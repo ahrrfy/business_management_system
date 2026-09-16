@@ -14,12 +14,12 @@ import { fmtAr, D } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 import { printTreasuryReportA4 } from "@/lib/printing/printTreasuryReportA4";
 import { CopyButton, CopyInline } from "@/components/CopyButton";
-import { TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtDateTime } from "@/lib/date";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 type TS = RouterOutputs["reports"]["treasurySummary"];
+type TStmt = RouterOutputs["reports"]["treasuryStatement"];
+type TSMove = TStmt["movements"][number];
 
 const NOTE =
   "أساس نقدي مباشر: من المقبوضات/المدفوعات المكتملة (لا أساس الاستحقاق). الفروقات حسب الورديات المفتوحة في الفترة (تاريخ الفتح). النقد حسب الفرع المحدّد.";
@@ -37,8 +37,10 @@ const RECONCILIATION_LABEL: Record<string, string> = {
 };
 
 export default function TreasuryReport() {
+  const utils = trpc.useUtils();
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [exporting, setExporting] = useState(false);
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.treasurySummary.useQuery({
     from: period.from,
@@ -46,6 +48,12 @@ export default function TreasuryReport() {
     branchId: branchId ? Number(branchId) : undefined,
   });
   const ts: TS | undefined = q.data;
+  const stmtQ = trpc.reports.treasuryStatement.useQuery({
+    from: period.from,
+    to: period.to,
+    branchId: branchId ? Number(branchId) : undefined,
+  });
+  const stmt: TStmt | undefined = stmtQ.data;
 
   const kpis: KpiItem[] = ts
     ? [
@@ -89,44 +97,78 @@ export default function TreasuryReport() {
   }, [ts, period.from, period.to, branchLabel]);
 
   function onExport() {
-    if (!ts) return;
-    exportSheets(`الخزينة-${period.from}-${period.to}`, [
-      {
-        sheetName: "طرق الدفع",
-        title: "تقرير الخزينة — طرق الدفع",
-        meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
-        rows,
-        columns: [
-          { key: "label", header: "طريقة الدفع" },
-          { key: "settlementLabel", header: "مكان التسوية" },
-          { key: "in", header: "مقبوضات", money: true, map: (r) => Number(r.in) },
-          { key: "out", header: "مدفوعات", money: true, map: (r) => Number(r.out) },
-          { key: "net", header: "الصافي", money: true, map: (r) => Number(r.net) },
-        ],
-        totalsRow: { label: "الإجمالي", in: Number(ts.totalIn), out: Number(ts.totalOut), net: Number(ts.net) },
-      } as SheetSpec<any>,
-      {
-        sheetName: "تسوية الورديات",
-        title: "تقرير الخزينة — تسوية الورديات النقدية",
-        meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
-        rows: ts.shifts.rows,
-        columns: [
-          { key: "id", header: "رقم الوردية" },
-          { key: "branchName", header: "الفرع" },
-          { key: "cashierName", header: "الكاشير" },
-          { key: "shiftType", header: "النوع", map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType },
-          { key: "status", header: "الحالة", map: (r) => r.status === "CLOSED" ? "مغلقة" : "مفتوحة" },
-          { key: "openedAt", header: "فُتحت", map: (r) => fmtDateTime(r.openedAt) },
-          { key: "closedAt", header: "أُغلقت", map: (r) => r.closedAt ? fmtDateTime(r.closedAt) : "—" },
-          { key: "openingBalance", header: "افتتاحي", money: true, map: (r) => Number(r.openingBalance) },
-          { key: "expectedCash", header: "نقد متوقّع", money: true, map: (r) => r.expectedCash == null ? "" : Number(r.expectedCash) },
-          { key: "countedCash", header: "نقد معدود", money: true, map: (r) => r.countedCash == null ? "" : Number(r.countedCash) },
-          { key: "variance", header: "الفرق", money: true, map: (r) => r.variance == null ? "" : Number(r.variance) },
-          { key: "reconciliationStatus", header: "التسوية", map: (r) => r.reconciliationStatus ? (RECONCILIATION_LABEL[r.reconciliationStatus] ?? r.reconciliationStatus) : "بانتظار الإغلاق" },
-        ],
-        totalsRow: { id: "الإجمالي", countedCash: Number(ts.shifts.totalCounted), variance: Number(ts.shifts.totalVariance) },
-      } as SheetSpec<any>,
-    ]);
+    if (!ts || exporting) return;
+    setExporting(true);
+    // نمرّر الجلب نفسه إلى exportSheets كي يُفتح حوار «حفظ باسم» داخل إيماءة النقر، بالتوازي
+    // مع طلب كلّ الحركات. جدول الشاشة وحده يبقى محدوداً دفاعياً.
+    exportSheets(`الخزينة-${period.from}-${period.to}`, async () => {
+      try {
+        const exportStmt = await utils.reports.treasuryStatementExport.fetch({
+          from: period.from,
+          to: period.to,
+          branchId: branchId ? Number(branchId) : undefined,
+        }, { staleTime: 0 });
+        return [
+          {
+            sheetName: "طرق الدفع",
+            title: "تقرير الخزينة — طرق الدفع",
+            meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
+            rows,
+            columns: [
+              { key: "label", header: "طريقة الدفع" },
+              { key: "settlementLabel", header: "مكان التسوية" },
+              { key: "in", header: "مقبوضات", money: true, map: (r) => Number(r.in) },
+              { key: "out", header: "مدفوعات", money: true, map: (r) => Number(r.out) },
+              { key: "net", header: "الصافي", money: true, map: (r) => Number(r.net) },
+            ],
+            totalsRow: { label: "الإجمالي", in: Number(ts.totalIn), out: Number(ts.totalOut), net: Number(ts.net) },
+          } as SheetSpec<any>,
+          {
+            sheetName: "تسوية الورديات",
+            title: "تقرير الخزينة — تسوية الورديات النقدية",
+            meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
+            rows: ts.shifts.rows,
+            columns: [
+              { key: "id", header: "رقم الوردية" },
+              { key: "branchName", header: "الفرع" },
+              { key: "cashierName", header: "الكاشير" },
+              { key: "shiftType", header: "النوع", map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType },
+              { key: "status", header: "الحالة", map: (r) => r.status === "CLOSED" ? "مغلقة" : "مفتوحة" },
+              { key: "openedAt", header: "فُتحت", map: (r) => fmtDateTime(r.openedAt) },
+              { key: "closedAt", header: "أُغلقت", map: (r) => r.closedAt ? fmtDateTime(r.closedAt) : "—" },
+              { key: "openingBalance", header: "افتتاحي", money: true, map: (r) => Number(r.openingBalance) },
+              { key: "expectedCash", header: "نقد متوقّع", money: true, map: (r) => r.expectedCash == null ? "" : Number(r.expectedCash) },
+              { key: "countedCash", header: "نقد معدود", money: true, map: (r) => r.countedCash == null ? "" : Number(r.countedCash) },
+              { key: "variance", header: "الفرق", money: true, map: (r) => r.variance == null ? "" : Number(r.variance) },
+              { key: "reconciliationStatus", header: "التسوية", map: (r) => r.reconciliationStatus ? (RECONCILIATION_LABEL[r.reconciliationStatus] ?? r.reconciliationStatus) : "بانتظار الإغلاق" },
+            ],
+            totalsRow: { id: "الإجمالي", countedCash: Number(ts.shifts.totalCounted), variance: Number(ts.shifts.totalVariance) },
+          } as SheetSpec<any>,
+          {
+            sheetName: "كشف حركة الخزينة",
+            title: "كشف حركة الخزينة النقدية (رصيدٌ جارٍ)",
+            meta: [
+              { label: "الفترة", value: `${period.from} — ${period.to}` },
+              { label: "الفرع", value: branchLabel },
+              { label: "رصيد افتتاحيّ", value: fmtAr(exportStmt.openingBalance) },
+              { label: "رصيد ختاميّ", value: fmtAr(exportStmt.closingBalance) },
+            ],
+            rows: exportStmt.movements,
+            columns: [
+              { key: "at", header: "التاريخ", map: (r) => fmtDateTime(r.at) },
+              { key: "reason", header: "الحركة", map: (r) => (r.reversed ? `${r.reason} (معكوس)` : r.reason) },
+              { key: "detail", header: "الطرف/البيان", map: (r) => r.counterparty ?? r.description ?? r.voucherNumber ?? "" },
+              { key: "actor", header: "المنشئ/المعتمِد", map: (r) => (r.approvedByName && r.approvedByName !== r.createdByName ? `${r.createdByName ?? "—"} · اعتمد: ${r.approvedByName}` : (r.createdByName ?? "—")) },
+              { key: "in", header: "وارد", money: true, map: (r) => (r.direction === "IN" ? Number(r.amount) : "") },
+              { key: "out", header: "صادر", money: true, map: (r) => (r.direction === "OUT" ? Number(r.amount) : "") },
+              { key: "running", header: "الرصيد بعد الحركة", money: true, map: (r) => Number(r.runningBalance) },
+            ],
+          } as SheetSpec<any>,
+        ];
+      } finally {
+        setExporting(false);
+      }
+    });
   }
 
   // طباعة A4 — وثيقة توقيع واعتماد (أمين الصندوق/المحاسب/المدير)، لا جدول تقرير مجرّد
@@ -205,6 +247,157 @@ export default function TreasuryReport() {
     },
   ], [ts]);
 
+  /** أعمدة تفاصيل تسوية الورديات — ثابتةٌ بلا اعتمادٍ على الحالة (الصفوف تأتي من `ts`). */
+  const shiftColumns = useMemo<ColumnDef<TS["shifts"]["rows"][number], unknown>[]>(() => [
+    { id: "id", header: "#", accessorFn: (s) => s.id, meta: { kind: "number", width: "id" }, cell: ({ row }) => row.original.id },
+    { id: "branchName", header: "الفرع", accessorFn: (s) => s.branchName ?? "—", cell: ({ row }) => row.original.branchName ?? "—" },
+    { id: "cashierName", header: "الكاشير", accessorFn: (s) => s.cashierName ?? "—", meta: { kind: "actor" }, cell: ({ row }) => row.original.cashierName ?? "—" },
+    {
+      id: "shiftType",
+      header: "النوع",
+      accessorFn: (s) => SHIFT_TYPE_LABEL[s.shiftType] ?? s.shiftType,
+      cell: ({ row }) => <span className="text-xs">{SHIFT_TYPE_LABEL[row.original.shiftType] ?? row.original.shiftType}</span>,
+    },
+    {
+      id: "period",
+      header: "الفترة",
+      accessorFn: (s) => `${fmtDateTime(s.openedAt)} — ${s.closedAt ? fmtDateTime(s.closedAt) : "مفتوحة"}`,
+      meta: { kind: "datetime" },
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {fmtDateTime(row.original.openedAt)}
+          <br />
+          {row.original.closedAt ? fmtDateTime(row.original.closedAt) : "مفتوحة"}
+        </span>
+      ),
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (s) => (s.status === "CLOSED" ? "مغلقة" : "مفتوحة"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${row.original.status === "CLOSED" ? "bg-muted text-muted-foreground" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"}`}>
+          {row.original.status === "CLOSED" ? "مغلقة" : "مفتوحة"}
+        </span>
+      ),
+    },
+    {
+      id: "expectedCash",
+      header: "المتوقّع النقدي",
+      accessorFn: (s) => (s.expectedCash == null ? "—" : fmtAr(s.expectedCash)),
+      meta: { kind: "money" },
+      cell: ({ row }) =>
+        row.original.expectedCash == null ? "—" : <CopyInline value={row.original.expectedCash} display={fmtAr(row.original.expectedCash)} mono={false} />,
+    },
+    {
+      id: "countedCash",
+      header: "المعدود",
+      accessorFn: (s) => (s.countedCash == null ? "—" : fmtAr(s.countedCash)),
+      meta: { kind: "money" },
+      cell: ({ row }) =>
+        row.original.countedCash == null ? "—" : <CopyInline value={row.original.countedCash} display={fmtAr(row.original.countedCash)} mono={false} />,
+    },
+    {
+      id: "variance",
+      header: "الفرق",
+      accessorFn: (s) => (s.variance == null ? "—" : fmtAr(s.variance)),
+      meta: { kind: "money" },
+      cell: ({ row }) =>
+        row.original.variance == null ? (
+          "—"
+        ) : (
+          <span className={`font-semibold ${D(row.original.variance).lt(0) ? "text-money-negative" : "text-money-positive"}`}>
+            <CopyInline value={row.original.variance} display={fmtAr(row.original.variance)} mono={false} />
+          </span>
+        ),
+    },
+    {
+      id: "reconciliationStatus",
+      header: "التسوية",
+      accessorFn: (s) => (s.reconciliationStatus ? (RECONCILIATION_LABEL[s.reconciliationStatus] ?? s.reconciliationStatus) : "بانتظار الإغلاق"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {row.original.reconciliationStatus
+            ? (RECONCILIATION_LABEL[row.original.reconciliationStatus] ?? row.original.reconciliationStatus)
+            : "بانتظار الإغلاق"}
+        </span>
+      ),
+    },
+  ], []);
+
+  /** أعمدة كشف حركة الخزينة النقدية — رصيدٌ جارٍ. */
+  const stmtColumns = useMemo<ColumnDef<TSMove, unknown>[]>(() => [
+    {
+      id: "at", header: "التاريخ",
+      accessorFn: (m) => m.at,
+      meta: { kind: "datetime" },
+      cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.at)}</span>,
+    },
+    {
+      id: "reason", header: "الحركة",
+      accessorFn: (m) => m.reason,
+      meta: { kind: "text" },
+      cell: ({ row }) => (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="font-medium">{row.original.reason}</span>
+          {row.original.reversed && (
+            <span className="rounded-full bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[10px] text-[var(--sem-neg)]">معكوس</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: "detail", header: "الطرف / البيان",
+      accessorFn: (m) => m.counterparty ?? m.description ?? m.voucherNumber ?? "—",
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground">
+          {row.original.counterparty ?? row.original.description ?? row.original.voucherNumber ?? "—"}
+        </span>
+      ),
+    },
+    {
+      id: "actor", header: "المنشئ / المعتمِد",
+      accessorFn: (m) => m.createdByName ?? "—",
+      meta: { kind: "text" },
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground">
+          {row.original.createdByName ?? "—"}
+          {row.original.approvedByName && row.original.approvedByName !== row.original.createdByName && (
+            <span className="text-[10px]"> · اعتمد: {row.original.approvedByName}</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: "in", header: "وارد",
+      accessorFn: (m) => (m.direction === "IN" ? Number(m.amount) : 0),
+      meta: { kind: "money" },
+      cell: ({ row }) => row.original.direction === "IN"
+        ? <span className="text-money-positive"><CopyInline value={row.original.amount} display={fmtAr(row.original.amount)} mono={false} /></span>
+        : <span className="text-muted-foreground">—</span>,
+    },
+    {
+      id: "out", header: "صادر",
+      accessorFn: (m) => (m.direction === "OUT" ? Number(m.amount) : 0),
+      meta: { kind: "money" },
+      cell: ({ row }) => row.original.direction === "OUT"
+        ? <span className="text-money-negative"><CopyInline value={row.original.amount} display={fmtAr(row.original.amount)} mono={false} /></span>
+        : <span className="text-muted-foreground">—</span>,
+    },
+    {
+      id: "running", header: "الرصيد بعد الحركة",
+      accessorFn: (m) => Number(m.runningBalance),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="font-semibold tabular-nums" dir="ltr">
+          <CopyInline value={row.original.runningBalance} display={fmtAr(row.original.runningBalance)} mono={false} />
+        </span>
+      ),
+    },
+  ], []);
+
   return (
     <ReportShell
       title="تقرير الخزينة"
@@ -218,7 +411,7 @@ export default function TreasuryReport() {
       }
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!ts}
+      exportDisabled={!ts || exporting}
       printDisabled={!ts}
       filters={
         <div className="flex flex-wrap items-end gap-3">
@@ -252,6 +445,48 @@ export default function TreasuryReport() {
             errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
             emptyText="لا حركات في الفترة."
           />
+        </CardContent>
+      </Card>
+
+      {/* كشف حركة الخزينة النقدية — رصيدٌ جارٍ يشرح كل داخل/خارج؛ ختامُه = رصيد الخزينة الفعليّ */}
+      <Card>
+        <CardContent className="p-0">
+          <div className="border-b px-4 py-3">
+            <h2 className="text-sm font-bold">كشف حركة الخزينة النقدية (رصيدٌ جارٍ)</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              كل إيداعٍ وصرفٍ نقديّ في الخزينة مرتّباً زمنياً برصيدٍ جارٍ. الرصيد الختاميّ = رصيد الخزينة النقديّ الفعليّ عند نهاية الفترة (يُطابق ما تعرضه لوحة الخزينة).
+            </p>
+          </div>
+          {stmt && (
+            <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-4">
+              {[
+                { label: "رصيد افتتاحيّ", value: stmt.openingBalance, tone: "" },
+                { label: "إجمالي الوارد", value: stmt.totalIn, tone: "text-money-positive" },
+                { label: "إجمالي الصادر", value: stmt.totalOut, tone: "text-money-negative" },
+                { label: "الرصيد الختاميّ", value: stmt.closingBalance, tone: D(stmt.closingBalance).lt(0) ? "text-money-negative" : "text-money-positive" },
+              ].map((k) => (
+                <div key={k.label} className="bg-card px-3 py-2 text-center">
+                  <p className="text-[11px] text-muted-foreground">{k.label}</p>
+                  <p className={`text-base font-bold tabular-nums ${k.tone}`} dir="ltr">
+                    <CopyInline value={String(k.value)} display={fmtAr(k.value)} mono={false} />
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+          <DataTable<TSMove>
+            columns={stmtColumns}
+            data={stmt?.movements ?? []}
+            loading={stmtQ.isLoading}
+            searchable={false}
+            errorState={{ isError: stmtQ.isError, message: "تعذّر تحميل كشف الحركة.", onRetry: () => void stmtQ.refetch() }}
+            emptyText="لا حركات خزينة نقدية في الفترة."
+          />
+          {stmt && stmt.truncated && (
+            <p className="border-t px-4 py-2 text-xs text-money-negative">
+              تُعرض أوّل {stmt.shownCount} حركة من أصل {stmt.count} — تصدير Excel يجلب الحركات كلّها.
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -302,26 +537,18 @@ export default function TreasuryReport() {
               <h2 className="text-sm font-bold">تفاصيل تسوية الورديات النقدية</h2>
               <p className="mt-1 text-xs text-muted-foreground">المتوقّع والمعدود هنا للنقد الموجود في الدرج فقط؛ لا تدخل البطاقة أو التحويل في مبلغ إغلاق الكاشير.</p>
             </div>
-            <ScrollTableShell bordered={false} maxHeightClass="max-h-[calc(100dvh-19rem)]">
-              <table className="w-full text-sm">
-                <thead><tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">#</th><th className="p-3 text-right font-medium">الفرع</th><th className="p-3 text-right font-medium">الكاشير</th><th className="p-3 text-right font-medium">النوع</th><th className="p-3 text-right font-medium">الفترة</th><th className="p-3 text-right font-medium">الحالة</th><th className="p-3 text-right font-medium">المتوقّع النقدي</th><th className="p-3 text-right font-medium">المعدود</th><th className="p-3 text-right font-medium">الفرق</th><th className="p-3 text-right font-medium">التسوية</th>
-                </tr></thead>
-                <tbody>
-                  {ts.shifts.rows.length === 0 ? <TableEmptyRow colSpan={10} message="لا ورديات فُتحت في الفترة." /> : ts.shifts.rows.map((s) => (
-                    <tr key={s.id} className="border-b last:border-0">
-                      <td className="p-3 tabular-nums" dir="ltr">{s.id}</td><td className="p-3">{s.branchName ?? "—"}</td><td className="p-3">{s.cashierName ?? "—"}</td><td className="p-3 text-xs">{SHIFT_TYPE_LABEL[s.shiftType] ?? s.shiftType}</td>
-                      <td className="p-3 text-xs whitespace-nowrap" dir="ltr">{fmtDateTime(s.openedAt)}<br />{s.closedAt ? fmtDateTime(s.closedAt) : "مفتوحة"}</td>
-                      <td className="p-3"><span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${s.status === "CLOSED" ? "bg-muted text-muted-foreground" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"}`}>{s.status === "CLOSED" ? "مغلقة" : "مفتوحة"}</span></td>
-                      <td className="p-3 tabular-nums" dir="ltr">{s.expectedCash == null ? "—" : <CopyInline value={s.expectedCash} display={fmtAr(s.expectedCash)} mono={false} />}</td>
-                      <td className="p-3 tabular-nums" dir="ltr">{s.countedCash == null ? "—" : <CopyInline value={s.countedCash} display={fmtAr(s.countedCash)} mono={false} />}</td>
-                      <td className={`p-3 tabular-nums font-semibold ${s.variance != null && D(s.variance).lt(0) ? "text-money-negative" : "text-money-positive"}`} dir="ltr">{s.variance == null ? "—" : <CopyInline value={s.variance} display={fmtAr(s.variance)} mono={false} />}</td>
-                      <td className="p-3 text-xs">{s.reconciliationStatus ? (RECONCILIATION_LABEL[s.reconciliationStatus] ?? s.reconciliationStatus) : "بانتظار الإغلاق"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: البطاقة تحمل العنوان والشرح؛ و`pageSize=Infinity` إلزاميّ مع `embedded`
+                لأنّ شريط الحالة (وفيه أزرار الترقيم) مكتومٌ — بلا ذلك تُحبَس الصفوف بعد الخمسين
+                بلا وسيلة وصول. الارتفاع المقيّد والترويسة اللاصقة كما كانا. */}
+            <DataTable<TS["shifts"]["rows"][number]>
+              embedded
+              searchable={false}
+              pageSize={Infinity}
+              maxHeightClass="max-h-[calc(100dvh-19rem)]"
+              data={ts.shifts.rows}
+              columns={shiftColumns}
+              emptyText="لا ورديات فُتحت في الفترة."
+            />
             {ts.shifts.count > ts.shifts.shownCount && <p className="border-t px-4 py-2 text-xs text-muted-foreground">تُعرض أحدث {ts.shifts.shownCount} وردية من أصل {ts.shifts.count}. صدّر Excel للحصول على الصفوف المعروضة.</p>}
           </CardContent>
         </Card>

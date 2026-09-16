@@ -1,16 +1,18 @@
 import {
   PERMISSION_MODULES,
-  ROLE_TEMPLATES,
   ROLES,
-  resolvePermissions,
   type AccessLevel,
   type RoleKey,
 } from "@shared/permissions";
 import { LEAVE_TYPES } from "@shared/hr";
-import { SALES_CONTROL_TYPE_LABELS, type SalesControlType } from "@shared/salesControl";
+import {
+  SALES_CONTROL_TYPE_LABELS,
+  type SalesControlType,
+} from "@shared/salesControl";
 import { salesControlFacts } from "@shared/salesControlFacts";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import {
   and,
   asc,
@@ -19,7 +21,6 @@ import {
   gte,
   inArray,
   isNull,
-  ne,
   notExists,
   or,
   sql,
@@ -70,19 +71,48 @@ import {
   markNotificationRead,
   updateNotificationPreferences,
 } from "../services/appNotificationService";
-import { createLeave, withdrawPendingLeave } from "../services/leaveService";
+import {
+  createLeave,
+  createMobileSelfLeave,
+  withdrawLatestMobileSelfLeave,
+  withdrawPendingLeave,
+} from "../services/leaveService";
 import { listStockAdjustmentRequests } from "../services/inventory/adjustmentApproval";
 import { requireDb } from "../services/tx";
 import {
-  canSeeCostForUser,
-  canViewReports,
+  expoSuperAppProcedure,
   router,
   selfServiceProcedure,
   superAppProcedure,
 } from "../trpc";
+import { verifiedNativeKeyThumbprint } from "../auth/deviceProof";
 import { detectAll as detectCatalogAnomalies } from "../services/catalogAnomalies/detectors";
 import { getTodayNetSales } from "../services/reports/todaySales";
+import {
+  getMobileAttendanceHistory,
+  getMobilePayslip,
+  getMobileToday,
+} from "../services/mobileTodayService";
+import { consumeFreshSecondFactor } from "../services/twoFactorService";
 import { getAPAging } from "../services/reports/apAging";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { resolveSuperAppAuthority } from "../services/superAppAuthority";
+import { getExecutiveCommandCenter } from "./executiveRouter";
+import {
+  resolveCurrentMobileTask,
+  startCurrentMobileTask,
+} from "../services/tasks";
+import {
+  countActiveSuperAppExpoPushDevices,
+  registerSuperAppExpoPushDevice,
+  revokeSuperAppExpoPushDevice,
+  SUPERAPP_EXPO_PUSH_ENVIRONMENTS,
+  SUPERAPP_EXPO_PUSH_PLATFORMS,
+  SuperAppExpoPushConflictError,
+  SuperAppExpoPushValidationError,
+} from "../services/superAppPushService";
+
+export { resolveSuperAppAuthority, type SuperAppAuthorityUser } from "../services/superAppAuthority";
 
 const leaveTypeKeys = LEAVE_TYPES.map((item) => item.key) as [
   string,
@@ -94,8 +124,35 @@ const quietTime = z
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "الوقت يجب أن يكون HH:mm")
   .nullable();
 
-/** نفس سلامة طلب المصروف التي تتطلبها خدمة الاعتماد؛ لا نعرض قراراً سيفشل حتماً عند تنفيذه. */
-function actionableExpenseApprovalWhere(ownerUserId: number) {
+function expoDeviceKeyThumbprint(ctx: { req: { headers?: Record<string, unknown> } }): string {
+  const value = verifiedNativeKeyThumbprint(ctx.req);
+  if (value) return value;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: appErrorMessage({
+      what: "تعذر تأكيد جهاز الإشعارات",
+      why: "الجلسة لا تحمل بصمة مفتاح جهاز موثق",
+      doThis: "أعد فتح التطبيق المثبت وسجل الدخول من جديد قبل تفعيل الإشعارات",
+    }),
+  });
+}
+
+function rethrowExpoPushError(error: unknown): never {
+  if (error instanceof SuperAppExpoPushValidationError) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+  }
+  if (error instanceof SuperAppExpoPushConflictError) {
+    throw new TRPCError({ code: "CONFLICT", message: error.message });
+  }
+  throw error;
+}
+
+/**
+ * نفس سلامة طلب المصروف التي تتطلبها خدمة الاعتماد؛ لا نعرض قراراً سيفشل حتماً عند تنفيذه.
+ * ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — استثناء صانع الطلب أُلغي (كل مواضع
+ * الاستدعاء الثلاثة تشترط `isOwner` أصلاً قبل استدعاء هذه الدالّة).
+ */
+function actionableExpenseApprovalWhere() {
   return and(
     eq(expenses.status, "PENDING_APPROVAL"),
     eq(expenses.source, "CASH"),
@@ -111,7 +168,6 @@ function actionableExpenseApprovalWhere(ownerUserId: number) {
     isNull(receipts.reservationId),
     isNull(receipts.voucherNumber),
     sql`${expenses.createdBy} IS NOT NULL`,
-    ne(expenses.createdBy, ownerUserId),
     sql`${receipts.branchId} <=> ${expenses.branchId}`,
     sql`${receipts.amount} <=> ${expenses.amount}`,
     sql`${receipts.paymentMethod} <=> ${expenses.paymentMethod}`,
@@ -121,60 +177,6 @@ function actionableExpenseApprovalWhere(ownerUserId: number) {
 
 function isVisible(level: AccessLevel | undefined): boolean {
   return level === "FULL" || level === "READ";
-}
-
-type SuperAppAuthorityUser = {
-  role: string;
-  isOwner?: boolean;
-  branchId?: number | null;
-  permissionsOverride?: unknown;
-  roleLockedByInactiveCustomRole?: boolean;
-};
-
-/** Single authority contract shared by bootstrap and mobile operational pulses. */
-export function resolveSuperAppAuthority(user: SuperAppAuthorityUser) {
-  const ownerOrAdmin = user.isOwner === true || user.role === "admin";
-  const role = (ownerOrAdmin ? "admin" : user.role) as RoleKey;
-  // Server gates intentionally give admin unconditional module access. The mobile
-  // contract must not hide a module that the same session can open server-side.
-  // `isOwner` is the persisted authority invariant: a stale/custom base role
-  // must never turn the company owner into a branch-scoped pseudo-manager.
-  const permissions = ownerOrAdmin
-    ? { ...ROLE_TEMPLATES.admin }
-    : resolvePermissions(
-        role,
-        (user.permissionsOverride ?? null) as Record<
-          string,
-          AccessLevel
-        > | null,
-      );
-  const allBranches = ownerOrAdmin;
-  const requestedBranchId =
-    user.branchId == null ? null : Number(user.branchId);
-  const branchId =
-    requestedBranchId != null &&
-    Number.isInteger(requestedBranchId) &&
-    requestedBranchId > 0
-      ? requestedBranchId
-      : null;
-  return {
-    role,
-    permissions,
-    scope: {
-      branchId,
-      allBranches,
-      // A manager is a branch manager. Missing assignment is an explicit empty
-      // scope, never an implicit company-wide scope.
-      effectiveBranchId: allBranches ? null : (branchId ?? -1),
-    },
-    capabilities: {
-      isOwner: user.isOwner === true,
-      canSeeCost: ownerOrAdmin || canSeeCostForUser(user),
-      canViewReports: ownerOrAdmin || canViewReports(user),
-      isExecutive: ownerOrAdmin || role === "manager",
-      roleDegraded: user.roleLockedByInactiveCustomRole === true,
-    },
-  };
 }
 
 function baghdadDate(): string {
@@ -222,7 +224,10 @@ export async function getScopedCustomerPulse(scopedBranchId: number | null) {
       .then((rows) => rows[0]),
     db
       .select({
-        balance: sql<string>`coalesce(sum(greatest(${invoices.total} - ${invoices.paidAmount} - ${invoices.returnedTotal}, 0)), 0)`,
+        // ذمّةُ الفرع سؤالٌ تحصيليّ ⇒ `COLLECTIBLE` (مقصوص) — نفسُ شكل `greatest(…,0)` القائم.
+        // ⚠️ القائمةُ البيضاء أدناه (`PENDING`/`PARTIALLY_PAID`) تُسقِط `CONFIRMED` وتبقى كما
+        // هي: توسيعُها يرفع رقمَ نبض العملاء في التطبيق ⇒ قرارُ سياسة لا توحيدُ مسند (بند د).
+        balance: sql<string>`coalesce(sum(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0)`,
       })
       .from(invoices)
       .innerJoin(customers, eq(invoices.customerId, customers.id))
@@ -283,6 +288,334 @@ export async function getScopedSupplierPulse(scopedBranchId: number | null) {
  * session; domain routers remain the authority for all business mutations.
  */
 export const superAppRouter = router({
+  /**
+   * The first live Expo workspace payload. It deliberately has no caller
+   * supplied employee, branch, or date: identity and the Baghdad business day
+   * are derived on the server after verified native-device session proof.
+   */
+  mobileToday: expoSuperAppProcedure.query(({ ctx }) =>
+    getMobileToday({
+      actor: {
+        userId: ctx.user.id,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        branchId: ctx.user.branchId,
+        permissionsOverride: ctx.user.permissionsOverride,
+        roleLockedByInactiveCustomRole: ctx.user.roleLockedByInactiveCustomRole,
+      },
+      date: baghdadDate(),
+    }),
+  ),
+
+  /**
+   * Employee-owned attendance history for the native app. This deliberately
+   * accepts no pagination, employee, branch, date, or export filename from
+   * the device: the protected session and Baghdad business day define the
+   * only bounded 31-day window.
+   */
+  mobileAttendanceHistory: expoSuperAppProcedure.query(({ ctx }) =>
+    getMobileAttendanceHistory({
+      actor: {
+        userId: ctx.user.id,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        branchId: ctx.user.branchId,
+      },
+      date: baghdadDate(),
+    }),
+  ),
+
+  /**
+   * Notification registration is device-bound and contains no caller-supplied
+   * user, branch, route, or record identifier. The token can only be used by
+   * the separate Super Arabia Expo worker.
+   */
+  mobileExpoPushStatus: expoSuperAppProcedure.query(({ ctx }) =>
+    countActiveSuperAppExpoPushDevices(ctx.user.id).then((activeCount) => ({ activeCount })),
+  ),
+
+  mobileRegisterExpoPush: expoSuperAppProcedure
+    .input(
+      z
+        .object({
+          expoPushToken: z.string().trim().max(256),
+          platform: z.enum(SUPERAPP_EXPO_PUSH_PLATFORMS),
+          environment: z.enum(SUPERAPP_EXPO_PUSH_ENVIRONMENTS),
+          appVersion: z.string().trim().min(1).max(64),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const devicePublicKeyHash = expoDeviceKeyThumbprint(ctx);
+        const result = await registerSuperAppExpoPushDevice({
+          userId: ctx.user.id,
+          devicePublicKeyHash,
+          ...input,
+        });
+        await logAudit(ctx, {
+          action: "superapp.expoPushRegistered",
+          entityType: "superAppExpoPushDevice",
+          entityId: result.id,
+          newValue: {
+            tokenHash: result.tokenHash,
+            platform: input.platform,
+            environment: input.environment,
+            appVersion: input.appVersion,
+          },
+        });
+        return { registered: true as const };
+      } catch (error) {
+        rethrowExpoPushError(error);
+      }
+    }),
+
+  mobileRevokeExpoPush: expoSuperAppProcedure.mutation(async ({ ctx }) => {
+    const devicePublicKeyHash = expoDeviceKeyThumbprint(ctx);
+    await revokeSuperAppExpoPushDevice(ctx.user.id, devicePublicKeyHash);
+    await logAudit(ctx, {
+      action: "superapp.expoPushRevoked",
+      entityType: "superAppExpoPushDevice",
+      entityId: undefined,
+      newValue: { devicePublicKeyHash },
+    });
+    return { revoked: true as const };
+  }),
+
+  /**
+   * Sensitive, personal payslip reveal. The phone supplies only one fresh
+   * second-factor value; it never chooses a payroll/employee/period. No
+   * reusable step-up ticket or browser-password prompt is created.
+   */
+  mobilePayslipReveal: expoSuperAppProcedure
+    .input(
+      z
+        .object({
+          code: z.string().trim().regex(/^\d{6}$/, "رمز التحقق يجب أن يكون ستة أرقام").optional(),
+          recoveryCode: z.string().trim().min(5).max(64).optional(),
+        })
+        .strict()
+        .refine((input) => Boolean(input.code) !== Boolean(input.recoveryCode), {
+          message: "أدخل رمز التحقق أو رمز الاسترداد، وليس كليهما.",
+          path: ["code"],
+        }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const verification = await consumeFreshSecondFactor(ctx.user.id, input);
+      const payslip = await getMobilePayslip({
+        actor: {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+          branchId: ctx.user.branchId,
+        },
+      });
+      await logAudit(ctx, {
+        action: "superapp.mobilePayslipReveal",
+        entityType: "payrollItem",
+        entityId: undefined,
+        newValue: {
+          outcome: payslip.personal.payslip ? "REVEALED" : "NO_AVAILABLE_PAYSLIP",
+          secondFactor: verification.method,
+        },
+      });
+      return payslip;
+    }),
+
+  /**
+   * A closed native leave command. The device provides dates, type, optional
+   * reason, and one opaque retry key only; the server derives employee, branch
+   * and the resulting request record from the authenticated Expo session.
+   */
+  mobileRequestLeave: expoSuperAppProcedure
+    .input(
+      z
+        .object({
+          leaveType: z.enum(leaveTypeKeys),
+          fromDate: dateString,
+          toDate: dateString,
+          reason: z.string().trim().max(1000).optional(),
+          clientRequestId: z.string().uuid(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const db = requireDb();
+      const [employee] = await db
+        .select({ id: employees.id })
+        .from(employees)
+        .where(eq(employees.userId, ctx.user.id))
+        .limit(1);
+      if (!employee) throw new Error("لا يوجد ملف موظف مرتبط بهذا الحساب");
+      const result = await createMobileSelfLeave({
+        employeeId: Number(employee.id),
+        leaveType: input.leaveType,
+        fromDate: input.fromDate,
+        toDate: input.toDate,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
+      await logAudit(ctx, {
+        action: "superapp.mobileLeaveRequest",
+        entityType: "leaveRequest",
+        entityId: result.leave.id,
+        newValue: {
+          outcome: result.idempotent ? "REPLAYED" : "CREATED",
+          leaveType: input.leaveType,
+          fromDate: input.fromDate,
+          toDate: input.toDate,
+        },
+      });
+      if (!result.idempotent) {
+        await createAppNotification({
+          userId: ctx.user.id,
+          kind: "LEAVE_STATUS",
+          title: "تم إرسال طلب الإجازة",
+          body: `${input.leaveType} · ${input.fromDate} — ${input.toDate}`,
+          route: "/hr?tab=leaves",
+          eventKey: `leave:${result.leave.id}:requested`,
+          entityType: "leaveRequest",
+          entityId: result.leave.id,
+          push: false,
+        });
+      }
+      return {
+        leave: {
+          status: result.leave.status,
+          fromDate: result.leave.fromDate,
+          toDate: result.leave.toDate,
+        },
+        idempotent: result.idempotent,
+      };
+    }),
+
+  /**
+   * The user cannot select a leave identifier. This can only withdraw their
+   * newest pending request; server idempotency protects a retry after a lost
+   * mobile response without exposing any employee or branch reference.
+   */
+  mobileWithdrawLatestLeave: expoSuperAppProcedure
+    .input(z.object({ clientRequestId: z.string().uuid() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const db = requireDb();
+      const [employee] = await db
+        .select({ id: employees.id })
+        .from(employees)
+        .where(eq(employees.userId, ctx.user.id))
+        .limit(1);
+      if (!employee) throw new Error("لا يوجد ملف موظف مرتبط بهذا الحساب");
+      const result = await withdrawLatestMobileSelfLeave({
+        employeeId: Number(employee.id),
+        clientRequestId: input.clientRequestId,
+      });
+      await logAudit(ctx, {
+        action: "superapp.mobileLeaveWithdraw",
+        entityType: "leaveRequest",
+        entityId: result.leave.id,
+        newValue: { outcome: result.idempotent ? "REPLAYED" : "WITHDRAWN" },
+      });
+      return {
+        leave: {
+          status: result.leave.status,
+          fromDate: result.leave.fromDate,
+          toDate: result.leave.toDate,
+        },
+        idempotent: result.idempotent,
+      };
+    }),
+
+  /** Starts only the current task assigned to this Expo session; no task id
+   * or assignee can be chosen by the phone. */
+  mobileStartFocusedTask: expoSuperAppProcedure
+    .input(z.object({ clientRequestId: z.string().uuid() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const result = await startCurrentMobileTask({
+        actor: {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId,
+          role: ctx.user.role,
+        },
+        clientRequestId: input.clientRequestId,
+      });
+      await logAudit(ctx, {
+        action: "superapp.mobileTaskStart",
+        entityType: "task",
+        entityId: result.taskId,
+        newValue: { outcome: result.idempotent ? "REPLAYED" : "STARTED" },
+      });
+      return { status: result.status, idempotent: result.idempotent };
+    }),
+
+  /** Completes only the current task assigned to this Expo session. A retry
+   * returns the original completion, never the next open task. */
+  mobileResolveFocusedTask: expoSuperAppProcedure
+    .input(
+      z
+        .object({
+          resolutionNote: z.string().trim().max(4000).optional(),
+          clientRequestId: z.string().uuid(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await resolveCurrentMobileTask({
+        actor: {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId,
+          role: ctx.user.role,
+        },
+        resolutionNote: input.resolutionNote,
+        clientRequestId: input.clientRequestId,
+      });
+      await logAudit(ctx, {
+        action: "superapp.mobileTaskResolve",
+        entityType: "task",
+        entityId: result.taskId,
+        newValue: { outcome: result.idempotent ? "REPLAYED" : "RESOLVED" },
+      });
+      return { status: result.status, idempotent: result.idempotent };
+    }),
+
+  /**
+   * Native owner/manager read model. The client supplies no branch, filter,
+   * destination, or URL; all authority and scope come from the signed session.
+   */
+  mobileCommandCenter: expoSuperAppProcedure.query(async ({ ctx }) => {
+    const commandCenter = await getExecutiveCommandCenter(ctx.user);
+    return {
+      asOf: commandCenter.asOf,
+      scope: commandCenter.scope.allBranches ? "ALL_BRANCHES" as const : "ASSIGNED_BRANCH" as const,
+      health: commandCenter.health,
+      decisions: commandCenter.decisions.map((decision) => ({
+        id: decision.id,
+        severity: decision.severity,
+        title: decision.title,
+        actionLabel: decision.actionLabel,
+      })),
+      metrics: {
+        lowStockCount: commandCenter.metrics.lowStockCount,
+        overdueReceivables: commandCenter.metrics.overdueAR == null
+          ? null
+          : {
+            count: commandCenter.metrics.overdueAR.count,
+            total: commandCenter.metrics.overdueAR.total,
+          },
+        salesToday: commandCenter.operationalSnapshot.salesToday == null
+          ? null
+          : {
+            total: commandCenter.operationalSnapshot.salesToday.total,
+            invoiceCount: commandCenter.operationalSnapshot.salesToday.invoiceCount,
+          },
+        treasury: commandCenter.operationalSnapshot.treasury == null
+          ? null
+          : {
+            balance: commandCenter.operationalSnapshot.treasury.treasuryBalance,
+            openShiftsCount: commandCenter.operationalSnapshot.treasury.openShiftsCount,
+          },
+      },
+    };
+  }),
+
   bootstrap: superAppProcedure.query(async ({ ctx }) => {
     const authority = resolveSuperAppAuthority(ctx.user);
     const { role, permissions } = authority;
@@ -516,6 +849,7 @@ export const superAppRouter = router({
             .from(receipts)
             .where(
               and(
+                eq(receipts.status, "PENDING"),
                 eq(receipts.approvalStatus, "PENDING_APPROVAL"),
                 notExists(
                   db
@@ -534,7 +868,7 @@ export const superAppRouter = router({
                 .select({ count: sql<number>`count(*)` })
                 .from(expenses)
                 .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
-                .where(actionableExpenseApprovalWhere(ctx.user.id))
+                .where(actionableExpenseApprovalWhere())
                 .then((rows) => rows[0])
             : Promise.resolve({ count: 0 }),
         ]);
@@ -594,34 +928,38 @@ export const superAppRouter = router({
       }
 
       if (input.moduleKey === "purchases") {
-        const [row] = await db
-          .select({
-            count: sql<number>`count(*)`,
-            total: sql<string>`coalesce(sum(${purchaseOrders.total} - ${purchaseOrders.paidAmount}), 0)`,
-          })
-          .from(purchaseOrders)
-          .where(
-            and(
-              inArray(purchaseOrders.status, ["DRAFT", "SENT", "CONFIRMED"]),
+        // «غير مسدد» كان يُحسب من purchaseOrders.total-paidAmount الخام لكل أمر — فلا يطابق
+        // ذمّة المورّد الحقيقية (دفعاتٌ غير مخصَّصة لأمرٍ بعينه تُخفّض الرصيد الفعلي بلا أن تُخفّض
+        // هذا المجموع الساذج) ويحسب DRAFT/SENT رغم أنها غير ملتزمة مالياً بعد. نستعمل نفس دالّة
+        // AP الحاكمة (GL) المستخدمة في كشف حساب المورد ووحدة الموردين — مصدرٌ واحد للحقيقة.
+        const [countRow, supplierPulse] = await Promise.all([
+          db
+            .select({
+              count: sql<number>`sum(case when ${purchaseOrders.status} in ('DRAFT', 'SENT', 'CONFIRMED') then 1 else 0 end)`,
+            })
+            .from(purchaseOrders)
+            .where(
               scopedBranchId == null
                 ? undefined
                 : eq(purchaseOrders.branchId, scopedBranchId),
-            ),
-          );
+            )
+            .then((rows) => rows[0]),
+          getScopedSupplierPulse(scopedBranchId),
+        ]);
         return {
           moduleKey: input.moduleKey,
           metrics: [
             metric(
               "open-orders",
               "أوامر مفتوحة",
-              row?.count,
+              countRow?.count,
               "count",
               "/purchases",
             ),
             metric(
               "outstanding",
               "غير مسدد",
-              row?.total,
+              supplierPulse.balance,
               "money",
               "/purchases",
             ),
@@ -1651,151 +1989,158 @@ export const superAppRouter = router({
       const canTreasuryApprove =
         role === "admin" || role === "manager" || role === "accountant";
 
-      const [stockRows, leaveRows, voucherRows, expenseRows, giftRows, salesControlRows] =
-        await Promise.all([
-          permissions.inventory === "FULL" && canManage
-            ? listStockAdjustmentRequests({
-                branchId,
-                status: "PENDING_APPROVAL",
+      const [
+        stockRows,
+        leaveRows,
+        voucherRows,
+        expenseRows,
+        giftRows,
+        salesControlRows,
+      ] = await Promise.all([
+        permissions.inventory === "FULL" && canManage
+          ? listStockAdjustmentRequests({
+              branchId,
+              status: "PENDING_APPROVAL",
+            })
+          : Promise.resolve([]),
+        permissions.hr === "FULL"
+          ? db
+              .select({
+                id: leaveRequests.id,
+                leaveType: leaveRequests.leaveType,
+                fromDate: leaveRequests.fromDate,
+                toDate: leaveRequests.toDate,
+                days: leaveRequests.days,
+                reason: leaveRequests.reason,
+                requestedAt: leaveRequests.requestedAt,
+                employeeUserId: employees.userId,
+                employeeBranchId: employees.branchId,
+                firstName: employees.firstName,
+                lastName: employees.lastName,
               })
-            : Promise.resolve([]),
-          permissions.hr === "FULL"
-            ? db
-                .select({
-                  id: leaveRequests.id,
-                  leaveType: leaveRequests.leaveType,
-                  fromDate: leaveRequests.fromDate,
-                  toDate: leaveRequests.toDate,
-                  days: leaveRequests.days,
-                  reason: leaveRequests.reason,
-                  requestedAt: leaveRequests.requestedAt,
-                  employeeUserId: employees.userId,
-                  employeeBranchId: employees.branchId,
-                  firstName: employees.firstName,
-                  lastName: employees.lastName,
-                })
-                .from(leaveRequests)
-                .innerJoin(
-                  employees,
-                  eq(leaveRequests.employeeId, employees.id),
-                )
-                .where(
-                  and(
-                    eq(leaveRequests.status, "pending"),
-                    ...(branchId == null
-                      ? []
-                      : [eq(employees.branchId, branchId)]),
+              .from(leaveRequests)
+              .innerJoin(employees, eq(leaveRequests.employeeId, employees.id))
+              .where(
+                and(
+                  eq(leaveRequests.status, "pending"),
+                  ...(branchId == null
+                    ? []
+                    : [eq(employees.branchId, branchId)]),
+                ),
+              )
+              .orderBy(desc(leaveRequests.requestedAt))
+              .limit(sourceLimit)
+          : Promise.resolve([]),
+        permissions.treasury === "FULL" &&
+        canTreasuryApprove &&
+        (role === "admin" || ctx.user.branchId != null)
+          ? db
+              .select({
+                id: receipts.id,
+                voucherNumber: receipts.voucherNumber,
+                amount: receipts.amount,
+                direction: receipts.direction,
+                description: receipts.description,
+                createdBy: receipts.createdBy,
+                createdAt: receipts.createdAt,
+              })
+              .from(receipts)
+              .where(
+                and(
+                  eq(receipts.status, "PENDING"),
+                  eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+                  notExists(
+                    db
+                      .select({ id: expenses.id })
+                      .from(expenses)
+                      .where(eq(expenses.receiptId, receipts.id)),
                   ),
-                )
-                .orderBy(desc(leaveRequests.requestedAt))
-                .limit(sourceLimit)
-            : Promise.resolve([]),
-          permissions.treasury === "FULL" &&
-          canTreasuryApprove &&
-          (role === "admin" || ctx.user.branchId != null)
-            ? db
-                .select({
-                  id: receipts.id,
-                  voucherNumber: receipts.voucherNumber,
-                  amount: receipts.amount,
-                  direction: receipts.direction,
-                  description: receipts.description,
-                  createdBy: receipts.createdBy,
-                  createdAt: receipts.createdAt,
-                })
-                .from(receipts)
-                .where(
-                  and(
-                    eq(receipts.approvalStatus, "PENDING_APPROVAL"),
-                    notExists(
-                      db
-                        .select({ id: expenses.id })
-                        .from(expenses)
-                        .where(eq(expenses.receiptId, receipts.id)),
-                    ),
-                    ...(branchId == null
-                      ? []
-                      : [eq(receipts.branchId, branchId)]),
-                    isNull(receipts.invoiceId),
-                  ),
-                )
-                .orderBy(desc(receipts.createdAt))
-                .limit(sourceLimit)
-            : Promise.resolve([]),
-          ctx.user.isOwner === true
-            ? db
-                .select({
-                  id: expenses.id,
-                  category: expenses.category,
-                  amount: expenses.amount,
-                  paymentMethod: expenses.paymentMethod,
-                  description: expenses.description,
-                  payee: expenses.payee,
-                  createdBy: expenses.createdBy,
-                  createdAt: expenses.createdAt,
-                })
-                .from(expenses)
-                .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
-                .where(actionableExpenseApprovalWhere(ctx.user.id))
-                .orderBy(desc(expenses.createdAt))
-                .limit(sourceLimit)
-            : Promise.resolve([]),
-          permissions.gifts === "FULL" && canManage
-            ? db
-                .select({
-                  id: giftVouchers.id,
-                  giftNumber: giftVouchers.giftNumber,
-                  totalCost: giftVouchers.totalCost,
-                  reason: giftVouchers.reason,
-                  createdBy: giftVouchers.createdBy,
-                  createdAt: giftVouchers.createdAt,
-                })
-                .from(giftVouchers)
-                .where(
-                  and(
-                    eq(giftVouchers.status, "PENDING_APPROVAL"),
-                    ...(branchId == null
-                      ? []
-                      : [eq(giftVouchers.branchId, branchId)]),
-                  ),
-                )
-                .orderBy(desc(giftVouchers.createdAt))
-                .limit(sourceLimit)
-            : Promise.resolve([]),
-          /**
-           * طلبات التحكّم بالبيع (مرتجع/إلغاء/إعادة إصدار/استبدال/استحقاق) — تدقيق ١/٩/٢٦.
-           *
-           * كان الصندوق يجمع خمسة مصادر ليس فيها هذا الجدول ⇒ **الشاشة التي يفتحها المدير
-           * فعلاً (`/my-work` وصندوق موافقات أندرويد) عمياء عن كلّ طلبات المرتجعات**، فتتراكم
-           * صامتةً بينما الموظّف سلّم البضاعة والنقد. وهو جذرُ بلاغ «المرتجع وهميّ ولا أثر له».
-           */
-          permissions.sales === "FULL" && canManage
-            ? db
-                .select({
-                  id: salesControlRequests.id,
-                  requestType: salesControlRequests.requestType,
-                  reason: salesControlRequests.reason,
-                  createdAt: salesControlRequests.createdAt,
-                  requestedBy: salesControlRequests.requestedBy,
-                  invoiceId: salesControlRequests.invoiceId,
-                  invoiceNumber: invoices.invoiceNumber,
-                  invoiceTotal: invoices.total,
-                  invoiceCreatedBy: invoices.createdBy,
-                })
-                .from(salesControlRequests)
-                .innerJoin(invoices, eq(salesControlRequests.invoiceId, invoices.id))
-                .where(
-                  and(
-                    eq(salesControlRequests.status, "PENDING"),
-                    ...(branchId == null
-                      ? []
-                      : [eq(salesControlRequests.branchId, branchId)]),
-                  ),
-                )
-                .orderBy(desc(salesControlRequests.createdAt))
-                .limit(sourceLimit)
-            : Promise.resolve([]),
-        ]);
+                  ...(branchId == null
+                    ? []
+                    : [eq(receipts.branchId, branchId)]),
+                  isNull(receipts.invoiceId),
+                ),
+              )
+              .orderBy(desc(receipts.createdAt))
+              .limit(sourceLimit)
+          : Promise.resolve([]),
+        ctx.user.isOwner === true
+          ? db
+              .select({
+                id: expenses.id,
+                category: expenses.category,
+                amount: expenses.amount,
+                paymentMethod: expenses.paymentMethod,
+                description: expenses.description,
+                payee: expenses.payee,
+                createdBy: expenses.createdBy,
+                createdAt: expenses.createdAt,
+              })
+              .from(expenses)
+              .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
+              .where(actionableExpenseApprovalWhere())
+              .orderBy(desc(expenses.createdAt))
+              .limit(sourceLimit)
+          : Promise.resolve([]),
+        permissions.gifts === "FULL" && canManage
+          ? db
+              .select({
+                id: giftVouchers.id,
+                giftNumber: giftVouchers.giftNumber,
+                totalCost: giftVouchers.totalCost,
+                reason: giftVouchers.reason,
+                createdBy: giftVouchers.createdBy,
+                createdAt: giftVouchers.createdAt,
+              })
+              .from(giftVouchers)
+              .where(
+                and(
+                  eq(giftVouchers.status, "PENDING_APPROVAL"),
+                  ...(branchId == null
+                    ? []
+                    : [eq(giftVouchers.branchId, branchId)]),
+                ),
+              )
+              .orderBy(desc(giftVouchers.createdAt))
+              .limit(sourceLimit)
+          : Promise.resolve([]),
+        /**
+         * طلبات التحكّم بالبيع (مرتجع/إلغاء/إعادة إصدار/استبدال/استحقاق) — تدقيق ١/٩/٢٦.
+         *
+         * كان الصندوق يجمع خمسة مصادر ليس فيها هذا الجدول ⇒ **الشاشة التي يفتحها المدير
+         * فعلاً (`/my-work` وصندوق موافقات أندرويد) عمياء عن كلّ طلبات المرتجعات**، فتتراكم
+         * صامتةً بينما الموظّف سلّم البضاعة والنقد. وهو جذرُ بلاغ «المرتجع وهميّ ولا أثر له».
+         */
+        permissions.sales === "FULL" && canManage
+          ? db
+              .select({
+                id: salesControlRequests.id,
+                requestType: salesControlRequests.requestType,
+                reason: salesControlRequests.reason,
+                createdAt: salesControlRequests.createdAt,
+                requestedBy: salesControlRequests.requestedBy,
+                invoiceId: salesControlRequests.invoiceId,
+                invoiceNumber: invoices.invoiceNumber,
+                invoiceTotal: invoices.total,
+                invoiceCreatedBy: invoices.createdBy,
+              })
+              .from(salesControlRequests)
+              .innerJoin(
+                invoices,
+                eq(salesControlRequests.invoiceId, invoices.id),
+              )
+              .where(
+                and(
+                  eq(salesControlRequests.status, "PENDING"),
+                  ...(branchId == null
+                    ? []
+                    : [eq(salesControlRequests.branchId, branchId)]),
+                ),
+              )
+              .orderBy(desc(salesControlRequests.createdAt))
+              .limit(sourceLimit)
+          : Promise.resolve([]),
+      ]);
 
       return [
         ...stockRows
@@ -1844,7 +2189,12 @@ export const superAppRouter = router({
           })),
         ...voucherRows
           .filter(
-            (row) => role === "admin" || Number(row.createdBy) !== ctx.user.id,
+            // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يرى سنده الخاص
+            // في صندوق الاعتماد ويقرّره بنفسه، لا أن يُخفى عنه.
+            (row) =>
+              role === "admin" ||
+              ctx.user.isOwner === true ||
+              Number(row.createdBy) !== ctx.user.id,
           )
           .map((row) => ({
             kind: "voucher" as const,
@@ -1864,30 +2214,30 @@ export const superAppRouter = router({
               duplicatePolicy: "state_transition_guard" as const,
             },
           })),
-        ...expenseRows
-          .filter((row) => Number(row.createdBy) !== ctx.user.id)
-          .map((row) => ({
-            kind: "expense" as const,
-            id: Number(row.id),
-            title: "طلب مصروف",
-            reference: `EXP#${row.id}`,
-            detail:
-              [row.description, row.payee, row.category]
-                .filter(Boolean)
-                .join(" · ") || "طلب مصروف بانتظار اعتماد المالك",
-            href: `/treasury?tab=expenses&focus=${row.id}`,
-            createdAt: row.createdAt,
-            amount: row.amount,
-            paymentMethod: row.paymentMethod,
+        // ⭐ قرار المالك (٣/٩/٢٦): بلا فلترة صانع الطلب — الاستعلام نفسه (actionableExpenseApprovalWhere)
+        // لا يُنفَّذ إلا لمالكٍ نشط أصلاً (أعلاه)، ولم يعد يستثني منشئ الطلب.
+        ...expenseRows.map((row) => ({
+          kind: "expense" as const,
+          id: Number(row.id),
+          title: "طلب مصروف",
+          reference: `EXP#${row.id}`,
+          detail:
+            [row.description, row.payee, row.category]
+              .filter(Boolean)
+              .join(" · ") || "طلب مصروف بانتظار اعتماد المالك",
+          href: `/treasury?tab=expenses&focus=${row.id}`,
+          createdAt: row.createdAt,
+          amount: row.amount,
+          paymentMethod: row.paymentMethod,
+          canReject: true,
+          capabilities: {
+            canApprove: true,
             canReject: true,
-            capabilities: {
-              canApprove: true,
-              canReject: true,
-              rejectionReason: "required" as const,
-              supportsClientRequestId: false,
-              duplicatePolicy: "state_transition_guard" as const,
-            },
-          })),
+            rejectionReason: "required" as const,
+            supportsClientRequestId: false,
+            duplicatePolicy: "state_transition_guard" as const,
+          },
+        })),
         ...giftRows
           .filter(
             (row) => role === "admin" || Number(row.createdBy) !== ctx.user.id,
@@ -1916,15 +2266,17 @@ export const superAppRouter = router({
            * الخادمُ حتماً. ⛔ **ولا استثناءَ للأدمن هنا** — بخلاف بقيّة المصادر أعلاه — لأنّ
            * الحارس الخادميّ نفسه لا يستثنيه؛ وإظهارُ صفٍّ يُرفض قرارُه أسوأ من إخفائه.
            */
-          .filter((row) =>
-            Number(row.requestedBy) !== ctx.user.id
-            && Number(row.invoiceCreatedBy ?? -1) !== ctx.user.id,
+          .filter(
+            (row) =>
+              Number(row.requestedBy) !== ctx.user.id &&
+              Number(row.invoiceCreatedBy ?? -1) !== ctx.user.id,
           )
           .map((row) => ({
             kind: "salesControl" as const,
             id: Number(row.id),
-            title: SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType]
-              ?? "طلب تحكّم بالبيع",
+            title:
+              SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType] ??
+              "طلب تحكّم بالبيع",
             reference: row.invoiceNumber || `فاتورة #${row.invoiceId}`,
             detail: row.reason || "طلب بانتظار مراجعٍ مستقل",
             href: "/invoices?tab=controls",
@@ -1952,7 +2304,14 @@ export const superAppRouter = router({
   approvalDetail: superAppProcedure
     .input(
       z.object({
-        kind: z.enum(["inventory", "leave", "voucher", "expense", "gift", "salesControl"]),
+        kind: z.enum([
+          "inventory",
+          "leave",
+          "voucher",
+          "expense",
+          "gift",
+          "salesControl",
+        ]),
         id: z.number().int().positive(),
       }),
     )
@@ -2085,6 +2444,7 @@ export const superAppRouter = router({
           .where(
             and(
               eq(receipts.id, input.id),
+              eq(receipts.status, "PENDING"),
               eq(receipts.approvalStatus, "PENDING_APPROVAL"),
               notExists(
                 db
@@ -2097,7 +2457,13 @@ export const superAppRouter = router({
             ),
           )
           .limit(1);
-        if (!row || (role !== "admin" && Number(row.createdBy) === ctx.user.id))
+        // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك.
+        if (
+          !row ||
+          (role !== "admin" &&
+            ctx.user.isOwner !== true &&
+            Number(row.createdBy) === ctx.user.id)
+        )
           return notFound();
         return {
           kind: "voucher" as const,
@@ -2134,10 +2500,7 @@ export const superAppRouter = router({
           .from(expenses)
           .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
           .where(
-            and(
-              eq(expenses.id, input.id),
-              actionableExpenseApprovalWhere(ctx.user.id),
-            ),
+            and(eq(expenses.id, input.id), actionableExpenseApprovalWhere()),
           )
           .limit(1);
         if (!row) return notFound();
@@ -2199,14 +2562,16 @@ export const superAppRouter = router({
         if (!row) return notFound();
         // فصلُ المهام يُطبَّق هنا أيضاً — وإلّا صار المخرَج «عرّافَ معرّفات» لطلبٍ لا يُقرَّر.
         if (
-          Number(row.requestedBy) === ctx.user.id
-          || Number(row.invoiceCreatedBy ?? -1) === ctx.user.id
-        ) return notFound();
+          Number(row.requestedBy) === ctx.user.id ||
+          Number(row.invoiceCreatedBy ?? -1) === ctx.user.id
+        )
+          return notFound();
         return {
           kind: "salesControl" as const,
           id: Number(row.id),
-          title: SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType]
-            ?? "طلب تحكّم بالبيع",
+          title:
+            SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType] ??
+            "طلب تحكّم بالبيع",
           reference: row.invoiceNumber || `فاتورة #${row.invoiceId}`,
           detail: row.reason || "طلب بانتظار مراجعٍ مستقل",
           createdAt: row.createdAt,
@@ -2218,7 +2583,10 @@ export const superAppRouter = router({
            * وهو عينُ عطبِ «مراجعٌ لا يرى ما يراجعه» الذي فتح هذا التدقيق. الاشتقاقُ مشتركٌ
            * مع شاشة الويب (`@shared/salesControlFacts`) فلا يوجد تعريفان ينجرفان.
            */
-          facts: salesControlFacts(row.requestType as SalesControlType, row.payload),
+          facts: salesControlFacts(
+            row.requestType as SalesControlType,
+            row.payload,
+          ),
           canReject: true,
           capabilities: {
             canApprove: true,
@@ -2324,7 +2692,7 @@ export const superAppRouter = router({
       const leave = await createLeave({
         ...input,
         employeeId: employee.id,
-      });
+      }, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role, isOwner: ctx.user.isOwner });
       await logAudit(ctx, {
         action: "leave.selfRequest",
         entityType: "leaveRequest",

@@ -8,6 +8,31 @@ Decimal.set({ rounding: Decimal.ROUND_HALF_UP });
 
 export const D = (v: string | number | null | undefined) => new Decimal(v == null || v === "" ? 0 : v);
 
+/**
+ * قراءةُ **مُدخَلٍ ماليٍّ قيد الكتابة** بأمان — للعرض والشروط داخل النماذج، لا للإرسال.
+ *
+ * ⚠️ `D()` **ترمي** على مُدخَلٍ جزئيٍّ مشروع: `MoneyInput.sanitizeRaw` تُنتج `"."` عند أوّل
+ * ضغطةٍ لمن يكتب `.5`، و`new Decimal(".")` ⇒ `[DecimalError] Invalid argument`. وحين يقع ذلك
+ * **داخل التصيير** (شرطُ إظهار تلميحٍ أو معاينةُ مبلغ) تسقط الشاشةُ بيضاء بينما المستخدم يكتب
+ * رقماً صحيحاً تماماً.
+ *
+ * والفخُّ أنّ الصيغة القديمة `Number(x) > 0` كانت تُعطي `NaN` بلا ضرر — فاستبدالُها بـ`D`
+ * التزاماً بقاعدة «لا `Number` على مال» **يُدخل عطباً وهو يُغلق آخر**. القاعدة صحيحة، وينقصها
+ * مدخلٌ آمن: هذا هو.
+ *
+ * المُدخَل الفارغ أو غير المكتمل ⇒ صفر (أي «لا رقمَ بعد»). وللإرسال يبقى
+ * `round2(D(v)).toFixed(2)` بعد اكتمال المُدخَل ومروره بحرّاس الخادم.
+ */
+export const moneyInput = (v: string | number | null | undefined): Decimal => {
+  const raw = typeof v === "number" ? String(v) : (v ?? "").trim();
+  if (raw === "") return new Decimal(0);
+  try {
+    return new Decimal(raw);
+  } catch {
+    return new Decimal(0);
+  }
+};
+
 /** Round to 2 dp, HALF_UP. */
 export const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
@@ -37,11 +62,13 @@ export const sum = (values: Array<string | number>) =>
 export const toBase = (quantity: string | number, conversionFactor: string | number) =>
   D(quantity).times(D(conversionFactor));
 
-/** تنسيق مبلغ **للعرض فقط**: فواصل آلاف + منزلتان ثابتتان (1,234,567.89) — طلب المالك ١١/٦
- *  لتجنّب سهو قراءة المبالغ الكبيرة. ⛔ ممنوع في حمولات الـAPI (zod moneyStr يرفض الفواصل) —
- *  للإرسال استعمل round2(D(v)).toFixed(2). */
+/** تنسيق مبلغ **للعرض فقط**: فواصل آلاف + منزلتان كحدٍّ أقصى، بلا أصفارٍ زائدة (1,234,567 أو
+ *  1,234,567.5) — طلب المالك ٣/٩ يُلغي القرار السابق (١١/٦: منزلتان ثابتتان دائماً) الذي كان
+ *  يُظهر «.00» على كل مبلغٍ صحيح. يطابق الآن سلوك fmtAr أدناه (المنتشر بالفعل في نصف الشاشات)
+ *  فيزيل تناقضاً كان قائماً بين الدالّتين. لا فقدان دقّة: كسرٌ حقيقي (1,234,567.5) يبقى ظاهراً.
+ *  ⛔ ممنوع في حمولات الـAPI (zod moneyStr يرفض الفواصل) — للإرسال استعمل round2(D(v)).toFixed(2). */
 export const fmt = (v: string | number | null | undefined) =>
-  round2(D(v)).toNumber().toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  round2(D(v)).toNumber().toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 /** فرق موجب بدقّة Decimal — مكافئ خادمي `positiveDiff` لحساب «المتبقّي» بلا انجراف float.
  *  Math.max(0, Number(total) - Number(paid)) → positiveDiff(total, paid).toFixed(2) */
@@ -67,7 +94,7 @@ export const fmtInt = (v: string | number | null | undefined) =>
 
 /** تنسيق مبلغ بـ**ar-IQ** locale (أرقام لاتينية) حتى منزلتين عشريتين — **بلا** لاحقة عملة.
  *  null/undefined/"" ⇒ "—". مكافئ مركزي لتكرار Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 })
- *  المنتشر في الصفحات (Customers/Suppliers/PurchaseReceive/WorkOrderDetail/SalesReport/BarcodeLabels…). */
+ *  المنتشر في الصفحات (Customers/Suppliers/PurchaseOrderDetail/WorkOrderDetail/SalesReport/BarcodeLabels…). */
 export const fmtAr = (v: string | number | null | undefined): string => {
   if (v === null || v === undefined || v === "") return "—";
   return round2(D(v)).toNumber().toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });

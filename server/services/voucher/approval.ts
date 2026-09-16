@@ -23,12 +23,14 @@ import {
 import {
   activateAdvanceForApprovedVoucherTx,
   assertEmployeeAdvanceVoucherRequestTx,
-} from "../advancesService";
+} from "../advances";
 import {
   adjustCustomerBalance,
+  adjustDeliveryBalance,
   adjustSupplierBalance,
   postEntry,
 } from "../ledgerService";
+import { appendDeliveryLedgerEntry } from "../delivery/lifecycle";
 import { baghdadToday } from "../businessDay";
 import { money, toDateStr, toDbMoney } from "../money";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
@@ -42,6 +44,11 @@ import {
   type ExternalTreasuryDisbursementApproval,
 } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import {
+  voucherApprovalRetainsLegacy,
+  voucherApprovalTrigger,
+} from "@shared/approvalTriggers";
 import { computeSignature } from "./helpers";
 import type { PartyType, PaymentMethod } from "./types";
 import {
@@ -80,13 +87,14 @@ import { loadVoucherCategoryForPosting } from "./categoryAccounting";
 import { voucherPostingPlan } from "./posting";
 import type { VoucherCategoryPostingRole } from "../../../shared/voucherCategoryAccounting";
 import { settleTerminationVoucherTx } from "../terminationSettlementService";
+import { closeDeferredSaleRefundEffectsTx } from "../reversal/deferredRefund";
 import type { PayrollPaymentMethod } from "../payroll/types";
 import type { Tx } from "../../db";
 import {
   cancelLockedEmployeeAdvanceTx,
   lockUntouchedEmployeeAdvanceForCancellationTx,
   type LockedEmployeeAdvanceCancellation,
-} from "./employeeAdvanceCancellation";
+} from "../advances";
 import {
   expensePaymentResubmitDescriptionSuffix,
   expensePaymentResubmitKey,
@@ -428,6 +436,23 @@ function approvedVoucherPostingPlan(args: {
           args.amount,
         );
   }
+  if (args.partyType === "DELIVERY_PARTY") {
+    return args.direction === "IN"
+      ? twoRolePostingPlan(
+          "PAYMENT_IN_DELIVERY_PARTY",
+          "PAYMENT_IN",
+          assetRole,
+          "DELIVERY_FLOAT",
+          args.amount,
+        )
+      : twoRolePostingPlan(
+          "PAYMENT_OUT_COURIER",
+          "PAYMENT_OUT",
+          "COURIER_PAYABLE",
+          assetRole,
+          args.amount,
+        );
+  }
 
   if (args.partyType === "OTHER" && args.categoryPostingRole) {
     return (
@@ -457,14 +482,29 @@ export interface ApproveVoucherResult {
 
 /** اعتماد سند مُعلَّق (Maker-Checker): يُسجّل الأثر المالي ويُختم بـsignatureHash.
  *
- * عقد المالك: المُعتمِد حساب users نشط وisOwner=true، ومختلف عن المُنشئ بلا استثناء دور.
+ * عقد المالك: المُعتمِد حساب users نشط وisOwner=true — هذا وحده هو الحارس (٣/٩/٢٦).
+ * ⭐ **قرار المالك:** «لا اعتماد ثانٍ بعد المالك؛ المالك أعلى سلطة» — أُزيل شرط «مختلفٌ عن
+ * المُنشئ» الذي كان يمنع مالكاً وحيداً فعّالاً (يُنشئ سنداته ويعتمدها بنفسه) من اعتماد أيّ سندٍ
+ * أنشأه هو شخصياً، رغم وجود مُلّاكٍ آخرين نشطين في النظام لم يكونوا طرفاً في ذلك السند تحديداً.
+ * الاعتمادُ الذاتيّ للمالك يبقى كاملَ الأثر التدقيقيّ: createdBy وapprovedBy يُسجَّلان كما هما.
  * إعادة اعتماد سند APPROVED idempotent: تعيد البصمة بلا أي كتابة أو أثر مالي ثانٍ.
  */
 export async function approveVoucher(
   receiptId: number,
   actor: Actor,
 ): Promise<ApproveVoucherResult> {
-  return withTx(async (tx) => {
+  return withTx((tx) => approveVoucherTx(tx, receiptId, actor));
+}
+
+/**
+ * النسخة الذرية من اعتماد السند. تستعملها عملية الإنشاء عندما يكون المنشئ مالكاً،
+ * كي يقع إنشاء الطلب واعتماده وأثره المالي في معاملة واحدة بلا نافذة طلب معلّق.
+ */
+export async function approveVoucherTx(
+  tx: Tx,
+  receiptId: number,
+  actor: Actor,
+): Promise<ApproveVoucherResult> {
     const [preview] = await tx
       .select()
       .from(receipts)
@@ -744,12 +784,41 @@ export async function approveVoucher(
         message: "تغيّر مصدر السند النقدي أثناء الاعتماد — أعد المحاولة",
       });
     }
-    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
-      });
-    }
+    // بالفعل لا بالإجراء: إجراءٌ واحد (`approveVoucher`) يحمل ثلاثةَ تصنيفاتٍ متمايزة —
+    // `OUT` خروجُ مال · `IN` مع إلغاءِ سندٍ أو استردادِ تصحيحِ استحقاق محوُ أثرٍ منشور ·
+    // و`IN` العاديّ لا مالَ يخرج ولا أثرَ يُمحى ⇒ `null` **وضابطُه مُستبقًى بقرار المالك**
+    // (٢/٩/٢٦) لأنّه البوّابةُ الوحيدة على نقدٍ مجهول المصدر يدخل الخزينة. التفصيل ودليلُه
+    // في `shared/approvalTriggers.ts`.
+    //
+    // ⭐ **قرار المالك (٣/٩/٢٦) يُنفَّذ هنا مباشرةً — لا عبر علَم `ownerOnlyApproval`:** ذلك
+    // العلَم مُقفَلٌ عمداً (`rolloutFlags.ts`) حتى تكتمل ثلاثةُ أشياء لا صلة لواحدٍ منها بهذا
+    // الفعل (سجلّ solo-execution · مستدعي `planApproval` · مساري تسوية مخزون/تكلفة). فصلُ
+    // المهام «غير صانع الطلب» على سندٍ يُخرج مالاً أو يمحو أثراً منشوراً أُلغي **بلا انتظار
+    // العلَم**، بنفس تصنيف `voucherApprovalTrigger`/`voucherApprovalRetainsLegacy` أعلاه
+    // حرفياً — فحين يكتمل العلَم يصير هذا الشرط زائداً بلا أثر (النتيجتان متطابقتان دائماً).
+    // والمُستبقى بقرار ٢/٩ (سند قبضٍ عاديّ) لم يمسّه قرار ٣/٩ ويبقى كما هو.
+    //
+    // التصنيفُ يُشتقّ من `systemRequestPreview` لا من `systemRequest` كي يبقى الفحصُ في
+    // موضعه الأصليّ بلا إعادة ترتيب؛ وتطابُقُهما مفروضٌ في السطور التالية مباشرةً، وأيُّ
+    // اختلافٍ يرمي `CONFLICT` فيتراجع كلُّ شيء — فلا مسارَ يمرّ بتصنيفٍ منحرف.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: voucherApprovalTrigger(r.direction, systemRequestPreview?.kind ?? null),
+      retainLegacy: voucherApprovalRetainsLegacy(r.direction, systemRequestPreview?.kind ?? null),
+      subject: `سند ${r.voucherNumber}`,
+      legacy: () => {
+        if (
+          voucherApprovalRetainsLegacy(r.direction, systemRequestPreview?.kind ?? null) &&
+          r.createdBy != null &&
+          Number(r.createdBy) === actor.userId
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
+          });
+        }
+      },
+    });
     const systemRequest = parseSystemPaymentRequest(r.internalNote);
     if (
       JSON.stringify(systemRequest) !== JSON.stringify(systemRequestPreview)
@@ -847,15 +916,29 @@ export async function approveVoucher(
           message: "سند القبض الأصلي تغيّر أو لم يعد صالحاً للإلغاء",
         });
       }
-      if (
-        cancellationOriginal.createdBy != null &&
-        Number(cancellationOriginal.createdBy) === actor.userId
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "لا يجوز لمن أنشأ القبض اعتماد إلغائه — يلزم مالك آخر",
-        });
-      }
+      // إلغاءُ السند مُبوَّبٌ في الحالتين معاً فلا يبلغه استبقاءٌ (`voucherApprovalRetainsLegacy`
+      // تُعيد `false` دائماً هنا): عكسُ سندِ قبضٍ يُنتج إيصالاً `OUT` (خروجُ مال)، وعكسُ سندِ
+      // صرفٍ يُنتج `IN` على مستندٍ منشور (محوُ أثر). ⭐ قرار المالك (٣/٩/٢٦، الشرح أعلى الدالّة):
+      // فصلُ المهام الثاني — منشئُ **القبض الأصليّ** لا يعتمد إلغاءه — أُلغي هنا مباشرةً بلا
+      // انتظار علَم `ownerOnlyApproval`.
+      assertApprover({
+        actor: await resolveApprovalActor(tx, actor),
+        trigger: voucherApprovalTrigger(r.direction, systemRequest.kind),
+        retainLegacy: voucherApprovalRetainsLegacy(r.direction, systemRequest.kind),
+        subject: `إلغاء سند ${cancellationOriginal.voucherNumber}`,
+        legacy: () => {
+          if (
+            voucherApprovalRetainsLegacy(r.direction, systemRequest.kind) &&
+            cancellationOriginal!.createdBy != null &&
+            Number(cancellationOriginal!.createdBy) === actor.userId
+          ) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "لا يجوز لمن أنشأ القبض اعتماد إلغائه — يلزم مالك آخر",
+            });
+          }
+        },
+      });
       cancellationSourceRequest = parseSystemPaymentRequest(
         cancellationOriginal.internalNote,
       );
@@ -1030,6 +1113,14 @@ export async function approveVoucher(
     const direction = r.direction as "IN" | "OUT";
     const branchId = Number(r.branchId);
     const partyType = r.partyType as PartyType | null;
+    const isDeliveryParty =
+      r.partyType === "OTHER" &&
+      r.partyId != null &&
+      typeof r.internalNote === "string" &&
+      r.internalNote.startsWith("DELIVERY_PARTY:");
+    const effectivePartyType: PartyType | null = isDeliveryParty
+      ? "DELIVERY_PARTY"
+      : partyType;
     const partyId = r.partyId != null ? Number(r.partyId) : null;
     const paymentMethod = r.paymentMethod as PaymentMethod;
     const postingReferenceNumber =
@@ -1089,7 +1180,7 @@ export async function approveVoucher(
     }
     let categoryPostingRole: VoucherCategoryPostingRole | null = null;
     let categoryReversalOfDirection: "IN" | "OUT" | null = null;
-    if (partyType === "OTHER" && !isEmployeeAdvance) {
+    if (effectivePartyType === "OTHER" && !isEmployeeAdvance) {
       if (cancellationOriginal) {
         if (cancellationOriginal.voucherCategoryId == null) {
           throw new TRPCError({
@@ -1464,7 +1555,7 @@ export async function approveVoucher(
       }
       if (
         systemRequest.kind === "PURCHASE_SUPPLIER" &&
-        (partyType !== "SUPPLIER" ||
+        (effectivePartyType !== "SUPPLIER" ||
           partyId == null ||
           Number(systemPurchaseOrder.supplierId) !== partyId ||
           typeof systemRequest.sourceTotal !== "string" ||
@@ -1575,7 +1666,7 @@ export async function approveVoucher(
     // كل دفعة مورد تعيد فحص AP الحالي تحت القفل؛ مرتجع أو دفعة أخرى بين الطلب
     // والاعتماد قد تخفض المستحق لأي مورد، لا المودِع فقط.
     if (
-      partyType === "SUPPLIER" &&
+      effectivePartyType === "SUPPLIER" &&
       partyId != null &&
       direction === "OUT" &&
       systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
@@ -1669,7 +1760,7 @@ export async function approveVoucher(
           direction,
           paymentMethod,
           cashBucket,
-          partyType,
+          partyType: effectivePartyType,
           amount,
           referenceNumber: postingReferenceNumber,
           systemKind:
@@ -1905,8 +1996,12 @@ export async function approveVoucher(
         entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT",
         branchId,
         receiptId,
-        customerId: partyType === "CUSTOMER" ? partyId : null,
-        supplierId: partyType === "SUPPLIER" ? partyId : null,
+        customerId: effectivePartyType === "CUSTOMER" ? partyId : null,
+        supplierId: effectivePartyType === "SUPPLIER" ? partyId : null,
+        deliveryPartyId:
+          effectivePartyType === "DELIVERY_PARTY" && partyId != null
+            ? partyId
+            : null,
         purchaseOrderId: systemPurchaseOrder
           ? Number(systemPurchaseOrder.id)
           : cancellationPurchaseOrder
@@ -1985,7 +2080,7 @@ export async function approveVoucher(
     // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
     // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
     // يعمل للحالتين، وtoDateStr = toISOString.slice(0,10) مطابق لدلالة assertPeriodOpen.
-    if (partyType === "CUSTOMER" && partyId) {
+    if (effectivePartyType === "CUSTOMER" && partyId) {
       // تخصيص السند لفاتورته عند **الاعتماد** لا الطلب (الأثر المالي كلّه هنا). حالةُ الفاتورة
       // تُعاد فحصها داخل allocateVoucherToInvoiceTx تحت القفل: بين الطلب والاعتماد قد تُلغى
       // الفاتورة أو تُصحَّح فيصير تخصيص المال لها نسبةً لمستندٍ ميت.
@@ -2009,8 +2104,24 @@ export async function approveVoucher(
         partyId,
         direction === "IN" ? amount.neg() : amount,
       );
+      // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
+      // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
+      // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
+      // شرطٌ صريح: القبضُ (IN) على العميل ليس ردّاً.
+      if (
+        direction === "OUT" &&
+        r.invoiceId != null &&
+        typeof r.internalNote === "string" &&
+        r.internalNote.startsWith("SALE_CUSTOMER_REFUND:")
+      ) {
+        await closeDeferredSaleRefundEffectsTx(
+          tx,
+          { invoiceId: Number(r.invoiceId), receiptId, amount, reason: `اعتماد سند صرف استرداد ${r.voucherNumber}` },
+          actor,
+        );
+      }
     } else if (
-      partyType === "SUPPLIER" &&
+      effectivePartyType === "SUPPLIER" &&
       partyId &&
       systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
       cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
@@ -2021,6 +2132,24 @@ export async function approveVoucher(
         partyId,
         direction === "OUT" ? amount.neg() : amount,
       );
+    } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
+      await adjustDeliveryBalance(
+        tx,
+        partyId,
+        direction === "IN" ? amount.neg() : amount,
+      );
+      if (direction === "IN") {
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
+          partyId,
+          branchId,
+          entryType: "COD_REMITTED",
+          amount: toDbMoney(amount),
+          notes: r.description,
+          actorUserId: actor.userId,
+          occurredAt: approvedAt,
+        });
+      }
     }
     if (systemRequest?.kind === "PURCHASE_SUPPLIER" && systemPurchaseOrder) {
       await tx
@@ -2087,7 +2216,6 @@ export async function approveVoucher(
       signatureHash: hash,
       replayed: false,
     };
-  });
 }
 
 export interface RejectVoucherResult {
@@ -2144,12 +2272,23 @@ export async function rejectVoucher(
         message: "السند ملغى — لا يمكن رفضه (الإلغاء أنهى الطلب أصلاً)",
       });
     }
-    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز رفض سند أنشأته بنفسك — يلزم مالك آخر",
-      });
-    }
+    // **الرفضُ حرّ**: لا `postEntry` ولا إيصالَ أثرٍ ولا مسَّ رصيدِ عميلٍ أو مورّد — الحالة
+    // تصير `FAILED/REJECTED`، والمعلَّقاتُ المرتبطة (صيرفة · محفظة · التزامُ استحقاق) تعود
+    // إلى ما قبل الطلب وكلُّها `PENDING_APPROVAL` لم تُنشر قطّ. ⇒ `null`، وهو نفسُ
+    // `REJECT_IS_FREE` في كل مسارات المشتريات، وأثرُه المقصود فكُّ جمودٍ مضمون: المالكُ
+    // الذي أنشأ السند يسحب طلبه بنفسه بدل أن يبقى معلّقاً إذ لا أحدَ فوقه.
+    // ⚠️ ولا مُصنِّفَ لهذا الفعل: `voucherApprovalTrigger` بلا معامل `action` — التصنيف هنا
+    // صريحٌ حتى يُضيفه القائد (`voucherRejectionTrigger`) فيُحوَّل هذا الموضع إليه.
+    // ⭐ قرار المالك (٣/٩/٢٦): الرفضُ كالاعتماد سواء — أُلغي هنا مباشرةً بلا انتظار العلَم
+    // (retainLegacy غير ممرَّرة عمداً كـ`true`، فتبقى `legacy()` نفسها مصدر الحقيقة الوحيد).
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: null,
+      subject: `رفض سند ${r.voucherNumber}`,
+      legacy: () => {
+        // القديمُ "لا يجوز رفض سند أنشأته بنفسك — يلزم مالك آخر" أُلغي عمداً (الرفضُ حرّ).
+      },
+    });
 
     const trimmedReason = reason.trim().slice(0, 500);
     if (!trimmedReason) {

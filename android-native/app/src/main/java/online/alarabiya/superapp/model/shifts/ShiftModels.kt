@@ -148,16 +148,9 @@ data class CurrentShift(
     val openedAt: String,
 )
 
-data class ShiftHandoverRecipient(
-    val id: Long,
-    val name: String,
-    val branchId: Long?,
-)
-
 data class ShiftCloseCommand(
     val shiftId: Long,
     val countedCash: ShiftMoney,
-    val handoverToUserId: Long?,
 )
 
 data class ShiftCloseResult(
@@ -170,7 +163,6 @@ data class ShiftCloseResult(
     val requiresManagerReview: Boolean,
     val alreadyClosed: Boolean,
     val treasuryHandoverNumber: String?,
-    val treasuryRecipientName: String?,
 )
 
 data class ShiftAccessPolicy(

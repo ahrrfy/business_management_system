@@ -3,6 +3,8 @@
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
 
 let cachedEnabled: boolean | null = null;
+let lastStatusCheck = 0;
+const STATUS_CACHE_TTL = 15_000; // 15 ثانية — تجديد دوري تلقائي
 
 /** ترميز Uint8Array إلى base64 (حلقة بايت-بايت ⇒ بلا نشر typed array، متوافق مع كل أهداف TS). */
 function bytesToBase64(bytes: Uint8Array): string {
@@ -11,17 +13,26 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-/** هل جسر الخادم مفعّل؟ (مخزّن مؤقّتاً؛ مرّر force=true لإعادة الفحص). */
+/** هل جسر الخادم مفعّل؟ (مخزّن مؤقّتاً لمدة 15 ثانية؛ مرّر force=true لإعادة الفحص الفوري). */
 export async function isServerBridgeEnabled(force = false): Promise<boolean> {
-  if (cachedEnabled !== null && !force) return cachedEnabled;
+  const now = Date.now();
+  if (cachedEnabled !== null && !force && (now - lastStatusCheck) < STATUS_CACHE_TTL) {
+    return cachedEnabled;
+  }
   try {
     const res = await fetch("/api/print/status", { credentials: "include" });
-    if (!res.ok) { cachedEnabled = false; return false; }
+    if (!res.ok) {
+      cachedEnabled = false;
+      lastStatusCheck = now;
+      return false;
+    }
     const data = await res.json();
     cachedEnabled = !!data?.enabled;
+    lastStatusCheck = now;
     return cachedEnabled;
   } catch {
     cachedEnabled = false;
+    lastStatusCheck = now;
     return false;
   }
 }
@@ -33,6 +44,7 @@ export async function getServerBridgeStatus(): Promise<{ enabled: boolean; descr
     if (!res.ok) return { enabled: false, description: "غير متاح" };
     const data = await res.json();
     cachedEnabled = !!data?.enabled;
+    lastStatusCheck = Date.now();
     return { enabled: !!data?.enabled, description: String(data?.description ?? "") };
   } catch {
     return { enabled: false, description: "غير متاح" };

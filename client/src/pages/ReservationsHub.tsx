@@ -43,6 +43,7 @@ import {
   reservationConversionErrorClosesDialog,
   type ReservationAvailabilitySnapshot,
 } from "@/lib/reservationConversionGuard";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -337,7 +338,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
   function submitExtend() {
     if (!extendTarget) return;
     const hours = Number(extendHours);
-    if (!Number.isInteger(hours) || hours < 1 || hours > 72) { notify.err("مدّة غير صالحة (١–٧٢ ساعة)"); return; }
+    if (!Number.isInteger(hours) || hours < 1 || hours > 72) { notify.err("مدّة غير صالحة (1–72 ساعة)"); return; }
     extend.mutate({ id: Number(extendTarget.id), hours });
   }
 
@@ -837,7 +838,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
             <Button variant="outline" onClick={() => { setCancelTarget(null); setCancelReason(""); }} disabled={cancel.isPending}>تراجع</Button>
             <Button variant="destructive" onClick={submitCancel} disabled={cancel.isPending}>
               <Trash2 className="size-4 me-1" aria-hidden />
-              {cancel.isPending ? "جارٍ الإلغاء…" : "تأكيد الإلغاء"}
+              {cancel.isPending ? ACTION_LABELS.cancelling : "تأكيد الإلغاء"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -856,7 +857,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
-            <Label htmlFor="res-extend-hours">مدّة التمديد بالساعات (١–٧٢)</Label>
+            <Label htmlFor="res-extend-hours">مدّة التمديد بالساعات (<bdi dir="ltr">1–72</bdi>)</Label>
             <Input
               id="res-extend-hours"
               dir="ltr"
@@ -1023,7 +1024,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
               </AppSelect>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="res-hours">مدّة الحجز (ساعات، ≤٧٢)</Label>
+              <Label htmlFor="res-hours">مدّة الحجز (ساعات، ≤72)</Label>
               <Input id="res-hours" dir="ltr" type="number" min={1} max={72} value={expiresInHours} onChange={(e) => setExpiresInHours(e.target.value)} />
             </div>
           </div>

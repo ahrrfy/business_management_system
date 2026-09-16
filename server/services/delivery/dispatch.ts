@@ -30,7 +30,7 @@ import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import { assertSiblingsReady } from "../workOrder/siblings";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryWorkOrderSaleIntent } from "./posting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { workOrderInvoiceSourceId } from "../workOrder/helpers";
@@ -50,6 +50,10 @@ export interface DispatchInput {
   assignedUserId?: number | null;
   /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
   partialDispatchConfirmed?: boolean;
+  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
+  /** ملاحظات التوصيل للمندوب أو شركة الشحن. */
+  notes?: string | null;
 }
 
 function reopenedConsignmentSourceId(wo: { id: number | string; version: number | string }): number {
@@ -449,6 +453,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // إعادة التنشيط: تحديثُ الصفّ الملغى في مكانه (سابقة dispatchInvoice.ts) — يحفظ سلسلة
     // أحداثه وتاريخه، ويُبقي القيدَين الفريدَين حارسَين بنيويَّين بلا هجرة ولا شواهد قبور.
     if (reusableCn) {
+      assertConsignmentStatusTransition(reusableCn.status, "DISPATCHED");
       await tx.update(deliveryConsignments).set({
         branchId: Number(wo.branchId),
         partyId: input.partyId,
@@ -462,6 +467,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         recipientName: input.recipientName ?? null,
         recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
         deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+        notes: input.notes ?? (reusableCn.notes ?? null),
         feeCollection,
         feeSettledAt: null,
         parcelStatus: "ASSIGNED",
@@ -508,6 +514,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       // أدناه؛ يمنع مندوباً يُرسَل بلا وسيلة اتصال بالزبون حين لا يُدخِل الموظّف رقماً صريحاً هنا.
       recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+      notes: input.notes ?? null,
       feeCollection,
       feeSettledAt: null,
       parcelStatus: "ASSIGNED",
@@ -517,6 +524,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       status: "DISPATCHED",
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
+      externalTrackingRef: input.externalTrackingRef ?? null,
     });
     const consignmentId = reusableCn ? Number(reusableCn.id) : extractInsertId(cnRes!);
 

@@ -9,13 +9,22 @@ import {
   type PeriodValue, type CompareMode,
 } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { formatIqd, fmtAr, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type PL = RouterOutputs["reports"]["profitAndLoss"];
 type Snap = PL["current"];
+
+/** سطرُ قائمة الأرباح والخسائر — يُستهلَك في العرض والتصدير والطباعة معاً. */
+type PLLine = { label: string; cur: string; prev?: string; bold?: boolean; neg?: boolean };
+
+/** مبلغٌ سالبُ الأثر يُعرَض بين قوسين وبلون المال السالب (عرفٌ محاسبيّ قائم). */
+function plAmount(value: string, neg?: boolean): string {
+  return neg ? `(${fmtAr(value)})` : fmtAr(value);
+}
 
 const ASSUMPTIONS =
   "افتراضات مبسّطة: التكلفة = كلفة الفاتورة وقت البيع (آخر تكلفة)، الضريبة 0%. المصروفات = نقدية (سجلّ المصروفات) + رواتب المسيّر + نثرية وتلف المخزون بالكلفة (تشمل هدر الإنتاج). لا تشمل سداد ذمم الموردين. للتفاصيل راجع دفتر الأستاذ.";
@@ -58,9 +67,9 @@ export default function ProfitLoss() {
 
   // صفوف القائمة لإعادة استعمالها في العرض/التصدير/الطباعة.
   const lines = useMemo(() => {
-    if (!cur) return [] as { label: string; cur: string; prev?: string; bold?: boolean; neg?: boolean }[];
+    if (!cur) return [] as PLLine[];
     const prevMap = new Map((prev?.expenseLines ?? []).map((l) => [l.key, l.amount]));
-    const rows: { label: string; cur: string; prev?: string; bold?: boolean; neg?: boolean }[] = [
+    const rows: PLLine[] = [
       { label: "الإيراد", cur: cur.revenue, prev: prev?.revenue, bold: true },
       { label: "تكلفة المبيعات", cur: cur.cogs, prev: prev?.cogs, neg: true },
       { label: "مجمل الربح", cur: cur.grossProfit, prev: prev?.grossProfit, bold: true },
@@ -72,6 +81,41 @@ export default function ProfitLoss() {
     rows.push({ label: "صافي الربح", cur: cur.netProfit, prev: prev?.netProfit, bold: true });
     return rows;
   }, [cur, prev]);
+
+  // عمود «الفترة السابقة» مشروطٌ بوجود مقارنة — كما كان في الجدول الخامّ.
+  const columns = useMemo<ColumnDef<PLLine, unknown>[]>(() => {
+    const prevColumn: ColumnDef<PLLine, unknown> = {
+      id: "prev",
+      enableSorting: false,
+      header: "الفترة السابقة",
+      accessorFn: (r) => (r.prev != null ? plAmount(r.prev, r.neg) : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="text-muted-foreground">{row.original.prev != null ? plAmount(row.original.prev, row.original.neg) : "—"}</span>
+      ),
+    };
+    return [
+      {
+        id: "label",
+        enableSorting: false,
+        header: "البند",
+        accessorFn: (r) => r.label,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => row.original.label,
+      },
+      {
+        id: "cur",
+        enableSorting: false,
+        header: "الفترة",
+        accessorFn: (r) => plAmount(r.cur, r.neg),
+        meta: { kind: "money" },
+        cell: ({ row }) => (
+          <span className={row.original.neg ? "text-money-negative" : undefined}>{plAmount(row.original.cur, row.original.neg)}</span>
+        ),
+      },
+      ...(prev ? [prevColumn] : []),
+    ];
+  }, [prev]);
 
   const periodLabel = `${period.from} — ${period.to}`;
 
@@ -137,38 +181,20 @@ export default function ProfitLoss() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message={q.error?.message} onRetry={() => q.refetch()} />
-          ) : !cur ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">البند</th>
-                  <th className="p-3 text-right font-medium">الفترة</th>
-                  {prev && <th className="p-3 text-right font-medium">الفترة السابقة</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((r, i) => (
-                  <tr key={i} className={`border-b last:border-0 ${r.bold ? "font-bold bg-muted/30" : ""}`}>
-                    <td className="p-3 text-right">{r.label}</td>
-                    <td className={`p-3 text-right tabular-nums ${r.neg ? "text-money-negative" : ""}`} dir="ltr">
-                      {r.neg ? `(${fmtAr(r.cur)})` : fmtAr(r.cur)}
-                    </td>
-                    {prev && (
-                      <td className="p-3 text-right tabular-nums text-muted-foreground" dir="ltr">
-                        {r.prev != null ? (r.neg ? `(${fmtAr(r.prev)})` : fmtAr(r.prev)) : "—"}
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {/* قائمةٌ مالية ثابتة الطول داخل بطاقةٍ في ReportShell ⇒ `embedded` (بلا شريط حالةٍ
+              ولا منتقي أعمدة) وبلا ترقيمٍ ولا بحث: البنود معدودةٌ ويجب أن تُقرأ كاملةً. */}
+          <DataTable<PLLine>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={columns}
+            data={lines}
+            loading={q.isLoading}
+            errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => q.refetch() }}
+            getRowClassName={(r) => (r.bold ? "font-bold bg-muted/30" : undefined)}
+            emptyText="لا بيانات."
+          />
         </CardContent>
       </Card>
     </ReportShell>

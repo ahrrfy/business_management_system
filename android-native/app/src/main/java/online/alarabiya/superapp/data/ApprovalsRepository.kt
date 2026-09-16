@@ -7,6 +7,7 @@ import online.alarabiya.superapp.model.approvals.ApprovalDecisionReceipt
 import online.alarabiya.superapp.model.approvals.ApprovalFact
 import online.alarabiya.superapp.model.approvals.ApprovalKind
 import online.alarabiya.superapp.model.approvals.ApprovalRequest
+import online.alarabiya.superapp.model.approvals.CardReferenceInput
 import online.alarabiya.superapp.model.approvals.RejectionReasonPolicy
 import org.json.JSONArray
 import org.json.JSONObject
@@ -99,18 +100,18 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
     ): ApprovalDecisionReceipt {
         require(request.id > 0) { "معرّف الطلب غير صالح" }
         when (decision) {
-            ApprovalDecision.Approve -> {
+            is ApprovalDecision.Approve -> {
                 if (!request.capabilities.canApprove) {
                     throw UnsupportedApprovalDecision("اعتماد هذا النوع غير متاح في العقد الحالي")
                 }
-                approve(request)
+                approve(request, decision.cardReference)
             }
             is ApprovalDecision.Reject -> reject(request, decision.reason)
         }
         return ApprovalDecisionReceipt(request.id, request.kind, decision)
     }
 
-    private suspend fun approve(request: ApprovalRequest) {
+    private suspend fun approve(request: ApprovalRequest, cardReference: CardReferenceInput) {
         when (request.kind) {
             ApprovalKind.INVENTORY -> api.mutate(
                 "inventory.approveAdjustment",
@@ -136,12 +137,15 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
              * أبداً بينما الويب يستطيع إنقاذه. ولا يختار درجاً بالنيابة عن المُعتمِد: الخادمُ
              * يأخذ الدرجَ المفتوح الوحيد، ويطلب تحديداً صريحاً إن تعدّد، ويصرف من خزينة الفرع
              * للإداريّ إن لم يوجد — أيْ نفس افتراض المسار الأونلاينيّ حين لا يُحدَّد درج.
+             *
+             * `reference` (تعميم PR #997 لإلغاء البيع ببطاقة): مرجع جهاز الدفع قرارُ لحظة
+             * الاعتماد لا لحظة الطلب — بلا هذا يضطرّ الطالبُ لتنفيذ الاسترداد الفعليّ على
+             * الجهاز قبل أن يبتّ أيّ مراجعٍ في الطلب أصلاً. [buildSalesControlApproveInput]
+             * يترجم [CardReferenceInput] الثلاثيّ إلى شكل الحمولة (مفتاحٌ غائب/`null`/قيمة).
              */
             ApprovalKind.SALES_CONTROL -> api.mutate(
                 "salesControl.approve",
-                JSONObject()
-                    .put("requestId", request.id)
-                    .put("cashRouting", JSONObject().put("clearShift", true)),
+                buildSalesControlApproveInput(request.id, cardReference),
             )
         }
     }
@@ -187,6 +191,25 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
 
 private fun JSONArray.objects(): List<JSONObject> = buildList {
     for (index in 0 until length()) optJSONObject(index)?.let(::add)
+}
+
+/**
+ * يبني حمولة `salesControl.approve`. `reference` حسب حالة [CardReferenceInput] الثلاث
+ * (تفصيلها في تعريف النوع): [CardReferenceInput.Untouched] يُغفَل المفتاح كليّاً (بلا مساسٍ
+ * بمرجع الطلب المخزَّن)، [CardReferenceInput.Cleared] يرسل `null` صراحةً، و[CardReferenceInput.Value]
+ * يرسل النصّ. إغفالُ المفتاح و`null` صريحة مختلفان جوهرياً خادمياً
+ * (`applyCancelCashRouting`، `server/services/sale/controlRequests.ts`) فلا يُطوَيان معاً —
+ * `org.json.JSONObject` يفرّق بينهما فعلياً: مفتاحٌ لم يُستدعَ له `put` لا يظهر أصلاً في
+ * `toString()`، بينما `put(key, JSONObject.NULL)` يظهر بقيمة `null` حرفية.
+ */
+internal fun buildSalesControlApproveInput(requestId: Long, cardReference: CardReferenceInput): JSONObject {
+    val cashRouting = JSONObject().put("clearShift", true)
+    when (cardReference) {
+        CardReferenceInput.Untouched -> Unit
+        CardReferenceInput.Cleared -> cashRouting.put("reference", JSONObject.NULL)
+        is CardReferenceInput.Value -> cashRouting.put("reference", cardReference.text)
+    }
+    return JSONObject().put("requestId", requestId).put("cashRouting", cashRouting)
 }
 
 private fun JSONObject.toApprovalPayload() = ApprovalInboxPayload(

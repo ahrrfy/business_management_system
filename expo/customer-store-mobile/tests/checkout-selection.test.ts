@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkoutRequestLines, checkoutSelectionFingerprint, checkoutSelectionIssue, checkoutSelectionNotes } from "@/lib/checkout-selection";
+import { checkoutQuoteFingerprint, checkoutRequestLines, checkoutSelectionFingerprint, checkoutSelectionIssue, checkoutSelectionNotes } from "@/lib/checkout-selection";
 import type { CartLine } from "@/shared/storefront";
 
 const line = {
@@ -29,6 +29,15 @@ describe("checkout selection persistence", () => {
   it("quotes the selected unit and fingerprints all selection details", () => {
     expect(checkoutRequestLines([line])).toEqual([{ productUnitId: 71, quantity: 2 }]);
     expect(checkoutSelectionFingerprint([line])[0]).toMatchObject({ lineId: line.lineId, selectionDetails: line.selectionDetails });
+  });
+
+  it("invalidates a price review when the quantity or chosen unit changes", () => {
+    const quotedCart = checkoutQuoteFingerprint([line]);
+    expect(checkoutQuoteFingerprint([{ ...line, quantity: 3 }])).not.toBe(quotedCart);
+    expect(checkoutQuoteFingerprint([{
+      ...line,
+      selectionDetails: { ...line.selectionDetails, productUnitId: 72, unitName: "درزن" },
+    } as CartLine])).not.toBe(quotedCart);
   });
 
   it("provides a bounded fulfillment note until the server accepts structured details", () => {

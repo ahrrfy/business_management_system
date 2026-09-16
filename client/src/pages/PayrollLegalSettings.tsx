@@ -17,6 +17,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, Coins, Plus, Receipt, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -103,7 +104,7 @@ export default function PayrollLegalSettings() {
         actions={
           canEdit ? (
             <Button onClick={save} disabled={updateM.isPending}>
-              <Save className="size-4" aria-hidden /> {updateM.isPending ? "جارٍ الحفظ…" : "حفظ الإعدادات"}
+              <Save className="size-4" aria-hidden /> {updateM.isPending ? ACTION_LABELS.saving : "حفظ الإعدادات"}
             </Button>
           ) : undefined
         }

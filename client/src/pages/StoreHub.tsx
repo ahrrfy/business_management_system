@@ -16,6 +16,7 @@ const StoreSettingsPanel = lazy(() => import("@/pages/store/StoreSettingsPanel")
 const LoyaltyManager = lazy(() => import("@/pages/store/LoyaltyManager"));
 const StorePushCampaignManager = lazy(() => import("@/pages/store/StorePushCampaignManager"));
 const StoreProductReviewManager = lazy(() => import("@/pages/store/StoreProductReviewManager"));
+const StoreQuoteRequests = lazy(() => import("@/pages/store/StoreQuoteRequests"));
 
 const TABS: HubTab[] = [
   { value: "dashboard", label: "لوحة المتجر", Component: StoreDashboard },
@@ -27,6 +28,7 @@ const TABS: HubTab[] = [
   { value: "loyalty", label: "الولاء", gate: { adminOnly: true }, Component: LoyaltyManager },
   { value: "notifications", label: "إشعارات العملاء", gate: { adminOnly: true }, Component: StorePushCampaignManager },
   { value: "reviews", label: "مراجعات العملاء", gate: { managerOnly: true }, Component: StoreProductReviewManager },
+  { value: "quote-requests", label: "طلبات عروض الأسعار", gate: { managerOnly: true }, Component: StoreQuoteRequests },
   { value: "settings", label: "الإعدادات", gate: { adminOnly: true }, Component: StoreSettingsPanel },
 ];
 

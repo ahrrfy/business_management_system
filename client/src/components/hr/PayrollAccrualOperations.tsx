@@ -114,7 +114,6 @@ export function PayrollAccrualOperations({
       .map((row) => ({ ...row, branchId })),
   );
   const owner = me.data?.isOwner === true;
-  const currentUserId = Number(me.data?.id ?? 0);
 
   async function refreshAll() {
     await Promise.all([
@@ -199,7 +198,7 @@ export function PayrollAccrualOperations({
                     <td className="p-2 tabular-nums" dir="ltr">{payment.paymentDate ? String(payment.paymentDate).slice(0, 10) : "—"}</td>
                     <td className="p-2 text-center"><Badge status={payment.active ? "SETTLED" : "REVERSED"} /></td>
                     <td className="p-2 tabular-nums" dir="ltr">USER-{event?.createdBy ?? "—"}</td>
-                    <td className="p-2 text-left">{payment.active && event && <Button size="sm" variant="outline" title={currentUserId === Number(event.createdBy) ? "يلزم مالك مستقل عن منفذ الدفعة" : undefined} disabled={!owner || currentUserId === Number(event.createdBy)} onClick={() => setAction({ type: "RETURN_SALARY", event })}><RotateCcw className="size-3.5" /> إعادة الدفعة</Button>}</td>
+                    <td className="p-2 text-left">{payment.active && event && <Button size="sm" variant="outline" disabled={!owner} onClick={() => setAction({ type: "RETURN_SALARY", event })}><RotateCcw className="size-3.5" /> إعادة الدفعة</Button>}</td>
                   </tr>;
                 })}
               </tbody></table>
@@ -223,8 +222,9 @@ export function PayrollAccrualOperations({
               <th className="p-2 text-right">المبلغ</th><th className="p-2 text-center">الحالة</th><th className="p-2 text-left">الإجراء</th>
             </tr></thead><tbody>
               {(remittancesQ.data ?? []).map((request) => {
-                const independent = owner && currentUserId !== Number(request.createdBy);
-                const canReturn = owner && currentUserId !== Number(request.createdBy) && currentUserId !== Number(request.paidBy ?? 0);
+                // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يقرّر بنفسه.
+                const independent = owner;
+                const canReturn = owner;
                 return <tr key={request.id} className="border-t">
                   <td className="p-2">{OBLIGATION_KIND_LABEL[request.kind]}</td>
                   <td className="p-2"><div>{request.authorityName}</div><div className="text-muted-foreground" dir="ltr">{request.referenceNumber}</div></td>
@@ -248,7 +248,7 @@ export function PayrollAccrualOperations({
               {!remittancesQ.isLoading && (remittancesQ.data ?? []).length === 0 && <tr><td colSpan={6} className="p-5 text-center text-muted-foreground">لا طلبات تحويل قانونية.</td></tr>}
             </tbody></table>
           </ScrollTableShell>
-          {!owner && <p className="flex items-center gap-1 text-xs text-muted-foreground"><ShieldCheck className="size-3.5" /> إنشاء الطلب متاح، أما الاعتماد والدفع والإعادة فمحصورة بمالك نشط مستقل.</p>}
+          {!owner && <p className="flex items-center gap-1 text-xs text-muted-foreground"><ShieldCheck className="size-3.5" /> إنشاء الطلب متاح، أما الاعتماد والدفع والإعادة فمحصورة بحساب مالك نشط.</p>}
         </CardContent>
       </Card>
 

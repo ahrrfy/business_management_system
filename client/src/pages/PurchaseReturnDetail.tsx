@@ -7,11 +7,59 @@ import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { ArrowRight, Printer } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Link, useParams } from "wouter";
+
+/** بندُ المرتجع — مشتقٌّ من عقد `purchaseReturns.get` فلا ينجرف عن الخادم. */
+type ReturnItemRow = RouterOutputs["purchaseReturns"]["get"]["items"][number];
+
+const returnItemColumns: ColumnDef<ReturnItemRow, unknown>[] = [
+  {
+    id: "product",
+    header: "الصنف",
+    accessorFn: (r) => `${r.productNameSnapshot}${r.variantNameSnapshot ? ` — ${r.variantNameSnapshot}` : ""}`,
+    meta: { width: "wide", wrap: true },
+    cell: ({ row }) => (
+      <span className="font-medium">
+        {row.original.productNameSnapshot}
+        {row.original.variantNameSnapshot ? ` — ${row.original.variantNameSnapshot}` : ""}
+      </span>
+    ),
+  },
+  {
+    id: "unit",
+    header: "الوحدة",
+    accessorFn: (r) => r.unitNameSnapshot || "—",
+    meta: { align: "center" },
+    cell: ({ row }) => row.original.unitNameSnapshot || "—",
+  },
+  {
+    id: "quantity",
+    header: "الكمية",
+    accessorFn: (r) => r.quantity,
+    meta: { kind: "number" },
+    cell: ({ row }) => row.original.quantity,
+  },
+  {
+    id: "unitPrice",
+    header: "السعر",
+    accessorFn: (r) => fmt(r.unitPrice),
+    meta: { kind: "money" },
+    cell: ({ row }) => fmt(row.original.unitPrice),
+  },
+  {
+    id: "total",
+    header: "الإجمالي",
+    accessorFn: (r) => fmt(r.lineTotal),
+    meta: { kind: "money" },
+    cell: ({ row }) => <span className="font-semibold">{fmt(row.original.lineTotal)}</span>,
+  },
+];
 
 export default function PurchaseReturnDetail() {
   const params = useParams<{ id?: string }>();
@@ -99,10 +147,16 @@ export default function PurchaseReturnDetail() {
       </Card>
       <Card>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50"><tr><th className="p-2 text-right">الصنف</th><th className="p-2">الوحدة</th><th className="p-2">الكمية</th><th className="p-2">السعر</th><th className="p-2">الإجمالي</th></tr></thead>
-            <tbody>{data.items.map((item) => <tr key={item.id} className="border-t"><td className="p-2 font-medium">{item.productNameSnapshot}{item.variantNameSnapshot ? ` — ${item.variantNameSnapshot}` : ""}</td><td className="p-2 text-center">{item.unitNameSnapshot || "—"}</td><td className="p-2 text-center tabular-nums" dir="ltr">{item.quantity}</td><td className="p-2 text-center tabular-nums" dir="ltr">{fmt(item.unitPrice)}</td><td className="p-2 text-center font-semibold tabular-nums" dir="ltr">{fmt(item.lineTotal)}</td></tr>)}</tbody>
-          </table>
+          {/* مُضمَّن داخل بطاقة المستند — البنود قائمةٌ قصيرة لا تحتاج بحثاً ولا ترقيماً. */}
+          <DataTable<ReturnItemRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={returnItemColumns}
+            data={data.items}
+            emptyText="لا بنود في هذا المرتجع."
+          />
         </CardContent>
       </Card>
       <div className="grid gap-2 rounded-md border bg-card p-3 text-sm sm:grid-cols-3">

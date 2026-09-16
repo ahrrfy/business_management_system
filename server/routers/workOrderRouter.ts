@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { failOpaque } from "../lib/opaqueFailure";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
@@ -10,6 +10,7 @@ import {
   auditLogs,
   customers,
   invoices,
+  onlineOrders,
   deliveryConsignments,
   deliveryParties,
   productVariants,
@@ -45,7 +46,10 @@ import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
+import { dispatchToDelivery } from "../services/deliveryService";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
+import { nextActionTerminalReason } from "@shared/nextAction";
+import { deriveWorkOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { maySeeDrawerCash as sharedMaySeeDrawerCash } from "@shared/workOrderControlAuthority";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersDirectCancelProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
@@ -83,11 +87,9 @@ const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   CONCAT('مستخدم #', ${workOrders.createdBy})
 )`;
 
-// سطوح نقطة البيع/الاستقبال نقدية فقط حتى يوجد مزوّد وتسوية موثوقان.
 const receptionPaymentMethod = z
   .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
-  .transform((value) => value as "CASH");
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
 const workOrderControlReason = z.string().trim().min(3).max(500);
@@ -523,13 +525,29 @@ export const workOrderRouter = router({
       role: ctx.user.role,
     })),
 
+  /**
+   * **الاعتمادُ يقبل رافدَ ردٍّ بديلاً** (بلاغ المالك ٢/٩/٢٦): الطالبُ اختار الدرج ساعةَ الطلب،
+   * وفُرِّغ الدرجُ بالبيع قبل الاعتماد، فوقف المديرُ أمام «رصيد الدرج أقل من المطلوب» وحمولةٍ
+   * مبصومةٍ لا تُعدَّل. الحقولُ الثلاثة اختيارية: غيابُها = تنفيذُ ما أقرّه الطالب حرفياً
+   * (السلوك القائم بلا تغيير). ⛔ ولا تمسّ الشروطَ المادّية — تلك يحرسها `payloadHash`.
+   */
   approveControl: workordersManagerProcedure
-    .input(z.object({ id: z.number().int().positive(), note: z.string().trim().max(500).nullish() }))
+    .input(z.object({
+      id: z.number().int().positive(),
+      note: z.string().trim().max(500).nullish(),
+      refundRail: z.enum(REFUND_RAILS).nullish(),
+      refundShiftId: z.number().int().positive().nullish(),
+      refundReference: z.string().trim().max(100).nullish(),
+    }))
     .mutation(({ input, ctx }) => approveWorkOrderControlRequest(input.id, {
       userId: ctx.user.id,
       branchId: ctx.user.branchId ?? 0,
       role: ctx.user.role,
-    }, input.note)),
+    }, input.note, {
+      refundRail: input.refundRail ?? null,
+      refundShiftId: input.refundShiftId ?? null,
+      refundReference: input.refundReference ?? null,
+    })),
 
   rejectControl: workordersManagerProcedure
     .input(z.object({ id: z.number().int().positive(), reason: workOrderControlReason }))
@@ -611,6 +629,7 @@ export const workOrderRouter = router({
       const rows = await db
         .select({
           id: workOrders.id,
+          branchId: workOrders.branchId,
           customerId: workOrders.customerId,
           // ش٥: ملخص الطلب الجامع مشتقّ من المسوّدة، كي تعرض نقاط الدخول حالة الطلب كاملة.
           draftId: workOrders.draftId,
@@ -647,6 +666,8 @@ export const workOrderRouter = router({
           // `computeStateAgeMinutes` (shared/orderSla.ts) — READY = workStartedAt + workSeconds.
           workStartedAt: workOrders.workStartedAt,
           workSeconds: workOrders.workSeconds,
+          deliveredAt: workOrders.deliveredAt,
+          updatedAt: workOrders.updatedAt,
           createdBy: workOrders.createdBy,
           createdByName: workOrderCreatorDisplayName,
           assignedTo: workOrders.assignedTo,
@@ -768,16 +789,22 @@ export const workOrderRouter = router({
       const whereCond = allConds.length ? and(...allConds) : undefined;
       // «اليوم» بحدود UTC (إطار businessDay) — dueDate عمود DATE فتصلح مقارنته نصّياً بحتمية.
       const todayUtc = new Date().toISOString().slice(0, 10);
+      // أمر الشغل في READY يُعدّ جاهزاً للتسليم/بانتظار العميل ما لم يكن مُسنداً لإرسالية توصيل نشطة
+      const isDispatchedReady = sql<boolean>`(${workOrders.status} = 'READY' AND EXISTS (
+        SELECT 1 FROM deliveryConsignments dc
+        WHERE dc.workOrderId = ${workOrders.id}
+          AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+      ))`;
       const rows = await db
         .select({
           status: workOrders.status,
-          c: sql<number>`count(*)`,
+          c: sql<number>`sum(case when ${isDispatchedReady} then 0 else 1 end)`,
           // الموجة ١: مجموع قيمة العمل الجاري في العمود — «مسحوبٌ منه ٥ملايين» يبيّن التركّز.
           // salePrice decimal ⇒ mysql2 يُرجعه نصّاً؛ نبقيه نصّاً ونحوّله في العرض بـmoney utils.
-          totalValue: sql<string>`COALESCE(SUM(${workOrders.salePrice}), 0)`,
-          lateC: sql<number>`sum(case when ${workOrders.dueDate} is not null and ${workOrders.dueDate} < ${todayUtc} then 1 else 0 end)`,
+          totalValue: sql<string>`COALESCE(SUM(case when ${isDispatchedReady} then 0 else ${workOrders.salePrice} end), 0)`,
+          lateC: sql<number>`sum(case when ${workOrders.dueDate} is not null and ${workOrders.dueDate} < ${todayUtc} and not ${isDispatchedReady} then 1 else 0 end)`,
           // إشارةُ الفنّيّ BLOCKED — تُعرض بجانب العدّ لتفسير الاختناق («٩ منها ٤ معطَّلة»).
-          blockedC: sql<number>`sum(case when ${workOrders.kanbanState} = 'BLOCKED' then 1 else 0 end)`,
+          blockedC: sql<number>`sum(case when ${workOrders.kanbanState} = 'BLOCKED' and not ${isDispatchedReady} then 1 else 0 end)`,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -855,6 +882,11 @@ export const workOrderRouter = router({
           invoiceTotal: invoices.total,
           invoiceReturnedTotal: invoices.returnedTotal,
           hasDelivery: workOrders.hasDelivery,
+          // م٢ ق١١ (٣/٩/٢٦): مصدرا اشتقاق «الخطوة التالية» — إشارةُ الفنّيّ داخل المرحلة
+          // ("جاهز/محجوز/عادي") وسببُ التعطّل حين تكون الإشارة `BLOCKED`. كانا يظهران في
+          // list وحده فتحسبهما رقاقةُ التفاصيل من قواميسَ محلّية.
+          kanbanState: workOrders.kanbanState,
+          blockedReason: workOrders.blockedReason,
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
@@ -1005,6 +1037,26 @@ export const workOrderRouter = router({
       createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
       branchId: wo.branchId,
     }).qrPayload;
+
+    /**
+     * م٢ ق١١ — «الخطوة التالية». `blockingTaskLabel` يقرأ عنوانَ المهمّة الحاجزة الحقيقيّة
+     * من الاستعلام أعلاه فيسري نصُّها إلى `blockedBy` مباشرةً بدل صياغةٍ محلّية تفوّت السبب.
+     * الحقل اختياريّ — لا يكسر مستهلكي `workOrders.get` القدامى.
+     */
+    const nextAction = deriveWorkOrderNextActionFromRow({
+      workOrderId: wo.id,
+      status: wo.status,
+      assignedToUserId: wo.assignedTo,
+      hasDelivery: Boolean(wo.hasDelivery),
+      consignmentId: deliveryInfo.consignmentId ?? null,
+      courierDeliveredAt: deliveryInfo.courierDeliveredAt ?? null,
+      kanbanState: wo.kanbanState,
+      blockedReason: wo.blockedReason,
+      blockingTaskLabel: blockingTask?.title ?? null,
+    });
+    const nextActionReason =
+      nextAction == null ? nextActionTerminalReason("WORK_ORDER", wo.status) : null;
+
     // §٧ تكلفة: نُخفي materialsCost/laborCost/unitCost عن غير المرتفعين (defense-in-depth).
     // نُبقي شكل الـtype ثابتاً (null بدلاً من حذف الحقول) لئلا تنكسر شاشة التفاصيل.
     if (!canSeeCostForUser(ctx.user)) {
@@ -1019,10 +1071,292 @@ export const workOrderRouter = router({
         blockingTask,
         siblings,
         qrPayload,
+        nextAction,
+        nextActionReason,
       };
     }
-    return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload };
+    return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload, nextAction, nextActionReason };
   }),
+
+  getByNumber: workordersReadProcedure
+    .input(z.object({ orderNumber: z.string().trim().min(1) }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return null;
+      const raw = input.orderNumber.trim();
+      let resolvedRaw = raw;
+      if (/^CN[S]?-/i.test(raw)) {
+        const [matchedCn] = await db
+          .select({
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            workOrderId: deliveryConsignments.workOrderId,
+            invoiceId: deliveryConsignments.invoiceId,
+            sourceType: deliveryConsignments.sourceType,
+            sourceId: deliveryConsignments.sourceId,
+          })
+          .from(deliveryConsignments)
+          .where(
+            or(
+              eq(deliveryConsignments.consignmentNumber, raw),
+              eq(deliveryConsignments.externalTrackingRef, raw),
+            ),
+          )
+          .limit(1);
+
+        if (matchedCn) {
+          if (matchedCn.workOrderId) {
+            const [wo] = await db.select({ n: workOrders.orderNumber }).from(workOrders).where(eq(workOrders.id, matchedCn.workOrderId)).limit(1);
+            if (wo?.n) resolvedRaw = wo.n;
+          } else if (matchedCn.sourceType === "ONLINE_ORDER" && matchedCn.sourceId) {
+            const [ordRow] = await db.select({ n: onlineOrders.orderNumber }).from(onlineOrders).where(eq(onlineOrders.id, matchedCn.sourceId)).limit(1);
+            if (ordRow?.n) resolvedRaw = ordRow.n;
+          } else if (matchedCn.invoiceId) {
+            const [ordRow] = await db.select({ n: onlineOrders.orderNumber }).from(onlineOrders).where(eq(onlineOrders.invoiceId, matchedCn.invoiceId)).limit(1);
+            if (ordRow?.n) {
+              resolvedRaw = ordRow.n;
+            } else {
+              const [invRow] = await db.select({ n: invoices.invoiceNumber }).from(invoices).where(eq(invoices.id, matchedCn.invoiceId)).limit(1);
+              if (invRow?.n) resolvedRaw = invRow.n;
+            }
+          }
+        }
+      }
+
+      const rawCode = resolvedRaw;
+      const stripped = rawCode.replace(/^WO-/i, "").replace(/^INV-/i, "").replace(/^ORD-/i, "");
+      const isNumeric = /^\d+$/.test(rawCode);
+      const [row] = await db
+        .select({
+          id: workOrders.id,
+          orderNumber: workOrders.orderNumber,
+          title: workOrders.title,
+          status: workOrders.status,
+          salePrice: workOrders.salePrice,
+          deposit: workOrders.deposit,
+          customerId: workOrders.customerId,
+          customerName: customers.name,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
+          deliveryAddress: workOrders.deliveryAddress,
+          deliveryPhone: workOrders.deliveryPhone,
+          deliveryCost: workOrders.deliveryCost,
+          deliveryFeeCollection: workOrders.deliveryFeeCollection,
+          branchId: workOrders.branchId,
+          version: workOrders.version,
+          notes: workOrders.customizationText,
+        })
+        .from(workOrders)
+        .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .where(
+          or(
+            eq(workOrders.orderNumber, rawCode),
+            eq(workOrders.orderNumber, `WO-${stripped}`),
+            eq(workOrders.orderNumber, stripped),
+            like(workOrders.orderNumber, `%${stripped}%`),
+            isNumeric ? eq(workOrders.id, Number(rawCode)) : sql`0=1`,
+          ),
+        )
+        .limit(1);
+      if (row) {
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              eq(deliveryConsignments.workOrderId, row.id),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            )
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...row,
+          kind: "workOrder" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
+      }
+
+      const [inv] = await db
+        .select({
+          id: invoices.id,
+          orderNumber: invoices.invoiceNumber,
+          title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
+          status: invoices.status,
+          salePrice: invoices.total,
+          deposit: invoices.paidAmount,
+          customerId: invoices.customerId,
+          customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
+          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${customers.whatsapp}, ${invoices.contactPhone})`,
+          deliveryAddress: customers.address,
+          deliveryPhone: sql<string | null>`COALESCE(${invoices.contactPhone}, ${customers.phone}, ${customers.whatsapp})`,
+          deliveryCost: sql<string | null>`COALESCE(${invoices.deliveryFee}, '0.00')`,
+          deliveryFeeCollection: sql<string | null>`'COURIER'`,
+          branchId: invoices.branchId,
+          notes: invoices.notes,
+        })
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .where(
+          or(
+            eq(invoices.invoiceNumber, rawCode),
+            eq(invoices.invoiceNumber, `INV-${stripped}`),
+            eq(invoices.invoiceNumber, stripped),
+            like(invoices.invoiceNumber, `%${stripped}%`),
+            isNumeric ? eq(invoices.id, Number(rawCode)) : sql`0=1`,
+          )
+        )
+        .limit(1);
+      if (inv) {
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              eq(deliveryConsignments.invoiceId, inv.id),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            )
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...inv,
+          version: 1,
+          kind: "invoice" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
+      }
+
+      const [ord] = await db
+        .select({
+          id: onlineOrders.id,
+          orderNumber: onlineOrders.orderNumber,
+          title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
+          status: onlineOrders.status,
+          salePrice: onlineOrders.total,
+          deposit: sql<string>`'0.00'`,
+          customerId: onlineOrders.customerId,
+          customerName: customers.name,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+          deliveryAddress: sql<string | null>`COALESCE(NULLIF(${onlineOrders.shippingAddress}, ''), ${customers.address})`,
+          deliveryPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+          deliveryCost: onlineOrders.shippingCost,
+          deliveryFeeCollection: sql<string | null>`'COURIER'`,
+          branchId: onlineOrders.branchId,
+          notes: onlineOrders.cancelReason,
+          invoiceId: onlineOrders.invoiceId,
+        })
+        .from(onlineOrders)
+        .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+        .where(
+          or(
+            eq(onlineOrders.orderNumber, rawCode),
+            eq(onlineOrders.orderNumber, `ORD-${stripped}`),
+            eq(onlineOrders.orderNumber, stripped),
+            like(onlineOrders.orderNumber, `%${stripped}%`),
+            isNumeric ? eq(onlineOrders.id, Number(rawCode)) : sql`0=1`,
+          ),
+        )
+        .limit(1);
+
+      if (ord) {
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              or(
+                and(
+                  eq(deliveryConsignments.sourceId, ord.id),
+                  eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
+                ),
+                ord.invoiceId ? eq(deliveryConsignments.invoiceId, ord.invoiceId) : sql`0=1`,
+              ),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            ),
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...ord,
+          version: 1,
+          kind: "onlineOrder" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
+      }
+
+      return null;
+    }),
 
   /**
    * الموظفون المتاحون للإسناد (أسماء+أدوار فقط) — لاختيار المنفّذ عند إنشاء الأمر وللوحة التفاصيل.
@@ -1729,6 +2063,137 @@ export const workOrderRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
+    }),
+
+  /**
+   * **التصريف التلقائي للطلبات الجاهزة** — كاشير أو مدير:
+   * يقوم بتصريف كافة أوامر الشغل العالقة في عمود «جاهز للتسليم»:
+   * - إرسال أوامر التوصيل تلقائياً لجهة التوصيل النشطة للفرع
+   * - تسليم الأوامر المباشرة المدفوعة بالكامل وإصدار فواتيرها
+   */
+  autoClearReady: workordersCashierProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().optional(),
+          workOrderId: z.number().optional(),
+        })
+        .optional(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const branchId = ctx.user.role === "admin" && input?.branchId != null
+        ? Number(input.branchId)
+        : (ctx.user.branchId ?? 1);
+      const conds = [eq(workOrders.status, "READY")];
+      if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
+      if (input?.workOrderId != null) conds.push(eq(workOrders.id, input.workOrderId));
+
+      const readyOrders = await db
+        .select({
+          id: workOrders.id,
+          branchId: workOrders.branchId,
+          hasDelivery: workOrders.hasDelivery,
+          deposit: workOrders.deposit,
+          salePrice: workOrders.salePrice,
+          deliveryCost: workOrders.deliveryCost,
+          deliveryAddress: workOrders.deliveryAddress,
+          deliveryPhone: workOrders.deliveryPhone,
+          contactName: workOrders.contactName,
+          assignedTo: workOrders.assignedTo,
+          createdBy: workOrders.createdBy,
+        })
+        .from(workOrders)
+        .where(and(...conds));
+
+      let dispatchedCount = 0;
+      let deliveredCount = 0;
+
+      for (const wo of readyOrders) {
+        if (wo.hasDelivery) {
+          // فحص هل يوجد إرسالية غير ملغاة مرتبطة بالأمر
+          const existingCn = (
+            await db
+              .select({ id: deliveryConsignments.id, status: deliveryConsignments.status })
+              .from(deliveryConsignments)
+              .where(
+                and(
+                  eq(deliveryConsignments.workOrderId, Number(wo.id)),
+                  notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (existingCn) continue;
+
+          // جلب جهة التوصيل النشطة للفرع
+          const parties = await db
+            .select({ id: deliveryParties.id })
+            .from(deliveryParties)
+            .where(
+              and(
+                or(eq(deliveryParties.branchId, Number(wo.branchId)), isNull(deliveryParties.branchId)),
+                eq(deliveryParties.isActive, true),
+              ),
+            )
+            .limit(1);
+
+          if (parties[0]) {
+            try {
+              await dispatchToDelivery(
+                {
+                  workOrderId: Number(wo.id),
+                  partyId: Number(parties[0].id),
+                  deliveryFee: wo.deliveryCost ? String(wo.deliveryCost) : undefined,
+                  deliveryAddress: wo.deliveryAddress ?? undefined,
+                  recipientPhone: wo.deliveryPhone ?? undefined,
+                  recipientName: wo.contactName ?? undefined,
+                  clientRequestId: `autoclear-dispatch-${wo.id}-${Date.now()}`,
+                },
+                {
+                  userId: ctx.user.id,
+                  branchId: Number(wo.branchId),
+                  role: ctx.user.role,
+                },
+              );
+              dispatchedCount++;
+            } catch (e) {
+              logger.warn({ err: e, workOrderId: wo.id }, "autoClearReady: تعذّر إرسال الأمر للتوصيل");
+            }
+          }
+        } else {
+          // استلام مباشر: تسليم فوري إذا كان مدفوعاً بالكامل مقدماً
+          const depositD = Number(wo.deposit ?? 0);
+          const salePriceD = Number(wo.salePrice ?? 0);
+          if (depositD >= salePriceD && salePriceD >= 0) {
+            try {
+              await deliverWorkOrder(
+                {
+                  workOrderId: Number(wo.id),
+                  payment: null,
+                  clientRequestId: `autoclear-deliver-${wo.id}-${Date.now()}`,
+                },
+                {
+                  userId: ctx.user.id,
+                  branchId: Number(wo.branchId),
+                  role: ctx.user.role,
+                },
+              );
+              deliveredCount++;
+            } catch (e) {
+              logger.warn({ err: e, workOrderId: wo.id }, "autoClearReady: تعذّر التسليم التلقائي");
+            }
+          }
+        }
+      }
+
+      return {
+        totalEvaluated: readyOrders.length,
+        dispatchedCount,
+        deliveredCount,
+        clearedCount: dispatchedCount + deliveredCount,
+      };
     }),
 
   /**

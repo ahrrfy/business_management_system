@@ -501,10 +501,10 @@ function QueueTab({
             aria-label="شريحة التقادم"
             placeholder="كل شرائح التقادم"
           >
-            <option value="7-30">٧-٣٠ يوماً</option>
-            <option value="31-60">٣١-٦٠ يوماً</option>
-            <option value="61-90">٦١-٩٠ يوماً</option>
-            <option value="90+">أكثر من ٩٠ يوماً</option>
+            <option value="7-30">7-30 يوماً</option>
+            <option value="31-60">31-60 يوماً</option>
+            <option value="61-90">61-90 يوماً</option>
+            <option value="90+">أكثر من 90 يوماً</option>
           </AppSelect>
           <Button variant="outline" size="sm" onClick={refetch} className="gap-1.5">
             <RotateCcw className="size-3.5" aria-hidden /> تحديث

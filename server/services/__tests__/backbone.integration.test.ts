@@ -153,7 +153,7 @@ async function createApprovedPurchaseOrder(input: {
     decisionKey: `backbone-po-approve:${crypto.randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت أمر الاختبار",
-  }, owner);
+  }, owner, { legacyConfirmOnly: true });
   return po;
 }
 

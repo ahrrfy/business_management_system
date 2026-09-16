@@ -32,9 +32,12 @@ data class SalesCapabilities(
     val canReadSales: Boolean get() = sales.canRead
     val canSearchCustomers: Boolean get() = customers.canRead
     val canReadShifts: Boolean get() = treasury.canRead && branchId != null
-    val canCreateReturn: Boolean get() = sales.canWrite && (role == "admin" || role == "manager")
-    /** المرتجعُ يُنفَّذ فوراً للمالك، ويُصبح طلباً بانتظار مراجعٍ مستقلّ لغيره (قرار المالك ١/٩/٢٦). */
-    val returnExecutesImmediately: Boolean get() = isOwner
+    val canCreateReturn: Boolean get() = sales.canWrite && (role == "admin" || role == "manager" || role == "cashier")
+    /** المرتجعُ يُنفَّذ فوراً للمالك ومسؤولي النظام والمدراء والكاشير (محرك المرتجعات الفوري الذري). */
+    val returnExecutesImmediately: Boolean get() = isOwner || role == "admin" || role == "manager" || role == "cashier"
+    /** الكاشير مقيّد بوردية نفسه حصراً في مرتجع البيع (returnSaleInTx)؛ أمّا المدير والمشرف فيتاح لهما أدراج الفرع كلّها. */
+    fun filterReturnShifts(shifts: List<RetailShift>): List<RetailShift> =
+        if (role == "cashier") shifts.filter { it.userId == userId } else shifts
 
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap): SalesCapabilities {
@@ -218,6 +221,7 @@ data class ReturnableInvoice(
     val status: String,
     val paymentMethod: String?,
     val items: List<ReturnableLine>,
+    val refundShifts: List<RetailShift> = emptyList(),
 )
 
 data class ReturnSubmission(
@@ -228,6 +232,8 @@ data class ReturnSubmission(
     val refundShiftId: Long?,
     val restock: Boolean,
     val clientRequestId: String,
+    val reason: String = "مرتجع مبيعات عبر التطبيق",
+    val refundReference: String? = null,
 )
 
 /**
@@ -280,7 +286,11 @@ object SalesValidation {
         return null
     }
 
-    fun salesReturn(submission: ReturnSubmission, invoice: ReturnableInvoice): String? {
+    fun salesReturn(
+        submission: ReturnSubmission,
+        invoice: ReturnableInvoice,
+        capabilities: SalesCapabilities? = null,
+    ): String? {
         if (submission.invoiceId != invoice.id) return "الفاتورة المختارة لا تطابق طلب المرتجع"
         val selected = submission.quantities.filterValues { it > 0 }
         if (selected.isEmpty()) return "حدد كمية مرتجعة لصنف واحد على الأقل"
@@ -288,12 +298,34 @@ object SalesValidation {
             val line = invoice.items.firstOrNull { it.invoiceItemId == itemId } ?: return "بند المرتجع لا يتبع الفاتورة"
             if (qty > line.remaining) return "كمية المرتجع تتجاوز المتبقي القابل للإرجاع"
         }
+        if (submission.reason.trim().length !in 3..500) {
+            return "سبب المرتجع مطلوب (٣ أحرف على الأقل)"
+        }
+        if (capabilities?.role == "cashier") {
+            val hasShift = if (invoice.refundShifts.isNotEmpty()) {
+                invoice.refundShifts.any { it.userId == capabilities.userId }
+            } else {
+                submission.refundShiftId != null
+            }
+            if (!hasShift) {
+                return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع"
+            }
+        }
         if (submission.refundAmount.isNotBlank()) {
             if (!money.matches(submission.refundAmount)) return "مبلغ الاسترداد غير صالح"
-            if (submission.refundAmount.toDoubleOrNull()?.let { it < 0 } != false) return "مبلغ الاسترداد غير صالح"
-            if (submission.refundAmount.toDoubleOrNull()?.let { it > 0 } == true &&
-                submission.refundMethod == PaymentMethod.CASH && submission.refundShiftId == null
-            ) return "اختر وردية الدرج الذي سيخرج منه الاسترداد النقدي"
+            val refundVal = submission.refundAmount.toDoubleOrNull()
+            if (refundVal == null || refundVal < 0) return "مبلغ الاسترداد غير صالح"
+            if (refundVal > 0) {
+                if (submission.refundMethod !in listOf(PaymentMethod.CASH, PaymentMethod.CARD)) {
+                    return "طريقة الرد المباشر المتاحة هي النقد أو البطاقة فقط"
+                }
+                if (submission.refundMethod == PaymentMethod.CASH && capabilities?.role == "cashier" && submission.refundShiftId == null) {
+                    return "اختر وردية الدرج الذي سيخرج منه الاسترداد النقدي"
+                }
+                if (submission.refundMethod == PaymentMethod.CARD && submission.refundReference.isNullOrBlank()) {
+                    return "مرجع البطاقة مطلوب"
+                }
+            }
         }
         if (submission.clientRequestId.length !in 8..80) return "مفتاح أمان المرتجع غير صالح"
         return null

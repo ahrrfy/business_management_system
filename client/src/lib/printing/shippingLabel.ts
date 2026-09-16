@@ -29,13 +29,21 @@ export interface ShippingLabelItem {
 
 export interface ShippingLabelData {
   orderNumber: string;
+  /** قيمة آلية نوعية؛ رقم العرض وحده قد يُفسَّر كمنتج عند المسح. */
+  barcodeValue?: string | null;
   customerName: string | null;
   customerPhone: string | null;
   governorate: string | null;
   addressText: string | null;
+  latitude?: string | number | null;
+  longitude?: string | number | null;
   /** مبلغ التحصيل عند الاستلام (COD) — إجمالي الطلب. */
   total: string;
+  /** الفاتورة المدفوعة بالكامل تُوسَم مدفوعة ولا تطلب من المندوب تحصيل صفرٍ «نقداً». */
+  paymentState?: "COD" | "PREPAID";
   deliveryPartyName?: string | null;
+  /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
   createdAt?: Date | string | null;
   items: ShippingLabelItem[];
   /** رابط عام موقّع للملصق؛ عند المسح يفتح ملخص الطلب بدلاً من نص باركود غير مفيد. */
@@ -60,13 +68,19 @@ export async function shippingLabelHtml(
   const govName = o.governorate ? governorateById(o.governorate)?.name ?? o.governorate : "";
   let barcode = "";
   try {
-    barcode = code128Svg(o.orderNumber, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
+    barcode = code128Svg(o.barcodeValue || o.orderNumber, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
   } catch {
     barcode = "";
   }
   let qr = "";
+  const hasMap = Boolean(o.latitude && o.longitude);
   try {
-    qr = await qrCodeSvg(o.qrUrl || o.orderNumber, { margin: 1 });
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const mapUrl = hasMap
+      ? `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`
+      : null;
+    const targetPayload = mapUrl || o.qrUrl || (origin ? `${origin}/verify?payload=${encodeURIComponent(o.orderNumber)}` : o.orderNumber);
+    qr = await qrCodeSvg(targetPayload, { margin: 1 });
   } catch {
     qr = "";
   }
@@ -142,11 +156,12 @@ ${CAIRO_FONT}
       </div>
       ${govName ? `<div class="to-gov">${esc(govName)}</div>` : ""}
       ${o.addressText ? `<div class="to-addr">${esc(o.addressText)}</div>` : ""}
+      ${hasMap ? `<div class="to-coords" style="font-size:7.5pt;font-weight:bold;color:#0e806a;margin-top:1mm">موقع الخريطة مثبت: ${esc(String(o.latitude))}, ${esc(String(o.longitude))}</div>` : ""}
     </div>
 
     <div class="cod">
-      <div class="cod-l">الدفع عند الاستلام<small>COD — تُحصَّل نقداً</small></div>
-      <div class="cod-v">${esc(fmt(o.total))}<u>د.ع</u></div>
+      <div class="cod-l">${o.paymentState === "PREPAID" ? "مدفوع مسبقاً" : "الدفع عند الاستلام"}<small>${o.paymentState === "PREPAID" ? "لا يُحصَّل مبلغ عند التسليم" : "COD — تُحصَّل نقداً"}</small></div>
+      <div class="cod-v">${o.paymentState === "PREPAID" ? "مدفوع" : `${esc(fmt(o.total))}<u>د.ع</u>`}</div>
     </div>
 
     <div class="items"><b>أصناف التجهيز (${itemCount}):</b> <span class="items-list">${esc(contents || "—")}</span></div>
@@ -161,7 +176,8 @@ ${CAIRO_FONT}
       <div class="ft-info">
         <div><b>الطلب:</b> ${esc(o.orderNumber)} &nbsp; <b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
         ${o.deliveryPartyName ? `<div><b>المندوب:</b> ${esc(o.deliveryPartyName)}</div>` : ""}
-        <div class="ft-c">امسح QR لفتح معلومات الطلب</div>
+        ${o.externalTrackingRef ? `<div><b>مرجع الشركة:</b> <span dir="ltr" style="font-family:monospace;font-weight:bold">${esc(o.externalTrackingRef)}</span></div>` : ""}
+        <div class="ft-c" style="${hasMap ? "font-weight:900;color:#0e806a" : ""}">${hasMap ? "موقع الزبون على الخريطة (امسح للملاحة)" : "امسح QR لفتح معلومات الطلب"}</div>
       </div>
     </div>
   </div>

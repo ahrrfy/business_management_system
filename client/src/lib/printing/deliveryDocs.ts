@@ -30,7 +30,7 @@ export interface LabelPrintableOrder {
 export function printDeliverySlip(
   order: LabelPrintableOrder,
   party: { name: string } | undefined,
-  r: { consignmentNumber: string; invoiceNumber: string; codAmount: string; deliveryFee: string },
+  r: { consignmentNumber: string; invoiceNumber: string; codAmount: string; deliveryFee: string; externalTrackingRef?: string | null },
 ) {
   void printDoc({
     kind: "receipt",
@@ -39,6 +39,7 @@ export function printDeliverySlip(
     meta: [
       `الطلب: ${order.orderNumber}`,
       `الجهة: ${party?.name ?? ""}`,
+      r.externalTrackingRef ? `مرجع الشركة: ${r.externalTrackingRef}` : "",
       `المستلم: ${order.customerName ?? "—"}`,
       order.deliveryAddress ? `العنوان: ${order.deliveryAddress}` : "",
       `الفاتورة: ${r.invoiceNumber}`,
@@ -104,7 +105,7 @@ export function printDeliveryManifest(
  *  برقم الإرسالية واسم الجهة (نفس ملصق طلبات المتجر — تكامل وظيفي واحد). */
 export async function printReadyOrderLabel(
   order: LabelPrintableOrder,
-  opts?: { partyName?: string | null; trackingNumber?: string; cod?: string; into?: Window | null },
+  opts?: { partyName?: string | null; trackingNumber?: string; cod?: string; externalTrackingRef?: string | null; into?: Window | null },
 ) {
   const cod = opts?.cod ?? String(Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0)));
   // Slice F (٢٩/٨/٢٦): «الكلي للعميل» على الملصق — COURIER يقبض COD + الأجرة، الآخران COD وحده.
@@ -123,6 +124,7 @@ export async function printReadyOrderLabel(
       addressText: order.deliveryAddress,
       total: totalDue,
       deliveryPartyName: opts?.partyName ?? null,
+      externalTrackingRef: opts?.externalTrackingRef ?? null,
       createdAt: new Date(),
       items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
     },

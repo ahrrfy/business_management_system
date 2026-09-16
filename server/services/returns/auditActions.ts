@@ -31,4 +31,6 @@ export type ReturnExecutionMode =
   /** اعتمادُ مديرٍ مستقلٍّ لطلبِ موظّف المحطة (الطابور القديم `returnRequests`). */
   | "STATION_REQUEST_APPROVAL"
   /** اعتمادُ مديرٍ مستقلٍّ لطلب تحكّمٍ محكوم (`salesControlRequests`). */
-  | "GOVERNED_APPROVAL";
+  | "GOVERNED_APPROVAL"
+  /** تنفيذٌ مباشر ذريّ من الإدارة أو الكاشير أثناء الوردية المفتوحة دون دورة تعليق. */
+  | "DIRECT_EXECUTION";

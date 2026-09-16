@@ -1,5 +1,6 @@
 // تسجيل عدّة (submit) داخل withTx واحدة — العقد §٥ من docs/stocktake-contract.md.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -29,6 +30,8 @@ import {
   type CountEntryMethod,
   type CountMethod,
 } from "../../../shared/stocktakeCountMethod";
+import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
+import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "../catalog/barcodeAliases";
 
 function scannerPrefix(code: string | null | undefined): number | null {
   const digits = String(code ?? "").replace(/\D/g, "");
@@ -77,6 +80,14 @@ export type SubmitCountInput = {
   scannedBarcode?: string | null;
   /** مفتاح idempotency لمزامنة طابور الأوفلاين (uuid). */
   clientRequestId: string;
+  /** وقت الالتقاط الفعلي على جهاز العامل (لطابور الأوفلاين) لحماية مبيعات الكاشير اللاحقة. */
+  clientCapturedAt?: string | Date | null;
+  /** وقت إرسال الطلب من جهاز العميل لحساب فارق التوقيت ومعالجة انحراف ساعة العميل بدقة. */
+  clientSentAt?: string | Date | null;
+  /** وقت وصول الطلب إلى راوتر الخادم لحساب حد الوصول المحافظ والتخلص من تأخير انتظار أقفال المعاملة. */
+  requestReceivedAt?: string | Date | null;
+  /** انحراف ساعة العميل عن الخادم المحسوب مسبقاً (client - server) بالمللي ثانية إن توفر. */
+  clientClockOffsetMs?: number | null;
 };
 
 export type SubmitCountResult = {
@@ -286,18 +297,35 @@ export async function submitCount(
       // مقبول في FREE، مرفوض في SCAN_REQUIRED — فلا تمرّ عدّةٌ حرّة عبر واجهةٍ متجاوِزة.
       const sessionMethod = session.countMethod as CountMethod;
       const entryMethod: CountEntryMethod = input.entryMethod ?? "SEARCH_PICK";
-      const scannedBarcode = input.scannedBarcode?.trim() || null;
+      const scannedBarcode = canonicalizeBarcodeInput(input.scannedBarcode ?? "") || null;
+
+      if (isScanEntry(entryMethod)) {
+        if (!scannedBarcode) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+            what: "تعذّر تسجيل العدّ كعملية مسح",
+            why: "لم يصل باركود صالح يثبت المسح، حتى في جلسة العدّ الحر",
+            doThis: "امسح باركود الصنف ثم أعد المحاولة، أو استخدم طريقة الإدخال اليدوي المسموح بها للجلسة",
+          }) });
+        }
+        const resolution = await resolveBarcodeOwnerResult(tx, scannedBarcode);
+        if (resolution.status === "AMBIGUOUS") {
+          throw new TRPCError({ code: "CONFLICT", message: barcodeAmbiguityMessage("تعذّر تسجيل العدّ بهذا الباركود") });
+        }
+        if (resolution.status !== "FOUND" || resolution.owner.variantId !== input.variantId || !resolution.owner.unitActive) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذّر تسجيل العدّ بهذا الباركود", why: "الباركود الممسوح لا يخصّ هذا الصنف أو أن وحدته معطّلة", doThis: "امسح باركود الصنف الصحيح، أو أبلغ مسؤول الجرد لتصحيح الباركود ووحدته" }) });
+        }
+      }
 
       if (sessionMethod === "SCAN_REQUIRED") {
         if (isScanEntry(entryMethod)) {
           // مسحٌ فعليّ ⇒ الباركود الممسوح يجب أن يعيد الحلّ إلى **هذا** المتغيّر خادمياً
           // (لا ثقة بالواجهة): يطابق باركود وحدةٍ **نشطة** أو بديلَ وحدةٍ نشطة لنفس المتغيّر.
           // (#6) الوحدة المتقاعدة لا تُقبل دليلاً — لا تعرضها الواجهة ولا تعدّها التغطية «متاحة».
-          const variantCodes = new Set<string>();
+          const variantCodes: string[] = [];
           for (const u of units)
-            if (u.barcode && u.isActive !== false) variantCodes.add(String(u.barcode).trim());
+            if (u.barcode && u.isActive !== false) variantCodes.push(u.barcode);
           for (const a of aliases)
-            if (a.barcode && a.isActive !== false) variantCodes.add(String(a.barcode).trim());
+            if (a.barcode && a.isActive !== false) variantCodes.push(a.barcode);
           if (!scannedBarcode) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -305,7 +333,7 @@ export async function submitCount(
                 "هذه الجلسة بأسلوب المسح الإلزامي — امسح باركود الصنف لفتح بطاقة العدّ.",
             });
           }
-          if (!variantCodes.has(scannedBarcode)) {
+          if (!variantCodes.some((code) => barcodesEquivalent(code, scannedBarcode))) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
               message:
@@ -374,6 +402,67 @@ export async function submitCount(
             "الكمية تطابق بداية باركود المنتج ويُحتمل أن الماسح كتب داخل حقل العدد. امسح الحقل وأعد العدّ يدوياً؛ وللكمية المشروعة يلزم تأكيد مسؤول الجرد من حساب USER مكلّف برتبة manager أو admin.",
         });
       }
+
+      if (breakdown) {
+        const userEntries = Object.entries(breakdown).filter(
+          ([k, v]) => !k.startsWith("__") && typeof v === "number" && v > 0,
+        );
+        if (userEntries.length > 0) {
+          const activeUnits = units.filter((u) => u.isActive !== false);
+          // إذا كان الصنف غير نشط ولا يملك أي وحدات نشطة (مخزون وهمي/ghost stock يراد تسويته)،
+          // تقبل البوابة تفصيل الوحدة الافتراضية طالما تطابق الكمية الإجمالية (Codex finding).
+          if (activeUnits.length === 0) {
+            const sumCounts = userEntries.reduce((acc, [, count]) => acc + count, 0);
+            if (sumCounts !== input.qty) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "عدم تطابق في كمية الجرد",
+                  why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${sumCounts})`,
+                  doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
+                }),
+              });
+            }
+          } else {
+            let expectedBaseQty = new Decimal(0);
+            for (const [uName, count] of userEntries) {
+              const matches = activeUnits.filter((u) => u.unitName === uName);
+              if (matches.length === 0) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذّر تسجيل تفصيل الوحدات",
+                    why: `الوحدة «${uName}» المذكورة في تفصيل الجرد غير معرّفة أو معطّلة لهذا المنتج`,
+                    doThis: "امسح الحقل وأعد إدخال الكمية بالوحدات الصحيحة المعرّفة للصنف",
+                  }),
+                });
+              }
+              if (matches.length > 1) {
+                throw new TRPCError({
+                  code: "CONFLICT",
+                  message: appErrorMessage({
+                    what: "تعارض في تعريف الوحدات",
+                    why: `توجد أكثر من وحدة نشطة بالاسم نفسه «${uName}» لهذا المنتج`,
+                    doThis: "صحّح أسماء الوحدات في بطاقة المنتج أولاً قبل تسجيل الجرد",
+                  }),
+                });
+              }
+              const unitObj = matches[0];
+              expectedBaseQty = expectedBaseQty.plus(new Decimal(count).times(String(unitObj.factor)));
+            }
+            if (expectedBaseQty.isInteger() && expectedBaseQty.toNumber() !== input.qty) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "عدم تطابق في كمية الجرد",
+                  why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${expectedBaseQty.toNumber()})`,
+                  doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
+                }),
+              });
+            }
+          }
+        }
+      }
       const candidateDigest = createHash("sha256")
         .update(
           JSON.stringify(
@@ -426,7 +515,45 @@ export async function submitCount(
       // العدّ الفعّال = آخر RECOUNT إن وُجد وإلا FIRST (نفس قاعدة rawCount في المراجعة).
       const effectiveRow = latestRecount ?? first;
 
-      const now = new Date();
+      const arrivalMs = input.requestReceivedAt ? new Date(input.requestReceivedAt).getTime() : Date.now();
+      const sessionCreatedMs = new Date(session.createdAt).getTime();
+      let countedAtDate = new Date(arrivalMs);
+
+      if (input.clientCapturedAt) {
+        const cap = new Date(input.clientCapturedAt);
+        const capMs = cap.getTime();
+        if (!isNaN(capMs)) {
+          let derivedMs: number;
+          if (input.clientClockOffsetMs != null && !isNaN(Number(input.clientClockOffsetMs))) {
+            const offsetCapMs = capMs + Number(input.clientClockOffsetMs);
+            if (input.clientSentAt) {
+              const sentMs = new Date(input.clientSentAt).getTime();
+              if (!isNaN(sentMs)) {
+                const delayMs = Math.max(0, sentMs - capMs);
+                const arrivalBoundMs = arrivalMs - delayMs;
+                derivedMs = Math.min(offsetCapMs, arrivalBoundMs);
+              } else {
+                derivedMs = Math.min(offsetCapMs, arrivalMs);
+              }
+            } else {
+              derivedMs = Math.min(offsetCapMs, arrivalMs);
+            }
+          } else if (input.clientSentAt) {
+            const sent = new Date(input.clientSentAt);
+            const sentMs = sent.getTime();
+            if (!isNaN(sentMs)) {
+              const delayMs = Math.max(0, sentMs - capMs);
+              derivedMs = arrivalMs - delayMs;
+            } else {
+              derivedMs = capMs;
+            }
+          } else {
+            derivedMs = Math.max(arrivalMs - 60_000, capMs);
+          }
+          const clampedMs = Math.max(sessionCreatedMs, Math.min(arrivalMs, derivedMs));
+          countedAtDate = new Date(clampedMs);
+        }
+      }
 
       let kind: "FIRST" | "RECOUNT" | "VERIFY";
       let verifyMatch: boolean | null = null;
@@ -445,7 +572,7 @@ export async function submitCount(
           scannedBarcode: storedScannedBarcode,
           countedByName: identity.countedByName,
           countedByUserId: identity.countedByUserId,
-          countedAt: now,
+          countedAt: countedAtDate,
           clientRequestId: input.clientRequestId,
         });
         await tx
@@ -492,7 +619,7 @@ export async function submitCount(
               unitBreakdown: guardedUnitBreakdown,
               entryMethod: storedEntryMethod,
               scannedBarcode: storedScannedBarcode,
-              countedAt: now,
+              countedAt: countedAtDate,
             })
             .where(eq(stocktakeCounts.id, myOwn.id));
 
@@ -526,7 +653,7 @@ export async function submitCount(
             scannedBarcode: storedScannedBarcode,
             countedByName: identity.countedByName,
             countedByUserId: identity.countedByUserId,
-            countedAt: now,
+            countedAt: countedAtDate,
             clientRequestId: input.clientRequestId,
           });
         } else {
@@ -552,7 +679,7 @@ export async function submitCount(
                 unitBreakdown: guardedUnitBreakdown,
                 entryMethod: storedEntryMethod,
                 scannedBarcode: storedScannedBarcode,
-                countedAt: now,
+                countedAt: countedAtDate,
                 isConflict: !match,
                 // تعديل العدّ التحقّقي يُلغي حسماً سابقاً مبنياً على قيمة قديمة.
                 resolvedBy: null,
@@ -572,7 +699,7 @@ export async function submitCount(
               scannedBarcode: storedScannedBarcode,
               countedByName: identity.countedByName,
               countedByUserId: identity.countedByUserId,
-              countedAt: now,
+              countedAt: countedAtDate,
               isConflict: !match,
               clientRequestId: input.clientRequestId,
             });
@@ -608,7 +735,7 @@ export async function submitCount(
       // (٥) آخر نشاط للتكليف — يغذّي شاشة المتابعة الحية.
       await tx
         .update(stocktakeAssignments)
-        .set({ lastActivityAt: now })
+        .set({ lastActivityAt: new Date() })
         .where(eq(stocktakeAssignments.id, asg.id));
 
       return { ok: true as const, kind, verifyMatch, idempotent: false };

@@ -14,13 +14,13 @@ sealed interface PurchasingConfirmation {
     val title: String
     val explanation: String
 
-    data class ConfirmOrder(val id: Long, val number: String) : PurchasingConfirmation {
-        override val title = "اعتماد أمر الشراء"
-        override val explanation = "سيصبح الأمر قابلاً للاستلام ولا يوفّر الخادم تراجعاً تلقائياً."
+    data class ConfirmOrder(val id: Long, val number: String, val version: Int) : PurchasingConfirmation {
+        override val title = "إرسال فاتورة الشراء للاعتماد"
+        override val explanation = "سيُراجعها مستخدم مستقل. عند اعتماده بعد التأكد من وصول البضاعة، يضيف النظام كامل الكميات إلى المخزون ويرحّل القيد والذمة تلقائياً."
     }
-    data class CancelOrder(val id: Long, val number: String) : PurchasingConfirmation {
+    data class CancelOrder(val id: Long, val number: String, val version: Int) : PurchasingConfirmation {
         override val title = "إلغاء أمر الشراء"
-        override val explanation = "سيتم إلغاء الأمر بعد تحقق الخادم من عدم وجود استلام أو أثر مالي."
+        override val explanation = "سيتم إلغاء المسودة بعد تحقق الخادم من عدم وجود ترحيل مخزني أو أثر مالي."
     }
     data class SupplierActivation(val id: Long, val name: String, val active: Boolean) : PurchasingConfirmation {
         override val title = if (active) "إعادة تفعيل المورد" else "تعطيل المورد"

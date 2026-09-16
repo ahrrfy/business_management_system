@@ -20,6 +20,8 @@ import { logger } from "../../logger";
 import { setStock } from "../inventoryService";
 import { money, toDbMoney } from "../money";
 import { type Actor, requireDb, withTx } from "../tx";
+import { canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "../../../shared/barcodeNormalize";
+import { normalizedMatchAny } from "../catalog/barcodeAliases";
 import { priceTier, type ProductImportRow } from "./schemas";
 import type { ImportOptions, ImportRowResult, ImportSummary } from "./types";
 import {
@@ -66,13 +68,16 @@ const EXPLICIT_PRICE_FIELDS = [
   ["governmentPrice", "GOVERNMENT"],
 ] as const;
 
-/** يفكّ عمود «بدائل الباركود»: مفصولة بفاصلة عربية «،» أو لاتينية «,» أو «;» — مع إسقاط الفراغ والتكرار. */
+/** يفكّ عمود «بدائل الباركود»: مفصولة بفاصلة عربية «،» أو لاتينية «,» أو «;» — مع إسقاط الفراغ والتكرار.
+ *  (٤/٩، ١٥/٩) كل قيمة تُطبَّع بـ`canonicalizeBarcodeForStorage` (تقليم طرفيّ + طيّ الأرقام، **مع إبقاء
+ *  المسافة الداخلية** بصيغة المصنع): استيراد Excel أكبرُ مصدرٍ لمسافةٍ طرفية أو أرقامٍ هندية ⇒ تُنظَّف الحواف
+ *  دون تغيير التسلسل المرئيّ، والمطابقة تبقى عبر `barcodeNormalized`. */
 function parseAliases(raw?: string): string[] {
   if (!raw) return [];
   return uniq(
     raw
       .split(/[،,;]/)
-      .map((s) => s.trim())
+      .map((s) => canonicalizeBarcodeForStorage(s))
       .filter(Boolean),
   );
 }
@@ -232,7 +237,7 @@ function aggregateImportRows(
       }
     }
 
-    const uBarcode = norm(r.barcode) ?? undefined;
+    const uBarcode = canonicalizeBarcodeForStorage(r.barcode ?? "") || undefined; // حرفيّاً بصيغة المصنع (يُبقي المسافة)
     const rowAliases = parseAliases(r.barcodeAliases);
     let u = v.units.get(r.unitName);
     if (!u) {
@@ -344,14 +349,19 @@ function validateProductGroups(
             );
         }
         if (u.barcode) {
-          const prevRows = batchBarcodes.get(u.barcode);
+          // ⚠️ يُفتَح على الهوية المُطبَّعة (canonicalizeBarcodeInput + صغيرة) لا الصيغة المخزَّنة:
+          // بعد حفظِ صيغة المصنع حرفيّاً (١٥/٩) صار «1  0172» و«10172» صيغتين مخزّنتين مختلفتين لكن
+          // هويةً واحدة ⇒ لو فُتِح على المخزَّن لَمرّا كصنفين ثمّ تصادما على barcodeNormalized فصار
+          // كلاهما غامضاً غيرَ قابلٍ للمسح. الفتحُ على الهوية يُمسك التكرارَ هنا (الرسالة بالصيغة المرئية).
+          const key = canonicalizeBarcodeInput(u.barcode).toLowerCase();
+          const prevRows = batchBarcodes.get(key);
           if (prevRows) {
             for (const rn of v.rowNumbers)
               failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
             for (const rn of prevRows)
               failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
           } else {
-            batchBarcodes.set(u.barcode, v.rowNumbers);
+            batchBarcodes.set(key, v.rowNumbers);
           }
         }
         // البدائل تدخل نفس فضاء التفرّد (أساسيّ + بديل = فضاء واحد — قاعدة PR #179):
@@ -362,7 +372,8 @@ function validateProductGroups(
               failures.set(rn, `البديل «${alias}» أطول من ٦٤ خانة`);
             continue;
           }
-          if (u.barcode && alias === u.barcode) {
+          const aliasKey = canonicalizeBarcodeInput(alias).toLowerCase(); // الهوية (كما الأساسيّ أعلاه)
+          if (u.barcode && aliasKey === canonicalizeBarcodeInput(u.barcode).toLowerCase()) {
             for (const rn of v.rowNumbers)
               failures.set(
                 rn,
@@ -370,14 +381,14 @@ function validateProductGroups(
               );
             continue;
           }
-          const prevRows = batchBarcodes.get(alias);
+          const prevRows = batchBarcodes.get(aliasKey);
           if (prevRows) {
             for (const rn of v.rowNumbers)
               failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
             for (const rn of prevRows)
               failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
           } else {
-            batchBarcodes.set(alias, v.rowNumbers);
+            batchBarcodes.set(aliasKey, v.rowNumbers);
           }
         }
       }
@@ -465,6 +476,41 @@ async function detectExistingProducts(
           e.barcode,
           productSkuKey(e.productName, e.sku),
         );
+
+    // (٤/٩، مراجعة Codex P1) صفوفٌ إرثيّةٌ مخزَّنةٌ ملوّثة (أرقامٌ عربية-هندية أو فراغٌ طرفيّ) تتطبّع إلى
+    // أحد باركودات الملف لا تلتقطها المساواةُ الخامّة أعلاه ⇒ يُدرَج الشكلُ النظيف لسلعةٍ أخرى فيصير
+    // لباركودٍ واحدٍ منطقيّاً مالكان. نلتقطها عبر العمود المُطبَّع ونُفهرسها بالمفتاح الذي يفتّش عنه
+    // `classifyProductGroups` (باركود الملف بحالته). الحالة الغالبة (كتالوج نظيف) لا تُرجع صفوفاً إضافية.
+    // ⚠️ (١٥/٩، مراجعة Codex P1) يُفتَح بمفتاح **الهوية المُطبَّعة** لا صيغة الملف المخزَّنة: بعد صون
+    // مسافة المصنع صار باركود الملف «1  0172» يحمل مسافةً، فلو فُهرِس بـ`toLowerCase()` وحده (يُبقيها)
+    // لَفشل الاستعلامُ المُطبَّع أدناه (يُسقط المسافة) في إيجاده ⇒ مالكٌ في القاعدة على «10172» لا يُنسَب
+    // لصفّ الملف «1  0172» فيُدرَج ازدواجٌ صامتٌ لهويةٍ واحدة. المفتاح canonicalizeBarcodeInput(b) يوحّدهما.
+    const importByLowerCanon = new Map<string, string>();
+    for (const b of allBarcodes) importByLowerCanon.set(canonicalizeBarcodeInput(b).toLowerCase(), b);
+    const registerNormalizedOwner = (barcode: string | null, productName: string, sku: string) => {
+      if (!barcode) return;
+      const key = importByLowerCanon.get(canonicalizeBarcodeInput(barcode).toLowerCase());
+      if (key && !existingBarcodeOwner.has(key)) existingBarcodeOwner.set(key, productSkuKey(productName, sku));
+    };
+    const primClause = normalizedMatchAny(productUnits.barcode, allBarcodes);
+    if (primClause)
+      for (const e of await db
+        .select({ barcode: productUnits.barcode, productName: products.name, sku: productVariants.sku })
+        .from(productUnits)
+        .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(primClause))
+        registerNormalizedOwner(e.barcode, e.productName, e.sku);
+    const aliasClause = normalizedMatchAny(productUnitBarcodes.barcode, allBarcodes);
+    if (aliasClause)
+      for (const e of await db
+        .select({ barcode: productUnitBarcodes.barcode, productName: products.name, sku: productVariants.sku })
+        .from(productUnitBarcodes)
+        .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
+        .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(aliasClause))
+        registerNormalizedOwner(e.barcode, e.productName, e.sku);
   }
   return { existingProductSkus, existingBarcodeOwner };
 }
@@ -643,6 +689,33 @@ async function planAliasMergeForExisting(
     .from(productUnitBarcodes)
     .where(inArray(productUnitBarcodes.barcode, candidateCodes)))
     aliasOwner.set(r.barcode, Number(r.unitId));
+
+  // (٤/٩، مراجعة Codex P1) نفس معالجة `detectExistingProducts`: صفوفٌ إرثيّةٌ ملوّثة تتطبّع إلى بديلٍ
+  // من الملف تُلتقَط عبر العمود المُطبَّع وتُفهرَس بمفتاح الملف المرشّح، فلا يُدرَج شكلُه النظيف على
+  // وحدةٍ بينما يملكه إرثٌ ملوَّثٌ لوحدةٍ أخرى (يقلبه فحص السطر ٦٩٩ إلى فشلٍ صريح بدل ازدواجٍ صامت).
+  // ⚠️ (١٥/٩، مراجعة Codex P1) بمفتاح الهوية المُطبَّعة لا صيغة الملف (نظيرُ `importByLowerCanon` أعلاه):
+  // البديلُ المصون بمسافةٍ «1  0172» يجب أن يُطابَق ضدّ مالكٍ في القاعدة على «10172» فلا يُدرَج مالكاً ثانياً.
+  const candidateByLowerCanon = new Map<string, string>();
+  for (const c of candidateCodes) candidateByLowerCanon.set(canonicalizeBarcodeInput(c).toLowerCase(), c);
+  const primClause = normalizedMatchAny(productUnits.barcode, candidateCodes);
+  if (primClause)
+    for (const r of await db
+      .select({ id: productUnits.id, barcode: productUnits.barcode })
+      .from(productUnits)
+      .where(primClause)) {
+      if (!r.barcode) continue;
+      const key = candidateByLowerCanon.get(canonicalizeBarcodeInput(r.barcode).toLowerCase());
+      if (key && !primaryOwner.has(key)) primaryOwner.set(key, Number(r.id));
+    }
+  const aliClause = normalizedMatchAny(productUnitBarcodes.barcode, candidateCodes);
+  if (aliClause)
+    for (const r of await db
+      .select({ unitId: productUnitBarcodes.productUnitId, barcode: productUnitBarcodes.barcode })
+      .from(productUnitBarcodes)
+      .where(aliClause)) {
+      const key = candidateByLowerCanon.get(canonicalizeBarcodeInput(r.barcode).toLowerCase());
+      if (key && !aliasOwner.has(key)) aliasOwner.set(key, Number(r.unitId));
+    }
 
   const inserts: Array<{ productUnitId: number; barcode: string }> = [];
   for (const w of wants) {

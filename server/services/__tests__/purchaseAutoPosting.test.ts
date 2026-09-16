@@ -1,0 +1,599 @@
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { beforeEach, describe, expect, it } from "vitest";
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
+import { decidePurchaseOrderControl } from "../purchase/controls";
+import { confirmPurchaseOrder, createPurchaseOrder } from "../purchaseService";
+import { truncateTables } from "./__testUtils__";
+
+const creator = { userId: 1, branchId: 1, role: "admin" as const };
+const approver = { userId: 2, branchId: 1, role: "manager" as const };
+const treasurer = { userId: 3, branchId: 1, role: "manager" as const };
+
+const TABLES = [
+  "idempotencyKeys",
+  "auditLogs",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
+  "supplierInvoiceApprovalRequests",
+  "supplierInvoiceMatchAllocations",
+  "supplierInvoiceMatchRuns",
+  "supplierInvoiceLines",
+  "supplierPaymentAllocations",
+  "supplierPayments",
+  "supplierPaymentRequestAllocations",
+  "supplierPaymentRequests",
+  "supplierInvoices",
+  "goodsReceiptAccountingLinks",
+  "goodsReceiptItems",
+  "goodsReceipts",
+  "journalLines",
+  "journalEntries",
+  "doubleEntrySettings",
+  "accrualObligationEvents",
+  "accrualObligations",
+  "accountingEntries",
+  "expenses",
+  "receipts",
+  "financialPeriods",
+  "inventoryMovements",
+  "purchaseOrderItems",
+  "purchaseOrders",
+  "purchaseControlSettings",
+  "branchStock",
+  "productUnits",
+  "productVariants",
+  "products",
+  "suppliers",
+  "branches",
+  "users",
+] as const;
+
+function db() {
+  const value = getDb();
+  if (!value) throw new Error("DATABASE_URL not set");
+  return value;
+}
+
+async function seed() {
+  await db().insert(s.branches).values({
+    id: 1,
+    name: "الرئيسي",
+    code: "MAIN",
+    type: "MAIN",
+  });
+  await db()
+    .insert(s.users)
+    .values([
+      {
+        id: 1,
+        openId: "purchase-auto-creator",
+        name: "منشئ أمر الشراء",
+        role: "admin",
+        loginMethod: "local",
+        branchId: 1,
+      },
+      {
+        id: 2,
+        openId: "purchase-auto-approver",
+        name: "معتمد مستقل",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+      },
+      {
+        id: 3,
+        openId: "purchase-auto-treasurer",
+        name: "معتمد الصرف",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+        isOwner: true,
+      },
+    ]);
+  await db().insert(s.suppliers).values({
+    id: 1,
+    name: "مورد",
+    currentBalance: "0.00",
+  });
+  await db().insert(s.products).values({ id: 1, name: "ورق" });
+  await db().insert(s.productVariants).values({
+    id: 1,
+    productId: 1,
+    sku: "PAPER-AUTO",
+    costPrice: "4.00",
+  });
+  await db().insert(s.productUnits).values({
+    id: 1,
+    variantId: 1,
+    unitName: "قطعة",
+    conversionFactor: "1",
+    isBaseUnit: true,
+  });
+  await db().insert(s.branchStock).values({
+    variantId: 1,
+    branchId: 1,
+    quantity: 10,
+  });
+}
+
+async function artifactCounts() {
+  const [
+    goodsReceipts,
+    goodsReceiptItems,
+    goodsReceiptLinks,
+    supplierInvoices,
+    supplierInvoiceLines,
+    matchRuns,
+    matchAllocations,
+    movements,
+    entries,
+  ] = await Promise.all([
+    db().select().from(s.goodsReceipts),
+    db().select().from(s.goodsReceiptItems),
+    db().select().from(s.goodsReceiptAccountingLinks),
+    db().select().from(s.supplierInvoices),
+    db().select().from(s.supplierInvoiceLines),
+    db().select().from(s.supplierInvoiceMatchRuns),
+    db().select().from(s.supplierInvoiceMatchAllocations),
+    db().select().from(s.inventoryMovements),
+    db().select().from(s.accountingEntries),
+  ]);
+  return {
+    goodsReceipts: goodsReceipts.length,
+    goodsReceiptItems: goodsReceiptItems.length,
+    goodsReceiptLinks: goodsReceiptLinks.length,
+    supplierInvoices: supplierInvoices.length,
+    supplierInvoiceLines: supplierInvoiceLines.length,
+    matchRuns: matchRuns.length,
+    matchAllocations: matchAllocations.length,
+    movements: movements.length,
+    entries: entries.length,
+  };
+}
+
+beforeEach(async () => {
+  await truncateTables(TABLES);
+  await seed();
+});
+
+describe("اعتماد أمر الشراء يرحّل الفاتورة والاستلام آلياً", () => {
+  it("يمر DRAFT → SENT → RECEIVED ويثبت WAVG وGRN/GRNI وAP مرة واحدة حتى عند replay", async () => {
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CREDIT",
+        shippingCost: "5.00",
+        customsCost: "2.00",
+        clientRequestId: "purchase-auto-draft",
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "6.00",
+          },
+        ],
+      },
+      creator,
+    );
+
+    expect(draft.status).toBe("DRAFT");
+    expect(await artifactCounts()).toEqual({
+      goodsReceipts: 0,
+      goodsReceiptItems: 0,
+      goodsReceiptLinks: 0,
+      supplierInvoices: 0,
+      supplierInvoiceLines: 0,
+      matchRuns: 0,
+      matchAllocations: 0,
+      movements: 0,
+      entries: 0,
+    });
+
+    const request = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: draft.purchaseOrderId,
+        expectedVersion: draft.version,
+        reason: "اكتملت مراجعة أمر الشراء وأرسل للاعتماد",
+        clientRequestId: "purchase-auto-submit",
+      },
+      creator,
+    );
+    expect(request).toMatchObject({ status: "PENDING", idempotent: false });
+    expect(
+      (
+        await db()
+          .select({ status: s.purchaseOrders.status })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, draft.purchaseOrderId))
+      )[0]?.status,
+    ).toBe("SENT");
+    expect(await artifactCounts()).toMatchObject({
+      goodsReceipts: 0,
+      supplierInvoices: 0,
+      movements: 0,
+      entries: 0,
+    });
+
+    const decision = {
+      requestId: request.requestId,
+      // مفتاحُ القرار بصيغة الشاشة حرفياً (PurchaseApprovalQueue) — ~٨٠ محرفاً. كان عمود
+      // idempotencyKeys.clientRequestId ٦٤ فسقط الاعتمادُ على الإنتاج بـ«قيمة أطول من المسموح»
+      // بينما تمرّ هذه الحزمة بمفتاحٍ قصير (هجرة 0328، ٣/٩/٢٦).
+      decisionKey: `purchase-decision-PURCHASE_ORDER-${request.requestId}-approve-${randomUUID()}`,
+      approve: true,
+      reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+      confirmedFullReceipt: true,
+    } as const;
+    expect(decision.decisionKey.length).toBeGreaterThan(64);
+    const approved = await decidePurchaseOrderControl(decision, approver);
+    expect(approved).toMatchObject({
+      status: "APPROVED",
+      orderStatus: "RECEIVED",
+      idempotent: false,
+    });
+
+    const [
+      [order],
+      [item],
+      [stock],
+      [variant],
+      [movement],
+      [receipt],
+      [invoice],
+      [match],
+      entries,
+      [supplier],
+      [shippingExpense],
+      [shippingObligation],
+      [shippingPaymentRequest],
+    ] = await Promise.all([
+      db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, draft.purchaseOrderId)),
+      db()
+        .select()
+        .from(s.purchaseOrderItems)
+        .where(eq(s.purchaseOrderItems.purchaseOrderId, draft.purchaseOrderId)),
+      db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)),
+      db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)),
+      db().select().from(s.inventoryMovements),
+      db().select().from(s.goodsReceipts),
+      db().select().from(s.supplierInvoices),
+      db().select().from(s.supplierInvoiceMatchRuns),
+      db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.purchaseOrderId, draft.purchaseOrderId)),
+      db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)),
+      db().select().from(s.expenses),
+      db().select().from(s.accrualObligations),
+      db().select().from(s.receipts),
+    ]);
+
+    expect(order.status).toBe("RECEIVED");
+    expect(item.receivedBaseQuantity).toBe(10);
+    expect(stock.quantity).toBe(20);
+    expect(variant.costPrice).toBe("5.00");
+    expect(movement).toMatchObject({
+      movementType: "IN",
+      quantity: 10,
+      signedDelta: 10,
+      referenceType: "GOODS_RECEIPT",
+      referenceId: receipt.id,
+    });
+    expect(receipt).toMatchObject({
+      purchaseOrderId: draft.purchaseOrderId,
+      status: "POSTED",
+      totalAmount: "60.00",
+    });
+    expect(invoice).toMatchObject({
+      status: "POSTED",
+      liabilityClass: "NATIVE_AP",
+      paymentGate: "OPEN",
+      totalAmount: "60.00",
+    });
+    expect(invoice.postingEntryId).not.toBeNull();
+    expect(match).toMatchObject({
+      supplierInvoiceId: invoice.id,
+      outcome: "EXACT",
+      receivedBaseQuantity: 10,
+      invoicedBaseQuantity: 10,
+    });
+    expect(entries).toHaveLength(3);
+    expect(entries.map((entry) => entry.dedupeKey)).toEqual(
+      expect.arrayContaining([
+        `GRNI:RECEIPT:${receipt.id}`,
+        `GRNI:SUPPLIER_INVOICE:${invoice.id}`,
+        expect.stringMatching(/^PURCHASE_SHIPPING_ACCRUAL:/),
+      ]),
+    );
+    expect(entries.every((entry) => entry.entryType === "ADJUST")).toBe(true);
+    expect(supplier.currentBalance).toBe("60.00");
+    expect(shippingExpense).toMatchObject({
+      amount: "7.00",
+      category: "TRANSPORT",
+      source: "ACCRUAL",
+      status: "ACTIVE",
+    });
+    expect(shippingObligation).toMatchObject({
+      kind: "PURCHASE_SHIPPING",
+      purchaseOrderId: draft.purchaseOrderId,
+      recognizedAmount: "7.00",
+      status: "PAYMENT_PENDING",
+    });
+    expect(shippingPaymentRequest).toMatchObject({
+      direction: "OUT",
+      amount: "7.00",
+      approvalStatus: "PENDING_APPROVAL",
+      status: "PENDING",
+    });
+
+    const beforeReplay = await artifactCounts();
+    const replay = await decidePurchaseOrderControl(decision, approver);
+    expect(replay).toMatchObject({ status: "APPROVED", idempotent: true });
+    expect(await artifactCounts()).toEqual(beforeReplay);
+    expect((await db().select().from(s.branchStock))[0]?.quantity).toBe(20);
+    expect((await db().select().from(s.productVariants))[0]?.costPrice).toBe(
+      "5.00",
+    );
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "60.00",
+    );
+  });
+});
+
+describe("أمر الشراء النقدي يُسدَّد فوراً عند اعتماده — اعتمادٌ وصرفٌ بلا شاشةٍ ثانية (بلاغ المالك ٦/٩/٢٦، مُعدَّلٌ لاحقاً بقرارٍ صريح: لا تعقيد ولا خطوة ثانية)", () => {
+  beforeEach(async () => {
+    // تمويل خزينة الفرع — لازمٌ فقط لاختبارَي هذه المجموعة (تسوية نقدية فعلية)؛ خارج seed()
+    // المشتركة كي لا تُغيّر عدد صفوف receipts في اختبار المجموعة الأولى.
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: null,
+      cashBucket: "TREASURY",
+      direction: "IN",
+      amount: "5000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CASH-PO-TREASURY-FUND",
+      createdBy: 1,
+    });
+  });
+
+  async function submitCashOrder(clientRequestIdPrefix: string) {
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CASH",
+        clientRequestId: `${clientRequestIdPrefix}-draft`,
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      creator,
+    );
+    const submitted = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: draft.purchaseOrderId,
+        expectedVersion: draft.version,
+        reason: "اكتملت مراجعة أمر الشراء وأرسل للاعتماد",
+        clientRequestId: `${clientRequestIdPrefix}-submit`,
+      },
+      creator,
+    );
+    return { purchaseOrderId: draft.purchaseOrderId, requestId: submitted.requestId };
+  }
+
+  it("مديرٌ غير مالكٍ لا يستطيع اعتماد أمرٍ نقديّ — الصرف من الخزينة يلزمه حساب مالكٍ نشط، والاعتماد كلّه يتراجع", async () => {
+    const { purchaseOrderId, requestId } = await submitCashOrder("cash-nonowner");
+    await expect(
+      decidePurchaseOrderControl(
+        {
+          requestId,
+          decisionKey: `purchase-decision-PURCHASE_ORDER-${requestId}-approve-${randomUUID()}`,
+          approve: true,
+          reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+          confirmedFullReceipt: true,
+        },
+        approver, // manager عادي، ليس isOwner
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // تراجعٌ كامل وذرّيّ: لا فاتورة مورد، لا استلام، لا حركة مخزون، لا تغيّر في حالة الأمر.
+    expect(await db().select().from(s.supplierInvoices)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select({ status: s.purchaseOrders.status })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, purchaseOrderId))
+      )[0]?.status,
+    ).toBe("SENT");
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "0.00",
+    );
+  });
+
+  it("مالكٌ يعتمد الأمر النقدي فيُسدَّد فوراً ضمن نفس الاعتماد — بلا طلبٍ معلَّق وبلا ذمّةٍ تظهر من خارج المعاملة", async () => {
+    const { purchaseOrderId, requestId } = await submitCashOrder("cash-owner");
+    const approved = await decidePurchaseOrderControl(
+      {
+        requestId,
+        decisionKey: `purchase-decision-PURCHASE_ORDER-${requestId}-approve-${randomUUID()}`,
+        approve: true,
+        reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+        confirmedFullReceipt: true,
+      },
+      treasurer, // isOwner: true
+    );
+    expect(
+      (
+        await db()
+          .select({
+            status: s.purchaseOrders.status,
+            paidAmount: s.purchaseOrders.paidAmount,
+          })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, purchaseOrderId))
+      )[0],
+    ).toMatchObject({
+      status: "RECEIVED",
+      paidAmount: "60.00",
+    });
+
+    const [invoice] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.supplierId, 1));
+    expect(invoice).toMatchObject({ status: "POSTED", paymentGate: "SETTLED" });
+
+    // لا طلب سدادٍ معلَّق يظهر لأي مستخدم — الطلب والاعتماد وقعا معاً داخل معاملة الاعتماد نفسها.
+    const [request] = await db()
+      .select()
+      .from(s.supplierPaymentRequests)
+      .where(eq(s.supplierPaymentRequests.supplierId, 1));
+    expect(request).toMatchObject({
+      status: "APPROVED",
+      paymentMethod: "CASH",
+      requestedAmount: "60.00",
+    });
+
+    // الذمّة صفرٌ — لا ذمّة «مؤقّتة» ظاهرة، بلا حاجة لأي اعتمادٍ ثانٍ.
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "0.00",
+    );
+    // Codex (P1، ٦/٩): بلا purchaseOrderId هنا يظنّ getPurchaseIntegrityReport أنّ هذا الأمر
+    // النقديّ بلا أيّ تغطية دفعٍ فيبلغ CASH_RECEIVED_PAYMENT_COVERAGE_GAP حرجاً كاذباً.
+    const [paymentEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(paymentEntry).toMatchObject({
+      supplierId: 1,
+      amount: "60.00",
+      purchaseOrderId,
+    });
+
+    // Codex (P1، ٦/٩): شارة «مُسدَّدٌ فعلاً» في Purchases.tsx تُشتقّ من purchases.list.
+    // linkedCashPaidAmount — لا من settlementType+status وحدهما — فتثبت هنا أنّ الإشارة
+    // الحقيقية التي يعتمدها العمود تُغطّي الأمر بالكامل بعد التسوية الفورية.
+    const { purchaseRouter } = await import("../../routers/purchaseRouter");
+    const caller = purchaseRouter.createCaller({
+      req: { headers: {} } as never,
+      res: { cookie() {}, clearCookie() {} } as never,
+      user: {
+        id: treasurer.userId,
+        role: treasurer.role,
+        branchId: treasurer.branchId,
+        name: "معتمد الصرف",
+        email: "treasurer@test.local",
+        isActive: true,
+        isOwner: true,
+        permissionsOverride: null,
+      } as never,
+    });
+    const [listedOrder] = await caller.list({});
+    expect(listedOrder).toMatchObject({
+      id: purchaseOrderId,
+      settlementType: "CASH",
+      linkedCashPaidAmount: "60.00",
+    });
+  });
+
+  it("Codex P1 (٦/٩): أمرٌ نقديّ وصل RECEIVED **قبل** هذا الإصلاح (بلا أيّ صرفٍ مرتبط) لا يُعرَض مُسدَّداً — linkedCashPaidAmount يبقى صفراً رغم CASH+RECEIVED معاً", async () => {
+    // محاكاة بيانات ما قبل الإصلاح: تحديثٌ مباشر للحالة يتجاوز مسار الاعتماد التلقائي —
+    // بالضبط الحالة التي كانت الشارة القديمة (settlementType+status فقط) ستُسمّيها خطأً
+    // «مُسدَّدٌ فعلاً» بينما لا صرف حقيقياً وقع قطّ.
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CASH",
+        clientRequestId: "legacy-cash-received-draft",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      creator,
+    );
+    await db()
+      .update(s.purchaseOrders)
+      .set({ status: "RECEIVED" })
+      .where(eq(s.purchaseOrders.id, draft.purchaseOrderId));
+
+    const { purchaseRouter } = await import("../../routers/purchaseRouter");
+    const caller = purchaseRouter.createCaller({
+      req: { headers: {} } as never,
+      res: { cookie() {}, clearCookie() {} } as never,
+      user: {
+        id: treasurer.userId,
+        role: treasurer.role,
+        branchId: treasurer.branchId,
+        name: "معتمد الصرف",
+        email: "treasurer@test.local",
+        isActive: true,
+        isOwner: true,
+        permissionsOverride: null,
+      } as never,
+    });
+    const [listedOrder] = await caller.list({});
+    expect(listedOrder).toMatchObject({
+      id: draft.purchaseOrderId,
+      settlementType: "CASH",
+      status: "RECEIVED",
+      linkedCashPaidAmount: "0.00",
+    });
+  });
+
+  it("لا ينشئ أيّ طلب سداد لأمرٍ آجل", async () => {
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CREDIT",
+        clientRequestId: "credit-no-autopay-draft",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      creator,
+    );
+    const submitted = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: draft.purchaseOrderId,
+        expectedVersion: draft.version,
+        reason: "اكتملت مراجعة أمر الشراء وأرسل للاعتماد",
+        clientRequestId: "credit-no-autopay-submit",
+      },
+      creator,
+    );
+    await decidePurchaseOrderControl(
+      {
+        requestId: submitted.requestId,
+        decisionKey: `purchase-decision-PURCHASE_ORDER-${submitted.requestId}-approve-${randomUUID()}`,
+        approve: true,
+        reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+        confirmedFullReceipt: true,
+      },
+      approver,
+    );
+    expect(await db().select().from(s.supplierPaymentRequests)).toHaveLength(0);
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "60.00",
+    );
+  });
+});

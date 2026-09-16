@@ -32,9 +32,9 @@ describe("قوالب الأدوار الخمسة القديمة — توافق �
     expect(t.purchases).toBe("NONE");
     expect(t.reports).toBe("NONE");
   });
-  it("warehouse: purchases+inventory+suppliers FULL، pos NONE، products READ (لا FULL — صدق القالب #26)", () => {
+  it("warehouse: purchases READ، inventory+suppliers FULL، pos NONE، products READ (لا FULL — صدق القالب #26)", () => {
     const t = ROLE_TEMPLATES.warehouse;
-    expect(t.purchases).toBe("FULL");
+    expect(t.purchases).toBe("READ");
     expect(t.inventory).toBe("FULL");
     expect(t.suppliers).toBe("FULL");
     expect(t.pos).toBe("NONE");

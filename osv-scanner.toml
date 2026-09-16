@@ -1,0 +1,9 @@
+# Configuration for OSV-Scanner dependency audit
+
+[[IgnoredVulns]]
+id = "GHSA-82fw-gwwq-j7x9"
+reason = "Dev dependency test runner (vitest/mocker). Not exposed in production runtime."
+
+[[IgnoredVulns]]
+id = "GHSA-w5vr-8v7q-w6rv"
+reason = "Transitive build-time browser mapping data. Not exposed in production runtime."

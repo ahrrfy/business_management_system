@@ -1,3 +1,4 @@
+import { loadGuestTrackingOrders, rememberGuestTrackingOrder } from '@/lib/storefrontGuestTracking';
 import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -10,8 +11,6 @@ import {
   formatStorefrontReservationDeadline,
   getStorefrontCustomizationConfig,
   loadCheckoutAttempt,
-  loadGuestTrackingOrders,
-  rememberGuestTrackingOrder,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
   reconcileStorefrontCartPricing,
@@ -544,5 +543,14 @@ describe("storefront guest tracking ownership", () => {
     expect(source).toContain("trackOrderByToken.useMutation");
     expect(source).not.toContain("trackOrder.fetch");
     expect(source).toContain("quoteOrderPrivate.useMutation");
+  });
+});
+
+describe("storefront wholesale guidance", () => {
+  it("shows a cart action and explains that colours and units are accumulated", () => {
+    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    expect(source).toContain("quoteQ.data?.wholesaleProgress");
+    expect(source).toContain("تُحسب الألوان والوحدات لهذا المنتج معاً");
+    expect(source).toContain('setPanel("cart")');
   });
 });

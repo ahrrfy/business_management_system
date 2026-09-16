@@ -31,7 +31,7 @@ import { eq, sql } from "drizzle-orm";
 import type Decimal from "decimal.js";
 import { invoices } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { computeInvoiceStatus } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 
@@ -70,7 +70,7 @@ export async function allocateVoucherToInvoiceTx(
   // ⚠️ **الإنقاص مُستثنى دائماً**: هو ردٌّ أو عكسُ سندٍ مُلغى، ويجب أن يبقى ممكناً مهما صارت
   // حالة الفاتورة — وإلّا احتُجز مالٌ مخصَّصٌ لفاتورةٍ ماتت بلا أيّ مخرج (نقضٌ للمبدأ الحاكم:
   // كل مالٍ محتجَز يلزمه مسار خروجٍ ممكنٌ دائماً).
-  if (isCredit && isDeadInvoiceStatus(inv.status)) {
+  if (isCredit && isDeadInvoice(inv)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "لا يمكن تخصيص السند لفاتورة ملغاة أو مرتجعة أو مستبدَلة بمصحّحة",
@@ -109,7 +109,7 @@ export async function allocateVoucherToInvoiceTx(
    * فتحُ طلب إلغاءٍ أو تصحيحٍ أو استبدالٍ عليها وربطُ سندٍ جديدٍ بها.
    * الحالة النهائية ملكُ مسارها الذي أنشأها (`returnService`/`cancel`/`correct`) لا مسار السداد.
    */
-  const status = isDeadInvoiceStatus(inv.status)
+  const status = isDeadInvoice(inv)
     ? inv.status
     : computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
 

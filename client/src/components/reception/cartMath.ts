@@ -1,4 +1,5 @@
 import type { CustomizationData } from "@/components/CustomizationDialog";
+import type { DigitalCheckoutLineMeta } from "@/components/pos/digitalBasket";
 import type { ReceiptBrowserData, WorkOrderReceiptData } from "@/lib/printing/print";
 import type { RouterOutputs } from "@/lib/trpc";
 
@@ -41,6 +42,7 @@ export type CartLine = {
   disc?: number; // نسبة خصم
   custom?: CustomizationData; // إن كان مخصّصاً
   manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
+  digital?: DigitalCheckoutLineMeta;
 };
 
 // مبالغ سريعة بالقيمة الفعلية (د.ع). إصلاح P2 (٢٣/٦/٢٦): كان `setQuickAmt(v * 1000)` يجعل

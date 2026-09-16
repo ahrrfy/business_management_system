@@ -7,6 +7,20 @@ import {
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
+const readComponent = (relative: string) =>
+  readFileSync(new URL(`../../components/${relative}`, import.meta.url), "utf8");
+/**
+ * الكاشير (م١ PR-A): لوحة الدفع استُخرجت من `POS.tsx` إلى `components/pos/PaymentPanel.tsx` بلا
+ * تغيير سلوكيّ — العقد المحروس يمتدّ على الشاشة **ومكوّنها** معاً (أزرار الطريقة وحقل المرجع
+ * في المكوّن، والمحاولة الخارجية المؤكَّدة في الشاشة).
+ */
+const readRetailPos = () => readPage("POS.tsx") + "\n" + readComponent("pos/PaymentPanel.tsx");
+const readPrintPos = () =>
+  readPage("PrintPOS.tsx") +
+  "\n" +
+  readComponent("print-pos/PrintPosCheckout.tsx") +
+  "\n" +
+  readComponent("print-pos/PrintBottomToolbar.tsx");
 
 /**
  * العقد الحاكم للدفع غير النقدي في نقاط البيع:
@@ -32,7 +46,7 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   });
 
   it("الكاشير يُتيح البطاقة/التحويل/المحفظة ولا يفتح الإتمام قبل التأكيد الخادميّ", () => {
-    const source = readPage("POS.tsx");
+    const source = readRetailPos();
 
     expect(source).toContain('onClick={() => setMethod("CARD")}');
     expect(source).toContain('onClick={() => setMethod("TRANSFER")}');
@@ -47,12 +61,14 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   });
 
   it("شاشة المطبعة (PrintPOS) تتبع العقد نفسه", () => {
-    const source = readPage("PrintPOS.tsx");
+    const source = readPrintPos();
 
-    expect(source).toContain('<Method m="CARD" Icon={CreditCard} label="بطاقة" />');
-    expect(source).toContain('<Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />');
+    expect(source).toContain('onClick={() => setMethod("CARD")}');
+    expect(source).toContain('onClick={() => setMethod("TRANSFER")}');
     expect(source).toContain("externalPaymentConfirmed");
     expect(source).toContain("PaymentReferenceField");
+    // لا إقفال مبثوث: لا زرّ طريقةٍ مُعطَّلٌ بنصٍّ ثابت في الشاشة.
+    expect(source).not.toContain('disabled aria-describedby="pos-external-payment-disabled"');
   });
 
   it("تحصيل دفعة لاحقة على فاتورة يشتقّ طرقه من السياسة لا من نصٍّ ثابت", () => {

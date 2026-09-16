@@ -174,7 +174,7 @@ export default function ExchangeSettle() {
                 <option value={0}>— اختر —</option>
                 {usdOrders.map((p) => {
                   const rem = D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).minus(D(p.returnedUsd ?? 0)).toFixed(2);
-                  return <option key={p.id} value={p.id}>{p.poNumber} — متبقي {rem}$</option>;
+                  return <option key={p.id} value={p.id}>{p.poNumber} — متبقي {fmtAr(rem)}$</option>;
                 })}
               </AppSelect>
             </div>

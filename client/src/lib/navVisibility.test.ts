@@ -3,7 +3,7 @@
 // فتُظهر التبويب لكل الأدوار وإن رفضها الخادم بـ403؛ ولم تكن تستشير قالب الدور (المنح الصريح فقط).
 import { describe, expect, it } from "vitest";
 import { getMobileBottomNavItems } from "@/components/MobileBottomNav";
-import { canSeeGate, RECONCILE_CONTROL_GATE } from "./navVisibility";
+import { canSeeGate, INVOICE_CORRECTION_GATE, RECONCILE_CONTROL_GATE } from "./navVisibility";
 
 function mobileHrefs(
   role: string,
@@ -136,5 +136,15 @@ describe("تدقيق الدفتر المزدوج — مطابق لبوابة ا�
     expect(canSeeGate(RECONCILE_CONTROL_GATE, "manager", { reports: "FULL" })).toBe(false);
     expect(canSeeGate(RECONCILE_CONTROL_GATE, "accountant", { reports: "FULL" })).toBe(false);
     expect(canSeeGate(RECONCILE_CONTROL_GATE, "auditor", { reports: "FULL" })).toBe(false);
+  });
+});
+
+describe("بوابة تعديل الفاتورة", () => {
+  it("تتطلب قراءة المنتجات مع مبيعات كاملة أو استقبال كامل", () => {
+    expect(canSeeGate(INVOICE_CORRECTION_GATE, "cashier", { workorders: "FULL", products: "NONE" })).toBe(false);
+    expect(canSeeGate(INVOICE_CORRECTION_GATE, "cashier", { workorders: "FULL", products: "READ" })).toBe(true);
+    expect(canSeeGate(INVOICE_CORRECTION_GATE, "manager", { sales: "FULL", products: "NONE" })).toBe(false);
+    expect(canSeeGate(INVOICE_CORRECTION_GATE, "manager", { sales: "FULL", products: "READ" })).toBe(true);
+    expect(canSeeGate(INVOICE_CORRECTION_GATE, "admin", null)).toBe(true);
   });
 });

@@ -176,6 +176,16 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
     },
     onError: (error) => toast.error(error.message),
   });
+  const seedIraqi = trpc.statutoryAccounting.seedIraqiUnified.useMutation({
+    onSuccess: async ({ profileId: seededId, accountsImported, mappedAccounts, status }) => {
+      setProfileId(seededId);
+      await refresh();
+      toast.success(
+        `تم تثبيت الدليل المحاسبي الموحد العراقي (${accountsImported} حساباً، ${mappedAccounts} ربطاً آلياً) — الحالة: ${status === "ACTIVE" ? "نافذ" : "مسودة جاهزة للاعتماد"}.`,
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
 
   const current = profiles.data?.find((item) => item.id === profileId);
   const editable = canAdmin && current?.status === "DRAFT";
@@ -264,9 +274,12 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
             <div className="space-y-1"><Label>تاريخ النفاذ</Label><Input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} /></div>
             <div className="space-y-1 md:col-span-2"><Label>اسم الدليل</Label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
             <div className="space-y-1"><Label>مرجع الجهة أو التعليمات</Label><Input value={authorityReference} onChange={(e) => setAuthorityReference(e.target.value)} placeholder="رقم الكتاب وتاريخه" /></div>
-            <div className="md:col-span-3">
+            <div className="md:col-span-3 flex flex-wrap items-center gap-2">
               <Button disabled={createProfile.isPending || !authorityReference.trim()} onClick={() => createProfile.mutate({ profileKey, version, name, authorityReference, effectiveFrom })}>
                 إنشاء مسودة
+              </Button>
+              <Button variant="outline" disabled={seedIraqi.isPending} onClick={() => seedIraqi.mutate()}>
+                بذر الدليل المحاسبي الموحد العراقي تلقائياً
               </Button>
             </div>
           </CardContent>
@@ -546,7 +559,7 @@ function FinancialStatementsTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="max-w-full overflow-x-auto pb-1"><PeriodFilter value={period} onChange={setPeriod} /></div>
-        <Button disabled={!trial?.available || !income?.available || !balance?.available || trial.mode !== "ACTIVE"} onClick={exportAccountantPack}>
+        <Button disabled={!trial?.available || !income?.available || !balance?.available || trial.mode !== "ACTIVE" || trial.unmapped.lineCount > 0} onClick={exportAccountantPack}>
           <FileSpreadsheet className="size-4" aria-hidden />تصدير حزمة مراقب الحسابات
         </Button>
       </div>
@@ -555,6 +568,11 @@ function FinancialStatementsTab() {
       {trial?.available && trial.mode !== "ACTIVE" && (
         <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-base text-[var(--sem-warn)]">
           هذه أرقام معاينة من دورة SHADOW وليست قوائم رسمية. يتاح تصدير حزمة مراقب الحسابات بعد اجتياز بوابة ACTIVE فقط.
+        </div>
+      )}
+      {trial?.available && trial.unmapped.lineCount > 0 && (
+        <div className="rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-3 text-base text-[var(--sem-neg)]">
+          الدفتر يحوي {trial.unmapped.lineCount} سطراً مُرحَّلاً بلا حسابٍ نظاميّ ({fmtAr(trial.unmapped.debit)} مديناً / {fmtAr(trial.unmapped.credit)} دائناً) لا يظهر في الكشوفات أدناه — أكمِل ربط الأدوار بالخريطة النظامية المعتمدة؛ وتصدير الحزمة الرسمية محجوبٌ حتى يُعالَج (§٥: لا دينار يُسقَط صامتاً).
         </div>
       )}
       {trial?.available && income?.available && balance?.available && (

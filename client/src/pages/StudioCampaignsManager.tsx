@@ -475,8 +475,8 @@ export default function StudioCampaignsManager() {
                         {/* «+٧ أيام» للحملات المتأخّرة (٢٩/٨) — بدلاً من فتح محرّر
                             التفاصيل في الاستوديو، تمديدٌ سريع بضغطةٍ واحدة إلى وقتنا+٧د. */}
                         {dueClass === "overdue" && (status === "ACTIVE" || status === "PAUSED") && (
-                          <Button size="sm" variant="outline" className="min-h-9" disabled={updateDetails.isPending} onClick={() => extendDueBySevenDays(Number(c.id))} title="مدِّد موعد الاستحقاق ٧ أيام من الآن">
-                            <CalendarPlus aria-hidden className="size-4" /> +٧ أيام
+                          <Button size="sm" variant="outline" className="min-h-9" disabled={updateDetails.isPending} onClick={() => extendDueBySevenDays(Number(c.id))} title="مدِّد موعد الاستحقاق 7 أيام من الآن">
+                            <CalendarPlus aria-hidden className="size-4" /> +7 أيام
                           </Button>
                         )}
                         {(status === "DRAFT" || status === "ACTIVE" || status === "PAUSED") && (

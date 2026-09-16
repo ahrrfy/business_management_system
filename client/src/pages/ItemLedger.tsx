@@ -18,7 +18,6 @@ import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { LoadingState, ErrorState } from "@/components/PageState";
 
-import { TablePager } from "@/components/table/TablePager";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
@@ -383,19 +382,16 @@ export default function ItemLedger() {
               searchable={false}
               errorState={{ isError: ledger.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void ledger.refetch() }}
               emptyText="لا حركات لهذا المنتج في هذا النطاق."
+              /*
+               * الترقيم خادميّ حصراً (Codex P2 على PR #936): الصفحة الخادمية ١٠٠ صفّ
+               * والترقيمُ المحلّيّ الافتراضيّ ٥٠ ⇒ كان يشطر الصفحةَ الواحدة إلى صفحتَين
+               * بمُرقِّمٍ داخليّ، بينما المُرقِّم الخارجيّ يقفز ١٠٠ — فيتخطّى الصفوف ٥١-١٠٠
+               * **بصمت**. صار مُرقِّمٌ واحدٌ يقود الخادمَ وحدَه.
+               */
+              serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
             />
           )}
         </CardContent>
-        {picked && (
-          <TablePager
-            page={page}
-            onPageChange={setPage}
-            pageSize={PAGE_SIZE}
-            rowsOnPage={rows.length}
-            total={total}
-            isLoading={ledger.isFetching}
-          />
-        )}
       </Card>
     </ReportShell>
   );

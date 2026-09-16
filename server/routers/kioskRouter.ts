@@ -10,6 +10,7 @@
  *
  * المخرَج آمن للزبون (kioskService): بلا تكلفة ولا كمية مخزون ولا أسعار جملة/حكومي.
  */
+import { parse as parseCookie } from "cookie";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { asc, eq } from "drizzle-orm";
@@ -18,7 +19,9 @@ import { getDb } from "../db";
 import { getSessionCookieOptions } from "../cookies";
 import { KIOSK_COOKIE_NAME, KIOSK_TOKEN_TTL_MS, signKioskSession } from "../auth/kioskSession";
 import { logAudit } from "../services/auditService";
-import { kioskBanner, kioskLookup } from "../services/kioskService";
+import { kioskBanner, kioskLookup, kioskPromotions } from "../services/kioskService";
+import { barcodeString } from "../lib/schemas";
+import { appErrorMessage } from "@shared/errors";
 import {
   createKioskDevice,
   deleteKioskDevice,
@@ -27,21 +30,35 @@ import {
   resolveKioskDevice,
   rotateKioskDevice,
   setKioskDeviceActive,
+  updateKioskDevice,
 } from "../services/kioskDeviceService";
-import { adminProcedure, middleware, publicProcedure, router } from "../trpc";
+import { adminProcedure, middleware, publicProcedure, router, settingsAdminProcedure } from "../trpc";
 
 /**
  * وسيط القراءة: يُمرّر المستخدم المسجَّل كما هو (deviceBranchId=null ⇒ يُستعمل branchId من المدخل)،
  * أو يحلّ جهاز الكشك من الكوكي فيفرض فرعه، أو يسمح بالوصول العام (بلا مصادقة — قارئ الأسعار)
  * حيث يجب أن يُرسل العميل branchId صراحةً.
+ * إن وُجد كوكي جهاز لكنّه فشل في التحقق (ملغى/مُدوَّر/فرع معطّل) ⇒ يُرفض فوراً بـUNAUTHORIZED لمنع الالتفاف.
  */
 const kioskRead = middleware(async ({ ctx, next }) => {
   if (ctx.user) {
     return next({ ctx: { ...ctx, deviceBranchId: null as number | null } });
   }
+  const cookies = parseCookie(ctx.req.headers.cookie ?? "");
+  const hasKioskCookie = Boolean(cookies[KIOSK_COOKIE_NAME]);
   const device = await resolveKioskDevice(ctx.req);
   if (device) {
     return next({ ctx: { ...ctx, deviceBranchId: device.branchId as number | null } });
+  }
+  if (hasKioskCookie) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: appErrorMessage({
+        what: "تعذّر التحقق من جلسة جهاز الكشك",
+        why: "رمز الجهاز غير صالح أو تم إلغاؤه من قبل الإدارة",
+        doThis: "أعد تفعيل الجهاز برمز صالح جديد من شاشة إدارة الأجهزة",
+      }),
+    });
   }
   // وصول عام (قارئ الأسعار بلا دخول) — branchId من المدخل إلزامي
   return next({ ctx: { ...ctx, deviceBranchId: null as number | null } });
@@ -78,8 +95,13 @@ export const kioskRouter = router({
 
   /** بحث سعر بالباركود (المسح). يعيد null إن لم يُعرَف الباركود. */
   lookup: kioskReadProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional(), barcode: z.string().min(1).max(64) }))
+    .input(z.object({ branchId: z.number().int().positive().optional(), barcode: barcodeString }))
     .query(({ input, ctx }) => kioskLookup(input.barcode, effectiveBranchId(ctx.deviceBranchId, input.branchId))),
+
+  /** البنرات الإعلانية والترويجية الفعّالة لشاشة الكشك. */
+  promotions: kioskReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(({ input, ctx }) => kioskPromotions(ctx.deviceBranchId ?? input?.branchId ?? null)),
 
   // ───────────────────────── مصادقة الجهاز الخارجي ─────────────────────────
 
@@ -109,10 +131,12 @@ export const kioskRouter = router({
       return { ok: true as const, branchId: r.branchId, branchName: r.branchName, label: r.label };
     }),
 
-  /** حالة الجهاز الحالي من الكوكي (لصفحة /kiosk). null = غير مُصرَّح. */
+  /** حالة الجهاز الحالي من الكوكي (لصفحة /kiosk) مع تجديد تلقائي للكوكي. null = غير مُصرَّح. */
   deviceMe: publicProcedure.query(async ({ ctx }) => {
     const device = await resolveKioskDevice(ctx.req);
     if (!device) return null;
+    const token = await signKioskSession(device.deviceId, device.branchId, device.tokenPrefix);
+    ctx.res.cookie(KIOSK_COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: KIOSK_TOKEN_TTL_MS });
     return {
       deviceId: device.deviceId,
       branchId: device.branchId,
@@ -145,6 +169,26 @@ export const kioskRouter = router({
           newValue: { branchId: input.branchId, label: input.label, tokenPrefix: r.tokenPrefix },
         });
         return { id: r.id, rawToken: r.rawToken, tokenPrefix: r.tokenPrefix };
+      }),
+
+    /** تعديل اسم الجهاز أو فرعه المربوط. */
+    update: settingsAdminProcedure
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          label: z.string().trim().min(1).max(120).optional(),
+          branchId: z.number().int().positive().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        await updateKioskDevice(input.id, { label: input.label, branchId: input.branchId });
+        await logAudit(ctx, {
+          action: "kiosk.device.update",
+          entityType: "kioskDevice",
+          entityId: input.id,
+          newValue: { label: input.label, branchId: input.branchId },
+        });
+        return { ok: true as const };
       }),
 
     /** تدوير الرمز ⇒ رمز خام جديد (يُبطل القديم فوراً). */

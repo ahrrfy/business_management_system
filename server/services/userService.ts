@@ -44,6 +44,7 @@ import { logAuditTx } from "./auditService";
 import { assertCanAdministerUser } from "./userAdminPolicy";
 import { notifyAdminsOfSessionEvent } from "./sessionEventNotifier";
 import { revokeAllNativePushDevicesForUser } from "./nativePushService";
+import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
 
 export type Role = typeof ALL_ROLES[number];
 
@@ -459,7 +460,7 @@ export async function deleteUser(userId: number, actor: Actor) {
 
 /** تفعيل/تعطيل مستخدم. */
 export async function setUserActive(userId: number, isActive: boolean, actor: Actor) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const u = (await tx.select().from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
     if (!!u.isActive === isActive) {
@@ -502,6 +503,13 @@ export async function setUserActive(userId: number, isActive: boolean, actor: Ac
     await tx.update(users).set({ isActive: true }).where(eq(users.id, userId));
     return { userId, isActive: true };
   });
+  if (!result.isActive) {
+    await Promise.allSettled([
+      revokeAllNativePushDevicesForUser(result.userId),
+      revokeAllSuperAppExpoPushDevicesForUser(result.userId),
+    ]);
+  }
+  return result;
 }
 
 /** إعادة تعيين كلمة مرور (بواسطة مدير) — يضبط إلزام التغيير + انتهاء 72 ساعة. */
@@ -511,7 +519,7 @@ export async function resetUserPassword(
   actor: Actor,
   options?: { mustChange?: boolean }
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     assertPasswordPolicy(newPassword);
     const u = (await tx.select({ id: users.id, role: users.role, isOwner: users.isOwner }).from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
@@ -542,6 +550,11 @@ export async function resetUserPassword(
       );
     return { userId, success: true };
   });
+  await Promise.allSettled([
+    revokeAllNativePushDevicesForUser(result.userId),
+    revokeAllSuperAppExpoPushDevicesForUser(result.userId),
+  ]);
+  return result;
 }
 
 /**
@@ -550,7 +563,7 @@ export async function resetUserPassword(
  * بـ`iat` أكبر تماماً منها فلا يُطرَد (انظر getUserFromRequest: `iat <= validFromSec` يُرفض).
  */
 export async function changePassword(userId: number, oldPassword: string, newPassword: string) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const u = (await tx.select().from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
     if (!(await verifyPassword(oldPassword, u.passwordHash))) {
@@ -579,6 +592,11 @@ export async function changePassword(userId: number, oldPassword: string, newPas
       );
     return { userId, success: true, validFrom };
   });
+  await Promise.allSettled([
+    revokeAllNativePushDevicesForUser(result.userId),
+    revokeAllSuperAppExpoPushDevicesForUser(result.userId),
+  ]);
+  return result;
 }
 
 /**
@@ -606,7 +624,10 @@ export async function revokeUserSessions(userId: number, _actor: Actor) {
   // فالخادم مسؤولٌ عن ذلك بنفسه. خارج المعاملة لأنّ nativePushService يستعمل pool مباشرةً؛
   // fail-open كي لا يُلغى الإبطالُ الرئيسيّ لعطلٍ في قناةٍ ثانوية.
   try {
-    await revokeAllNativePushDevicesForUser(outcome.userId);
+    await Promise.allSettled([
+      revokeAllNativePushDevicesForUser(outcome.userId),
+      revokeAllSuperAppExpoPushDevicesForUser(outcome.userId),
+    ]);
   } catch {
     /* ignore — تسجيلُ الأثر يتكفّل به مسار المخارج */
   }

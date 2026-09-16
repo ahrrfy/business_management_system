@@ -9,7 +9,7 @@ import {
 } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { withTx } from "../tx";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
 
 export interface CancelDeliveryAssignmentInput {
@@ -173,6 +173,7 @@ export async function cancelDeliveryAssignment(
       });
     }
 
+    assertConsignmentStatusTransition(cn.status, "CANCELLED");
     await tx
       .update(deliveryConsignments)
       .set({

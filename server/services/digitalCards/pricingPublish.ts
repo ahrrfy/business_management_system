@@ -12,6 +12,8 @@ import {
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import type { Actor } from "../tx";
+import { resolveApprovalActor } from "../approval/ownerGate";
+import { approveBigChange } from "./pricingDraft";
 import {
   activeOfferings,
   auditLog,
@@ -134,15 +136,21 @@ export async function publish(
     new Map(priced.map((p) => [p.offeringId, p.sellPrice])),
   );
   if (bigChanges.length > 0) {
-    const approvedBy = batch.bigChangeApprovedBy != null ? Number(batch.bigChangeApprovedBy) : null;
+    let approvedBy = batch.bigChangeApprovedBy != null ? Number(batch.bigChangeApprovedBy) : null;
     if (approvedBy == null) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message:
-          `${bigChanges.length} بطاقة تغيّرت حصتها ≥${BIG_CHANGE_THRESHOLD_PERCENT}% عن السعر النافذ ` +
-          `(${bigChanges.slice(0, 3).map((b) => `${b.name}: ${b.changePercent}%`).join("، ")}` +
-          `${bigChanges.length > 3 ? "…" : ""}) — يلزم اعتماد مديرٍ آخر قبل النشر.`,
-      });
+      const resolvedActor = await resolveApprovalActor(tx, actor);
+      if (resolvedActor.isOwner) {
+        await approveBigChange(tx, { batchId: input.batchId }, resolvedActor);
+        approvedBy = resolvedActor.userId;
+      } else {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            `${bigChanges.length} بطاقة تغيّرت حصتها ≥${BIG_CHANGE_THRESHOLD_PERCENT}% عن السعر النافذ ` +
+            `(${bigChanges.slice(0, 3).map((b) => `${b.name}: ${b.changePercent}%`).join("، ")}` +
+            `${bigChanges.length > 3 ? "…" : ""}) — يلزم اعتماد مديرٍ آخر قبل النشر.`,
+        });
+      }
     }
     if (approvedBy === Number(batch.createdBy)) {
       const [approver] = await tx

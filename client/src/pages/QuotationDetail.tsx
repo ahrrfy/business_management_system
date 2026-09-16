@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { Download } from "lucide-react";
+import { downloadOfficialPdf } from "@/lib/exportPdf";
 import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
@@ -19,7 +21,9 @@ import { getDeviceCode } from "@/lib/offline/outbox";
 import { allocateLineTax } from "@/components/invoice";
 import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
-import { trpc } from "@/lib/trpc";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey,
 } from "@shared/permissions";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
@@ -27,6 +31,12 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { paymentMethodTermOptions } from "@shared/terms";
+import {
+  INBOUND_ENABLED_PAYMENT_METHODS,
+  type InboundEnabledPaymentMethod,
+} from "@shared/inboundPaymentPolicy";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -38,6 +48,37 @@ const STATUS: Record<string, string> = {
 };
 const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي",
 };
+
+/** صفُّ بند عرض السعر — مشتقٌّ من عقد `quotations.get`. */
+type QuotationItemRow = NonNullable<RouterOutputs["quotations"]["get"]>["items"][number];
+
+/**
+ * أعمدة بنود عرض السعر. دالّة لا ثابت لأنّ ذيل «مجموع البنود» يحمل مجموع المستند —
+ * ولأنّ الشاشة تخرج مبكّراً قبل توفّر البيانات فلا يصحّ بناؤها بـuseMemo بعد ذلك الخروج.
+ */
+function quotationItemColumns(subtotal: string): ColumnDef<QuotationItemRow, unknown>[] {
+  return [
+    {
+      id: "product",
+      header: "المنتج",
+      accessorFn: (it) => `${it.productName}${it.variantName ? ` — ${it.variantName}` : ""}`,
+      meta: { width: "wide", wrap: true },
+      footer: "مجموع البنود",
+      cell: ({ row }) => (
+        <span>
+          {row.original.productName}{row.original.variantName ? ` — ${row.original.variantName}` : ""}{" "}
+          {row.original.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{row.original.sku}</span>}
+        </span>
+      ),
+    },
+    { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName, cell: ({ row }) => <span className="text-muted-foreground">{row.original.unitName}</span> },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => it.quantity, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.quantity },
+    // `accessorFn` نصُّ العرض (للنسخ) ⇒ `sortingFn` صريحٌ بـDecimal: الفرز الافتراضيّ نصّيّ
+    // فيقرأ «1,234» أصغر من «999» ويقلب ترتيب البنود.
+    { id: "unitPrice", header: "سعر الوحدة", accessorFn: (it) => fmt(it.unitPrice), meta: { kind: "money" }, sortingFn: (a, b) => D(a.original.unitPrice).cmp(D(b.original.unitPrice)), cell: ({ row }) => fmt(row.original.unitPrice) },
+    { id: "total", header: "الإجمالي", accessorFn: (it) => fmt(it.total), meta: { kind: "money" }, sortingFn: (a, b) => D(a.original.total).cmp(D(b.original.total)), footer: fmt(subtotal), cell: ({ row }) => fmt(row.original.total) },
+  ];
+}
 const STATUS_CLS: Record<string, string> = {
   DRAFT: "bg-muted text-foreground/70",
   SENT: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
@@ -46,13 +87,14 @@ const STATUS_CLS: Record<string, string> = {
   CONVERTED: "bg-violet-100 text-violet-700",
   EXPIRED: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
 };
-const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string;
-}[] = [
-  { v: "CASH", label: "نقدي" },
-  { v: "TRANSFER", label: "تحويل" },
-  { v: "CARD", label: "بطاقة" },
-  { v: "WALLET", label: "محفظة" },
-];
+/**
+ * وصلُ برنامج v2 §٦ ق٦ (٤/٩/٢٦): خياراتُ طريقة الدفع من `shared/terms.ts` مباشرة —
+ * كانت مصفوفةً محلّية بأربعة عناصر تنجرف مع نسخ الشاشات الأخرى (`نقدي`/`نقداً` مثالاً حيّ).
+ * السياسةُ الحاكمة `INBOUND_ENABLED_PAYMENT_METHODS` (CASH/CARD/TRANSFER/WALLET) — لا
+ * CHECK ولا TELECOM في مسار القبض بقرار المالك. حارس `check:vocabulary`.
+ */
+const METHODS = paymentMethodTermOptions(INBOUND_ENABLED_PAYMENT_METHODS);
+type QuotationPayMethod = InboundEnabledPaymentMethod;
 /** حقل وصفي: عنوان صغير + قيمة. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -94,7 +136,7 @@ export default function QuotationDetail() {
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [payMethod, setPayMethod] = useState<QuotationPayMethod>("CASH");
   const [payReference, setPayReference] = useState("");
 
   const [externalAttempt, setExternalAttempt] = useState<{
@@ -116,6 +158,12 @@ export default function QuotationDetail() {
     onSuccess: async () => { setDone("تم تحديث الحالة."); setError(""); await refresh(); },
     onError: (e) => { setError(e.message); setDone(""); },
   });
+  // «مُرسَل» يصف تسليم العرض للعميل فعلاً، لا فتح نافذة واتساب أو إنشاء PDF فقط.
+  // هذا يظل انتقالَ حالةٍ وثائقيّاً فقط؛ البيع/المخزون لا يبدأان إلا من convert الصريح لاحقاً.
+  const markQuotationSentAfterDelivery = () => {
+    if (q.data?.status !== "DRAFT" || !canManage) return;
+    setStatus.mutate({ quotationId, status: "SENT" });
+  };
   const convert = trpc.quotations.convert.useMutation({
     onSuccess: async (r) => {
       setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل إلى الفاتورة رقم ${r.invoiceNumber ?? r.invoiceId}.`,
@@ -127,7 +175,7 @@ export default function QuotationDetail() {
   });
 
   if (q.isLoading) return (
-      <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>
+      <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
     );
   if (!q.data) return (
       <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>
@@ -283,40 +331,17 @@ export default function QuotationDetail() {
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">البنود</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium text-start">المنتج</th>
-                  <th className="px-3 py-2 font-medium text-start">الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-center">الكمية</th>
-                  <th className="px-3 py-2 font-medium text-right">سعر الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-right">الإجمالي</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((it) => (
-                  <tr key={it.id} className="border-t hover:bg-muted/30">
-                    <td className="px-3 py-2">{it.productName}{it.variantName ? ` — ${it.variantName}` : ""}{" "}
-                      {it.sku && (
-                        <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-muted-foreground">{it.unitName}</td>
-                    <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(it.total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 bg-muted/40 font-semibold">
-                  <td className="px-3 py-2" colSpan={4}>مجموع البنود</td>
-                  <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(data.subtotal)}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+          {/* بنود المستند: مُضمَّن (العنوان في رأس البطاقة) وبلا ترقيم — المستند يُقرأ كاملاً.
+              صفّ «مجموع البنود» صار `footer` على الأعمدة فيقع تحت عمود الإجمالي مباشرةً. */}
+          <DataTable<QuotationItemRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={quotationItemColumns(data.subtotal)}
+            data={data.items}
+            emptyText="لا بنود في عرض السعر."
+          />
         </CardContent>
       </Card>
 
@@ -324,6 +349,9 @@ export default function QuotationDetail() {
         <Card>
           <CardHeader><CardTitle className="text-base">تحويل لفاتورة</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <p className="md:col-span-3 text-sm text-muted-foreground">
+              قبول العرض يثبت موافقة العميل فقط؛ لا ينشئ فاتورة ولا يحجز مخزوناً. أنشئ البيع صراحةً من هذا القسم عند الجاهزية.
+            </p>
             <div className="space-y-1">
               <Label>دفعة عند التحويل (اختياري)</Label>
               <MoneyInput value={payAmount} onChange={setPayAmount} placeholder={data.customerName ? "اتركه فارغاً = آجل" : `أقل من ${fmt(data.total)} يتطلّب عميلاً`} />
@@ -340,7 +368,7 @@ export default function QuotationDetail() {
                 }}
               >
                 {METHODS.map((m) => (
-                  <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>
+                  <option key={m.value} value={m.value} disabled={!isPosPaymentMethodEnabled(m.value)}>{m.compact}</option>
                 ))}
               </AppSelect>
             </div>
@@ -492,6 +520,20 @@ export default function QuotationDetail() {
           </Button>
         )}
         <Button variant="outline" onClick={printQuote}>طباعة العرض</Button>
+        <Button
+          variant="outline"
+          onClick={() =>
+            downloadOfficialPdf({
+              kind: "QUOTATION",
+              documentId: quotationId,
+              documentNumber: data.quoteNumber,
+              fetcher: (params) => utils.client.documentDelivery.downloadPdf.mutate(params),
+            })
+          }
+        >
+          <Download aria-hidden className="size-4" />
+          تنزيل PDF
+        </Button>
         <CopyAsMenu
           label="نسخ العرض"
           plain={data.quoteNumber}
@@ -520,6 +562,7 @@ export default function QuotationDetail() {
           customerName={data.customerName}
           defaultPhone={data.customerPhone}
           autoOpen={new URLSearchParams(search).get("share") === "1"}
+          onDocumentSent={markQuotationSentAfterDelivery}
           fallbackMessage={buildQuotationMessage({
             quoteNumber: data.quoteNumber,
             quoteDate: data.quoteDate ? String(data.quoteDate) : undefined,

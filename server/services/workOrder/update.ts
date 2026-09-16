@@ -5,7 +5,7 @@ import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";
-import { appliedCollectionsForWorkOrder } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder } from "../deposits";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 
 export interface UpdateWorkOrderInput {

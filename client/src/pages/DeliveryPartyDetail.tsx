@@ -6,27 +6,57 @@
 // → توريدات → كشف حساب حيّ (يشمل أمانات الأجرة التي كان الكشف المطبوع يُسقطها صامتاً)
 // → بيانات الجهة وتعديلها (سقف العهدة كان غير قابل للضبط من أي شاشة = حارس ميت).
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Banknote, PackageOpen, Printer, Truck, X } from "lucide-react";
+import { AlertTriangle, Ban, Banknote, PackageOpen, Printer, Truck, Wallet, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
+import { CollectConsignmentDialog, type TargetConsignment } from "@/components/delivery/CollectConsignmentDialog";
+import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
+import { balanceDirection } from "@shared/predicates";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type PartyRow = RouterOutputs["delivery"]["listParties"][number];
 type StatementEntry = NonNullable<RouterOutputs["delivery"]["partyStatement"]>["entries"][number];
+type ConsignmentRow = NonNullable<RouterOutputs["delivery"]["consignments"]>["rows"][number];
+type RemittanceRow = RouterOutputs["delivery"]["remittances"][number];
+
+/**
+ * عمود مبلغ. `accessorFn` يُرجع النصّ المعروض (للنسخ)، و`sortingFn` رقميّ صريح بـDecimal
+ * لأنّ الفرز الافتراضيّ يقارن نصّاً فيه فواصل آلاف («1,234» قبل «999») فيقلب ترتيب الذمم.
+ */
+function moneyCol<T>(
+  id: string,
+  header: string,
+  get: (r: T) => string | number | null | undefined,
+  display?: (r: T) => string,
+  cls?: (r: T) => string | undefined,
+): ColumnDef<T, unknown> {
+  return {
+    id,
+    header,
+    accessorFn: (r) => (display ? display(r) : fmt(get(r))),
+    meta: { kind: "money" },
+    sortDescFirst: true,
+    sortingFn: (a, b) => D(get(a.original) ?? 0).cmp(D(get(b.original) ?? 0)),
+    cell: ({ row }) => <span className={cls?.(row.original)}>{display ? display(row.original) : fmt(get(row.original))}</span>,
+  };
+}
 
 const CN_STATUS: Record<string, { label: string; cls: string }> = {
   NOT_APPLICABLE: { label: "لا تحصيل", cls: "bg-muted text-muted-foreground" },
@@ -102,6 +132,9 @@ function buildStatementRows(entries: StatementEntry[]) {
   return { rows, totDispatch, totSettled, totFees, heldNet, closing: bal };
 }
 
+/** صفُّ كشف الحساب — مشتقٌّ من بانيه فلا ينجرف عنه. */
+type StatementRow = ReturnType<typeof buildStatementRows>["rows"][number];
+
 export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
   party: PartyRow;
   onClose: () => void;
@@ -117,8 +150,16 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
     "FULL",
     ["manager"],
   );
+  const canSettle = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
+    "store",
+    "FULL",
+    ["cashier", "manager"],
+  );
   const canRecover = canManageParty;
   const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "commission" | "settings">("consignments");
+  const [showCollectModal, setShowCollectModal] = useState(false);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-sm md:p-8" dir="rtl" onClick={onClose}>
@@ -134,10 +175,31 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
             {party.phone && <div className="mt-1 text-xs text-muted-foreground" dir="ltr">{party.phone}</div>}
           </div>
           <div className="flex items-center gap-2">
+            <WhatsAppStageActionsMenu
+              data={{
+                courierName: party.name,
+                courierPhone: party.phone,
+                totalSettlementCod: party.currentBalance,
+                openConsignmentsCount: 1,
+              }}
+              target="courier"
+              size="sm"
+              label="رسائل واتساب للمندوب"
+            />
             <div className="rounded-lg border px-3 py-1.5 text-sm">
               <span className="text-muted-foreground">نقد بذمّتها: </span>
-              <b className={cn("tabular-nums", Number(party.currentBalance) > 0 ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
+              <b className={cn("tabular-nums", balanceDirection(party, "deliveryParty") === "receivable" ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
             </div>
+            {canSettle && (
+              <Button
+                size="sm"
+                className="gap-1.5 font-bold"
+                onClick={() => setShowCollectModal(true)}
+                title="قبض النقد من المندوب وتصفير رصيده بسند توريد فوري"
+              >
+                <Wallet aria-hidden className="size-4" /> قبض الرصيد وتصفير الذمة
+              </Button>
+            )}
             <StoreInTransitChip partyId={party.id} />
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="إغلاق"><X aria-hidden className="size-4" /></Button>
           </div>
@@ -160,6 +222,19 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
         {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={canManageParty} />}
         {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={canManageParty} />}
         {tab === "settings" && <SettingsTab party={party} canManage={canManageParty} canRecover={canRecover} onChanged={onChanged} />}
+
+        {showCollectModal && (
+          <CollectConsignmentDialog
+            partyId={party.id}
+            partyName={party.name}
+            open={showCollectModal}
+            onOpenChange={setShowCollectModal}
+            onCompleted={() => {
+              setShowCollectModal(false);
+              onChanged();
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -304,6 +379,8 @@ function StoreInTransitChip({ partyId }: { partyId: number }) {
 // ───────────────────────── الإرساليات والفواتير ─────────────────────────
 function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
   const [openOnly, setOpenOnly] = useState(false);
+  const [collectConsignmentTarget, setCollectConsignmentTarget] = useState<ConsignmentRow | null>(null);
+  const [cancelConsignmentTarget, setCancelConsignmentTarget] = useState<{ id: number; number: string } | null>(null);
   const q = trpc.delivery.consignments.useQuery({ partyId, openOnly });
   const members = trpc.delivery.partyMembers.useQuery({ partyId });
   const utils = trpc.useUtils();
@@ -314,97 +391,220 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
   const list = q.data?.rows ?? [];
   const listHasMore = q.data?.hasMore ?? false;
   const drivers = (members.data ?? []).filter((m) => m.isActive && m.memberRole === "DRIVER");
+  // الأعمدة تُغلِق على طفرة إعادة الإسناد وقائمة السائقين ⇒ تُبنى في كل تصيير (بلا تجميد يُقادم الحالة).
+  const columns: ColumnDef<ConsignmentRow, unknown>[] = [
+    {
+      id: "actions",
+      header: "الإجراءات",
+      enableSorting: false,
+      meta: { kind: "actions", align: "start" },
+      cell: ({ row }) => {
+        const c = row.original;
+        const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
+        const canRemit = c.parcelStatus === "DELIVERED" && c.moneyStatus !== "SETTLED" && remaining > 0;
+        const canCancel = (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && Number(c.collectedAmount ?? 0) === 0;
+        return (
+          <div className="flex items-center gap-1">
+            {canRemit && (
+              <Button
+                size="sm"
+                variant="default"
+                className="h-7 px-2 text-xs font-bold gap-1"
+                onClick={() => setCollectConsignmentTarget(c)}
+                title="قبض وتحصيل هذا الطرد فوراً"
+              >
+                <Wallet aria-hidden className="size-3" /> سجّل التحصيل
+              </Button>
+            )}
+            {canEdit && canCancel && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={() => setCancelConsignmentTarget({ id: Number(c.id), number: c.consignmentNumber })}
+                title="إلغاء إسناد الطرد للمندوب وتحرير العهدة"
+              >
+                <Ban aria-hidden className="size-3" /> إلغاء الإسناد
+              </Button>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: "consignmentNumber",
+      header: "الإرسالية",
+      accessorFn: (c) => c.consignmentNumber,
+      meta: { kind: "code" },
+      cell: ({ row }) => <span className="text-xs">{row.original.consignmentNumber}</span>,
+    },
+    {
+      id: "invoice",
+      header: "الفاتورة",
+      accessorFn: (c) => (c.invoiceId ? (c.invoiceNumber ?? "#" + c.invoiceId) : "—"),
+      meta: { kind: "code" },
+      cell: ({ row }) =>
+        row.original.invoiceId ? (
+          <a className="text-xs text-primary hover:underline" dir="ltr" href={"/invoices/" + row.original.invoiceId}>
+            {row.original.invoiceNumber ?? "#" + row.original.invoiceId}
+          </a>
+        ) : (
+          "—"
+        ),
+    },
+    {
+      id: "customer",
+      header: "العميل/المستلم",
+      accessorFn: (c) => c.customerName ?? c.recipientName ?? "عميل نقدي",
+      meta: { width: "wide" },
+      cell: ({ row }) => row.original.customerName ?? row.original.recipientName ?? "عميل نقدي",
+    },
+    moneyCol<ConsignmentRow>("cod", "COD", (c) => c.codAmount),
+    moneyCol<ConsignmentRow>("collected", "المقبوض", (c) => c.collectedAmount),
+    moneyCol<ConsignmentRow>(
+      "remaining",
+      "المتبقي",
+      (c) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount)),
+      undefined,
+      (c) => (Math.max(0, Number(c.codAmount) - Number(c.collectedAmount)) > 0 ? "font-bold text-destructive" : "font-bold"),
+    ),
+    {
+      id: "moneyStatus",
+      header: "حالة التسوية",
+      accessorFn: (c) => CN_STATUS[c.moneyStatus]?.label ?? c.moneyStatus,
+      meta: { kind: "status" },
+      cell: ({ row }) => {
+        const st = CN_STATUS[row.original.moneyStatus] ?? { label: row.original.moneyStatus, cls: "bg-muted" };
+        return <span className={cn("rounded px-2 py-0.5 text-xs font-bold", st.cls)}>{st.label}</span>;
+      },
+    },
+    {
+      id: "parcelStatus",
+      header: "التسليم للعميل",
+      accessorFn: (c) => PARCEL_STATUS[c.parcelStatus] ?? c.parcelStatus,
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <div className="text-xs">
+          <Badge variant={row.original.parcelStatus === "DELIVERED" ? "success" : row.original.parcelStatus === "FAILED" ? "danger" : "info"}>
+            {PARCEL_STATUS[row.original.parcelStatus] ?? row.original.parcelStatus}
+          </Badge>
+          {row.original.courierDeliveredAt && <div className="mt-1 text-money-positive">{fmtDate(row.original.courierDeliveredAt)}</div>}
+        </div>
+      ),
+    },
+    {
+      id: "driver",
+      header: "السائق والحركة",
+      accessorFn: (c) => c.assignedUserName ?? "طابور الشركة المشترك",
+      meta: { width: "wide", wrap: true },
+      enableSorting: false,
+      cell: ({ row }) => {
+        const c = row.original;
+        return (
+          <div className="text-xs">
+            <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
+            {c.failureReason && <div className="mb-1 text-destructive">{c.failureReason}</div>}
+            {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && (
+              <AppSelect
+                value={String(c.assignedUserId ?? "")}
+                disabled={reassignM.isPending}
+                onValueChange={(next) => reassignM.mutate({
+                  partyId,
+                  consignmentId: Number(c.id),
+                  assignedUserId: next ? Number(next) : null,
+                  clientRequestId: crypto.randomUUID(),
+                })}
+                className="px-2 py-1"
+              >
+                <option value="">مشترك لكل السائقين</option>
+                {drivers.map((d) => <option key={d.userId} value={d.userId}>{d.name ?? d.username ?? "#" + d.userId}</option>)}
+              </AppSelect>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: "dispatchedAt",
+      header: "ارسلت",
+      accessorFn: (c) => (c.dispatchedAt ? fmtDate(c.dispatchedAt) : "—"),
+      meta: { kind: "date" },
+      cell: ({ row }) => (row.original.dispatchedAt ? fmtDate(row.original.dispatchedAt) : "—"),
+    },
+    {
+      id: "remittanceNumber",
+      header: "التوريد",
+      accessorFn: (c) => c.remittanceNumber ?? "—",
+      meta: { kind: "code" },
+      cell: ({ row }) =>
+        row.original.remittanceNumber ? (
+          <span className="text-xs">{row.original.remittanceNumber}</span>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        ),
+    },
+  ];
   return (
     <div className="space-y-3">
       <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
         المالية المفتوحة فقط (غير مسوّاة / مسوّاة جزئياً)
       </label>
-      {q.isLoading ? (
-        <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-      ) : list.length === 0 ? (
-        <EmptyState icon={PackageOpen} title="لا إرساليات" description="لم تُسنَد لهذه الجهة إرساليات بعد." />
-      ) : (
-        <ScrollTableShell className="bg-card">
-          <table className="w-full text-sm">
-            <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
-              <tr>
-                <th className="p-2.5 text-right">الإرسالية</th>
-                <th className="p-2.5 text-right">الفاتورة</th>
-                <th className="p-2.5 text-right">العميل/المستلم</th>
-                <th className="p-2.5 text-left">COD</th>
-                <th className="p-2.5 text-left">المقبوض</th>
-                <th className="p-2.5 text-left">المتبقي</th>
-                <th className="p-2.5 text-center">حالة التسوية</th>
-                <th className="p-2.5 text-center">التسليم للعميل</th>
-                <th className="p-2.5 text-right">السائق والحركة</th>
-                <th className="p-2.5 text-right">ارسلت</th>
-                <th className="p-2.5 text-right">التوريد</th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.map((c) => {
-                const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
-                const st = CN_STATUS[c.moneyStatus] ?? { label: c.moneyStatus, cls: "bg-muted" };
-                return (
-                  <tr key={c.id} className="border-b last:border-0 hover:bg-muted/30">
-                    <td className="p-2.5 font-mono text-xs" dir="ltr">{c.consignmentNumber}</td>
-                    <td className="p-2.5">
-                      {c.invoiceId ? (
-                        <a className="font-mono text-xs text-primary hover:underline" dir="ltr" href={`/invoices/${c.invoiceId}`}>
-                          {c.invoiceNumber ?? `#${c.invoiceId}`}
-                        </a>
-                      ) : "—"}
-                    </td>
-                    <td className="p-2.5">{c.customerName ?? c.recipientName ?? "عميل نقدي"}</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmt(c.codAmount)}</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmt(c.collectedAmount)}</td>
-                    <td className={cn("p-2.5 text-left tabular-nums font-bold", remaining > 0 ? "text-destructive" : "")} dir="ltr">{fmt(String(remaining))}</td>
-                    <td className="p-2.5 text-center">
-                      <span className={cn("rounded px-2 py-0.5 text-xs font-bold", st.cls)}>{st.label}</span>
-                    </td>
-                    <td className="p-2.5 text-center text-xs">
-                      <Badge variant={c.parcelStatus === "DELIVERED" ? "success" : c.parcelStatus === "FAILED" ? "danger" : "info"}>
-                        {PARCEL_STATUS[c.parcelStatus] ?? c.parcelStatus}
-                      </Badge>
-                      {c.courierDeliveredAt && <div className="mt-1 text-money-positive">{fmtDate(c.courierDeliveredAt)}</div>}
-                    </td>
-                    <td className="min-w-48 p-2.5 text-xs">
-                      <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
-                      {c.failureReason && <div className="mb-1 text-destructive">{c.failureReason}</div>}
-                      {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && (
-                        <AppSelect
-                          value={String(c.assignedUserId ?? "")}
-                          disabled={reassignM.isPending}
-                          onValueChange={(next) => reassignM.mutate({
-                            partyId,
-                            consignmentId: Number(c.id),
-                            assignedUserId: next ? Number(next) : null,
-                            clientRequestId: crypto.randomUUID(),
-                          })}
-                          className="px-2 py-1"
-                        >
-                          <option value="">مشترك لكل السائقين</option>
-                          {drivers.map((d) => <option key={d.userId} value={d.userId}>{d.name ?? d.username ?? `#${d.userId}`}</option>)}
-                        </AppSelect>
-                      )}
-                    </td>
-                    <td className="p-2.5 text-xs text-muted-foreground">{c.dispatchedAt ? fmtDate(c.dispatchedAt) : "—"}</td>
-                    <td className="p-2.5 text-xs">
-                      {c.remittanceNumber ? <span className="font-mono" dir="ltr">{c.remittanceNumber}</span> : <span className="text-muted-foreground">—</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {listHasMore && (
-            <div className="border-t border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-2 text-center text-xs font-bold text-[var(--sem-warn)]">
-              تعرض {list.length} إرسالية — هناك المزيد. استعمل «المالية المفتوحة فقط» للتصفية.
-            </div>
-          )}
-        </ScrollTableShell>
+      <DataTable<ConsignmentRow>
+        columns={columns}
+        data={list}
+        /* الفلترة بمربّع «المالية المفتوحة فقط» أعلاه (يغذّي الاستعلام). */
+        searchable={false}
+        externalFiltersActive={openOnly}
+        loading={q.isLoading}
+        errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
+        emptyState={<EmptyState icon={PackageOpen} title="لا إرساليات" description="لم تُسنَد لهذه الجهة إرساليات بعد." />}
+        emptyFilteredState={<EmptyState icon={PackageOpen} title="لا إرساليات مفتوحة" description="لا إرسالية غير مسوّاة لهذه الجهة." />}
+      />
+      {/* اقتطاعُ الخادم يُعلَن صراحةً: صفوفٌ لا تظهر ولا تُبحَث لو صمتنا عنه. */}
+      {listHasMore && (
+        <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-2 text-center text-xs font-bold text-[var(--sem-warn)]">
+          تعرض {list.length} إرسالية — هناك المزيد. استعمل «المالية المفتوحة فقط» للتصفية.
+        </div>
       )}
+
+      {collectConsignmentTarget && (
+        <CollectConsignmentDialog
+          consignment={{
+            id: Number(collectConsignmentTarget.id),
+            consignmentNumber: collectConsignmentTarget.consignmentNumber,
+            partyId,
+            orderNumber: collectConsignmentTarget.invoiceNumber ?? (collectConsignmentTarget.invoiceId ? `#${collectConsignmentTarget.invoiceId}` : null),
+            invoiceNumber: collectConsignmentTarget.invoiceNumber,
+            customerName: collectConsignmentTarget.customerName ?? collectConsignmentTarget.recipientName,
+            recipientPhone: collectConsignmentTarget.recipientPhone,
+            codDue: Math.max(0, Number(collectConsignmentTarget.codAmount) - Number(collectConsignmentTarget.collectedAmount)),
+            codAmount: collectConsignmentTarget.codAmount,
+            collectedAmount: collectConsignmentTarget.collectedAmount,
+            parcelStatus: collectConsignmentTarget.parcelStatus,
+          }}
+          open={collectConsignmentTarget != null}
+          onOpenChange={(open) => { if (!open) setCollectConsignmentTarget(null); }}
+          onCompleted={() => {
+            setCollectConsignmentTarget(null);
+            void utils.delivery.consignments.invalidate({ partyId });
+            void utils.delivery.getParty.invalidate({ id: partyId });
+            void utils.delivery.partyFinancials.invalidate({ partyId });
+          }}
+        />
+      )}
+
+      <CancelDeliveryAssignmentDialog
+        consignment={cancelConsignmentTarget}
+        open={cancelConsignmentTarget != null}
+        onOpenChange={(open) => { if (!open) setCancelConsignmentTarget(null); }}
+        onCompleted={() => {
+          setCancelConsignmentTarget(null);
+          void utils.delivery.consignments.invalidate({ partyId });
+          void utils.delivery.getParty.invalidate({ id: partyId });
+          void utils.delivery.partyFinancials.invalidate({ partyId });
+        }}
+      />
     </div>
   );
 }
@@ -415,55 +615,78 @@ function RemittancesTab({ partyId }: { partyId: number }) {
   const [to, setTo] = useState("");
   const q = trpc.delivery.remittances.useQuery({ partyId, from: from || undefined, to: to || undefined });
   const list = q.data ?? [];
+  const columns: ColumnDef<RemittanceRow, unknown>[] = [
+    {
+      id: "remittanceNumber",
+      header: "رقم التوريد",
+      accessorFn: (r) => r.remittanceNumber,
+      meta: { kind: "code" },
+      cell: ({ row }) => <span className="text-xs">{row.original.remittanceNumber}</span>,
+    },
+    {
+      id: "receivedAt",
+      header: "التاريخ",
+      accessorFn: (r) => fmtDateTime(r.receivedAt),
+      meta: { kind: "datetime" },
+      cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.receivedAt)}</span>,
+    },
+    moneyCol<RemittanceRow>("collectedTotal", "المقبوض", (r) => r.collectedTotal),
+    moneyCol<RemittanceRow>(
+      "feesTotal",
+      "الأجور",
+      (r) => r.feesTotal,
+      (r) => (Number(r.feesTotal) > 0 ? "−" + fmt(r.feesTotal) : "—"),
+      () => "text-[var(--sem-warn)]",
+    ),
+    moneyCol<RemittanceRow>("netRemitted", "صافي التوريد", (r) => r.netRemitted, undefined, () => "font-bold"),
+    moneyCol<RemittanceRow>(
+      "shortfallTotal",
+      "عجز بقي عهدة",
+      (r) => r.shortfallTotal,
+      (r) => (Number(r.shortfallTotal) > 0 ? fmt(r.shortfallTotal) : "—"),
+      (r) => (Number(r.shortfallTotal) > 0 ? "font-bold text-destructive" : "text-muted-foreground"),
+    ),
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => (r.status === "BALANCED" ? "مطابق" : r.status === "SHORT" ? "بعجز" : "بزيادة"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span
+          className={cn(
+            "rounded px-2 py-0.5 text-xs font-bold",
+            row.original.status === "BALANCED" ? "badge-status-active" : row.original.status === "SHORT" ? "badge-stock-out" : "badge-stock-low",
+          )}
+        >
+          {row.original.status === "BALANCED" ? "مطابق" : row.original.status === "SHORT" ? "بعجز" : "بزيادة"}
+        </span>
+      ),
+    },
+    {
+      id: "receivedBy",
+      header: "استلمه",
+      accessorFn: (r) => r.receivedByName ?? "—",
+      meta: { kind: "actor" },
+      cell: ({ row }) => <span className="text-xs">{row.original.receivedByName ?? "—"}</span>,
+    },
+  ];
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <label className="inline-flex items-center gap-1.5">من <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-40" /></label>
         <label className="inline-flex items-center gap-1.5">إلى <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-40" /></label>
       </div>
-      {q.isLoading ? (
-        <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-      ) : list.length === 0 ? (
-        <EmptyState icon={Banknote} title="لا توريدات" description="لم تُسجَّل توريدات لهذه الجهة في الفترة." />
-      ) : (
-        <ScrollTableShell className="bg-card">
-          <table className="w-full text-sm">
-            <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
-              <tr>
-                <th className="p-2.5 text-right">رقم التوريد</th>
-                <th className="p-2.5 text-right">التاريخ</th>
-                <th className="p-2.5 text-left">المقبوض</th>
-                <th className="p-2.5 text-left">الأجور</th>
-                <th className="p-2.5 text-left">صافي التوريد</th>
-                <th className="p-2.5 text-left">عجز بقي عهدة</th>
-                <th className="p-2.5 text-center">الحالة</th>
-                <th className="p-2.5 text-right">استلمه</th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.map((r) => (
-                <tr key={r.id} className="border-b last:border-0 hover:bg-muted/30">
-                  <td className="p-2.5 font-mono text-xs" dir="ltr">{r.remittanceNumber}</td>
-                  <td className="p-2.5 text-xs">{fmtDateTime(r.receivedAt)}</td>
-                  <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmt(r.collectedTotal)}</td>
-                  <td className="p-2.5 text-left tabular-nums text-[var(--sem-warn)]" dir="ltr">{Number(r.feesTotal) > 0 ? `−${fmt(r.feesTotal)}` : "—"}</td>
-                  <td className="p-2.5 text-left tabular-nums font-bold" dir="ltr">{fmt(r.netRemitted)}</td>
-                  <td className={cn("p-2.5 text-left tabular-nums", Number(r.shortfallTotal) > 0 ? "font-bold text-destructive" : "text-muted-foreground")} dir="ltr">
-                    {Number(r.shortfallTotal) > 0 ? fmt(r.shortfallTotal) : "—"}
-                  </td>
-                  <td className="p-2.5 text-center">
-                    <span className={cn("rounded px-2 py-0.5 text-xs font-bold",
-                      r.status === "BALANCED" ? "badge-status-active" : r.status === "SHORT" ? "badge-stock-out" : "badge-stock-low")}>
-                      {r.status === "BALANCED" ? "مطابق" : r.status === "SHORT" ? "بعجز" : "بزيادة"}
-                    </span>
-                  </td>
-                  <td className="p-2.5 text-xs">{r.receivedByName ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </ScrollTableShell>
-      )}
+      <DataTable<RemittanceRow>
+        columns={columns}
+        data={list}
+        /* فلترُ الفترة أعلاه يغذّي الاستعلام — لا حقلَ بحثٍ ثانياً في الجدول. */
+        searchable={false}
+        externalFiltersActive={Boolean(from || to)}
+        loading={q.isLoading}
+        errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
+        emptyState={<EmptyState icon={Banknote} title="لا توريدات" description="لم تُسجَّل توريدات لهذه الجهة في الفترة." />}
+        emptyFilteredState={<EmptyState icon={Banknote} title="لا توريدات" description="لم تُسجَّل توريدات لهذه الجهة في الفترة." />}
+      />
     </div>
   );
 }
@@ -474,6 +697,26 @@ function StatementTab({ party }: { party: PartyRow }) {
   const [to, setTo] = useState("");
   const q = trpc.delivery.partyStatement.useQuery({ partyId: party.id, from: from || undefined, to: to || undefined });
   const built = useMemo(() => (q.data ? buildStatementRows(q.data.entries) : null), [q.data]);
+  /*
+   * ⛔ لا فرزَ على كشف حساب: الرصيد عمودٌ **جارٍ** يُحسب بترتيب القيود، وإعادةُ ترتيب الصفوف
+   * تُنتج عمود رصيدٍ لا يقود إلى شيء. لذلك `enableSorting: false` على كل عمود.
+   */
+  const statementColumns: ColumnDef<StatementRow, unknown>[] = [
+    { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, enableSorting: false, cell: ({ row }) => <span className="text-xs">{row.original.date}</span> },
+    { id: "ref", header: "المرجع", accessorFn: (r) => r.ref, meta: { kind: "code" }, enableSorting: false, cell: ({ row }) => <span className="text-xs">{row.original.ref}</span> },
+    { id: "description", header: "البيان", accessorFn: (r) => r.description, meta: { width: "wide", wrap: true }, enableSorting: false, cell: ({ row }) => row.original.description },
+    { id: "debit", header: "مدين (عهدة+)", accessorFn: (r) => (r.debit ? fmt(r.debit) : "—"), meta: { kind: "money" }, enableSorting: false, cell: ({ row }) => (row.original.debit ? fmt(row.original.debit) : "—") },
+    { id: "credit", header: "دائن (توريد/شطب)", accessorFn: (r) => (r.credit ? fmt(r.credit) : "—"), meta: { kind: "money" }, enableSorting: false, cell: ({ row }) => (row.original.credit ? fmt(row.original.credit) : "—") },
+    {
+      id: "balance",
+      header: "الرصيد",
+      // صفوف الإفصاح (أجور/أمانات) لا تغيّر العهدة ⇒ خانةُ رصيدها تبقى فارغة كما كانت.
+      accessorFn: (r) => (r.balance ? fmt(r.balance) : ""),
+      meta: { kind: "money" },
+      enableSorting: false,
+      cell: ({ row }) => <span className="font-bold">{row.original.balance ? fmt(row.original.balance) : ""}</span>,
+    },
+  ];
 
   const print = () => {
     if (!q.data || !built) return;
@@ -510,38 +753,31 @@ function StatementTab({ party }: { party: PartyRow }) {
           <Printer aria-hidden className="size-3.5" /> طباعة الكشف
         </Button>
       </div>
-      {q.isLoading ? (
-        <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-      ) : !built || built.rows.length === 0 ? (
-        <EmptyState icon={Banknote} title="لا حركات" description="لا قيود توصيل لهذه الجهة في الفترة." />
+      {!built || built.rows.length === 0 ? (
+        <DataTable<StatementRow>
+          /* مُضمَّن كنظيره أدناه: شريطُ حالةٍ يقول «لا بيانات» ومنتقي أعمدةٍ فوق كشفٍ فارغ
+             ضجيجٌ يزاحم رسالةَ الفراغ نفسها. */
+          embedded
+          columns={statementColumns}
+          data={[]}
+          searchable={false}
+          loading={q.isLoading}
+          errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
+          emptyState={<EmptyState icon={Banknote} title="لا حركات" description="لا قيود توصيل لهذه الجهة في الفترة." />}
+        />
       ) : (
         <>
-          <ScrollTableShell className="bg-card">
-            <table className="w-full text-sm">
-              <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
-                <tr>
-                  <th className="p-2.5 text-right">التاريخ</th>
-                  <th className="p-2.5 text-right">المرجع</th>
-                  <th className="p-2.5 text-right">البيان</th>
-                  <th className="p-2.5 text-left">مدين (عهدة+)</th>
-                  <th className="p-2.5 text-left">دائن (توريد/شطب)</th>
-                  <th className="p-2.5 text-left">الرصيد</th>
-                </tr>
-              </thead>
-              <tbody>
-                {built.rows.map((r) => (
-                  <tr key={r.id} className={cn("border-b last:border-0", r.info && "bg-muted/20 text-muted-foreground")}>
-                    <td className="p-2.5 text-xs">{r.date}</td>
-                    <td className="p-2.5 font-mono text-xs" dir="ltr">{r.ref}</td>
-                    <td className="p-2.5">{r.description}</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.debit ? fmt(r.debit) : "—"}</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.credit ? fmt(r.credit) : "—"}</td>
-                    <td className="p-2.5 text-left tabular-nums font-bold" dir="ltr">{r.balance ? fmt(r.balance) : ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/* مُضمَّن: المجاميع تحته مباشرةً، والكشف يُعرض كاملاً (لا ترقيم يقطع الرصيد الجاري). */}
+          <DataTable<StatementRow>
+            embedded
+            searchable={false}
+            pageSize={Infinity}
+            columns={statementColumns}
+            data={built.rows}
+            /* `!bg-…`: تلوينُ `odd:`/`even:` في `DataTable` أعلى تخصّصاً ⇒ بلا `!` يذوب
+               تمييزُ صفوف الإفصاح (أجور/أمانات) التي لا تُغيّر عمودَ الرصيد. */
+            getRowClassName={(r) => (r.info ? "!bg-muted/20 text-muted-foreground" : undefined)}
+          />
           <div className="grid gap-2 rounded-xl border bg-card p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <div><span className="text-muted-foreground">إجمالي الإرساليات: </span><b className="tabular-nums" dir="ltr">{fmt(built.totDispatch.toFixed(2))}</b></div>
             <div><span className="text-muted-foreground">إجمالي التوريد/التسوية: </span><b className="tabular-nums" dir="ltr">{fmt(built.totSettled.toFixed(2))}</b></div>
@@ -812,7 +1048,7 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
             </div>
           </div>
           <div className="mt-3 flex gap-2">
-            <Button onClick={submit} disabled={save.isPending}>{save.isPending ? "جارٍ…" : (form.id ? "حفظ" : "إضافة قاعدة")}</Button>
+            <Button onClick={submit} disabled={save.isPending}>{save.isPending ? ACTION_LABELS.saving : (form.id ? "حفظ" : "إضافة قاعدة")}</Button>
             {form.id && (
               <Button variant="outline" onClick={() => setForm({ id: null, ruleType: "FLAT_PER_DELIVERY", flatAmount: "2000", percentValue: "", minGuarantee: "", maxCap: "", notes: "" })}>إلغاء</Button>
             )}
@@ -831,6 +1067,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
   const [form, setForm] = useState<{
     name: string; phone: string; phone2: string; defaultFee: string; floatLimit: string;
     nationalId: string; vehicleInfo: string; notes: string; userId: number | null;
+    maxOpenParcelAgeDays: number;
   } | null>(null);
   // تهيئة النموذج من الجلب الكامل مرّة واحدة (getParty يحمل الحقول التي لا تعيدها listParties).
   useEffect(() => {
@@ -845,6 +1082,9 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
         vehicleInfo: full.data.vehicleInfo ?? "",
         notes: full.data.notes ?? "",
         userId: full.data.userId != null ? Number(full.data.userId) : null,
+        maxOpenParcelAgeDays: (full.data as { maxOpenParcelAgeDays?: number | null }).maxOpenParcelAgeDays != null
+          ? Number((full.data as { maxOpenParcelAgeDays?: number | null }).maxOpenParcelAgeDays)
+          : 7,
       });
     }
   }, [full.data, form]);
@@ -869,7 +1109,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
     onError: (e) => notify.err(e),
   });
 
-  if (!form) return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (!form) return <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   const moneyOk = (v: string) => /^\d+(\.\d{1,2})?$/.test(v);
 
   return (
@@ -904,6 +1144,19 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
               <Input value={form.vehicleInfo} onChange={(e) => setForm({ ...form, vehicleInfo: e.target.value })} className="mt-1 h-10" placeholder="نوع/لون/رقم اللوحة" />
             </label>
           </div>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <label className="block text-sm font-bold">مهلة إغلاق الطرود المفتوحة (بالأيام — 0 = بلا حظر SLA)
+              <Input
+                type="number"
+                min={0}
+                max={365}
+                value={form.maxOpenParcelAgeDays}
+                onChange={(e) => setForm({ ...form, maxOpenParcelAgeDays: e.target.value === "" ? 7 : Number(e.target.value) })}
+                className="mt-1 h-10 text-end tabular-nums"
+              />
+              <span className="mt-1 block text-xs font-normal text-muted-foreground">الافتراضي 7 أيام. القيمة 0 تعني جهة موثوقة لا تُحظر برمجياً عند تأخر إغلاق الطرود.</span>
+            </label>
+          </div>
           <label className="block text-sm font-bold">ملاحظات
             <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="mt-1 h-10" />
           </label>
@@ -935,8 +1188,9 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
                 vehicleInfo: form.vehicleInfo || null,
                 notes: form.notes || null,
                 userId: form.userId,
+                maxOpenParcelAgeDays: form.maxOpenParcelAgeDays,
               })}
-            >{update.isPending ? "جارٍ…" : "حفظ"}</Button>
+            >{update.isPending ? ACTION_LABELS.saving : "حفظ"}</Button>
             <Button
               variant="outline"
               disabled={setActive.isPending}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { HandCoins } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
+import { DecideInInboxNotice } from "@/components/purchases/DecideInInboxNotice";
 import type { GovernanceQueueRow } from "@/components/purchases/GovernanceApprovalQueue";
 import {
   SupplierPaymentsGovernanceWorkspace,
@@ -85,6 +86,7 @@ export default function SupplierPaymentsGovernance() {
         exchangeRate: row.agreedRate,
         remainingAmount: row.remainingAmount,
         remainingCurrencyAmount: row.remainingCurrencyAmount,
+        purchaseOrderIds: row.purchaseOrderIds,
       })),
     [paymentSourcesQuery.data, supplierNames],
   );
@@ -216,6 +218,7 @@ export default function SupplierPaymentsGovernance() {
           ) : undefined
         }
       />
+      <DecideInInboxNotice />
       {me.isLoading ? (
         <LoadingState />
       ) : branchId == null ? (
@@ -233,6 +236,7 @@ export default function SupplierPaymentsGovernance() {
           pendingPayments={pendingPayments}
           pendingRefunds={pendingRefunds}
           currentUserId={me.data?.id}
+          isOwner={me.data?.isOwner === true}
           canDecide={canDecide}
           decisionBlockedReason={decisionBlockedReason}
           loadingSources={

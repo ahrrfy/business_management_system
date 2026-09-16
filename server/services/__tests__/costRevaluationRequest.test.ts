@@ -37,6 +37,7 @@ const mgr1 = { userId: 2, branchId: 1, role: "manager" as const };
 const mgr1b = { userId: 3, branchId: 1, role: "manager" as const };
 const mgr2 = { userId: 4, branchId: 2, role: "manager" as const };
 const admin2 = { userId: 5, branchId: 1, role: "admin" as const };
+const owner = { userId: 6, branchId: 1, role: "admin" as const };
 
 function db() {
   const d = getDb();
@@ -55,6 +56,7 @@ async function seed(opts: { cost?: string; qty1?: number; qty2?: number; consign
     { id: 3, openId: "u-mgr1b", name: "مدير ١ب", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 4, openId: "u-mgr2", name: "مدير ٢", role: "manager", loginMethod: "local", branchId: 2 },
     { id: 5, openId: "u-admin2", name: "أدمن ٢", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 6, openId: "u-owner", name: "المالك", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await db().insert(s.products).values([{ id: 1, name: "قلم", isConsignment: !!opts.consignment }]);
   await db().insert(s.productVariants).values([
@@ -85,6 +87,17 @@ beforeEach(async () => {
 });
 
 describe("requestCostRevaluation — المستند قبل الأثر", () => {
+  it("طلب المالك يعيد تقييم التكلفة مباشرة بلا اعتماد ثان", async () => {
+    await seed({ cost: "100.00", qty1: 10 });
+    const result = await requestCostRevaluation(
+      { variantId: 1, newCost: "80.00", purpose: "CORRECTION", reason: REASON },
+      owner,
+    );
+    expect(await variantCost()).toBe("80.00");
+    const [request] = await db().select().from(s.costRevaluationRequests).where(eq(s.costRevaluationRequests.id, result.requestId));
+    expect(request).toMatchObject({ status: "APPROVED", createdBy: owner.userId, approvedBy: owner.userId });
+  });
+
   it("الطلب لا يمسّ التكلفة ولا الدفتر، ويحسب أثر القيمة المتوقَّع", async () => {
     await seed({ cost: "100.00", qty1: 10 });
     const res = await requestCostRevaluation(

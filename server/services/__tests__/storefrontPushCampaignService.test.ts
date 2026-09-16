@@ -8,6 +8,7 @@ import { getDb } from "../../db";
 import {
   STOREFRONT_PUSH_WORKER_LIMITS,
   createStorefrontPushWorkerRuntime,
+  createStorefrontPushCampaign,
   registerStorefrontPushDevice,
   runStorefrontPushSettled,
   validateExpoPushToken,
@@ -32,6 +33,17 @@ describe("storefront push campaign validation", () => {
     expect(() => validateStorefrontPushDestination("https://attacker.example")).toThrow(StorefrontPushValidationError);
     expect(() => validateStorefrontPushDestination("//attacker.example")).toThrow(StorefrontPushValidationError);
     expect(() => validateExpoPushToken("not-a-device-token")).toThrow(StorefrontPushValidationError);
+  });
+
+  it("لا يسمح للحملة اليدوية بتجاوز موافقة التسويق عبر النوع التشغيلي", async () => {
+    await expect(createStorefrontPushCampaign({
+      name: "رسالة تشغيلية عامة",
+      kind: "TRANSACTIONAL",
+      title: "تحديث",
+      body: "لا ينبغي إرسال هذه الرسالة إلى كل أجهزة الطلب.",
+      destination: "/orders",
+      throttlePerMinute: 120,
+    }, 1)).rejects.toThrow("الحملات اليدوية تسويقية فقط");
   });
 
   it("يربط الجهاز بهوية عميل موثوقة ويحافظ على الربط عند تحديث تفضيل مجهول", async () => {

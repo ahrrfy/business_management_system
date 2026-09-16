@@ -147,6 +147,16 @@ object SalesMappers {
                 total = row.text("total", "0"),
             )
         } },
+        refundShifts = root.list("refundShifts").mapNotNull { value -> value.asMap()?.let { row ->
+            RetailShift(
+                id = row.long("shiftId"),
+                branchId = root.long("branchId"),
+                userId = row.long("userId"),
+                userName = row.nullableText("userName"),
+                status = "OPEN",
+                openedAt = null,
+            )
+        } },
     )
 
     fun returnCreation(root: JSONObject): ReturnCreation = returnCreation(root.toWireMap())

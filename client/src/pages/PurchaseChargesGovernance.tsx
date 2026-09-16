@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ReceiptText } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
+import { DecideInInboxNotice } from "@/components/purchases/DecideInInboxNotice";
 import type { GovernanceQueueRow } from "@/components/purchases/GovernanceApprovalQueue";
 import {
   PurchaseChargesGovernanceWorkspace,
@@ -189,6 +190,7 @@ export default function PurchaseChargesGovernance() {
           ) : undefined
         }
       />
+      <DecideInInboxNotice />
       {me.isLoading ? (
         <LoadingState />
       ) : branchId == null ? (
@@ -207,6 +209,7 @@ export default function PurchaseChargesGovernance() {
           suppliers={suppliers}
           pendingControls={pendingControls}
           currentUserId={me.data?.id}
+          isOwner={me.data?.isOwner === true}
           loading={
             sourcesQuery.isLoading ||
             chargesQuery.isLoading ||

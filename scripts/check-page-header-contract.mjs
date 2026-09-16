@@ -75,9 +75,48 @@ const RAW_BACK_BASELINE = {
  * ويحوي `<h1` خامّاً. الاستثناء الوحيد: PageHeader.tsx نفسه.
  *
  * المصدر: `grep -rE '^\s*<h1\s' client/src/pages/` = ٢٧ حالة في ٢٣ ملف عند التفعيل.
+ *
+ * ⚠️ **ما بقي هنا بقي بقرارٍ لا بتقصير** (فحصٌ موضعيّ ٢/٩/٢٦، موجةُ ذيل التوحيد). صُنّف كلّ
+ * مدخلٍ يدوياً، فلا يُعيد أحدٌ استقصاءه ولا يُحوّله آلياً ظنّاً أنّه دَيْنٌ متبقٍّ:
+ *
+ *   • **نصٌّ داخل مستند طباعة، ليس JSX** — `ConsignmentSettlements` · `ContractPrices` ·
+ *     `WorkOrderNew`: `<h1>` داخل قالبٍ نصّيٍّ يُمرَّر لنافذة طباعة. الحارس يمسكه بـregex
+ *     بدائيّ. تحويله إلى `PageHeader` **مستحيلٌ** — لا React في تلك النافذة.
+ *
+ *   • **صفحاتٌ عامّة خارج هيكل التطبيق** — `JobApply` (تقديمُ توظيفٍ للزائر) ·
+ *     `MobileTurnstile` · `Storefront` (وهو `sr-only` أصلاً — عنوانٌ لقارئ الشاشة لا
+ *     يُعرَض): لا شريطَ جانبياً ولا مسارَ رجوعٍ ولا هويّةَ نظامٍ داخليّة. `PageHeader` يفرض
+ *     هويّةَ لوحةِ الإدارة على صفحةٍ تخاطب زبوناً — وهو ضررٌ لا إصلاح.
+ *
+ *   • **صفحاتٌ ذاتُ هويّةٍ بصريّة خاصّة** — `Dashboard` (رأسٌ مُثيَّمٌ بكائن `T` بأسلوبٍ
+ *     مستقلّ) · `MobileDesignPreview` (معاينةُ لغةِ تصميمٍ للجوّال — عناوينُه **عيّنةُ
+ *     التصميم نفسها** لا رأسَ صفحة): توحيدُها يمحو الشيءَ الذي وُجدت لعرضه.
+ *
+ *   • **`<h1>` وحيدٌ في شاشةٍ بلا هيكلِ صفحة** — `Inbox` (لوحةٌ بعمودَين بارتفاعٍ كامل،
+ *     العنوان في العمود الجانبيّ) · `PointOfSale` (شاشةُ «لا صلاحية») · `Reception`
+ *     (طبقةٌ عائمة داخل الكاشير): هذه الشاشات **بلا
+ *     `PageHeader` أصلاً**، فـ`<h1>` فيها هو العنوانُ الوحيد — وهو الصحيحُ دلالياً.
+ *     إقحامُ رأسٍ موحَّدٍ يأكل ارتفاعاً في شاشاتٍ مصمَّمةٍ لملء النافذة.
+ *
+ *   • **مسارُ عرضٍ بديل يملك `<h1>` الوحيد لما يُعرَض** — `ReservationsHub` و
+ *     `StocktakeNew`: يظهر في الملفّ `<PageHeader>` **و**`<h1>` معاً، فيبدو للوهلة الأولى
+ *     تكراراً لعنوانٍ أوّل. وهو ليس كذلك: الاثنان على **مسارَين متنافيَين**.
+ *     `StocktakeNew` يخرج مبكّراً إلى `CreatedLinksScreen` (مكوّنٌ مستقلّ بلا `PageHeader`)
+ *     فلا يُبلَغ سطرُ `PageHeader` أصلاً حين تُعرَض بطاقةُ النجاح؛ و`ReservationsHub` يتفرّع
+ *     بـ`embedded ? … : <PageHeader/>` ومَركَبُه الوحيد `PointOfSale` **بلا `PageHeader`**.
+ *     ⇒ إنزالُهما إلى `<h2>` يترك الشاشةَ المعروضة **بصفر `<h1>`** — أي يصنع العيبَ الذي
+ *     يدّعي إصلاحه. أمسك ذلك عاملُ الموجة بقراءة مسارات العرض بدل الاكتفاء بوجود الرمزَين
+ *     في الملفّ، وهو الفرق بين `grep` على مستوى الملفّ وقراءةِ ما يُعرَض فعلاً.
+ *
+ * والذي **أُصلح فعلاً** في الموجة: `PlatformAdmin` وحده — رأسُ صفحةٍ حقيقيّ (عنوانٌ وزرُّ
+ * خروجٍ في `justify-between`) صار `<PageHeader>` بزرّه في `actions`، وبـ`homeHref={null}`
+ * لأنّ المسار خارج `AppLayout` بجلسةٍ منفصلة فرابطُ «الرئيسية» كان سيقود إلى طريقٍ مسدود.
  */
 const RAW_H1_BASELINE = {
-  "client/src/pages/CashRemediation.tsx": 1,
+  // ⬇️ حُذفت خمسةُ ملفّاتٍ من الأساس (٢/٩/٢٦) بعد أن نظّفتها موجاتُ التوحيد:
+  // CashRemediation · MyStocktakes · MyStocktakeWorkspace · Treasury · WorkOrderStation
+  // ثمّ PlatformAdmin بعد تحويله إلى PageHeader في الموجة نفسها.
+  // حذفُها **يشدّ السقّاطة**: عودةُ `<h1>` خامٍّ إليها تكسر CI بدل أن تُبتلَع في سقفٍ قديم.
   "client/src/pages/ConsignmentSettlements.tsx": 1,
   "client/src/pages/ContractPrices.tsx": 1,
   "client/src/pages/Dashboard.tsx": 2,
@@ -85,19 +124,14 @@ const RAW_H1_BASELINE = {
   "client/src/pages/JobApply.tsx": 1,
   "client/src/pages/MobileDesignPreview.tsx": 3,
   "client/src/pages/MobileTurnstile.tsx": 1,
-  "client/src/pages/MyStocktakes.tsx": 1,
-  "client/src/pages/MyStocktakeWorkspace.tsx": 1,
   "client/src/pages/PointOfSale.tsx": 1,
-  "client/src/pages/PlatformAdmin.tsx": 1,
   "client/src/pages/Reception.tsx": 1,
   "client/src/pages/ReservationsHub.tsx": 1,
   "client/src/pages/StocktakeNew.tsx": 1,
   "client/src/pages/Storefront.tsx": 1,
-  "client/src/pages/Treasury.tsx": 1,
   // WorkOrderNew.tsx يحوي <h1>طلب خدمة — معاينة</h1> داخل template string لـ`window.open()`
   // (نافذة طباعة منبثقة، ليس JSX). الحارس يمسكه بـregex بدائيّ. مقصود، ثابت.
   "client/src/pages/WorkOrderNew.tsx": 1,
-  "client/src/pages/WorkOrderStation.tsx": 1,
 };
 
 function* walkTsx(dir) {

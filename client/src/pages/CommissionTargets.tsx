@@ -16,6 +16,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { iqd } from "@/lib/hr/ui";
 import { employmentStatusLabel } from "@shared/hr";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -137,7 +138,7 @@ export default function CommissionTargets() {
                 </Button>
                 <Button size="sm" disabled={dirtyRows.length === 0 || save.isPending} onClick={() => save.mutate({ period, rows: dirtyRows })}>
                   <Save className="size-4" aria-hidden />
-                  {save.isPending ? "جارٍ الحفظ…" : `حفظ الكل${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
+                  {save.isPending ? ACTION_LABELS.saving : `حفظ الكل${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
                 </Button>
               </>
             )}

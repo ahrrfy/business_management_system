@@ -330,7 +330,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
 
     await expect(
       returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true }, MANAGER),
-    ).rejects.toThrowError(/إرسالية مفتوحة/);
+    ).rejects.toThrowError(/إرسالية التوصيل/);
     await expect(
       returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1" } as never),
     ).resolves.toBeTruthy();
@@ -353,7 +353,7 @@ describe("M8 — قرار المالك: مرتجعُ فاتورةٍ بيد ال�
 
     await expect(
       returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true }, MANAGER),
-    ).rejects.toThrowError(/إرسالية مفتوحة/);
+    ).rejects.toThrowError(/إرسالية التوصيل/);
 
     // لا نقد في عهدة المندوب قبل التسليم، ولا يُسمح بمرتجع مبيعات يتجاوز دورة الطرد.
     const party = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];

@@ -65,6 +65,7 @@ object NativeNotificationRenderer {
             .setContentIntent(contentIntent)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setCategory(
                 if (payload.urgency == NotificationUrgency.ACTION) {
                     NotificationCompat.CATEGORY_REMINDER

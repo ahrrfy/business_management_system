@@ -39,11 +39,14 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     const pickup = readClient("../delivery/MarkPickedUpDialog.tsx");
     const workOrderNew = readClient("../../pages/WorkOrderNew.tsx");
     const workOrderDetail = readClient("../../pages/WorkOrderDetail.tsx");
-    const workOrders = readClient("../../pages/WorkOrders.tsx");
+    const workOrders =
+      readClient("../../pages/WorkOrders.tsx") +
+      "\n" +
+      readClient("../workOrders/WorkOrderDeliverDialog.tsx");
     const reservations = readClient("../../pages/ReservationsHub.tsx");
 
     expect(pickup).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
-    expect(workOrderNew).toContain('onClick={() => setPaymentMethod("CARD")}');
+    expect(workOrderNew).toContain('<Redirect to="/pos?mode=RECEPTION" />');
     expect(workOrderDetail).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}",
     );
     expect(workOrders).toContain('disabled={!isPosPaymentMethodEnabled("CARD")}',
@@ -67,8 +70,12 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     // جهاز المحاولة يُرسَل مع الإنشاء وإلا رُفض استهلاكها؛ وفرعُ المحاولة = فرع الفاتورة.
     expect(invoice).toContain("deviceId: externalAttempt.deviceId");
     expect(invoice).toContain("const branchId = state.branchId;");
-    // مسار التصحيح يمرّ بعقد `reissue` الذي يحمل المرجع النصّي بنفسه.
-    expect(invoice).toContain("reference: paymentRef.trim()");
+    // التصحيح محكومٌ بصانع/مراجع: لا ينفّذ الطالب دفع البطاقة قبل الاعتماد؛
+    // المراجع يحجز العملية ثم يمرّر مرجع القسيمة لحظة التنفيذ الذري.
+    const approvals = readClient("../../pages/SalesControlApprovals.tsx");
+    expect(invoice).not.toContain("reference: paymentRef.trim()");
+    expect(approvals).toContain("claimCorrectionPayment");
+    expect(approvals).toContain("reference: referenceOverride");
   });
 
   it("تحويل عرض السعر يجمع المرجع ويُمرّره بدل قسر النقد", () => {
@@ -81,7 +88,10 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
   });
 
   it("الشاشات ذات حقل المرجع تُرسله فعلاً بدل إسقاطه", () => {
-    const workOrders = readClient("../../pages/WorkOrders.tsx");
+    const workOrders =
+      readClient("../../pages/WorkOrders.tsx") +
+      "\n" +
+      readClient("../workOrders/WorkOrderDeliverDialog.tsx");
     const invoiceDetail = readClient("../../pages/InvoiceDetail.tsx");
     const receptionQueue = readComponent("ReceptionInvoiceQueue.tsx");
 

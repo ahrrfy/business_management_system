@@ -13,10 +13,12 @@ async function searchEmployees(
   kind: SearchKind,
   query: string,
   limit: number,
+  scopedBranchId: number | null,
 ): Promise<SearchResult[]> {
   // كود بطاقة الموظف: EMP-<id> ⇒ تطابق دقيق (أعلى رتبة).
   const code = query.match(/^EMP-?(\d+)$/i);
   const conds: any[] = [eq(employees.isActive, true)];
+  if (scopedBranchId !== null) conds.push(eq(employees.branchId, scopedBranchId));
   if (code) {
     conds.push(eq(employees.id, Number(code[1])));
   } else {

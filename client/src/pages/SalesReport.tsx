@@ -20,6 +20,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type ReportRow = RouterOutputs["reports"]["salesReport"]["rows"][number];
 type TopRow = RouterOutputs["reports"]["topProducts"][number];
@@ -607,7 +608,7 @@ function InvoicesTab({
                 }
               }}
             >
-              {exporting ? "جارٍ التصدير…" : "تصدير Excel"}
+              {exporting ? ACTION_LABELS.exporting : "تصدير Excel"}
             </Button>
           </>
         }

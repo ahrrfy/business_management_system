@@ -118,11 +118,15 @@ export const auditRouter = router({
           return ordered.map((id) => byId.get(id)).filter((r): r is (typeof fetched)[number] => r != null);
         },
       });
-      const total = await countIfOffset(usingCursor, async () => {
-        const baseWhere = conds.length ? and(...conds) : undefined;
-        const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(auditLogs).where(baseWhere))[0];
-        return Number(totalRow?.n ?? 0);
-      });
+      const total = await countIfOffset(
+        usingCursor,
+        async () => {
+          const baseWhere = conds.length ? and(...conds) : undefined;
+          const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(auditLogs).where(baseWhere))[0];
+          return Number(totalRow?.n ?? 0);
+        },
+        { rowsLength: rows.length, limit: i.limit ?? 50, offset: i.offset },
+      );
       return { rows, total, hasMore, nextCursor };
     }),
 

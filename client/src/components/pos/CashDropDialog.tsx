@@ -6,8 +6,18 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, round2 } from "@/lib/money";
 import { newClientRequestId } from "@/lib/countQueue";
-import type { PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { MoneyInput } from "@/components/form/MoneyInput";
+
+/** الحدّ الأدنى من رموز ألوان الكاشير (متوافق بنيوياً مع POS_COLORS/LIGHT). */
+export interface PosTokens {
+  card: string;
+  border: string;
+  muted: string;
+  mutedFg: string;
+  fg: string;
+  primary: string;
+  danger: string;
+}
 
 export function CashDropDialog({
   C,

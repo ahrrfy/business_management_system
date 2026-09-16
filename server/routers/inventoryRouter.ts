@@ -2,6 +2,8 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import type { ProductBarcodeMatch } from "@shared/productScan";
+import { appErrorMessage } from "@shared/errors";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { nonNegMoneyString } from "../lib/schemas";
 import { alias } from "drizzle-orm/mysql-core";
@@ -35,7 +37,7 @@ import {
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import { signedMoveQty } from "../services/inventoryService";
 import { buildVariantCatalogSearchWhere } from "../services/catalog/search";
-import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
+import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "../services/catalog/barcodeAliases";
 import { loadProductIdentificationImages } from "../services/catalog/productIdentification";
 import {
   ADJUSTMENT_REASONS,
@@ -165,7 +167,9 @@ export const inventoryRouter = router({
   transferBatch: inventoryWarehouseProcedure
     .input(
       z.object({
-        fromBranchId: z.number().int().positive(),
+        // م٤ (الاستنتاج قبل السؤال): المصدرُ اختياريّ — يُشتقّ من فرع الفاعل حين يغيب؛ الأدمن
+        // يمرّره لفرعٍ آخر بقصدٍ صريح، وغيرُه لا يُقبَل منه إلّا فرعُه.
+        fromBranchId: z.number().int().positive().optional(),
         toBranchId: z.number().int().positive(),
         reason: z.enum(TRANSFER_REASON_KEYS).optional(),
         notes: z.string().max(500).optional(),
@@ -185,15 +189,30 @@ export const inventoryRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const elevated = ctx.user.role === "admin"; // «كتابة فرعه»: المدير لم يعُد عابر الفروع كتابةً (قرار المالك ٢٣/٧)
-      let fromBranchId = input.fromBranchId;
+      const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+      let fromBranchId: number;
       if (!elevated) {
-        if (ctx.user.branchId == null) {
+        if (assignedBranchId == null) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
         }
-        if (Number(ctx.user.branchId) !== input.fromBranchId) {
+        if (input.fromBranchId != null && input.fromBranchId !== assignedBranchId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن نقل بضاعة من فرع ليس فرعك" });
         }
-        fromBranchId = Number(ctx.user.branchId);
+        fromBranchId = assignedBranchId;
+      } else {
+        const chosen = input.fromBranchId ?? assignedBranchId;
+        if (chosen == null) {
+          // أدمنٌ بلا فرعٍ مُسنَد لم يُرسل مصدراً: لا فرعَ افتراضيّ (حارس check:branch) — اختيارٌ صريح.
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تحديد الفرع المصدر",
+              why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً مصدراً",
+              doThis: "اختر الفرع المصدر من القائمة في شاشة التحويل ثم أعِد الإرسال",
+            }),
+          });
+        }
+        fromBranchId = chosen;
       }
       // منذ ١٤/٧ (تحويل بخطوتين): الإنشاء يخصم المصدر ويضع السند «بالطريق»؛ الوجهة تستلم
       // بمطابقة عبر transferReceive. الذرّية والقفل الحتمي وidempotency داخل الخدمة.
@@ -398,9 +417,12 @@ export const inventoryRouter = router({
       );
       if (res.idempotentReplay) {
         // إعادةُ إرسالٍ لطلبٍ قائم — لا سجلَّ تدقيقٍ ولا إشعارَ اعتمادٍ ثانياً.
-        return { requestId: res.requestId, status: "PENDING_APPROVAL" as const, idempotentReplay: true as const };
+        return { requestId: res.requestId, status: res.status, idempotentReplay: true as const };
       }
       await logAudit(ctx, { action: "inventory.adjustRequest", entityType: "stockAdjustmentRequest", entityId: res.requestId, newValue: { variantId: input.variantId, branchId, target: input.targetQuantity } });
+      if (res.status === "APPROVED") {
+        return { requestId: res.requestId, status: res.status };
+      }
       const db = getDb();
       if (db) {
         const candidates = await db
@@ -423,7 +445,7 @@ export const inventoryRouter = router({
           requiresAction: true,
         }).catch(() => undefined)));
       }
-      return { requestId: res.requestId, status: "PENDING_APPROVAL" as const };
+      return { requestId: res.requestId, status: res.status };
     }),
 
   // اعتماد طلب تسوية معلَّق — مديرٌ آخر (SOD-04) ⇒ يطبّق setStock + قيد ADJUST.
@@ -702,8 +724,24 @@ export const inventoryRouter = router({
       const conds: any[] = [
         sql`(${branchStock.variantId} IS NOT NULL OR (${productVariants.isActive} = true AND ${products.isActive} = true AND ${products.isService} = false AND ${products.isBundle} = false))`,
       ];
-      const search = buildVariantCatalogSearchWhere(input?.q);
-      if (search) conds.push(search);
+      // المسحُ هويةٌ قاطعة لا بحثٌ ضبابيّ: حلّ المالك أولاً بعقد الباركود المركزي، ثم
+      // احصر الصفّ في متغيّره. هذا يمنع اسمَ منتجٍ عَرَضياً يحتوي الرمز من أن يسبق المالك
+      // عند limit=1، ويشفي الإرث الملوّث وتكافؤ UPC-A/EAN-13 في شاشة الجرد نفسها.
+      const scannedBarcode = canonicalizeBarcodeInput(input?.q ?? "");
+      const scanResolution = scannedBarcode
+        // المطابقة المطبعة مفهرسة الآن؛ شكل الحروف وحده لا يميّز الاسم عن باركود المورد.
+        ? await resolveBarcodeOwnerResult(db, scannedBarcode)
+        : { status: "NOT_FOUND" as const };
+      if (scanResolution.status === "AMBIGUOUS") {
+        throw new TRPCError({ code: "CONFLICT", message: barcodeAmbiguityMessage("تعذّر تحديد صنف الجرد من الباركود") });
+      }
+      const scanOwner = scanResolution.status === "FOUND" ? scanResolution.owner : null;
+      if (scanOwner) {
+        conds.push(eq(productVariants.id, scanOwner.variantId));
+      } else {
+        const search = buildVariantCatalogSearchWhere(input?.q);
+        if (search) conds.push(search);
+      }
       // «تحت الحدّ» و«سالب فقط»: مقارنةٌ على الحقل الخام دون COALESCE — المتغيّر بلا صفٍّ
       // (quantity = NULL) لا يُصنّف «تحت الحدّ» ولا «سالباً»، فلا يُفيض هذان الفلتران بمنتجاتٍ
       // كتالوجيّة صفريّة. من يريد رؤيتها يفتح القائمة بلا فلتر «تحت الحدّ».
@@ -783,9 +821,6 @@ export const inventoryRouter = router({
         })),
         { kind: "inventory" },
       );
-      const scannedBarcode = input?.q?.trim() ?? "";
-      const scanOwner = scannedBarcode ? await resolveBarcodeOwner(db, scannedBarcode) : null;
-
       return rows.map((r) => {
         // hasStockRow = صفٌّ فعليّ في branchStock (LEFT JOIN التقط الرصيد). المتغيّرات
         // الكتالوجيّة الصفريّة (لا صفَّ) تخرج بـ`quantity = 0` لكنّ isLow=false — كي يتطابق
@@ -957,19 +992,23 @@ export const inventoryRouter = router({
       });
 
       // COUNT الكامل (مَسحٌ ثانٍ) يَتدهور خطّياً عند الملايين ⇒ نَتجاوزه عند keyset.
-      const total = await countIfOffset(usingCursor, async () => {
-        const baseWhere = conds.length ? and(...conds) : sql`1=1`;
-        const countRows = await db
-          .select({ c: sql<number>`count(*)` })
-          .from(inventoryMovements)
-          .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
-          .innerJoin(products, eq(products.id, productVariants.productId))
-          .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
-          // leftJoin مطلوب فقط لأن createdByName قد يُصفّي على users.name (أعلاه) — بلا أثر إن غاب.
-          .leftJoin(users, eq(users.id, inventoryMovements.createdBy))
-          .where(baseWhere);
-        return Number(countRows[0]?.c ?? 0);
-      });
+      const total = await countIfOffset(
+        usingCursor,
+        async () => {
+          const baseWhere = conds.length ? and(...conds) : sql`1=1`;
+          const countRows = await db
+            .select({ c: sql<number>`count(*)` })
+            .from(inventoryMovements)
+            .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
+            .innerJoin(products, eq(products.id, productVariants.productId))
+            .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
+            // leftJoin مطلوب فقط لأن createdByName قد يُصفّي على users.name (أعلاه) — بلا أثر إن غاب.
+            .leftJoin(users, eq(users.id, inventoryMovements.createdBy))
+            .where(baseWhere);
+          return Number(countRows[0]?.c ?? 0);
+        },
+        { rowsLength: rows.length, limit: i.limit ?? 200, offset: i.offset },
+      );
 
       return {
         rows: rows.map((r) => ({

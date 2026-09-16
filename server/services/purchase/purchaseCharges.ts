@@ -14,6 +14,7 @@ import {
   suppliers,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { extractInsertId } from "../../lib/insertId";
 import {
   ACCOUNT_ROLES,
@@ -38,6 +39,9 @@ import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { assertExpectedVersion, assertIndependentPurchaseReviewer } from "./returnGovernance";
+import { purchaseChargeControlTrigger } from "@shared/approvalTriggers";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { payloadHashMatches } from "../idempotency";
 
 const ACCRUABLE_ROLES = new Set<AccountRole>(["RENT", "UTILITIES", "OPERATING_EXPENSE", "DELIVERY_EXPENSE", "OTHER_EXPENSE"]);
 const EXPENSE_ROLES = new Set<AccountRole>([
@@ -179,7 +183,7 @@ export async function createPurchaseCharge(input: CreatePurchaseChargeInput, act
   const payloadHash = sha256(canonical); const evidenceHash = sha256(stableCanonical({ type: input.evidenceType, reference: evidenceReference }));
   return withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseCharges).where(eq(purchaseCharges.clientRequestId, clientRequestId)).limit(1))[0];
-    if (replay) { assertPurchaseBranch(replay, actor); if (replay.payloadHash !== payloadHash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بمصروف مختلف" }); return { purchaseChargeId: Number(replay.id), status: replay.status, idempotent: true as const }; }
+    if (replay) { assertPurchaseBranch(replay, actor); if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بمصروف مختلف" }); return { purchaseChargeId: Number(replay.id), status: replay.status, idempotent: true as const }; }
     assertPurchaseBranch({ branchId: input.branchId }, actor);
     const account = (await tx.select().from(accounts).where(eq(accounts.id, input.expenseAccountId)).for("update").limit(1))[0];
     if (!account) throw new TRPCError({ code: "NOT_FOUND", message: "حساب المصروف غير موجود" });
@@ -208,15 +212,21 @@ export async function createPurchaseCharge(input: CreatePurchaseChargeInput, act
 export async function requestPurchaseChargeControl(input: RequestPurchaseChargeControlInput, actor: Actor) {
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120); const evidenceReference = required(input.evidenceReference, "مرجع الدليل", 500); const reason = required(input.reason, "سبب الطلب", 500);
   const canonical = stableCanonical({ purchaseChargeId: input.purchaseChargeId, expectedChargeVersion: input.expectedChargeVersion, kind: input.kind, evidenceReference, reason }); const payloadHash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseChargeControlRequests).where(eq(purchaseChargeControlRequests.requestKey, requestKey)).limit(1))[0];
-    if (replay) { assertPurchaseBranch(replay, actor); if (replay.payloadHash !== payloadHash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
+    if (replay) { assertPurchaseBranch(replay, actor); if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
     const charge = (await tx.select().from(purchaseCharges).where(eq(purchaseCharges.id, input.purchaseChargeId)).for("update").limit(1))[0];
     if (!charge) throw new TRPCError({ code: "NOT_FOUND", message: "مصروف الشراء غير موجود" }); assertPurchaseBranch(charge, actor); assertExpectedVersion(Number(charge.version), input.expectedChargeVersion, "مصروف الشراء");
     if ((input.kind === "POST" && charge.status !== "DRAFT") || (input.kind === "REVERSE" && charge.status !== "POSTED")) throw new TRPCError({ code: "CONFLICT", message: "حالة المصروف لا تسمح بهذه العملية" });
     const inserted = await tx.insert(purchaseChargeControlRequests).values({ requestKey, purchaseChargeId: input.purchaseChargeId, branchId: Number(charge.branchId), kind: input.kind, baseChargeVersion: input.expectedChargeVersion, payloadCanonical: canonical, payloadHash, evidenceReference, reason, pendingGuard: `PURCHASE-CHARGE:${input.purchaseChargeId}`, requestedBy: actor.userId });
     return { requestId: extractInsertId(inserted), status: "PENDING" as const, idempotent: false as const };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.charge.control",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decidePurchaseChargeControl(input: DecidePurchaseChargeControlInput, actor: Actor) {
@@ -241,7 +251,11 @@ export async function decidePurchaseChargeControl(input: DecidePurchaseChargeCon
       );
     }
     const request = (await tx.select().from(purchaseChargeControlRequests).where(eq(purchaseChargeControlRequests.id, input.requestId)).for("update").limit(1))[0]!;
-    assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId);
+    // اعتمادُ المصروف **يُخرج نقداً**: الإيصال يستوفي شروط «النقد المتحقّق» الأربعة نصّاً
+    // (cashAvailability.ts) ⇒ نقدٌ يغادر الدرج ماديّاً. ⇒ المالك حصراً.
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
+    const purchaseChargeApprover = await resolveApprovalActor(tx, actor);
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseChargeControlTrigger(input.action), subject: `مصروف شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseChargeApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
     if (request.status !== "PENDING") { if (request.decisionKey === decisionKey && request.decisionHash === hash) return { requestId: input.requestId, status: request.status, purchaseChargeId: Number(request.purchaseChargeId), idempotent: true as const }; throw new TRPCError({ code: "CONFLICT", message: "حُسم طلب التحكم مسبقاً" }); }
     if (input.action === "REJECT") { await tx.update(purchaseChargeControlRequests).set({ status: "REJECTED", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason, decisionKey, decisionHash: hash }).where(eq(purchaseChargeControlRequests.id, input.requestId)); return { requestId: input.requestId, status: "REJECTED" as const, purchaseChargeId: Number(request.purchaseChargeId), idempotent: false as const }; }
     const charge = (await tx.select().from(purchaseCharges).where(eq(purchaseCharges.id, Number(request.purchaseChargeId))).for("update").limit(1))[0];

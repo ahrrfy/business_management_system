@@ -12,6 +12,7 @@ import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog, type DispatchParty } from "@/components/delivery/DispatchDialog";
+import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
@@ -135,9 +136,8 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   }
   const [partialPickup, setPartialPickup] = useState<PartialPickup | null>(null);
   const [reclassifyTarget, setReclassifyTarget] = useState<QueueRow | null>(null);
-  // ردّ أمانة أجرة توصيلٍ عبر ورديةٍ غير وردية القبض ⇒ الخادم يرفض (FORBIDDEN «اعتماد مدير»):
-  // نلتقط بيانات المحاولة ونطلب اعتماد مدير ثم نعيدها معه (نمط DraftPaymentsDialog حرفياً).
   const [reclassifyMgrAsk, setReclassifyMgrAsk] = useState<RouterInputs["workOrders"]["setDeliveryMethod"] | null>(null);
+  const [departureData, setDepartureData] = useState<DeliveryDepartureData | null>(null);
 
   const invalidateAll = () => {
     void utils.workOrders.list.invalidate();
@@ -268,7 +268,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         parties={(parties.data ?? []) as DispatchParty[]}
         pending={dispatch.isPending}
         onClose={() => setDispatchTarget(null)}
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
           const ord = dispatchTarget!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح متزامنةً مع نقرة التأكيد (قبل await الإرسال) — نمط DeliveryHub بالضبط.
@@ -280,16 +280,37 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
               deliveryFee: fee,
               recipientName: recipientName || undefined,
               recipientPhone: recipientPhone || undefined,
-              deliveryAddress: ord.deliveryAddress ?? undefined,
+              deliveryAddress: deliveryAddress || ord.deliveryAddress || undefined,
+              notes: notes || undefined,
               clientRequestId: crypto.randomUUID(),
               assignedUserId,
+              externalTrackingRef,
             });
-            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
-            printDeliverySlip(ord, party, r);
+            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef, into: labelWin });
+            printDeliverySlip(ord, party, { ...r, externalTrackingRef });
+            setDepartureData({
+              consignmentNumber: r.consignmentNumber,
+              orderNumber: ord.orderNumber,
+              title: ord.title,
+              customerName: recipientName || ord.customerName,
+              customerPhone: recipientPhone || ord.deliveryPhone || ord.customerPhone,
+              deliveryAddress: deliveryAddress || ord.deliveryAddress,
+              courierName: party?.name ?? "المندوب",
+              courierPhone: party?.phone,
+              codAmount: r.codAmount,
+              deliveryFee: fee,
+              feeCollection: ord.deliveryFeeCollection ?? "COURIER",
+            });
           } catch {
             labelWin?.close();
           }
         }}
+      />
+
+      <DeliveryDepartureOverlay
+        open={!!departureData}
+        onClose={() => setDepartureData(null)}
+        data={departureData}
       />
 
       <MarkPickedUpDialog

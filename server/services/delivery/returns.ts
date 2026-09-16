@@ -17,7 +17,7 @@ import {
   MATERIALIZED_RECEIPT_STATUSES,
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryCustomerRefundIntent, deliveryFeeHeldPayoutIntent, deliveryReturnSaleIntent, type DeliveryReturnSaleKind } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
@@ -610,6 +610,7 @@ export async function returnConsignment(
       });
     }
 
+    assertConsignmentStatusTransition(cn.status, "RETURNED");
     const returnedAt = new Date();
     await tx.update(deliveryConsignments).set({
       status: "RETURNED",

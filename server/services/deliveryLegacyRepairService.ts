@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, exists, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
 import {
   auditLogs,
@@ -383,14 +384,25 @@ function requireConfirmation(actual: string, supplied: string) {
   if (supplied.trim() !== actual.trim()) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `التأكيد غير مطابق — اكتب «${actual}» حرفياً`,
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ إصلاح التوصيل القديم",
+        why: `التأكيد غير مطابق — كتبتَ نصّاً مختلفاً عن «${actual}» المطلوب حرفياً`,
+        doThis: `انسخ «${actual}» بحروفه وضعه في حقل التأكيد ثم أعد الإرسال`,
+      }),
     });
   }
 }
 
 function requireEvidence(input: DeliveryLegacyRepairInput) {
   if (!input.evidenceRef?.trim()) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مرجع إثبات التسليم مطلوب ولا يُستنتج آلياً" });
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ إصلاح التوصيل",
+        why: "مرجع إثبات التسليم مفقود ولا يُستنتج آلياً — الإصلاح يحتاج مستنداً خارجياً يشهد بالتسليم",
+        doThis: "أرفق رقم إيصال أو مرجعاً خارجياً (رسالة أو صورة) يُثبت التسليم، ثم أعد الإرسال",
+      }),
+    });
   }
 }
 
@@ -465,38 +477,105 @@ async function createMissingConsignment(
   ctx: Pick<TrpcContext, "user" | "req">,
 ) {
   if (input.partyId == null) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "اختر جهة التوصيل صراحةً" });
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ إصلاح التوصيل",
+        why: "لم تختر جهة التوصيل صراحةً — الإصلاح لا يفترض جهةً افتراضية",
+        doThis: "افتح شاشة الإصلاح واختر جهة التوصيل المطلوبة من القائمة، ثم أعد الإرسال",
+      }),
+    });
   }
   if (input.deliveryFee == null || input.deliveryFee === "") {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "أدخل أجرة التوصيل صراحةً، ولو كانت صفراً" });
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ إصلاح التوصيل",
+        why: "لم تُدخل أجرة التوصيل صراحةً — الإصلاح لا يفترض قيمةً افتراضية",
+        doThis: "أدخل أجرة التوصيل بالدينار (ولو صفراً)، ثم أعد الإرسال",
+      }),
+    });
   }
   const wo = (await tx.select().from(workOrders).where(eq(workOrders.id, input.targetId)).for("update").limit(1))[0];
-  if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشغل غير موجود" });
+  if (!wo)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ إصلاح التوصيل",
+        why: `أمر الشغل بالرقم ${input.targetId} غير موجود — الرقم مغلوط أو الأمر محذوف`,
+        doThis: "افتح قائمة أوامر الشغل واختر أمراً موجوداً، ثم أعد الإصلاح",
+      }),
+    });
   requireConfirmation(wo.orderNumber, input.confirmation);
   if (!wo.hasDelivery || wo.status !== "DELIVERED" || wo.invoiceId == null) {
-    throw new TRPCError({ code: "CONFLICT", message: "الصف لم يعد طلب توصيل مغلقاً قابلاً لهذا الإصلاح" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ إصلاح التوصيل",
+        why: "الصف لم يعد طلب توصيلٍ مغلقاً — الشرط الأصليّ لهذا الإصلاح لم يعد قائماً",
+        doThis: "أعد فتح تقرير الإصلاح لتحديث القائمة، ثم اختر بنداً ما زال يستوفي شرط الإصلاح",
+      }),
+    });
   }
   const existing = (await tx
     .select({ id: deliveryConsignments.id })
     .from(deliveryConsignments)
     .where(sql`${deliveryConsignments.workOrderId} = ${wo.id} OR ${deliveryConsignments.invoiceId} = ${wo.invoiceId}`)
     .limit(1))[0];
-  if (existing) throw new TRPCError({ code: "CONFLICT", message: "للأمر أو فاتورته إرسالية بالفعل" });
+  if (existing)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء إرسالية جديدة",
+        why: "للأمر (أو فاتورته) إرساليةٌ قائمة — لا تُنشأ إرسالية موازية لنفس المستند",
+        doThis: "افتح الإرسالية القائمة من قائمة التوصيل بدل إنشاء أخرى",
+      }),
+    });
 
   const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
-  if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل المختارة غير متاحة" });
+  if (!party || !party.isActive)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: `جهة التوصيل المختارة (${input.partyId}) غير موجودة أو معطَّلة`,
+        doThis: "اختر جهة توصيلٍ نشطةً من القائمة، أو أعد تفعيل الجهة من إدارة التوصيل",
+      }),
+    });
   if (party.branchId != null && Number(party.branchId) !== Number(wo.branchId)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخص فرع أمر الشغل" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: "جهة التوصيل المختارة تخصّ فرعاً مختلفاً عن فرع أمر الشغل",
+        doThis: "اختر جهة توصيلٍ تخصّ فرع أمر الشغل نفسه، أو أنشئ جهةً جديدةً للفرع",
+      }),
+    });
   }
   const invoice = (await tx.select().from(invoices).where(eq(invoices.id, Number(wo.invoiceId))).for("update").limit(1))[0];
   if (!invoice || invoice.status === "CANCELLED" || invoice.status === "RETURNED") {
-    throw new TRPCError({ code: "CONFLICT", message: "فاتورة الأمر غير موجودة أو ملغاة" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: "فاتورة الأمر غير موجودة أو ملغاة — لا يمكن إنشاء إرسالية لمستندٍ فاقدٍ لفاتورةٍ صالحة",
+        doThis: "أنشئ فاتورةَ الأمر أوّلاً، ثم أعد الإصلاح",
+      }),
+    });
   }
   const codAmount = DecimalMaxZero(
     money(invoice.total).minus(money(invoice.paidAmount)).minus(money(invoice.returnedTotal ?? "0")),
   );
   const fee = round2(money(input.deliveryFee));
-  if (fee.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تكون سالبة" });
+  if (fee.lt(0))
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: `أجرة التوصيل (${fee.toString()}) سالبة — الأجرة تكون صفراً أو موجبةً`,
+        doThis: "أدخل الأجرة كقيمةٍ موجبة أو صفر، ثم أعد الإرسال",
+      }),
+    });
   const feeCollection = (wo.deliveryFeeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP";
   let counterFeeHeld = money(0);
   if (feeCollection === "COUNTER") {
@@ -514,7 +593,11 @@ async function createMissingConsignment(
     if (counterFeeHeld.lte(0) || !counterFeeHeld.eq(fee)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `صافي أمانة أجرة التوصيل المقبوضة (${counterFeeHeld.toFixed(2)}) يجب أن يساوي الأجرة المختارة (${fee.toFixed(2)}) قبل الترميم`,
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ الإصلاح",
+          why: `صافي أمانة أجرة التوصيل المقبوضة (${counterFeeHeld.toFixed(2)}) لا يساوي الأجرة المختارة (${fee.toFixed(2)})`,
+          doThis: "صحّح قيمة الأجرة لتطابق الأمانة المقبوضة، أو ادرس السندات على أمر الشغل قبل الإصلاح",
+        }),
       });
     }
   }
@@ -596,14 +679,36 @@ async function recordPrepaidProof(
 ) {
   requireEvidence(input);
   if (!input.deliveredAt) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "وقت التسليم المثبت مطلوب" });
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: "لم تُدخل وقت التسليم المثبت — الإصلاح يتطلّب تاريخاً ووقتاً محدَّدَين للحدث",
+        doThis: "أدخل وقت التسليم بصيغةٍ صالحة (تاريخ ووقت)، ثم أعد الإرسال",
+      }),
+    });
   }
   const deliveredAt = new Date(input.deliveredAt);
   if (Number.isNaN(deliveredAt.getTime()) || deliveredAt.getTime() > Date.now() + 60_000) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "وقت التسليم غير صالح أو يقع في المستقبل" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبول وقت التسليم",
+        why: "الوقت المُدخل غير صالح أو يقع في المستقبل — التسليم حدثٌ ماضٍ",
+        doThis: "أدخل وقتاً حقيقياً للتسليم (بين اليوم وأيّ تاريخٍ سابق)، ثم أعد الإرسال",
+      }),
+    });
   }
   const row = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, input.targetId)).for("update").limit(1))[0];
-  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+  if (!row)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: `الإرسالية بالرقم ${input.targetId} غير موجودة — الرقم مغلوط أو الإرسالية محذوفة`,
+        doThis: "افتح قائمة الإرساليات واختر إرساليةً موجودة، ثم أعد الإصلاح",
+      }),
+    });
   requireConfirmation(row.consignmentNumber, input.confirmation);
   const createdByRepair = row.workOrderId == null ? null : (await tx
     .select({ id: auditLogs.id })
@@ -620,7 +725,14 @@ async function recordPrepaidProof(
     || row.courierDeliveredAt != null
     || (row.parcelStatus !== "DELIVERED" && (row.parcelStatus !== "ASSIGNED" || !createdByRepair))
   ) {
-    throw new TRPCError({ code: "CONFLICT", message: "الإرسالية لم تعد ضمن حالة مدفوعة مغلقة بلا إثبات" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: "الإرسالية لم تعد ضمن حالة مدفوعةٍ مغلقةٍ بلا إثبات — الشرط الأصليّ لهذا الإصلاح لم يعد قائماً",
+        doThis: "أعد فتح تقرير الإصلاح لتحديث القائمة، ثم اختر إرساليةً ما زالت تستوفي الشرط",
+      }),
+    });
   }
   await tx.update(deliveryConsignments).set({
     courierDeliveredAt: deliveredAt,
@@ -705,10 +817,25 @@ async function reopenPrepaidConsignment(
   ctx: Pick<TrpcContext, "user" | "req">,
 ) {
   const row = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, input.targetId)).for("update").limit(1))[0];
-  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+  if (!row)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: `الإرسالية بالرقم ${input.targetId} غير موجودة — الرقم مغلوط أو الإرسالية محذوفة`,
+        doThis: "افتح قائمة الإرساليات واختر إرساليةً موجودة، ثم أعد الإصلاح",
+      }),
+    });
   requireConfirmation(row.consignmentNumber, input.confirmation);
   if (!money(row.codAmount).isZero() || row.parcelStatus !== "DELIVERED" || row.courierDeliveredAt != null) {
-    throw new TRPCError({ code: "CONFLICT", message: "الإرسالية لم تعد ضمن حالة مدفوعة مغلقة بلا إثبات" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: "الإرسالية لم تعد ضمن حالة مدفوعةٍ مغلقةٍ بلا إثبات — الشرط الأصليّ لهذا الإصلاح لم يعد قائماً",
+        doThis: "أعد فتح تقرير الإصلاح لتحديث القائمة، ثم اختر إرساليةً ما زالت تستوفي الشرط",
+      }),
+    });
   }
   await tx.update(deliveryConsignments).set({
     status: "DISPATCHED",
@@ -748,11 +875,26 @@ async function acknowledgePartial(
   ctx: Pick<TrpcContext, "user" | "req">,
 ) {
   const row = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, input.targetId)).for("update").limit(1))[0];
-  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+  if (!row)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: `الإرسالية بالرقم ${input.targetId} غير موجودة — الرقم مغلوط أو الإرسالية محذوفة`,
+        doThis: "افتح قائمة الإرساليات واختر إرساليةً موجودة، ثم أعد الإصلاح",
+      }),
+    });
   requireConfirmation(row.consignmentNumber, input.confirmation);
   const remaining = round2(money(row.codAmount).minus(money(row.collectedAmount)));
   if (row.moneyStatus !== "PARTIAL" || remaining.lte(0)) {
-    throw new TRPCError({ code: "CONFLICT", message: "الإرسالية لم تعد PARTIAL برصيد مفتوح" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل مراجعة الإرسالية",
+        why: `الإرسالية لم تعد PARTIAL برصيدٍ مفتوح (الحالة ${row.moneyStatus}، المتبقّي ${remaining.toString()})`,
+        doThis: "أعد فتح تقرير المراجعة لتحديث الحالة، ثم اختر إرساليةً ما زالت جزئيّةً برصيدٍ مفتوح",
+      }),
+    });
   }
   const allocationLines = await tx
     .select({ id: deliveryRemittanceLines.id, remittanceId: deliveryRemittanceLines.remittanceId })
@@ -760,7 +902,14 @@ async function acknowledgePartial(
     .where(eq(deliveryRemittanceLines.consignmentId, row.id))
     .for("update");
   if (allocationLines.length === 0) {
-    throw new TRPCError({ code: "CONFLICT", message: "الإرسالية PARTIAL لكن أثر التوريد مفقود؛ لا يمكن تسجيل المراجعة بأمان" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل المراجعة",
+        why: "الإرسالية جزئيّةٌ لكنّ أثر التوريد مفقود — سطر التوريد الأصليّ غير موجود",
+        doThis: "أبلغ الدعم الفنّي — تسجيل المراجعة بأمان يحتاج فحصاً بيانياً على سجلّ التوريد",
+      }),
+    });
   }
   await logAuditTx(tx, ctx, {
     action: "delivery.legacy.partialReviewed",
@@ -783,11 +932,35 @@ async function linkGatewayAccount(
   input: DeliveryLegacyRepairInput,
   ctx: Pick<TrpcContext, "user" | "req">,
 ) {
-  if (input.gatewayUserId == null) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "اختر حساب البوابة صراحةً" });
+  if (input.gatewayUserId == null)
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: "لم تختر حساب البوابة صراحةً — الربط لا يفترض حساباً افتراضياً",
+        doThis: "افتح شاشة الإصلاح واختر حساب البوابة (المندوب) من القائمة، ثم أعد الإرسال",
+      }),
+    });
   const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.targetId)).for("update").limit(1))[0];
-  if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+  if (!party)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: `جهة التوصيل بالرقم ${input.targetId} غير موجودة — الرقم مغلوط أو الجهة محذوفة`,
+        doThis: "افتح قائمة جهات التوصيل واختر جهةً موجودة، ثم أعد الإصلاح",
+      }),
+    });
   requireConfirmation(party.name, input.confirmation);
-  if (!party.isActive) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "أعد تفعيل جهة التوصيل بقرار مستقل قبل ربط حساب البوابة" });
+  if (!party.isActive)
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: "جهة التوصيل معطَّلة — لا يجوز ربط حساب البوابة بجهةٍ غير نشطة",
+        doThis: "أعد تفعيل الجهة من إدارة التوصيل بقرارٍ مستقلٍّ، ثم أعد ربط حساب البوابة",
+      }),
+    });
   const legacyAccount = party.userId == null ? null : (await tx
     .select({ id: users.id, role: users.role, isActive: users.isActive })
     .from(users)
@@ -795,7 +968,15 @@ async function linkGatewayAccount(
     .for("update")
     .limit(1))[0];
   const legacyGatewayValid = Boolean(legacyAccount?.isActive && legacyAccount.role === "courier");
-  if (legacyGatewayValid) throw new TRPCError({ code: "CONFLICT", message: "الجهة مرتبطة بحساب بوابة نشط بالفعل" });
+  if (legacyGatewayValid)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: "الجهة مرتبطةٌ بحساب بوابةٍ نشطٍ بالفعل — لا يُبنى ربطٌ ثانٍ على قائم",
+        doThis: "أزل الربط القديم من إدارة التوصيل قبل ربط حسابٍ جديد، أو ادرس سببه قبل التبديل",
+      }),
+    });
   const memberLinks = await tx
     .select({
       id: deliveryPartyMembers.id,
@@ -809,13 +990,36 @@ async function linkGatewayAccount(
     .where(eq(deliveryPartyMembers.partyId, party.id))
     .for("update");
   const activeMember = memberLinks.find((link) => link.membershipActive && link.userRole === "courier" && link.userActive);
-  if (activeMember) throw new TRPCError({ code: "CONFLICT", message: "الجهة مرتبطة بحساب بوابة نشط بالفعل" });
+  if (activeMember)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: "الجهة مرتبطةٌ بحساب بوابةٍ نشطٍ بالفعل — لا يُبنى ربطٌ ثانٍ على قائم",
+        doThis: "أزل الربط القديم من إدارة التوصيل قبل ربط حسابٍ جديد، أو ادرس سببه قبل التبديل",
+      }),
+    });
   const account = (await tx.select().from(users).where(eq(users.id, input.gatewayUserId)).for("update").limit(1))[0];
   if (!account || account.role !== "courier" || !account.isActive) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الحساب المختار ليس حساب مندوب نشطاً" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: `الحساب المختار (رقم ${input.gatewayUserId}) ليس حساب مندوبٍ نشط — قد يكون معطَّلاً أو ليس بدور مندوب`,
+        doThis: "افتح شاشة المستخدمين وتحقّق من دور الحساب وحالته، أو اختر حساباً مندوبيّاً نشطاً",
+      }),
+    });
   }
   const linked = (await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(eq(deliveryParties.userId, account.id)).limit(1))[0];
-  if (linked) throw new TRPCError({ code: "CONFLICT", message: "حساب المندوب مرتبط بجهة أخرى" });
+  if (linked)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: "حساب المندوب المختار مرتبطٌ بجهة توصيلٍ أخرى — لا يخدم حسابٌ واحدٌ جهتين معاً",
+        doThis: "أزل الربط بالجهة الأخرى من إدارة التوصيل قبل ربطه هنا، أو اختر حساباً غير مرتبط",
+      }),
+    });
   const memberLink = (await tx
     .select({ id: deliveryPartyMembers.id, partyId: deliveryPartyMembers.partyId })
     .from(deliveryPartyMembers)
@@ -852,7 +1056,15 @@ async function confirmExternalWithoutGateway(
   ctx: Pick<TrpcContext, "user" | "req">,
 ) {
   const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.targetId)).for("update").limit(1))[0];
-  if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+  if (!party)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: `جهة التوصيل بالرقم ${input.targetId} غير موجودة — الرقم مغلوط أو الجهة محذوفة`,
+        doThis: "افتح قائمة جهات التوصيل واختر جهةً موجودة، ثم أعد الإصلاح",
+      }),
+    });
   requireConfirmation(party.name, input.confirmation);
   const legacyAccount = party.userId == null ? null : (await tx
     .select({ id: users.id, role: users.role, isActive: users.isActive })
@@ -861,7 +1073,15 @@ async function confirmExternalWithoutGateway(
     .for("update")
     .limit(1))[0];
   const legacyGatewayValid = Boolean(legacyAccount?.isActive && legacyAccount.role === "courier");
-  if (legacyGatewayValid) throw new TRPCError({ code: "CONFLICT", message: "الجهة مرتبطة بحساب بوابة نشط بالفعل" });
+  if (legacyGatewayValid)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: "الجهة مرتبطةٌ بحساب بوابةٍ نشطٍ بالفعل — لا يُبنى ربطٌ ثانٍ على قائم",
+        doThis: "أزل الربط القديم من إدارة التوصيل قبل ربط حسابٍ جديد، أو ادرس سببه قبل التبديل",
+      }),
+    });
   const memberLinks = await tx
     .select({
       id: deliveryPartyMembers.id,
@@ -875,7 +1095,15 @@ async function confirmExternalWithoutGateway(
     .where(eq(deliveryPartyMembers.partyId, party.id))
     .for("update");
   const activeMember = memberLinks.find((link) => link.membershipActive && link.userRole === "courier" && link.userActive);
-  if (activeMember) throw new TRPCError({ code: "CONFLICT", message: "الجهة مرتبطة بحساب بوابة نشط بالفعل" });
+  if (activeMember)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الربط",
+        why: "الجهة مرتبطةٌ بحساب بوابةٍ نشطٍ بالفعل — لا يُبنى ربطٌ ثانٍ على قائم",
+        doThis: "أزل الربط القديم من إدارة التوصيل قبل ربط حسابٍ جديد، أو ادرس سببه قبل التبديل",
+      }),
+    });
   const openConsignments = (await tx
     .select({ count: sql<number>`COUNT(*)` })
     .from(deliveryConsignments)

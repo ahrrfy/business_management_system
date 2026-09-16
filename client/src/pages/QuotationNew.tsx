@@ -9,7 +9,7 @@
  * - اختصارات F2/F4/F9/F12/Esc.
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { Link, useLocation, useParams } from "wouter";
+import { Link, useLocation, useParams, useSearch } from "wouter";
 import { AlertTriangle } from "lucide-react";
 
 import { trpc } from "@/lib/trpc";
@@ -42,14 +42,23 @@ const INVOICE_TYPE = "QUOTATION" as const;
 
 export default function QuotationNew() {
   const [, navigate] = useLocation();
+  const search = useSearch();
   const params = useParams<{ id?: string }>();
   const editQuotationId = params.id ? Number(params.id) : null;
   const isEdit = Number.isInteger(editQuotationId) && Number(editQuotationId) > 0;
+  const sourceQuoteRequestId = useMemo(() => {
+    const value = Number(new URLSearchParams(search).get("storeQuoteRequestId"));
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }, [search]);
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const editQuery = trpc.quotations.get.useQuery(
     { quotationId: isEdit ? Number(editQuotationId) : 1 },
     { enabled: isEdit },
+  );
+  const sourceQuoteRequest = trpc.storeAdmin.quoteRequests.prepareOfficialQuotation.useQuery(
+    { requestId: sourceQuoteRequestId ?? 1 },
+    { enabled: !isEdit && sourceQuoteRequestId != null },
   );
 
   // مصدر الفرع الافتراضي (يأتي مع جلسة المستخدم). نُعيد تهيئة الحالة عند تحميله أول مرة.
@@ -63,6 +72,7 @@ export default function QuotationNew() {
 
   const taxDefaultsAppliedRef = useRef(false);
   const editHydratedRef = useRef(false);
+  const sourceHydratedRequestIdRef = useRef<number | null>(null);
   useEffect(() => {
     const quotation = editQuery.data;
     if (!isEdit || !quotation || editHydratedRef.current) return;
@@ -108,6 +118,55 @@ export default function QuotationNew() {
     editHydratedRef.current = true;
     taxDefaultsAppliedRef.current = true;
   }, [editQuery.data, isEdit, navigate]);
+
+  // طلب المتجر ليس تسعيراً. نملأ فقط العميل وبنود الكتالوج الحية وسعره الحالي القابل للتعديل؛
+  // البنود التي تغيّرت/أوقفت منذ الطلب تبقى في السياق النصّي ليتعامل معها الموظف يدوياً.
+  useEffect(() => {
+    const request = sourceQuoteRequest.data;
+    if (isEdit || !sourceQuoteRequestId || !request || sourceHydratedRequestIdRef.current === request.id) return;
+    const currentLines = request.items.filter(
+      (item) => item.isCurrentCatalogLine && item.productId && item.variantId && item.productUnitId,
+    );
+    const staleLines = request.items.filter((item) => !item.isCurrentCatalogLine);
+    const sourceContext = [
+      `طلب متجر مصدر: ${request.requestNumber}`,
+      request.companyName ? `الجهة: ${request.companyName}` : null,
+      request.governorate ? `المحافظة: ${request.governorate}` : null,
+      `وصف العميل: ${request.customerNote}`,
+      staleLines.length
+        ? `بنود تحتاج مراجعة يدوية لأنها لم تعد متاحة بالكتالوج: ${staleLines.map((item) => `${item.productName} × ${item.quantity} ${item.unitName}`).join("، ")}`
+        : null,
+    ].filter(Boolean).join("\n");
+    dispatch({
+      type: "REPLACE_STATE",
+      state: {
+        ...createInitialState(INVOICE_TYPE, request.branchId),
+        entityId: request.customerId,
+        branchId: request.branchId,
+        tier: request.customerPriceTier,
+        notes: sourceContext,
+        items: currentLines.map((item) => ({
+          productId: Number(item.productId),
+          variantId: Number(item.variantId),
+          productUnitId: Number(item.productUnitId),
+          name: [item.productName, item.currentVariantName ?? item.variantLabel].filter(Boolean).join(" — "),
+          sku: item.sku ?? "",
+          barcode: null,
+          unit: item.currentUnitName ?? item.unitName,
+          qty: item.quantity,
+          conversionFactor: item.conversionFactor ?? "1",
+          stockBase: 0,
+          price: item.suggestedUnitPrice ?? "0",
+          costBase: "0",
+          discount: "0",
+          discountType: "amount",
+          note: "",
+        })),
+      },
+    });
+    sourceHydratedRequestIdRef.current = request.id;
+    taxDefaultsAppliedRef.current = true;
+  }, [isEdit, sourceQuoteRequest.data, sourceQuoteRequestId]);
 
   // مزامنة فرع المستخدم مرة واحدة (إن وصل لاحقاً)؛ لا نطمس اختياره اليدوي بعد ذلك.
   const syncedBranch = useRef(false);
@@ -209,6 +268,7 @@ export default function QuotationNew() {
       priceTier: state.tier,
       validUntil: state.validUntil || undefined,
       notes: state.notes?.trim() || undefined,
+      storefrontQuoteRequestId: sourceQuoteRequestId ?? undefined,
       clientRequestId,
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       taxRatePercent: state.taxEnabled ? D(state.taxRatePercent || "0").toFixed(2) : undefined,
@@ -420,6 +480,19 @@ export default function QuotationNew() {
   if (isEdit && editQuery.isLoading) {
     return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل مسوّدة عرض السعر…</div>;
   }
+  if (!isEdit && sourceQuoteRequestId != null && sourceQuoteRequest.isLoading) {
+    return <div className="p-10 text-center text-muted-foreground">جارٍ تجهيز طلب عرض السعر للمراجعة…</div>;
+  }
+  if (!isEdit && sourceQuoteRequestId != null && sourceQuoteRequest.isError) {
+    return (
+      <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-10 text-center">
+        <AlertTriangle aria-hidden className="size-8 text-destructive" />
+        <p className="font-semibold text-foreground">تعذّر تجهيز العرض الرسمي من طلب المتجر.</p>
+        <p className="max-w-lg text-sm text-muted-foreground">تأكد أن الطلب تمت مراجعته وتسجيل التواصل معه، ثم أعد المحاولة من طابور المتجر.</p>
+        <Link className="rounded-md border bg-card px-4 py-2 text-sm font-semibold hover:bg-muted" href="/store?tab=quote-requests">العودة إلى طلبات عروض الأسعار</Link>
+      </div>
+    );
+  }
   if (isEdit && editQuery.isError) {
     return (
       <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-10 text-center">
@@ -451,6 +524,13 @@ export default function QuotationNew() {
         backHref="/quotations"
         backLabel="رجوع للعروض"
       />
+
+      {!isEdit && sourceQuoteRequest.data && (
+        <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-2 text-sm leading-6 text-foreground">
+          <span className="font-semibold">عرض رسمي من الطلب {sourceQuoteRequest.data.requestNumber}.</span>{" "}
+          راجع الأسعار والكميات والتوفر قبل الحفظ؛ لا يحجز هذا العرض مخزوناً ولا يصدر فاتورة.
+        </div>
+      )}
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط + «صالح حتى» يظهر تلقائياً للنوع QUOTATION) */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />

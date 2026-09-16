@@ -18,7 +18,7 @@ export { getARAging, getCustomerStatement } from "./reports/arAging";
 export type { APAgingRow, SupplierStatementPO, SupplierStatementPayment, SupplierStatementResult } from "./reports/apAging";
 export { getAPAging, getSupplierStatement } from "./reports/apAging";
 export type { DashboardMetricsResult } from "./reports/dashboard";
-export { getDashboardMetrics } from "./reports/dashboard";
+export { getDashboardMetrics, clearDashboardMetricsCache } from "./reports/dashboard";
 export type { SalesAnalyticsFilters, TopProductRow, SlowMoverRow, CategoryProfitRow } from "./reports/salesAnalytics";
 export { getTopProducts, getSlowMovers, getProfitByCategory } from "./reports/salesAnalytics";
 export type { WIPRow, WIPReport } from "./reports/wip";

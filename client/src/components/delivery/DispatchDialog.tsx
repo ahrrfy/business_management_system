@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Truck, UserPlus } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Truck, UserPlus } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { AnimatedDeliveryButton } from "@/components/delivery/AnimatedDeliveryButton";
+import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
@@ -24,6 +26,7 @@ export interface DispatchableOrder {
   /** مَن يقبض الأجرة (Slice B، ٢٩/٨/٢٦): يحدّد ما يدفعه الزبون للمندوب صراحةً في المُلخّص. */
   deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   deliveryCost?: string | null;
+  notes?: string | null;
 }
 
 export interface DispatchParty {
@@ -41,7 +44,11 @@ export interface DispatchConfirmArgs {
   fee: string;
   recipientName: string;
   recipientPhone: string;
+  deliveryAddress?: string;
+  notes?: string;
   assignedUserId?: number;
+  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  externalTrackingRef?: string;
 }
 
 /**
@@ -53,18 +60,22 @@ export interface DispatchConfirmArgs {
  * وُثِّقا عند إنشاء/تصنيف الأمر. الحقلان الآن قابلان للتحرير، ومُهيَّآن افتراضياً من بيانات الأمر
  * (اسم العميل + هاتف التوصيل الصريح أو هاتف العميل احتياطاً).
  */
-export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
+export function DispatchDialog({ order, parties, pending, onClose, onConfirm, onDirectHandover }: {
   order: DispatchableOrder | null;
   parties: DispatchParty[];
   pending: boolean;
   onClose: () => void;
   onConfirm: (args: DispatchConfirmArgs) => void;
+  onDirectHandover?: () => void;
 }) {
   const [partyId, setPartyId] = useState<string>("");
   const [fee, setFee] = useState<string>("0");
   const [recipientName, setRecipientName] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
+  const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [notes, setNotes] = useState("");
   const [assignedUserId, setAssignedUserId] = useState("");
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const selectedParty = parties.find((p) => String(p.id) === partyId);
 
   useMemo(() => {
@@ -76,7 +87,10 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
       setFee(preset > 0 ? String(preset) : "0");
       setRecipientName(order.customerName?.trim() || "");
       setRecipientPhone(order.deliveryPhone?.trim() || order.customerPhone?.trim() || "");
+      setDeliveryAddress(order.deliveryAddress?.trim() || "");
+      setNotes(order.notes?.trim() || "");
       setAssignedUserId("");
+      setExternalTrackingRef("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id]);
@@ -98,6 +112,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
   const pickParty = (id: string) => {
     setPartyId(id);
     setAssignedUserId("");
+    setExternalTrackingRef("");
     const p = parties.find((x) => String(x.id) === id);
     if (p) setFee(String(Number(p.defaultFee ?? 0)));
   };
@@ -111,15 +126,41 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
       fee: fee || "0",
       recipientName: recipientName.trim(),
       recipientPhone: recipientPhone.trim(),
+      deliveryAddress: deliveryAddress.trim() || undefined,
+      notes: notes.trim() || undefined,
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
+      externalTrackingRef: selectedParty?.partyType === "COMPANY" && externalTrackingRef.trim() ? externalTrackingRef.trim() : undefined,
     });
   };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" dir="rtl" onClick={onClose}>
       <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="mb-1 text-lg font-extrabold">تسليم «{order.title}» لمندوب</h3>
+        <h3 className="mb-1 text-lg font-extrabold">تسليم «{order.title}»</h3>
         <p className="mb-4 text-xs text-muted-foreground">{order.orderNumber} — {order.customerName ?? "عميل نقدي"}</p>
+
+        {onDirectHandover && (
+          <div className="mb-5 rounded-xl border-2 border-emerald-500/40 bg-emerald-500/10 p-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-black text-emerald-800 dark:text-emerald-300">تسليم مباشر للزبون الآن</h4>
+                <p className="text-xs text-muted-foreground">الزبون حاضر في المحل · تحصيل نقدي فوري وإغلاق الأمر من اللوحة</p>
+              </div>
+              <Button
+                type="button"
+                variant="default"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-black shrink-0"
+                disabled={pending}
+                onClick={onDirectHandover}
+              >
+                <CheckCircle2 className="size-4 me-1.5" />
+                تسليم مباشر (نقدي)
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-2 text-xs font-bold text-muted-foreground">أو إسناد لشركة/مندوب توصيل:</div>
         <div className="mb-3 grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>
@@ -166,6 +207,14 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
             <IntlPhoneInput value={recipientPhone} onChange={setRecipientPhone} ariaLabel="هاتف المستلم" className="h-11" />
           </div>
         </div>
+        <div className="mb-3">
+          <label className="mb-1.5 block text-sm font-bold">عنوان التوصيل</label>
+          <Input value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="المحافظة - المدينة - الحي - أقرب نقطة دالة…" className="h-11" />
+        </div>
+        <div className="mb-3">
+          <label className="mb-1.5 block text-sm font-bold">ملاحظات التوصيل</label>
+          <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="أي تعليمات للمندوب أو وقت التسليم المفضل…" className="h-11" />
+        </div>
         <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
           {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
@@ -196,18 +245,58 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
             </AppSelect>
           </div>
         )}
+        {selectedParty?.partyType === "COMPANY" && (
+          <div className="mb-3">
+            <label className="mb-1.5 block text-sm font-bold">
+              رقم إيصال / مرجع الشركة
+              <span className="mr-1.5 text-xs font-normal text-muted-foreground">(اختياري)</span>
+            </label>
+            <Input
+              value={externalTrackingRef}
+              onChange={(e) => setExternalTrackingRef(e.target.value)}
+              placeholder="أدخل رقم تتبع أو مرجع الشركة إن وُجد…"
+              maxLength={100}
+              className="h-9 text-sm font-mono"
+              dir="ltr"
+            />
+          </div>
+        )}
         {selectedParty?.hasPortalAccess === false && (
           <p className="mb-3 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs font-medium text-[var(--sem-warn)]">
             هذه الجهة بلا حساب بوابة؛ سيُسجَّل الإسناد إدارياً لكنها لن ترى الطلب في «توصيلاتي» حتى تربط حساباً بها.
           </p>
         )}
+        <div className="mb-3 flex justify-end">
+          <WhatsAppStageActionsMenu
+            data={{
+              orderNumber: order.orderNumber,
+              title: order.title,
+              customerName: recipientName || order.customerName,
+              customerPhone: recipientPhone || order.deliveryPhone || order.customerPhone,
+              deliveryAddress: order.deliveryAddress,
+              courierName: selectedParty?.name,
+              codAmount: cod,
+              deliveryFee: feeNum,
+              feeCollection: feeCollection,
+            }}
+            size="sm"
+            label="معاينة رسائل واتساب للطلب"
+          />
+        </div>
         <p className="mb-4 flex items-start gap-1.5 text-xs text-destructive">
           <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
           <span>ستُصدَر فاتورة وتُسجَّل {fmt(String(cod))} د.ع ذمّةً على «{selectedParty?.name ?? "المندوب"}». لا رجعة.</span>
         </p>
         <div className="flex gap-2.5">
           <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
-          <Button variant="destructive" className="flex-1" onClick={submit} disabled={pending || !partyId}>{pending ? "جارٍ…" : "تأكيد التسليم للمندوب"}</Button>
+          <AnimatedDeliveryButton
+            variant="destructive"
+            className="flex-1"
+            onClick={submit}
+            disabled={pending || !partyId}
+            isDispatching={pending}
+            label="تأكيد التسليم للمندوب"
+          />
         </div>
       </div>
     </div>

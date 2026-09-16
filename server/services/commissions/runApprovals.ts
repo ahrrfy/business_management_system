@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   commissionRunApprovalRequests,
   commissionRunLines,
@@ -9,8 +9,9 @@ import {
 import { isDupEntry } from "@shared/errorMap.ar";
 import type { Tx } from "../../db";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { requireDb, type Actor, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { approveRunInTx, type ApproveResult } from "./runs";
 
 export interface RequestCommissionRunApprovalInput {
@@ -56,7 +57,7 @@ function exactRequestReplay(
   payloadHash: string,
   actor: Actor,
 ): boolean {
-  return row.payloadHash === payloadHash && Number(row.requestedBy) === actor.userId;
+  return payloadHashMatches(payloadHash, row.payloadHash) && Number(row.requestedBy) === actor.userId;
 }
 
 function exactRequestIntentReplay(
@@ -149,7 +150,7 @@ export async function requestCommissionRunApproval(
   const requestKey = normalizedKey(input.requestKey, "مفتاح الطلب");
   const reason = normalizedText(input.reason, "سبب طلب الاعتماد");
   assertRequestedScope(input.scopeBranchId, authorizedScope);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = await loadRequestByKey(tx, requestKey);
     if (replay) {
       if (!exactRequestIntentReplay(replay, input, reason, actor)) {
@@ -217,6 +218,13 @@ export async function requestCommissionRunApproval(
       throw new TRPCError({ code: "CONFLICT", message: "يوجد طلب اعتماد معلّق لهذا النطاق أو استُهلك المفتاح" });
     }
   }, { gate: "NONE" });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "commissions.run.approve",
+    id: Number(result.id),
+    reason,
+    expectedVersion: Number(result.baseRunVersion),
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 class StaleCommissionRunApproval extends Error {}
@@ -254,6 +262,7 @@ function assertIndependentReviewer(
   run: typeof commissionRuns.$inferSelect,
   actor: Actor,
 ) {
+  if (actor.isOwner) return;
   if (Number(request.requestedBy) === actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يراجع منشئ طلب الاعتماد طلبه بنفسه" });
   }
@@ -482,7 +491,8 @@ export async function rejectCommissionRunRequest(
 export async function listCommissionRunApprovalRequests(
   actor: Actor,
   readableScope: number | null,
-  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; runId?: number },
+  /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ (300) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; runId?: number; order?: "ASC" | "DESC" },
 ) {
   void actor;
   const db = requireDb();
@@ -513,6 +523,6 @@ export async function listCommissionRunApprovalRequests(
         ? undefined
         : eq(commissionRunApprovalRequests.scopeBranchId, readableScope),
     ))
-    .orderBy(desc(commissionRunApprovalRequests.id))
+    .orderBy(options?.order === "ASC" ? asc(commissionRunApprovalRequests.id) : desc(commissionRunApprovalRequests.id))
     .limit(300);
 }

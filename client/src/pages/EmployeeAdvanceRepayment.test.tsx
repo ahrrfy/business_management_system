@@ -16,8 +16,11 @@ describe("employee advance repayment UI contract", () => {
       "rejectAdvanceRepayment",
     ]) expect(panel).toContain(`payroll.${route}`);
     expect(panel).toContain("!owner && <Button");
-    expect(panel).toContain(".every((actorId) => currentUserId !== Number(actorId))");
-    expect(panel).toContain("يلزم مالك مستقل عن صانع الطلب");
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — الاعتماد/الرفض مشروطان بـowner
+    // وحده، لا باستقلاله عن صانع الطلب أو مراجع أصله.
+    expect(panel).toContain("{owner && request.status === \"PENDING\" && <>");
+    expect(panel).not.toContain(".every((actorId) => currentUserId !== Number(actorId))");
+    expect(panel).not.toContain("يلزم مالك مستقل عن صانع الطلب");
   });
 
   it("shows scoped advance balances without querying salary runs or salary obligations", () => {
@@ -70,10 +73,10 @@ describe("employee advance repayment UI contract", () => {
     expect(panel).toContain('header: "قيد التخصيص"');
   });
 
-  it("prevents a return from being approved by an actor involved in the original repayment", () => {
-    expect(panel).toContain("original?.createdBy");
-    expect(panel).toContain("original?.reviewedBy");
-    expect(panel).toContain(".every((actorId) => currentUserId !== Number(actorId))");
+  it("lets any active owner decide a return regardless of who touched the original repayment (قرار المالك ٣/٩/٢٦)", () => {
+    expect(panel).not.toContain("original?.createdBy");
+    expect(panel).not.toContain("original?.reviewedBy");
+    expect(panel).not.toContain("const independent");
   });
 
   it("keeps IQD arithmetic in Decimal and guards Excel conversion", () => {

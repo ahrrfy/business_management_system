@@ -1,0 +1,17 @@
+{
+  "name": "alrueya-secure-transport",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native P-256 device-proof boundary for Super Arabia.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "keywords": [
+    "expo-module",
+    "security",
+    "device-proof"
+  ],
+  "peerDependencies": {
+    "expo": "*",
+    "react-native": "*"
+  }
+}

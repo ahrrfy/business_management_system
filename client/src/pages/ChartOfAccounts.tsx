@@ -1,8 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TableEmptyRow } from "@/components/PageState";
-import { trpc } from "@/lib/trpc";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * شجرة الحسابات (P0، الدفتر المزدوج) — عرضٌ للقراءة فقط في هذه المرحلة. الحسابات بياناتٌ مرجعية تُبذَر
@@ -19,6 +20,36 @@ const TYPE_TONE: Record<string, string> = {
   EXPENSE: "text-money-negative",
 };
 
+/** صفُّ الحساب — مشتقٌّ من عقد `accounts.tree` فلا ينجرف عن الخادم. */
+type AccountRow = RouterOutputs["accounts"]["tree"][number]["rows"][number];
+
+const accountColumns: ColumnDef<AccountRow, unknown>[] = [
+  { id: "code", header: "الرمز", accessorFn: (r) => r.code, enableSorting: false, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+  {
+    id: "name",
+    enableSorting: false,
+    header: "اسم الحساب",
+    accessorFn: (r) => r.name,
+    meta: { width: "wide" },
+    // الإزاحة تُبقي التسلسل الهرميّ مقروءاً: الرؤوس الخمسة بلا إزاحة وأبناؤها مُزاحون.
+    cell: ({ row }) => <span className={row.original.parentId == null ? "" : "ps-6 inline-block"}>{row.original.name}</span>,
+  },
+  {
+    id: "systemRole",
+    enableSorting: false,
+    header: "الدور النظاميّ (الربط)",
+    accessorFn: (r) => r.systemRole ?? "",
+    cell: ({ row }) =>
+      row.original.systemRole ? (
+        <code className="text-xs rounded bg-muted px-1.5 py-0.5" dir="ltr">
+          {row.original.systemRole}
+        </code>
+      ) : (
+        <span className="text-xs text-muted-foreground">—</span>
+      ),
+  },
+];
+
 export default function ChartOfAccounts() {
   const tree = trpc.accounts.tree.useQuery();
   const groups = tree.data ?? [];
@@ -29,7 +60,7 @@ export default function ChartOfAccounts() {
         title="شجرة الحسابات"
         description="أساس الدفتر المزدوج — كل حساب مربوطٌ بالمفهوم القائم في النظام عبر «الدور النظاميّ». عرضٌ للقراءة (المرحلة الأولى)."
       />
-      {tree.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+      {tree.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
       {!tree.isLoading && groups.length === 0 && (
         <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">لا حسابات بعد.</CardContent></Card>
       )}
@@ -39,34 +70,19 @@ export default function ChartOfAccounts() {
             <CardTitle className={`text-base ${TYPE_TONE[g.type] ?? ""}`}>{g.label}</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 w-24">الرمز</th>
-                    <th className="p-2">اسم الحساب</th>
-                    <th className="p-2">الدور النظاميّ (الربط)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {g.rows.map((a) => {
-                    const isHeader = a.parentId == null; // الرؤوس الخمسة
-                    return (
-                      <tr key={a.id} className={`border-t ${isHeader ? "bg-muted/30 font-semibold" : ""}`}>
-                        <td className="p-2 tabular-nums" dir="ltr">{a.code}</td>
-                        <td className={`p-2 ${isHeader ? "" : "ps-6"}`}>{a.name}</td>
-                        <td className="p-2">
-                          {a.systemRole
-                            ? <code className="text-xs rounded bg-muted px-1.5 py-0.5" dir="ltr">{a.systemRole}</code>
-                            : <span className="text-xs text-muted-foreground">—</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {g.rows.length === 0 && <TableEmptyRow colSpan={3} message="لا حسابات." />}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: البطاقة تحمل عنوان المجموعة، وشريطُ حالةٍ لكل نوعِ حسابٍ ضجيجٌ لا معلومة. */}
+            <DataTable<AccountRow>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              data={g.rows}
+              columns={accountColumns}
+              /* `!bg-…`: تلوينُ `odd:`/`even:` في `DataTable` أعلى تخصّصاً من صنف خلفيةٍ
+                 عاديّ ⇒ بلا `!` تفقد الرؤوسُ الخمسةُ تمييزَها البصريّ ولا يبقى إلّا الخطّ العريض. */
+              getRowClassName={(a) => (a.parentId == null ? "!bg-muted/30 font-semibold" : undefined)}
+              emptyText="لا حسابات."
+            />
           </CardContent>
         </Card>
       ))}

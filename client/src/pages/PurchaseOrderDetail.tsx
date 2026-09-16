@@ -6,11 +6,63 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
-import { Banknote, PackageCheck, Pencil } from "lucide-react";
+import { Banknote, Pencil } from "lucide-react";
 import { Link, useParams } from "wouter";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { NextActionChip } from "@/components/nextAction/NextActionChip";
+
+/** بندُ أمر الشراء — مشتقٌّ من عقد `purchases.get` فلا ينجرف عن الخادم. */
+type PoItemRow = NonNullable<RouterOutputs["purchases"]["get"]>["items"][number];
+
+/**
+ * أعمدة البنود. تُبنى بدالّة لأنّ رؤوسها وقيمها تتبع عملة الأمر: أمرُ الدولار
+ * يعرض `usdUnitPrice`/`usdTotal` ورأسَه بعلامة `($)`.
+ */
+function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
+  return [
+    {
+      id: "product",
+      header: "الصنف",
+      accessorFn: (it) => (it.productName ?? "—") + (it.variantName ? " — " + it.variantName : ""),
+      meta: { width: "wide" },
+      cell: ({ row }) => (
+        <>
+          {row.original.productName ?? "—"}
+          {row.original.variantName ? <span className="text-muted-foreground"> — {row.original.variantName}</span> : null}
+        </>
+      ),
+    },
+    { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName ?? "—", cell: ({ row }) => row.original.unitName ?? "—" },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => fmtAr(it.quantity), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.quantity) },
+    {
+      // الطرفان بوحدة الأساس: `quantity` بوحدة الشراء و`receivedBaseQuantity` بالأساس،
+      // فمقارنتهما مباشرةً تُظهر «٢ مطلوب / ٢٤ مستلَم» لكرتونٍ من ١٢.
+      id: "received",
+      header: "المستلَم / المطلوب (أساس)",
+      accessorFn: (it) => fmtAr(it.receivedBaseQuantity) + " / " + fmtAr(it.baseQuantity),
+      meta: { kind: "number" },
+      cell: ({ row }) => fmtAr(row.original.receivedBaseQuantity) + " / " + fmtAr(row.original.baseQuantity),
+    },
+    {
+      id: "unitPrice",
+      header: isUsd ? "سعر الوحدة ($)" : "سعر الوحدة",
+      accessorFn: (it) => fmtAr(isUsd ? it.usdUnitPrice : it.unitPrice),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(isUsd ? row.original.usdUnitPrice : row.original.unitPrice),
+    },
+    {
+      id: "total",
+      header: isUsd ? "الإجمالي ($)" : "الإجمالي",
+      accessorFn: (it) => fmtAr(isUsd ? it.usdTotal : it.total),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(isUsd ? row.original.usdTotal : row.original.total),
+    },
+  ];
+}
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -50,8 +102,7 @@ function Field({
  *
  * سدّ رابطٍ مكسور: «سجلّ المشتريات» و«دفتر الأستاذ» يربطان رقم الأمر بـ`/purchases/:id`
  * وكان المسار غير معرَّف في App.tsx ⇒ صفحة فارغة عند كل نقرة (تدقيق ١٧/٧، السطر ٣٤١).
- * لم يُوجَّه الرابط إلى `/purchases/:id/receive` لأنّ تلك شاشة **إجراء** لأمين المخزن،
- * بينما قارئ الأستاذ محاسبٌ/مدقّق — التوجيه إليها يخلط الأدوار ويصدّ من لا يملك الاستلام.
+ * الاعتماد النهائي هو إجراء الاستلام والترحيل نفسه؛ لا توجد شاشة استلام مستقلة.
  *
  * التكلفة محجوبة خادمياً لغير أدواتها (`purchases.get` يُفرغ الأسعار والإجماليات إلى null)
  * ⇒ الشاشة تعرض «—» بلا منطق حجبٍ عميليّ موازٍ.
@@ -65,7 +116,7 @@ export default function PurchaseOrderDetail() {
   );
   const me = trpc.auth.me.useQuery();
 
-  const canReceive = hasModuleAccess(
+  const canEdit = hasModuleAccess(
     me.data?.role ?? "",
     (
       me.data as
@@ -122,9 +173,6 @@ export default function PurchaseOrderDetail() {
             .toString(),
         )
       : positiveDiff(d.total, d.paidAmount);
-  // الاستلام مقصورٌ على CONFIRMED: `receivePurchase` يرفض كل ما عداها (purchase/receive.ts:180)
-  // ⇒ إظهار الزرّ لمسوّدةٍ أو أمرٍ مُرسَل يقود المستخدم إلى رفضٍ حتميّ بعد ملء النموذج.
-  const openForReceiving = d.status === "CONFIRMED";
   // التعديل ممكن ما لم يبدأ الأثر الفعليّ: أمرٌ نهائيّ، أو استُلم منه سطر، أو حمل دفعة.
   // نفس حرّاس `updatePurchaseOrder` — والخادم هو الحكم النهائيّ.
   const openForEditing =
@@ -138,7 +186,7 @@ export default function PurchaseOrderDetail() {
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
-          canReceive && (openForEditing || openForReceiving) ? (
+          canEdit && openForEditing ? (
             <div className="flex items-center gap-2">
               {openForEditing ? (
                 <Button asChild size="sm" variant="outline">
@@ -148,17 +196,15 @@ export default function PurchaseOrderDetail() {
                   </Link>
                 </Button>
               ) : null}
-              {openForReceiving ? (
-                <Button asChild size="sm">
-                  <Link href={`/purchases/goods-receipts?purchaseOrderId=${d.id}`}>
-                    <PackageCheck aria-hidden className="size-4" />
-                    إنشاء إذن استلام
-                  </Link>
-                </Button>
-              ) : null}
             </div>
           ) : undefined
         }
+      />
+
+      {/* م٢ ق١١ — «الخطوة التالية» لأمر الشراء. اختياريّ العقد فيسقط إلى null بأمان. */}
+      <NextActionChip
+        nextAction={d.nextAction ?? null}
+        terminalReason={d.nextActionReason ?? null}
       />
 
       <Card>
@@ -194,7 +240,7 @@ export default function PurchaseOrderDetail() {
       </Card>
 
       {/* بعد cutover، الدفع يُخصَّص إلى فاتورة مورد مرحّلة لا إلى أمر الشراء مباشرةً. */}
-      {canReceive &&
+      {canEdit &&
       d.status !== "CANCELLED" &&
       remaining != null &&
       remaining.gt(0) ? (
@@ -223,67 +269,16 @@ export default function PurchaseOrderDetail() {
           <CardTitle className="text-base">البنود</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-muted-foreground">
-                <tr>
-                  <th className="p-2.5 text-end font-medium">الصنف</th>
-                  <th className="p-2.5 text-end font-medium">الوحدة</th>
-                  <th className="p-2.5 text-end font-medium">الكمية</th>
-                  <th className="p-2.5 text-end font-medium">
-                    المستلَم / المطلوب (أساس)
-                  </th>
-                  <th className="p-2.5 text-end font-medium">
-                    سعر الوحدة{isUsd ? " ($)" : ""}
-                  </th>
-                  <th className="p-2.5 text-end font-medium">
-                    الإجمالي{isUsd ? " ($)" : ""}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.items.map((it) => (
-                  <tr key={it.id} className="border-b last:border-0">
-                    <td className="p-2.5 text-end">
-                      {it.productName ?? "—"}
-                      {it.variantName ? (
-                        <span className="text-muted-foreground">
-                          {" "}
-                          — {it.variantName}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="p-2.5 text-end">{it.unitName ?? "—"}</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(it.quantity)}
-                    </td>
-                    {/* الطرفان بوحدة الأساس: `quantity` بوحدة الشراء و`receivedBaseQuantity` بالأساس،
-                        فمقارنتهما مباشرةً تُظهر «٢ مطلوب / ٢٤ مستلَم» لكرتونٍ من ١٢. */}
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(it.receivedBaseQuantity)} /{" "}
-                      {fmtAr(it.baseQuantity)}
-                    </td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(isUsd ? it.usdUnitPrice : it.unitPrice)}
-                    </td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(isUsd ? it.usdTotal : it.total)}
-                    </td>
-                  </tr>
-                ))}
-                {d.items.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="p-4 text-center text-muted-foreground"
-                    >
-                      لا بنود في هذا الأمر.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+          {/* مُضمَّن: البطاقة تحمل عنوان «البنود»، والإجماليات في بطاقةٍ مستقلّة أدناه. */}
+          <DataTable<PoItemRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            data={d.items}
+            columns={poItemColumns(isUsd)}
+            emptyText="لا بنود في هذا الأمر."
+          />
         </CardContent>
       </Card>
 
@@ -297,36 +292,69 @@ export default function PurchaseOrderDetail() {
               قيم التكلفة محجوبة عن صلاحيّتك.
             </p>
           ) : (
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <Field label="المجموع قبل الضريبة">{fmtAr(d.subtotal)}</Field>
-              {/* خصم فاتورة المورّد (0204): **مطبَّقٌ في الأعمدة أعلاه** — المجموع صافٍ بعده،
-                  والذمّة وتكلفة المخزون كذلك. يُعرَض إفصاحاً لا بنداً يُطرَح مرّةً أخرى. */}
-              {D(d.invoiceDiscount ?? 0).gt(0) && (
-                <Field label="خصم فاتورة المورّد (مطبَّق)">
-                  −{fmtAr(d.invoiceDiscount)}
-                  {isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0)
-                    ? ` (${fmtAr(d.usdInvoiceDiscount)} $)`
-                    : ""}
-                </Field>
-              )}
-              <Field label="الضريبة">{fmtAr(d.taxAmount)}</Field>
-              <Field label="الشحن">{fmtAr(d.shippingCost)}</Field>
-              <Field label="الكمرك">{fmtAr(d.customsCost)}</Field>
-              <Field label="الإجمالي">{fmtAr(d.total)}</Field>
-              <Field label="المدفوع">{fmtAr(d.paidAmount)}</Field>
-              {isUsd ? (
-                <>
-                  {/* مطابَقةٌ لا اشتقاق: منذ ضابط `supplierInvoiceTotal` يُرفض حفظ أمرٍ يخالف
-                      قيمة فاتورة المورّد، فهذا الرقم هو رقم الورقة نفسه. */}
-                  <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
-                  <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
-                  <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>
-                  <Field label="المتبقّي للمورّد ($)">
-                    {fmtAr(remaining?.toString())}
+            <div className="space-y-4">
+              {/* ما يُحسَب فعلاً ضمن «الإجمالي» وذمّة المورّد — بضاعةٌ فقط، بلا شحن ولا كمرك
+                  (قرار المالك ٥/٨/٢٦: order.ts `total = subtotal + tax`). كانا سابقاً يُعرَضان
+                  كسطرَين مجاورَين لهذه المجموعة فيبدوان مطروحَين منها رغم أنهما لم يدخلاها قطّ —
+                  فُصلا بصرياً أدناه ليزول هذا الالتباس. */}
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                <Field label="المجموع قبل الضريبة">{fmtAr(d.subtotal)}</Field>
+                {/* خصم فاتورة المورّد (0204): **مطبَّقٌ في الأعمدة أعلاه** — المجموع صافٍ بعده،
+                    والذمّة وتكلفة المخزون كذلك. يُعرَض إفصاحاً لا بنداً يُطرَح مرّةً أخرى. */}
+                {D(d.invoiceDiscount ?? 0).gt(0) && (
+                  <Field label="خصم فاتورة المورّد (مطبَّق)">
+                    −{fmtAr(d.invoiceDiscount)}
+                    {isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0)
+                      ? ` (${fmtAr(d.usdInvoiceDiscount)} $)`
+                      : ""}
                   </Field>
-                </>
-              ) : (
-                <Field label="المتبقّي">{fmtAr(remaining?.toString())}</Field>
+                )}
+                <Field label="الضريبة">{fmtAr(d.taxAmount)}</Field>
+                <Field label="الإجمالي (ذمّة المورّد)">
+                  <span className="font-bold">{fmtAr(d.total)}</span>
+                </Field>
+                <Field label="المدفوع">{fmtAr(d.paidAmount)}</Field>
+                {isUsd ? (
+                  <>
+                    {/* مطابَقةٌ لا اشتقاق: منذ ضابط `supplierInvoiceTotal` يُرفض حفظ أمرٍ يخالف
+                        قيمة فاتورة المورّد، فهذا الرقم هو رقم الورقة نفسه. */}
+                    <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
+                    <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
+                    <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>
+                    <Field label="المتبقّي للمورّد ($)">
+                      <span
+                        className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
+                      >
+                        {fmtAr(remaining?.toString())}
+                        {remaining && remaining.lte(0) ? " (مسدد)" : ""}
+                      </span>
+                    </Field>
+                  </>
+                ) : (
+                  <Field label="المتبقّي">
+                    <span
+                      className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
+                    >
+                      {fmtAr(remaining?.toString())}
+                      {remaining && remaining.lte(0) ? " (مسدد)" : ""}
+                    </span>
+                  </Field>
+                )}
+              </div>
+
+              {(D(d.shippingCost ?? 0).gt(0) || D(d.customsCost ?? 0).gt(0)) && (
+                <div className="rounded-md border bg-[var(--sem-warn-bg)]/60 p-3">
+                  <p className="mb-2 text-xs font-semibold text-[var(--sem-warn)]">
+                    مصروف نقلٍ منفصل — لا يدخل «الإجمالي» أعلاه ولا ذمّة المورّد
+                  </p>
+                  <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                    <Field label="الشحن">{fmtAr(d.shippingCost)}</Field>
+                    <Field label="الكمرك">{fmtAr(d.customsCost)}</Field>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                    يُستحقّ مصروف نقلٍ لناقلٍ مستقلّ عند الاستلام (سند صرفٍ خاصّ به)، ولا يُخفَّض عند مرتجع هذا الأمر.
+                  </p>
+                </div>
               )}
             </div>
           )}

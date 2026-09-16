@@ -67,7 +67,7 @@ async function approvePurchaseOrder(purchaseOrderId: number, expectedVersion: nu
     decisionKey: `financial-final-approve:${randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت الاستلام",
-  }, { userId: 2, branchId: 1, role: "manager" });
+  }, { userId: 2, branchId: 1, role: "manager" }, { legacyConfirmOnly: true });
 }
 
 beforeEach(async () => {
@@ -98,7 +98,7 @@ describe("saleService — قفل صفّ الوردية يَسَلْسِل الب
       actor,
     );
     expect(r.status).toBe("PAID");
-    const close = await closeShift({ shiftId, countedCash: "10.00", handoverToUserId: 2 }, actor);
+    const close = await closeShift({ shiftId, countedCash: "10.00" }, actor);
     expect(close.expectedCash).toBe("10.00"); // البيع محسوب
     expect(close.variance).toBe("0.00");
   });

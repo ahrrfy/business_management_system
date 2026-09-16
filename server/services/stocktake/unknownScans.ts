@@ -5,7 +5,7 @@
 //   - DISMISS: صنفٌ مجهولٌ تماماً أو غير ذي صلة ⇒ يُغلق بملاحظة (يبقى في السجل append-only).
 // الحلّ يعبُر الأساسيّ والبديل معاً (نفس منطق resolveBarcodeOwner)، ويُرفض الخدميّ/البكج.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   branchStock,
   products,
@@ -18,6 +18,12 @@ import {
   stocktakeUnknownScans,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import {
+  barcodeComparisonKey,
+  barcodeIdentityCandidates,
+  canonicalizeBarcodeInput,
+} from "@shared/barcodeNormalize";
+import { normalizedMatchAny } from "../catalog/barcodeAliases";
 import { toDbMoney } from "../money";
 import { requireDb, withTx } from "../tx";
 import type { StkActor } from "./types";
@@ -55,7 +61,31 @@ async function resolveBarcodesToVariants(
     string,
     { variantId: number; productName: string; isService: boolean; isBundle: boolean; costPrice: string }
   >();
-  if (!barcodes.length) return out;
+  // (٤/٩) المفتاح **مُطبَّع**: يُطابَق المسحُ المخزَّن (stocktakeUnknownScans.barcode) بكتالوجٍ صار مُطبَّعاً
+  // عند الكتابة. المُدخل قد يحمل مسافةً طرفية أو أرقاماً عربية-هندية من التقاط الميدان، والكتالوج نظيف
+  // ⇒ نُطبّع الطرفين ونُفهرس النتيجة بالصيغة المُطبَّعة. القرّاء يستعلمون بـ`canonicalizeBarcodeInput`.
+  const canon = Array.from(new Set(barcodes.map(canonicalizeBarcodeInput).filter(Boolean)));
+  if (!canon.length) return out;
+  const candidates = Array.from(new Set(canon.flatMap(barcodeIdentityCandidates)));
+  const requestedKeys = new Set(candidates.map(barcodeComparisonKey));
+  const ambiguousKeys = new Set<string>();
+  const remember = (
+    storedBarcode: string | null,
+    value: { variantId: number; productName: string; isService: boolean; isBundle: boolean; costPrice: string },
+  ) => {
+    if (!storedBarcode) return;
+    for (const candidate of barcodeIdentityCandidates(storedBarcode)) {
+      const key = barcodeComparisonKey(candidate);
+      if (!requestedKeys.has(key) || ambiguousKeys.has(key)) continue;
+      const prior = out.get(key);
+      if (prior && prior.variantId !== value.variantId) {
+        out.delete(key);
+        ambiguousKeys.add(key);
+      } else {
+        out.set(key, value);
+      }
+    }
+  };
   const primary = await tx
     .select({
       barcode: productUnits.barcode,
@@ -68,43 +98,38 @@ async function resolveBarcodesToVariants(
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(inArray(productUnits.barcode, barcodes));
+    .where(or(inArray(productUnits.barcode, candidates), normalizedMatchAny(productUnits.barcode, candidates)!));
   for (const r of primary) {
-    if (r.barcode && !out.has(r.barcode))
-      out.set(r.barcode, {
-        variantId: Number(r.variantId),
-        productName: r.productName,
-        isService: !!r.isService,
-        isBundle: !!r.isBundle,
-        costPrice: String(r.costPrice ?? "0"),
-      });
+    remember(r.barcode, {
+      variantId: Number(r.variantId),
+      productName: r.productName,
+      isService: !!r.isService,
+      isBundle: !!r.isBundle,
+      costPrice: String(r.costPrice ?? "0"),
+    });
   }
-  const remaining = barcodes.filter((b) => !out.has(b));
-  if (remaining.length) {
-    const alias = await tx
-      .select({
-        barcode: productUnitBarcodes.barcode,
-        variantId: productVariants.id,
-        productName: products.name,
-        isService: products.isService,
-        isBundle: products.isBundle,
-        costPrice: productVariants.costPrice,
-      })
-      .from(productUnitBarcodes)
-      .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(inArray(productUnitBarcodes.barcode, remaining));
-    for (const r of alias) {
-      if (r.barcode && !out.has(r.barcode))
-        out.set(r.barcode, {
-          variantId: Number(r.variantId),
-          productName: r.productName,
-          isService: !!r.isService,
-          isBundle: !!r.isBundle,
-          costPrice: String(r.costPrice ?? "0"),
-        });
-    }
+  const alias = await tx
+    .select({
+      barcode: productUnitBarcodes.barcode,
+      variantId: productVariants.id,
+      productName: products.name,
+      isService: products.isService,
+      isBundle: products.isBundle,
+      costPrice: productVariants.costPrice,
+    })
+    .from(productUnitBarcodes)
+    .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(or(inArray(productUnitBarcodes.barcode, candidates), normalizedMatchAny(productUnitBarcodes.barcode, candidates)!));
+  for (const r of alias) {
+    remember(r.barcode, {
+      variantId: Number(r.variantId),
+      productName: r.productName,
+      isService: !!r.isService,
+      isBundle: !!r.isBundle,
+      costPrice: String(r.costPrice ?? "0"),
+    });
   }
   return out;
 }
@@ -186,7 +211,7 @@ export async function listUnknownScans(
   }
 
   return rows.map((r) => {
-    const hit = resolved.get(r.barcode);
+    const hit = resolved.get(barcodeComparisonKey(r.barcode));
     const already = hit ? inScope.has(hit.variantId) : false;
     const resolvable = !!hit && !hit.isService && !hit.isBundle && !already;
     return {
@@ -222,8 +247,9 @@ export async function resolveUnknownScan(
   actor: StkActor,
   opts: { restrictBranchId: number | null } = { restrictBranchId: null },
 ): Promise<ResolveUnknownScanResult> {
-  const barcode = input.barcode.trim();
+  const barcode = canonicalizeBarcodeInput(input.barcode);
   if (!barcode) throw new TRPCError({ code: "BAD_REQUEST", message: "باركود غير صالح." });
+  const barcodeCandidates = barcodeIdentityCandidates(barcode);
 
   return withTx(async (tx) => {
     const session = await loadSessionForManager(tx, input.sessionId, opts.restrictBranchId);
@@ -234,7 +260,13 @@ export async function resolveUnknownScan(
       .where(
         and(
           eq(stocktakeUnknownScans.sessionId, session.id),
-          eq(stocktakeUnknownScans.barcode, barcode),
+          // (٤/٩، مراجعة Codex P2) نطابق العمود المُطبَّع أيضاً: صفوف PENDING الملتقَطة قبل النشر قد
+          // تحمل أرقاماً عربية-هندية، والمساواةُ الخامّة على مُدخلٍ مُطبَّع تُعمي ADD_TO_SCOPE/DISMISS عنها
+          // فتبقى عالقةً في جلسةٍ جارية. الالتقاطُ الجديد مُطبَّعٌ أصلاً فالمساواة الخامّة تكفيه (المسار السريع).
+          or(
+            inArray(stocktakeUnknownScans.barcode, barcodeCandidates),
+            normalizedMatchAny(stocktakeUnknownScans.barcode, barcodeCandidates)!,
+          ),
           eq(stocktakeUnknownScans.status, "PENDING"),
         ),
       )
@@ -259,7 +291,7 @@ export async function resolveUnknownScan(
         });
       }
       const resolved = await resolveBarcodesToVariants(tx, [barcode]);
-      const hit = resolved.get(barcode);
+      const hit = resolved.get(barcodeComparisonKey(barcode));
       if (!hit) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",

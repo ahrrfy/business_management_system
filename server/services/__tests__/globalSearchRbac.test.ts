@@ -5,8 +5,34 @@
  * المحسوبة (قالب الدور + permissionsOverride) لا باسم الدور الأساس — مطابِقةً تماماً
  * لـ requireModule("hr","READ")، وإدارة المستخدمين للأدمن فقط.
  */
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { canSeeType } from "../globalSearchService";
+
+const searchMocks = vi.hoisted(() => ({
+  db: {},
+  getDb: vi.fn(),
+  searchEmployees: vi.fn(),
+}));
+
+vi.mock("../../db", () => ({ getDb: searchMocks.getDb }));
+vi.mock("../globalSearch/searchHr", () => ({
+  searchEmployees: searchMocks.searchEmployees,
+  searchUsers: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("../globalSearch/searchMasterData", () => ({
+  searchProducts: vi.fn().mockResolvedValue([]),
+  searchCustomers: vi.fn().mockResolvedValue([]),
+  searchSuppliers: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("../globalSearch/searchDocuments", () => ({
+  searchInvoices: vi.fn().mockResolvedValue([]),
+  searchQuotations: vi.fn().mockResolvedValue([]),
+  searchWorkOrders: vi.fn().mockResolvedValue([]),
+  searchPurchaseOrders: vi.fn().mockResolvedValue([]),
+  searchExpenses: vi.fn().mockResolvedValue([]),
+}));
+
+import { globalSearch } from "../globalSearch/orchestrator";
 
 describe("canSeeType — RBAC للموظف/المستخدم (يحلّ permissionsOverride)", () => {
   it("الأدمن يرى كل شيء", () => {
@@ -79,5 +105,43 @@ describe("canSeeType — بوّابة الوحدة لكل نوع بحث (يطا�
     expect(canSeeType("cashier", "INVOICE")).toBe(true); // sales: FULL
     expect(canSeeType("cashier", "WORK_ORDER")).toBe(true); // workorders: FULL
     expect(canSeeType("cashier", "PRODUCT")).toBe(true); // products: READ
+  });
+});
+
+describe("globalSearch — نطاق فرع الموظفين", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    searchMocks.getDb.mockReturnValue(searchMocks.db);
+    searchMocks.searchEmployees.mockResolvedValue([]);
+  });
+
+  it("يرفض المستخدم غير العابر عندما لا يكون له فرع", async () => {
+    await expect(globalSearch({
+      query: "موظف",
+      branchId: null,
+      role: "manager",
+      scopes: ["EMPLOYEE"],
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(searchMocks.searchEmployees).not.toHaveBeenCalled();
+  });
+
+  it("يمرر فرع المدير إلى بحث الموظفين", async () => {
+    await globalSearch({
+      query: "موظف",
+      branchId: 17,
+      role: "manager",
+      scopes: ["EMPLOYEE"],
+    });
+    expect(searchMocks.searchEmployees).toHaveBeenCalledWith(searchMocks.db, "TEXT", "موظف", 6, 17);
+  });
+
+  it("يبقي الأدمن عابر الفروع", async () => {
+    await globalSearch({
+      query: "موظف",
+      branchId: null,
+      role: "admin",
+      scopes: ["EMPLOYEE"],
+    });
+    expect(searchMocks.searchEmployees).toHaveBeenCalledWith(searchMocks.db, "TEXT", "موظف", 6, null);
   });
 });

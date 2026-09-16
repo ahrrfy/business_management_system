@@ -1,17 +1,31 @@
+import Decimal from "decimal.js";
 import { Link } from "wouter";
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
 import { PurchaseCancellationDialog } from "@/components/purchases/PurchaseCancellationDialog";
+import { PurchaseDetailDrawer } from "@/components/purchases/PurchaseDetailDrawer";
 import { CopyInline } from "@/components/CopyButton";
 import { ActorCell } from "@/components/data-table/ActorCell";
+import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
+import { QuickSupplierPaymentDialog } from "@/components/purchases/QuickSupplierPaymentDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TablePager } from "@/components/table/TablePager";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { confirm } from "@/lib/confirm";
@@ -24,6 +38,7 @@ import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
 import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   moduleAccessAllowed,
@@ -67,6 +82,13 @@ const SETTLEMENT_CLASS: Record<string, string> = {
 /** حجم صفحة القائمة — الخادم يُرقّم. */
 const PAGE_SIZE = 50;
 
+/**
+ * مرساةُ الصفّ المُبرَز من ميل البحث الشامل (Ctrl+K). `DataTable` لا يقبل `ref` لكلّ صفّ،
+ * فيمرّ الإبراز عبر `getRowClassName` ويُمرَّر الصفّ إلى وسط الشاشة بأثرٍ يبحث عن هذه
+ * المرساة بعد الرسم — نفس سلوك ref السابق بلا تعديل المكوّن المشترك.
+ */
+const FOCUS_ANCHOR_CLASS = "purchase-focus-anchor";
+
 export default function Purchases() {
   const utils = trpc.useUtils();
   const controlKeysRef = useRef(new Map<string, string>());
@@ -77,6 +99,7 @@ export default function Purchases() {
     version: number;
   } | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [drawerPoId, setDrawerPoId] = useState<number | null>(null);
   function controlKey(kind: "SUBMIT" | "CANCEL", id: number, version: number) {
     const key = `${kind}:${id}:${version}`;
     const existing = controlKeysRef.current.get(key);
@@ -138,6 +161,46 @@ export default function Purchases() {
       ),
     [pendingControls.data],
   );
+  const pendingOrderControlMap = useMemo(() => {
+    const map = new Map<
+      number,
+      Extract<
+        NonNullable<typeof pendingControls.data>["rows"][number],
+        { documentType: "PURCHASE_ORDER" }
+      >
+    >();
+    for (const row of pendingControls.data?.rows ?? []) {
+      if (row.documentType === "PURCHASE_ORDER") {
+        map.set(Number(row.purchaseOrderId), row);
+      }
+    }
+    return map;
+  }, [pendingControls.data?.rows]);
+
+  const [quickPaymentTarget, setQuickPaymentTarget] = useState<PurchaseRow | null>(null);
+  const [quickApprovalTarget, setQuickApprovalTarget] = useState<{
+    id: number;
+    poNumber: string;
+    controlRequestId?: number;
+    version: number;
+  } | null>(null);
+  const [quickApprovalReason, setQuickApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
+
+  const decideControlMut = trpc.purchases.decideControl.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        res.status === "APPROVED"
+          ? "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
+          : "تم تحديث حالة طلب الاعتماد",
+      );
+      setQuickApprovalTarget(null);
+      await Promise.all([
+        utils.purchases.list.invalidate(),
+        utils.purchases.pendingControls.invalidate(),
+      ]);
+    },
+    onError: (err) => notify.err(err),
+  });
   const controlStateUnavailable =
     canManagePurchases &&
     (pendingControls.isLoading || pendingControls.isError);
@@ -204,6 +267,14 @@ export default function Purchases() {
   const countQ = trpc.purchases.listCount.useQuery(listInput);
   const total = countQ.data?.count;
 
+  // تمريرُ الصفّ المُبرَز إلى وسط الشاشة بعد رسم الصفوف (بديل ref الذي كان على <tr>).
+  useEffect(() => {
+    if (rows.length === 0) return;
+    document
+      .querySelector(`.${FOCUS_ANCHOR_CLASS}`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [rows, rowProps]);
+
   // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى.
   useEffect(() => {
     setPage(0);
@@ -231,14 +302,13 @@ export default function Purchases() {
         utils.purchases.pendingControls.invalidate(),
       ]);
       notify.ok(
-        "أُرسل أمر الشراء للاعتماد — لا يصبح قابلاً للاستلام قبل قرار مراجع مستقل",
+        "أُرسلت الفاتورة للاعتماد المستقل؛ الاعتماد النهائي سيضيف كامل الكميات إلى المخزون",
       );
     },
     onError: (e) => notify.err(e),
   });
 
-  // اعتماد مسوّدة (DRAFT ← CONFIRMED): يُتمّم دورة «حفظ مسوّدة» في شاشة الإنشاء — بعدها الأمر
-  // قابل للاستلام عبر شاشة الاستلام.
+  // الإرسال صفري الأثر؛ الاعتماد المستقل اللاحق يستلم الفاتورة ويرحّلها كاملةً.
   async function confirmOrder(p: {
     id: number;
     poNumber: string;
@@ -247,7 +317,7 @@ export default function Purchases() {
     const ok = await confirm({
       variant: "info",
       title: "إرسال أمر الشراء للاعتماد",
-      description: `سيُرسل الأمر ${p.poNumber} إلى مراجع مستقل. لن يصبح قابلاً للاستلام بمجرد الإرسال.`,
+      description: `سيُرسل الأمر ${p.poNumber} إلى مراجع مستقل. عند اعتماده تُضاف كامل الكميات إلى المخزون مباشرةً.`,
       confirmText: "إرسال للاعتماد",
       cancelText: "تراجع",
       requireText: p.poNumber,
@@ -506,293 +576,465 @@ export default function Purchases() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false} showColumnVisibility={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">رقم الأمر</th>
-                  <th className="p-2">المورد</th>
-                  {/* عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (نمط Invoices.tsx). */}
-                  {showBranchCol && <th className="p-2">الفرع</th>}
-                  <th className="p-2">التاريخ</th>
-                  <th className="p-2 text-right">الإجمالي</th>
-                  <th className="p-2 text-right">فاتورة المورد</th>
-                  <th className="p-2 text-right">سعر التثبيت</th>
-                  <th className="p-2 text-right">المتبقي</th>
-                  <th className="p-2">التسوية</th>
-                  <th className="p-2">الحالة</th>
-                  <th className="p-2">منشئ الأمر</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((p) => {
+          <DataTable<PurchaseRow>
+            data={rows}
+            loading={query.isLoading}
+            errorState={{
+              isError: query.isError,
+              message: query.error?.message,
+              onRetry: () => void query.refetch(),
+            }}
+            /* البحث والفلاتر في ListToolbar أعلاه (تغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
+            /* الترقيم خادميّ (limit/offset + listCount) ⇒ شريطٌ واحد داخل الجدول بدل TablePager منفصل. */
+            serverPagination={{
+              page,
+              onPageChange: setPage,
+              pageSize: PAGE_SIZE,
+              total,
+              isFetching: query.isFetching,
+            }}
+            getRowClassName={(p) => {
+              const focus = rowProps(p.id).className;
+              return focus ? `${focus} ${FOCUS_ANCHOR_CLASS}` : undefined;
+            }}
+            emptyText="لا أوامر شراء مطابقة."
+            columns={[
+              {
+                id: "poNumber",
+                header: "رقم الأمر",
+                accessorFn: (p) => p.poNumber,
+                meta: { kind: "code" },
+                cell: ({ row }) => (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setDrawerPoId(row.original.id)}
+                      className="font-mono font-medium text-primary hover:underline cursor-pointer text-right"
+                      title="معاينة تفاصيل وبنود أمر الشراء"
+                    >
+                      {row.original.poNumber}
+                    </button>
+                    <CopyInline value={row.original.poNumber} />
+                  </div>
+                ),
+              },
+              {
+                id: "supplier",
+                header: "المورد",
+                accessorFn: (p) => p.supplierName ?? "—",
+                meta: { width: "wide" },
+                cell: ({ row }) =>
+                  /* ٢٤/٨ (تدقيق): اسم المورّد رابطٌ لكشف حسابه — بلا حاجةٍ لفتح ⋯. */
+                  row.original.supplierName &&
+                  row.original.supplierId &&
+                  canOpenSupplierStatement ? (
+                    <Link
+                      href={`/suppliers-statement?id=${row.original.supplierId}`}
+                      className="text-primary hover:underline"
+                      title="فتح كشف حساب المورّد"
+                    >
+                      {row.original.supplierName}
+                    </Link>
+                  ) : (
+                    (row.original.supplierName ?? "—")
+                  ),
+              },
+              // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (نمط Invoices.tsx).
+              ...(showBranchCol
+                ? ([
+                    {
+                      id: "branch",
+                      header: "الفرع",
+                      accessorFn: (p) =>
+                        branchNames.get(p.branchId ?? -1) ?? "—",
+                      cell: ({ row }) =>
+                        branchNames.get(row.original.branchId ?? -1) ?? "—",
+                    },
+                  ] as ColumnDef<PurchaseRow, unknown>[])
+                : []),
+              {
+                id: "orderDate",
+                header: "التاريخ",
+                accessorFn: (p) => fmtDate(p.orderDate),
+                meta: { kind: "date" },
+                cell: ({ row }) => fmtDate(row.original.orderDate),
+              },
+              {
+                id: "total",
+                header: "الإجمالي",
+                accessorFn: (p) => fmt(p.total),
+                meta: { kind: "money" },
+                cell: ({ row }) => fmt(row.original.total),
+              },
+              {
+                id: "supplierInvoice",
+                header: "فاتورة المورد",
+                accessorFn: (p) =>
+                  p.agreedCurrency === "USD"
+                    ? `${fmt(p.usdTotal)} $`
+                    : `${fmt(p.total)} د.ع`,
+                meta: { kind: "money" },
+                cell: ({ row }) =>
+                  row.original.agreedCurrency === "USD"
+                    ? `${fmt(row.original.usdTotal)} $`
+                    : `${fmt(row.original.total)} د.ع`,
+              },
+              {
+                id: "agreedRate",
+                header: "سعر التثبيت",
+                accessorFn: (p) =>
+                  p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—",
+                meta: { kind: "money" },
+                cell: ({ row }) =>
+                  row.original.agreedCurrency === "USD"
+                    ? fmt(row.original.agreedRate)
+                    : "—",
+              },
+              {
+                id: "remaining",
+                header: "المتبقي",
+                // ⚠️ كانت هذه الخلية الوحيدة في الجدول تعرض الرقم بلا فواصل آلاف (positiveDiff(...).toFixed(2)
+                // مباشرةً) بينما كل عمود مالٍ مجاورٍ (الإجمالي/فاتورة المورد) يمرّ عبر fmt() — تناقضٌ بصريّ
+                // يكسر إيقاع الجدول (جولة بصرية ٣/٩). fmt() يلفّ نفس Decimal بتنسيق en-US الموحَّد.
+                accessorFn: (p) => {
+                  const effectivePaid = Decimal.max(
+                    D(p.paidAmount ?? 0),
+                    D(p.linkedCashPaidAmount ?? 0),
+                  );
+                  return p.agreedCurrency === "USD"
+                    ? `${fmt(
+                        D(p.usdTotal ?? 0)
+                          .minus(D(p.paidUsd ?? 0))
+                          .toFixed(2),
+                      )} $`
+                    : `${fmt(positiveDiff(p.total ?? 0, effectivePaid.toString()).toFixed(2))} د.ع`;
+                },
+                meta: { kind: "money" },
+                // ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع».
+                cell: ({ row }) => {
+                  const isUsd = row.original.agreedCurrency === "USD";
+                  const effectivePaid = Decimal.max(
+                    D(row.original.paidAmount ?? 0),
+                    D(row.original.linkedCashPaidAmount ?? 0),
+                  );
+                  const rem = isUsd
+                    ? D(row.original.usdTotal ?? 0).minus(
+                        D(row.original.paidUsd ?? 0),
+                      )
+                    : positiveDiff(
+                        row.original.total ?? 0,
+                        effectivePaid.toString(),
+                      );
+                  const isSettled = rem.lte(0);
+                  return (
+                    <span
+                      className={`font-bold ${isSettled ? "text-money-positive" : ""}`}
+                      title="المتبقّي = الإجمالي − المدفوع"
+                    >
+                      {isUsd
+                        ? `${fmt(rem.toFixed(2))} $`
+                        : `${fmt(rem.toFixed(2))} د.ع`}
+                      {isSettled ? " (مسدد)" : ""}
+                    </span>
+                  );
+                },
+              },
+              {
+                id: "settlementType",
+                header: "التسوية",
+                accessorFn: (p) =>
+                  SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType,
+                meta: { kind: "status" },
+                cell: ({ row }) => {
+                  const total = D(row.original.total ?? 0);
+                  const paid = D(row.original.paidAmount ?? 0);
+                  const linkedPaid = D(row.original.linkedCashPaidAmount ?? 0);
+                  const effectivePaid = Decimal.max(paid, linkedPaid);
+                  const isFullyPaid =
+                    row.original.status === "RECEIVED" &&
+                    total.gt(0) &&
+                    effectivePaid.gte(total);
+                  return (
+                    <div className="space-y-1">
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[row.original.settlementType] ?? "badge-status-pending"}`}
+                      >
+                        {SETTLEMENT_TYPE[row.original.settlementType] ??
+                          row.original.settlementType}
+                      </span>
+                      {isFullyPaid ? (
+                        <div
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-money-positive"
+                          title="مسدد بالكامل — لا توجد ذمة متبقية على هذا الأمر"
+                        >
+                          <CheckCircle2 aria-hidden className="size-3" />
+                          مسدد بالكامل
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                },
+              },
+              {
+                id: "status",
+                header: "الحالة",
+                accessorFn: (p) => PO_STATUS[p.status] ?? p.status,
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[row.original.status] ?? "badge-status-pending"}`}
+                  >
+                    {PO_STATUS[row.original.status] ?? row.original.status}
+                  </span>
+                ),
+              },
+              {
+                id: "createdBy",
+                header: "منشئ الأمر",
+                accessorFn: (p) => p.createdByName ?? "",
+                meta: { kind: "actor" },
+                cell: ({ row }) => (
+                  <ActorCell
+                    actor={{
+                      userId: row.original.createdBy,
+                      name: row.original.createdByName,
+                      source:
+                        row.original.createdBy == null ? "legacy" : "user",
+                    }}
+                  />
+                ),
+              },
+              {
+                id: "actions",
+                header: "إجراء",
+                enableSorting: false,
+                meta: { kind: "actions" },
+                cell: ({ row }) => {
+                  const p = row.original;
                   const terminal =
                     p.status === "RECEIVED" || p.status === "CANCELLED";
                   const needsConfirmation = p.status === "DRAFT";
                   const awaitingApproval = p.status === "SENT";
                   const hasPendingControl = pendingOrderIds.has(Number(p.id));
-                  const fr = rowProps(p.id);
-                  return (
-                    <tr
-                      key={p.id}
-                      ref={fr.ref}
-                      className={`border-t ${fr.className}`}
-                    >
-                      <td className="p-2">
-                        <CopyInline value={p.poNumber} />
-                      </td>
-                      <td className="p-2">
-                        {/* ٢٤/٨ (تدقيق): اسم المورّد رابطٌ لكشف حسابه — بلا حاجةٍ لفتح ⋯. */}
-                        {p.supplierName &&
-                        p.supplierId &&
-                        canOpenSupplierStatement ? (
-                          <Link
-                            href={`/suppliers-statement?id=${p.supplierId}`}
-                            className="text-primary hover:underline"
-                            title="فتح كشف حساب المورّد"
-                          >
-                            {p.supplierName}
-                          </Link>
-                        ) : (
-                          (p.supplierName ?? "—")
-                        )}
-                      </td>
-                      {showBranchCol && (
-                        <td className="p-2">
-                          {branchNames.get(p.branchId ?? -1) ?? "—"}
-                        </td>
-                      )}
-                      <td
-                        className="p-2 whitespace-nowrap tabular-nums"
-                        dir="ltr"
-                      >
-                        {fmtDate(p.orderDate)}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmt(p.total)}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {p.agreedCurrency === "USD"
-                          ? `${fmt(p.usdTotal)} $`
-                          : `${fmt(p.total)} د.ع`}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—"}
-                      </td>
-                      {/* ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع». */}
-                      <td
-                        className="p-2 text-right font-bold tabular-nums"
-                        dir="ltr"
-                        title="المتبقّي = الإجمالي − المدفوع"
-                      >
-                        {p.agreedCurrency === "USD"
-                          ? `${D(p.usdTotal ?? 0)
-                              .minus(D(p.paidUsd ?? 0))
-                              .toFixed(2)} $`
-                          : `${positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2)} د.ع`}
-                      </td>
-                      <td className="p-2">
-                        {/* ٢٤/٨ (تدقيق): شارةُ لون بدل نصٍّ خام. */}
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[p.settlementType] ?? "badge-status-pending"}`}
-                        >
-                          {SETTLEMENT_TYPE[p.settlementType] ??
-                            p.settlementType}
-                        </span>
-                      </td>
-                      <td className="p-2">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[p.status] ?? "badge-status-pending"}`}
-                        >
-                          {PO_STATUS[p.status] ?? p.status}
-                        </span>
-                      </td>
-                      <td className="p-2">
-                        <ActorCell
-                          actor={{
-                            userId: p.createdBy,
-                            name: p.createdByName,
-                            source: p.createdBy == null ? "legacy" : "user",
-                          }}
-                        />
-                      </td>
-                      <td className="p-2 text-center">
-                        <RowActions
-                          mode="auto"
-                          contact={{
-                            whatsapp: supplierContacts.get(Number(p.supplierId))
-                              ?.whatsapp,
-                            phone: supplierContacts.get(Number(p.supplierId))
-                              ?.phone,
-                            label: `واتساب ${p.supplierName ?? "المورّد"}`,
-                            message: buildOperationalContactMessage({
-                              entityLabel: "أمر شراء",
-                              reference: p.poNumber,
-                              partyName: p.supplierName,
-                              title: `إجمالي الأمر: ${fmt(p.total)} د.ع`,
-                              dueAt: p.orderDate,
-                              status: PO_STATUS[p.status] ?? p.status,
-                              nextAction:
-                                p.status === "CONFIRMED"
-                                  ? "يرجى تأكيد موعد تجهيز الطلب."
-                                  : undefined,
-                            }),
-                            gate: { module: "purchases", level: "READ" },
-                          }}
-                          actions={[
-                            {
-                              key: "confirm",
-                              kind: "approve",
-                              label: "إرسال للاعتماد",
-                              // الإرسال لا يعني الاعتماد؛ يبقى SENT حتى يحسمه مراجع مستقل.
-                              hidden: !needsConfirmation,
-                              disabled:
-                                confirmMut.isPending ||
-                                hasPendingControl ||
-                                controlStateUnavailable,
-                              disabledReason: controlStateUnavailable
-                                ? "تعذّر التحقق من طلبات التحكم"
-                                : hasPendingControl
-                                  ? "يوجد طلب تحكم معلّق"
-                                  : "توجد عملية إرسال قيد التنفيذ",
-                              onSelect: () =>
-                                void confirmOrder({
-                                  id: p.id,
-                                  poNumber: p.poNumber,
-                                  version: Number(p.version),
-                                }),
-                              gate: {
-                                roles: ["manager", "purchasing"],
-                                module: "purchases",
-                                level: "FULL",
-                              },
-                            },
-                            {
-                              key: "edit",
-                              kind: "edit",
-                              label: "تعديل الأمر",
-                              href: `/purchases/${p.id}/edit`,
-                              // الأهليّة الكاملة خادمية (لا استلام/لا دفعة)؛ هنا نُخفيه عن النهائيّ
-                              // فقط — والشاشة نفسها تشرح سبب المنع لو تعذّر التعديل.
-                              hidden:
-                                terminal ||
-                                awaitingApproval ||
-                                p.status === "CONFIRMED",
-                              gate: {
-                                roles: ["manager", "purchasing"],
-                                module: "purchases",
-                                level: "FULL",
-                              },
-                            },
-                            {
-                              key: "receive",
-                              kind: terminal ? "view" : "approve",
-                              label: terminal ? "عرض" : "استلام",
-                              href: `/purchases/${p.id}/receive`,
-                              // مسوّدة غير قابلة للاستلام قبل الاعتماد (receive يشترط status=CONFIRMED خادمياً).
-                              hidden: needsConfirmation || awaitingApproval,
-                              gate: terminal
-                                ? { module: "purchases", level: "READ" }
-                                : {
-                                    roles: [
-                                      "warehouse",
-                                      "manager",
-                                      "purchasing",
-                                    ],
-                                    module: "purchases",
-                                    level: "FULL",
-                                  },
-                            },
-                            {
-                              key: "print",
-                              kind: "print",
-                              label: "طباعة أمر الشراء",
-                              onSelect: () => void printOrder(p.id),
-                              gate: { module: "purchases", level: "READ" },
-                            },
-                            {
-                              key: "stmt",
-                              kind: "view",
-                              label: "كشف حساب المورد",
-                              href: `/suppliers-statement?id=${p.supplierId}`,
-                              hidden: p.supplierId == null,
-                              gate: { module: "suppliers", level: "READ" },
-                            },
-                            {
-                              key: "preturn",
-                              kind: "reverse",
-                              label: "مرتجع شراء",
-                              href: `/purchase-returns/new?po=${encodeURIComponent(p.poNumber)}`,
-                              // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
-                              hidden:
-                                p.status !== "RECEIVED" &&
-                                p.status !== "CONFIRMED",
-                              gate: {
-                                roles: ["manager", "purchasing"],
-                                module: "purchases",
-                                level: "FULL",
-                              },
-                            },
-                            {
-                              key: "cancel",
-                              kind: "reverse",
-                              label: "إلغاء الأمر",
-                              variant: "destructive",
-                              // الحارس النهائي خادمي (يرفض المستلَم جزئياً) — رسالته العربية تظهر عبر notify.err.
-                              hidden:
-                                p.status === "RECEIVED" ||
-                                p.status === "CANCELLED",
-                              disabled:
-                                cancelMut.isPending ||
-                                hasPendingControl ||
-                                controlStateUnavailable,
-                              disabledReason: controlStateUnavailable
-                                ? "تعذّر التحقق من طلبات التحكم"
-                                : hasPendingControl
-                                  ? "يوجد طلب تحكم معلّق"
-                                  : "توجد عملية إلغاء قيد التنفيذ",
-                              onSelect: () =>
-                                void cancelOrder({
-                                  id: p.id,
-                                  poNumber: p.poNumber,
-                                  total: String(p.total ?? "0"),
-                                  version: Number(p.version),
-                                }),
-                              gate: {
-                                roles: ["manager", "purchasing"],
-                                module: "purchases",
-                                level: "FULL",
-                              },
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
+                  const isUsd = p.agreedCurrency === "USD";
+                  const effectivePaid = Decimal.max(
+                    D(p.paidAmount ?? 0),
+                    D(p.linkedCashPaidAmount ?? 0),
                   );
-                })}
-                {!query.isLoading && rows.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={showBranchCol ? 12 : 11}
-                      className="p-6 text-center text-muted-foreground"
-                    >
-                      لا أوامر شراء مطابقة.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+                  const rem = isUsd
+                    ? positiveDiff(p.usdTotal, D(p.paidUsd ?? 0).plus(D(p.returnedUsd ?? 0)).toString())
+                    : positiveDiff(p.total ?? 0, effectivePaid.toString());
+                  const isSettled = rem.lte(0);
+                  const activeControl = pendingOrderControlMap.get(Number(p.id));
+                  const currentUserId = me.data?.id;
+                  const isOwner = me.data?.isOwner === true;
+                  const violatesSod =
+                    !isOwner &&
+                    (currentUserId == null ||
+                      (activeControl != null &&
+                        [
+                          activeControl.requestedBy,
+                          activeControl.creatorId,
+                          activeControl.lastEditedBy,
+                          p.createdBy,
+                          (p as { lastEditedBy?: number | null }).lastEditedBy,
+                          (p as { submittedBy?: number | null }).submittedBy,
+                        ].some((id) => id != null && Number(id) === Number(currentUserId))));
+                  const canDirectApprove =
+                    p.status === "SENT" &&
+                    activeControl != null &&
+                    activeControl.kind === "APPROVE_REVISION" &&
+                    !violatesSod;
+
+                  return (
+                    <RowActions
+                      mode="auto"
+                      contact={{
+                        whatsapp: supplierContacts.get(Number(p.supplierId))
+                          ?.whatsapp,
+                        phone: supplierContacts.get(Number(p.supplierId))
+                          ?.phone,
+                        label: `واتساب ${p.supplierName ?? "المورّد"}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "أمر شراء",
+                          reference: p.poNumber,
+                          partyName: p.supplierName,
+                          title: `إجمالي الأمر: ${fmt(p.total)} د.ع`,
+                          dueAt: p.orderDate,
+                          status: PO_STATUS[p.status] ?? p.status,
+                          nextAction:
+                            p.status === "CONFIRMED"
+                              ? "يرجى تأكيد موعد تجهيز الطلب."
+                              : undefined,
+                        }),
+                        gate: { module: "purchases", level: "READ" },
+                      }}
+                      actions={[
+                        {
+                          key: "direct-approve",
+                          kind: "approve",
+                          label: "اعتماد واستلام البضاعة",
+                          hidden: !canDirectApprove,
+                          disabled:
+                            decideControlMut.isPending ||
+                            controlStateUnavailable,
+                          disabledReason: controlStateUnavailable
+                            ? "تعذّر التحقق من طلبات التحكم"
+                            : undefined,
+                          onSelect: () => {
+                            if (!activeControl) return;
+                            setQuickApprovalTarget({
+                              id: p.id,
+                              poNumber: p.poNumber,
+                              controlRequestId: Number(activeControl.id),
+                              version: Number(p.version),
+                            });
+                            setQuickApprovalReason("اعتماد واستلام البضاعة كاملة");
+                          },
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "quick-pay",
+                          kind: "edit",
+                          label: "سداد فوري للمورد",
+                          hidden: p.status !== "RECEIVED" || isSettled,
+                          onSelect: () => setQuickPaymentTarget(p),
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "confirm",
+                          kind: "approve",
+                          label: "إرسال للاعتماد",
+                          // الإرسال لا يعني الاعتماد؛ يبقى SENT حتى يحسمه مراجع مستقل.
+                          hidden: !needsConfirmation,
+                          disabled:
+                            confirmMut.isPending ||
+                            hasPendingControl ||
+                            controlStateUnavailable,
+                          disabledReason: controlStateUnavailable
+                            ? "تعذّر التحقق من طلبات التحكم"
+                            : hasPendingControl
+                              ? "يوجد طلب تحكم معلّق"
+                              : "توجد عملية إرسال قيد التنفيذ",
+                          onSelect: () =>
+                            void confirmOrder({
+                              id: p.id,
+                              poNumber: p.poNumber,
+                              version: Number(p.version),
+                            }),
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "edit",
+                          kind: "edit",
+                          label: "تعديل الأمر",
+                          href: `/purchases/${p.id}/edit`,
+                          // الأهليّة الكاملة خادمية (لا استلام/لا دفعة)؛ هنا نُخفيه عن النهائيّ
+                          // فقط — والشاشة نفسها تشرح سبب المنع لو تعذّر التعديل.
+                          hidden:
+                            terminal ||
+                            awaitingApproval ||
+                            p.status === "CONFIRMED",
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "preview",
+                          kind: "view",
+                          label: "معاينة التفاصيل",
+                          onSelect: () => setDrawerPoId(p.id),
+                          gate: { module: "purchases", level: "READ" },
+                        },
+                        {
+                          key: "receive",
+                          kind: "view",
+                          label: "عرض التفاصيل",
+                          href: `/purchases/${p.id}`,
+                          gate: { module: "purchases", level: "READ" },
+                        },
+                        {
+                          key: "print",
+                          kind: "print",
+                          label: "طباعة أمر الشراء",
+                          onSelect: () => void printOrder(p.id),
+                          gate: { module: "purchases", level: "READ" },
+                        },
+                        {
+                          key: "stmt",
+                          kind: "view",
+                          label: "كشف حساب المورد",
+                          href: `/suppliers-statement?id=${p.supplierId}`,
+                          hidden: p.supplierId == null,
+                          gate: { module: "suppliers", level: "READ" },
+                        },
+                        {
+                          key: "preturn",
+                          kind: "reverse",
+                          label: "مرتجع شراء",
+                          href: `/returns?portal=purchases&po=${encodeURIComponent(p.poNumber)}`,
+                          // الإرجاع للمورد ممكن فقط بعد اعتماد الفاتورة وترحيلها.
+                          hidden: p.status !== "RECEIVED",
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "cancel",
+                          kind: "reverse",
+                          label: "إلغاء الأمر",
+                          variant: "destructive",
+                          // الحارس النهائي خادمي (يرفض المستلَم جزئياً) — رسالته العربية تظهر عبر notify.err.
+                          hidden:
+                            p.status === "RECEIVED" || p.status === "CANCELLED",
+                          disabled:
+                            cancelMut.isPending ||
+                            hasPendingControl ||
+                            controlStateUnavailable,
+                          disabledReason: controlStateUnavailable
+                            ? "تعذّر التحقق من طلبات التحكم"
+                            : hasPendingControl
+                              ? "يوجد طلب تحكم معلّق"
+                              : "توجد عملية إلغاء قيد التنفيذ",
+                          onSelect: () =>
+                            void cancelOrder({
+                              id: p.id,
+                              poNumber: p.poNumber,
+                              total: String(p.total ?? "0"),
+                              version: Number(p.version),
+                            }),
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                      ]}
+                    />
+                  );
+                },
+              },
+            ]}
+          />
         </CardContent>
-        <TablePager
-          page={page}
-          onPageChange={setPage}
-          pageSize={PAGE_SIZE}
-          rowsOnPage={rows.length}
-          total={total}
-          isLoading={query.isFetching}
-        />
       </Card>
       {canViewIntegrity && (
         <PurchaseIntegrityPanel
@@ -819,6 +1061,95 @@ export default function Purchases() {
         }}
         onSubmit={submitCancellation}
       />
+      <PurchaseDetailDrawer
+        purchaseOrderId={drawerPoId}
+        onClose={() => setDrawerPoId(null)}
+        onPrint={(id) => void printOrder(id)}
+      />
+      {quickPaymentTarget && quickPaymentTarget.supplierId ? (
+        <QuickSupplierPaymentDialog
+          open={quickPaymentTarget != null}
+          onClose={() => setQuickPaymentTarget(null)}
+          purchaseOrderId={quickPaymentTarget.id}
+          poNumber={quickPaymentTarget.poNumber}
+          supplierId={quickPaymentTarget.supplierId}
+          supplierName={quickPaymentTarget.supplierName ?? ""}
+          branchId={Number(quickPaymentTarget.branchId)}
+          currency={quickPaymentTarget.agreedCurrency === "USD" ? "USD" : "IQD"}
+          exchangeRate={quickPaymentTarget.agreedRate}
+          remainingAmount={
+            quickPaymentTarget.agreedCurrency === "USD"
+              ? D(quickPaymentTarget.usdTotal ?? 0)
+                  .minus(D(quickPaymentTarget.paidUsd ?? 0))
+                  .toFixed(2)
+              : positiveDiff(
+                  quickPaymentTarget.total ?? 0,
+                  Decimal.max(
+                    D(quickPaymentTarget.paidAmount ?? 0),
+                    D(quickPaymentTarget.linkedCashPaidAmount ?? 0),
+                  ).toString(),
+                ).toFixed(2)
+          }
+          onSuccess={() => void utils.purchases.list.invalidate()}
+        />
+      ) : null}
+      <Dialog
+        open={quickApprovalTarget != null}
+        onOpenChange={(open) => !open && setQuickApprovalTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <CheckCircle2 aria-hidden className="size-5 text-primary" />
+              <span>اعتماد واستلام أمر الشراء {quickApprovalTarget?.poNumber}</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              اعتماد هذا الأمر يعني تأكيد استلام كامل الأصناف في المستودع وترحيل فاتورة المورد في قيد متوازن وإتاحتها للبيع فوراً.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="space-y-1">
+              <Label htmlFor="row-approve-reason" className="text-xs">
+                بيان الاعتماد / السبب
+              </Label>
+              <Input
+                id="row-approve-reason"
+                value={quickApprovalReason}
+                onChange={(e) => setQuickApprovalReason(e.target.value)}
+                className="text-xs"
+                placeholder="اعتماد واستلام البضاعة كاملة"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setQuickApprovalTarget(null)}
+              disabled={decideControlMut.isPending}
+            >
+              إلغاء
+            </Button>
+            <SubmitButton
+              size="sm"
+              pending={decideControlMut.isPending}
+              onClick={() => {
+                if (!quickApprovalTarget?.controlRequestId) return;
+                decideControlMut.mutate({
+                  requestId: quickApprovalTarget.controlRequestId,
+                  decisionKey: `decide-row-${quickApprovalTarget.controlRequestId}-${crypto.randomUUID()}`,
+                  approve: true,
+                  reason: quickApprovalReason.trim() || "اعتماد واستلام البضاعة كاملة",
+                  confirmedFullReceipt: true,
+                });
+              }}
+              disabled={quickApprovalReason.trim().length < 3}
+            >
+              تأكيد الاعتماد والاستلام
+            </SubmitButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

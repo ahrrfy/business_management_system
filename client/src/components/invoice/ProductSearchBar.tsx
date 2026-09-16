@@ -7,16 +7,19 @@
  *   (sale-side only). On purchase side, we fall back to substring match.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Camera, Search, X } from "lucide-react";
+import { Camera, CheckCircle2, AlertCircle, Search, X } from "lucide-react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
-import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
+import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { estimatedPurchaseUnitPrice } from "./purchasePrice";
+import { resolveExactBeforeFuzzy, type ExactProductResolution } from "./productSearchResolution";
+import { playReadyBeep } from "@/lib/notifyBeep";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -25,6 +28,20 @@ export interface ProductSearchBarProps {
   onAddProduct: (line: InvoiceLine) => void;
   /** Optional callback for "not found" / errors. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
+  /**
+   * Codex #980 (٤/٩/٢٦): عملةُ أمر الشراء وسعرُ تثبيته — يمرَّرا من `PurchaseNew`/`PurchaseEdit`
+   * عبر `ProductTable`. الحقلان يخصّان جانب الشراء فقط، والقيم الافتراضية (`IQD`/`""`) تجعل
+   * جانب البيع لا يتأثّر. `catalog.forPurchase.costPriceBase` يبقى بالدينار حتى للأمر الدولاريّ
+   * ⇒ الفرع الدولاريّ يحتاج القسمةَ على `agreedRate`، وإلّا انتفخت ذمّةُ المورّد بمقداره.
+   */
+  purchaseCurrency?: Currency;
+  purchaseAgreedRate?: string;
+  placeholder?: string;
+  compact?: boolean;
+  className?: string;
+  inputClassName?: string;
+  autoFocus?: boolean;
+  onScanStatus?: (status: "success" | "error") => void;
 }
 
 interface NormalizedRow {
@@ -42,6 +59,8 @@ interface NormalizedRow {
   availableBase: number; // المتاح التشغيلي للبيع = max(0, stockBase − reservedBase)
   /** خدمة بلا مخزون ذاتيّ — createSale يوسّع وصفتها لخصم المواد. */
   isService: boolean;
+  /** بكج مركّب — stockBase/availableBase يمثلان عدد البكجات الممكن تركيبها. */
+  isBundle: boolean;
   /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده ⇒ لا يُوسَم نافداً. */
   allowBackorder: boolean;
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
@@ -57,7 +76,21 @@ function stockBadgeColor(stock: number): string {
   return "text-muted-foreground";
 }
 
-export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify }: ProductSearchBarProps) {
+export function ProductSearchBar({
+  invoiceType,
+  branchId,
+  tier,
+  onAddProduct,
+  onNotify,
+  purchaseCurrency = "IQD",
+  purchaseAgreedRate = "",
+  placeholder,
+  compact = false,
+  className,
+  inputClassName,
+  autoFocus = false,
+  onScanStatus,
+}: ProductSearchBarProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -68,6 +101,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   const [query, setQuery] = useState("");
   const [showDrop, setShowDrop] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(-1);
+  const [scanStatus, setScanStatus] = useState<"idle" | "success" | "error">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -111,8 +145,15 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         reservedBase: 0, // الشراء لا يعنيه المحجوز
         availableBase: r.stockBase ?? 0,
         isService: false,
+        isBundle: false,
         allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
-        price: r.costPriceBase, // purchase price defaults to last cost (base)
+        // PUR-UNIT-01 (٤/٩/٢٦): سعر شراء الوحدة **تقديريّاً** = تكلفة الأساس × المعامل.
+        // كان الحقلان يُملآن معاً بـcostPriceBase (بوحدة الأساس)، فدرزنٌ (معامل ١٢) بتكلفة
+        // ١٥٠/قطعة يُضاف بسعرِ ١٥٠/درزن ⇒ يقسم الخادم على ١٢ فيصير `costPerBase = 12.50`
+        // ويسمّم WAVG. المساعد المشترك يفصل: `price` بوحدة الصفّ، `costBase` مرجعُ الأساس.
+        // Codex #980 (٤/٩/٢٦): الفرع الدولاريّ يقسم على سعر التثبيت، وبلا تثبيتٍ يترك الحقل
+        // فارغاً حتى يضبطه المستخدم يدوياً (لا يضع رقماً دينارياً في حقل دولار).
+        price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor, isPurchase ? purchaseCurrency : "IQD", isPurchase ? purchaseAgreedRate : null),
         costBase: r.costPriceBase,
       }));
     }
@@ -123,13 +164,14 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
       sku: r.sku,
       barcode: r.barcode ?? null,
-      unitName: r.unitName,
+      unitName: r.isBundle === true && Number(r.conversionFactor) === 1 ? "بكج" : r.unitName,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
       stockBranchId: r.branchId,
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
+      isBundle: r.isBundle === true,
       allowBackorder: r.allowBackorder === true,
       price: r.price ?? "0",
       // التكلفة تصل من الخادم (`catalog.posList`) للمستخدم المخوَّل برؤيتها (مدير/أدمن)، ويُحجب
@@ -137,7 +179,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       // شاشات المبيعات المتقدّمة (`SalesInvoiceNew`) تعرض عمود «التكلفة» و«الهامش٪» بهذه القيمة.
       costBase: r.costPriceBase ?? "0",
     }));
-  }, [isPurchase, posQ.data, purQ.data, query]);
+  }, [isPurchase, posQ.data, purQ.data, query, purchaseCurrency, purchaseAgreedRate]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -169,6 +211,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       reservedBase: r.reservedBase,
       availableBase: r.availableBase,
       isService: r.isService,
+      isBundle: r.isBundle,
       allowBackorder: r.allowBackorder,
       price: r.price || "0",
       costBase: r.costBase || "0",
@@ -177,47 +220,143 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       note: "",
     };
     onAddProduct(line);
+    setScanStatus("success");
+    playReadyBeep();
+    onScanStatus?.("success");
+    setTimeout(() => {
+      setScanStatus((curr) => (curr === "success" ? "idle" : curr));
+    }, 900);
     setQuery("");
     setShowDrop(false);
     inputRef.current?.focus();
   };
 
-  async function resolveExactBarcode(code: string) {
-    // جانب الشراء لا يملك byBarcode؛ نملأ النص المصحّح ليعمل البحث الخادميّ المعتاد.
-    if (isPurchase) {
-      setQuery(code);
-      setShowDrop(true);
-      return;
-    }
+  async function resolveExactBarcode(
+    code: string,
+    options: { quietNotFound?: boolean } = {},
+  ): Promise<ExactProductResolution> {
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
-      if (row) {
-        addRow({
-          productId: row.productId,
-          variantId: row.variantId,
-          productUnitId: row.productUnitId,
-          name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
-          sku: row.sku,
-          barcode: row.barcode ?? null,
-          unitName: row.unitName,
-          conversionFactor: row.conversionFactor,
-          stockBase: row.stockBase ?? 0,
-          stockBranchId: row.branchId,
-          reservedBase: row.reservedBase ?? 0,
-          availableBase: row.availableBase ?? (row.stockBase ?? 0),
-          isService: row.isService || row.isPrintService,
-          allowBackorder: row.allowBackorder === true,
-          price: row.price ?? "0",
-          costBase: "0",
-        });
-        return;
+      let row: Awaited<ReturnType<typeof utils.catalog.byBarcode.fetch>> | null = null;
+      try {
+        row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      } catch {
+        // إذا كان المستخدم لا يملك صلاحية كتالوج المنتجات أو حدث خطأ، ننتقل للفحص الاحتياطي
+        row = null;
       }
-      onNotify?.(`الباركود غير معروف: ${code}`, "error");
-    } catch {
-      onNotify?.("تعذّر الاتصال بالخادم", "error");
+
+      if (row) {
+        if (isPurchase) {
+          // byBarcode يثبت المالك الأساسي/البديل أولاً؛ ثم نأخذ بيانات التكلفة من بوابة الشراء
+          // ونطابق productUnitId صراحةً، فلا يتحول المسح إلى اختيار أول نتيجة LIKE.
+          let purchaseRows: Awaited<ReturnType<typeof utils.catalog.forPurchase.fetch>> = [];
+          try {
+            purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
+          } catch {
+            purchaseRows = [];
+          }
+          const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
+          if (purchaseRow) {
+            addRow({
+              productId: purchaseRow.productId,
+              variantId: purchaseRow.variantId,
+              productUnitId: purchaseRow.productUnitId,
+              name: purchaseRow.productName + (purchaseRow.variantName ? ` — ${purchaseRow.variantName}` : ""),
+              sku: purchaseRow.sku,
+              barcode: row.barcode ?? null,
+              unitName: purchaseRow.unitName,
+              conversionFactor: purchaseRow.conversionFactor,
+              stockBase: purchaseRow.stockBase ?? 0,
+              stockBranchId: branchId,
+              reservedBase: 0,
+              availableBase: purchaseRow.stockBase ?? 0,
+              isService: false,
+              isBundle: false,
+              allowBackorder: false,
+              price: estimatedPurchaseUnitPrice(
+                purchaseRow.costPriceBase,
+                purchaseRow.conversionFactor,
+                purchaseCurrency,
+                purchaseAgreedRate || null,
+              ),
+              costBase: purchaseRow.costPriceBase,
+            });
+            return "FOUND";
+          }
+        } else {
+          addRow({
+            productId: row.productId,
+            variantId: row.variantId,
+            productUnitId: row.productUnitId,
+            name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
+            sku: row.sku,
+            barcode: row.barcode ?? null,
+            unitName: row.isBundle === true && Number(row.conversionFactor) === 1 ? "بكج" : row.unitName,
+            conversionFactor: row.conversionFactor,
+            stockBase: row.stockBase ?? 0,
+            stockBranchId: row.branchId,
+            reservedBase: row.reservedBase ?? 0,
+            availableBase: row.availableBase ?? (row.stockBase ?? 0),
+            isService: row.isService || row.isPrintService,
+            isBundle: row.isBundle === true,
+            allowBackorder: row.allowBackorder === true,
+            price: row.price ?? "0",
+            costBase: "0",
+          });
+          return "FOUND";
+        }
+      }
+
+      // خط دفاع/احتياط للمرتجعات: فحص الأصناف المتوقفة/غير النشطة أو عند غياب صلاحية الكتالوج المباشرة
+      try {
+        const retItem = await utils.returns.lookupItemForReturn.fetch({ barcode: code });
+        if (retItem) {
+          addRow({
+            productId: retItem.productId,
+            variantId: retItem.variantId,
+            productUnitId: Number(retItem.productUnitId || 0),
+            name: retItem.productName + (retItem.variantName ? ` — ${retItem.variantName}` : ""),
+            sku: retItem.sku || "",
+            barcode: retItem.barcode ?? code,
+            unitName: retItem.unitName || "قطعة",
+            conversionFactor: "1",
+            stockBase: retItem.currentStock ?? 0,
+            stockBranchId: branchId,
+            reservedBase: 0,
+            availableBase: retItem.currentStock ?? 0,
+            isService: false,
+            isBundle: false,
+            allowBackorder: true,
+            price: isPurchase ? (retItem.costPrice || "0") : (retItem.retailPrice || retItem.lowestHistoricalPrice || "0"),
+            costBase: retItem.costPrice || "0",
+          });
+          return "FOUND";
+        }
+      } catch {
+        // تجاهل الخطأ في الفحص الاحتياطي
+      }
+
+      if (!options.quietNotFound) {
+        setScanStatus("error");
+        onScanStatus?.("error");
+        setTimeout(() => {
+          setScanStatus((curr) => (curr === "error" ? "idle" : curr));
+        }, 900);
+        onNotify?.(`الباركود غير معروف: ${code}`, "error");
+      }
+      return "NOT_FOUND";
+    } catch (error) {
+      setScanStatus("error");
+      onScanStatus?.("error");
+      setTimeout(() => {
+        setScanStatus((curr) => (curr === "error" ? "idle" : curr));
+      }, 900);
+      onNotify?.(error instanceof Error ? error.message : "تعذّر الاتصال بالخادم", "error");
+      return "BLOCKED";
     }
   }
 
+  // موحَّدٌ مع خطّاف الكاشير `useSmartScanInput` عبر `useBarcodeInput` (١٥/٩): بحثٌ بالاسم والمسحٌ
+  // بالسلوك نفسه في كلّ الشاشات — الكتابة العربية بالمسافة تُقبَل، والمسح (رقميّ/أبجديّ) يُحلّ.
   const barcodeInput = useBarcodeInput((code) => { void resolveExactBarcode(code); });
 
   const handleKey = async (e: KeyboardEvent<HTMLInputElement>) => {
@@ -231,22 +370,26 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       setSelectedIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (selectedIdx >= 0 && results[selectedIdx]) {
-        addRow(results[selectedIdx]);
-        return;
-      }
-      // أثناء التأجيل/الجلب النتائج قد تعود لاستعلام أقدم ⇒ لا نضيف خطأً (انتظر ~٢٠٠ms واضغط من جديد)
-      if (settled && results.length >= 1) {
-        addRow(results[0]);
-        return;
-      }
-      // Try exact barcode resolution (sale side only — has byBarcode endpoint).
-      // فقط لما يشبه باركوداً (أرقام/لاتيني متصل ≥4) — نصّ بحث عربي عادي لا يُرمى عليه
-      // «باركود غير معروف»؛ رسالة «لا نتائج» تظهر في القائمة نفسها.
       const code = query.trim();
-      const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
-      if (code && !isPurchase && looksLikeBarcode) {
-        await resolveExactBarcode(code);
+      if (code) {
+        const decision = await resolveExactBeforeFuzzy(
+          () => resolveExactBarcode(code, { quietNotFound: true }),
+          () => selectedIdx >= 0
+            ? results[selectedIdx]
+            : settled && results.length === 1 ? results[0] : undefined,
+        );
+        if (decision.status === "NOT_FOUND") {
+          if (decision.fuzzy) {
+            addRow(decision.fuzzy);
+          } else {
+            setScanStatus("error");
+            onScanStatus?.("error");
+            setTimeout(() => {
+              setScanStatus((curr) => (curr === "error" ? "idle" : curr));
+            }, 900);
+            onNotify?.(`لم يتم العثور على صنف مطابق: ${code}`, "error");
+          }
+        }
       }
     } else if (e.key === "Escape") {
       setShowDrop(false);
@@ -257,7 +400,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   const loading = (isPurchase ? purQ.isFetching : posQ.isFetching) && query.trim().length > 0;
 
   return (
-    <div ref={wrapRef} className="relative">
+    <div ref={wrapRef} className={cn("relative", className)}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
           {/* توحيد بصريّ (٢٥/٨): استعمال `barcodeSearchInputClass` + `<BarcodeSearchCue />` كنمطٍ موحَّد
@@ -271,17 +414,41 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           </span>
           <Input
             ref={inputRef}
+            data-product-search="1"
+            autoFocus={autoFocus}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (scanStatus !== "idle") setScanStatus("idle");
+            }}
             onKeyDown={handleKey}
             onFocus={() => {
               if (results.length > 0) setShowDrop(true);
             }}
-            placeholder="ابحث بالاسم أو SKU أو امسح الباركود..."
-            className={`h-11 pe-10 text-sm ${barcodeSearchInputClass}`}
+            placeholder={placeholder ?? "ابحث بالاسم أو SKU أو امسح الباركود..."}
+            className={cn(
+              compact ? "h-9 text-xs" : "h-11 text-sm",
+              "pe-10 transition-all duration-200",
+              barcodeSearchInputClass,
+              scanStatus === "success" && "border-emerald-500 ring-2 ring-emerald-500/40 bg-emerald-50/20 dark:bg-emerald-950/20",
+              scanStatus === "error" && "border-destructive ring-2 ring-destructive/40 bg-destructive/10 animate-pulse",
+              inputClassName
+            )}
             aria-label="بحث المنتجات"
           />
-          {query && (
+          {scanStatus === "success" && (
+            <span className="pointer-events-none absolute end-10 top-1/2 -translate-y-1/2 text-emerald-600 font-bold text-xs flex items-center gap-1 bg-emerald-100/90 dark:bg-emerald-950/90 px-1.5 py-0.5 rounded shadow-xs animate-in fade-in zoom-in-95">
+              <CheckCircle2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span className="text-[11px]">تمت الإضافة</span>
+            </span>
+          )}
+          {scanStatus === "error" && (
+            <span className="pointer-events-none absolute end-10 top-1/2 -translate-y-1/2 text-destructive font-bold text-xs flex items-center gap-1 bg-destructive/15 dark:bg-destructive/30 px-1.5 py-0.5 rounded shadow-xs animate-in fade-in zoom-in-95">
+              <AlertCircle className="size-3.5 text-destructive" />
+              <span className="text-[11px]">غير موجود</span>
+            </span>
+          )}
+          {query && scanStatus === "idle" && (
             <button
               type="button"
               aria-label="مسح"
@@ -297,10 +464,27 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           <BarcodeSearchCue />
         </div>
         <div className="flex w-full shrink-0 gap-2 sm:w-auto">
-          <div className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-primary/50 bg-primary/10 px-3 text-xs font-bold text-primary sm:flex-none">
+          <div
+            className={cn(
+              "flex flex-1 items-center justify-center gap-1.5 rounded-lg border font-bold sm:flex-none transition-colors",
+              compact ? "h-9 px-2.5 text-[11px]" : "h-11 px-3 text-xs",
+              scanStatus === "success"
+                ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+                : scanStatus === "error"
+                ? "border-destructive bg-destructive/10 text-destructive"
+                : "border-primary/50 bg-primary/10 text-primary"
+            )}
+          >
             <Camera aria-hidden className="size-4" /> قارئ باركود
           </div>
-          <div className="flex shrink-0 items-center rounded-md bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">F2 للبحث</div>
+          <div
+            className={cn(
+              "flex shrink-0 items-center rounded-md bg-muted px-2 py-1 font-semibold text-muted-foreground",
+              compact ? "text-[10px]" : "text-[11px]"
+            )}
+          >
+            F2 للبحث
+          </div>
         </div>
       </div>
 
@@ -331,6 +515,9 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                     {p.isService && (
                       <span className="ms-2 rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">خدمة</span>
                     )}
+                    {p.isBundle && (
+                      <span className="ms-2 rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-info)]">بكج</span>
+                    )}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                     <span>{p.sku}</span>
@@ -341,6 +528,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                     <span>•</span>
                     {p.isService ? (
                       <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
+                    ) : p.isBundle ? (
+                      <span>المتاح كبكج كامل: {fmtNum(p.availableBase)}</span>
                     ) : (
                       <>
                         <span>فعلي: {fmtNum(p.stockBase)}</span>
@@ -366,7 +555,16 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                   <div dir="ltr" className="text-base font-extrabold text-primary">
                     {fmtNum(p.price)}
                   </div>
-                  <div className="text-[10px] text-muted-foreground">د.ع / {p.unitName}</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    د.ع / {p.unitName}
+                    {/* PUR-UNIT-01: على جانب الشراء السعر مشتقٌّ من آخر تكلفةٍ × معامل الوحدة —
+                        ليست ورقة المورّد. الوسم يُعلم المستعمل أنّه قابل للتعديل قبل الإرسال. */}
+                    {isPurchase && (
+                      <span className="ms-1 rounded bg-muted px-1 py-0.5 text-[9px] font-bold text-muted-foreground">
+                        تقديريّ
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

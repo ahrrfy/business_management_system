@@ -170,20 +170,81 @@ describe("inventory.onHand", () => {
       unitName: "قطعة",
       factor: 1,
     });
+    // المسافة الداخلية تُسقَط من الهوية (١٣/٩): البحث يجد الصنف نفسه، و`scannedBarcode` صورتُه
+    // المطبَّعة بلا مسافات، بينما `primaryBarcode` يبقى القيمة الخام المخزَّنة كما هي.
     expect(bySpacedPrimary[0]?.scanMatch).toEqual({
       kind: "PRIMARY",
-      scannedBarcode: "LOT 2026 B",
+      scannedBarcode: "LOT2026B",
       primaryBarcode: "LOT 2026 B",
       unitName: "حزمة",
       factor: 10,
     });
     expect(bySpacedAlias[0]?.scanMatch).toEqual({
       kind: "ALIAS",
-      scannedBarcode: "ALT LOT 2026 B",
+      scannedBarcode: "ALTLOT2026B",
       primaryBarcode: "LOT 2026 B",
       unitName: "حزمة",
       factor: 10,
     });
+  });
+
+  it("يحسم إرث الباركود الملوّث + المسافة الداخلية + تكافؤ UPC-A/EAN-13 قبل المطابقة النصية العَرَضية", async () => {
+    await db().insert(s.productUnits).values([
+      {
+        id: 20,
+        variantId: 2,
+        unitName: "مورد",
+        conversionFactor: "1",
+        isBaseUnit: false,
+        barcode: " 10095\t",
+      },
+      {
+        id: 21,
+        variantId: 2,
+        unitName: "UPC",
+        conversionFactor: "1",
+        isBaseUnit: false,
+        barcode: "0036000291452",
+      },
+    ]);
+    await db().insert(s.products).values({ id: 3, name: "000 10095 036000291452" });
+    await db().insert(s.productVariants).values({ id: 3, productId: 3, sku: "DISTRACTOR" });
+
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const healed = await caller.inventory.onHand({ branchId: 1, q: "10095", limit: 1 });
+    const upc = await caller.inventory.onHand({ branchId: 1, q: "036000291452", limit: 1 });
+    // مسحُ/بحثُ ملصقٍ بمسافةٍ داخلية زائدة «1  0095» يُطبَّع إلى «10095» فيَحلّ إلى الوحدة نفسها
+    // (بلاغ المالك ١٣/٩: ١٢٥ صنفاً بصورة «1  XXXX» كانت غير قابلة للمسح — المسافة ضجيجٌ لا هوية).
+    const spacedScan = await caller.inventory.onHand({ branchId: 1, q: "1  0095", limit: 1 });
+
+    expect(healed.map((row) => Number(row.variantId))).toEqual([2]);
+    expect(healed[0]?.scanMatch?.unitName).toBe("مورد");
+    expect(upc.map((row) => Number(row.variantId))).toEqual([2]);
+    expect(upc[0]?.scanMatch?.unitName).toBe("UPC");
+    expect(spacedScan.map((row) => Number(row.variantId))).toEqual([2]);
+    expect(spacedScan[0]?.scanMatch?.scannedBarcode).toBe("10095");
+  });
+
+  it("resolves legacy alphabetic supplier identities in inventory and global search", async () => {
+    const { searchProducts } = await import("../globalSearch/searchMasterData");
+    await db().update(s.productUnits).set({ barcode: "\u200f ABC\t" }).where(eq(s.productUnits.id, 12));
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 12, barcode: " DEF\r\n" });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    for (const query of ["ABC", "DEF"]) {
+      const rows = await caller.inventory.onHand({ branchId: 1, q: query, limit: 1 });
+      expect(rows.map((row) => Number(row.variantId))).toEqual([2]);
+      expect(rows[0]?.scanMatch?.scannedBarcode).toBe(query);
+      const global = await searchProducts(db(), "TEXT", query, 1);
+      expect(global.map((row) => row.id)).toEqual([1]);
+      expect(global[0]?.rank).toBe(0);
+    }
+  });
+
+  it("يفشل مغلقاً إذا امتلك UPC-A وEAN-13 المكافئ وحدتان مختلفتان", async () => {
+    await db().update(s.productUnits).set({ barcode: "0036000291452" }).where(eq(s.productUnits.id, 10));
+    await db().update(s.productUnits).set({ barcode: "036000291452" }).where(eq(s.productUnits.id, 12));
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    await expect(caller.inventory.onHand({ branchId: 1, q: "036000291452", limit: 1 })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("لا يرفق scanMatch لبحث نصي غير حرفي", async () => {

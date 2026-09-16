@@ -21,7 +21,7 @@ const advanceMocks = vi.hoisted(() => ({
   employeeBalance: vi.fn(async () => ({ employeeId: 10, balance: "0.00", activeCount: 0 })),
   approveAdvanceRepaymentRequest: vi.fn(async () => ({ id: 1, replayed: true })),
 }));
-vi.mock("../../services/advancesService", () => advanceMocks);
+vi.mock("../../services/advances", () => advanceMocks);
 import { payrollRouter } from "../payrollRouter";
 
 function blockedCaller() {

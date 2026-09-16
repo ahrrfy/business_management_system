@@ -49,6 +49,21 @@ const webTunableKeys = Object.freeze([
   "EVENT_LOOP_MAX_LAG_MS",
   "EVENT_LOOP_CRITICAL_MAX_LAG_MS",
   "EVENT_LOOP_STOREFRONT_MAX_LAG_MS",
+  // ── أعلامُ الطرح (برنامج v2) — `shared/rolloutFlags.ts` هو تعريفها ────────────────────
+  // ⚠️ **لولا إدراجُها هنا لتجمّدت على قيمتها لحظةَ أوّل `pm2 start`** بحكم القاعدة أعلاه:
+  // فمفتاحُ إطفاءٍ لسياسةٍ ماليّة يصير عاجزاً عن الإطفاء، ورجوعٌ طارئ يترك السياسة على
+  // قيمتها السابقة بعد نشرٍ «ناجح» تماماً وبلا أيّ خطأ. أمسكته مراجعةُ Codex على PR #954،
+  // وهو نفسُ ما وقع فعلاً مع `DB_POOL_LIMIT` في ٣١/٨.
+  // والإدراجُ آمنٌ للمفقود: `webTunables` تُدرج الموجودةَ غيرَ الفارغة وحدها،
+  // و`resolveRolloutMode` تُرجع `OFF` عند الغياب — أي «السلوك القائم».
+  "ROLLOUT_COURIER_LEDGER_DERIVED",
+  "ROLLOUT_POS_DELIVERY_MODE",
+  "ROLLOUT_DISPATCH_DEBT_ON_PARTY",
+  "ROLLOUT_OWNER_ONLY_APPROVAL",
+  "ROLLOUT_REVERSAL_ENGINE",
+  "ROLLOUT_AUTO_CLOSE_ON_REFUSAL",
+  "ROLLOUT_REFUND_RAIL_PICKER",
+  "ROLLOUT_NEXT_ACTION",
 ]);
 const webTunables = Object.freeze(
   Object.fromEntries(
@@ -56,6 +71,26 @@ const webTunables = Object.freeze(
       .filter((key) => typeof process.env[key] === "string" && process.env[key].trim() !== "")
       .map((key) => [key, process.env[key]]),
   ),
+);
+
+// مفاتيح الاستوديو النصية تُرسل دائماً. القيمة الفارغة مقصودة: تمسح نسخة PM2 الموروثة
+// عند إزالة إعداد من .env، فلا يبقى العامل على مفتاح/عنوان/سائق قديم بعد نشر ناجح شكلياً.
+const webStudioEnvironmentKeys = Object.freeze([
+  "INTEGRATIONS_ENCRYPTION_KEY",
+  "GEMINI_API_BASE",
+  "IMAGE_STORE_DRIVER",
+  "R2_ACCOUNT_ID",
+  "R2_IMAGE_BUCKET",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_MAX_CONCURRENCY",
+  "R2_MAX_QUEUE",
+  "R2_QUEUE_TIMEOUT_MS",
+  "R2_CIRCUIT_FAILURE_THRESHOLD",
+  "R2_CIRCUIT_OPEN_MS",
+]);
+const webStudioEnvironment = Object.freeze(
+  Object.fromEntries(webStudioEnvironmentKeys.map((key) => [key, process.env[key] ?? ""])),
 );
 
 const webForbiddenEnvironmentKeys = Object.freeze([
@@ -167,6 +202,7 @@ module.exports = {
         // قد يصل العملية نصّاً `"undefined"`، و`boundedIntEnv` في `server/db.ts` **يرمي** على
         // قيمةٍ غير عددية ⇒ خادمٌ لا يُقلع في أيّ نشرٍ لا يضبط المفتاح في `.env`.
         ...webTunables,
+        ...webStudioEnvironment,
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
         // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.

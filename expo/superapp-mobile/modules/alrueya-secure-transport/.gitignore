@@ -1,0 +1,7 @@
+# Native build products are reproducible and must never be committed.
+android/build/
+android/.cxx/
+ios/build/
+
+# Xcode user state is local to an individual developer machine.
+ios/**/*.xcuserstate

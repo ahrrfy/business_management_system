@@ -1,5 +1,7 @@
-// شجرة الحسابات — مصدر البذر TypeScript للاختبارات. الإنتاج يُبذر الأدوار
-// الأصلية عبر 0115 وأدوار P2/Sh2 عبر 0184. أبقِ المصدرين متطابقين دائماً.
+// شجرة الحسابات — مصدر البذر TypeScript للاختبارات. الإنتاج يُبذر الأدوار الأصلية (٢٦) عبر 0115،
+// وأدوار P2/Sh2 عبر 0187 (٢٥) و0188 (٧) و0189 (٤)، وGRNI عبر 0302 — إجمالاً ٦٣ دوراً.
+// (تصحيح تدقيق م١ ١٣/٩: كان يُشار خطأً إلى 0184، وهو shift_funding_source_links لا بذرَ حسابات فيه.)
+// أبقِ هذا المصدر ومهاجرات الإنتاج متطابقَين دائماً (لا اختبارَ يفرض التطابق بعدُ — تحقّق يدويّاً).
 export interface SeedAccount {
   id: number;
   code: string;
@@ -623,5 +625,14 @@ export const CHART_ACCOUNTS: SeedAccount[] = [
     parentId: 8,
     systemRole: "GRNI",
     sortOrder: 215,
+  },
+  {
+    id: 69,
+    code: "5680",
+    name: "تسوية تقييم المخزون",
+    type: "EXPENSE",
+    parentId: 24,
+    systemRole: "INVENTORY_REVALUATION",
+    sortOrder: 568,
   },
 ];

@@ -460,6 +460,19 @@ export async function readOutboxSummary(): Promise<OutboxSummary> {
   }
 }
 
+export async function readShiftOutboxSummary(shiftId?: number | null): Promise<{ queued: number; queuedTotal: number }> {
+  try {
+    const items = await offlineDb.outbox.where("status").anyOf("QUEUED", "SENDING").toArray();
+    const shiftItems = shiftId != null ? items.filter((i) => (i.payload as { shiftId?: number }).shiftId === shiftId) : items;
+    return {
+      queued: shiftItems.length,
+      queuedTotal: shiftItems.reduce((sum, i) => sum + Number(i.total || 0), 0),
+    };
+  } catch {
+    return { queued: 0, queuedTotal: 0 };
+  }
+}
+
 export async function listOutboxItems(): Promise<OfflineOutboxItem[]> {
   try {
     const items = await offlineDb.outbox.toArray();

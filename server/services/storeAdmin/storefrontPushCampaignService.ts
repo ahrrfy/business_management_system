@@ -214,7 +214,9 @@ export async function createStorefrontPushCampaign(input: {
   const title = text(input.title, "عنوان الحملة", 80);
   const body = text(input.body, "نص الحملة", 180);
   const destination = validateStorefrontPushDestination(input.destination);
-  if (input.kind !== "MARKETING" && input.kind !== "TRANSACTIONAL") throw new StorefrontPushValidationError("نوع الحملة غير صالح.");
+  if (input.kind !== "MARKETING") {
+    throw new StorefrontPushValidationError("الحملات اليدوية تسويقية فقط؛ إشعارات الطلب التشغيلية ينشئها مسار الطلب تلقائياً.");
+  }
   const throttlePerMinute = Math.max(10, Math.min(Math.trunc(input.throttlePerMinute) || 120, 240));
   const [result] = await requirePool().execute<ResultSetHeader>(
     `INSERT INTO storefrontPushCampaigns (name, kind, title, body, destination, throttlePerMinute, createdBy)

@@ -120,12 +120,20 @@ export async function getInventoryValuation(
   const inTransitRow = rowsOf(
     await db.execute(sql`
       SELECT
-        COUNT(DISTINCT stl.variantId) AS items,
-        CAST(COALESCE(SUM(stl.quantitySent - COALESCE(stl.quantityReceived, 0)), 0) AS CHAR) AS totalQty,
-        CAST(COALESCE(SUM((stl.quantitySent - COALESCE(stl.quantityReceived, 0)) * pv.costPrice), 0) AS CHAR) AS totalValue
+        COUNT(DISTINCT COALESCE(stlbc.componentVariantId, stl.variantId)) AS items,
+        CAST(COALESCE(SUM(
+          (stl.quantitySent - COALESCE(stl.quantityReceived, 0))
+          * COALESCE(stlbc.componentBaseQuantity, 1)
+        ), 0) AS CHAR) AS totalQty,
+        CAST(COALESCE(SUM(
+          (stl.quantitySent - COALESCE(stl.quantityReceived, 0))
+          * COALESCE(stlbc.componentBaseQuantity, 1)
+          * pv.costPrice
+        ), 0) AS CHAR) AS totalValue
       FROM stockTransfers st
       JOIN stockTransferLines stl ON stl.transferId = st.id
-      JOIN productVariants pv ON pv.id = stl.variantId
+      LEFT JOIN stockTransferLineBundleComponents stlbc ON stlbc.transferLineId = stl.id
+      JOIN productVariants pv ON pv.id = COALESCE(stlbc.componentVariantId, stl.variantId)
       JOIN products p ON p.id = pv.productId
       WHERE st.transferStatus = 'IN_TRANSIT' AND p.isConsignment = false ${inTransitBranchCond}
     `),

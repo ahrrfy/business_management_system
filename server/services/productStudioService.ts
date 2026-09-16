@@ -2,11 +2,14 @@ import { TRPCError } from "@trpc/server";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
 import type { PermissionMap } from "@shared/permissions";
 import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
+import { addUnitBarcodeAlias, normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
@@ -20,7 +23,6 @@ import { evaluateStagingRetention, loadR2GcDeletionAuthorization, resolveR2GcMod
 import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { utcDayStart, utcNextDayStart } from "./businessDay";
-import { reserveStudioSubmitQuotaInTx, studioPayloadBytes } from "./productStudioSubmitQuota";
 import { createAppNotification } from "./appNotificationService";
 import {
   enqueueAppNotificationOutbox,
@@ -63,7 +65,6 @@ function isManager(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
 }
 
-
 /**
  * فرعُ المُسنَد إليه يجب أن يطابق فرع المُسنِد، وكلاهما يجب أن يكون **معروفاً**.
  *
@@ -77,13 +78,13 @@ function assertAssignableBranch(actor: ProductStudioActor, assigneeBranchId: num
   // مسارٌ قائمٌ ومقصود. الحظر يخصّ من لا يعبر.
   if (canCrossBranches(actor)) return;
   if (actor.branchId == null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لك؛ لا يمكنك إسناد مهام الاستوديو" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر إسناد مهامّ الاستوديو", why: "حسابك بلا فرعٍ مُسنَد، وكلّ مهمّة استوديو تُنشأ داخل فرعٍ محدَّد", doThis: "اطلب من مدير النظام ربط حسابك بفرعٍ من صفحة المستخدمين، ثمّ أعد الإسناد" }) });
   }
   if (assigneeBranchId == null) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف بلا فرع مُسنَد؛ عيّن فرعه قبل إسناد مهام الاستوديو" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إسناد المهمّة إلى هذا الموظّف", why: "الموظّف بلا فرعٍ مُسنَد، ومهمّةٌ بلا فرعٍ لا يفتحها أحدٌ بعد إنشائها", doThis: "اختر مصوّراً آخر من فرعك الآن، واطلب من مدير النظام تعيين فرع هذا الموظّف من صفحة المستخدمين" }) });
   }
   if (Number(assigneeBranchId) !== Number(actor.branchId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن الإسناد إلى فرع آخر" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر إسناد المهمّة إلى هذا الموظّف", why: "الموظّف يتبع فرعاً غير فرعك، وإسناد مهامّ الاستوديو لا يعبر الفروع", doThis: "اختر مصوّراً من فرعك، أو اطلب من مدير النظام تنفيذ الإسناد عبر الفروع" }) });
   }
 }
 
@@ -97,21 +98,21 @@ async function assertCampaignAssignees(tx: StudioTx, actor: ProductStudioActor, 
     .from(users)
     .where(and(inArray(users.id, userIds), eq(users.isActive, true)));
   if (rows.length !== userIds.length) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "أحد الموظفين غير متاح" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حفظ مصوّري الحملة", why: "أحد المصوّرين المختارين لم يعد حساباً نشطاً — أُوقف أو حُذف بعد فتحك الشاشة", doThis: "حدّث الشاشة، ثمّ أعد اختيار المصوّرين من القائمة واحفظ" }) });
   }
   for (const row of rows) {
     if (Number(row.branchId) !== Number(campaignBranch)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن إسناد الحملة إلى موظفٍ من فرعٍ آخر" });
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر إضافة الموظّف إلى مصوّري الحملة", why: "الموظّف يتبع فرعاً غير فرع الحملة، ومصوّرو الحملة من فرعها وحده", doThis: "اختر مصوّرين من فرع الحملة، أو أنشئ حملةً مستقلّةً لذلك الفرع" }) });
     }
     if (!hasModuleAccess(row.role, row.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أحد الموظفين لا يملك صلاحية استوديو المنتجات" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إضافة الموظّف إلى مصوّري الحملة", why: "الموظّف لا يملك صلاحية «استوديو المنتجات»، ومن لا يملكها لا تظهر له مهامّ الحملة", doThis: "اضغط «امنح الصلاحية» أمام اسمه في قائمة الموظّفين ثمّ أعد الحفظ" }) });
     }
   }
   void actor;
 }
 
 function isAdminActor(actor: ProductStudioActor): boolean {
-  return actor.role === "admin" || actor.isOwner === true;
+  return canCrossBranches(actor);
 }
 
 function cleanAdminOverrideReason(reason: string | null | undefined): string | null {
@@ -131,13 +132,21 @@ async function publishedImageUrl(imageId: number, hash: string): Promise<string>
   if (companyId == null)
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "سياق الشركة مطلوب لنشر الصورة",
+      message: appErrorMessage({
+        what: "تعذّر نشر الصورة بعد اعتمادها",
+        why: "الجلسة بلا سياق شركةٍ في وضع تعدّد الشركات، ورابط الصورة العامّ يُبنى برمز الشركة",
+        doThis: "سجّل الخروج وادخل من رابط شركتك، ثمّ أعد اعتماد المهمّة",
+      }),
     });
   const company = await resolveCompanyById(companyId);
   if (!company)
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "تعذّر تحديد رابط الشركة العام",
+      message: appErrorMessage({
+        what: "تعذّر نشر الصورة بعد اعتمادها",
+        why: "سجلّ الشركة المرتبط بجلستك غير مقروء، ومنه يُشتقّ رمزها في رابط الصورة العامّ",
+        doThis: "أبلغ الدعم الفنّي بتعذّر قراءة سجلّ شركتك، وأعد الاعتماد بعد إصلاحه",
+      }),
     });
   return `/api/img/company/${encodeURIComponent(company.code)}/product/${imageId}?v=${shortHash(hash)}`;
 }
@@ -158,7 +167,11 @@ function assertTaskAccess(actor: ProductStudioActor, task: { assignedTo: number 
   if (actor.branchId == null || Number(task.branchId) !== Number(actor.branchId)) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "المهمة تتبع فرعاً آخر",
+      message: appErrorMessage({
+        what: "تعذّر فتح مهمّة الاستوديو",
+        why: "المهمّة تتبع فرعاً غير فرعك، ومهامّ الاستوديو لا تُقرأ عبر الفروع",
+        doThis: "اعمل على مهامّ فرعك من تبويب «الطابور»، أو اطلب من مدير النظام نقل المهمّة إلى فرعك",
+      }),
     });
   }
   if (actor.role === "manager") return;
@@ -166,7 +179,11 @@ function assertTaskAccess(actor: ProductStudioActor, task: { assignedTo: number 
   if (managerOnly || Number(task.assignedTo) !== actor.userId) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "هذه المهمة ليست مسندة إليك",
+      message: appErrorMessage({
+        what: "تعذّر فتح مهمّة الاستوديو",
+        why: "المهمّة مُسنَدة إلى مصوّرٍ آخر، وكلٌّ يفتح ما أُسنِد إليه",
+        doThis: "افتح مهامّك من تبويب «مهامّي»، واطلب من المدير إعادة إسناد هذه المهمّة إليك إن كانت من نصيبك",
+      }),
     });
   }
 }
@@ -175,19 +192,68 @@ function processingAuthorizationHash(authorization: string, mode: "PRO" | "AI"):
   return contentHash(Buffer.from(`${mode}:${authorization}`, "utf8"));
 }
 
-function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: number | null; branchId: number | null }, adminOverrideReason?: string | null): string | null {
+/**
+ * Receipt لمعاينةٍ جديدة غير معتمدة، مخزّن مؤقتاً في خانة lease ببادئة لا تبدأ بها
+ * SHA-256 السداسية. بذلك تبقى النتيجة المقبولة السابقة صالحة إن أُلغيَت المعاينة الجديدة.
+ */
+function pendingProcessingReceiptMarker(receipt: string, mode: "PRO" | "AI"): string {
+  const prefix = mode === "AI" ? "I" : "P";
+  return prefix + contentHash(Buffer.from(receipt, "utf8")).slice(0, 63);
+}
+
+function pendingProcessingReceiptMode(marker: string | null, receipt: string): "PRO" | "AI" | null {
+  if (marker === pendingProcessingReceiptMarker(receipt, "AI")) return "AI";
+  if (marker === pendingProcessingReceiptMarker(receipt, "PRO")) return "PRO";
+  return null;
+}
+
+function isPendingProcessingReceipt(marker: string | null): boolean {
+  return typeof marker === "string" && /^[IP][0-9a-f]{63}$/.test(marker);
+}
+
+function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: number | null; branchId: number | null; barcodeVerifiedBy?: number | null }, adminOverrideReason?: string | null, requireBarcodeVerification = false): string | null {
   if (!canCrossBranches(actor) && (actor.branchId == null || Number(task.branchId) !== Number(actor.branchId))) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "المهمة تتبع فرعاً آخر",
+      message: appErrorMessage({
+        what: "تعذّر الحفظ على مهمّة الاستوديو",
+        why: "المهمّة تتبع فرعاً غير فرعك، والكتابة على مهامّ الاستوديو لا تعبر الفروع",
+        doThis: "اعمل على مهامّ فرعك، أو اطلب من مدير النظام نقل المهمّة إلى فرعك",
+      }),
     });
   }
-  if (Number(task.assignedTo) === actor.userId) return null;
+  if (Number(task.assignedTo) === actor.userId) {
+    // الباركود هو مفتاح دخول المنتج للمسار التشغيلي، لا مجرد إشارة UI. حتى المدير المكلّف
+    // بالتصوير يجب أن يثبت المنتج نفسه قبل إرسال الصورة إلى مزوّد مدفوع أو اعتماد مرشّح.
+    if (requireBarcodeVerification && Number(task.barcodeVerifiedBy) !== actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا يمكن بدء تصوير هذه المهمة بعد",
+          why: "لم يُؤكّد الخادم مسح باركود المنتج لهذه المهمة",
+          doThis: "امسح باركود المنتج من محطة التصوير ثم ابدأ الالتقاط",
+        }),
+      });
+    }
+    return null;
+  }
   const reason = cleanAdminOverrideReason(adminOverrideReason);
   if (!isAdminActor(actor) || !reason) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: isAdminActor(actor) ? "يلزم سبب تصحيح إداري واضح للعمل نيابة عن مالك المهمة" : "لا يجوز للمدير تعديل مهمة عامل آخر",
+      // الفرعان يخاطبان قارئَين مختلفَين: مدير النظام يملك المخرج بيده (يكتب السبب)،
+      // ومن دونه لا يملكه أصلاً ⇒ مخرجه **إحالة** لا أمرٌ يعجز عنه.
+      message: isAdminActor(actor)
+        ? appErrorMessage({
+            what: "تعذّر العمل على مهمّة مصوّرٍ آخر",
+            why: "المهمّة مُسنَدة إلى مصوّرٍ غيرك، والعمل نيابةً عنه تصحيحٌ إداريٌّ يلزمه سببٌ مكتوب لا يقلّ عن 5 أحرف",
+            doThis: "اكتب سبب التصحيح الإداريّ في حقل السبب ثمّ أعد الحفظ",
+          })
+        : appErrorMessage({
+            what: "تعذّر الحفظ على هذه المهمّة",
+            why: "المهمّة مُسنَدة إلى مصوّرٍ آخر، والعمل عليها محصورٌ بمالكها أو بمدير النظام بسببٍ موثَّق",
+            doThis: "اعمل على مهامّك من تبويب «مهامّي»، واطلب من المدير إعادة إسناد هذه المهمّة إليك إن كانت من نصيبك",
+          }),
     });
   }
   return reason;
@@ -200,7 +266,11 @@ function assertIndependentReviewer(actor: ProductStudioActor, task: { assignedTo
   if (!isAdminActor(actor) || !reason) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "يلزم مراجع مستقل عن منفذ المهمة",
+      message: appErrorMessage({
+        what: "تعذّر إتمام مراجعة المهمّة",
+        why: "أنت من نفّذ العمل أو أرسله للمراجعة، وفصلُ المهامّ يمنع مراجعة الشخص لعمل نفسه",
+        doThis: "اطلب من مديرٍ آخر مراجعة المهمّة، أو من مدير النظام اعتمادها بسبب تصحيحٍ إداريٍّ مكتوب",
+      }),
     });
   }
   return reason;
@@ -248,7 +318,11 @@ function decodeStudioImage(dataUrl: string): {
   if (!dims || dims.width < 1 || dims.height < 1 || !structurallyComplete) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "تعذّر التحقق من أبعاد الصورة",
+      message: appErrorMessage({
+        what: "تعذّر قبول الصورة",
+        why: "الملفّ المرسَل مبتورٌ أو ليس صورةً سليمة — تعذّرت قراءة أبعاده من بايتاته (المقبول PNG أو JPEG أو WebP كاملاً)",
+        doThis: "أعِد التقاط الصورة أو صدّرها من جديد بصيغة JPEG، ثمّ أعد الإرسال",
+      }),
     });
   }
   return {
@@ -373,7 +447,11 @@ export function decodeStudioThumbnail(
   if (!isWebp && !isJpeg) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مصغّرة العرض يجب أن تكون WebP أو JPEG",
+      message: appErrorMessage({
+        what: "تعذّر إرسال المرشّح للمراجعة",
+        why: "مصغّرة العرض التي أنتجها متصفّحك ليست WebP ولا JPEG، وهما الصيغتان المقبولتان",
+        doThis: "حدّث الصفحة وأعد الإرسال، وإن تكرّر فجرّب متصفّحاً آخر أو أبلغ الدعم الفنّي",
+      }),
     });
   }
   assertValidImageDataUrl(dataUrl, MAX_STUDIO_THUMBNAIL_BYTES, true, MAX_STUDIO_THUMBNAIL_DIMENSION);
@@ -398,20 +476,39 @@ export function decodeStudioThumbnail(
   if (!structureOk || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_STUDIO_THUMBNAIL_DIMENSION || dimensions.height > MAX_STUDIO_THUMBNAIL_DIMENSION) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: isWebp ? "بنية/إطار مصغّرة WebP غير مكتمل" : "بنية مصغّرة JPEG غير مكتملة",
+      // السبب وحده يتبدّل بالصيغة؛ المخرج واحدٌ لأنّ المصغّرة يُنتجها المتصفّح لا المصوّر.
+      message: isWebp
+        ? appErrorMessage({
+            what: "تعذّر إرسال المرشّح للمراجعة",
+            why: "مصغّرة WebP التي أنتجها متصفّحك مبتورةٌ أو بلا إطار صورةٍ ثابت، أو تجاوز ضلعُها 320 بكسل",
+            doThis: "حدّث الصفحة وأعد الإرسال ليُنتج المتصفّح مصغّرةً جديدة، وإن تكرّر فأبلغ الدعم الفنّي",
+          })
+        : appErrorMessage({
+            what: "تعذّر إرسال المرشّح للمراجعة",
+            why: "مصغّرة JPEG التي أنتجها متصفّحك مبتورةٌ (بلا خاتمة ملفّ) أو تجاوز ضلعُها 320 بكسل",
+            doThis: "حدّث الصفحة وأعد الإرسال ليُنتج المتصفّح مصغّرةً جديدة، وإن تكرّر فأبلغ الدعم الفنّي",
+          }),
     });
   }
   if (!processed.width || !processed.height) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "تعذّر ربط المصغّرة بأبعاد المرشح",
+      message: appErrorMessage({
+        what: "تعذّر إرسال المرشّح للمراجعة",
+        why: "أبعاد الصورة النهائية غير مقروءة، فلا سبيل للتحقّق أنّ المصغّرة مشتقّةٌ منها",
+        doThis: "أعِد إنتاج الصورة النهائية من محرّر الاستوديو ثمّ أعد الإرسال",
+      }),
     });
   }
   const expected = fittedThumbnailDimensions(processed.width, processed.height);
   if (dimensions.width !== expected.width || dimensions.height !== expected.height) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "أبعاد المصغّرة لا تطابق المرشح النهائي",
+      message: appErrorMessage({
+        what: "تعذّر إرسال المرشّح للمراجعة",
+        why: "أبعاد المصغّرة لا تطابق المشتقّ من الصورة النهائية (أطول ضلعٍ يُصغَّر إلى 320 بكسل)",
+        doThis: "حدّث الصفحة وأعد إنتاج الصورة ومصغّرتها معاً ثمّ أعد الإرسال",
+      }),
     });
   }
   return { dataUrl, bytes, ...dimensions, hash: contentHash(bytes) };
@@ -423,7 +520,11 @@ function assertStoragePolicy(): void {
   } catch {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "عمليات الاستوديو متوقفة حتى تهيئة مخزن R2 الخاص",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ عملية الاستوديو",
+        why: "مخزن الصور الخاص غير مُهيَّأ على الخادم، ولا تُحفَظ صورةٌ بلا مخزنٍ يستقبلها",
+        doThis: "أبلغ الإدارة بأنّ إعدادات مخزن صور الاستوديو ناقصة على الخادم؛ التصوير متوقّف حتى تُضبط",
+      }),
     });
   }
 }
@@ -433,7 +534,11 @@ async function lockTask(tx: Parameters<Parameters<typeof withTx>[0]>[0], taskId:
   if (!task)
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: "مهمة الاستوديو غير موجودة",
+      message: appErrorMessage({
+        what: "تعذّر فتح مهمّة الاستوديو",
+        why: "لا مهمّة بهذا الرقم — أُلغيت أو حُذفت بعد فتحك الشاشة",
+        doThis: "حدّث قائمة المهامّ وأعد الاختيار منها",
+      }),
     });
   return task;
 }
@@ -462,7 +567,11 @@ function assertExpectedRevision(task: { revision: number }, expectedRevision?: n
   if (expectedRevision !== undefined && task.revision !== expectedRevision) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تغيّرت المهمة منذ فتحها؛ حدّثها قبل إعادة المحاولة",
+      message: appErrorMessage({
+        what: "تعذّر حفظ التغيير على المهمّة",
+        why: "تغيّرت المهمّة بعد فتحك لها (إعادة إسنادٍ أو تغيير موعدٍ أو حفظٌ من جهازٍ آخر)، وحفظُك مبنيٌّ على نسخةٍ أقدم",
+        doThis: "حدّث الشاشة لتقرأ النسخة الأحدث، ثمّ أعد إدخال تغييرك واحفظ",
+      }),
     });
   }
 }
@@ -481,7 +590,11 @@ function decodeStudioProductCursor(value: string, query: string, includeInactive
   } catch {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مؤشر نتائج المنتجات غير صالح",
+      message: appErrorMessage({
+        what: "تعذّر عرض الصفحة التالية من نتائج المنتجات",
+        why: "مؤشّر الصفحة لم يعد مطابقاً لبحثك الحالي — تغيّر نصّ البحث أو مرشّح «إظهار المعطَّل» بعد إنشائه",
+        doThis: "أعد البحث من أوّله ثمّ تنقّل بين الصفحات من جديد",
+      }),
     });
   }
 }
@@ -498,6 +611,7 @@ function normalizedStudioVariantNameSql() {
 export async function listStudioProducts(actor: ProductStudioActor, input: StudioProductSearchInput = {}) {
   const db = requireDb();
   const q = normalizeSearchText(input.search ?? "").slice(0, 80);
+  const barcodeQuery = canonicalizeBarcodeInput(input.search ?? "");
   const showInactive = input.includeInactive === true && isManager(actor);
   const cursor = input.cursor ? decodeStudioProductCursor(input.cursor, q, showInactive) : null;
   const numericId = /^\d+$/.test(q) ? Number(q) : 0;
@@ -505,7 +619,15 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   const prefix = `${escLike(q)}%`;
   const productName = sql<string>`coalesce(${products.searchNorm}, lower(${products.name}))`;
   const variantName = normalizedStudioVariantNameSql();
-  const exactBarcode = q ? or(eq(productUnits.barcode, q), eq(productUnitBarcodes.barcode, q)) : undefined;
+  // (٤/٩) المقارنة على العمود **المُطبَّع** (تقليم + حالة موحّدة + طيّ الأرقام) لا الخامّ: `q` مرّ بـ
+  // `normalizeSearchText` (يقلّم ويصغّر ويطوي الأرقام)، فمساواةٌ خامّة تُخطئ أيّ صفٍّ حُفظ قبل تطبيع
+  // الحفظ بمسافةٍ طرفية أو رقمٍ عربيّ-هنديّ ⇒ لا يدخل الصفحةَ أصلاً ولا يصل إلى `contextFor`
+  // (المُطبَّع منذ #912)، فيصل الماسحَ «الرمز لا يطابق» على منتجٍ موجود. هذا الاستعلام مسحٌ متعدّد
+  // الشروط أصلاً (LIKE على الأسماء المُطبَّعة) لا مسارَ نقطيّ على فهرس الباركود، فالتغليف لا يغيّر كلفته.
+  // وهو مرآةُ `contextFor` أدناه بالضبط: ما يُطابقه SQL يُصنّفه JS باركوداً، لا أقلّ.
+  const exactBarcode = barcodeQuery
+    ? or(normalizedMatchAny(productUnits.barcode, [barcodeQuery]), normalizedMatchAny(productUnitBarcodes.barcode, [barcodeQuery]))
+    : undefined;
   const exactSku = q ? sql`lower(${productVariants.sku}) = ${q}` : undefined;
   const exactProductId = numericId > 0 ? eq(products.id, numericId) : undefined;
   const namePrefix = q ? or(like(productName, prefix), like(variantName, prefix)) : undefined;
@@ -573,9 +695,9 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
     // MySQL (`utf8mb4_0900_ai_ci`) لا يُميّز الحالة فيجد صفّه في SQL. النتيجة: صفٌّ يُطابقه
     // الاستعلامُ لكنّ التصنيف يسقط إلى NAME_CONTAINS، فيعيد `resolveStudioBarcode` (بلا
     // BARCODE_PRIMARY/ALIAS) خطأ «الباركود غير معروف» على منتجٍ موجود فعلاً.
-    if (q && row.primaryBarcode != null && normalizeSearchText(row.primaryBarcode) === q)
+    if (barcodeQuery && row.primaryBarcode != null && barcodesEquivalent(row.primaryBarcode, barcodeQuery))
       return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: row.primaryBarcode };
-    if (q && row.aliasBarcode != null && normalizeSearchText(row.aliasBarcode) === q)
+    if (barcodeQuery && row.aliasBarcode != null && barcodesEquivalent(row.aliasBarcode, barcodeQuery))
       return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: row.aliasBarcode };
     if (q && normalizeSearchText(row.sku ?? "") === q) return { rank: 2, kind: "SKU" as const, barcode: null };
     if (q && numericId > 0 && Number(row.productId) === numericId) return { rank: 2, kind: "PRODUCT_ID" as const, barcode: null };
@@ -617,18 +739,79 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   };
 }
 
-/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣». */
-async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null) {
+/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣» مع صور المنتج المعتمدة السابقة. */
+async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null, variantId: number | null = null) {
   const [approved] = await tx
     .select({ count: sql<number>`count(*)` })
     .from(productImages)
-    .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")));
+    .where(and(
+      eq(productImages.productId, productId),
+      variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
   let requiredImages = 1;
   if (campaignId != null) {
     const [campaign] = await tx.select({ requiredImages: productStudioCampaigns.requiredImages }).from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1);
     requiredImages = Math.max(1, Number(campaign?.requiredImages ?? 1));
   }
-  return { approvedImages: Number(approved?.count ?? 0), requiredImages };
+
+  const previousImages = await tx
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, productId),
+      variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return {
+    approvedImages: Number(approved?.count ?? 0),
+    requiredImages,
+    previousImages: previousImages.map((img) => ({
+      id: Number(img.id),
+      isPrimary: Boolean(img.isPrimary),
+      sortOrder: Number(img.sortOrder ?? 0),
+      thumbDataUrl: img.thumbDataUrl ?? null,
+      contentHash: img.contentHash ?? null,
+      createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+    })),
+  };
+}
+
+/** عددُ الصور التي تسبق المهمة الجديدة في ترتيب حملتها/بديلها. */
+async function completedCampaignImageCount(
+  tx: StudioTx,
+  input: {
+    campaignId: number;
+    imagesPolicy: "ONLY_MISSING" | "ANY_REGARDLESS";
+    productId: number;
+    variantId: number | null;
+  },
+): Promise<number> {
+  if (input.imagesPolicy === "ANY_REGARDLESS") {
+    const [row] = await tx.select({ n: sql<number>`count(*)` }).from(productImageJobs).where(and(
+      eq(productImageJobs.campaignId, input.campaignId),
+      eq(productImageJobs.productId, input.productId),
+      input.variantId == null ? isNull(productImageJobs.variantId) : eq(productImageJobs.variantId, input.variantId),
+      eq(productImageJobs.status, "APPROVED"),
+    ));
+    return Number(row?.n ?? 0);
+  }
+  const [row] = await tx.select({ n: sql<number>`count(*)` }).from(productImages).where(and(
+    eq(productImages.productId, input.productId),
+    input.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, input.variantId),
+    eq(productImages.reviewStatus, "APPROVED"),
+  ));
+  return Number(row?.n ?? 0);
 }
 
 /**
@@ -681,7 +864,7 @@ async function claimFreshCampaignTask(
   if (campaigns.length === 0) {
     // مديرٌ بلا أيّ حملة نشطة: رسالةٌ تدعوه لبدء واحدة بدل «راجع المدير».
     if (managerActor) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد حملات تصوير نشطة حالياً — أنشئ حملةً لبدء التصوير" });
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${displayName}» لم يُفتح له عمل تصوير`, why: "لا حملة تصويرٍ نشطةٍ واحدة في النظام، والمسح يفتح العمل داخل حملةٍ نشطة", doThis: "أنشئ حملةً وفعّلها من لوحة الحملات، ثمّ أعد مسح الباركود" }) });
     }
     // تمييزٌ بين «لا حملات أصلاً» و«حملات موجودة لكنك لست عضواً» لغير المدير — قبلَ كان
     // كلاهما يخرج بنفس «راجع المدير»، فيراجعه في حملةٍ غير موجودة أصلاً. العدُّ مُقيَّدٌ
@@ -697,12 +880,12 @@ async function claimFreshCampaignTask(
           : and(eq(productStudioCampaigns.status, "ACTIVE"), eq(productStudioCampaigns.branchId, Number(actor.branchId))),
       );
     if (Number(activeCount?.n ?? 0) === 0) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد حملات تصوير نشطة حالياً في فرعك — راجع المدير لبدء حملة" });
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${displayName}» لم يُفتح له عمل تصوير`, why: "لا حملة تصويرٍ نشطةٍ في فرعك، والمسح يفتح العمل داخل حملةٍ نشطة", doThis: "اطلب من المدير إنشاء حملةٍ لفرعك وتفعيلها، ثمّ أعد مسح الباركود" }) });
     }
     // FORBIDDEN لا NOT_FOUND: عدم العضويّة قرارُ صلاحيةٍ (لا يخصّه الطابور) — والاختبار
     // السابق كان يعتمد على هذا الرمز حين كان المسار السابق (backlog-based lookup) يرفض
     // المصوّرَ غير العضو قبل الفحص. الحفاظ على FORBIDDEN يُبقي عقد الرمز متسقاً.
-    throw new TRPCError({ code: "FORBIDDEN", message: "لست ضمن مصوّري أيّ حملةٍ نشطة — راجع المدير لإضافتك للحملة" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لم يُفتح له عمل تصوير`, why: "هناك حملاتٌ نشطة لكنّك لست ضمن مصوّري أيٍّ منها، والمسح يسحب من حملةٍ أنت أحد مصوّريها", doThis: "اطلب من المدير إضافتك إلى مصوّري الحملة، ثمّ أعد مسح الباركود" }) });
   }
   let branchMismatchCount = 0;
   let outOfScopeCount = 0;
@@ -753,6 +936,12 @@ async function claimFreshCampaignTask(
       }
     }
     const inScope = inScopeRow;
+    const completedImages = await completedCampaignImageCount(tx, {
+      campaignId: Number(campaign.id),
+      imagesPolicy: campaign.imagesPolicy ?? "ONLY_MISSING",
+      productId,
+      variantId,
+    });
     const [created] = await tx
       .insert(productImageJobs)
       .values({
@@ -772,8 +961,12 @@ async function claimFreshCampaignTask(
         assignedTo: actor.userId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: actor.userId,
+        barcodeVerifiedAt: new Date(),
         createdBy: actor.userId,
-        activeSlot: 1,
+        // يبقى ordinal الصورة ثابتاً طوال المهمة، ثم يُستخدم لترتيب النشر حتى لو
+        // اكتملت صورة سابقة وعاد المنتج إلى الطابور لجولة تالية.
+        activeSlot: Math.min(MAX_REQUIRED_IMAGES, completedImages + 1),
         templateVersion: 1,
       })
       .$returningId()
@@ -781,27 +974,27 @@ async function claimFreshCampaignTask(
         // ماسحان متزامنان على البديل نفسه: القيد الفريد (productId, variantScope, activeSlot)
         // يمنع التكرار، لكنّ الخطأ الخام كان يصل الخاسرَ عطلاً داخلياً بدل «بيد زميل».
         if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
-          throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» فتحه زميلٌ قبلك للتوّ` });
+          throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» لم يُفتح لك`, why: "زميلٌ مسح الباركود نفسه قبلك بلحظة، ومهمّة المنتج الواحد لا تُفتح لاثنين معاً", doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير نقل المهمّة إليك بإعادة الإسناد" }) });
         }
         throw error;
       });
     const taskId = Number(created.id);
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, variantId, campaignId: Number(campaign.id) }));
-    return { taskId, productName: displayName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id))) };
+    return { taskId, productName: displayName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id), variantId)) };
   }
   // ترتيبُ التشخيص من الأخصّ إلى الأعمّ: «اكتملت» يسبق «خارج النطاق» يسبق «فرعٌ آخر»،
   // فالمصوّر يقرأ سبباً واحداً محدَّداً بدل عدّة سببٍ عامّ محتمل.
   if (completedCount > 0) {
-    throw new TRPCError({ code: "NOT_FOUND", message: `«${displayName}» اكتملت صوره المعتمَدة في حملتك` });
+    throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${displayName}» لا يحتاج تصويراً في حملتك`, why: "بلغت صوره المعتمَدة العددَ المطلوب في الحملة، وسياستها «الناقصة فقط»", doThis: "انتقل إلى المنتج التالي، واطلب من المدير ضبط سياسة الحملة على «كل المنتجات» إن أردتَ إضافة صورةٍ له رغم اكتماله" }) });
   }
   if (outOfScopeCount > 0) {
-    throw new TRPCError({ code: "NOT_FOUND", message: `«${displayName}» خارج نطاق حملاتك النشطة — تحقّق من فئة المنتج مع المدير` });
+    throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${displayName}» خارج نطاق حملاتك النشطة`, why: "فئة المنتج (أو قائمة منتجات الحملة) لا تشمله، والمسح يفتح ما يقع داخل النطاق وحده", doThis: "انتقل إلى منتجٍ داخل نطاق الحملة، واطلب من المدير توسيع نطاقها ليشمل فئة هذا المنتج" }) });
   }
   if (branchMismatchCount > 0) {
-    throw new TRPCError({ code: "FORBIDDEN", message: `«${displayName}»: حملاتك في فرعٍ آخر — راجع المدير` });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لم يُفتح لك`, why: "حملاتك النشطة تتبع فرعاً غير فرعك الحاليّ، ومهمّة التصوير تُنشأ في فرع حملتها", doThis: "اطلب من المدير إنشاء حملةٍ لفرعك، أو نقلك إلى فرع الحملة، ثمّ أعد المسح" }) });
   }
   // احتياط: لا حملات مطابقة لأيّ سبب — يحدث حين تتغيّر الحملات بين استعلامَين.
-  throw new TRPCError({ code: "NOT_FOUND", message: `«${displayName}» ليس ضمن حملة تصوير نشطة مُسنَدة إليك` });
+  throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${displayName}» ليس ضمن حملة تصويرٍ مُسنَدةٍ إليك`, why: "تغيّرت الحملات بين قراءتين أثناء المسح، فلم يبقَ ما يطابق هذا المنتج في حملاتك", doThis: "أعد مسح الباركود، وإن تكرّر فاطلب من المدير التأكّد من حملة هذا المنتج" }) });
 }
 
 /**
@@ -818,6 +1011,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
   const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
   // اسمُ العرض للرسائل يجمع المنتج والبديل (إن وُجد).
   const displayName = resolved.variantName ? `${resolved.productName} — ${resolved.variantName}` : resolved.productName;
+  const eligibleQueueCampaign = sql`exists (select 1 from ${productStudioCampaigns} c
+    where c.id = ${productImageJobs.campaignId} and c.status = 'ACTIVE'
+    ${canCrossBranches(actor) ? sql`` : sql`and c.branchId = ${actor.branchId}`}
+    ${isManager(actor) ? sql`` : sql`and exists (select 1 from ${productStudioCampaignAssignees} ca where ca.campaignId = c.id and ca.userId = ${actor.userId})`})`;
   return withStudioTx(async (tx) => {
     // البحثُ عن مهمّةٍ نشطة يُقيَّد بـ **البديل نفسه**، مع سماحٍ باستهداف مهمّة الطابور
     // المستوى-الأمّ (`variantId IS NULL`) إن كان الماسحُ يمسح بديلاً ولا مهمّةَ خاصّةً بذلك
@@ -831,9 +1028,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? null
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId, barcodeVerifiedBy: productImageJobs.barcodeVerifiedBy })
             .from(productImageJobs)
-            .where(and(eq(productImageJobs.productId, productId), eq(productImageJobs.activeSlot, 1), eq(productImageJobs.variantId, variantId)))
+            .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), eq(productImageJobs.variantId, variantId)))
+            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
             .limit(1)
             .for("update")
         )[0];
@@ -841,9 +1039,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? undefined
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId, barcodeVerifiedBy: productImageJobs.barcodeVerifiedBy })
             .from(productImageJobs)
-            .where(and(eq(productImageJobs.productId, productId), eq(productImageJobs.activeSlot, 1), isNull(productImageJobs.variantId)))
+            .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
+            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
             .limit(1)
             .for("update")
         )[0];
@@ -854,6 +1053,9 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       // يُولّد المدير الطابور يدوياً — وهو ما يكسر انسيابية «امسح ثم صوّر».
       return claimFreshCampaignTask(tx, actor, resolved);
     }
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(active.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» لا يُفتح للتصوير الآن`, why: active.status === "PENDING_REVIEW" ? "صوره أُرسلت للاعتماد وتنتظر قرار المراجع" : "المهمة مغلقة ولا يجوز إعادتها إلى التصوير بالمسح", doThis: "انتقل إلى المنتج التالي، أو راجع المدير إذا كانت الحالة تحتاج إجراءً إدارياً" }) });
+    }
     // ترقيةُ variantId قبل الرجوع «لصاحبها»: إن كان المدير أسنَد مهمّةً مستوى-أمّ
     // (variantId=NULL) إلى المصوّر ثمّ مسح المصوّرُ باركود بديلٍ محدَّد، الصورةُ يجب أن
     // تذهب لذاك البديل. بلا هذه الترقية كانت المهمّةُ تُغلَق مبكّراً بـ«صاحبها» ثمّ الاعتماد
@@ -861,28 +1063,104 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     if (variantId != null && active.variantId == null && Number(active.assignedTo) === actor.userId) {
       await tx
         .update(productImageJobs)
-        .set({ variantId, revision: sql`${productImageJobs.revision} + 1` })
+        .set({ variantId, barcodeVerifiedBy: actor.userId, barcodeVerifiedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` })
         .where(eq(productImageJobs.id, active.id));
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.claimByBarcode.upgradeVariant", Number(active.id), { productId, variantId, barcode: barcode.slice(0, 64) }),
       );
-      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
+      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (Number(active.assignedTo) === actor.userId) {
-      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
+      if (Number(active.barcodeVerifiedBy) !== actor.userId) {
+        await tx.update(productImageJobs).set({ barcodeVerifiedBy: actor.userId, barcodeVerifiedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` }).where(eq(productImageJobs.id, active.id));
+        return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
+      }
+      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
+    if (active.status === "PENDING_REVIEW" || active.submittedAt != null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» صُوِّر بالفعل وبانتظار الاعتماد`,
+          why: "التقط زميلٌ صورةً لهذا المنتج وأرسلها للاعتماد، ولا حاجة لإعادة تصويره",
+          doThis: "انتقل إلى المنتج التالي في الطابور",
+        }),
+      });
+    }
+    // إن كانت المهمّة مسندة لزميل (assignedTo != null)
     if (active.assignedTo != null) {
-      throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» بيد زميلٍ آخر الآن` });
+      // إن كان مسحاً ذاتياً لم يُصوَّر ومضى عليه أكثر من 15 دقيقة، يُتاح للمصوّر الجديد الذي بيده المنتج حالياً استلامه
+      // بشرط استيفاء عضوية الحملة والفرع:
+      const isSelfClaimed = active.assignedBy != null && Number(active.assignedBy) === Number(active.assignedTo);
+      const CLAIM_STALE_MS = 15 * 60 * 1_000;
+      const isStaleClaim = isSelfClaimed && active.status === "ASSIGNED" && active.submittedAt == null && (
+        !active.assignedAt || (Date.now() - new Date(active.assignedAt).getTime() > CLAIM_STALE_MS)
+      );
+      if (isStaleClaim) {
+        if (!canCrossBranches(actor) && (actor.branchId == null || Number(active.branchId) !== Number(actor.branchId))) {
+          throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لم يُفتح لك`, why: "مهمّة هذا المنتج أُنشئت في فرعٍ غير فرعك، والسحب لا يعبر الفروع", doThis: "اطلب من المدير إنشاء حملةٍ لفرعك، أو نقل هذه المهمّة إلى فرعك" }) });
+        }
+        if (active.campaignId != null) {
+          const member = (
+            await tx
+              .select({ id: productStudioCampaignAssignees.id })
+              .from(productStudioCampaignAssignees)
+              .where(and(eq(productStudioCampaignAssignees.campaignId, Number(active.campaignId)), eq(productStudioCampaignAssignees.userId, actor.userId)))
+              .limit(1)
+          )[0];
+          if (!member && !isManager(actor)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر سحب هذه المهمّة", why: "لستَ ضمن مصوّري الحملة التي تتبعها، والسحب محصورٌ بمصوّريها", doThis: "اطلب من المدير إضافتك إلى مصوّري الحملة، ثمّ أعد مسح الباركود" }) });
+          }
+        }
+        const upgradeVariant = variantId != null && active.variantId == null;
+        await tx
+          .update(productImageJobs)
+          .set({
+            assignedTo: actor.userId,
+            assignedBy: actor.userId,
+            assignedAt: new Date(),
+            barcodeVerifiedBy: actor.userId,
+            barcodeVerifiedAt: new Date(),
+            ...(upgradeVariant ? { variantId } : {}),
+            revision: sql`${productImageJobs.revision} + 1`,
+          })
+          .where(eq(productImageJobs.id, active.id));
+        await tx.insert(auditLogs).values(
+          auditValues(actor, "productStudio.claimByBarcode.reclaimStale", Number(active.id), {
+            productId,
+            variantId,
+            previousAssigneeId: Number(active.assignedTo),
+            barcode: barcode.slice(0, 64),
+            campaignId: active.campaignId == null ? null : Number(active.campaignId),
+          }),
+        );
+        return {
+          taskId: Number(active.id),
+          productName: displayName,
+          claimed: true as const,
+          revision: Number(active.revision) + 1,
+          ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)),
+        };
+      }
+
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» قيد العمل لدى زميلٍ آخر الآن`,
+          why: "المهمّة مفتوحة لدى مصوّرٍ غيرك حالياً، ولا تُفتح المهمّة الواحدة لاثنين معاً",
+          doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير إعادة إسنادها إن كان الزميل قد غادر",
+        }),
+      });
     }
     // فحصُ الفرع وحده هنا: `assertTaskAccess` تفشل مغلقةً على صفٍّ **بلا منفّذ**
     // (`Number(null) === 0` لا يساوي معرّف أحد) — وهو بالضبط ما يعنيه السحب.
     // التخويل الحقيقيّ تحته: عضويّةُ الحملة.
     if (!canCrossBranches(actor) && (actor.branchId == null || Number(active.branchId) !== Number(actor.branchId))) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "المهمة تتبع فرعاً آخر" });
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لم يُفتح لك`, why: "مهمّة هذا المنتج أُنشئت في فرعٍ غير فرعك، والسحب لا يعبر الفروع", doThis: "اطلب من المدير إنشاء حملةٍ لفرعك، أو نقل هذه المهمّة إلى فرعك" }) });
     }
     // السحب مشروطٌ بعضوية الحملة: لا يسحب من ليس مصوّراً فيها.
     if (active.campaignId == null) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة تُسنَد من المدير ولا تُسحَب بالمسح" });
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لا يُسحَب بمسح الباركود`, why: "مهمّته أُنشئت بإسنادٍ مباشرٍ من المدير خارج أيّ حملة، والسحب بالمسح خاصٌّ بمهامّ الحملات", doThis: "اطلب من المدير إسناد المهمّة إليك، ثمّ افتحها من تبويب «مهامّي»" }) });
     }
     // حالةُ الحملة مطلوبةٌ هنا أيضاً بعد إضافة PAUSED (٢٨/٨، مراجعة Codex P1): «التجميد
     // الذكيّ» على مستوى الحملة يعني أنّ **الطابور المُسنَد مُسبقاً** يبقى قابلاً للإتمام
@@ -896,10 +1174,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       .where(eq(productStudioCampaigns.id, Number(active.campaignId)))
       .limit(1);
     if (campaignRow?.status === "PAUSED") {
-      throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» تتبع حملةً موقوفةً مؤقّتاً — راجع المدير للاستئناف` });
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» لا يُسحَب الآن`, why: "حملته موقوفةٌ مؤقّتاً، والإيقاف يمنع سحب عملٍ جديدٍ منها بينما يبقى المُسنَد سلفاً قابلاً للإتمام", doThis: "أكمل مهامّك المُسنَدة من تبويب «مهامّي»، واطلب من المدير «استئناف الحملة» لتعود قابلةً للسحب" }) });
     }
     if (campaignRow?.status === "COMPLETED" || campaignRow?.status === "CANCELLED") {
-      throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» تتبع حملةً مُغلقة — لا يمكن سحبها` });
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» لا يُسحَب الآن`, why: "حملته مُغلقة (مكتملة أو ملغاة)، والمُغلقة لا تفتح عملاً جديداً", doThis: "امسح منتجاً من حملةٍ نشطة، واطلب من المدير حملةً جديدةً إن كان هذا المنتج ما زال يحتاج صورة" }) });
     }
     const member = (
       await tx
@@ -909,7 +1187,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
         .limit(1)
     )[0];
     if (!member && !isManager(actor)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لستَ ضمن مصوّري هذه الحملة" });
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر سحب هذه المهمّة", why: "لستَ ضمن مصوّري الحملة التي تتبعها، والسحب من الطابور محصورٌ بمصوّريها", doThis: "اطلب من المدير إضافتك إلى مصوّري الحملة، ثمّ أعد مسح الباركود" }) });
     }
     // ترقيةُ variantId إن كانت المهمّةُ في الطابور الأمّ (NULL) والماسحُ يمسح بديلاً محدَّداً:
     // الصورةُ ستذهب لهذا البديل بالتحديد (approve يمرّرها إلى productImages.variantId).
@@ -922,6 +1200,8 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
         assignedTo: actor.userId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: actor.userId,
+        barcodeVerifiedAt: new Date(),
         ...(upgradeVariant ? { variantId } : {}),
         revision: sql`${productImageJobs.revision} + 1`,
       })
@@ -929,48 +1209,43 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     await tx.insert(auditLogs).values(
       auditValues(actor, "productStudio.claimByBarcode", Number(active.id), { productId, variantId, upgradedFromParent: upgradeVariant, barcode: barcode.slice(0, 64), campaignId: Number(active.campaignId) }),
     );
-    return { taskId: Number(active.id), productName: displayName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId))) };
+    return { taskId: Number(active.id), productName: displayName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId), variantId)) };
   });
 }
 
 export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: string) {
-  // بحثٌ أوّليّ باحترام صلاحيّة المستخدم — يعطي المنتج النشط إن وُجد.
-  const activeOnly = await listStudioProducts(actor, {
-    search: barcode,
-    includeInactive: isManager(actor),
-  });
-  const activeMatch = activeOnly.rows.find((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
-  if (activeMatch) {
+  // مسح الباركود له محلّل واحد في النظام كلّه. استعمال بحث الاستوديو النصي هنا كان يضغط
+  // المسافات الداخلية، يفسّر الرقم القصير كمعرّف منتج، ولا يعرف تكافؤ UPC-A/EAN-13.
+  const resolution = await resolveBarcodeOwnerResult(requireDb(), barcode);
+  if (resolution.status === "AMBIGUOUS") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "الرمز الممسوح يخصّ أكثر من منتج",
+        why: "باركوداتٌ مخزّنةٌ قديمةٌ لعدّة منتجاتٍ تتطابق بعد التطبيع مع هذا الرمز، فلا يُحسَم لأيّها آلياً",
+        doThis: "ابحث عن المنتج بالاسم، واطلب من المدير تصحيح باركودات المنتجات المتضاربة",
+      }),
+    });
+  }
+  const owner = resolution.status === "FOUND" ? resolution.owner : null;
+  if (owner && !owner.isService) {
+    const isActive = owner.productActive && owner.variantActive && owner.unitActive;
+    if (!isActive && !isManager(actor)) {
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${owner.productName}» لا يُفتح له عمل تصوير`, why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير", doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد مسح الباركود" }) });
+    }
     return {
-      productId: activeMatch.productId,
-      productName: activeMatch.productName,
-      variantId: activeMatch.variantId,
-      variantName: activeMatch.variantName,
-      unitId: activeMatch.unitId,
-      unitName: activeMatch.unitName,
-      isActive: activeMatch.isActive,
-      isBundle: activeMatch.isBundle,
-      matchKind: activeMatch.matchKind,
+      productId: owner.productId,
+      productName: owner.productName,
+      variantId: owner.variantId,
+      variantName: owner.variantName,
+      unitId: owner.productUnitId,
+      unitName: owner.unitName,
+      isActive,
+      isBundle: owner.isBundle,
+      matchKind: owner.matchKind === "PRIMARY" ? "BARCODE_PRIMARY" as const : "BARCODE_ALIAS" as const,
     };
   }
-  // بحثٌ ثانٍ يشمل المُعطَّل — إن وُجد، فرّق الرسالة كي لا يظنّ المصوّر أنّ الماسح مكسور
-  // أو الباركود مطبوعٌ خطأ. قبل هذا: كل الحالات ⇒ «الباركود غير معروف» رسالةً واحدة.
-  // تمريرُ دور «admin» هنا آمن: `listStudioProducts` يقصر `includeInactive` على المدير
-  // فقط، والكتالوج نفسه ليس مُفرَّعاً (المنتجات مشتركة بين الفروع) ⇒ لا تسريبَ عبر فروع
-  // من إظهار اسم منتجٍ معطَّل — نفس الاسم يظهر لكل مدير في النظام.
-  if (!isManager(actor)) {
-    const withInactive = await listStudioProducts({ ...actor, role: "admin" }, {
-      search: barcode,
-      includeInactive: true,
-    });
-    const inactiveMatch = withInactive.rows.find(
-      (row) => (row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS") && row.isActive === false,
-    );
-    if (inactiveMatch) {
-      throw new TRPCError({ code: "NOT_FOUND", message: `«${inactiveMatch.productName}» منتجٌ معطَّل — راجع المدير قبل تصويره` });
-    }
-  }
-  throw new TRPCError({ code: "NOT_FOUND", message: "الباركود غير معروف — لم يُطابق أيّ منتجٍ في نظامك" });
+  throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر فتح عملٍ بهذا الباركود", why: "الرمز الممسوح لا يطابق باركود أيّ منتجٍ أو بديلٍ في الكتالوج", doThis: "ابحث عن المنتج بالاسم من حقل البحث في الاستوديو، أو اطلب من المدير إضافة هذا الباركود إلى المنتج" }) });
 }
 
 export async function listStudioAssignees(actor: ProductStudioActor) {
@@ -1019,9 +1294,9 @@ export async function grantStudioAccess(actor: ProductStudioActor, userId: numbe
       .where(and(eq(users.id, userId), eq(users.isActive, true)))
       .limit(1)
       .for("update");
-    if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير متاح" });
+    if (!target) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر منح صلاحية الاستوديو", why: "الحساب المختار غير موجودٍ أو غير نشط — أُوقف بعد فتحك القائمة", doThis: "حدّث قائمة الموظّفين واختر حساباً نشطاً، ثمّ أعد المنح" }) });
     if (!canCrossBranches(actor) && (actor.branchId == null || Number(target.branchId) !== Number(actor.branchId))) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن منح صلاحية لموظفٍ من فرعٍ آخر" });
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر منح صلاحية الاستوديو", why: "الموظّف يتبع فرعاً غير فرعك، ومنح الصلاحيات لا يعبر الفروع", doThis: "امنح الصلاحية لموظّفٍ من فرعك، أو اطلب من مدير النظام منحها لموظّفي الفروع الأخرى" }) });
     }
     if (hasModuleAccess(target.role, target.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
       return { granted: false as const, name: target.name };
@@ -1048,7 +1323,11 @@ function assertCampaignAccess(actor: ProductStudioActor, campaign: Pick<StudioCa
   if (actor.branchId == null || Number(campaign.branchId) !== Number(actor.branchId)) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "الحملة تتبع فرعاً آخر",
+      message: appErrorMessage({
+        what: "تعذّر فتح الحملة",
+        why: "الحملة تتبع فرعاً غير فرعك، وحملات الاستوديو لا تُقرأ عبر الفروع",
+        doThis: "افتح حملات فرعك من لوحة الحملات، أو اطلب من مدير النظام العمل على حملة الفرع الآخر",
+      }),
     });
   }
 }
@@ -1056,12 +1335,16 @@ function assertCampaignAccess(actor: ProductStudioActor, campaign: Pick<StudioCa
 function campaignBranchId(actor: ProductStudioActor, requested?: number): number {
   const branchId = requested ?? actor.branchId;
   if (branchId == null || !Number.isSafeInteger(Number(branchId)) || Number(branchId) < 1) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر فرع الحملة" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حفظ الحملة", why: "الحملة بلا فرع: لا فرعٌ اختير في النموذج ولا فرعٌ مُسنَدٌ لحسابك يُشتقّ منه", doThis: "اختر فرع الحملة من قائمة الفروع في النموذج ثمّ احفظ" }) });
   }
   if (!canCrossBranches(actor) && Number(branchId) !== Number(actor.branchId)) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "لا يمكن إنشاء حملة لفرع آخر",
+      message: appErrorMessage({
+        what: "تعذّر حفظ الحملة",
+        why: "الفرع المختار غير فرعك، وإنشاء حملةٍ لفرعٍ آخر محصورٌ بمدير النظام",
+        doThis: "اختر فرعك في النموذج، أو اطلب من مدير النظام إنشاء الحملة لذلك الفرع",
+      }),
     });
   }
   return Number(branchId);
@@ -1103,7 +1386,11 @@ export async function createStudioCampaign(
   if (name.length < 3 || name.length > 180) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "اسم الحملة يجب أن يكون بين 3 و180 حرفاً",
+      message: appErrorMessage({
+        what: "تعذّر حفظ الحملة",
+        why: "اسم الحملة خارج المدى المسموح — المطلوب من 3 إلى 180 حرفاً",
+        doThis: "اكتب اسماً بين 3 و180 حرفاً في حقل اسم الحملة ثمّ احفظ",
+      }),
     });
   }
   const status = input.status ?? "DRAFT";
@@ -1111,7 +1398,11 @@ export async function createStudioCampaign(
   if (startsAt && input.dueAt && input.dueAt <= startsAt) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "موعد الحملة يجب أن يكون بعد بدايتها",
+      message: appErrorMessage({
+        what: "تعذّر حفظ الحملة",
+        why: "الموعد النهائيّ يسبق تاريخ البداية أو يساويه، والحملة لا تنتهي قبل أن تبدأ",
+        doThis: "اضبط الموعد النهائيّ على تاريخٍ بعد تاريخ البداية ثمّ احفظ",
+      }),
     });
   }
   const branchId = campaignBranchId(actor, input.branchId);
@@ -1123,16 +1414,16 @@ export async function createStudioCampaign(
   const assigneeIds = Array.from(new Set((input.assigneeIds ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)));
   // النطاق يجب أن يحمل ما يصفه، وإلّا كانت الحملة فارغةً بلا أن يدري منشئها.
   if (scopeKind === "CATEGORY" && !input.scopeCategoryId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر الفئة قبل حفظ حملةٍ بنطاق فئة" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حفظ الحملة", why: "النطاق «فئة» ولم تُختَر فئة، فتُحفظ حملةٌ فارغةٌ لا يُولَّد لها طابور", doThis: "اختر الفئة من قائمة الفئات، أو بدّل النطاق إلى «الكتالوج كلّه»، ثمّ احفظ" }) });
   }
   if (scopeKind === "CATEGORIES" && scopeCategoryIds.length === 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر فئةً واحدةً على الأقل قبل حفظ حملةٍ بنطاق فئات متعدّدة" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حفظ الحملة", why: "النطاق «فئات متعدّدة» ولم تُختَر أيّ فئة، فتُحفظ حملةٌ فارغةٌ لا يُولَّد لها طابور", doThis: "اختر فئةً واحدةً على الأقلّ، أو بدّل النطاق إلى «الكتالوج كلّه»، ثمّ احفظ" }) });
   }
   if (scopeKind === "PRODUCTS" && scopeProductIds.length === 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر منتجاً واحداً على الأقل قبل حفظ حملةٍ بنطاق منتجات" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حفظ الحملة", why: "النطاق «منتجات» ولم يُختَر أيّ منتج، فتُحفظ حملةٌ فارغةٌ لا يُولَّد لها طابور", doThis: "أضِف منتجاً واحداً على الأقلّ من منتقي المنتجات، أو بدّل النطاق، ثمّ احفظ" }) });
   }
   if (scopeProductIds.length > MAX_CAMPAIGN_PRODUCTS) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: `أقصى عدد منتجاتٍ للحملة الواحدة ${MAX_CAMPAIGN_PRODUCTS}` });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حفظ الحملة", why: `المنتجات المختارة تتجاوز سقف الحملة الواحدة (${MAX_CAMPAIGN_PRODUCTS} منتجاً)`, doThis: `أنقص الاختيار إلى ${MAX_CAMPAIGN_PRODUCTS} منتجاً أو أقلّ، أو وزّعها على أكثر من حملة، ثمّ احفظ` }) });
   }
   return withStudioTx(async (tx) => {
     const [created] = await tx
@@ -1275,7 +1566,7 @@ export async function transitionStudioCampaign(
         .for("update")
     )[0];
     if (!campaign) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "حملة الاستوديو غير موجودة" });
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر تغيير حالة الحملة", why: "لا حملة بهذا الرقم — حُذفت أو تغيّرت بعد فتحك الشاشة", doThis: "حدّث لوحة الحملات واختر الحملة من جديد" }) });
     }
     assertCampaignAccess(actor, campaign);
     // مصفوفة الانتقالات المشروعة بعد إضافة PAUSED (٢٨/٨، تجميد ذكيّ):
@@ -1292,7 +1583,7 @@ export async function transitionStudioCampaign(
       (campaign.status === "PAUSED" &&
         (input.status === "ACTIVE" || input.status === "COMPLETED" || input.status === "CANCELLED"));
     if (!legal) {
-      throw new TRPCError({ code: "CONFLICT", message: "انتقال حالة الحملة غير مسموح" });
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر تغيير حالة الحملة", why: "الانتقال المطلوب غير مشروعٍ من حالتها الراهنة — المكتملة والملغاة نهائيّتان، والمسوّدة تُفعَّل أو تُلغى فقط", doThis: "حدّث لوحة الحملات لتقرأ حالتها الراهنة ثمّ اختر إجراءً متاحاً لها، أو أنشئ حملةً جديدة" }) });
     }
     const startsAt =
       input.status === "ACTIVE"
@@ -1300,7 +1591,7 @@ export async function transitionStudioCampaign(
         : campaign.startsAt;
     const dueAt = input.dueAt === undefined ? campaign.dueAt : input.dueAt;
     if (startsAt && dueAt && dueAt <= startsAt) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة يجب أن يكون بعد بدايتها" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تغيير حالة الحملة", why: "الموعد النهائيّ الناتج يسبق تاريخ البداية أو يساويه", doThis: "عدّل الموعد النهائيّ إلى تاريخٍ بعد البداية من زرّ تعديل الحملة، ثمّ أعد تغيير الحالة" }) });
     }
     await tx
       .update(productStudioCampaigns)
@@ -1433,7 +1724,7 @@ export async function reconcileStudioCampaignTransitionNotifications(
 ): Promise<{ createdCount: number; claimedCount: number; failedCount: number }> {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   if (!canCrossBranches(actor) && actor.branchId == null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر إرسال إشعارات الحملة", why: "حسابك بلا فرعٍ مُسنَد، وإشعارات الحملة تُرسَل ضمن نطاق فرعٍ محدَّد", doThis: "اطلب من مدير النظام ربط حسابك بفرعٍ من صفحة المستخدمين، ثمّ أعد المحاولة" }) });
   }
   const result = await reconcileAppNotificationOutbox({
     branchId: canCrossBranches(actor) ? undefined : Number(actor.branchId),
@@ -1630,7 +1921,11 @@ async function loadCampaign(actor: ProductStudioActor, campaignId: number): Prom
   if (!campaign)
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: "حملة الاستوديو غير موجودة",
+      message: appErrorMessage({
+        what: "تعذّر فتح الحملة",
+        why: "لا حملة بهذا الرقم — حُذفت أو تغيّر رقمها بعد فتحك الشاشة",
+        doThis: "حدّث لوحة الحملات واختر الحملة من القائمة",
+      }),
     });
   assertCampaignAccess(actor, campaign);
   return campaign;
@@ -1698,7 +1993,7 @@ function missingStudioProductConditions(requiredImages = 1, imagesPolicy: "ONLY_
   const required = Math.max(1, Math.trunc(requiredImages));
   const missingCountCondition = imagesPolicy === "ANY_REGARDLESS"
     ? undefined
-    : sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') < ${required}`;
+    : sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.variantId} is null and ${productImages.reviewStatus} = 'APPROVED') < ${required}`;
   // في ONLY_MISSING الفحصُ activeSlot=1 يكفي — بمجرد اعتماد الصورة يخرج المنتج بشرط
   // العدّ. في ANY_REGARDLESS المنتج المكتمل مسموحٌ ⇒ إن اقتصر الفحص على activeSlot=1
   // فإنّ approve يفرّغه فيصير المنتج «ناقصاً» فوراً ⇒ باكلوغ لا نهائيّ (الجذر:
@@ -1715,7 +2010,7 @@ function missingStudioProductConditions(requiredImages = 1, imagesPolicy: "ONLY_
     eq(products.isService, false),
     missingCountCondition,
     anyJobInThisCampaign,
-    sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} = 1)`,
+    sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} is not null)`,
   );
 }
 
@@ -1764,13 +2059,21 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
     if (!campaign)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "حملة الاستوديو غير موجودة",
+        message: appErrorMessage({
+          what: "تعذّر توليد مهامّ الحملة",
+          why: "لا حملة بهذا الرقم — حُذفت بعد فتحك الشاشة",
+          doThis: "حدّث لوحة الحملات واختر الحملة، ثمّ أعد التوليد",
+        }),
       });
     assertCampaignAccess(actor, campaign);
     if (campaign.status !== "ACTIVE") {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "فعّل الحملة قبل توليد المهام",
+        message: appErrorMessage({
+          what: "تعذّر توليد مهامّ الحملة",
+          why: "الحملة ليست نشطة، والتوليد يجري على النشطة وحدها كي لا يُنشأ طابورٌ لحملةٍ مسوّدةٍ أو مُغلقة",
+          doThis: "فعّل الحملة من لوحة الحملات ثمّ أعد التوليد",
+        }),
       });
     }
 
@@ -1781,6 +2084,19 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
     if (missing.length === 0) return { createdCount: 0, remaining: 0 };
     const ids = missing.map((product) => Number(product.id));
     await tx.select({ id: products.id }).from(products).where(inArray(products.id, ids)).for("update");
+    const approvedByProduct = new Map<number, number>();
+    if (campaign.imagesPolicy === "ONLY_MISSING") {
+      const counts = await tx
+        .select({ productId: productImages.productId, n: sql<number>`count(*)` })
+        .from(productImages)
+        .where(and(
+          inArray(productImages.productId, ids),
+          isNull(productImages.variantId),
+          eq(productImages.reviewStatus, "APPROVED"),
+        ))
+        .groupBy(productImages.productId);
+      for (const row of counts) approvedByProduct.set(Number(row.productId), Number(row.n));
+    }
     // حرسُ سباق: حملتان نشطتان بنطاقٍ متقاطع تحسبان الناقص قبل أيّ إدراج، ثمّ تتسابقان
     // على القيد الفريد `(productId, activeSlot)`. `onDuplicateKeyUpdate` بضبطٍ ذاتيّ
     // يُحوّل الاصطدام إلى **تخطٍّ صامتٍ ذرّيّ** (`affectedRows=0`) بدل إسقاط الدفعة
@@ -1802,7 +2118,7 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
           assignedTo: null,
           assignedBy: null,
           createdBy: actor.userId,
-          activeSlot: 1,
+          activeSlot: Math.min(MAX_REQUIRED_IMAGES, (approvedByProduct.get(Number(product.id)) ?? 0) + 1),
           templateVersion: 1,
         })),
       )
@@ -1875,34 +2191,34 @@ export async function updateStudioCampaignDetails(
   if (input.name !== undefined) {
     const name = input.name.trim();
     if (name.length < 3 || name.length > 180) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الحملة من ٣ إلى ١٨٠ حرفاً" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تعديل الحملة", why: "اسم الحملة خارج المدى المسموح — المطلوب من 3 إلى 180 حرفاً", doThis: "اكتب اسماً بين 3 و180 حرفاً ثمّ احفظ التعديل" }) });
     }
     patch.name = name;
   }
   if (input.requiredImages !== undefined) {
     const required = Math.trunc(Number(input.requiredImages));
     if (!Number.isSafeInteger(required) || required < 1 || required > 10) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "عدد الصور المطلوبة من ١ إلى ١٠" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تعديل الحملة", why: "عدد الصور المطلوبة لكلّ منتج خارج المدى المسموح — المطلوب من 1 إلى 10 صور", doThis: "اضبط «صور مطلوبة» على عددٍ بين 1 و10 صور ثمّ احفظ التعديل" }) });
     }
     patch.requiredImages = required;
   }
   if (input.startsAt !== undefined) patch.startsAt = input.startsAt;
   if (input.dueAt !== undefined) patch.dueAt = input.dueAt;
   if (Object.keys(patch).length === 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا حقلَ للتعديل" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تعديل الحملة", why: "الطلب وصل بلا أيّ حقلٍ مُغيَّر، فلا شيء يُحفَظ", doThis: "غيّر الاسم أو عدد الصور أو التواريخ في النموذج ثمّ احفظ" }) });
   }
   return withStudioTx(async (tx) => {
     const [campaign] = await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, input.campaignId)).limit(1).for("update");
-    if (!campaign) throw new TRPCError({ code: "NOT_FOUND", message: "حملة الاستوديو غير موجودة" });
+    if (!campaign) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر تعديل الحملة", why: "لا حملة بهذا الرقم — حُذفت بعد فتحك النموذج", doThis: "حدّث لوحة الحملات واختر الحملة من جديد" }) });
     assertCampaignAccess(actor, campaign);
     if (campaign.status === "COMPLETED" || campaign.status === "CANCELLED") {
-      throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل حملةٍ مُغلقة" });
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر تعديل الحملة", why: "الحملة مكتملة أو ملغاة، والمُغلقة سجلٌّ تاريخيٌّ لا يُعدَّل", doThis: "أنشئ حملةً جديدةً بالبيانات المطلوبة بدل تعديل المُغلقة" }) });
     }
     // تحقّقُ ترتيبٍ زمنيّ: يُقاس على القيم الجديدة إن قُدِّمت، وإلّا القائمة.
     const effectiveStartsAt = patch.startsAt === undefined ? campaign.startsAt : (patch.startsAt as Date | null);
     const effectiveDueAt = patch.dueAt === undefined ? campaign.dueAt : (patch.dueAt as Date | null);
     if (effectiveStartsAt && effectiveDueAt && effectiveDueAt <= effectiveStartsAt) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة يجب أن يكون بعد بدايتها" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تعديل الحملة", why: "الموعد النهائيّ الناتج يسبق تاريخ البداية أو يساويه", doThis: "اضبط الموعد النهائيّ على تاريخٍ بعد البداية ثمّ احفظ التعديل" }) });
     }
     await tx.update(productStudioCampaigns).set(patch).where(eq(productStudioCampaigns.id, input.campaignId));
 
@@ -1982,14 +2298,14 @@ export async function updateCampaignAssignees(actor: ProductStudioActor, input: 
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const uniqueIds = Array.from(new Set(input.assigneeIds.map((id) => Number(id))));
   if (uniqueIds.some((id) => !Number.isSafeInteger(id) || id < 1)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف مصوّرٍ غير صالح" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حفظ مصوّري الحملة", why: "القائمة المرسَلة تحمل معرّفاً غير صالح — أُرسل رقمٌ لا يخصّ مستخدماً", doThis: "حدّث الشاشة وأعد اختيار المصوّرين من القائمة ثمّ احفظ" }) });
   }
   return withStudioTx(async (tx) => {
     const [campaign] = await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, input.campaignId)).limit(1).for("update");
-    if (!campaign) throw new TRPCError({ code: "NOT_FOUND", message: "حملة الاستوديو غير موجودة" });
+    if (!campaign) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر حفظ مصوّري الحملة", why: "لا حملة بهذا الرقم — حُذفت بعد فتحك الشاشة", doThis: "حدّث لوحة الحملات واختر الحملة من جديد" }) });
     assertCampaignAccess(actor, campaign);
     if (campaign.status === "CANCELLED" || campaign.status === "COMPLETED") {
-      throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل مصوّري حملةٍ مُغلقة" });
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر حفظ مصوّري الحملة", why: "الحملة مكتملة أو ملغاة، ولا يُضاف مصوّرٌ إلى حملةٍ لا عمل فيها", doThis: "أنشئ حملةً جديدةً وأضِف مصوّريها فيها" }) });
     }
     const existing = await tx
       .select({ id: productStudioCampaignAssignees.id, userId: productStudioCampaignAssignees.userId, openId: users.openId, isActive: users.isActive })
@@ -2081,16 +2397,16 @@ export async function createTemporaryCampaignPhotographer(actor: ProductStudioAc
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const name = input.name.trim();
   if (name.length < 3 || name.length > 80) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المصوّر يجب أن يكون بين ٣ و٨٠ حرفاً" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إنشاء حساب المصوّر المؤقّت", why: "الاسم خارج المدى المسموح — المطلوب من 3 إلى 80 حرفاً", doThis: "اكتب اسم المصوّر بين 3 و80 حرفاً ثمّ أنشئ الحساب" }) });
   }
   const campaign = await loadCampaign(actor, input.campaignId);
   if (campaign.status !== "ACTIVE" && campaign.status !== "DRAFT") {
-    throw new TRPCError({ code: "CONFLICT", message: "لا يُنشَأ مصوّر مؤقّت لحملةٍ منتهية أو ملغاة" });
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر إنشاء حساب المصوّر المؤقّت", why: "الحملة مكتملة أو ملغاة، والحساب المؤقّت ينتهي بموعدها فلا عمل له فيها", doThis: "أنشئ الحساب على حملةٍ نشطةٍ أو مسوّدة، أو أنشئ حملةً جديدةً أوّلاً" }) });
   }
   // الانتهاء يتبع موعد الحملة، وبسقفٍ افتراضيّ إن كانت بلا موعد — لا حسابَ بلا نهاية.
   const expiresAt = campaign.dueAt ?? new Date(Date.now() + TEMP_ACCOUNT_FALLBACK_DAYS * 24 * 60 * 60_000);
   if (expiresAt.getTime() <= Date.now()) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة مضى؛ حدّثه قبل إنشاء مصوّر مؤقّت" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إنشاء حساب المصوّر المؤقّت", why: "موعد الحملة مضى، وصلاحية الحساب المؤقّت تنتهي بموعدها — فيُغلَق ساعة إنشائه", doThis: "مدّد موعد الحملة إلى تاريخٍ قادم من زرّ تعديل الحملة، ثمّ أنشئ الحساب" }) });
   }
   const code = generateTemporaryCode();
   const passwordHash = await hashPassword(code);
@@ -2656,6 +2972,7 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
 type StudioTaskScope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 type StudioTaskCursor = {
   scope: StudioTaskScope;
+  taskId: number | null;
   statuses: StudioStatus[];
   priorities: StudioPriority[];
   overdue: boolean | null;
@@ -2675,12 +2992,17 @@ function encodeStudioTaskCursor(cursor: StudioTaskCursor): string {
 function decodeStudioTaskCursor(value: string, expected: Omit<StudioTaskCursor, "updatedAt" | "id">): StudioTaskCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as StudioTaskCursor;
+    if ((parsed.taskId ?? null) !== expected.taskId) throw new Error("invalid cursor");
     if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.productId !== expected.productId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || parsed.search !== expected.search || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
     return parsed;
   } catch {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مؤشر مهام الاستوديو غير صالح",
+      message: appErrorMessage({
+        what: "تعذّر عرض الصفحة التالية من المهامّ",
+        why: "مؤشّر الصفحة لم يعد مطابقاً للمرشّحات الحالية — تغيّر التبويب أو الحالة أو البحث بعد إنشائه",
+        doThis: "أعد ضبط المرشّحات ثمّ تنقّل بين الصفحات من جديد",
+      }),
     });
   }
 }
@@ -2689,6 +3011,7 @@ export async function listStudioTasks(
   actor: ProductStudioActor,
   input: {
     scope: StudioTaskScope;
+    taskId?: number;
     limit?: number;
     cursor?: string | null;
     statuses?: StudioStatus[];
@@ -2719,6 +3042,7 @@ export async function listStudioTasks(
   const campaignId = input.campaignId ?? null;
   const cursorScope = {
     scope: input.scope,
+    taskId: input.taskId ?? null,
     statuses,
     priorities,
     overdue: input.overdue ?? null,
@@ -2732,7 +3056,19 @@ export async function listStudioTasks(
   const now = input.now ?? new Date();
   if (!canCrossBranches(actor)) conds.push(eq(productImageJobs.branchId, Number(actor.branchId)));
   const branchAuditHistory = actor.role === "auditor" && input.scope === "HISTORY";
-  if ((!isManager(actor) && !branchAuditHistory) || input.scope === "MINE") {
+  if (!isManager(actor) && !branchAuditHistory) {
+    if (input.scope === "MINE") {
+      conds.push(eq(productImageJobs.assignedTo, actor.userId));
+    } else {
+      const memberCampaign = sql`exists (select 1 from ${productStudioCampaignAssignees} where ${productStudioCampaignAssignees.campaignId} = ${productImageJobs.campaignId} and ${productStudioCampaignAssignees.userId} = ${actor.userId})`;
+      conds.push(
+        or(
+          eq(productImageJobs.assignedTo, actor.userId),
+          and(isNull(productImageJobs.assignedTo), memberCampaign),
+        )!,
+      );
+    }
+  } else if (input.scope === "MINE") {
     conds.push(eq(productImageJobs.assignedTo, actor.userId));
   }
   // عرض الاستثناءات (متأخّر/بلا منفّذ) يشمل ما ينتظر المراجعة أيضاً، وإلّا خالف العدّادَ
@@ -2748,6 +3084,8 @@ export async function listStudioTasks(
     conds.push(eq(productImageJobs.assignedTo, assigneeId));
   }
   if (productId != null) conds.push(eq(productImageJobs.productId, productId));
+  // فتح المهمة الممسوحة لا يعتمد على موضعها في صفحات القائمة؛ يبقى عزل الفرع والمالك أعلاه سارياً.
+  if (input.taskId != null) conds.push(eq(productImageJobs.id, input.taskId));
   if (campaignId != null) conds.push(eq(productImageJobs.campaignId, campaignId));
   if (input.unassigned === true) conds.push(isNull(productImageJobs.assignedTo));
   // إخفاءُ مهام الحملات النهائيّة (٢٩/٨): يُنفَّذ في WHERE عبر subquery correlated كي لا
@@ -2807,6 +3145,7 @@ export async function listStudioTasks(
       priority: productImageJobs.priority,
       dueAt: productImageJobs.dueAt,
       revision: productImageJobs.revision,
+      activeSlot: productImageJobs.activeSlot,
       overdue: sql<boolean>`${productImageJobs.dueAt} is not null and ${productImageJobs.dueAt} < ${now} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'REJECTED')`,
       // حالةُ حملة المهمّة تصعد إلى الواجهة (٢٩/٨) لتُبرزَ الشاشةُ شارة تحذير على المهام
       // التي تتبع حملةً مغلقة/موقوفة. `null` للمهام المستقلّة بلا حملة.
@@ -2859,17 +3198,46 @@ export async function listStudioProductImages(actor: ProductStudioActor, product
       .where(and(eq(products.id, productId), eq(products.isActive, true)))
       .limit(1)
   )[0];
-  if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
-  return requireDb()
+  if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر عرض صور المنتج", why: "لا منتج نشطٌ بهذا الرقم — حُذف أو عُطِّل بعد فتحك الشاشة", doThis: "حدّث الشاشة واختر منتجاً نشطاً من القائمة" }) });
+  const rows = await requireDb()
     .select({
       id: productImages.id,
+      productId: productImages.productId,
+      variantId: productImages.variantId,
+      variantName: productVariants.variantName,
+      url: productImages.url,
       isPrimary: productImages.isPrimary,
       sortOrder: productImages.sortOrder,
+      objectKey: productImages.objectKey,
+      mime: productImages.mime,
+      width: productImages.width,
+      height: productImages.height,
+      bytes: productImages.bytes,
+      thumbDataUrl: productImages.thumbDataUrl,
       origin: productImages.origin,
+      createdAt: productImages.createdAt,
     })
     .from(productImages)
+    .leftJoin(productVariants, eq(productVariants.id, productImages.variantId))
     .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")))
     .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
+  return rows.map((r) => ({
+    id: Number(r.id),
+    productId: Number(r.productId),
+    variantId: r.variantId == null ? null : Number(r.variantId),
+    variantName: r.variantName,
+    url: r.url,
+    isPrimary: Boolean(r.isPrimary),
+    sortOrder: Number(r.sortOrder ?? 0),
+    objectKey: r.objectKey,
+    mime: r.mime,
+    width: r.width,
+    height: r.height,
+    bytes: r.bytes,
+    thumbDataUrl: r.thumbDataUrl,
+    origin: r.origin,
+    createdAt: r.createdAt,
+  }));
 }
 
 async function stageStudioObject(objectKey: string): Promise<void> {
@@ -3020,7 +3388,11 @@ async function prepareSourceSnapshot(productId: number, requested: number | null
     if (requested != null)
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "صورة المصدر لا تخص المنتج أو غير معتمدة",
+        message: appErrorMessage({
+          what: "تعذّر إسناد المهمّة على صورة المصدر المطلوبة",
+          why: "الصورة المطلوبة لا تخصّ هذا المنتج أو ليست معتمَدة، والعمل يبدأ من صورةٍ معتمَدةٍ للمنتج نفسه",
+          doThis: "اختر صورةً معتمَدةً من معرض صور المنتج، أو أسنِد المهمّة بلا صورة مصدر",
+        }),
       });
     return null;
   }
@@ -3029,13 +3401,21 @@ async function prepareSourceSnapshot(productId: number, requested: number | null
     if (!/^[0-9a-f]{64}$/i.test(source.contentHash) || !["image/png", "image/jpeg", "image/webp"].includes(canonicalImageMime(source.mime))) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "بيانات صورة المصدر المخزنة غير صالحة",
+        message: appErrorMessage({
+          what: "تعذّر إسناد المهمّة على صورة المصدر المطلوبة",
+          why: "سجلّ الصورة يحمل بصمةً أو نوع ملفٍّ غير صالح، فلا يمكن التحقّق من سلامة بايتاتها",
+          doThis: "اختر صورة مصدرٍ أخرى من معرض المنتج، وأبلغ الدعم الفنّي بالصورة المعطوبة",
+        }),
       });
     }
     if (!(await getImageStore().head(source.objectKey)).exists) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "صورة المصدر غير موجودة في المخزن الخاص",
+        message: appErrorMessage({
+          what: "تعذّر إسناد المهمّة على صورة المصدر المطلوبة",
+          why: "ملفّ الصورة غير موجودٍ في مخزن الصور رغم بقاء سجلّها، فلا مصدرَ يُسلَّم للمصوّر",
+          doThis: "اختر صورة مصدرٍ أخرى، أو أسنِد المهمّة بلا مصدر ليصوّر المنتج من جديد",
+        }),
       });
     }
     await stageStudioObject(source.objectKey);
@@ -3179,7 +3559,11 @@ export async function assignStudioTask(
     if (!product)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "المنتج غير موجود أو معطل",
+        message: appErrorMessage({
+          what: "تعذّر إسناد مهمّة تصوير لهذا المنتج",
+          why: "المنتج غير موجودٍ أو معطَّل أو خدميّ، ولا يُصوَّر إلّا منتجٌ نشطٌ مخزنيّ",
+          doThis: "فعّل المنتج من صفحة المنتجات إن كان معطَّلاً، أو اختر منتجاً نشطاً، ثمّ أعد الإسناد",
+        }),
       });
     const assignee = (
       await tx
@@ -3197,18 +3581,22 @@ export async function assignStudioTask(
         // ترتيب القفل بين assign (products→users) وbulkAssign (users→products) فيولّد deadlock.
         .for("share")
     )[0];
-    if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
+    if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إسناد المهمّة", why: "المصوّر المختار غير موجودٍ أو غير نشط — أُوقف حسابه بعد فتحك القائمة", doThis: "حدّث قائمة المصوّرين واختر حساباً نشطاً ثمّ أعد الإسناد" }) });
     assertAssignableBranch(actor, assignee.branchId);
     if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الموظف لا يملك صلاحية استوديو المنتجات",
+        message: appErrorMessage({
+          what: "تعذّر إسناد المهمّة",
+          why: "الموظّف لا يملك صلاحية «استوديو المنتجات»، فلن تظهر له المهمّة بعد إسنادها",
+          doThis: "اضغط «امنح الصلاحية» أمام اسمه في قائمة الموظّفين ثمّ أعد الإسناد",
+        }),
       });
     }
     // تُستعمل في مسارَي الإسناد معاً: إنشاء مهمة جديدة، وتبنّي مهمة طابورٍ قائمة.
     // كان التحقّق حكراً على مسار الإنشاء، فكان تبنّي مهمة الطابور يمرّ بلا تحقّقٍ ثم يُهمل اللقطة.
-    const assertSourceSnapshotCurrent = async () => {
-      if (!snapshot) return;
+    const assertSourceSnapshotCurrent = async (candidate = snapshot) => {
+      if (!candidate) return;
       const current = (
         await tx
           .select({
@@ -3220,14 +3608,18 @@ export async function assignStudioTask(
             reviewStatus: productImages.reviewStatus,
           })
           .from(productImages)
-          .where(and(eq(productImages.id, snapshot.sourceImageId), eq(productImages.productId, input.productId)))
+          .where(and(eq(productImages.id, candidate.sourceImageId), eq(productImages.productId, input.productId)))
           .limit(1)
           .for("update")
       )[0];
-      if (!current || current.reviewStatus !== "APPROVED" || current.url !== snapshot.expected.url || current.objectKey !== snapshot.expected.objectKey || current.contentHash !== snapshot.expected.contentHash || current.mime !== snapshot.expected.mime) {
+      if (!current || current.reviewStatus !== "APPROVED" || current.url !== candidate.expected.url || current.objectKey !== candidate.expected.objectKey || current.contentHash !== candidate.expected.contentHash || current.mime !== candidate.expected.mime) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تغيّرت صورة المصدر أثناء الإسناد",
+          message: appErrorMessage({
+            what: "تعذّر إسناد المهمّة",
+            why: "تغيّرت صورة المصدر المختارة أثناء الحفظ — نُشرت نسخةٌ أحدث أو سُحب اعتمادها",
+            doThis: "حدّث الشاشة، ثمّ أعد اختيار صورة المصدر وأعد الإسناد",
+          }),
         });
       }
     };
@@ -3240,58 +3632,75 @@ export async function assignStudioTask(
           priority: productImageJobs.priority,
           dueAt: productImageJobs.dueAt,
           revision: productImageJobs.revision,
+          campaignId: productImageJobs.campaignId,
+          sourceImageId: productImageJobs.sourceImageId,
         })
         .from(productImageJobs)
         // إسنادُ المدير الفرديّ **مستوى-الأمّ فقط** (`variantId IS NULL`): مهامّ البدائل
         // من مسح المصوّر لها دورتها ولا يُسنِدها المدير هنا (الجذر: مراجعة Codex P2 على PR #807).
-        .where(and(eq(productImageJobs.productId, input.productId), eq(productImageJobs.activeSlot, 1), isNull(productImageJobs.variantId)))
+        .where(and(eq(productImageJobs.productId, input.productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
         .limit(1)
         .for("update")
     )[0];
     if (activeTask) {
+      // مهمة الحملة التي أُنشئت لإضافة صورة جديدة لا تتحول صامتاً إلى «استبدال
+      // الصورة الرئيسية» لمجرد أن المدير لم يمرر sourceImageId في طلب الإسناد.
+      const assignedSnapshot = activeTask.campaignId != null && activeTask.sourceImageId == null && input.sourceImageId === undefined
+        ? null
+        : snapshot;
       if (activeTask.assignedTo != null) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "للمنتج مهمة استوديو نشطة بالفعل",
+          message: appErrorMessage({
+            what: "تعذّر إسناد مهمّة تصوير لهذا المنتج",
+            why: "للمنتج مهمّةٌ نشطةٌ بيد مصوّرٍ الآن، ولا تُفتح للمنتج مهمّتان معاً",
+            doThis: "افتح المهمّة القائمة من لوحة المهامّ وانقلها بزرّ إعادة الإسناد، أو انتظر إغلاقها",
+          }),
         });
       }
       if (Number(activeTask.branchId) !== Number(assignee.branchId)) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "المهمة غير المسندة تتبع فرعاً آخر",
+          message: appErrorMessage({
+            what: "تعذّر إسناد المهمّة إلى هذا المصوّر",
+            why: "مهمّة المنتج القائمة في الطابور تتبع فرعاً غير فرع المصوّر، والمهمّة لا تعبر الفروع",
+            doThis: "اختر مصوّراً من فرع المهمّة، أو اطلب من مدير النظام نقلها بين الفروع",
+          }),
         });
       }
-      await assertSourceSnapshotCurrent();
+      await assertSourceSnapshotCurrent(assignedSnapshot);
       await tx
         .update(productImageJobs)
         .set({
           assignedTo: input.assigneeId,
           assignedBy: actor.userId,
           assignedAt: new Date(),
+          barcodeVerifiedBy: null,
+          barcodeVerifiedAt: null,
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? activeTask.dueAt : input.dueAt,
           // لقطة المصدر التي اختارها المدير تُحفَظ هنا أيضاً؛ إغفالها كان يُفقدها صامتاً
           // فيصطدم المنفّذ لاحقاً بـ«الصورة الأصلية مطلوبة لأول إرسال».
-          ...(snapshot
+          ...(assignedSnapshot
             ? {
-                sourceImageId: snapshot.sourceImageId,
-                originalObjectKey: snapshot.originalObjectKey,
-                sourceContentHash: snapshot.sourceContentHash,
-                originalMime: snapshot.originalMime,
+                sourceImageId: assignedSnapshot.sourceImageId,
+                originalObjectKey: assignedSnapshot.originalObjectKey,
+                sourceContentHash: assignedSnapshot.sourceContentHash,
+                originalMime: assignedSnapshot.originalMime,
               }
             : {}),
           sourceProductHash: productContentHash(product),
           revision: sql`${productImageJobs.revision} + 1`,
         })
         .where(eq(productImageJobs.id, activeTask.id));
-      if (snapshot) {
-        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() }).where(eq(productImageObjectStaging.objectKey, snapshot.originalObjectKey));
+      if (assignedSnapshot) {
+        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() }).where(eq(productImageObjectStaging.objectKey, assignedSnapshot.originalObjectKey));
       }
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.assignBacklog", Number(activeTask.id), {
           productId: input.productId,
           assigneeId: input.assigneeId,
-          sourceImageId: snapshot?.sourceImageId ?? null,
+          sourceImageId: assignedSnapshot?.sourceImageId ?? null,
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? (activeTask.dueAt?.toISOString() ?? null) : (input.dueAt?.toISOString() ?? null),
         }),
@@ -3345,7 +3754,11 @@ export async function assignStudioTask(
       if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "للمنتج مهمة استوديو نشطة بالفعل",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء مهمّة التصوير",
+            why: "أُنشئت للمنتج مهمّةٌ نشطةٌ في اللحظة نفسها من شاشةٍ أخرى، والمنتج لا يحمل مهمّتين معاً",
+            doThis: "حدّث لوحة المهامّ لترى المهمّة القائمة، وأعد إسنادها من هناك إن لزم",
+          }),
         });
       }
       throw error;
@@ -3369,13 +3782,21 @@ export async function bulkAssignStudioTasks(
   if (productIds.length === 0 || productIds.length > 100 || productIds.some((id) => !Number.isSafeInteger(id) || id < 1)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "اختر من منتج واحد إلى 100 منتج",
+      message: appErrorMessage({
+        what: "تعذّر الإسناد الجماعيّ",
+        why: "عدد المنتجات المختارة خارج المسموح — الدفعة الواحدة من 1 إلى 100 منتج",
+        doThis: "أنقص التحديد إلى 100 منتجٍ أو أقلّ ونفّذ الإسناد على دفعات",
+      }),
     });
   }
   if (productIds.length !== input.productIds.length) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "قائمة المنتجات تحتوي تكراراً",
+      message: appErrorMessage({
+        what: "تعذّر الإسناد الجماعيّ",
+        why: "قائمة المنتجات المرسَلة تحمل منتجاً مكرّراً، والإسناد يُحسب مرّةً واحدةً لكلّ منتج",
+        doThis: "حدّث الشاشة وأعد التحديد ثمّ أعد الإسناد الجماعيّ",
+      }),
     });
   }
   assertStoragePolicy();
@@ -3396,12 +3817,16 @@ export async function bulkAssignStudioTasks(
         // ترتيب القفل بين assign (products→users) وbulkAssign (users→products) فيولّد deadlock.
         .for("share")
     )[0];
-    if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
+    if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر الإسناد الجماعيّ", why: "المصوّر المختار غير موجودٍ أو غير نشط — أُوقف حسابه بعد فتحك القائمة", doThis: "حدّث قائمة المصوّرين واختر حساباً نشطاً ثمّ أعد الإسناد الجماعيّ" }) });
     assertAssignableBranch(actor, assignee.branchId);
     if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الموظف لا يملك صلاحية استوديو المنتجات",
+        message: appErrorMessage({
+          what: "تعذّر الإسناد الجماعيّ",
+          why: "الموظّف لا يملك صلاحية «استوديو المنتجات»، فلن تظهر له المهامّ بعد إسنادها",
+          doThis: "اضغط «امنح الصلاحية» أمام اسمه في قائمة الموظّفين ثمّ أعد الإسناد الجماعيّ",
+        }),
       });
     }
     const selectedProducts = await tx
@@ -3416,7 +3841,11 @@ export async function bulkAssignStudioTasks(
     if (selectedProducts.length !== productIds.length) {
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "أحد المنتجات غير موجود أو معطل أو خدميّ (لا يُصوَّر)",
+        message: appErrorMessage({
+          what: "تعذّر الإسناد الجماعيّ",
+          why: "أحد المنتجات المحدَّدة غير موجودٍ أو معطَّل أو خدميّ، ولا يُصوَّر إلّا المنتج النشط المخزنيّ",
+          doThis: "أزِل المنتجات المعطَّلة والخدميّة من التحديد ثمّ أعد الإسناد الجماعيّ",
+        }),
       });
     }
     // الإسنادُ الجماعيّ **مستوى-الأمّ فقط**: يعمل على المهام بـ`variantId=NULL` — لا
@@ -3436,7 +3865,7 @@ export async function bulkAssignStudioTasks(
       .where(
         and(
           inArray(productImageJobs.productId, productIds),
-          eq(productImageJobs.activeSlot, 1),
+          isNotNull(productImageJobs.activeSlot),
           isNull(productImageJobs.variantId),
         ),
       )
@@ -3450,15 +3879,17 @@ export async function bulkAssignStudioTasks(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "أحد المنتجات لديه مهمة استوديو نشطة بالفعل",
+        message: appErrorMessage({
+          what: "تعذّر الإسناد الجماعيّ",
+          why: "أحد المنتجات المحدَّدة له مهمّةٌ نشطةٌ بيد مصوّر، أو مهمّةٌ في طابور فرعٍ آخر",
+          doThis: "أزِل المنتجات التي لها مهمّةٌ قائمة من التحديد — أو انقلها بإعادة الإسناد — ثمّ أعد الإسناد الجماعيّ",
+        }),
       });
     }
     const productById = new Map(selectedProducts.map((product) => [Number(product.id), product]));
-    const unassignedByProduct = new Map(
-      active.map((task) => [Number(task.productId), Number(task.id)]),
-    );
+    const unassignedProducts = new Set(active.map((task) => Number(task.productId)));
     const newProductIds = productIds.filter(
-      (productId) => !unassignedByProduct.has(productId),
+      (productId) => !unassignedProducts.has(productId),
     );
     try {
       if (newProductIds.length > 0) {
@@ -3481,14 +3912,15 @@ export async function bulkAssignStudioTasks(
           })),
         );
       }
-      const unassignedIds = Array.from(unassignedByProduct.values());
+      const unassignedIds = active.map((task) => Number(task.id));
       if (unassignedIds.length > 0) {
         // إعادةُ الإسناد لطابورٍ قائم: `sourceProductHash` يُحدَّث ليطابق محتوى المنتج
         // اللحظة، وإلّا رُفض الاعتماد لاحقاً بـ«عُدّل محتوى المنتج بعد بدء المهمة» بينما
         // المصوّر عمل على المحتوى الراهن منذ لحظة الإسناد. مُسنَدٌ بمعنيَين: بيدٍ جديدة
         // ومقابل محتوى راهن. الجذر أمسكه تدقيق ٢٤/٨ (بنك الوكلاء الخامس).
-        for (const [productId, jobId] of Array.from(unassignedByProduct.entries())) {
-          const product = productById.get(productId);
+        for (const queuedTask of active) {
+          const jobId = Number(queuedTask.id);
+          const product = productById.get(Number(queuedTask.productId));
           if (!product) continue;
           await tx
             .update(productImageJobs)
@@ -3496,6 +3928,8 @@ export async function bulkAssignStudioTasks(
               assignedTo: input.assigneeId,
               assignedBy: actor.userId,
               assignedAt: new Date(),
+              barcodeVerifiedBy: null,
+              barcodeVerifiedAt: null,
               sourceProductHash: productContentHash(product),
               // أولوية المهمة القائمة تُصان ما لم يُصرّح المدير بغيرها؛ الحشو بـNORMAL
               // كان يخفض حزمة مهامٍ URGENT صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
@@ -3510,7 +3944,11 @@ export async function bulkAssignStudioTasks(
       if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تغيّرت المهام النشطة أثناء الإسناد الجماعي",
+          message: appErrorMessage({
+            what: "تعذّر إتمام الإسناد الجماعيّ",
+            why: "أُنشئت مهامٌّ لبعض هذه المنتجات من شاشةٍ أخرى أثناء تنفيذ الدفعة",
+            doThis: "حدّث لوحة المهامّ وأعد التحديد، ثمّ أعد الإسناد الجماعيّ",
+          }),
         });
       }
       throw error;
@@ -3527,9 +3965,9 @@ export async function bulkAssignStudioTasks(
     const assignedRows = await tx
       .select({ id: productImageJobs.id, revision: productImageJobs.revision })
       .from(productImageJobs)
-      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.assignedTo, input.assigneeId), eq(productImageJobs.activeSlot, 1)));
+      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.assignedTo, input.assigneeId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)));
     return {
-      createdCount: productIds.length,
+      createdCount: assignedRows.length,
       taskIds: assignedRows.map((row) => ({ id: Number(row.id), revision: Number(row.revision) })),
       assigneeRole: assignee.role,
     };
@@ -3569,7 +4007,11 @@ export async function reassignStudioTask(
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "لا يمكن إعادة إسناد مهمّةٍ منتظرةٍ للمراجعة أو مغلقة",
+        message: appErrorMessage({
+          what: "تعذّر إعادة إسناد المهمّة",
+          why: "المهمّة بانتظار المراجعة أو مغلقة، وإعادة الإسناد تخصّ المهامّ الجارية (مُسنَدة أو قيد العمل أو مرفوضة)",
+          doThis: "اعتمد المهمّة أو ارفضها أوّلاً من شاشة المراجعة، ثمّ أعد إسنادها بعد الرفض",
+        }),
       });
     }
     // الطابور المفتوح متاحٌ فقط لمهامّ الحملات: `claimStudioProductByBarcode` يرفض سحب
@@ -3578,7 +4020,11 @@ export async function reassignStudioTask(
     if (input.newAssigneeId == null && task.campaignId == null) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "المهمّةُ غير مرتبطةٍ بحملة — لا يمكن إعادتها للطابور المفتوح، اختر مصوّراً صراحةً",
+        message: appErrorMessage({
+          what: "تعذّر إعادة المهمّة إلى الطابور المفتوح",
+          why: "المهمّة غير مرتبطةٍ بحملة، ومهامّ الطابور المفتوح تُسحَب بمسح الباركود داخل حملةٍ فقط — فتبقى بلا يدٍ تلتقطها",
+          doThis: "اختر مصوّراً بعينه في حقل المصوّر الجديد ثمّ أعد الإسناد",
+        }),
       });
     }
     let newAssigneeRole: string | null = null;
@@ -3589,13 +4035,13 @@ export async function reassignStudioTask(
         .where(and(eq(users.id, input.newAssigneeId), eq(users.isActive, true)))
         .limit(1)
         .for("share");
-      if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد غير متاح" });
+      if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إعادة إسناد المهمّة", why: "المصوّر المختار غير موجودٍ أو غير نشط — أُوقف حسابه بعد فتحك القائمة", doThis: "حدّث قائمة المصوّرين واختر حساباً نشطاً ثمّ أعد الإسناد" }) });
       assertAssignableBranch(actor, assignee.branchId);
       if (Number(assignee.branchId) !== Number(task.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن نقل المهمة إلى مصوّرٍ من فرعٍ آخر" });
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر إعادة إسناد المهمّة", why: "المصوّر المختار يتبع فرعاً غير فرع المهمّة، والمهمّة لا تعبر الفروع", doThis: "اختر مصوّراً من فرع المهمّة نفسه ثمّ أعد الإسناد" }) });
       }
       if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد لا يملك صلاحية استوديو المنتجات" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إعادة إسناد المهمّة", why: "المصوّر المختار لا يملك صلاحية «استوديو المنتجات»، فلن تظهر له المهمّة بعد نقلها", doThis: "اضغط «امنح الصلاحية» أمام اسمه في قائمة الموظّفين ثمّ أعد الإسناد" }) });
       }
       newAssigneeRole = assignee.role;
     }
@@ -3609,6 +4055,8 @@ export async function reassignStudioTask(
         assignedTo: input.newAssigneeId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: null,
+        barcodeVerifiedAt: null,
         sourceProductHash: product ? productContentHash(product) : null,
         revision: sql`${productImageJobs.revision} + 1`,
       })
@@ -3645,7 +4093,7 @@ export async function bulkReassignStudioTasks(
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const taskIds = Array.from(new Set(input.taskIds.map(Number)));
   if (taskIds.length === 0 || taskIds.length > 100) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر من مهمّة واحدة إلى ١٠٠ مهمّة" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إعادة الإسناد الجماعيّة", why: "عدد المهامّ المحدَّدة خارج المسموح — الدفعة الواحدة من 1 إلى 100 مهمّة", doThis: "أنقص التحديد إلى 100 مهمّةٍ أو أقلّ ونفّذ إعادة الإسناد على دفعات" }) });
   }
   const cleanReason = input.reason?.trim() ?? null;
   const result = await withStudioTx(async (tx) => {
@@ -3657,10 +4105,10 @@ export async function bulkReassignStudioTasks(
         .where(and(eq(users.id, input.newAssigneeId), eq(users.isActive, true)))
         .limit(1)
         .for("share");
-      if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد غير متاح" });
+      if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إعادة الإسناد الجماعيّة", why: "المصوّر المختار غير موجودٍ أو غير نشط — أُوقف حسابه بعد فتحك القائمة", doThis: "حدّث قائمة المصوّرين واختر حساباً نشطاً ثمّ أعد التنفيذ" }) });
       assertAssignableBranch(actor, assignee.branchId);
       if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد لا يملك صلاحية استوديو المنتجات" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر إعادة الإسناد الجماعيّة", why: "المصوّر المختار لا يملك صلاحية «استوديو المنتجات»، فلن تظهر له المهامّ بعد نقلها", doThis: "اضغط «امنح الصلاحية» أمام اسمه في قائمة الموظّفين ثمّ أعد التنفيذ" }) });
       }
       newAssignee = { id: Number(assignee.id), role: assignee.role, branchId: assignee.branchId == null ? null : Number(assignee.branchId) };
     }
@@ -3669,16 +4117,16 @@ export async function bulkReassignStudioTasks(
       .from(productImageJobs)
       .where(inArray(productImageJobs.id, taskIds))
       .for("update");
-    if (tasks.length !== taskIds.length) throw new TRPCError({ code: "NOT_FOUND", message: "بعض المهام غير موجود" });
+    if (tasks.length !== taskIds.length) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر إعادة الإسناد الجماعيّة", why: "بعض المهامّ المحدَّدة لم تعد موجودة — حُذفت أو تغيّرت بعد فتحك الشاشة", doThis: "حدّث لوحة المهامّ وأعد التحديد ثمّ نفّذ إعادة الإسناد" }) });
     for (const t of tasks) {
       if (!canCrossBranches(actor) && Number(t.branchId) !== Number(actor.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "بعض المهام في فرعٍ آخر" });
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر إعادة الإسناد الجماعيّة", why: "بعض المهامّ المحدَّدة تتبع فرعاً غير فرعك، ومهامّ الاستوديو لا تعبر الفروع", doThis: "اقصر التحديد على مهامّ فرعك ثمّ أعد التنفيذ" }) });
       }
       if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(t.status)) {
-        throw new TRPCError({ code: "CONFLICT", message: "بعض المهام لا تقبل إعادة الإسناد (منتظرة مراجعةً أو مغلقة)" });
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر إعادة الإسناد الجماعيّة", why: "بعض المهامّ المحدَّدة بانتظار المراجعة أو مغلقة، وإعادة الإسناد للمهامّ الجارية وحدها", doThis: "أزِل المهامّ المنتظِرة للمراجعة والمغلقة من التحديد ثمّ أعد التنفيذ" }) });
       }
       if (newAssignee && Number(t.branchId) !== newAssignee.branchId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "المصوّر الجديد في فرعٍ آخر" });
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر إعادة الإسناد الجماعيّة", why: "المصوّر المختار يتبع فرعاً غير فرع بعض المهامّ المحدَّدة", doThis: "اختر مصوّراً من فرع المهامّ نفسه، أو اقصر التحديد على مهامّ فرعه" }) });
       }
     }
     const productIds = tasks.map((t) => Number(t.productId)).filter((id) => Number.isSafeInteger(id));
@@ -3695,6 +4143,8 @@ export async function bulkReassignStudioTasks(
           assignedTo: input.newAssigneeId,
           assignedBy: actor.userId,
           assignedAt: new Date(),
+          barcodeVerifiedBy: null,
+          barcodeVerifiedAt: null,
           sourceProductHash: product ? productContentHash(product) : null,
           revision: sql`${productImageJobs.revision} + 1`,
         })
@@ -3728,7 +4178,7 @@ export async function bulkSetStudioPriority(
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const taskIds = Array.from(new Set(input.taskIds.map(Number)));
   if (taskIds.length === 0 || taskIds.length > 100) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر من مهمّة واحدة إلى ١٠٠ مهمّة" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر ضبط الأولويّة على الدفعة", why: "عدد المهامّ المحدَّدة خارج المسموح — الدفعة الواحدة من 1 إلى 100 مهمّة", doThis: "أنقص التحديد إلى 100 مهمّةٍ أو أقلّ واضبط الأولويّة على دفعات" }) });
   }
   return withStudioTx(async (tx) => {
     const tasks = await tx
@@ -3736,13 +4186,13 @@ export async function bulkSetStudioPriority(
       .from(productImageJobs)
       .where(inArray(productImageJobs.id, taskIds))
       .for("update");
-    if (tasks.length !== taskIds.length) throw new TRPCError({ code: "NOT_FOUND", message: "بعض المهام غير موجود" });
+    if (tasks.length !== taskIds.length) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر ضبط الأولويّة على الدفعة", why: "بعض المهامّ المحدَّدة لم تعد موجودة — حُذفت بعد فتحك الشاشة", doThis: "حدّث لوحة المهامّ وأعد التحديد ثمّ اضبط الأولويّة" }) });
     for (const t of tasks) {
       if (!canCrossBranches(actor) && Number(t.branchId) !== Number(actor.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "بعض المهام في فرعٍ آخر" });
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر ضبط الأولويّة على الدفعة", why: "بعض المهامّ المحدَّدة تتبع فرعاً غير فرعك، ومهامّ الاستوديو لا تعبر الفروع", doThis: "اقصر التحديد على مهامّ فرعك ثمّ أعد الضبط" }) });
       }
       if (!["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(t.status)) {
-        throw new TRPCError({ code: "CONFLICT", message: "لا يمكن ضبط أولويّة مهمّة مغلقة" });
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر ضبط الأولويّة على الدفعة", why: "بعض المهامّ المحدَّدة مغلقة (معتمَدة أو ملغاة أو فاشلة)، والأولويّة تخصّ العمل الجاري", doThis: "أزِل المهامّ المغلقة من التحديد ثمّ أعد الضبط" }) });
       }
     }
     await tx
@@ -3782,7 +4232,11 @@ export async function updateStudioTaskSchedule(
     if (!["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "لا يمكن تعديل موعد مهمة مغلقة",
+        message: appErrorMessage({
+          what: "تعذّر تعديل موعد المهمّة وأولويّتها",
+          why: "المهمّة مغلقة (معتمَدة أو ملغاة أو فاشلة)، والموعد يخصّ العمل الجاري",
+          doThis: "عدّل موعد مهمّةٍ جارية، أو أنشئ مهمّةً جديدةً لهذا المنتج",
+        }),
       });
     }
     await tx
@@ -3812,38 +4266,57 @@ export async function saveStudioDraft(
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
     expectedRevision?: number;
+    requireBarcodeVerification?: boolean;
   },
 ) {
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
+    const photographerCaptureOnly = input.requireBarcodeVerification === true && !isManager(actor);
+    const photographerContentAttempt = photographerCaptureOnly && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
+    if (photographerContentAttempt) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يحرّر المصوّر محتوى المنتج", why: "مسؤولية مهمة التصوير هي الصورة الأصلية ومعالجتها فقط، لحماية اسم المنتج ووصفه من التعديل غير المقصود", doThis: "أرسل الصورة للمراجعة؛ يتولى مدير الكتالوج الاسم والوصف والنص التسويقي" }) });
+    const managerPreparedContent = isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "لا يمكن تعديل مهمة بانتظار المراجعة أو مغلقة",
+        message: appErrorMessage({
+          what: "تعذّر حفظ مسودّة المهمّة",
+          why: "المهمّة بانتظار مراجعة المدير أو مغلقة، ولا تُحرَّر بعد إرسالها",
+          doThis: "انتظر قرار المدير — فإن رُفضت عادت إليك قابلةً للتحرير — واطلب منه إعادتها إليك إن أردتَ تعديلها الآن",
+        }),
       });
     }
     if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "الرفع قيد التنفيذ؛ انتظر اكتماله",
+        message: appErrorMessage({
+          what: "تعذّر حفظ مسودّة المهمّة",
+          why: "رفعُ صورةٍ لهذه المهمّة جارٍ الآن، وحفظُ مسودّةٍ أثناءه يُبطل الرفع الجاري",
+          doThis: "انتظر انتهاء الرفع (دقيقتان على الأكثر) ثمّ أعد الحفظ",
+        }),
       });
     }
-    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+    if (task.processingLeaseTokenHash && !isPendingProcessingReceipt(task.processingLeaseTokenHash) && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المعالجة عبر المزود قيد التنفيذ؛ انتظر اكتمالها",
+        message: appErrorMessage({
+          what: "تعذّر حفظ مسودّة المهمّة",
+          why: "معالجة الصورة عبر المزوّد جارية الآن، وحفظُ مسودّةٍ أثناءها يُبطل نتيجتها",
+          doThis: "انتظر انتهاء المعالجة (دقيقتان على الأكثر) ثمّ أعد الحفظ",
+        }),
       });
     }
     await tx
       .update(productImageJobs)
       .set({
-        proposedName: input.proposedName?.trim() || null,
-        proposedDescription: input.proposedDescription?.trim() || null,
-        proposedMarketingCopy: input.proposedMarketingCopy?.trim() || null,
+        proposedName: photographerCaptureOnly ? task.proposedName : input.proposedName?.trim() || null,
+        proposedDescription: photographerCaptureOnly ? task.proposedDescription : input.proposedDescription?.trim() || null,
+        proposedMarketingCopy: photographerCaptureOnly ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
+        contentPreparedBy: managerPreparedContent ? actor.userId : task.contentPreparedBy,
+        contentPreparedByManager: managerPreparedContent ? true : task.contentPreparedByManager,
         status: "IN_PROGRESS",
-        activeSlot: 1,
+        activeSlot: task.activeSlot,
         // وصلنا هنا فقط إن لم توجد lease حيّة؛ تصفير المنتهية يدوّر الملكية ويمنع رفعاً بطيئاً
         // من الالتزام بعد حفظ هذه المسودة الأحدث.
         uploadLeaseToken: null,
@@ -3868,29 +4341,41 @@ export async function saveStudioDraft(
  * نشطة مسندة إليه في فرعه؛ لا مسار مباشر للمدير خارج المهمة، وتُعاد مراجعة المهمة تحت قفل عند
  * إصدار receipt بعد نجاح المزود لسد سباق تغيّر الإسناد/الحالة.
  */
-export async function authorizeStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null): Promise<string> {
+export async function authorizeStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null, requireBarcodeVerification = false): Promise<string> {
   const authorization = randomUUID();
   await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason, requireBarcodeVerification);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "حالة المهمة لا تقبل معالجة جديدة",
+        message: appErrorMessage({
+          what: "تعذّر بدء معالجة الصورة عبر المزوّد",
+          why: "حالة المهمّة لا تقبل معالجةً جديدة — المعالجة تجري على المُسنَدة أو قيد العمل أو المرفوضة",
+          doThis: "حدّث الشاشة لتقرأ حالة المهمّة، واطلب من المدير إعادتها إليك إن كانت بانتظار المراجعة",
+        }),
       });
     }
     if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "رفع مرشح لهذه المهمة قيد التنفيذ",
+        message: appErrorMessage({
+          what: "تعذّر بدء معالجة الصورة عبر المزوّد",
+          why: "رفعُ مرشّحٍ لهذه المهمّة جارٍ الآن، ولا تُستهلك حصّة المزوّد على مهمّةٍ تُكتب في اللحظة نفسها",
+          doThis: "انتظر انتهاء الرفع (دقيقتان على الأكثر) ثمّ أعد المعالجة",
+        }),
       });
     }
     // يجب أن تسبق جاهزية R2 حجز الحصة والاتصال بالمزوّد؛ لا استهلاك مدفوع لمرشح لا يمكن حفظه.
     assertStoragePolicy();
-    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+    if (task.processingLeaseTokenHash && !isPendingProcessingReceipt(task.processingLeaseTokenHash) && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "معالجة أخرى لهذه المهمة قيد التنفيذ",
+        message: appErrorMessage({
+          what: "تعذّر بدء معالجة الصورة عبر المزوّد",
+          why: "معالجةٌ أخرى لهذه المهمّة ما زالت جارية، ولا تُحجَز حصّتان للمهمّة الواحدة",
+          doThis: "انتظر انتهاء المعالجة الجارية (دقيقتان على الأكثر) ثمّ أعد المحاولة",
+        }),
       });
     }
     await tx
@@ -3909,31 +4394,53 @@ export async function authorizeStudioProcessing(actor: ProductStudioActor, taskI
 export async function attestStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", processingAuthorization: string, adminOverrideReason?: string | null): Promise<string> {
   const receipt = randomUUID();
   const authorizationHash = processingAuthorizationHash(processingAuthorization, mode);
+  const proofExpiresAt = new Date(Date.now() + PROCESSING_PROOF_MS);
   await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "حالة المهمة لا تقبل معالجة جديدة",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل نتيجة المعالجة",
+          why: "تغيّرت حالة المهمّة أثناء المعالجة فلم تعد تقبل نتيجةً جديدة — تُقبَل على المُسنَدة أو قيد العمل أو المرفوضة",
+          doThis: "حدّث الشاشة لتقرأ حالة المهمّة، ثمّ أعد المعالجة من جديد إن كانت ما زالت بيدك",
+        }),
       });
     }
     if (task.processingLeaseTokenHash !== authorizationHash || !task.processingLeaseExpiresAt || task.processingLeaseExpiresAt <= new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "انتهى حجز المعالجة أو استُبدل",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل نتيجة المعالجة",
+          why: "حجز المعالجة انتهت مهلته (دقيقتان) أو استبدلته معالجةٌ أحدث على المهمّة نفسها",
+          doThis: "أعد تشغيل المعالجة من زرّها في محرّر الاستوديو، ولا تترك النتيجة معلّقةً أكثر من دقيقتين",
+        }),
       });
     }
+    const preserveAcceptedProof = Boolean(
+      task.processingProofTokenHash &&
+      task.processingProofCandidateHash &&
+      task.processingProofExpiresAt &&
+      task.processingProofExpiresAt > new Date(),
+    );
     await tx
       .update(productImageJobs)
-      .set({
-        processingProofTokenHash: contentHash(Buffer.from(receipt, "utf8")),
-        processingProofMode: mode,
-        processingProofCandidateHash: null,
-        processingProofExpiresAt: new Date(Date.now() + PROCESSING_PROOF_MS),
-        processingLeaseTokenHash: null,
-        processingLeaseExpiresAt: null,
-      })
+      .set(preserveAcceptedProof
+        ? {
+            // لا تستبدل إثباتاً قبله المصوّر بمجرد وصول معاينةٍ أحدث؛ خزّن الأخيرة
+            // معلّقةً حتى يربطها زر «اعتماد» ببايتاتها النهائية.
+            processingLeaseTokenHash: pendingProcessingReceiptMarker(receipt, mode),
+            processingLeaseExpiresAt: proofExpiresAt,
+          }
+        : {
+            processingProofTokenHash: contentHash(Buffer.from(receipt, "utf8")),
+            processingProofMode: mode,
+            processingProofCandidateHash: null,
+            processingProofExpiresAt: proofExpiresAt,
+            processingLeaseTokenHash: null,
+            processingLeaseExpiresAt: null,
+          })
       .where(eq(productImageJobs.id, taskId));
     await recordAdminOverride(tx, actor, taskId, "processingAttestation", overrideReason, task.assignedTo);
   });
@@ -3960,6 +4467,7 @@ export async function bindStudioProcessingCandidate(
     processingReceipt: string;
     candidateDataUrl: string;
     adminOverrideReason?: string | null;
+    requireBarcodeVerification?: boolean;
     /**
      * تحقّقٌ متفائل: كلّ كاتبٍ آخر (`saveDraft`/`updateSchedule`/`submitCandidate`/…)
      * يُلزم `expectedRevision`؛ غيابُه هنا كان يجعل هذا المسار **الوحيد** الذي يقبل
@@ -3974,20 +4482,47 @@ export async function bindStudioProcessingCandidate(
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     if (input.expectedRevision !== undefined) assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "حالة المهمة لا تقبل ربط معالجة جديدة",
+        message: appErrorMessage({
+          what: "تعذّر ربط نتيجة المعالجة بالصورة",
+          why: "تغيّرت حالة المهمّة فلم تعد تقبل ربطاً جديداً — يُقبَل على المُسنَدة أو قيد العمل أو المرفوضة",
+          doThis: "حدّث الشاشة، ثمّ أعد المعالجة من جديد إن كانت المهمّة ما زالت بيدك",
+        }),
       });
     }
-    if (task.processingProofTokenHash !== receiptHash || !task.processingProofMode || !task.processingProofExpiresAt || task.processingProofExpiresAt <= new Date()) {
+    const pendingMode = task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()
+      ? pendingProcessingReceiptMode(task.processingLeaseTokenHash, input.processingReceipt)
+      : null;
+    const acceptedProofValid = Boolean(
+      task.processingProofTokenHash === receiptHash &&
+      task.processingProofMode &&
+      task.processingProofExpiresAt &&
+      task.processingProofExpiresAt > new Date() &&
+      (!task.processingProofCandidateHash || task.processingProofCandidateHash === candidate.hash),
+    );
+    if (!pendingMode && !acceptedProofValid) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "إيصال المعالجة غير صالح أو منتهي",
+        message: appErrorMessage({
+          what: "تعذّر ربط نتيجة المعالجة بالصورة",
+          why: "إيصال المعالجة لا يطابق سجلّ المهمّة أو انتهت صلاحيته (15 دقيقة من تسجيل النتيجة)",
+          doThis: "أعد تشغيل المعالجة من زرّها في محرّر الاستوديو ثمّ أرسل نتيجتها مباشرةً",
+        }),
       });
     }
-    await tx.update(productImageJobs).set({ processingProofCandidateHash: candidate.hash }).where(eq(productImageJobs.id, input.taskId));
+    await tx.update(productImageJobs).set(pendingMode
+      ? {
+          processingProofTokenHash: receiptHash,
+          processingProofMode: pendingMode,
+          processingProofCandidateHash: candidate.hash,
+          processingProofExpiresAt: task.processingLeaseExpiresAt,
+          processingLeaseTokenHash: null,
+          processingLeaseExpiresAt: null,
+        }
+      : { processingProofCandidateHash: candidate.hash }).where(eq(productImageJobs.id, input.taskId));
     await recordAdminOverride(tx, actor, input.taskId, "bindProcessingProof", overrideReason, task.assignedTo);
     return input.expectedRevision === undefined ? { ok: true as const } : { ok: true as const, revision: task.revision };
   });
@@ -4026,7 +4561,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.warn({ err, taskId, userId, name, nodeCode }, "productStudio.submit.network");
     return new TRPCError({
       code: "TIMEOUT",
-      message: "تعذّر الاتّصال بمخزن الصور — تحقّق من الشبكة وأعد المحاولة",
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: "انقطع الاتّصال بمخزن الصور أثناء الرفع — انتهت المهلة أو سقطت الشبكة",
+        doThis: "تحقّق من اتّصال الجهاز بالشبكة ثمّ أعد الإرسال؛ عملك محفوظٌ ولم يُفقد",
+      }),
       cause: err,
     });
   }
@@ -4036,7 +4575,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.warn({ err, taskId, userId, dbCode }, "productStudio.submit.lock_conflict");
     return new TRPCError({
       code: "CONFLICT",
-      message: "تعارضٌ مؤقّتٌ أثناء الحفظ — أعد الإرسال بعد لحظات",
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: "تعارضُ قفلٍ مؤقّتٌ في قاعدة البيانات أثناء الحفظ — كتابةٌ أخرى كانت تمسّ المهمّة نفسها",
+        doThis: "انتظر بضع ثوانٍ ثمّ أعد الإرسال",
+      }),
       cause: err,
     });
   }
@@ -4044,7 +4587,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.warn({ err, taskId, userId }, "productStudio.submit.duplicate");
     return new TRPCError({
       code: "CONFLICT",
-      message: "أُرسل هذا المرشّح للمراجعة سلفاً — حدِّث الشاشة وأعد المحاولة",
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: "هذه الصورة أُرسلت للمراجعة سلفاً، فلا تُسجَّل مرّتين",
+        doThis: "حدّث الشاشة لترى المهمّة بانتظار المراجعة، وأرسل صورةً جديدةً إن أردتَ استبدالها",
+      }),
       cause: err,
     });
   }
@@ -4055,7 +4602,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.error({ err, taskId, userId, dbCode }, "productStudio.submit.db_error");
     return new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: `تعذّر حفظ المرشّح في قاعدة البيانات (${dbCode})`,
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: `رفضت قاعدة البيانات حفظ الصورة برمز الخطأ ${dbCode}، والعلّة ليست في صورتك`,
+        doThis: "أعد الإرسال مرّةً، وإن تكرّر فأبلغ الدعم الفنّي برمز الخطأ الظاهر هنا",
+      }),
       cause: err,
     });
   }
@@ -4063,7 +4614,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.warn({ err, taskId, userId, dbCode }, "productStudio.submit.db_connection");
     return new TRPCError({
       code: "TIMEOUT",
-      message: `تعذّر الاتّصال بقاعدة البيانات (${dbCode}) — أعد المحاولة`,
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: `انقطع اتّصال الخادم بقاعدة البيانات برمز ${dbCode} أثناء الحفظ`,
+        doThis: "انتظر لحظاتٍ وأعد الإرسال، وإن تكرّر فأبلغ الدعم الفنّي برمز الخطأ الظاهر هنا",
+      }),
       cause: err,
     });
   }
@@ -4075,7 +4630,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.error({ err, taskId, userId, name, httpStatus }, "productStudio.submit.storage_auth");
     return new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "إعدادات مخزن الصور غير صحيحة — أبلغ الإدارة",
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: "رفض مخزن الصور مفاتيح الوصول المضبوطة على الخادم، فلا تُكتب صورةٌ فيه",
+        doThis: "أبلغ الإدارة بأنّ مفاتيح مخزن صور الاستوديو غير صحيحة؛ الإرسال متوقّف حتى تُصحَّح",
+      }),
       cause: err,
     });
   }
@@ -4084,7 +4643,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.error({ err, taskId, userId, name, httpStatus }, "productStudio.submit.storage_missing");
     return new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "مخزن الصور غير مهيّأ للاستخدام — أبلغ الإدارة",
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: "الحاوية المضبوطة في إعدادات مخزن الصور غير موجودةٍ على الخادم",
+        doThis: "أبلغ الإدارة بأنّ حاوية مخزن صور الاستوديو غير موجودة؛ الإرسال متوقّف حتى تُنشأ",
+      }),
       cause: err,
     });
   }
@@ -4092,7 +4655,11 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     logger.warn({ err, taskId, userId, httpStatus }, "productStudio.submit.storage_5xx");
     return new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: `مخزن الصور يستجيب بخطأ (${httpStatus}) — حاول مجدّداً بعد قليل`,
+      message: appErrorMessage({
+        what: "تعذّر إرسال الصورة للمراجعة",
+        why: `مخزن الصور ردّ بخطأ خادمٍ (رمز ${httpStatus})، وهو عطلٌ مؤقّتٌ عنده لا في صورتك`,
+        doThis: "انتظر دقيقةً ثمّ أعد الإرسال، وإن تكرّر فأبلغ الإدارة",
+      }),
       cause: err,
     });
   }
@@ -4103,6 +4670,95 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
   return err;
 }
 
+/**
+ * A campaign may reserve up to ten independent review jobs for one product.
+ * activeSlot is the unique image slot (1..10), NULL only after closure.
+ * Lock the product before counting capacity so different tabs/variants cannot
+ * reserve the same remaining allowance. Repeating a reservation reuses jobs.
+ */
+export async function reserveStudioImageTasks(actor: ProductStudioActor, input: {
+  taskId: number;
+  count: number;
+  adminOverrideReason?: string | null;
+  requireBarcodeVerification?: boolean;
+}) {
+  return withStudioTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
+    if (!task.productId || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status) ||
+        !Number.isInteger(input.count) || input.count < 1 || input.count > MAX_REQUIRED_IMAGES) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر فتح صور إضافية", why: "المهمة أو عدد الصور لا يقبل الإضافة",
+        doThis: "حدّث المهمة واختر من 1 إلى 10 صور ضمن سماح الحملة",
+      }) });
+    }
+    await tx.select({ id: products.id }).from(products).where(eq(products.id, task.productId)).for("update");
+    const campaign = task.campaignId == null ? null : (await tx.select().from(productStudioCampaigns)
+      .where(eq(productStudioCampaigns.id, task.campaignId)).limit(1).for("update"))[0];
+    const live = await tx.select().from(productImageJobs)
+      .where(and(eq(productImageJobs.productId, task.productId), isNotNull(productImageJobs.activeSlot)));
+    const editable = live.filter((row) => Number(row.id) !== Number(task.id) &&
+      row.campaignId === task.campaignId && row.variantId === task.variantId &&
+      row.assignedTo === task.assignedTo && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(row.status));
+    const slots = [task, ...editable.sort((a, b) => Number(a.id) - Number(b.id))];
+    const sameVariantJob = task.variantId == null
+      ? isNull(productImageJobs.variantId)
+      : eq(productImageJobs.variantId, task.variantId);
+    const sameVariantImage = task.variantId == null
+      ? isNull(productImages.variantId)
+      : eq(productImages.variantId, task.variantId);
+    const [completed] = campaign?.imagesPolicy === "ANY_REGARDLESS"
+      ? await tx.select({ n: sql<number>`count(*)` }).from(productImageJobs).where(and(
+          eq(productImageJobs.productId, task.productId), eq(productImageJobs.campaignId, campaign.id),
+          sameVariantJob, eq(productImageJobs.status, "APPROVED")))
+      : await tx.select({ n: sql<number>`count(*)` }).from(productImages).where(and(
+          eq(productImages.productId, task.productId), sameVariantImage, eq(productImages.reviewStatus, "APPROVED")));
+    const capacityJobs = campaign?.imagesPolicy === "ANY_REGARDLESS"
+      ? live.filter((row) => row.campaignId === task.campaignId && row.variantId === task.variantId)
+      : live.filter((row) => row.sourceImageId == null && row.variantId === task.variantId);
+    const completedCount = Number(completed?.n ?? 0);
+    const remaining = campaign?.status === "ACTIVE"
+      ? Math.max(0, Number(campaign.requiredImages) - completedCount - capacityJobs.length) : 0;
+    const maxImages = Math.min(MAX_REQUIRED_IMAGES, slots.length + remaining);
+    if (input.count > maxImages) {
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+        what: "تعذّر إضافة الصور", why: "عدد الصور يتجاوز سماح الحملة أو الحملة غير نشطة",
+        doThis: "استخدم الصور المتاحة أو اطلب من المدير زيادة العدد المسموح وتفعيل الحملة",
+      }) });
+    }
+    const used = new Set(live.filter((row) => row.variantId === task.variantId).map((row) => row.activeSlot));
+    const firstAvailableOrdinal = Math.min(MAX_REQUIRED_IMAGES, completedCount + 1);
+    if (slots.length < input.count) assertStoragePolicy();
+    while (slots.length < input.count) {
+      const activeSlot = Array.from(
+        { length: MAX_REQUIRED_IMAGES - firstAvailableOrdinal + 1 },
+        (_, i) => firstAvailableOrdinal + i,
+      ).find((slot) => !used.has(slot));
+      if (!activeSlot) throw new TRPCError({ code: "CONFLICT" });
+      const [created] = await tx.insert(productImageJobs).values({
+        productId: task.productId, variantId: task.variantId, campaignId: task.campaignId,
+        branchId: task.branchId, assignedTo: task.assignedTo, assignedBy: actor.userId,
+        assignedAt: new Date(), createdBy: actor.userId, mode: "FLATTEN", status: "ASSIGNED",
+        priority: task.priority, dueAt: task.dueAt, sourceProductHash: task.sourceProductHash,
+        templateVersion: task.templateVersion, revision: 1, activeSlot,
+      }).$returningId();
+      used.add(activeSlot);
+      const added = await lockTask(tx, Number(created.id));
+      slots.push(added);
+      await tx.insert(auditLogs).values(auditValues(actor, "productStudio.reserveImage", Number(created.id), {
+        sourceTaskId: task.id, campaignId: task.campaignId, activeSlot,
+      }));
+      await recordAdminOverride(tx, actor, Number(created.id), "reserveImage", overrideReason, task.assignedTo);
+    }
+    return { maxImages, tasks: slots.map((row) => ({
+      taskId: Number(row.id), revision: Number(row.revision), status: row.status,
+      activeSlot: Number(row.activeSlot),
+      hasOriginal: Boolean(row.originalObjectKey), hasCandidate: Boolean(row.processedObjectKey),
+      updatedAt: row.updatedAt,
+    })) };
+  });
+}
+
 export async function submitStudioCandidate(
   actor: ProductStudioActor,
   input: {
@@ -4110,42 +4766,56 @@ export async function submitStudioCandidate(
     originalDataUrl?: string | null;
     processedDataUrl: string;
     thumbnailDataUrl: string;
-    mode: "FLATTEN" | "CUT";
+    mode: "FLATTEN" | "CUT" | "AI";
     processingReceipt?: string | null;
     proposedName?: string | null;
     proposedDescription?: string | null;
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
     expectedRevision?: number;
+    requireBarcodeVerification?: boolean;
   },
 ) {
   const token = randomUUID();
   const lease = await withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
+    const photographerContentAttempt = input.requireBarcodeVerification === true && !isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
+    if (photographerContentAttempt) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يحرّر المصوّر محتوى المنتج", why: "مسؤولية مهمة التصوير هي الصورة الأصلية ومعالجتها فقط، لحماية اسم المنتج ووصفه من التعديل غير المقصود", doThis: "أرسل الصورة للمراجعة؛ يتولى مدير الكتالوج الاسم والوصف والنص التسويقي" }) });
     assertStoragePolicy();
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "حالة المهمة لا تقبل مرشحاً جديداً",
+        message: appErrorMessage({
+          what: "تعذّر إرسال الصورة للمراجعة",
+          why: "حالة المهمّة لا تقبل صورةً جديدة — الإرسال يجري على المُسنَدة أو قيد العمل أو المرفوضة",
+          doThis: "حدّث الشاشة لتقرأ حالة المهمّة، واطلب من المدير إعادتها إليك إن كانت بانتظار المراجعة",
+        }),
       });
     }
     if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "رفع آخر لهذه المهمة قيد التنفيذ",
+        message: appErrorMessage({
+          what: "تعذّر إرسال الصورة للمراجعة",
+          why: "رفعٌ آخر لهذه المهمّة جارٍ الآن (من هذا الجهاز أو من جهازٍ آخر)، ولا يُقبَل رفعان معاً",
+          doThis: "انتظر انتهاء الرفع الجاري (دقيقتان على الأكثر) ثمّ أعد الإرسال",
+        }),
       });
     }
-    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+    if (task.processingLeaseTokenHash && !isPendingProcessingReceipt(task.processingLeaseTokenHash) && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المعالجة عبر المزود قيد التنفيذ؛ لا يمكن إرسال نسخة أقدم",
+        message: appErrorMessage({
+          what: "تعذّر إرسال الصورة للمراجعة",
+          why: "معالجة الصورة عبر المزوّد جارية الآن، وإرسال نسخةٍ أقدم أثناءها يطمس نتيجتها",
+          doThis: "انتظر انتهاء المعالجة (دقيقتان على الأكثر) ثمّ أرسل ناتجها بدل النسخة الأقدم",
+        }),
       });
     }
     // الحجز قبل الرفع وداخل معاملة الحجز نفسها: لا يُكتب بايتٌ في المخزن قبل إثبات رصيده.
     // كان هذا المسار المجّاني بلا سقفٍ إطلاقاً بينما يكتب كائنَين لا يُستبدَلان ولا يُستردّان.
-    await reserveStudioSubmitQuotaInTx(tx, actor.userId, studioPayloadBytes(input.processedDataUrl, input.thumbnailDataUrl, task.originalObjectKey ? null : input.originalDataUrl));
     await tx
       .update(productImageJobs)
       .set({
@@ -4169,7 +4839,11 @@ export async function submitStudioCandidate(
     if (!lease.originalObjectKey && !original) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الصورة الأصلية مطلوبة لأول إرسال",
+        message: appErrorMessage({
+          what: "تعذّر إرسال الصورة للمراجعة",
+          why: "هذا أوّل إرسالٍ للمهمّة ولم تُرفَق الصورة الأصلية، والأصل لقطةٌ لا تُستعاد بعدها",
+          doThis: "أرفِق الصورة الأصلية قبل المعالجة ثمّ أعد الإرسال؛ وإن كنتَ حدّثت الصفحة فأعد التقاطها من جديد",
+        }),
       });
     }
     const store = getImageStore();
@@ -4185,11 +4859,15 @@ export async function submitStudioCandidate(
     const result = await withStudioTx(async (tx) => {
       const task = await lockTask(tx, input.taskId);
       assertExpectedRevision(task, input.expectedRevision);
-      assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+      assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
       if (task.uploadLeaseToken !== token || !task.uploadLeaseExpiresAt || task.uploadLeaseExpiresAt <= new Date() || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "انتهت ملكية الرفع أو تغيّرت حالة المهمة",
+          message: appErrorMessage({
+            what: "تعذّر إتمام إرسال الصورة",
+            why: "انتهت مهلة الرفع (دقيقتان) أو تغيّرت حالة المهمّة أثناءه — بدأ رفعٌ أحدث أو نُقلت المهمّة",
+            doThis: "حدّث الشاشة، ثمّ أعد الإرسال إن كانت المهمّة ما زالت بيدك",
+          }),
         });
       }
       const immutableOriginalHash = task.sourceContentHash ?? original?.hash;
@@ -4197,17 +4875,26 @@ export async function submitStudioCandidate(
       if (!immutableOriginalHash || !immutableOriginalMime) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "لقطة الأصل غير مكتملة",
+          message: appErrorMessage({
+            what: "تعذّر إتمام إرسال الصورة",
+            why: "لقطة الصورة الأصلية على المهمّة ناقصة (بلا بصمةٍ أو نوع ملفّ)، والاعتماد لاحقاً يُقاس عليها",
+            doThis: "أرفِق الصورة الأصلية وأعد الإرسال، واطلب من المدير إعادة إسناد المهمّة إن تكرّر",
+          }),
         });
       }
       const receiptHash = input.processingReceipt ? contentHash(Buffer.from(input.processingReceipt, "utf8")) : null;
+      const managerPreparedContent = isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
       let effectiveMode: "FLATTEN" | "CUT" | "PRO" | "AI" = input.mode;
       if (input.processingReceipt) {
         const proofValid = Boolean(receiptHash && task.processingProofTokenHash === receiptHash && task.processingProofExpiresAt && task.processingProofExpiresAt > new Date() && task.processingProofCandidateHash === processed.hash && (task.processingProofMode === "PRO" || task.processingProofMode === "AI"));
         if (!proofValid) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "إيصال المعالجة لا يطابق الصورة النهائية أو انتهت صلاحيته",
+            message: appErrorMessage({
+              what: "تعذّر إتمام إرسال الصورة",
+              why: "إيصال المعالجة لا يطابق بايتات الصورة المرسَلة أو انتهت صلاحيته (15 دقيقة)",
+              doThis: "أعد تشغيل المعالجة من زرّها في المحرّر ثمّ أرسل ناتجها كما هو بلا تعديل",
+            }),
           });
         }
         effectiveMode = task.processingProofMode!;
@@ -4231,6 +4918,8 @@ export async function submitStudioCandidate(
           proposedName: input.proposedName === undefined ? task.proposedName : input.proposedName?.trim() || null,
           proposedDescription: input.proposedDescription === undefined ? task.proposedDescription : input.proposedDescription?.trim() || null,
           proposedMarketingCopy: input.proposedMarketingCopy === undefined ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
+          contentPreparedBy: managerPreparedContent ? actor.userId : task.contentPreparedBy,
+          contentPreparedByManager: managerPreparedContent ? true : task.contentPreparedByManager,
           status: "PENDING_REVIEW",
           submittedAt: new Date(),
           // هوية المرسل حقيقة خادمية من Actor، ولا نقبلها من الحمولة.
@@ -4238,13 +4927,15 @@ export async function submitStudioCandidate(
           reviewedBy: null,
           reviewedAt: null,
           rejectionReason: null,
-          activeSlot: 1,
+          activeSlot: task.activeSlot,
           uploadLeaseToken: null,
           uploadLeaseExpiresAt: null,
           processingProofTokenHash: null,
           processingProofMode: null,
           processingProofCandidateHash: null,
           processingProofExpiresAt: null,
+          processingLeaseTokenHash: null,
+          processingLeaseExpiresAt: null,
           revision: sql`${productImageJobs.revision} + 1`,
         })
         .where(eq(productImageJobs.id, input.taskId));
@@ -4287,7 +4978,11 @@ async function streamToBase64(key: string): Promise<string> {
   if (!stream)
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: "ملف الصورة غير موجود في المخزن الخاص",
+      message: appErrorMessage({
+        what: "تعذّر عرض الصورة",
+        why: "ملفّ الصورة غير موجودٍ في مخزن الصور رغم بقاء سجلّه على المهمّة",
+        doThis: "حدّث الشاشة، ثمّ أعد رفع الصورة من محرّر الاستوديو أو اطلب من مصوّرها إعادة إرسالها",
+      }),
     });
   const chunks: Buffer[] = [];
   let total = 0;
@@ -4321,7 +5016,11 @@ export async function getStudioCandidatePreview(actor: ProductStudioActor, taskI
   if (!task.originalObjectKey || !task.processedObjectKey || !task.originalMime || !task.processedMime) {
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: "لا يوجد مرشح مكتمل لهذه المهمة",
+      message: appErrorMessage({
+        what: "تعذّر عرض المرشّح للمقارنة",
+        why: "المهمّة بلا صورةٍ نهائيةٍ مكتملة — لم يُرسَل مرشّحٌ بعد أو أُفرِغ بعد رفضه",
+        doThis: "أرسل صورة المهمّة من المحرّر إن كانت بيدك، أو اطلب من مصوّرها إرسالها ثمّ أعد فتح المقارنة",
+      }),
     });
   }
   const [originalBase64, processedBase64] = await Promise.all([streamToBase64(task.originalObjectKey), streamToBase64(task.processedObjectKey)]);
@@ -4353,13 +5052,63 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
   if (!task.originalObjectKey || !task.originalMime) {
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: "لا توجد صورة مصدر لهذه المهمة",
+      message: appErrorMessage({
+        what: "تعذّر عرض صورة المصدر",
+        why: "المهمّة أُسنِدت بلا صورة مصدرٍ سابقة — تُصوَّر من جديد لا تُعالَج من صورةٍ قائمة",
+        doThis: "التقط الصورة من محرّر الاستوديو مباشرةً بدل انتظار مصدر",
+      }),
     });
   }
   return {
     base64: await streamToBase64(task.originalObjectKey),
     mime: task.originalMime,
   };
+}
+
+/** يعيد الصور المعتمدة السابقة للمنتج للمصور المصرّح له؛ تظهر في محطة التصوير لمنع تكرار الزوايا. */
+export async function getStudioTaskPreviousImages(actor: ProductStudioActor, taskId: number) {
+  const task = (
+    await requireDb()
+      .select({
+        productId: productImageJobs.productId,
+        variantId: productImageJobs.variantId,
+        assignedTo: productImageJobs.assignedTo,
+        branchId: productImageJobs.branchId,
+      })
+      .from(productImageJobs)
+      .where(eq(productImageJobs.id, taskId))
+      .limit(1)
+  )[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND" });
+  assertTaskAccess(actor, task);
+  if (task.productId == null) return [];
+
+  const images = await requireDb()
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, task.productId),
+      task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return images.map((img) => ({
+    id: Number(img.id),
+    isPrimary: Boolean(img.isPrimary),
+    sortOrder: Number(img.sortOrder ?? 0),
+    thumbDataUrl: img.thumbDataUrl ?? null,
+    contentHash: img.contentHash ?? null,
+    createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+  }));
 }
 
 export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null, expectedRevision?: number) {
@@ -4371,7 +5120,11 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
     if (task.status !== "PENDING_REVIEW") {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المهمة لم تعد بانتظار المراجعة",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد المهمّة",
+          why: "المهمّة لم تعد بانتظار المراجعة — بتّ فيها مديرٌ آخر أو أُلغيت بعد فتحك الشاشة",
+          doThis: "حدّث لوحة المراجعة لتقرأ حالتها الراهنة، وانتقل إلى المهمّة التالية",
+        }),
       });
     }
     const overrideReason = assertIndependentReviewer(actor, task, adminOverrideReason);
@@ -4379,7 +5132,11 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
     if (!task.productId || !task.processedObjectKey || !task.processedContentHash || !task.processedMime || !task.processedUrl) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "بيانات المرشح غير مكتملة",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد المهمّة",
+          why: "بيانات الصورة النهائية على المهمّة ناقصة (ملفٌّ أو بصمةٌ أو رابطٌ مفقود)، ولا تُنشَر صورةٌ ناقصة البيانات",
+          doThis: "ارفض المهمّة بسببٍ مكتوب ليعيد المصوّر إرسال الصورة كاملة",
+        }),
       });
     }
     const thumbnail = decodeStudioThumbnail(task.processedUrl, {
@@ -4398,13 +5155,25 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         .limit(1)
         .for("update")
     )[0];
-    if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+    if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر اعتماد المهمّة", why: "منتج المهمّة لم يعد موجوداً في الكتالوج — حُذف بعد إنشائها", doThis: "ألغِ المهمّة بسببٍ مكتوب، وأنشئ مهمّةً جديدةً على المنتج الصحيح" }) });
 
-    const changesProductContent = Boolean(task.proposedName?.trim() || task.proposedDescription?.trim() || task.proposedMarketingCopy?.trim());
+    // لا تثبت ملكية النص بالباركود ولا بدور المستخدم الحالي: كلاهما متغير بعد الكتابة. لا
+    // يدخل المحتوى في تعارض المصدر أو في تحديث المنتج إلا إذا أثبت الخادم صلاحية مدير عند
+    // لحظة كتابته في contentPreparedByManager.
+    const hasProposedContent = Boolean(task.proposedName?.trim() || task.proposedDescription?.trim() || task.proposedMarketingCopy?.trim());
+    const discardUntrustedContent = hasProposedContent && !task.contentPreparedByManager;
+    const actuallyChangesName = !discardUntrustedContent && task.proposedName != null && task.proposedName.trim() !== "" && task.proposedName.trim() !== product.name.trim();
+    const actuallyChangesDesc = !discardUntrustedContent && task.proposedDescription != null && task.proposedDescription.trim() !== "" && task.proposedDescription.trim() !== (product.description || "").trim();
+    const actuallyChangesCopy = !discardUntrustedContent && Boolean(task.proposedMarketingCopy?.trim());
+    const changesProductContent = actuallyChangesName || actuallyChangesDesc || actuallyChangesCopy;
     if (changesProductContent && task.sourceProductHash && productContentHash(product) !== task.sourceProductHash) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "عُدّل محتوى المنتج بعد بدء المهمة؛ راجع النسخة الأحدث",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد المهمّة",
+          why: "المهمّة تقترح اسماً أو وصفاً للمنتج، وقد عُدّل محتوى المنتج بعد بدئها — فالاعتماد يطمس التعديل الأحدث",
+          doThis: "قارن اقتراح المصوّر بمحتوى المنتج الحاليّ، ثمّ ارفض المهمّة بسببٍ مكتوب ليبني اقتراحه على النسخة الأحدث",
+        }),
       });
     }
 
@@ -4437,34 +5206,73 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       if (!image || Number(image.productId) !== Number(task.productId) || image.reviewStatus !== "APPROVED" || !task.sourceContentHash || currentSourceHash !== task.sourceContentHash) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "صورة المصدر لم تعد صالحة",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد المهمّة",
+            why: "صورة المصدر التي بُنيت عليها المهمّة تغيّرت أو سُحب اعتمادها، فلا يصحّ استبدالها بناتج مهمّةٍ قديمة",
+            doThis: "ارفض المهمّة بسببٍ مكتوب، وأسنِد مهمّةً جديدةً على صورة المصدر الحالية",
+          }),
         });
       }
       imageId = Number(image.id);
       existingOriginalKey = image.originalKey;
     } else {
-      // العزلُ لكل بديل: تخفيضُ الصور الرئيسيّة يُقيَّد بنفس `variantId` (أو نفس مستوى-الأمّ
-      // إن كانت المهمّة variantId=NULL). بلا هذا القيد كانت الصورة الأخيرة لأيّ بديلٍ
-      // تُعزَّز رئيسيّةً وتُخفَّض جميع البدائل الأخرى — فيقرأ الكشك/المتجر صورةً واحدة
-      // لكل البدائل (الجذر: مراجعة Codex P1 على PR #807).
-      await tx
-        .update(productImages)
-        .set({ isPrimary: false })
-        .where(
-          and(
-            eq(productImages.productId, task.productId),
-            eq(productImages.isPrimary, true),
-            task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
-          ),
-        );
+      const scope = and(
+        eq(productImages.productId, task.productId),
+        task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
+      );
+      const existingImages = await tx
+        .select({
+          id: productImages.id,
+          isPrimary: productImages.isPrimary,
+          sortOrder: productImages.sortOrder,
+          publishedStudioJobId: productImages.publishedStudioJobId,
+        })
+        .from(productImages)
+        .where(scope)
+        .for("update");
+      const publishedJobIds = existingImages
+        .map((image) => image.publishedStudioJobId)
+        .filter((id): id is number => id != null);
+      const publishedJobs = publishedJobIds.length
+        ? await tx
+            .select({ id: productImageJobs.id, campaignId: productImageJobs.campaignId })
+            .from(productImageJobs)
+            .where(inArray(productImageJobs.id, publishedJobIds))
+        : [];
+      const campaignByJob = new Map(publishedJobs.map((job) => [Number(job.id), job.campaignId]));
+      const sameCampaign = task.campaignId == null
+        ? []
+        : existingImages.filter(
+            (image) => image.publishedStudioJobId != null && campaignByJob.get(Number(image.publishedStudioJobId)) === task.campaignId,
+          );
+      const outsideCampaign = existingImages.filter((image) => !sameCampaign.some((own) => Number(own.id) === Number(image.id)));
+      const outsidePrimary = outsideCampaign.some((image) => image.isPrimary);
+      const sameCampaignPrimaryIds = sameCampaign.filter((image) => image.isPrimary).map((image) => Number(image.id));
+      const activeSlot = Math.max(1, Number(task.activeSlot ?? 1));
+      // موضعُ دفعة الحملة ثابت بالـslot لا بترتيب مراجعة المدير. الصور السابقة تبقى
+      // كما هي؛ الدفعة تبدأ بعد أعلى ترتيب خارج حملتها ثم تحتل slots متجاورة.
+      const baseSortOrder = outsideCampaign.reduce(
+        (max, image) => Math.max(max, Number(image.sortOrder ?? 0)),
+        -1,
+      ) + 1;
+      const nextSortOrder = baseSortOrder + activeSlot - 1;
+      // إن لم توجد صورة رئيسية سابقة، تكون أول نتيجة رئيسية مؤقتاً. وصول slot 1
+      // يصحّحها حتمياً؛ وإن ظهرت صورة رئيسية خارج الحملة نحافظ عليها ونخفض المؤقتة.
+      if (sameCampaignPrimaryIds.length && (outsidePrimary || activeSlot === 1)) {
+        await tx
+          .update(productImages)
+          .set({ isPrimary: false })
+          .where(inArray(productImages.id, sameCampaignPrimaryIds));
+      }
+      const shouldBePrimary = !outsidePrimary && (activeSlot === 1 || sameCampaignPrimaryIds.length === 0);
       const [created] = await tx
         .insert(productImages)
         .values({
           productId: task.productId,
           variantId: task.variantId,
           url: "stored-object",
-          isPrimary: true,
-          sortOrder: 0,
+          isPrimary: shouldBePrimary,
+          sortOrder: nextSortOrder,
           reviewStatus: "APPROVED",
           origin: task.mode === "AI" ? "STUDIO_AI" : task.mode === "PRO" ? "STUDIO_PRO" : "STUDIO_FREE",
         })
@@ -4493,8 +5301,8 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
 
     const combinedDescription = [task.proposedDescription?.trim(), task.proposedMarketingCopy?.trim()].filter(Boolean).join("\n\n");
     const productPatch: { name?: string; description?: string | null } = {};
-    if (task.proposedName?.trim()) productPatch.name = task.proposedName.trim();
-    if (combinedDescription) productPatch.description = combinedDescription;
+    if (actuallyChangesName) productPatch.name = task.proposedName!.trim();
+    if (actuallyChangesDesc || actuallyChangesCopy) productPatch.description = combinedDescription || null;
     if (Object.keys(productPatch).length) await tx.update(products).set(productPatch).where(eq(products.id, task.productId));
 
     await tx
@@ -4507,6 +5315,9 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         rejectionReason: null,
         activeSlot: null,
         processedUrl: null,
+        proposedName: discardUntrustedContent ? null : task.proposedName,
+        proposedDescription: discardUntrustedContent ? null : task.proposedDescription,
+        proposedMarketingCopy: discardUntrustedContent ? null : task.proposedMarketingCopy,
         revision: sql`${productImageJobs.revision} + 1`,
       })
       .where(eq(productImageJobs.id, taskId));
@@ -4517,6 +5328,7 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         processedHash: task.processedContentHash,
         thumbnailHash: thumbnail.hash,
         contentUpdated: Object.keys(productPatch).length > 0,
+        untrustedContentDiscarded: discardUntrustedContent,
       }),
     );
     await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);
@@ -4573,7 +5385,11 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
   if (cleanReason.length < 5)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "سبب الرفض مطلوب بوضوح",
+      message: appErrorMessage({
+        what: "تعذّر رفض المهمّة",
+        why: "سبب الرفض أقصر من 5 أحرف، والمصوّر يبني إعادة العمل على هذا السبب وحده",
+        doThis: "اكتب في حقل السبب ما ينقص الصورة تحديداً (الإضاءة أو الخلفية أو الزاوية) ثمّ أعد الرفض",
+      }),
     });
   const result = await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
@@ -4582,7 +5398,11 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
     if (task.status !== "PENDING_REVIEW")
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المهمة لم تعد بانتظار المراجعة",
+        message: appErrorMessage({
+          what: "تعذّر رفض المهمّة",
+          why: "المهمّة لم تعد بانتظار المراجعة — بتّ فيها مديرٌ آخر أو أُلغيت بعد فتحك الشاشة",
+          doThis: "حدّث لوحة المراجعة لتقرأ حالتها الراهنة، وانتقل إلى المهمّة التالية",
+        }),
       });
     const overrideReason = assertIndependentReviewer(actor, task, adminOverrideReason);
     await tx
@@ -4603,7 +5423,7 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
         reviewedBy: actor.userId,
         reviewedAt: new Date(),
         rejectionReason: cleanReason,
-        activeSlot: 1,
+        activeSlot: task.activeSlot,
         revision: sql`${productImageJobs.revision} + 1`,
       })
       .where(eq(productImageJobs.id, taskId));
@@ -4686,7 +5506,11 @@ export async function cancelStudioTask(actor: ProductStudioActor, input: { taskI
   if (cleanReason.length < 5)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "سبب الإلغاء مطلوب بوضوح",
+      message: appErrorMessage({
+        what: "تعذّر إلغاء المهمّة",
+        why: "سبب الإلغاء أقصر من 5 أحرف، والإلغاء قرارٌ يبقى في سجلّ التدقيق بسببه",
+        doThis: "اكتب سبب الإلغاء في حقل السبب بخمسة أحرفٍ فأكثر ثمّ أعد الإلغاء",
+      }),
     });
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
@@ -4695,12 +5519,20 @@ export async function cancelStudioTask(actor: ProductStudioActor, input: { taskI
     if (task.status === "APPROVED")
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المهمة معتمدة ومنشورة؛ استعمل استرجاع الأصل بدل الإلغاء",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء المهمّة",
+          why: "المهمّة معتمَدةٌ وصورتها منشورةٌ على المنتج، والإلغاء لا يسحب صورةً نُشرت",
+          doThis: "اضغط «استرجاع الأصل» على المهمّة لتعود صورة المنتج إلى أصلها قبل المعالجة",
+        }),
       });
     if (!CANCELLABLE_STUDIO_STATUSES.includes(task.status))
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المهمة في حالة نهائية ولا تقبل الإلغاء",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء المهمّة",
+          why: "المهمّة في حالةٍ نهائية (ملغاةٌ سلفاً أو فاشلة)، ولا يُلغى ما أُغلق",
+          doThis: "حدّث لوحة المهامّ لتقرأ حالتها، وأنشئ مهمّةً جديدةً لهذا المنتج إن كان يحتاج صورة",
+        }),
       });
     await tx
       .update(productImageJobs)
@@ -4755,8 +5587,8 @@ async function cancelCampaignQueuedTasksInTx(
   const scope = cascadeAssigned
     // كل مهمّةٍ حيّةٍ على الحملة — بمُنفّذٍ أو بلا — تُلغى. PENDING_REVIEW تُلغى أيضاً لأنّها
     // ما زالت مفتوحةً على منتجٍ ينتظر قراراً؛ عدم إلغائها يترك تناقضاً مع «الحملة ملغاة».
-    ? and(eq(productImageJobs.campaignId, campaignId), inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), eq(productImageJobs.activeSlot, 1))
-    : and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), eq(productImageJobs.activeSlot, 1));
+    ? and(eq(productImageJobs.campaignId, campaignId), inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), isNotNull(productImageJobs.activeSlot))
+    : and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), isNotNull(productImageJobs.activeSlot));
   const rows = await tx.select({ id: productImageJobs.id }).from(productImageJobs).where(scope).orderBy(asc(productImageJobs.id)).limit(CANCEL_BATCH_LIMIT).for("update");
   if (rows.length === 0) return { cancelledCount: 0, remaining: 0 };
   const ids = rows.map((row) => Number(row.id));
@@ -4783,14 +5615,22 @@ export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: 
   if (cleanReason.length < 5)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "سبب الإلغاء مطلوب بوضوح",
+      message: appErrorMessage({
+        what: "تعذّر إلغاء طابور الحملة",
+        why: "سبب الإلغاء أقصر من 5 أحرف، وإلغاء دفعةٍ كاملة يبقى في سجلّ التدقيق بسببه",
+        doThis: "اكتب سبب إلغاء الطابور في حقل السبب بخمسة أحرفٍ فأكثر ثمّ أعد التنفيذ",
+      }),
     });
   return withStudioTx(async (tx) => {
     const campaign = (await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, input.campaignId)).limit(1))[0];
     if (!campaign)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "حملة الاستوديو غير موجودة",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء طابور الحملة",
+          why: "لا حملة بهذا الرقم — حُذفت بعد فتحك الشاشة",
+          doThis: "حدّث لوحة الحملات واختر الحملة من جديد",
+        }),
       });
     assertCampaignAccess(actor, campaign);
     return cancelCampaignQueuedTasksInTx(tx, actor, campaign, cleanReason, input.cascadeAssigned === true ? "productStudio.campaign.cancelBacklog.cascade" : "productStudio.campaign.cancelBacklog", { cascadeAssigned: input.cascadeAssigned === true });
@@ -4821,14 +5661,22 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
   if (snapshot.status !== "APPROVED" || !snapshot.originalObjectKey || !snapshot.sourceContentHash || !snapshot.originalMime) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "لا يوجد أصل قابل للاسترجاع لهذه المهمة",
+      message: appErrorMessage({
+        what: "تعذّر استرجاع الصورة الأصلية",
+        why: "المهمّة ليست معتمَدةً أو لا تحمل لقطةً كاملةً للأصل، ولا يُسترجَع أصلٌ غير محفوظ",
+        doThis: "أسنِد مهمّةً جديدةً على المنتج ليُلتقط له أصلٌ جديد بدل الاسترجاع",
+      }),
     });
   }
   const originalStream = await getImageStore().getStream(snapshot.originalObjectKey);
   if (!originalStream)
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: "الأصل غير موجود في المخزن الخاص",
+      message: appErrorMessage({
+        what: "تعذّر استرجاع الصورة الأصلية",
+        why: "ملفّ الأصل غير موجودٍ في مخزن الصور رغم بقاء سجلّه على المهمّة",
+        doThis: "أسنِد مهمّةً جديدةً على المنتج ليُلتقط أصلٌ جديد، وأبلغ الإدارة إن تكرّر على أكثر من مهمّة",
+      }),
     });
   const chunks: Buffer[] = [];
   let total = 0;
@@ -4842,7 +5690,11 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
   if (contentHash(originalBytes) !== snapshot.sourceContentHash) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "بصمة الأصل لا تطابق سجل المهمة",
+      message: appErrorMessage({
+        what: "تعذّر استرجاع الصورة الأصلية",
+        why: "بصمة الملفّ المقروء من المخزن لا تطابق البصمة المسجَّلة على المهمّة — تغيّر محتواه",
+        doThis: "أبلغ الإدارة بأنّ أصل هذه المهمّة تغيّر في المخزن، وأسنِد مهمّةً جديدةً للمنتج بدل الاسترجاع",
+      }),
     });
   }
   const publishedOriginalKey = objectKeyFor(snapshot.sourceContentHash, snapshot.originalMime, studioObjectPrefix("candidate"));
@@ -4856,7 +5708,11 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
     if (task.status !== "APPROVED" || !task.sourceImageId || !task.originalObjectKey || !task.sourceContentHash || !task.originalMime) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "لا يوجد أصل قابل للاسترجاع لهذه المهمة",
+        message: appErrorMessage({
+          what: "تعذّر استرجاع الصورة الأصلية",
+          why: "تغيّرت المهمّة أثناء الاسترجاع فلم تعد معتمَدةً أو فُقدت لقطة أصلها",
+          doThis: "حدّث الشاشة لتقرأ حالة المهمّة، وأسنِد مهمّةً جديدةً على المنتج إن لزم",
+        }),
       });
     }
     const image = (
@@ -4876,7 +5732,11 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
     if (!image || Number(image.productId) !== Number(task.productId) || image.reviewStatus !== "APPROVED" || Number(image.publishedStudioJobId) !== taskId || image.contentHash !== task.processedContentHash) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "نُشرت نسخة أحدث؛ لا يمكن استرجاع مهمة قديمة",
+        message: appErrorMessage({
+          what: "تعذّر استرجاع الصورة الأصلية",
+          why: "صورة المنتج نُشرت من مهمّةٍ أحدث بعد هذه، واسترجاع القديمة يطمس الأحدث",
+          doThis: "افتح المهمّة الأحدث على المنتج واسترجع أصلها منها إن أردتَ إعادة الصورة السابقة",
+        }),
       });
     }
     await tx
@@ -4915,3 +5775,121 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
     return expectedRevision === undefined ? { imageId: Number(image.id) } : { imageId: Number(image.id), revision: nextRevision(task) };
   });
 }
+
+/**
+ * جلب متغيّرات ووحدات المنتج المتاحة للاستوديو برخصة قراءة الاستوديو
+ * دون كشف الأسعار أو التكاليف أو البيانات الإدارية الحساسة.
+ */
+export async function getStudioProductUnits(actor: ProductStudioActor, productId: number) {
+  const db = requireDb();
+
+  const product = (
+    await db
+      .select({ id: products.id })
+      .from(products)
+      .where(and(eq(products.id, productId), eq(products.isActive, true), eq(products.isService, false)))
+      .limit(1)
+  )[0];
+
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير متاح للاستوديو",
+        why: "المنتج غير موجود أو معطّل أو من نوع خدمة لا تتطلب تصويراً",
+        doThis: "اختر منتجاً نشطاً من قائمة منتجات الاستوديو",
+      }),
+    });
+  }
+
+  const variants = await db
+    .select({
+      id: productVariants.id,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+      isActive: productVariants.isActive,
+    })
+    .from(productVariants)
+    .where(and(eq(productVariants.productId, productId), eq(productVariants.isActive, true)));
+
+  const variantIds = variants.map((v) => Number(v.id));
+  const units = variantIds.length > 0
+    ? await db
+        .select({
+          id: productUnits.id,
+          variantId: productUnits.variantId,
+          unitName: productUnits.unitName,
+          barcode: productUnits.barcode,
+        })
+        .from(productUnits)
+        .where(and(inArray(productUnits.variantId, variantIds), eq(productUnits.isActive, true)))
+    : [];
+
+  return {
+    variants: variants.map((v) => ({
+      id: Number(v.id),
+      variantName: v.variantName,
+      color: v.color,
+      size: v.size,
+      sku: v.sku,
+      isActive: v.isActive,
+      unitBarcodes: Object.fromEntries(
+        units
+          .filter((u) => Number(u.variantId) === Number(v.id) && u.barcode)
+          .map((u) => [u.unitName, u.barcode!]),
+      ),
+    })),
+    unitTemplate: Array.from(new Set(units.map((u) => u.unitName))).map((unitName) => ({ unitName })),
+  };
+}
+
+/**
+ * ربط باركود غير معروف بوحدة منتج نشطة من واجهة الاستوديو
+ * مع التحقق من أن الوحدة والمتغيّر والمنتج نشطون وغير خدميين.
+ */
+export async function linkStudioBarcode(
+  actor: ProductStudioActor,
+  input: { productUnitId: number; barcode: string; note?: string | null },
+) {
+  const db = requireDb();
+  const unit = (
+    await db
+      .select({
+        id: productUnits.id,
+      })
+      .from(productUnits)
+      .innerJoin(productVariants, eq(productVariants.id, productUnits.variantId))
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(
+        and(
+          eq(productUnits.id, input.productUnitId),
+          eq(productUnits.isActive, true),
+          eq(productVariants.isActive, true),
+          eq(products.isActive, true),
+          eq(products.isService, false),
+        ),
+      )
+      .limit(1)
+  )[0];
+
+  if (!unit) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر ربط الباركود",
+        why: "وحدة القياس أو المنتج غير موجود أو معطّل أو نوعه خدمة",
+        doThis: "اختر وحدة نشطة لمنتج متاح في الاستوديو",
+      }),
+    });
+  }
+
+  return addUnitBarcodeAlias(
+    input.productUnitId,
+    input.barcode,
+    input.note ?? "رُبط من استوديو المنتجات",
+    actor.userId,
+  );
+}
+

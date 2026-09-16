@@ -1,9 +1,12 @@
 // تخطيط موسم المدارس (بند 7): جدول المنتجات الموسمية بمخزونها الكلّيّ عبر **كل الفروع** مقابل هدف الموسم
 // + الفجوة (كمية الشراء المقترحة لتجهيز ذروة أيلول). تحرير الهدف مباشرةً، إضافة منتج موسميّ بالبحث،
 // تصفية «تحت الهدف فقط»، وتصدير قائمة الشراء إلى Excel. محصورة بالمدير/المخزن (البوّابة خادمية).
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -142,6 +145,102 @@ export default function SeasonPlanning() {
     });
   }
 
+  /** صفُّ الخطة — مشتقٌّ من عقد `inventory.seasonPlan` فلا ينجرف عن الخادم. */
+  type PlanRow = (typeof allRows)[number];
+
+  /* أعمدة الخطة — تُبنى داخل الرسم لأنّها تلتقط صفَّ التحرير الجاري (`editing`/`targetVal`)
+     وحالة الطفرة. جدولُ عرضٍ لا شبكةُ تحرير: صفٌّ واحدٌ فقط يدخل وضع التحرير في كل لحظة،
+     وبقيّة الصفوف قراءةٌ محضة. */
+  const planColumns: ColumnDef<PlanRow, unknown>[] = [
+    {
+      id: "product",
+      header: "المنتج",
+      accessorFn: (r) => r.productName,
+      meta: { width: "wide" },
+      cell: ({ row }) => <span className="font-medium">{row.original.productName}</span>,
+    },
+    {
+      id: "variant",
+      header: "المتغيّر / SKU",
+      accessorFn: (r) => `${variantLabel(r)} (${r.sku})`,
+      meta: { width: "wide" },
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {variantLabel(row.original)}{" "}
+          <span className="text-muted-foreground font-mono" dir="ltr">({row.original.sku})</span>
+        </span>
+      ),
+    },
+    {
+      id: "totalStock",
+      header: "المخزون الكلّيّ",
+      accessorFn: (r) => fmtInt(r.totalStock),
+      meta: { kind: "number" },
+      cell: ({ row }) => <span className="font-semibold">{fmtInt(row.original.totalStock)}</span>,
+    },
+    {
+      id: "seasonTarget",
+      header: "هدف الموسم",
+      accessorFn: (r) => fmtInt(r.seasonTarget),
+      meta: { kind: "number" },
+      cell: ({ row }) =>
+        editing === row.original.variantId ? (
+          <Input
+            dir="ltr"
+            inputMode="numeric"
+            value={targetVal}
+            onChange={(e) => setTargetVal(e.target.value.replace(/[^\d]/g, ""))}
+            className="h-8 w-24 text-center"
+            aria-label="هدف الموسم"
+            autoFocus
+          />
+        ) : (
+          fmtInt(row.original.seasonTarget)
+        ),
+    },
+    {
+      id: "gap",
+      header: "الفجوة (شراء مقترح)",
+      accessorFn: (r) => fmtInt(r.gap),
+      meta: { kind: "number" },
+      cell: ({ row }) => <span className="font-semibold text-primary">{fmtInt(row.original.gap)}</span>,
+    },
+    ...(canWrite
+      ? ([
+          {
+            id: "targetActions",
+            header: "الهدف",
+            enableSorting: false,
+            meta: { kind: "actions" },
+            cell: ({ row }) =>
+              editing === row.original.variantId ? (
+                <div className="flex gap-1 justify-center">
+                  <Button size="sm" onClick={() => saveEdit(row.original.variantId)} disabled={setTarget.isPending}>
+                    {setTarget.isPending ? "…" : "حفظ"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={setTarget.isPending}>
+                    إلغاء
+                  </Button>
+                </div>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => startEdit(row.original)}>
+                  <FileEdit aria-hidden className="size-3.5" />
+                  تعديل
+                </Button>
+              ),
+          },
+        ] as ColumnDef<PlanRow, unknown>[])
+      : []),
+  ];
+
+  /* رسالة الفراغ تحفظ التمييز الثلاثيّ الأصليّ (بحث / «تحت الهدف فقط» / لا خطّة بعد)،
+     وتُمرَّر لطرفَي الفراغ معاً كي لا يتوقّف النصّ على تصنيف DataTable للسبب. */
+  const emptyMessage = planSearch.trim()
+    ? "لا منتجات موسمية مطابقة للبحث."
+    : onlyBelow
+      ? "لا منتجات موسمية تحت الهدف. ألغِ «تحت الهدف فقط» لعرض كل المنتجات الموسمية، أو أضِف منتجاً بزرّ «إضافة منتج موسميّ»."
+      : "لا منتجات موسمية بعد. أضِف منتجاً بزرّ «إضافة منتج موسميّ» واضبط هدفه لتجهيز الموسم.";
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -186,87 +285,26 @@ export default function SeasonPlanning() {
               تحت الهدف فقط
             </label>
             <span className="text-xs text-muted-foreground">
-              {plan.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} صنف`}
+              {plan.isLoading ? ACTION_LABELS.loading : `${fmtInt(rows.length)} صنف`}
             </span>
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">المنتج</th>
-                  <th className="p-2 text-start">المتغيّر / SKU</th>
-                  <th className="p-2 text-left">المخزون الكلّيّ</th>
-                  <th className="p-2 text-left">هدف الموسم</th>
-                  <th className="p-2 text-left">الفجوة (شراء مقترح)</th>
-                  {canWrite && <th className="p-2 text-center">الهدف</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const isEditing = editing === r.variantId;
-                  const needs = r.gap > 0;
-                  return (
-                    <tr key={r.variantId} className={`border-t ${needs ? "bg-[var(--sem-warn-bg)]/50" : ""}`}>
-                      <td className="p-2 font-medium">{r.productName}</td>
-                      <td className="p-2 text-xs">
-                        {variantLabel(r)} <span className="text-muted-foreground font-mono" dir="ltr">({r.sku})</span>
-                      </td>
-                      <td className="p-2 text-left tabular-nums font-semibold">{fmtInt(r.totalStock)}</td>
-                      <td className="p-2 text-left tabular-nums">
-                        {isEditing ? (
-                          <Input
-                            dir="ltr"
-                            inputMode="numeric"
-                            value={targetVal}
-                            onChange={(e) => setTargetVal(e.target.value.replace(/[^\d]/g, ""))}
-                            className="h-8 w-24 text-center"
-                            aria-label="هدف الموسم"
-                            autoFocus
-                          />
-                        ) : (
-                          fmtInt(r.seasonTarget)
-                        )}
-                      </td>
-                      <td className="p-2 text-left tabular-nums font-semibold text-primary">{fmtInt(r.gap)}</td>
-                      {canWrite && (
-                        <td className="p-2 text-center">
-                          {isEditing ? (
-                            <div className="flex gap-1 justify-center">
-                              <Button size="sm" onClick={() => saveEdit(r.variantId)} disabled={setTarget.isPending}>
-                                {setTarget.isPending ? "…" : "حفظ"}
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={setTarget.isPending}>
-                                إلغاء
-                              </Button>
-                            </div>
-                          ) : (
-                            <Button size="sm" variant="outline" onClick={() => startEdit(r)}>
-                              <FileEdit aria-hidden className="size-3.5" />
-                              تعديل
-                            </Button>
-                          )}
-                        </td>
-                      )}
-                    </tr>
-                  );
-                })}
-                {!plan.isLoading && rows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={canWrite ? 6 : 5}
-                    message={
-                      planSearch.trim()
-                        ? "لا منتجات موسمية مطابقة للبحث."
-                        : onlyBelow
-                          ? "لا منتجات موسمية تحت الهدف. ألغِ «تحت الهدف فقط» لعرض كل المنتجات الموسمية، أو أضِف منتجاً بزرّ «إضافة منتج موسميّ»."
-                          : "لا منتجات موسمية بعد. أضِف منتجاً بزرّ «إضافة منتج موسميّ» واضبط هدفه لتجهيز الموسم."
-                    }
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/* البحث و«تحت الهدف فقط» في رأس البطاقة أعلاه (يغذّيان `rows`) ⇒ `searchable={false}`
+              مع `externalFiltersActive` وإلّا ظهر حقلا بحثٍ متجاوران وأعلن الجدولُ «لا صفوف بعد»
+              على قائمةٍ حجَبها الفلتر. بلا ترقيمٍ محلّيّ: الخطّة تُقرأ كاملةً كما كانت. */}
+          <DataTable<PlanRow>
+            columns={planColumns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={planSearch.trim() !== "" || onlyBelow}
+            pageSize={Infinity}
+            loading={plan.isLoading}
+            errorState={{ isError: plan.isError, message: plan.error?.message, onRetry: () => void plan.refetch() }}
+            getRowClassName={(r) => (r.gap > 0 ? "bg-[var(--sem-warn-bg)]/50" : undefined)}
+            emptyState={emptyMessage}
+            emptyFilteredState={emptyMessage}
+          />
         </CardContent>
       </Card>
 

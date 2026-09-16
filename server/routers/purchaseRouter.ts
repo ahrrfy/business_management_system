@@ -1,16 +1,23 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import {
+  accountingEntries,
   productUnits,
   productVariants,
   products,
+  purchaseControlSettings,
+  purchaseOrderControlRequests,
   purchaseOrderItems,
   purchaseOrders,
+  supplierPayments,
+  supplierPaymentRefunds,
   suppliers,
   users,
 } from "../../drizzle/schema";
+import { nextActionTerminalReason } from "@shared/nextAction";
+import { derivePurchaseOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import {
@@ -23,6 +30,7 @@ import {
 } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
+import { money, toDbMoney } from "../services/money";
 import {
   getPurchaseIntegrityReport,
   MAX_PURCHASE_INTEGRITY_LIMIT,
@@ -34,7 +42,6 @@ import {
   decidePurchaseRequisitionControl,
   getPurchaseControlSettings,
   getPurchaseOrderControlRequest,
-  getPurchaseOrderRevision,
   getPurchaseOrderRevisionDiff,
   getPurchaseRequisition,
   listPendingPurchaseOrderControls,
@@ -55,11 +62,9 @@ import {
   canSeeCostForUser,
   purchasesManagerProcedure,
   purchasesReadProcedure,
-  purchasesWarehouseProcedure,
   router,
 } from "../trpc";
 
-const method = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 /**
  * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
  * `receivePurchase` («الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية»)،
@@ -449,53 +454,6 @@ export const purchaseRouter = router({
       return res;
     }),
 
-  receive: purchasesWarehouseProcedure
-    .input(
-      z.object({
-        purchaseOrderId: z.number().int().positive(),
-        lines: z
-          .array(
-            z.object({
-              purchaseOrderItemId: z.number().int().positive(),
-              receivedBaseQuantity: z.number().int().positive(),
-            }),
-          )
-          .min(1)
-          .superRefine((lines, ctx) => {
-            const seen = new Set<number>();
-            lines.forEach((line, index) => {
-              if (seen.has(line.purchaseOrderItemId)) {
-                ctx.addIssue({
-                  code: z.ZodIssueCode.custom,
-                  path: [index, "purchaseOrderItemId"],
-                  message: "لا يجوز تكرار بند أمر الشراء في الاستلام نفسه",
-                });
-              }
-              seen.add(line.purchaseOrderItemId);
-            });
-          }),
-        payment: z
-          .object({
-            amount: positiveMoneyString,
-            method: supplierPaymentMethod,
-          })
-          .optional(),
-        // طريقة دفع مصروف الشحن/الكمرك (لشركة النقل، لا للمورّد). الافتراضي نقديّ.
-        shippingPaymentMethod: method.optional(),
-        shippingPaymentReference: z.string().trim().min(1).max(50).optional(),
-        shippingCardLastFour: z
-          .string()
-          .regex(/^\d{4}$/)
-          .optional(),
-        shippingBeneficiarySupplierId: z.number().int().positive().nullish(),
-        shippingBeneficiaryName: z.string().trim().min(2).max(200).nullish(),
-        shippingEvidenceReference: z.string().trim().min(2).max(191).nullish(),
-        // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
-        clientRequestId: z.string().min(1).max(80),
-      }),
-    )
-    .mutation(() => assertLegacyPurchaseWritePathDisabled("purchases.receive")),
-
   /**
    * تسديد أمر شراءٍ بعد استلامه — الفجوة التي كانت تُبقي الشراء الآجل بلا مسار إقفال
    * (البيع يملك `sales.pay`؛ الشراء لا نظير له، فكلّ سدادٍ لاحق يخرج لسند صرفٍ عامّ لا
@@ -583,6 +541,7 @@ export const purchaseRouter = router({
         decisionKey: z.string().trim().min(1).max(120),
         approve: z.boolean(),
         reason: z.string().trim().min(3).max(500),
+        confirmedFullReceipt: z.boolean().optional(),
       }),
     )
     .mutation(({ input, ctx }) =>
@@ -685,27 +644,6 @@ export const purchaseRouter = router({
         });
       }
       return listPurchaseOrderRevisions(input.purchaseOrderId, {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId ?? 0),
-        role: ctx.user.role,
-      });
-    }),
-
-  revision: purchasesReadProcedure
-    .input(
-      z.object({
-        purchaseOrderId: z.number().int().positive(),
-        revisionId: z.number().int().positive(),
-      }),
-    )
-    .query(({ input, ctx }) => {
-      if (!canSeeCostForUser(ctx.user)) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "تفاصيل مراجعة أمر الشراء تحتوي تكاليف محجوبة عن صلاحيتك",
-        });
-      }
-      return getPurchaseOrderRevision(input, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
@@ -1013,6 +951,8 @@ export const purchaseRouter = router({
               approvedRevisionId: purchaseOrders.approvedRevisionId,
               createdBy: purchaseOrders.createdBy,
               createdByName: users.name,
+              lastEditedBy: purchaseOrders.lastEditedBy,
+              submittedBy: purchaseOrders.submittedBy,
               supplierName: suppliers.name,
             })
             .from(purchaseOrders)
@@ -1023,18 +963,98 @@ export const purchaseRouter = router({
             .limit(lim)
             .offset(off),
       });
+      // Codex (P1، ٦/٩/٢٦): شارة «مُسدَّدٌ فعلاً» في الواجهة لا يجوز أن تُستنتَج من
+      // settlementType+status وحدهما — أمرٌ CASH وصل RECEIVED قبل هذا الإصلاح لم يُسدَّد
+      // آلياً قطّ وقد تبقى عليه ذمّةٌ حقيقية. الدليل الوحيد المقبول: قيدُ PAYMENT_OUT فعليّ
+      // مربوطٌ بهذا الأمر عبر accountingEntries.purchaseOrderId (نفس إشارة
+      // purchaseIntegrityService، بلا صافي المرتجعات هنا لأنها شارة قائمةٍ سريعة لا تدقيقاً).
+      const cashOrderIds = rows
+        .filter((row) => row.settlementType === "CASH")
+        .map((row) => Number(row.id));
+      const linkedCashPaidById = new Map<number, string>();
+      if (cashOrderIds.length) {
+        const [paidRows, refundRows] = await Promise.all([
+          db
+            .select({
+              purchaseOrderId: accountingEntries.purchaseOrderId,
+              paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
+            })
+            .from(accountingEntries)
+            .where(
+              and(
+                inArray(accountingEntries.purchaseOrderId, cashOrderIds),
+                sql`${accountingEntries.supplierId} IS NOT NULL`,
+                isNull(accountingEntries.deliveryPartyId),
+                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
+                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
+                or(
+                  eq(accountingEntries.entryType, "PAYMENT_OUT"),
+                  and(
+                    eq(accountingEntries.entryType, "PAYMENT_IN"),
+                    sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
+                  ),
+                ),
+              ),
+            )
+            .groupBy(accountingEntries.purchaseOrderId),
+          db
+            .select({
+              purchaseOrderId: accountingEntries.purchaseOrderId,
+              refunded: sql<string>`COALESCE(SUM(${supplierPaymentRefunds.amount}), 0)`,
+            })
+            .from(supplierPaymentRefunds)
+            .innerJoin(
+              supplierPayments,
+              eq(supplierPayments.id, supplierPaymentRefunds.supplierPaymentId),
+            )
+            .innerJoin(
+              accountingEntries,
+              eq(accountingEntries.id, supplierPayments.accountingEntryId),
+            )
+            .where(
+              and(
+                inArray(accountingEntries.purchaseOrderId, cashOrderIds),
+                sql`${accountingEntries.purchaseOrderId} IS NOT NULL`,
+              ),
+            )
+            .groupBy(accountingEntries.purchaseOrderId),
+        ]);
+        const refundMap = new Map<number, ReturnType<typeof money>>();
+        for (const r of refundRows) {
+          if (r.purchaseOrderId == null) continue;
+          refundMap.set(Number(r.purchaseOrderId), money(r.refunded));
+        }
+        for (const row of paidRows) {
+          if (row.purchaseOrderId == null) continue;
+          const poId = Number(row.purchaseOrderId);
+          const rawPaid = money(row.paid);
+          const refundAmount = refundMap.get(poId) ?? money(0);
+          const netPaid = rawPaid.minus(refundAmount);
+          linkedCashPaidById.set(
+            poId,
+            toDbMoney(netPaid.gt(0) ? netPaid : money(0)),
+          );
+        }
+      }
+      const withLinkedPaid = rows.map((row) => ({
+        ...row,
+        linkedCashPaidAmount: toDbMoney(
+          money(linkedCashPaidById.get(Number(row.id)) ?? 0),
+        ),
+      }));
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
       if (!canSeeCostForUser(ctx.user)) {
-        return rows.map((row) => ({
+        return withLinkedPaid.map((row) => ({
           ...row,
           total: null,
           paidAmount: null,
           usdTotal: null,
           paidUsd: null,
           agreedRate: null,
+          linkedCashPaidAmount: null,
         }));
       }
-      return rows;
+      return withLinkedPaid;
     }),
 
   /** عدد أوامر الشراء المطابقة للفلتر — لِترقيم القائمة («عرض ١–٥٠ من N»).
@@ -1084,6 +1104,8 @@ export const purchaseRouter = router({
             supplierName: suppliers.name,
             branchId: purchaseOrders.branchId,
             orderDate: purchaseOrders.orderDate,
+            // م٢ ق١١: تاريخ التسليم المتوقّع — يدخل سقف «الخطوة التالية» عند CONFIRMED.
+            expectedDeliveryDate: purchaseOrders.expectedDeliveryDate,
             subtotal: purchaseOrders.subtotal,
             taxAmount: purchaseOrders.taxAmount,
             taxRatePercent: purchaseOrders.taxRatePercent,
@@ -1164,6 +1186,104 @@ export const purchaseRouter = router({
           eq(purchaseOrderItems.productUnitId, productUnits.id),
         )
         .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+      /**
+       * م٢ ق١١ — «الخطوة التالية». نقرأ هنا حقيقتَين قصيرتَين من جداول التحكّم مباشرةً:
+       *  · إعدادُ الفرع `requireRequisition` — نصفُ سطرٍ يجيب سؤال «هل التغطية مفروضة أصلاً؟».
+       *  · طلبُ اعتمادٍ نشطٌ على الأمر (PENDING/STALE) — لتقول الرقاقة «مَن ينتظر أحداً؟».
+       *
+       * ⛔ لا نمرّ بخدمة الشراء (`server/services/purchase/**` ممنوعُ المسّ في هذه الموجة).
+       *   استعلامان مقروءان مباشرةً على المخطّط، بحدود صفٍّ واحد ومصفوفٍ محدودٍ (LIMIT 1).
+       */
+      const [controlSetting] = po.branchId != null
+        ? await db
+            .select({ requireRequisition: purchaseControlSettings.requireRequisition })
+            .from(purchaseControlSettings)
+            .where(eq(purchaseControlSettings.branchId, Number(po.branchId)))
+            .limit(1)
+        : [];
+      const activeApprovals = await db
+        .select({ status: purchaseOrderControlRequests.status })
+        .from(purchaseOrderControlRequests)
+        .where(
+          and(
+            eq(purchaseOrderControlRequests.purchaseOrderId, po.id),
+            eq(purchaseOrderControlRequests.kind, "APPROVE_REVISION"),
+            inArray(purchaseOrderControlRequests.status, ["PENDING", "STALE"]),
+          ),
+        )
+        .orderBy(desc(purchaseOrderControlRequests.id))
+        .limit(1);
+      const approvalRequest: "PENDING" | "STALE" | "NONE" =
+        activeApprovals[0]?.status === "PENDING"
+          ? "PENDING"
+          : activeApprovals[0]?.status === "STALE"
+            ? "STALE"
+            : "NONE";
+
+      let linkedCashPaidAmount: string = "0.00";
+      if (po.settlementType === "CASH") {
+        const [paidRows, refundRows] = await Promise.all([
+          db
+            .select({
+              paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
+            })
+            .from(accountingEntries)
+            .where(
+              and(
+                eq(accountingEntries.purchaseOrderId, po.id),
+                sql`${accountingEntries.supplierId} IS NOT NULL`,
+                isNull(accountingEntries.deliveryPartyId),
+                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
+                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
+                or(
+                  eq(accountingEntries.entryType, "PAYMENT_OUT"),
+                  and(
+                    eq(accountingEntries.entryType, "PAYMENT_IN"),
+                    sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
+                  ),
+                ),
+              ),
+            ),
+          db
+            .select({
+              refunded: sql<string>`COALESCE(SUM(${supplierPaymentRefunds.amount}), 0)`,
+            })
+            .from(supplierPaymentRefunds)
+            .innerJoin(
+              supplierPayments,
+              eq(supplierPayments.id, supplierPaymentRefunds.supplierPaymentId),
+            )
+            .innerJoin(
+              accountingEntries,
+              eq(accountingEntries.id, supplierPayments.accountingEntryId),
+            )
+            .where(eq(accountingEntries.purchaseOrderId, po.id)),
+        ]);
+        const rawPaid = money(paidRows[0]?.paid ?? 0);
+        const refundAmount = money(refundRows[0]?.refunded ?? 0);
+        const netPaid = rawPaid.minus(refundAmount);
+        linkedCashPaidAmount = toDbMoney(netPaid.gt(0) ? netPaid : money(0));
+      }
+
+      const totalDec = Number(po.total ?? 0);
+      const effectivePaidDec = Math.max(
+        Number(po.paidAmount ?? 0),
+        Number(linkedCashPaidAmount ?? 0),
+      );
+      const nextAction = derivePurchaseOrderNextActionFromRow({
+        purchaseOrderId: po.id,
+        status: po.status,
+        currentRevisionId: po.currentRevisionId,
+        hasUnpaidBalance: Number.isFinite(totalDec) && Number.isFinite(effectivePaidDec) && totalDec - effectivePaidDec > 0,
+        approvalRequest,
+        requireRequisition: controlSetting?.requireRequisition,
+        expectedDeliveryDate: po.expectedDeliveryDate,
+      });
+      const nextActionReason =
+        nextAction == null
+          ? nextActionTerminalReason("PURCHASE_ORDER", po.status)
+          : null;
+
       // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
       if (!canSeeCostForUser(ctx.user)) {
         // 0204: الخصم وسعرُ ما قبله **تكلفةٌ أيضاً** (يكشفان بنية سعر المورّد) ⇒ يُحجبان مع البقيّة.
@@ -1182,6 +1302,7 @@ export const purchaseRouter = router({
           agreedRate: null,
           invoiceDiscount: null,
           usdInvoiceDiscount: null,
+          linkedCashPaidAmount: null,
         };
         // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
         // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
@@ -1198,8 +1319,8 @@ export const purchaseRouter = router({
               usdListUnitPrice: null,
             }) as unknown as typeof row,
         );
-        return { ...poMasked, items: itemsMasked };
+        return { ...poMasked, items: itemsMasked, nextAction, nextActionReason };
       }
-      return { ...po, items };
+      return { ...po, linkedCashPaidAmount, items, nextAction, nextActionReason };
     }),
 });

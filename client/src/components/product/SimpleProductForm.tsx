@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Package, X } from "lucide-react";
+import { Package, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
+import { RecordForm } from "@/components/form/RecordForm";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -115,7 +116,16 @@ export default function SimpleProductForm() {
   // بضاعة الأمانة (٢٠/٧): وسم السلعة البسيطة + مودِعها (الحصة في costPrice).
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
-  const [error, setError] = useState("");
+  // لقطةُ الاتّساخ المرجعية: الحالةُ الأوّلية، ثمّ **ما أُرسل فعلاً** بعد حفظٍ ناجح (سباق Codex #978).
+  const formSignature = JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, units, costPrice, stockByBranch, minStock, reorderPoint, isCustomizable, isActive, consignment });
+  const [initialSignature] = useState(formSignature);
+  const [savedSignature, setSavedSignature] = useState<string | null>(null);
+  const isDirty = formSignature !== (savedSignature ?? initialSignature);
+  // بعد حفظٍ ناجح نغادر إلى القائمة بعد أن يرى الحارس أنّ النموذج لم يعد متّسخاً (وإلّا سأل).
+  const [leaveTo, setLeaveTo] = useState<string | null>(null);
+  useEffect(() => {
+    if (leaveTo && !isDirty) navigate(leaveTo);
+  }, [leaveTo, isDirty, navigate]);
 
   const branches = useMemo(
     () => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })),
@@ -176,18 +186,7 @@ export default function SimpleProductForm() {
   );
   const takenInDb = useMemo(() => new Set((checkQ.data ?? []).map((r) => r.code)), [checkQ.data]);
 
-  const create = trpc.catalog.createProduct.useMutation({
-    onSuccess: async () => {
-      await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
-      navigate("/products");
-    },
-    onError: (e) => {
-      setError(e.message);
-      // انقل التركيز للحقل المخالف ليكون الخطأ قابلاً للتصحيح (لا رسالةً غامضة عن رمز لم يُدخِله).
-      if (/SKU|الرمز/.test(e.message)) document.getElementById("simple-sku")?.focus();
-      else if (/باركود/.test(e.message)) document.getElementById("simple-barcode")?.focus();
-    },
-  });
+  const create = trpc.catalog.createProduct.useMutation();
 
   const totalStock = useMemo(
     () => Object.values(stockByBranch).reduce((s, q) => s + (parseInt(q, 10) || 0), 0),
@@ -272,15 +271,10 @@ export default function SimpleProductForm() {
     return null;
   }
 
-  async function save() {
-    setError("");
+  /** يُرجع نتيجة الخادم أو يرمي — `RecordForm` يُصنّف المآل ويعرضه (SAVED/CONFLICT/FAILED). */
+  async function save(): Promise<unknown> {
     const err = validate();
-    if (err) {
-      setError(err);
-      if (!finalName) document.getElementById("simple-name")?.focus();
-      else if (!costPrice.trim()) document.getElementById("simple-cost")?.focus();
-      return;
-    }
+    if (err) throw new Error(err);
     // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce) — يشمل البدائل.
     const codes = Array.from(
       new Set(
@@ -290,15 +284,15 @@ export default function SimpleProductForm() {
       )
     );
     if (codes.length) {
+      let hit: Array<{ code: string; takenBy: string }> = [];
       try {
-        const hit = await utils.catalog.checkBarcodes.fetch({ codes });
-        if (hit.length) {
-          setError(`الباركود ${hit[0].code} مُستخدَم في «${hit[0].takenBy}». غيّره قبل الحفظ.`);
-          document.getElementById("simple-barcode")?.focus();
-          return;
-        }
+        hit = await utils.catalog.checkBarcodes.fetch({ codes });
       } catch {
         // فشل الفحص المسبق لا يمنع الحفظ — قيد UNIQUE في القاعدة يبقى الحارس الأخير.
+      }
+      if (hit.length) {
+        document.getElementById("simple-barcode")?.focus();
+        throw new Error(`الباركود ${hit[0].code} مُستخدَم في «${hit[0].takenBy}». غيّره قبل الحفظ.`);
       }
     }
     const unitsPayload = units.map((u) => {
@@ -319,7 +313,8 @@ export default function SimpleProductForm() {
         barcodeAliases: aliases.length ? aliases : undefined,
       };
     });
-    create.mutate({
+    const submitted = formSignature;
+    const res = await create.mutateAsync({
       name: finalName,
       productType: productType.trim() || null,
       brand: brand.trim() || null,
@@ -344,12 +339,34 @@ export default function SimpleProductForm() {
         },
       ],
     });
+    setSavedSignature(submitted);
+    await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
+    setLeaveTo("/products");
+    return res;
   }
 
   const unitCost = parseFloat(costPrice) || 0;
+  const validationReason = validate();
 
   return (
     <div className="space-y-4">
+      <RecordForm
+        mode="create"
+        isDirty={isDirty}
+        blockedBy={validationReason ? [validationReason] : []}
+        isPending={create.isPending}
+        onSave={save}
+        onCancel={() => navigate("/products")}
+        saveLabel="حفظ المنتج"
+        savedMessage="تم حفظ المنتج"
+        barHint={
+          <>
+            سيُحفظ منتج بسيط واحد بـ<b className="text-foreground" dir="ltr">{units.length}</b> وحدة
+            {baseBarcode ? " (بباركود)" : " (بلا باركود)"}
+            {totalStock > 0 && <> — رصيد افتتاحيّ <b className="text-foreground" dir="ltr">{totalStock}</b> {baseUnitName}</>}.
+          </>
+        }
+      >
       {/* م٣ — تدفّق «صورة أوّلاً» للموظّف الذي لا يعرف كيف يصف: ارفع صورة ⇒ اقتراح الحقول
           الأساسية ⇒ يطبّق على الفارغ فقط. لا تُطمس أيّ قيمةٍ كتبها الموظّف بنفسه. */}
       <ImageFirstProductAssistant
@@ -649,27 +666,7 @@ export default function SimpleProductForm() {
         onDescriptionChange={setDescription}
       />
 
-      {error && (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span className="whitespace-pre-wrap break-words">{error}</span>
-        </div>
-      )}
-
-      {/* ── شريط الحفظ الثابت ── */}
-      <div className="fixed bottom-0 inset-x-0 lg:start-60 border-t bg-card/95 backdrop-blur px-6 py-3 flex items-center justify-between gap-3 z-30">
-        <div className="text-xs text-muted-foreground hidden sm:block">
-          سيُحفظ منتج بسيط واحد بـ<b className="text-foreground">{toArabicDigits(units.length)}</b> وحدة
-          {baseBarcode ? " (بباركود)" : " (بلا باركود)"}
-          {totalStock > 0 && <> — رصيد افتتاحيّ <b className="text-foreground">{toArabicDigits(totalStock)}</b> {baseUnitName}</>}.
-        </div>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={() => navigate("/products")}>إلغاء</Button>
-          <Button type="button" size="sm" onClick={save} disabled={create.isPending}>
-            {create.isPending ? "جارٍ الحفظ…" : "حفظ المنتج"}
-          </Button>
-        </div>
-      </div>
+      </RecordForm>
     </div>
   );
 }

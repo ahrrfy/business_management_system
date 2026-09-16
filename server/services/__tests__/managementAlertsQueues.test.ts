@@ -20,7 +20,7 @@ const TABLES = [
   "taskEvents", "tasks", "serviceTypes",
   "workOrderMaterials", "workOrders",
   "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits",
-  "productVariants", "products", "shifts", "customers", "branches", "users", "auditLogs",
+  "productVariants", "products", "shifts", "customers", "branches", "users", "auditLogs", "receipts",
 ];
 
 function db() {
@@ -138,4 +138,97 @@ describe("ش٦ — طوابير أوامر الشغل في تنبيهات الإ
     const all = await getManagementAlerts({});
     expect(all.alerts.find((x) => x.key === "wo-unassigned")?.count).toBe(1);
   });
+
+  it("⭐ رادار الذكاء التشغيلي: يرصد البيع دون الكلفة ويطلقه كتنبيه رادار حرج", async () => {
+    await db().insert(s.products).values({ id: 99, name: "منتج رادار" });
+    await db().insert(s.productVariants).values({ id: 99, productId: 99, sku: "RADAR-1", costPrice: "10000.00" });
+
+    const invRes = await db().insert(s.invoices).values({
+      branchId: 1,
+      customerId: 1,
+      invoiceNumber: "INV-RADAR-1",
+      sourceType: "POS",
+      invoiceStatus: "PAID",
+      subtotal: "5000.00",
+      total: "5000.00",
+      paidAmount: "5000.00",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    } as never);
+    const invId = Number((invRes as unknown as { insertId: number }[])[0]?.insertId ?? 0);
+
+    await db().insert(s.invoiceItems).values({
+      invoiceId: invId,
+      variantId: 99,
+      quantity: "1.000",
+      baseQuantity: 1,
+      unitPrice: "5000.00",
+      unitCost: "10000.00",
+      total: "5000.00",
+    } as never);
+
+    const a = await alertKeys();
+    const radarAlert = a.get("radar-below-cost");
+    expect(radarAlert).toBeDefined();
+    expect(radarAlert?.severity).toBe("critical");
+    expect(radarAlert?.count).toBe(1);
+    expect(radarAlert?.href).toBe("/reports/anomaly-watch");
+  });
+
+  it("⭐ رادار الذكاء التشغيلي: يطلق كواشف الرادار المحددة والمؤشرات الإضافية معاً دون حجب أي منهما", async () => {
+    await db().insert(s.products).values({ id: 100, name: "منتج رادار 2" });
+    await db().insert(s.productVariants).values({ id: 100, productId: 100, sku: "RADAR-2", costPrice: "10000.00" });
+
+    // بيع دون الكلفة -> يطلق radar-below-cost
+    const invRes = await db().insert(s.invoices).values({
+      branchId: 1,
+      customerId: 1,
+      invoiceNumber: "INV-RADAR-2",
+      sourceType: "POS",
+      invoiceStatus: "PAID",
+      subtotal: "4000.00",
+      total: "4000.00",
+      paidAmount: "4000.00",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    } as never);
+    const invId = Number((invRes as unknown as { insertId: number }[])[0]?.insertId ?? 0);
+
+    await db().insert(s.invoiceItems).values({
+      invoiceId: invId,
+      variantId: 100,
+      quantity: "1.000",
+      baseQuantity: 1,
+      unitPrice: "4000.00",
+      unitCost: "10000.00",
+      total: "4000.00",
+    } as never);
+
+    // سند معكوس -> يطلق مؤشر الشذوذ الإضافي anomaly-watch
+    await db().insert(s.receipts).values({
+      id: 999,
+      voucherNumber: "VCH-RADAR-1",
+      branchId: 1,
+      direction: "IN",
+      paymentMethod: "CASH",
+      status: "REVERSED",
+      amount: "1000.00",
+      createdBy: 1,
+      createdAt: new Date(),
+    } as never);
+
+    const a = await alertKeys();
+    const belowCostAlert = a.get("radar-below-cost");
+    const additionalAnomalyAlert = a.get("anomaly-watch");
+
+    // التحقق من إطلاق كلا التنبيهين بالتزامن دون أن يحجب الأول الثاني
+    expect(belowCostAlert).toBeDefined();
+    expect(belowCostAlert?.severity).toBe("critical");
+    expect(belowCostAlert?.count).toBe(1);
+
+    expect(additionalAnomalyAlert).toBeDefined();
+    expect(additionalAnomalyAlert?.severity).toBe("warning");
+    expect(additionalAnomalyAlert?.count).toBeGreaterThanOrEqual(1);
+  });
 });
+

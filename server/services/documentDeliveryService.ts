@@ -83,6 +83,11 @@ export async function loadOfficialDocumentSnapshot(
           taxAmount: invoices.taxAmount,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
+          // status + returnedTotal يحدّدان دورة الحياة (ميّتة/حيّة) وحساب المطالبة.
+          // انظر CP-OUT-PDF-01: PDF فاتورة مرتجعة كان يعرض «المتبقي 250» بلا وسم لأنّ
+          // هذين الحقلين لم يكونا محمولَين في اللقطة.
+          status: invoices.status,
+          returnedTotal: invoices.returnedTotal,
           notes: invoices.notes,
         })
         .from(invoices)
@@ -125,6 +130,8 @@ export async function loadOfficialDocumentSnapshot(
         taxAmount: row.taxAmount,
         total: row.total,
         paidAmount: row.paidAmount,
+        status: row.status,
+        returnedTotal: row.returnedTotal,
         notes: row.notes,
         items: items.map((item) => ({
           productName: item.itemNameSnapshot ?? item.productName ?? "",

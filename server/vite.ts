@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import path from "path";
 import { createServer as createViteServer, type InlineConfig, type UserConfig, type UserConfigFn } from "vite";
 import viteConfig from "../vite.config";
+import { injectStorefrontSeoMeta } from "./services/storefrontSeoMetaService";
 
 /**
  * **`vite.config.ts` يُصدّر دالّةً لا كائناً** (`defineConfig(({ mode }) => …)` — صار كذلك في
@@ -63,6 +64,7 @@ export async function setupVite(app: Express, server: Server) {
       const clientTemplate = path.resolve(import.meta.dirname, "..", "client", "index.html");
       let template = await fs.promises.readFile(clientTemplate, "utf-8");
       template = template.replace(`src="/src/main.tsx"`, `src="/src/main.tsx?v=${nanoid()}"`);
+      template = await injectStorefrontSeoMeta(template, req);
       const page = await vite.transformIndexHtml(url, template);
       res.status(200).set({ "Content-Type": "text/html" }).end(page);
     } catch (e) {
@@ -104,8 +106,15 @@ export function serveStatic(app: Express) {
     })
   );
 
-  app.use("*", (_req, res) => {
-    res.setHeader("Cache-Control", "no-cache");
-    res.sendFile(path.resolve(distPath, "index.html"));
+  app.use("*", async (req, res, next) => {
+    try {
+      const indexPath = path.resolve(distPath, "index.html");
+      let html = await fs.promises.readFile(indexPath, "utf-8");
+      html = await injectStorefrontSeoMeta(html, req);
+      res.setHeader("Cache-Control", "no-cache");
+      res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(html);
+    } catch (e) {
+      next(e);
+    }
   });
 }

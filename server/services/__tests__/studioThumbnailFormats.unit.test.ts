@@ -25,6 +25,13 @@ const ONE_BY_ONE = { width: 1, height: 1 };
  */
 const CHROME_VP8X_4X3 = "data:image/webp;base64,UklGRiACAABXRUJQVlA4WAoAAAAgAAAAAwAAAgAASUNDUMgBAAAAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADZWUDggMgAAADACAJ0BKgQAAwABwCwlnAJ0fwCNQCzay6iAAP7+AkzY/yADW+E8I/i6O+8w3iO/gAAA";
 
+/**
+ * ⚠️ الأنماطُ الثلاثة أدناه عُدِّلت (٢/٩/٢٦) بعد إعادة صياغة رسائل الاستوديو بعقد
+ * `shared/errors.ts`. كلٌّ منها **ضُيِّق على الجزء الثابت من المعنى** لا على الجملة كاملة،
+ * ولم يُضعَّف ولم يُحذف: «ليست WebP ولا JPEG» تميّز رفضَ الصيغة · «مصغّرة JPEG» تميّز
+ * البتر · «المصغّرة مشتقّة» تميّز تعذّرَ الربط. يحرس هذا الصنفَ من الانجراف
+ * `scripts/check-message-contract-drift.mjs` — وهو الذي أمسك كسرَها هنا.
+ */
 describe("بنية WebP: مشيٌ على مقاطع RIFF لا افتراضُ شكل", () => {
   const bytesOf = (dataUrl: string) => Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
 
@@ -106,13 +113,13 @@ describe("مصغّرة الاستوديو تقبل الصيغتين", () => {
 
   it("يرفض PNG — التساهل في الصيغة محدودٌ بصيغتين لا مفتوح", () => {
     const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-    expect(() => decodeStudioThumbnail(png, ONE_BY_ONE)).toThrow(/WebP أو JPEG/);
+    expect(() => decodeStudioThumbnail(png, ONE_BY_ONE)).toThrow(/ليست WebP ولا JPEG/);
   });
 
   it("يرفض JPEG مبتوراً (بلا EOI) — الصرامة لم تُخفَّض", () => {
     const raw = Buffer.from(JPEG_1X1.slice(JPEG_1X1.indexOf(",") + 1), "base64");
     const truncated = `data:image/jpeg;base64,${raw.subarray(0, raw.length - 2).toString("base64")}`;
-    expect(() => decodeStudioThumbnail(truncated, ONE_BY_ONE)).toThrow(/بنية مصغّرة JPEG/);
+    expect(() => decodeStudioThumbnail(truncated, ONE_BY_ONE)).toThrow(/مصغّرة JPEG/);
   });
 
   it("يرفض مصغّرةً لا تطابق أبعاد المرشّح — الحارس المشترك أياً كانت الصيغة", () => {
@@ -128,6 +135,6 @@ describe("مصغّرة الاستوديو تقبل الصيغتين", () => {
   });
 
   it("يرفض مرشّحاً بلا أبعاد — لا مصغّرة بلا ما تُشتقّ منه", () => {
-    expect(() => decodeStudioThumbnail(JPEG_1X1, { width: null, height: null })).toThrow(/ربط المصغّرة/);
+    expect(() => decodeStudioThumbnail(JPEG_1X1, { width: null, height: null })).toThrow(/المصغّرة مشتقّة/);
   });
 });

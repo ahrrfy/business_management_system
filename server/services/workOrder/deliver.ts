@@ -1,6 +1,6 @@
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, isNull, notLike, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
 import { customers, invoiceItems, invoices, productUnits, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
 import { requiresFullPaymentAtHandover, COD_PICKUP_PAYMENT_ERROR_AR, type CodPaymentMode } from "@shared/codHandoverPolicy";
@@ -11,7 +11,7 @@ import { createPostingIntent, creditLine, debitLine } from "../accounting/postin
 import { money, round2, toDbMoney } from "../money";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
-import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId } from "./helpers";
 import { assertSiblingsReady } from "./siblings";
@@ -409,7 +409,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 
     await tx
       .update(workOrders)
-      .set({ status: "DELIVERED", invoiceId, deliveredAt: new Date() })
+      .set({ status: "DELIVERED", kanbanState: "NORMAL", invoiceId, deliveredAt: new Date() })
       .where(eq(workOrders.id, Number(wo.id)));
 
     if (input.clientRequestId) {

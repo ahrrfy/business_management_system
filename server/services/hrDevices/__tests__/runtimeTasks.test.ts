@@ -26,9 +26,41 @@ afterEach(() => {
   vi.doUnmock("../../attendanceService");
   vi.doUnmock("../../appNotificationService");
   vi.doUnmock("../../pushService");
+  vi.doUnmock("../../sessionEventNotifier");
 });
 
 describe("تصريف مهام عامل جسر الحضور", () => {
+  it("لا يرسل إشعاراً إدارياً عند تسجيل الدخول إلى الحساب", async () => {
+    const createAppNotification = vi.fn();
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: async () => [{ id: 1 }],
+        }),
+      })),
+    };
+
+    vi.doMock("../../tx", () => ({ requireDb: () => db }));
+    vi.doMock("../../appNotificationService", () => ({
+      createAppNotification,
+    }));
+
+    const { notifyAdminsOfSessionEvent } = await import(
+      "../../sessionEventNotifier"
+    );
+    await notifyAdminsOfSessionEvent({
+      userId: 9,
+      userBranchId: 1,
+      userDisplayName: "أحمد علي",
+      kind: "LOGIN",
+      sessionId: 77,
+      occurredAt: new Date("2026-09-02T05:05:00.000Z"),
+    });
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(createAppNotification).not.toHaveBeenCalled();
+  });
+
   it("يعيد claim المتزامن مع الإغلاق إلى queued ولا يرسل على وصلة ميتة", async () => {
     const claimStarted = deferred();
     const releaseClaim = deferred();
@@ -408,7 +440,7 @@ describe("تصريف مهام عامل جسر الحضور", () => {
     }
   });
 
-  it("يحفظ إشعار العامل وصندوقي native/Web Push دون انتظار الشبكة", async () => {
+  it("يحفظ إشعار العامل وصناديق native/Web/Expo Push دون انتظار الشبكة", async () => {
     const sendPushToUser = vi.fn(() => new Promise<never>(() => undefined));
     const inserted: unknown[] = [];
     const tx = {
@@ -449,7 +481,7 @@ describe("تصريف مهام عامل جسر الحضور", () => {
       push: true,
     });
     await expect(creating).resolves.toEqual({ created: true });
-    expect(inserted).toHaveLength(3);
+    expect(inserted).toHaveLength(4);
     expect(inserted[0]).toEqual(
       expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
     );
@@ -462,6 +494,12 @@ describe("تصريف مهام عامل جسر الحضور", () => {
     expect(inserted[2]).toEqual(
       expect.objectContaining({
         payload: expect.objectContaining({ kind: "ATTENDANCE_CHECK_IN" }),
+      }),
+    );
+    expect(inserted[3]).toEqual(
+      expect.objectContaining({
+        environment: expect.any(String),
+        payload: { version: "1", destination: "my-day" },
       }),
     );
     expect(sendPushToUser).not.toHaveBeenCalled();

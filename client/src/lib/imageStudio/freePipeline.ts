@@ -9,6 +9,8 @@ import { compressCanvas } from "@/components/form/ImageUploader";
 import { STUDIO_TEMPLATE } from "@shared/imageStudio/template";
 import { compositeOnTemplate, loadImageEl } from "./compositor";
 import { analyzeMask, type ConfidenceResult, type StudioMode } from "./confidence";
+import type { StudioPreset } from "./studioEnhancer";
+export type { StudioPreset };
 
 export interface StudioResult {
   /** الناتج المعالَج (data URL) مرمَّزاً ≤700KB. */
@@ -27,10 +29,17 @@ async function encodeCanvas(canvas: HTMLCanvasElement): Promise<{ dataUrl: strin
   return compressCanvas(canvas);
 }
 
-/** المسار الآمن (FLATTEN): الأصل موسَّطاً على أبيض + ظلّ. لا عزل ⇒ صفر خطر على المنتج. */
-export async function runFreeStudioFlatten(sourceDataUrl: string): Promise<StudioResult> {
+/** المسار الآمن (FLATTEN): الأصل موسَّطاً على أبيض + ظلّ مع تحسين الألوان. */
+export async function runFreeStudioFlatten(
+  sourceDataUrl: string,
+  opts: { preset?: StudioPreset } = {},
+): Promise<StudioResult> {
   const img = await loadImageEl(sourceDataUrl);
-  const canvas = compositeOnTemplate(img, img.naturalWidth, img.naturalHeight);
+  const canvas = compositeOnTemplate(img, img.naturalWidth, img.naturalHeight, undefined, {
+    preset: opts.preset ?? "PURE_WHITE",
+    enhanceColors: true,
+    sharpen: true,
+  });
   const { dataUrl, sizeKB } = await encodeCanvas(canvas);
   return { dataUrl, sizeKB, mode: "FLATTEN", confidence: null, templateVersion: STUDIO_TEMPLATE.version };
 }
@@ -59,28 +68,38 @@ function extractAlpha(img: HTMLImageElement, maxDim = 512): { alpha: Uint8Clampe
 export async function finishCutFromCutout(
   cutoutDataUrl: string,
   sourceDataUrl: string,
-  opts: { forceFlatten?: boolean; trustCutout?: boolean } = {},
+  opts: { forceFlatten?: boolean; trustCutout?: boolean; preset?: StudioPreset } = {},
 ): Promise<StudioResult> {
   const cutImg = await loadImageEl(cutoutDataUrl);
   const { alpha, width, height } = extractAlpha(cutImg);
   const confidence = analyzeMask(alpha, width, height, { forceFlatten: opts.forceFlatten });
   // مسار Pro (remove.bg): `trustCutout` ⇒ نثق بالقصّ **دائماً** — خدمةٌ احترافيّة مدفوعة موثوقة،
-  // لا نُخضعها لحدس analyzeMask المصمَّم لنموذج @imgly المجانيّ الأقلّ موثوقيّة (كان يتردّد على صورةٍ
-  // معقّدة ⇒ يسقط للأصل ⇒ الخلفية تبقى). المسار المجانيّ (بلا trustCutout) يُبقي الحدس + FLATTEN-عند-الشكّ.
+  // لا نُخضعها لحدس analyzeMask المصمَّم لنموذج @imgly المجانيّ الأقلّ موثوقيّة.
   const useCut = opts.trustCutout || confidence.mode === "CUT";
   let canvas: HTMLCanvasElement;
   if (useCut) {
-    canvas = compositeOnTemplate(cutImg, cutImg.naturalWidth, cutImg.naturalHeight);
+    canvas = compositeOnTemplate(cutImg, cutImg.naturalWidth, cutImg.naturalHeight, undefined, {
+      preset: opts.preset ?? "PURE_WHITE",
+      enhanceColors: true,
+      sharpen: true,
+    });
   } else {
     const orig = await loadImageEl(sourceDataUrl);
-    canvas = compositeOnTemplate(orig, orig.naturalWidth, orig.naturalHeight);
+    canvas = compositeOnTemplate(orig, orig.naturalWidth, orig.naturalHeight, undefined, {
+      preset: opts.preset ?? "PURE_WHITE",
+      enhanceColors: true,
+      sharpen: true,
+    });
   }
   const { dataUrl, sizeKB } = await encodeCanvas(canvas);
   return { dataUrl, sizeKB, mode: useCut ? "CUT" : "FLATTEN", confidence, templateVersion: STUDIO_TEMPLATE.version };
 }
 
 /** مسار CUT الكامل: عزل الخلفية بـ@imgly ثم إكمال التركيب. يرمي إن تعذّر العزل (يلتقطه runFreeStudio). */
-export async function runFreeStudioCut(sourceDataUrl: string, opts: { forceFlatten?: boolean } = {}): Promise<StudioResult> {
+export async function runFreeStudioCut(
+  sourceDataUrl: string,
+  opts: { forceFlatten?: boolean; preset?: StudioPreset } = {},
+): Promise<StudioResult> {
   // تحميل كسول لـsegment/@imgly (النموذج الثقيل) — لا يدخل حزمة المسار الآمن FLATTEN.
   const { removeBackgroundToDataUrl } = await import("./segment");
   const cutoutDataUrl = await removeBackgroundToDataUrl(sourceDataUrl);
@@ -93,13 +112,13 @@ export async function runFreeStudioCut(sourceDataUrl: string, opts: { forceFlatt
  */
 export async function runFreeStudio(
   sourceDataUrl: string,
-  opts: { safeOnly?: boolean; forceFlatten?: boolean } = {},
+  opts: { safeOnly?: boolean; forceFlatten?: boolean; preset?: StudioPreset } = {},
 ): Promise<StudioResult> {
-  if (opts.safeOnly) return runFreeStudioFlatten(sourceDataUrl);
+  if (opts.safeOnly) return runFreeStudioFlatten(sourceDataUrl, { preset: opts.preset });
   try {
-    return await runFreeStudioCut(sourceDataUrl, { forceFlatten: opts.forceFlatten });
+    return await runFreeStudioCut(sourceDataUrl, { forceFlatten: opts.forceFlatten, preset: opts.preset });
   } catch (e) {
     console.warn("[imageStudio] تعذّر مسار CUT (عزل)، السقوط للمسار الآمن FLATTEN:", e);
-    return runFreeStudioFlatten(sourceDataUrl);
+    return runFreeStudioFlatten(sourceDataUrl, { preset: opts.preset });
   }
 }

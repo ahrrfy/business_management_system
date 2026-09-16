@@ -23,7 +23,7 @@ import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { assertSiblingsReady } from "../workOrder/siblings";
 
 export interface DispatchInvoiceInput {
@@ -51,6 +51,10 @@ export interface DispatchInvoiceInput {
    * ومن يقرّه صراحةً يُكتب قراره في حدث الإرسالية.
    */
   partialDispatchConfirmed?: boolean;
+  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
+  /** ملاحظات التوصيل للمندوب أو شركة الشحن. */
+  notes?: string | null;
 }
 
 export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, actor: DeliveryTxActor) {
@@ -239,6 +243,7 @@ export async function dispatchInvoiceInTx(
     let consignmentId: number;
     let consignmentNumber: string;
     if (already) {
+      assertConsignmentStatusTransition(already.status, "DISPATCHED");
       consignmentId = Number(already.id);
       consignmentNumber = already.consignmentNumber;
       await tx.update(deliveryConsignments).set({
@@ -257,6 +262,7 @@ export async function dispatchInvoiceInTx(
         governorate: input.governorate ?? null,
         latitude: input.latitude ?? null,
         longitude: input.longitude ?? null,
+        notes: input.notes ?? (already.notes ?? null),
         parcelStatus: "ASSIGNED",
         moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
         status: "DISPATCHED",
@@ -299,6 +305,7 @@ export async function dispatchInvoiceInTx(
         governorate: input.governorate ?? null,
         latitude: input.latitude ?? null,
         longitude: input.longitude ?? null,
+        notes: input.notes ?? null,
         parcelStatus: "ASSIGNED",
         moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
         // اكتمال الدفع لا يثبت وصول الطرد؛ أبقه تشغيلياً مع المندوب حتى ختم التسليم.
@@ -306,6 +313,7 @@ export async function dispatchInvoiceInTx(
         settledAt: codPositive ? null : dispatchedAt,
         dispatchedBy: actor.userId,
         dispatchedAt,
+        externalTrackingRef: input.externalTrackingRef ?? null,
       });
       consignmentId = extractInsertId(cnRes);
     }

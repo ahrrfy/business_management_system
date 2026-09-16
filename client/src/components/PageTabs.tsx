@@ -69,8 +69,6 @@ export function PageTabs({
 
   // تصفية حسب الدور + المنح الصريح — الإنفاذ الحقيقي خادمي؛ هذا إخفاء بصري + سقوط آمن للتبويب الأوّل.
   const visible = tabs.filter((t) => canSeeGate(t.gate, role, permsOverride));
-  if (visible.length === 0) return null; // دور محدود جداً — لا تبويبات (نادر).
-
   const requested = new URLSearchParams(search).get("tab");
   const active = visible.find((t) => t.value === requested) ?? visible[0];
   const activeTriggerRef = useRef<HTMLButtonElement>(null);
@@ -83,7 +81,16 @@ export function PageTabs({
       activeTriggerRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [active.value]);
+  }, [active?.value]);
+
+  /*
+   * ⚠️ **بعد الخطّافات** (٢/٩/٢٦): كان هذا الحارس فوق `useRef` و`useEffect`. و`visible`
+   * يُشتقّ من `me.data.role` الذي يصل **بعد** أوّل تصيير: فالتصييرُ الأوّل بلا دورٍ قد
+   * يُفرغ التبويبات فيخرج المكوّن مبكّراً بخطّافَين أقلّ، ثمّ يصل الدور فيُصيَّران —
+   * وReact يسقط على اختلاف العدد. أمسكه `react-hooks/rules-of-hooks`.
+   * ولذلك صار `active` قد يكون `undefined` هنا: الخطّافات تُنفَّذ قبل التأكّد من وجوده.
+   */
+  if (visible.length === 0) return null; // دور محدود جداً — لا تبويبات (نادر).
 
   function selectTab(value: string) {
     if (value === active.value) return;

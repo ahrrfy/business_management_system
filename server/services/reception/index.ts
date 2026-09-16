@@ -2,18 +2,17 @@
 // البنية المرجعية في docs/reception-cashier-system-design-2026-08-05.md §٧.
 export { listReceptionInvoices } from "./queries";
 export { collectOnReceptionInvoice } from "./collect";
+// كتّابُ الإيصالات (قبضٌ/ردٌّ على مسوّدة) — محوِّلُ الاستقبال فوق نواة العرابين.
+export { collectDeposit, refundDeposit, type CollectDepositInput, type RefundDepositInput } from "./deposits";
+// دفترُ المال المحتجَز — نواة العرابين (م٣): `server/services/deposits` هي المصدر، لا هذا البرميل.
 export {
-  collectDeposit,
-  refundDeposit,
   listDraftPayments,
   heldNetOfDraft,
   heldDepositsOfShift,
   allocateAtCommit,
   appliedCollectionsForWorkOrder,
-  type CollectDepositInput,
-  type RefundDepositInput,
   type DepositMethod,
-} from "./deposits";
+} from "../deposits";
 export { isPreInvoiceHoldReceiptCond, entryNotHoldReceiptCond } from "./holdReceipts";
 export {
   cancelDraft,

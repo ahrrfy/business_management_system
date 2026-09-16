@@ -30,6 +30,16 @@ describe("reverse proxy security boundary", () => {
     );
   });
 
+  it("يسمح لمكيّف tRPC باستقبال الاستعلامات الكبيرة في جسم POST", async () => {
+    const index = await readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8");
+    const adapter = index.slice(
+      index.indexOf("createExpressMiddleware({"),
+      index.indexOf("// جسر الطباعة الصامتة"),
+    );
+    expect(adapter).toContain("allowMethodOverride: true");
+    expect(adapter).toContain("maxBatchSize: 20");
+  });
+
   it("يحصر معرّف عامل canary في healthz المباشر عبر loopback", async () => {
     const index = await readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8");
     const proxyCommon = await readFile(

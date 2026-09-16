@@ -11,6 +11,7 @@ import { fmtDate } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
 import { printCountSheets } from "@/lib/printing/stocktakeTemplates";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 import { Printer } from "lucide-react";
@@ -71,7 +72,7 @@ export default function StocktakeCountSheets() {
   }, [getQ.data, sheetsQ.data]);
 
   if (!enabled) return <div className="p-10 text-center text-muted-foreground">جلسة غير صالحة.</div>;
-  if (sheetsQ.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (sheetsQ.isLoading) return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   if (sheetsQ.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل قوائم العدّ: {sheetsQ.error.message}</div>;
 
   const code = sess?.code ?? `#${sessionId}`;

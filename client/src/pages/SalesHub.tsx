@@ -1,19 +1,24 @@
-// SalesHub — وحدة «المبيعات» بتبويبات (فواتير + عروض أسعار + مرتجعات + تقرير + صندوق الوارد).
+// SalesHub — وحدة «المبيعات» بتبويبات (فواتير + طلبات العمليات + تقرير).
 // نقطة البيع وقارئ الأسعار أدواتٌ ملء‑شاشة مستقلّة في الشريط (ليست تبويبات هنا).
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
 const Invoices = lazy(() => import("@/pages/Invoices"));
-const SalesReturns = lazy(() => import("@/pages/SalesReturns"));
 const SalesReport = lazy(() => import("@/pages/SalesReport"));
 const SalesControlApprovals = lazy(() => import("@/pages/SalesControlApprovals"));
 
+// مرآة reportViewerProcedure: الأدوار المالية القالبية تمرّ عبر خريطة صلاحياتها،
+// وأي دور آخر لا يرى التبويب إلا بمنح reports صريح.
+const REPORT_VIEWER_GATE: NonNullable<HubTab["gate"]> = {
+  roles: ["manager", "accountant", "auditor"],
+  module: "reports",
+  level: "READ",
+};
+
 const TABS: HubTab[] = [
   { value: "invoices", label: "فواتير المبيعات", Component: Invoices },
-  // returns.list خادمياً = salesManagerProcedure(["manager"], "sales", "FULL") — التبويب مرآتها (يُخفى عمّن يرفضه الخادم حتماً).
-  { value: "returns", label: "مرتجعات البيع", gate: { roles: ["manager"], module: "sales", level: "FULL" }, Component: SalesReturns },
   { value: "controls", label: "طلبات العمليات", gate: { module: "sales", level: "READ" }, Component: SalesControlApprovals },
-  { value: "report", label: "تقرير المبيعات", gate: { managerOnly: true }, Component: SalesReport },
+  { value: "report", label: "تقرير المبيعات", gate: REPORT_VIEWER_GATE, Component: SalesReport },
 ];
 
 export default function SalesHub() {

@@ -248,7 +248,13 @@ export async function createWorkOrderInTx(
       : null,
     // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID. يُمرَّر 'COD' من مسار الاستقبال
     // لطلبات التوصيل التي سيُحصِّلها المندوب — يُتجاوز فحصُ الائتمان عند التسليم.
-    paymentMode: input.paymentMode ?? "PREPAID",
+    // لطلبات التوصيل أو قنوات الاتصال عن بُعد (واتساب، هاتف، إنستغرام…) يكون الافتراضي COD
+    // لضمان عدم حظر الزبائن النقديين عند دفع عربون جزئي مع تحصيل الباقي عند الاستلام أو التوصيل.
+    paymentMode: input.paymentMode ?? (
+      input.hasDelivery || (input.receptionChannel && input.receptionChannel !== "WALK_IN")
+        ? "COD"
+        : "PREPAID"
+    ),
     paymentReference: input.paymentReference?.trim() || null,
     paymentReceiptUrl: input.paymentReceiptUrl?.trim() || null,
     hasDelivery: !!input.hasDelivery,

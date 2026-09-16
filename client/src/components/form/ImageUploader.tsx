@@ -433,7 +433,7 @@ export function ImageUploader({
                 )}
               </div>
               {/* ٢٠/٨ (لقطة المالك): عمودان ثابتان + `whitespace-nowrap` الافتراضيّ في Button
-                  ⇒ «معالجة في الاستوديو» و«إعادة الالتقاط» يفيضان عن خليّتيهما فيتراكب النصّان
+                  ⇒ «معالجة بالذكاء الاصطناعي» و«إعادة الالتقاط» يفيضان عن خليّتيهما فيتراكب النصّان
                   ويصيران غير مقروءَين على الهاتف. عمودٌ واحد في الضيّق، ولفٌّ للنصّ لا اقتطاع
                   (اسم الفعل العربيّ يفقد معناه إذا بُتِر). */}
               <div className="grid grid-cols-1 gap-px border-t bg-border min-[220px]:grid-cols-2">
@@ -446,7 +446,7 @@ export function ImageUploader({
                       onEditImage(img.id);
                     }}
                   >
-                    <WandSparkles aria-hidden className="size-3.5" /> معالجة في الاستوديو
+                  <WandSparkles aria-hidden className="size-3.5" /> معالجة بالذكاء الاصطناعي
                   </Button>
                 )}
                 <Button type="button" variant="outline" className="min-h-11 min-w-0 whitespace-normal rounded-none border-0 bg-card px-2 text-xs leading-tight" onClick={() => openRearCamera(img.id)}>

@@ -10,6 +10,10 @@ export interface CommissionPayrollReadiness {
   runId: number | null;
   status: "draft" | "approved" | null;
   ready: boolean;
+  /** من احتسب التشغيلة — لا يجوز أن يعتمد طلبها (فصل مهام)، تُستهلَك لبانر الرواتب الاستباقي. */
+  runCreatedBy: number | null;
+  /** مسيّر الرواتب الذي التقط هذه التشغيلة المعتمدة فعلياً، إن وُجد. */
+  capturedPayrollRunId: number | null;
 }
 
 async function commissionPayrollReadiness(
@@ -18,7 +22,12 @@ async function commissionPayrollReadiness(
   lock: boolean,
 ): Promise<CommissionPayrollReadiness> {
   let query = runner
-    .select({ id: commissionRuns.id, status: commissionRuns.status })
+    .select({
+      id: commissionRuns.id,
+      status: commissionRuns.status,
+      createdBy: commissionRuns.createdBy,
+      payrollRunId: commissionRuns.payrollRunId,
+    })
     .from(commissionRuns)
     .where(eq(commissionRuns.period, period))
     .limit(1);
@@ -32,6 +41,8 @@ async function commissionPayrollReadiness(
     runId: run == null ? null : Number(run.id),
     status: run?.status ?? null,
     ready: !required || run?.status === "approved",
+    runCreatedBy: run?.createdBy == null ? null : Number(run.createdBy),
+    capturedPayrollRunId: run?.payrollRunId == null ? null : Number(run.payrollRunId),
   };
 }
 

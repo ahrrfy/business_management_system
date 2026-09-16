@@ -14,11 +14,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TransferCart, computeLineStates, type TransferCartLine } from "@/components/transfer/TransferCart";
+import { InferredBranchField, InferredField } from "@/components/form/InferredField";
+import { useSessionContext } from "@/hooks/useSessionContext";
 import { confirm } from "@/lib/confirm";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { ArrowRightLeft, Inbox, PackagePlus } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { ArrowRightLeft, Inbox, PackagePlus, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import TransfersLog from "@/pages/TransfersLog";
@@ -42,14 +45,19 @@ function genTrf(): string {
 }
 
 /** يجمع أسطر السلة (وحدات مختلفة) في بندٍ واحد لكل متغيّر بالوحدة الأساس. */
-export function aggregateByVariant(lines: TransferCartLine[]): Array<{ variantId: number; baseQuantity: number; name: string; stockBase: number }> {
-  const byVariant = new Map<number, { variantId: number; baseQuantity: number; name: string; stockBase: number }>();
+export function aggregateByVariant(lines: TransferCartLine[]): Array<{ variantId: number; baseQuantity: number; name: string; stockBase: number; availableBase: number }> {
+  const byVariant = new Map<number, { variantId: number; baseQuantity: number; name: string; stockBase: number; availableBase: number }>();
   for (const l of lines) {
     const factor = Number(l.conversionFactor) || 1;
     const base = (Number(l.qty) || 0) * factor;
+    const availableBase = Number(l.availableBase ?? l.stockBase) || 0;
     const cur = byVariant.get(l.variantId);
-    if (cur) cur.baseQuantity += base;
-    else byVariant.set(l.variantId, { variantId: l.variantId, baseQuantity: base, name: l.name, stockBase: Number(l.stockBase) || 0 });
+    if (cur) {
+      cur.baseQuantity += base;
+      cur.availableBase = Math.min(cur.availableBase, availableBase);
+    } else {
+      byVariant.set(l.variantId, { variantId: l.variantId, baseQuantity: base, name: l.name, stockBase: Number(l.stockBase) || 0, availableBase });
+    }
   }
   return Array.from(byVariant.values());
 }
@@ -61,8 +69,12 @@ export default function Transfers() {
   const [tab, setTab] = useState<"new" | "log">("new");
   const pending = trpc.inventory.transfersPendingIncoming.useQuery(undefined, { refetchInterval: 60_000 });
 
-  const [fromBranchId, setFromBranchId] = useState<number | "">("");
+  // المصدرُ استنتاجٌ خادميّ عبر `<InferredBranchField>` (م٤ ق١) — تبدأ `null` عمداً: كان يسقط
+  // على «فرع المستخدم أو الأوّل في القائمة» صامتاً، والأدمن/المالك يتجاوزه بقصدٍ من قائمةٍ خادميّة.
+  const [fromBranchId, setFromBranchId] = useState<number | null>(null);
   const [toBranchId, setToBranchId] = useState<number | "">("");
+  const session = useSessionContext();
+  const canCrossBranches = session.context?.canCrossBranches === true;
   const [reason, setReason] = useState<string>("REBALANCE");
   const [notes, setNotes] = useState("");
   const [cart, setCart] = useState<TransferCartLine[]>([]);
@@ -74,13 +86,13 @@ export default function Transfers() {
   // الشبكة يُعاد كـreplay على الخادم بدل نقل المخزون بين الفروع مرّتين.
   const [reqId, setReqId] = useState(() => crypto.randomUUID());
 
-  // فروع افتراضية بعد التحميل: المصدر = فرع المستخدم أو الأول، الوجهة = أول فرع مختلف.
-  const effectiveFrom =
-    fromBranchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 0);
+  // المصدرُ لا يُفترَض (لا «فرع المستخدم أو الأوّل في القائمة»)؛ الوجهةُ وحدها تُقترَح: أوّلُ فرعٍ
+  // مختلفٍ عنه — قرارٌ للمستخدم لا للجلسة، ومع فرعَين يكون محسوماً.
+  const effectiveFrom: number | null = fromBranchId;
   const effectiveTo =
     toBranchId ||
-    (branches.data?.find((b) => Number(b.id) !== Number(effectiveFrom))
-      ? Number(branches.data.find((b) => Number(b.id) !== Number(effectiveFrom))!.id)
+    (effectiveFrom != null && branches.data?.find((b) => Number(b.id) !== effectiveFrom)
+      ? Number(branches.data.find((b) => Number(b.id) !== effectiveFrom)!.id)
       : 0);
 
   // F2 يركّز حقل بحث السلة (اختصار الكاشير — ProductSearchBar يعرض الشارة ويترك التركيز للأب).
@@ -94,10 +106,13 @@ export default function Transfers() {
     return () => window.removeEventListener("keydown", onKey);
   }, [tab]);
 
-  // تبديل فرع المصدر يُفرغ السلة (الأرصدة تختلف بين الفروع ⇒ stockBase المخزَّن يصير كاذباً).
-  function changeFrom(v: number | "") { setFromBranchId(v); setCart([]); }
+  // تبديل فرع المصدر يُفرغ السلة (الأرصدة والمتاح بعد الحجوزات يختلفان بين الفروع ⇒ اللقطة المخزَّنة تصير كاذبة).
+  function changeFrom(v: number | null) { setFromBranchId(v); setCart([]); }
+  // العكسُ يجعل المصدرَ فرعاً غيرَ المستنتَج ⇒ يظهر في `<InferredBranchField>` منتقًى صريحاً (لا
+  // يُغطّيه عرضُ الفرع المستنتَج)، ويُتاح لعابر الفروع وحده — غيرُه لا يُرسِل مصدراً غيرَ فرعه.
   function swap() {
-    const f = Number(effectiveFrom), t = Number(effectiveTo);
+    if (effectiveFrom == null || !effectiveTo) return;
+    const f = effectiveFrom, t = Number(effectiveTo);
     setFromBranchId(t); setToBranchId(f); setCart([]);
   }
 
@@ -129,8 +144,8 @@ export default function Transfers() {
   const blocking = useMemo(() => {
     const frac = cart.findIndex((_, i) => lineStates[i]?.fractional);
     if (frac >= 0) return `المنتج «${cart[frac].name}»: كمية غير صالحة (لا تُقبل كسور الوحدة الأساس).`;
-    const over = aggregated.find((x) => x.baseQuantity > x.stockBase);
-    if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${fmtInt(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${fmtInt(over.stockBase)}).`;
+    const over = aggregated.find((x) => x.baseQuantity > x.availableBase);
+    if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${fmtInt(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${fmtInt(over.availableBase)}).`;
     return "";
   }, [cart, lineStates, aggregated, fromName]);
 
@@ -146,7 +161,7 @@ export default function Transfers() {
       !(await confirm({
         variant: "danger",
         title: `سند تحويل ${trf}: من ${fromName} إلى ${toName}`,
-        description: `إرسال السند (${fmtInt(aggregated.length)} منتج، ${fmtInt(totalBase)} وحدة أساس) يخصم من رصيد ${fromName} فوراً ويضع البضاعة «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
+        description: `إرسال السند (${fmtInt(aggregated.length)} منتج، ${fmtInt(totalBase)} وحدة تشغيلية) يخصم السلع أو مكوّنات البكج من رصيد ${fromName} فوراً ويضعها «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
         confirmText: "إرسال السند",
       }))
     )
@@ -207,17 +222,21 @@ export default function Transfers() {
         <CardHeader><CardTitle className="text-base">الفروع</CardTitle></CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-end">
-            <div className="space-y-1">
-              <Label>من فرع *</Label>
-              <AppSelect className="h-9" value={String(effectiveFrom || "")} onValueChange={(next) => changeFrom(next ? Number(next) : "")}>
-                <option value="">— اختر —</option>
-                {(branches.data ?? []).map(branchOption)}
-              </AppSelect>
-            </div>
+            {/* المصدرُ استنتاجٌ خادميّ (م٤ ق١): «فرعك المسند» للمخزن قراءةً (الخادم يُلزمه به)،
+                وزرُّ «تغيير» للأدمن/المالك — ولا «الفرع الأوّل في القائمة» صامتاً. */}
+            <InferredBranchField
+              id="transfer-from-branch"
+              label="من فرع *"
+              value={fromBranchId}
+              onChange={changeFrom}
+              disabled={transfer.isPending}
+            />
             <div className="flex justify-center pb-1">
-              <Button type="button" variant="outline" size="icon" title="عكس الاتجاه" onClick={swap} className="rounded-full">
-                <ArrowRightLeft aria-hidden className="h-4 w-4" />
-              </Button>
+              {canCrossBranches && (
+                <Button type="button" variant="outline" size="icon" title="عكس الاتجاه" onClick={swap} className="rounded-full">
+                  <ArrowRightLeft aria-hidden className="h-4 w-4" />
+                </Button>
+              )}
             </div>
             <div className="space-y-1">
               <Label>إلى فرع *</Label>
@@ -245,10 +264,14 @@ export default function Transfers() {
               {REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </AppSelect>
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="trf-owner">المسؤول عن التحويل</Label>
-            <Input id="trf-owner" value={me.data?.name ?? "—"} readOnly dir="rtl" className="bg-muted/40" />
-          </div>
+          {/* الفاعلُ يعرفه الخادم من الجلسة — يُعرَض لا يُدخَل (كان `readOnly` يوهم بحقل إدخال). */}
+          <InferredField
+            id="trf-owner"
+            label="المسؤول عن التحويل"
+            value={me.data?.name ?? "—"}
+            sourceLabel="حسابك المسجل"
+            icon={<UserRound aria-hidden className="size-4 shrink-0 text-muted-foreground" />}
+          />
           <div className="space-y-1">
             <Label htmlFor="trf-notes">ملاحظات</Label>
             <Input id="trf-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="اختياري" />
@@ -258,14 +281,23 @@ export default function Transfers() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 items-start">
         {/* سلة الأصناف — جدول الفاتورة المتقدمة (بحث حيّ + ماسح + إضافة متعددة) */}
-        <TransferCart
-          lines={cart}
-          setLines={setCart}
-          branchId={Number(effectiveFrom)}
-          bulkOpen={bulkOpen}
-          setBulkOpen={setBulkOpen}
-          onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.ok(msg))}
-        />
+        {effectiveFrom != null ? (
+          <TransferCart
+            lines={cart}
+            setLines={setCart}
+            branchId={effectiveFrom}
+            bulkOpen={bulkOpen}
+            setBulkOpen={setBulkOpen}
+            onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.ok(msg))}
+          />
+        ) : (
+          // لا سلّةَ بلا مصدر: البحثُ والأرصدة تُقرأ بفرعٍ محدَّد، ولا فرعَ يُخترَع.
+          <Card>
+            <CardContent className="p-6 text-center text-sm text-muted-foreground">
+              يُحدَّد فرعُ المصدر أوّلاً — تُفتَح سلّةُ الأصناف بعده.
+            </CardContent>
+          </Card>
+        )}
 
         {/* ملخّص التحويل (لاصق) */}
         <Card className="lg:sticky lg:top-4">
@@ -275,7 +307,7 @@ export default function Transfers() {
             <div className="flex justify-between"><span className="text-muted-foreground">إلى</span><span className="font-medium">{toName}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">أسطر السلة</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(cart.length)}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">أصناف السند</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(aggregated.length)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي الوحدات (أساس)</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalBase)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي وحدات السند</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalBase)}</span></div>
             {cart.length > aggregated.length && (
               <p className="text-[11px] text-muted-foreground">وحدات متعددة لنفس المنتج تُدمَج في بندٍ واحد بالوحدة الأساس.</p>
             )}
@@ -283,7 +315,7 @@ export default function Transfers() {
             {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
             {done && <p className="text-sm text-money-positive">{done}</p>}
             <Button className="w-full" onClick={submit} disabled={transfer.isPending || !valid}>
-              {transfer.isPending ? "جارٍ الإرسال…" : "إرسال السند (بالطريق)"}
+              {transfer.isPending ? ACTION_LABELS.sending : "إرسال السند (بالطريق)"}
             </Button>
             <Button variant="ghost" className="w-full" onClick={() => { setCart([]); setNotes(""); setError(""); setDone(""); }}>تفريغ السند</Button>
           </CardContent>

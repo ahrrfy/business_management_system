@@ -11,6 +11,7 @@
  *   conflicts: [{ variantId, variantLabel, qty1, by1, qty2, by2 }]
  */
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -513,7 +514,7 @@ export default function StocktakeMonitor() {
                 }
                 onClick={() => void onForceReview()}
               >
-                {forceReview.isPending ? "جارٍ الإغلاق…" : "إنهاء العدّ والانتقال للمراجعة"}
+                {forceReview.isPending ? ACTION_LABELS.closing : "إنهاء العدّ والانتقال للمراجعة"}
               </Button>
             )}
           </>
@@ -1036,7 +1037,7 @@ export default function StocktakeMonitor() {
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRecountFor(null)}>إلغاء</Button>
             <Button onClick={submitRecount} disabled={requestRecount.isPending}>
-              {requestRecount.isPending ? "جارٍ الإرسال…" : "إرسال الطلب للعامل"}
+              {requestRecount.isPending ? ACTION_LABELS.sending : "إرسال الطلب للعامل"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1063,7 +1064,7 @@ export default function StocktakeMonitor() {
               disabled={cancelSession.isPending}
               onClick={() => cancelSession.mutate({ sessionId, reason: cancelReason.trim() || undefined })}
             >
-              {cancelSession.isPending ? "جارٍ الإلغاء…" : "تأكيد إلغاء الجلسة"}
+              {cancelSession.isPending ? ACTION_LABELS.cancelling : "تأكيد إلغاء الجلسة"}
             </Button>
           </DialogFooter>
         </DialogContent>

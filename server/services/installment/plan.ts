@@ -17,6 +17,7 @@ import {
   recordIdempotencyKey,
 } from "../idempotency";
 import { money, sumMoney, toDbMoney } from "../money";
+import { invoiceRemaining } from "@shared/predicates";
 import { requireDb, type Actor, withTx } from "../tx";
 import { assertPlanBranch, type BranchRestriction, type CreatePlanInput, YMD_RE } from "./types";
 
@@ -147,7 +148,7 @@ export async function createPlan(input: CreatePlanInput, actor: Actor): Promise<
     if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الربط بفاتورة ملغاة أو مرتجعة أو مستبدلة" });
     }
-    const outstanding = money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount));
+    const outstanding = invoiceRemaining(inv);
     if (outstanding.lte(0)) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة لا تحمل مبلغاً متبقياً للتقسيط" });
     }

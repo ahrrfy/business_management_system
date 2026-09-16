@@ -3,6 +3,8 @@ import {
   loadStudioDraftIdentity,
   purgeAllStudioDrafts,
 } from "@/lib/productStudio/studioDrafts";
+import { pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
+import { clearNotificationBadge } from "@/lib/push";
 
 type SessionBoundaryDependencies = {
   loadStudioIdentity: () => Promise<{ userId: number } | null>;
@@ -44,11 +46,13 @@ export async function resetSessionForLogin(
   }
 }
 
-/** تسجيل الخروج الصريح حد أمنيّ يمحو كل المسودات والهوية المحلية. */
+/** تسجيل الخروج الصريح حد أمنيّ يمحو كل المسودات والهوية المحلية ويوقف الصوت. */
 export async function resetSessionForLogout(
   queryClient: QueryClient,
   dependencies: SessionBoundaryDependencies = studioDraftDependencies,
 ): Promise<void> {
+  pauseGlobalQuranAudio();
+  void clearNotificationBadge();
   await resetSessionQueryCache(queryClient);
   await dependencies.purgeStudioDrafts().catch(() => undefined);
 }

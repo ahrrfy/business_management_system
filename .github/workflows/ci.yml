@@ -17,14 +17,61 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # المسار السريع محصورٌ عمداً في PR توثيقي خالص. أي push إلى main، أو ملف غير معروف،
+  # أو فشل في التصنيف يعود fail-closed إلى الحزمة الكاملة. لا نستخدم paths-ignore لأنّه
+  # قد يترك الفحص المطلوب Pending إلى الأبد؛ بوابة check-test-build تصدر نتيجة دائماً.
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      heavy: ${{ steps.classify.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: حارِس مبكر لإعداد Firebase ومفاتيح Google المتتبعة
+        run: node scripts/check-firebase-config-security.mjs
+      - id: classify
+        name: تصنيف نطاق التغيير (docs/** فقط = مسار سريع)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # السكربت يستخدم diff -z (أسماء ملفات آمنة) و--no-renames (النقل = حذف+إضافة)،
+        # ويعود للحزمة الكاملة عند push أو SHA/فرق مفقود أو ملف خارج القائمة البيضاء.
+        run: node scripts/ci-policy.mjs scope
+
   # Vitest يشغّل ملفات التكامل تسلسلياً عمداً (fileParallelism:false) لأنّ كل ملف ينظّف
   # قاعدة الاختبار. بعد #626 تجاوزت الحزمة الواحدة ٨٣:٥٤ ولم تكتمل ضمن سقف ٩٠ دقيقة.
   # نقسم *الملفات* عبر مشغّلين، لكلّ واحد MySQL مستقلة؛ يبقى التنفيذ داخل كل قاعدة
-  # تسلسلياً، واتحاد الشريحتين هو الحزمة الكاملة بلا تداخل وفق عقد Vitest --shard.
+  # تسلسلياً، واتحاد الشرائح هو الحزمة الكاملة بلا تداخل وفق عقد Vitest --shard.
+  #
+  # ورُفعت من شريحتين إلى أربع ثم إلى **ثمانٍ** (٦/٩/٢٦) بدليلٍ لا بتخمين: شاردةٌ سقطت
+  # بانتهاء المهلة عند ١٥٠ دقيقة، وسجلُّها يُظهر اختباراتِ حسابٍ محضة (`sumMoney`،
+  # `computeLineTotal`) تفصل بينها **دقائق** — أي مشغّلٌ مُجوَّعٌ لا كودٌ بطيء. ثماني
+  # شرائح تخفّض المسار الحرج مع بقاء كل قاعدة معزولة، وtmpfs تزيل I/O القرص المؤقت.
   test-shards:
-    name: test-shard-${{ matrix.shard }}-of-2
+    name: test-shard-${{ matrix.shard }}-of-${{ matrix.total }}
+    needs: scope
+    if: ${{ needs.scope.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
-    # ⏱️ ١٥٠ لا ٩٠ — يُعايَر على **أبطأ** مشغّل لا الوسيط. مسألةٌ مستقلّة عن التجزئة أدناه:
+    # ⏱️ **ثماني شوارد** (٦/٩/٢٦): أُلغيت الشريحة ٢/٢ سابقاً عند
+    # سقف ١٥٠ بعد ساعتين ونصف. والسجلّ يحسم السبب: عند ١٦:٥٠ و١٦:٥٦ و١٦:٥٧ كانت ما زالت
+    # تُمرّر اختباراتٍ **حسابيةً محضة** (computeDeliveryFee · sumMoney · computeLineTotal)
+    # — دوالُّ نقيّة بلا قاعدة بيانات — وبين توكيدٍ وآخر **دقائق**. أي مشغّلٌ مخنوقُ الموارد
+    # لا اختبارٌ معلَّق ولا عطبٌ في الشيفرة (الشريحة ١ على نفس الالتزام مرّت في ٥٧ د).
+    #
+    # ولمّا كان تفاوتُ المشغّلات ~٤× (موثَّقٌ أدناه) فرفعُ المهلة وحده يُطيل الانتظار ولا
+    # يُنقص التعرّض: العلاجُ الأنفع **تقليصُ نصيب الشاردة الواحدة**. ثماني شوارد ⇒ ~١٠٥ ملفات
+    # لكلٍّ بدل ~٢١٠، فيهبط زمنُ أبطأ شاردةٍ إلى النصف ويصير سقفُ ١٨٠ فسيحاً حتى على أبطأ
+    # مشغّل. والمصفوفةُ تُشغّلها متوازيةً فزمنُ الجدار ينقص أيضاً.
+    #
+    # ⚠️ تغييرُ عدد الشوارد يُغيّر **أسماء وظائفها** (test-shard-N-of-8) — وهو آمنٌ هنا
+    # لأنّ الفحص المطلوب في حماية الفرع هو `check-test-build` وحده (انظر تعليقها أدناه)،
+    # وهي `needs: test-shards` فتنتظر المصفوفة كلَّها وتفشل صراحةً إن أُلغيت أيُّ شاردة.
+    # ⛔ فلا تجعل أيّاً من `test-shard-*` فحصاً مطلوباً، وإلّا انكسرت الحماية بأوّل تغييرِ عدد.
+    #
+    # ⏱️ والمهلة تُعايَر على **أبطأ** مشغّل لا الوسيط. مسألةٌ مستقلّة عن التجزئة أدناه:
     # تلك تُنقص العمل، وهذه تُحصّن من تفاوت المشغّلات. الدليل من تشغيلات PR #634:
     #   • قبل إصلاح التجزئة: الشريحتان تُنفّذان العمل نفسه بالضبط (٥٤٧ ملفاً لكلٍّ)، فأنهت
     #     الأولى في ٥٢ دقيقة ولم تُنهِ الثانية في ٩٠ ⇒ ١.٧×+ فرقاً على عملٍ متطابق.
@@ -33,11 +80,12 @@ jobs:
     #   • وفي التشغيلة التالية أنهت الشريحة نفسها في ٢٣ دقيقة ⇒ تفاوتٌ ~٤× بين مشغّلٍ وآخر.
     # وسقفٌ ضيّق لا يكشف بطئاً بل يُحمّر PR سليماً ويُخفي نتيجته — «فشلٌ» لا يدلّ على شيء.
     # لا كلفة على التشغيل السليم: المهلة سقفٌ لا حجز، والوظيفة تنتهي في ~٢٥ دقيقة كالمعتاد.
-    timeout-minutes: 150
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        total: [8]
     services:
       mysql:
         image: mysql:8.0
@@ -48,6 +96,7 @@ jobs:
         ports:
           - 3306:3306
         options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1g
           --health-cmd="mysqladmin ping -h localhost -uroot"
           --health-interval=10s --health-timeout=5s --health-retries=10
     env:
@@ -76,7 +125,7 @@ jobs:
         run: node scripts/bootstrap-control-db.mjs
         env:
           CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
-      - name: الاختبارات — الشريحة ${{ matrix.shard }}/2
+      - name: الاختبارات — الشريحة ${{ matrix.shard }}/${{ matrix.total }}
         # ⚠️ pnpm يبتلع الخيارات **بالصيغتين**: `pnpm test --shard=…` يطبع نسخة pnpm نفسها،
         # و`pnpm run test -- --shard=…` لا يُمرّرها أيضاً (مثبَّت: `pnpm run test -- --version`
         # يشغّل الحزمة كاملةً بدل طباعة النسخة). فكانت **كلتا الشريحتين تشغّلان الحزمة كاملة**
@@ -86,24 +135,26 @@ jobs:
         run: |
           set -o pipefail
           total="$(git ls-files "*.test.ts" | grep -cE "^(server|client/src|shared)/")"
-          pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/2 2>&1 | tee /tmp/shard.log
+          pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/${{ matrix.total }} 2>&1 | tee /tmp/shard.log
           # ⚠️ مخرَج vitest ملوَّن: سطر النتيجة مسبوقٌ برموز ANSI، فمرساةُ "^ *Test Files" لا
           # تطابقه ويَخرج $ran فارغاً فتسقط الوظيفة **رغم خضرة الاختبارات** (وقع فعلاً هنا).
           line="$(grep -aE "Test Files" /tmp/shard.log | tail -1)"
           ran="$(printf "%s" "$line" | grep -oE "[(][0-9]+[)]" | tail -1 | tr -d "()")"
           if [ -z "$ran" ]; then echo "تعذّر استخراج عدد الملفات من مخرَج vitest" >&2; exit 1; fi
-          echo "الشريحة ${{ matrix.shard }}/2 شغّلت $ran ملفاً من أصل $total"
-          # حارسٌ ضدّ عودة العطل صامتاً: التجزئة الفعّالة تُشغّل ~نصف الملفات؛ تجاوز ٧٠٪ يعني
-          # أنّ `--shard` لم يصل vitest. لا نقارن بالإجمالي مباشرةً لأنّ المجموعة المُجمَّعة
-          # أقلّ قليلاً من الملفات المتعقَّبة (٥٤٧ مقابل ٥٥٠) فتمرّ المقارنة الصارمة كاذبةً.
-          test "$((ran * 10))" -lt "$((total * 7))"
+          echo "الشريحة ${{ matrix.shard }}/${{ matrix.total }} شغّلت $ran ملفاً من أصل $total"
+          # حارسٌ ضدّ عودة العطل صامتاً: مع ثماني شوارد تُشغّل كلٌّ ~١٢.٥٪ من الملفات؛ تجاوز
+          # ٢٥٪ يعني أنّ `--shard` لم يصل vitest (وعندها تُشغَّل الحزمة كاملةً = ١٠٠٪).
+          # لا نقارن بالإجمالي مباشرةً لأنّ المجموعة المُجمَّعة أقلّ قليلاً من الملفات
+          # المتعقَّبة فتمرّ المقارنة الصارمة كاذبةً.
+          test "$((ran * 100))" -lt "$((total * 25))"
 
-  check-test-build:
-    needs: test-shards
-    # يبقى اسم الفحص المطلوب ثابتاً، ويصدر فشلاً صريحاً بدل skipped إن فشلت/أُلغيت شريحة.
-    if: ${{ always() }}
+  # يعمل بالتوازي مع شرائح الاختبار: كان وضعه بعدها يضيف ٥-٧ دقائق كاملة إلى المسار
+  # الحرج لكل PR ناجح، مع أن عمله مستقل تماماً عن نتائج Vitest.
+  quality-build:
+    needs: scope
+    if: ${{ needs.scope.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
-    # الاختبارات أصبحت في وظيفتَي الشطر أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
+    # الاختبارات في شرائحها أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
     timeout-minutes: 45
     services:
       mysql:
@@ -126,15 +177,13 @@ jobs:
       TEST_CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       JWT_SECRET: ci_test_secret_change_me_0123456789abcdef
     steps:
-      - name: تأكيد نجاح جميع شرائح الاختبار
-        run: test '${{ needs.test-shards.result }}' = 'success'
       # fetch-depth: 0 — يلزم لحارس «تصادم ترقيم الهجرات مع origin/main» داخل check:migrations
       # (يقارن `_journal.json` بالجانب الآخر). بعمق ١ لا يوجد مرجع origin/main فيتخطّى الحارس
       # صامتاً — و«حارسٌ لا يُشغَّل آلياً ليس حارساً» (درس CI موثَّق في هذا الملف أدناه).
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4  # نسخة pnpm من packageManager في package.json
+      - uses: pnpm/action-setup@v4 # نسخة pnpm من packageManager في package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -181,7 +230,7 @@ jobs:
       - name: فحص الأنواع
         run: pnpm check
       - name: حارس تشخيص فشل CI الآمن
-        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts
+        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts
       - name: حارس عقد إصدار تطبيق Android الأصلي
         run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI
@@ -227,7 +276,7 @@ jobs:
       - name: حارِس متغيّرات CSS غير المعرَّفة (typos في التوكنز)
         run: pnpm check:css-vars
       # PR #795 (٢٥/٨): حرّاس شريحة UX S1-S3 — يجب استدعاؤها **بالاسم** لا عبر aggregate.
-      # ملاحظة Codex الصائبة: `check-test-build` يستدعي كلّ حارس صراحةً، ولا يشغّل `pnpm check:guards`
+      # ملاحظة Codex الصائبة: `quality-build` يستدعي كلّ حارس صراحةً، ولا يشغّل `pnpm check:guards`
       # ⇒ حارس مُدرَج فقط في aggregate لا يعمل في CI ويسمح للـPR بتخطّي pre-commit.
       - name: حارِس عقد PageHeader (يمنع h1 خامّ + ← رجوع يدويّ)
         run: pnpm check:page-header
@@ -235,6 +284,8 @@ jobs:
         run: pnpm check:invoice-status-variants
       - name: حارِس اعتماد DataTable (يمنع <table> جديدة في pages)
         run: pnpm check:raw-tables
+      - name: حارِس اعتماد Card (يمنع بطاقةً مدحرجةً يدوياً جديدة في pages)
+        run: pnpm check:raw-card
       - name: حارِس اعتماد printReportDoc (يمنع window.print() جديدة في pages)
         run: pnpm check:window-print
       - name: حارِس قاعدة الأرقام اللاتينية (قرار المالك ٢٥/٨/٢٦)
@@ -249,12 +300,79 @@ jobs:
         run: pnpm check:loading-strings
       - name: حارِس تغطية useSaveShortcuts (Ctrl+S في نماذج New/Edit)
         run: pnpm check:save-shortcut-coverage
+      - name: حارِس UNIQUE_AR (كلّ قيد UNIQUE له مدخلٌ تشخيصيّ عربيّ)
+        run: pnpm check:unique-ar
+      - name: حارِس التشكيل في الشارات ورؤوس الجداول
+        run: pnpm check:tashkeel
+      - name: حارِس تغطية إسناد العمليات
+        run: pnpm check:operation-attribution
+      - name: حارِس اعتماد FilterShell (توحيد مساحة الفلاتر)
+        run: pnpm check:filter-shell
+      - name: حارِس إسناد الصفّ (نفّذها/المستفيد/الطرف الآخر من العقد)
+        run: pnpm check:row-attribution
+      - name: حارِس ازدواج حقل البحث (DataTable + ListToolbar معاً)
+        run: pnpm check:duplicate-search
+      - name: حارِس إعداد Firebase ومفاتيح Google في الملفات المتتبعة
+        run: pnpm check:firebase-config-security
+      - name: ESLint (قواعد الخطّافات — يمنع خطّافاً بعد رجوعٍ مبكّر)
+        run: pnpm check:lint
+      - name: حارِس تسجيل الحرّاس في CI (يمنع حارساً في aggregate بلا خطوة)
+        run: pnpm check:guards-registered
+      # تناظر شاشتَي الإنشاء/التعديل (برنامج v2، ق٤) — يحجب على الارتفاع فقط. يتبع مكوّنات
+      # `client/src/components/form/**` المفوَّض إليها، فلا يُبلّغ عن حقلٍ موجودٍ في الشاشتين.
+      - name: حارِس تناظر النموذج (شاشة التعديل = شاشة الإنشاء)
+        run: pnpm check:form-parity
+      # انجرافُ الرسائل المتعاقَد عليها (ق٦). ⚠️ المقارنة مقابل `origin/main` لا `HEAD`:
+      # التغييراتُ في CI ملتزَمةٌ أصلاً فيكون فرقُ `HEAD` فارغاً والحارسُ خاملاً.
+      - name: حارِس انجراف نصوص الرسائل المتعاقَد عليها
+        run: git fetch --no-tags --depth=200 origin main && pnpm check:message-drift -- --base origin/main
+      # مسننةُ رسائل الخطأ (ق٦): تعدّ الرسائل «الصمّاء» التي لا تمرّ بعقد `shared/errors.ts`.
+      # ⛔ ولا تدّعي قياسَ **جودة** النصّ — لا يستطيعه حارس؛ تقيس المرور بالعقد وحده.
+      - name: حارِس رسائل الخطأ (مسننةٌ تنازلية)
+        run: pnpm check:error-messages
+      # مقياس الاحتكاك (برنامج v2، الموجة ٠) — **وضعُ التقرير**: يطبع لوحة العلل الثمانية
+      # ولا يحجب. سببُ التقرير أوّلاً: خطُّ الأساس يُجمَّد قبل أن يبدأ الترحيل، فتشديدُه قبل
+      # وجود العلاجات (سجلّ القرارات · محرّك العكس · shared/predicates) كان سيمنع كلّ PR
+      # على دينٍ قائمٍ لا علاقةَ له به. يُشدَّد إلى `check:friction:strict` في الموجة ٩.
+      - name: مقياس الاحتكاك (تقرير — لا يحجب)
+        run: pnpm check:friction
+      # سجلّ الأتمتة (§٣ من خطة v2): كلّ انتقالِ حالةٍ يُصرّح AUTO بدليلٍ مُسمّى أو
+      # MANUAL بمبرّرِ حكمٍ بشريّ. ⛔ ولا يدّعي قياسَ جودة النصّ — الطولُ مقياسُ وجودٍ لا جودة.
+      - name: حارِس سجلّ الأتمتة (AUTO بدليل · MANUAL بمبرّر)
+        run: pnpm check:automation-registry
+      # المفردات الموحّدة (§٦ ق٦ + §٤ D6 من خطة v2): قاموسُ طريقة الدفع أو القناة يجب أن
+      # يأتي من `shared/terms.ts` — الاتّحاد الواحد. مسننةٌ تنازلية على `client/src/**`.
+      - name: حارِس المفردات الموحّدة (طريقة الدفع + القناة)
+        run: pnpm check:vocabulary
+      # حارس حجم الصفحة (خطة v2 §١١ + مقياس الاحتكاك D4): مِسنَنةٌ تنازلية على الصفحات
+      # فوق ١٢٠٠ سطر. اليوم ٢٠ صفحة فوق العتبة — يمنع الجديد ورفعَ الأساس معاً.
+      - name: حارِس حجم الصفحة (مسنَنةٌ تنازلية فوق ١٢٠٠ سطر)
+        run: pnpm check:page-size
+      # حارس حوكمة الشاشات وترشيق النظام: يمنع الأيتام والاستيرادات الميتة والمكونات الموضوعة خطأً في pages/
+      - name: حارِس حوكمة الشاشات وترشيق النظام
+        run: pnpm check:screen-governance
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة
         run: pnpm test:nginx-contract
       - name: بناء الإنتاج
         run: pnpm build
+
+  # اسم الفحص محميّ في إعدادات main؛ يبقى ثابتاً كبوابة تجميع سريعة تصدر فشلاً صريحاً
+  # بدل skipped إذا فشلت أو أُلغيت أي شريحة أو وظيفة الجودة.
+  check-test-build:
+    needs: [scope, test-shards, quality-build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: تأكيد نجاح الاختبارات والجودة والبناء
+        env:
+          HEAVY: ${{ needs.scope.outputs.heavy }}
+          TEST_SHARDS_RESULT: ${{ needs.test-shards.result }}
+          QUALITY_BUILD_RESULT: ${{ needs.quality-build.result }}
+        run: node scripts/ci-policy.mjs gate
 
   # حارس الصلاحيات (T-12) — **مقارنة قاعدة الدمج (merge-base)**، وظيفةٌ مستقلّة سريعة (node فقط، بلا
   # قاعدة/تثبيت). يمسح شجرة الأساس (origin/<base>) وشجرة الـhead ويفشل فقط على انتهاكٍ **يُدخِله الـPR**

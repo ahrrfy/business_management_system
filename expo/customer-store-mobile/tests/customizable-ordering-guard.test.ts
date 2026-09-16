@@ -7,6 +7,7 @@ import {
 } from "@/lib/checkout-selection";
 import {
   CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE,
+  validateProductQuoteSelection,
   validateProductSelection,
 } from "@/lib/product-selection";
 import type {
@@ -105,5 +106,14 @@ describe("customizable product online-ordering guard", () => {
     expect(issue).toBe(CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE);
     expect(requestLines).toEqual([]);
     expect(networkCall).not.toHaveBeenCalled();
+  });
+
+  it("keeps direct checkout closed while allowing the selected unit into a sales quote", () => {
+    expect(validateProductQuoteSelection(customizableProduct, {
+      variantId: 21,
+      productUnitId: 71,
+      customizationValues: {},
+    }).details).toMatchObject({ productUnitId: 71, variantId: 21 });
+    expect(checkoutRequestLines([customizableLine])).toEqual([]);
   });
 });

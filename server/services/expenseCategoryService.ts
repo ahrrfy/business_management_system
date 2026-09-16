@@ -13,6 +13,7 @@
  *     استيراد)؛ تعطيلها يترك مصروفاً بلا فئةٍ مُدارة.
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { expenseCategories, expenses } from "../../drizzle/schema";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../../shared/expenseCategories";
 import { getDb, type Tx } from "../db";
 import { extractAffectedRows, extractInsertId } from "../lib/insertId";
+import { createTtlCache } from "../lib/ttlCache";
 import { withTx, type Actor } from "./tx";
 
 export interface ExpenseCategoryListRow {
@@ -37,6 +39,15 @@ export interface ExpenseCategoryListRow {
   usedExpenseCount: number;
 }
 
+const expenseCategoryCache = createTtlCache<string, ExpenseCategoryListRow[]>({
+  ttlMs: 60_000,
+  maxEntries: 10,
+});
+
+export function clearExpenseCategoriesCache(): void {
+  expenseCategoryCache.clear();
+}
+
 /** مطابقة الاسم كما في DB (UNIQUE بترتيب غير حسّاس للحالة). */
 function nameKey(name: string): string {
   return name.trim().toLocaleLowerCase("ar");
@@ -45,40 +56,43 @@ function nameKey(name: string): string {
 export async function listExpenseCategories(input?: {
   includeInactive?: boolean;
 }): Promise<ExpenseCategoryListRow[]> {
-  const db = getDb();
-  if (!db) return [];
-  const [rows, counts] = await Promise.all([
-    db
-      .select()
-      .from(expenseCategories)
-      .where(
-        input?.includeInactive
-          ? undefined
-          : eq(expenseCategories.isActive, true),
-      )
-      .orderBy(asc(expenseCategories.sortOrder), asc(expenseCategories.id)),
-    db
-      .select({
-        categoryId: expenses.expenseCategoryId,
-        count: sql<number>`COUNT(*)`,
-      })
-      .from(expenses)
-      .where(sql`${expenses.expenseCategoryId} IS NOT NULL`)
-      .groupBy(expenses.expenseCategoryId),
-  ]);
-  const countById = new Map(
-    counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
-  );
-  return rows.map((row) => ({
-    id: Number(row.id),
-    name: row.name,
-    bucket: row.bucket as ExpenseBucket,
-    description: row.description ?? null,
-    isActive: !!row.isActive,
-    isBucketDefault: !!row.isBucketDefault,
-    sortOrder: Number(row.sortOrder ?? 0),
-    usedExpenseCount: countById.get(Number(row.id)) ?? 0,
-  }));
+  const cacheKey = input?.includeInactive ? "all" : "active";
+  return expenseCategoryCache.get(cacheKey, async () => {
+    const db = getDb();
+    if (!db) return [];
+    const [rows, counts] = await Promise.all([
+      db
+        .select()
+        .from(expenseCategories)
+        .where(
+          input?.includeInactive
+            ? undefined
+            : eq(expenseCategories.isActive, true),
+        )
+        .orderBy(asc(expenseCategories.sortOrder), asc(expenseCategories.id)),
+      db
+        .select({
+          categoryId: expenses.expenseCategoryId,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(expenses)
+        .where(sql`${expenses.expenseCategoryId} IS NOT NULL`)
+        .groupBy(expenses.expenseCategoryId),
+    ]);
+    const countById = new Map(
+      counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
+    );
+    return rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      bucket: row.bucket as ExpenseBucket,
+      description: row.description ?? null,
+      isActive: !!row.isActive,
+      isBucketDefault: !!row.isBucketDefault,
+      sortOrder: Number(row.sortOrder ?? 0),
+      usedExpenseCount: countById.get(Number(row.id)) ?? 0,
+    }));
+  });
 }
 
 async function assertNameFree(tx: Tx, name: string, excludeId?: number) {
@@ -92,7 +106,11 @@ async function assertNameFree(tx: Tx, name: string, excludeId?: number) {
   if (clash && Number(clash.id) !== excludeId) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: `الفئة «${name}» موجودة مسبقاً — قد تكون معطّلة، فعّلها من القائمة بدل إنشاء نسخة ثانية.`,
+      message: appErrorMessage({
+        what: "لا يمكن استعمال هذا الاسم للفئة",
+        why: `الفئة «${name}» موجودة مسبقاً في الكتالوج (قد تكون معطَّلة) — الأسماء المكرّرة تُنتج تصنيفَين لنفس المصروف`,
+        doThis: "افتح شاشة فئات المصروف وفعّل الفئة الحالية، أو اختر اسماً مميزاً لفئتك الجديدة",
+      }),
     });
   }
 }
@@ -117,11 +135,22 @@ export async function createExpenseCategory(
   return withTx(async (tx) => {
     const name = input.name.trim();
     if (!name)
-      throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الفئة مطلوب." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "اسم الفئة مطلوب",
+          why: "حقل «اسم الفئة» فارغ — لا يمكن إنشاء فئة مصروف بلا اسم مميّز",
+          doThis: "أدخل اسماً واضحاً للفئة (كهرباء/إيجار/…) ثم أعد الحفظ",
+        }),
+      });
     if (!isExpenseBucket(input.bucket)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الدلو المحاسبي غير معروف.",
+        message: appErrorMessage({
+          what: "قيمة الدلو المحاسبي غير مقبولة",
+          why: "الدلو المرسل لا يتطابق مع أيّ من التصنيفات المعروفة (SUPPLIES/RENT/UTILITIES/…)",
+          doThis: "اختر دلواً محاسبياً من القائمة المنسدلة (لا تكتبه يدوياً)",
+        }),
       });
     }
     await assertNameFree(tx, name);
@@ -136,6 +165,7 @@ export async function createExpenseCategory(
         isBucketDefault: false,
       }),
     );
+    clearExpenseCategoriesCache();
     return { id, name, bucket: input.bucket, isActive: true };
   });
 }
@@ -160,7 +190,11 @@ export async function updateExpenseCategory(
     if (!current)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "فئة المصروف غير موجودة.",
+        message: appErrorMessage({
+          what: "تعذّر العثور على فئة المصروف",
+          why: "معرّف الفئة المرسل يشير إلى فئة محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة فئات المصروف واختر فئة موجودة، أو أنشئها من شاشة الفئات",
+        }),
       });
 
     const patch: Record<string, unknown> = {};
@@ -186,15 +220,21 @@ export async function updateExpenseCategory(
       if (current.isBucketDefault) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message:
-            "لا يُنقل دلو الفئة الاحتياطية — هي مهبط الطلبات التي تحمل الدلو وحده.",
+          message: appErrorMessage({
+            what: "لا يمكن تغيير دلو هذه الفئة",
+            why: "الفئة احتياطية (isBucketDefault) — تستقبل الطلبات التي تحمل الدلو وحده (أوفلاين/أندرويد/استيراد)، ونقلها يفسد مسار تلك الطلبات",
+            doThis: "أنشئ فئة جديدة بالدلو المستهدف من شاشة فئات المصروف بدل نقل الاحتياطية",
+          }),
         });
       }
       if (await countExpensesUsing(tx, input.id)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message:
-            "لا يمكن تغيير الدلو المحاسبي لفئة مرتبطة بمصروفات (يُعيد تصنيف تاريخٍ مُرحَّل). أنشئ فئة جديدة بالدلو الصحيح.",
+          message: appErrorMessage({
+            what: "لا يمكن تغيير الدلو المحاسبي لفئة مرتبطة بمصروفات",
+            why: "الفئة مستعمَلة على مصروفات مُرحَّلة سلفاً — تغيير الدلو يعيد تصنيف تاريخٍ محاسبيّ ويشوّه تقارير الفترات المغلقة",
+            doThis: "أنشئ فئة جديدة بالدلو الصحيح من شاشة فئات المصروف، ثم استخدمها للطلبات الجديدة",
+          }),
         });
       }
       patch.bucket = input.bucket;
@@ -208,6 +248,7 @@ export async function updateExpenseCategory(
         .update(expenseCategories)
         .set(patch)
         .where(eq(expenseCategories.id, input.id));
+      clearExpenseCategoriesCache();
     }
     return { id: input.id, changed: Object.keys(patch) };
   });
@@ -227,19 +268,27 @@ export async function setExpenseCategoryActive(
     if (!current)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "فئة المصروف غير موجودة.",
+        message: appErrorMessage({
+          what: "تعذّر العثور على فئة المصروف",
+          why: "معرّف الفئة المرسل يشير إلى فئة محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة فئات المصروف واختر فئة موجودة، أو أنشئها من شاشة الفئات",
+        }),
       });
     if (!input.isActive && current.isBucketDefault) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message:
-          "لا تُعطَّل فئة الدلو الاحتياطية — إليها تهبط الطلبات التي تحمل الدلو وحده (أوفلاين/أندرويد/استيراد).",
+        message: appErrorMessage({
+          what: "لا تُعطَّل فئة الدلو الاحتياطية",
+          why: "الفئة احتياطية (isBucketDefault) — إليها تهبط الطلبات التي تحمل الدلو وحده (أوفلاين/أندرويد/استيراد)، وتعطيلها يكسر مسار تلك الطلبات",
+          doThis: "أنشئ فئة احتياطية بديلة قبل التعطيل، أو أبقِ هذه فعّالة",
+        }),
       });
     }
     await tx
       .update(expenseCategories)
       .set({ isActive: input.isActive })
       .where(eq(expenseCategories.id, input.id));
+    clearExpenseCategoriesCache();
     return { id: input.id, isActive: input.isActive };
   });
 }
@@ -326,6 +375,10 @@ export async function ensureDefaultExpenseCategoriesInTx(
     result.defaultsRepaired.push(def.bucket);
   }
 
+  if (missing.length || result.defaultsRepaired.length) {
+    clearExpenseCategoriesCache();
+  }
+
   return result;
 }
 
@@ -361,13 +414,21 @@ export async function resolveExpenseCategory(
     if (!row) {
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "فئة المصروف غير موجودة.",
+        message: appErrorMessage({
+          what: "تعذّر العثور على فئة المصروف",
+          why: "معرّف الفئة المرسل يشير إلى فئة محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة فئات المصروف واختر فئة موجودة، أو أنشئها من شاشة الفئات",
+        }),
       });
     }
     if (!row.isActive) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `فئة «${row.name}» معطّلة — اختر فئة فعّالة.`,
+        message: appErrorMessage({
+          what: "لا يمكن استعمال هذه الفئة",
+          why: `فئة «${row.name}» معطَّلة (isActive=false) — لا يجوز فتح مصروفات جديدة على تصنيف مغلق`,
+          doThis: "اختر فئة فعّالة أخرى من قائمة الفئات، أو فعّل هذه الفئة من شاشة إدارة الفئات",
+        }),
       });
     }
     return {
@@ -436,6 +497,9 @@ export async function backfillExpenseCategories(): Promise<{
           ),
         );
       updated += extractAffectedRows(res);
+    }
+    if (updated > 0) {
+      clearExpenseCategoriesCache();
     }
     return { updated };
   });

@@ -426,7 +426,7 @@ function HomeContent({
       <div className="neo-home-dark-layer" aria-hidden />
       <section className="neo-greeting relative flex items-end justify-between">
         <div>
-          <span className="text-[11px] font-medium">الثلاثاء، ٤ آب</span>
+          <span className="text-[11px] font-medium">الثلاثاء، 4 آب</span>
           <h2 className="mt-1 text-[22px] font-bold tracking-tight">
             أهلاً أحمد
           </h2>
@@ -479,7 +479,7 @@ function HomeContent({
             />
           </div>
           <div className="mt-3 flex items-center justify-between border-t border-white/15 pt-3 text-[11px] text-emerald-50">
-            <span>٣٨ فاتورة مكتملة</span>
+            <span>38 فاتورة مكتملة</span>
             <span>↑ 12% عن الأمس</span>
           </div>
         </div>
@@ -529,7 +529,7 @@ function HomeContent({
         <Metric
           title="طلبات تنتظر الإجراء"
           value="12"
-          note="٤ طلبات متجر جديدة"
+          note="4 طلبات متجر جديدة"
           icon={ClipboardList}
         />
         <Metric
@@ -730,7 +730,7 @@ function SalesContent({ tablet }: { tablet: boolean }) {
                   </span>
                 </div>
                 <span className="mt-1 block text-[10px] text-[#71877f]">
-                  {customer} · ٣ أصناف
+                  {customer} · 3 أصناف
                 </span>
               </div>
               <b className="text-[12px] text-[#1d4439]" dir="ltr">

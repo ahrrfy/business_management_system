@@ -119,6 +119,8 @@ fun SalesRoute(viewModel: SalesViewModel, capabilities: SalesCapabilities, modif
             returnMethod = viewModel::returnMethod,
             returnShift = viewModel::returnShift,
             returnRestock = viewModel::returnRestock,
+            returnReason = viewModel::returnReason,
+            returnRefundReference = viewModel::returnRefundReference,
             submitReturn = viewModel::submitReturn,
             retry = viewModel::initialize,
         ),
@@ -152,6 +154,8 @@ data class SalesActions(
     val returnMethod: (PaymentMethod) -> Unit,
     val returnShift: (Long?) -> Unit,
     val returnRestock: (Boolean) -> Unit,
+    val returnReason: (String) -> Unit,
+    val returnRefundReference: (String) -> Unit,
     val submitReturn: () -> Unit,
     val retry: () -> Unit,
 )
@@ -196,7 +200,7 @@ fun SalesScreen(state: SalesUiState, capabilities: SalesCapabilities, actions: S
             } else when (state.section) {
                 SalesSection.CHECKOUT -> CheckoutWorkspace(state, guardedActions)
                 SalesSection.HISTORY -> HistoryWorkspace(state, capabilities, guardedActions)
-                SalesSection.RETURNS -> ReturnsWorkspace(state, guardedActions)
+                SalesSection.RETURNS -> ReturnsWorkspace(state, capabilities, guardedActions)
             }
         }
     }
@@ -531,7 +535,7 @@ private fun DetailPane(detail: SaleDetail?, canReturn: Boolean, actions: SalesAc
 }
 
 @Composable
-private fun ReturnsWorkspace(state: SalesUiState, actions: SalesActions) {
+private fun ReturnsWorkspace(state: SalesUiState, capabilities: SalesCapabilities, actions: SalesActions) {
     val invoice = state.returnInvoice
     if (invoice == null) {
         LazyColumn(
@@ -548,12 +552,12 @@ private fun ReturnsWorkspace(state: SalesUiState, actions: SalesActions) {
         return
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-        ReturnEditor(invoice, state, actions, Modifier.widthIn(max = 920.dp).fillMaxWidth())
+        ReturnEditor(invoice, state, capabilities, actions, Modifier.widthIn(max = 920.dp).fillMaxWidth())
     }
 }
 
 @Composable
-private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, actions: SalesActions, modifier: Modifier = Modifier) {
+private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabilities: SalesCapabilities, actions: SalesActions, modifier: Modifier = Modifier) {
     LazyColumn(modifier.fillMaxHeight(), contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             SalesCard(Modifier.fillMaxWidth()) {
@@ -576,30 +580,77 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
         }
         item {
             SalesCard(Modifier.fillMaxWidth()) {
+                val availableShifts = invoice.refundShifts
+                val returnShifts = capabilities.filterReturnShifts(availableShifts)
+                val isCashier = capabilities.role == "cashier"
+                val cashierHasShift = returnShifts.isNotEmpty()
+                val canSubmit = !state.locked && (!isCashier || cashierHasShift)
+
                 Text("الاسترداد", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                if (isCashier && !cashierHasShift) {
+                    Text(
+                        "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                OutlinedTextField(
+                    state.returnReason,
+                    actions.returnReason,
+                    Modifier.fillMaxWidth(),
+                    label = { Text("سبب المرتجع *") },
+                    placeholder = { Text("سبب طلب أو تنفيذ المرتجع...") },
+                    enabled = !state.locked,
+                    singleLine = true,
+                )
                 OutlinedTextField(state.returnRefundAmount, actions.returnRefundAmount, Modifier.fillMaxWidth(), label = { Text("مبلغ الاسترداد") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), enabled = !state.locked)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PaymentMethod.entries.forEach { method -> FilterChip(state.returnMethod == method, { actions.returnMethod(method) }, label = { Text(method.label) }, enabled = !state.locked) }
+                    listOf(PaymentMethod.CASH, PaymentMethod.CARD).forEach { method -> FilterChip(state.returnMethod == method, { actions.returnMethod(method) }, label = { Text(method.label) }, enabled = !state.locked) }
                 }
                 if (state.returnMethod == PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
-                    Text("درج الاسترداد", fontWeight = FontWeight.SemiBold)
-                    LazyRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(state.openShifts, key = { it.id }) { shift ->
-                            FilterChip(
-                                state.returnShiftId == shift.id,
-                                { actions.returnShift(shift.id) },
-                                label = { Text(shift.userName ?: "وردية ${shift.id}") },
-                                enabled = !state.locked,
-                            )
+                    Text("مصدر الاسترداد النقدي", fontWeight = FontWeight.SemiBold)
+                    if (isCashier && returnShifts.isEmpty()) {
+                        Text(
+                            "لا تملك وردية نقدية مفتوحة باسمك في هذا الفرع — الرد النقدي للكاشير يتطلب وردية مفتوحة",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else if (returnShifts.isEmpty()) {
+                        Text(
+                            "لا توجد ورديات مفتوحة في هذا الفرع — سيتم صرف الاسترداد النقدي من خزينة الفرع (إداري)",
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        LazyRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(returnShifts, key = { it.id }) { shift ->
+                                FilterChip(
+                                    selected = state.returnShiftId == shift.id,
+                                    onClick = { actions.returnShift(shift.id) },
+                                    label = { Text(shift.userName ?: "وردية ${shift.id}") },
+                                    enabled = !state.locked,
+                                )
+                            }
                         }
                     }
                 }
+                if (state.returnMethod != PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
+                    OutlinedTextField(
+                        state.returnRefundReference,
+                        actions.returnRefundReference,
+                        Modifier.fillMaxWidth(),
+                        label = { Text("مرجع البطاقة *") },
+                        placeholder = { Text("رقم العملية أو الإيصال...") },
+                        enabled = !state.locked,
+                        singleLine = true,
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(state.returnRestock, actions.returnRestock, enabled = !state.locked); Text("إعادة الكمية للمخزون") }
                 Text("تُراجع القيمة النهائية مع الفاتورة والكميات.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                Button(actions.submitReturn, Modifier.fillMaxWidth().height(52.dp), enabled = !state.locked) { Text("تسجيل المرتجع") }
+                Button(actions.submitReturn, Modifier.fillMaxWidth().height(52.dp), enabled = canSubmit) { Text("تسجيل المرتجع") }
             }
         }
     }

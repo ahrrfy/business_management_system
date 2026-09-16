@@ -7,7 +7,7 @@ import { offlineDb } from "@/lib/offline/db";
 import Dexie from "dexie";
 
 export const STUDIO_DRAFT_TTL_MS = 24 * 60 * 60 * 1_000;
-export const STUDIO_DRAFT_RESUME_LEASE_MS = 60_000;
+export const STUDIO_DRAFT_RESUME_LEASE_MS = 10_000;
 
 export type StudioDraftMode = "FLATTEN" | "CUT" | "AI";
 
@@ -83,29 +83,41 @@ export type StudioDraftReconciliation =
   | { kind: "ALREADY_RESUMED"; draft: StudioDraft; retryAt: number }
   | { kind: "CONFLICT"; draft: StudioDraft };
 
+/** لا تفتح الكتابة إلا لجلسة لا توجد لها مسودة أو نجحت فعلياً في امتلاك استئنافها. */
+export function studioDraftWritesAllowed(result: StudioDraftReconciliation): boolean {
+  return result.kind === "NONE" || result.kind === "RESUME";
+}
+
 const STUDIO_DRAFT_INDEX_KEY = "studio-draft-index-hmac";
 
 async function studioDraftOpaqueId(
   userId: number,
   taskId: number,
 ): Promise<string> {
-  let key = (await offlineDb.keys.get(STUDIO_DRAFT_INDEX_KEY))?.key;
-  if (!key) {
-    key = await crypto.subtle.generateKey(
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    await offlineDb.keys.put({ name: STUDIO_DRAFT_INDEX_KEY, key });
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    return `sd-insecure-${userId}-${taskId}`;
   }
-  const signature = new Uint8Array(
-    await crypto.subtle.sign(
-      "HMAC",
-      key,
-      new TextEncoder().encode(`${userId}:${taskId}`),
-    ),
-  );
-  return `sd-${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  try {
+    let key = (await offlineDb.keys.get(STUDIO_DRAFT_INDEX_KEY))?.key;
+    if (!key) {
+      key = await crypto.subtle.generateKey(
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"],
+      );
+      await offlineDb.keys.put({ name: STUDIO_DRAFT_INDEX_KEY, key });
+    }
+    const signature = new Uint8Array(
+      await crypto.subtle.sign(
+        "HMAC",
+        key,
+        new TextEncoder().encode(`${userId}:${taskId}`),
+      ),
+    );
+    return `sd-${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  } catch {
+    return `sd-fallback-${userId}-${taskId}`;
+  }
 }
 
 function validDraft(value: unknown): value is StudioDraft {
@@ -193,27 +205,36 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
   return {
     async save(input: StudioDraftInput): Promise<StudioDraft> {
       const id = await idFor(input.userId, input.taskId);
-      const existing = await load(input.userId, input.taskId);
-      const timestamp = now();
-      const unchanged =
-        existing != null &&
-        existing.revision === input.revision &&
-        existing.proposedName === input.proposedName &&
-        existing.proposedDescription === input.proposedDescription &&
-        existing.proposedMarketingCopy === input.proposedMarketingCopy &&
-        existing.imageDataUrl === input.imageDataUrl &&
-        existing.originalDataUrl === input.originalDataUrl &&
-        existing.processingReceipt === input.processingReceipt &&
-        existing.mode === input.mode;
-      const draft: StudioDraft = {
-        ...input,
-        createdAt: existing?.createdAt ?? timestamp,
-        updatedAt: timestamp,
-        expiresAt: timestamp + STUDIO_DRAFT_TTL_MS,
-        resumeLease: unchanged ? existing.resumeLease : null,
-      };
-      await options.persistence.put({ id, envelope: await encrypt(draft) });
-      return draft;
+      return options.persistence.readwrite(async () => {
+        const timestamp = now();
+        const row = await options.persistence.get(id);
+        const existing = row ? await readRow(row, timestamp) : null;
+        if (existing && (existing.userId !== input.userId || existing.taskId !== input.taskId)) {
+          await options.persistence.delete(id);
+          throw new Error("تعارضت هوية مسودة الاستوديو المحلية");
+        }
+        if (
+          existing?.resumeLease &&
+          existing.resumeLease.expiresAt > timestamp &&
+          existing.resumeLease.sessionId !== sessionId
+        ) {
+          throw new Error("مسودة الاستوديو مفتوحة في تبويب آخر");
+        }
+        const draft: StudioDraft = {
+          ...input,
+          createdAt: existing?.createdAt ?? timestamp,
+          updatedAt: timestamp,
+          expiresAt: timestamp + STUDIO_DRAFT_TTL_MS,
+          // أول حفظ يملك المسودة لهذه الجلسة، وكل حفظ لاحق يجدد ملكيتها. القراءة
+          // والتحقق والكتابة داخل معاملة واحدة كي لا يطمس تبويبٌ مسودة تبويب آخر.
+          resumeLease: {
+            sessionId,
+            expiresAt: timestamp + STUDIO_DRAFT_RESUME_LEASE_MS,
+          },
+        };
+        await options.persistence.put({ id, envelope: await encrypt(draft) });
+        return draft;
+      });
     },
 
     load,
@@ -292,12 +313,24 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
           draft.revision !== context.revision
         )
           return { kind: "CONFLICT", draft };
-        if (draft.resumeLease && draft.resumeLease.expiresAt > now())
-          return {
-            kind: "ALREADY_RESUMED",
-            draft,
-            retryAt: draft.resumeLease.expiresAt,
+        if (draft.resumeLease && draft.resumeLease.expiresAt > now()) {
+          if (draft.resumeLease.sessionId !== sessionId) {
+            return {
+              kind: "ALREADY_RESUMED",
+              draft,
+              retryAt: draft.resumeLease.expiresAt,
+            };
+          }
+          const renewed = {
+            ...draft,
+            resumeLease: {
+              sessionId,
+              expiresAt: now() + STUDIO_DRAFT_RESUME_LEASE_MS,
+            },
           };
+          await options.persistence.put({ id, envelope: await encrypt(renewed) });
+          return { kind: "RESUME", draft: renewed };
+        }
         const claimed = {
           ...draft,
           resumeLease: {

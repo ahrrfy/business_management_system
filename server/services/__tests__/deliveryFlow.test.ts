@@ -270,6 +270,13 @@ describe("delivery COD — money path", () => {
     await db().update(s.deliveryParties)
       .set({ currentBalance: sql`${s.deliveryParties.currentBalance} + 3000` })
       .where(eq(s.deliveryParties.id, partyId));
+    // م١ (حارس reconcileDeliveryFloat/deliveryPartyLedger، PR-3): العهدةُ السائبة المُسجَّلة نقداً يلزمها
+    // قيدُ دفترٍ (COD_COLLECTED) كي يطابق `deriveCashInHandFromLedger` العمودَ المخزَّن — والتسويةُ الحرّة
+    // تكتب COD_REMITTED فيعود المجموعُ صفراً. بدونه ينحرف الدفترُ بمقدار السائبة.
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: `SIM-LOOSE-COD_COLLECTED:${partyId}`,
+      partyId, branchId: 1, entryType: "COD_COLLECTED", amount: "3000.00", occurredAt: new Date(),
+    });
     const set = await settleDeliveryBalance({ branchId: 1, partyId, amount: "3000" }, CASHIER);
     expect(set.partyBalanceAfter).toBe("0.00");
     expect(await partyBalance(partyId)).toBe("0.00");

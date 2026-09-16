@@ -14,10 +14,34 @@ import { and, asc, eq, ne, sql } from "drizzle-orm";
 import { branches, branchStock, storeSettings } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { createTtlCache } from "../lib/ttlCache";
 import { withTx, type Actor } from "./tx";
 
 export type BranchType = "MAIN" | "SALES";
 const CODE_RE = /^[A-Z0-9_-]{2,30}$/;
+
+const activeBranchesCache = createTtlCache<string, (typeof branches.$inferSelect)[]>({
+  ttlMs: 60_000,
+  maxEntries: 5,
+});
+
+export function invalidateActiveBranchesCache(): void {
+  activeBranchesCache.clear();
+}
+
+/** قائمة الفروع النشطة — مكيَّشة بالذاكرة (TTL 60ث + single-flight) لمنع تكرار ضرب القاعدة في كل شاشة. */
+export async function listActiveBranches(): Promise<(typeof branches.$inferSelect)[]> {
+  if (process.env.NODE_ENV === "test") {
+    const db = getDb();
+    if (!db) return [];
+    return db.select().from(branches).where(eq(branches.isActive, true)).orderBy(asc(branches.id));
+  }
+  return activeBranchesCache.get("active", async () => {
+    const db = getDb();
+    if (!db) return [];
+    return db.select().from(branches).where(eq(branches.isActive, true)).orderBy(asc(branches.id));
+  });
+}
 
 export interface BranchAdminRow {
   id: number;
@@ -88,6 +112,7 @@ export async function createBranch(
     address: input.address?.trim() || null,
     phone: input.phone?.trim() || null,
   });
+  invalidateActiveBranchesCache();
   return { id: extractInsertId(res), name, code };
 }
 
@@ -124,7 +149,10 @@ export async function updateBranch(
   if (input.address !== undefined) patch.address = input.address?.trim() || null;
   if (input.phone !== undefined) patch.phone = input.phone?.trim() || null;
 
-  if (Object.keys(patch).length) await db.update(branches).set(patch).where(eq(branches.id, input.id));
+  if (Object.keys(patch).length) {
+    await db.update(branches).set(patch).where(eq(branches.id, input.id));
+    invalidateActiveBranchesCache();
+  }
   return { id: input.id };
 }
 
@@ -184,6 +212,7 @@ export async function setBranchActive(id: number, isActive: boolean, _actor: Act
     }
 
     await tx.update(branches).set({ isActive }).where(eq(branches.id, id));
+    invalidateActiveBranchesCache();
     return { id, isActive };
   });
 }

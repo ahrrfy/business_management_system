@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { isCurrentNativeClient } from "../auth/deviceProof";
 import { sendTrpcError } from "./trpcError";
 
 /**
@@ -53,10 +54,11 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
     // Fail closed when every browser-provided source signal is absent. The web
     // client adds a non-simple header; cross-site forms cannot forge it and a
     // malicious script would need a CORS preflight, which this server rejects.
-    // The native Android client already identifies itself with a non-simple
-    // header, so old WebViews keep working without weakening browser requests.
+    // Native clients use non-simple, exact-version headers. A cross-site page
+    // cannot send them without a CORS preflight, and the server accepts only
+    // reviewed client identities/versions rather than any free-form label.
     const explicitClientProof =
-      req.get("x-erp-csrf") === "1" || req.get("x-alrueya-client") === "android-native";
+      req.get("x-erp-csrf") === "1" || isCurrentNativeClient(req);
     if (!explicitClientProof) {
       deny(req, res, "CSRF: تعذّر التحقق من مصدر الطلب");
       return;

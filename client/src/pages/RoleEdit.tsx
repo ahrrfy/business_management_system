@@ -17,6 +17,7 @@ import {
 } from "@/lib/permissionsModel";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 
@@ -132,6 +133,8 @@ export default function RoleEdit() {
     else createM.mutate(payload);
   }
 
+  // نصٌّ مخصّص عمداً: هذا الرجوع المبكّر يسبق <PageHeader> ⇒ لا سياق آخر على الشاشة أثناء الانتظار.
+  // وليس من أنماط check:loading-strings («جارٍ تحميل الدور» ≠ «جارٍ التحميل») ⇒ لا يُعمَّم على القاموس.
   if (isEdit && detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل الدور…</div>;
 
   return (
@@ -210,7 +213,7 @@ export default function RoleEdit() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex flex-wrap gap-2">
-        <Button onClick={submit} disabled={pending}>{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الدور"}</Button>
+        <Button onClick={submit} disabled={pending}>{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الدور"}</Button>
         <Link href="/roles"><Button variant="ghost">إلغاء</Button></Link>
       </div>
     </div>

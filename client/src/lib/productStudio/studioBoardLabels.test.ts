@@ -1,13 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask } from "./studioBoardLabels";
+import { backlogButtonSuffix, canApproveStudioCandidate, getStudioTaskStatusDisplay, isQueuedStudioTask, studioTaskSelection } from "./studioBoardLabels";
 
 describe("studio board labels", () => {
+  it("selects independent image tasks sharing the same product", () => {
+    const tasks = [
+      { id: 21, productId: 7, status: "ASSIGNED" as const, assignedTo: 2, assigneeName: "مصوّر" },
+      { id: 22, productId: 7, status: "ASSIGNED" as const, assignedTo: null, assigneeName: null },
+      { id: 23, productId: 7, status: "PENDING_REVIEW" as const, assignedTo: 2, assigneeName: "مصوّر" },
+    ];
+    expect(studioTaskSelection(tasks, new Set([21]))).toEqual({
+      queuedTaskIds: [22], allQueuedSelected: false, selectedAssignedTaskIds: [21], selectedActiveTaskIds: [21],
+    });
+    expect(studioTaskSelection(tasks, new Set([22]))).toEqual({
+      queuedTaskIds: [22], allQueuedSelected: true, selectedAssignedTaskIds: [], selectedActiveTaskIds: [22],
+    });
+  });
   it("يميّز مهمة الطابور عن المهمة المسنَدة رغم تطابق الحالة", () => {
     // هذه هي حالة الإنتاج: ٤٢٨٥ مهمة ASSIGNED بلا منفّذ عُرضت «مسندة/قيد العمل».
     expect(isQueuedStudioTask({ status: "ASSIGNED", assigneeName: null })).toBe(true);
     expect(isQueuedStudioTask({ status: "ASSIGNED", assigneeName: "علي" })).toBe(false);
     expect(isQueuedStudioTask({ status: "IN_PROGRESS", assigneeName: null })).toBe(false);
     expect(isQueuedStudioTask({ status: "PENDING_REVIEW", assigneeName: null })).toBe(false);
+  });
+
+  it("يعرض وسوم الحالة بوضوح وتمييز دقيق للمستخدم", () => {
+    expect(getStudioTaskStatusDisplay({ status: "ASSIGNED", assigneeName: null })).toEqual({
+      label: "في الطابور",
+      variant: "warning",
+    });
+    expect(getStudioTaskStatusDisplay({ status: "ASSIGNED", assigneeName: "مصوّر" })).toEqual({
+      label: "بانتظار التصوير",
+      variant: "info",
+    });
+    expect(getStudioTaskStatusDisplay({ status: "PENDING_REVIEW", assigneeName: "مصوّر" })).toEqual({
+      label: "بانتظار الاعتماد",
+      variant: "warning",
+    });
+    expect(getStudioTaskStatusDisplay({ status: "APPROVED", assigneeName: "مصوّر" })).toEqual({
+      label: "مكتملة ومعتمدة",
+      variant: "success",
+    });
   });
 
   it("لا يطبع صفراً إلا حين تكون المعاينة قد نجحت فعلاً", () => {

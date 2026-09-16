@@ -2,7 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { grantAdvance } from "../advancesService";
+import { grantAdvance } from "../advances";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, payRun, updateItem } from "../payrollService";
 import { approveVoucher } from "../voucher/approval";
@@ -77,7 +77,7 @@ describe("financial integrity — payroll", () => {
     });
   });
 
-  it("آخر معدّل مالي لا يستطيع اعتماد تعديله بنفسه", async () => {
+  it("آخر معدّل مالي مالكٌ نشط يعتمد تعديله بنفسه (قرار المالك ٣/٩/٢٦)", async () => {
     await createEmployee({
       firstName: "سارة",
       lastName: "كاظم",
@@ -88,8 +88,10 @@ describe("financial integrity — payroll", () => {
     });
     const run = await generatePayroll("2026-06", MAKER);
     await updateItem(run!.items[0].id, { overtime: "25000" }, CHECKER);
-    await expect(approveRun(run!.id, CHECKER)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(approveRun(run!.id, OWNER)).resolves.toMatchObject({ status: "approved" });
+    const firstApproval = await approveRun(run!.id, CHECKER);
+    expect(firstApproval).toMatchObject({ status: "approved", replayed: false });
+    const replay = await approveRun(run!.id, OWNER);
+    expect(replay).toMatchObject({ status: "approved", replayed: true });
   });
 
   it("يحتسب الموظف المعين منتصف الشهر عن أيام خدمته فقط", async () => {

@@ -44,6 +44,30 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(approvals).toContain("رفض طلب البيع");
   });
 
+  it("يعرض تعديل الفاتورة كمقارنة كان/سيصبح ويطبع الحرارية وليبل الشحن بلا كتابة الرقم", () => {
+    const approvals = page("SalesControlApprovals.tsx");
+    const controlRouter = server("routers/salesControlRouter.ts");
+    const correctionConfirm = approvals.slice(
+      approvals.indexOf("async function approveOne"),
+      approvals.indexOf("function beginRouting"),
+    );
+    expect(approvals).toContain("كان هكذا");
+    expect(approvals).toContain("سيصبح هكذا");
+    expect(approvals).toContain("buildSalesCorrectionComparison");
+    expect(approvals).toContain("requestShippingLabelPrint");
+    expect(approvals).toContain("طُبعت حرارياً تلقائياً");
+    expect(approvals).toContain('{ openDrawer: false }');
+    expect(correctionConfirm).toContain('type === "SALES_REISSUE" || type === "SALES_EXCHANGE"');
+    expect(correctionConfirm).toContain('{ requireText: invoiceNumber }');
+    expect(controlRouter).toContain("claimCorrectionPayment");
+    expect(controlRouter).toContain("deviceId: z.string().trim().min(1).max(64)");
+    expect(approvals).toContain("استُعيد حجز دفع سابق");
+    expect(approvals).toContain("لا تمرّر المبلغ مرة ثانية");
+    expect(approvals).toContain("recoveredClaimFor");
+    expect(approvals).toContain("مرجع القسيمة الموجودة — لا تُعد الدفع");
+    expect(approvals).toContain('requireText: "لم يتم الدفع"');
+  });
+
   it("الراوترات العامة لا تستدعي cancelSale/correctSale/returnSale مباشرة", () => {
     const saleRouter = server("routers/saleRouter.ts");
     const returnRouter = server("routers/returnRouter.ts");
@@ -59,7 +83,7 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     const controlService = server("services/sale/controlRequests.ts");
     const notesOnlyRoute = saleRouter.slice(
       saleRouter.indexOf("correct: salesManagerProcedure"),
-      saleRouter.indexOf("reissue: salesCashierProcedure"),
+      saleRouter.indexOf("reissue: salesCorrectionProcedure"),
     );
     const correctionGate = invoice.slice(
       invoice.indexOf("const canCorrectInvoice"),

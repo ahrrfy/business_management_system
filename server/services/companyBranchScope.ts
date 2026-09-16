@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { canCrossBranches } from "@shared/predicates";
 
 /**
  * Branch scope inside the tenant database selected by runWithCompany.
@@ -19,7 +20,7 @@ function positiveBranchId(value: unknown): number | null {
 
 /** Derive authority only from the authenticated principal, never request input. */
 export function companyBranchScope(principal: ScopePrincipal): CompanyBranchScope {
-  if (principal.isOwner === true || principal.role === "admin") return { branchId: null };
+  if (canCrossBranches(principal)) return { branchId: null };
   const branchId = positiveBranchId(principal.branchId);
   if (branchId == null) {
     throw new TRPCError({

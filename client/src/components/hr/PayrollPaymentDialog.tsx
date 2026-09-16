@@ -41,9 +41,9 @@ export function PayrollPaymentDialog({
   const referenceValid = !isNonCash || (method === "CARD"
     ? /^\d{4}$/.test(referenceNumber.trim())
     : !!referenceNumber.trim());
+  // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يصرف مسيّره بنفسه.
   const owner = me.data?.isOwner === true;
-  const independent = !!run && Number(me.data?.id ?? 0) !== Number(run.createdBy ?? 0);
-  const canSubmit = !!run && owner && independent && referenceValid && !pay.isPending;
+  const canSubmit = !!run && owner && referenceValid && !pay.isPending;
 
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
@@ -62,9 +62,9 @@ export function PayrollPaymentDialog({
               <p className="mt-2 text-xs text-primary">الصافي صفر: سيُقفل المسيّر تدقيقياً بلا إيصال أو حركة خزينة.</p>
             )}
           </div>
-          {(!owner || !independent) && (
+          {!owner && (
             <p className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive" role="alert">
-              {!owner ? "صرف الرواتب محصور بحساب مالك نشط." : "لا يجوز لمن أنشأ المسيّر أن يصرفه؛ يلزم مالك مستقل."}
+              صرف الرواتب محصور بحساب مالك نشط.
             </p>
           )}
           <div>

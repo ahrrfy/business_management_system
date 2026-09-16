@@ -3,6 +3,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { InferredBranchField } from "@/components/form/InferredField";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -16,6 +17,7 @@ import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   EXPENSE_BUCKET_LABEL,
   type ExpenseBucket,
@@ -28,7 +30,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   expenseApprovalExecutionText,
   expenseExecutionMode,
-} from "./expenseUiPolicy";
+} from "@/lib/expenseUiPolicy";
 
 /**
  * مصروف جديد — v3 add-screens.
@@ -126,7 +128,10 @@ export default function ExpenseNew() {
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
 
-  const [branchId, setBranchId] = useState<number | "">("");
+  // الفرعُ مُستنتَجٌ من الجلسة عبر `<InferredBranchField>` أدناه: بدء الحالة `null` **مقصود**
+  // — لا نختار فرعاً عن الشاشة قبل أن يصل استنتاجُ الخادم؛ نمطُ `?? 1` هو ما يحرسه
+  // `check:branch` وهو ما نُخرج هذه الشاشةَ منه هنا.
+  const [branchId, setBranchId] = useState<number | null>(null);
   // الفئة المُدارة (0203) هي ما يختاره المستخدم، والدلو المحاسبيّ يُشتقّ منها هنا وعلى الخادم
   // معاً — لا يُرسِل هذا النموذج دلواً يخالف الفئة أبداً.
   const expenseCategories = trpc.expenses.categories.list.useQuery({
@@ -198,13 +203,12 @@ export default function ExpenseNew() {
     [items],
   );
 
-  const effectiveBranch =
-    branchId ||
-    me.data?.branchId ||
-    (branches.data?.[0] ? Number(branches.data[0].id) : 1);
+  // ⛔ لا `?? 1` هنا: قبل استنتاج الفرعِ من الجلسة، القيمةُ `null` وتقف الاستعلاماتُ التي
+  //    تحتاجها. `<InferredBranchField>` أدناه يُسند `branchId` أوّل ما يصل الاستنتاج.
+  const effectiveBranch: number | null = branchId;
   const openShift = trpc.shifts.current.useQuery(
-    { branchId: Number(effectiveBranch) },
-    { enabled: !!effectiveBranch },
+    { branchId: effectiveBranch ?? 0 },
+    { enabled: effectiveBranch != null },
   );
   const executionMode = expenseExecutionMode({
     source,
@@ -237,7 +241,11 @@ export default function ExpenseNew() {
 
   async function submit() {
     setError("");
-    if (!effectiveBranch) return setError("اختر الفرع.");
+    if (effectiveBranch == null || effectiveBranch <= 0) {
+      return setError(
+        "لا فرعَ نشط · لم تصل جلستُك بعد أو حسابك بلا فرعٍ مُسنَد · انتظر إتمام التحميل أو راجع المدير.",
+      );
+    }
     if (expenseCategoryId === "") {
       document.getElementById("expense-category")?.focus();
       return setError(
@@ -386,20 +394,15 @@ export default function ExpenseNew() {
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
           <div className="space-y-1 md:col-span-2 lg:col-span-1">
-            <Label>الفرع *</Label>
-            <AppSelect
-              className="h-9"
-              value={String(effectiveBranch)}
-              onValueChange={(value) =>
-                setBranchId(value ? Number(value) : "")
-              }
-            >
-              {(branches.data ?? []).map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </AppSelect>
+            {/* الفرعُ استنتاجٌ خادميّ لا سؤالٌ للشاشة — `<InferredBranchField>` يعرض «فرعُك
+                المُسنَد» ويكشف زرَّ «تغيير» للأدمن/المالك فقط، ولا يقع على «الفرع ١» صامتاً
+                (حارس `check:branch`). التسمية العارية «الفرع *» تُبقي التوقّع البصريّ للمستخدم. */}
+            <InferredBranchField
+              label="الفرع *"
+              value={branchId}
+              onChange={(next) => setBranchId(next)}
+              disabled={create.isPending}
+            />
             {(() => {
               if (openShift.data) {
                 return (
@@ -818,7 +821,7 @@ export default function ExpenseNew() {
               }
             >
               {create.isPending
-                ? "جارٍ الحفظ…"
+                ? ACTION_LABELS.saving
                 : executionMode === "PENDING_OWNER_APPROVAL"
                   ? "رفع طلب الاعتماد"
                   : "حفظ وتنفيذ المصروف"}

@@ -203,25 +203,24 @@ async function createApprovedPurchaseOrder(
       reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
     },
     owner,
+    { legacyConfirmOnly: true },
   );
   return created;
 }
 
 /** أمرٌ بقيمة بضاعة ٤٬٠٠٠ وشحن+كمرك ٤٠٠ (بلا ضريبة). */
 async function orderWithShipping(shipping = "300", customs = "100") {
-  return createApprovedPurchaseOrder(
-    {
-      supplierId: 1,
-      branchId: 1,
-      taxRatePercent: "0",
-      items: [
-        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }, // 1,000
-        { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" }, // 3,000
-      ],
-      shippingCost: shipping,
-      customsCost: customs,
-    },
-  );
+  return createApprovedPurchaseOrder({
+    supplierId: 1,
+    branchId: 1,
+    taxRatePercent: "0",
+    items: [
+      { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }, // 1,000
+      { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" }, // 3,000
+    ],
+    shippingCost: shipping,
+    customsCost: customs,
+  });
 }
 
 describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ مورّد ولا تكلفةُ صنف", () => {
@@ -616,21 +615,19 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
   });
 
   it("أمرٌ بلا شحن ⇒ لا مصروف ولا إيصال (حارس انحدار)", async () => {
-    const po = await createApprovedPurchaseOrder(
-      {
-        supplierId: 1,
-        branchId: 1,
-        taxRatePercent: "0",
-        items: [
-          {
-            variantId: 1,
-            productUnitId: 1,
-            quantity: "10",
-            unitPrice: "100.00",
-          },
-        ],
-      },
-    );
+    const po = await createApprovedPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      items: [
+        {
+          variantId: 1,
+          productUnitId: 1,
+          quantity: "10",
+          unitPrice: "100.00",
+        },
+      ],
+    });
     const items = await itemsOf(po.purchaseOrderId);
     await receivePurchase(
       {
@@ -656,21 +653,19 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
   });
 
   it("دفعة المورد النقدية تبقى طلباً بلا أثر حتى مالك آخر، ثم تُعتمد مرة واحدة وتعيد القراءة من PO", async () => {
-    const po = await createApprovedPurchaseOrder(
-      {
-        supplierId: 1,
-        branchId: 1,
-        taxRatePercent: "0",
-        items: [
-          {
-            variantId: 1,
-            productUnitId: 1,
-            quantity: "10",
-            unitPrice: "100.00",
-          },
-        ],
-      },
-    );
+    const po = await createApprovedPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      items: [
+        {
+          variantId: 1,
+          productUnitId: 1,
+          quantity: "10",
+          unitPrice: "100.00",
+        },
+      ],
+    });
     const items = await itemsOf(po.purchaseOrderId);
     const received = await receivePurchase(
       {
@@ -723,21 +718,19 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
   });
 
   it("تغيّر مصدر طلب دفعة المورد قبل الاعتماد يفشل مغلقاً ويرجع كل أثر الاعتماد", async () => {
-    const po = await createApprovedPurchaseOrder(
-      {
-        supplierId: 1,
-        branchId: 1,
-        taxRatePercent: "0",
-        items: [
-          {
-            variantId: 1,
-            productUnitId: 1,
-            quantity: "10",
-            unitPrice: "100.00",
-          },
-        ],
-      },
-    );
+    const po = await createApprovedPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      items: [
+        {
+          variantId: 1,
+          productUnitId: 1,
+          quantity: "10",
+          unitPrice: "100.00",
+        },
+      ],
+    });
     const items = await itemsOf(po.purchaseOrderId);
     const received = await receivePurchase(
       {

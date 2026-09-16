@@ -3,5 +3,10 @@ import { trpc } from "@/lib/trpc";
 
 export default function PurchaseApprovals() {
   const me = trpc.auth.me.useQuery();
-  return <PurchaseApprovalQueue currentUserId={me.data?.id} />;
+  return (
+    <PurchaseApprovalQueue
+      currentUserId={me.data?.id}
+      isOwner={me.data?.isOwner === true}
+    />
+  );
 }

@@ -13,25 +13,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type FollowUpKind = "CALL" | "PROMISE" | "MESSAGE" | "VISIT" | "NOTE";
-type FollowUpOutcome = "REACHED" | "NO_ANSWER" | "PROMISED" | "DISPUTED" | "PAID" | "OTHER";
-
-const KIND_LABEL: Record<FollowUpKind, string> = {
-  CALL: "مكالمة",
-  PROMISE: "وعد دفع",
-  MESSAGE: "رسالة",
-  VISIT: "زيارة",
-  NOTE: "ملاحظة",
-};
-
-const OUTCOME_LABEL: Record<FollowUpOutcome, string> = {
-  REACHED: "تم التواصل",
-  NO_ANSWER: "لا إجابة",
-  PROMISED: "وعد بالدفع",
-  DISPUTED: "اعتراض/نزاع",
-  PAID: "أفاد بأنه دفع",
-  OTHER: "نتيجة أخرى",
-};
+// موجة D6 (٢/٩/٢٦): قاموسا وسيلة المتابعة ونتيجتها نُقلا إلى `@shared/customerFollowUp`.
+// السبب ليس الترتيب: نصُّ الملاحظة المحفوظ يُركَّب منهما، فهما عقدُ قراءةٍ لكلّ من سيصنّف
+// نتائج المتابعة لاحقاً — وقاموسٌ داخل مكوّنٍ يدعو القارئ الثاني لاختراع تصنيفٍ موازٍ.
+import {
+  CUSTOMER_FOLLOW_UP_KINDS,
+  CUSTOMER_FOLLOW_UP_KIND_LABEL,
+  CUSTOMER_FOLLOW_UP_OUTCOMES,
+  CUSTOMER_FOLLOW_UP_OUTCOME_LABEL,
+  type CustomerFollowUpKind,
+  type CustomerFollowUpOutcome,
+} from "@shared/customerFollowUp";
 
 export interface FollowUpValue {
   note: string;
@@ -55,8 +47,8 @@ export function CustomerFollowUpDialog({
   submitting?: boolean;
   onSubmit: (value: FollowUpValue) => void;
 }) {
-  const [kind, setKind] = useState<FollowUpKind>("CALL");
-  const [outcome, setOutcome] = useState<FollowUpOutcome>("REACHED");
+  const [kind, setKind] = useState<CustomerFollowUpKind>("CALL");
+  const [outcome, setOutcome] = useState<CustomerFollowUpOutcome>("REACHED");
   const [amount, setAmount] = useState(defaultAmount ?? "");
   const [date, setDate] = useState("");
   const [details, setDetails] = useState("");
@@ -76,8 +68,8 @@ export function CustomerFollowUpDialog({
 
   const note = useMemo(() => {
     const parts = [
-      `نوع المتابعة: ${KIND_LABEL[kind]}`,
-      `النتيجة: ${OUTCOME_LABEL[outcome]}`,
+      `نوع المتابعة: ${CUSTOMER_FOLLOW_UP_KIND_LABEL[kind]}`,
+      `النتيجة: ${CUSTOMER_FOLLOW_UP_OUTCOME_LABEL[outcome]}`,
       amount.trim() ? `المبلغ: ${amount.trim()} د.ع` : "",
       details.trim() ? `التفاصيل: ${details.trim()}` : "",
     ].filter(Boolean);
@@ -96,14 +88,14 @@ export function CustomerFollowUpDialog({
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <Label htmlFor="follow-kind">نوع المتابعة</Label>
-            <select id="follow-kind" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={kind} onChange={(e) => setKind(e.target.value as FollowUpKind)}>
-              {Object.entries(KIND_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            <select id="follow-kind" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={kind} onChange={(e) => setKind(e.target.value as CustomerFollowUpKind)}>
+              {CUSTOMER_FOLLOW_UP_KINDS.map((value) => <option key={value} value={value}>{CUSTOMER_FOLLOW_UP_KIND_LABEL[value]}</option>)}
             </select>
           </div>
           <div className="space-y-1">
             <Label htmlFor="follow-outcome">النتيجة</Label>
-            <select id="follow-outcome" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={outcome} onChange={(e) => setOutcome(e.target.value as FollowUpOutcome)}>
-              {Object.entries(OUTCOME_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            <select id="follow-outcome" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={outcome} onChange={(e) => setOutcome(e.target.value as CustomerFollowUpOutcome)}>
+              {CUSTOMER_FOLLOW_UP_OUTCOMES.map((value) => <option key={value} value={value}>{CUSTOMER_FOLLOW_UP_OUTCOME_LABEL[value]}</option>)}
             </select>
           </div>
           <div className="space-y-1">

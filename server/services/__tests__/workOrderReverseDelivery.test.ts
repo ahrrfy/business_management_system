@@ -12,7 +12,10 @@ import {
   approveWorkOrderControlRequest,
   requestWorkOrderControl,
 } from "../workOrder/controlRequests";
-import { getWorkOrderReverseDeliveryPreflight } from "../workOrder/reverseDelivery";
+import {
+  getWorkOrderReverseDeliveryPreflight,
+  reverseWorkOrderDelivery,
+} from "../workOrder/reverseDelivery";
 import { approveWorkOrderCancellationRefund } from "../workOrder/cancel";
 import {
   decideWorkOrderDesignApproval,
@@ -22,6 +25,7 @@ import { dispatchToDelivery } from "../delivery/dispatch";
 import { money, round2 } from "../money";
 
 const TABLES = [
+  "documentEffects",
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
   "deliveryRemittances", "deliveryConsignments", "deliveryParties",
   "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions",
@@ -168,6 +172,26 @@ async function requestReverse(args: {
   return { preflight, request };
 }
 
+/** Σ لكلّ نوعٍ في نطاق `delivery` على مستند أمر الشغل — يجب أن يكون صفراً لما عُكس كاملاً. */
+async function deliveryEffectSums(workOrderId: number): Promise<Record<string, { amount: string; rows: number }>> {
+  const rows = await db()
+    .select({
+      kind: s.documentEffects.effectKind,
+      amount: sql<string>`SUM(${s.documentEffects.signedAmount})`,
+      rows: sql<number>`COUNT(*)`,
+    })
+    .from(s.documentEffects)
+    .where(and(
+      eq(s.documentEffects.documentType, "WORK_ORDER"),
+      eq(s.documentEffects.documentId, workOrderId),
+      eq(s.documentEffects.scope, "delivery"),
+    ))
+    .groupBy(s.documentEffects.effectKind);
+  const out: Record<string, { amount: string; rows: number }> = {};
+  for (const r of rows) out[r.kind] = { amount: money(r.amount ?? 0).toFixed(4), rows: Number(r.rows ?? 0) };
+  return out;
+}
+
 async function approveReverse(workOrderId: number, reopen = false, reviewer = REVIEWER) {
   const { preflight, request } = await requestReverse({ workOrderId, reopen });
   const approval = await approveWorkOrderControlRequest(Number(request.id), reviewer, "تمت مراجعة الدليل");
@@ -259,6 +283,56 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]!.currentBalance).toBe("0.00");
     const out = await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, order.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "COMPLETED")));
     expect(round2(out.reduce((sum, row) => sum.plus(money(row.amount)), money(0))).toFixed(2)).toBe("10000.00");
+    // ⭐ ق٧: العكسُ مرّ بمحرّك العكس منفِّذاً — سجلُّ الأثر متوازنٌ نوعاً نوعاً (المصدرُ ذو الردّ
+    // السابق صُولح بابنِ فرقٍ ثمّ عُكس متبقّيه)، وصفُّ REVERSE للردّ يشير إلى إيصال صرفٍ حقيقيّ.
+    const sums = await deliveryEffectSums(order.workOrderId);
+    expect(sums.LEDGER_ENTRY!.amount).toBe("0.0000");
+    expect(sums.PAID_AMOUNT!.amount).toBe("0.0000");
+    expect(sums.PAID_AMOUNT!.rows).toBeGreaterThanOrEqual(2);
+    expect(sums.CUSTOMER_BALANCE!.amount).toBe("0.0000");
+    const refundReverse = (await db().select().from(s.documentEffects).where(and(
+      eq(s.documentEffects.documentType, "WORK_ORDER"), eq(s.documentEffects.documentId, order.workOrderId),
+      eq(s.documentEffects.effectKind, "PAID_AMOUNT"), eq(s.documentEffects.phase, "REVERSE"),
+      sql`JSON_EXTRACT(${s.documentEffects.payloadJson}, '$.reconciled') IS NULL`,
+    )))[0]!;
+    expect(refundReverse.effectTable).toBe("receipts");
+    expect(out.map((r) => Number(r.id))).toContain(Number(refundReverse.effectRowId));
+  });
+
+  it("⭐ بلا وردية استقبال مفتوحة عند الاعتماد: الردّ النقديّ يخرج من الخزينة بصفة المعتمِد (المفتاح الناقص) ولا يسقط الاعتماد", async () => {
+    const order = await deliveredOrder({ key: "treasury-fallback", deposit: "10000.00" });
+    // تمويلُ الخزينة ثمّ إقفالُ وردية الاستقبال الوحيدة (قُبض العربون فيها) قبل الطلب.
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "100000.00", paymentMethod: "CASH",
+      status: "COMPLETED", approvalStatus: "APPROVED", referenceNumber: "TREASURY-FUND-REVERSE", createdBy: 1,
+    } as never);
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, 1));
+    await approveReverse(order.workOrderId);
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, order.invoiceId)))[0]!;
+    expect(invoice.status).toBe("RETURNED");
+    expect(invoice.paidAmount).toBe("0.00");
+    const out = await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, order.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "COMPLETED"),
+    ));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.cashBucket).toBe("TREASURY");
+    expect(out[0]!.shiftId).toBeNull();
+    expect(out[0]!.amount).toBe("10000.00");
+    // الأثرُ متوازن: المقبوضُ رُدّ كاملاً من الخزينة، والقيدُ والذمّةُ صفر.
+    const sums = await deliveryEffectSums(order.workOrderId);
+    expect(sums.PAID_AMOUNT!.amount).toBe("0.0000");
+    expect(sums.LEDGER_ENTRY!.amount).toBe("0.0000");
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]!.currentBalance).toBe("0.00");
+  });
+
+  it("درجٌ صريحٌ أُغلق بين الطلب والاعتماد لا يسقط إلى الخزينة صامتاً — يُرفض بسببه", async () => {
+    const order = await deliveredOrder({ key: "explicit-closed-drawer", deposit: "10000.00" });
+    // الطلبُ يسمّي الدرج 1 وهو مفتوح؛ ثمّ يُقفل قبل الاعتماد (بوّابةُ الطلب نفسها ترفض درجاً مغلقاً مسبقاً).
+    const { request } = await requestReverse({ workOrderId: order.workOrderId, refundShiftId: 1 });
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, 1));
+    await expect(approveWorkOrderControlRequest(Number(request.id), REVIEWER, "مراجعة"))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
   });
 
   it("وردّيتان نقديتان تفرضان اختيار درج صريح", async () => {
@@ -280,6 +354,11 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     await approveReverse(order.workOrderId, reopen);
     let invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, order.invoiceId)))[0]!;
     expect(invoice.paidAmount).toBe("10000.00");
+    // ق٧: المالُ لم يخرج ⇒ أثرُ المقبوض يبقى مفتوحاً **بإعلان** (APPLY بلا REVERSE) لا Σ=0 كاذباً.
+    const sumsPending = await deliveryEffectSums(order.workOrderId);
+    expect(sumsPending.PAID_AMOUNT!.amount).toBe("10000.0000");
+    expect(sumsPending.PAID_AMOUNT!.rows).toBe(1);
+    expect(sumsPending.LEDGER_ENTRY!.amount).toBe("0.0000");
     const pending = (await db().select().from(s.receipts).where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "PENDING"))))[0]!;
     await approveWorkOrderCancellationRefund(Number(pending.id), OWNER, `CARD-${reopen}`, {
       user: { id: OWNER.userId, branchId: null } as never,
@@ -289,6 +368,22 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     expect(invoice.paidAmount).toBe("0.00");
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, order.workOrderId)))[0]!;
     expect(wo.status).toBe(reopen ? "READY" : "CANCELLED");
+  });
+
+  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — المالك يُصدر طلب عكس التسليم بنفسه (بصفته
+  // المُراجع الثاني لعكس التسليم) ثمّ يعتمد سند ردّ العربون الناتج بنفسه أيضاً.
+  it("المالك مراجعٌ لعكس التسليم ومعتمِدٌ لردّ العربون معاً ⇒ ينفَّذ (لا اعتماد ثانٍ بعد المالك)", async () => {
+    const order = await deliveredOrder({ key: "owner-self-approve", deposit: "10000.00", depositMethod: "CARD" });
+    await approveReverse(order.workOrderId, false, OWNER);
+    const pending = (await db().select().from(s.receipts).where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "PENDING"))))[0]!;
+    expect(pending.createdBy).toBe(OWNER.userId);
+    const approved = await approveWorkOrderCancellationRefund(Number(pending.id), OWNER, "CARD-SELF", {
+      user: { id: OWNER.userId, branchId: null } as never,
+      req: undefined as never,
+    });
+    expect(approved.status).toBe("COMPLETED");
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, order.invoiceId)))[0]!;
+    expect(invoice.paidAmount).toBe("0.00");
   });
 
   it("زبون عابر مدفوع نقداً له مسار رد كامل بلا ذمة وهمية", async () => {
@@ -386,6 +481,49 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
       eq(s.workOrderEvents.eventType, "CONTROL_APPROVED"),
     ))).toHaveLength(1);
     expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `WO-REVERSE:${order.workOrderId}:${order.invoiceId}`))).toHaveLength(1);
+  });
+
+  it("reverseWorkOrderDelivery المباشر (بلا المرور بـ approveWorkOrderControlRequest) يرفض منشئ الأمر ويكمل فعلياً لمراجع غير مرتبط", async () => {
+    const control = { approvedControlRequestId: 999999 };
+
+    // (1) استدعاء مباشر — الحارس الوحيد الذي يمكن أن يرفض هنا هو reverseDelivery.ts:594-596،
+    // لأن controlRequests.ts لم يُستدعَ إطلاقاً في هذا المسار.
+    const blocked = await deliveredOrder({ key: "reverse-direct-sod-blocked", deposit: "10000.00" });
+    const blockedPreflight = await getWorkOrderReverseDeliveryPreflight(blocked.workOrderId, REQUESTER);
+    if (!blockedPreflight.eligible) throw new Error("not eligible");
+    await expect(reverseWorkOrderDelivery({
+      workOrderId: blocked.workOrderId,
+      expectedVersion: blockedPreflight.version,
+      reason: "اختبار مباشر لحارس SOD في reverseWorkOrderDeliveryInTx",
+      reopen: false,
+      refundShiftId: null,
+      refundSources: blockedPreflight.refundSources,
+      clientRequestId: "reverse-direct-sod-blocked-1",
+    }, CASHIER, control)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const untouchedInvoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, blocked.invoiceId)))[0]!;
+    expect(untouchedInvoice.status).not.toBe("RETURNED");
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
+
+    // (2) نفس الاستدعاء المباشر بفاعل غير مرتبط — يجب أن يكتمل العكس فعلياً
+    const allowed = await deliveredOrder({ key: "reverse-direct-sod-allowed", deposit: "10000.00" });
+    const allowedPreflight = await getWorkOrderReverseDeliveryPreflight(allowed.workOrderId, REQUESTER);
+    if (!allowedPreflight.eligible) throw new Error("not eligible");
+    const result = await reverseWorkOrderDelivery({
+      workOrderId: allowed.workOrderId,
+      expectedVersion: allowedPreflight.version,
+      reason: "اختبار مباشر لاكتمال عكس التسليم بمعزل عن اعتماد طلب التحكم",
+      reopen: false,
+      refundShiftId: null,
+      refundSources: allowedPreflight.refundSources,
+      clientRequestId: "reverse-direct-sod-allowed-1",
+    }, REVIEWER, control);
+    expect(result.status).toBe("CANCELLED");
+    const returnedInvoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, allowed.invoiceId)))[0]!;
+    expect(returnedInvoice.status).toBe("RETURNED");
+    const refundOut = await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, allowed.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "COMPLETED"),
+    ));
+    expect(round2(refundOut.reduce((sum, row) => sum.plus(money(row.amount)), money(0))).toFixed(2)).toBe("10000.00");
   });
 
   it("مفتاح طلب واحد يرفض payload مختلفاً، وفرع admin يُنسب إلى فرع الأمر الحقيقي", async () => {

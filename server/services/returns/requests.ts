@@ -16,12 +16,13 @@
  *  ④ **المُعتمِد ≠ المُنشئ ومُنشئ الفاتورة** بلا استثناءٍ إداريّ؛ الصلاحية لا تلغي فصل المهام.
  */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { invoiceItems, invoices, returnRequests, salesControlRequests, users,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractAffectedRows } from "../../lib/insertId";
-import { isDeadInvoiceStatus, invoiceStatusLabel } from "@shared/invoiceStatus";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { money, round2 } from "../money";
 import { withTx, type Actor } from "../tx";
 import type { Tx } from "../../db";
@@ -65,7 +66,7 @@ export async function createReturnRequest(input: CreateReturnRequestInput, actor
     throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخصّ فرعاً آخر",
     });
   }
-  if (isDeadInvoiceStatus(inv.status)) {
+  if (isDeadInvoice(inv)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: `الفاتورة ${invoiceStatusLabel(inv.status)} — لا يُطلَب إرجاعٌ عليها`,
@@ -199,6 +200,8 @@ export async function listReturnRequests(opts: {
   branchId: number | null;
   status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
   createdBy?: number | null;
+  /** `ASC` = الأقدم أوّلاً لصندوق القرارات — القصّ (200) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  order?: "ASC" | "DESC";
 }) {
   const d = db();
   const conds = [];
@@ -211,8 +214,15 @@ export async function listReturnRequests(opts: {
       invoiceId: returnRequests.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
       customerId: invoices.customerId,
+      invoiceSubtotal: invoices.subtotal,
+      invoiceDiscountAmount: invoices.discountAmount,
+      invoiceTaxAmount: invoices.taxAmount,
       invoiceTotal: invoices.total,
       invoicePaid: invoices.paidAmount,
+      invoiceReturnedTotal: invoices.returnedTotal,
+      invoicePaymentMethod: invoices.paymentMethod,
+      invoiceCreatedBy: invoices.createdBy,
+      invoiceCreatedAt: invoices.createdAt,
       branchId: returnRequests.branchId,
       linesJson: returnRequests.linesJson,
       reason: returnRequests.reason,
@@ -228,7 +238,7 @@ export async function listReturnRequests(opts: {
     .leftJoin(invoices, eq(invoices.id, returnRequests.invoiceId))
     .leftJoin(users, eq(users.id, returnRequests.createdBy))
     .where(conds.length ? and(...conds) : undefined)
-    .orderBy(desc(returnRequests.id))
+    .orderBy(opts.order === "ASC" ? asc(returnRequests.id) : desc(returnRequests.id))
     .limit(200);
 }
 

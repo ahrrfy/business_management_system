@@ -1,13 +1,21 @@
 import { NOT_ADMIN_ERR_MSG, TWO_FACTOR_REQUIRED_ROLES, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import {
   AI_PROVIDER_ERROR_CATEGORIES,
   type AiProviderErrorCategory,
 } from "@shared/productContentAi";
-import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import {
+  capabilityModuleDecision,
+  capabilityShadowEnabled,
+  classifyCapabilityShadow,
+  deriveCapabilityGrants,
+} from "@shared/capabilities";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { EXPO_SUPERAPP_CLIENT_ID } from "./auth/deviceProof";
 import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
 import { canCrossBranches } from "./lib/branchAuthority";
@@ -245,6 +253,25 @@ export const selfServiceProcedure = protectedProcedure;
 export const superAppProcedure = protectedProcedure;
 
 /**
+ * A deliberately narrow BFF boundary for the Expo client. The identity comes
+ * from a verified device-bound session in `getSessionContext`; testing a raw
+ * request header here would turn this check into presentation-only security.
+ */
+export const expoSuperAppProcedure = superAppProcedure.use(({ ctx, next }) => {
+  if (ctx.nativeClientId !== EXPO_SUPERAPP_CLIENT_ID) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "لا يمكن فتح هذه المساحة من هذه الجلسة",
+        why: "يجب أن تكون الجلسة صادرة من تطبيق سوبر العربية المثبت على جهاز موثق",
+        doThis: "افتح التطبيق المثبت وسجّل الدخول من جديد",
+      }),
+    });
+  }
+  return next({ ctx });
+});
+
+/**
  * بوابة خدمة ذاتية لمكلّف جرد بحساب النظام. لا تمنح هذه البوابة وصولاً عاماً
  * إلى وحدة المخزون؛ كل handler يستعملها ملزم بربط القراءة/الكتابة بـ userId
  * للتكليف نفسه (مثال: countPortalRouter.mine).
@@ -287,15 +314,67 @@ function requireRole(...allowed: string[]) {
   });
 }
 
+/**
+ * تحقّق القدرات الظِلّيّ (RBAC ش٥ / م٨) — يُستشار **فقط** في وضع الظلّ الموثَّق `AUTHZ_ENGINE=shadow`
+ * (معطَّلٌ افتراضياً؛ `capabilityShadowEnabled`)، ولا يغيّر قرار البوّابة القائمة إطلاقاً. يصنّف كلّ بوّابةٍ
+ * إلى ثلاثٍ **متمايزة** (`classifyCapabilityShadow`) ويُصدر لكلٍّ حدثاً مناسباً:
+ *   · `divergence` — القدراتُ تخالف القرار الحاليّ (الوحدة مُغطّاة) ⇒ `warn` ليُبنى عليه التضييقُ الواعي.
+ *   · `uncovered`  — الوحدة/المستوى خارج الكتالوج (كلّ `purchases`، أو `expenses/READ`, `reports/FULL`) ⇒
+ *      `debug` كي لا يُحسَب غيرُ المُغطّى **تطابقاً مُتحقَّقاً**؛ لا يُصعَّد خطأً أحمرَ ولا يكسر طلباً.
+ *   · `match`      — لا حدث.
+ * كلّ حدثٍ يحمل `path` (نقطة النهاية) و`correlationId` (معرِّف الطلب) لتمييز إجراءاتٍ تتشارك بوّابةَ وحدة.
+ * ملفوفٌ بـtry/catch: الظلّ **لا يُسقط طلباً أبداً**، فحتى خطأٌ فيه لا يُغيّر السلوك القائم (لا توسيع، لا تضييق).
+ */
+function auditCapabilityShadow(
+  ctx: { user?: { id?: number | string; role?: string } | null; req?: { id?: unknown } | null },
+  gate: "requireModule" | "requireModuleGate",
+  moduleKey: string,
+  minLevel: AccessLevel,
+  moduleMap: Record<string, AccessLevel>,
+  gateAllowed: boolean,
+  path: string,
+): void {
+  try {
+    // req.id = ReqId (string|number من pino-http) — نُطبّعه نصّاً كما في errorFormatter.
+    const rawCorrelationId = ctx.req?.id;
+    const correlationId = rawCorrelationId == null ? null : String(rawCorrelationId);
+    const grants = deriveCapabilityGrants(moduleMap);
+    const capabilityAllowed = capabilityModuleDecision(moduleMap, grants, moduleKey, minLevel);
+    const outcome = classifyCapabilityShadow(gateAllowed, capabilityAllowed);
+    if (outcome === "match") return;
+    const fields = {
+      gate,
+      path,
+      moduleKey,
+      minLevel,
+      gateAllowed,
+      capabilityAllowed,
+      correlationId,
+      userId: ctx.user?.id ?? null,
+      role: ctx.user?.role ?? null,
+    };
+    if (outcome === "divergence") {
+      logger.warn(fields, `RBAC capability shadow divergence: ${moduleKey}/${minLevel} @ ${path}`);
+    } else {
+      // فوات تغطية: ليس خطأً ولا يكسر طلباً — `debug` (كثيرٌ ومتوقَّع؛ أغلبُ المرور غيرُ مُغطّى بالكتالوج).
+      logger.debug(fields, `RBAC capability shadow uncovered gate: ${moduleKey}/${minLevel} @ ${path}`);
+    }
+  } catch (err) {
+    logger.warn({ err, gate, path, moduleKey, minLevel }, "RBAC capability shadow check failed (ignored)");
+  }
+}
+
 /** إنفاذ وحدة بمستوى وصول — يستخدم الخريطة المحسوبة (قالب + override). */
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
-  return t.middleware(async ({ ctx, next }) => {
+  return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
     const level = map[moduleKey] ?? "NONE";
     const allowed = level === "FULL" || (minLevel === "READ" && level === "READ");
+    // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `allowed` (صفر انحدار).
+    if (capabilityShadowEnabled()) auditCapabilityShadow(ctx, "requireModule", moduleKey, minLevel, map, allowed, path);
     if (!allowed) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
@@ -318,7 +397,14 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
       | Record<string, AccessLevel>
       | null
       | undefined;
-    if (!moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles)) {
+    const gateAllowed = moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles);
+    // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `gateAllowed` (صفر
+    // انحدار). admin مُستثنى (يعبُر البوّابة دائماً وقدراتُه مُطابِقة تلقائياً، فلا معنى لبناء خريطته للمقارنة).
+    if (capabilityShadowEnabled() && ctx.user.role !== "admin") {
+      const map = resolvePermissions(ctx.user.role as RoleKey, override);
+      auditCapabilityShadow(ctx, "requireModuleGate", moduleKey, minLevel, map, gateAllowed, path);
+    }
+    if (!gateAllowed) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
     assertTwoFactorEnrolled(ctx.user, path);
@@ -474,6 +560,82 @@ export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos"
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
 export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
+/**
+ * طلب تصحيح فاتورة من محرّر البيع: مبيعات FULL، أو محطة استقبال workorders:FULL، مع
+ * products:READ لأن المحرّر الأصلي يحمّل وحدات الكتالوج وأسعاره لإعادة بناء السطور.
+ * لا تمنح هذه البوابة إنشاء بيعٍ مباشر؛ استعمالها محصور بنقاط التصحيح ومحاولة فرق الدفع.
+ * branchScoped يضيف عزل الفرع والموظف، وinvoiceCorrectionScope يقصّ موظف الاستقبال على
+ * فواتير ورديات RECEPTION حصراً داخل الخدمة نفسها.
+ */
+export const salesCorrectionProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next, path }) => {
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: appErrorMessage({
+          what: "تعذّر فتح تعديل الفاتورة",
+          why: UNAUTHED_ERR_MSG,
+          doThis: "سجّل الدخول ثم أعد فتح شاشة الاستقبال أو المبيعات",
+        }),
+      });
+    }
+    const override = (ctx.user.permissionsOverride ?? null) as Record<string, AccessLevel> | null;
+    const map = resolvePermissions(ctx.user.role as RoleKey, override);
+    const salesFull = map.sales === "FULL";
+    const receptionFull = map.workorders === "FULL";
+    const productsReadable = map.products === "READ" || map.products === "FULL";
+    if (ctx.user.role !== "admin" && (!productsReadable || (!salesFull && !receptionFull))) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر فتح تعديل الفاتورة",
+          why: FORBIDDEN_MSG,
+          doThis: "اطلب من المدير منحك وصول المبيعات الكامل أو صلاحية الاستقبال، مع قراءة المنتجات",
+        }),
+      });
+    }
+    assertTwoFactorEnrolled(ctx.user, path);
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+        invoiceCorrectionScope: salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
+      },
+    });
+  }),
+);
+/**
+ * مقارنة طلب التصحيح في شاشة الاعتماد: مراجع المبيعات لا يحتاج صلاحية كتالوج مستقلة،
+ * بينما موظف الاستقبال الذي يراجع طلبه يبقى محتاجاً قراءة المنتجات كما في شاشة التحرير.
+ */
+export const salesCorrectionComparisonProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next, path }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const override = (ctx.user.permissionsOverride ?? null) as Record<string, AccessLevel> | null;
+    const map = resolvePermissions(ctx.user.role as RoleKey, override);
+    const salesFull = map.sales === "FULL";
+    const receptionWithCatalog = map.workorders === "FULL"
+      && (map.products === "READ" || map.products === "FULL");
+    if (ctx.user.role !== "admin" && !salesFull && !receptionWithCatalog) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر فتح مقارنة التعديل",
+          why: FORBIDDEN_MSG,
+          doThis: "اطلب صلاحية اعتماد المبيعات أو صلاحية الاستقبال مع قراءة المنتجات",
+        }),
+      });
+    }
+    assertTwoFactorEnrolled(ctx.user, path);
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+        invoiceCorrectionScope: salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
+      },
+    });
+  }),
+);
 // عرض/طباعة فاتورةٍ واحدة (طلب المالك — خدمة العملاء تطبع/تعيد طباعة فواتيرها): يسمح بـsales≥READ
 // **أو** صلاحية الاستقبال (workorders:FULL). مشغّل الاستقبال يُنشئ الفواتير فيطبعها، بلا فتح وحدة
 // المبيعات كاملةً (عروض الأسعار تبقى محميّة على salesReadProcedure). محميّة بالفرع (branchScoped +
@@ -532,7 +694,6 @@ export const invoiceViewProcedure = branchScopedProcedure.use(
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
 export const purchasesManagerProcedure = moduleProcedure(["manager", "purchasing"], "purchases", "FULL");
-export const purchasesWarehouseProcedure = moduleProcedure(["warehouse", "manager", "purchasing"], "purchases", "FULL");
 // inventory (يشمل production/stocktake — كلاهما يُحرّك المخزون)
 export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
 export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manager"], "inventory", "FULL");
@@ -661,9 +822,8 @@ export const consignmentReadProcedure = branchScopedProcedure.use(requireModule(
 // products (catalog)
 export const productsReadProcedure = protectedProcedure.use(requireModule("products", "READ"));
 export const productsManagerProcedure = moduleProcedure(["manager"], "products", "FULL");
-// forPurchase (بحث منتجات جانب الشراء — يكشف التكلفة): أدوار الشراء التي تبني/تستلم أوامر الشراء
-// (purchasing/warehouse) تحتاجه لإضافة سطور PO، وكان محصوراً بالمدير فتعذّر عليها بناء أمر الشراء
-// رغم تخويلها إنشاءه (purchasesManagerProcedure)/استلامه (purchasesWarehouseProcedure). قراءة فقط،
+// forPurchase (بحث منتجات جانب الشراء — يكشف التكلفة): مسؤول الشراء يبني الفاتورة، وأمين المخزن
+// يحتاج قراءة بيانات الوحدة/التكلفة لأعمال الجرد والتحقيق. قراءة فقط،
 // ومحصور بأدوار الشراء + المدير ⇒ لا تتسرّب التكلفة للكاشير/المندوب/المستخدم العام.
 export const productsPurchaseProcedure = moduleProcedure(["manager", "warehouse", "purchasing"], "products", "READ");
 // استوديو المنتجات وحدة مستقلة: العامل يقرأ/يكتب الصور والمحتوى المقترح فقط، ولا يعبر بوابة
@@ -766,17 +926,17 @@ export const commissionsReadProcedure = protectedProcedure.use(requireModule("co
 //     (قالبه READ لا يضعه في القائمة، ولا يعبُر إلا بمنح **صريح** — قرار أدمن واعٍ).
 // الكتابة (إنشاء/تعديل مزوّد أو محفظة أو بطاقة، ونشر السعر) مديرية حصراً — §١١ من وثيقة التصميم.
 /**
- * Digital-card selling is a RETAIL-POS operation. A print/reception cashier
- * may share the cashier base template (including digital_cards=READ), but must
- * not be able to invoke the retail sale endpoints directly.
+ * Digital-card selling is available from the two selling stations: retail and
+ * reception. The print-services station remains outside this gate, while the
+ * independent digital_cards module gate below still applies.
  */
-const requireDigitalCardsRetailStation = t.middleware(async ({ ctx, next }) => {
+const requireDigitalCardsSellingStation = t.middleware(async ({ ctx, next }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
   const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
     | Record<string, AccessLevel>
     | null
     | undefined;
-  if (!canUseStation("RETAIL", ctx.user.role, override)) {
+  if (!canUseDigitalCardsSellingStation(ctx.user.role, override)) {
     throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
   }
   return next({ ctx: { ...ctx, user: ctx.user } });
@@ -784,7 +944,7 @@ const requireDigitalCardsRetailStation = t.middleware(async ({ ctx, next }) => {
 
 export const digitalCardsPosProcedure = branchScopedProcedure
   .use(requireModule("digital_cards", "READ"))
-  .use(requireDigitalCardsRetailStation);
+  .use(requireDigitalCardsSellingStation);
 export const digitalCardsAdminReadProcedure = branchScopedProcedure.use(
   requireModuleGate(["manager", "accountant", "auditor"], "digital_cards", "READ")
 );

@@ -58,6 +58,22 @@ describe("computeProgressiveTax — تصاعديّ حدّيّ", () => {
     const shuffled = [BRACKETS[2], BRACKETS[0], BRACKETS[1]];
     expect(computeProgressiveTax(shuffled, D(600000)).toNumber()).toBe(35000);
   });
+
+  /*
+   * كنارياء توثّق سلوكاً مقصوداً (تعليق الدالّة: "ما فوق أعلى حدٍّ رقميٍّ بلا شريحة مفتوحة =
+   * لا يُضرَّب — اختيار المالك") لا تُختبَر من قبل: كل شرائح هذا الملف تنتهي بشريحةٍ مفتوحة
+   * (upTo:null)، فلا شيء يثبت أنّ الإعفاء الصامت فوق آخر شريحة مغلقة هو فعلاً ما يُنفَّذ
+   * اليوم — انحرافٌ مستقبليّ (بالخطأ لا بالقصد) هنا يمرّ بلا أن يُمسِكه أيّ اختبار قائم.
+   */
+  it("شرائح مغلقة كلّها بلا شريحة مفتوحة عليا ⇒ ما فوق آخر حدٍّ لا يُضرَّب (سلوكٌ موثَّقٌ مقصود)", () => {
+    const closedOnly = [
+      { upTo: "250000", rate: "3" },
+      { upTo: "500000", rate: "5" },
+    ];
+    // 250k×3% + 250k×5% = 7,500 + 12,500 = 20,000 — و100,000 الزائدة فوق 500,000 بلا ضريبة.
+    expect(computeProgressiveTax(closedOnly, D(600000)).toNumber()).toBe(20000);
+    expect(computeProgressiveTax(closedOnly, D(5000000)).toNumber()).toBe(20000);
+  });
 });
 
 describe("computeLegalComponents — الحتمية والتعطيل", () => {

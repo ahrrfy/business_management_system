@@ -17,6 +17,8 @@ import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { getCustomerJournalBreakdown } from "../reports/customerJournalBreakdown";
 
+const TEST_CYCLE_ID = "11111111-1111-4111-8111-111111111111";
+
 function db() {
   const d = getDb();
   if (!d) throw new Error("DATABASE_URL not set for tests");
@@ -26,6 +28,7 @@ function db() {
 const TABLES = [
   "journalLines",
   "journalEntries",
+  "doubleEntrySettings",
   "accountingEntries",
   "accounts",
   "customers",
@@ -55,6 +58,13 @@ async function seed() {
   const [sales] = await d.insert(s.accounts).values({
     code: "4100", name: "مبيعات قرطاسية", type: "REVENUE", systemRole: "SALES_STATIONERY",
   });
+  // دورةٌ حاليّة (SHADOW) — الكشف يُرشّح على cycleId (تحصين م١)، فبيانات دورةٍ أخرى لا تظهر.
+  await d.insert(s.doubleEntrySettings).values({
+    id: 1,
+    mode: "SHADOW",
+    shadowStartedAt: new Date("2026-07-01T00:00:00Z"),
+    shadowCycleId: TEST_CYCLE_ID,
+  });
   return {
     arId: Number((ar as { insertId: number }).insertId),
     salesId: Number((sales as { insertId: number }).insertId),
@@ -79,9 +89,10 @@ async function seedJournal(
   branchId: number | null = 1,
   entryDate = new Date("2026-08-11"),
   status: "POSTED" | "UNMAPPED" = "POSTED",
+  cycleId: string = TEST_CYCLE_ID,
 ): Promise<number> {
   const res = await db().insert(s.journalEntries).values({
-    entryId, sourceType: "ACCOUNTING_ENTRY", entryDate, branchId, status,
+    entryId, sourceType: "ACCOUNTING_ENTRY", entryDate, branchId, status, cycleId,
   });
   return extractInsertId(res);
 }
@@ -178,5 +189,27 @@ describe("getCustomerJournalBreakdown", () => {
       customerId: 100, from: "2026-08-01", to: "2026-08-31",
     });
     expect(result.totalDebit).toBe("200.00");
+  });
+
+  it("أسطرُ دورةِ ظلٍّ سابقةٍ مُلغاة (cycleId مختلف) مُستبعَدة — تحصين م١", async () => {
+    const { arId } = await seed();
+    // الدورة الحاليّة (TEST_CYCLE_ID): ١٠٠ مدين — تظهر.
+    const entryCur = await seedEntry();
+    const journalCur = await seedJournal(entryCur);
+    // دورةٌ سابقة مُلغاة (cycleId آخر): ٩٠٠ مدين — يجب أن تُستبعَد كي لا تتضخّم أرصدة العميل.
+    const entryOld = await seedEntry();
+    const journalOld = await seedJournal(
+      entryOld,
+      1,
+      new Date("2026-08-11"),
+      "POSTED",
+      "99999999-9999-4999-8999-999999999999",
+    );
+    await db().insert(s.journalLines).values([
+      { journalId: journalCur, role: "AR", accountId: arId, customerId: 100, branchId: 1, debit: "100.00", credit: "0.00" },
+      { journalId: journalOld, role: "AR", accountId: arId, customerId: 100, branchId: 1, debit: "900.00", credit: "0.00" },
+    ]);
+    const result = await getCustomerJournalBreakdown({ customerId: 100 });
+    expect(result.totalDebit).toBe("100.00"); // دون ٩٠٠ من الدورة المُلغاة
   });
 });

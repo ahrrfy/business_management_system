@@ -152,4 +152,17 @@ describe("Slice DFP1 — حارس SLA على عمر الطرود المفتوح�
     const fresh = await dispatchedOrder(shiftId, "sla-6b", "1500.00");
     expect(fresh.consignmentId).toBeGreaterThan(0);
   });
+
+  it("⑦ جهة توصيل موثوقة (maxOpenParcelAgeDays = 0) تتجاوز حظر SLA وتسمح بالإسناد رغم وجود طرود قديمة", async () => {
+    // ضبط العتبة إلى 0 (تعطيل حظر الـSLA للجهة الموثوقة)
+    await db().update(s.deliveryParties).set({ maxOpenParcelAgeDays: 0 }).where(eq(s.deliveryParties.id, 1));
+    const shiftId = await openReception();
+    const stale = await dispatchedOrder(shiftId, "sla-7a", "25000.00");
+    await ageParcelBy(stale.consignmentId, 45); // عمر الطرد 45 يوماً
+
+    // الإسناد يجب أن ينجح مباشرة دون حظر
+    const bypassOrder = await dispatchedOrder(shiftId, "sla-7b", "5000.00");
+    expect(bypassOrder.consignmentId).toBeGreaterThan(0);
+  });
 });
+

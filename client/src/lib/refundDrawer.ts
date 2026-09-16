@@ -7,6 +7,8 @@
  * [`shared/refundPreflight.ts`](../../../shared/refundPreflight.ts) ونقطتَي التمهيد الخادميّتين.
  *
  * الباقي هنا **عرضٌ خالص**: أيُّ درجٍ يُختار افتراضاً، ومتى يُحجَب الإرسال، ومتى يُحذَّر من عجز.
+ * يستهلكه `useRefundDrawer`/`RefundDrawerField` داخل المنتقي الموحَّد
+ * [`components/ui/RefundRailPicker.tsx`](../components/ui/RefundRailPicker.tsx) وحده (م٢ ق١٠ب).
  */
 import { D } from "@/lib/money";
 
@@ -40,17 +42,24 @@ export interface RefundDrawerOption {
  *
  * وحين يتعدّد الدرجُ ولا يملك المنفّذ واحداً ⇒ `null`: **لا تخمين**. نسبةُ نقدٍ خارجٍ إلى
  * درجٍ لم يخرج منه تُفسد تسوية درجَين معاً (§٥ — لكلّ دينارٍ مسارٌ منسوبٌ لفاعله).
+ *
+ * `restrictToOwnDrawer`: في مرتجع البيع المباشر (`SALE_RETURN`)، الكاشير مقيّد بوردية نفسه حصراً،
+ * فلا يرث درج غيره ولو كان وحيداً في الفرع. أمّا في إرجاع الأمانات وباقي السياقات فالخادم يقبل
+ * أيّ درج مفتوح في الفرع.
  */
 export function pickDefaultRefundDrawer(
   drawers: readonly RefundDrawerOption[],
   currentUserId: number | null | undefined,
+  role?: string,
+  restrictToOwnDrawer = false,
 ): number | null {
   if (drawers.length === 0) return null;
   if (currentUserId != null) {
     const mine = drawers.find((d) => d.userId === currentUserId);
     if (mine) return mine.shiftId;
+    if (restrictToOwnDrawer && role === "cashier") return null;
   }
-  return drawers.length === 1 ? drawers[0].shiftId : null;
+  return (restrictToOwnDrawer && role === "cashier") ? null : (drawers.length === 1 ? drawers[0].shiftId : null);
 }
 
 /**

@@ -209,6 +209,20 @@ const EXTRA_MIGRATIONS = [
   // ١/٩/٢٦: يوسّع enum قناة طابور الاسترداد بـRETURN. `db:push` يبنيه من المخطّط فتنشأ
   // الصيغة الجديدة على قاعدة الاختبار، لكن المرآة تُبقي المسارين متطابقين.
   "drizzle/migrations/0327_offline_recovery_return_channel.sql",
+  // Run after 0128 so the reference owner, not each basket member, holds uniqueness.
+  "drizzle/migrations/0332_digital_card_baskets.sql",
+  // ٤/٩/٢٦: تُسقط ستّة قيود CHECK maker-checker قائمة (راجع رأس الملف) — إتمامُ قرار
+  // المالك ٣/٩/٢٦ (PR #962) الذي طبّقته طبقة التطبيق فقط. `db:push` الطازج (test:db:init)
+  // يبني الصيغة الصحيحة أصلاً من schema.ts بعد إزالة check()، لكن قاعدةً بها هذه القيود
+  // مسبقاً (كإنتاج، أو دفعٍ تزايديّ لم يُعِد بناء الجدول) تبقى على الصيغة القديمة بصمتٍ —
+  // نفس فخّ #675/0326.
+  "drizzle/migrations/0333_owner_selfapproval_checkconstraints.sql",
+  // ٤/٩/٢٦: تُسقط ثلاثة قيود CHECK maker-checker قائمة (توسيعُ قرار المالك ٣/٩/٢٦ على
+  // مسارات حوكمة مشترياتٍ إضافية) — نفس فخّ #675/0326/0333.
+  "drizzle/migrations/0334_purchases_owner_selfapproval_checkconstraints.sql",
+  // ٦/٩/٢٦: قرار المالك عامٌّ في كل الوحدات؛ تُسقط بقية قيود maker-checker التي لا تستطيع
+  // CHECK أحادية الجدول استثناء المالك النشط منها. التحقق من صفة المالك يبقى في الخدمة.
+  "drizzle/migrations/0336_owner_global_selfapproval_constraints.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

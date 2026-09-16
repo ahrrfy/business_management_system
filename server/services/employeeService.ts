@@ -21,6 +21,8 @@ import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage"
 import { listEmployeeDeviceLinks } from "./hrDeviceService";
 import { WAGE_FIELD_LABELS, wageProfileDiff, wageProfileOf } from "./hr/wageProfile";
 import { resolveTargetBranch, type CompanyBranchScope } from "./companyBranchScope";
+import { revokeAllNativePushDevicesForUser } from "./nativePushService";
+import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
 
 const COMPANY_SCOPE: CompanyBranchScope = { branchId: null };
 
@@ -440,8 +442,21 @@ export async function setEmploymentStatus(
       .set({ effectiveTo: linkEndsOn })
       .where(eq(hrDeviceUsers.employeeId, id));
     const deviceLinksReleased = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
-    return { userDisabled, deviceLinksReleased, deviceLinksRestored: 0 };
+    return {
+      userDisabled,
+      disabledUserId: userDisabled ? e.userId : null,
+      deviceLinksReleased,
+      deviceLinksRestored: 0,
+    };
   });
+  if (effects.disabledUserId != null) {
+    // Termination commits first; the separate delivery channels then lose the
+    // device bindings as a best-effort containment action.
+    await Promise.allSettled([
+      revokeAllNativePushDevicesForUser(effects.disabledUserId),
+      revokeAllSuperAppExpoPushDevicesForUser(effects.disabledUserId),
+    ]);
+  }
   const e = await getEmployee(id, scope);
   return { ...e!, ...effects };
 }

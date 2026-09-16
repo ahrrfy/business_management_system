@@ -36,6 +36,7 @@ import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { registerWellKnown } from "./wellKnown";
 import { registerStorefrontWishlistFallback } from "./storefrontWishlistFallback";
+import { sitemapRouter } from "./routes/sitemap";
 import { applyBodyParsers } from "./middleware/bodyParsers";
 import { csrfGuard } from "./middleware/csrf";
 import {
@@ -73,6 +74,7 @@ import { studioExportRouter } from "./routes/studioExportRouter";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
+import { runWithLegacyHashScope } from "./services/idempotency";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
 import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
@@ -214,6 +216,10 @@ async function startServer() {
     }),
   );
 
+  // نطاقُ مرشّحات البصمة القديمة لكلّ طلب (idempotency.ts، ٣/٩/٢٦): يجعل جسرَ البصمات ما قبل
+  // الإصلاح محلّياً للطلب فلا يطرح طلبٌ متزامن مرشّحَ طلبٍ آخر، ويموت مع الطلب.
+  app.use((_req, _res, next) => runWithLegacyHashScope(next));
+
   // حماية رؤوس HTTP. CSP مُفعَّل مع استثناء style-src unsafe-inline لـTailwind/SPA.
   // في وضع التطوير: 'unsafe-inline' + 'unsafe-eval' مطلوبان لـVite HMR و source maps.
   // في الإنتاج: نبقى على 'self' فقط (البنية المجمَّعة بلا inline scripts).
@@ -245,7 +251,7 @@ async function startServer() {
           // `blob:` هنا لا يُوسّع `script-src`: العمّال معزولون ولا يصلون DOM.
           workerSrc: ["'self'", "blob:"],
           styleSrc: ["'self'", "'unsafe-inline'"],
-          imgSrc: ["'self'", "data:", "blob:"],
+          imgSrc: ["'self'", "data:", "blob:", "https:"],
           connectSrc: isDev
             ? [
                 "'self'",
@@ -265,6 +271,7 @@ async function startServer() {
             ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
             : ["'none'"],
           fontSrc: ["'self'", "data:"], // خط Cairo مستضاف محلياً (@fontsource) ⇒ لا حاجة لـgstatic.
+          mediaSrc: ["'self'", "blob:", "https://*.mp3quran.net", "https://*.everyayah.com"],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
         },
@@ -533,8 +540,7 @@ async function startServer() {
     }),
   );
 
-  // حدّ صارم على **كتابة الطلب** العلنية (storefront.createOrder) — إجراء كتابة بلا مصادقة
-  // ⇒ حماية من إغراق جدول الطلبات/إنشاء عملاء وهميين بالجملة. (يسبق الحدّ العام للقراءة.)
+  // حدّ صارم على **كتابة البيع/عرض السعر** العلنية — كلاهما ينشئ عميلاً وصفوفاً بلا مصادقة.
   app.use(
     "/api/trpc",
     rateLimit({
@@ -542,8 +548,12 @@ async function startServer() {
       limit: Number(process.env.STOREFRONT_ORDER_RATE_LIMIT_MAX ?? 20),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      skip: (req) => !req.path.includes("storefront.createOrder"),
-      handler: rateLimitHandler("طلبات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
+      skip: (req) =>
+        !req.path.includes("storefront.createOrder") &&
+        !req.path.includes("storefront.createQuoteRequest"),
+      handler: rateLimitHandler(
+        "طلبات أو عروض سعر كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
     }),
   );
 
@@ -611,17 +621,17 @@ async function startServer() {
   const tenancy = tenancyMiddleware();
 
   app.use("/api/trpc", tenancy);
-  // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
-  // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
+  // الاستعلامات تُنقل بـPOST لتفادي حد عنوان Nginx؛ وmaxBatchSize يحدّ سطح هجوم batch إلى 20.
+  // هذا يغيّر وسيلة نقل query فقط؛ نوع الإجراء وصلاحياته لا يتغيّران.
   app.use(
     "/api/trpc",
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      allowMethodOverride: true,
       maxBatchSize: 20,
     }),
   );
-
   // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"
   // لأن /raw و /test يغيّران الحالة (طباعة فعلية + قد يُشغّلان copy للمشاركة).
@@ -725,6 +735,7 @@ async function startServer() {
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
+  let stopSuperAppExpoPushWorker: (() => void) | null = null;
   let stopAppNotificationOutboxWorker: (() => Promise<void>) | null = null;
   let stopWebPushOutboxWorker: (() => void) | null = null;
   let stopStorefrontPushCampaignWorker: (() => Promise<void>) | null = null;
@@ -756,6 +767,12 @@ async function startServer() {
     const nativePush = await import("./services/nativePushOutboxWorker");
     nativePush.startNativePushOutboxWorker();
     stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
+
+    // Super Arabia's Expo tokens are intentionally isolated from both the
+    // legacy Android FCM path and the customer-store campaign worker.
+    const superAppExpoPush = await import("./services/superAppPushWorker");
+    superAppExpoPush.startSuperAppExpoPushWorker();
+    stopSuperAppExpoPushWorker = superAppExpoPush.stopSuperAppExpoPushWorker;
 
     // Web Push يمر بالطابور الدائم نفسه دلالياً: لا تضيع الرسالة عند عطل مؤقت في المزود.
     const webPush = await import("./services/webPushOutboxWorker");
@@ -803,6 +820,19 @@ async function startServer() {
         void runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts).catch(() => {
           /* دورة قادمة */
         });
+      });
+    }
+
+    // قرار المالك ١/٩/٢٦: إغلاق الوردية يرحّل النقد مباشرةً إلى الخزينة. نطوي مرةً واحدة
+    // عقود CH القديمة المعلّقة كي تختفي خطوة «عدّ واستلام» من الواقع لا من الواجهة فقط.
+    if (process.env.NODE_ENV !== "test") {
+      const { settlePendingShiftCloseHandovers } = await import("./services/cashHandoverService");
+      const { runAcrossActiveTenants } = await import("./tenancy/backgroundTenants");
+      void runAcrossActiveTenants(
+        "shift_close_auto_settlement",
+        settlePendingShiftCloseHandovers,
+      ).catch((err) => {
+        logger.error({ err }, "shift.close_auto_settlement.failed");
       });
     }
 
@@ -858,6 +888,7 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
+      stopSuperAppExpoPushWorker?.();
       await stopAppNotificationOutboxWorker?.();
       stopWebPushOutboxWorker?.();
       await stopStorefrontPushCampaignWorker?.();
@@ -885,6 +916,7 @@ async function startServer() {
   // JSON لا index.html على /.well-known/assetlinks.json (تغليف أندرويد على Play).
   registerWellKnown(app);
   registerStorefrontWishlistFallback(app);
+  app.use(sitemapRouter);
 
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);

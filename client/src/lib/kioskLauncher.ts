@@ -23,7 +23,7 @@ export function kioskUrl(origin: string, token: string): string {
 export interface InstallerInfo {
   /** أصل الخادم (مثلاً https://srv1548487.hstgr.cloud). */
   origin: string;
-  /** ثواني الانتظار قبل فتح المتصفّح بعد إقلاع الوندوز. افتراضي 120. */
+  /** ثواني الانتظار قبل فتح المتصفّح بعد إقلاع الوندوز. افتراضي 5. */
   bootDelaySeconds?: number;
 }
 
@@ -33,18 +33,18 @@ export interface InstallerInfo {
  * منطقه:
  *   1. إن لم يوجد ملف الرمز (`token.txt`) ⇒ وضع «تفعيل»: يطلب لصق الرمز، يحفظه،
  *      يُنسّخ نفسه إلى مجلّد بدء التشغيل، ثم يفتح الكشك فوراً (بلا انتظار).
- *   2. إن كان يعمل من مجلّد بدء التشغيل (بعد إقلاع الوندوز) ⇒ ينتظر BOOT_DELAY_SECS ثم يفتح.
+ *   2. إن كان يعمل من مجلّد بدء التشغيل (بعد إقلاع الوندوز) ⇒ ينتظر BOOT_DELAY_SECS ثم يفحص الشبكة ويفتح.
  *   3. إن كان يعمل يدوياً بعد التفعيل ⇒ يفتح مباشرةً بلا انتظار.
  *
  * ملاحظات تقنية:
  * - كشف «تشغيل من Startup» عبر مقارنة `%~dp0` بمسار مجلّد Startup للمستخدم.
- * - يفضّل Chrome ثم يقع إلى Edge؛ ملف تعريف متصفّح مخصّص معزول عن جلسات المستخدم.
+ * - يفضّل Chrome ثم يقع إلى Edge؛ يبحث في ProgramFiles وLocalAppData (تثبيت المستخدم).
  * - `--kiosk` يخفي كل شرائط المتصفّح (ملء شاشة كامل).
  * - العلامة `title` تُظهر «قارئ الأسعار» في شريط مهام الوندوز لتمييز النافذة.
  */
 export function buildInstallerCmd(info: InstallerInfo): string {
   const base = info.origin.replace(/\/+$/, "");
-  const delay = Math.max(0, Math.floor(info.bootDelaySeconds ?? 120));
+  const delay = Math.max(0, Math.floor(info.bootDelaySeconds ?? 5));
   const lines = [
     "@echo off",
     "chcp 65001 >nul",
@@ -117,10 +117,23 @@ export function buildInstallerCmd(info: InstallerInfo): string {
     "",
     ":delay_then_run",
     "echo.",
-    "echo   قارئ الأسعار سيبدأ خلال %BOOT_DELAY_SECS% ثانية...",
-    "echo   (انتظار استقرار الوندوز والاتصال بالخادم)",
-    "echo.",
-    "timeout /t %BOOT_DELAY_SECS% /nobreak >nul",
+    "echo   قارئ الأسعار — جاري فحص الاتصال بالخادم واستقرار النظام...",
+    "if %BOOT_DELAY_SECS% gtr 0 timeout /t %BOOT_DELAY_SECS% /nobreak >nul",
+    "set /a ATTEMPTS=0",
+    ":wait_network",
+    "set /a ATTEMPTS+=1",
+    `curl -s --head --connect-timeout 2 "%SERVER_URL%" >nul 2>&1`,
+    "if not errorlevel 1 goto :network_ready",
+    "if !ATTEMPTS! geq 30 goto :network_timeout",
+    "timeout /t 2 /nobreak >nul",
+    "goto :wait_network",
+    "",
+    ":network_timeout",
+    "echo   تنبيه: تعذّر الاتصال بالخادم بعد 60 ثانية، جاري فتح القارئ بالاعتماد على الحفظ المحلي...",
+    "goto :run_now",
+    "",
+    ":network_ready",
+    "echo   تم الاتصال بالخادم بنجاح.",
     "",
     ":run_now",
     "set \"TOKEN=\"",
@@ -132,21 +145,36 @@ export function buildInstallerCmd(info: InstallerInfo): string {
     "  exit /b 1",
     ")",
     "",
+    "REM تنظيف أقفال كروم القديمة في حال انقطاع الكهرباء الفجائي",
+    "if exist \"%PROFILE%\\SingletonLock\" del /f /q \"%PROFILE%\\SingletonLock\" >nul 2>&1",
+    "if exist \"%PROFILE%\\SingletonCookie\" del /f /q \"%PROFILE%\\SingletonCookie\" >nul 2>&1",
+    "if exist \"%PROFILE%\\SingletonSocket\" del /f /q \"%PROFILE%\\SingletonSocket\" >nul 2>&1",
+    "",
+    "REM منع سكون الشاشة وجهاز الكشك نهائياً (وضع التشغيل المستمر 24/7)",
+    "powercfg /change monitor-timeout-ac 0 >nul 2>&1",
+    "powercfg /change standby-timeout-ac 0 >nul 2>&1",
+    "powercfg /change hibernate-timeout-ac 0 >nul 2>&1",
+    "powercfg /change disk-timeout-ac 0 >nul 2>&1",
+    "powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-86ee-57e808e59607 48e6b7a6-50f5-4760-a502-e17220042107 0 >nul 2>&1",
+    "powercfg /setactive SCHEME_CURRENT >nul 2>&1",
+    "",
     "set \"KURL=%SERVER_URL%/kiosk#t=!TOKEN!\"",
     "",
     "set \"CHROME=\"",
     "if exist \"%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe\" set \"CHROME=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe\"",
     "if exist \"%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe\" set \"CHROME=%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe\"",
+    "if exist \"%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe\" set \"CHROME=%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe\"",
     "if defined CHROME (",
-    "  start \"\" \"!CHROME!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --no-default-browser-check --noerrdialogs --disable-pinch --overscroll-history-navigation=0 --disable-features=TranslateUI --check-for-update-interval=604800",
+    "  start \"\" \"!CHROME!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --no-default-browser-check --noerrdialogs --disable-pinch --overscroll-history-navigation=0 --disable-features=TranslateUI,TouchpadOverscrollHistoryNavigation,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --force-power-high-performance --autoplay-policy=no-user-gesture-required --disable-session-crashed-bubble --check-for-update-interval=604800",
     "  exit /b 0",
     ")",
     "",
     "set \"EDGE=\"",
     "if exist \"%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe\" set \"EDGE=%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe\"",
     "if exist \"%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe\" set \"EDGE=%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe\"",
+    "if exist \"%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe\" set \"EDGE=%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe\"",
     "if defined EDGE (",
-    "  start \"\" \"!EDGE!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --noerrdialogs --overscroll-history-navigation=0",
+    "  start \"\" \"!EDGE!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --noerrdialogs --disable-pinch --overscroll-history-navigation=0 --disable-features=TranslateUI,TouchpadOverscrollHistoryNavigation,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --force-power-high-performance --autoplay-policy=no-user-gesture-required --disable-session-crashed-bubble",
     "  exit /b 0",
     ")",
     "",

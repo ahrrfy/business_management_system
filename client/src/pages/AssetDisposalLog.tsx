@@ -35,13 +35,11 @@ export default function AssetDisposalLog() {
   }, [allRows, f.q, f.type, f.from, f.to]);
   const filtersActive = f.q.trim() !== "" || f.type !== "" || f.from !== "" || f.to !== "";
 
-  if (q.isLoading) return <LoadingState />;
-  if (q.error) return <ErrorState message={q.error.message} onRetry={() => q.refetch()} />;
-
-  const disposed = rows.filter((r) => r.status === "disposed");
-  const retired = rows.filter((r) => r.status === "retired");
-  const totalProceeds = disposed.reduce((s, r) => s + Number(r.proceeds ?? 0), 0);
-  const netGain = disposed.reduce((s, r) => s + Number(r.gain ?? 0), 0);
+  /*
+   * ⚠️ **فوق الرجوع المبكّر**: كان تحت `if (q.isLoading) return` فلا يُنفَّذ إلّا في
+   * التصيير الثاني ⇒ عددُ الخطّافات يتغيّر بين تصييرَين، وReact يسقط بدل عرض السجلّ
+   * (Codex P1 على PR #936). قاعدةُ الخطّافات: كلُّ `useMemo` فوق كلِّ `return` مشروط.
+   */
   /** أعمدة سجلّ استبعاد الأصول. */
   const disposalColumns = useMemo<ColumnDef<(typeof rows)[number], unknown>[]>(() => [
     {
@@ -97,6 +95,14 @@ export default function AssetDisposalLog() {
       meta: { kind: "money" },
     },
   ], []);
+
+  if (q.isLoading) return <LoadingState />;
+  if (q.error) return <ErrorState message={q.error.message} onRetry={() => q.refetch()} />;
+
+  const disposed = rows.filter((r) => r.status === "disposed");
+  const retired = rows.filter((r) => r.status === "retired");
+  const totalProceeds = disposed.reduce((s, r) => s + Number(r.proceeds ?? 0), 0);
+  const netGain = disposed.reduce((s, r) => s + Number(r.gain ?? 0), 0);
 
   return (
     <div className="space-y-4">

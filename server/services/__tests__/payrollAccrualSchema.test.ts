@@ -105,7 +105,7 @@ describe("0185 payroll and expense accrual schema", () => {
     expect(columnNames(payrollAccountingEvents).has("sourceHash")).toBe(true);
   });
 
-  it("requires maker/checker remittance evidence and preserves advance history", () => {
+  it("requires remittance evidence columns (no DB-level maker/checker after 0333) and preserves advance history", () => {
     const remittance = getTableConfig(payrollRemittanceRequests);
     const remittanceColumns = new Set(
       remittance.columns.map((column) => column.name),
@@ -122,7 +122,10 @@ describe("0185 payroll and expense accrual schema", () => {
     ]) {
       expect(remittanceColumns.has(name)).toBe(true);
     }
-    expect(remittance.checks.map((check) => check.name)).toContain(
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ
+    // `chk_payroll_remittance_maker_checker` أُسقط بالهجرة 0333 (كان يمنع owner من اعتماد
+    // ما أنشأه هو بنفسه بلا استثناء). راجع ownerSelfApprovalCheckConstraints.test.ts.
+    expect(remittance.checks.map((check) => check.name)).not.toContain(
       "chk_payroll_remittance_maker_checker",
     );
 

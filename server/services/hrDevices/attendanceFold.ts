@@ -296,7 +296,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
             g.date,
             event.clock,
           );
-          // تسجيل الدخول ناجح بذاته؛ نقص الخروج في منتصف اليوم ليس خطأً للمستخدم.
+          // بصمة الحضور ناجحة بذاتها؛ نقص الخروج في منتصف اليوم ليس خطأً للمستخدم.
           const needsReview =
             event.movement === "ATTENDANCE_CHECK_OUT" && day.needsReview;
           if (empRow.userId) {

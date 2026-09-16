@@ -1,12 +1,16 @@
 // الميزانية العمومية المبسّطة (لقطة) — أصول / خصوم / حقوق ملكية (مشتقّة).
 // عرض + Excel + طباعة A4. ⚠️ مبسّطة: المقبوضات مصنفة حسب وسيلة الدفع، الأصول بالتكلفة، حقوق الملكية مشتقّة.
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
+import { FileCheck2 } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -97,7 +101,13 @@ export default function BalanceSheet() {
           : "",
       ].filter(Boolean).join(" ")
     : "";
-  const fullNote = [NOTE, disclosure, p?.historicalNote ?? "", p?.interbranchNote ?? ""].filter(Boolean).join(" ");
+  // عند تفعيل الدفتر المزدوج: هذه لقطةٌ تشغيليّة بحقوقٍ موازَنةٍ بالإجبار؛ الميزانية المُدقّقة
+  // المشتقّة من الدفتر (حقوقٌ حقيقيّة لا مُجبَرة) في شاشة «الدليل المحاسبي النظاميّ».
+  const activeLedgerNote =
+    p?.accountingMode === "ACTIVE"
+      ? "الدفتر المزدوج مُفعَّل: حقوق الملكية هنا موازنةُ إجبار (أصول − خصوم)؛ الميزانية المُدقّقة المشتقّة من الدفتر في شاشة «الدليل المحاسبي النظاميّ»."
+      : "";
+  const fullNote = [NOTE, disclosure, activeLedgerNote, p?.historicalNote ?? "", p?.interbranchNote ?? ""].filter(Boolean).join(" ");
 
   const kpis: KpiItem[] = p
     ? [
@@ -118,7 +128,15 @@ export default function BalanceSheet() {
       { label: "الخصوم", amount: "" },
       ...sections.liabilities.map((r) => ({ label: `— ${r.label}`, amount: r.v })),
       { label: "إجمالي الخصوم", amount: p.totalLiabilities },
-      { label: "حقوق الملكية (مشتقّة)", amount: p.equity },
+      {
+        // عند تفعيل الدفتر: يحمل التصدير والطباعة تصريحَ أنّ الحقوق موازنةُ إجبار لا اشتقاقٌ من
+        // الدفتر (الميزانية المُدقّقة في الدليل المحاسبي النظاميّ) — لا يصل رقمُ الإجبار بلا إفصاح.
+        label:
+          p.accountingMode === "ACTIVE"
+            ? "حقوق الملكية (موازنةُ إجبار — الميزانية المُدقّقة في الدليل المحاسبي النظاميّ)"
+            : "حقوق الملكية (مشتقّة)",
+        amount: p.equity,
+      },
     ];
   }
 
@@ -197,13 +215,25 @@ export default function BalanceSheet() {
         </div>
       }
     >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
+        <div className="flex items-center gap-2">
+          <FileCheck2 className="size-4 text-primary" aria-hidden />
+          <span>تتوفر الميزانية العمومية الرسمية وميزان المراجعة وفق النظام المحاسبي الموحد العراقي.</span>
+        </div>
+        <Link href="/statutory-accounting">
+          <span className="font-semibold text-primary underline underline-offset-4 hover:opacity-80">
+            الانتقال إلى الدليل والقوائم النظامية
+          </span>
+        </Link>
+      </div>
+
       {q.isLoading || q.isError || !p || !sections ? (
         <Card><CardContent className="p-0">{q.isLoading ? <LoadingState /> : q.isError ? <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} /> : <div className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</div>}</CardContent></Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
-          <SectionCard title="الأصول" rows={sections.assets} total={p.totalAssets} totalLabel="إجمالي الأصول" tone="emerald" />
+          <SectionCard title="الأصول" rows={sections.assets} total={p.totalAssets} totalLabel="إجمالي الأصول" tone="pos" />
           <div className="space-y-4">
-            <SectionCard title="الخصوم" rows={sections.liabilities} total={p.totalLiabilities} totalLabel="إجمالي الخصوم" tone="amber" />
+            <SectionCard title="الخصوم" rows={sections.liabilities} total={p.totalLiabilities} totalLabel="إجمالي الخصوم" tone="warn" />
             <Card>
               <CardContent className="flex items-center justify-between p-4">
                 <span className="font-bold">حقوق الملكية (مشتقّة)</span>
@@ -217,29 +247,59 @@ export default function BalanceSheet() {
   );
 }
 
+/** سطرُ قسمٍ في الميزانية (أصل أو خصم) — تسمية البند وقيمته نصّاً. */
+type SectionRow = { label: string; v: string };
+
 function SectionCard({ title, rows, total, totalLabel, tone }: {
-  title: string; rows: { label: string; v: string }[]; total: string; totalLabel: string; tone: "emerald" | "amber";
+  // اسمُ النغمة دلاليّ لا لونيّ («pos/warn» لا «emerald/amber») — الاسمُ اللونيّ يُغري بإعادة
+  // إدخال صنفٍ خامّ عند أوّل تعديل، بينما الرسم فعلياً يخرج من توكنَي --sem-pos/--sem-warn.
+  title: string; rows: SectionRow[]; total: string; totalLabel: string; tone: "pos" | "warn";
 }) {
+  // الإجمالي في `<tfoot>` عبر `footer` على الأعمدة — يبقى محاذياً لعموده (لا سطرَ ملخّصٍ حرّ).
+  const columns = useMemo<ColumnDef<SectionRow, unknown>[]>(
+    () => [
+      {
+        id: "label",
+        header: "البند",
+        accessorFn: (r) => r.label,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => row.original.label,
+        footer: () => totalLabel,
+      },
+      {
+        id: "amount",
+        header: "القيمة",
+        accessorFn: (r) => fmtAr(r.v),
+        meta: { kind: "money" },
+        cell: ({ row }) => fmtAr(row.original.v),
+        footer: () => fmtAr(total),
+      },
+    ],
+    [total, totalLabel],
+  );
+
   return (
     <Card>
       <CardContent className="p-0">
-        <div className={`px-4 py-2.5 font-semibold border-b ${tone === "emerald" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}>{title}</div>
-        <table className="w-full text-sm">
-          <tbody>
-            {rows.length === 0 ? (
-              <tr><td className="p-4 text-center text-muted-foreground">—</td></tr>
-            ) : rows.map((r, i) => (
-              <tr key={i} className="border-b">
-                <td className="p-3 text-end">{r.label}</td>
-                <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(r.v)}</td>
-              </tr>
-            ))}
-            <tr className="font-bold bg-muted/30">
-              <td className="p-3 text-end">{totalLabel}</td>
-              <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(total)}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div className={`px-4 py-2.5 font-semibold border-b ${tone === "pos" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}>{title}</div>
+        {/* قسمٌ مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+        <DataTable<SectionRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={columns}
+          data={rows}
+          emptyText="—"
+        />
+        {/* الإجماليّ يبقى مرئياً حتى على قسمٍ فارغ: DataTable لا يرسم ذيلاً فوق صفر صفوف،
+            والجدول الخامّ كان يعرض صفَّ الإجمالي دائماً. */}
+        {rows.length === 0 && (
+          <div className="flex items-center justify-between gap-3 border-t-2 border-border bg-muted/40 px-[var(--ui-table-cell-inline)] py-2.5 text-sm font-bold">
+            <span>{totalLabel}</span>
+            <span className="tabular-nums" dir="ltr">{fmtAr(total)}</span>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

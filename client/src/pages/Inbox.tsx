@@ -1,4 +1,5 @@
 import { receptionChannelLabel } from "@shared/receptionChannel";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -159,7 +160,9 @@ function DeliveryMark({ m, onRetry }: { m: Msg; onRetry: (outboxId: number) => v
       );
     }
     return (
-      <span title={m.pending.status === "SENDING" ? "جارٍ الإرسال…" : "قيد الإرسال…"}>
+      // الفرعان حالتان مختلفتان لا صياغتان: SENDING = إرسالٌ جارٍ فعلاً (مفتاح القاموس)،
+      // وغيرُه طابورٌ لمّا يُرسَل بعد، ولا مفتاحَ له في ACTION_LABELS — دمجُهما يُضيّع التمييز.
+      <span title={m.pending.status === "SENDING" ? ACTION_LABELS.sending : "قيد الإرسال…"}>
         <Clock aria-hidden className="size-3 opacity-70" />
       </span>
     );
@@ -893,7 +896,7 @@ export default function Inbox({ onStartOrder }: { onStartOrder?: (v: StartOrderF
               disabled={list.isFetchingNextPage}
             >
               {list.isFetchingNextPage
-                ? (<><Loader2 aria-hidden className="size-4 me-1 animate-spin" /> جارٍ التحميل…</>)
+                ? (<><Loader2 aria-hidden className="size-4 me-1 animate-spin" /> {ACTION_LABELS.loading}</>)
                 : "تحميل المزيد"}
             </Button>
           )}

@@ -33,17 +33,40 @@ export function readBaselineFromMain(relativePath) {
   }
 }
 
-/** مجموع القيم في خريطة خطّ أساس `{ file: count }`. */
+/**
+ * يستخرج عدداً من قيمة أساسٍ خامّة. يدعم صيغتَين:
+ *   • رقم (السائد) — يُعاد كما هو.
+ *   • `{ onlyNew: string[], onlyEdit: string[] }` — لخطّ أساس تناظر النموذج (#958)،
+ *     يُجمَع طولا المصفوفتَين. كان `Number({...}) || 0` = `NaN || 0` = 0 ⇒ ratchet يُبلغ
+ *     زوراً بأنّ أساس main = 0 ويرفض أيّ فرع (مسك أثناء دمج #954 مع main بعد #958).
+ */
+function coerceCount(v) {
+  if (typeof v === "number") return v;
+  if (v && typeof v === "object") {
+    const n = (Array.isArray(v.onlyNew) ? v.onlyNew.length : 0);
+    const e = (Array.isArray(v.onlyEdit) ? v.onlyEdit.length : 0);
+    return n + e;
+  }
+  return Number(v) || 0;
+}
+
+/** مجموع القيم في خريطة خطّ أساس `{ file: count }` (أو `{ file: {onlyNew,onlyEdit} }`). */
 export function baselineTotal(baseline) {
-  return Object.values(baseline ?? {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+  return Object.values(baseline ?? {}).reduce((sum, n) => sum + coerceCount(n), 0);
 }
 
 /**
  * يفرض أنّ خطّ الأساس المُلتزَم لم يرتفع عن `origin/main`.
  *
+ * `renames`: خريطةٌ اختيارية `{ oldPath: newPath }` لملفّاتٍ نُقلت في هذا الفرع.
+ * المقارنة بالمفتاح تعمى عن التسمية: ملفٌّ نُقل يبدو للحارس كـ«ملفٍّ جديدٍ برصيدٍ ٢٤»
+ * وكـ«ملفٍّ اختفى» — فيبلّغ عن ارتفاعٍ زائفٍ لأنّ نظيرَه في `origin/main` تحت الاسم القديم.
+ * تُنقَل قيمةُ `mainBaseline[oldPath]` إلى `mainBaseline[newPath]` قبل المقارنة، فيتّبعُ
+ * تاريخُ الملفّ اسمَه الجديد. النقلُ الميكانيكيّ يمرّ؛ رفعُ الانتهاك الحقيقيّ يبقى ممنوعاً.
+ *
  * @returns {{ ok: boolean, skipped: boolean, message: string, delta: number }}
  */
-export function assertMonotonicDescent({ baselinePath, baseline, label }) {
+export function assertMonotonicDescent({ baselinePath, baseline, label, renames }) {
   const mainBaseline = readBaselineFromMain(baselinePath);
   if (!mainBaseline) {
     return {
@@ -52,6 +75,19 @@ export function assertMonotonicDescent({ baselinePath, baseline, label }) {
       delta: 0,
       message: `ℹ️  ${label}: تُخطّيت مقارنة المِسنَنة (لا origin/main محلياً). شغّل: git fetch origin main`,
     };
+  }
+
+  if (renames && typeof renames === "object") {
+    for (const [oldPath, newPath] of Object.entries(renames)) {
+      if (
+        typeof newPath === "string" &&
+        Object.prototype.hasOwnProperty.call(mainBaseline, oldPath) &&
+        !Object.prototype.hasOwnProperty.call(mainBaseline, newPath)
+      ) {
+        mainBaseline[newPath] = mainBaseline[oldPath];
+        delete mainBaseline[oldPath];
+      }
+    }
   }
 
   const before = baselineTotal(mainBaseline);
@@ -65,13 +101,13 @@ export function assertMonotonicDescent({ baselinePath, baseline, label }) {
    * وتُلتَفّ المِسنَنة بينما هذه الدالّة تُبلّغ بالنجاح. المِسنَنة **لكل مفتاح**.
    */
   const risen = Object.keys(baseline).filter(
-    (f) => (Number(baseline[f]) || 0) > (Number(mainBaseline[f]) || 0),
+    (f) => coerceCount(baseline[f]) > coerceCount(mainBaseline[f]),
   );
 
   if (risen.length > 0) {
     const detail = risen
       .slice(0, 10)
-      .map((f) => `   - ${f}: ${Number(mainBaseline[f]) || 0} ← ${Number(baseline[f]) || 0}`);
+      .map((f) => `   - ${f}: ${coerceCount(mainBaseline[f])} ← ${coerceCount(baseline[f])}`);
     return {
       ok: false,
       skipped: false,

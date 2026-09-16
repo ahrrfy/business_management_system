@@ -10,9 +10,15 @@
 //
 // الهوية: تُحل العضوية من deliveryPartyMembers مع توافق الربط القديم؛ السائق لا يرى إلا ما
 // أُسند إليه أو ما ينتظر ادعاء سائق داخل شركته، والمدير يرى إرساليات الجهة وفق صلاحيات عضويته.
+// ⚠️ **قاعدةُ صياغةٍ حاكمة لرسائل هذا الملفّ:** رفضُه يقع **والمندوب واقفٌ على باب الزبون**
+// (أو الكاشير على الهاتف معه)، فلا مجال لرسالةٍ تصف الحالة وتقف. كلُّ رفضٍ رقميّ يذكر
+// **الرقمين والفرق واتّجاهه**، وكلُّ رفضٍ حالة يذكر **الحالة القائمة والخطوة الناقصة باسم زرّها
+// في شاشة «توصيلاتي»** («قبول الطلب» ⇐ «استلمت الطرد» ⇐ «خرج للتوصيل» ⇐ «تم التسليم»).
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { assertNotReturnDeclared } from "./declaredReturn";
 import Decimal from "decimal.js";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   customers,
@@ -41,6 +47,7 @@ import {
 import {
   appendDeliveryEvent,
   appendDeliveryLedgerEntry,
+  assertConsignmentStatusTransition,
   assertMemberCanUseConsignment,
   assertParcelTransition,
   getDeliveryFinancialSummary,
@@ -54,7 +61,12 @@ import {
   deliveryDispatchMemoIntent,
   deliveryFeeAccrualIntent,
 } from "./posting";
-import { isShortfallReason } from "@shared/shortfallReason";
+import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
+import {
+  isShortfallReason,
+  SHORTFALL_REASONS,
+  SHORTFALL_REASON_LABEL_AR,
+} from "@shared/shortfallReason";
 import { enqueueStorefrontOrderStatusPush } from "../storeAdmin/storefrontPushCampaignService";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
@@ -89,6 +101,12 @@ export interface MyDeliveryRow {
   deliveredAt?: Date | null;
   failureReason?: string | null;
   assignedUserId?: number | null;
+  /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
+  /** المبلغ المُحصَّل فعلياً (إن وُجد). */
+  collectedAmount?: string | null;
+  /** الحالة المالية للإرسالية. */
+  moneyStatus?: string | null;
 }
 
 export interface MyDeliveriesResult {
@@ -157,12 +175,19 @@ export async function listMyDeliveries(
   );
   // لا نقصّ العمل المفتوح أبداً؛ التاريخ وحده محدود حتى لا يكبر حساب الشركة
   // بلا سقف. الطلبات الجديدة تسلك deliveryConsignments، وهذه قراءة توافقية للإرث.
+  // deliveredOnlineRows: نحصرها على غير المسدّد فقط كي لا تظهر الطلبات المنتهية تاريخياً.
   const [openOnlineRows, deliveredOnlineRows] = await Promise.all([
     legacyOnlineQuery()
       .where(and(legacyOnlineScope, eq(onlineOrders.status, "SHIPPED")))
       .orderBy(desc(onlineOrders.id)),
     legacyOnlineQuery()
-      .where(and(legacyOnlineScope, eq(onlineOrders.status, "DELIVERED")))
+      .where(
+        and(
+          legacyOnlineScope,
+          eq(onlineOrders.status, "DELIVERED"),
+          sql`(${invoices.paidAmount} IS NULL OR ${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")} > 0)`,
+        ),
+      )
       .orderBy(desc(onlineOrders.id))
       .limit(100),
   ]);
@@ -191,13 +216,16 @@ export async function listMyDeliveries(
       codDue: toDbMoney(due),
       courierFee: toDbMoney(money(r.shippingCost ?? "0")),
       createdAt: r.createdAt,
+      collectedAmount: r.invPaid ? String(r.invPaid) : "0",
+      moneyStatus: null,
     };
     (r.status === "DELIVERED" ? delivered : toDeliver).push(row);
   }
 
-  // إرساليات الاستقبال المُسنَدة لهذه الجهة. الرؤية التشغيلية لا تعتمد على remittanceId:
-  // التوريد الجزئي لا يعني أن الطرد اختفى، وختم التسليم يبقى في السجل حتى بعد التسوية المالية.
-  // نضمّ أيضاً إرث COD=0 الذي أُنشئ DELIVERED بلا ختم كي لا تبقى طرود قديمة يتيمة عن الحساب.
+  // إرساليات الاستقبال المُسنَدة لهذه الجهة:
+  // - قيد التوصيل (toDeliver): الجديد المستلم والغير مستلم (ASSIGNED/ACCEPTED/PICKED_UP/OUT_FOR_DELIVERY/FAILED).
+  // - سُلّمت (delivered): المُسلَّم للزبون فقط والذي لم يتم التحاسب عليه أو توريده بعد (UNSETTLED/PARTIAL أو أجرته معلّقة).
+  //   بمجرد التوريد أو التسوية المالية بالكامل (SETTLED) يخرج الطرد تلقائياً ليبقى الحساب نظيفاً للمندوب.
   const consignmentSelection = {
     id: deliveryConsignments.id,
     consignmentNumber: deliveryConsignments.consignmentNumber,
@@ -227,6 +255,8 @@ export async function listMyDeliveries(
     custPhone: sql<
       string | null
     >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+    externalTrackingRef: deliveryConsignments.externalTrackingRef,
+    shortfallAssigned: consignmentShortfallAssignedSql,
   };
   const consignmentQuery = () =>
     db
@@ -247,6 +277,7 @@ export async function listMyDeliveries(
         and(
           consignmentScope,
           sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED')`,
+          sql`${deliveryConsignments.status} NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')`,
         ),
       )
       .orderBy(desc(deliveryConsignments.id)),
@@ -255,6 +286,8 @@ export async function listMyDeliveries(
         and(
           consignmentScope,
           eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+          sql`${deliveryConsignments.status} NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')`,
+          sql`(${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL') OR (${deliveryConsignments.moneyStatus} = 'NOT_APPLICABLE' AND ${deliveryConsignments.feeSettledAt} IS NULL AND ${deliveryConsignments.feeCollection} IN ('SHOP', 'COUNTER') AND CAST(${deliveryConsignments.deliveryFee} AS DECIMAL(15,2)) > 0))`,
         ),
       )
       .orderBy(desc(deliveryConsignments.id))
@@ -292,6 +325,18 @@ export async function listMyDeliveries(
       failureReason: r.failureReason,
       assignedUserId:
         r.assignedUserId != null ? Number(r.assignedUserId) : null,
+      externalTrackingRef: r.externalTrackingRef ?? null,
+      collectedAmount: (() => {
+        const sf = round2(money(r.shortfallAssigned ?? "0"));
+        if (sf.gt(0)) {
+          return round2(money(r.codAmount ?? "0").minus(sf)).toFixed(2);
+        }
+        return r.collectedAmount ?? null;
+      })(),
+      moneyStatus:
+        round2(money(r.shortfallAssigned ?? "0")).gt(0)
+          ? "PARTIAL"
+          : (r.moneyStatus ?? null),
     };
     (r.parcelStatus === "DELIVERED" ? delivered : toDeliver).push(row);
   }
@@ -331,7 +376,13 @@ export async function confirmCourierDelivery(
   if (partyId == null || membership?.memberRole === "ACCOUNTANT") {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "حسابك غير مرتبط بمندوب توصيل — راجع المدير",
+      message: appErrorMessage({
+        what: "تعذّر تأكيد التسليم والتحصيل",
+        why: membership?.memberRole === "ACCOUNTANT"
+          ? "حسابك محاسبُ جهة التوصيل: يراجع الكشف والتوريد ولا يختم تسليماً في الميدان"
+          : "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وختمُ التسليم يرفع عهدةً نقديّة فلا يقع بلا جهةٍ تُنسَب إليها",
+        doThis: "اطلب من المدير ربط حسابك بجهة التوصيل من صفحة «جهات التوصيل»؛ وإلى أن يتمّ ذلك يُثبَّت التسليم من كاشير الاستقبال بمستندٍ قصير",
+      }),
     });
   }
   return withTx(async (tx) => {
@@ -351,13 +402,21 @@ export async function confirmCourierDelivery(
     if (!partyRow)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "جهة التوصيل غير موجودة",
+        message: appErrorMessage({
+          what: "تعذّر تأكيد التسليم والتحصيل",
+          why: `جهة التوصيل المرتبطة بحسابك (رقم ${partyId}) لم تعد موجودةً في السجلّ — يبدو أنّها حُذفت`,
+          doThis: "اطلب من المدير إعادة ربط حسابك بجهةٍ قائمة من صفحة «جهات التوصيل»، ولا تسلّم البضاعة قبل ذلك",
+        }),
       });
     // إعادة فحص التفعيل تحت القفل (سباق تعطيل متزامن — مراجعة عدائية ١٢/٧): جهة عُطّلت لا تقبض عهدة جديدة.
     if (!partyRow.isActive)
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "جهة التوصيل مُعطَّلة — راجع المدير",
+        message: appErrorMessage({
+          what: "تعذّر تأكيد التسليم والتحصيل",
+          why: "جهة التوصيل المرتبطة بحسابك مُعطَّلة الآن، والمعطَّلةُ لا تُحمَّل عهدةً نقديّة جديدة",
+          doThis: "اطلب من المدير إعادة تفعيل الجهة من صفحة «جهات التوصيل» ثمّ أعِد الختم؛ وسلِّم النقد المقبوض للمتجر في كلّ الأحوال",
+        }),
       });
 
     const order = (
@@ -369,25 +428,43 @@ export async function confirmCourierDelivery(
         .limit(1)
     )[0];
     if (!order)
-      throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+        what: "تعذّر تأكيد التسليم والتحصيل",
+        why: `لا طلبَ متجرٍ بالرقم ${input.onlineOrderId} في السجلّ — يبدو أنّ قائمتك قديمة`,
+        doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد الختم من بطاقة الطلب الصحيحة",
+      }) });
     // IDOR: المندوب لا يؤكّد إلا طلباته المُسنَدة إليه.
     if (Number(order.deliveryPartyId) !== partyId) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "هذا الطلب ليس ضمن توصيلاتك",
+        message: appErrorMessage({
+          what: `تعذّر تأكيد تسليم الطلب ${order.orderNumber}`,
+          why: "الطلب مُسنَدٌ إلى جهة توصيلٍ أخرى، والختمُ يرفع عهدةً نقديّة على الجهة المُسنَد إليها لا على من سلّم",
+          // إعادةُ الإسناد بوّابتها **مدير** (`deliveryManagerProcedure`)، أمّا إثباتُ التسليم
+          // بمستندٍ فبوّابتُه كاشير الاستقبال (`deliveryCashierProcedure`) — لا تخلط الجهتين.
+          doThis: "اطلب من المدير نقلَ إسناد الطلب إليك قبل الختم؛ وإن كنتَ سلّمتَ فعلاً فسلّم النقد لكاشير الاستقبال ليُثبِت التسليم بمستند",
+        }),
       });
     }
     // يجب أن يكون مُرسَلاً (SHIPPED) أو مُسلَّماً (DELIVERED — استرداد idempotent). غيرهما: لم يُجهَّز بعد.
     if (order.status !== "SHIPPED" && order.status !== "DELIVERED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الطلب ليس قيد التوصيل",
+        message: appErrorMessage({
+          what: `تعذّر تأكيد تسليم الطلب ${order.orderNumber}`,
+          why: `حالة الطلب ${order.status} لا «مُرسَل» — لم يُجهَّز للخروج بعد أو أُلغي`,
+          doThis: "اطلب من كاشير الاستقبال إخراج الطلب للتوصيل، ثمّ أعِد الختم بعد تحديث قائمة «توصيلاتي»",
+        }),
       });
     }
     if (!order.invoiceId)
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الطلب بلا فاتورة — تعذّر التحصيل",
+        message: appErrorMessage({
+          what: `تعذّر تحصيل الطلب ${order.orderNumber}`,
+          why: "لا فاتورة على الطلب، والتحصيلُ يُقاس على متبقّي فاتورةٍ قائمة لا على قيمة الطلب",
+          doThis: "سلّم البضاعة إن كانت جاهزة ولا تقبض شيئاً، وأبلِغ كاشير الاستقبال ليُصدِر فاتورة الطلب ثمّ يُثبِت التحصيل",
+        }),
       });
 
     const inv = (
@@ -401,12 +478,20 @@ export async function confirmCourierDelivery(
     if (!inv)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "فاتورة الطلب غير موجودة",
+        message: appErrorMessage({
+          what: `تعذّر تحصيل الطلب ${order.orderNumber}`,
+          why: `فاتورة الطلب (رقم ${Number(order.invoiceId)}) مفقودةٌ من السجلّ، ولا يُقيَّد قبضٌ بلا فاتورةٍ يُنسَب إليها`,
+          doThis: "لا تقبض شيئاً، وأبلِغ كاشير الاستقبال برقم الطلب ليُصلِح ارتباط الفاتورة قبل التسليم",
+        }),
       });
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "فاتورة الطلب ملغاة/مرتجعة — راجع المدير",
+        message: appErrorMessage({
+          what: `تعذّر تحصيل الطلب ${order.orderNumber}`,
+          why: `فاتورة الطلب حالتها ${inv.status === "CANCELLED" ? "ملغاة" : "مرتجعة"}، فلا ذمّةَ على الزبون تُحصَّل`,
+          doThis: "لا تقبض من الزبون شيئاً، وأرجِع البضاعة إلى المتجر، وأبلِغ كاشير الاستقبال برقم الطلب ليُعيد إصداره إن كان الإلغاء خطأً",
+        }),
       });
     }
     // مراجعة عدائية ٩/٨ — الشقّ الثاني من حارس ازدواج العهدة (نظير رفض ONLINE في dispatchInvoice):
@@ -430,7 +515,11 @@ export async function confirmCourierDelivery(
     if (cnDup) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: `فاتورة الطلب مُسنَدة لإرسالية استقبال بالطريق (${cnDup.n}) — تحصيلها عبر توريد المندوب هناك`,
+        message: appErrorMessage({
+          what: `تعذّر تحصيل الطلب ${order.orderNumber} من هنا`,
+          why: `فاتورة الطلب مُسنَدةٌ أصلاً إلى إرسالية الاستقبال ${cnDup.n} وهي بالطريق — وختمُها هنا يرفع عهدةً ثانية لنقدٍ واحد`,
+          doThis: `اختم التسليم من بطاقة الإرسالية ${cnDup.n} في «توصيلاتي»، ومنها يجري التوريد`,
+        }),
       });
     }
 
@@ -578,6 +667,15 @@ export async function confirmConsignmentDelivery(
        */
       shortfallReason?: string;
     };
+    /**
+     * م١ (PR-4، العيب ج) — **بوّابةُ المندوب**: ما قبضه فعلاً إن قلّ عن المتبقّي (غيابُه = المتبقّي
+     * كاملاً كما كان الختم دائماً). كان الختمُ من البوّابة يشترط التطابق التامّ فلا مسارَ للعجز
+     * من الميدان أصلاً — والمندوبُ الذي قبض أقلّ يقف بلا زرّ. أيُّ عجزٍ يلزمه `shortfallReason`
+     * من القائمة المغلقة ويُقيَّد `SHORTFALL_ASSIGNED` ذمّةً فوريّة على الجهة (نفس المسار الماليّ
+     * لمسارَي الكاشير — لا نسخةَ ثانية). يُتجاهَلان مع `statementWitness` (له حقولُه الخاصّة).
+     */
+    collectedAmount?: string;
+    shortfallReason?: string;
   },
   actor: { userId: number },
 ): Promise<ConfirmConsignmentResult> {
@@ -587,13 +685,23 @@ export async function confirmConsignmentDelivery(
   if (!membership) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "حسابك غير مرتبط بجهة توصيل نشطة",
+      message: appErrorMessage({
+        what: "تعذّر ختم تسليم الإرسالية",
+        why: input.statementWitness
+          ? `الجهة رقم ${input.statementWitness.partyId} غير موجودةٍ أو غير نشطة، وكشفُها لا يُثبِت تسليماً على جهةٍ معطَّلة`
+          : "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وختمُ التسليم يرفع عهدةً نقديّة فلا يقع بلا جهةٍ تُنسَب إليها",
+        doThis: "اطلب من المدير ربط حسابك بجهة توصيلٍ نشطة من صفحة «جهات التوصيل»؛ وإلى أن يتمّ ذلك يُثبِت كاشير الاستقبال التسليم بمستندٍ قصير",
+      }),
     });
   }
   if (membership.memberRole === "ACCOUNTANT") {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "المحاسب يراجع الكشف ولا يؤكد التسليم",
+      message: appErrorMessage({
+        what: "تعذّر ختم تسليم الإرسالية بحسابك",
+        why: "دورك في الجهة «محاسب»: تراجع الكشف والتوريد ولا تختم تسليماً ميدانياً",
+        doThis: "اطلب من المندوب أو مدير الجهة ختمَ التسليم؛ ولك بعدها تسجيل التحصيل المتمِّم من كشف الشركة",
+      }),
     });
   }
 
@@ -618,7 +726,11 @@ export async function confirmConsignmentDelivery(
       if (!existing?.courierDeliveredAt)
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح العملية مرتبط بتسليم غير مكتمل",
+          message: appErrorMessage({
+            what: "تعذّر ختم التسليم",
+            why: "مفتاح هذه العملية مسجَّلٌ على إرساليةٍ لم يكتمل ختمُ تسليمها — إعادةُ الإرسال بالمفتاح نفسه لا تُكملها",
+            doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية من جديد؛ فإن تكرّر الرفض فأبلِغ كاشير الاستقبال برقم الإرسالية",
+          }),
         });
       return {
         consignmentId: Number(existing.id),
@@ -640,7 +752,11 @@ export async function confirmConsignmentDelivery(
     if (!lockedParty)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "جهة التوصيل غير موجودة",
+        message: appErrorMessage({
+          what: "تعذّر ختم تسليم الإرسالية",
+          why: `جهة التوصيل رقم ${membership.partyId} لم تعد موجودةً في السجلّ — يبدو أنّها حُذفت بعد الإسناد`,
+          doThis: "أبلِغ المدير برقم الإرسالية ليُعيد إسنادها إلى جهةٍ قائمة قبل تسجيل التحصيل",
+        }),
       });
     const cn = (
       await tx
@@ -653,7 +769,11 @@ export async function confirmConsignmentDelivery(
     if (!cn)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "الإرسالية غير موجودة",
+        message: appErrorMessage({
+          what: "تعذّر ختم التسليم",
+          why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ — يبدو أنّ قائمتك قديمة أو أنّ الإرسالية حُذفت`,
+          doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية الصحيحة",
+        }),
       });
     const replayAfterLock = await checkIdempotency(
       tx,
@@ -665,7 +785,11 @@ export async function confirmConsignmentDelivery(
       if (Number(replayAfterLock) !== Number(cn.id) || !cn.courierDeliveredAt) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح العملية مرتبط بتسليم آخر أو غير مكتمل",
+          message: appErrorMessage({
+            what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
+            why: `مفتاح هذه العملية مسجَّلٌ على إرساليةٍ أخرى (رقم ${Number(replayAfterLock)}) أو على تسليمٍ لم يكتمل`,
+            doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ اختم من بطاقة الإرسالية من جديد — مفتاحٌ واحد لا يخدم طردين",
+          }),
         });
       }
       return {
@@ -697,12 +821,14 @@ export async function confirmConsignmentDelivery(
       || cn.parcelStatus === "ACCEPTED"
       || cn.parcelStatus === "PICKED_UP"
       || cn.parcelStatus === "OUT_FOR_DELIVERY";
-    if (input.statementWitness ? !parcelOut : cn.parcelStatus !== "OUT_FOR_DELIVERY") {
+    if (!parcelOut) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: input.statementWitness
-          ? "لا يُثبَت تسليم طردٍ ملغى أو مرتجع من كشف الشركة"
-          : "يجب قبول الطرد واستلامه ووضعه «خرج للتوصيل» قبل ختم التسليم",
+        message: appErrorMessage({
+          what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
+          why: `الطرد بلغ حالةً نهائية (${cn.parcelStatus}) فخرج من دورة التوصيل — ولا يُختم تسليمُ طردٍ أُغلق ملفُّه`,
+          doThis: "افتح بطاقة الطرد في صفحة الإرساليات وراجع سجلّه: إن كان أُغلق خطأً فأعِد إسناده من جديد؛ وإن كان قد سُلّم فعلاً فلا حاجة إلى ختمٍ ثانٍ",
+        }),
       });
     }
 
@@ -713,7 +839,11 @@ export async function confirmConsignmentDelivery(
     if (codRemaining.lt(0))
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "تسويات الإرسالية تتجاوز مبلغ التحصيل الأصلي",
+        message: appErrorMessage({
+          what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
+          why: `المُحصَّل المسجَّل عليها ${round2(money(cn.collectedAmount ?? "0")).toFixed(2)} يتجاوز مبلغ التحصيل الأصليّ ${round2(money(cn.codAmount)).toFixed(2)} بفارق ${codRemaining.abs().toFixed(2)}`,
+          doThis: "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصحّح التحصيل المسجَّل قبل الختم",
+        }),
       });
     /**
      * **التحصيل الجزئيّ من الكشف** (١٩/٨): بوّابة المندوب تفترض أنّ الختم يعني قبض COD
@@ -722,18 +852,31 @@ export async function confirmConsignmentDelivery(
      * بنقدٍ لم تقبضه. نسجّل **ما وقع فعلاً**، ويبقى المتبقّي مطالَباً به على العميل
      * (قرار المالك: «التحصيل الجزئي يُترك متبقّيه على العميل»).
      */
-    const declared = input.statementWitness?.collectedAmount;
+    // م١ (PR-4): البوّابةُ تُعلن المقبوض اختيارياً؛ إعلانُه يحوّل حارس الفاتورة من تطابقٍ إلى سقف.
+    const portalDeclared = !input.statementWitness && input.collectedAmount != null;
+    const declared = input.statementWitness
+      ? input.statementWitness.collectedAmount
+      : input.collectedAmount;
     const cod = declared != null
       ? round2(money(declared))
       : codRemaining;
     if (cod.gt(codRemaining)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الكشف يعلن تحصيل ${cod.toFixed(2)} وهو أكثر من المتبقّي على الطرد (${codRemaining.toFixed(2)})`,
+        message: appErrorMessage({
+          // «أكثر من المتبقّي» عبارةٌ مقصودة: هي ما يفهمه الكاشير، والفرقُ مذكورٌ بعدها.
+          what: `تعذّر تسجيل تحصيل الإرسالية ${cn.consignmentNumber}`,
+          why: `الكشف يعلن تحصيل ${cod.toFixed(2)} وهو أكثر من المتبقّي على الطرد (${codRemaining.toFixed(2)}) بفارق ${cod.minus(codRemaining).toFixed(2)} — والزائدُ لا مستندَ له على هذا الطرد`,
+          doThis: `سجّل ${codRemaining.toFixed(2)} على هذا الطرد، وراجع مع الشركة أيَّ طردٍ آخر يخصّه الفارق فسجّله عليه`,
+        }),
       });
     }
     if (cod.lt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ تحصيلٍ سالب على الكشف" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: `تعذّر تسجيل تحصيل الإرسالية ${cn.consignmentNumber}`,
+        why: `المبلغ المُعلَن على الكشف ${cod.toFixed(2)} سالب، والتحصيلُ لا يكون سالباً`,
+        doThis: "أدخِل ما حصّلته الشركة فعلاً (صفراً إن لم تُحصّل شيئاً)؛ ولردّ مبلغٍ للزبون استعمل مسار المرتجع لا الكشف",
+      }) });
     }
     // **إغلاق `status`** (Codex P1 #4 — ٢٢/٨): كان `cod.isZero()` يُغلق الطرد لكلا الحالتَين
     // متسويةً بين «مدفوعٌ سلفاً» (codAmount=0 ⇒ لا ذمّة أصلاً) و«إثباتٌ بلا تحصيل» (COD>0
@@ -741,6 +884,7 @@ export async function confirmConsignmentDelivery(
     // لاحقاً — والذي يشترط `status ∈ {DISPATCHED, PARTIAL}` (guards)، فإغلاقُه هنا كان يجعل
     // الذمّة غيرَ قابلةٍ للاستيفاء صامتاً.
     const originalCodIsZero = round2(money(cn.codAmount)).isZero();
+    if (originalCodIsZero) assertConsignmentStatusTransition(cn.status, "DELIVERED");
     await tx
       .update(deliveryConsignments)
       .set({
@@ -785,7 +929,11 @@ export async function confirmConsignmentDelivery(
       if (!inv)
         throw new TRPCError({
           code: "NOT_FOUND",
-          message: "فاتورة الإرسالية غير موجودة",
+          message: appErrorMessage({
+            what: `تعذّر تسجيل تحصيل الإرسالية ${cn.consignmentNumber}`,
+            why: `فاتورة الإرسالية (رقم ${Number(cn.invoiceId)}) مفقودةٌ من السجلّ، ولا يُقيَّد قبضٌ بلا فاتورةٍ يُنسَب إليها`,
+            doThis: "لا تقبض من الزبون شيئاً، وأبلِغ كاشير الاستقبال برقم الإرسالية ليُصلِح ارتباط الفاتورة قبل التسليم",
+          }),
         });
       const invoiceRemaining = round2(
         money(inv.total)
@@ -794,15 +942,24 @@ export async function confirmConsignmentDelivery(
       );
       // بوّابة المندوب: الختمُ يعني قبض المتبقّي **كاملاً** ⇒ تطابقٌ تامّ يمسك أيّ انحراف.
       // كشفُ الشركة: قد يُعلن تحصيلاً **جزئياً** — سقفٌ لا تطابق. لا يجوز بحال تجاوزُ متبقّي الفاتورة.
-      const collectionMismatch = input.statementWitness
+      const collectionMismatch = input.statementWitness || portalDeclared
         ? cod.gt(invoiceRemaining)
         : !invoiceRemaining.eq(cod);
       if (collectionMismatch) {
+        const gap = cod.minus(invoiceRemaining);
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: input.statementWitness
-            ? `الكشف يعلن تحصيل ${cod.toFixed(2)} وهو أكثر من متبقّي الفاتورة (${invoiceRemaining.toFixed(2)})`
-            : `متبقي الفاتورة (${invoiceRemaining.toFixed(2)}) لا يطابق مبلغ التحصيل على الطرد (${cod.toFixed(2)}) — صحّح الدفعات قبل التسليم`,
+            ? appErrorMessage({
+                what: `تعذّر تسجيل تحصيل الإرسالية ${cn.consignmentNumber}`,
+                why: `الكشف يعلن تحصيل ${cod.toFixed(2)} وهو أكثر من متبقّي الفاتورة (${invoiceRemaining.toFixed(2)}) بفارق ${gap.toFixed(2)} — والفاتورة قُبض عليها شيءٌ سلفاً أو أُرجع منها`,
+                doThis: `سجّل ${invoiceRemaining.toFixed(2)} على هذه الفاتورة، وراجع مع الشركة أيَّ فاتورةٍ أخرى يخصّها الفارق`,
+              })
+            : appErrorMessage({
+                what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
+                why: `متبقّي الفاتورة ${invoiceRemaining.toFixed(2)} والمطلوب على الطرد ${cod.toFixed(2)} — الفرق ${gap.abs().toFixed(2)} ${gap.gt(0) ? "زيادةً على الفاتورة" : "نقصاً عنها"}؛ غالباً لأنّ دفعةً أو مرتجعاً سُجِّل على الفاتورة بعد إخراج الطرد`,
+                doThis: "لا تقبض من الزبون غير ما على الفاتورة، واطلب من كاشير الاستقبال تصحيح دفعات الفاتورة أو مبلغ الطرد ثمّ أعِد الختم",
+              }),
         });
       }
       /**
@@ -820,26 +977,38 @@ export async function confirmConsignmentDelivery(
        *   ٤) الفاتورة تُقفَل مسدَّدة كاملاً (`newPaid = invoiceRemaining`) — لا AR للعميل.
        *   ٥) ذمّة العميل تُصفَّى كاملاً (`adjustCustomerBalance` بـinvoiceRemaining كاملاً).
        *
-       * البيوّابة النظيرة في `manualProof` تحمل نفس السلوك (نفس المسار الماليّ). البيوّابة الجزئيّة
-       * الحقيقيّة عبر كشف الشركة الرسميّ تبقى مسموحةً بلا سبب (`kind='COMPANY_STATEMENT'` بلا شاهد
-       * SHORTFALL — نمطُ التحصيل الجزئيّ التقليديّ عبر مسار `counterCollection` لاحقاً).
+       * البوّابة النظيرة في `manualProof` تحمل نفس السلوك (نفس المسار الماليّ)، وكذلك **بوّابةُ
+       * المندوب** منذ م١ PR-4 (`collectedAmount` أعلى الدالّة). أمّا **كشفُ الشركة الرسميّ** فيبقى
+       * على قرار المالك (٢١/٨): سطرٌ بلا سبب = «المتبقّي يبقى على العميل» ذمّةً حيّة تُقبض كاونترياً
+       * (سطرُ الإثبات الصفريّ نموذجُه)؛ وسطرٌ يحمل `shortfallReason` يقيّد عجزَه على الجهة كالمسارَين
+       * الآخرَين تماماً — الاختيارُ في السطر لا في الشيفرة.
        */
       const shortage = round2(invoiceRemaining.minus(cod));
-      const isStaffOrManualPath =
-        input.statementWitness?.kind === "STAFF_CONFIRMED" ||
-        input.statementWitness?.kind === "MANUAL_PROOF";
-      if (shortage.gt(0) && isStaffOrManualPath) {
-        const reason = input.statementWitness?.shortfallReason;
+      const witnessKind = input.statementWitness
+        ? (input.statementWitness.kind ?? "COMPANY_STATEMENT")
+        : "COURIER_PORTAL";
+      const declaredReason = input.statementWitness
+        ? input.statementWitness.shortfallReason
+        : input.shortfallReason;
+      const shortfallOptional = witnessKind === "COMPANY_STATEMENT";
+      const booksShortfall = shortage.gt(0) && (!shortfallOptional || declaredReason != null);
+      if (booksShortfall) {
+        const reason = declaredReason;
         if (!reason || !isShortfallReason(reason)) {
+          // ⚠️ «سبب مصنَّف» يبقى في النصّ: يُطابقه `deliveryProof` بالتعبير النمطيّ.
+          // والقائمة تُشتقّ من `@shared/shortfallReason` لا تُكتب هنا — فلا تنجرف عن المُنتقي.
+          const choices = SHORTFALL_REASONS.map((r) => SHORTFALL_REASON_LABEL_AR[r]).join(" · ");
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: `تحصيلٌ ناقص (${shortage.toFixed(2)} د.ع) بلا سبب مصنَّف — اختر سبباً من قائمة أسباب العجز قبل الحفظ`,
+            message: appErrorMessage({
+              what: `تعذّر تسجيل تسليم الإرسالية ${cn.consignmentNumber}`,
+              why: `المقبوض ${cod.toFixed(2)} والمطلوب ${invoiceRemaining.toFixed(2)} — عجزٌ قدره ${shortage.toFixed(2)} د.ع ${reason ? "بسببٍ غير معروف في القائمة" : "بلا سبب مصنَّف"}، والعجزُ يُقيَّد ذمّةً على المندوب فلا يُقبَل بلا تصنيف`,
+              doThis: `اختر سبب العجز من القائمة (${choices}) ثمّ احفظ`,
+            }),
           });
         }
       }
-      const shortfallReason = shortage.gt(0) && isStaffOrManualPath
-        ? input.statementWitness!.shortfallReason!
-        : null;
+      const shortfallReason = booksShortfall ? declaredReason! : null;
 
       if (cn.custodyRecognizedAt == null) {
         // نُصعِّد عهدةَ المندوب بـ**مجموع** ما يتحمّله (نقدٌ قبضه + عجزٌ يتحمّله):
@@ -1009,7 +1178,15 @@ export async function transitionConsignmentParcel(
   if (!membership || membership.memberRole === "ACCOUNTANT") {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "حسابك لا يملك تنفيذ حركة الطرد",
+      message: appErrorMessage({
+        what: "تعذّر تحديث حالة الطرد",
+        why: membership
+          ? "دورك في الجهة «محاسب»: تراجع الكشف والتوريد ولا تُحرّك الطرود في الميدان"
+          : "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وحركةُ الطرد تُنسَب إلى جهةٍ ومندوب",
+        doThis: membership
+          ? "اطلب من المندوب أو مدير الجهة تحريك الطرد من شاشة «توصيلاتي»"
+          : "اطلب من المدير ربط حسابك بجهة التوصيل من صفحة «جهات التوصيل» ثمّ أعِد المحاولة",
+      }),
     });
   }
   const payloadHash = idempotencyHash(input);
@@ -1032,7 +1209,11 @@ export async function transitionConsignmentParcel(
     if (!cn)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "الإرسالية غير موجودة",
+        message: appErrorMessage({
+          what: "تعذّر تحديث حالة الطرد",
+          why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ — يبدو أنّ قائمتك قديمة`,
+          doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد الحركة من بطاقة الطرد الصحيحة",
+        }),
       });
     const replayAfterLock = await checkIdempotency(
       tx,
@@ -1049,7 +1230,11 @@ export async function transitionConsignmentParcel(
     if (input.toStatus === "FAILED" && (!reason || reason.length < 2)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "اكتب سبب تعذر التوصيل",
+        message: appErrorMessage({
+          what: `تعذّر وسم الطرد ${cn.consignmentNumber} بأنّ توصيله تعذّر`,
+          why: "سببُ التعذّر فارغٌ أو أقصر من حرفين، وهو ما يقرؤه المتجر ليقرّر إعادة المحاولة أو إرجاع البضاعة",
+          doThis: "اكتب سبباً قصيراً وواضحاً (رفض العميل الاستلام · العميل غير متوفّر · عنوان خاطئ · تعذّر التواصل) ثمّ احفظ",
+        }),
       });
     }
     const statusTimestamps: Record<string, object> = {
@@ -1120,19 +1305,35 @@ export async function failCourierDelivery(
   if (partyId == null || membership?.memberRole === "ACCOUNTANT")
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "هذا الحساب للقراءة المالية ولا ينفذ حركة الطرد",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل «تعذّر التسليم»",
+        why: partyId == null
+          ? "حسابك غير مرتبطٍ بجهة توصيلٍ نشطة، وهذه الحركة تعكس البيع وتُعيد البضاعة للمخزون فلا تقع بلا جهةٍ تُنسَب إليها"
+          : "دورك في الجهة «محاسب»: تراجع الكشف والتوريد ولا تُحرّك الطرود في الميدان",
+        doThis: partyId == null
+          ? "اطلب من المدير ربط حسابك بجهة التوصيل من صفحة «جهات التوصيل»، وأعِد البضاعة إلى المتجر بكلّ حال"
+          : "اطلب من المندوب أو مدير الجهة تسجيل تعذّر التسليم من شاشة «توصيلاتي»",
+      }),
     });
   const reason = (input.reason ?? "").trim();
   if (reason.length < 2)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "اذكر سبب تعذّر التسليم",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل «تعذّر التسليم»",
+        why: "السبب فارغٌ أو أقصر من حرفين، وهذه الحركة تعكس البيع وتُعيد البضاعة للمخزون فلا تُسجَّل بلا سببٍ موثَّق",
+        doThis: "اكتب سبباً قصيراً وواضحاً (رفض العميل الاستلام · العميل غير متوفّر · عنوان خاطئ · تعذّر التواصل) ثمّ احفظ",
+      }),
     });
   const db = getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: "قاعدة البيانات غير متاحة",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل «تعذّر التسليم»",
+        why: "الاتصال بقاعدة البيانات منقطعٌ الآن، فلا يمكن عكس البيع ولا إعادة البضاعة للمخزون",
+        doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب، وأعِد التسجيل بعد عودة الاتصال",
+      }),
     });
 
   // المرحلة ①: **مطالبة ذرّية** بالطلب تحت قفل الصفّ (SHIPPED→CANCELLED). تُسلسِل ضدّ التحصيل المتزامن
@@ -1149,14 +1350,26 @@ export async function failCourierDelivery(
         .limit(1)
     )[0];
     if (!order)
-      throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+        what: "تعذّر تسجيل «تعذّر التسليم»",
+        why: `لا طلبَ متجرٍ بالرقم ${input.onlineOrderId} في السجلّ — يبدو أنّ قائمتك قديمة`,
+        doThis: "اسحب قائمة «توصيلاتي» للتحديث ثمّ أعِد التسجيل من بطاقة الطلب الصحيحة",
+      }) });
     if (Number(order.deliveryPartyId) !== partyId)
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "هذا الطلب ليس ضمن توصيلاتك",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
+          why: "الطلب مُسنَدٌ إلى جهة توصيلٍ أخرى، وعكسُ بيعه يخصّ الجهة المُسنَد إليها",
+          doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُسجّل التعذّر بنفسه، أو المدير إن لزم نقلُ الإسناد",
+        }),
       });
     if (!order.invoiceId)
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا فاتورة" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
+        why: "لا فاتورة على الطلب، وهذه الحركة تعكس فاتورةً وتُعيد بنودها للمخزون",
+        doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُغلقه من صفحة الطلبات",
+      }) });
     const inv = (
       await tx
         .select({
@@ -1172,7 +1385,11 @@ export async function failCourierDelivery(
     if (!inv)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "فاتورة الطلب غير موجودة",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
+          why: `فاتورة الطلب (رقم ${Number(order.invoiceId)}) مفقودةٌ من السجلّ، ولا يُعكَس بيعٌ بلا فاتورةٍ تُعكَس`,
+          doThis: "أعِد البضاعة إلى المتجر وأبلِغ كاشير الاستقبال برقم الطلب ليُصلِح ارتباط الفاتورة",
+        }),
       });
     if (order.status === "CANCELLED") {
       // استرداد idempotent: مُطالَبٌ سابقاً — أكمِل العكس إن لم تُرجَع الفاتورة بعد (فشلٌ بين المطالبة والعكس).
@@ -1194,12 +1411,20 @@ export async function failCourierDelivery(
     if (order.status !== "SHIPPED")
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الطلب ليس قيد التوصيل",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
+          why: `حالة الطلب ${order.status} لا «مُرسَل» — و«تعذّر التسليم» لا يقع إلّا على طردٍ خرج ولم يُسلَّم`,
+          doThis: "اسحب قائمة «توصيلاتي» للتحديث؛ فإن كان الطلب مُسلَّماً فالإرجاع بعد التسليم يُنفّذه المدير من صفحة المرتجعات",
+        }),
       });
     if (money(inv.paidAmount ?? "0").gt(0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الطلب محصَّل — الإرجاع بعد التسليم عبر المدير",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل «تعذّر التسليم» للطلب ${order.orderNumber}`,
+          why: `الفاتورة قُبض عليها ${money(inv.paidAmount ?? "0").toFixed(2)} سلفاً — وما قُبض يلزمه ردٌّ موثَّق لا عكسٌ صامت من الميدان`,
+          doThis: "أعِد البضاعة إلى المتجر، وأبلِغ المدير برقم الطلب ليُنفّذ إرجاعاً بعد التسليم مع ردّ المبلغ للزبون",
+        }),
       });
     }
     await tx
@@ -1303,7 +1528,11 @@ export async function recordSupplementaryStatementCollection(
 ): Promise<SupplementaryCollectionResult> {
   const clientRequestId = input.clientRequestId;
   if (!clientRequestId || clientRequestId.length < 8) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "clientRequestId مطلوب" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذّر تسجيل التحصيل المتمِّم",
+      why: `الطلب وصل بمعرّف عمليةٍ غير صالحٍ لمنع التكرار (طوله ${clientRequestId?.length ?? 0} والحدّ الأدنى 8) — وهو ما يمنع تسجيل التحصيل نفسه مرّتين`,
+      doThis: "أعِد تحميل شاشة كشف الشركة ثمّ أعِد الحفظ؛ فإن تكرّر الرفض فأبلِغ مسؤول النظام برقم الكشف",
+    }) });
   }
   const payloadHash = idempotencyHash(input);
   return withTx(async (tx) => {
@@ -1319,11 +1548,19 @@ export async function recordSupplementaryStatementCollection(
         .for("update")
         .limit(1)
     )[0];
-    if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+    if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+      what: "تعذّر تسجيل التحصيل المتمِّم",
+      why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ`,
+      doThis: `راجع رقم الطرد في كشف الشركة ${input.statementNumber} وأعِد إدخاله من صفحة الإرساليات`,
+    }) });
     if (cn.parcelStatus !== "DELIVERED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "التحصيل المتمِّم لا يُدوَّن إلّا على طردٍ ثبت تسليمه — استعمل مسار التسليم الاعتيادي",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+          why: `حالة الطرد ${cn.parcelStatus} لا «مُسلَّم» — والتحصيلُ المتمِّم يُدوَّن على طردٍ ثبت تسليمه سلفاً في كشفٍ سابق`,
+          doThis: "سجّل التسليم أوّلاً من مسار تسليم الإرسالية بالكشف، ثمّ سجّل ما تبقّى تحصيلاً متمِّماً",
+        }),
       });
     }
     assertNotReturnDeclared(cn, "collect");
@@ -1333,7 +1570,11 @@ export async function recordSupplementaryStatementCollection(
     if (newTotal.gt(codAmount)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `المُعلَن ${newTotal.toFixed(2)} أكثر من مبلغ COD الأصليّ (${codAmount.toFixed(2)})`,
+        message: appErrorMessage({
+          what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+          why: `الكشف ${input.statementNumber} يعلن مُحصَّلاً إجمالياً ${newTotal.toFixed(2)} وهو أكثر من مبلغ التحصيل الأصليّ على الطرد (${codAmount.toFixed(2)}) بفارق ${newTotal.minus(codAmount).toFixed(2)}`,
+          doThis: `أدخِل المُحصَّل الإجماليّ على هذا الطرد وحده (بحدّ ${codAmount.toFixed(2)})، وراجع مع الشركة أيَّ طردٍ آخر يخصّه الفارق`,
+        }),
       });
     }
     const delta = round2(newTotal.minus(currentCollected));
@@ -1350,7 +1591,11 @@ export async function recordSupplementaryStatementCollection(
         .for("update")
         .limit(1)
     )[0];
-    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+      what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+      why: `جهة التوصيل رقم ${Number(cn.partyId)} لم تعد موجودةً في السجلّ، ولا تُرفَع عهدةٌ لجهةٍ محذوفة`,
+      doThis: "أبلِغ المدير برقم الإرسالية ليُعيد إنشاء الجهة أو يُصحّح إسناد الطرد قبل تسجيل الكشف",
+    }) });
     // الفاتورة — للتسديد بالدلتا.
     const inv = (
       await tx
@@ -1360,14 +1605,22 @@ export async function recordSupplementaryStatementCollection(
         .for("update")
         .limit(1)
     )[0];
-    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
+    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+      what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+      why: `فاتورة الإرسالية (رقم ${Number(cn.invoiceId)}) مفقودةٌ من السجلّ، ولا يُقيَّد قبضٌ بلا فاتورةٍ يُنسَب إليها`,
+      doThis: "أبلِغ كاشير الاستقبال برقم الإرسالية ليُصلِح ارتباط الفاتورة، ثمّ أعِد تسجيل الكشف",
+    }) });
     const invoiceRemaining = round2(
       money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount)),
     );
     if (delta.gt(invoiceRemaining)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `الدلتا ${delta.toFixed(2)} تتجاوز متبقّي الفاتورة (${invoiceRemaining.toFixed(2)})`,
+        message: appErrorMessage({
+          what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+          why: `الجديد في الكشف ${input.statementNumber} هو ${delta.toFixed(2)} (${newTotal.toFixed(2)} معلَناً ناقصاً ${currentCollected.toFixed(2)} مسجَّلاً سلفاً)، وهو يتجاوز متبقّي الفاتورة ${invoiceRemaining.toFixed(2)} بفارق ${delta.minus(invoiceRemaining).toFixed(2)}`,
+          doThis: `سجّل ${invoiceRemaining.toFixed(2)} على هذه الفاتورة، وراجع مع الشركة أيَّ فاتورةٍ أخرى يخصّها الفارق قبل قيده`,
+        }),
       });
     }
     // ارتفاعُ العهدة + قيد التحصيل بمفتاحٍ خاصّ لهذا الكشف (idempotent إن أُعيد).

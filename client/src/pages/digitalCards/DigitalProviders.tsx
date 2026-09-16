@@ -1,9 +1,10 @@
 // مزوّدو البطاقات الرقمية والاشتراكات — كل مزوّد يرثُ مورّداً قائماً في المنظومة (ذمّته وكشفه).
 // نمط التسوية هو القرار المالي الحاكم: PREPAID (محفظة رصيد لدى المزوّد) أو POSTPAID (ذمّة دائنة).
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { RowActions } from "@/components/list";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -16,13 +17,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { EntityPicker } from "@/components/invoice/EntityPicker";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtAr } from "@/lib/money";
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 type ProviderRow = RouterOutputs["digitalCards"]["providers"]["list"][number];
 
@@ -43,8 +45,6 @@ const SETTLEMENT_CYCLE: Record<string, string> = {
   MONTHLY: "شهري",
   ON_DEMAND: "عند الطلب",
 };
-
-const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 export default function DigitalProviders() {
   const utils = trpc.useUtils();
@@ -133,6 +133,95 @@ export default function DigitalProviders() {
   const saving = createMut.isPending || updateMut.isPending;
   const editing = editId != null;
 
+  /*
+   * أعمدة القائمة — داخل المكوّن لأنّها تستدعي `openEdit`/`toggle` وتقرأ حالة الطفرة.
+   * كلّ عمودٍ ذي قيمة يحمل `accessorFn` بالتسمية العربية المعروضة لا الرمز الخامّ،
+   * فـ«نسخ القيمة» يُخرج ما يقرأه المستعمِل. وبوّابات الصلاحية على الإجراءات كما كانت.
+   */
+  const columns = useMemo<ColumnDef<ProviderRow, unknown>[]>(
+    () => [
+      {
+        id: "supplier",
+        header: "المورّد",
+        accessorFn: (p) => p.supplierName,
+        meta: { width: "wide" },
+        cell: ({ row }) => <span className="font-medium">{row.original.supplierName}</span>,
+      },
+      {
+        id: "providerType",
+        header: "النوع",
+        accessorFn: (p) => PROVIDER_TYPE[p.providerType] ?? p.providerType,
+        cell: ({ row }) => PROVIDER_TYPE[row.original.providerType] ?? row.original.providerType,
+      },
+      {
+        id: "settlementMode",
+        header: "طريقة دفعنا للمزوّد",
+        accessorFn: (p) => SETTLEMENT_MODE[p.settlementMode] ?? p.settlementMode,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => SETTLEMENT_MODE[row.original.settlementMode] ?? row.original.settlementMode,
+      },
+      {
+        id: "settlementCycle",
+        header: "موعد السداد",
+        accessorFn: (p) => SETTLEMENT_CYCLE[p.settlementCycle] ?? p.settlementCycle,
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">{SETTLEMENT_CYCLE[row.original.settlementCycle] ?? row.original.settlementCycle}</span>
+        ),
+      },
+      {
+        id: "lowBalanceThreshold",
+        header: "حدّ الرصيد المنخفض",
+        accessorFn: (p) => fmtAr(p.lowBalanceThreshold),
+        meta: { kind: "money" },
+        cell: ({ row }) => fmtAr(row.original.lowBalanceThreshold),
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (p) => (p.isActive ? "مفعّل" : "معطّل"),
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "badge-stock-out"}`}>
+            {row.original.isActive ? "مفعّل" : "معطّل"}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "إجراء",
+        meta: { kind: "actions" },
+        cell: ({ row }) => {
+          const p = row.original;
+          return (
+            <RowActions
+              actions={[
+                {
+                  key: "edit",
+                  kind: "edit",
+                  label: "تعديل",
+                  onSelect: () => openEdit(p),
+                  gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                },
+                {
+                  key: "toggle",
+                  kind: "approve",
+                  label: p.isActive ? "تعطيل" : "تفعيل",
+                  variant: p.isActive ? "destructive" : "default",
+                  disabled: toggleMut.isPending,
+                  disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                  onSelect: () => void toggle(p),
+                  gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                },
+              ]}
+            />
+          );
+        },
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [toggleMut.isPending],
+  );
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -146,64 +235,15 @@ export default function DigitalProviders() {
           {list.isLoading ? "" : `${rows.length} مزوّد`}
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">المورّد</th>
-                  <th className="p-2 text-start">النوع</th>
-                  <th className="p-2 text-start">طريقة دفعنا للمزوّد</th>
-                  <th className="p-2 text-start">موعد السداد</th>
-                  <th className="p-2 text-start">حدّ الرصيد المنخفض</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((p) => (
-                  <tr key={p.id} className={`border-t ${p.isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">{p.supplierName}</td>
-                    <td className="p-2">{PROVIDER_TYPE[p.providerType] ?? p.providerType}</td>
-                    <td className="p-2">{SETTLEMENT_MODE[p.settlementMode] ?? p.settlementMode}</td>
-                    <td className="p-2 text-muted-foreground">{SETTLEMENT_CYCLE[p.settlementCycle] ?? p.settlementCycle}</td>
-                    <td className="p-2 tabular-nums">{fmtAr(p.lowBalanceThreshold)}</td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${p.isActive ? "badge-status-active" : "badge-stock-out"}`}>
-                        {p.isActive ? "مفعّل" : "معطّل"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            onSelect: () => openEdit(p),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: p.isActive ? "تعطيل" : "تفعيل",
-                            variant: p.isActive ? "destructive" : "default",
-                            disabled: toggleMut.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            onSelect: () => void toggle(p),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-                {list.isLoading && <tr><td colSpan={7}><LoadingState /></td></tr>}
-                {!list.isLoading && rows.length === 0 && (
-                  <TableEmptyRow colSpan={7} message="لا مزوّدين بعد — أضِف أوّل مزوّد بربطه بمورّد قائم." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<ProviderRow>
+            columns={columns}
+            data={rows}
+            searchPlaceholder="بحث بالمورّد أو النوع…"
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            getRowClassName={(p) => (p.isActive ? undefined : "opacity-60")}
+            emptyText="لا مزوّدين بعد — أضِف أوّل مزوّد بربطه بمورّد قائم."
+          />
         </CardContent>
       </Card>
 
@@ -231,15 +271,15 @@ export default function DigitalProviders() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dc-type">نوع المزوّد</label>
-                <select id="dc-type" className={selectCls} value={fType} onChange={(e) => setFType(e.target.value)}>
+                <AppSelect id="dc-type" value={fType} onValueChange={setFType}>
                   {Object.entries(PROVIDER_TYPE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dc-mode">كيف ندفع لهذا المزوّد؟</label>
-                <select id="dc-mode" className={selectCls} value={fMode} disabled={editing} onChange={(e) => setFMode(e.target.value)}>
+                <AppSelect id="dc-mode" value={fMode} disabled={editing} onValueChange={setFMode}>
                   {Object.entries(SETTLEMENT_MODE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                </AppSelect>
                 {editing && <p className="text-xs text-muted-foreground">لا يتغير بعد الإنشاء لأنه يحدد هل يخصم البيع من رصيد الجهاز أم يسجّل مبلغاً مستحقاً للمزوّد.</p>}
               </div>
             </div>
@@ -247,9 +287,9 @@ export default function DigitalProviders() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dc-cycle">متى نسدد للمزوّد؟</label>
-                <select id="dc-cycle" className={selectCls} value={fCycle} onChange={(e) => setFCycle(e.target.value)}>
+                <AppSelect id="dc-cycle" value={fCycle} onValueChange={setFCycle}>
                   {Object.entries(SETTLEMENT_CYCLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                </AppSelect>
               </div>
               <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
                 رقم العملية أو الاشتراك يُحفظ إلزامياً عند كل بيع للمطابقة وحفظ الحقوق.
@@ -270,7 +310,7 @@ export default function DigitalProviders() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={saving}>
-              {saving ? "جارٍ الحفظ…" : "حفظ"}
+              {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

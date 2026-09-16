@@ -231,6 +231,33 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     expect(mine2.delivered.some((r) => r.kind === "consignment" && r.id === disp.consignmentId)).toBe(true);
   });
 
+  it("listMyDeliveries: تختفي الإرسالية من delivered تماماً بمجرد توريدها وتسويتها ماليّاً (SETTLED)", async () => {
+    const { partyA } = await seedParties();
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const disp = await dispatchReception(partyA);
+
+    // 1. قبل التسليم: في toDeliver (غير مستلم / مستلم)
+    const before = await listMyDeliveries(3);
+    expect(before.toDeliver.some((r) => r.id === disp.consignmentId)).toBe(true);
+    expect(before.delivered.some((r) => r.id === disp.consignmentId)).toBe(false);
+
+    // 2. بعد التسليم: تنتقل إلى delivered لأنها لم تُورّد بعد (moneyStatus=UNSETTLED)
+    await advanceToOutForDelivery(disp.consignmentId);
+    await confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 3 });
+    const afterDelivery = await listMyDeliveries(3);
+    expect(afterDelivery.toDeliver.some((r) => r.id === disp.consignmentId)).toBe(false);
+    expect(afterDelivery.delivered.some((r) => r.id === disp.consignmentId)).toBe(true);
+
+    // 3. بعد التوريد الكامل: تختفي تماماً من delivered
+    await recordDeliveryRemittance(
+      { branchId: 1, partyId: partyA, countedCash: "10000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "10000" }] },
+      CASHIER,
+    );
+    const afterRemit = await listMyDeliveries(3);
+    expect(afterRemit.toDeliver.some((r) => r.id === disp.consignmentId)).toBe(false);
+    expect(afterRemit.delivered.some((r) => r.id === disp.consignmentId)).toBe(false);
+  });
+
   it("رحلة الظهور الكاملة: جاهز من الفني → إدارة التوصيل → جهة أ فقط", async () => {
     const { partyA } = await seedParties();
     const woId = await readyReception();
@@ -299,8 +326,9 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     await confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 3 });
     const after = await consignment(disp.consignmentId);
     expect(after.status).toBe("DELIVERED");
-    expect(after.courierDeliveredAt).not.toBeNull();
-    expect((await listMyDeliveries(3)).delivered.some((r) => r.id === disp.consignmentId && r.kind === "consignment")).toBe(true);
+    // COD=0 مسوّى ماليّاً سلفاً فلا يبقى في delivered (المُسلَّم غير المُسوّى فقط هو ما يظهر للمندوب).
+    expect((await listMyDeliveries(3)).toDeliver.some((r) => r.id === disp.consignmentId && r.kind === "consignment")).toBe(false);
+    expect((await listMyDeliveries(3)).delivered.some((r) => r.id === disp.consignmentId && r.kind === "consignment")).toBe(false);
   });
 
   it("PARTIAL يبقى في حساب المندوب ويمكن ختم تسليمه بعد أول توريد", async () => {
@@ -386,6 +414,65 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     await expect(
       confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 1 }), // المدير بلا جهة
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("تسليم مباشر من حالة ASSIGNED (بلا الحاجة للمرور بـ ACCEPTED أو OUT_FOR_DELIVERY)", async () => {
+    const { partyA } = await seedParties();
+    const disp = await dispatchReception(partyA); // parcelStatus = ASSIGNED
+    const cnBefore = await consignment(disp.consignmentId);
+    expect(cnBefore.parcelStatus).toBe("ASSIGNED");
+
+    // التسليم مباشرة دون استدعاء advanceToOutForDelivery
+    const res = await confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 3 });
+    expect(res.consignmentId).toBe(disp.consignmentId);
+
+    const cnAfter = await consignment(disp.consignmentId);
+    expect(cnAfter.parcelStatus).toBe("DELIVERED");
+    expect(await partyBalance(partyA)).toBe("10000.00");
+  });
+
+  it("تسليم جزئي مع تسجيل عجز: يوثق المقبوض والعجز ويظهر كـ PARTIAL في listMyDeliveries", async () => {
+    const { partyA } = await seedParties();
+    const disp = await dispatchReception(partyA); // 10000.00 COD
+
+    // تسليم جزئي: قبض 7000 من أصل 10000 مع سبب رفض جزئي
+    const res = await confirmConsignmentDelivery(
+      {
+        consignmentId: disp.consignmentId,
+        collectedAmount: "7000.00",
+        shortfallReason: "PARTIAL_REFUSAL",
+      },
+      { userId: 3 },
+    );
+    expect(res.consignmentId).toBe(disp.consignmentId);
+
+    const cnAfter = await consignment(disp.consignmentId);
+    expect(cnAfter.parcelStatus).toBe("DELIVERED");
+
+    // العهدة تصعد بالمجموع (7000 نقد + 3000 عجز على المندوب)
+    expect(await partyBalance(partyA)).toBe("10000.00");
+
+    // قيود دفتر التوصيل تحوي التحصيل والعجز
+    const d = db();
+    const ledgers = await d
+      .select()
+      .from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.consignmentId, disp.consignmentId));
+    const codCollected = ledgers.find((l) => l.entryType === "COD_COLLECTED");
+    const shortfall = ledgers.find((l) => l.entryType === "SHORTFALL_ASSIGNED");
+    expect(codCollected).toBeTruthy();
+    expect(codCollected!.amount).toBe("7000.00");
+    expect(shortfall).toBeTruthy();
+    expect(shortfall!.amount).toBe("3000.00");
+    expect(shortfall!.shortfallReason).toBe("PARTIAL_REFUSAL");
+
+    // listMyDeliveries يعيد المقبوض عند الباب 7000 وحالة PARTIAL
+    const mine = await listMyDeliveries(3);
+    const deliveredRow = mine.delivered.find((r) => r.id === disp.consignmentId);
+    expect(deliveredRow).toBeTruthy();
+    expect(deliveredRow!.collectedAmount).toBe("7000.00");
+    expect(deliveredRow!.moneyStatus).toBe("PARTIAL");
+    expect(deliveredRow!.codDue).toBe("10000.00");
   });
 });
 

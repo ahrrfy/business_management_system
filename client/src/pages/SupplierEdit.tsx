@@ -1,3 +1,4 @@
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -507,7 +508,7 @@ export default function SupplierEdit() {
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <Button onClick={submit} disabled={update.isPending} title="Ctrl+S">
-          {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
+          {update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
         </Button>
         <Link href="/suppliers"><Button variant="outline" title="Esc">رجوع</Button></Link>
       </div>

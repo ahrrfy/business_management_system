@@ -9,7 +9,9 @@ export interface CashEventAtColumns {
 
 /**
  * لحظة تحقّق الحركة النقدية:
- * - مسار maker-checker يتحقق عند اعتماد مستخدمٍ ثانٍ.
+ * - مسار maker-checker يتحقق عند اعتماد التنفيذ فعلياً (بصرف النظر عن هوية المعتمِد —
+ *   ⭐ قرار المالك ٣/٩/٢٦ يجيز اعتماد المالك حركته بنفسه، فمساواةُ المعتمِد بالمُنشئ لم تعد
+ *   دليلاً على أنّ الاعتماد لم يقع؛ المصدر الوحيد لوقوعه هو `approvedAt` نفسها).
  * - الحركة الفورية، أو الصف الذي لا يملك دليلاً كاملاً للاعتماد، يبقى بتاريخ إنشائه.
  *
  * هذا هو تعريف المصدر الواحد للأدلة اليومية، وجاهزية الإقفال الشهري، وتقارير النقد.
@@ -17,7 +19,6 @@ export interface CashEventAtColumns {
 export function cashEventAtSql(columns: CashEventAtColumns): SQL {
   return sql`CASE
     WHEN ${columns.approvedBy} IS NOT NULL
-      AND ${columns.approvedBy} <> ${columns.createdBy}
       AND ${columns.approvedAt} IS NOT NULL
       THEN ${columns.approvedAt}
     ELSE ${columns.createdAt}

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { PASSWORD_POLICY_MSG, isStrongPassword } from "@shared/const";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc } from "@/lib/trpc";
 import { confirm as confirmDialog } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -250,7 +251,7 @@ export default function Account() {
           <p className="text-xs text-muted-foreground">
             الأجهزة المسجَّل دخولها حالياً بحسابك. جلسات ما قبل آخر تسجيل خروج جماعي لا تظهر هنا.
           </p>
-          {sessions.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {sessions.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
           {!sessions.isLoading && (sessions.data?.length ?? 0) === 0 && (
             <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخلتَ قبل تفعيل هذه الميزة).</p>
           )}
@@ -422,7 +423,7 @@ function TwoFactorCard() {
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         {status.isLoading ? (
-          <p className="text-muted-foreground">جارٍ التحميل…</p>
+          <p className="text-muted-foreground">{ACTION_LABELS.loading}</p>
         ) : enabled ? (
           <>
             <div className="flex items-center gap-2 flex-wrap">
@@ -451,7 +452,7 @@ function TwoFactorCard() {
             )}
             {step === "regen" && (
               <div className="space-y-3 rounded-lg border p-3">
-                <p className="text-xs text-muted-foreground">أدخل كلمة المرور والرمز الحالي من تطبيق المصادقة لتوليد ١٠ رموز استرداد جديدة (تُبطل القديمة كلها).</p>
+                <p className="text-xs text-muted-foreground">أدخل كلمة المرور والرمز الحالي من تطبيق المصادقة لتوليد 10 رموز استرداد جديدة (تُبطل القديمة كلها).</p>
                 <div className="space-y-1.5">
                   <Label htmlFor="regen-pw">كلمة المرور</Label>
                   <PasswordInput id="regen-pw" autoComplete="current-password" value={password} onChange={setPassword} />
@@ -541,7 +542,7 @@ function TwoFactorCard() {
             {step === "qr" && (
               <div className="space-y-3 rounded-lg border p-3">
                 <p className="text-xs text-muted-foreground">
-                  ١) افتح تطبيق المصادقة على هاتفك واختر «إضافة حساب» ثم امسح هذا الرمز:
+                  1) افتح تطبيق المصادقة على هاتفك واختر «إضافة حساب» ثم امسح هذا الرمز:
                 </p>
                 <div className="flex justify-center">
                   {qrDataUrl ? (
@@ -557,7 +558,7 @@ function TwoFactorCard() {
                     <Copy className="size-3" aria-hidden />
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">٢) أدخل الرمز الظاهر في التطبيق لتأكيد الربط:</p>
+                <p className="text-xs text-muted-foreground">2) أدخل الرمز الظاهر في التطبيق لتأكيد الربط:</p>
                 {otpSlots((v) => setupConfirm.mutate({ code: v }))}
                 <div className="flex gap-2">
                   <Button size="sm" disabled={busy || otp.length !== 6} onClick={() => setupConfirm.mutate({ code: otp })}>

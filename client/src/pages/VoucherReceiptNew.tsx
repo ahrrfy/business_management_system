@@ -1,4 +1,4 @@
-import VoucherFormShared from "@/pages/_VoucherFormShared";
+import VoucherFormShared from "@/components/vouchers/VoucherFormShared";
 
 /** سند قبض جديد — IN (المحلّ يَستلم نقداً/بطاقة/تحويلاً من طرف). */
 export default function VoucherReceiptNew() {

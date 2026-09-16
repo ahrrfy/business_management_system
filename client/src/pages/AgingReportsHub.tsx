@@ -5,13 +5,14 @@
 import { lazy, Suspense, useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/PageHeader";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const ARAging = lazy(() => import("./ARAging"));
 const APAging = lazy(() => import("./APAging"));
 const ArApAgingDetail = lazy(() => import("./ArApAgingDetail"));
 
 function TabFallback() {
-  return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
 }
 
 export default function AgingReportsHub() {

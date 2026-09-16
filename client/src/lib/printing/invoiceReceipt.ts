@@ -1,15 +1,7 @@
-import { fmtDate, fmtTime, type DateInput } from "@/lib/date";
+import { fmtDate, fmtDateTime, fmtTime, type DateInput } from "@/lib/date";
 import { D, round2 } from "@/lib/money";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
 import type { ReceiptBrowserData } from "./print";
-
-const PAYMENT_METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  CHECK: "صك",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  TELECOM: "رصيد زين",
-};
 
 export interface InvoiceReceiptSource {
   invoiceNumber: string;
@@ -26,6 +18,15 @@ export interface InvoiceReceiptSource {
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
   paymentMethod?: string | null;
+  correctionAudit?: {
+    originalInvoiceNumber: string;
+    requestedBy?: number | null;
+    requestedByName?: string | null;
+    requestedAt?: DateInput | null;
+    reviewedBy?: number | null;
+    reviewedByName?: string | null;
+    reviewedAt?: DateInput | null;
+  } | null;
   /** ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة — إفصاحٌ للزبون على
    *  الإيصال المُعاد طبعه (يُصوَّر ويُرسَل). عرضٌ فقط — لا يمسّ الإجمالي/الإيراد. */
   courierName?: string | null;
@@ -75,7 +76,18 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     total: d.total,
     paid: paid.toString(),
     credit: credit.gt(0) ? credit.toString() : null,
-    paymentMethod: d.paymentMethod ? (PAYMENT_METHOD_LABEL[d.paymentMethod] ?? d.paymentMethod) : null,
+    paymentMethod: d.paymentMethod ? paymentMethodLabel(d.paymentMethod) : null,
+    revision: d.correctionAudit ? {
+      originalReceiptNumber: d.correctionAudit.originalInvoiceNumber,
+      revisedAt: d.correctionAudit.requestedAt ? fmtDateTime(d.correctionAudit.requestedAt) : "غير موثّق",
+      revisedByName: d.correctionAudit.requestedBy != null
+        ? `المستخدم #${d.correctionAudit.requestedBy}${d.correctionAudit.requestedByName ? ` (الاسم الحالي: ${d.correctionAudit.requestedByName})` : ""}`
+        : "حساب غير موثّق",
+      approvedByName: d.correctionAudit.reviewedByName || d.correctionAudit.reviewedBy != null
+        ? `المستخدم #${d.correctionAudit.reviewedBy ?? "غير موثّق"}${d.correctionAudit.reviewedByName ? ` (الاسم الحالي: ${d.correctionAudit.reviewedByName})` : ""}`
+        : null,
+      approvedAt: d.correctionAudit.reviewedAt ? fmtDateTime(d.correctionAudit.reviewedAt) : null,
+    } : null,
     delivery: d.courierName && Number(d.courierFee ?? 0) > 0
       ? { partyName: d.courierName, fee: d.courierFee ?? "0", feeCollection: d.courierFeeCollection ?? "COURIER" }
       : null,

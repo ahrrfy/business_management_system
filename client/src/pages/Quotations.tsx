@@ -17,7 +17,10 @@ import { allocateLineTax } from "@/components/invoice";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { Download } from "lucide-react";
+import { downloadOfficialPdf } from "@/lib/exportPdf";
 import { useMemo } from "react";
 import { buildQuotationMessage } from "@/lib/whatsapp";
 
@@ -215,6 +218,20 @@ export default function Quotations() {
               },
               { key: "print", kind: "print", label: "طباعة", onSelect: () => void printQuote(qr.id), gate: { module: "sales", level: "READ" } },
               {
+                key: "download-pdf",
+                kind: "export",
+                icon: Download,
+                label: "تنزيل PDF",
+                onSelect: () =>
+                  downloadOfficialPdf({
+                    kind: "QUOTATION",
+                    documentId: qr.id,
+                    documentNumber: qr.quoteNumber,
+                    fetcher: (params) => utils.client.documentDelivery.downloadPdf.mutate(params),
+                  }),
+                gate: { module: "sales", level: "READ" },
+              },
+              {
                 key: "send", kind: "approve", label: "وضع مُرسَل",
                 onSelect: async () => {
                   if (!(await confirm({
@@ -322,7 +339,7 @@ export default function Quotations() {
           {rows.hasNextPage && (
             <div className="border-t p-3 text-center">
               <Button variant="outline" size="sm" onClick={() => void rows.fetchNextPage()} disabled={rows.isFetchingNextPage}>
-                {rows.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+                {rows.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
               </Button>
             </div>
           )}

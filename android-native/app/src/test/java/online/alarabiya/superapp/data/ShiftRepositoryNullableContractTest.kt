@@ -63,24 +63,7 @@ class ShiftRepositoryNullableContractTest {
     }
 
     @Test
-    fun handoverRecipientsUseTheNamedActiveRecipientContract() = runBlocking {
-        val api = FakeShiftApi(
-            arrayResponse = JSONArray()
-                .put(JSONObject().put("id", 11).put("name", "مدير الكرادة").put("branchId", 7))
-                .put(JSONObject().put("id", 12).put("name", "الإدارة العامة").put("branchId", JSONObject.NULL))
-                .put(JSONObject().put("id", 0).put("name", "غير صالح").put("branchId", 7)),
-        )
-
-        val recipients = ShiftRepository(api).handoverRecipients()
-
-        assertEquals(listOf(11L, 12L), recipients.map { it.id })
-        assertEquals(7L, recipients.first().branchId)
-        assertNull(recipients.last().branchId)
-        assertEquals("shifts.handoverRecipients", api.calls.single().procedure)
-    }
-
-    @Test
-    fun closePassesTheSelectedHandoverRecipientToTheServer() = runBlocking {
+    fun closePassesOnlyTheMatchedCashAndReturnsTheAutomaticTreasuryReference() = runBlocking {
         val api = FakeShiftApi(
             mutationResponse = JSONObject()
                 .put("shiftId", 41)
@@ -94,8 +77,7 @@ class ShiftRepositoryNullableContractTest {
                 .put(
                     "treasuryReturn",
                     JSONObject()
-                        .put("handoverNumber", "CH-7-20260831-0001")
-                        .put("recipientName", "مدير الكرادة"),
+                        .put("handoverNumber", "CH-7-20260831-0001"),
                 ),
         )
 
@@ -103,36 +85,15 @@ class ShiftRepositoryNullableContractTest {
             ShiftCloseCommand(
                 shiftId = 41,
                 countedCash = ShiftMoney.fromServer("125000"),
-                handoverToUserId = 11,
             ),
         )
 
         assertEquals("CH-7-20260831-0001", result.treasuryHandoverNumber)
-        assertEquals("مدير الكرادة", result.treasuryRecipientName)
         val call = api.calls.single()
         assertEquals("shifts.close", call.procedure)
         assertEquals(41L, call.input?.getLong("shiftId"))
         assertEquals("125000", call.input?.getString("countedCash"))
-        assertEquals(11L, call.input?.getLong("handoverToUserId"))
-    }
-
-    @Test
-    fun closeRefusesPositiveCashBeforeCallingTheServerWithoutARecipient() = runBlocking {
-        val api = FakeShiftApi()
-
-        val error = runCatching {
-            ShiftRepository(api).close(
-                ShiftCloseCommand(
-                    shiftId = 41,
-                    countedCash = ShiftMoney.fromServer("125000"),
-                    handoverToUserId = null,
-                ),
-            )
-        }.exceptionOrNull()
-
-        assertTrue(error is IllegalArgumentException)
-        assertTrue(error?.message.orEmpty().contains("مديراً"))
-        assertTrue(api.calls.isEmpty())
+        assertTrue(call.input?.has("handoverToUserId") == false)
     }
 }
 
@@ -144,7 +105,6 @@ private data class ShiftApiCall(
 
 private class FakeShiftApi(
     private val nullableResponse: JSONObject? = null,
-    private val arrayResponse: JSONArray = JSONArray(),
     private val mutationResponse: JSONObject? = null,
 ) : ShiftApi {
     val calls = mutableListOf<ShiftApiCall>()
@@ -161,7 +121,7 @@ private class FakeShiftApi(
 
     override suspend fun queryArray(procedure: String, input: JSONObject?): JSONArray {
         calls += ShiftApiCall(procedure, input, nullable = false)
-        return arrayResponse
+        return JSONArray()
     }
 
     override suspend fun mutateObject(procedure: String, input: JSONObject?): JSONObject {

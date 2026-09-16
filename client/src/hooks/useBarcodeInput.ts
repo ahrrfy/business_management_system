@@ -1,88 +1,50 @@
-/** التقاط قارئ الباركود داخل input: تسلسل سريع ثم Enter، مع إبقاء الكتابة البشرية كما هي. */
+/** التقاط قارئ الباركود داخل input — **موحَّدٌ مع خطّاف الكاشير** `useSmartScanInput` (بلاغ المالك ١٥/٩:
+ *  «طبّق مكوّن الكاشير على بقية حقول البحث والاستعلام»). كان هذا الخطّاف يحمل نسخةً موازية من منطق
+ *  التوقيت انجرفت عن الكاشير؛ الآن **يفوّض كلّ شيء إلى `useSmartScanInput`** فيصير سلوكُ البحث/المسح
+ *  (الكتابة العربية بالمسافة + المسح الرقميّ والأبجديّ) واحداً في كلّ الشاشات كما في الكاشير تماماً.
+ *
+ *  يكيّف فقط التوقيع: حقول القوائم القائمة تستدعي `handleKeyDown(event, setValue)`، بينما خطّاف الكاشير
+ *  يستقبل `(event, currentValue, setValue)` — نشتقّ القيمة الحالية من `event.currentTarget.value`.
+ *  `useSmartScanInput` بلا خيارات = سلوك الكاشير (٤ محارف/١٢٠مي)؛ هنا نمرّر minLength=3 لحقول البحث. */
 import { useCallback, useEffect, useRef, type KeyboardEvent } from "react";
-import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { useSmartScanInput } from "@/components/pos/useSmartScanInput";
 
 type SetInputValue = (value: string) => void;
+
+export const DEFAULT_BARCODE_INPUT_MIN_LENGTH = 3;
+export function barcodeInputAcceptsScan(raw: string, minLength = DEFAULT_BARCODE_INPUT_MIN_LENGTH): boolean {
+  return raw.length >= minLength;
+}
 
 export function useBarcodeInput(
   onScan: (code: string) => void,
   {
     enabled = true,
-    minLength = 4,
-    thresholdMs = 80,
+    // باركودات الموردين الداخلية قد تكون من 3 محارف (مثل B1X). أقلّ من ذلك يبقى كتابةً بشرية.
+    minLength = DEFAULT_BARCODE_INPUT_MIN_LENGTH,
+    // ١٢٠مي موحّدٌ مع الكاشير — يتحمّل تذبذب توقيت USB دون بلوغ سرعة الكتابة البشرية المستدامة.
+    thresholdMs = 120,
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
 ) {
   const onScanRef = useRef(onScan);
-  const previousMsRef = useRef(0);
-  const firstKeyRef = useRef("");
-  const bufferRef = useRef("");
-  const scanningRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   onScanRef.current = onScan;
 
-  const reset = useCallback(() => {
-    clearTimeout(timerRef.current);
-    firstKeyRef.current = "";
-    bufferRef.current = "";
-    scanningRef.current = false;
-  }, []);
+  // نفس خطّاف الكاشير حرفيّاً — لا نسخة موازية. مرجعٌ مستقرّ لـonScan كي لا يُعاد بناء الكاشف وسط مسح.
+  const { handleKeyDown: scanKeyDown, reset } = useSmartScanInput(
+    (code) => onScanRef.current(code),
+    { minLength, gapMs: thresholdMs },
+  );
 
-  const flush = useCallback((setValue: SetInputValue) => {
-    clearTimeout(timerRef.current);
-    const raw = bufferRef.current;
-    reset();
-    if (raw.length >= minLength) {
-      setValue("");
-      onScanRef.current(normalizeBarcodeScannerInput(raw));
-    } else if (raw) {
-      // تسلسل بشري قصير صُنّف سريعاً بالخطأ: لا نبتلعه.
-      setValue(raw);
-    }
-  }, [minLength, reset]);
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>, setValue: SetInputValue) => {
+      if (!enabled) return;
+      // نمرّر القيمة الحالية للحقل (بادئة البحث القائم) كما يفعل الكاشير بـ`curVal`.
+      scanKeyDown(event, event.currentTarget.value, setValue);
+    },
+    [enabled, scanKeyDown],
+  );
 
-  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>, setValue: SetInputValue) => {
-    if (!enabled) return;
-    const now = Date.now();
-
-    if (event.key === "Enter") {
-      if (scanningRef.current && bufferRef.current.length >= minLength) {
-        event.preventDefault();
-        flush(setValue);
-      } else {
-        reset();
-      }
-      return;
-    }
-    if (event.key === "Escape") {
-      reset();
-      return;
-    }
-    if (event.ctrlKey || event.altKey || event.metaKey || event.key.length === 0 || event.key.length > 2) return;
-
-    const gap = now - previousMsRef.current;
-    previousMsRef.current = now;
-
-    if (scanningRef.current) {
-      event.preventDefault();
-      bufferRef.current += event.key;
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => flush(setValue), thresholdMs * 6);
-      return;
-    }
-
-    if (firstKeyRef.current && gap < thresholdMs) {
-      event.preventDefault();
-      bufferRef.current = firstKeyRef.current + event.key;
-      scanningRef.current = true;
-      setValue("");
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => flush(setValue), thresholdMs * 6);
-      return;
-    }
-
-    firstKeyRef.current = event.key;
-  }, [enabled, flush, minLength, reset, thresholdMs]);
-
+  // إلغاءُ أيّ ومضةٍ معلّقة عند إزالة المكوّن (تجنّب إطلاق مسحٍ على حقلٍ زال).
   useEffect(() => reset, [reset]);
 
   return { handleKeyDown, reset };

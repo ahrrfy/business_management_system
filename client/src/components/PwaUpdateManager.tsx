@@ -47,7 +47,8 @@ export function pwaOfflineReadyMessage(input: {
 }
 
 /**
- * زائر المتجر لا يملك مسودة ERP حرجة ويجب ألا يبقى على shell قديم يحوّل أخطاء API إلى فراغ.
+ * زائر المتجر وشاشات الكشك وقارئ الأسعار لا تملك مسودة ERP حرجة ويجب ألا تبقى على shell قديم.
+ * شاشات الكشك غير مأهولة وتتطلب تطبيقاً صامتاً دون انتظار لمسة بشرية.
  * أما الموظفون والمناديب فيحتفظون بالموافقة اليدوية لأن لديهم عمليات قد تكون غير محفوظة.
  */
 export function decidePwaUpdateDelivery(input: {
@@ -56,6 +57,12 @@ export function decidePwaUpdateDelivery(input: {
   hasWaitingWorker: boolean;
 }): PwaUpdateDelivery {
   if (!input.hasWaitingWorker) return "NONE";
+  const isKioskPath =
+    input.pathname === "/kiosk" ||
+    input.pathname.startsWith("/kiosk/") ||
+    input.pathname === "/price-checker" ||
+    input.pathname.startsWith("/price-checker/");
+  if (isKioskPath) return "AUTO_APPLY";
   const storefrontPath =
     input.pathname === "/store" || input.pathname.startsWith("/store/");
   if (isPublicHost(input.hostname) && storefrontPath) return "AUTO_APPLY";
@@ -730,6 +737,12 @@ export function PwaUpdateManager() {
   }
 
   if (!ready) return null;
+  const isKioskSurface =
+    pathname === "/kiosk" ||
+    pathname.startsWith("/kiosk/") ||
+    pathname === "/price-checker" ||
+    pathname.startsWith("/price-checker/");
+
   return (
     <>
       {applying && (
@@ -773,66 +786,68 @@ export function PwaUpdateManager() {
         </div>
       )}
 
-      <aside
-        className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-xl rounded-lg border bg-background p-3 shadow-xl"
-        dir="rtl"
-        role="status"
-        aria-live="polite"
-        aria-busy={applying}
-      >
-        <div className="flex items-start gap-3">
-          <ShieldCheck
-            className="mt-0.5 size-5 shrink-0 text-primary"
-            aria-hidden
-          />
-          <div className="min-w-0 flex-1">
-            <p className="font-medium">تحديث آمن جاهز للتثبيت</p>
-            {updateError ? (
-              <p className="mt-1 text-sm font-medium text-destructive" role="alert">
-                {updateError}
-              </p>
-            ) : (
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                سيُحفظ العمل محلياً ثم يُعاد فتح النظام بعد التحقق من النسخة
-                الجديدة.
-              </p>
-            )}
-          </div>
-        </div>
-        <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={applying}
-            onClick={() => {
-              setPwaUpdatePending(false);
-              setReady(false);
-            }}
-          >
-            لاحقاً
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            disabled={applying}
-            onClick={() => void applyUpdate()}
-          >
-            <RefreshCw
-              className={`size-4 ${applying ? "motion-safe:animate-spin" : ""}`}
+      {!isKioskSurface && (
+        <aside
+          className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-xl rounded-lg border bg-background p-3 shadow-xl"
+          dir="rtl"
+          role="status"
+          aria-live="polite"
+          aria-busy={applying}
+        >
+          <div className="flex items-start gap-3">
+            <ShieldCheck
+              className="mt-0.5 size-5 shrink-0 text-primary"
               aria-hidden
             />
-            {applying
-              ? "جارٍ التحديث…"
-              : updateError
-                ? "إعادة المحاولة بأمان"
-              : hasUnsavedInteraction()
-                ? "حفظ وتحديث"
-                : "تحديث الآن"}
-            <Download className="size-4" aria-hidden />
-          </Button>
-        </div>
-      </aside>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">تحديث آمن جاهز للتثبيت</p>
+              {updateError ? (
+                <p className="mt-1 text-sm font-medium text-destructive" role="alert">
+                  {updateError}
+                </p>
+              ) : (
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  سيُحفظ العمل محلياً ثم يُعاد فتح النظام بعد التحقق من النسخة
+                  الجديدة.
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={applying}
+              onClick={() => {
+                setPwaUpdatePending(false);
+                setReady(false);
+              }}
+            >
+              لاحقاً
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={applying}
+              onClick={() => void applyUpdate()}
+            >
+              <RefreshCw
+                className={`size-4 ${applying ? "motion-safe:animate-spin" : ""}`}
+                aria-hidden
+              />
+              {applying
+                ? "جارٍ التحديث…"
+                : updateError
+                  ? "إعادة المحاولة بأمان"
+                : hasUnsavedInteraction()
+                  ? "حفظ وتحديث"
+                  : "تحديث الآن"}
+              <Download className="size-4" aria-hidden />
+            </Button>
+          </div>
+        </aside>
+      )}
     </>
   );
 }

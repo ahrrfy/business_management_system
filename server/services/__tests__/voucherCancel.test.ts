@@ -451,7 +451,7 @@ describe("حواجز الإلغاء", () => {
     },
   );
 
-  it("قبض TREASURY لا يخرجه non-owner/admin، ولا يعتمده requester أو منشئ القبض؛ مالك ثالث فقط ينفذه", async () => {
+  it("قبض TREASURY لا يخرجه non-owner/admin؛ ومنشئ القبض (مالكٌ) يعتمد إلغاءه بنفسه (قرار المالك ٣/٩/٢٦: لا اعتماد ثانٍ بعد المالك)", async () => {
     const original = await createVoucher(
       {
         voucherType: "RECEIPT",
@@ -468,10 +468,9 @@ describe("حواجز الإلغاء", () => {
     await expect(
       approveVoucher(Number(request.approvalReceiptId), actor),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(
-      approveVoucher(Number(request.approvalReceiptId), ownerApprover),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await approveVoucher(Number(request.approvalReceiptId), secondOwner);
+    // ownerApprover أنشأ القبض الأصلي وهو مالكٌ نشط — يعتمد إلغاءه بنفسه بلا حاجة لمالكٍ آخر.
+    const firstApproval = await approveVoucher(Number(request.approvalReceiptId), ownerApprover);
+    expect(firstApproval.replayed).toBe(false);
     const [orig] = await db()
       .select()
       .from(s.receipts)
@@ -487,6 +486,10 @@ describe("حواجز الإلغاء", () => {
       cashBucket: "TREASURY",
       shiftId: null,
     });
+    // اعتمادٌ ثانٍ (بمالكٍ آخر) على سندٍ مُعتمَدٍ سلفاً ⇒ replay idempotent بلا أثرٍ ثانٍ.
+    const secondApproval = await approveVoucher(Number(request.approvalReceiptId), secondOwner);
+    expect(secondApproval.replayed).toBe(true);
+    expect(secondApproval.signatureHash).toBe(firstApproval.signatureHash);
   });
 
   it("tamper للـpayload أو المصدر يفشل مغلقاً ويبقي الأصل/الطلب/الذمة بلا أثر جزئي", async () => {

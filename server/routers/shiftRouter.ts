@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "driz
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { z } from "zod";
+import { appErrorMessage } from "@shared/errors";
 import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
@@ -117,11 +118,15 @@ export const shiftRouter = router({
           .limit(lim)
           .offset(off),
       });
-      const total = await countIfOffset(usingCursor, async () => {
-        const baseWhere = conds.length ? and(...conds) : undefined;
-        const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(baseWhere))[0];
-        return Number(totalRow?.n ?? 0);
-      });
+      const total = await countIfOffset(
+        usingCursor,
+        async () => {
+          const baseWhere = conds.length ? and(...conds) : undefined;
+          const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(baseWhere))[0];
+          return Number(totalRow?.n ?? 0);
+        },
+        { rowsLength: rows.length, limit: i.limit ?? 50, offset: i.offset },
+      );
       return { rows, total, hasMore, nextCursor };
     }),
 
@@ -296,8 +301,6 @@ export const shiftRouter = router({
         countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
-        // عقد الحيازة: عند وجود نقد يجب تسمية مدير مستقل يستلمه ويعدّه لاحقاً.
-        handoverToUserId: z.number().int().positive().nullish(),
         // مسار مالك استثنائي لورديات سالبة سبقت تفعيل الحارس. لا يَقبل مبلغ تمويل من العميل؛
         // الخدمة تعيد حساب العجز وتضيف خزينة→درج بالقيمة الدقيقة ثم تغلق بصفر.
         legacyNegativeRemediation: z
@@ -374,9 +377,6 @@ export const shiftRouter = router({
         closeShift({
           ...input,
           enforceCashGovernance: true,
-          // توافق العملاء السابقين الذين لا يعرفون handoverToUserId: لا نسقط النقد ولا
-          // ندخله الخزينة؛ يبقى في CASH_IN_TRANSIT بعهدة مالك الوردية حتى يعيد المدير إسناده.
-          allowLegacySelfCustody: input.handoverToUserId == null,
         }, {
           userId: ctx.user.id,
           branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
@@ -399,18 +399,23 @@ export const shiftRouter = router({
           varianceReasonCode: res.varianceReasonCode,
           varianceReason: res.varianceReason,
           requiresManagerReview: res.requiresManagerReview,
-          // النقد خرج من الدرج إلى عهدة المستلم، ولا يدخل الخزينة قبل عدّه وقبوله.
+          // النقد خرج من الدرج ودخل الخزينة تلقائياً داخل معاملة الإغلاق نفسها.
           treasuryReturn: res.treasuryReturn
             ? {
                 handoverNumber: res.treasuryReturn.handoverNumber,
                 amount: res.countedCash,
-                recipientUserId: res.treasuryReturn.recipientUserId,
+                destination: "TREASURY",
               }
             : null,
         },
       });
       return res;
     }),
+
+  // إغلاق الوردية لا يفتح عقد حيازة جديداً ولا يحتاج اسم مستلم.
+  // كامل النقد المطابق ينتقل إلى الخزينة داخل معاملة الإغلاق نفسها،
+  // بينما يبقى السحب أثناء الوردية أدناه مساراً تشغيلياً مستقلاً
+  // ذا مستلم مسمّى وقبول لاحق حتى لا تُخفَّف حوكمته مصادفةً.
 
   // السحب النقديّ أثناء الوردية (cash drop) — نقلٌ مِن الدرج إلى الخزينة في منتصف الوردية لتقليل
   // مخاطرة تكدّس النقد. مرآةٌ لحوكمة close (نفس treasuryCashierProcedure + فحص الملكية داخل الخدمة).
@@ -459,8 +464,8 @@ export const shiftRouter = router({
       return res;
     }),
 
-  // treasury-stage2: مستلِمو تسليم النقد عند إغلاق الوردية أو إعادة إسناد عهدة
-  // معلّقة. المستلِم admin/manager نشط، أمّا القارئ فيشمل الكاشير والمدير والمحاسب
+  // مستلمو السحب النقدي أثناء الوردية وإعادة إسناد العهد التشغيلية المعلّقة.
+  // المستلِم admin/manager نشط، أمّا القارئ فيشمل الكاشير والمدير والمحاسب
   // والمنح الصريح. غير admin يرى مستلمي فرعه فقط؛ admin يعبر الفروع لمعالجة
   // الوردية في الفرع المختار.
   handoverRecipients: treasuryHandoverRecipientsProcedure.query(async ({ ctx }) => {
@@ -505,14 +510,28 @@ export const shiftRouter = router({
   current: treasuryReadProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive(),
+        // م٤ (الاستنتاج قبل السؤال): اختياريّ — الخادم يشتقّه من نطاق الفاعل حين يغيب؛
+        // المرتفعون يمرّرونه لفرعٍ آخر بقصدٍ صريح، والشاشاتُ القائمة تمرّره كما كانت.
+        branchId: z.number().int().positive().optional(),
         // كل شاشة تستعلم عن نوع ورديتها صراحةً (RECEPTION للاستقبال، PRINT_SERVICES للطباعة)؛
         // بدونه يُرجَع أيّ وردية مفتوحة.
         shiftType: z.enum(["RETAIL", "RECEPTION", "PRINT_SERVICES"]).optional(),
       }),
     )
     .query(({ input, ctx }) => {
-      const effective = ctx.scopedBranchId ?? input.branchId;
+      const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+      const effective = ctx.scopedBranchId ?? input.branchId ?? assignedBranchId;
+      if (effective == null) {
+        // عابرُ الفروع بلا فرعٍ مُسنَد ولم يُرسل فرعاً: لا فرعَ افتراضيّ (حارس check:branch).
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تحديد فرع الوردية",
+            why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً",
+            doThis: "اختر الفرع من القائمة في الشاشة أو اطلب من المدير إسناد فرعٍ إلى حسابك",
+          }),
+        });
+      }
       return getOpenShift(ctx.user.id, effective, input.shiftType);
     }),
 });

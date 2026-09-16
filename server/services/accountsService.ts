@@ -3,6 +3,7 @@
 import { asc } from "drizzle-orm";
 import { accounts } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { createTtlCache } from "../lib/ttlCache";
 
 export type AccountType = "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
 
@@ -26,8 +27,16 @@ const TYPE_LABEL: Record<AccountType, string> = {
 };
 const TYPE_ORDER: AccountType[] = ["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"];
 
-/** كل الحسابات مرتّبةً (type ثم sortOrder). */
-export async function listAccounts(): Promise<AccountRow[]> {
+const accountsCache = createTtlCache<string, AccountRow[]>({
+  ttlMs: 300_000, // 5 دقائق — بيانات مرجعية نادراً ما تتغير
+  maxEntries: 5,
+});
+
+export function invalidateAccountsCache(): void {
+  accountsCache.clear();
+}
+
+async function fetchAccountsFromDb(): Promise<AccountRow[]> {
   const db = getDb();
   if (!db) return [];
   const rows = await db.select().from(accounts).orderBy(asc(accounts.sortOrder));
@@ -41,6 +50,14 @@ export async function listAccounts(): Promise<AccountRow[]> {
     isActive: !!r.isActive,
     sortOrder: Number(r.sortOrder),
   }));
+}
+
+/** كل الحسابات مرتّبةً (type ثم sortOrder) — مكيَّشة بالذاكرة (TTL 5د + single-flight). */
+export async function listAccounts(): Promise<AccountRow[]> {
+  if (process.env.NODE_ENV === "test") {
+    return fetchAccountsFromDb();
+  }
+  return accountsCache.get("all", fetchAccountsFromDb);
 }
 
 /** الشجرة مجموعةً حسب النوع (لعرض الواجهة) — لكل نوعٍ عنوانُه العربيّ وحساباته مرتّبة. */

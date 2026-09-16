@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 const readPage = (name: string) =>
   readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
+const readComponent = (relative: string) =>
+  readFileSync(new URL(`../../components/${relative}`, import.meta.url), "utf8");
+
 describe("audited public UX contracts", () => {
   it("keeps the jobs marquee semantic once and delegates modal focus to Dialog", () => {
     const source = readPage("JobApply.tsx");
@@ -45,7 +48,7 @@ describe("audited public UX contracts", () => {
     const governance = readPage("PurchaseReturnsGovernance.tsx");
 
     expect(legacyEntry).toContain(
-      '<Redirect to="/purchases/returns-governance" />',
+      '<Redirect to="/returns?tab=purchases" />',
     );
     expect(legacyEntry).not.toContain("PURCHASE_RETURN_ACTIONS");
     expect(legacyEntry).not.toContain("trpc.purchaseReturns.create");
@@ -193,5 +196,74 @@ describe("audited public UX contracts", () => {
       "mobileCardRenderer?: (row: T, index: number) => React.ReactNode",
     );
     expect(dataTableSource).toContain("md:hidden space-y-2.5");
+  });
+
+  it("keeps report catalog navigation consolidated around the canonical hubs", () => {
+    const reportsCenter = readPage("ReportsCenter.tsx");
+
+    expect(reportsCenter).toContain('href: "/reports/sales-hub"');
+    expect(reportsCenter).toContain('href: "/reports/profitability"');
+    expect(reportsCenter).not.toContain('href: "/sales-report"');
+    expect(reportsCenter).not.toContain('href: "/reports/sales-register"');
+    expect(reportsCenter).not.toContain('href: "/reports/sales-by-dimension"');
+
+    expect(reportsCenter).toContain('href: "/reports/aging-hub"');
+    expect(reportsCenter).not.toContain('href: "/ar-aging"');
+    expect(reportsCenter).not.toContain('href: "/ap-aging"');
+    expect(reportsCenter).not.toContain('href: "/reports/aging-detail"');
+  });
+
+  it("keeps report tabs aligned with reportViewerProcedure", () => {
+    for (const page of ["SalesHub.tsx", "SuppliersHub.tsx", "CrmHub.tsx", "ReportsHub.tsx"]) {
+      const source = readPage(page);
+      const gate = source.slice(
+        source.indexOf("const REPORT_VIEWER_GATE"),
+        source.indexOf("const TABS"),
+      );
+      expect(gate, page).toContain('roles: ["manager", "accountant", "auditor"]');
+      expect(gate, page).toContain('module: "reports"');
+      expect(gate, page).toContain('level: "READ"');
+      expect(source, page).toContain("gate: REPORT_VIEWER_GATE");
+    }
+  });
+});
+
+describe("سلة البطاقات والمنتجات الموحّدة في POS", () => {
+  const source =
+    readPage("POS.tsx") + "\n" + readComponent("pos/usePOSCatalogSearch.ts");
+
+  it("يقبل المنتجات والبطاقات في نيّة موحّدة بدلاً من فصل السلتين", () => {
+    expect(source).not.toContain("DIGITAL_CART_BLOCKS_REGULAR_MESSAGE");
+    expect(source).not.toContain("REGULAR_CART_BLOCKS_DIGITAL_MESSAGE");
+    expect(source).toContain("regularLines: cart.filter((c) => !c.digital)");
+    expect(source).toContain("providerBasketKey: c.digital!.providerBasketKey");
+  });
+
+  it("يبقي الاتصال مطلوباً ويضيف المجموعة كاملةً مع مرجع واحد", () => {
+    expect(source).toContain("cardsDisabled={offline}");
+    expect(source).toContain("onPickBasket={addDigitalBasket}");
+    expect(source).toContain("existingCardCount={digitalLines.length}");
+  });
+
+  it("يسمح بمسح المنتجات بعد إضافة البطاقات دون حارس فصل قديم", () => {
+    const lookupBarcode = source.slice(
+      source.indexOf("const lookupBarcode = useCallback"),
+      source.indexOf("const { handleKeyDown: handleScanKeyDown }"),
+    );
+    const addRow = source.slice(
+      source.indexOf("function addRow("),
+      source.indexOf("function changeQty("),
+    );
+
+    expect(source).toContain("useBarcodeScanner(handleHidScan");
+    expect(lookupBarcode).not.toContain("if (cartHasDigitalRef.current)");
+    expect(lookupBarcode).toContain("else addRow(row as PosRow)");
+    expect(addRow).not.toContain("if (cartHasDigitalRef.current)");
+  });
+
+  it("يوضح شروط الدفع ويطبع الأسطر المحفوظة من الخادم", () => {
+    expect(source).toContain('data-testid="pos-cart-mode-guard"');
+    expect(source).toContain("البطاقات والمنتجات في فاتورة واحدة");
+    expect(source).toContain("digitalCheckoutReceiptLines(r.receiptLines)");
   });
 });

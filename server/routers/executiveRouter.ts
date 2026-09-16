@@ -7,7 +7,7 @@ import { getManagementAlerts, type AlertItem } from "../services/reportsAlertsSe
 import { getDashboard as getTreasuryDashboard } from "../services/treasuryService";
 import { money, toDbMoney } from "../services/money";
 import { getTodayNetSales } from "../services/reports/todaySales";
-import { resolveSuperAppAuthority } from "./superAppRouter";
+import { resolveSuperAppAuthority } from "../services/superAppAuthority";
 
 export const executiveDestinationKeys = [
   "INSIGHTS", "RECEIVABLES", "PRODUCTS", "SHIFTS", "WORK_ORDERS", "PURCHASING", "TASKS",
@@ -130,87 +130,97 @@ const emptyMetrics = (): DashboardMetricsResult => ({
   health: { status: "degraded", sourceErrors: ["metrics"] },
 });
 
+/**
+ * Shared read model for the web command center and the Expo-native projection.
+ * `requestedBranchId` is deliberately optional: the Expo endpoint never
+ * supplies it, so its scope is derived solely from the authenticated actor.
+ */
+export async function getExecutiveCommandCenter(
+  user: ExecutiveUser & { id: number },
+  requestedBranchId?: number,
+) {
+  assertExecutiveAccess(user);
+  const authority = resolveSuperAppAuthority(user);
+  const branchId = resolveExecutiveBranch(user, requestedBranchId);
+  const capabilities = resolveExecutiveCapabilities(user);
+  const partialErrors: Array<{ section: string; code: string }> = [];
+  const safe = async <T>(section: string, load: () => Promise<T>, fallback: T): Promise<T> => {
+    try { return await load(); }
+    catch { partialErrors.push({ section, code: "SOURCE_UNAVAILABLE" }); return fallback; }
+  };
+  const [metrics, alertsResult, salesToday, treasuryDashboard] = await Promise.all([
+    safe("metrics", () => getDashboardMetrics({
+      branchId: branchId ?? null,
+      includeOpeningBalance: authority.scope.allBranches && branchId == null,
+      includeFinancials: capabilities.financial && (capabilities.sales || capabilities.receivables),
+      userId: user.id,
+    }), emptyMetrics()),
+    capabilities.financial
+      ? safe("alerts", () => getManagementAlerts({ branchId, isAdmin: authority.scope.allBranches }), { alerts: [], generatedAt: "", sourceErrors: ["alerts"] })
+      : Promise.resolve({ alerts: [], generatedAt: "", sourceErrors: [] }),
+    capabilities.sales
+      ? safe("salesToday", () => getExecutiveTodaySales(branchId), null)
+      : Promise.resolve(null),
+    capabilities.treasury
+      ? safe("treasurySnapshot", () => getTreasuryDashboard(
+        { branchId },
+        { scopedBranchId: authority.scope.allBranches ? null : branchId ?? null, role: authority.scope.allBranches ? "admin" : user.role, userId: user.id },
+      ), null)
+      : Promise.resolve(null),
+  ]);
+  for (const source of metrics.health.sourceErrors) {
+    partialErrors.push({ section: `metrics.${source}`, code: "SOURCE_UNAVAILABLE" });
+  }
+  for (const source of alertsResult.sourceErrors) {
+    partialErrors.push({ section: `alerts.${source}`, code: "SOURCE_UNAVAILABLE" });
+  }
+  const asOf = new Date().toISOString();
+  const treasurySnapshot = treasuryDashboard == null ? null : {
+    treasuryBalance: toDbMoney(treasuryDashboard.treasuryBalances.reduce((sum, row) => sum.plus(money(row.balance)), money(0))),
+    drawerBalance: toDbMoney(treasuryDashboard.drawerBalances.reduce((sum, row) => sum.plus(money(row.expectedCash)), money(0))),
+    todayReceipts: treasuryDashboard.todayReceiptsTotal,
+    todayExpenses: treasuryDashboard.todayExpensesTotal,
+    openShiftsCount: treasuryDashboard.openShiftsCount,
+    generatedAt: treasuryDashboard.generatedAt,
+  };
+  return {
+    asOf,
+    scope: { branchId: branchId ?? null, allBranches: authority.scope.allBranches && branchId == null },
+    capabilities,
+    health: { status: partialErrors.length ? "degraded" as const : "ok" as const, partialErrors },
+    operationalSnapshot: {
+      salesToday: salesToday == null ? null : {
+        total: salesToday.total,
+        invoiceCount: salesToday.invoiceCount,
+        freshness: { asOf: salesToday.generatedAt, source: "database" as const },
+      },
+      treasury: treasurySnapshot == null ? null : {
+        treasuryBalance: treasurySnapshot.treasuryBalance,
+        drawerBalance: treasurySnapshot.drawerBalance,
+        todayReceipts: treasurySnapshot.todayReceipts,
+        todayExpenses: treasurySnapshot.todayExpenses,
+        openShiftsCount: treasurySnapshot.openShiftsCount,
+        freshness: { asOf: treasurySnapshot.generatedAt, source: "treasury-ledger" as const },
+      },
+    },
+    metrics: selectPermittedExecutiveMetrics(metrics, capabilities),
+    decisions: alertsResult.alerts.flatMap((alert) => {
+      const action = alertAction(alert);
+      return actionPermitted(action, capabilities) ? [{
+        id: alert.key,
+        severity: alert.severity,
+        title: alert.title,
+        count: alert.count,
+        amount: alert.amount,
+        actionLabel: alert.actionLabel,
+        action,
+      }] : [];
+    }),
+  };
+}
+
 export const executiveRouter = router({
   commandCenter: reportViewerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(async ({ input, ctx }) => {
-      assertExecutiveAccess(ctx.user);
-      const authority = resolveSuperAppAuthority(ctx.user);
-      const branchId = resolveExecutiveBranch(ctx.user, input?.branchId);
-      const capabilities = resolveExecutiveCapabilities(ctx.user);
-      const partialErrors: Array<{ section: string; code: string }> = [];
-      const safe = async <T>(section: string, load: () => Promise<T>, fallback: T): Promise<T> => {
-        try { return await load(); }
-        catch { partialErrors.push({ section, code: "SOURCE_UNAVAILABLE" }); return fallback; }
-      };
-      const [metrics, alertsResult, salesToday, treasuryDashboard] = await Promise.all([
-        safe("metrics", () => getDashboardMetrics({
-          branchId: branchId ?? null,
-          includeOpeningBalance: authority.scope.allBranches && branchId == null,
-          includeFinancials: capabilities.financial && (capabilities.sales || capabilities.receivables),
-          userId: ctx.user.id,
-        }), emptyMetrics()),
-        capabilities.financial
-          ? safe("alerts", () => getManagementAlerts({ branchId, isAdmin: authority.scope.allBranches }), { alerts: [], generatedAt: "", sourceErrors: ["alerts"] })
-          : Promise.resolve({ alerts: [], generatedAt: "", sourceErrors: [] }),
-        capabilities.sales
-          ? safe("salesToday", () => getExecutiveTodaySales(branchId), null)
-          : Promise.resolve(null),
-        capabilities.treasury
-          ? safe("treasurySnapshot", () => getTreasuryDashboard(
-            { branchId },
-            { scopedBranchId: authority.scope.allBranches ? null : branchId ?? null, role: authority.scope.allBranches ? "admin" : ctx.user.role, userId: ctx.user.id },
-          ), null)
-          : Promise.resolve(null),
-      ]);
-      for (const source of metrics.health.sourceErrors) {
-        partialErrors.push({ section: `metrics.${source}`, code: "SOURCE_UNAVAILABLE" });
-      }
-      for (const source of alertsResult.sourceErrors) {
-        partialErrors.push({ section: `alerts.${source}`, code: "SOURCE_UNAVAILABLE" });
-      }
-      const asOf = new Date().toISOString();
-      const treasurySnapshot = treasuryDashboard == null ? null : {
-        treasuryBalance: toDbMoney(treasuryDashboard.treasuryBalances.reduce((sum, row) => sum.plus(money(row.balance)), money(0))),
-        drawerBalance: toDbMoney(treasuryDashboard.drawerBalances.reduce((sum, row) => sum.plus(money(row.expectedCash)), money(0))),
-        todayReceipts: treasuryDashboard.todayReceiptsTotal,
-        todayExpenses: treasuryDashboard.todayExpensesTotal,
-        openShiftsCount: treasuryDashboard.openShiftsCount,
-        generatedAt: treasuryDashboard.generatedAt,
-      };
-      return {
-        asOf,
-        scope: { branchId: branchId ?? null, allBranches: authority.scope.allBranches && branchId == null },
-        capabilities,
-        health: { status: partialErrors.length ? "degraded" as const : "ok" as const, partialErrors },
-        operationalSnapshot: {
-          salesToday: salesToday == null ? null : {
-            total: salesToday.total,
-            invoiceCount: salesToday.invoiceCount,
-            freshness: { asOf: salesToday.generatedAt, source: "database" as const },
-          },
-          treasury: treasurySnapshot == null ? null : {
-            treasuryBalance: treasurySnapshot.treasuryBalance,
-            drawerBalance: treasurySnapshot.drawerBalance,
-            todayReceipts: treasurySnapshot.todayReceipts,
-            todayExpenses: treasurySnapshot.todayExpenses,
-            openShiftsCount: treasurySnapshot.openShiftsCount,
-            freshness: { asOf: treasurySnapshot.generatedAt, source: "treasury-ledger" as const },
-          },
-        },
-        metrics: selectPermittedExecutiveMetrics(metrics, capabilities),
-        decisions: alertsResult.alerts.flatMap((alert) => {
-          const action = alertAction(alert);
-          return actionPermitted(action, capabilities) ? [{
-            id: alert.key,
-            severity: alert.severity,
-            title: alert.title,
-            count: alert.count,
-            amount: alert.amount,
-            actionLabel: alert.actionLabel,
-            action,
-          }] : [];
-        }),
-      };
-    }),
+    .query(({ input, ctx }) => getExecutiveCommandCenter(ctx.user, input?.branchId)),
 });

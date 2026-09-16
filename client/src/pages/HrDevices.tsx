@@ -8,15 +8,18 @@ import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  PROTOCOL_LABELS,
+  emptyForm,
+  fmtTime,
+  fmtRelativeTime,
+  type DeviceFormData,
+} from "@/components/hrDevices/hrDeviceTypes";
+import { HrDeviceDetailCard } from "@/components/hrDevices/HrDeviceDetailCard";
+import { HrDeviceUsersDialog } from "@/components/hrDevices/HrDeviceUsersDialog";
+import { HrDeviceGuideDialog } from "@/components/hrDevices/HrDeviceGuideDialog";
+import { HrDeviceFormDialog } from "@/components/hrDevices/HrDeviceFormDialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,14 +27,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/PageHeader";
+import { DataTable } from "@/components/data-table/DataTable";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions, type RowAction } from "@/components/list/RowActions";
 import { FilterField } from "@/components/list/FilterField";
-import {
-  ErrorState,
-  LoadingState,
-  TableEmptyRow,
-} from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { notify } from "@/lib/notify";
@@ -63,56 +64,11 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const emptyForm = {
-  name: "",
-  serialNumber: "",
-  protocol: "AIFACE_WS",
-  model: "",
-  location: "",
-  branchId: "",
-  deviceCode: "",
-  ip: "",
-};
-
-/** توقيت مقروء ببغداد — أو «—». */
-function fmtTime(v: string | Date | null | undefined): string {
-  if (!v) return "—";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  return d.toLocaleString("ar-IQ-u-nu-latn", {
-    dateStyle: "short",
-    timeStyle: "short",
-    timeZone: "Asia/Baghdad",
-  });
-}
-
-/** وقتٌ نسبيّ قصير للحالة الحيّة؛ التاريخ الكامل يبقى للتوقيتات الأقدم. */
-function fmtRelativeTime(v: string | Date | null | undefined): string {
-  if (!v) return "—";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  const seconds = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1_000));
-  if (seconds < 60) return "الآن";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes === 1) return "قبل دقيقة";
-  if (minutes === 2) return "قبل دقيقتين";
-  if (minutes < 60)
-    return `قبل ${minutes.toLocaleString("ar-IQ-u-nu-latn")} دقيقة`;
-  const hours = Math.floor(minutes / 60);
-  if (hours === 1) return "قبل ساعة";
-  if (hours === 2) return "قبل ساعتين";
-  if (hours < 24) return `قبل ${hours.toLocaleString("ar-IQ-u-nu-latn")} ساعات`;
-  return fmtTime(d);
-}
-
-const PROTOCOL_LABELS: Record<string, string> = {
-  AIFACE_WS: "بصمة وجه (AiFace/AI518)",
-  ZKTECO_PUSH: "ZKTeco وأشباهها",
-};
 
 export default function HrDevices() {
   const utils = trpc.useUtils();
@@ -346,6 +302,199 @@ export default function HrDevices() {
     Number(deviceBranchFilter !== "all") +
     Number(deviceActionFilter !== "all");
   const selectedDevice = devices.find((d) => d.id === selectedDeviceId) ?? null;
+
+  /** صفّا الجدولين — مشتقّان من مخرَج الاستعلام نفسه فلا ينجرفان عن عقد الخادم. */
+  type DeviceRow = (typeof devices)[number];
+  type PunchRow = NonNullable<(typeof punches)["data"]>["rows"][number];
+
+  /*
+   * أعمدة الأجهزة — داخل المكوّن لأنّها تقرأ الجهاز المختار وتُبدّله.
+   *
+   * الشاشاتُ الصغيرة: الجدولُ الخامّ كان يُخفي «آخر إشارة» بـ`hidden md:table-cell`
+   * و«البصمات المستلمة» بـ`hidden lg:table-cell`، فيبقى على الهاتف أربعةُ أعمدةٍ تسع
+   * العرض. ولا مقابلَ لذلك في عقد أعمدة `DataTable` (لا مدخلَ لصنفٍ استجابيّ على
+   * `<td>`/`<th>`). وتعليقٌ سابقٌ هنا أحال إلى «منتقي الأعمدة» — وهو **غيرُ متاح**:
+   * `embedded` يكتمه (DataTable.tsx: `!embedded && …`)، فلم يبقَ إلّا التمريرُ الأفقيّ
+   * على ستّة أعمدة، أي أنّ قارئ الهاتف يجرّ الجدولَ جانبياً ليرى حالةَ جهاز.
+   * البديلُ الصحيح هو `mobileCardRenderer` أدناه: كروتٌ دون `md` والجدولُ كاملاً فوقها.
+   */
+  const deviceColumns = useMemo<ColumnDef<DeviceRow, unknown>[]>(
+    () => [
+      {
+        id: "device",
+        header: "الجهاز",
+        accessorFn: (d) => d.name,
+        meta: { width: "wide" },
+        cell: ({ row }) => {
+          const d = row.original;
+          const selected = d.id === selectedDeviceId;
+          return (
+            <button
+              type="button"
+              onClick={() => setSelectedDeviceId(d.id)}
+              className="flex w-full items-center gap-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span
+                className={`grid size-8 shrink-0 place-items-center rounded-lg ${selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+              >
+                <ScanFace aria-hidden className="size-4.5" />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate font-semibold">{d.name}</span>
+                <span className="block truncate text-[11px] text-muted-foreground" dir="ltr">
+                  {d.serialNumber ?? d.model ?? "—"}
+                </span>
+              </span>
+            </button>
+          );
+        },
+      },
+      {
+        id: "branch",
+        header: "الفرع",
+        accessorFn: (d) => d.branchName ?? "بلا فرع",
+        cell: ({ row }) => (
+          <span className="text-xs">
+            <span className="block font-medium">{row.original.branchName ?? "بلا فرع"}</span>
+            {row.original.location && (
+              <span className="block truncate text-[11px] text-muted-foreground">{row.original.location}</span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (d) => (!d.enabled ? "بانتظار الاعتماد" : d.status === "online" ? "متصل" : "منقطع"),
+        meta: { kind: "status" },
+        cell: ({ row }) => {
+          const d = row.original;
+          const online = d.enabled && d.status === "online";
+          return (
+            <span
+              className={`inline-flex items-center gap-1.5 text-xs font-medium ${!d.enabled ? "text-[var(--sem-warn)]" : online ? "text-[var(--status-active)]" : "text-[var(--sem-neg)]"}`}
+            >
+              <Circle aria-hidden className="size-2 fill-current" />
+              {!d.enabled ? "بانتظار الاعتماد" : online ? "متصل" : "منقطع"}
+            </span>
+          );
+        },
+      },
+      {
+        id: "lastSeen",
+        header: "آخر إشارة",
+        accessorFn: (d) => fmtRelativeTime(d.lastSeenAt),
+        // نصٌّ نسبيّ بالعربية («قبل ٣ دقائق») لا تاريخٌ لاتينيّ ⇒ بلا عزل اتّجاه.
+        meta: { align: "center", width: "date" },
+        cell: ({ row }) => (
+          <span className="text-[11px] text-muted-foreground">{fmtRelativeTime(row.original.lastSeenAt)}</span>
+        ),
+      },
+      {
+        id: "punches",
+        header: "البصمات المستلمة",
+        accessorFn: (d) => (d.receivedPunches ?? 0).toLocaleString("en-US"),
+        meta: { kind: "number", align: "center" },
+        cell: ({ row }) => (
+          <span className="text-xs">
+            <span className="font-semibold">{(row.original.receivedPunches ?? 0).toLocaleString("en-US")}</span>
+            {(row.original.pendingPunches ?? 0) > 0 && (
+              <span className="mt-0.5 block text-[10px] text-[var(--sem-warn)]">
+                {row.original.pendingPunches} بلا موظف
+              </span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "open",
+        header: "تفاصيل",
+        meta: { kind: "actions" },
+        cell: ({ row }) => (
+          <button
+            type="button"
+            aria-label={`عرض تفاصيل ${row.original.name}`}
+            onClick={() => setSelectedDeviceId(row.original.id)}
+            className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ChevronLeft aria-hidden className="size-4" />
+          </button>
+        ),
+      },
+    ],
+    [selectedDeviceId],
+  );
+
+  /** أعمدة طابور البصمات — كلّها مشتقّة من الصفّ وحده. */
+  const punchColumns = useMemo<ColumnDef<PunchRow, unknown>[]>(
+    () => [
+      {
+        id: "punchAt",
+        header: "الوقت",
+        accessorFn: (p) => String(p.punchAt),
+        meta: { kind: "datetime", align: "start" },
+        cell: ({ row }) => <span className="text-xs">{String(row.original.punchAt)}</span>,
+      },
+      {
+        id: "device",
+        header: "الجهاز",
+        accessorFn: (p) => p.deviceName ?? p.serialNumber,
+        cell: ({ row }) => <span className="text-xs">{row.original.deviceName ?? row.original.serialNumber}</span>,
+      },
+      {
+        id: "enrollId",
+        header: "رقم المستخدم",
+        accessorFn: (p) => p.enrollId,
+        meta: { kind: "number", align: "center" },
+        cell: ({ row }) => <span className="text-xs">{row.original.enrollId}</span>,
+      },
+      {
+        id: "employee",
+        header: "الموظف",
+        accessorFn: (p) => p.employeeName ?? "غير مربوط — اربطه من زر «الربط»",
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          <span className="text-xs">
+            {row.original.employeeName ?? (
+              <span className="text-[var(--sem-warn)]">غير مربوط — اربطه من زر «الربط»</span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "mode",
+        header: "الوسيلة",
+        accessorFn: (p) => p.mode ?? "—",
+        meta: { align: "center" },
+        cell: ({ row }) => <span className="text-xs">{row.original.mode ?? "—"}</span>,
+      },
+      {
+        id: "processed",
+        header: "المعالجة",
+        accessorFn: (p) => (p.processedAt ? (p.processNote ? "مركونة" : "في الحضور") : "بالانتظار"),
+        meta: { kind: "status" },
+        cell: ({ row }) => {
+          const p = row.original;
+          return (
+            <span className="text-xs">
+              {p.processedAt ? (
+                p.processNote ? (
+                  <span className="text-[var(--sem-neg)]" title={p.processNote}>
+                    مركونة
+                  </span>
+                ) : (
+                  <span className="text-[var(--sem-pos)]">في الحضور</span>
+                )
+              ) : (
+                <span className="text-muted-foreground">بالانتظار</span>
+              )}
+            </span>
+          );
+        },
+      },
+    ],
+    [],
+  );
   const selectedOrigin = selectedDevice
     ? (pendingOrigins.find(
         (o) =>
@@ -494,7 +643,7 @@ export default function HrDevices() {
       hidden: d.enabled,
       gate: { module: "hr", level: "FULL" },
       disabled: del.isPending,
-      disabledReason: "جارٍ الحذف",
+      disabledReason: ACTION_LABELS.deleting,
       onSelect: () => void deleteDevice(d),
     },
   ];
@@ -714,141 +863,80 @@ export default function HrDevices() {
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40">
-                  <tr>
-                    <th className="px-3 py-2">الجهاز</th>
-                    <th className="px-3 py-2">الفرع</th>
-                    <th className="px-3 py-2 text-center">الحالة</th>
-                    <th className="hidden px-3 py-2 text-center md:table-cell">
-                      آخر إشارة
-                    </th>
-                    <th className="hidden px-3 py-2 text-center lg:table-cell">
-                      البصمات المستلمة
-                    </th>
-                    <th className="w-10 px-3 py-2">
-                      <span className="sr-only">اختيار</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleDevices.map((d) => {
-                    const online = d.enabled && d.status === "online";
-                    const selected = d.id === selectedDeviceId;
-                    return (
-                      <tr
-                        key={d.id}
-                        aria-selected={selected}
-                        className={`border-t transition-colors ${selected ? "bg-primary/10" : "hover:bg-accent/40"}`}
-                      >
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedDeviceId(d.id)}
-                            className="flex w-full items-center gap-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <span
-                              className={`grid size-8 shrink-0 place-items-center rounded-lg ${selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-                            >
-                              <ScanFace aria-hidden className="size-4.5" />
-                            </span>
-                            <span className="min-w-0">
-                              <span className="block truncate font-semibold">
-                                {d.name}
-                              </span>
-                              <span
-                                className="block truncate text-[11px] text-muted-foreground"
-                                dir="ltr"
-                              >
-                                {d.serialNumber ?? d.model ?? "—"}
-                              </span>
-                            </span>
-                          </button>
-                        </td>
-                        <td className="px-3 py-2 text-xs">
-                          <span className="block font-medium">
-                            {d.branchName ?? "بلا فرع"}
-                          </span>
-                          {d.location && (
-                            <span className="block truncate text-[11px] text-muted-foreground">
-                              {d.location}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          <span
-                            className={`inline-flex items-center gap-1.5 text-xs font-medium ${!d.enabled ? "text-[var(--sem-warn)]" : online ? "text-[var(--status-active)]" : "text-[var(--sem-neg)]"}`}
-                          >
-                            <Circle
-                              aria-hidden
-                              className="size-2 fill-current"
-                            />
-                            {!d.enabled
-                              ? "بانتظار الاعتماد"
-                              : online
-                                ? "متصل"
-                                : "منقطع"}
-                          </span>
-                        </td>
-                        <td className="hidden px-3 py-2 text-center text-[11px] text-muted-foreground md:table-cell">
-                          {fmtRelativeTime(d.lastSeenAt)}
-                        </td>
-                        <td className="hidden px-3 py-2 text-center text-xs lg:table-cell">
-                          <span className="font-semibold tabular-nums">
-                            {(d.receivedPunches ?? 0).toLocaleString("en-US")}
-                          </span>
-                          {(d.pendingPunches ?? 0) > 0 && (
-                            <span className="mt-0.5 block text-[10px] text-[var(--sem-warn)]">
-                              {d.pendingPunches} بلا موظف
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-muted-foreground">
-                          <button
-                            type="button"
-                            aria-label={`عرض تفاصيل ${d.name}`}
-                            onClick={() => setSelectedDeviceId(d.id)}
-                            className="grid size-8 place-items-center rounded-md hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <ChevronLeft aria-hidden className="size-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {list.isError && (
-                    <tr>
-                      <td colSpan={6} className="p-0">
-                        <ErrorState
-                          message="تعذّر تحميل الأجهزة."
-                          onRetry={() => list.refetch()}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                  {!list.isLoading &&
-                    !list.isError &&
-                    visibleDevices.length === 0 && (
-                      <TableEmptyRow
-                        colSpan={6}
-                        message={
-                          devices.length === 0
-                            ? "لا أجهزة بعد. أضف جهازاً أو وجّهه إلى الخادم ليظهر هنا."
-                            : "لا توجد أجهزة مطابقة للبحث والفلاتر."
-                        }
-                      />
-                    )}
-                  {list.isLoading && (
-                    <tr>
-                      <td colSpan={6} className="p-0">
-                        <LoadingState />
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: العدّ والملاحظة في الشريط أسفله وترويسة البطاقة أعلاه — فلا شريطَ حالةٍ ثانٍ. */}
+            <DataTable<DeviceRow>
+              embedded
+              columns={deviceColumns}
+              data={visibleDevices}
+              /* البحث والفلاتر في ترويسة البطاقة (تُغذّي visibleDevices) — بلا هذا يظهر حقلا
+                 بحثٍ متجاوران، وتُعلن الشاشةُ «لا أجهزة بعد» بينما الفلترُ وحده هو الحاجب. */
+              searchable={false}
+              externalFiltersActive={activeDeviceFilterCount > 0 || query.trim() !== ""}
+              pageSize={Infinity}
+              loading={list.isLoading}
+              errorState={{ isError: list.isError, message: "تعذّر تحميل الأجهزة.", onRetry: () => void list.refetch() }}
+              onRowClick={(d) => setSelectedDeviceId(d.id)}
+              /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد ⇒ بلا
+                 !important يختفي تمييزُ الجهاز المختار على الصفوف الفردية (وهو المؤشّر الوحيد
+                 بعد أن سقط `aria-selected` بالتحويل). */
+              getRowClassName={(d) => (d.id === selectedDeviceId ? "!bg-primary/10" : undefined)}
+              /*
+               * كروتُ الهاتف — بديلُ `hidden md:table-cell` الذي أسقطه التحويل (انظر تعليق
+               * `deviceColumns`). دون `md` تُعرَض هذه الكروت وفوقها الجدولُ كاملاً، فلا
+               * يُجرّ الجدولُ جانبياً ولا يُخفى عمود.
+               * ⚠️ مسارُ الكروت في `DataTable` لا يستدعي `getRowClassName` ⇒ تمييزُ الجهاز
+               * المختار يُكتب هنا صراحةً، وإلّا ضاع المؤشّرُ الوحيد على الهاتف.
+               */
+              mobileCardRenderer={(d) => {
+                const online = d.enabled && d.status === "online";
+                const serial = d.serialNumber ?? d.model ?? null;
+                return (
+                  <MobileDataCard
+                    key={d.id}
+                    title={d.name}
+                    /* `dir="ltr"` كما في الجدول الخامّ وفي عمود «الجهاز»: الرقم التسلسليّ
+                       قيمةٌ لاتينية داخل صفحة RTL، فبلا عزلٍ تنقلب شرطاتُه وأرقامه في
+                       العرض (`AI518-01/24` تُقرأ مقلوبة). */
+                    subtitle={serial ? <span dir="ltr">{serial}</span> : undefined}
+                    badge={{
+                      label: !d.enabled ? "بانتظار الاعتماد" : online ? "متصل" : "منقطع",
+                      variant: !d.enabled ? "warning" : online ? "success" : "destructive",
+                    }}
+                    metadata={[
+                      {
+                        /* الموقعُ مضمومٌ إلى الفرع بنفس صيغة لوحة التفاصيل أعلاه
+                           (`الفرع · الموقع`). عمودُ «الفرع» في الجدول الخامّ كان ظاهراً
+                           على الهاتف بسطرَيه، فإسقاطُ الموقع هنا يخسر ما كان مرئياً قبل
+                           التحويل — وهو التمييزُ الوحيد بين جهازَي فرعٍ واحد. */
+                        label: "الفرع",
+                        value: `${d.branchName ?? "بلا فرع"}${d.location ? ` · ${d.location}` : ""}`,
+                        icon: MapPin,
+                      },
+                      { label: "آخر إشارة", value: fmtRelativeTime(d.lastSeenAt), icon: Clock3 },
+                      {
+                        label: "البصمات المستلمة",
+                        value: (d.receivedPunches ?? 0).toLocaleString("en-US"),
+                        icon: Fingerprint,
+                      },
+                      ...((d.pendingPunches ?? 0) > 0
+                        ? [{
+                            label: "بلا موظف",
+                            value: (d.pendingPunches ?? 0).toLocaleString("en-US"),
+                            icon: ShieldQuestion,
+                          }]
+                        : []),
+                    ]}
+                    onClick={() => setSelectedDeviceId(d.id)}
+                    ariaLabel={`عرض تفاصيل ${d.name}`}
+                    /* `mx-3`: حاوية البطاقة `CardContent p-0` (صحيحٌ للجدول الممتدّ حافّةً
+                       لحافّة) — فبلا هذا الإزاحة تلتصق حوافُّ الكروت المُدوَّرة بحافّة البطاقة. */
+                    className={`mx-3 ${d.id === selectedDeviceId ? "border-primary bg-primary/10" : ""}`}
+                  />
+                );
+              }}
+              emptyState="لا أجهزة بعد. أضف جهازاً أو وجّهه إلى الخادم ليظهر هنا."
+              emptyFilteredState="لا توجد أجهزة مطابقة للبحث والفلاتر."
+            />
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2.5 text-[11px] text-muted-foreground">
               <span>
                 عرض {visibleDevices.length} من {total} جهاز
@@ -861,270 +949,26 @@ export default function HrDevices() {
           </CardContent>
         </Card>
 
-        <Card className="overflow-hidden xl:sticky xl:top-3">
-          {selectedDevice ? (
-            <>
-              <CardHeader className="space-y-4 border-b">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <CardTitle className="truncate text-base">
-                      {selectedDevice.name}
-                    </CardTitle>
-                    <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                      <MapPin aria-hidden className="size-3.5" />
-                      {selectedDevice.branchName ?? "بلا فرع"}
-                      {selectedDevice.location
-                        ? ` · ${selectedDevice.location}`
-                        : ""}
-                    </p>
-                  </div>
-                  <RowActions
-                    mode="menu"
-                    align="start"
-                    label={`إجراءات ${selectedDevice.name}`}
-                    actions={actionsForDevice(selectedDevice)}
-                  />
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <span
-                    className={`grid size-11 place-items-center rounded-lg ${!selectedDevice.enabled ? "badge-stock-low" : selectedDevice.status === "online" ? "badge-status-active" : "badge-stock-out"}`}
-                  >
-                    {selectedDevice.status === "online" &&
-                    selectedDevice.enabled ? (
-                      <Wifi aria-hidden className="size-5" />
-                    ) : (
-                      <WifiOff aria-hidden className="size-5" />
-                    )}
-                  </span>
-                  <div>
-                    <div
-                      className={`text-lg font-bold ${!selectedDevice.enabled ? "text-[var(--sem-warn)]" : selectedDevice.status === "online" ? "text-[var(--status-active)]" : "text-[var(--sem-neg)]"}`}
-                    >
-                      {!selectedDevice.enabled
-                        ? "بانتظار الاعتماد"
-                        : selectedDevice.status === "online"
-                          ? "متصل الآن"
-                          : "غير متصل"}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      آخر إشارة: {fmtRelativeTime(selectedDevice.lastSeenAt)}
-                    </div>
-                  </div>
-                </div>
-
-                {!selectedDevice.enabled ? (
-                  <Button
-                    disabled={approve.isPending}
-                    onClick={() => approve.mutate({ id: selectedDevice.id })}
-                  >
-                    <BadgeCheck aria-hidden className="size-4" /> اعتماد الجهاز
-                  </Button>
-                ) : (
-                  <Button onClick={() => showDevicePunches(selectedDevice.id)}>
-                    <Fingerprint aria-hidden className="size-4" /> عرض البصمات
-                  </Button>
-                )}
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={!selectedDevice.enabled}
-                    onClick={() => void testDeviceConnection(selectedDevice.id)}
-                  >
-                    <Activity aria-hidden className="size-4" /> اختبار الاتصال
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={!selectedDevice.enabled}
-                    onClick={() => setMapDeviceId(selectedDevice.id)}
-                  >
-                    <Users aria-hidden className="size-4" /> ربط الموظفين
-                  </Button>
-                </div>
-              </CardHeader>
-
-              <CardContent className="space-y-5 p-4">
-                {selectedOrigin && (
-                  <div className="space-y-2 rounded-lg border border-[color-mix(in_oklch,var(--sem-warn)_35%,transparent)] bg-[var(--sem-warn-bg)] p-3">
-                    <div className="flex items-start gap-2">
-                      <ShieldQuestion
-                        aria-hidden
-                        className="mt-0.5 size-4 shrink-0 text-[var(--sem-warn)]"
-                      />
-                      <div>
-                        <div className="text-xs font-semibold">
-                          محاولة اتصال من عنوان جديد
-                        </div>
-                        <div
-                          className="mt-0.5 text-[11px] text-muted-foreground"
-                          dir="ltr"
-                        >
-                          {selectedOrigin.ip}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        disabled={trustOrigin.isPending}
-                        onClick={() =>
-                          trustOrigin.mutate({
-                            id: selectedOrigin.id,
-                            ...(selectedOrigin.deviceId == null
-                              ? { deviceId: selectedDevice.id }
-                              : {}),
-                          })
-                        }
-                      >
-                        اعتماد
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={dismissOrigin.isPending}
-                        onClick={() =>
-                          dismissOrigin.mutate({ id: selectedOrigin.id })
-                        }
-                      >
-                        رفض
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                <section>
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                    <Activity
-                      aria-hidden
-                      className="size-4 text-muted-foreground"
-                    />{" "}
-                    التشغيل
-                  </h3>
-                  <dl className="space-y-2 text-xs">
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">
-                        البصمات المستلمة
-                      </dt>
-                      <dd className="font-semibold tabular-nums">
-                        {(selectedDevice.receivedPunches ?? 0).toLocaleString(
-                          "en-US",
-                        )}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">آخر مزامنة</dt>
-                      <dd>{fmtRelativeTime(selectedDevice.lastHandshakeAt)}</dd>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">مستخدمو الجهاز</dt>
-                      <dd className="tabular-nums">
-                        {selectedDevice.usersCount ?? 0}
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
-
-                <section className="border-t pt-4">
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                    <Link2
-                      aria-hidden
-                      className="size-4 text-muted-foreground"
-                    />{" "}
-                    الربط
-                  </h3>
-                  <dl className="space-y-2 text-xs">
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">الفرع</dt>
-                      <dd>{selectedDevice.branchName ?? "غير محدد"}</dd>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">الموقع</dt>
-                      <dd>{selectedDevice.location ?? "غير محدد"}</dd>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">
-                        بصمات تحتاج ربطاً
-                      </dt>
-                      <dd
-                        className={
-                          (selectedDevice.pendingPunches ?? 0) > 0
-                            ? "font-semibold text-[var(--sem-warn)]"
-                            : "text-muted-foreground"
-                        }
-                      >
-                        {selectedDevice.pendingPunches ?? 0}
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
-
-                <section className="border-t pt-4">
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                    <ScanFace
-                      aria-hidden
-                      className="size-4 text-muted-foreground"
-                    />{" "}
-                    معلومات الجهاز
-                  </h3>
-                  <dl className="space-y-2 text-xs">
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">الرقم التسلسلي</dt>
-                      <dd className="max-w-44 truncate font-mono" dir="ltr">
-                        {selectedDevice.serialNumber ?? "—"}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">الطراز</dt>
-                      <dd>{selectedDevice.model ?? "—"}</dd>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">إصدار البرنامج</dt>
-                      <dd className="font-mono" dir="ltr">
-                        {selectedDevice.firmware ?? "—"}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">البروتوكول</dt>
-                      <dd>
-                        {PROTOCOL_LABELS[selectedDevice.protocol ?? ""] ??
-                          selectedDevice.protocol ??
-                          "—"}
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
-
-                <Button
-                  variant="outline"
-                  className="w-full justify-between"
-                  onClick={() => setGuideOpen(true)}
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <Settings2 aria-hidden className="size-4" /> إعدادات الاتصال
-                  </span>
-                  <ChevronLeft aria-hidden className="size-4" />
-                </Button>
-              </CardContent>
-            </>
-          ) : (
-            <CardContent className="grid min-h-72 place-items-center p-6 text-center">
-              <div>
-                <ScanFace
-                  aria-hidden
-                  className="mx-auto mb-3 size-8 text-muted-foreground"
-                />
-                <p className="text-sm font-semibold">
-                  اختر جهازاً لعرض تفاصيله
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  ستظهر هنا حالة الاتصال والربط والإجراءات المتاحة.
-                </p>
-              </div>
-            </CardContent>
-          )}
-        </Card>
+        <HrDeviceDetailCard
+          selectedDevice={selectedDevice}
+          selectedOrigin={selectedOrigin}
+          actionsForDevice={actionsForDevice}
+          onApprove={(id) => approve.mutate({ id })}
+          isApprovePending={approve.isPending}
+          onShowDevicePunches={showDevicePunches}
+          onTestConnection={(id) => void testDeviceConnection(id)}
+          onOpenUserMapping={(id) => setMapDeviceId(id)}
+          onTrustOrigin={(originId, deviceId) =>
+            trustOrigin.mutate({
+              id: originId,
+              ...(deviceId != null ? { deviceId } : {}),
+            })
+          }
+          isTrustOriginPending={trustOrigin.isPending}
+          onDismissOrigin={(id) => dismissOrigin.mutate({ id })}
+          isDismissOriginPending={dismissOrigin.isPending}
+          onOpenGuide={() => setGuideOpen(true)}
+        />
       </div>
 
       {/* البصمات الخام */}
@@ -1206,403 +1050,72 @@ export default function HrDevices() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">الوقت</th>
-                  <th className="p-2">الجهاز</th>
-                  <th className="p-2 text-center">رقم المستخدم</th>
-                  <th className="p-2">الموظف</th>
-                  <th className="p-2 text-center">الوسيلة</th>
-                  <th className="p-2 text-center">المعالجة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(punches.data?.rows ?? []).map((p) => (
-                  <tr key={p.id} className="border-t">
-                    <td className="p-2 text-xs tabular-nums" dir="ltr">
-                      {String(p.punchAt)}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {p.deviceName ?? p.serialNumber}
-                    </td>
-                    <td className="p-2 text-center text-xs tabular-nums">
-                      {p.enrollId}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {p.employeeName ?? (
-                        <span className="text-[var(--sem-warn)]">
-                          غير مربوط — اربطه من زر «الربط»
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-center text-xs">{p.mode ?? "—"}</td>
-                    <td className="p-2 text-center text-xs">
-                      {p.processedAt ? (
-                        p.processNote ? (
-                          <span
-                            className="text-[var(--sem-neg)]"
-                            title={p.processNote}
-                          >
-                            مركونة
-                          </span>
-                        ) : (
-                          <span className="text-[var(--sem-pos)]">
-                            في الحضور
-                          </span>
-                        )
-                      ) : (
-                        <span className="text-muted-foreground">بالانتظار</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {!punches.isLoading &&
-                  (punches.data?.rows.length ?? 0) === 0 && (
-                    <TableEmptyRow
-                      colSpan={6}
-                      message="لا بصمات واردة بعد — ستظهر هنا لحظة وصولها من الأجهزة."
-                    />
-                  )}
-                {punches.isLoading && (
-                  <tr>
-                    <td colSpan={6} className="p-0">
-                      <LoadingState />
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
-          <div className="flex items-center justify-between p-2 border-t">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={punchOffset === 0}
-              onClick={() => setPunchOffset((o) => Math.max(0, o - 25))}
-            >
-              الأحدث
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!punches.data?.hasMore}
-              onClick={() => setPunchOffset((o) => o + 25)}
-            >
-              الأقدم
-            </Button>
-          </div>
+          {/* ترقيمٌ خادميّ (offset + hasMore) — استبدل زرَّي «الأحدث/الأقدم» اليدويَّين كي لا
+             يقفز شريطان بمقدارَين مختلفَين فتُتخطّى صفوفٌ بصمت. */}
+          <DataTable<PunchRow>
+            columns={punchColumns}
+            data={punches.data?.rows ?? []}
+            /* الفلاتر في ترويسة البطاقة أعلاه (تُغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={punchFiltersActive || unmatchedOnly}
+            loading={punches.isLoading}
+            errorState={{ isError: punches.isError, message: punches.error?.message, onRetry: () => void punches.refetch() }}
+            serverPagination={{
+              page: Math.floor(punchOffset / 25),
+              onPageChange: (next) => setPunchOffset(next * 25),
+              pageSize: 25,
+              hasMore: punches.data?.hasMore,
+              isFetching: punches.isFetching,
+            }}
+            emptyText="لا بصمات واردة بعد — ستظهر هنا لحظة وصولها من الأجهزة."
+          />
         </CardContent>
       </Card>
 
-      {/* حوار ربط مستخدمي الجهاز بالموظفين */}
-      <Dialog
+      <HrDeviceUsersDialog
         open={mapDeviceId != null}
-        onOpenChange={(o) => {
-          if (!o) {
-            setMapDeviceId(null);
-            setDeviceUserQuery("");
+        onClose={() => {
+          setMapDeviceId(null);
+          setDeviceUserQuery("");
+        }}
+        deviceUserQuery={deviceUserQuery}
+        setDeviceUserQuery={setDeviceUserQuery}
+        visibleDeviceUsers={visibleDeviceUsers}
+        deviceUsersLoading={deviceUsers.isLoading}
+        totalDeviceUsers={deviceUsers.data?.length ?? 0}
+        employeeOptions={employeeOptions}
+        onMapUser={(enrollId, employeeId) => {
+          if (mapDeviceId != null) {
+            mapUser.mutate({
+              deviceId: mapDeviceId,
+              enrollId,
+              employeeId,
+            });
           }
         }}
-      >
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>ربط مستخدمي الجهاز بالموظفين</DialogTitle>
-          </DialogHeader>
-          <p className="text-[12px] text-muted-foreground -mt-1">
-            كل رقم في الجهاز يقابله موظف في النظام — بعد الربط تُحتسب بصماته
-            حضوراً تلقائياً (حتى السابقة منها). إن كانت القائمة فارغة اسحب
-            المستخدمين من الجهاز بزر «المستخدمون».
-          </p>
-          <div className="relative">
-            <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              type="search"
-              value={deviceUserQuery}
-              onChange={(e) => setDeviceUserQuery(e.target.value)}
-              placeholder="بحث بالرقم أو الاسم في الجهاز…"
-              aria-label="بحث في مستخدمي الجهاز"
-              className="h-8 w-full pr-8"
-            />
-          </div>
-          <div className="max-h-[50vh] overflow-y-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 sticky top-0">
-                <tr>
-                  <th className="p-2 text-center">الرقم</th>
-                  <th className="p-2">الاسم في الجهاز</th>
-                  <th className="p-2 text-center">قوالب محفوظة؟</th>
-                  <th className="p-2">الموظف المربوط</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleDeviceUsers.map((u) => (
-                  <tr key={u.id} className="border-t">
-                    <td className="p-2 text-center tabular-nums">
-                      {u.enrollId}
-                    </td>
-                    <td className="p-2 text-xs">{u.name ?? "—"}</td>
-                    <td className="p-2 text-center text-xs">
-                      {u.hasBackup ? "نعم" : "—"}
-                    </td>
-                    <td className="p-2">
-                      <AppSelect
-                        className="h-9"
-                        value={u.employeeId ? String(u.employeeId) : ""}
-                        onValueChange={(next) =>
-                          mapDeviceId != null &&
-                          mapUser.mutate({
-                            deviceId: mapDeviceId,
-                            enrollId: u.enrollId,
-                            employeeId: next
-                              ? Number(next)
-                              : null,
-                          })
-                        }
-                      >
-                        <option value="">— غير مربوط —</option>
-                        {employeeOptions.map((emp) => (
-                          <option key={emp.id} value={String(emp.id)}>
-                            {emp.name}
-                          </option>
-                        ))}
-                      </AppSelect>
-                    </td>
-                  </tr>
-                ))}
-                {!deviceUsers.isLoading && visibleDeviceUsers.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={4}
-                      className="p-4 text-center text-xs text-muted-foreground"
-                    >
-                      {(deviceUsers.data?.length ?? 0) === 0
-                        ? "لا مستخدمون مسحوبون بعد — أرسل أمر «المستخدمون» من جدول الأجهزة ثم افتح هذا الحوار."
-                        : "لا نتائج مطابقة للبحث."}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setMapDeviceId(null)}>
-              إغلاق
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      />
 
-      {/* حوار تعليمات توجيه الجهاز */}
-      <Dialog open={guideOpen} onOpenChange={setGuideOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>توجيه الجهاز إلى خادمك</DialogTitle>
-          </DialogHeader>
-          <ol className="text-[13px] leading-relaxed space-y-2 list-decimal pr-5">
-            <li>
-              من شاشة الجهاز: <b>Menu ← Comm set / Server</b>.
-            </li>
-            <li>
-              اضبط:{" "}
-              <span dir="ltr" className="font-mono text-xs">
-                Server Req = Yes
-              </span>
-            </li>
-            <li>
-              فعّل النطاق:{" "}
-              <span dir="ltr" className="font-mono text-xs">
-                Use domainNm = Yes
-              </span>
-            </li>
-            <li>
-              ثم اكتب:{" "}
-              <span dir="ltr" className="font-mono text-xs">
-                DomainNm = {myHost}
-              </span>
-            </li>
-            <li>
-              والمنفذ:{" "}
-              <span dir="ltr" className="font-mono text-xs">
-                SerPortNo = {bridgePort}
-              </span>
-            </li>
-            <li>
-              احفظ وأعد تشغيل الجهاز — سيظهر خلال دقيقة في الجدول أعلاه (متصل /
-              بانتظار الاعتماد).
-            </li>
-            <li>
-              أجهزة ZKTeco: نفس الفكرة من قائمة Cloud Server Setting (ADMS) بنفس
-              النطاق والمنفذ.
-            </li>
-          </ol>
-          <p className="text-[11px] text-muted-foreground">
-            بديلٌ للنطاق:{" "}
-            <span dir="ltr" className="font-mono text-xs">
-              Use domainNm = No
-            </span>{" "}
-            ثم
-            <span dir="ltr" className="font-mono text-xs">
-              {" "}
-              Server IP ={" "}
-            </span>{" "}
-            عنوان الخادم الرقمي — لكن النطاق أفضل (تغيّر عنوان الخادم يُحلّ
-            بتحديث DNS واحد بلا لمس الأجهزة).
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            يحتفظ الجهاز بالسجلات الموجودة في ذاكرته، ويعيد إرسالها تلقائياً بعد
-            الاتصال. ويمكن طلب السجل كاملاً من قائمة إجراءات الجهاز.
-          </p>
-          <DialogFooter>
-            <Button onClick={() => setGuideOpen(false)}>فهمت</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <HrDeviceGuideDialog
+        open={guideOpen}
+        onClose={() => setGuideOpen(false)}
+        myHost={myHost}
+        bridgePort={bridgePort}
+      />
 
-      {/* نافذة إضافة جهاز */}
-      <Dialog
+      <HrDeviceFormDialog
         open={openAdd}
-        onOpenChange={(o) => {
-          setOpenAdd(o);
-          if (!o) {
-            setForm({ ...emptyForm });
-            setEditId(null);
-          }
+        onClose={() => {
+          setOpenAdd(false);
+          setForm({ ...emptyForm });
+          setEditId(null);
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {editId != null ? "تعديل جهاز حضور" : "إضافة جهاز حضور"}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1 sm:col-span-2">
-              <Label htmlFor="d-name">اسم الجهاز</Label>
-              <Input
-                id="d-name"
-                value={form.name}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, name: e.target.value }))
-                }
-                placeholder="جهاز البصمة — المدخل الرئيسي"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="d-sn">الرقم التسلسلي (SN)</Label>
-              <Input
-                id="d-sn"
-                dir="ltr"
-                value={form.serialNumber}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, serialNumber: e.target.value }))
-                }
-                placeholder="ZXRB06004623"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="d-proto">نوع الجهاز</Label>
-              <AppSelect
-                id="d-proto"
-                className="h-9"
-                value={form.protocol}
-                onValueChange={(next) =>
-                  setForm((f) => ({ ...f, protocol: next }))
-                }
-              >
-                {Object.entries(PROTOCOL_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </AppSelect>
-            </div>
-            <div className="space-y-1 sm:col-span-2">
-              <Label htmlFor="d-ip">عنوان IP الدقيق الخاص بالجهاز</Label>
-              <Input
-                id="d-ip"
-                dir="ltr"
-                value={form.ip}
-                onChange={(e) => setForm((f) => ({ ...f, ip: e.target.value }))}
-                placeholder="مثال: عنوان الجهاز داخل شبكة الحضور"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="d-model">الطراز</Label>
-              <Input
-                id="d-model"
-                value={form.model}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, model: e.target.value }))
-                }
-                placeholder="AI518 وجه + بطاقة"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="d-location">الموقع</Label>
-              <Input
-                id="d-location"
-                value={form.location}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, location: e.target.value }))
-                }
-                placeholder="بوابة الفرع الرئيسي"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="d-branch">الفرع</Label>
-              <AppSelect
-                id="d-branch"
-                className="h-9"
-                value={form.branchId}
-                onValueChange={(next) =>
-                  setForm((f) => ({ ...f, branchId: next }))
-                }
-              >
-                <option value="">— بلا فرع —</option>
-                {(opts.data?.branches ?? []).map((b) => (
-                  <option key={b.id} value={String(b.id)}>
-                    {b.name}
-                  </option>
-                ))}
-              </AppSelect>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="d-code">معرّف الجهاز (Device ID)</Label>
-              <Input
-                id="d-code"
-                dir="ltr"
-                value={form.deviceCode}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, deviceCode: e.target.value }))
-                }
-                placeholder="1"
-              />
-            </div>
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            عند التسجيل المسبق يلزم ربط الرقم التسلسلي بعنوان جهاز فريد. الشبكات
-            المشتركة أو NAT تحتاج مفتاح جهاز خاصاً في إعداد الخادم. لا تُقبل
-            بصمات الجهاز المكتشف قبل الاعتماد.
-          </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenAdd(false)}>
-              إلغاء
-            </Button>
-            <Button
-              disabled={create.isPending || update.isPending}
-              onClick={submit}
-            >
-              {create.isPending || update.isPending
-                ? "جارٍ…"
-                : editId != null
-                  ? "حفظ"
-                  : "إضافة"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        editId={editId}
+        form={form}
+        setForm={setForm}
+        branches={opts.data?.branches ?? []}
+        isPending={create.isPending || update.isPending}
+        onSubmit={submit}
+      />
     </div>
   );
 }

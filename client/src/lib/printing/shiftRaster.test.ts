@@ -141,20 +141,18 @@ describe("shiftCloseToCanvas — عقد تخطيط الورق الحراري", (
       expectedCash: 1000,
       countedCash: 1000,
       variance: 0,
-      cashHandover: {
+      treasuryReturn: {
         amount: 1000,
-        recipientName: "RECIPIENTRECIPIENTRECIPIENTRECIPIENTRECIPIENTRECIPIENT",
         referenceNumber: "REFERENCEREFERENCEREFERENCEREFERENCEREFERENCEREFERENCE",
       },
     });
 
     const handoverDraws = harness.draws.filter((draw) =>
-      draw.text.includes("سلّم إلى:") ||
-      draw.text.includes("رقم العهدة:") ||
-      draw.text.includes("RECIPIENT") ||
+      draw.text.includes("رقم سند الترحيل:") ||
+      draw.text.includes("تم الترحيل") ||
       draw.text.includes("REFERENCE"),
     );
-    expect(handoverDraws.length).toBeGreaterThanOrEqual(4);
+    expect(handoverDraws.length).toBeGreaterThanOrEqual(3);
     for (const draw of handoverDraws) {
       const [left, right] = horizontalBounds(draw);
       expect(left).toBeGreaterThanOrEqual(28);

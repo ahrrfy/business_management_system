@@ -11,7 +11,8 @@
 //   cancelTask:  NEW/IN_PROGRESS/WAITING_CUSTOMER → CANCELLED (مدير)
 //   addComment:  بلا تغيير حالة (تنفيذ بنطاق الموظف)
 import { TRPCError } from "@trpc/server";
-import { eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   conversations,
   taskEvents,
@@ -32,6 +33,7 @@ import { canCrossBranches } from "../../lib/branchAuthority";
 import { assertNotDesignApprovalTask } from "../workOrder/designApproval";
 import { extractInsertId } from "../../lib/insertId";
 import { enqueueTaskNotifications, reconcileTaskNotifications } from "./notifications";
+import { withIdempotency } from "../idempotency";
 
 type TaskEventType =
   | "COMMENT"
@@ -41,6 +43,24 @@ type TaskEventType =
   | "SYSTEM"
   | "CSAT";
 type TaskActor = Actor & { role?: string };
+/** A company owner can be elevated without a fixed branch.  The mobile path
+ * must derive that branch from its locked, already-assigned task; it must
+ * never silently substitute a default branch. */
+type MobileTaskActor = Omit<TaskActor, "branchId"> & { branchId: number | null };
+type ClaimTaskOutcome = {
+  taskId: number;
+  status: "IN_PROGRESS";
+  assignedTo: number;
+  notificationOccurrenceId: string | null;
+};
+type ResolveTaskOutcome = {
+  taskId: number;
+  status: "RESOLVED";
+  taskKind: string;
+  branchId: number;
+  conversationId: number | null;
+  notificationOccurrenceId: string | null;
+};
 
 const OPEN_STATUSES = ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"] as const;
 
@@ -76,52 +96,173 @@ function toDateOrNull(v: unknown): Date | null {
  * السحب الذاتي (claim): NEW → IN_PROGRESS. لا «سرقة» — assignedTo يجب أن يكون null أو الفاعل نفسه
  * (إعادة إسناد قسرية تبقى لـ`assignTask` المديرية). يضبط firstResponseAt=NOW أول مرّة فقط.
  */
-export async function claimTask(taskId: number, actor: TaskActor) {
-  const outcome = await withTx(async (tx) => {
-    const task = await loadTask(tx, taskId);
-    assertTaskBranch(task, actor);
-    if (task.taskStatus !== "NEW")
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "لا يمكن سحب المهمة إلا وهي جديدة",
-      });
-    if (task.assignedTo != null && Number(task.assignedTo) !== actor.userId)
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "المهمة مُسنَدة بالفعل لموظف آخر",
-      });
+async function claimTaskInTx(tx: Tx, taskId: number, actor: TaskActor): Promise<ClaimTaskOutcome> {
+  const task = await loadTask(tx, taskId);
+  assertTaskBranch(task, actor);
+  if (task.taskStatus !== "NEW")
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يمكن سحب المهمة إلا وهي جديدة",
+    });
+  if (task.assignedTo != null && Number(task.assignedTo) !== actor.userId)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "المهمة مُسنَدة بالفعل لموظف آخر",
+    });
 
-    const patch: Record<string, unknown> = {
-      taskStatus: "IN_PROGRESS",
-      assignedTo: actor.userId,
-    };
-    if (task.firstResponseAt == null) patch.firstResponseAt = sql`NOW()`;
-    await tx.update(tasks).set(patch).where(eq(tasks.id, taskId));
-    const statusEventId = await insertEvent(tx, {
-      taskId,
-      eventType: "ASSIGN",
-      note: "سحب ذاتي",
-      userId: actor.userId,
-    });
-    await insertEvent(tx, {
-      taskId,
-      eventType: "STATUS",
-      fromStatus: task.taskStatus,
-      toStatus: "IN_PROGRESS",
-      userId: actor.userId,
-    });
-    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
-      task,
-      eventId: statusEventId,
-      action: { type: "CLAIMED" },
-      actorUserId: actor.userId,
-    });
-    return { taskId, status: "IN_PROGRESS" as const, assignedTo: actor.userId, notificationOccurrenceId };
+  const patch: Record<string, unknown> = {
+    taskStatus: "IN_PROGRESS",
+    assignedTo: actor.userId,
+  };
+  if (task.firstResponseAt == null) patch.firstResponseAt = sql`NOW()`;
+  await tx.update(tasks).set(patch).where(eq(tasks.id, taskId));
+  const statusEventId = await insertEvent(tx, {
+    taskId,
+    eventType: "ASSIGN",
+    note: "سحب ذاتي",
+    userId: actor.userId,
   });
+  await insertEvent(tx, {
+    taskId,
+    eventType: "STATUS",
+    fromStatus: task.taskStatus,
+    toStatus: "IN_PROGRESS",
+    userId: actor.userId,
+  });
+  const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+    task,
+    eventId: statusEventId,
+    action: { type: "CLAIMED" },
+    actorUserId: actor.userId,
+  });
+  return { taskId, status: "IN_PROGRESS", assignedTo: actor.userId, notificationOccurrenceId };
+}
+
+export async function claimTask(taskId: number, actor: TaskActor) {
+  const outcome = await withTx((tx) => claimTaskInTx(tx, taskId, actor));
   await reconcileTaskNotifications(outcome.notificationOccurrenceId);
   const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
   void _notificationOccurrenceId;
   return publicResult;
+}
+
+/** The phone never supplies a task id. This is the same current-focus ordering
+ * used by the mobile read model, locked inside the command transaction. */
+async function loadCurrentMobileTask(tx: Tx, actor: MobileTaskActor) {
+  const [task] = await tx
+    .select({ id: tasks.id, taskStatus: tasks.taskStatus, branchId: tasks.branchId })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.assignedTo, actor.userId),
+        inArray(tasks.taskStatus, [...OPEN_STATUSES]),
+      ),
+    )
+    .orderBy(asc(tasks.dueAt), asc(tasks.createdAt))
+    .for("update")
+    .limit(1);
+  return task ?? null;
+}
+
+function scopedMobileTaskActor(
+  actor: MobileTaskActor,
+  task: { branchId: number | string },
+): TaskActor {
+  if (actor.branchId != null) return { ...actor, branchId: actor.branchId };
+  if (actor.role !== "admin") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ المهمة من الهاتف",
+        why: "حسابك غير مرتبط بفرع عمل يسمح بتنفيذ هذه المهمة",
+        doThis: "اطلب من مدير النظام ربط حسابك بالفرع الصحيح، ثم حدّث صفحة «يومي»",
+      }),
+    });
+  }
+  const branchId = Number(task.branchId);
+  if (!Number.isSafeInteger(branchId) || branchId <= 0) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ المهمة من الهاتف",
+        why: "فرع المهمة المسندة غير صالح أو لم يعد متاحاً",
+        doThis: "حدّث صفحة «يومي»، ثم أبلغ مدير النظام بمراجعة بيانات المهمة إن استمر الرفض",
+      }),
+    });
+  }
+  return { ...actor, branchId };
+}
+
+/**
+ * Closed Expo command for starting the employee's current focus. Its result
+ * never exposes the task id; the server stores it only in the idempotency
+ * record and audit trail. A repeat sees the same in-progress focus, rather
+ * than advancing another task.
+ */
+export async function startCurrentMobileTask(input: {
+  actor: MobileTaskActor;
+  clientRequestId: string;
+}) {
+  const result = await withTx((tx) =>
+    withIdempotency(
+      tx,
+      {
+        operation: `superapp.task.start.${input.actor.userId}`,
+        clientRequestId: input.clientRequestId,
+        payload: { action: "start-current-focus" },
+      },
+      async () => {
+        const current = await loadCurrentMobileTask(tx, input.actor);
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "لا توجد مهمة للبدء الآن",
+              why: "لا توجد مهمة مفتوحة مسندة إلى حسابك في هذه اللحظة",
+              doThis: "حدّث صفحة «يومي»، أو راجع مديرك إذا كنت تنتظر إسناد مهمة جديدة",
+            }),
+          });
+        }
+        if (current.taskStatus === "IN_PROGRESS") {
+          return {
+            refId: Number(current.id),
+            result: { taskId: Number(current.id), notificationOccurrenceId: null, alreadyApplied: true },
+          };
+        }
+        if (current.taskStatus !== "NEW") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر بدء المهمة الحالية",
+              why: "حالة المهمة تغيّرت قبل تسجيل البدء",
+              doThis: "حدّث صفحة «يومي» واعمل على المهمة الظاهرة هناك، ولا تعِد إرسال الطلب القديم",
+            }),
+          });
+        }
+        const claimed = await claimTaskInTx(
+          tx,
+          Number(current.id),
+          scopedMobileTaskActor(input.actor, current),
+        );
+        return {
+          refId: claimed.taskId,
+          result: {
+            taskId: claimed.taskId,
+            notificationOccurrenceId: claimed.notificationOccurrenceId,
+            alreadyApplied: false,
+          },
+        };
+      },
+    ),
+  );
+  if (!result.replay && result.result?.notificationOccurrenceId) {
+    await reconcileTaskNotifications(result.result.notificationOccurrenceId);
+  }
+  return {
+    taskId: result.refId,
+    status: "IN_PROGRESS" as const,
+    idempotent: result.replay || result.result?.alreadyApplied === true,
+  };
 }
 
 function positiveTaskUserId(value: number | string | null): number | null {
@@ -285,68 +426,70 @@ export async function resumeTask(taskId: number, actor: TaskActor) {
 }
 
 /** IN_PROGRESS/WAITING_CUSTOMER → RESOLVED. resolutionNote إلزامي لمهام SUPPORT. يراكم الانتظار أولاً إن كان جارياً. */
-export async function resolveTask(
+async function resolveTaskInTx(
+  tx: Tx,
   taskId: number,
   actor: TaskActor,
   resolutionNote?: string | null,
-) {
-  const result = await withTx(async (tx) => {
-    const task = await loadTask(tx, taskId);
-    assertTaskBranch(task, actor);
-    await assertNotDesignApprovalTask(tx, taskId);
-    assertTaskAssigneeOrElevated(task, actor);
-    if (
-      task.taskStatus !== "IN_PROGRESS" &&
-      task.taskStatus !== "WAITING_CUSTOMER"
-    )
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "لا يمكن حلّ مهمة ليست قيد التنفيذ أو الانتظار",
-      });
-    if (task.taskKind === "SUPPORT" && !resolutionNote?.trim())
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "ملاحظة الحلّ إلزامية لمهام الدعم (SUPPORT)",
-      });
+): Promise<ResolveTaskOutcome> {
+  const task = await loadTask(tx, taskId);
+  assertTaskBranch(task, actor);
+  await assertNotDesignApprovalTask(tx, taskId);
+  assertTaskAssigneeOrElevated(task, actor);
+  if (
+    task.taskStatus !== "IN_PROGRESS" &&
+    task.taskStatus !== "WAITING_CUSTOMER"
+  )
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يمكن حلّ مهمة ليست قيد التنفيذ أو الانتظار",
+    });
+  if (task.taskKind === "SUPPORT" && !resolutionNote?.trim())
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "ملاحظة الحلّ إلزامية لمهام الدعم (SUPPORT)",
+    });
 
-    const patch: Record<string, unknown> = {
-      taskStatus: "RESOLVED",
-      resolvedAt: sql`NOW()`,
-      resolutionNote: resolutionNote?.trim() || null,
-    };
-    if (task.taskStatus === "WAITING_CUSTOMER") {
-      const waitingSince = toDateOrNull(task.waitingSince);
-      const deltaMs = waitingSince
-        ? Math.max(0, Date.now() - waitingSince.getTime())
-        : 0;
-      patch.waitingAccumMs = Number(task.waitingAccumMs ?? 0) + deltaMs;
-      patch.waitingSince = null;
-    }
-    await tx.update(tasks).set(patch).where(eq(tasks.id, taskId));
-    const eventId = await insertEvent(tx, {
-      taskId,
-      eventType: "STATUS",
-      fromStatus: task.taskStatus,
-      toStatus: "RESOLVED",
-      note: resolutionNote ?? null,
-      userId: actor.userId,
-    });
-    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
-      task,
-      eventId,
-      action: { type: "RESOLVED" },
-      actorUserId: actor.userId,
-    });
-    return {
-      taskId,
-      status: "RESOLVED" as const,
-      taskKind: task.taskKind,
-      branchId: Number(task.branchId),
-      conversationId:
-        task.conversationId != null ? Number(task.conversationId) : null,
-      notificationOccurrenceId,
-    };
+  const patch: Record<string, unknown> = {
+    taskStatus: "RESOLVED",
+    resolvedAt: sql`NOW()`,
+    resolutionNote: resolutionNote?.trim() || null,
+  };
+  if (task.taskStatus === "WAITING_CUSTOMER") {
+    const waitingSince = toDateOrNull(task.waitingSince);
+    const deltaMs = waitingSince
+      ? Math.max(0, Date.now() - waitingSince.getTime())
+      : 0;
+    patch.waitingAccumMs = Number(task.waitingAccumMs ?? 0) + deltaMs;
+    patch.waitingSince = null;
+  }
+  await tx.update(tasks).set(patch).where(eq(tasks.id, taskId));
+  const eventId = await insertEvent(tx, {
+    taskId,
+    eventType: "STATUS",
+    fromStatus: task.taskStatus,
+    toStatus: "RESOLVED",
+    note: resolutionNote ?? null,
+    userId: actor.userId,
   });
+  const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+    task,
+    eventId,
+    action: { type: "RESOLVED" },
+    actorUserId: actor.userId,
+  });
+  return {
+    taskId,
+    status: "RESOLVED",
+    taskKind: task.taskKind,
+    branchId: Number(task.branchId),
+    conversationId:
+      task.conversationId != null ? Number(task.conversationId) : null,
+    notificationOccurrenceId,
+  };
+}
+
+async function afterResolveTask(result: ResolveTaskOutcome) {
 
   await reconcileTaskNotifications(result.notificationOccurrenceId);
 
@@ -366,6 +509,67 @@ export async function resolveTask(
   }
 
   return { taskId: result.taskId, status: result.status };
+}
+
+export async function resolveTask(
+  taskId: number,
+  actor: TaskActor,
+  resolutionNote?: string | null,
+) {
+  return afterResolveTask(await withTx((tx) => resolveTaskInTx(tx, taskId, actor, resolutionNote)));
+}
+
+/**
+ * Resolves only the authenticated employee's current focus. The task id stays
+ * inside the transaction/audit layer; an idempotency replay cannot select the
+ * next task after the first one is closed.
+ */
+export async function resolveCurrentMobileTask(input: {
+  actor: MobileTaskActor;
+  clientRequestId: string;
+  resolutionNote?: string | null;
+}) {
+  const result = await withTx((tx) =>
+    withIdempotency(
+      tx,
+      {
+        operation: `superapp.task.resolve.${input.actor.userId}`,
+        clientRequestId: input.clientRequestId,
+        payload: {
+          action: "resolve-current-focus",
+          resolutionNote: input.resolutionNote?.trim() || null,
+        },
+      },
+      async () => {
+        const current = await loadCurrentMobileTask(tx, input.actor);
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "لا توجد مهمة لإتمامها الآن",
+              why: "لا توجد مهمة مفتوحة مسندة إلى حسابك في هذه اللحظة",
+              doThis: "حدّث صفحة «يومي»، أو راجع مديرك إذا كانت المهمة قد أُعيد إسنادها أو حُسمت",
+            }),
+          });
+        }
+        const resolved = await resolveTaskInTx(
+          tx,
+          Number(current.id),
+          scopedMobileTaskActor(input.actor, current),
+          input.resolutionNote,
+        );
+        return { refId: resolved.taskId, result: resolved };
+      },
+    ),
+  );
+  if (result.replay) {
+    return { taskId: result.refId, status: "RESOLVED" as const, idempotent: true };
+  }
+  if (!result.result) {
+    throw new Error("تعذّر حفظ نتيجة المهمة");
+  }
+  const resolved = await afterResolveTask(result.result);
+  return { ...resolved, idempotent: false };
 }
 
 /**

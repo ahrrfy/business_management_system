@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  approveCommissionRunRequest,
   rejectCommissionRunRequest,
   requestCommissionRunApproval,
 } from "../commissions/runApprovals";
+import { lockPeriod } from "../periodLockService";
 
 const service = readFileSync("server/services/commissions/runApprovals.ts", "utf8");
 const runs = readFileSync("server/services/commissions/runs.ts", "utf8");
@@ -222,5 +224,140 @@ describe.skipIf(!SAFE_TEST_DATABASE_URL)("طلبات اعتماد العمولا
       appliedAt: null,
     });
     expect(stored.decisionHash).toHaveLength(64);
+  });
+
+  /*
+   * فصل المهام (SOD) — هذا هو الحاجز الذي يعلق فيه المالك الوحيد فعلياً على الإنتاج:
+   * من يحتسب التشغيلة أو يطلب اعتمادها لا يستطيع اعتماد الطلب بنفسه. كانت التغطية السابقة
+   * نصّيةً فقط (expect(approval).toContain(...)) بلا اختبارٍ سلوكيّ فعليّ يستدعي
+   * approveCommissionRunRequest بنفس الفاعل. الثلاثة أدناه يغطّون الحالتين المرفوضتين
+   * والحالة الناجحة، كي لا يبقى المسار الحرج مُختبَراً بالنصّ وحده.
+   *
+   * ⚠️ حاجزان لا حاجزٌ واحد على نطاق الشركة (scopeBranchId=null، وهو نطاق مسيّر الرواتب):
+   * approveRunInTx في commissions/runs.ts يفحص `run.createdBy === actor` **قبل** استدعاء
+   * beforeApply (حيث يعيش assertIndependentReviewer في runApprovals.ts) فيسبقه برسالته
+   * الخاصة كلّما كان المعتمِد هو نفسه محتسب التشغيلة — بصرف النظر عمّن طلب الاعتماد فعلياً.
+   * فرسالة "محتسب التشغيلة لا يراجع اعتمادها" في assertIndependentReviewer غيرُ قابلة للوصول
+   * على نطاق الشركة تحديداً (تصل فقط عبر طلبات نطاق الفرع، التي لا تمرّ بـapproveRunInTx).
+   */
+  describe("فصل المهام (SOD) — من يملك اعتماد الطلب", () => {
+    it("يمنع منشئ التشغيلة من اعتماد طلب اعتمادها — حتى لو طلبه هو نفسه (حالة المالك الوحيد)", async () => {
+      const runId = await seedDraftRun("2097-03"); // createdBy = MAKER
+      const request = await requestCommissionRunApproval({
+        requestKey: "commission-sod-self-request",
+        runId,
+        reason: "طلب اعتماد شهري",
+        scopeBranchId: null,
+      }, MAKER, null); // نفس محتسب التشغيلة يطلب اعتمادها — يطابق مالكاً وحيداً يشغّل النظام.
+
+      await expect(approveCommissionRunRequest({
+        id: Number(request.id),
+        expectedVersion: Number(request.baseRunVersion),
+        decisionKey: "commission-sod-self-decision",
+      }, MAKER, null)).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: expect.stringContaining("المعتمِد يجب أن يختلف عن مَن احتسب التشغيلة"),
+      });
+
+      const [stillPending] = await db().select().from(s.commissionRunApprovalRequests)
+        .where(eq(s.commissionRunApprovalRequests.id, Number(request.id)));
+      expect(stillPending.status).toBe("PENDING");
+      const [run] = await db().select().from(s.commissionRuns).where(eq(s.commissionRuns.id, runId));
+      expect(run.status).toBe("draft");
+    });
+
+    it("يمنع طالب الاعتماد من مراجعة طلبه بنفسه حتى لو لم يحتسب هو التشغيلة", async () => {
+      const runId = await seedDraftRun("2097-04"); // createdBy = MAKER
+      const request = await requestCommissionRunApproval({
+        requestKey: "commission-sod-requester-request",
+        runId,
+        reason: "طلب اعتماد شهري",
+        scopeBranchId: null,
+      }, REVIEWER, null); // REVIEWER يطلب (لا يحتسب) — ثم يحاول اعتماد طلبه هو بنفسه.
+
+      await expect(approveCommissionRunRequest({
+        id: Number(request.id),
+        expectedVersion: Number(request.baseRunVersion),
+        decisionKey: "commission-sod-requester-decision",
+      }, REVIEWER, null)).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: expect.stringContaining("لا يراجع منشئ طلب الاعتماد طلبه بنفسه"),
+      });
+
+      const [stillPending] = await db().select().from(s.commissionRunApprovalRequests)
+        .where(eq(s.commissionRunApprovalRequests.id, Number(request.id)));
+      expect(stillPending.status).toBe("PENDING");
+    });
+
+    it("يعتمد مراجعٌ مستقلٌّ فعلاً الطلب فتُقفل التشغيلة", async () => {
+      const runId = await seedDraftRun("2097-05");
+      const request = await requestCommissionRunApproval({
+        requestKey: "commission-sod-independent-request",
+        runId,
+        reason: "طلب اعتماد شهري",
+        scopeBranchId: null,
+      }, MAKER, null);
+
+      const result = await approveCommissionRunRequest({
+        id: Number(request.id),
+        expectedVersion: Number(request.baseRunVersion),
+        decisionKey: "commission-sod-independent-decision",
+      }, REVIEWER, null);
+      expect(result.replayed).toBe(false);
+      expect(result.request.status).toBe("APPROVED");
+      expect(result.runApproval?.status).toBe("approved");
+
+      const [run] = await db().select().from(s.commissionRuns).where(eq(s.commissionRuns.id, runId));
+      expect(run.status).toBe("approved");
+      expect(Number(run.approvedBy)).toBe(REVIEWER.userId);
+    });
+  });
+
+  /*
+   * حارس إقفال الفترة المالية (assertPeriodOpen) — كان approveRunInTx يفحص فقط وجود صفّ
+   * payrollRuns معتمَد/مدفوع لنفس الشهر (فحصٌ خاصّ)، بلا استشارة القفل العامّ (فحصٌ عامّ) على
+   * الإطلاق. شهرٌ مُقفَل بلا مسيّر رواتب بعد (قفلٌ سابق للرواتب، أو مسيّرٌ حُذف) كان يمرّ اعتمادُ
+   * عمولته بلا رادع رغم كونه اعتماداً append-only لا رجوع عنه. هذا الاختبار الأخير عمداً — تثبيت
+   * قفلٍ في financialPeriods لا تُصفّره resetApprovalFixtures (تصفّر فقط جداول العمولات/المستخدمين
+   * أعلاه)، فوضعه قبل تشغيلاتٍ لاحقة كان يُسرّب القفل إليها.
+   */
+  it("يمنع اعتماد تشغيلة عمولة لشهرٍ مُقفَل مالياً حتى بلا مسيّر رواتب لذلك الشهر", async () => {
+    await db().transaction((tx) => lockPeriod(tx, { cutoffDate: "2097-06-30", lockedBy: MAKER.userId }));
+
+    const lockedRunId = await seedDraftRun("2097-06"); // بلا صفّ payrollRuns لهذا الشهر عمداً
+    const lockedRequest = await requestCommissionRunApproval({
+      requestKey: "commission-period-lock-request",
+      runId: lockedRunId,
+      reason: "طلب اعتماد شهرٍ مُقفَل ماليّاً",
+      scopeBranchId: null,
+    }, MAKER, null);
+
+    await expect(approveCommissionRunRequest({
+      id: Number(lockedRequest.id),
+      expectedVersion: Number(lockedRequest.baseRunVersion),
+      decisionKey: "commission-period-lock-decision",
+    }, REVIEWER, null)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("الفترة المالية مُقفَلة"),
+    });
+
+    const [lockedRun] = await db().select().from(s.commissionRuns).where(eq(s.commissionRuns.id, lockedRunId));
+    expect(lockedRun.status).toBe("draft");
+
+    // شهرٌ يلي المُقفَل مباشرةً يبقى قابلاً للاعتماد — الحارس مقصورٌ على الشهر المُقفَل وحده.
+    const openRunId = await seedDraftRun("2097-07");
+    const openRequest = await requestCommissionRunApproval({
+      requestKey: "commission-period-open-request",
+      runId: openRunId,
+      reason: "طلب اعتماد شهرٍ مفتوح بعد القفل",
+      scopeBranchId: null,
+    }, MAKER, null);
+
+    const result = await approveCommissionRunRequest({
+      id: Number(openRequest.id),
+      expectedVersion: Number(openRequest.baseRunVersion),
+      decisionKey: "commission-period-open-decision",
+    }, REVIEWER, null);
+    expect(result.runApproval?.status).toBe("approved");
   });
 });

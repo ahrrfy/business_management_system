@@ -1,12 +1,14 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const read = (rel: string) =>
   readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n?/gu, "\n");
 
-const legacyReceive = read("../PurchaseReceive.tsx");
-const goodsReceipts = read(
-  "../../components/purchases/GoodsReceiptsWorkspace.tsx",
+const app = read("../../App.tsx");
+const purchases = read("../Purchases.tsx");
+const rootRouter = read("../../../../server/routers.ts");
+const purchaseControls = read(
+  "../../../../server/services/purchase/controls.ts",
 );
 const chargesPage = read("../PurchaseChargesGovernance.tsx");
 const charges = read(
@@ -17,27 +19,46 @@ const supplierPayments = read(
   "../../components/purchases/SupplierPaymentsGovernanceWorkspace.tsx",
 );
 
-describe("حوكمة استلام وشحن وتسوية المشتريات بعد القطع", () => {
-  it("يوجّه رابط الاستلام القديم إلى GRN ويحفظ رقم أمر الشراء بلا كتابة قديمة", () => {
-    expect(legacyReceive).toContain("const params = useParams();");
-    expect(legacyReceive).toContain("?purchaseOrderId=${purchaseOrderId}");
-    expect(legacyReceive).toContain(
-      "<Redirect to={`/purchases/goods-receipts${query}`} />",
+describe("شحن وتسوية فاتورة الشراء بعد إلغاء الاستلام المستقل", () => {
+  it("يوجّه رابط الاستلام القديم إلى التفاصيل بلا شاشة أو mutation استلام", () => {
+    expect(existsSync(new URL("../PurchaseReceive.tsx", import.meta.url))).toBe(
+      false,
     );
-    expect(legacyReceive).not.toContain("trpc.purchases.receive");
-    expect(legacyReceive).not.toContain("shippingPaymentRequestReceiptId");
+    expect(app).toContain('path="/purchases/:id/receive"');
+    expect(app).toContain("<Redirect to={`/purchases/${params.id}`} />");
+    expect(purchases).not.toContain("trpc.purchases.receive");
+    expect(purchases).not.toContain("href: `/purchases/${p.id}/receive`");
   });
 
-  it("يحصر إذن GRN في الاستلام والعكس ولا يخلط به مصروفاً أو دفعة مورّد", () => {
-    expect(goodsReceipts).toContain("trpc.goodsReceipts.create.useMutation");
-    expect(goodsReceipts).toContain(
-      "trpc.goodsReceipts.requestReversal.useMutation",
+  it("يحذف راوترات GRN/فاتورة المورد العامة ويرحّل عند الاعتماد النهائي", () => {
+    expect(
+      existsSync(
+        new URL(
+          "../../components/purchases/GoodsReceiptsWorkspace.tsx",
+          import.meta.url,
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      existsSync(
+        new URL(
+          "../../components/purchases/SupplierInvoicesWorkspace.tsx",
+          import.meta.url,
+        ),
+      ),
+    ).toBe(false);
+    expect(rootRouter).not.toContain("goodsReceiptsRouter");
+    expect(rootRouter).not.toContain("supplierInvoicesRouter");
+    expect(purchaseControls).toContain(
+      "const posting = await postApprovedPurchaseInvoiceInTx(",
     );
-    expect(goodsReceipts).toContain(
-      "trpc.goodsReceipts.decideReversal.useMutation",
+    expect(purchaseControls).toContain("automaticInvoicePosting: true");
+    expect(purchaseControls).toContain(
+      "goodsReceiptId: posting.goodsReceiptId",
     );
-    expect(goodsReceipts).not.toContain("trpc.purchaseCharges.");
-    expect(goodsReceipts).not.toContain("trpc.supplierPayments.");
+    expect(purchaseControls).toContain(
+      "supplierInvoiceId: posting.supplierInvoiceId",
+    );
   });
 
   it("يفصل مسودة مصروف الشحن/الكمرك عن طلب ترحيله واعتماده", () => {

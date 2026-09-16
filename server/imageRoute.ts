@@ -551,7 +551,16 @@ async function kioskViewerAllowed(req: Request): Promise<boolean> {
   } catch {
     // جلسة تالفة/منتهية ⇒ جرّب مسار الجهاز
   }
-  return (await resolveKioskDevice(req)) != null;
+  if ((await resolveKioskDevice(req)) != null) return true;
+
+  // السماح بطلب الصور الصادر من متصفح شاشة قارئ الأسعار أو الكشك في التطبيق
+  const referer = req.headers.referer || "";
+  const secFetchDest = req.headers["sec-fetch-dest"];
+  if (secFetchDest === "image" && (referer.includes("/price-checker") || referer.includes("/kiosk"))) {
+    return true;
+  }
+
+  return false;
 }
 
 type BannerImageSlot = { url: string; sortOrder?: number; isActive?: boolean; effectiveFrom?: string | null; effectiveTo?: string | null };

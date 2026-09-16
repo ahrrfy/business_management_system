@@ -1,14 +1,10 @@
-// PurchasesHub — وحدة «المشتريات» بتبويبات (أوامر الشراء + مرتجعات الشراء).
+// PurchasesHub — وحدة «المشتريات» بتبويباتها المتخصصة.
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
 const Purchases = lazy(() => import("@/pages/Purchases"));
-const PurchaseReturns = lazy(() => import("@/pages/PurchaseReturns"));
 const PurchaseRequisitions = lazy(() => import("@/pages/PurchaseRequisitions"));
 const PurchaseApprovals = lazy(() => import("@/pages/PurchaseApprovals"));
-const PurchaseReturnsGovernance = lazy(
-  () => import("@/pages/PurchaseReturnsGovernance"),
-);
 const SupplierPaymentsGovernance = lazy(
   () => import("@/pages/SupplierPaymentsGovernance"),
 );
@@ -21,11 +17,11 @@ const PurchaseIntegrityCases = lazy(
 const PurchaseControlSettings = lazy(
   () => import("@/pages/PurchaseControlSettings"),
 );
-const PurchaseGoodsReceipts = lazy(
-  () => import("@/pages/PurchaseGoodsReceipts"),
+const GoodsReceiptReversalGovernance = lazy(
+  () => import("@/pages/GoodsReceiptReversalGovernance"),
 );
-const PurchaseSupplierInvoices = lazy(
-  () => import("@/pages/PurchaseSupplierInvoices"),
+const SupplierInvoiceApprovalGovernance = lazy(
+  () => import("@/pages/SupplierInvoiceApprovalGovernance"),
 );
 
 const TABS: HubTab[] = [
@@ -60,47 +56,6 @@ const TABS: HubTab[] = [
     Component: PurchaseApprovals,
   },
   {
-    value: "receipts",
-    label: "أذون الاستلام",
-    gate: {
-      roles: ["manager", "purchasing", "warehouse"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseGoodsReceipts,
-  },
-  {
-    value: "supplier-invoices",
-    label: "فواتير الموردين",
-    gate: {
-      roles: ["manager", "purchasing"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseSupplierInvoices,
-  },
-  // purchaseReturns.list خادمياً = purchasesManagerProcedure(["manager", "purchasing"], "purchases", "FULL") — التبويب مرآتها (يُخفى عمّن يرفضه الخادم حتماً).
-  {
-    value: "returns",
-    label: "مرتجعات الشراء",
-    gate: {
-      roles: ["manager", "purchasing"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseReturns,
-  },
-  {
-    value: "returns-governance",
-    label: "حوكمة المرتجعات",
-    gate: {
-      roles: ["manager", "purchasing"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseReturnsGovernance,
-  },
-  {
     value: "supplier-payments",
     label: "سداد الموردين",
     gate: {
@@ -129,6 +84,26 @@ const TABS: HubTab[] = [
       level: "FULL",
     },
     Component: PurchaseIntegrityCases,
+  },
+  {
+    value: "goods-receipt-reversals",
+    label: "عكس الاستلام",
+    gate: {
+      roles: ["manager", "purchasing"],
+      module: "purchases",
+      level: "FULL",
+    },
+    Component: GoodsReceiptReversalGovernance,
+  },
+  {
+    value: "supplier-invoice-approvals",
+    label: "اعتماد فواتير الموردين",
+    gate: {
+      roles: ["manager", "purchasing"],
+      module: "purchases",
+      level: "FULL",
+    },
+    Component: SupplierInvoiceApprovalGovernance,
   },
   {
     value: "control-settings",

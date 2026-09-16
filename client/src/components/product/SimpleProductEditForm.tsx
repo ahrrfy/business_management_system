@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
-import { AlertCircle, CheckCircle2, Layers, X } from "lucide-react";
+import { Link, useLocation } from "wouter";
+import { Layers, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,10 @@ import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { UnitPriceHistory } from "@/components/product/UnitPriceHistory";
+import { ProductVersionHistory } from "@/components/product/ProductVersionHistory";
+import { RecordForm } from "@/components/form/RecordForm";
 import { trpc } from "@/lib/trpc";
+import { confirm } from "@/lib/confirm";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
@@ -25,6 +28,11 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
+import {
+  findForeignBarcodeUsages,
+  findTakenEditableBarcodeCodes,
+  type EditableBarcodeField,
+} from "@/lib/productBarcodeOwnership";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { normalizeConversionFactor } from "@shared/productContentAi";
 
@@ -48,7 +56,7 @@ type EditUnit = { id: number; name: string; factor: string; isBase: boolean; sel
  * السلعة البسيطة لها متغيّرٌ واحد ⇒ زرّ آخر شراء ذو معنى مباشر (يملأ الحقل بنقرة).
  */
 function SimpleEditCostCoach({
-  costPrice, baseRetail, categoryId, brand, productType, productId, variantId, onUseLastPurchase,
+  costPrice, baseRetail, categoryId, brand, productType, productId, variantId, onUseLastPurchase, disabled,
 }: {
   costPrice: string;
   baseRetail: string;
@@ -58,6 +66,7 @@ function SimpleEditCostCoach({
   productId: number;
   variantId: number | null;
   onUseLastPurchase: (cost: string) => void;
+  disabled?: boolean;
 }) {
   const statsQ = trpc.catalog.categoryStats.useQuery(
     { categoryId, brand: brand.trim() || null, productType: productType.trim() || null, excludeProductId: productId },
@@ -65,7 +74,7 @@ function SimpleEditCostCoach({
   );
   const lastPurchaseQ = trpc.catalog.lastPurchaseCost.useQuery(
     { variantId: variantId ?? 0 },
-    { enabled: variantId != null && variantId > 0, staleTime: 60 * 1000 }
+    { enabled: variantId != null && variantId > 0 && !disabled, staleTime: 60 * 1000 }
   );
   const daysAgo = lastPurchaseQ.data?.receivedAt
     ? Math.floor((Date.now() - new Date(lastPurchaseQ.data.receivedAt).getTime()) / (1000 * 60 * 60 * 24))
@@ -82,7 +91,7 @@ function SimpleEditCostCoach({
           n: statsQ.data.n ?? 0,
         } : undefined}
       />
-      {lastPurchaseQ.data && (
+      {!disabled && lastPurchaseQ.data && (
         <button
           type="button"
           onClick={() => onUseLastPurchase(lastPurchaseQ.data!.unitCost)}
@@ -105,6 +114,7 @@ export default function SimpleProductEditForm({
   onAdvanced: () => void;
 }) {
   const utils = trpc.useUtils();
+  const [, navigate] = useLocation();
   const branchesQ = trpc.branches.list.useQuery();
   const categoriesQ = trpc.catalog.categories.useQuery();
   const product = trpc.catalog.getForVariantEdit.useQuery({ productId }, { enabled: Number.isFinite(productId) });
@@ -133,14 +143,14 @@ export default function SimpleProductEditForm({
 
   const unitSeq = useRef(1);
   const [units, setUnits] = useState<EditUnit[]>([]);
+  const originalBarcodeCodes = useRef(new Map<string, string | null>());
   // معرّف المتغيّر الوحيد + رصيده الحالي (قراءة فقط). صورة اللون (variant.image) تُترَك دون مساس؛
   // صور المنتج العامّة تُحرَّر عبر حالة `images` أعلاه.
   const variantId = useRef<number | null>(null);
   const baseline = useRef<string | null>(null); // لقطة توقيع النموذج بعد التعبئة (لكشف التعديلات غير المحفوظة)
   const [currentStock, setCurrentStock] = useState<Record<number, number>>({});
-
-  const [error, setError] = useState("");
-  const [done, setDone] = useState("");
+  const hasStock = useMemo(() => Object.values(currentStock).some((q) => Number(q) !== 0), [currentStock]);
+  const isCostLocked = hasStock && !consignment.isConsignment;
 
   const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
 
@@ -178,6 +188,9 @@ export default function SimpleProductEditForm({
       wholesale: u.wholesale,
       government: u.government,
     }));
+    originalBarcodeCodes.current = new Map(
+      tmpl.map((unit) => [String(unit.id), unit.barcode || null] as const),
+    );
     unitSeq.current = tmpl.length + 1;
     setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
     setImages(hydrateProductImages(d.images));
@@ -216,56 +229,66 @@ export default function SimpleProductEditForm({
   );
   // ── كشف «تعديلات غير محفوظة»: نقارن توقيع النموذج بلقطة الأساس المُلتقَطة بعد التعبئة ──
   const formSig = useMemo(
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig]
+    // Codex #1010: هويّةُ الأمانة (الوسم + المودِع) جزءٌ من الحالة القابلة للتحرير — بلا إدراجها كان تغييرُها
+    // وحده يُبقي `dirty=false` فتضيع بلا تحذيرٍ عند المغادرة. (`consignorName` عرضٌ فلا يدخل البصمة.)
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, isConsignment: consignment.isConsignment, consignorId: consignment.consignorId, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, consignment.isConsignment, consignment.consignorId, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
   }, [hydrated, formSig]);
   const dirty = hydrated && baseline.current !== null && formSig !== baseline.current;
   // الانتقال للتحرير المتقدّم يعيد التحميل من الخادم ⇒ نؤكّد قبل تجاهل تعديلات غير محفوظة.
-  const goAdvanced = () => {
-    if (dirty && !window.confirm("لديك تعديلات غير محفوظة ستُتجاهَل عند الانتقال للتحرير المتقدّم. هل تريد المتابعة؟")) return;
+  const goAdvanced = async () => {
+    if (
+      dirty &&
+      !(await confirm({
+        variant: "warning",
+        title: "الانتقال للتحرير المتقدّم؟",
+        description:
+          "لديك تعديلات غير محفوظة ستُتجاهَل عند الانتقال للتحرير المتقدّم. هل تريد المتابعة؟",
+        confirmText: "متابعة بلا حفظ",
+      }))
+    )
+      return;
     onAdvanced();
   };
 
   // ── فحص تكرار الباركود ضدّ القاعدة (live) — نستثني باركودات هذا المنتج نفسه ──
-  const allCodes = useMemo(() => {
-    const set = new Set<string>();
-    for (const u of units) { const c = u.barcode.trim(); if (c) set.add(c); }
-    return Array.from(set);
+  const barcodeFields = useMemo<EditableBarcodeField[]>(() => {
+    return units.flatMap((unit) => {
+      const code = unit.barcode.trim();
+      if (!code) return [];
+      const fieldKey = String(unit.id);
+      return [{ fieldKey, code }];
+    });
   }, [units]);
+  const allCodes = useMemo(() => Array.from(new Set(barcodeFields.map((field) => field.code))), [barcodeFields]);
   const debouncedKey = useDebouncedValue(allCodes.join("\n"), 450);
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
     { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
   );
-  const ownCodes = useMemo(() => new Set(allCodes), [allCodes]);
   const takenInDb = useMemo(
-    () => new Set((checkQ.data ?? []).map((r) => r.code).filter((c) => !ownCodes.has(c))),
-    [checkQ.data, ownCodes]
+    () => findTakenEditableBarcodeCodes(checkQ.data ?? [], barcodeFields, originalBarcodeCodes.current),
+    [checkQ.data, barcodeFields]
   );
 
-  const update = trpc.catalog.updateProductVariants.useMutation({
-    onSuccess: async () => {
-      setError("");
-      setDone("تم حفظ التعديلات بنجاح.");
-      await Promise.all([
-        utils.catalog.getForVariantEdit.invalidate({ productId }),
-        utils.catalog.posList.invalidate(),
-        utils.catalog.adminList.invalidate(),
-        utils.catalog.forPurchase.invalidate(),
-      ]);
-      baseline.current = null; // أعِد التقاط لقطة الأساس بعد إعادة التعبئة (نظافة كشف التعديلات)
-      setHydrated(false); // أعد التحميل ليعكس الحالة المحفوظة
-    },
-    onError: (e) => {
-      setDone("");
-      setError(e.message);
-      if (/SKU|الرمز/.test(e.message)) document.getElementById("simpleedit-sku")?.focus();
-    },
-  });
+  const update = trpc.catalog.updateProductVariants.useMutation();
+
+  /** بعد حفظٍ أو استعادةٍ ناجحة: إبطالُ الكاش وإعادةُ التعبئة من الخادم (لقطة الأساس تُلتقَط من جديد). */
+  async function reloadFromServer() {
+    await Promise.all([
+      utils.catalog.getForVariantEdit.invalidate({ productId }),
+      utils.catalog.productVersions.invalidate({ productId }),
+      utils.catalog.posList.invalidate(),
+      utils.catalog.adminList.invalidate(),
+      utils.catalog.forPurchase.invalidate(),
+    ]);
+    baseline.current = null; // أعِد التقاط لقطة الأساس بعد إعادة التعبئة (نظافة كشف التعديلات)
+    setHydrated(false); // أعد التحميل ليعكس الحالة المحفوظة
+  }
 
   /* ── الوحدات ── */
   const addUnit = () =>
@@ -303,28 +326,26 @@ export default function SimpleProductEditForm({
     return null;
   }
 
-  async function save() {
-    setError("");
-    setDone("");
+  /** يُرجع نتيجة الخادم أو يرمي — `RecordForm` يُصنّف المآل ويعرضه (SAVED/CONFLICT/FAILED). */
+  async function save(): Promise<unknown> {
     const err = validate();
-    if (err) {
-      setError(err);
-      if (!finalName) document.getElementById("simpleedit-name")?.focus();
-      else if (!costPrice.trim()) document.getElementById("simpleedit-cost")?.focus();
-      return;
-    }
+    if (err) throw new Error(err);
     // فحص أخير حاسم للباركود ضدّ القاعدة (نستثني ما يخصّ هذا المنتج).
     const codes = Array.from(new Set(units.map((u) => u.barcode.trim()).filter(Boolean)));
     if (codes.length) {
+      let taken: Array<{ code: string; takenBy: string }> = [];
       try {
-        const taken = (await utils.catalog.checkBarcodes.fetch({ codes })).filter((t) => !ownCodes.has(t.code));
-        if (taken.length) {
-          setError(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`);
-          return;
-        }
+        // مِلكيّةُ الباركود من `main` (findForeignBarcodeUsages + originalBarcodeCodes) — تستثني ملكيّةَ
+        // المنتج لباركوده الأصليّ بالحقل نفسه؛ ثمّ يُصنّف `RecordForm` الرميَ (لا setError يدويّ).
+        taken = findForeignBarcodeUsages(
+          await utils.catalog.checkBarcodes.fetch({ codes }),
+          barcodeFields,
+          originalBarcodeCodes.current,
+        );
       } catch {
         // القيد UNIQUE في القاعدة هو الحارس الأخير.
       }
+      if (taken.length) throw new Error(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`);
     }
     const unitTemplate = units.map((u) => ({
       unitName: u.name.trim(),
@@ -341,7 +362,7 @@ export default function SimpleProductEditForm({
     }));
     const unitBarcodes: Record<string, string> = {};
     for (const u of units) { const b = u.barcode.trim(); if (b) unitBarcodes[u.name.trim()] = b; }
-    update.mutate({
+    const res = await update.mutateAsync({
       productId,
       name: finalName || null,
       productType: productType.trim() || null,
@@ -373,6 +394,8 @@ export default function SimpleProductEditForm({
       // صور المنتج العامّة: معرّفات وmetadata فقط؛ الفارغة توفّق الحذف ولا تمرّر بايتات.
       images: buildProductImagesPayload(images),
     });
+    await reloadFromServer();
+    return res;
   }
 
   if (product.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
@@ -381,6 +404,8 @@ export default function SimpleProductEditForm({
   const totalStock = Object.values(currentStock).reduce((s, q) => s + (q || 0), 0);
   const unitCost = parseFloat(costPrice) || 0;
   const baseUnitName = units.find((u) => u.isBase)?.name.trim() || "قطعة";
+  // سببُ المنع يُعرض نصّاً بجوار الزرّ (SaveBar) — لا زرٌّ ميّتٌ ولا بانرٌ بعد النقر.
+  const validationReason = hydrated ? validate() : null;
 
   return (
     <div className="max-w-4xl mx-auto space-y-4 pb-28">
@@ -397,6 +422,16 @@ export default function SimpleProductEditForm({
         }
       />
 
+      <RecordForm
+        mode="edit"
+        isDirty={dirty}
+        blockedBy={validationReason ? [validationReason] : []}
+        isPending={update.isPending}
+        onSave={save}
+        onCancel={() => navigate("/products")}
+        savedMessage="تم حفظ التعديلات"
+        barHint="تعديل سلعة بسيطة — المخزون يُدار عبر الجرد/الحركات."
+      >
       {!product.data?.isService && !product.data?.isBundle && (
         <ConsignmentField
           value={consignment}
@@ -592,17 +627,31 @@ export default function SimpleProductEditForm({
             required
             hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "سعر الشراء الموحّد."}
           >
-            <MoneyInput id="simpleedit-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
-            <SimpleEditCostCoach
-              costPrice={costPrice}
-              baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
-              categoryId={categoryId === "" ? null : Number(categoryId)}
-              brand={brand}
-              productType={productType}
-              productId={productId}
-              variantId={variantId.current}
-              onUseLastPurchase={(cost) => setCostPrice(cost)}
+            <MoneyInput
+              id="simpleedit-cost"
+              value={costPrice}
+              onChange={setCostPrice}
+              placeholder="150"
+              disabled={isCostLocked}
             />
+            {isCostLocked && (
+              <p className="text-[11px] text-[var(--sem-warn)] mt-1 font-medium leading-normal">
+                مقفل لوجود رصيد مخزني فعلي. لتعديل التكلفة مع إثبات القيود المحاسبية، استعمل «إعادة تقييم التكلفة» من شاشة المخزون أو عبر أذون الاستلام.
+              </p>
+            )}
+            {!isCostLocked && (
+              <SimpleEditCostCoach
+                costPrice={costPrice}
+                baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
+                categoryId={categoryId === "" ? null : Number(categoryId)}
+                brand={brand}
+                productType={productType}
+                productId={productId}
+                variantId={variantId.current}
+                onUseLastPurchase={(cost) => setCostPrice(cost)}
+                disabled={isCostLocked}
+              />
+            )}
           </Field>
           <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">
             <NumberInput value={minStock} onChange={setMinStock} className="text-center" ariaLabel="الحد الأدنى" />
@@ -665,29 +714,15 @@ export default function SimpleProductEditForm({
         productExists
       />
 
-      {error && (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span className="whitespace-pre-wrap break-words">{error}</span>
-        </div>
-      )}
-      {done && (
-        <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm badge-status-active">
-          <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
-          <span>{done}</span>
-        </div>
-      )}
-
-      {/* ── شريط الحفظ الثابت ── */}
-      <div className="fixed bottom-0 inset-x-0 lg:start-60 border-t bg-card/95 backdrop-blur px-6 py-3 flex items-center justify-between gap-3 z-30">
-        <div className="text-xs text-muted-foreground hidden sm:block">تعديل سلعة بسيطة — المخزون يُدار عبر الجرد/الحركات.</div>
-        <div className="flex gap-2">
-          <Link href="/products"><Button type="button" variant="outline" size="sm">إلغاء</Button></Link>
-          <Button type="button" size="sm" onClick={save} disabled={update.isPending}>
-            {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
-          </Button>
-        </div>
-      </div>
+      {/* م٦ ق٨ — السجلّ والاستعادة: بعد استعادةٍ ناجحة نُعيد التعبئة من الخادم (كما بعد الحفظ). */}
+      <ProductVersionHistory
+        productId={productId}
+        onRestored={() => {
+          baseline.current = null;
+          setHydrated(false);
+        }}
+      />
+      </RecordForm>
     </div>
   );
 }

@@ -297,6 +297,32 @@ export const periodLockRouter = router({
             entityId: result.id,
             newValue: { month: input.month },
           });
+          if (result.autoApproval) {
+            const approval = result.autoApproval;
+            await logAuditTx(tx, ctx, {
+              action: "period.close_approve",
+              entityType: "monthCloseRequest",
+              entityId: result.id,
+              newValue: {
+                month: approval.month,
+                revision: approval.revision,
+                periodId: approval.periodId,
+                certificateId: approval.certificateId,
+                certificateNumber: approval.certificateNumber,
+                automatic: true,
+              },
+            });
+            await logAuditTx(tx, ctx, {
+              action: "period.lock",
+              entityType: "financialPeriod",
+              entityId: approval.periodId,
+              newValue: {
+                cutoffDate: approval.cutoffDate,
+                notes: `إقفال شهر ${approval.month} — اعتماد تلقائي لطلب المالك #${result.id}`,
+                automatic: true,
+              },
+            });
+          }
           return result;
         }),
       ),

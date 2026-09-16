@@ -11,6 +11,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import online.alarabiya.superapp.core.network.ApiException
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.data.InventoryDataSource
 import online.alarabiya.superapp.model.inventory.AdjustmentDraft
 import online.alarabiya.superapp.model.inventory.AdjustmentRequest
@@ -34,6 +35,7 @@ import online.alarabiya.superapp.model.inventory.TransferDetail
 import online.alarabiya.superapp.model.inventory.TransferDraft
 import online.alarabiya.superapp.model.inventory.TransferPage
 import online.alarabiya.superapp.model.inventory.TransferStatus
+import online.alarabiya.superapp.model.warehouseTools.CountSubmitOutcome
 
 enum class ExecutiveStockState { LOW, OUT }
 
@@ -85,6 +87,8 @@ data class InventoryUiState(
     val countAssignments: List<CountAssignment> = emptyList(),
     val selectedCount: CountSession? = null,
     val countQuery: String = "",
+    val countScannedVariantId: Long? = null,
+    val countScannedBarcode: String? = null,
 ) {
     val visibleBalances: List<StockBalance>
         get() = when (executiveStockState) {
@@ -734,7 +738,17 @@ class InventoryViewModel(
     }
     fun forceReview() = stocktakeAction("stocktake:review", "نُقلت الجلسة للمراجعة") { source.forceStocktakeReview(it) }
     fun firstSign() = stocktakeAction("stocktake:sign", "تم التوقيع الأول") { source.firstSignStocktake(it) }
-    fun approveStocktake() = stocktakeAction("stocktake:approve", "تم اعتماد الجرد") { source.approveStocktake(it) }
+    fun approveStocktake() = stocktakeAction(
+        key = "stocktake:approve",
+        message = "تم اعتماد الجرد",
+        successOf = { negativeSettlements: Int ->
+            if (negativeSettlements > 0) {
+                "تم اعتماد الجرد — $negativeSettlements صنف بأرصدة سالبة، راجع تقرير السوالب"
+            } else {
+                "تم اعتماد الجرد"
+            }
+        },
+    ) { source.approveStocktake(it) }
     fun setCancelStocktakeReason(value: String) { state = state.copy(cancelStocktakeReason = value.take(500)) }
     fun cancelStocktake() {
         val detail = state.selectedStocktake ?: return
@@ -760,7 +774,12 @@ class InventoryViewModel(
         )
     }
 
-    private fun stocktakeAction(key: String, message: String, action: suspend (Long) -> Unit) {
+    private fun <T> stocktakeAction(
+        key: String,
+        message: String,
+        successOf: ((T) -> String)? = null,
+        action: suspend (Long) -> T,
+    ) {
         val detail = state.selectedStocktake ?: return
         if (!capabilities.canManage) return
         val acknowledgedStatus = when (key) {
@@ -772,6 +791,7 @@ class InventoryViewModel(
             key = key,
             section = InventorySection.STOCKTAKES,
             success = message,
+            successOf = successOf,
             replayPolicy = MutationReplayPolicy.MONOTONIC,
             request = { action(detail.summary.id) },
             acknowledge = { current, _ ->
@@ -794,25 +814,53 @@ class InventoryViewModel(
     }
     fun selectCount(sessionCode: String) = launchRead("count:$sessionCode", InventorySection.MY_COUNTS) {
         val detail = source.countSession(sessionCode)
-        return@launchRead { current -> current.copy(selectedCount = detail, countQuery = "") }
+        return@launchRead { current -> current.copy(selectedCount = detail, countQuery = "", countScannedVariantId = null, countScannedBarcode = null) }
     }
-    fun closeCount() { state = state.copy(selectedCount = null) }
-    fun setCountQuery(value: String) { state = state.copy(countQuery = value.take(120)) }
+    fun closeCount() { state = state.copy(selectedCount = null, countScannedVariantId = null, countScannedBarcode = null) }
+    fun setCountQuery(value: String) { state = state.copy(countQuery = value.take(120), countScannedVariantId = null, countScannedBarcode = null) }
+    fun scanCount(raw: String) {
+        val count = state.selectedCount ?: return
+        state = state.copy(countScannedVariantId = null, countScannedBarcode = null)
+        when (val match = count.barcodeMatch(raw)) {
+            NativeBarcodeResolution.NoMatch ->
+                setError("الباركود الممسوح لا يخص صنفاً في هذا التكليف")
+            NativeBarcodeResolution.Ambiguous ->
+                setError("الباركود يطابق أكثر من صنف في هذا التكليف؛ صحّح هوية الباركود قبل العد")
+            is NativeBarcodeResolution.Unique -> state = state.copy(
+                countQuery = match.value.label,
+                countScannedVariantId = match.value.variantId,
+                countScannedBarcode = match.normalizedBarcode,
+                error = null,
+            )
+        }
+    }
     fun submitCount(variantId: Long, quantity: String) {
         val count = state.selectedCount ?: return
         InventoryValidation.count(quantity)?.let { return setError(it) }
+        val scannedBarcode = state.countScannedBarcode.takeIf { state.countScannedVariantId == variantId }
+        if (count.countMethod == "SCAN_REQUIRED" && scannedBarcode == null) {
+            return setError("هذه الجلسة تتطلب مسح باركود الصنف بالكاميرا قبل حفظ العد")
+        }
         val parsedQuantity = requireNotNull(quantity.toIntOrNull())
         val clientRequestId = countRequestIds.idFor(count.code, variantId, parsedQuantity)
         launchMutation(
             key = "count:submit:$variantId",
             section = InventorySection.MY_COUNTS,
             success = "تم حفظ العدّة",
+            successOf = { outcome ->
+                when (outcome) {
+                    is CountSubmitOutcome.Submitted -> "تم حفظ العدّة"
+                    is CountSubmitOutcome.Queued -> "تعذر الاتصال؛ حُفظت العدّة في طابور أدوات المستودع"
+                }
+            },
             replayPolicy = MutationReplayPolicy.IDEMPOTENT,
-            request = { source.submitCount(count.code, variantId, parsedQuantity, clientRequestId) },
-            acknowledge = { current, _ -> current.acknowledgeCount(count.code, variantId, parsedQuantity) },
-            refresh = {
-                val refreshed = source.countSession(count.code)
-                val reducer: InventoryReducer = { current -> current.copy(selectedCount = refreshed) }
+            request = { source.submitCount(count.code, variantId, parsedQuantity, clientRequestId, if (scannedBarcode == null) "SEARCH_PICK" else "SCAN_CAMERA", scannedBarcode) },
+            acknowledge = { current, _ -> current.acknowledgeCount(count.code, variantId, parsedQuantity).copy(countScannedVariantId = null, countScannedBarcode = null) },
+            refresh = { outcome ->
+                val refreshed = if (outcome is CountSubmitOutcome.Queued) null else source.countSession(count.code)
+                val reducer: InventoryReducer = { current ->
+                    if (refreshed == null) current else current.copy(selectedCount = refreshed)
+                }
                 reducer
             },
         )
@@ -866,6 +914,7 @@ class InventoryViewModel(
         request: suspend () -> T,
         acknowledge: (InventoryUiState, T) -> InventoryUiState,
         refresh: suspend (T) -> InventoryReducer,
+        successOf: ((T) -> String)? = null,
     ) {
         if (!state.canInteract(section)) return
         state = state.copy(busyKey = key, error = null, message = null)
@@ -887,17 +936,18 @@ class InventoryViewModel(
             }
 
             val value = response.getOrThrow()
+            val resolvedSuccess = successOf?.invoke(value) ?: success
             // Commit the acknowledged server outcome first. The following read is reconciliation,
             // never part of the write, so its failure cannot reopen the draft or repeat the action.
-            state = acknowledge(state, value).markStale(section).copy(message = success)
+            state = acknowledge(state, value).markStale(section).copy(message = resolvedSuccess)
             runCatching { refresh(value) }
                 .onSuccess { reducer ->
-                    state = reducer(state).markFresh(section).copy(busyKey = null, error = null, message = success)
+                    state = reducer(state).markFresh(section).copy(busyKey = null, error = null, message = resolvedSuccess)
                 }
                 .onFailure { refreshFailure ->
                     state = state.copy(
                         busyKey = null,
-                        message = success,
+                        message = resolvedSuccess,
                         error = "اكتملت العملية، لكن تعذر تحديث بيانات القسم. اضغط إعادة المحاولة قبل تنفيذ إجراء آخر: ${userMessage(refreshFailure)}",
                     )
                 }

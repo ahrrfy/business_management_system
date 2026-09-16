@@ -16,7 +16,7 @@ import { deliveryConsignments, deliveryEvents, deliveryLedgerEntries } from "../
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { assertNotReturnDeclared } from "./declaredReturn";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 
 export interface CounterCollectionInput {
   invoiceId: number;
@@ -147,6 +147,7 @@ export async function registerCounterCollectionTx(
   const pendingCustody = round2(money(custodyRow?.pending ?? "0"));
   const noPendingCustody = pendingCustody.lte(0);
   const close = liveRemaining.isZero() && noPendingCustody;
+  if (close) assertConsignmentStatusTransition(cn.status, "DELIVERED");
 
   await tx
     .update(deliveryConsignments)

@@ -7,12 +7,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CameraOff, Flashlight, FlashlightOff, ScanLine, X } from "lucide-react";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { dispatchManualCameraEntry } from "./cameraScannerLifecycle";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   /** يُستدعى بالنص المفكوك من الباركود أو QR. */
   onDetect: (code: string) => void;
+  /** الإدخال المكتوب ليس دليلاً من الكاميرا؛ المستدعي المحاسبي يميّزه صراحةً. */
+  onManualDetect?: (code: string) => void;
   /**
    * إبقاء الكاميرا مفتوحةً بعد كلّ مسحٍ ناجح لتمكين دورة «امسح ثمّ التالي» بلا إعادة فتح.
    * الافتراضي `false` للتوافق مع الاستدعاءات القائمة التي تتوقّع الإغلاق التلقائيّ.
@@ -33,7 +36,10 @@ type NativeBarcodeDetector = {
   detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>;
 };
 
-type NativeBarcodeDetectorCtor = new (options: { formats: string[] }) => NativeBarcodeDetector;
+type NativeBarcodeDetectorCtor = {
+  new (options: { formats: string[] }): NativeBarcodeDetector;
+  getSupportedFormats?: () => Promise<string[]>;
+};
 
 function cameraErrorMessage(error: unknown): string {
   const name = error instanceof DOMException ? error.name : "";
@@ -80,9 +86,10 @@ function ManualEntry({ onSubmit }: { onSubmit: (value: string) => void }) {
   );
 }
 
-export function CameraScanner({ open, onClose, onDetect, keepOpen = false, cooldownMs = 1500 }: Props) {
+export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpen = false, cooldownMs = 1500 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onDetectRef = useRef(onDetect);
+  const onManualDetectRef = useRef(onManualDetect ?? onDetect);
   const controlsRef = useRef<FallbackControls | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectedRef = useRef(false);
@@ -91,6 +98,7 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
   const keepOpenRef = useRef(keepOpen);
   const cooldownMsRef = useRef(cooldownMs);
   onDetectRef.current = onDetect;
+  onManualDetectRef.current = onManualDetect ?? onDetect;
   keepOpenRef.current = keepOpen;
   cooldownMsRef.current = cooldownMs;
 
@@ -139,6 +147,8 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
     if (!open) return;
     let stopped = false;
     let nativeRaf = 0;
+    let ownedStream: MediaStream | null = null;
+    let ownedControls: FallbackControls | null = null;
     detectedRef.current = false;
     lastCodeRef.current = null;
     if (cooldownTimerRef.current != null) {
@@ -150,7 +160,15 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
 
     const stop = () => {
       if (nativeRaf) cancelAnimationFrame(nativeRaf);
-      stopMedia();
+      ownedControls?.stop();
+      ownedStream?.getTracks().forEach((track) => track.stop());
+      if (controlsRef.current === ownedControls) controlsRef.current = null;
+      if (streamRef.current === ownedStream) {
+        streamRef.current = null;
+        if (videoRef.current?.srcObject === ownedStream) videoRef.current.srcObject = null;
+      }
+      setTorchAvailable(false);
+      setTorchOn(false);
     };
 
     const setTorchCapability = (stream: MediaStream | null) => {
@@ -162,9 +180,13 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
     const startNative = async (Detector: NativeBarcodeDetectorCtor) => {
       // بعض المتصفحات تعرض BarcodeDetector لكنها لا تقبل جميع الصيغ؛ ننشئه
       // أولاً حتى نستطيع الانتقال إلى ZXing قبل حجز الكاميرا عند حدوث ذلك.
-      const detector = new Detector({
-        formats: ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "itf", "upc_a", "upc_e", "qr_code"],
-      });
+      const formats = ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "itf", "upc_a", "upc_e", "qr_code"];
+      if (Detector.getSupportedFormats) {
+        const supported = await Detector.getSupportedFormats();
+        if (formats.some((format) => !supported.includes(format))) throw new Error("Incomplete barcode formats");
+      }
+      if (stopped) return;
+      const detector = new Detector({ formats });
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
@@ -177,13 +199,16 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      ownedStream = stream;
       streamRef.current = stream;
       setTorchCapability(stream);
       const video = videoRef.current;
       if (!video) return;
       video.srcObject = stream;
       await video.play();
+      if (stopped) return;
       setEngine("native");
+      let failedFrames = 0;
       const scanFrame = async () => {
         if (stopped) return;
         // في وضع `keepOpen` نُبقي الحلقةَ حيّةً أثناء التبريد بدل موتها بعد أوّل رصد.
@@ -197,6 +222,8 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
           try {
             const codes = await detector.detect(video);
+            if (stopped) return;
+            failedFrames = 0;
             const value = codes[0]?.rawValue;
             if (value) {
               deliver(value);
@@ -204,7 +231,19 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
               if (!keepOpenRef.current) return;
             }
           } catch {
-            // إطار غير صالح أو ضبابي؛ نستمر حتى يستقر التركيز.
+            if (stopped) return;
+            // أخطاء المحرك المتكررة ليست إطاراً ضبابياً؛ انتقل إلى القارئ البديل.
+            if (++failedFrames >= 3) {
+              stop();
+              try { await startFallback(); }
+              catch (error) {
+                if (!stopped) {
+                  stop();
+                  setError(cameraErrorMessage(error));
+                }
+              }
+              return;
+            }
           }
         }
         nativeRaf = requestAnimationFrame(scanFrame);
@@ -219,24 +258,38 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
         delayBetweenScanAttempts: 90,
         delayBetweenScanSuccess: 250,
       });
-      const controls = await reader.decodeFromConstraints(
-        {
+      const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
             facingMode: { ideal: "environment" },
             width: { ideal: 1920 },
             height: { ideal: 1080 },
           },
-        },
-        videoRef.current,
-        (result) => {
-          if (result) deliver(result.getText());
+        });
+      if (stopped) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      ownedStream = stream;
+      streamRef.current = stream;
+      const controls = await reader.decodeFromStream(
+        stream, videoRef.current,
+        (result, _error, callbackControls) => {
+          if (stopped || (detectedRef.current && !keepOpenRef.current)) {
+            callbackControls.stop();
+            return;
+          }
+          if (result) {
+            deliver(result.getText());
+            if (!keepOpenRef.current) callbackControls.stop();
+          }
         },
       );
-      if (stopped) {
+      if (stopped || (detectedRef.current && !keepOpenRef.current)) {
         controls.stop();
         return;
       }
+      ownedControls = controls;
       controlsRef.current = controls;
       streamRef.current = videoRef.current?.srcObject instanceof MediaStream ? videoRef.current.srcObject : null;
       setTorchCapability(streamRef.current);
@@ -261,12 +314,15 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
             if (["NotAllowedError", "SecurityError", "NotFoundError", "OverconstrainedError"].includes(name)) {
               throw nativeError;
             }
-            stopMedia();
+            stop();
           }
         }
         await startFallback();
       } catch (scanError) {
-        if (!stopped) setError(cameraErrorMessage(scanError));
+        if (!stopped) {
+          stop();
+          setError(cameraErrorMessage(scanError));
+        }
       }
     };
 
@@ -365,7 +421,16 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
       {/* الفصل البصريّ عبر borderTop خفيف يميّز منطقة الإدخال اليدويّ عن الكاميرا،
           فلا يظنّ المستخدم أنّ الحقلَ جزءٌ من إطار المسح. */}
       <div className="mt-1 w-full max-w-md border-t border-white/10 pt-3">
-        <ManualEntry onSubmit={deliver} />
+        <ManualEntry
+          onSubmit={(code) => {
+            dispatchManualCameraEntry(code, {
+              deliver,
+              stopMedia,
+              manual: onManualDetectRef.current,
+              hasManualOverride: onManualDetect != null,
+            });
+          }}
+        />
       </div>
     </div>
   );

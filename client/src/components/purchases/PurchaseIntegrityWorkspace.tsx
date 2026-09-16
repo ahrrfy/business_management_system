@@ -1,5 +1,11 @@
 import { useMemo, useState } from "react";
-import { AlertOctagon, CheckCircle2, RotateCcw, XCircle } from "lucide-react";
+import {
+  AlertOctagon,
+  AlertTriangle,
+  CheckCircle2,
+  RotateCcw,
+  XCircle,
+} from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -20,11 +26,66 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Textarea } from "@/components/ui/textarea";
+import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import {
   canReviewGovernanceRequest,
   newGovernanceKey,
 } from "./purchaseGovernanceUiPolicy";
+
+type LiveSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "INFO";
+export type LiveIntegrityFinding = {
+  id: string;
+  severity: LiveSeverity;
+  code: string;
+  purchaseOrderId: number;
+  poNumber: string;
+  supplierId: number;
+  supplierName: string | null;
+  subjectType: string;
+  subjectId: number | string;
+  ageDays: number | null;
+  summaryAr: string;
+  evidence: Record<string, unknown>;
+};
+export type LiveIntegritySummary = {
+  findingCount: number;
+  affectedOrderCount: number;
+  severityCounts: Record<LiveSeverity, number>;
+};
+
+const LIVE_SEVERITY_LABEL: Record<LiveSeverity, string> = {
+  CRITICAL: "حرجة",
+  HIGH: "عالية",
+  MEDIUM: "متوسطة",
+  INFO: "معلوماتية",
+};
+
+const LIVE_SEVERITY_CLASS: Record<LiveSeverity, string> = {
+  CRITICAL: "badge-status-danger",
+  HIGH: "badge-status-warning",
+  MEDIUM: "badge-status-pending",
+  INFO: "badge-status-neutral",
+};
+
+// المصدر: PURCHASE_INTEGRITY_CODES في server/services/purchaseIntegrityService.ts —
+// قائمةٌ مختلفة تماماً عن CODE_LABEL أعلاه (قضايا مطابقة GRN/فاتورة اليدوية)؛ هذه أكواد
+// تشخيصٍ آليّ من GL مباشرة، صفر تدخّلٍ بشريّ في اكتشافها.
+const LIVE_CODE_LABEL: Record<string, string> = {
+  CASH_RECEIVED_PAYMENT_COVERAGE_GAP: "شراء نقدي بلا تغطية دفع مساوية",
+  PAID_AMOUNT_GL_DRIFT: "انحراف المدفوع المسجَّل عن الدفتر",
+  NEGATIVE_PO_LEDGER_BALANCE: "رصيد دفتري سالب لأمر الشراء",
+  PO_PAYMENT_OVER_ALLOCATION: "تخصيص دفعٍ يتجاوز الاعتراف الدفتري",
+  HISTORICAL_CREDIT_REVIEW_CANDIDATE: "أمر آجل قديم مرشَّح للمراجعة",
+  STALE_PENDING_PO_PAYMENT: "طلب دفع معلَّق تجاوز المهلة",
+  STALE_REJECTED_PO_PAYMENT: "طلب دفع مرفوض قديم بلا إغلاق",
+  INVALID_PENDING_PO_PAYMENT: "طلب دفع معلَّق أخفق في أدلة المصدر",
+  UNAPPROVED_PAYMENT_OUT_LEDGER_ENTRY: "قيد صرف بلا سند معتمد مطابق",
+  LEDGER_BRANCH_OR_SUPPLIER_MISMATCH: "قيد بفرع أو مورد لا يطابق المستند",
+  IDEMPOTENCY_CONFLICTING_PO_PAY_REFERENCE: "مرجع دفع متعارض بين محاولتين",
+  DUPLICATE_PAYMENT_LEDGER_MATERIALIZATION: "سند صرف واحد بقيدين",
+  IDEMPOTENCY_RECEIPT_REF_REUSED: "سند مرتبط بأكثر من مفتاح تنفيذ",
+};
 
 type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 type CaseStatus =
@@ -102,6 +163,12 @@ export function PurchaseIntegrityWorkspace({
   branchId,
   rows,
   blockers,
+  liveFindings,
+  liveSummary,
+  liveLoading,
+  liveError,
+  liveIsPartial,
+  onRetryLive,
   cutoffDate,
   currentUserId,
   loading,
@@ -116,6 +183,14 @@ export function PurchaseIntegrityWorkspace({
   branchId: number;
   rows: PurchaseIntegrityRow[];
   blockers: MonthCloseBlocker[];
+  liveFindings: LiveIntegrityFinding[];
+  liveSummary: LiveIntegritySummary | null;
+  liveLoading: boolean;
+  liveError?: unknown;
+  /** Codex (P1، ٦/٩): الفحص الحيّ توقّف عند سقف صفحاتٍ أمانيّ قبل نفاد hasMore — النتيجة
+   *  جزئية ولا يجوز عرضها كأنها مسحٌ كاملٌ للفرع. */
+  liveIsPartial?: boolean;
+  onRetryLive: () => void;
   cutoffDate: string;
   currentUserId: number | null | undefined;
   loading: boolean;
@@ -196,6 +271,48 @@ export function PurchaseIntegrityWorkspace({
       clearForm();
     } catch {
       // يبقى الحوار مفتوحاً لإصلاح المدخلات أو إعادة المحاولة.
+    }
+  }
+
+  // caseKey = معرّف الاكتشاف نفسه (finding.id بصيغة code:subjectType:subjectId) — فتحُ نفس
+  // الاكتشاف مرّتين idempotent بلا قضيتين مكرّرتين (openPurchaseIntegrityCase يطابق caseKey).
+  // code يبقى OTHER دائماً: أكواد التشخيص الحيّ (LIVE_CODE_LABEL) مصدرها GL مباشرة ولا تتقاطع
+  // مع قاموس أكواد القضايا اليدوية (CODE_LABEL) — الاسم الحقيقي يبقى محفوظاً في العنوان والدليل.
+  async function openFromLiveFinding(finding: LiveIntegrityFinding) {
+    const label = LIVE_CODE_LABEL[finding.code] ?? finding.code;
+    const ok = await confirm({
+      variant: "warning",
+      title: "فتح قضية من اكتشاف الفحص الحيّ",
+      description: `أمر الشراء ${finding.poNumber} — ${label}. فتح القضية توثيقٌ للمتابعة فقط، ولا يغيّر قيداً أو مخزوناً أو رصيداً.`,
+      confirmText: "فتح القضية",
+    });
+    if (!ok) return;
+    const severity: Severity =
+      finding.severity === "INFO" ? "LOW" : finding.severity;
+    try {
+      await onOpenCase({
+        caseKey: finding.id,
+        branchId,
+        code: "OTHER",
+        severity,
+        title: `${label} — أمر الشراء ${finding.poNumber}`.slice(0, 255),
+        description: finding.summaryAr.slice(0, 1000),
+        detectedAmount: null,
+        evidence: {
+          liveCode: finding.code,
+          purchaseOrderId: finding.purchaseOrderId,
+          poNumber: finding.poNumber,
+          supplierId: finding.supplierId,
+          supplierName: finding.supplierName,
+          subjectType: finding.subjectType,
+          subjectId: finding.subjectId,
+          ageDays: finding.ageDays,
+          ...finding.evidence,
+        },
+        reason: `اكتشافٌ آليّ من الفحص الحيّ (GL) — ${label}`,
+      });
+    } catch {
+      // notify.err يعرض الخطأ؛ لا حاجة لحالة إضافية هنا.
     }
   }
 
@@ -340,8 +457,143 @@ export function PurchaseIntegrityWorkspace({
     [currentUserId],
   );
 
+  const liveColumns = useMemo<ColumnDef<LiveIntegrityFinding, unknown>[]>(
+    () => [
+      {
+        accessorKey: "severity",
+        header: "الخطورة",
+        cell: ({ row }) => (
+          <span
+            className={`inline-block rounded-full px-2 py-0.5 text-xs ${LIVE_SEVERITY_CLASS[row.original.severity]}`}
+          >
+            {LIVE_SEVERITY_LABEL[row.original.severity]}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "code",
+        header: "الاكتشاف",
+        cell: ({ row }) =>
+          LIVE_CODE_LABEL[row.original.code] ?? row.original.code,
+      },
+      {
+        id: "order",
+        header: "أمر الشراء",
+        cell: ({ row }) => (
+          <div className="whitespace-nowrap">
+            <bdi dir="ltr">{row.original.poNumber}</bdi>
+            {row.original.supplierName ? (
+              <span className="text-muted-foreground">
+                {" "}
+                — {row.original.supplierName}
+              </span>
+            ) : null}
+          </div>
+        ),
+      },
+      {
+        accessorKey: "summaryAr",
+        header: "الوصف",
+        cell: ({ row }) => (
+          <div className="max-w-md text-sm">
+            {row.original.summaryAr}
+            {row.original.ageDays != null ? (
+              <span className="text-muted-foreground">
+                {" "}
+                ({row.original.ageDays.toLocaleString("ar-IQ-u-nu-latn")} يوماً)
+              </span>
+            ) : null}
+          </div>
+        ),
+      },
+      {
+        id: "live-actions",
+        header: "الإجراء",
+        cell: ({ row }) => (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() => void openFromLiveFinding(row.original)}
+          >
+            فتح قضية
+          </Button>
+        ),
+      },
+    ],
+    // Codex (P2، ٦/٩/٢٦): openFromLiveFinding يُعاد إنشاؤه كل عرضٍ ويحمل branchId الحاليّ في
+    // نطاقه — لكن هذا العمود كان محفوظاً بـpending وحده، فيبقى مغلقاً على branchId **قديم**
+    // بعد تبديل الفرع بلا تغيّر pending. إدراج الدالّة في الاعتماديات يضمن عمودَ إجراءٍ طازجاً.
+    [pending, openFromLiveFinding],
+  );
+
   return (
     <div className="space-y-4">
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-base">
+            <span className="inline-flex items-center gap-2">
+              <AlertTriangle aria-hidden className="size-4" />
+              الفحص الحيّ (من الدفتر مباشرة)
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={liveLoading}
+              onClick={onRetryLive}
+            >
+              <RotateCcw aria-hidden className="size-4" />
+              {ACTION_LABELS.refresh}
+            </Button>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            تشخيصٌ آليّ يقارن أوامر الشراء بحركاتها الفعلية في الدفتر (لا يقرأ
+            من قضايا مفتوحة يدوياً) — يكتشف مثلاً شراءً نقدياً بلا صرفٍ معتمد
+            يغطّيه. قراءةٌ فقط، لا يُغيّر قيداً أو رصيداً بنفسه.
+          </p>
+          {liveSummary ? (
+            <p className="text-sm">
+              {liveSummary.findingCount.toLocaleString("ar-IQ-u-nu-latn")}{" "}
+              اكتشافاً على{" "}
+              {liveSummary.affectedOrderCount.toLocaleString("ar-IQ-u-nu-latn")}{" "}
+              أمر شراء — حرجة{" "}
+              {liveSummary.severityCounts.CRITICAL.toLocaleString(
+                "ar-IQ-u-nu-latn",
+              )}{" "}
+              · عالية{" "}
+              {liveSummary.severityCounts.HIGH.toLocaleString(
+                "ar-IQ-u-nu-latn",
+              )}
+            </p>
+          ) : null}
+          {liveIsPartial ? (
+            <p className="inline-flex items-center gap-1 text-xs font-semibold text-money-negative">
+              <AlertTriangle aria-hidden className="size-3" />
+              الفرع كبيرٌ جداً — هذا مسحٌ جزئيّ فقط ولا يغطّي كل أوامر الشراء. لا
+              تعتمد على «لا اكتشافات» هنا كدليل نظافةٍ كاملة.
+            </p>
+          ) : null}
+          {liveError ? (
+            <ErrorState
+              message="تعذّر تشغيل الفحص الحيّ."
+              onRetry={onRetryLive}
+            />
+          ) : (
+            <DataTable
+              columns={liveColumns}
+              data={liveFindings}
+              loading={liveLoading}
+              searchable
+              searchPlaceholder="بحث برقم الأمر أو المورد أو نوع الاكتشاف"
+              emptyText="لا اكتشافات في هذا الفرع — الفحص لا يجد فجوة تغطية أو انحرافاً حالياً."
+            />
+          )}
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-base">

@@ -14,6 +14,7 @@ import { StatCard } from "@/components/StatCard";
 import { Card, CardContent } from "@/components/ui/card";
 import { LoadingState } from "@/components/PageState";
 import { fmtAr, formatIqd, D } from "@/lib/money";
+import { OperationalRadarCard } from "@/components/dashboard/OperationalRadarCard";
 
 type Period = "today" | "month" | "last30";
 type Alert = RouterOutputs["reports"]["managementAlerts"]["alerts"][number];
@@ -250,12 +251,21 @@ export default function ReportsOverview() {
       </div>
 
       {/* ② لوحة الإجراءات ذات الأولوية — أين الخطر؟ وماذا أفعل الآن؟ */}
-      <section className="space-y-2">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-          <AlertTriangle className="size-4 text-stock-low" aria-hidden />
-          ما يحتاج انتباهك الآن
-        </h2>
-        <AlertsPanel alerts={alerts.data?.alerts ?? []} loading={alerts.isLoading} />
+      <section className="space-y-3">
+        <OperationalRadarCard
+          alerts={alerts.data?.alerts ?? []}
+          loading={alerts.isLoading}
+          error={alerts.isError}
+          sourceErrors={alerts.data?.sourceErrors}
+        />
+
+        <div className="space-y-2">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+            <AlertTriangle className="size-4 text-stock-low" aria-hidden />
+            ما يحتاج انتباهك الآن
+          </h2>
+          <AlertsPanel alerts={alerts.data?.alerts ?? []} loading={alerts.isLoading} />
+        </div>
       </section>
 
       {/* ③ من المتأخر؟ — لوحتا صدارة */}

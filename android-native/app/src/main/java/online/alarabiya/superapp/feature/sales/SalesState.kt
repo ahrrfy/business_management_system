@@ -46,8 +46,10 @@ data class SalesUiState(
     val returnQuantities: Map<Long, Int> = emptyMap(),
     val returnRefundAmount: String = "",
     val returnMethod: PaymentMethod = PaymentMethod.CASH,
+    val returnRefundReference: String = "",
     val returnShiftId: Long? = null,
     val returnRestock: Boolean = true,
+    val returnReason: String = "",
     val returnRequestId: String = UUID.randomUUID().toString(),
 ) {
     val locked: Boolean get() = busy != null
@@ -116,7 +118,9 @@ data class SalesUiState(
         returnInvoice = null,
         returnQuantities = emptyMap(),
         returnRefundAmount = "",
+        returnRefundReference = "",
         returnShiftId = null,
+        returnReason = "",
         returnRequestId = nextRequestId,
         error = null,
         notice = when (result) {

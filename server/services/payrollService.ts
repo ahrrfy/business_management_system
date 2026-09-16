@@ -59,3 +59,7 @@ export {
   listPayrollObligations,
   listStatutoryObligationSummary,
 } from "./payroll/remittance";
+export {
+  getBiometricPayrollReadiness,
+  type BiometricPayrollReadiness,
+} from "./payroll/biometricReadiness";

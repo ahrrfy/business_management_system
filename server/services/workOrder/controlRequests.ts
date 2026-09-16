@@ -13,7 +13,7 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import {
@@ -23,8 +23,14 @@ import {
   workOrderControlDeniedMessage,
   type WorkOrderControlTypeKey,
 } from "@shared/workOrderControlAuthority";
-import type { RefundRail } from "@shared/refundRail";
+import {
+  REFUND_RAILS,
+  refundRailNeedsReference,
+  refundRailNeedsShift,
+  type RefundRail,
+} from "@shared/refundRail";
 import { type Actor, requireDb, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
@@ -32,7 +38,7 @@ import { cancelWorkOrderInTx, type WorkOrderCancelMaterialDecision } from "./can
 import { setWorkOrderMaterialsInTx } from "./materials";
 import { updateWorkOrderInTx, type UpdateWorkOrderInput } from "./update";
 import type { WorkOrderMaterialInput } from "./types";
-import { appliedCollectionsForWorkOrder } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder } from "../deposits";
 import {
   getWorkOrderReverseDeliveryPreflightInTx,
   lockReverseDeliveryApprovalResourcesInTx,
@@ -133,7 +139,7 @@ function exactRequestReplay(
   return Number(row.workOrderId) === input.workOrderId
     && row.requestType === input.requestType
     && Number(row.baseVersion) === input.baseVersion
-    && row.payloadHash === payloadHash
+    && payloadHashMatches(payloadHash, row.payloadHash)
     && row.reason === reason
     && Number(row.requestedBy) === actor.userId;
 }
@@ -161,7 +167,7 @@ export async function requestWorkOrderControl(
   }
   const reason = normalizedReason(input.reason, "الإجراء");
   const payloadHash = idempotencyHash(input.payload);
-  return retryOnDeadlock(() => withTx(async (tx) => {
+  const result = await retryOnDeadlock(() => withTx(async (tx) => {
     const replay = await loadExistingByKey(tx, requestKey);
     if (replay) {
       assertRequestBranch(replay, actor);
@@ -271,6 +277,12 @@ export async function requestWorkOrderControl(
     const row = await loadExistingByKey(tx, requestKey);
     return { ...row!, replayed: false as const };
   }, { gate: "NONE" }));
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "workOrder.control.approve",
+    id: Number(result.id),
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function listPendingWorkOrderControls(actor: Actor & { role?: string }) {
@@ -311,10 +323,68 @@ export async function getWorkOrderControlRequest(id: number, actor: Actor & { ro
   return row;
 }
 
+/**
+ * **رافدُ الردّ قرارُ المُعتمِد لا الطالب** (بلاغ المالك ٢/٩/٢٦).
+ *
+ * الطالبُ يختار الرافدَ ساعةَ الطلب، والمعتمِدُ يُطبّقه ساعةَ الاعتماد — وبينهما ساعات:
+ * يُفرَّغ الدرجُ بالبيع، فيجد المديرُ «رصيد الدرج 25٬000 أقل من المطلوب 70٬000» وحمولةَ الطلب
+ * **مبصومةً لا تُعدَّل**. بابٌ مسدود: لا يعتمد ولا يُغيّر، ورسالةُ الرفض لا تقول ما العمل.
+ *
+ * ⛔ **والشروطُ المادّية تبقى مبصومةً كما هي**: أيُّ أمرٍ، ومصيرُ الخامة، والسبب، ونسخةُ
+ * الأساس — كلُّها من الطالب ويحرسها `payloadHash`. المتغيّرُ **من أين يخرج المال** وحده،
+ * وهو ليس جزءاً ممّا طلبه الطالب أصلاً: المعتمِدُ صاحبُ الدرج والمسؤولُ عن الصرف.
+ * ويُسجَّل الفارقُ في حدث الاعتماد فلا يضيع أنّ الرافد تبدّل ولا مَن بدّله.
+ */
+export interface ControlApprovalRefundOverride {
+  refundRail?: RefundRail | null;
+  refundShiftId?: number | null;
+  refundReference?: string | null;
+}
+
+/** يتحقّق من الرافد البديل **قبل** أيّ أثر — الرفضُ يترك الطلبَ معلّقاً كما كان. */
+function normalizedRefundOverride(
+  override: ControlApprovalRefundOverride | undefined,
+  requestType: WorkOrderControlType,
+): ControlApprovalRefundOverride | null {
+  if (!override) return null;
+  const rail = override.refundRail ?? null;
+  const shiftId = override.refundShiftId ?? null;
+  const reference = override.refundReference?.trim() || null;
+  if (rail == null && shiftId == null && reference == null) return null;
+
+  /**
+   * ⛔ **الإلغاء وحده.** عكسُ التسليم يحمل خطّةَ `refundSources` موزَّعةً على الإيصالات
+   * ومقفولةً في تمهيدٍ سابق؛ تبديلُ رافدٍ واحدٍ فوقها يُفكّ تطابقَها بلا أن يُعيد بناءها.
+   * توسيعُه يحتاج شريحتَه، ولا يُقحَم هنا لأنّ الاسم يسمح.
+   */
+  if (requestType !== "CANCEL") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "تبديلُ رافد الردّ عند الاعتماد متاحٌ لطلبات الإلغاء وحدها",
+    });
+  }
+  if (rail != null) {
+    if (!(REFUND_RAILS as readonly string[]).includes(rail)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "رافدُ ردٍّ غير معروف" });
+    }
+    if (refundRailNeedsShift(rail) && shiftId == null) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "رافدُ الدرج يلزمه تحديد وردية الصرف" });
+    }
+    if (refundRailNeedsReference(rail) && (reference == null || reference.length < 3)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الردّ على البطاقة يلزمه مرجعُ تنفيذٍ خارجيّ (٣ محارف على الأقل)",
+      });
+    }
+  }
+  return { refundRail: rail, refundShiftId: shiftId, refundReference: reference };
+}
+
 export async function approveWorkOrderControlRequest(
   id: number,
   actor: Actor & { role?: string },
   reviewNote?: string | null,
+  refundOverride?: ControlApprovalRefundOverride,
 ) {
   assertManager(actor);
   const note = reviewNote?.trim() || null;
@@ -360,7 +430,7 @@ export async function approveWorkOrderControlRequest(
       || Number(requestSnapshot.requestedBy) !== Number(request.requestedBy)) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر طلب التحكم أثناء الاعتماد" });
     }
-    if (Number(request.requestedBy) === actor.userId) {
+    if (!actor.isOwner && Number(request.requestedBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد منشئ الطلب طلبه بنفسه" });
     }
     if (request.status === "APPROVED") return { request, replayed: true as const };
@@ -376,7 +446,7 @@ export async function approveWorkOrderControlRequest(
       : await loadWorkOrder(tx, Number(request.workOrderId));
     if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
     assertWorkOrderBranch(wo, actor);
-    if ((request.requestType === "CANCEL" || request.requestType === "MATERIAL_ADJUST" || request.requestType === "REVERSE_DELIVERY")
+    if (!actor.isOwner && (request.requestType === "CANCEL" || request.requestType === "MATERIAL_ADJUST" || request.requestType === "REVERSE_DELIVERY")
       && (Number(wo.createdBy ?? 0) === actor.userId || Number(wo.assignedTo ?? 0) === actor.userId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -396,6 +466,8 @@ export async function approveWorkOrderControlRequest(
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "صدرت فاتورة لهذا الأمر — لا يمكن اعتماد التعديل" });
     }
 
+    // التحقّقُ من الرافد البديل بعد معرفة نوع الطلب وقبل أيّ كتابة.
+    const override = normalizedRefundOverride(refundOverride, request.requestType);
     const control = { approvedControlRequestId: id };
     if (request.requestType === "COMMERCIAL_EDIT") {
       await updateWorkOrderInTx(tx, {
@@ -417,10 +489,11 @@ export async function approveWorkOrderControlRequest(
       await cancelWorkOrderInTx(tx, Number(request.workOrderId), actor, {
         expectedVersion: Number(request.baseVersion),
         reason: request.reason,
-        refundShiftId: payload.refundShiftId ?? null,
-        // الرافدُ والمرجعُ يُنفَّذان كما أقرّهما الطالبُ واعتمدهما المدير — لا يُسقَطان بينهما.
-        refundRail: payload.refundRail ?? null,
-        refundReference: payload.refundReference ?? null,
+        // الرافدُ والدرجُ والمرجع: اختيارُ المعتمِد يسبق اقتراحَ الطالب حين يقدّمه صراحةً.
+        // ومصيرُ الخامة والسببُ والنسخة تبقى من الطالب حرفياً — مبصومةً بـ`payloadHash`.
+        refundShiftId: override?.refundShiftId ?? payload.refundShiftId ?? null,
+        refundRail: override?.refundRail ?? payload.refundRail ?? null,
+        refundReference: override?.refundReference ?? payload.refundReference ?? null,
         materials: payload.materials ?? null,
         clientRequestId: `wo-control-cancel-${id}`,
       }, control);
@@ -448,7 +521,20 @@ export async function approveWorkOrderControlRequest(
     await recordWorkOrderEvent(tx, {
       workOrderId: Number(request.workOrderId),
       eventType: "CONTROL_APPROVED",
-      payload: { controlRequestId: id, requestType: request.requestType, payloadHash: request.payloadHash, reviewNote: note },
+      payload: {
+        controlRequestId: id,
+        requestType: request.requestType,
+        payloadHash: request.payloadHash,
+        reviewNote: note,
+        // §٥: لا يضيع أنّ رافدَ المال تبدّل بين الطلب والاعتماد — ولا مَن بدّله.
+        ...(override
+          ? {
+              refundOverride: override,
+              refundRailAsRequested:
+                (request.payload as unknown as CancelControlPayload).refundRail ?? null,
+            }
+          : {}),
+      },
       actorUserId: actor.userId,
       branchId: Number(request.branchId),
       seq: id,
@@ -475,7 +561,7 @@ export async function rejectWorkOrderControlRequest(
     )[0];
     if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحكم غير موجود" });
     assertRequestBranch(request, actor);
-    if (Number(request.requestedBy) === actor.userId) {
+    if (!actor.isOwner && Number(request.requestedBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يرفض منشئ الطلب طلبه بنفسه" });
     }
     if (request.status === "REJECTED" && request.reviewNote === note) return { request, replayed: true as const };

@@ -6,6 +6,8 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { type Mode, canSeeMode } from "./pos/posModeGates";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
 
 /**
  * نقطة البيع المُوحَّدة — Shell واحد لـ٣ أوضاع: تجزئة / خدمات طباعة / استقبال.
@@ -214,6 +216,7 @@ export default function PointOfSale() {
           {/* كل محطة تملأ هذا المقبس بإجراءات ورديتها. إبقاؤه في الرأس الموحد يمنع تكرار
               الحساب/الوردية داخل رأس المحطة ويحرّر صف البحث للباركود والاسم. */}
           <div id="pos-header-actions" className="flex shrink-0 items-center gap-1.5 overflow-x-auto" />
+          <QuranHeaderButton />
           {activeMode !== "RECEPTION" && visibleModes.some((mode) => mode.v === "RETAIL") && (
             <Link
               href="/invoices"
@@ -239,7 +242,7 @@ export default function PointOfSale() {
       <div className="min-h-0 flex-1 overflow-hidden">
         {meLoading ? (
           <div className="grid h-full place-items-center text-muted-foreground">
-            جارٍ التحقّق من الصلاحيات…
+            {ACTION_LABELS.verifyingPermissions}
           </div>
         ) : accessDenied ? (
           <Forbidden mode={activeMode} />

@@ -2115,6 +2115,167 @@
 			"when": 1788052400000,
 			"tag": "0327_offline_recovery_return_channel",
 			"breakpoints": true
+		},
+		{
+			"idx": 328,
+			"version": "5",
+			"when": 1788052401000,
+			"tag": "0328_widen_idempotency_client_request_id",
+			"breakpoints": true
+		},
+		{
+			"idx": 329,
+			"version": "5",
+			"when": 1788052402000,
+			"tag": "0329_document_effects_reversal_engine",
+			"breakpoints": true
+		},
+		{
+			"idx": 330,
+			"version": "5",
+			"when": 1788052403000,
+			"tag": "0330_record_versions",
+			"breakpoints": true
+		},
+		{
+			"idx": 331,
+			"version": "5",
+			"when": 1788052404000,
+			"tag": "0331_control_requests",
+			"breakpoints": true
+		},
+		{
+			"idx": 332,
+			"version": "5",
+			"when": 1788052405000,
+			"tag": "0332_digital_card_baskets",
+			"breakpoints": true
+		},
+		{
+			"idx": 333,
+			"version": "5",
+			"when": 1788052406000,
+			"tag": "0333_owner_selfapproval_checkconstraints",
+			"breakpoints": true
+		},
+		{
+			"idx": 334,
+			"version": "5",
+			"when": 1788052407000,
+			"tag": "0334_purchases_owner_selfapproval_checkconstraints",
+			"breakpoints": true
+		},
+		{
+			"idx": 335,
+			"version": "5",
+			"when": 1788052408000,
+			"tag": "0335_supplier_barcode_identity_index",
+			"breakpoints": true
+		},
+		{
+			"idx": 336,
+			"version": "5",
+			"when": 1788052409000,
+			"tag": "0336_owner_global_selfapproval_constraints",
+			"breakpoints": true
+		},
+		{
+			"idx": 337,
+			"version": "5",
+			"when": 1788052410000,
+			"tag": "0337_add_job_applicant_profile_fields",
+			"breakpoints": true
+		},
+		{
+			"idx": 338,
+			"version": "5",
+			"when": 1788052411000,
+			"tag": "0338_product_studio_barcode_gate",
+			"breakpoints": true
+		},
+		{
+			"idx": 339,
+			"version": "5",
+			"when": 1788052412000,
+			"tag": "0339_product_studio_legacy_capture_only",
+			"breakpoints": true
+		},
+		{
+			"idx": 340,
+			"version": "5",
+			"when": 1788148800000,
+			"tag": "0340_consignment_external_tracking_ref",
+			"breakpoints": true
+		},
+		{
+			"idx": 343,
+			"version": "5",
+			"when": 1788148803000,
+			"tag": "0343_superapp_expo_push_devices",
+			"breakpoints": true
+		},
+		{
+			"idx": 346,
+			"version": "5",
+			"when": 1788148804000,
+			"tag": "0346_storefront_pricing_benefit_snapshot_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 347,
+			"version": "5",
+			"when": 1788148805000,
+			"tag": "0347_storefront_quote_requests_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 348,
+			"version": "5",
+			"when": 1788148806000,
+			"tag": "0348_storefront_quote_request_tracking_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 349,
+			"version": "5",
+			"when": 1788148807000,
+			"tag": "0349_storefront_quote_request_official_quotation_link_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 350,
+			"version": "5",
+			"when": 1788148808000,
+			"tag": "0350_storefront_first_order_coupon_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 351,
+			"version": "5",
+			"when": 1788148809000,
+			"tag": "0351_quotation_item_catalog_unit_price",
+			"breakpoints": true
+		},
+		{
+			"idx": 353,
+			"version": "5",
+			"when": 1788148811000,
+			"tag": "0353_barcode_strip_internal_space",
+			"breakpoints": true
+		},
+		{
+			"idx": 354,
+			"version": "5",
+			"when": 1788148812000,
+			"tag": "0354_inventory_revaluation_account",
+			"breakpoints": true
+		},
+		{
+			"idx": 356,
+			"version": "5",
+			"when": 1788148814000,
+			"tag": "0356_bundle_transfer_snapshot",
+			"breakpoints": true
 		}
 	]
 }

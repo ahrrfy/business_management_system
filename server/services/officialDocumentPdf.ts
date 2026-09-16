@@ -10,11 +10,13 @@
  *  - «الصنف» ⇒ «المنتج» (مسرد المصطلحات المعتمد).
  */
 import fontkit from "@pdf-lib/fontkit";
+import Decimal from "decimal.js";
 import { PDFDocument, PDFFont, PDFImage, PDFPage, StandardFonts, rgb } from "pdf-lib";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import QRCode from "qrcode";
 import { COMPANY_IDENTITY as CO } from "@shared/companyIdentity";
+import { isDeadInvoiceStatus, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { formatArabicMoneyWords } from "@shared/tafqit";
 
 export type OfficialDocumentKind = "INVOICE" | "QUOTATION";
@@ -31,6 +33,18 @@ export interface OfficialDocumentPdfData {
   taxAmount?: string | number | null;
   total: string | number;
   paidAmount?: string | number | null;
+  /**
+   * حالة الفاتورة من `invoices.status` — تُحدِّد ما إذا كانت الفاتورة **ميّتة** (مُلغاة/مُرتجَعة
+   * بالكامل/مُستبدَلة) فيُعرَض مستندٌ تاريخيٌّ لا مطالبة. غيابُها = fail-safe (نسخة تاريخية).
+   * ⚠️ لا يُطبَّق منطق الحالات الميّتة على `QUOTATION` — عرضُ السعر ليس فاتورة.
+   */
+  status?: string | null;
+  /**
+   * مجموع المرتجَع من الفاتورة (`invoices.returnedTotal`). المطالبة الفعليّة = max(total − paid − returned, 0).
+   * لا شارة «المتبقي» بالأحمر إن كانت الفاتورة ميّتة، ولا يجوز حساب المطالبة بـ`total−paid` وحدها
+   * لأنّ المرتجع الجزئيّ لفاتورة حيّة يُنقص المطالبة كذلك (لا يمسّ `paidAmount` أبداً).
+   */
+  returnedTotal?: string | number | null;
   notes?: string | null;
   items: Array<{
     productName: string;
@@ -41,6 +55,103 @@ export interface OfficialDocumentPdfData {
     total: string | number;
   }>;
 }
+
+/**
+ * ملخّص المطالبة لفاتورة (نتيجة عقد ثلاثيّ الحالات): مصدر الحقيقة الوحيد لما يُرسَم في
+ * منطقة الإجماليات. الراسم يستهلك هذه القيم فحسب — لا يُعيد الحساب ولا يُقرِّر العرض.
+ *
+ * لماذا دالّة نقيّة منفصلة عن الرسم:
+ *  - قابليّة الاختبار: مصفوفة الحالات الميّتة تُختبَر مباشرةً بلا فكّ ترميز PDF.
+ *  - مصدرٌ واحد: أيّ قناة تعيد استعمال هذه الحمولة (واتساب/التنزيل/…) ترى نفس القرار.
+ *  - `decimal.js`: نحسب المطالبة مرّةً بدقّةٍ ثابتة (`total − paid − returned`) بدل تقريبٍ لكلّ حدٍّ منفصل.
+ */
+export interface InvoiceClaimSummary {
+  /** الفاتورة ميّتة (`CANCELLED`/`RETURNED`/`SUPERSEDED`) ⇒ لا مطالبة مهما كانت الحسابات. */
+  readonly isDead: boolean;
+  /** التعريب العربيّ لحالة الفاتورة عبر `invoiceStatusLabel` — لعرضٍ آمن (لا رمز خام). */
+  readonly statusLabel: string;
+  /** المطالبة الحاليّة بالدينار العراقي (مُقرَّبةً لعددٍ صحيح): 0 للفواتير الميّتة. */
+  readonly currentClaim: number;
+  /** المدفوع (نصّاً كما وُرد). */
+  readonly paidAmount: string;
+  /** المرتجَع (نصّاً كما وُرد). */
+  readonly returnedTotal: string;
+  /** أظهر شريط «نسخة تاريخية» أعلى المستند. */
+  readonly showHistoricalBanner: boolean;
+  /** أظهر صفّ «المدفوع» في الإجماليات (فاتورة + قيمة معلومة). */
+  readonly showPaidRow: boolean;
+  /** أظهر صفّ «المرتجع» (فاتورة + returned > 0). */
+  readonly showReturnedRow: boolean;
+  /** أظهر شريط «المتبقي» الأحمر (فاتورة **حيّة** + مطالبة > 0). لا يشتعل على ميّتة أبداً. */
+  readonly showRedOutstandingRow: boolean;
+  /** أظهر صفّ «المطالبة الحاليّة» المحايد بقيمة 0 (فاتورة ميّتة فقط). */
+  readonly showDeadZeroClaimRow: boolean;
+  /** تسمية الشريط الأخضر الكبير: «الإجمالي المستحق» للحيّة/«الإجمالي الأصلي» للميّتة. */
+  readonly grandBarLabel: string;
+}
+
+const HISTORICAL_BANNER_TEXT = "نسخة تاريخية — غير صالحة للمطالبة";
+
+/**
+ * يحسب ملخّص المطالبة والقرارات البصريّة. **نقيّة** — بلا آثار جانبيّة، بلا رسم.
+ *
+ * للفاتورة الحيّة: `currentClaim = max(total − paid − returned, 0)` بـ`decimal.js`
+ * (لا تقريبٍ لكلّ حدٍّ منفصل: التقريبُ في نهاية الحساب مرّةً واحدة).
+ *
+ * للفاتورة الميّتة (`isDeadInvoiceStatus`): المطالبة **صفر** حتّى إن كان
+ * `total − paid − returned > 0` (كالحالة الحرجة `CANCELLED` بلا مرتجع). القرار سياسيّ لا حسابيّ.
+ *
+ * للحالة `undefined`/غير معروفة: fail-safe = نسخة تاريخية بلا مطالبة (لا نطالب بمالٍ لا نعرف حالته).
+ */
+export function computeInvoiceClaim(data: OfficialDocumentPdfData): InvoiceClaimSummary {
+  const paidRaw = data.paidAmount != null ? String(data.paidAmount) : "0";
+  const returnedRaw = data.returnedTotal != null ? String(data.returnedTotal) : "0";
+
+  if (data.kind !== "INVOICE") {
+    return {
+      isDead: false,
+      statusLabel: "",
+      currentClaim: 0,
+      paidAmount: paidRaw,
+      returnedTotal: returnedRaw,
+      showHistoricalBanner: false,
+      showPaidRow: false,
+      showReturnedRow: false,
+      showRedOutstandingRow: false,
+      showDeadZeroClaimRow: false,
+      grandBarLabel: "الإجمالي",
+    };
+  }
+
+  const dead = isDeadInvoiceStatus(data.status);
+  const unknownStatus = data.status == null || data.status === "";
+  const historical = dead || unknownStatus;
+
+  const total = new Decimal(data.total ?? 0);
+  const paid = new Decimal(paidRaw || "0");
+  const returned = new Decimal(returnedRaw || "0");
+  const rawClaim = total.minus(paid).minus(returned);
+  const claim = rawClaim.gt(0) ? rawClaim : new Decimal(0);
+  const currentClaim = historical ? 0 : Math.round(claim.toNumber());
+  const returnedPositive = returned.gt(0);
+  const paidKnown = data.paidAmount != null;
+
+  return {
+    isDead: dead,
+    statusLabel: unknownStatus ? "" : invoiceStatusLabel(data.status),
+    currentClaim,
+    paidAmount: paidRaw,
+    returnedTotal: returnedRaw,
+    showHistoricalBanner: historical,
+    showPaidRow: paidKnown,
+    showReturnedRow: returnedPositive,
+    showRedOutstandingRow: !historical && currentClaim > 0,
+    showDeadZeroClaimRow: historical,
+    grandBarLabel: historical ? "الإجمالي الأصلي" : "الإجمالي المستحق",
+  };
+}
+
+export { HISTORICAL_BANNER_TEXT };
 
 // ─── هوية بصرية (تطابق BRAND في قوالب المتصفح) ──────────────────────────────
 const GREEN = rgb(13 / 255, 107 / 255, 82 / 255);
@@ -250,6 +361,28 @@ export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData)
 
   drawHeader();
 
+  // ── حساب ملخّص المطالبة (يقرّر ما يُرسَم لاحقاً في الإجماليات + الشريط التاريخيّ) ──
+  const claim = computeInvoiceClaim(data);
+
+  // ── شريط «نسخة تاريخية» للفواتير الميّتة (أعلى المستند، أعلى بطاقة المعلومات) ──
+  if (claim.showHistoricalBanner) {
+    const bannerH = 30;
+    page.drawRectangle({
+      x: MARGIN,
+      y: y - bannerH,
+      width: CONTENT_W,
+      height: bannerH,
+      color: RED_BG,
+      borderColor: RED,
+      borderWidth: 0.9,
+    });
+    const primary = HISTORICAL_BANNER_TEXT;
+    const secondary = claim.statusLabel ? `الحالة: ${claim.statusLabel}` : "";
+    drawAr(page, primary, PAGE_W - MARGIN - 12, y - 20, 11.5, { color: RED, bold: true });
+    if (secondary) drawAr(page, secondary, MARGIN + 12 + cairo.widthOfTextAtSize(secondary, 10), y - 19, 10, { color: RED, bold: true });
+    y -= bannerH + 10;
+  }
+
   // ── بطاقة معلومات المستند ────────────────────────────────────────────────
   const cardH = 78;
   page.drawRectangle({ x: MARGIN, y: y - cardH, width: CONTENT_W, height: cardH, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
@@ -343,17 +476,18 @@ export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData)
   if (Number(data.discountAmount ?? 0) > 0) totals.push({ label: "الخصم", value: money(data.discountAmount), sign: "-" });
   if (Number(data.taxAmount ?? 0) > 0) totals.push({ label: "الضريبة", value: money(data.taxAmount), sign: "+" });
 
-  const paidNum = data.paidAmount != null ? Number(data.paidAmount) : null;
-  const remainingNum = data.kind === "INVOICE" && paidNum != null
-    ? Math.max(Math.round(Number(data.total)) - Math.round(paidNum), 0)
-    : 0;
-  const showPaid = data.kind === "INVOICE" && paidNum != null;
+  const grandBarLabel = data.kind === "INVOICE" ? claim.grandBarLabel : "الإجمالي";
 
   const LINE_H = 22;
   const GRAND_H = 32;
   const totalsBoxW = 250;
   const totalsBoxX = MARGIN;
-  const totalsH = totals.length * LINE_H + GRAND_H + (showPaid ? LINE_H : 0) + (remainingNum > 0 ? LINE_H + 4 : 0);
+  const extraLines =
+    (claim.showPaidRow ? 1 : 0)
+    + (claim.showReturnedRow ? 1 : 0)
+    + (claim.showDeadZeroClaimRow ? 1 : 0);
+  const outstandingBarH = claim.showRedOutstandingRow ? LINE_H + 4 : 0;
+  const totalsH = totals.length * LINE_H + GRAND_H + extraLines * LINE_H + outstandingBarH;
   const qrSize = 74;
   const regionH = Math.max(totalsH, qrImage ? qrSize + 18 : 0);
   if (y - regionH < 120) addPage();
@@ -366,22 +500,33 @@ export async function generateOfficialDocumentPdf(data: OfficialDocumentPdfData)
     page.drawLine({ start: { x: totalsBoxX, y: ty - LINE_H }, end: { x: totalsBoxX + totalsBoxW, y: ty - LINE_H }, color: BORDER, thickness: 0.4 });
     ty -= LINE_H;
   }
-  // شريط الإجمالي الأخضر الداكن
+  // شريط الإجمالي الأخضر الداكن — «الإجمالي المستحق» للحيّة، «الإجمالي الأصلي» للميّتة.
   page.drawRectangle({ x: totalsBoxX, y: ty - GRAND_H, width: totalsBoxW, height: GRAND_H, color: GREEN_DARK });
-  drawAr(page, data.kind === "INVOICE" ? "الإجمالي المستحق" : "الإجمالي", totalsBoxX + totalsBoxW - 10, ty - 21, 10.5, { color: GREEN_ACCENT, bold: true });
+  drawAr(page, grandBarLabel, totalsBoxX + totalsBoxW - 10, ty - 21, 10.5, { color: GREEN_ACCENT, bold: true });
   drawAr(page, "د.ع", totalsBoxX + 42, ty - 21, 8.5, { color: GREEN_ACCENT });
   drawNumRight(page, money(data.total), totalsBoxX + 108 + 28, ty - 21.5, 13.5, { bold: true, color: WHITE });
   ty -= GRAND_H;
-  if (showPaid) {
+  if (claim.showPaidRow) {
     drawAr(page, "المدفوع", totalsBoxX + totalsBoxW - 6, ty - 16, 9.5);
-    drawNumRight(page, money(paidNum), totalsBoxX + 104, ty - 16, 10, { bold: true });
+    drawNumRight(page, money(claim.paidAmount), totalsBoxX + 104, ty - 16, 10, { bold: true });
     ty -= LINE_H;
   }
-  if (remainingNum > 0) {
+  if (claim.showReturnedRow) {
+    drawAr(page, "المرتجَع", totalsBoxX + totalsBoxW - 6, ty - 16, 9.5);
+    drawNumRight(page, `- ${money(claim.returnedTotal)}`, totalsBoxX + 104, ty - 16, 10, { bold: true });
+    ty -= LINE_H;
+  }
+  if (claim.showRedOutstandingRow) {
+    // شارة «المتبقي» الأحمر — للحيّة فقط + مطالبة > 0. لا تشتعل على الميّتة أبداً.
     page.drawRectangle({ x: totalsBoxX, y: ty - LINE_H, width: totalsBoxW, height: LINE_H, color: RED_BG, borderColor: RED, borderWidth: 0.5 });
     drawAr(page, "المتبقي", totalsBoxX + totalsBoxW - 8, ty - 15, 9.5, { color: RED, bold: true });
-    drawNumRight(page, money(remainingNum), totalsBoxX + 104, ty - 15, 10.5, { bold: true, color: RED });
+    drawNumRight(page, money(claim.currentClaim), totalsBoxX + 104, ty - 15, 10.5, { bold: true, color: RED });
     ty -= LINE_H + 4;
+  } else if (claim.showDeadZeroClaimRow) {
+    // «المطالبة الحاليّة: 0» محايدةً — لا شارة حمراء على مستندٍ لا يطالب بشيء.
+    drawAr(page, "المطالبة الحاليّة", totalsBoxX + totalsBoxW - 6, ty - 16, 9.5, { bold: true });
+    drawNumRight(page, "0", totalsBoxX + 104, ty - 16, 10.5, { bold: true });
+    ty -= LINE_H;
   }
 
   // QR على يمين منطقة الإجماليات

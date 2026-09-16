@@ -1,5 +1,5 @@
 export const STOREFRONT_SHELL_CHUNK_GLOB =
-  "assets/{Storefront,framework,data-client,ui-vendor,icons,observability,offline-store,charts,onlineOrderStatus,money,governorates,whatsapp,TurnstileWidget,IntlPhoneInput,date,invoiceStatus,intlPhone,numberNormalize}-*.js";
+  "assets/{Storefront,framework,data-client,ui-vendor,icons,observability,offline-store,charts,motion,onlineOrderStatus,money,governorates,whatsapp,TurnstileWidget,IntlPhoneInput,date,invoiceStatus,intlPhone,numberNormalize}-*.js";
 
 /** Workbox CacheFirst is allowed only for server routes whose response is public. */
 export function storefrontPublicImageCacheMatcher({ request, url }) {

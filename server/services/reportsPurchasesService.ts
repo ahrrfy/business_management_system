@@ -12,6 +12,18 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import {
+  GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP,
+  GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP,
+} from "./ledger/supplierApEffect";
+
+// أثر «حجم الشراء» الموقَّع لقيود GRNI/ADJUST الحديثة (فاتورة المورّد تدائن AP، وعكسها يَدينها).
+// يُلحَق بفروع PURCHASE/RETURN القديمة كي يظهر الشراء الحديث في تقرير المشتريات. راجع
+// [[supplier-statement-grni-adjust-blindness-2026-09-11]] و supplierApEffect.ts.
+const GRNI_PURCHASE_VOLUME_CASE = sql`
+  WHEN ae.entryType = 'ADJUST' AND ae.dedupeKey REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP} THEN CAST(ae.amount AS DECIMAL(15,2))
+  WHEN ae.entryType = 'ADJUST' AND ae.dedupeKey REGEXP ${GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP} THEN -CAST(ae.amount AS DECIMAL(15,2))`;
+const GRNI_LEDGER_ENTRY_COND = sql`(ae.entryType = 'ADJUST' AND (ae.dedupeKey REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP} OR ae.dedupeKey REGEXP ${GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP}))`;
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -57,20 +69,21 @@ export async function getPurchasesReport(opts: {
         ae.supplierId AS supplierId,
         s.name AS supplierName,
         COUNT(DISTINCT ae.purchaseOrderId) AS orders,
-        CAST(COALESCE(SUM(CASE WHEN ae.entryType IN ('PURCHASE','RETURN') THEN ae.amount ELSE 0 END), 0) AS CHAR) AS total,
+        CAST(COALESCE(SUM(CASE WHEN ae.entryType IN ('PURCHASE','RETURN') THEN ae.amount ${GRNI_PURCHASE_VOLUME_CASE} ELSE 0 END), 0) AS CHAR) AS total,
         CAST(COALESCE(SUM(CASE WHEN ae.entryType = 'PAYMENT_OUT' THEN ae.amount ELSE 0 END), 0) AS CHAR) AS paid,
         CAST(GREATEST(COALESCE(SUM(CASE
           WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
           WHEN ae.entryType = 'PAYMENT_OUT' THEN -ae.amount
+          ${GRNI_PURCHASE_VOLUME_CASE}
           ELSE 0 END), 0), 0) AS CHAR) AS unpaid
       FROM accountingEntries ae
       JOIN suppliers s ON s.id = ae.supplierId
       WHERE ae.supplierId IS NOT NULL
-        AND ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT')
+        AND (ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT') OR ${GRNI_LEDGER_ENTRY_COND})
         AND ae.entryDate >= ${opts.from} AND ae.entryDate <= ${opts.to}
         ${branchPo}
       GROUP BY ae.supplierId, s.name
-      ORDER BY SUM(CASE WHEN ae.entryType IN ('PURCHASE','RETURN') THEN ae.amount ELSE 0 END) DESC
+      ORDER BY SUM(CASE WHEN ae.entryType IN ('PURCHASE','RETURN') THEN ae.amount ${GRNI_PURCHASE_VOLUME_CASE} ELSE 0 END) DESC
     `),
   );
 

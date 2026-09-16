@@ -7,12 +7,12 @@
 import { confirm } from "@/lib/confirm";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
-import { D, formatIqd, roundCashIQD } from "@/lib/money";
+import { D, roundCashIQD, formatIqd } from "@/lib/money";
 import {
-  printDoc, printReceipt, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
-  getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData,
+  printShiftOpen, printReceipt, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
+  getServerBridgeStatus, serverPrintTest,
 } from "@/lib/printing/print";
-import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices";
+import { isCustomPriceSku } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
@@ -27,24 +27,33 @@ import {
 } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Flame } from "lucide-react";
+import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Vault, Clock, Undo2 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { normalizeNumberInput } from "@shared/numberNormalize";
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
-import { MoneyInput } from "@/components/form/MoneyInput";
-import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
-import { ShiftHandoverSection } from "@/components/pos/ShiftHandoverSection";
 import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope } from "@/lib/cartDraft";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
+import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
+import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import { buildBrandedReceipt, type Receipt, POS_COLORS } from "@/components/pos/posShared";
+import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
+import { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
+import { PrintServiceGrid } from "@/components/printPos/PrintServiceGrid";
+import { type OrderChannel } from "@/components/print-pos/PrintChannelCustomerBar";
+import { HeldOrdersDrawer, type HeldSaleOrder } from "@/components/print-pos/HeldOrdersDrawer";
+import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/PrintPosHeader";
+import { CheckoutColumn, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
+import { PrintBottomToolbar } from "@/components/print-pos/PrintBottomToolbar";
+import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { createPortal } from "react-dom";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
 type Svc = RouterOutputs["printPos"]["services"][number];
 type ShiftData = RouterOutputs["shifts"]["current"];
 
@@ -56,7 +65,6 @@ type ExternalPaymentDraft = {
   deviceId?: string;
 };
 
-type CartLine = { uid: number; svc: Svc; qty: number; price: number };
 type Tab = {
   id: number;
   label: string;
@@ -64,29 +72,14 @@ type Tab = {
   payInput: string;
   method: PaymentMethod;
   customerId: number | null;
+  contactName: string;
+  contactPhone: string;
+  channel: OrderChannel;
+  editingInvoice: EditingInvoiceInfo | null;
   selUid: number | null;
   /** مرجع ومحاولة الدفع غير النقدي المؤكدة خادمياً. */
   paymentRef: string;
   externalPayment: ExternalPaymentDraft | null;
-};
-
-type Receipt = {
-  num: string;
-  invoiceId: number;
-  date: string;
-  printDate: string;
-  printTime: string;
-  cashier?: string;
-  customer?: string;
-  /** G3 (١١/٨): رقم وردية الطباعة — يُطبع في ترويسة الإيصال. */
-  shiftId?: number | null;
-  lines: { name: string; unit: string; qty: number; price: number; total: number }[];
-  total: number;
-  received: number;
-  change: number;
-  credit: number;
-  method: string;
-  isCredit: boolean;
 };
 
 // ─── Dark mode (يتبع الوضع العام للنظام عبر صنف <html>) ──────────────────────
@@ -129,19 +122,20 @@ const riqd = (n: number) => roundCashIQD(n).toNumber();
 let TAB_SEQ = 2;
 let UID = 1;
 const newTab = (id: number, label?: string): Tab => ({
-  id, label: label ?? `طلب ${id}`, cart: [], payInput: "", method: "CASH", customerId: null, selUid: null, paymentRef: "", externalPayment: null,
+  id,
+  label: label ?? `طلب ${id}`,
+  cart: [],
+  payInput: "",
+  method: "CASH",
+  customerId: null,
+  contactName: "",
+  contactPhone: "",
+  channel: "WALK_IN",
+  editingInvoice: null,
+  selUid: null,
+  paymentRef: "",
+  externalPayment: null,
 });
-
-function brandedReceipt(r: Receipt): ReceiptBrowserData {
-  return {
-    receiptNumber: r.num, date: r.printDate, time: r.printTime,
-    cashierName: r.cashier ?? null, customerName: r.customer ?? null,
-    shiftId: r.shiftId ?? null,
-    items: r.lines.map((l) => ({ name: `${l.name} (${l.unit})`, quantity: l.qty, price: l.price, total: l.total })),
-    subtotal: r.total, total: r.total, paid: r.received,
-    change: r.isCredit ? null : r.change, credit: r.isCredit ? r.credit : null,
-  };
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 export default function PrintPOS() {
@@ -244,6 +238,13 @@ export default function PrintPOS() {
   const [headerActionsNode, setHeaderActionsNode] = useState<HTMLElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const [heldDrawerOpen, setHeldDrawerOpen] = useState(false);
+  const heldSalesQ = trpc.printPos.listHeldSales.useQuery(
+    { branchId },
+    { refetchInterval: 15_000 },
+  );
+  const heldCount = heldSalesQ.data?.length ?? 0;
+
   useEffect(() => {
     setHeaderActionsNode(document.getElementById("pos-header-actions"));
   }, []);
@@ -251,7 +252,7 @@ export default function PrintPOS() {
   // من حالة لاحقة/سلة مُفرَّغة، ولا «باقي/آجل» وهميّ من فرق التقريب.
   const pendingRef = useRef<{
     lines: Receipt["lines"]; customerName?: string; method: PaymentMethod;
-    cashTotal: number; received: number; change: number; credit: number; isCredit: boolean;
+    cashTotal: number; rawTotal: number; cashRounding: number; received: number; change: number; credit: number; isCredit: boolean;
   } | null>(null);
 
   const effectiveCatId = catId ?? cats[0]?.id ?? null;
@@ -317,8 +318,24 @@ export default function PrintPOS() {
   }, [tabs, activeId, DRAFT_KEY, restoredDraftKey]);
 
   // ── تبويبات ──
-  const patch = (p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, ...p } : t)));
-  const patchTab = (id: number, p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...p } : t)));
+  const patch = useCallback((p: Partial<Tab>) => {
+    setTabs((prev) => {
+      const current = prev.find((t) => t.id === activeId);
+      if (!current) return prev;
+      const hasChange = Object.keys(p).some((k) => (current as Record<string, unknown>)[k] !== (p as Record<string, unknown>)[k]);
+      if (!hasChange) return prev;
+      return prev.map((t) => (t.id === activeId ? { ...t, ...p } : t));
+    });
+  }, [activeId]);
+  const patchTab = useCallback((id: number, p: Partial<Tab>) => {
+    setTabs((prev) => {
+      const current = prev.find((t) => t.id === id);
+      if (!current) return prev;
+      const hasChange = Object.keys(p).some((k) => (current as Record<string, unknown>)[k] !== (p as Record<string, unknown>)[k]);
+      if (!hasChange) return prev;
+      return prev.map((t) => (t.id === id ? { ...t, ...p } : t));
+    });
+  }, []);
   const setCart = (u: CartLine[] | ((c: CartLine[]) => CartLine[])) =>
     setTabs((prev) => prev.map((t) => (t.id !== activeId ? t : { ...t, cart: typeof u === "function" ? u(t.cart) : u })));
   const setPayInput = (u: string | ((s: string) => string)) =>
@@ -404,22 +421,32 @@ export default function PrintPOS() {
       const p = pendingRef.current;
       const now = new Date();
       const rec: Receipt = {
-        num: r.invoiceNumber, invoiceId: r.invoiceId,
+        invoiceId: r.invoiceId,
+        invoiceNumber: r.invoiceNumber,
+        num: r.invoiceNumber,
         date: fmtDateTime(now),
         printDate: fmtDate(now),
         printTime: fmtTime(now),
-        cashier: me.data?.name ?? undefined, customer: p?.customerName,
+        cashierName: me.data?.name ?? undefined,
+        customerName: p?.customerName,
         // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
         shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
-        lines: p?.lines ?? [],
-        total: p?.cashTotal ?? 0, received: p?.received ?? 0, change: p?.change ?? 0,
-        credit: p?.credit ?? 0, method: METHOD_LABEL[p?.method ?? "CASH"], isCredit: p?.isCredit ?? false,
+        lines: (p?.lines ?? []).map((l) => ({ ...l, disc: undefined })),
+        subtotal: p?.rawTotal ?? p?.cashTotal ?? 0,
+        cashRounding: p?.cashRounding,
+        total: p?.cashTotal ?? 0,
+        received: p?.received ?? 0,
+        change: p?.change ?? 0,
+        credit: p?.credit ?? 0,
+        method: METHOD_LABEL[p?.method ?? "CASH"],
+        methodCode: p?.method,
+        isCredit: p?.isCredit ?? false,
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
       setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null });
       setClientRequestId(crypto.randomUUID());
-      const printed = await printReceipt(brandedReceipt(rec));
+      const printed = await printReceipt(buildBrandedReceipt(rec));
       setMessage({
         kind: !printed.ok ? "err" : printed.via === "browser" ? "warn" : "ok",
         text: !printed.ok
@@ -510,6 +537,140 @@ export default function PrintPOS() {
     }
   }
 
+  const correctSaleMut = trpc.printPos.correctHeldSale.useMutation({
+    onSuccess: async (r) => {
+      const now = new Date();
+      const rec: Receipt = {
+        invoiceId: r.correctedInvoiceId,
+        invoiceNumber: r.correctedInvoiceNumber,
+        num: r.correctedInvoiceNumber,
+        date: fmtDateTime(now),
+        printDate: fmtDate(now),
+        printTime: fmtTime(now),
+        cashierName: me.data?.name ?? undefined,
+        customerName: selectedCustomer?.name ?? (tab.contactName || undefined),
+        shiftId: shift?.id ?? null,
+        lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
+        subtotal: total,
+        cashRounding: 0,
+        total: Number(r.total),
+        received: Number(tab.editingInvoice?.preCollected || 0) + Number(tab.payInput || 0),
+        change: 0,
+        credit: Math.max(0, Number(r.total) - (Number(tab.editingInvoice?.preCollected || 0) + Number(tab.payInput || 0))),
+        method: METHOD_LABEL[tab.method],
+        methodCode: tab.method,
+        isCredit: Number(r.total) > (Number(tab.editingInvoice?.preCollected || 0) + Number(tab.payInput || 0)),
+      };
+      setReceipt(rec);
+      setLastInv({ num: r.correctedInvoiceNumber, total: Number(r.total) });
+      patch({
+        editingInvoice: null,
+        cart: [],
+        payInput: "",
+        contactName: "",
+        contactPhone: "",
+        selUid: null,
+        paymentRef: "",
+        externalPayment: null,
+      });
+      setClientRequestId(crypto.randomUUID());
+      const printed = await printReceipt(buildBrandedReceipt(rec));
+      setMessage({
+        kind: "ok",
+        text: `تم تعديل الفاتورة بنجاح وإصدار الفاتورة البديلة ${r.correctedInvoiceNumber}${!printed.ok ? " (فشلت الطباعة المباشرة)" : ""}`,
+      });
+      await Promise.all([
+        utils.printPos.listHeldSales.invalidate(),
+        utils.printPos.services.invalidate(),
+        shiftQ.refetch(),
+      ]);
+    },
+    onError: (e) => setMessage({ kind: "err", text: e.message || "فشل تعديل الطلب المحجوز" }),
+  });
+
+  function handleEditHeldOrder(order: HeldSaleOrder) {
+    const lines: CartLine[] = order.lines.map((l) => {
+      const matchedSvc: Svc = services.find((s) => s.productUnitId === l.productUnitId) ?? {
+        productUnitId: l.productUnitId,
+        variantId: l.variantId,
+        productId: 0,
+        productName: l.itemNameSnapshot || "خدمة طباعة",
+        unitName: "خدمة",
+        sku: "",
+        price: String(l.unitPrice),
+        categoryId: null,
+        categoryName: null,
+      };
+      return {
+        uid: UID++,
+        svc: matchedSvc,
+        qty: Number(l.quantity),
+        price: Number(l.unitPrice),
+      };
+    });
+
+    let ch: OrderChannel = "WALK_IN";
+    if (order.notes?.includes("واتساب")) ch = "WHATSAPP";
+    else if (order.notes?.includes("تليغرام")) ch = "TELEGRAM";
+    else if (order.notes?.includes("هاتف")) ch = "PHONE";
+
+    patch({
+      cart: lines,
+      customerId: order.customerId,
+      contactName: order.contactName ?? "",
+      contactPhone: order.contactPhone ?? "",
+      channel: ch,
+      editingInvoice: {
+        id: order.id,
+        invoiceNumber: order.invoiceNumber,
+        preCollected: order.paidAmount,
+        originalTotal: order.total,
+      },
+      payInput: "",
+      selUid: lines[0]?.uid ?? null,
+    });
+    setHeldDrawerOpen(false);
+    notify.ok(`تم تحميل الفاتورة #${order.invoiceNumber} للتعديل`);
+  }
+
+  function cancelEditingHeldOrder() {
+    patch({
+      editingInvoice: null,
+      cart: [],
+      payInput: "",
+      contactName: "",
+      contactPhone: "",
+      channel: "WALK_IN",
+      customerId: null,
+      selUid: null,
+    });
+    notify.info("تم إلغاء التعديل وتفريغ السلة");
+  }
+
+  useBarcodeScanner(async (code) => {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    try {
+      const found = await utils.printPos.getSaleByNumber.fetch({ orderNumber: trimmed });
+      if (found) {
+        if (found.status === "PENDING" || found.status === "PARTIALLY_PAID") {
+          notify.ok(`تم العثور على الطلب المحجوز #${found.invoiceNumber}`);
+          handleEditHeldOrder(found as any);
+          return;
+        } else {
+          notify.info(`الفاتورة #${found.invoiceNumber} مكتملة وليست قيد الحجز`);
+          return;
+        }
+      }
+    } catch {
+      // ليس رقم فاتورة، تحقق من مطابقة SKU لخدمات الطباعة
+    }
+    const matchedSvc = services.find((s) => s.sku === trimmed);
+    if (matchedSvc) {
+      addService(matchedSvc);
+    }
+  }, { enabled: !shifting && !receipt && !creditPrompt });
+
   /**
    * التقاط بيع خدمات طباعةٍ دون اتصال.
    *
@@ -533,7 +694,9 @@ export default function PrintPOS() {
     const cashTotal = riqd(total);
     const paid = forceFullPayment ? cashTotal : Number(tab.payInput || 0);
     if (paid < cashTotal) {
-      setMessage({ kind: "err", text: `دون اتصال: الدفع الكامل فقط — المطلوب ${cashTotal.toFixed(2)} د.ع.` });
+      // كان رقماً خاماً بلا فواصل آلاف (١,٨٩٦,٥٠٠ ← 1896500.00) في شريطٍ ظاهرٍ دائماً أثناء
+      // الانقطاع، لا Toast عابر — formatIqd المستوردة أصلاً في هذا الملف تكفي.
+      setMessage({ kind: "err", text: `دون اتصال: الدفع الكامل فقط — المطلوب ${formatIqd(cashTotal)}.` });
       return false;
     }
     const gate = await assertCanCapture(cashTotal);
@@ -572,20 +735,24 @@ export default function PrintPOS() {
 
     const now = new Date();
     const rec: Receipt = {
-      num: receiptNumber,
       invoiceId: 0, // لا فاتورة رسميّة بعد — الطباعة تستعمل الرقم المؤقّت.
+      invoiceNumber: receiptNumber,
+      num: receiptNumber,
       date: fmtDateTime(now),
       printDate: fmtDate(now),
       printTime: fmtTime(now),
-      cashier: me.data?.name ?? undefined,
-      customer: selectedCustomer?.name,
+      cashierName: me.data?.name ?? undefined,
+      customerName: selectedCustomer?.name,
       shiftId: shift?.id ?? null,
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
+      subtotal: total,
+      cashRounding: cashTotal - total,
       total: cashTotal,
       received: paid,
       change: Math.max(0, paid - cashTotal),
       credit: 0,
       method: METHOD_LABEL.CASH,
+      methodCode: "CASH",
       isCredit: false,
     };
     setReceipt(rec);
@@ -596,50 +763,102 @@ export default function PrintPOS() {
       kind: "ok",
       text: `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}. الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال.`,
     });
-    void printReceipt(brandedReceipt(rec)).then((printed) => {
+    void printReceipt(buildBrandedReceipt(rec)).then((printed) => {
       if (!printed.ok) setMessage({ kind: "err", text: `حُفظ الإيصال المؤقت ${receiptNumber}، لكن حجب المتصفح نافذة الطباعة` });
     }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
     return true;
   }
 
-  function submit(forceFullPayment: boolean, approval?: { email: string; password: string }) {
-    if (!shift || !cart.length || sale.isPending) return;
+  function submit(forceFullPayment: boolean, approval?: { email: string; password: string }, isReservation?: boolean) {
+    if (!shift || !cart.length || sale.isPending || correctSaleMut.isPending) return;
     setMessage(null);
+
+    // إذا كانت هناك فاتورة محجوزة قيد التعديل
+    if (tab.editingInvoice) {
+      const additionalPaid = Number(tab.payInput || 0);
+      const additionalAmount = additionalPaid > 0 ? additionalPaid.toFixed(2) : undefined;
+      correctSaleMut.mutate({
+        originalInvoiceId: tab.editingInvoice.id,
+        customerId: tab.customerId,
+        contactName: tab.contactName.trim() || undefined,
+        contactPhone: tab.contactPhone.trim() || undefined,
+        priceTier: "RETAIL",
+        lines: cart.map((c) => ({
+          variantId: c.svc.variantId,
+          productUnitId: c.svc.productUnitId,
+          quantity: String(c.qty),
+          unitPriceOverride: c.price.toFixed(2),
+        })),
+        reason: "تعديل بنود الفاتورة المحجوزة من كاشير الطباعة",
+        additionalPayment: additionalAmount ? {
+          amount: additionalAmount,
+          method: tab.method as any,
+          reference: tab.paymentRef || undefined,
+          externalPaymentAttemptId: tab.externalPayment?.attemptId,
+          externalPaymentDeviceId: tab.externalPayment?.deviceId,
+        } : null,
+        overpayHandling: "CASH_REFUND",
+        clientRequestId,
+      });
+      return;
+    }
+
     if (offline) {
+      if (isReservation) {
+        setMessage({ kind: "err", text: "حجز الفواتير والبيع الآجل يتطلب الاتصال بالخادم." });
+        return;
+      }
       void captureOfflinePrintSale(forceFullPayment);
       return;
     }
+
     // Quick pay means full payment, not a forced change of the selected method to CASH.
     const method: PaymentMethod = tab.method;
     const confirmedForAmount = forceFullPayment ? externalFullPaymentConfirmed : externalPaymentConfirmed;
-    if (method !== "CASH" && !confirmedForAmount) {
+    if (method !== "CASH" && !confirmedForAmount && !isReservation) {
       setMessage({ kind: "err", text: "أدخل مرجع العملية وثبّت نجاح الدفع لدى المزوّد للمبلغ الحالي قبل الإتمام." });
       return;
     }
     const cashTotal = method === "CASH" ? riqd(total) : total;
     const paid = forceFullPayment ? cashTotal : Number(tab.payInput || 0);
-    const isCredit = !forceFullPayment && paid > 0 && paid < cashTotal;
-    if (isCredit && tab.customerId == null) {
-      setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل." });
+    const isCredit = !forceFullPayment && !isReservation && paid < cashTotal;
+
+    if (isReservation) {
+      if (tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) {
+        setMessage({ kind: "err", text: "حجز الطلب يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." });
+        return;
+      }
+    } else if (isCredit && tab.customerId == null) {
+      setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل مسجّل ذو ذمة وحساب." });
       return;
     }
-    const cashFull = method === "CASH" && !isCredit;
-    const amount = isCredit ? paid.toFixed(2) : total.toFixed(2);
+
+    const cashFull = method === "CASH" && !isCredit && !isReservation;
+    const amount = isReservation ? (paid > 0 ? paid.toFixed(2) : "0.00") : (isCredit ? paid.toFixed(2) : total.toFixed(2));
     // النقد المُسلَّم فعلاً: للدفع الكامل بلا إدخال = الإجمالي المقرّب (لا باقي)؛ ومع إدخالٍ صريح = المُدخَل.
     const tendered = forceFullPayment ? cashTotal : (tab.payInput === "" ? cashTotal : paid);
+    const finalTotal = cashFull ? cashTotal : total;
     pendingRef.current = {
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
-      customerName: selectedCustomer?.name,
-      method, cashTotal,
-      received: isCredit ? paid : cashTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
-      change: isCredit ? 0 : Math.max(0, tendered - cashTotal),
-      credit: isCredit ? cashTotal - paid : 0,
-      isCredit,
+      customerName: selectedCustomer?.name ?? (tab.contactName || undefined),
+      method,
+      cashTotal: finalTotal,
+      rawTotal: total,
+      cashRounding: cashFull ? cashTotal - total : 0,
+      received: isReservation || isCredit ? paid : finalTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
+      change: isReservation || isCredit ? 0 : Math.max(0, tendered - finalTotal),
+      credit: isReservation || isCredit ? Math.max(0, total - paid) : 0,
+      isCredit: Boolean(isCredit || isReservation),
     };
     sale.mutate({
       branchId, shiftId: shift.id, clientRequestId,
       ...(method !== "CASH" && tab.externalPayment?.deviceId ? { deviceId: tab.externalPayment.deviceId } : {}),
-      customerId: tab.customerId ?? undefined, priceTier: "RETAIL",
+      customerId: tab.customerId ?? undefined,
+      contactName: tab.contactName.trim() || undefined,
+      contactPhone: tab.contactPhone.trim() || undefined,
+      channel: tab.channel,
+      isReservation: isReservation ? true : undefined,
+      priceTier: "RETAIL",
       lines: cart.map((c) => ({
         variantId: c.svc.variantId, productUnitId: c.svc.productUnitId,
         quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2),
@@ -647,7 +866,7 @@ export default function PrintPOS() {
       payment: {
         amount,
         method,
-        ...(method !== "CASH" ? { externalPaymentAttemptId: tab.externalPayment!.attemptId! } : {}),
+        ...(method !== "CASH" && tab.externalPayment?.attemptId ? { externalPaymentAttemptId: tab.externalPayment.attemptId } : {}),
       },
       ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
@@ -666,11 +885,13 @@ export default function PrintPOS() {
             : "عهدة الافتتاح فاقت رصيد الخزينة (عجز). أبلغ المدير لتمويل الخزينة.",
         );
       }
-      await printDoc({
-        kind: "opening", title: SHOP, subtitle: "بيان الرصيد الافتتاحي — قسم الطباعة",
-        meta: [`وردية #${res.shiftId}`, fmtDateTime(new Date())],
-        totals: [{ label: "الرصيد الافتتاحي", value: fmt(Number(opening || 0)) }],
-        footer: "بداية الوردية",
+      void printShiftOpen({
+        shiftId:        res.shiftId,
+        openingBalance: Number(opening || 0),
+        cashierName:    me.data?.name ?? "كاشير",
+        branchName:     (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
+        openedAt:       new Date(),
+        departmentName: "خدمات طباعة",
       });
     },
     onError: (e) => setMessage({ kind: "err", text: e.message }),
@@ -685,6 +906,13 @@ export default function PrintPOS() {
       if (shifting) { if (e.key === "Escape") setShifting(false); return; }
       if (e.key === "F2") { e.preventDefault(); searchRef.current?.focus(); }
       else if (e.key === "F4") { e.preventDefault(); submit(false); }
+      else if (e.key === "F10") {
+        e.preventDefault();
+        void openCashDrawer().then((res) => {
+          if (res.ok) notify.ok("تم فتح درج النقود");
+          else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها");
+        });
+      }
       else if (e.key === "F12") { e.preventDefault(); void clearCart(); }
     }
     window.addEventListener("keydown", onKey);
@@ -728,7 +956,7 @@ export default function PrintPOS() {
 
   // ── شاشة فتح الوردية ──
   if (shiftQ.isLoading) {
-    return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>جارٍ التحميل…</div>;
+    return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>{ACTION_LABELS.loading}</div>;
   }
   if (!shift) {
     return (
@@ -783,8 +1011,26 @@ export default function PrintPOS() {
   // ── الشاشة الرئيسية ──
   return (
     <div className="print-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
-      <Header C={C} dark={dark} toggleDark={toggleDark} search={search} setSearch={setSearch} searchRef={searchRef}
-        lastInv={lastInv} />
+      <PrintPosHeader
+        tabId={activeId}
+        C={C}
+        dark={dark}
+        toggleDark={toggleDark}
+        search={search}
+        setSearch={setSearch}
+        searchRef={searchRef}
+        lastInv={lastInv}
+        channel={tab.channel}
+        setChannel={(c) => patch({ channel: c })}
+        customerId={tab.customerId}
+        setCustomerId={(id) => patch({ customerId: id })}
+        contactName={tab.contactName}
+        setContactName={(name) => patch({ contactName: name })}
+        contactPhone={tab.contactPhone}
+        setContactPhone={(phone) => patch({ contactPhone: phone })}
+        heldCount={heldCount}
+        onOpenHeldDrawer={() => setHeldDrawerOpen(true)}
+      />
 
       {headerActionsNode && createPortal(
         <PrintPosHeaderActions
@@ -816,7 +1062,31 @@ export default function PrintPOS() {
             </div>
           );
         })}
-        {tabs.length < 6 && <button aria-label="طلب طباعة جديد" onClick={addTab} style={{ width: 44, height: 44, borderRadius: 9, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>}
+        {tabs.length < 6 && (
+          <button
+            type="button"
+            aria-label="طلب طباعة جديد"
+            onClick={addTab}
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              background: C.card,
+              border: `1.5px dashed ${C.border}`,
+              cursor: "pointer",
+              fontSize: 18,
+              color: C.mutedFg,
+              flexShrink: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 1,
+              transition: "all 0.15s ease",
+            }}
+          >
+            +
+          </button>
+        )}
       </div>
 
       {/* ٢٤/٨ (Codex P2 على PR #741): الأرضيّة كانت `oklch(0.95 ...)` مثبَّتة فاتحة، والفَون
@@ -838,884 +1108,81 @@ export default function PrintPOS() {
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
           customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
-          payInput={tab.payInput} setPayInput={setPayInput} method={tab.method} setMethod={(m) => patch({ method: m, externalPayment: null })}
-          paymentRef={tab.paymentRef ?? ""} setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
-          externalPaymentConfirmed={externalPaymentConfirmed}
-          externalFullPaymentConfirmed={externalFullPaymentConfirmed}
-          externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
-          onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
-          numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
+          editingInvoice={tab.editingInvoice} onCancelEdit={cancelEditingHeldOrder}
           addTick={addTick}
         />
-        <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
+        <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 
-      {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => {
-        // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS.tsx): useModalFocus يعيد التركيز إلى «الزرّ الذي فتح الحوار»
-        // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
-        setReceipt(null);
-        setTimeout(() => searchRef.current?.focus(), 0);
-      }} onPrint={() => printReceipt(brandedReceipt(receipt)).then((printed) => {
-        if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
-      }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }))} />}
-      {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
-      {creditPrompt && (
-        <CreditApprovalDialog C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
-          isPending={sale.isPending} onApprove={() => submit(false, { email: mgrEmail, password: mgrPwd })} onCancel={() => setCreditPrompt(null)} />
+      {/* مسطرة الدفع والتحصيل أسفل الصفحة */}
+      <PrintBottomToolbar
+        C={C}
+        cart={cart}
+        total={total}
+        payInput={tab.payInput}
+        setPayInput={setPayInput}
+        method={tab.method}
+        setMethod={(m) => patch({ method: m, externalPayment: null })}
+        paymentRef={tab.paymentRef ?? ""}
+        setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
+        externalPaymentConfirmed={externalPaymentConfirmed}
+        externalFullPaymentConfirmed={externalFullPaymentConfirmed}
+        externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
+        onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
+        onPay={() => submit(false)}
+        onQuickPay={() => submit(true)}
+        onReserve={() => submit(false, undefined, true)}
+        isPending={sale.isPending || correctSaleMut.isPending}
+        customerId={tab.customerId}
+        contactName={tab.contactName}
+        contactPhone={tab.contactPhone}
+        editingInvoice={tab.editingInvoice}
+      />
+
+      {receipt && (
+        <ReceiptOverlay
+          C={C}
+          receipt={receipt}
+          onDismiss={() => {
+            // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS.tsx): useModalFocus يعيد التركيز إلى «الزرّ الذي فتح الحوار»
+            // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
+            setReceipt(null);
+            setTimeout(() => searchRef.current?.focus(), 0);
+          }}
+          onPrint={() => {
+            void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
+              if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
+            }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }));
+          }}
+        />
       )}
-    </div>
-  );
-}
-
-// ─── Header ──────────────────────────────────────────────────────────────────
-function PrintPosHeaderActions({
-  C,
-  shiftId,
-  userRole,
-  onCloseShift,
-  printerReady,
-  onConnectPrinter,
-  bridgeEnabled,
-  bridgeDesc,
-  onTestPrint,
-}: {
-  C: C;
-  shiftId: number;
-  userRole?: string | null;
-  onCloseShift: () => void;
-  printerReady: boolean;
-  onConnectPrinter: () => void;
-  bridgeEnabled: boolean;
-  bridgeDesc: string;
-  onTestPrint: () => void;
-}) {
-  return (
-    <>
-      <span className="inline-flex h-[var(--ui-control)] shrink-0 items-center rounded-lg border bg-muted/40 px-2.5 text-xs font-bold text-muted-foreground">
-        <span aria-hidden className="me-1.5 size-2 rounded-full bg-[var(--sem-pos)]" />
-        وردية #{shiftId}
-      </span>
-      {bridgeEnabled && (
-        <button
-          type="button"
-          onClick={onTestPrint}
-          title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
-          aria-label="اختبار جسر الطباعة"
-          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border border-[var(--sem-pos)] text-[var(--sem-pos)]"
-        >
-          <Globe aria-hidden size={16} />
-        </button>
-      )}
-      {isWebUsbSupported() && (
-        <button
-          type="button"
-          onClick={onConnectPrinter}
-          title={printerReady ? "الطابعة الافتراضية مربوطة — اضغط لتبديلها" : "ربط الطابعة الحرارية"}
-          aria-label={printerReady ? "الطابعة مربوطة" : "ربط الطابعة الحرارية"}
-          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border"
-          style={{ color: printerReady ? C.success : C.mutedFg, borderColor: printerReady ? C.success : C.border }}
-        >
-          <Printer aria-hidden size={16} />
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={onCloseShift}
-        title="إغلاق الوردية"
-        className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold"
-      >
-        <Power aria-hidden size={16} />
-        <span className="hidden 2xl:inline">إغلاق الوردية</span>
-      </button>
-      <OfflineSyncChip userRole={userRole} placement="inline" />
-    </>
-  );
-}
-
-function Header({ C, dark, toggleDark, search, setSearch, searchRef, lastInv }: {
-  C: C; dark: boolean; toggleDark: () => void; search: string; setSearch: (s: string) => void;
-  searchRef: React.RefObject<HTMLInputElement | null>;
-  lastInv: { num: string; total: number } | null;
-}) {
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "7px 14px", minHeight: 64, flexShrink: 0, background: C.card, borderBottom: `1px solid ${C.border}`, position: "relative", zIndex: 40 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, flexShrink: 0 }}>
-        <div style={{ width: 40, height: 40, borderRadius: 11, background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center" }} aria-hidden>
-          <Printer size={20} />
-        </div>
-        <div>
-          <div style={{ fontSize: 13.5, fontWeight: 800, lineHeight: 1.2, color: C.fg }}>{SHOP}</div>
-          <div style={{ fontSize: 11, color: C.mutedFg, lineHeight: 1.3 }}>{DEPT}</div>
-        </div>
-      </div>
-      <div style={{ width: 1, height: 28, background: C.border, flexShrink: 0 }} />
-      <div style={{ flex: "1 1 460px", minWidth: 240, position: "relative", display: "flex", alignItems: "center" }}>
-        <span style={{ position: "absolute", right: 13, color: C.mutedFg, pointerEvents: "none", display: "flex", alignItems: "center" }} aria-hidden>
-          <Search size={16} />
-        </span>
-        {/* ٢٤/٨ (تدقيق ذاتيّ): `autoFocus` مفقود — POS و Reception يُركّزان الحقل، لكن PrintPOS
-            كان يُلزم الكاشير بالنقر قبل أوّل مسحٍ/كتابة. توحيدُ السلوك عبر الشاشات الثلاث. */}
-        <input ref={searchRef} autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن خدمة بالاسم أو الرمز… (F2)"
-          style={{ width: "100%", height: 46, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, outline: "none", paddingRight: 42, paddingLeft: search ? 36 : 14 }}
-          onFocus={(e) => (e.target.style.borderColor = C.primary)} onBlur={(e) => (e.target.style.borderColor = C.border)} />
-        {search && <button onClick={() => setSearch("")} aria-label="مسح البحث" style={{ position: "absolute", left: 8, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, padding: 4, display: "inline-flex" }}><X aria-hidden size={15} /></button>}
-      </div>
-      {lastInv && (
-        <div style={{ display: "flex", alignItems: "center", gap: 4, background: C.primarySoft, border: `1px solid ${C.primary}`, borderRadius: 9, padding: "3px 6px 3px 13px", flexShrink: 0, lineHeight: 1.3 }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <span style={{ fontSize: 10, color: C.mutedFg, fontWeight: 600 }}>آخر فاتورة</span>
-            <span style={{ fontSize: 15, fontWeight: 900, direction: "ltr", color: C.primary }}>{fmt(lastInv.total)} د.ع</span>
-            <span style={{ fontSize: 9.5, color: C.mutedFg }}>{lastInv.num}</span>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            <CopyButton value={lastInv.num} title="نسخ رقم آخر فاتورة" successMessage="تم نسخ رقم الفاتورة" />
-            <CopyButton value={lastInv.total} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
-          </div>
-        </div>
-      )}
-      <button onClick={toggleDark} title="تبديل الوضع الليلي" aria-label="تبديل الوضع الليلي" style={{ width: 42, height: 42, borderRadius: 9, background: "none", border: `1.5px solid ${C.border}`, cursor: "pointer", color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        {dark ? <Sun size={18} aria-hidden /> : <Moon size={18} aria-hidden />}
-      </button>
-    </div>
-  );
-}
-
-// ─── ServiceGrid ─────────────────────────────────────────────────────────────
-/** بطاقة خدمة موحّدة — مستعملة في الشبكة الرئيسية وشريط «الأكثر استعمالاً» (نفس التصميم بحواف
- *  ملوّنة إن كانت «أكثر استعمالاً»). كبيرة (‎١٢٠px‎) بأيقونةٍ بارزة وسعرٍ ملوّن. */
-function ServiceCard({ C, s, onAdd, hot }: { C: C; s: Svc; onAdd: (s: Svc) => void; hot?: boolean }) {
-  const custom = isCustomPriceSku(s.sku);
-  const accent = hot ? C.amber : C.primary;
-  const accentSoft = hot ? `color-mix(in oklch, ${C.amber} 12%, transparent)` : C.primarySoft;
-  return (
-    <button onClick={() => onAdd(s)}
-      title={`${s.productName} — ${s.unitName}${s.price == null ? "" : ` — ${fmt(Number(s.price))} د.ع`}`}
-      style={{
-        height: 120, display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "space-between",
-        padding: "10px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "right",
-        background: hot ? `linear-gradient(180deg, ${accentSoft} 0%, ${C.card} 60%)` : C.card,
-        border: `${hot ? 2 : 1.5}px solid ${hot ? accent : C.border}`,
-        transition: "transform .07s, border-color .1s, box-shadow .1s",
-        boxShadow: hot ? `0 2px 10px ${accentSoft}` : "none",
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.boxShadow = `0 6px 18px ${accentSoft}`; }}
-      onMouseLeave={(e) => { e.currentTarget.style.borderColor = hot ? accent : C.border; e.currentTarget.style.boxShadow = hot ? `0 2px 10px ${accentSoft}` : "none"; }}
-      onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.96)")}
-      onMouseUp={(e) => (e.currentTarget.style.transform = "")}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-        <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: 8, background: accentSoft, color: accent, flexShrink: 0 }}>
-          {(() => { const SIcon = serviceIcon(s.sku); return <SIcon aria-hidden size={20} strokeWidth={1.8} />; })()}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-end" }}>
-          {hot && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "2px 6px", borderRadius: 20 }}><Flame aria-hidden size={10} />الأكثر</span>}
-          {custom && <span style={{ fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "1px 6px", borderRadius: 20 }}>يدوي</span>}
-        </div>
-      </div>
-      <div style={{ width: "100%" }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.fg, lineHeight: 1.25, marginBottom: 3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>{s.productName}</div>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 10, color: C.mutedFg }}>/ {s.unitName}</span>
-          <span style={{ fontSize: 16, fontWeight: 900, color: accent, direction: "ltr" }}>{s.price == null ? "—" : fmt(Number(s.price))}<span style={{ fontSize: 9.5, color: C.mutedFg, fontWeight: 600 }}> د.ع</span></span>
-        </div>
-      </div>
-    </button>
-  );
-}
-
-function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAdd, recentIds }: {
-  C: C; services: Svc[]; loading: boolean; cats: { id: number; name: string }[]; catId: number | null;
-  setCatId: (id: number) => void; search: string; onAdd: (s: Svc) => void; recentIds: number[];
-}) {
-  const q = search.trim();
-  const list = useMemo(() => {
-    // تطبيع عربي موحّد (همزات/تاء مربوطة/مقصورة/أرقام هندية) — «استنساخ» يجد «إستنساخ»،
-    // نفس فضاء البحث الخادمي (shared/searchNormalize) بدل includes الخام الحسّاس للهمزة.
-    if (q) {
-      const nq = normalizeSearchText(q);
-      return services.filter((s) => normalizeSearchText(s.productName).includes(nq));
-    }
-    // print-catalog: catId=0 هو تبويب «أخرى» (الخدمات بلا فئة، categoryId == null).
-    return services.filter((s) => (catId === 0 ? s.categoryId == null : s.categoryId === catId));
-  }, [services, q, catId]);
-
-  // ٢٥/٨ (بلاغ المالك): «الأكثر استعمالاً» — يعرض حتى ٦ خدمات بترتيب الاستعمال الأخير للكاشير+فرع
-  // في شريطٍ بارزٍ بحواف كهرمانية وأيقونة لهب، أعلى شبكة الفئة. تختفي إن لم يكن هناك سجلّ.
-  const recentSvcs = useMemo(() => {
-    if (q || !recentIds.length) return [];
-    const byId = new Map(services.map((s) => [s.productUnitId, s] as const));
-    const out: Svc[] = [];
-    for (const id of recentIds) {
-      const s = byId.get(id);
-      if (s && !out.includes(s)) out.push(s);
-      if (out.length >= 6) break;
-    }
-    return out;
-  }, [q, recentIds, services]);
-
-  return (
-    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-      {!q && (
-        <div style={{ display: "flex", gap: 5, padding: "7px 9px", overflowX: "auto", borderBottom: `1px solid ${C.border}`, flexShrink: 0, background: C.muted }}>
-          {cats.map((ct) => {
-            const active = ct.id === catId;
-            return (
-              <button key={ct.id} onClick={() => setCatId(ct.id)}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "0 12px", height: 38, borderRadius: 9, whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, flexShrink: 0, touchAction: "manipulation", background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg, border: `${active ? 2 : 1.5}px solid ${active ? C.primary : C.border}` }}>
-                {(() => { const CIcon = categoryIcon(ct.name); return <CIcon aria-hidden size={15} />; })()}
-                {ct.name}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {q && <div style={{ padding: "11px 14px", borderBottom: `1px solid ${C.border}`, fontSize: 13, color: C.mutedFg, background: C.muted }}>نتائج البحث عن «<strong style={{ color: C.fg }}>{q}</strong>» — {list.length} خدمة</div>}
-      <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
-        {loading ? (
-          <div style={{ padding: "60px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل الخدمات…</div>
-        ) : list.length === 0 ? (
-          <div style={{ padding: "60px 0", textAlign: "center", color: C.mutedFg }}>
-            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><Search aria-hidden size={40} strokeWidth={1.5} /></div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{q ? "لا توجد خدمة بهذا الاسم" : "لا خدمات في هذه الفئة"}</div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {recentSvcs.length > 0 && (
-              <div style={{ borderRadius: 12, border: `1.5px dashed ${C.amber}`, background: `color-mix(in oklch, ${C.amber} 4%, transparent)`, padding: "10px 12px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, color: C.amber, fontSize: 12, fontWeight: 800 }}>
-                  <Flame aria-hidden size={14} />
-                  الأكثر استعمالاً <span style={{ color: C.mutedFg, fontWeight: 600 }}>({recentSvcs.length})</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(158px, 1fr))", gap: 8 }}>
-                  {recentSvcs.map((s) => <ServiceCard key={`hot-${s.productUnitId}`} C={C} s={s} onAdd={onAdd} hot />)}
-                </div>
-              </div>
-            )}
-            {/* الشبكة الرئيسية — بلاطات كبيرة (١٥٨px) لبروزٍ أوضح بعد توسّع عمود السلّة. */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(158px, 1fr))", gap: 8 }}>
-              {list.map((s) => <ServiceCard key={s.productUnitId} C={C} s={s} onAdd={onAdd} />)}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * منتقي عميل مضغوط ببحثٍ **خادميّ** — بديل `<select>` كان يُغذّى من `customers.list` المقصوصة
- * عند ٥٠٠ صفّاً: العميل رقم ٥٠١ لم يكن يظهر في القائمة إطلاقاً ⇒ **يتعذّر بيعه آجلاً** من هذه
- * الشاشة (البيع الآجل يشترط عميلاً — انظر حارس `isCredit && customerId == null`)، بلا أيّ مؤشّر.
- * مُنسَّق بـinline styles على توكنات `C` لأن هذه الشاشة لمسية بتصميمها الخاص (لا Tailwind).
- */
-function CustomerCombo({ C, customerId, setCustomerId }: { C: C; customerId: number | null; setCustomerId: (id: number | null) => void }) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const boxRef = useRef<HTMLDivElement | null>(null);
-  const dq = useDebouncedValue(q.trim(), 250);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-
-  // البحث لا يُطلَق إلا والقائمة مفتوحة ⇒ صفر تحميل عند الإقلاع (كان يجلب ٥٠٠ عميل دائماً).
-  const search = trpc.customers.search.useQuery(
-    { q: dq || undefined, limit: 20 },
-    { enabled: open, staleTime: 30_000 },
-  );
-  // اسم المختار بـid مستقلاً عن نتائج البحث (قد يكون خارجها أو خارج أيّ سقف).
-  const picked = trpc.customers.get.useQuery(
-    { customerId: customerId ?? 0 },
-    { enabled: customerId != null, staleTime: 60_000 },
-  );
-  const rows = search.data?.rows ?? [];
-  const label = customerId == null ? "عميل نقدي" : (picked.data?.name ?? `#${customerId}`);
-  const active = customerId != null;
-
-  return (
-    <div ref={boxRef} style={{ position: "relative" }}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label="اختيار العميل"
-        style={{ height: 36, borderRadius: 9, border: `1.5px solid ${active ? C.primary : C.border}`, background: active ? C.primarySoft : C.card, color: active ? C.primary : C.mutedFg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "0 8px", outline: "none", cursor: "pointer", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-      >
-        {label}
-      </button>
-      {open && (
-        <div role="listbox" style={{ position: "absolute", top: 40, left: 0, minWidth: 240, zIndex: 50, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,.18)", overflow: "hidden" }}>
-          <div style={{ padding: 7 }}>
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="ابحث بالاسم أو الهاتف…"
-              style={{ width: "100%", height: 32, borderRadius: 7, border: `1px solid ${C.border}`, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 12.5, padding: "0 8px", outline: "none" }}
-            />
-          </div>
-          <div style={{ maxHeight: 210, overflowY: "auto" }}>
-            <div
-              role="option"
-              aria-selected={customerId == null}
-              onClick={() => { setCustomerId(null); setOpen(false); setQ(""); }}
-              style={{ padding: "8px 10px", cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: C.mutedFg, borderBottom: `1px solid ${C.border}` }}
-            >
-              عميل نقدي
-            </div>
-            {search.isFetching && rows.length === 0 && (
-              <div style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, color: C.mutedFg }}>جارٍ البحث…</div>
-            )}
-            {!search.isFetching && rows.length === 0 && (
-              <div style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, color: C.mutedFg }}>لا نتائج</div>
-            )}
-            {rows.map((c) => (
-              <div
-                key={c.id}
-                role="option"
-                aria-selected={c.id === customerId}
-                onClick={() => { setCustomerId(c.id); setOpen(false); setQ(""); }}
-                style={{ padding: "8px 10px", cursor: "pointer", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, background: c.id === customerId ? C.primarySoft : "transparent", color: C.fg }}
-              >
-                <div style={{ fontWeight: 700 }}>{c.name}</div>
-                <div style={{ fontSize: 11, color: C.mutedFg }}>{c.phone || "بلا هاتف"}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── CheckoutColumn = CartList (فوق) + PaymentBlock (تحت) ─────────────────────
-interface CheckoutProps {
-  C: C; cart: CartLine[]; total: number; selUid: number | null; setSelUid: (id: number | null) => void;
-  changeQty: (uid: number, q: number) => void; removeRow: (uid: number) => void; onClear: () => void;
-  setPrice: (uid: number, p: number) => void; editPriceUid: number | null; setEditPriceUid: (id: number | null) => void;
-  customerId: number | null; setCustomerId: (id: number | null) => void;
-  payInput: string; setPayInput: (u: string | ((s: string) => string)) => void; method: PaymentMethod; setMethod: (m: PaymentMethod) => void;
-  paymentRef: string; setPaymentRef: (v: string) => void;
-  externalPaymentConfirmed: boolean; externalFullPaymentConfirmed: boolean;
-  externalPaymentPending: boolean; onConfirmExternalPayment: () => void;
-  numPress: (k: string) => void; onPay: () => void; onQuickPay: () => void; isPending: boolean;
-  /** ٢٤/٨ — عدّاد إضافةٍ صريح: يشغّل التمريرَ إلى السطر الفعّال في `CartList`. */
-  addTick: number;
-}
-
-// الاحتواء الديناميكي: زوم المتصفح لا يُكبّر الشاشة بل يُقلّص المساحة بوحدات CSS.
-// الارتفاعات الثابتة كانت تُفيض لوحة الدفع فتُقصّ أزرارها بصمت تحت overflow:hidden.
-// ارتفاع اللوحة هنا يحدّده محتواها (لا الشبكة) ⇒ نقيس بالشاشة (vh) لا بالحاوية.
-// الحدود الدنيا مرفوعة عمداً: شاشة الكاشير الصغيرة تحتاج أزراراً **كبيرة وواضحة**،
-// فيُحذف الثانويّ عند الضيق (رقائق المبالغ) بدل تصغير الأساسيّ — الحدّ 42px فأعلى.
-const fluid = (min: number, ratio: number, max: number) => `clamp(${min}px, ${ratio}vh, ${max}px)`;
-
-function CheckoutColumn(props: CheckoutProps) {
-  const { C } = props;
-  // ٢٥/٨ (بلاغ المالك «مساحة أكبر للسلة طولاً وعرضاً»): توسيع العمود من ٤٠٠ إلى ٤٨٠px + إزالة
-  // الحاسبة كاملةً (numpad + رقائق المبالغ + زرّ التبديل) — الحقلُ نصّيٌّ يقبل الكتابة المباشرة
-  // فلا حاجة للنمباد على أجهزة الديسك، والقبول اللمسيّ عبر الكيبورد الافتراضي (inputMode="decimal").
-  // الفضاءُ المُحرَّر يقسَّم بين السلّة (ارتفاعاً) وأزرار الدفع/التحصيل/الطباعة (بروزاً).
-  return (
-    <div style={{ width: 480, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
-      <CartList {...props} />
-      <PaymentBlock {...props} />
-    </div>
-  );
-}
-
-function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customerId, setCustomerId, addTick }: CheckoutProps) {
-  const items = cart.reduce((s, c) => s + c.qty, 0);
-  // ٢٤/٨ — تمرير تلقائيّ إلى السطر المُضاف/المزاد بعد كلّ نقرةٍ على بلاطة خدمة (مرآة POS/Reception).
-  const selectedRowRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (selUid == null) return;
-    const raf = requestAnimationFrame(() => {
-      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-    });
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addTick]);
-  return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 11px", height: 48, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg, display: "inline-flex", alignItems: "center", gap: 6 }}><ReceiptIcon aria-hidden size={17} /> الفاتورة</span>
-          {cart.length > 0 && <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 11.5, fontWeight: 700 }}>{cart.length} · {items}</span>}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: customerId != null ? C.primary : C.mutedFg }} aria-hidden><User size={14} /></span>
-          <CustomerCombo C={C} customerId={customerId} setCustomerId={setCustomerId} />
-          {cart.length > 0 && <button onClick={onClear} style={{ height: 36, padding: "0 11px", background: "none", border: `1px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontSize: 12.5, color: C.danger, fontFamily: "inherit", fontWeight: 700 }}>تفريغ</button>}
-        </div>
-      </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: cart.length ? 9 : 0 }}>
-        {cart.length === 0 ? (
-          <div style={{ padding: "50px 0", textAlign: "center", color: C.mutedFg }}>
-            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><ReceiptIcon aria-hidden size={40} strokeWidth={1.5} /></div>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>الفاتورة فارغة</div>
-            {/* ٢٤/٨ (تدقيق ذاتيّ): إرشادُ فعلٍ صريحٌ بدل «اضغط على خدمة من اليسار» — الاختصار يفتحه فوراً. */}
-            <div style={{ fontSize: 12, marginTop: 6, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
-              اضغط <kbd style={{ background: C.muted, borderRadius: 4, padding: "1px 6px", fontFamily: "monospace", fontSize: 10.5, fontWeight: 700, color: C.fg }}>F2</kbd> للبحث السريع، أو اختر خدمة من الشبكة
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-            {cart.map((c) => {
-              const sel = selUid === c.uid;
-              const editing = editPriceUid === c.uid;
-              return (
-                <div key={c.uid} ref={sel ? selectedRowRef : undefined} onClick={() => setSelUid(c.uid)}
-                  style={{ borderRadius: 11, border: `1.5px solid ${sel ? C.primary : C.border}`, background: sel ? C.primarySoft : C.card, padding: "9px 11px", cursor: "pointer" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                    <div style={{ fontSize: 19, fontWeight: 800, color: C.fg, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 6 }}>
-                      {(() => { const SIcon = serviceIcon(c.svc.sku); return <SIcon aria-hidden size={16} />; })()}
-                      {c.svc.productName}
-                      <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500 }}>/ {c.svc.unitName}</span>
-                    </div>
-                    <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 44, height: 44, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <div onClick={(e) => { e.stopPropagation(); setSelUid(c.uid); setEditPriceUid(c.uid); }} style={{ minWidth: 78 }}>
-                      {editing ? (
-                        <input autoFocus dir="ltr" inputMode="numeric" defaultValue={c.price}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setPrice(c.uid, Math.max(0, parseInt(e.target.value.replace(/[^0-9]/g, ""), 10) || 0))}
-                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditPriceUid(null); }}
-                          onBlur={() => setEditPriceUid(null)}
-                          style={{ width: 84, height: 36, textAlign: "center", border: `1.5px solid ${C.primary}`, borderRadius: 8, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, fontWeight: 800, outline: "none", direction: "ltr" }} />
-                      ) : (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, direction: "ltr", color: isCustomPriceSku(c.svc.sku) ? C.amber : C.mutedFg, fontWeight: isCustomPriceSku(c.svc.sku) ? 800 : 600, fontSize: 13.5, padding: "5px 9px", borderRadius: 8, border: `1px dashed ${isCustomPriceSku(c.svc.sku) ? C.amber : C.border}` }}>
-                          {fmt(c.price)}<Pencil aria-hidden size={10} style={{ opacity: 0.7 }} />
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty - 1); }} style={{ width: 40, height: 40, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>−</button>
-                      {/* ٢٥/٨ (بلاغ المالك): الكمية حقلٌ قابل للكتابة (الافتراضي ١ من addService).
-                          الكاشير يكتب مباشرةً «5»/«12»/إلخ بدل ضغط + خمس مرّات. onFocus يحدّد النصّ
-                          ⇒ أوّل ضغطة رقم تستبدل القيمة الحاليّة. onChange يقبل فقط الأرقام ويطبّع
-                          الأصفار البادئة. onBlur يُصلح الفراغ إلى ١ (السطر يُحذف على 0 عبر changeQty). */}
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={c.qty}
-                        onClick={(e) => e.stopPropagation()}
-                        onFocus={(e) => { e.stopPropagation(); e.currentTarget.select(); }}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          const raw = e.target.value.replace(/[^\d]/g, "");
-                          if (raw === "") return;
-                          const n = parseInt(raw, 10);
-                          if (!Number.isFinite(n) || n < 0) return;
-                          changeQty(c.uid, n);
-                        }}
-                        onBlur={(e) => { if (e.currentTarget.value === "" || Number(e.currentTarget.value) < 1) changeQty(c.uid, 1); }}
-                        aria-label="الكمية"
-                        style={{ width: 56, height: 40, textAlign: "center", fontWeight: 900, fontSize: 18, direction: "ltr", color: C.fg, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 10, outline: "none", fontFamily: "inherit" }}
-                      />
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty + 1); }} style={{ width: 40, height: 40, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>+</button>
-                    </div>
-                    <span style={{ direction: "ltr", fontWeight: 900, fontSize: 16, color: C.fg, minWidth: 64, textAlign: "left" }}>{fmt(c.price * c.qty)}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalFullPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, onPay, onQuickPay, cart, customerId, isPending }: CheckoutProps) {
-  // ٢٥/٨ (بلاغ المالك): أُزيلت الحاسبة (numpad + QUICK + Calculator toggle) كلّياً — الحقلُ نصّيٌّ
-  // يقبل الكتابة المباشرة من لوحة المفاتيح، والقبول اللمسيّ عبر الكيبورد الافتراضي
-  // (inputMode="decimal"). الفضاء المُحرَّر يصعد إلى السلّة وأزرار الدفع الأساسية.
-  //
-  // ٢٤/٨ (Codex P1 v2 على PR #741): حقلُ المبلغ يفصل «العرض» عن «القيمة الملتزمة» — نفس نمط
-  // POS/Reception. أثناء الكتابة الوسيطة (`1,` قبل `1,5`) الحرفُ يبقى في الحقل والقيمةُ الملتزمة
-  // (`payInput` المُرسَلة إلى الحساب) لا تتغيّر إلّا حين تكون غير ملتبسة. لولا هذا: `1` ثمّ `,` ثمّ
-  // `5` كان يُلتزم `15` بدل `1.5` (React يعيد رسمَ الحقل بـpayInput=`1` فيبتلع `,`).
-  const [displayPay, setDisplayPay] = useState(payInput);
-  useEffect(() => {
-    try {
-      const norm = normalizeNumberInput(displayPay).normalized;
-      if (norm !== payInput) setDisplayPay(payInput);
-    } catch { setDisplayPay(payInput); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payInput]);
-  const cartLen = cart.length;
-  const paid = Number(payInput || 0);
-  const cashTotal = method === "CASH" ? riqd(total) : total;
-  const change = paid - cashTotal;
-  const credit = cashTotal - paid;
-  const isChange = paid > 0 && paid >= cashTotal;
-  const isOwing = paid > 0 && paid < cashTotal;
-  // حارس: لا بيع بسطرٍ بسعر صفر (خدمة سعرها يدوي لم يُدخَل) — يمنع فاتورة مجانية بالخطأ.
-  const hasZeroLine = cart.some((c) => c.price <= 0);
-  // حافظ على عقد PrintPOS السابق: الدفعة الجزئية لا تُنشأ من هذه الشاشة؛ الحارس الجديد
-  // يضيف تأكيد غير النقدي فقط ولا يوسّع سلوك النقد/الآجل.
-  const canPay = cartLen > 0 && !hasZeroLine && (payInput === "" || paid >= cashTotal) && (!isOwing || customerId != null) && externalPaymentConfirmed;
-  const canQuickPay = cartLen > 0 && !hasZeroLine && externalFullPaymentConfirmed;
-
-  const Method = ({ m, Icon, label, disabled = false }: { m: PaymentMethod; Icon: React.ComponentType<{ "aria-hidden"?: boolean; size?: number }>; label: string; disabled?: boolean }) => (
-    <button onClick={disabled ? undefined : () => setMethod(m)} disabled={disabled}
-      aria-describedby={disabled ? "print-pos-external-payment-proof" : undefined}
-      title={disabled ? POS_EXTERNAL_PAYMENT_PROOF_HINT : label}
-      style={{ flex: 1, minHeight: fluid(44, 5.6, 50), display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `2px solid ${method === m ? C.primary : C.border}`, borderRadius: 10, background: method === m ? C.primary : C.card, color: method === m ? C.primaryFg : C.fg, fontWeight: 800, fontSize: 13.5, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1, fontFamily: "inherit", touchAction: "manipulation" }}>
-      <Icon aria-hidden size={19} />{label}
-    </button>
-  );
-
-  // ٢٥/٨: بعد إزالة الحاسبة، PaymentBlock صار مضغوطاً — يكفيه ~٢٤٠px (إجمالي + حقل + طرق دفع +
-  // مرجع + أزرار الإتمام). السقفُ ٣٥٪ يترك ٦٥٪ للسلّة (كانت ٥٦-٤٢٪ سابقاً) ⇒ السلّة تحصل على
-  // ~٤٠-٥٠٪ زيادة في الارتفاع، وأزرار الدفع/التحصيل/الطباعة تبقى بارزة لا مضغوطة.
-  return (
-    <div style={{ flexShrink: 0, minHeight: 240, maxHeight: "38%", display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-      <div style={{ padding: "7px 16px", background: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-        <span style={{ fontSize: 13.5, color: C.primaryFg, fontWeight: 700, opacity: 0.92 }}>الإجمالي</span>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
-          <span style={{ fontSize: fluid(20, 2.9, 27), fontWeight: 900, direction: "ltr", letterSpacing: "-1px", color: C.primaryFg }}>{fmt(total)}</span>
-          <span style={{ fontSize: 12.5, color: C.primaryFg, opacity: 0.85 }}>د.ع</span>
-        </div>
-      </div>
-      {/* منطقة الإدخال — الوحيدة القابلة للتمرير؛ الإجمالي فوقها وأزرار الدفع تحتها ثابتان. */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "8px 12px 0" }}>
-        {/* ٢٥/٨: أُزيلت الحاسبة كاملةً — الحقل نصّيٌّ مباشر يقبل الكتابة من الكيبورد أو اللمس
-            عبر inputMode="decimal". زرّ «=الكل» يبقى أعلى الحقل لتعبئة المبلغ الإجمالي بضغطة. */}
-        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minHeight: fluid(38, 5, 46), marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: C.mutedFg, flexShrink: 0, fontWeight: 700 }}>المبلغ المستلم</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, justifyContent: "flex-end" }}>
-            <button
-              type="button"
-              onClick={() => setPayInput(String(cashTotal))}
-              disabled={!cartLen}
-              title="عبّئ المبلغ الإجماليّ"
-              style={{ height: 30, padding: "0 10px", border: `1.5px solid ${C.primary}`, borderRadius: 8, background: C.primarySoft, color: C.primary, fontFamily: "inherit", fontSize: 12, fontWeight: 800, cursor: cartLen ? "pointer" : "not-allowed", opacity: cartLen ? 1 : 0.5, flexShrink: 0, touchAction: "manipulation" }}
-            >
-              = الكل
-            </button>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={displayPay}
-              onChange={(e) => {
-                const src = e.target.value;
-                setDisplayPay(src);
-                if (src === "") { setPayInput(""); return; }
-                if (!/^[\d.,،٫]*$/.test(src)) return;
-                const result = normalizeNumberInput(src);
-                if (result.ambiguous) return;
-                const n = result.normalized;
-                if (!n) return;
-                if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(n)) return;
-                if (!Number.isFinite(Number(n))) return;
-                setPayInput(n);
-              }}
-              onFocus={(e) => e.currentTarget.select()}
-              placeholder="0"
-              aria-label="المبلغ المستلم"
-              style={{ flex: 1, minWidth: 0, maxWidth: 200, border: "none", outline: "none", background: "transparent", fontSize: fluid(19, 2.6, 24), fontWeight: 900, direction: "ltr", textAlign: "left", fontFamily: "inherit", color: payInput ? (isOwing ? C.amber : C.primary) : C.fg }}
-            />
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-          <Method m="CASH" Icon={Banknote} label="نقدي" />
-          <Method m="CARD" Icon={CreditCard} label="بطاقة" />
-          <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />
-        </div>
-        {method !== "CASH" && (
-          <div id="print-pos-external-payment-proof" role="status" style={{ marginBottom: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.mutedFg, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
-            <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
-            <span>{POS_EXTERNAL_PAYMENT_PROOF_HINT}</span>
-          </div>
-        )}
-        {/* مرجع ومحاولة الدفع غير النقدي — CONFIRMED قبل إنشاء الفاتورة. */}
-        <PaymentReferenceField
-          value={paymentRef}
-          onChange={setPaymentRef}
-          method={method}
-          confirmed={externalPaymentConfirmed}
-          confirming={externalPaymentPending}
-          onConfirm={onConfirmExternalPayment}
-          inputId="print-pos-payment-reference"
-          colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber, success: C.success }}
-          style={{ marginBottom: 6 }}
+      {shifting && (
+        <ShiftCloseDialog
+          C={POS_COLORS}
+          shift={shift}
+          branchId={branchId}
+          onClose={() => setShifting(false)}
+          onClosed={() => {
+            setShifting(false);
+            void shiftQ.refetch();
+          }}
+          me={me.data}
+          branches={branches.data}
         />
 
-        </div>{/* ← نهاية منطقة الإدخال القابلة للتمرير */}
-
-        {/* منطقة الفعل — خارج التمرير ولا تنكمش: زرّا الدفع يبقيان ظاهرَين مهما بلغ الزوم. */}
-        <div style={{ flexShrink: 0, padding: "6px 10px 9px", borderTop: `1px solid ${C.border}` }}>
-        <div style={{ minHeight: 24, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-          {!cartLen && <span style={{ fontSize: 12.5, color: C.mutedFg }}>اختر خدمة للبدء</span>}
-          {cartLen > 0 && hasZeroLine && <span style={{ fontSize: 12, color: C.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>أدخل سعراً للخدمات ذات السعر اليدوي (<Pencil aria-hidden size={11} />)</span>}
-          {cartLen > 0 && !hasZeroLine && !payInput && <span style={{ fontSize: 12, color: C.mutedFg }}>{method === "CASH" && cashTotal !== total ? `نقداً يُقرَّب إلى ${fmt(cashTotal)} د.ع` : "أدخل المبلغ أو «إتمام» للدفع الكامل"}</span>}
-          {cartLen > 0 && !!payInput && isChange && (<><span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span><CopyButton value={change} title="نسخ الباقي" successMessage="تم نسخ الباقي" /></span></>)}
-          {cartLen > 0 && !!payInput && isOwing && (<><span style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>المتبقي (آجل)</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12, fontWeight: 500 }}>د.ع</span></span><CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" /></span></>)}
-        </div>
-        <div style={{ display: "flex", gap: 7 }}>
-          <button disabled={!canQuickPay || isPending} onClick={onQuickPay}
-            title={
-              // ٢٤/٨ (نمط Odoo — بلاغ فحص UX): `title` يعلن سبب التعطيل بدل الحيرة.
-              isPending ? "جارٍ الحفظ…" :
-              !cartLen ? "أضف خدمة أوّلاً" :
-              hasZeroLine ? "أدخل سعراً للخدمات ذات السعر اليدوي" :
-              !externalFullPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
-              `دفع سريع وطباعة — ${METHOD_LABEL[method]}`
-            }
-            style={{ width: 116, height: fluid(48, 6, 54), background: canQuickPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: canQuickPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: canQuickPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
-            <Zap aria-hidden size={17} />دفع سريع ({METHOD_LABEL[method]})
-          </button>
-          <button disabled={!canPay || isPending} onClick={onPay}
-            title={
-              isPending ? "جارٍ الحفظ…" :
-              !cartLen ? "أضف خدمة أوّلاً" :
-              hasZeroLine ? "أدخل سعراً للخدمات ذات السعر اليدوي" :
-              isOwing && customerId == null ? "الآجل يحتاج عميلاً مرتبطاً — أو اكمل المبلغ" :
-              !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
-              `إتمام الدفع — ${fmt(total)} د.ع`
-            }
-            style={{ flex: 1, height: fluid(48, 6, 54), background: canPay && !isPending ? C.success : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, touchAction: "manipulation" }}>
-            {isPending
-              ? "جارٍ…"
-              : !cartLen
-                ? "الفاتورة فارغة"
-                : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع <kbd style={{ background: "rgba(255,255,255,.22)", color: "#fff", borderRadius: 4, padding: "1px 6px", fontFamily: "monospace", fontSize: 10, fontWeight: 700 }}>F4</kbd></>}
-          </button>
-        </div>
-        {/* ٢٤/٨ (تدقيق ذاتيّ): تلميحُ الاختصارات ظاهرٌ على كلّ الأحجام — الكاشير يحتاجها يومياً. */}
-        <div style={{ textAlign: "center", marginTop: 4, fontSize: 10, color: C.mutedFg, opacity: 0.85 }}>
-          F4 للدفع · F2 للبحث · F12 للتفريغ · Esc للإغلاق
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── ReceiptOverlay ──────────────────────────────────────────────────────────
-function ReceiptOverlay({ C, r, onDismiss, onPrint }: { C: C; r: Receipt; onDismiss: () => void; onPrint: () => void }) {
-  return (
-    <div onClick={onDismiss} style={{ position: "fixed", inset: 0, zIndex: 100, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 20, padding: "34px 42px 28px", width: 460, maxWidth: "92vw", boxShadow: "0 28px 72px rgb(0 0 0/.42)", cursor: "default", textAlign: "center" }}>
-        <div style={{ width: 74, height: 74, borderRadius: "50%", background: C.success, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", color: "#fff" }}><Check aria-hidden size={42} strokeWidth={3} /></div>
-        <div style={{ fontSize: 23, fontWeight: 900, marginBottom: 3, color: C.fg }}>تمّت العملية بنجاح</div>
-        <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 22, display: "inline-flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
-          <span>فاتورة: {r.num}</span>
-          <CopyButton value={r.num} title="نسخ رقم الفاتورة" successMessage="تم نسخ رقم الفاتورة" />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-          {[{ l: "المبلغ المدفوع", v: r.received, c: C.primary }, { l: "إجمالي الفاتورة", v: r.total, c: C.fg }].map((it) => (
-            <div key={it.l} style={{ background: C.muted, borderRadius: 10, padding: "13px 10px", position: "relative" }}>
-              <div style={{ position: "absolute", top: 4, left: 4 }}>
-                <CopyButton value={it.v} title={`نسخ ${it.l}`} successMessage={`تم نسخ ${it.l}`} />
-              </div>
-              <div style={{ fontSize: 12, color: C.mutedFg, marginBottom: 3 }}>{it.l}</div>
-              <div style={{ fontSize: 25, fontWeight: 900, direction: "ltr", color: it.c }}>{fmt(it.v)}</div>
-              <div style={{ fontSize: 11, color: C.mutedFg }}>د.ع</div>
-            </div>
-          ))}
-        </div>
-        {r.change > 0 && <Bar C={C} c={C.success} k="الباقي للعميل" v={r.change} copyTitle="نسخ الباقي" />}
-        {r.credit > 0 && <Bar C={C} c={C.amber} k={`آجل على ${r.customer ?? "العميل"}`} v={r.credit} copyTitle="نسخ المتبقي الآجل" />}
-        <div style={{ marginBottom: 18, fontSize: 13, color: C.mutedFg }}>الدفع: <strong style={{ color: C.fg }}>{r.method}</strong> · {r.lines.length} خدمة</div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={onPrint} style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <Printer size={18} aria-hidden /> طباعة الإيصال
-          </button>
-          <button onClick={onDismiss} style={{ flex: 1, height: 50, background: C.primary, border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.primaryFg }}>فاتورة جديدة</button>
-        </div>
-        <div style={{ marginTop: 14, fontSize: 12, color: C.mutedFg }}>المس الشاشة في أي مكان للمتابعة</div>
-      </div>
-    </div>
-  );
-}
-function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number; copyTitle?: string }) {
-  return (
-    <div style={{ background: `color-mix(in oklch, ${c} 12%, transparent)`, border: `1.5px solid color-mix(in oklch, ${c} 30%, transparent)`, borderRadius: 10, padding: "11px 18px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-      <span style={{ fontSize: 14, fontWeight: 700, color: c }}>{k}</span>
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-        <span style={{ fontSize: 25, fontWeight: 900, color: c, direction: "ltr" }}>{fmt(v)} <span style={{ fontSize: 12 }}>د.ع</span></span>
-        <CopyButton value={v} title={copyTitle ?? `نسخ ${k}`} successMessage={`تم نسخ ${k}`} />
-      </span>
-    </div>
-  );
-}
-
-// ─── ShiftCloseDialog (نقد ومبيعات فقط — بلا كلفة) ───────────────────────────
-function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; isElevatedRole: boolean; onClose: () => void; onClosed: () => void }) {
-  const [counted, setCounted] = useState("");
-  const [countEntered, setCountEntered] = useState(false);
-  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
-  const utils = trpc.useUtils();
-  const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
-  const report = reportQ.data;
-
-  const closeShift = trpc.shifts.close.useMutation({
-    onSuccess: async (r) => {
-      // أكواد الطرق تُعرَّب في Z المطبوع (paymentMethodLabel) — كان يُطبع CARD/TRANSFER خاماً.
-      const payRows: [string, string, string][] = (report?.payments ?? []).map((p) => [`${paymentMethodLabel(p.method)} ${p.direction === "IN" ? "وارد" : "صادر"}`, String(p.count), String(p.total)]);
-      await printDoc({
-        kind: "zreport", title: SHOP, subtitle: "تقرير نهاية الوردية (Z) — قسم الطباعة",
-        meta: [`وردية #${r.shiftId}`, fmtDateTime(new Date())],
-        columns: ["الحركة", "عدد", "مبلغ"], rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
-        totals: [
-          { label: "عدد الفواتير", value: String(report?.invoiceCount ?? 0) },
-          { label: "إجمالي المبيعات", value: String(report?.salesTotal ?? "0.00") },
-          { label: "الرصيد الافتتاحي", value: r.openingBalance },
-          { label: "النقد المتوقع", value: r.expectedCash },
-          { label: "النقد المعدود", value: r.countedCash },
-          { label: "الفرق", value: r.variance },
-          ...(r.treasuryReturn ? [
-            { label: "سلّم النقد إلى", value: r.treasuryReturn.recipientName },
-            { label: "رقم عهدة التسليم", value: r.treasuryReturn.handoverNumber },
-          ] : []),
-        ],
-        footer: r.treasuryReturn
-          ? "النقد عهدة بانتظار العدّ والقبول في الخزينة"
-          : "نهاية الوردية — شكراً",
-      });
-      if (r.treasuryReturn) {
-        notify.ok(
-          `سلّم ${formatIqd(r.countedCash)} إلى ${r.treasuryReturn.recipientName}`,
-          `العهدة ${r.treasuryReturn.handoverNumber} بانتظار العدّ والقبول في الخزينة.`,
-        );
-      }
-      await utils.shifts.current.invalidate();
-      onClosed();
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  const openingBal = D(shift.openingBalance ?? 0).toNumber();
-  const expected = report != null ? D(report.expectedCash).toNumber() : null;
-  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
-  const showExpected = isElevatedRole || countEntered;
-  const diff = showExpected && expected != null && counted ? Number(counted) - expected : null;
-  const hasVariance = diff != null && Math.abs(diff) >= 0.01;
-  const needsHandoverRecipient = D(counted || 0).gt(0) && handoverToUserId == null;
-  const closeDisabled = !counted || closeShift.isPending || hasVariance || needsHandoverRecipient;
-  const closeLabel = closeShift.isPending
-    ? "جارٍ الإغلاق…"
-    : hasVariance
-      ? "الإغلاق مرفوض لوجود فرق"
-      : needsHandoverRecipient
-        ? "اختر مستلم عهدة الإغلاق"
-        : "إغلاق وطباعة Z";
-
-  return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgb(0 0 0/.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 18, padding: "24px 28px", width: 460, maxHeight: "92vh", overflowY: "auto", boxShadow: "0 24px 64px rgb(0 0 0/.32)" }}>
-        <div style={{ fontWeight: 900, fontSize: 19, marginBottom: 3, color: C.fg }}>إغلاق الوردية #{shift.id}</div>
-        <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 16 }}>{fmtDate(new Date())}</div>
-        {reportQ.isLoading ? (
-          <div style={{ padding: "24px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل التقرير…</div>
-        ) : (
-          <>
-            {([["عدد الفواتير", `${report?.invoiceCount ?? 0} فاتورة`], ["إجمالي المبيعات", `${fmt(Number(report?.salesTotal ?? 0))} د.ع`], ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`], ...(expected != null && showExpected ? [["النقد المتوقع بالصندوق", `${fmt(expected)} د.ع`] as [string, string]] : [])] as [string, string][]).map(([l, v]) => (
-              <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}><span style={{ color: C.mutedFg }}>{l}</span><span style={{ fontWeight: 700, color: C.fg }}>{v}</span></div>
-            ))}
-            {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>}
-            {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
-              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}><span style={{ color: C.mutedFg }}>{paymentMethodLabel(p.method)} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span><span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span></div>
-            ))}
-            <div
-              style={{ marginTop: 16 }}
-              onBlur={() => setCountEntered(counted.trim() !== "")}
-            >
-              <label htmlFor="print-counted-cash" style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 800, color: C.fg }}>
-                النقد المعدود (د.ع)
-              </label>
-              <MoneyInput
-                id="print-counted-cash"
-                value={counted}
-                onChange={(value) => {
-                  setCounted(value);
-                  setCountEntered(false);
-                }}
-                placeholder="0"
-                ariaLabel="النقد المعدود عند إغلاق وردية الطباعة"
-                className="h-12 text-center text-lg font-extrabold"
-              />
-              {!showExpected && (
-                <div style={{ marginTop: 6, fontSize: 12, color: C.mutedFg }}>
-                  أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
-                </div>
-              )}
-              {diff !== null && (
-                <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-                  <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
-                  {diff === 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><Check aria-hidden size={14} strokeWidth={3} /> مطابق</span>}
-                  {diff > 0 && <span>(زيادة)</span>}
-                  {diff < 0 && <span>(عجز)</span>}
-                </div>
-              )}
-            </div>
-            {hasVariance && (
-              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${C.danger}`, borderRadius: 9, background: C.muted }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: C.danger }}>
-                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة.
-                </div>
-                <div style={{ marginTop: 6, fontSize: 12.5, color: C.mutedFg }}>
-                  أعد العد وراجع الفواتير والمرتجعات. لا يستطيع المدير اعتماد مال بلا مصدر من شاشة الإغلاق.
-                </div>
-              </div>
-            )}
-            <ShiftHandoverSection
-              branchId={Number(shift.branchId)}
-              amount={counted}
-              value={handoverToUserId}
-              onChange={setHandoverToUserId}
-              disabled={closeShift.isPending}
-            />
-            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-              <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
-              <button disabled={closeDisabled}
-                onClick={() => closeShift.mutate({
-                  shiftId: shift.id,
-                  countedCash: counted,
-                  handoverToUserId,
-                })}
-                style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeLabel}</button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── CreditApprovalDialog ────────────────────────────────────────────────────
-function CreditApprovalDialog({ C, message, mgrEmail, setMgrEmail, mgrPwd, setMgrPwd, isPending, onApprove, onCancel }: {
-  C: C; message: string; mgrEmail: string; setMgrEmail: (s: string) => void; mgrPwd: string; setMgrPwd: (s: string) => void;
-  isPending: boolean; onApprove: () => void; onCancel: () => void;
-}) {
-  return (
-    <div onClick={onCancel} style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgb(0 0 0/.45)", display: "flex", alignItems: "center", justifyContent: "center", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: "24px 28px", width: 380, boxShadow: "0 20px 56px rgb(0 0 0/.3)" }}>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber, display: "inline-flex", alignItems: "center", gap: 6 }}><AlertTriangle aria-hidden size={18} /> موافقة مدير مطلوبة</div>
-        <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 18 }}>{message}</div>
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>بريد المدير</label>
-          <input type="email" dir="ltr" value={mgrEmail} placeholder="manager@alroya.local" onChange={(e) => setMgrEmail(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}
-            style={{ width: "100%", height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 14, padding: "0 12px", outline: "none", boxSizing: "border-box" }} />
-        </div>
-        {/* PasswordInput الموحّد (عين إظهار/إخفاء — نفس مكوّن شاشة الدخول) بدل input نصيّ عارٍ.
-            Enter يعتمد ويُكمل — يُلتقط على الحاوية لأن المكوّن لا يكشف onKeyDown. */}
-        <div style={{ marginBottom: 12 }} onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}>
-          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>كلمة المرور</label>
-          <PasswordInput value={mgrPwd} onChange={setMgrPwd} autoComplete="current-password" />
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-          <button disabled={!mgrEmail || !mgrPwd || isPending} onClick={onApprove}
-            style={{ flex: 1, height: 46, background: !mgrEmail || !mgrPwd || isPending ? C.muted : C.primary, color: !mgrEmail || !mgrPwd || isPending ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 8, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: !mgrEmail || !mgrPwd || isPending ? "not-allowed" : "pointer" }}>{isPending ? "جارٍ…" : "اعتمد وأكمل البيع"}</button>
-          <button onClick={onCancel} style={{ height: 46, padding: "0 18px", background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 8, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer", color: C.fg }}>إلغاء</button>
-        </div>
-      </div>
+      )}
+      {creditPrompt && (
+        <CreditApprovalDialog C={C as any} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
+          isPending={sale.isPending} onApprove={() => submit(false, { email: mgrEmail, password: mgrPwd })} onCancel={() => setCreditPrompt(null)} />
+      )}
+      <HeldOrdersDrawer
+        open={heldDrawerOpen}
+        onClose={() => setHeldDrawerOpen(false)}
+        branchId={branchId}
+        onEditOrder={handleEditHeldOrder}
+        cashierName={me.data?.name ?? undefined}
+        shiftId={shift?.id}
+      />
     </div>
   );
 }

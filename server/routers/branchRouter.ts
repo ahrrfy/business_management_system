@@ -1,8 +1,5 @@
 import { z } from "zod";
-import { asc, eq } from "drizzle-orm";
-import { branches } from "../../drizzle/schema";
-import { getDb } from "../db";
-import { createBranch, listBranchesAdmin, setBranchActive, updateBranch } from "../services/branchService";
+import { createBranch, listActiveBranches, listBranchesAdmin, setBranchActive, updateBranch } from "../services/branchService";
 import { logAudit } from "../services/auditService";
 import { adminProcedure, protectedProcedure, router } from "../trpc";
 
@@ -10,11 +7,7 @@ const BRANCH_TYPES = ["MAIN", "SALES"] as const;
 
 /** الفروع — قائمة نشطة للاختيار في الشاشات (شراء/تحويل) + إدارة كاملة (إنشاء/تعديل/تعطيل) للمدير العام. */
 export const branchRouter = router({
-  list: protectedProcedure.query(async () => {
-    const db = getDb();
-    if (!db) return [];
-    return db.select().from(branches).where(eq(branches.isActive, true)).orderBy(asc(branches.id));
-  }),
+  list: protectedProcedure.query(() => listActiveBranches()),
 
   /** قائمة كاملة (تشمل المعطّلة) لشاشة الإدارة. */
   adminList: adminProcedure.query(() => listBranchesAdmin()),

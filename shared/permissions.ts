@@ -37,7 +37,7 @@ export const ROLES: RoleInfo[] = [
   { key: "manager",        label: "مدير فرع",           description: "إدارة العمليات والتقارير بدون تعديل المستخدمين", canSeeCost: true },
   { key: "accountant",     label: "محاسب",              description: "التقارير المالية، الذمم، المصروفات، كشوف الحساب", canSeeCost: true },
   { key: "cashier",        label: "كاشير",               description: "نقطة بيع + مبيعات (لا يرى التكلفة)" },
-  { key: "warehouse",      label: "أمين مخزن",           description: "المخزون والمشتريات والاستلام" },
+  { key: "warehouse",      label: "أمين مخزن",           description: "المخزون والجرد والتحويلات" },
   { key: "purchasing",     label: "مسؤول مشتريات",       description: "أوامر شراء وموردون (منفصل عن المخزن)" },
   { key: "print_operator", label: "فني مطبعة",           description: "طلبات خدمة العملاء والطباعة فقط" },
   { key: "sales_rep",      label: "مندوب مبيعات",        description: "عروض أسعار ومتابعة عملاء بلا صندوق" },
@@ -61,7 +61,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   // المالك (يختار «نقطة البيع» متوقّعاً التجزئة فيفتح الطباعة) — التسمية الآن تسمّي القسم صراحةً.
   { key: "pos",          label: "كاشير خدمات الطباعة", description: "تبويب «خدمات طباعة» في نقطة البيع: نسخ/تجليد/طباعة فورية." },
   { key: "sales",        label: "كاشير التجزئة والمبيعات", description: "تبويب «تجزئة» في نقطة البيع + الفواتير والمرتجعات والذمم." },
-  { key: "purchases",    label: "المشتريات",         description: "أوامر شراء، استلام، دفعات موردين" },
+  { key: "purchases",    label: "المشتريات",         description: "فواتير شراء، إضافة مخزنية تلقائية، دفعات موردين" },
   { key: "inventory",    label: "المخزون والأرصدة",  description: "حركات المخزون، التحويلات، الجرد" },
   { key: "workorders",   label: "استقبال أوامر الشغل", description: "تبويب «استقبال أوامر شغل» في نقطة البيع: تصميم/عربون + متابعة طلبات الطباعة والتخصيص." },
   { key: "channels",     label: "القنوات والوارد",     description: "صندوق الوارد الموحّد (واتساب/إنستغرام/المتجر) والمحادثات" },
@@ -180,7 +180,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "NONE",
     // FULL: أمين المخزن يسجّل سندات الإيداع/السحب الكمّية (استلام فعليّ)؛ لا يرى الحصة (ليس canSeeCost).
     consignments: "FULL",
-    pos: "NONE", sales: "READ", purchases: "FULL", inventory: "FULL", workorders: "READ", channels: "NONE", treasury: "NONE",
+    pos: "NONE", sales: "READ", purchases: "READ", inventory: "FULL", workorders: "READ", channels: "NONE", treasury: "NONE",
     // READ: يرى مهام مرتبطة باستلام/تجهيز الطلبات بلا إسناد/إدارة.
     tasks: "READ",
     // products: READ لا FULL — كتابة الكتالوج «مدير فأعلى» (productsManagerProcedure)؛ كان القالب
@@ -208,7 +208,9 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   print_operator: {
-    digital_cards: "NONE",
+    // READ: فنّي المطبعة يشغّل محطة الاستقبال فعلياً؛ شبكة البيع لا تُخرج تكلفةً أو هامشاً
+    // أو رصيد محفظة، بينما شاشات الإدارة تبقى خلف بوابة المدير المستقلة.
+    digital_cards: "READ",
     reservations: "NONE",
     gifts: "NONE",
     // crm=FULL (٨/٨، مراجعة Codex P1): فنّي المطبعة يشغّل محطة الاستقبال فعلياً، وطلبات القنوات
@@ -500,6 +502,17 @@ export function canUseStation(
   if (!role) return false;
   const g = POS_STATION_GATES[station];
   return moduleAccessAllowed(role, override ?? null, g.module, "FULL", g.allowedRoles);
+}
+
+/**
+ * البطاقات الرقمية منتج بيع، لذا تُتاح في محطتي التجزئة والاستقبال فقط.
+ * صلاحية وحدة digital_cards نفسها تُفحَص منفصلةً في الخادم؛ هذه الدالة لا تفتح محطة الطباعة.
+ */
+export function canUseDigitalCardsSellingStation(
+  role: string | undefined,
+  override?: PermissionMap | null,
+): boolean {
+  return canUseStation("RETAIL", role, override) || canUseStation("RECEPTION", role, override);
 }
 
 /** الأقسام التي يفتحها الحساب فعلاً (بالترتيب الثابت تجزئة→طباعة→استقبال). */

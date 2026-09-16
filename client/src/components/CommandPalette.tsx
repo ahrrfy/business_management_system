@@ -21,10 +21,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { SEARCH_OPEN_EVENT } from "@/lib/searchEvents";
 import {
-  Boxes, Contact, FileText, Inbox as InboxIcon, LayoutDashboard, Package, Receipt, RotateCcw, ScanLine, ShoppingCart, Truck, UserCog, Users, Wallet, Wrench,
+  Boxes, CheckCircle2, Contact, FileText, Inbox as InboxIcon, LayoutDashboard, Package, Receipt, RotateCcw, ScanLine, ShoppingCart, Truck, UserCog, Users, Wallet, Wrench, X,
 } from "lucide-react";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { playReadyBeep } from "@/lib/notifyBeep";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -38,7 +40,7 @@ export function hasLocalScanner(
   pathname: string,
   search = typeof window !== "undefined" ? window.location.search : "",
 ): boolean {
-  if (/^\/(pos|count|kiosk|price-checker|login|stocktakes)(\/|$)/.test(pathname)) return true;
+  if (/^\/(pos|count|kiosk|price-checker|login|stocktakes|reception|delivery)(\/|$)/.test(pathname)) return true;
   if (pathname.startsWith("/inventory")) {
     const tab = new URLSearchParams(search).get("tab") ?? "stock";
     if (tab === "stock" || tab === "barcodes") return true;
@@ -60,7 +62,7 @@ const PAGES: PageItem[] = [
   { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات" },
   { label: "فواتير المبيعات", href: "/invoices", icon: FileText, keywords: "invoices sales فواتير" },
   { label: "عروض الأسعار", href: "/quotations", icon: Receipt, keywords: "quotations عرض سعر" },
-  { label: "مُرتجَعات البيع", href: "/sales-returns", icon: RotateCcw, keywords: "returns sales إرجاع" },
+  { label: "بوابة المرتجعات المركزية", href: "/returns", icon: RotateCcw, keywords: "returns sales purchases إرجاع مرتجع فواتير مفقودة تقصي" },
   { label: "المشتريات", href: "/purchases", icon: Truck, keywords: "purchases شراء" },
   { label: "الموردون", href: "/suppliers", icon: Truck, keywords: "suppliers موردين" },
   { label: "طلبات خدمة العملاء", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة خدمة" },
@@ -129,21 +131,45 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [q, setQ] = useState("");
+  const [lastScannedBarcode, setLastScannedBarcode] = useState<string | null>(null);
+  const [immediateTerm, setImmediateTerm] = useState<string | null>(null);
   const debouncedQ = useDebouncedValue(q, 200);
   const [loc, navigate] = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // ── مسح الباركود العالمي (خارج POS) ──────────────────────────────
-  // ماسح ليزري على أيّ شاشة تصفّح ⇒ يفتح البحث الشامل مملوءاً بالكود، فيُحلّ فوراً
-  // (٨–١٤ رقماً = باركود بتطابق دقيق على productUnits.barcode) ⇒ نقرة للانتقال للصنف/الوثيقة.
-  // معطّل حين يكون البحث مفتوحاً (حقله يلتقط المسح بنفسه) أو على مسار يملك ماسحه المحلّي.
-  const scanToSearch = useCallback((raw: string) => {
+  // ── معالج مسح الباركود الموحّد (ليزر / كاميرا / عالمي) ───────────
+  const handleBarcodeScan = useCallback((raw: string) => {
     const code = raw.trim();
     if (!code) return;
+    // إن كانت الصفحة تملك حقل بحث منتجاتٍ محلّيّاً (سلة مرتجعات/تحويل/هدايا/حجز/شراء عبر
+    // ProductSearchBar) ولم تكن لوحة البحث مفتوحة، فالمسح مقصودٌ لتلك السلة لا للبحث الشامل.
+    if (!open && typeof document !== "undefined") {
+      const localField = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      if (localField) {
+        localField.focus();
+        return;
+      }
+    }
+    playReadyBeep();
+    setLastScannedBarcode(code);
+    setImmediateTerm(code);
     setQ(code);
     setOpen(true);
-  }, []);
-  useBarcodeScanner(scanToSearch, { enabled: !open && !hasLocalScanner(loc) });
+    setTimeout(() => inputRef.current?.focus(), 10);
+  }, [open]);
+
+  // خطاف التقاط الماسح داخل حقل البحث: فك فيزيائي للرموز مستقل عن اللغة (عربي/إنجليزي)
+  // ومنع مفتاح Enter اللاحق للماسح من إغلاق النافذة أو القفز للعنصر الأول بالخطأ.
+  const barcodeInput = useBarcodeInput(
+    (code) => {
+      handleBarcodeScan(code);
+    },
+    { minLength: 2 },
+  );
+
+  // ── مسح الباركود العالمي (خارج POS والحقول المخصصة) ──────────────
+  const scanToSearch = handleBarcodeScan;
+  useBarcodeScanner(scanToSearch, { enabled: !hasLocalScanner(loc), ignoreInputFields: true });
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -164,11 +190,17 @@ export function CommandPalette() {
   }, []);
 
   useEffect(() => {
-    if (open) setTimeout(() => inputRef.current?.focus(), 10);
-    else setQ("");
+    if (open) {
+      setTimeout(() => inputRef.current?.focus(), 10);
+    } else {
+      setQ("");
+      setImmediateTerm(null);
+      setLastScannedBarcode(null);
+    }
   }, [open]);
 
-  const term = debouncedQ.trim();
+  // عند مسح باركود، نتجاوز مهلة الـ 200ms للبحث الفوري اللحظي
+  const term = (immediateTerm ?? debouncedQ).trim();
   const results = trpc.globalSearch.search.useQuery(
     { query: term, perEntityLimit: 6 },
     { enabled: open && term.length > 0, placeholderData: keepPreviousData, staleTime: 30_000 },
@@ -194,6 +226,8 @@ export function CommandPalette() {
   const go = useCallback((href: string) => {
     setOpen(false);
     setQ("");
+    setImmediateTerm(null);
+    setLastScannedBarcode(null);
     navigate(href);
   }, [navigate]);
 
@@ -214,17 +248,48 @@ export function CommandPalette() {
             ref={inputRef}
             placeholder="اكتب/امسح باركود/أدخل رقم وثيقة (INV-/QT-/PO-/WO-) أو كود موظف/مستخدم (EMP-/USER-)…"
             value={q}
-            onValueChange={setQ}
+            onValueChange={(val) => {
+              setImmediateTerm(null);
+              setQ(val);
+            }}
+            onKeyDown={(e) => {
+              barcodeInput.handleKeyDown(e, (val) => {
+                setImmediateTerm(null);
+                setQ(val);
+              });
+            }}
           />
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b">
-            <button
-              type="button"
-              onClick={() => setScanOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-foreground/80 hover:bg-accent"
-            >
-              <ScanLine className="size-3.5" /> مسح بالكاميرا
-            </button>
-            <span className="text-[11px] text-muted-foreground">أو امسح بماسح ليزري — يُكتب الكود ثم Enter</span>
+          <div className="flex items-center justify-between px-3 py-1.5 border-b bg-muted/30 text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setScanOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded border bg-background px-2 py-1 text-xs text-foreground/80 hover:bg-accent transition-colors"
+              >
+                <ScanLine className="size-3.5 text-primary" /> مسح بالكاميرا
+              </button>
+              {lastScannedBarcode && lastScannedBarcode === term ? (
+                <span className="inline-flex items-center gap-1 font-medium text-primary bg-primary/10 px-2 py-0.5 rounded text-[11px]">
+                  <CheckCircle2 className="size-3" /> تم مسح: <span dir="ltr" className="font-mono font-bold">{lastScannedBarcode}</span>
+                </span>
+              ) : (
+                <span className="text-[11px] text-muted-foreground">أو وجّه الماسح الليزري هنا واضغط الزناد للمسح المباشر</span>
+              )}
+            </div>
+            {term && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQ("");
+                  setImmediateTerm(null);
+                  setLastScannedBarcode(null);
+                  inputRef.current?.focus();
+                }}
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="size-3" /> مسح البحث
+              </button>
+            )}
           </div>
           <CommandList>
             {!term && (
@@ -238,11 +303,22 @@ export function CommandPalette() {
             )}
 
             {term && results.isLoading && (
-              <div className="px-4 py-6 text-center text-sm text-muted-foreground">جارٍ البحث…</div>
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground flex flex-col items-center justify-center gap-2">
+                <div className="size-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                <span>جارٍ فحص الباركود والبحث في سجلات النظام…</span>
+              </div>
             )}
 
             {term && !results.isLoading && grouped.length === 0 && matchedPages.length === 0 && (
-              <CommandEmpty>لا نتائج لـ«{term}» — جرّب رقم فاتورة أو اسم منتج/عميل.</CommandEmpty>
+              <div className="px-4 py-8 text-center">
+                <div className="mx-auto mb-2 flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <ScanLine className="size-5" />
+                </div>
+                <div className="text-sm font-semibold">لا توجد نتائج لـ«{term}»</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  لم نجد صنفاً أو فاتورة أو وثيقة بهذا الرمز — تحقق من صحة الرمز أو أضف الصنف للمخزون.
+                </div>
+              </div>
             )}
 
             {term && matchedPages.length > 0 && (
@@ -266,17 +342,24 @@ export function CommandPalette() {
                         key={`${r.type}:${r.id}`}
                         value={`${r.type}:${r.id}:${r.title}`}
                         onSelect={() => go(r.route)}
-                        className="flex items-center gap-2"
+                        className="flex items-center gap-2 cursor-pointer"
                       >
                         <Icon className="size-4 shrink-0" />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-semibold">{r.title}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-semibold">{r.title}</span>
+                            {r.rank === 0 && (
+                              <span className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                                تطابق تام
+                              </span>
+                            )}
+                          </div>
                           {r.subtitle && (
                             <div className="truncate text-[11px] text-muted-foreground">{r.subtitle}</div>
                           )}
                         </div>
                         {r.meta && (
-                          <div dir="ltr" className="shrink-0 text-[11px] text-muted-foreground">
+                          <div dir="ltr" className="shrink-0 text-[11px] font-medium text-muted-foreground">
                             {r.meta}
                           </div>
                         )}
@@ -293,8 +376,7 @@ export function CommandPalette() {
           onClose={() => setScanOpen(false)}
           onDetect={(code) => {
             setScanOpen(false);
-            setQ(code);
-            setTimeout(() => inputRef.current?.focus(), 10);
+            handleBarcodeScan(code);
           }}
         />
       </DialogContent>

@@ -61,15 +61,17 @@ class ProductsRepository(private val api: TrpcClient) : ProductsDataSource {
     override suspend fun barcode(branchId: Long, barcode: String, tier: ProductTier): BarcodeResult? {
         val normalized = barcode.trim()
         require(normalized.isNotEmpty()) { "أدخل باركوداً صالحاً" }
-        // adminList searches both primary and alias barcodes and returns an object even for no match.
-        // catalog.byBarcode returns null for a miss, which the current native object-only transport cannot represent.
-        return products(branchId, normalized, false).rows.firstOrNull { row ->
-            row.barcode == normalized || normalized in row.barcodeAliases
-        }?.let { row ->
-            val variantId = row.variantId ?: return@let null
-            val unitId = row.productUnitId ?: return@let null
-            BarcodeResult(row.productId, variantId, unitId, row.label, row.sku.orEmpty(), row.barcode, row.price(tier), row.stockBase)
-        }
+        require(branchId > 0) { "لا يوجد فرع صالح لقراءة الباركود" }
+        // المسار الحاكم نفسه للكاشير/الكشك: بدائل + تطبيع إرثي + UPC-A/EAN-13، ولا
+        // نختار الصف الأول من بحثٍ ضبابي قد يخص منتجاً آخر.
+        val root = api.queryNullableObject(
+            "catalog.byBarcode",
+            JSONObject()
+                .put("branchId", branchId)
+                .put("barcode", normalized)
+                .put("tier", tier.name),
+        ) ?: return null
+        return ProductsMappers.barcode(root)
     }
 
     override suspend fun bundle(variantId: Long): BundleDetails = coroutineScope {

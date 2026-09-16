@@ -7,6 +7,7 @@
 import { TRPCError } from "@trpc/server";
 import {
   and,
+  asc,
   desc,
   eq,
   gte,
@@ -64,6 +65,15 @@ import {
 } from "./reports/monthCloseSequence";
 
 const BAGHDAD_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+async function isActiveOwnerTx(tx: Tx, userId: number): Promise<boolean> {
+  const [user] = await tx
+    .select({ isOwner: users.isOwner, isActive: users.isActive })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return user?.isOwner === true && user.isActive === true;
+}
 
 export interface CloseYearInput {
   year: number; // مثل 2025
@@ -881,6 +891,14 @@ export async function requestYearEndReopen(
     reason,
   });
   const id = extractInsertId(result);
+  if (await isActiveOwnerTx(tx, input.requestedBy)) {
+    await approveYearEndReopen(tx, {
+      requestId: id,
+      decidedBy: input.requestedBy,
+      decisionReason: reason,
+      now: input.now,
+    });
+  }
   const [created] = await tx
     .select()
     .from(yearEndReopenRequests)
@@ -940,7 +958,10 @@ export async function approveYearEndReopen(
       message: "طلب فتح نهاية السنة محسوم مسبقاً.",
     });
   }
-  if (Number(request.requestedBy) === input.decidedBy) {
+  if (
+    Number(request.requestedBy) === input.decidedBy &&
+    !(await isActiveOwnerTx(tx, input.decidedBy))
+  ) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "لا يعتمد طالب فتح نهاية السنة طلبه بنفسه (فصل المهام).",
@@ -1321,6 +1342,8 @@ export async function listYearEndReopenRequests(
     year?: number;
     snapshotId?: number;
     pendingOnly?: boolean;
+    /** الأقدم أوّلاً لصندوق القرارات — القصّ (200) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+    order?: "ASC" | "DESC";
   } = {},
 ) {
   const where = [];
@@ -1334,7 +1357,7 @@ export async function listYearEndReopenRequests(
     .select()
     .from(yearEndReopenRequests)
     .where(where.length ? and(...where) : sql`1=1`)
-    .orderBy(desc(yearEndReopenRequests.id))
+    .orderBy(filters.order === "ASC" ? asc(yearEndReopenRequests.id) : desc(yearEndReopenRequests.id))
     .limit(200);
   const userIds = Array.from(
     new Set(

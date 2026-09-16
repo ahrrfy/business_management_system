@@ -33,7 +33,7 @@ export const supplierRouter = router({
 
   /** قائمة بسيطة سريعة — لشاشة المشتريات والقوائم (مدير/أدمن فقط). */
   list: suppliersReadProcedure.query(async ({ ctx }) => {
-    const { rows } = await listSuppliers({ includeInactive: false, limit: 500 });
+    const { rows } = await listSuppliers({ includeInactive: false, limit: 500, skipTotal: true });
     return rows.map((r) => maskSupplierSensitive(r, ctx.user.role));
   }),
 

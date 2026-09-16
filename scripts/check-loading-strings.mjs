@@ -27,20 +27,55 @@ const BASELINE = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
   : {};
 
-// نصوصٌ مرفوضة — نطاقٌ ضيّق ومحدَّد. نتغاضى عن نصوصٍ متعدّدة الاستعمال (مثل «تحميل» وحده).
-const REJECTED_PATTERNS = [
-  /جارٍ التحميل/g,
-  /جار التحميل/g,
-  /جارى التحميل/g,
-  /يجري التحميل/g,
-  /جارٍ الحفظ/g,
-  /جار الحفظ/g,
-  /جاري الحفظ/g,
-  /يجري الحفظ/g,
-  /جارٍ الإرسال/g,
-  /جار الإرسال/g,
-  /جاري الإرسال/g,
-];
+/*
+ * ⭐ **الأنماطُ تُشتقّ من `ACTION_LABELS` لا تُكتَب هنا** (مراجعة Codex على PR #953).
+ *
+ * كانت مكتوبةً يدوياً وتغطّي ثلاثةَ أفعال (تحميل/حفظ/إرسال) وحدها. فلمّا وُسّع القاموس
+ * بأربعةٍ جديدة (`approving`/`rejecting`/`cancelling`/`closing`) بقي الحارس أعمى عنها
+ * ⇒ «خطّ أساسٍ صفر» أعلن اتّساقاً **لم يُقَس**: `SalesInvoiceNew` تكتب «جارٍ الاعتماد…»
+ * و`Shifts` «جارٍ الرفض…» و`PrintPOS` «جارٍ الإغلاق…» حرفياً، وكلُّها تعبر.
+ * وهذا هو انجرافُ القاموس عن حارسه: يُضاف مفتاحٌ فيبقى بلا إنفاذ، بلا أن ينبّه أحد.
+ *
+ * فالمصدرُ الآن واحد: يُقرأ `shared/actionLabels.ts` وتُشتقّ منه كلُّ قيمةٍ تبدأ بـ«جارٍ»،
+ * ثمّ يُولَّد لكلٍّ منها نمطُها **مع صيغِها المنجرفة** (بلا همزة · «جاري» · «جارى» ·
+ * «يجري») — وهي الصيغُ التي وُجدت فعلاً في المسح الأصليّ. ⇒ إضافةُ مفتاحٍ إلى القاموس
+ * تُوسّع الحارسَ تلقائياً، ولا يُمكن أن يتقدّم أحدُهما على الآخر.
+ */
+const LABELS_PATH = path.join(REPO_ROOT, "shared", "actionLabels.ts");
+
+/** يستخرج قيم الحالات المنتظِرة («جارٍ …») من القاموس المشترك. */
+function pendingLabelsFromDictionary() {
+  const text = readFileSync(LABELS_PATH, "utf8");
+  const values = new Set();
+  const re = /^\s*[a-zA-Z]+:\s*"([^"]+)"/gm;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const value = m[1];
+    if (value.startsWith("جارٍ ")) values.add(value);
+  }
+  if (values.size === 0) {
+    console.error("✗ تعذّر اشتقاق أيّ نصّ انتظار من shared/actionLabels.ts — هل تغيّر شكل الملفّ؟");
+    process.exit(1);
+  }
+  return [...values];
+}
+
+/** يبني من «جارٍ الاعتماد…» أنماطَ صيغِه المنجرفة كلِّها. */
+function driftVariants(label) {
+  // نُسقِط علامة الحذف ونأخذ الاسم بعد «جارٍ » — مثلاً «الاعتماد».
+  const noun = label.replace(/^جارٍ\s+/, "").replace(/[….]+$/, "").trim();
+  // لا تهريب: الاسم من قاموسنا العربيّ ولا يحمل محرف regex أبداً — والتهريب هنا كان مصدر عطبٍ لا أمان.
+  const escaped = noun;
+  return [
+    new RegExp(`جارٍ ${escaped}`, "g"),
+    new RegExp(`جار ${escaped}`, "g"),
+    new RegExp(`جاري ${escaped}`, "g"),
+    new RegExp(`جارى ${escaped}`, "g"),
+    new RegExp(`يجري ${escaped}`, "g"),
+  ];
+}
+
+const REJECTED_PATTERNS = pendingLabelsFromDictionary().flatMap(driftVariants);
 
 function* walkTsx(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -64,7 +99,21 @@ for (const file of walkTsx(SCAN_ROOT)) {
   let count = 0;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+    /*
+     * ⚠️ **وتعليقُ JSX `{/* … *\/}` كذلك** (٢/٩/٢٦): كانت الثلاثةُ أدناه تُسقط `//` و`*`
+     * و`/*` وحدها، فبقي تعليقُ JSX يُفحَص كأنّه شيفرة — وهو الشكل الأشيع في `client/**`.
+     * والنتيجة إنذارٌ كاذب: `GiftsHub.tsx` بقي في خطّ الأساس بمخالفةٍ واحدة بعد ترحيله
+     * كاملاً إلى `ACTION_LABELS`، ومَصدرُها **تعليقان** يشرحان الترحيل نفسه ويقتبسان
+     * «جارٍ» ليوضّحا الإملاء. أي أنّ الحارس كان يطالب بإصلاح ما أصلحه المُرحِّل للتوّ.
+     * والإنذارُ الكاذب أسوأ من الصمت: يدفع إلى تشويه تعليقٍ صحيحٍ للتملّص منه.
+     * (نفسُ العلّة أُصلحت في `check-no-window-dialogs.mjs` على `Vouchers.tsx`.)
+     */
+    if (
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("{/*")
+    ) continue;
     for (const rx of REJECTED_PATTERNS) {
       rx.lastIndex = 0;
       const m = line.match(rx);

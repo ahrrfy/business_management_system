@@ -14,6 +14,7 @@ import {
   Banknote,
   FileText,
   HandCoins,
+  PencilLine,
   Printer,
   Receipt,
   RotateCcw,
@@ -291,6 +292,7 @@ export function ReceptionInvoiceQueue({
             <tbody>
               {rows.map((r) => {
                 const remaining = remainingOf(r);
+                const canCorrect = canFulfill;
                 return (
                   <tr key={String(r.id)} className="border-b align-middle hover:bg-muted/30">
                     <td className="px-2 py-2 font-bold" dir="ltr">
@@ -364,6 +366,17 @@ export function ReceptionInvoiceQueue({
                         <Button size="sm" variant="outline" className="h-7 px-1.5" title="طباعة A4" aria-label={`طباعة A4 للفاتورة ${r.invoiceNumber}`} onClick={() => void printA4(r)}>
                           <FileText aria-hidden className="size-3" />
                         </Button>
+                        {canCorrect && (
+                          <a
+                            href={`/reception/workflow?section=edit&invoice=${encodeURIComponent(r.invoiceNumber)}`}
+                            className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-1.5 text-[10px] font-bold text-[var(--sem-warn)] hover:bg-muted"
+                            title="فتح فحص أهلية التعديل ثم محرر الفاتورة"
+                            aria-label={`تعديل الفاتورة ${r.invoiceNumber} وإعادة إصدارها`}
+                          >
+                            <PencilLine aria-hidden className="size-3" />
+                            تعديل
+                          </a>
+                        )}
                         {!r.consignmentId && canFulfill && (
                           <Button size="sm" variant="outline" className="h-7 px-1.5" title="إسناد للتوصيل" aria-label={`إسناد الفاتورة ${r.invoiceNumber} للتوصيل`} onClick={() => setDispatchTarget(r)}>
                             <Truck aria-hidden className="size-3" />
@@ -400,9 +413,9 @@ export function ReceptionInvoiceQueue({
         )}
       </div>
 
-      {/* §٨.٥ — سطرٌ ثابت بدل زرّ تعديلٍ يكذب: الفاتورة المثبَّتة لا تُعدَّل. */}
+      {/* التصحيح لا يكتب فوق المستند: الأصل يبقى تدقيقياً ويُستبدل بعد اعتماد مستقل. */}
       <div className="flex-shrink-0 border-t bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
-        الفاتورة المُثبَّتة لا تُعدَّل — التصحيح بمرتجعٍ (المدير) أو بتصحيح ملاحظات/استحقاق من شاشة التفاصيل.
+        «تعديل» يفتح محرر الفاتورة نفسه. عند اعتماد مدير مستقل يُعكس الأصل وتصدر فاتورة بديلة بكل آثارها المالية والمخزنية، ثم تُطبع البديلة.
       </div>
 
       {collectTarget && (

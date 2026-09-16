@@ -34,9 +34,9 @@ class ApprovalsStateTest {
 
     @Test
     fun `second decision cannot start while one is in flight`() {
-        val first = PendingApprovalDecision(request(1, ApprovalKind.INVENTORY).key, ApprovalDecision.Approve)
+        val first = PendingApprovalDecision(request(1, ApprovalKind.INVENTORY).key, ApprovalDecision.Approve())
         val inFlight = ApprovalsUiState(loading = false).decisionStarted(first)
-        val second = PendingApprovalDecision(request(2, ApprovalKind.LEAVE).key, ApprovalDecision.Approve)
+        val second = PendingApprovalDecision(request(2, ApprovalKind.LEAVE).key, ApprovalDecision.Approve())
 
         assertSame(inFlight, inFlight.decisionStarted(second))
         assertEquals(first.requestKey, inFlight.submittingKey)

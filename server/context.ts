@@ -1,6 +1,7 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import { applyPermissionOverrides, diffFromTemplate, resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { User } from "../drizzle/schema";
+import type { NativeClientId } from "./auth/deviceProof";
 import { getSessionContext } from "./auth/session";
 import { loadActiveCustomRole } from "./services/roleService";
 import { getPlatformAdminFromRequest } from "./tenancy/platformAuth";
@@ -21,6 +22,11 @@ export type TrpcContext = {
   /** معرّف سطر الجلسة الفردية الحالية (userSessions.id) — null لتوكنات legacy بلا sid
    *  أو حين لا مستخدم. يُستعمل لتمييز «الجلسة الحالية» في شاشة عرض الجلسات ولإبطالها. */
   sessionId: number | null;
+  /**
+   * A verified device-bound native app identity. This is populated by the
+   * session verifier, never by accepting a client-provided header in a router.
+   */
+  nativeClientId: NativeClientId | null;
   /** مدير منصّة (تعدّد الشركات) — منفصل تماماً عن `user` (لا ينتمي لأي شركة). */
   platformAdmin: PlatformAdmin | null;
 };
@@ -78,10 +84,12 @@ export async function createContext(
 ): Promise<TrpcContext> {
   let user: AuthUser | null = null;
   let sessionId: number | null = null;
+  let nativeClientId: NativeClientId | null = null;
   try {
     const sessionCtx = await getSessionContext(opts.req);
     user = sessionCtx.user as AuthUser | null;
     sessionId = sessionCtx.sessionId;
+    nativeClientId = sessionCtx.nativeClientId;
     if (user?.isOwner) {
       // The persisted owner flag is the system authority invariant. Normalize
       // the request context before any router/middleware sees it so a stale
@@ -94,6 +102,7 @@ export async function createContext(
   } catch {
     user = null;
     sessionId = null;
+    nativeClientId = null;
   }
   // مدير المنصّة: كوكي/JWT منفصلان تماماً (platformAuth.ts) — لا علاقة بجلسة الشركة أعلاه.
   // معظم الطلبات لا تحمل كوكي مدير المنصّة إطلاقاً ⇒ verifyPlatformSession يعود null فوراً
@@ -104,5 +113,12 @@ export async function createContext(
   } catch {
     platformAdmin = null;
   }
-  return { req: opts.req, res: opts.res, user, sessionId, platformAdmin };
+  return {
+    req: opts.req,
+    res: opts.res,
+    user,
+    sessionId,
+    nativeClientId,
+    platformAdmin,
+  };
 }

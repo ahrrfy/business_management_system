@@ -4,6 +4,20 @@ import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { getReminderQueue } from "../arRemindersService";
 import { getTodayNetSales } from "./todaySales";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+
+/**
+ * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` (نمطُ SQL الخامّ في هذا الملفّ) —
+ * `openBalanceExpr` لا تستورد المخطّط عمداً فتقبل أيّ جزءِ SQL، ولذلك تصلح هنا كما تصلح
+ * على جدول drizzle مباشرةً. ملاحظة: `CAST(… AS DECIMAL(15,2))` الذي تُضيفه لا أثرَ له رقمياً
+ * على هذه الأعمدة (`decimal(15,2)` في المخطّط) — هو تثبيتٌ يمنع استنتاج `DOUBLE` حين يمرّ
+ * المسند فوق عمودٍ عابرٍ من انضمامٍ يساريّ أو جدولٍ مشتقّ.
+ */
+const INVOICE_ALIAS_OPEN_BALANCE_COLS = {
+  total: sql`i.total`,
+  paidAmount: sql`i.paidAmount`,
+  returnedTotal: sql`i.returnedTotal`,
+};
 
 /** شرط SQL خام لمهمة متأخّرة — مرآة `overdueSqlCond` في `server/services/tasks/list.ts`
  *  (لا استيراد مباشر: تلك الدالة تستعمل أعمدة drizzle مكتوبة `tasks.dueAt`، وهذا الملف يبني
@@ -90,6 +104,21 @@ export interface DashboardMetricsResult {
   };
 }
 
+import { createTtlCache } from "../../lib/ttlCache";
+
+export type SharedDashboardMetrics = Omit<DashboardMetricsResult, "morningBrief"> & {
+  morningBrief: Omit<DashboardMetricsResult["morningBrief"], "myOpenTasks">;
+};
+
+const dashboardSharedMetricsCache = createTtlCache<string, SharedDashboardMetrics>({
+  ttlMs: 20_000,
+  maxEntries: 100,
+});
+
+export function clearDashboardMetricsCache(): void {
+  dashboardSharedMetricsCache.clear();
+}
+
 /**
  * مقاييس البطاقتين المعطّلتين في Dashboard.MetricsBar:
  *  - lowStockCount: متغيّرات تحت minStock (minStock>0) ضمن الفرع المُحدَّد (أو الكل إن null).
@@ -116,10 +145,46 @@ export async function getDashboardMetrics(
     /** مستخدم الطلب — يُستعمل حصراً لحساب `morningBrief.myOpenTasks` الشخصي. الراوتر الحيّ
      *  والتنفيذيّة يمرّرانه؛ غيابه عند المستدعي المجدول يُبقي الرقم صفراً. */
     userId?: number | null;
+    /** تجاوز كاش الذاكرة عمداً (يُستعمل في الاختبارات الدقيقة أو عند التحديث القسري). */
+    skipCache?: boolean;
   } = {}
 ): Promise<DashboardMetricsResult> {
   const includeFinancials = opts.includeFinancials ?? true;
   const includeTodaySales = opts.includeTodaySales ?? false;
+  const includeOpeningBalance = opts.includeOpeningBalance ?? false;
+  const branchId = opts.branchId ?? null;
+
+  const isTest = process.env.NODE_ENV === "test" || Boolean(process.env.VITEST);
+  const shouldSkipCache = opts.skipCache ?? isTest;
+
+  const cacheKey = `${branchId ?? "all"}:${includeOpeningBalance ? 1 : 0}:${includeFinancials ? 1 : 0}:${includeTodaySales ? 1 : 0}`;
+
+  const sharedPromise = shouldSkipCache
+    ? fetchSharedDashboardMetrics(branchId, includeOpeningBalance, includeFinancials, includeTodaySales)
+    : dashboardSharedMetricsCache.get(cacheKey, () =>
+        fetchSharedDashboardMetrics(branchId, includeOpeningBalance, includeFinancials, includeTodaySales),
+      );
+
+  const [shared, myOpenTasks] = await Promise.all([
+    sharedPromise,
+    opts.userId != null ? getMyOpenTasksCount(opts.userId) : Promise.resolve(0),
+  ]);
+
+  return {
+    ...shared,
+    morningBrief: {
+      ...shared.morningBrief,
+      myOpenTasks,
+    },
+  };
+}
+
+async function fetchSharedDashboardMetrics(
+  branchId: number | null,
+  includeOpeningBalance: boolean,
+  includeFinancials: boolean,
+  includeTodaySales: boolean,
+): Promise<SharedDashboardMetrics> {
   const db = getDb();
   if (!db) {
     return {
@@ -128,10 +193,9 @@ export async function getDashboardMetrics(
       todaySales: { total: toDbMoney(money(0)), invoiceCount: 0 },
       overdueAR: { count: 0, total: toDbMoney(money(0)) },
       salesPulse: { yesterday: toDbMoney(money(0)), avg7d: toDbMoney(money(0)), direction: "flat", changePct: 0 },
-      morningBrief: { arRemindersDue: 0, promisedToday: 0, overdueWorkOrders: 0, myOpenTasks: 0, overdueTasks: 0 },
+      morningBrief: { arRemindersDue: 0, promisedToday: 0, overdueWorkOrders: 0, overdueTasks: 0 },
     };
   }
-  const branchId = opts.branchId ?? null;
   const sourceErrors: string[] = [];
   const branchFilterStock = branchId == null ? sql`` : sql`AND bs.branchId = ${branchId}`;
   const branchFilterInv = branchId == null ? sql`` : sql`AND i.branchId = ${branchId}`;
@@ -173,8 +237,10 @@ export async function getDashboardMetrics(
     const arRows = await db.execute(sql`
       SELECT
         COUNT(*) AS c,
-        CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS t
+        CAST(COALESCE(SUM(${openBalanceExpr(INVOICE_ALIAS_OPEN_BALANCE_COLS, "COLLECTIBLE")}), 0) AS CHAR) AS t
       FROM invoices i
+      -- ⚠️ قائمةٌ بيضاء أضيقُ من «غير ميتة» (تُسقِط CONFIRMED) — تُرِكت كما هي: توسيعُها يرفع
+      -- بطاقةَ «الذمم المتأخّرة» في اللوحة ⇒ قرارُ سياسة لا توحيدُ مسند (جرد الانحراف، بند د).
       WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
         -- S2 (٢٩/٦/٢٦): مطابق DATEDIFF(NOW(),invoiceDate)>30 تماماً (DATEDIFF يتجاهل الوقت، TZ=UTC) لكنه قابل للفهرسة.
         AND i.invoiceDate < DATE_SUB(UTC_DATE(), INTERVAL 30 DAY)
@@ -204,7 +270,7 @@ export async function getDashboardMetrics(
     // غائبين كلياً عن هذين العدّادين رغم أنهما القناتان اليوميّتان المصمَّمتان خصيصاً لهذا الغرض.
     // نضيفهم فقط حين المستدعي طلب ذلك صراحةً (includeOpeningBalance — الأدمن حصراً، مطابقةً لحصر
     // openingScope في الراوتر) وفي العرض المجمَّع فقط (لا انتماء فرعيّ لهؤلاء المدينين).
-    if (opts.includeOpeningBalance && branchId == null) {
+    if (includeOpeningBalance && branchId == null) {
       const openingQueue = await getReminderQueue({ branchId: null, openingOnly: true });
       arRemindersDue += openingQueue.length;
       promisedToday += openingQueue.filter((r) => r.isPromiseDue).length;
@@ -239,7 +305,6 @@ export async function getDashboardMetrics(
   `);
   const taskData = (taskRows as any)[0] ?? taskRows;
   const overdueTasks = Number((Array.isArray(taskData) ? taskData[0]?.c : 0) ?? 0);
-  const myOpenTasks = opts.userId != null ? await getMyOpenTasksCount(opts.userId) : 0;
 
   // نبض المبيعات: مبيعات أمس (صافي = total − returnedTotal، غير الملغاة) مقابل معدّل آخر ٧ أيام
   // مكتملة (D-7..D-1، بلا اليوم الجاري غير المكتمل). العزل عبر الفرع. avg = مجموع النافذة ÷ ٧
@@ -286,6 +351,6 @@ export async function getDashboardMetrics(
       total: toDbMoney(money(arRow?.t ?? 0)),
     },
     salesPulse,
-    morningBrief: { arRemindersDue, promisedToday, overdueWorkOrders, myOpenTasks, overdueTasks },
+    morningBrief: { arRemindersDue, promisedToday, overdueWorkOrders, overdueTasks },
   };
 }

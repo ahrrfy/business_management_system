@@ -8,6 +8,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { FormError } from "@/components/form/FormError";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { fmt } from "@/lib/money";
@@ -50,6 +51,8 @@ export default function SupplierNew() {
   const [phone, setPhone] = useState("");
   const [phone2, setPhone2] = useState("");
   const [phone3, setPhone3] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
+  const [email, setEmail] = useState("");
   const [address, setAddress] = useState("");
   const [city, setCity] = useState("");
   const [supplierCategory, setSupplierCategory] = useState<string>("محلي");
@@ -128,7 +131,8 @@ export default function SupplierNew() {
       phone: phone.trim() || null,
       phone2: phone2.trim() || null,
       phone3: phone3.trim() || null,
-      whatsapp: phone.trim() || null,
+      whatsapp: whatsapp.trim() || null,
+      email: email.trim() || null,
       address: address.trim() || null,
       city: city.trim() || null,
       taxId: taxId.trim() || null,
@@ -170,9 +174,9 @@ export default function SupplierNew() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, phone, phone2, phone3, address, city, supplierCategory, productTypes, taxId, paymentTerms, leadTimeDays, minOrderAmount, rating, iban, bankName, openingAmount, openingDir, notes, supplierKind, settlementCycle, abandonedAfterMonths, autoSettleThreshold, agreementNotes, agreementImages]);
+  }, [name, phone, phone2, phone3, whatsapp, email, address, city, supplierCategory, productTypes, taxId, paymentTerms, leadTimeDays, minOrderAmount, rating, iban, bankName, openingAmount, openingDir, notes, supplierKind, settlementCycle, abandonedAfterMonths, autoSettleThreshold, agreementNotes, agreementImages]);
 
-  const wa = whatsappLink(phone);
+  const wa = whatsappLink(whatsapp || phone);
 
   return (
     <div className="space-y-4">
@@ -275,9 +279,21 @@ export default function SupplierNew() {
               <Label htmlFor="ph2">Phone 2</Label>
               <IntlPhoneInput id="ph2" value={phone2} onChange={setPhone2} />
             </div>
-            <div className="space-y-1 md:col-span-2">
+            <div className="space-y-1">
               <Label htmlFor="ph3">Phone 3</Label>
               <IntlPhoneInput id="ph3" value={phone3} onChange={setPhone3} />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between mb-1.5">
+                <Label htmlFor="whatsapp">واتساب</Label>
+                {wa && (
+                  <a href={wa} target="_blank" rel="noreferrer" className="text-xs text-primary underline" dir="ltr">
+                    {displayE164(whatsapp || phone)}
+                  </a>
+                )}
+              </div>
+              <IntlPhoneInput id="whatsapp" value={whatsapp} onChange={setWhatsapp} />
+              <p className="text-[11px] text-muted-foreground">إن تُرك فارغاً يُستعمَل الرقم الرئيسي.</p>
             </div>
           </div>
         </CardContent>
@@ -329,7 +345,11 @@ export default function SupplierNew() {
             <Label htmlFor="city">المدينة</Label>
             <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} placeholder="بغداد" maxLength={100} />
           </div>
-          <div className="space-y-1 lg:col-span-2">
+          <div className="space-y-1">
+            <Label htmlFor="email">البريد الإلكتروني</Label>
+            <Input id="email" dir="ltr" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="—" maxLength={320} />
+          </div>
+          <div className="space-y-1">
             <Label htmlFor="prods">أنواع المنتجات</Label>
             <Input id="prods" value={productTypes} onChange={(e) => setProductTypes(e.target.value)} placeholder="مثال: ورق، أحبار، أدوات قرطاسية" />
           </div>
@@ -496,7 +516,7 @@ export default function SupplierNew() {
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <Button onClick={submit} disabled={create.isPending} title="Ctrl+S">
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ المورّد"}
+          {create.isPending ? ACTION_LABELS.saving : "حفظ المورّد"}
         </Button>
         <Link href="/suppliers"><Button variant="outline" title="Esc">إلغاء</Button></Link>
       </div>

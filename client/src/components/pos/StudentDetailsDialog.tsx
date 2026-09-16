@@ -1,4 +1,4 @@
-// إدخال بيع الاشتراك فقط: رقم الاشتراك + اسم الطالب + هاتفه.
+// بيانات الطالب لكل اشتراك؛ مرجع المزوّد يُدخل مرة واحدة في سلة المزوّد.
 // لا عقد ولا تاريخ انتهاء ولا ربط بمنصة أو ملف طالب؛ اللقطة تُحفظ مع الفاتورة حصراً.
 import { notify } from "@/lib/notify";
 import { GraduationCap, X } from "lucide-react";
@@ -7,11 +7,6 @@ import { useEffect, useRef, useState } from "react";
 export type StudentSnapshot = {
   studentName: string;
   studentPhone: string;
-};
-
-export type SubscriptionSaleCapture = {
-  providerReference: string;
-  student: StudentSnapshot;
 };
 
 const C = {
@@ -45,31 +40,27 @@ export function StudentDetailsDialog({
   open: boolean;
   cardName: string;
   onCancel: () => void;
-  onConfirm: (capture: SubscriptionSaleCapture) => void;
+  onConfirm: (student: StudentSnapshot) => void;
 }) {
-  const [providerReference, setProviderReference] = useState("");
   const [studentName, setStudentName] = useState("");
   const [studentPhone, setStudentPhone] = useState("+964");
-  const refInput = useRef<HTMLInputElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
   const phoneInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    setProviderReference("");
     setStudentName("");
     setStudentPhone("+964");
-    setTimeout(() => refInput.current?.focus(), 40);
+    const timer = setTimeout(() => nameInput.current?.focus(), 40);
+    return () => clearTimeout(timer);
   }, [open]);
 
   function submit() {
-    const reference = providerReference.trim().replace(/\s+/g, "");
     const name = studentName.trim();
     const phone = iraqPhoneFromInput(studentPhone);
-    if (!reference) return notify.err("رقم الاشتراك أو ID مطلوب قبل الإضافة للسلة");
     if (!name) return notify.err("اسم الطالب مطلوب");
     if (phone.replace(/^\+964/, "").length !== 10) return notify.err("أدخل رقم هاتف الطالب العراقي كاملاً");
-    onConfirm({ providerReference: reference, student: { studentName: name, studentPhone: phone } });
+    onConfirm({ studentName: name, studentPhone: phone });
   }
 
   function next(e: React.KeyboardEvent<HTMLInputElement>, target?: React.RefObject<HTMLInputElement | null>) {
@@ -106,10 +97,6 @@ export function StudentDetailsDialog({
           <p style={{ margin: 0, padding: 10, borderRadius: 9, background: C.muted, color: C.mutedFg, fontSize: 12.5, lineHeight: 1.6 }}>
             نحفظ هذه البيانات مع الفاتورة فقط. لا يوجد ربط أو تحقق من المنصة التعليمية.
           </p>
-          <label style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 13, fontWeight: 800, color: C.fg }}>
-            رقم الاشتراك أو ID
-            <input ref={refInput} value={providerReference} maxLength={120} onChange={(e) => setProviderReference(e.target.value)} onKeyDown={(e) => next(e, nameInput)} placeholder="امسح الرقم أو اكتبه" dir="ltr" style={fieldStyle} />
-          </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 13, fontWeight: 800, color: C.fg }}>
             اسم الطالب
             <input ref={nameInput} value={studentName} maxLength={200} onChange={(e) => setStudentName(e.target.value)} onKeyDown={(e) => next(e, phoneInput)} dir="auto" style={fieldStyle} />

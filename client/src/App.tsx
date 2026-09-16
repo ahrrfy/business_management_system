@@ -33,8 +33,13 @@ import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
+import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
+const QuranStationDrawer = lazy(() =>
+  import("@/components/quran/QuranStationDrawer").then((m) => ({ default: m.QuranStationDrawer })),
+);
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
 const ForceTwoFactorEnroll = lazy(() =>
   import("@/components/ForceTwoFactorEnroll").then((m) => ({ default: m.ForceTwoFactorEnroll })),
@@ -56,6 +61,9 @@ const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const MyWork = lazy(() => import("@/pages/MyWork"));
 const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
 const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
+const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
+const ReceptionHandoverPage = lazy(() => import("@/pages/reception/ReceptionHandoverPage"));
+
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 
 const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
@@ -89,20 +97,16 @@ const ProductContentDrafts = lazy(() => import("@/pages/ProductContentDrafts"));
 const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
 const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
-const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
 const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
 const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
-const PurchaseGoodsReceipts = lazy(() => import("@/pages/PurchaseGoodsReceipts"));
-const PurchaseSupplierInvoices = lazy(() => import("@/pages/PurchaseSupplierInvoices"));
-const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGovernance"));
 const SupplierPaymentsGovernance = lazy(() => import("@/pages/SupplierPaymentsGovernance"));
 const PurchaseChargesGovernance = lazy(() => import("@/pages/PurchaseChargesGovernance"));
 const PurchaseIntegrityCases = lazy(() => import("@/pages/PurchaseIntegrityCases"));
+const GoodsReceiptReversalGovernance = lazy(() => import("@/pages/GoodsReceiptReversalGovernance"));
+const SupplierInvoiceApprovalGovernance = lazy(() => import("@/pages/SupplierInvoiceApprovalGovernance"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
-const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
-const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
 const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
@@ -116,14 +120,15 @@ const AssetEdit = lazy(() => import("@/pages/AssetEdit"));
 const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
 const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
+const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
 const PlatformAdmin = lazy(() => import("@/pages/PlatformAdmin"));
 const UserNew = lazy(() => import("@/pages/UserNew"));
 const UserEdit = lazy(() => import("@/pages/UserEdit"));
 const RoleEdit = lazy(() => import("@/pages/RoleEdit"));
 const Account = lazy(() => import("@/pages/Account"));
+const Announcements = lazy(() => import("@/pages/Announcements"));
 const SalesReportsHub = lazy(() => import("@/pages/SalesReportsHub"));
 const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
-const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
 const ChartOfAccounts = lazy(() => import("@/pages/ChartOfAccounts"));
 const StatutoryAccounting = lazy(() => import("@/pages/StatutoryAccounting"));
@@ -158,6 +163,7 @@ const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
 const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
 const WhatsappHubReport = lazy(() => import("@/pages/WhatsappHubReport"));
 const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
+const SelfApprovalAudit = lazy(() => import("@/pages/SelfApprovalAudit"));
 const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
 const MonthlyAttendanceReport = lazy(() => import("@/pages/MonthlyAttendanceReport"));
 const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
@@ -168,6 +174,7 @@ const StocktakeReview = lazy(() => import("@/pages/StocktakeReview"));
 const StocktakeReport = lazy(() => import("@/pages/StocktakeReport"));
 const StocktakeCountSheets = lazy(() => import("@/pages/StocktakeCountSheets"));
 const StocktakeRemaining = lazy(() => import("@/pages/StocktakeRemaining"));
+const VerifyDocument = lazy(() => import("@/pages/VerifyDocument"));
 const CountPortal = lazy(() => import("@/pages/CountPortal"));
 const MyStocktakes = lazy(() => import("@/pages/MyStocktakes"));
 const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
@@ -309,13 +316,45 @@ function RootRoute() {
   );
 }
 
+/**
+ * ربط تلقائي عام بالطابعة الحرارية المتصلة عبر WebUSB (Zadig WinUSB) عند تشغيل التطبيق أو وصل الكابل.
+ * يضمن بقاء الطابعة الحرارية مربوطة في الذاكرة عبر كافة شاشات النظام (الاستقبال، الكاشير، الشحن، الكشوفات).
+ */
+function GlobalPrinterAutoConnect() {
+  useEffect(() => {
+    if (!isWebUsbSupported()) return;
+    void tryReconnectPrinter("receipt").catch(() => { /* صامت */ });
+    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
+    if (!usb) return;
+    const onConnect = () => {
+      void tryReconnectPrinter("receipt").catch(() => { /* صامت */ });
+    };
+    usb.addEventListener("connect", onConnect);
+    return () => usb.removeEventListener("connect", onConnect);
+  }, []);
+  return null;
+}
+
+function QuranAuthBoundary() {
+  const [location] = useLocation();
+  useEffect(() => {
+    if (location === "/login") {
+      pauseGlobalQuranAudio();
+    }
+  }, [location]);
+  return null;
+}
+
 export default function App() {
   return (
-    <ErrorBoundary>
-    <HostPolicy />
-    {/* شريط حالة الاتصال — على مستوى App كي يظهر أيضاً في شاشات ملء الشاشة (POS/قارئ الأسعار/الدخول). */}
-    <OfflineBanner />
-    <Suspense fallback={<RouteFallback />}>
+    <QuranAudioProvider>
+      <QuranAuthBoundary />
+      <ErrorBoundary>
+      <HostPolicy />
+      <GlobalPrinterAutoConnect />
+      {/* شريط حالة الاتصال — على مستوى App كي يظهر أيضاً في شاشات ملء الشاشة (POS/قارئ الأسعار/الدخول). */}
+      <OfflineBanner />
+      <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
       {/* معاينة تصميم الهاتف/اللوحي: واجهة تجريبية ثابتة بلا بيانات تشغيلية. */}
@@ -330,22 +369,35 @@ export default function App() {
       <Route path="/print-pos">
         <Redirect to="/pos?mode=PRINT_SERVICES" />
       </Route>
+      {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION */}
+      <Route path="/reception">
+        <Redirect to="/pos?mode=RECEPTION" />
+      </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — عامة بلا دخول */}
       <Route path="/price-checker">
         <PriceChecker />
       </Route>
       {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/kiosk" component={Kiosk} />
-      {/* متجر الزبون (B2C) — صفحة علنية بملء الشاشة، نقطة دخول تطبيق الجوال. بلا جلسة وبلا AppLayout. */}
-      <Route path="/store" component={Storefront} />
       {/* تحقق ضيق لتطبيق الهاتف: يعيد رمز Turnstile فقط، ولا يعرض المتجر أو بيانات العميل. */}
       <Route path="/store/mobile-turnstile" component={MobileTurnstile} />
+      {/* متجر الزبون (B2C) — روابط مباشرة للمنتجات والأقسام للتسويق والـ SEO ومحركات البحث */}
+      <Route path="/store/product/:productId" component={Storefront} />
+      <Route path="/store/category/:categoryId" component={Storefront} />
+      <Route path="/store" component={Storefront} />
+      {/* الصفحات القانونية وسياسة الخصوصية وحذف الحساب — عامة بلا دخول ومطلوبة لـ Google Play */}
+      <Route path="/legal/privacy" component={LegalDocument} />
+      <Route path="/legal/terms" component={LegalDocument} />
+      <Route path="/legal/returns" component={LegalDocument} />
+      <Route path="/legal/delete-account" component={LegalDocument} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>
       <Route path="/my-stocktake"><Shell><MyStocktakes /></Shell></Route>
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
+      {/* بوابة التحقق الرقمي من أصالة المستندات والفواتير عبر QR المشفر — عامة بلا دخول */}
+      <Route path="/verify" component={VerifyDocument} />
       <Route path="/platform-admin" component={PlatformAdmin} />
       <Route path="/"><RootRoute /></Route>
       {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
@@ -369,8 +421,8 @@ export default function App() {
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><RequireRole gate={INVOICE_LIST_GATE}><SalesHub /></RequireRole></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
-      {/* تصحيح الفاتورة (0168): نفس شاشة البيع في وضع التصحيح (عكس + إعادة إصدار) — مديريّ فقط. */}
-      <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
+      {/* التصحيح: الكاشير يرفع طلباً صفريَّ الأثر من نفس شاشة البيع؛ مديرٌ مستقل يعتمد التنفيذ. */}
+      <Route path="/invoices/:id/correct"><Shell><RequireRole gate={INVOICE_CORRECTION_GATE}><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole></Shell></Route>
       <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
@@ -382,23 +434,26 @@ export default function App() {
       <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
-      <Route path="/returns"><Shell><Returns /></Shell></Route>
-      <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
-      <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
-      <Route path="/purchase-returns/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnNew /></RequireRole></Shell></Route>
+      <Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
+      <Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>
+      <Route path="/sales-returns"><Redirect to="/returns?tab=sales" /></Route>
+      <Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>
-      <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
+      <Route path="/purchase-returns"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchases"><Shell><RequireRole roles={["manager", "purchasing", "warehouse", "accountant", "auditor"]} module="purchases" level="READ"><PurchasesHub /></RequireRole></Shell></Route>
       <Route path="/purchases/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseNew /></RequireRole></Shell></Route>
-      <Route path="/purchases/:id/receive"><Shell><RequireRole roles={["manager", "purchasing", "warehouse"]} module="purchases" level="FULL"><PurchaseReceive /></RequireRole></Shell></Route>
+      {/* توافق روابط قديمة فقط: لا توجد عملية استلام مستقلة؛ الاعتماد النهائي يرحّل الفاتورة كاملة. */}
+      <Route path="/purchases/:id/receive">{(params) => <Redirect to={`/purchases/${params.id}`} />}</Route>
       <Route path="/purchases/:id/edit"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
-      <Route path="/purchases/goods-receipts"><Shell><RequireRole roles={["manager", "purchasing", "warehouse"]} module="purchases" level="FULL"><PurchaseGoodsReceipts /></RequireRole></Shell></Route>
-      <Route path="/purchases/supplier-invoices"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseSupplierInvoices /></RequireRole></Shell></Route>
-      <Route path="/purchases/returns-governance"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
+      <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
+      <Route path="/purchases/returns-governance"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
-      {/* بعد /purchases/new و/:id/receive و/:id/edit عمداً: مسارٌ عامّ لا يبتلع الأخصّ منه. */}
+      <Route path="/purchases/goods-receipt-reversals"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><GoodsReceiptReversalGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/supplier-invoice-approvals"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierInvoiceApprovalGovernance /></RequireRole></Shell></Route>
+      {/* بعد المسارات الأخصّ عمداً: مسارٌ عامّ لا يبتلعها. */}
       <Route path="/purchases/:id"><Shell><RequireRole module="purchases" level="READ"><PurchaseOrderDetail /></RequireRole></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
@@ -445,6 +500,9 @@ export default function App() {
       <Route path="/my-work"><Shell><MyWork /></Shell></Route>
       <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
       <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
+      {/* شاشة التسليم المباشر والإسناد للمندوب — تعمل بالباركود */}
+      <Route path="/reception/workflow"><Shell><ReceptionWorkflowPage /></Shell></Route>
+      <Route path="/reception/handover"><Shell><ReceptionHandoverPage /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>
@@ -536,6 +594,7 @@ export default function App() {
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة
           الخادم التي بلا قائمة أدوار. */}
       <Route path="/reports/payroll"><Shell><RequireOwner><PayrollReport /></RequireOwner></Shell></Route>
+      <Route path="/reports/self-approvals"><Shell><RequireOwner><SelfApprovalAudit /></RequireOwner></Shell></Route>
       <Route path="/reports/attendance-monthly"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><MonthlyAttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
@@ -573,6 +632,7 @@ export default function App() {
       <Route path="/roles/new"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
+      <Route path="/announcements"><Shell><RequireRole roles={["admin","manager"]} module="announcements" level="READ"><Announcements /></RequireRole></Shell></Route>
       <Route path="/audit"><Shell><RequireRole roles={["admin","auditor"]}><AuditLogs /></RequireRole></Shell></Route>
       <Route path="/closing"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
@@ -584,6 +644,11 @@ export default function App() {
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
     </Suspense>
+    {/* محطة القرآن الكريم الموسعة — تفتح كدرج جانبي عند الطلب من أي شاشة */}
+    <Suspense fallback={null}>
+      <QuranStationDrawer />
+    </Suspense>
     </ErrorBoundary>
+    </QuranAudioProvider>
   );
 }

@@ -11,9 +11,12 @@ import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrder
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
@@ -25,12 +28,14 @@ import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
-import { Printer, MessageCircle, Truck } from "lucide-react";
+import { Printer, MessageCircle, Truck, CheckCircle2, Clock } from "lucide-react";
+import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
 import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { WorkOrderDeliverySection } from "@/components/delivery/WorkOrderDeliverySection";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -49,6 +54,7 @@ import {
   mayRequestWorkOrderControl,
 } from "@shared/workOrderControlAuthority";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
 
 
@@ -61,9 +67,6 @@ const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: st
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
-
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 type CancelInput = RouterInputs["workOrders"]["cancel"];
 type CancelControlInput = Extract<
@@ -140,6 +143,7 @@ export default function WorkOrderDetail() {
   const [cancelOutcomeUncertain, setCancelOutcomeUncertain] = useState(false);
   // تحرير بنود الأمر (١٧/٨/٢٦) — الفجوة التي اشتكاها المالك: لا مسار لإضافة/حذف منتج.
   const [editingMaterials, setEditingMaterials] = useState(false);
+
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [payReference, setPayReference] = useState("");
@@ -465,6 +469,48 @@ export default function WorkOrderDetail() {
     ? durableRefundStatusNotice(cancellationRefundStatus.data.status, fmt(cancellationRefundStatus.data.amount))
     : null;
 
+  /* أعمدة جدول المواد — تُشتقّ من عقد `workOrders.get` نفسه (لا نوعٌ يدويّ ينجرف عن الخادم).
+     تُبنى هنا لا في `useMemo` لأنّ الشاشة ترجع مبكّراً قبل هذه النقطة (تحميل/خطأ)، وخطّافٌ
+     بعد رجوعٍ مشروط ممنوع. أعمدة الكلفة مشروطةٌ بـ`showCost` كما كانت في الجدول الخامّ. */
+  type MaterialRow = (typeof data)["materials"][number];
+  // مشروطٌ بـ`showCost` كما كان `<tfoot>` الأصليّ: لا حسابَ كلفةٍ لمن حُجبت عنه (قد تصل
+  // `unitCost` محجوبةً فيرمي `D()` على قيمةٍ غير رقمية).
+  const materialsCostTotal = showCost
+    ? data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2)
+    : "0";
+  const materialColumns: ColumnDef<MaterialRow, unknown>[] = [
+    {
+      id: "material",
+      header: "المادة",
+      accessorFn: (m) => `${m.productName}${m.variantName ? ` — ${m.variantName}` : ""}`,
+      meta: { width: "wide" },
+      cell: ({ row }) => <>{row.original.productName}{row.original.variantName ? ` — ${row.original.variantName}` : ""}</>,
+      // تسمية الذيل تظهر فقط مع أعمدة الكلفة — بلا كلفةٍ لا إجماليَّ يُذيَّل به الجدول.
+      footer: showCost ? () => "إجمالي كلفة المواد" : undefined,
+    },
+    { id: "sku", header: "SKU", accessorFn: (m) => m.sku ?? "", meta: { kind: "code" }, cell: ({ row }) => row.original.sku },
+    {
+      id: "baseQuantity",
+      header: "كمية (أساس)",
+      accessorFn: (m) => String(m.baseQuantity),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.baseQuantity,
+    },
+    ...(showCost
+      ? ([
+          { id: "unitCost", header: "كلفة الوحدة", accessorFn: (m) => fmt(m.unitCost), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.unitCost) },
+          {
+            id: "lineCost",
+            header: "كلفة السطر",
+            accessorFn: (m) => fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2)),
+            meta: { kind: "money" },
+            cell: ({ row }) => fmt(D(row.original.unitCost).times(row.original.baseQuantity).toFixed(2)),
+            footer: () => fmt(materialsCostTotal),
+          },
+        ] as ColumnDef<MaterialRow, unknown>[])
+      : []),
+  ];
+
   return (
     <div className="space-y-4 max-w-4xl">
       <PageHeader
@@ -585,6 +631,14 @@ export default function WorkOrderDetail() {
         </>}
       />
 
+      {/* م٢ ق١١ — «الخطوة التالية» لأمر الشغل. `assigneeName` يمرّ إلى الرقاقة كي تعرض
+          اسمَ الفنّيّ المُسنَد بدل «الموظّف المُسنَد» العامّ حين تكون الملكيّة USER. */}
+      <NextActionChip
+        nextAction={data.nextAction ?? null}
+        terminalReason={data.nextActionReason ?? null}
+        userName={data.assigneeName}
+      />
+
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center justify-between gap-2">
@@ -604,6 +658,27 @@ export default function WorkOrderDetail() {
               <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${workOrderStatusBadgeCls(data.status)}`}>
                 {displayStatus}
               </span>
+              {(() => {
+                const timing = computeOrderLifecycleTiming(data);
+                if (timing.state === "UNKNOWN") return null;
+                return (
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium inline-flex items-center gap-1 ${
+                      timing.state === "RUNNING"
+                        ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                        : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                    }`}
+                    title={timing.tooltip}
+                  >
+                    {timing.state === "RUNNING" ? (
+                      <Clock aria-hidden className="size-3.5 animate-pulse" />
+                    ) : (
+                      <CheckCircle2 aria-hidden className="size-3.5" />
+                    )}
+                    {timing.badgeLabel}
+                  </span>
+                );
+              })()}
             </span>
           </CardTitle>
         </CardHeader>
@@ -619,6 +694,29 @@ export default function WorkOrderDetail() {
               <Field label="الكمية">{data.quantity}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               <Field label="قناة الاستلام"><ChannelBadge channel={data.receptionChannel} handle={data.channelHandle} /></Field>
+              <Field label="عداد الوقت / المدة">
+                {(() => {
+                  const timing = computeOrderLifecycleTiming(data);
+                  if (timing.state === "UNKNOWN") return "—";
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                        timing.state === "RUNNING"
+                          ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                          : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                      }`}
+                      title={timing.tooltip}
+                    >
+                      {timing.state === "RUNNING" ? (
+                        <Clock aria-hidden className="size-3 animate-pulse" />
+                      ) : (
+                        <CheckCircle2 aria-hidden className="size-3" />
+                      )}
+                      {timing.badgeLabel}
+                    </span>
+                  );
+                })()}
+              </Field>
               {/* ش٥ (0220): الزبون يرى **طلباً واحداً** — والأمرُ كان لا يعرف إخوته، فيُشحَن
                   نصفُ الطلب صامتاً بينما نصفُه الآخر لم يبدأ. */}
               {data.siblings && data.siblings.total > 1 && (
@@ -709,6 +807,16 @@ export default function WorkOrderDetail() {
         </CardContent>
       </Card>
 
+      {/* بطاقة دورة حياة التوصيل وإسناد المندوب والتحصيل */}
+      <WorkOrderDeliverySection
+        data={data}
+        role={role}
+        onInvalidate={() => {
+          void utils.workOrders.invalidate();
+          void refresh();
+        }}
+      />
+
       {editingMaterials ? (
         <WorkOrderMaterialsEditor
           workOrderId={data.id}
@@ -737,43 +845,17 @@ export default function WorkOrderDetail() {
           )}
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium text-start">المادة</th>
-                  <th className="px-3 py-2 font-medium text-start">SKU</th>
-                  <th className="px-3 py-2 font-medium text-center">كمية (أساس)</th>
-                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة الوحدة</th>}
-                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة السطر</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {data.materials.map((m) => (
-                  <tr key={m.id} className="border-t hover:bg-muted/30">
-                    <td className="px-3 py-2">{m.productName}{m.variantName ? ` — ${m.variantName}` : ""}</td>
-                    <td className="px-3 py-2 font-mono text-xs" dir="ltr">{m.sku}</td>
-                    <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{m.baseQuantity}</td>
-                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>}
-                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2))}</td>}
-                  </tr>
-                ))}
-                {data.materials.length === 0 && (
-                  <tr><td colSpan={showCost ? 5 : 3} className="p-6 text-center text-muted-foreground">لا مواد مرفقة (أمر طباعة/خدمة صرفة).</td></tr>
-                )}
-              </tbody>
-              {data.materials.length > 0 && showCost && (
-                <tfoot>
-                  <tr className="border-t-2 bg-muted/40 font-semibold">
-                    <td className="px-3 py-2" colSpan={4}>إجمالي كلفة المواد</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">
-                      {fmt(data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2))}
-                    </td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
+          {/* مُضمَّن: العنوان في رأس البطاقة، وبنود المواد تُقرأ كاملةً بلا بحثٍ ولا ترقيم.
+              صفّ «إجمالي كلفة المواد» صار `footer` على العمودَين فيقع المبلغ تحت عموده. */}
+          <DataTable<MaterialRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={materialColumns}
+            data={data.materials}
+            emptyText="لا مواد مرفقة (أمر طباعة/خدمة صرفة)."
+          />
         </CardContent>
       </Card>
       )}
@@ -793,10 +875,11 @@ export default function WorkOrderDetail() {
                 <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="الرصيد المستحق" ariaLabel="مبلغ الدفعة" />
               </div>
               <div className="space-y-1">
-                <Label>طريقة الدفع</Label>
-                <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
+                <Label htmlFor="wo-pay-method">طريقة الدفع</Label>
+                {/* `disabled` على الخيار محفوظ — AppSelect يمرّره إلى SelectItem (سياسة القبض تبقى مُنفَّذة). */}
+                <AppSelect id="wo-pay-method" value={payMethod} onValueChange={(value) => setPayMethod(value as typeof payMethod)}>
                   {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
-                </select>
+                </AppSelect>
               </div>
               {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
                *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind
@@ -1076,6 +1159,7 @@ export default function WorkOrderDetail() {
           deliveryPhone: data.deliveryPhone,
           deliveryCost: data.deliveryCost,
           deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+          notes: (data as { notes?: string | null; customizationText?: string | null }).notes ?? (data as { customizationText?: string | null }).customizationText ?? null,
         } : null}
         parties={dispatchParties.data ?? []}
         pending={dispatchMut.isPending}
@@ -1087,7 +1171,7 @@ export default function WorkOrderDetail() {
          * ولا يطبع يترك الموظّف بطردٍ مُسنَدٍ بلا مستند — فيبحث عن شاشةٍ أخرى ليطبع يدوياً،
          * وهو نقيضُ تقليل النقرات. نفسُ الدالّتين المشتركتين، بلا ازدواج منطق.
          */
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
           const party = (dispatchParties.data ?? []).find((p) => Number(p.id) === partyId);
           const labelWin = preopenShippingLabelWindow();
           try {
@@ -1097,9 +1181,11 @@ export default function WorkOrderDetail() {
               deliveryFee: fee,
               recipientName: recipientName || undefined,
               recipientPhone: recipientPhone || undefined,
-              deliveryAddress: data.deliveryAddress ?? undefined,
+              deliveryAddress: deliveryAddress || data.deliveryAddress || undefined,
+              notes: notes || undefined,
               clientRequestId: dispatchRequestIdRef.current ?? (dispatchRequestIdRef.current = newClientRequestId()),
               assignedUserId,
+              externalTrackingRef,
             });
             const printable = {
               orderNumber: data.orderNumber,
@@ -1107,9 +1193,9 @@ export default function WorkOrderDetail() {
               quantity: Number(data.quantity),
               salePrice: data.salePrice,
               deposit: data.deposit ?? null,
-              customerName: data.customerName ?? null,
-              customerPhone: data.customerPhone ?? null,
-              deliveryAddress: data.deliveryAddress ?? null,
+              customerName: (recipientName || data.customerName) ?? null,
+              customerPhone: (recipientPhone || data.customerPhone) ?? null,
+              deliveryAddress: (deliveryAddress || data.deliveryAddress) ?? null,
               deliveryCost: data.deliveryCost ?? null,
               deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
             };
@@ -1117,9 +1203,10 @@ export default function WorkOrderDetail() {
               partyName: party?.name ?? null,
               trackingNumber: r.consignmentNumber,
               cod: r.codAmount,
+              externalTrackingRef,
               into: labelWin,
             });
-            printDeliverySlip(printable, party, r);
+            printDeliverySlip(printable, party, { ...r, externalTrackingRef });
           } catch {
             // فشلُ الإسناد يُبلَّغ من `onError`؛ هنا نغلق نافذةً فُتحت لمستندٍ لن يوجد.
             labelWin?.close();

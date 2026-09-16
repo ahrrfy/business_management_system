@@ -3,17 +3,16 @@
  */
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { D, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
   Check,
   CircleAlert,
@@ -85,6 +84,10 @@ export type YearEndReopenState =
   | "PENDING_APPROVAL"
   | "APPROVED"
   | "HISTORICAL";
+
+/** صفوفٌ مشتقّة من عقد الخادم فلا تنجرف عنه. */
+type YearEndSnapshotRow = RouterOutputs["yearEnd"]["list"]["rows"][number];
+type ReopenRequestRow = RouterOutputs["yearEnd"]["reopenRequests"]["rows"][number];
 
 /** Only the latest company revision can enter the governed reopen workflow. */
 export function yearEndReopenState(
@@ -421,84 +424,108 @@ export default function YearEndPage() {
               لا توجد طلبات فتح معلّقة.
             </p>
           ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted">
-                  <tr>
-                    <th className="p-2 text-right">الطلب</th>
-                    <th className="p-2 text-right">السنة/المراجعة</th>
-                    <th className="p-2 text-right">الطالب</th>
-                    <th className="p-2 text-right">السبب</th>
-                    <th className="p-2 text-right">القرار</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(reopenRequests.data?.rows ?? [])
-                    .filter((row) => row.status === "PENDING_APPROVAL")
-                    .map((row) => (
-                      <tr key={row.id} className="border-t">
-                        <td className="p-2">#{row.id}</td>
-                        <td className="p-2">
-                          {row.year} / R
-                          {list.data?.rows.find(
-                            (snapshot) =>
-                              Number(snapshot.id) === Number(row.snapshotId),
-                          )?.revision ?? "—"}
-                        </td>
-                        <td className="p-2">{row.requestedByName}</td>
-                        <td className="p-2">{row.reason}</td>
-                        <td className="p-2">
-                          {!canApprove ||
-                          Number(row.requestedBy) === Number(me.data?.id) ? (
-                            <span className="text-muted-foreground">
-                              يلزم أدمن آخر عن الطالب
-                            </span>
-                          ) : (
-                            <div className="flex flex-wrap gap-2">
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                disabled={
-                                  decisionReason.trim().length < 5 ||
-                                  approveReopenMut.isPending ||
-                                  rejectReopenMut.isPending
-                                }
-                                onClick={() =>
-                                  approveReopenMut.mutate({
-                                    requestId: Number(row.id),
-                                    decisionReason,
-                                  })
-                                }
-                              >
-                                <Check aria-hidden className="size-3.5" />
-                                اعتماد وفتح
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={
-                                  decisionReason.trim().length < 5 ||
-                                  approveReopenMut.isPending ||
-                                  rejectReopenMut.isPending
-                                }
-                                onClick={() =>
-                                  rejectReopenMut.mutate({
-                                    requestId: Number(row.id),
-                                    decisionReason,
-                                  })
-                                }
-                              >
-                                <X aria-hidden className="size-3.5" />
-                                رفض
-                              </Button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            /* لوحةٌ صغيرة مُضمَّنة داخل بطاقة الطلبات ⇒ بلا شريط حالةٍ ولا منتقي أعمدة. */
+            <DataTable<ReopenRequestRow>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              data={(reopenRequests.data?.rows ?? []).filter(
+                (row) => row.status === "PENDING_APPROVAL",
+              )}
+              emptyText="لا توجد طلبات فتح معلّقة."
+              columns={[
+                {
+                  id: "id",
+                  header: "الطلب",
+                  accessorFn: (row) => `#${row.id}`,
+                  meta: { kind: "code", width: "id" },
+                  cell: ({ row }) => `#${row.original.id}`,
+                },
+                {
+                  id: "yearRevision",
+                  header: "السنة/المراجعة",
+                  accessorFn: (row) =>
+                    `${row.year} / R${
+                      list.data?.rows.find(
+                        (snapshot) => Number(snapshot.id) === Number(row.snapshotId),
+                      )?.revision ?? "—"
+                    }`,
+                  cell: ({ row }) => (
+                    <>
+                      {row.original.year} / R
+                      {list.data?.rows.find(
+                        (snapshot) => Number(snapshot.id) === Number(row.original.snapshotId),
+                      )?.revision ?? "—"}
+                    </>
+                  ),
+                },
+                {
+                  id: "requestedBy",
+                  header: "الطالب",
+                  accessorFn: (row) => row.requestedByName,
+                  meta: { width: "actor" },
+                  cell: ({ row }) => row.original.requestedByName,
+                },
+                {
+                  id: "reason",
+                  header: "السبب",
+                  accessorFn: (row) => row.reason,
+                  meta: { width: "wide", wrap: true },
+                  cell: ({ row }) => row.original.reason,
+                },
+                {
+                  id: "decision",
+                  header: "القرار",
+                  enableSorting: false,
+                  meta: { align: "center" },
+                  // فصلُ المهام كما كان: لا يعتمد الطالبُ طلبَه، ولا يعتمد غيرُ المخوَّل.
+                  cell: ({ row }) =>
+                    !canApprove || Number(row.original.requestedBy) === Number(me.data?.id) ? (
+                      <span className="text-muted-foreground">يلزم أدمن آخر عن الطالب</span>
+                    ) : (
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={
+                            decisionReason.trim().length < 5 ||
+                            approveReopenMut.isPending ||
+                            rejectReopenMut.isPending
+                          }
+                          onClick={() =>
+                            approveReopenMut.mutate({
+                              requestId: Number(row.original.id),
+                              decisionReason,
+                            })
+                          }
+                        >
+                          <Check aria-hidden className="size-3.5" />
+                          اعتماد وفتح
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            decisionReason.trim().length < 5 ||
+                            approveReopenMut.isPending ||
+                            rejectReopenMut.isPending
+                          }
+                          onClick={() =>
+                            rejectReopenMut.mutate({
+                              requestId: Number(row.original.id),
+                              decisionReason,
+                            })
+                          }
+                        >
+                          <X aria-hidden className="size-3.5" />
+                          رفض
+                        </Button>
+                      </div>
+                    ),
+                },
+              ]}
+            />
           )}
         </CardContent>
       </Card>
@@ -525,140 +552,153 @@ export default function YearEndPage() {
           </div>
         </CardHeader>
         <CardContent>
-          {list.isLoading ? (
-            <LoadingState />
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm border-collapse">
-                <thead className="bg-muted">
-                  <tr>
-                    <th className="text-right p-2 border">السنة</th>
-                    <th className="text-right p-2 border">المراجعة</th>
-                    <th className="text-right p-2 border">النطاق</th>
-                    <th className="text-right p-2 border">الإيراد</th>
-                    <th className="text-right p-2 border">التكلفة</th>
-                    <th className="text-right p-2 border">المصاريف</th>
-                    <th className="text-right p-2 border">صافي الربح</th>
-                    {/* أصل المخزون يُقرأ حيّاً بلا تاريخ ⇒ بلا هذه اللقطة تُحسب ميزانية السنة
-                        المقفلة من مخزون اليوم لا من مخزون تاريخ إقفالها (تدقيق ٢٧/٧، H5). */}
-                    <th className="text-right p-2 border">المخزون لحظة الإقفال</th>
-                    <th className="text-right p-2 border">تاريخ الإقفال</th>
-                    <th className="text-right p-2 border">فتح مدقّق</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(list.data?.rows.length ?? 0) === 0 ? (
-                    <TableEmptyRow
-                      colSpan={10}
-                      message={
-                        histFiltered
-                          ? "لا إقفالات مطابقة للفلاتر"
-                          : "لا إقفالات سابقة"
-                      }
-                    />
+          <DataTable<YearEndSnapshotRow>
+            data={list.data?.rows ?? []}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            /* فلتر السنة في رأس البطاقة (يغذّي الاستعلام) — بلا هذا تُعلَن «لا صفوف بعد» زوراً. */
+            searchable={false}
+            externalFiltersActive={histFiltered}
+            emptyState="لا إقفالات سابقة"
+            emptyFilteredState="لا إقفالات مطابقة للفلاتر"
+            columns={[
+              {
+                id: "year",
+                header: "السنة",
+                accessorFn: (s) => s.year,
+                meta: { kind: "number", align: "center" },
+                cell: ({ row }) => <span className="font-medium">{row.original.year}</span>,
+              },
+              {
+                id: "revision",
+                header: "المراجعة",
+                accessorFn: (s) => `R${s.revision}`,
+                meta: { kind: "code", width: "id" },
+                cell: ({ row }) => `R${row.original.revision}`,
+              },
+              {
+                id: "scope",
+                header: "النطاق",
+                accessorFn: (s) => (s.branchId == null ? "الشركة كلها" : `إقفال فرعي قديم #${s.branchId}`),
+                cell: ({ row }) =>
+                  row.original.branchId == null ? "الشركة كلها" : `إقفال فرعي قديم #${row.original.branchId}`,
+              },
+              {
+                id: "totalRevenue",
+                header: "الإيراد",
+                accessorFn: (s) => formatIqd(s.totalRevenue),
+                meta: { kind: "money" },
+                cell: ({ row }) => formatIqd(row.original.totalRevenue),
+              },
+              {
+                id: "totalCogs",
+                header: "التكلفة",
+                accessorFn: (s) => formatIqd(s.totalCogs),
+                meta: { kind: "money" },
+                cell: ({ row }) => formatIqd(row.original.totalCogs),
+              },
+              {
+                id: "totalExpenses",
+                header: "المصاريف",
+                accessorFn: (s) => formatIqd(s.totalExpenses),
+                meta: { kind: "money" },
+                cell: ({ row }) => formatIqd(row.original.totalExpenses),
+              },
+              {
+                id: "netProfit",
+                header: "صافي الربح",
+                accessorFn: (s) => {
+                  const net = D(s.netProfit);
+                  return net.isNegative() ? `(${formatIqd(net.abs().toFixed(2))})` : formatIqd(net.toFixed(2));
+                },
+                meta: { kind: "money" },
+                cell: ({ row }) => {
+                  const net = D(row.original.netProfit);
+                  const isProfit = !net.isNegative();
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-1.5 font-semibold ${isProfit ? "text-money-positive" : "text-money-negative"}`}
+                      aria-label={isProfit ? "ربح" : "خسارة"}
+                    >
+                      {isProfit ? <TrendingUp className="size-4" aria-hidden="true" /> : <TrendingDown className="size-4" aria-hidden="true" />}
+                      {isProfit ? formatIqd(net.toFixed(2)) : `(${formatIqd(net.abs().toFixed(2))})`}
+                    </span>
+                  );
+                },
+              },
+              {
+                /* أصل المخزون يُقرأ حيّاً بلا تاريخ ⇒ بلا هذه اللقطة تُحسب ميزانية السنة
+                   المقفلة من مخزون اليوم لا من مخزون تاريخ إقفالها (تدقيق ٢٧/٧، H5). */
+                id: "snapshotInventory",
+                header: "المخزون لحظة الإقفال",
+                accessorFn: (s) => {
+                  const value = readSnapshotInventoryValue(s.snapshotData);
+                  return value == null ? "غير مسجَّلة (إقفالٌ سابق للّقطة)" : formatIqd(value);
+                },
+                meta: { kind: "money" },
+                cell: ({ row }) => {
+                  const snapshotInventory = readSnapshotInventoryValue(row.original.snapshotData);
+                  return snapshotInventory == null ? (
+                    <span className="text-xs text-muted-foreground">غير مسجَّلة (إقفالٌ سابق للّقطة)</span>
                   ) : (
-                    list.data!.rows.map((s: any) => {
-                      const net = D(s.netProfit);
-                      const isProfit = !net.isNegative();
-                      const branchName =
-                        s.branchId == null
-                          ? "الشركة كلها"
-                          : `إقفال فرعي قديم #${s.branchId}`;
-                      return (
-                        <tr key={s.id} className="hover:bg-accent/40">
-                          <td className="p-2 border font-medium">{s.year}</td>
-                          <td className="p-2 border">R{s.revision}</td>
-                          <td className="p-2 border">{branchName}</td>
-                          <td className="p-2 border">
-                            {formatIqd(s.totalRevenue)}
-                          </td>
-                          <td className="p-2 border">
-                            {formatIqd(s.totalCogs)}
-                          </td>
-                          <td className="p-2 border">
-                            {formatIqd(s.totalExpenses)}
-                          </td>
-                          <td
-                            className={`p-2 border font-semibold ${isProfit ? "text-money-positive" : "text-money-negative"}`}
-                          >
-                            <span
-                              className="inline-flex items-center gap-1.5"
-                              aria-label={isProfit ? "ربح" : "خسارة"}
-                            >
-                              {isProfit ? (
-                                <TrendingUp
-                                  className="size-4"
-                                  aria-hidden="true"
-                                />
-                              ) : (
-                                <TrendingDown
-                                  className="size-4"
-                                  aria-hidden="true"
-                                />
-                              )}
-                              {isProfit
-                                ? formatIqd(net.toFixed(2))
-                                : `(${formatIqd(net.abs().toFixed(2))})`}
-                            </span>
-                          </td>
-                          <td className="p-2 border tabular-nums">
-                            {(() => {
-                              const snapshotInventory = readSnapshotInventoryValue(s.snapshotData);
-                              return snapshotInventory == null ? (
-                                <span className="text-xs text-muted-foreground">
-                                  غير مسجَّلة (إقفالٌ سابق للّقطة)
-                                </span>
-                              ) : (
-                                formatIqd(snapshotInventory)
-                              );
-                            })()}
-                          </td>
-                          <td className="p-2 border text-muted-foreground">
-                            {fmtDate(s.closedAt)}
-                          </td>
-                          <td className="p-2 border">
-                            {(() => {
-                              const state = yearEndReopenState(
-                                s,
-                                list.data!.rows,
-                                reopenRequests.data?.rows ?? [],
-                              );
-                              if (state === "PENDING_APPROVAL")
-                                return "بانتظار الاعتماد";
-                              if (state === "APPROVED")
-                                return "مفتوحة — أعد إقفال ديسمبر";
-                              if (state === "HISTORICAL")
-                                return "مراجعة سابقة محفوظة";
-                              return (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={
-                                    reopenReason.trim().length < 10 ||
-                                    requestReopenMut.isPending
-                                  }
-                                  onClick={() =>
-                                    requestReopenMut.mutate({
-                                      snapshotId: Number(s.id),
-                                      reason: reopenReason,
-                                      clientRequestId: crypto.randomUUID(),
-                                    })
-                                  }
-                                >
-                                  <LockOpen aria-hidden className="size-3.5" />
-                                  طلب فتح
-                                </Button>
-                              );
-                            })()}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+                    formatIqd(snapshotInventory)
+                  );
+                },
+              },
+              {
+                id: "closedAt",
+                header: "تاريخ الإقفال",
+                accessorFn: (s) => fmtDate(s.closedAt),
+                meta: { kind: "date" },
+                cell: ({ row }) => <span className="text-muted-foreground">{fmtDate(row.original.closedAt)}</span>,
+              },
+              {
+                id: "reopen",
+                header: "فتح مدقّق",
+                enableSorting: false,
+                /* حالةُ الفتح بيانٌ لا إجراء في ثلاثٍ من أربع حالات ⇒ لها قيمةٌ تُنسَخ وتُصدَّر. */
+                accessorFn: (s) => {
+                  const state = yearEndReopenState(
+                    s,
+                    list.data?.rows ?? [],
+                    reopenRequests.data?.rows ?? [],
+                  );
+                  if (state === "PENDING_APPROVAL") return "بانتظار الاعتماد";
+                  if (state === "APPROVED") return "مفتوحة — أعد إقفال ديسمبر";
+                  if (state === "HISTORICAL") return "مراجعة سابقة محفوظة";
+                  return "قابلة لطلب الفتح";
+                },
+                meta: { align: "center" },
+                cell: ({ row }) => {
+                  const state = yearEndReopenState(
+                    row.original,
+                    list.data?.rows ?? [],
+                    reopenRequests.data?.rows ?? [],
+                  );
+                  if (state === "PENDING_APPROVAL") return "بانتظار الاعتماد";
+                  if (state === "APPROVED") return "مفتوحة — أعد إقفال ديسمبر";
+                  if (state === "HISTORICAL") return "مراجعة سابقة محفوظة";
+                  return (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={reopenReason.trim().length < 10 || requestReopenMut.isPending}
+                      onClick={() =>
+                        requestReopenMut.mutate({
+                          snapshotId: Number(row.original.id),
+                          reason: reopenReason,
+                          clientRequestId: crypto.randomUUID(),
+                        })
+                      }
+                    >
+                      <LockOpen aria-hidden className="size-3.5" />
+                      طلب فتح
+                    </Button>
+                  );
+                },
+              },
+            ]}
+          />
         </CardContent>
       </Card>
     </div>

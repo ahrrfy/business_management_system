@@ -31,7 +31,9 @@ describe("Payroll accrual UI contract", () => {
       "createRemittance", "approveRemittance", "rejectRemittance",
       "payRemittance", "returnRemittance", "returnSalaryPayment",
     ]) expect(operations).toContain(`trpc.payroll.${procedure}`);
-    expect(operations).toContain("currentUserId !== Number(request.createdBy)");
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — الاعتماد/الرفض/الدفع/الإعادة
+    // مشروطة بـowner وحده، لا باستقلاله عن صانع الطلب.
+    expect(operations).not.toContain("currentUserId !== Number(request.createdBy)");
     expect(operations).toContain("supportingDocumentUrl");
     expect(operations).toContain("reason.trim().length >= 5");
     expect(operations).toContain("minLength={5}");

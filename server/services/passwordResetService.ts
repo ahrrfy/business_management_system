@@ -10,6 +10,8 @@ import {
 } from "../../drizzle/schema";
 import { hashPassword } from "../auth/password";
 import { logAuditTx } from "./auditService";
+import { revokeAllNativePushDevicesForUser } from "./nativePushService";
+import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
 import { withTx, type Actor } from "./tx";
 import { assertCanAdministerUser } from "./userAdminPolicy";
 
@@ -241,6 +243,14 @@ export async function consumePasswordResetToken(
     return { ok: true as const, userId: target.id, resetAt: now };
   });
   if (!result.ok) throw tokenFailure();
+  // The password-reset transaction has invalidated every authenticated session.
+  // Push is a separate delivery channel, so revoke both device registrations
+  // after the committed security boundary. A delivery outage must never roll
+  // back the password reset itself.
+  await Promise.allSettled([
+    revokeAllNativePushDevicesForUser(result.userId),
+    revokeAllSuperAppExpoPushDevicesForUser(result.userId),
+  ]);
   return { userId: result.userId, resetAt: result.resetAt };
 }
 

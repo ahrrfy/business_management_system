@@ -17,19 +17,18 @@ import {
   Send,
   WifiOff,
 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
-import { usePulsedCountState } from "@/hooks/usePulsedCountState";
+import { usePulsedCountState, getServerClockOffsetMs } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
-import {
-  resolveProductBarcodeMatch,
-  type ProductBarcodeMatch,
-} from "@shared/productScan";
+import { resolveProductBarcodeItem, type ProductBarcodeMatch } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { CameraScanner } from "@/components/scan/CameraScanner";
+import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { errMsg, notify } from "@/lib/notify";
 import { isNetworkError } from "@/lib/netError";
@@ -57,36 +56,24 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { StocktakeQtyEditor } from "@/components/stocktake/StocktakeQtyEditor";
 
 // النوع من الوحدة المشتركة مباشرةً: `count.state` صار غلافاً (كتالوج + متغيّر) تُركّبه
 // `usePulsedCountState`، فاشتقاق النوع من شكل الردّ لم يعد يمثّل الحالة المعروضة.
 type State = PortalState;
 type CountItem = State["items"][number];
-type CountUnit = CountItem["units"][number];
 /** نوع العدّة كما تُسمّيها بوابة العدّ: أول عدّ · إعادة عدّ مطلوبة · عدّ تحقّقي فوق عدّ زميل. */
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 type SubmitResult = RouterOutputs["count"]["submit"];
-
-/** مطابقة حرفية لباركود الوحدة — الأساسيّ أو أيّ بديل (فضاء تفرّد واحد كما في الكاشير). */
-function unitHasBarcode(unit: CountUnit, value: string) {
-  return resolveProductBarcodeMatch([unit], value) != null;
-}
 
 function productLabel(item: CountItem) {
   return item.variantName
     ? `${item.productName} — ${item.variantName}`
     : item.productName;
-}
-
-/** اسم الوحدة الأساس (factor=1) — كل الكميات تُحفظ بها. */
-function baseUnitName(item: CountItem) {
-  const base = item.units.find((u) => u.factor === 1);
-  return base?.unitName ?? item.units[0]?.unitName ?? "قطعة";
 }
 
 /**
@@ -164,13 +151,11 @@ export default function MyStocktakeWorkspace() {
       for (const it of pending) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            variantId: it.variantId,
-            qty: it.qty,
-            unitBreakdown: it.unitBreakdown,
-            entryMethod: it.entryMethod,
+            sessionCode: code, variantId: it.variantId, qty: it.qty,
+            unitBreakdown: it.unitBreakdown, entryMethod: it.entryMethod,
             scannedBarcode: it.scannedBarcode ?? undefined,
-            clientRequestId: it.clientRequestId,
+            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt, clientSentAt: new Date().toISOString(),
+            clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
           });
           removeQueued(code, it.clientRequestId);
           synced++;
@@ -197,9 +182,9 @@ export default function MyStocktakeWorkspace() {
       for (const u of pendingUnknown) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            unknownBarcode: u.barcode,
-            clientRequestId: u.clientRequestId,
+            sessionCode: code, unknownBarcode: u.barcode,
+            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt, clientSentAt: new Date().toISOString(),
+            clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
           });
           removeUnknown(code, u.clientRequestId);
         } catch (e) {
@@ -320,26 +305,25 @@ export default function MyStocktakeWorkspace() {
     },
     [openItem],
   );
-
   const onBarcode = useCallback(
-    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
+    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" | "SEARCH_PICK" = "SCAN_HID") => {
       const value = raw.trim();
       if (!value) return;
-      let found: CountItem | undefined;
-      let scanMatch: ProductBarcodeMatch | null = null;
-      // نفحص فضاء الباركود أولاً كي لا يتحوّل SKU مصادف إلى «مسح» ولا يحجب باركود مادة أخرى.
-      for (const item of items) {
-        const match = resolveProductBarcodeMatch(item.units, value);
-        if (!match) continue;
-        found = item;
-        scanMatch = match;
-        break;
+      const resolution = resolveProductBarcodeItem(items, value);
+      if (resolution.status === "AMBIGUOUS") {
+        notify.err(
+          "الباركود يطابق أكثر من مادة في جلسة الجرد — لم تُفتح أيّ بطاقة",
+          "اطلب من المشرف تصحيح الباركودات المتعارضة قبل متابعة العدّ.",
+        );
+        return;
       }
+      let found: CountItem | undefined = resolution.status === "FOUND" ? resolution.item : undefined;
+      let scanMatch: ProductBarcodeMatch | null = resolution.status === "FOUND" ? resolution.match : null;
       // SKU مدخل بحث فقط؛ لا نمنحه إثبات المسح حتى لو وصل من قارئ HID أو الكاميرا.
       found ??= items.find((item) => item.sku === value);
       if (!found) {
         // باركودٌ خارج الجلسة (ب-٤): يُوضَع في طابورٍ يُزامَن فلا يضيع أوفلاين (مراجعة Codex #2).
-        if (st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
+        if (source !== "SEARCH_PICK" && st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
           const persisted = enqueueUnknown(code, {
             clientRequestId: newClientRequestId(),
             barcode: value,
@@ -358,7 +342,7 @@ export default function MyStocktakeWorkspace() {
             );
           }
         } else {
-          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
+          notify.warn(source === "SEARCH_PICK" ? "الرمز المُدخل يدوياً غير موجود ضمن منتجات هذه الجلسة" : "الباركود غير موجود ضمن منتجات هذه الجلسة", value);
         }
         return;
       }
@@ -369,7 +353,7 @@ export default function MyStocktakeWorkspace() {
       openItem(
         found,
         scanMatch?.unitName,
-        scanMatch
+        scanMatch && source !== "SEARCH_PICK"
           ? { method: source, scannedBarcode: value, scanMatch }
           : { method: "SEARCH_PICK", scannedBarcode: null, scanMatch: null },
       );
@@ -379,7 +363,7 @@ export default function MyStocktakeWorkspace() {
   const barcodeInput = useBarcodeInput((code) => {
     setQuery("");
     onBarcode(code, "SCAN_HID");
-  });
+  }, { minLength: scanRequired ? 2 : 3 });
   // قارئ HID: يُعطَّل أثناء فتح البطاقة أو الكاميرا كي لا يتضاعف الالتقاط.
   useBarcodeScanner((raw) => onBarcode(raw, "SCAN_HID"), {
     enabled: Boolean(st) && selected == null && !cameraOpen,
@@ -389,12 +373,17 @@ export default function MyStocktakeWorkspace() {
   const tryOpenByQuery = useCallback(() => {
     const exact = query.trim();
     if (!exact) return;
-    const hit =
-      items.find((i) => i.units.some((u) => unitHasBarcode(u, exact))) ??
-      items.find((i) => i.sku === exact);
+    const resolution = resolveProductBarcodeItem(items, exact);
+    if (resolution.status === "AMBIGUOUS") {
+      notify.err("الباركود يطابق أكثر من مادة — صحّح التعارض قبل الاختيار.");
+      return;
+    }
+    const hit = resolution.status === "FOUND"
+      ? resolution.item
+      : items.find((i) => i.sku === exact);
     if (!hit) return;
     setQuery("");
-    openItem(hit, hit.units.find((u) => unitHasBarcode(u, exact))?.unitName, {
+    openItem(hit, resolution.status === "FOUND" ? resolution.match.unitName : undefined, {
       method: "SEARCH_PICK",
       scannedBarcode: null,
       scanMatch: null,
@@ -426,15 +415,13 @@ export default function MyStocktakeWorkspace() {
     const item = selected;
     const mode = selectedMode;
     const clientRequestId = newClientRequestId();
+    const capturedAt = new Date().toISOString();
     const entry = selectedEntry;
     const payload = {
-      sessionCode: code,
-      variantId: item.variantId,
-      qty,
-      unitBreakdown,
-      entryMethod: entry.method,
-      scannedBarcode: entry.scannedBarcode ?? undefined,
-      clientRequestId,
+      sessionCode: code, variantId: item.variantId, qty, unitBreakdown,
+      entryMethod: entry.method, scannedBarcode: entry.scannedBarcode ?? undefined,
+      clientRequestId, clientCapturedAt: capturedAt, clientSentAt: new Date().toISOString(),
+      clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
     };
     const onAccepted = async (res: SubmitResult) => {
       // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
@@ -493,7 +480,7 @@ export default function MyStocktakeWorkspace() {
           unitBreakdown,
           entryMethod: entry.method,
           scannedBarcode: entry.scannedBarcode,
-          queuedAt: new Date().toISOString(),
+          queuedAt: capturedAt,
         });
         setQueueCount(queueSize(code));
         setSelected(null);
@@ -682,45 +669,51 @@ export default function MyStocktakeWorkspace() {
 
   return (
     <div className="mx-auto max-w-[1500px] space-y-4 p-1 sm:space-y-5">
-      <header className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border bg-card p-4 shadow-sm sm:p-6">
-        <div className="min-w-0">
-          <div className="mb-1.5 flex items-center gap-2 text-primary sm:mb-2">
-            <ClipboardCheck className="size-4 sm:size-5" aria-hidden />
-            <span className="text-xs font-bold sm:text-sm">
-              مساحة عملي في الجرد
-            </span>
-          </div>
-          <h1 className="truncate text-lg font-bold sm:text-2xl">
-            {st.session.name}
-          </h1>
-          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-            {st.session.branchName} · مرحباً {st.assignment.name}
-            {st.assignment.zone ? ` · المنطقة: ${st.assignment.zone}` : ""}
-          </p>
+      {/* بطاقة الرأس تبقى كما هي؛ صار عنوانها وشارات حالتها داخل PageHeader الموحّد —
+          ومعه رجوعٌ صريح إلى «جردي» كان مفقوداً هنا (لا مخرجَ إلّا بعد التسليم). */}
+      <header className="rounded-2xl border bg-card p-4 shadow-sm sm:p-6">
+        <div className="mb-1.5 flex items-center gap-2 text-primary sm:mb-2">
+          <ClipboardCheck className="size-4 sm:size-5" aria-hidden />
+          <span className="text-xs font-bold sm:text-sm">
+            مساحة عملي في الجرد
+          </span>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {queueCount > 0 && (
-            <span
-              className="inline-flex items-center gap-1 rounded-xl bg-muted px-2.5 py-1.5 text-xs font-bold text-muted-foreground"
-              title="عدّات محفوظة على الجهاز بانتظار المزامنة"
-            >
-              <Hourglass className="size-3.5" aria-hidden /> {fmtInt(queueCount)}
-            </span>
-          )}
-          <span
-            className={cn(
-              "inline-block size-2.5 rounded-full",
-              online ? "bg-[var(--stock-ok)]" : "bg-[var(--stock-out)]",
-            )}
-            title={online ? "متصل" : "لا اتصال"}
-            aria-label={online ? "متصل" : "لا اتصال"}
-          />
-          {st.session.blind && (
-            <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
-              <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
-            </div>
-          )}
-        </div>
+        <PageHeader
+          title={st.session.name}
+          backHref="/my-stocktake"
+          backLabel="جردي"
+          description={
+            <>
+              {st.session.branchName} · مرحباً {st.assignment.name}
+              {st.assignment.zone ? ` · المنطقة: ${st.assignment.zone}` : ""}
+            </>
+          }
+          actions={
+            <>
+              {queueCount > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-xl bg-muted px-2.5 py-1.5 text-xs font-bold text-muted-foreground"
+                  title="عدّات محفوظة على الجهاز بانتظار المزامنة"
+                >
+                  <Hourglass className="size-3.5" aria-hidden /> {fmtInt(queueCount)}
+                </span>
+              )}
+              <span
+                className={cn(
+                  "inline-block size-2.5 rounded-full",
+                  online ? "bg-[var(--stock-ok)]" : "bg-[var(--stock-out)]",
+                )}
+                title={online ? "متصل" : "لا اتصال"}
+                aria-label={online ? "متصل" : "لا اتصال"}
+              />
+              {st.session.blind && (
+                <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
+                  <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
+                </div>
+              )}
+            </>
+          }
+        />
       </header>
 
       {!online && (
@@ -1002,7 +995,7 @@ export default function MyStocktakeWorkspace() {
                 scanned={selectedEntry.scannedBarcode != null}
                 scanMatch={selectedEntry.scanMatch}
               />
-              <QtyEditor
+              <StocktakeQtyEditor
                 key={`${selected.variantId}-${selectedMode}`}
                 item={selected}
                 mode={selectedMode}
@@ -1027,216 +1020,8 @@ export default function MyStocktakeWorkspace() {
         onDetect={(raw) => {
           setCameraOpen(false);
           onBarcode(raw, "SCAN_CAMERA");
-        }}
+        }} onManualDetect={(raw) => { setCameraOpen(false); onBarcode(raw, "SEARCH_PICK"); }}
       />
-    </div>
-  );
-}
-
-/* ───────────────────── بطاقة إدخال الكمية (وحدات متعددة) ───────────────────── */
-
-function QtyEditor({
-  item,
-  mode,
-  recountReason,
-  queued,
-  focusUnit,
-  saving,
-  onCancel,
-  onSave,
-}: {
-  item: CountItem;
-  mode: CountMode;
-  recountReason?: string;
-  /** عدّة محفوظة على الجهاز لم تُزامَن بعد — أحدث من `item.myCount` فتسبقها في التعبئة. */
-  queued?: QueuedCount;
-  focusUnit: string | null;
-  saving: boolean;
-  onCancel: () => void;
-  onSave: (qty: number, unitBreakdown: string | undefined) => void;
-}) {
-  const isVerify = mode === "VERIFY";
-  const isRecount = mode === "RECOUNT";
-  // من الأكبر للأصغر (كرتون ← درزن ← قطعة) — نفس ترتيب بوابة العدّ.
-  const units = useMemo(() => {
-    const list = item.units.map((u) => ({ unitName: u.unitName, factor: u.factor }));
-    if (list.length === 0) list.push({ unitName: "قطعة", factor: 1 });
-    return list.sort((a, b) => b.factor - a.factor);
-  }, [item.units]);
-  const baseUnit = baseUnitName(item);
-
-  const [vals, setVals] = useState<Record<string, string>>(() => {
-    // إعادة العدّ والعدّ التحقّقي عدٌّ جديد **أعمى** يبدأ من الصفر (كبوابة العدّ) — التعبئة
-    // المسبقة للعدّ الأول فقط: المحفوظ محلياً أولاً (الأحدث) ثم المُزامَن.
-    if (mode !== "FIRST") return {};
-    const src = queued?.unitBreakdown ?? item.myCount?.unitBreakdown ?? null;
-    if (src) {
-      try {
-        const parsed = JSON.parse(src) as Record<string, unknown>;
-        const init: Record<string, string> = {};
-        for (const u of item.units) {
-          const v = parsed[u.unitName];
-          if (typeof v === "number" && Number.isInteger(v) && v >= 0)
-            init[u.unitName] = String(v);
-        }
-        if (Object.keys(init).length > 0) return init;
-      } catch {
-        /* تفصيل غير قابل للقراءة — نبدأ من الإجمالي */
-      }
-    }
-    const fallbackQty = queued?.qty ?? item.myCount?.qty ?? null;
-    if (fallbackQty != null) return { [baseUnitName(item)]: String(fallbackQty) };
-    return {};
-  });
-
-  const setVal = (unitName: string, raw: string) =>
-    setVals((v) => ({ ...v, [unitName]: raw.replace(/\D/g, "").slice(0, 7) }));
-  const step = (unitName: string, delta: number) =>
-    setVals((v) => {
-      const cur = parseInt(v[unitName] || "0", 10) || 0;
-      return { ...v, [unitName]: String(Math.max(0, cur + delta)) };
-    });
-
-  // الكميات أعداد صحيحة (ليست أموالاً) — حساب عددي مباشر.
-  const entries: Record<string, number> = {};
-  for (const u of units) {
-    const raw = vals[u.unitName];
-    if (raw !== undefined && raw !== "") entries[u.unitName] = parseInt(raw, 10) || 0;
-  }
-  const total = units.reduce((s, u) => s + (entries[u.unitName] ?? 0) * u.factor, 0);
-  const anyEntered = Object.keys(entries).length > 0;
-  const valid = anyEntered && Number.isSafeInteger(total) && total >= 0;
-
-  const handleSave = () => {
-    if (!valid || saving) return;
-    const json = JSON.stringify(entries);
-    onSave(total, units.length > 1 && json.length <= 500 ? json : undefined);
-  };
-
-  return (
-    <div className="space-y-4">
-      {isRecount && (
-        <p className="badge-stock-low inline-flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold leading-relaxed">
-          <RefreshCw className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          <span>
-            مطلوب إعادة عدّ ثانية لهذا المنتج
-            {recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد
-            بتمعّن.
-          </span>
-        </p>
-      )}
-      {isVerify && (
-        <p className="inline-flex items-start gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold leading-relaxed text-primary">
-          <span className="mt-0.5 inline-flex shrink-0 items-center -space-x-1 rtl:space-x-reverse">
-            <Check className="size-3.5" aria-hidden />
-            <Check className="size-3.5" aria-hidden />
-          </span>
-          <span>
-            عدّ تحقّقي — المنتج عدّه زميلك سابقاً. عدّك لن يستبدل عدّه: إن تطابقا
-            تأكّد الرقم، وإن اختلفا يُرفع تعارض يفصل فيه المسؤول. (كميته لا تُعرض
-            لك — جرد أعمى)
-          </span>
-        </p>
-      )}
-      {queued && (
-        <p className="inline-flex items-start gap-1.5 rounded-lg bg-muted p-3 text-xs font-semibold text-muted-foreground">
-          <Hourglass className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          <span>
-            عدّتك السابقة لهذا المنتج محفوظة على الجهاز ولم تُزامَن بعد — تعديلها
-            هنا يستبدلها، وتُرسَل تلقائياً عند عودة الاتصال.
-          </span>
-        </p>
-      )}
-      <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-        <p className="text-muted-foreground">
-          أدخل الكمية الفعلية على الرف — لكل وحدة حقلها، والإجمالي يُحتسب
-          بـ«{baseUnit}».
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        {units.map((u) => {
-          const cur = vals[u.unitName] ?? "";
-          return (
-            <div
-              key={u.unitName}
-              className={cn(
-                "flex items-center gap-2 rounded-xl border bg-card px-3 py-2.5",
-                focusUnit === u.unitName && "border-primary ring-1 ring-primary/40",
-              )}
-            >
-              <div className="min-w-0 flex-1">
-                <span className="block text-sm font-bold">{u.unitName}</span>
-                <span className="block text-[11px] text-muted-foreground">
-                  {u.factor === 1
-                    ? "وحدة الأساس"
-                    : `= ${fmtInt(u.factor)} ${baseUnit}`}
-                </span>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5" dir="ltr">
-                <button
-                  type="button"
-                  aria-label={`إنقاص ${u.unitName}`}
-                  onClick={() => step(u.unitName, -1)}
-                  disabled={(parseInt(cur || "0", 10) || 0) === 0}
-                  className="grid size-11 place-items-center rounded-lg border bg-background text-xl font-bold active:scale-95 disabled:opacity-40"
-                >
-                  −
-                </button>
-                <Input
-                  autoFocus={focusUnit ? focusUnit === u.unitName : u.factor === 1}
-                  inputMode="numeric"
-                  dir="ltr"
-                  value={cur}
-                  placeholder="0"
-                  onChange={(e) => setVal(u.unitName, e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSave();
-                  }}
-                  aria-label={`كمية ${u.unitName}`}
-                  className="h-11 w-20 text-center font-mono text-lg font-bold"
-                />
-                <button
-                  type="button"
-                  aria-label={`زيادة ${u.unitName}`}
-                  onClick={() => step(u.unitName, 1)}
-                  className="grid size-11 place-items-center rounded-lg border bg-background text-xl font-bold active:scale-95"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="flex items-center justify-between rounded-xl bg-primary/5 px-4 py-3">
-        <span className="text-sm font-bold">الإجمالي بالوحدة الأساس</span>
-        <span
-          className="font-mono text-xl font-bold tabular-nums text-primary"
-          dir="ltr"
-        >
-          {fmtInt(total)} {baseUnit}
-        </span>
-      </div>
-
-      <DialogFooter className="flex-col gap-2 sm:flex-row">
-        <Button variant="outline" disabled={saving} onClick={onCancel}>
-          إلغاء
-        </Button>
-        <Button disabled={saving || !valid} onClick={handleSave}>
-          {saving
-            ? "جارٍ الحفظ…"
-            : isVerify
-              ? "تسجيل العدّ التحقّقي"
-              : isRecount
-                ? "تسجيل إعادة العدّ"
-                : "تسجيل الكمية"}
-        </Button>
-      </DialogFooter>
-      <p className="text-center text-[11px] text-muted-foreground">
-        يُسجَّل الإدخال باسمك ووقته — يمكنك تعديل العدّ قبل التسليم.
-      </p>
     </div>
   );
 }

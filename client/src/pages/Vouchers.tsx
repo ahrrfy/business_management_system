@@ -3,27 +3,16 @@ import { ActorCell } from "@/components/data-table/ActorCell";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { CopyInline } from "@/components/CopyButton";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import type { ImageItem } from "@/components/form/ImageUploader";
+import { VoucherRejectDialog } from "@/components/vouchers/VoucherRejectDialog";
+import { VoucherSummaryCards } from "@/components/vouchers/VoucherSummaryCards";
+import { getVoucherExportColumns } from "@/components/vouchers/voucherExport";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import {
-  LoadingState,
-  ErrorState,
-  TableEmptyRow,
-} from "@/components/PageState";
 import { FilterField, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
@@ -72,6 +61,8 @@ import {
   validAccrualReissueReason,
   voucherApprovalLabel,
 } from "@/components/vouchers/voucherUiPolicy";
+import { DigitalStampOverlay } from "@/components/vouchers/DigitalStampOverlay";
+import { ResubmitVoucherDialog } from "@/components/vouchers/ResubmitVoucherDialog";
 import { selectClsFull } from "@/lib/ui/formStyles";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
@@ -82,6 +73,7 @@ const TYPE_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
 const PARTY_LABEL: Record<string, string> = {
   CUSTOMER: "عميل",
   SUPPLIER: "مورّد",
+  DELIVERY_PARTY: "جهة توصيل",
   OTHER: "أخرى",
 };
 // التسمية من `@/lib/paymentMethod` (مصدر واحد مع POS والفواتير وحوار الوردية) — كانت نسخةً
@@ -249,9 +241,22 @@ export default function Vouchers() {
           ? `اعتُمد وصُرف السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`
           : `اعتُمد السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`,
       );
+      setStampInfo({
+        isOpen: true,
+        voucherNumber: res.voucherNumber,
+        title: approvedDirection === "OUT" ? "صُرف واعتُمد" : "مُعتمَد رسمياً",
+        actorName: me.data?.name ?? undefined,
+      });
     },
     onError: (e) => notify.err(e),
   });
+
+  const [stampInfo, setStampInfo] = useState<{
+    isOpen: boolean;
+    voucherNumber?: string;
+    title?: string;
+    actorName?: string;
+  }>({ isOpen: false });
 
   // حوار سبب الرفض (بديل window.prompt — نمط حوارات النظام).
   const [rejectTarget, setRejectTarget] = useState<VoucherRow | null>(null);
@@ -395,8 +400,6 @@ export default function Vouchers() {
     [totalIn, totalOut],
   );
   const totalCount = agg.data?.count;
-  const pageCount =
-    totalCount != null ? Math.max(1, Math.ceil(totalCount / limit)) : null;
   // «التالي» بcount الخادمي؛ وقبل وصول aggregate نتحفّظ بقاعدة «صفحة ممتلئة = قد يوجد تالٍ».
   const hasNext =
     totalCount != null ? (page + 1) * limit < totalCount : all.length >= limit;
@@ -426,129 +429,7 @@ export default function Vouchers() {
       );
       exportRows(fetched, {
         filename: "السندات",
-        columns: [
-          { key: "voucherNumber", header: "رقم السند" },
-          {
-            key: "voucherDate",
-            header: "تاريخ السند",
-            map: (r) => fmtDate(r.voucherDate),
-          },
-          {
-            key: "createdAt",
-            header: "تاريخ الإدخال",
-            map: (r) => fmtDate(r.createdAt),
-          },
-          {
-            key: "branchId",
-            header: "الفرع",
-            map: (r) =>
-              r.branchId != null
-                ? (branchMap.get(Number(r.branchId)) ?? String(r.branchId))
-                : "—",
-          },
-          {
-            key: "direction",
-            header: "النوع",
-            map: (r) => TYPE_LABEL[r.direction] ?? r.direction,
-          },
-          {
-            key: "partyType",
-            header: "نوع الطرف",
-            map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—",
-          },
-          {
-            key: "partyName",
-            header: "اسم الطرف",
-            map: (r) => r.partyName ?? r.counterpartyName ?? "",
-          },
-          {
-            key: "createdByName",
-            header: "المنفذ",
-            map: (r) =>
-              r.createdByName ??
-              (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق"),
-          },
-          {
-            key: "voucherCategoryId",
-            header: "الفئة",
-            map: (r) =>
-              r.voucherCategoryId
-                ? (categoryMap.get(Number(r.voucherCategoryId)) ?? "—")
-                : "—",
-          },
-          { key: "description", header: "الوصف" },
-          {
-            key: "amount",
-            header: "المبلغ",
-            map: (r) => fmt(r.amount ?? "0"),
-          },
-          {
-            key: "paymentMethod",
-            header: "الدفع",
-            map: (r) => paymentMethodLabel(r.paymentMethod),
-          },
-          { key: "referenceNumber", header: "الرقم المرجعي" },
-          { key: "checkNumber", header: "مرجع التحويل/الصكّ" },
-          { key: "cardLastFour", header: "آخر ٤ بطاقة" },
-          {
-            key: "approvalStatus",
-            header: "حالة الاعتماد",
-            map: (r) => voucherApprovalLabel(r),
-          },
-          {
-            key: "status",
-            header: "الحالة",
-            map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل"),
-          },
-          // attachment-upload (٥/٧): المُرفق أصبح data URL صورة (~٩٣٣ك حرفاً) — تصديره خاماً يُفسد
-          // الخلية (حدّ Excel ~٣٢،٧٦٧ حرفاً) ⇒ نعم/لا فقط؛ المُلَفّ نفسه يُفتَح من الشاشة مباشرةً.
-          {
-            key: "attachmentUrl",
-            header: "مُرفَق؟",
-            map: (r) => (r.attachmentUrl ? "نعم" : "لا"),
-          },
-          {
-            key: "invoiceNumber",
-            header: "الفاتورة المرتبطة",
-            map: (r) => r.invoiceNumber ?? "—",
-          },
-          {
-            key: "signatureHash",
-            header: "بَصمة",
-            map: (r) => shortHash(r.signatureHash),
-          },
-          {
-            key: "cashBucket",
-            header: "نوع النَقد",
-            map: (r) =>
-              r.cashBucket === "DRAWER"
-                ? "درج كاشير"
-                : r.cashBucket === "TREASURY"
-                  ? "خزينة إدارية"
-                  : "—",
-          },
-          {
-            key: "resubmitAttempt",
-            header: "محاولة إعادة الإصدار",
-            map: (r) =>
-              r.resubmitAttempt == null ? "—" : `A${r.resubmitAttempt}`,
-          },
-          {
-            key: "resubmitRootReceiptId",
-            header: "سند أصل السلسلة",
-            map: (r) => r.resubmitRootReceiptId ?? "—",
-          },
-          {
-            key: "resubmitPriorReceiptId",
-            header: "السند السابق",
-            map: (r) => r.resubmitPriorReceiptId ?? "—",
-          },
-          {
-            key: "resubmitReason",
-            header: "سبب إعادة الإصدار",
-            map: (r) => r.resubmitReason ?? "—",
-          },
-        ],
+        columns: getVoucherExportColumns({ branchMap, categoryMap }),
       });
     } catch (e) {
       notify.err(e);
@@ -722,6 +603,7 @@ export default function Vouchers() {
               <option value="">الكل</option>
               <option value="CUSTOMER">عميل</option>
               <option value="SUPPLIER">مورّد</option>
+              <option value="DELIVERY_PARTY">جهة توصيل</option>
               <option value="OTHER">أخرى</option>
             </AppSelect>
           </FilterField>
@@ -839,75 +721,15 @@ export default function Vouchers() {
       </Card>
 
       {/* البطاقات من aggregate الخادمي — كامل النطاق المفلتر لا صفوف الصفحة الحالية. */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">
-              إجمالي القبض (مُعتمَد)
-            </div>
-            <div
-              className="text-xl font-bold text-money-positive tabular-nums"
-              dir="ltr"
-            >
-              {fmt(totalIn)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">
-              إجمالي الصرف (معتمد ومصروف)
-            </div>
-            <div
-              className="text-xl font-bold text-money-negative tabular-nums"
-              dir="ltr"
-            >
-              {fmt(totalOut)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">الصافي</div>
-            <div
-              className={`text-xl font-bold tabular-nums ${netTotal.gte(0) ? "text-money-positive" : "text-money-negative"}`}
-              dir="ltr"
-            >
-              {fmt(netTotal.toFixed(2))}
-            </div>
-            {(agg.data?.reversedCount ?? 0) > 0 && (
-              <div className="text-[11px] text-muted-foreground mt-0.5">
-                {(agg.data?.reversedCount ?? 0).toLocaleString(
-                  "ar-IQ-u-nu-latn",
-                )}{" "}
-                سند مُلغى في النطاق
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
-              <ShieldQuestion aria-hidden className="size-3.5" />
-              {f.type === "PAYMENT"
-                ? "بانتظار اعتماد وصرف (بلا أَثَر)"
-                : f.type === "RECEIPT"
-                  ? "بانتظار اعتماد (بلا أَثَر)"
-                  : "بانتظار اعتماد / صرف (بلا أَثَر)"}
-            </div>
-            <div
-              className="text-xl font-bold text-[var(--sem-warn)] tabular-nums"
-              dir="ltr"
-            >
-              {fmt(agg.data?.pendingTotal ?? "0")}
-            </div>
-            <div className="text-[11px] text-muted-foreground mt-0.5">
-              {(agg.data?.pendingCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}{" "}
-              سند معلّق
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <VoucherSummaryCards
+        totalIn={totalIn}
+        totalOut={totalOut}
+        netTotal={netTotal}
+        filterType={f.type}
+        reversedCount={agg.data?.reversedCount ?? 0}
+        pendingTotal={agg.data?.pendingTotal ?? "0"}
+        pendingCount={agg.data?.pendingCount ?? 0}
+      />
 
       <Card>
         <CardHeader className="flex-row items-center justify-between">
@@ -931,599 +753,435 @@ export default function Vouchers() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">رقم السند</th>
-                  <th className="p-2">التاريخ</th>
-                  {/* ٢٤/٨ (تدقيق): عمود الفرع يُظهر للمرتفعين فقط — لغيرهم قيمةٌ واحدة مكرَّرة
-                      في كلّ صفٍّ = إهدار عرضٍ لا فائدةَ منه. */}
-                  {canFilterBranch && <th className="p-2">الفرع</th>}
-                  <th className="p-2 text-center">النوع</th>
-                  <th className="p-2">الطرف</th>
-                  <th className="p-2">{ATTRIBUTION_LABELS.performedBy}</th>
-                  <th className="p-2">الفئة</th>
-                  <th className="p-2">الوصف</th>
-                  <th className="p-2 text-right">المبلغ</th>
-                  <th className="p-2 text-center">الدفع</th>
-                  <th className="p-2 text-center">الاعتماد</th>
-                  <th className="p-2 text-center">المُرفَق</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.isLoading && (
-                  <tr>
-                    <td colSpan={canFilterBranch ? 13 : 12}>
-                      <LoadingState />
-                    </td>
-                  </tr>
-                )}
-                {list.isError && !list.isLoading && (
-                  <tr>
-                    <td colSpan={canFilterBranch ? 13 : 12}>
-                      <ErrorState
-                        message={list.error?.message}
-                        onRetry={() => void list.refetch()}
-                      />
-                    </td>
-                  </tr>
-                )}
-                {rows.map((r) => {
+          <DataTable<VoucherRow>
+            data={rows}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            /* البحث والفلاتر في بطاقة الفلاتر أعلاه (تغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
+            /* الترقيم خادميّ (limit/offset + count) ⇒ شريطٌ واحد داخل الجدول بدل شريطٍ يدويّ تحته. */
+            serverPagination={{
+              page,
+              onPageChange: setPage,
+              pageSize: limit,
+              total: totalCount,
+              hasMore: hasNext,
+              isFetching: list.isFetching,
+            }}
+            /*
+             * لونُ المعلّق/المرفوض على **الخلايا** (`[&>td]:`) لا على `<tr>`: زِبرةُ الجدول
+             * تُصدَّر `odd:bg-…` أي `&:nth-child(odd)` بنوعيّةٍ (0,2,0) تغلب `bg-…` العارية
+             * (0,1,0) على العنصر نفسه ⇒ الوسمُ يموت صامتاً. و`opacity` يبقى على الصفّ
+             * (خاصّيةٌ أخرى لا تنازع فيها).
+             */
+            getRowClassName={(r) =>
+              [
+                r.status === "REVERSED" ? "opacity-60" : "",
+                r.approvalStatus === "PENDING_APPROVAL" ? "[&>td]:bg-[var(--sem-warn-bg)]" : "",
+                r.approvalStatus === "REJECTED" ? "[&>td]:bg-[var(--sem-neg-bg)]" : "",
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined
+            }
+            emptyText="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً."
+            columns={[
+              {
+                id: "voucherNumber",
+                header: "رقم السند",
+                accessorFn: (r) => String(r.voucherNumber ?? "—"),
+                meta: { width: "wide" },
+                cell: ({ row }) => {
+                  const r = row.original;
+                  return (
+                    <span className="font-mono text-xs">
+                      <CopyInline value={String(r.voucherNumber ?? "—")} />
+                      {r.signatureHash && (
+                        <div className="text-[10px] text-muted-foreground" title={`بَصمة كاملة: ${r.signatureHash}`}>
+                          #{shortHash(r.signatureHash)}
+                        </div>
+                      )}
+                      {accrualPaymentAttemptLabel({
+                        attempt: r.resubmitAttempt,
+                        rootReceiptId: r.resubmitRootReceiptId,
+                        priorReceiptId: r.resubmitPriorReceiptId,
+                      }) && (
+                        <div className="mt-1 text-[10px] text-muted-foreground font-sans" dir="rtl">
+                          {accrualPaymentAttemptLabel({
+                            attempt: r.resubmitAttempt,
+                            rootReceiptId: r.resubmitRootReceiptId,
+                            priorReceiptId: r.resubmitPriorReceiptId,
+                          })}
+                        </div>
+                      )}
+                      {r.resubmitReason && (
+                        <div
+                          className="mt-0.5 max-w-52 truncate text-[10px] text-muted-foreground font-sans"
+                          title={r.resubmitReason}
+                          dir="rtl"
+                        >
+                          سبب إعادة الإصدار: {r.resubmitReason}
+                        </div>
+                      )}
+                      {r.resubmitLineageStatus === "BROKEN" && (
+                        <div className="mt-1 text-[10px] text-[var(--sem-neg)] font-sans" dir="rtl">
+                          سلسلة إعادة الإصدار غير مكتملة — يلزم تدقيق
+                        </div>
+                      )}
+                    </span>
+                  );
+                },
+              },
+              {
+                id: "voucherDate",
+                header: "التاريخ",
+                accessorFn: (r) => fmtDate(r.voucherDate),
+                /* بلا kind: "date" — الخليّة تحمل سطراً عربياً («أُدخل: …») وعزلُ الاتّجاه يقلبه. */
+                meta: { width: "date" },
+                cell: ({ row }) => (
+                  <span className="text-xs">
+                    {fmtDate(row.original.voucherDate)}
+                    {row.original.voucherDate && row.original.createdAt && (
+                      <div className="text-[10px] text-muted-foreground">
+                        أُدخل: {fmtDate(row.original.createdAt)}
+                      </div>
+                    )}
+                  </span>
+                ),
+              },
+              /* ٢٤/٨ (تدقيق): عمود الفرع يُظهر للمرتفعين فقط — لغيرهم قيمةٌ واحدة مكرَّرة
+                 في كلّ صفٍّ = إهدار عرضٍ لا فائدةَ منه. */
+              ...(canFilterBranch
+                ? ([
+                    {
+                      id: "branch",
+                      header: "الفرع",
+                      accessorFn: (r) =>
+                        r.branchId != null ? (branchMap.get(Number(r.branchId)) ?? `فرع ${r.branchId}`) : "—",
+                      cell: ({ row }) => (
+                        <span className="text-xs">
+                          {row.original.branchId != null
+                            ? (branchMap.get(Number(row.original.branchId)) ?? `فرع ${row.original.branchId}`)
+                            : "—"}
+                        </span>
+                      ),
+                    },
+                  ] as ColumnDef<VoucherRow, unknown>[])
+                : []),
+              {
+                id: "direction",
+                header: "النوع",
+                accessorFn: (r) => TYPE_LABEL[r.direction],
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
+                    {TYPE_LABEL[row.original.direction]}
+                  </span>
+                ),
+              },
+              {
+                id: "party",
+                header: "الطرف",
+                accessorFn: (r) =>
+                  r.partyName?.trim() || r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—",
+                meta: { width: "wide" },
+                cell: ({ row }) => {
+                  const r = row.original;
                   const partyDisplay =
-                    r.partyName?.trim() ||
-                    r.counterpartyName?.trim() ||
-                    PARTY_LABEL[r.partyType ?? "OTHER"] ||
-                    "—";
+                    r.partyName?.trim() || r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
+                  return (
+                    <span className="text-xs">
+                      {partyDisplay}
+                      {r.partyType !== "OTHER" && r.counterpartyName && r.counterpartyName !== partyDisplay && (
+                        <div className="text-[10px] text-muted-foreground">{r.counterpartyName}</div>
+                      )}
+                      {/*
+                        أُزيل سطرُ «نفّذ: …» المدفون داخل خليّة الطرف: صار للفاعل عمودٌ
+                        مستقلّ باسم العقد. إبقاؤه هنا يُكرّر المعلومة في خليّتين ويُبقي
+                        الخلطَ الذي نُعالجه: الطرفُ الآخر والفاعلُ دوران مختلفان.
+                      */}
+                      {r.invoiceNumber && (
+                        // ٢٤/٨ (تدقيق + Codex P2 على PR #746): رابطٌ مباشرٌ بـ`invoiceId` لا فلترٍ
+                        // بالرقم — «INV-1» و«INV-10» و«INV-11» يتشابهان في `q=INV-1` فتُرجع
+                        // القائمةُ نتائجَ كثيرة. الآن قفزةٌ مباشرة إلى الفاتورة المذكورة.
+                        canOpenInvoices && r.invoiceId != null ? (
+                          <Link
+                            href={`/invoices/${r.invoiceId}`}
+                            className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
+                            title="فتح الفاتورة"
+                          >
+                            <Link2 aria-hidden className="size-3" /> فاتورة #{r.invoiceNumber}
+                          </Link>
+                        ) : (
+                          <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                            فاتورة #{r.invoiceNumber}
+                          </div>
+                        )
+                      )}
+                    </span>
+                  );
+                },
+              },
+              {
+                id: "performedBy",
+                header: ATTRIBUTION_LABELS.performedBy,
+                accessorFn: (r) => r.createdByName ?? "",
+                meta: { kind: "actor" },
+                cell: ({ row }) => (
+                  <ActorCell actor={{ name: row.original.createdByName, userId: row.original.createdBy }} />
+                ),
+              },
+              {
+                id: "category",
+                header: "الفئة",
+                accessorFn: (r) => (r.voucherCategoryId ? (categoryMap.get(Number(r.voucherCategoryId)) ?? "—") : "—"),
+                cell: ({ row }) => (
+                  <span className="text-xs">
+                    {row.original.voucherCategoryId
+                      ? (categoryMap.get(Number(row.original.voucherCategoryId)) ?? "—")
+                      : "—"}
+                  </span>
+                ),
+              },
+              {
+                id: "description",
+                header: "الوصف",
+                accessorFn: (r) => r.description ?? "—",
+                meta: { width: "wide", wrap: true },
+                cell: ({ row }) => row.original.description ?? "—",
+              },
+              {
+                id: "amount",
+                header: "المبلغ",
+                accessorFn: (r) => fmt(r.amount),
+                meta: { kind: "money" },
+                cell: ({ row }) => fmt(row.original.amount),
+              },
+              {
+                id: "paymentMethod",
+                header: "الدفع",
+                accessorFn: (r) => paymentMethodLabel(r.paymentMethod),
+                meta: { align: "center" },
+                cell: ({ row }) => <span className="text-xs">{paymentMethodLabel(row.original.paymentMethod)}</span>,
+              },
+              {
+                id: "approval",
+                header: "الاعتماد",
+                accessorFn: (r) => voucherApprovalLabel(r),
+                meta: { kind: "status" },
+                cell: ({ row }) => {
+                  const r = row.original;
                   const isPending = r.approvalStatus === "PENDING_APPROVAL";
                   const isRejected = r.approvalStatus === "REJECTED";
                   return (
-                    <tr
-                      key={Number(r.id)}
-                      className={`border-t ${r.status === "REVERSED" ? "opacity-60" : ""} ${isPending ? "bg-[var(--sem-warn-bg)]" : ""} ${isRejected ? "bg-[var(--sem-neg-bg)]" : ""}`}
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                        isPending ? "badge-status-pending" : isRejected ? "badge-status-cancelled" : "badge-status-active"
+                      }`}
                     >
-                      <td className="p-2 font-mono text-xs">
-                        <CopyInline value={String(r.voucherNumber ?? "—")} />
-                        {r.signatureHash && (
-                          <div
-                            className="text-[10px] text-muted-foreground"
-                            title={`بَصمة كاملة: ${r.signatureHash}`}
-                          >
-                            #{shortHash(r.signatureHash)}
-                          </div>
-                        )}
-                        {accrualPaymentAttemptLabel({
-                          attempt: r.resubmitAttempt,
-                          rootReceiptId: r.resubmitRootReceiptId,
-                          priorReceiptId: r.resubmitPriorReceiptId,
-                        }) && (
-                          <div
-                            className="mt-1 text-[10px] text-muted-foreground font-sans"
-                            dir="rtl"
-                          >
-                            {accrualPaymentAttemptLabel({
-                              attempt: r.resubmitAttempt,
-                              rootReceiptId: r.resubmitRootReceiptId,
-                              priorReceiptId: r.resubmitPriorReceiptId,
-                            })}
-                          </div>
-                        )}
-                        {r.resubmitReason && (
-                          <div
-                            className="mt-0.5 max-w-52 truncate text-[10px] text-muted-foreground font-sans"
-                            title={r.resubmitReason}
-                            dir="rtl"
-                          >
-                            سبب إعادة الإصدار: {r.resubmitReason}
-                          </div>
-                        )}
-                        {r.resubmitLineageStatus === "BROKEN" && (
-                          <div
-                            className="mt-1 text-[10px] text-[var(--sem-neg)] font-sans"
-                            dir="rtl"
-                          >
-                            سلسلة إعادة الإصدار غير مكتملة — يلزم تدقيق
-                          </div>
-                        )}
-                      </td>
-                      <td className="p-2 text-xs">
-                        {fmtDate(r.voucherDate)}
-                        {r.voucherDate && r.createdAt && (
-                          <div className="text-[10px] text-muted-foreground">
-                            أُدخل: {fmtDate(r.createdAt)}
-                          </div>
-                        )}
-                      </td>
-                      {canFilterBranch && (
-                        <td className="p-2 text-xs">
-                          {r.branchId != null
-                            ? (branchMap.get(Number(r.branchId)) ??
-                              `فرع ${r.branchId}`)
-                            : "—"}
-                        </td>
-                      )}
-                      <td className="p-2 text-center">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}
-                        >
-                          {TYPE_LABEL[r.direction]}
-                        </span>
-                      </td>
-                      <td className="p-2 text-xs">
-                        {partyDisplay}
-                        {r.partyType !== "OTHER" &&
-                          r.counterpartyName &&
-                          r.counterpartyName !== partyDisplay && (
-                            <div className="text-[10px] text-muted-foreground">
-                              {r.counterpartyName}
-                            </div>
-                          )}
-                        {/*
-                          أُزيل سطرُ «نفّذ: …» المدفون داخل خليّة الطرف: صار للفاعل عمودٌ
-                          مستقلّ باسم العقد ({ATTRIBUTION_LABELS.performedBy}). إبقاؤه هنا
-                          يُكرّر المعلومة في خليّتين ويُبقي الخلطَ الذي نُعالجه: الطرفُ الآخر
-                          والفاعلُ دوران مختلفان لا يسكنان خليّةً واحدة.
-                        */}
-                        {r.invoiceNumber && (
-                          // ٢٤/٨ (تدقيق + Codex P2 على PR #746): رابطٌ مباشرٌ بـ`invoiceId` لا فلترٍ
-                          // بالرقم — «INV-1» و«INV-10» و«INV-11» يتشابهان في `q=INV-1` فتُرجع
-                          // القائمةُ نتائجَ كثيرة، والمستخدم عليه تمييز الصحيحة يدوياً. الآن قفزةٌ
-                          // مباشرة إلى الفاتورة المذكورة.
-                          canOpenInvoices && r.invoiceId != null ? (
-                            <Link
-                              href={`/invoices/${r.invoiceId}`}
-                              className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
-                              title="فتح الفاتورة"
-                            >
-                              <Link2 aria-hidden className="size-3" /> فاتورة #{r.invoiceNumber}
-                            </Link>
-                          ) : (
-                            <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
-                              فاتورة #{r.invoiceNumber}
-                            </div>
-                          )
-                        )}
-                      </td>
-                      <td className="p-2 text-xs">
-                        <ActorCell actor={{ name: r.createdByName, userId: r.createdBy }} />
-                      </td>
-                      <td className="p-2 text-xs">
-                        {r.voucherCategoryId
-                          ? (categoryMap.get(Number(r.voucherCategoryId)) ??
-                            "—")
-                          : "—"}
-                      </td>
-                      <td className="p-2">{r.description ?? "—"}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmt(r.amount)}
-                      </td>
-                      <td className="p-2 text-center text-xs">
-                        {paymentMethodLabel(r.paymentMethod)}
-                      </td>
-                      <td className="p-2 text-center">
-                        <span
-                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
-                            isPending
-                              ? "badge-status-pending"
-                              : isRejected
-                                ? "badge-status-cancelled"
-                                : "badge-status-active"
-                          }`}
-                        >
-                          {isPending && (
-                            <ShieldQuestion aria-hidden className="size-3" />
-                          )}
-                          {isRejected && (
-                            <XCircle aria-hidden className="size-3" />
-                          )}
-                          {!isPending && !isRejected && (
-                            <CheckCircle2 aria-hidden className="size-3" />
-                          )}
-                          {voucherApprovalLabel(r)}
-                        </span>
-                      </td>
-                      <td className="p-2 text-center">
-                        {r.attachmentUrl ? (
-                          <a
-                            href={r.attachmentUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="فتح المُرفق"
-                          >
-                            <Paperclip
-                              aria-hidden
-                              className="size-4 text-[var(--sem-pos)] inline"
-                            />
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground text-xs">
-                            —
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-2 text-center">
-                        <RowActions
-                          mode="auto"
-                          actions={[
-                            {
-                              key: "print-thermal",
-                              kind: "print",
-                              label: "طباعة حرارية",
-                              hidden: !canPrintOfficialVoucher(r),
-                              onSelect: () => void printVoucher(r, "thermal"),
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "READ",
-                              },
-                            },
-                            {
-                              key: "print-a4",
-                              kind: "print",
-                              label: "طباعة A4 (PDF)",
-                              hidden: !canPrintOfficialVoucher(r),
-                              onSelect: () => void printVoucher(r, "a4"),
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "READ",
-                              },
-                            },
-                            {
-                              key: "approve",
-                              kind: "approve",
-                              label:
-                                r.direction === "OUT"
-                                  ? "اعتماد المالك وصرف"
-                                  : "اعتماد المالك",
-                              hidden: !canShowVoucherApprovalAction({
-                                direction: r.direction,
-                                approvalStatus: r.approvalStatus,
-                                isOwner,
-                                canManageLegacyReceipt: canManage,
-                              }),
-                              disabled: approveMut.isPending,
-                              disabledReason:
-                                "توجد عملية اعتماد وصرف قيد التنفيذ",
-                              onSelect: () => void approveVoucher(r),
-                              gate: { module: "treasury", level: "FULL" },
-                            },
-                            {
-                              key: "reject",
-                              kind: "reverse",
-                              label:
-                                r.direction === "OUT"
-                                  ? "رفض المالك لطلب الصرف"
-                                  : "رفض المالك للسند",
-                              variant: "destructive",
-                              hidden: !canShowVoucherRejectAction({
-                                direction: r.direction,
-                                approvalStatus: r.approvalStatus,
-                                isOwner,
-                                canManageLegacyReceipt: canManage,
-                              }),
-                              disabled: rejectMut.isPending,
-                              disabledReason: "توجد عملية رفض قيد التنفيذ",
-                              onSelect: () => openReject(r),
-                              gate: { module: "treasury", level: "FULL" },
-                            },
-                            {
-                              key: "resubmit-system-payment",
-                              kind: "create",
-                              label: r.referenceNumber?.startsWith(
-                                "TERM-SETTLEMENT-",
-                              )
-                                ? "إعادة تقديم تسوية نهاية الخدمة"
-                                : isPurchaseSupplierPaymentReference(
-                                      r.referenceNumber,
-                                    )
-                                  ? r.referenceNumber?.startsWith("PO-USD-PAY-")
-                                    ? "إعادة تقديم تسديد USD"
-                                    : "إعادة تقديم دفعة المورد"
-                                  : r.referenceNumber?.startsWith("ASSET-ACQ-")
-                                    ? "إعادة تقديم تسوية اقتناء الأصل"
-                                    : "إعادة تقديم دفع المصروف",
-                              hidden:
-                                !canShowAccrualPaymentResubmit({
-                                  referenceNumber: r.referenceNumber,
-                                  approvalStatus: r.approvalStatus,
-                                  resubmitLineageStatus:
-                                    r.resubmitLineageStatus,
-                                  canManage,
-                                }) &&
-                                !(
-                                  canManage &&
-                                  r.approvalStatus === "REJECTED" &&
-                                  r.resubmitLineageStatus !== "BROKEN" &&
-                                  isPurchaseSupplierPaymentReference(
-                                    r.referenceNumber,
-                                  )
-                                ),
-                              disabled: resubmitSystemPaymentMut.isPending,
-                              disabledReason: "توجد إعادة تقديم قيد التنفيذ",
-                              onSelect: () => openResubmitSystemPayment(r),
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "FULL",
-                              },
-                            },
-                            {
-                              key: "stmt",
-                              kind: "view",
-                              label: "كشف حساب الطرف",
-                              href: statementHref(r),
-                              hidden:
-                                r.partyType === "OTHER" ||
-                                r.partyType == null ||
-                                r.partyId == null,
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "READ",
-                              },
-                            },
-                            {
-                              key: "cancel",
-                              kind: "reverse",
-                              label:
-                                r.status === "COMPLETED" &&
-                                r.approvalStatus === "APPROVED"
-                                  ? "طلب إلغاء السند"
-                                  : "إلغاء الطلب",
-                              variant: "destructive",
-                              hidden:
-                                !canManage ||
-                                r.status === "REVERSED" ||
-                                r.paymentMethod === "EXCHANGE" ||
-                                (isSystemPaymentReference(r.referenceNumber) &&
-                                  !isPurchaseSupplierPaymentReference(
-                                    r.referenceNumber,
-                                  )),
-                              disabled: cancelMut.isPending,
-                              disabledReason: "توجد عملية إلغاء قيد التنفيذ",
-                              onSelect: () => void cancelVoucher(r),
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "FULL",
-                              },
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
+                      {isPending && <ShieldQuestion aria-hidden className="size-3" />}
+                      {isRejected && <XCircle aria-hidden className="size-3" />}
+                      {!isPending && !isRejected && <CheckCircle2 aria-hidden className="size-3" />}
+                      {voucherApprovalLabel(r)}
+                    </span>
                   );
-                })}
-                {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={canFilterBranch ? 13 : 12}
-                    message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً."
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+                },
+              },
+              {
+                id: "attachment",
+                header: "المُرفَق",
+                accessorFn: (r) => (r.attachmentUrl ? "مُرفَق" : "—"),
+                enableSorting: false,
+                meta: { align: "center" },
+                cell: ({ row }) =>
+                  row.original.attachmentUrl ? (
+                    <a href={row.original.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المُرفق">
+                      <Paperclip aria-hidden className="size-4 text-[var(--sem-pos)] inline" />
+                    </a>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">—</span>
+                  ),
+              },
+              {
+                id: "actions",
+                header: "إجراء",
+                enableSorting: false,
+                meta: { kind: "actions" },
+                cell: ({ row }) => {
+                  const r = row.original;
+                  return (
+                    <RowActions
+                      mode="auto"
+                      actions={[
+                        {
+                          key: "print-thermal",
+                          kind: "print",
+                          label: "طباعة حرارية",
+                          hidden: !canPrintOfficialVoucher(r),
+                          onSelect: () => void printVoucher(r, "thermal"),
+                          gate: {
+                            roles: ["manager", "accountant"],
+                            module: "treasury",
+                            level: "READ",
+                          },
+                        },
+                        {
+                          key: "print-a4",
+                          kind: "print",
+                          label: "طباعة A4 (PDF)",
+                          hidden: !canPrintOfficialVoucher(r),
+                          onSelect: () => void printVoucher(r, "a4"),
+                          gate: {
+                            roles: ["manager", "accountant"],
+                            module: "treasury",
+                            level: "READ",
+                          },
+                        },
+                        {
+                          key: "approve",
+                          kind: "approve",
+                          label: r.direction === "OUT" ? "اعتماد المالك وصرف" : "اعتماد المالك",
+                          hidden: !canShowVoucherApprovalAction({
+                            direction: r.direction,
+                            approvalStatus: r.approvalStatus,
+                            isOwner,
+                            canManageLegacyReceipt: canManage,
+                          }),
+                          disabled: approveMut.isPending,
+                          disabledReason: "توجد عملية اعتماد وصرف قيد التنفيذ",
+                          onSelect: () => void approveVoucher(r),
+                          gate: { module: "treasury", level: "FULL" },
+                        },
+                        {
+                          key: "reject",
+                          kind: "reverse",
+                          label: r.direction === "OUT" ? "رفض المالك لطلب الصرف" : "رفض المالك للسند",
+                          variant: "destructive",
+                          hidden: !canShowVoucherRejectAction({
+                            direction: r.direction,
+                            approvalStatus: r.approvalStatus,
+                            isOwner,
+                            canManageLegacyReceipt: canManage,
+                          }),
+                          disabled: rejectMut.isPending,
+                          disabledReason: "توجد عملية رفض قيد التنفيذ",
+                          onSelect: () => openReject(r),
+                          gate: { module: "treasury", level: "FULL" },
+                        },
+                        {
+                          key: "resubmit-system-payment",
+                          kind: "create",
+                          label: r.referenceNumber?.startsWith("TERM-SETTLEMENT-")
+                            ? "إعادة تقديم تسوية نهاية الخدمة"
+                            : isPurchaseSupplierPaymentReference(r.referenceNumber)
+                              ? r.referenceNumber?.startsWith("PO-USD-PAY-")
+                                ? "إعادة تقديم تسديد USD"
+                                : "إعادة تقديم دفعة المورد"
+                              : r.referenceNumber?.startsWith("ASSET-ACQ-")
+                                ? "إعادة تقديم تسوية اقتناء الأصل"
+                                : "إعادة تقديم دفع المصروف",
+                          hidden:
+                            !canShowAccrualPaymentResubmit({
+                              referenceNumber: r.referenceNumber,
+                              approvalStatus: r.approvalStatus,
+                              resubmitLineageStatus: r.resubmitLineageStatus,
+                              canManage,
+                            }) &&
+                            !(
+                              canManage &&
+                              r.approvalStatus === "REJECTED" &&
+                              r.resubmitLineageStatus !== "BROKEN" &&
+                              isPurchaseSupplierPaymentReference(r.referenceNumber)
+                            ),
+                          disabled: resubmitSystemPaymentMut.isPending,
+                          disabledReason: "توجد إعادة تقديم قيد التنفيذ",
+                          onSelect: () => openResubmitSystemPayment(r),
+                          gate: {
+                            roles: ["manager", "accountant"],
+                            module: "treasury",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "stmt",
+                          kind: "view",
+                          label: "كشف حساب الطرف",
+                          href: statementHref(r),
+                          hidden: r.partyType === "OTHER" || r.partyType == null || r.partyId == null,
+                          gate: {
+                            roles: ["manager", "accountant"],
+                            module: "treasury",
+                            level: "READ",
+                          },
+                        },
+                        {
+                          key: "cancel",
+                          kind: "reverse",
+                          label:
+                            r.status === "COMPLETED" && r.approvalStatus === "APPROVED"
+                              ? "طلب إلغاء السند"
+                              : "إلغاء الطلب",
+                          variant: "destructive",
+                          hidden:
+                            !canManage ||
+                            r.status === "REVERSED" ||
+                            r.paymentMethod === "EXCHANGE" ||
+                            (isSystemPaymentReference(r.referenceNumber) &&
+                              !isPurchaseSupplierPaymentReference(r.referenceNumber)),
+                          disabled: cancelMut.isPending,
+                          disabledReason: "توجد عملية إلغاء قيد التنفيذ",
+                          onSelect: () => void cancelVoucher(r),
+                          gate: {
+                            roles: ["manager", "accountant"],
+                            module: "treasury",
+                            level: "FULL",
+                          },
+                        },
+                      ]}
+                    />
+                  );
+                },
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
-      {/* الترقيم: «التالي» يُعطَّل على آخر صفحة اعتماداً على count الخادمي (كان يقفز لصفحة فارغة). */}
-      {(page > 0 || hasNext) && (
-        <div className="flex items-center justify-between text-sm">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page <= 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-          >
-            ← السابق
-          </Button>
-          {/* ٢٤/٨ (تدقيق): نطاق الصفوف المعروضة (س-ص) — العدّاد أعلى القائمة يقول «١٢٥٠ سند»
-              بينما المستخدم لم يعرف أيّ سنداتٍ في الصفحة قبل هذا الإضافة. */}
-          <div className="text-muted-foreground">
-            صفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")}
-            {pageCount != null
-              ? ` من ${pageCount.toLocaleString("ar-IQ-u-nu-latn")}`
-              : ""}
-            {rows.length > 0 && (
-              <> · يعرض <span className="tabular-nums" dir="ltr">{page * limit + 1}-{page * limit + rows.length}</span></>
-            )}
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!hasNext}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            التالي →
-          </Button>
-        </div>
-      )}
+      {/* حوار سبب الرفض — بديل window.prompt: السبب سجلّ تدقيقي إلزامي. */}
+      <VoucherRejectDialog
+        rejectTarget={rejectTarget}
+        rejectReason={rejectReason}
+        setRejectReason={setRejectReason}
+        isPending={rejectMut.isPending}
+        onClose={() => setRejectTarget(null)}
+        onSubmit={submitReject}
+      />
 
-      {/* حوار سبب الرفض — بديل window.prompt (سجل تَدقيقي إلزامي). */}
-      <Dialog
-        open={rejectTarget != null}
-        onOpenChange={(open) => {
-          if (!open && !rejectMut.isPending) setRejectTarget(null);
+      <ResubmitVoucherDialog
+        resubmitTarget={resubmitTarget}
+        onClose={() => {
+          setResubmitTarget(null);
+          setReissueReason("");
+          setResubmitNote("");
+          setResubmitAttachmentImages([]);
         }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              رفض السند {rejectTarget?.voucherNumber ?? ""}
-            </DialogTitle>
-            <DialogDescription>
-              {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
-                ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
-                : isPurchaseSupplierPaymentReference(
-                      rejectTarget?.referenceNumber,
-                    )
-                  ? "سبب الرفض إلزامي. لا تتغير ذمة المورد أو أمر الشراء، ويمكن إعادة تقديم الطلب مرتبطاً بالأمر نفسه بعد التصحيح."
-                  : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
-                    ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
-                    : rejectTarget?.referenceNumber &&
-                        (rejectTarget.referenceNumber.startsWith("SHIP-") ||
-                          rejectTarget.referenceNumber.startsWith(
-                            "ASSET-MAINT-",
-                          ))
-                      ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
-                      : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-1">
-            <Label htmlFor="voucher-reject-reason">سبب الرفض *</Label>
-            <Textarea
-              id="voucher-reject-reason"
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              placeholder="مَثلاً: المبلغ لا يطابق المستند المُرفَق"
-              rows={3}
-              maxLength={500}
-              autoFocus
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setRejectTarget(null)}
-              disabled={rejectMut.isPending}
-            >
-              تراجع
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={submitReject}
-              disabled={!rejectReason.trim() || rejectMut.isPending}
-            >
-              {rejectMut.isPending ? "جارٍ الرفض…" : "رفض السند"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onSubmit={submitResubmitSystemPayment}
+        reissueReason={reissueReason}
+        setReissueReason={setReissueReason}
+        resubmitNote={resubmitNote}
+        setResubmitNote={setResubmitNote}
+        resubmitAttachmentImages={resubmitAttachmentImages}
+        setResubmitAttachmentImages={setResubmitAttachmentImages}
+        isPending={resubmitSystemPaymentMut.isPending}
+      />
 
-      <Dialog
-        open={resubmitTarget != null}
-        onOpenChange={(open) => {
-          if (!open && !resubmitSystemPaymentMut.isPending) {
-            setResubmitTarget(null);
-            setReissueReason("");
-            setResubmitNote("");
-            setResubmitAttachmentImages([]);
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {isPurchaseSupplierPaymentReference(
-                resubmitTarget?.referenceNumber,
-              )
-                ? resubmitTarget?.referenceNumber?.startsWith("PO-USD-PAY-")
-                  ? "إعادة إصدار تسديد USD"
-                  : "إعادة إصدار دفعة المورد"
-                : "إعادة إصدار طلب الدفع"}{" "}
-              {resubmitTarget?.voucherNumber ?? ""}
-            </DialogTitle>
-            <DialogDescription>
-              {isPurchaseSupplierPaymentReference(
-                resubmitTarget?.referenceNumber,
-              ) ? (
-                <>
-                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
-                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
-                  {resubmitTarget?.id ?? "—"} وبأمر الشراء نفسه، بعد إعادة فحص
-                  رصيده الدفتري، بلا تغيير ذمة المورد أو أثر نقدي قبل اعتماد
-                  المالك.
-                </>
-              ) : (
-                <>
-                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
-                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
-                  {resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو الأصل أو قيد
-                  الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-1">
-            <Label htmlFor="voucher-reissue-reason">سبب إعادة الإصدار *</Label>
-            <Textarea
-              id="voucher-reissue-reason"
-              value={reissueReason}
-              onChange={(event) => setReissueReason(event.target.value)}
-              placeholder="مثلاً: أُرفقت فاتورة النقل المصححة"
-              rows={3}
-              minLength={5}
-              maxLength={500}
-              autoFocus
-            />
-            <div className="text-[11px] text-muted-foreground">
-              السبب جزء ثابت من سلسلة التدقيق ولا يمكن استبداله بعد إنشاء
-              المحاولة.
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label>المستند المصحح (اختياري)</Label>
-            <ImageUploader
-              value={resubmitAttachmentImages}
-              onChange={setResubmitAttachmentImages}
-              maxItems={1}
-              maxSizeMB={2}
-              singlePrimary={false}
-              hint="اختر مستند المحاولة الجديدة. مرفق السند المرفوض لا يُنقل تلقائياً."
-            />
-            {resubmitTarget?.attachmentUrl && (
-              <a
-                href={resubmitTarget.attachmentUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs underline text-muted-foreground"
-              >
-                فتح مرفق المحاولة المرفوضة للمراجعة فقط
-              </a>
-            )}
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="voucher-reissue-note">
-              ملاحظة المحاولة (اختيارية)
-            </Label>
-            <Textarea
-              id="voucher-reissue-note"
-              value={resubmitNote}
-              onChange={(event) => setResubmitNote(event.target.value)}
-              placeholder="ملاحظة تشغيلية تضاف إلى وصف المحاولة الجديدة"
-              rows={2}
-              maxLength={500}
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setResubmitTarget(null);
-                setReissueReason("");
-                setResubmitNote("");
-                setResubmitAttachmentImages([]);
-              }}
-              disabled={resubmitSystemPaymentMut.isPending}
-            >
-              تراجع
-            </Button>
-            <Button
-              onClick={submitResubmitSystemPayment}
-              disabled={
-                !validAccrualReissueReason(reissueReason) ||
-                resubmitSystemPaymentMut.isPending
-              }
-            >
-              {resubmitSystemPaymentMut.isPending
-                ? "جارٍ إنشاء المحاولة…"
-                : "إنشاء محاولة مرتبطة"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DigitalStampOverlay
+        isOpen={stampInfo.isOpen}
+        onClose={() => setStampInfo({ isOpen: false })}
+        title={stampInfo.title}
+        referenceNumber={stampInfo.voucherNumber}
+        actorName={stampInfo.actorName}
+      />
     </div>
   );
 }

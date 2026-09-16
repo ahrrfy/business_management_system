@@ -34,6 +34,16 @@ const esc = (s: unknown): string =>
 const htmlLines = (s: unknown): string =>
   esc(s).replace(/\r\n?|\n/g, "<br>");
 
+export function resolveQrUrl(payload: string): string {
+  if (!payload) return "";
+  if (payload.startsWith("http://") || payload.startsWith("https://")) return payload;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  if (origin) {
+    return `${origin}/verify?payload=${encodeURIComponent(payload)}`;
+  }
+  return payload;
+}
+
 export interface TextMeasureLike {
   measureText(text: string): { width: number };
 }
@@ -158,7 +168,7 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
   let barcodeSection = "";
   if (doc.barcodeSet) {
     const [qrSvg, bc128Result] = await Promise.all([
-      qrCodeSvg(doc.barcodeSet.qrPayload, { size: 140, margin: 1 }),
+      qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 140, margin: 1 }),
       Promise.resolve(code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 2, height: 48, showText: true })),
     ]);
     const labelHtml = doc.barcodeSet.displayLabel
@@ -173,13 +183,13 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
   }
 
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(doc.title)}</title>
-<style>@page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{font-family:"Cairo",monospace;width:74mm;max-width:74mm;margin:0 auto;font-size:14px;color:#000;line-height:1.6;overflow-wrap:anywhere}
-h2{text-align:center;margin:3px 0;font-size:18px;font-weight:900}.muted{text-align:center;margin:0;color:#222;font-size:13px;white-space:normal}
-table{width:100%;border-collapse:collapse;margin-top:8px}th{border-bottom:2px solid #000;font-size:13px;padding:3px 0}td{padding:3px 0;font-size:13px}
-.items{margin-top:8px}.item-head,.item-values{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.item-head{border-bottom:2px solid #000;padding:3px 0;font-size:13px;font-weight:800}.item-block{padding:5px 0;border-bottom:1px dashed #000;break-inside:avoid}.item-name{font-size:13px;font-weight:800;line-height:1.45;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}.item-values{margin-top:2px;font-size:12px;line-height:1.45}.item-qty-price{min-width:0;text-align:right}.item-total{flex:none;text-align:left;font-weight:800;direction:ltr}
-.tot{display:flex;justify-content:space-between;border-top:1px dashed #000;padding-top:4px;font-weight:bold;font-size:14px}
-.tot:last-child{font-size:16px;font-weight:900;border-top:2px solid #000;padding-top:5px;margin-top:3px}
-.foot{text-align:center;margin-top:10px;font-size:13px;white-space:normal;overflow-wrap:anywhere}
+<style>@page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{font-family:"Cairo",sans-serif,monospace;width:74mm;max-width:74mm;margin:0 auto;font-size:14px;color:#000;line-height:1.6;overflow-wrap:anywhere}
+h2{text-align:center;margin:3px 0;font-size:19px;font-weight:900}.muted{text-align:center;margin:0;color:#000;font-size:13px;font-weight:700;white-space:normal}
+table{width:100%;border-collapse:collapse;margin-top:8px}th{border-bottom:2.5px solid #000;font-size:13.5px;font-weight:900;padding:4px 0}td{padding:4px 0;font-size:13px;font-weight:700}
+.items{margin-top:8px}.item-head,.item-values{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.item-head{border-bottom:2.5px solid #000;padding:4px 0;font-size:13.5px;font-weight:900}.item-block{padding:5px 0;border-bottom:1px dashed #000;break-inside:avoid}.item-name{font-size:13.5px;font-weight:900;line-height:1.45;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}.item-values{margin-top:2px;font-size:13px;font-weight:800;line-height:1.45}.item-qty-price{min-width:0;text-align:right}.item-total{flex:none;text-align:left;font-weight:900;direction:ltr}
+.tot{display:flex;justify-content:space-between;border-top:1px dashed #000;padding-top:4px;font-weight:800;font-size:14px}
+.tot:last-child{font-size:17px;font-weight:900;border-top:2.5px solid #000;padding-top:6px;margin-top:4px}
+.foot{text-align:center;margin-top:10px;font-size:13px;font-weight:700;white-space:normal;overflow-wrap:anywhere}
 .bc-wrap{text-align:center;margin-top:10px;border-top:1px dashed #000;padding-top:8px}
 .bc-wrap svg{display:block;margin:0 auto}
 .bc-qr svg{width:140px;height:140px}
@@ -375,7 +385,7 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
 
     // QR — يُحمَّل كـ PNG data URL ويُرسم على Canvas
     try {
-      const qrUrl = await qrCodeDataUrl(doc.barcodeSet.qrPayload, { size: QR_SIZE });
+      const qrUrl = await qrCodeDataUrl(resolveQrUrl(doc.barcodeSet.qrPayload), { size: QR_SIZE });
       await drawImage(ctx, qrUrl, (widthPx - QR_SIZE) / 2, y, QR_SIZE, QR_SIZE);
     } catch { /* تدهور سلس */ }
     y += QR_SIZE + 6;

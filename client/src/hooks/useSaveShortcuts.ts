@@ -43,23 +43,71 @@ function anyOverlayOpen(): boolean {
   );
 }
 
+type Handlers = { onSave?: () => void; onCancel?: () => void; enabled: boolean };
+type Entry = { ref: { current: Handlers } };
+
+/**
+ * ⭐ سجلٌّ مركزيّ واحد — **الأعمقُ تركيباً يفوز** (م٦، أمسكته الجولة البصريّة):
+ * شاشةُ المنتج تربط Ctrl+S لمحرّر المتغيّرات، وتُصيّر داخلها نموذجَ «السلعة البسيطة» بشريط حفظه
+ * (`RecordForm`/`SaveBar`) الذي يربط Ctrl+S أيضاً ⇒ ضغطةٌ واحدة أطلقت **حفظَين متزامنَين** على المنتج
+ * نفسه (طلبان في دفعة tRPC واحدة، والثاني سقط على UNIQUE النسخ). مستمعٌ مستقلّ لكلّ مستهلكٍ يجعل
+ * كلَّ تركيبٍ متداخل حفظاً مزدوجاً بالضرورة.
+ * القاعدة: عند Ctrl+S/Esc يُستدعى **آخرُ معالِجٍ مثبَّتٍ مُفعَّل** (الابنُ الأحدث تركيباً) وحده، وحين يُفكَّك
+ * يعود الدورُ لمن قبله. المدخل يُسجَّل عند التركيب ويحتفظ بموضعه ولو تبدّل `enabled` (لا يقفز إلى القمّة).
+ */
+const stack: Entry[] = [];
+let listening = false;
+
+/** المعالِجُ الفعّال: آخرُ مدخلٍ مُفعَّل في السجلّ — دالّةٌ نقيّة تُختبر بلا DOM. */
+export function activeHandlers(entries: ReadonlyArray<Entry>): Handlers | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].ref.current.enabled) return entries[i].ref.current;
+  }
+  return null;
+}
+
+function keydownHandler(e: KeyboardEvent) {
+  const active = activeHandlers(stack);
+  if (!active) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    if (modalOpen() || !active.onSave) return;
+    e.preventDefault();
+    active.onSave();
+  } else if (e.key === "Escape" && active.onCancel) {
+    if (anyOverlayOpen()) return;
+    active.onCancel();
+  }
+}
+
+function attachListener() {
+  if (listening || typeof window === "undefined") return;
+  window.addEventListener("keydown", keydownHandler);
+  listening = true;
+}
+function detachListenerIfIdle() {
+  if (!listening || stack.length > 0 || typeof window === "undefined") return;
+  window.removeEventListener("keydown", keydownHandler);
+  listening = false;
+}
+
 export function useSaveShortcuts({ onSave, onCancel, enabled = true }: SaveShortcutOpts): void {
-  const ref = useRef<{ onSave?: () => void; onCancel?: () => void }>({ onSave, onCancel });
-  ref.current = { onSave, onCancel };
+  const ref = useRef<Handlers>({ onSave, onCancel, enabled });
+  ref.current = { onSave, onCancel, enabled };
 
   useEffect(() => {
-    if (!enabled) return;
-    function handler(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-        if (modalOpen() || !ref.current.onSave) return;
-        e.preventDefault();
-        ref.current.onSave();
-      } else if (e.key === "Escape" && ref.current.onCancel) {
-        if (anyOverlayOpen()) return;
-        ref.current.onCancel();
-      }
-    }
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [enabled]);
+    const entry: Entry = { ref };
+    stack.push(entry);
+    attachListener();
+    return () => {
+      const i = stack.indexOf(entry);
+      if (i >= 0) stack.splice(i, 1);
+      detachListenerIfIdle();
+    };
+  }, []);
 }
+
+/** @internal — للاختبار فقط. */
+export const __TEST_ONLY__ = {
+  activeHandlers,
+  stackSize: () => stack.length,
+};

@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.util.UUID
 import kotlinx.coroutines.launch
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.data.WarehouseToolsDataSource
 import online.alarabiya.superapp.model.warehouseTools.*
 
@@ -137,11 +138,47 @@ class WarehouseToolsViewModel(
     fun setScanInput(value: String) { state = state.copy(scanInput = value.take(1_000), signedResult = null, catalogResult = null, error = null) }
     fun setCountQuery(value: String) { state = state.copy(countQuery = value.take(120)) }
 
-    fun scan() {
-        val raw = state.scanInput.trim()
+    fun scan(capturedByCamera: Boolean = false, capturedByHid: Boolean = false, scannedValue: String = state.scanInput) {
+        val raw = scannedValue.trim()
         if (raw.isEmpty()) return fail("أدخل أو امسح رمزاً")
-        state.selectedCount?.exactMatch(raw)?.let { return beginCount(it) }
-        state.snapshot?.exactMatch(raw)?.let { state = state.copy(catalogResult = it, signedResult = null, message = "تمت المطابقة من اللقطة المشفرة"); return }
+        state.selectedCount?.let { session ->
+            when (val match = session.barcodeMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("الباركود يطابق أكثر من صنف في هذا التكليف؛ صحّح هوية الباركود قبل العد")
+                is NativeBarcodeResolution.Unique -> return beginCount(
+                    match.value,
+                    entryMethod = when { capturedByCamera -> "SCAN_CAMERA"; capturedByHid -> "SCAN_HID"; else -> "SEARCH_PICK" },
+                    scannedBarcode = match.normalizedBarcode.takeIf { capturedByCamera || capturedByHid },
+                )
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
+            when (val match = session.skuMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("رمز SKU يطابق أكثر من صنف في هذا التكليف؛ صحّح الهوية قبل العد")
+                is NativeBarcodeResolution.Unique -> return beginCount(match.value)
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
+        }
+        state.snapshot?.let { snapshot ->
+            when (val match = snapshot.barcodeMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("الباركود يطابق أكثر من وحدة أو منتج في اللقطة؛ صحّح هوية الباركود")
+                is NativeBarcodeResolution.Unique -> {
+                    state = state.copy(catalogResult = match.value, signedResult = null, message = "تمت المطابقة من اللقطة المشفرة")
+                    return
+                }
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
+            when (val match = snapshot.skuMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("رمز SKU يطابق أكثر من وحدة أو منتج في اللقطة؛ صحّح الهوية")
+                is NativeBarcodeResolution.Unique -> {
+                    state = state.copy(catalogResult = match.value, signedResult = null, message = "تمت المطابقة من اللقطة المشفرة")
+                    return
+                }
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
+        }
         if (raw.count { it == '|' } >= 5) {
             launch("barcode:verify") { state = state.copy(signedResult = source.verifySignedBarcode(raw), catalogResult = null) }
         } else fail("لا توجد مطابقة دقيقة للباركود أو SKU في البيانات المتاحة")
@@ -182,8 +219,15 @@ class WarehouseToolsViewModel(
         }
     }
 
-    fun beginCount(item: CountItem) {
+    fun beginCount(
+        item: CountItem,
+        entryMethod: String = "SEARCH_PICK",
+        scannedBarcode: String? = null,
+    ) {
         val session = state.selectedCount ?: return fail("اختر جلسة العد أولاً")
+        if (session.countMethod == "SCAN_REQUIRED" && entryMethod == "SEARCH_PICK") {
+            return fail("هذه الجلسة تتطلب مسح باركود الصنف بالكاميرا قبل فتح العد")
+        }
         if (!canBeginWarehouseCount(state, item)) {
             return fail(
                 if (!state.countFresh || !state.pendingFresh) "حدّث الجلسة قبل تسجيل عد جديد"
@@ -194,7 +238,14 @@ class WarehouseToolsViewModel(
         state = state.copy(
             section = WarehouseSection.COUNTS,
             selectedItem = item,
-            countDraft = CountDraft(session.code, item.variantId, units.map { CountUnitEntry(it.name, it.factor) }, UUID.randomUUID().toString()),
+            countDraft = CountDraft(
+                session.code,
+                item.variantId,
+                units.map { CountUnitEntry(it.name, it.factor) },
+                UUID.randomUUID().toString(),
+                entryMethod,
+                scannedBarcode,
+            ),
             error = null,
         )
     }

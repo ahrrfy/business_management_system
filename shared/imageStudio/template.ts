@@ -8,7 +8,7 @@
  */
 
 /** نسخة القالب — تُخزَّن في stylePresetVersion؛ رفعها يُوسم لإعادة المعالجة (لا يُعاد تلقائياً). */
-export const STUDIO_TEMPLATE_VERSION = 1;
+export const STUDIO_TEMPLATE_VERSION = 2;
 
 export const STUDIO_TEMPLATE = {
   version: STUDIO_TEMPLATE_VERSION,
@@ -16,19 +16,19 @@ export const STUDIO_TEMPLATE = {
   canvasSize: 1600,
   /** خلفية بيضاء نقيّة (قرار المالك ٣ — لا مشاهد مولَّدة). */
   background: "#FFFFFF",
-  /** أكبر بُعد للمنتج = هذه النسبة من القماش ⇒ هامش موحّد (~٩٪) وحجمٌ ثابت عبر الكتالوج. */
-  productMaxRatio: 0.82,
+  /** أكبر بُعد للمنتج = هذه النسبة من القماش ⇒ ملء ممتلئ وبارز بنسبة ٩٠٪ (معايير المتاجر الكبرى). */
+  productMaxRatio: 0.90,
   /** ظلّ تماس بيضاويّ أسفل-وسط، حتميّ (معاملات ثابتة). */
   shadow: {
     opacity: 0.18,
     /** عرض البيضاوي = هذه النسبة من عرض المنتج. */
     widthRatio: 0.72,
     /** ارتفاع البيضاوي = هذه النسبة من عرض المنتج (مسطّح). */
-    heightRatio: 0.08,
+    heightRatio: 0.075,
     /** نصف قطر تمويه الظلّ = هذه النسبة من القماش. */
-    blurRatio: 0.03,
+    blurRatio: 0.025,
     /** فجوة بين قاع المنتج وحافة الظلّ العليا = هذه النسبة من القماش. */
-    gapRatio: 0.01,
+    gapRatio: 0.008,
   },
   /** مقاسات العرض المشتقّة (px، مربّعة): بطاقة/قائمة/مصغّرة عرض. */
   derivedSizes: [1200, 600, 240],

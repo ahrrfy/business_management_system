@@ -82,15 +82,13 @@ async function seedBase() {
   await db()
     .insert(s.productVariants)
     .values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "5.00" });
-  await db()
-    .insert(s.productUnits)
-    .values({
-      id: 1,
-      variantId: 1,
-      unitName: "قطعة",
-      conversionFactor: "1",
-      isBaseUnit: true,
-    });
+  await db().insert(s.productUnits).values({
+    id: 1,
+    variantId: 1,
+    unitName: "قطعة",
+    conversionFactor: "1",
+    isBaseUnit: true,
+  });
   await db()
     .insert(s.suppliers)
     .values({ id: 1, name: "مورد الاختبار", currentBalance: "0" });
@@ -135,6 +133,7 @@ async function receivedOrder(
       reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر للاختبار",
     },
     { userId: 2, branchId: 1, role: "manager" },
+    { legacyConfirmOnly: true },
   );
   const item = (
     await db()
@@ -196,7 +195,9 @@ describe("مرتجع المشتريات المرجعي", () => {
     // إنشاء أمر الشراء المحكوم يكتب مفاتيح submit/decision مشروعة؛ المطلوب هنا
     // إثبات أن رفض طريقة الدفع لم يكتب مفتاح مرتجع شراء.
     expect(
-      await db().select().from(s.idempotencyKeys)
+      await db()
+        .select()
+        .from(s.idempotencyKeys)
         .where(eq(s.idempotencyKeys.operation, "purchase.return")),
     ).toHaveLength(0);
   });

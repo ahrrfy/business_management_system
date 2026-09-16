@@ -15,6 +15,7 @@ const WH1 = { userId: 2, branchId: 1, role: "warehouse" }; // المُنشئ (ف
 const MGR1 = { userId: 4, branchId: 1, role: "manager" }; // مُعتمِد فرع ١
 const MGR2 = { userId: 5, branchId: 2, role: "manager" }; // مدير فرع ٢ (لاختبار عزل الفرع)
 const ADMIN = { userId: 1, branchId: 1, role: "admin" };
+const OWNER = { userId: 6, branchId: 1, role: "admin" };
 
 const TABLES = [
   "auditLogs",
@@ -54,6 +55,7 @@ async function seed() {
     { id: 2, openId: "u_wh1", name: "مخزن ف١", role: "warehouse", branchId: 1 },
     { id: 4, openId: "u_mgr1", name: "مدير ف١", role: "manager", branchId: 1 },
     { id: 5, openId: "u_mgr2", name: "مدير ف٢", role: "manager", branchId: 2 },
+    { id: 6, openId: "u_owner", name: "المالك", role: "admin", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.products).values({ id: 1, name: "ورق A4" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PAPER-A4", variantName: "عادي", costPrice: "5.00" });
@@ -163,6 +165,17 @@ describe("تسوية المخزون بفصل مهام (#٦ الشريحة ٢)", 
     const res = await approveStockAdjustment(requestId, ADMIN);
     expect(res.delta).toBe(5);
     expect(await stockOf(1, 1)).toBe(25);
+  });
+
+  it("المالك يطلب تسوية المخزون فتُعتمد وتُطبق في الخطوة نفسها", async () => {
+    const result = await requestStockAdjustment(
+      { variantId: 1, branchId: 1, targetQuantity: 17, notes: "جرد المالك" },
+      OWNER,
+    );
+    expect(result.status).toBe("APPROVED");
+    expect(await stockOf(1, 1)).toBe(17);
+    const [row] = await db().select().from(s.stockAdjustmentRequests).where(eq(s.stockAdjustmentRequests.id, result.requestId));
+    expect(row).toMatchObject({ status: "APPROVED", createdBy: OWNER.userId, approvedBy: OWNER.userId });
   });
 
   it("H3 (تدقيق ١١/٨): أثناء الافتتاح، تسوية صنفٍ غير مُفتتَح = تثبيت افتتاحيّ بصفر أثر P&L + ختم openedAt", async () => {

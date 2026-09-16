@@ -1,19 +1,21 @@
 /**
- * useBarcodeScanner — Custom Hook لاستقبال مدخل ماسح HID.
+ * useBarcodeScanner — خطّاف الالتقاط العالميّ لمدخل قارئ HID على مستوى الصفحة كاملةً.
  *
- * ماسحات الباركود USB/Bluetooth تحاكي لوحة مفاتيح (HID keyboard emulation):
- * تُرسل أحرفاً بسرعة عالية (< 80ms/حرف) ثم Enter.
- * هذا الـ hook يُفرّق بين مدخل الماسح والكتابة البشرية العادية بالتوقيت.
+ * ماسحات USB/Bluetooth تحاكي لوحة مفاتيح: تُرسل مواقع مفاتيح بسرعةٍ عالية ثم Enter. هذا الخطّاف
+ * يلتقط المسح في **أيّ مكانٍ** بالشاشة (داخل حقلٍ أو خارجه) ويميّزه عن الكتابة البشرية بالتوقيت.
  *
- * النمط معتمد في: Square POS SDK، Shopify POS، WooCommerce POS.
+ * كلّ منطق التوقيت والفكّ الفيزيائيّ موحَّدٌ في `ScanBurstDetector` (نواةٌ نقيّة مُختبَرة) — فلا
+ * ينجرف عن `useBarcodeInput`/`useSmartScanInput`، ويصحّح ثلاث علل معاً: الرموز العربية (فكّ
+ * `event.code` المستقلّ عن التخطيط)، و«يعمل أحياناً» (تسامحٌ مع تذبذب توقيت USB)، والتسريب
+ * (إزالةٌ فوريّة للحرف المرشّح عند بدء الومضة). راجع `client/src/lib/barcodeScanTiming.ts`.
  *
- * @param onScan  — callback يُستدعى بالنص الكامل عند اكتمال المسح
- * @param enabled — يُعطَّل عند فتح نوافذ مودال لتجنّب التعارض
- * @param minLength — الحد الأدنى لطول الباركود (افتراضي 4)
- * @param thresholdMs — الفاصل الزمني الأقصى بين أحرف الماسح (افتراضي 80ms)
+ * @param onScan     — يُستدعى بالباركود المفكوك الكامل عند اكتمال المسح.
+ * @param enabled    — يُعطَّل عند فتح المودالات لتجنّب التعارض.
+ * @param minLength  — أدنى طولٍ لقبول الومضة (افتراضي 2؛ رموز الموردين الداخلية قد تكون قصيرة).
+ * @param thresholdMs— أقصى فاصلٍ بين ضغطتين ضمن ومضةٍ واحدة (افتراضي 120؛ سخيٌّ ليتحمّل التذبذب).
  */
-import { useEffect, useCallback } from "react";
-import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { useEffect, useRef } from "react";
+import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
 
 const INPUT_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
@@ -21,78 +23,138 @@ export function useBarcodeScanner(
   onScan: (raw: string) => void,
   {
     enabled = true,
-    minLength = 4,
-    thresholdMs = 80,
-  }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
+    minLength = 2,
+    thresholdMs = 120,
+    // يتنحّى الماسح عن الحقول المركَّز فيها (INPUT/TEXTAREA/SELECT) فيتركها لماسحها المحلّيّ
+    // (مثل ProductSearchBar عبر useBarcodeInput). يستعمله الماسح العالميّ للوحة الأوامر كي لا
+    // يخطف المسح داخل شاشات السلة (مرتجعات/تحويلات/هدايا...) — يعيد سلوك ما قبل #1070.
+    ignoreInputFields = false,
+  }: { enabled?: boolean; minLength?: number; thresholdMs?: number; ignoreInputFields?: boolean } = {},
 ): void {
-  // useCallback لضمان استقرار المرجع وتجنّب إعادة تسجيل event listener
-  const stableOnScan = useCallback(onScan, [onScan]);
+  // مرجعٌ مستقرّ لـonScan: يمنع إعادةَ بناء الكاشف وتسجيلِ المستمع كلّما تغيّرت هويّة onScan
+  // (المستدعي بدالّةٍ سطريّة مثل BarcodeLabels) — فلا يُعاد ضبطُ الكاشف وسط المسح فيُبتَر الباركود.
+  const onScanRef = useRef(onScan);
+  onScanRef.current = onScan;
 
   useEffect(() => {
     if (!enabled) return;
 
-    let buf = "";
-    let lastKeyTime = 0;
+    const detector = new ScanBurstDetector({ minLength, intraGapMs: thresholdMs });
+    // مهلة السكون قبل الإفراغ التلقائيّ (قارئٌ بلا لاحقة Enter): سخيّةٌ عمداً كي لا يقطع تذبذبُ
+    // توقيت USB (فاصلٌ >المهلة وسط ومضةٍ نشطة) الباركودَ فيُصدِر بادئةً جزئيّة (P2). القارئ البطيء
+    // جداً لا يُشغّل ومضةً أصلاً (فلا تنطبق المهلة)، فتقصيرُها لم يكن يُفيده.
+    const idleMs = Math.max(250, Math.min(thresholdMs * 4, 600));
     let timer: ReturnType<typeof setTimeout>;
 
-    const reset = () => {
-      buf = "";
+    // الحقل المستهدَف وقيمته قبل ظهور الحرف المرشّح — لاستعادةٍ نظيفة (صفر تسريب).
+    let fieldTarget: HTMLInputElement | HTMLTextAreaElement | null = null;
+    let valBefore = "";
+
+    const clearField = () => {
+      fieldTarget = null;
+      valBefore = "";
     };
 
-    const flush = () => {
-      const captured = buf;
-      buf = "";
-      if (captured.length >= minLength) {
-        stableOnScan(normalizeBarcodeScannerInput(captured));
+    const setFieldValueAndNotify = (value: string) => {
+      if (!fieldTarget) return;
+      if (fieldTarget.value === value) return;
+      // ضبطٌ عبر الـsetter الأصليّ (لا الخاصية المرقَّعة من React) ثمّ إرسال حدث input: الإسناد
+      // المباشر لـ`.value` يُحدِّث متتبِّع React فيُقرأ الحدثُ «بلا تغيير» ولا يُطلَق onChange، فتبقى
+      // حالة React (مثل نصّ البحث) غير مصحَّحة. هذا التمرير يزامن المسح والاستعادة مع الحالة فعلاً.
+      const proto = fieldTarget instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (nativeSetter) nativeSetter.call(fieldTarget, value);
+      else fieldTarget.value = value;
+      fieldTarget.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    const finish = () => {
+      clearTimeout(timer);
+      const { accepted, code, text } = detector.flush();
+      if (accepted && code.length >= minLength) {
+        // أزال startBurst مرشّح المسح من الحقل؛ أبقِ النصّ اليدوي السابق كما هو.
+        clearField();
+        onScanRef.current(code);
+      } else {
+        // كتابةٌ بشرية قصيرة صُنّفت سريعاً بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع.
+        if (text) setFieldValueAndNotify(valBefore + text);
+        clearField();
       }
     };
 
-    const handler = (e: KeyboardEvent) => {
-      const now = Date.now();
-      const inField = INPUT_TAGS.has((e.target as HTMLElement).tagName);
+    const armIdle = () => {
+      clearTimeout(timer);
+      timer = setTimeout(finish, idleMs);
+    };
 
-      // Enter: لا نبتلع Enter (e.preventDefault) إلا إذا كان التسلسل الحالي ماسحاً آلياً
-      // مؤكَّداً: طول كافٍ + آخر حرف وصل للتوّ (الماسح يُرسل آخر رقم ثم Enter خلال <80ms).
-      // الإنسان يفرغ من الكتابة ثم يتوقّف ثم يضغط Enter لإرسال نموذج ⇒ الفاصل أكبر فلا يُسرَق.
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inField = target != null && INPUT_TAGS.has(target.tagName);
+      const inputEl = inField ? (target as HTMLInputElement | HTMLTextAreaElement) : null;
+
+      // تنحٍّ عن الحقول المركَّز فيها (وضع لوحة الأوامر): يتركها لماسحها المحلّيّ بلا خطفٍ ولا Enter.
+      if (ignoreInputFields && inField) return;
+
+      // Enter: نعترضه حين تكون ومضةٌ نشطة — إمّا نُصدر الباركود (بلغ الحدّ الأدنى) وإمّا نستعيد
+      // النصّ القصير عبر finish (يعيد البادئة + الخام) بلا فقد. غير النشط يمرّ للنموذج/الحقل.
       if (e.key === "Enter") {
-        clearTimeout(timer);
-        if (buf.length >= minLength && now - lastKeyTime < thresholdMs * 2) {
+        if (detector.isActive) {
           e.preventDefault();
-          flush();
+          e.stopPropagation();
+          finish();
         } else {
-          reset();
+          // ⛔ لا استردادٌ لمسحٍ بطيء هنا: الخطّاف العالميّ يُطلَق على **أيّ** حقلٍ في الصفحة
+          // (طور الالتقاط على document)، فتفسيرُ قيمةِ حقلٍ غير باركوديّ (مبلغ الدفع مثلاً) باركوداً
+          // خطرٌ ماليّ (P1). استردادُ القارئ البطيء يبقى في خطّافات الحقل المخصَّصة للباركود وحدها.
+          clearTimeout(timer);
+          detector.reset();
+          clearField();
         }
         return;
       }
 
-      // تجاهل مفاتيح التحكم والوظائف والاختصارات
-      if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
+      // تجاهل مفاتيح التحكّم والوظائف والاختصارات. نقبل طول 1 أو 2 لأنّ العربي 101 يُنتج
+      // «لا/لأ/لآ» بحرفَين لضغطةٍ واحدة؛ الفكّ الفيزيائيّ (event.code) يعيدها ASCII.
+      if (e.ctrlKey || e.altKey || e.metaKey || e.key.length < 1 || e.key.length > 2) return;
 
-      // إن كانت الكتابة في حقل نص والمسح لم يبدأ بعد → اتركها للحقل (لا تراكم داخل الحقول).
-      if (inField && buf.length === 0) return;
+      const action = detector.feed({ code: e.code, key: e.key, shiftKey: e.shiftKey }, Date.now());
 
-      const gap = now - lastKeyTime;
-      lastKeyTime = now;
-
-      // إن كان الفاصل بين حرفين أكبر من الحدّ → سرعة بشرية لا ماسح
-      if (buf.length > 0 && gap > thresholdMs * 3) {
-        buf = "";
+      if (action === "pass") {
+        // حرفٌ مرشّح: يظهر في الحقل (قد يكون بشرياً). نسجّل قيمة الحقل قبله لاستعادةٍ محتملة.
+        if (inputEl) {
+          fieldTarget = inputEl;
+          valBefore = inputEl.value;
+        } else {
+          clearField();
+        }
+        return;
       }
 
-      buf += e.key;
-      clearTimeout(timer);
-      // مهلة انتهاء المسح (إن لم يأتِ Enter)
-      timer = setTimeout(flush, thresholdMs * 10);
+      // startBurst أو capture: احجب الحرف عن الحقل.
+      e.preventDefault();
+      e.stopPropagation();
+      if (action === "startBurst" && inputEl && fieldTarget === inputEl) {
+        // استعِد الحرف المرشّح الأوّل الذي تسرّب — صفر رمزٍ مرئيّ.
+        setFieldValueAndNotify(valBefore);
+      }
+      armIdle();
     };
 
-    document.addEventListener("keydown", handler);
-    // أي تغيّر تركيز (نقر/Tab إلى حقل أو زر) يُنهي أي تسلسل جارٍ ⇒ يمنع حمل buf المُجمَّع
-    // على body عبر تغيّر التركيز فيُسرَق Enter داخل حقل/زر (انحدار «النماذج لا تُرسَل»).
-    document.addEventListener("focusin", reset);
+    // useCapture: الالتقاط عند النزول قبل عناصر DOM لتأمين اعتراض Enter والنبضات وسبق الخطّافات الحقلية.
+    document.addEventListener("keydown", handler, true);
+    // أيّ تغيّر تركيزٍ يُنهي أيّ تسلسلٍ جارٍ (منع حمل مخزنٍ عبر الحقول).
+    const onFocusChange = () => {
+      clearTimeout(timer);
+      detector.reset();
+      clearField();
+    };
+    document.addEventListener("focusin", onFocusChange);
     return () => {
-      document.removeEventListener("keydown", handler);
-      document.removeEventListener("focusin", reset);
+      document.removeEventListener("keydown", handler, true);
+      document.removeEventListener("focusin", onFocusChange);
       clearTimeout(timer);
     };
-  }, [enabled, minLength, thresholdMs, stableOnScan]);
+  }, [enabled, minLength, thresholdMs, ignoreInputFields]);
 }

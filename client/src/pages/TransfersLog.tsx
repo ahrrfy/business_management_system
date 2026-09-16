@@ -9,8 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { DataTable } from "@/components/data-table/DataTable";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import type { ColumnDef } from "@tanstack/react-table";
 import { LoadingState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -43,10 +44,80 @@ function StatusBadge({ status, sent, received }: { status: string; sent: number;
   return <Badge className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30">مستلَم مطابق</Badge>;
 }
 
+/** نفسُ فروع `StatusBadge` نصّاً — تُغذّي «نسخ القيمة» والفرز بالتسمية المعروضة لا بالرمز. */
+function transferStatusLabel(r: TransferRow): string {
+  if (r.status === "IN_TRANSIT") return "بالطريق";
+  if (r.status === "CANCELLED") return "ملغى";
+  const sent = Number(r.totalSentBase);
+  const received = r.totalReceivedBase == null ? null : Number(r.totalReceivedBase);
+  if (received != null && received < sent) return `مستلَم بعجز ${fmtInt(sent - received)}`;
+  return "مستلَم مطابق";
+}
+
+/**
+ * أعمدةُ سجلّ التحويلات — موجة الجداول (٢/٩/٢٦). قائمةُ عرضٍ خالصة (لا حقلَ في صفٍّ)
+ * تُفتَح تفاصيلُها بنقر الصفّ ⇒ `DataTable` بـ`onRowClick`. شبكةُ الاستلام في الحوار
+ * أدناه تبقى خامّةً (انظر تعليقَها هناك).
+ */
+const transferColumns: ColumnDef<TransferRow, unknown>[] = [
+  {
+    id: "transferNumber",
+    header: "السند",
+    accessorFn: (r) => r.transferNumber,
+    meta: { kind: "code" },
+    cell: ({ row }) => <span className="text-xs">{row.original.transferNumber}</span>,
+  },
+  {
+    id: "route",
+    header: "من ← إلى",
+    accessorFn: (r) => `${r.fromBranchName} ← ${r.toBranchName}`,
+    meta: { width: "wide" },
+    cell: ({ row }) => `${row.original.fromBranchName} ← ${row.original.toBranchName}`,
+  },
+  {
+    id: "linesCount",
+    header: "المنتجات",
+    accessorFn: (r) => fmtInt(r.linesCount),
+    meta: { kind: "number", align: "center" },
+    cell: ({ row }) => fmtInt(row.original.linesCount),
+  },
+  {
+    id: "units",
+    header: "كميات الأسطر (مرسَل/مستلَم)",
+    accessorFn: (r) => (r.totalReceivedBase != null ? `${fmtInt(r.totalSentBase)} / ${fmtInt(r.totalReceivedBase)}` : fmtInt(r.totalSentBase)),
+    meta: { kind: "number", align: "center" },
+    /* استثناءٌ مقصود: الخليّة رقمان في نصٍّ واحد («120 / 118») فالمقارنةُ المشتقّة تلصقهما
+       عدداً واحداً — نفرز على المرسَل وحده. */
+    sortingFn: (a, b) => Number(a.original.totalSentBase) - Number(b.original.totalSentBase),
+    cell: ({ row }) =>
+      `${fmtInt(row.original.totalSentBase)}${row.original.totalReceivedBase != null ? ` / ${fmtInt(row.original.totalReceivedBase)}` : ""}`,
+  },
+  {
+    id: "status",
+    header: "الحالة",
+    accessorFn: (r) => transferStatusLabel(r),
+    meta: { kind: "status" },
+    cell: ({ row }) => (
+      <StatusBadge
+        status={row.original.status}
+        sent={Number(row.original.totalSentBase)}
+        received={row.original.totalReceivedBase == null ? null : Number(row.original.totalReceivedBase)}
+      />
+    ),
+  },
+  {
+    id: "createdAt",
+    header: "التاريخ",
+    accessorFn: (r) => fmtDateTime(r.createdAt),
+    meta: { kind: "datetime", align: "end" },
+    cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.createdAt)}</span>,
+  },
+];
+
 export default function TransfersLog() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const elevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const elevated = me.data?.role === "admin";
   const myBranch = me.data?.branchId == null ? null : Number(me.data.branchId);
 
   const [status, setStatus] = useState<"all" | "IN_TRANSIT" | "RECEIVED" | "CANCELLED">("all");
@@ -119,6 +190,19 @@ export default function TransfersLog() {
 
   const detail = trpc.inventory.transferGet.useQuery({ id: openId ?? 0 }, { enabled: openId != null });
   const doc = openId != null ? detail.data : undefined;
+  const bundleComponentLabelsByLine = useMemo(() => {
+    const labels = new Map<number, string>();
+    for (const line of doc?.lines ?? []) {
+      if (!line.isBundle) continue;
+      labels.set(
+        Number(line.id),
+        line.bundleComponents
+          .map((component) => `${fmtInt(component.baseQuantityPerBundle)} × ${component.productName}${component.variantName ? ` — ${component.variantName}` : ""}`)
+          .join(" + "),
+      );
+    }
+    return labels;
+  }, [doc]);
 
   // وضع الاستلام: كمية مستلَمة + ملاحظة لكل سطر (تُهيّأ عند فتح سند بالطريق بقيم المرسَل).
   const [recv, setRecv] = useState<Record<number, { qty: string; note: string }>>({});
@@ -159,17 +243,21 @@ export default function TransfersLog() {
     }, 0);
   }, [doc, recv]);
 
+  const invalidateTransferInventory = () => Promise.all([
+    utils.inventory.transfersList.invalidate(),
+    utils.inventory.transfersPendingIncoming.invalidate(),
+    utils.inventory.transferGet.invalidate(),
+    utils.catalog.forPurchase.invalidate(),
+    utils.catalog.posList.invalidate(),
+    utils.inventory.movements.invalidate(),
+    utils.inventory.movementsRich.invalidate(),
+  ]);
+
   const receive = trpc.inventory.transferReceive.useMutation({
     onSuccess: async (res) => {
-      notify.ok(res.discrepancyUnits > 0 ? `تمّ الاستلام مع توثيق عجز ${fmtInt(res.discrepancyUnits)} وحدة` : "تمّ الاستلام مطابقاً");
+      notify.ok(res.discrepancyUnits > 0 ? `تمّ الاستلام مع توثيق عجز ${fmtInt(res.discrepancyUnits)} من وحدات السند` : "تمّ الاستلام مطابقاً");
       setOpenId(null);
-      await Promise.all([
-        utils.inventory.transfersList.invalidate(),
-        utils.inventory.transfersPendingIncoming.invalidate(),
-        utils.inventory.transferGet.invalidate(),
-        utils.catalog.forPurchase.invalidate(),
-        utils.inventory.movements?.invalidate?.(),
-      ]);
+      await invalidateTransferInventory();
     },
     onError: (e) => notify.err(e.message),
   });
@@ -178,12 +266,7 @@ export default function TransfersLog() {
     onSuccess: async () => {
       notify.ok("أُلغي السند وأُعيدت الكمية لرصيد الفرع المرسل");
       setOpenId(null);
-      await Promise.all([
-        utils.inventory.transfersList.invalidate(),
-        utils.inventory.transfersPendingIncoming.invalidate(),
-        utils.inventory.transferGet.invalidate(),
-        utils.catalog.forPurchase.invalidate(),
-      ]);
+      await invalidateTransferInventory();
     },
     onError: (e) => notify.err(e.message),
   });
@@ -193,7 +276,7 @@ export default function TransfersLog() {
     if (totalDiscrepancy > 0) {
       const ok = await confirm({
         variant: "danger",
-        title: `استلام بعجز ${fmtInt(totalDiscrepancy)} وحدة`,
+        title: `استلام بعجز ${fmtInt(totalDiscrepancy)} من وحدات السند`,
         description: "العجز سيُوثَّق نهائياً على السند ويُخصم من مخزون النظام (خسارة نقل). متابعة؟",
         confirmText: "استلام وتوثيق العجز",
       });
@@ -229,6 +312,8 @@ export default function TransfersLog() {
         variantName: l.variantName,
         color: l.color,
         sku: l.sku,
+        unitLabel: l.unitLabel,
+        bundleComponents: l.bundleComponents,
         quantitySent: l.quantitySent,
         quantityReceived: l.quantityReceived == null ? null : Number(l.quantityReceived),
         note: l.note,
@@ -256,7 +341,7 @@ export default function TransfersLog() {
         onReset={resetFilters}
         headerActions={
           <Button variant="outline" size="sm" disabled={rows.length === 0 || exporting} onClick={() => void exportAll()}>
-            {exporting ? ACTION_LABELS.printing : "تصدير Excel (الكل)"}
+            {exporting ? ACTION_LABELS.exporting : "تصدير Excel (الكل)"}
           </Button>
         }
       >
@@ -298,46 +383,28 @@ export default function TransfersLog() {
 
       <Card>
         <CardContent className="p-0">
-          {list.isLoading ? (
-            <div className="p-6"><LoadingState /></div>
-          ) : rows.length === 0 ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا سندات تحويل بعد.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-right">السند</TableHead>
-                    <TableHead className="text-right">من ← إلى</TableHead>
-                    <TableHead className="text-center">المنتجات</TableHead>
-                    <TableHead className="text-center">الوحدات (مرسَل/مستلَم)</TableHead>
-                    <TableHead className="text-center">الحالة</TableHead>
-                    <TableHead className="text-left">التاريخ</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((r) => (
-                    <TableRow key={r.id} className="cursor-pointer hover:bg-accent/40" onClick={() => openDoc(Number(r.id))}>
-                      <TableCell className="font-mono text-xs" dir="ltr">{r.transferNumber}</TableCell>
-                      <TableCell>{r.fromBranchName} ← {r.toBranchName}</TableCell>
-                      <TableCell className="text-center tabular-nums">{fmtInt(r.linesCount)}</TableCell>
-                      <TableCell className="text-center tabular-nums" dir="ltr">
-                        {fmtInt(r.totalSentBase)}{r.totalReceivedBase != null ? ` / ${fmtInt(r.totalReceivedBase)}` : ""}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <StatusBadge status={r.status} sent={Number(r.totalSentBase)} received={r.totalReceivedBase == null ? null : Number(r.totalReceivedBase)} />
-                      </TableCell>
-                      <TableCell className="text-left tabular-nums text-xs" dir="ltr">{fmtDateTime(r.createdAt)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </ScrollTableShell>
-          )}
+          {/*
+            * `pageSize={Infinity}`: الصفحات تُراكَم بـ`useInfiniteQuery` وزرّ «تحميل المزيد»
+            * أدناه — ترقيمٌ محلّيّ فوقها يُخفي ما جُلب للتوّ. والفلاتر في `FilterShell` أعلاه
+            * ⇒ `searchable={false}` مع `externalFiltersActive` كي لا يُعلن الجدولُ «لا سندات
+            * بعد» بينما هي محجوبةٌ بالفلتر.
+            */}
+          <DataTable<TransferRow>
+            columns={transferColumns}
+            data={rows}
+            pageSize={Infinity}
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            onRowClick={(r) => openDoc(Number(r.id))}
+            emptyText="لا سندات تحويل بعد."
+            emptyFilteredState="لا سندات تحويل مطابقة للفلاتر الحالية."
+          />
           {list.hasNextPage && (
             <div className="p-3 text-center border-t">
               <Button variant="outline" size="sm" onClick={() => list.fetchNextPage()} disabled={list.isFetchingNextPage}>
-                {list.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+                {list.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
               </Button>
             </div>
           )}
@@ -355,7 +422,7 @@ export default function TransfersLog() {
             <DialogDescription>
               {doc
                 ? `${doc.fromBranchName} ← ${doc.toBranchName}${doc.reason ? ` · ${REASON_LABELS[doc.reason] ?? doc.reason}` : ""} · أنشأه ${doc.createdByName ?? "—"} في ${fmtDateTime(doc.createdAt)}`
-                : "جارٍ التحميل…"}
+                : ACTION_LABELS.loading}
             </DialogDescription>
           </DialogHeader>
 
@@ -382,7 +449,15 @@ export default function TransfersLog() {
                 <p className="text-sm text-muted-foreground">ألغاه {doc.cancelledByName ?? "—"} في <span dir="ltr" className="tabular-nums">{fmtDateTime(doc.cancelledAt)}</span> — أُعيدت الكمية للفرع المرسل.</p>
               )}
 
-              <div className="border rounded-md overflow-hidden">
+              {/* شبكةُ تحرير لا عرض: كل سطرٍ يحمل حقلَ الكمية المستلَمة وحقلَ ملاحظته —
+                  `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. قشرتُها مشتركة الآن
+                  (`ScrollTableShell` بدل `border rounded-md overflow-hidden`): الترويسة تلتصق
+                  فيبقى «المرسَل ← المستلَم ← الفرق» مرئياً في سندٍ طويل. الارتفاع مقيَّد بـ
+                  `max-h-[50vh]` لأنّ الحوار نفسه يُمرَّر (`max-h-[85vh]`): بلا قيدٍ يتداخل
+                  تمريران ويهبط زرّا «مطابقة الكل» و«تأكيد الاستلام» تحت الأسطر.
+                  `showColumnVisibility` معطَّل — إخفاء «المرسَل» أو «الفرق» يُلغي المقارنة
+                  التي من أجلها فُتح الحوار. */}
+              <ScrollTableShell maxHeightClass="max-h-[50vh]" showColumnVisibility={false}>
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">
                     <tr>
@@ -404,9 +479,17 @@ export default function TransfersLog() {
                         <tr key={Number(l.id)} className="border-t align-top">
                           <td className="p-2 px-3">
                             <div className="font-medium">{l.productName}{l.variantName ? ` — ${l.variantName}` : l.color ? ` — ${l.color}` : ""}</div>
+                            {l.isBundle && (
+                              <div className="mt-1 text-[11px] font-medium text-primary">
+                                بكج كامل — {bundleComponentLabelsByLine.get(Number(l.id))}
+                              </div>
+                            )}
                             <div className="text-[11px] text-muted-foreground font-mono" dir="ltr">{l.sku}</div>
                           </td>
-                          <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.quantitySent)}</td>
+                          <td className="p-2 text-center tabular-nums" dir="ltr">
+                            {fmtInt(l.quantitySent)}
+                            <div className="text-[10px] font-normal text-muted-foreground" dir="rtl">{l.unitLabel}</div>
+                          </td>
                           <td className="p-2 text-center">
                             {canReceive ? (
                               <>
@@ -416,7 +499,7 @@ export default function TransfersLog() {
                                   value={st.qty}
                                   onChange={(e) => setLine(Number(l.id), l.quantitySent, { qty: e.target.value.replace(/[^\d]/g, "") })}
                                   className={`h-8 text-center ${recvErrors[i] ? "border-destructive" : ""}`}
-                                  aria-label={`الكمية المستلَمة — ${l.productName}`}
+                                  aria-label={`الكمية المستلَمة بوحدة ${l.unitLabel} — ${l.productName}`}
                                 />
                                 {recvErrors[i] && <p className="text-[10px] text-destructive mt-0.5">{recvErrors[i]}</p>}
                               </>
@@ -445,7 +528,7 @@ export default function TransfersLog() {
                     })}
                   </tbody>
                 </table>
-              </div>
+              </ScrollTableShell>
 
               {canReceive && (
                 <div className="flex flex-wrap items-center justify-between gap-2">

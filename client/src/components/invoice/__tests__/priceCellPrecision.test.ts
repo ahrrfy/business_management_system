@@ -56,37 +56,6 @@ describe("invoice price cell — precision & input normalization contract", () =
   });
 });
 
-describe("supplier invoice S4 — مستند مستقل ودقّة عملته محفوظة", () => {
-  const workspace = read("../../purchases/SupplierInvoicesWorkspace.tsx");
-
-  it("ينشئ ويصحّح فاتورة المورد عبر عقدها المستقل لا عبر كتابة أمر الشراء", () => {
-    expect(workspace).toContain("trpc.supplierInvoices.create.useMutation");
-    expect(workspace).toContain(
-      "trpc.supplierInvoices.updateDraft.useMutation",
-    );
-    expect(workspace).toContain(
-      "trpc.supplierInvoices.draftGovernance.useQuery",
-    );
-    expect(workspace).not.toContain("trpc.purchases.create.useMutation");
-    expect(workspace).not.toContain("trpc.purchases.update.useMutation");
-  });
-
-  it("يحفظ سعر المستند الخام بعد التطبيع ويعرض أربع منازل للدولار ومنزلتين للدينار", () => {
-    expect(workspace).toContain("unitPrice: line.unitPrice.trim()");
-    expect(workspace).toContain('decimals={currency === "USD" ? 4 : 2}');
-    expect(workspace).toContain(
-      'decimals={selectedDetail?.invoice.currency === "USD" ? 4 : 2}',
-    );
-    expect(workspace).not.toMatch(/unitPrice:\s*round2\(/u);
-  });
-
-  it("يجري المطابقة مع إذن الاستلام داخل مساحة فاتورة المورد نفسها", () => {
-    expect(workspace).toContain("trpc.supplierInvoices.runMatch.useMutation");
-    expect(workspace).toContain("trpc.goodsReceipts.list.useQuery");
-    expect(workspace).toContain("trpc.goodsReceipts.get.useQuery");
-  });
-});
-
 describe("purchase payload — سعر الوحدة يُرسَل بدقّة عملته", () => {
   for (const page of ["PurchaseNew.tsx", "PurchaseEdit.tsx"]) {
     it(`${page}: يستعمل toUnitPriceStr ولا يقصّ السعر بـround2`, () => {

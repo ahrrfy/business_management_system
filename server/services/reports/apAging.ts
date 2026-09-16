@@ -5,6 +5,30 @@ import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { StatementPeriod } from "./shared";
+import {
+  GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP,
+  GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP,
+  isSupplierApLedgerEntrySql,
+  isSupplierApRecognitionSql,
+  supplierApEffectSql,
+} from "../ledger/supplierApEffect";
+import { classifyGrniApEntry } from "@shared/grniDedupe";
+
+/** أعمدة القيد بالاسم المستعار `ae` للاستعمال في استعلامات SQL الخام أدناه. */
+const AE = {
+  entryType: sql`ae.entryType`,
+  amount: sql`ae.amount`,
+  liabilityAccount: sql`ae.purchaseLiabilityAccount`,
+  dedupeKey: sql`ae.dedupeKey`,
+} as const;
+
+/** أعمدة القيد كمراجع Drizzle للاستعمال في مُنشئ الاستعلام (getSupplierStatement). */
+const ACCT = {
+  entryType: accountingEntries.entryType,
+  amount: accountingEntries.amount,
+  liabilityAccount: accountingEntries.purchaseLiabilityAccount,
+  dedupeKey: accountingEntries.dedupeKey,
+} as const;
 
 export interface APAgingRow {
   supplierId: number;
@@ -35,11 +59,7 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
   const branchBalanceJoin = opts.branchId
     ? sql`LEFT JOIN (
         SELECT ae.supplierId,
-          COALESCE(SUM(CASE
-            WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-            WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','OPENING') THEN ae.amount
-            WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
-            ELSE 0 END), 0) AS balance
+          COALESCE(SUM(${supplierApEffectSql(AE)}), 0) AS balance
         FROM accountingEntries ae
         WHERE ae.supplierId IS NOT NULL AND ae.branchId = ${opts.branchId}
         GROUP BY ae.supplierId
@@ -54,6 +74,11 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
   // مرتجعات الشراء الائتمانية (بخلاف AR الذي يستعمل returnedTotal). purchaseOrders لا يحمل
   // returnedTotal، لكن accountingEntries يحمل قيود RETURN (سالبة) وPAYMENT_IN (استرداد نقدي).
   // net_credit_returned = |Σ RETURN| − Σ PAYMENT_IN لكل PO ⇒ CASH يصفَّر (0)، CREDIT يبقى موجباً.
+  // ⛔ ولذلك **لا يُوصَل هذا التقرير بمسند «الرصيد المفتوح»** (`@shared/predicates/openBalance`):
+  // ذاك مسند فاتورةٍ ثلاثيُّ الأعمدة (total − paidAmount − returnedTotal)، والمصدر هنا رصيدُ
+  // دفتر الأستاذ لكلّ أمر (`gl.balance`) بعمودٍ واحد — لأنّ `purchaseOrders` بلا `returnedTotal`.
+  // توحيدُهما شكلاً يُغيّر الرقم معنًى: يُعيد الاعتماد على `paidAmount` الاسميّ ويُسقط المرتجع
+  // الائتمانيّ. والقصُّ عند الصفر يبقى صريحاً بـ`GREATEST(…, 0)` — نظيرُ `COLLECTIBLE` معنًى لا شكلاً.
   const rows = await db.execute(sql`
     SELECT
       s.id AS supplierId,
@@ -74,17 +99,11 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
       ${branchFilter}
     LEFT JOIN (
       SELECT ae.purchaseOrderId,
-        MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
-        COALESCE(SUM(CASE
-          WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-          WHEN ae.entryType = 'PURCHASE' THEN ae.amount
-          WHEN ae.entryType = 'RETURN' THEN ae.amount
-          WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount
-          WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
-          ELSE 0 END), 0) AS balance
+        MIN(CASE WHEN ${isSupplierApRecognitionSql(AE)} THEN ae.entryDate END) AS recognitionDate,
+        COALESCE(SUM(${supplierApEffectSql(AE, { includeOpening: false })}), 0) AS balance
       FROM accountingEntries ae
       WHERE ae.purchaseOrderId IS NOT NULL AND ae.supplierId IS NOT NULL
-        AND ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')
+        AND ${isSupplierApLedgerEntrySql(AE, { includeOpening: false })}
       GROUP BY ae.purchaseOrderId
     ) gl ON gl.purchaseOrderId = po.id
     WHERE s.isActive = TRUE
@@ -113,14 +132,18 @@ export interface SupplierStatementPO {
   total: string;
   paidAmount: string;
   status: string;
+  settlementType?: "CASH" | "CREDIT";
   createdBy: number | null;
   createdByName: string | null;
 }
 
 export interface SupplierStatementPayment {
   id: number;
-  /** نوع القيد: PAYMENT_OUT دفعة مورد، PAYMENT_IN استرداد، RETURN مرتجع شراء (إشارة سالبة)، PURCHASE شراء أصل. */
+  /** نوع القيد: PAYMENT_OUT دفعة مورد، PAYMENT_IN استرداد، RETURN مرتجع شراء (إشارة سالبة)، PURCHASE شراء أصل،
+   *  وADJUST لقيد فاتورة مورّد GRNI عديمِ الـPO (فاتورةٌ مجمّعة أو عكسُ فاتورة — يُميَّز بـdedupeKey). */
   entryType: string;
+  /** لازمٌ لتمييز قيد GRNI (فاتورة مجمّعة +AP / عكسها −AP) عبر classifyGrniApEntry. */
+  dedupeKey: string | null;
   purchaseOrderId: number | null;
   receiptId: number | null;
   amount: string;
@@ -146,6 +169,12 @@ export interface SupplierStatementResult {
     currentBalance: string;
     /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) مشتريات ملتزمة − دفعات قبل from. */
     openingBalance: string;
+    /** دفعاتٌ للمورد غير مربوطةٍ بأمر شراءٍ بعينه — السبب الأشيَع لتباعد مجموع «المتبقّي» لكل
+     *  الأوامر عن `unpaid`/`currentBalance` الحقيقيَّين. */
+    unallocatedPayments: string;
+    /** أعمار الذمم لكل أمرٍ (منهجية getAPAging). `unbucketed` يُغلق الفرق مع currentBalance
+     *  (رصيدٌ افتتاديّ مستورد/شراء أصلٍ يتيم) — الثابت: مجموع الدلاء + unbucketed === currentBalance. */
+    aging: { d0_30: string; d31_60: string; d61_90: string; d91p: string; unbucketed: string };
   };
 }
 
@@ -185,21 +214,15 @@ async function supplierOpeningBalance(supplierId: number, from?: string, branchI
   // EXCHANGE-SETTLE (تدقيق ٢/٧): تسديد ذمّة المورد عبر بيت صيرفة يُقيَّد EXCHANGE_SETTLE ويخفّض AP
   // (مرآة reconcileSupplierBalances السطر ١٨٠). كان مُغفَلاً من المُرحَّل ⇒ الكشف لا يتّزن مع الرصيد
   // الجاري عند وجود تسديد صيرفة. نُدرجه بإشارة سالبة هنا وفي حركة الفترة أدناه (متماثلاً فلا انحراف).
+  // أثر AP الموحَّد (القديم PURCHASE + الحديث GRNI/ADJUST)، بلا OPENING (يُحسَب منفصلاً أعلاه).
   const entriesRow = await db
     .select({
-      v: sql<string>`COALESCE(SUM(CASE
-        WHEN ${accountingEntries.purchaseLiabilityAccount} = 'CASH_CLEARING' THEN 0
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT'     THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'RETURN'          THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PURCHASE'        THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'EXCHANGE_SETTLE' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        ELSE 0 END), 0)`,
+      v: sql<string>`COALESCE(SUM(${supplierApEffectSql(ACCT, { includeOpening: false })}), 0)`,
     })
     .from(accountingEntries)
     .where(
       and(
-        inArray(accountingEntries.entryType, ["PURCHASE", "PAYMENT_OUT", "PAYMENT_IN", "RETURN", "EXCHANGE_SETTLE"]),
+        isSupplierApLedgerEntrySql(ACCT, { includeOpening: false }),
         eq(accountingEntries.supplierId, supplierId),
         branchCond,
         sql`${accountingEntries.entryDate} < ${from}`
@@ -255,6 +278,7 @@ export async function getSupplierStatement(
       // paidAmount هو الحقل التراكمي المرجعي للأمر (والاسترداد يظهر كحركة PAYMENT_IN مستقلة).
       paidAmount: purchaseOrders.paidAmount,
       status: purchaseOrders.status,
+      settlementType: purchaseOrders.settlementType,
       createdBy: purchaseOrders.createdBy,
       createdByName: sql<string | null>`COALESCE(${poActor.name}, ${poActor.username})`,
     })
@@ -263,11 +287,12 @@ export async function getSupplierStatement(
     .where(and(...poConds))
     .orderBy(desc(purchaseOrders.orderDate));
 
-  // نجمع مشتريات كل أمر من GL باستعلام مستقل. الاستعلام الفرعي المرتبط أعاد صفراً
-  // في MySQL/Drizzle في بعض الخطط، بينما التجميع الصريح يثبت أن المصدر هو PURCHASE
-  // الموثّق ويمنع الرجوع إلى purchaseOrders.total الاسمي.
+  // نجمع مشتريات كل أمر من GL باستعلام مستقل. «اعتراف الشراء» يوحّد النموذجين: قيد PURCHASE
+  // القديم، وقيد فاتورة المورّد GRNI/ADJUST الحديث (المصدر: supplierApEffect.ts). بلا هذا التوحيد
+  // كان الأمر الحديث يُسقَط من الكشف لغياب قيد PURCHASE بينما رصيده صحيح.
+  const recognitionSql = isSupplierApRecognitionSql(ACCT);
   const periodPurchasePredicate = sql`
-    ${accountingEntries.entryType} = 'PURCHASE'
+    ${recognitionSql}
     ${from ? sql`AND ${accountingEntries.entryDate} >= ${from}` : sql``}
     ${to ? sql`AND ${accountingEntries.entryDate} <= ${to}` : sql``}
   `;
@@ -275,18 +300,15 @@ export async function getSupplierStatement(
     ? await db
         .select({
           purchaseOrderId: accountingEntries.purchaseOrderId,
-          total: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PURCHASE' THEN ${accountingEntries.amount} ELSE 0 END), 0)`,
-          periodTotal: sql<string>`COALESCE(SUM(CASE WHEN ${periodPurchasePredicate} THEN ${accountingEntries.amount} ELSE 0 END), 0)`,
-          balance: sql<string>`COALESCE(SUM(CASE
-            WHEN ${accountingEntries.entryType} IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ${accountingEntries.amount}
-            WHEN ${accountingEntries.entryType} IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -${accountingEntries.amount}
-            ELSE 0 END), 0)`,
-          recognitionDate: sql<Date | null>`MIN(CASE WHEN ${accountingEntries.entryType} = 'PURCHASE' THEN ${accountingEntries.entryDate} END)`,
+          total: sql<string>`COALESCE(SUM(CASE WHEN ${recognitionSql} THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+          periodTotal: sql<string>`COALESCE(SUM(CASE WHEN ${periodPurchasePredicate} THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+          balance: sql<string>`COALESCE(SUM(${supplierApEffectSql(ACCT, { includeOpening: false })}), 0)`,
+          recognitionDate: sql<Date | null>`MIN(CASE WHEN ${recognitionSql} THEN ${accountingEntries.entryDate} END)`,
         })
         .from(accountingEntries)
         .where(
           and(
-            inArray(accountingEntries.entryType, ["PURCHASE", "RETURN", "PAYMENT_IN", "PAYMENT_OUT", "EXCHANGE_SETTLE"]),
+            isSupplierApLedgerEntrySql(ACCT, { includeOpening: false }),
             inArray(accountingEntries.purchaseOrderId, pos.map((p) => Number(p.id))),
           ),
         )
@@ -307,6 +329,9 @@ export async function getSupplierStatement(
       periodTotal: toDbMoney(gl.periodTotal),
       // «مسدّد/مخفّض» = إجمالي PURCHASE ناقص رصيد GL المفتوح؛ يشمل المرتجع والإلغاء الصحيحين.
       paidAmount: toDbMoney(total.minus(openBalance)),
+      // للاستعمال الداخلي فقط (أعمار الذمم أدناه) — لا يدخل الصفّ المُرسَل للواجهة.
+      _openBalance: openBalance,
+      _recognitionDate: gl.recognitionDate,
     }];
   });
 
@@ -323,8 +348,13 @@ export async function getSupplierStatement(
   const openingMoveSql = from
     ? sql` OR ${accountingEntries.entryType} = 'OPENING'`
     : sql``;
+  // قيود فاتورة المورّد GRNI عديمةُ الـPO (فاتورةٌ مطابَقة على عدّة أوامر + **كلّ** عكسِ فاتورة —
+  // supplierInvoices.ts يرحّلها بـpurchaseOrderId=null) تحرّك الذمّة لكنّها لا تنتمي لصفّ أمر، فتُعرَض
+  // هنا حركةً كي تَظهر ويتّزن الرصيد (أمسكه Codex على PR #1079: بدونها الأمرُ المجمَّع يختفي وعكسُ
+  // الفاتورة لا يخفض الرصيد ⇒ unpaid يبقى 60 والرصيد صفر). PO-linked GRNI يبقى في صفّ الأمر (لا ازدواج).
+  const grniOrphanMove = sql`(${accountingEntries.entryType} = 'ADJUST' AND ${accountingEntries.purchaseOrderId} IS NULL AND (${accountingEntries.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP} OR ${accountingEntries.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP}))`;
   const payConds = [
-    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL)${openingMoveSql})`,
+    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL) OR ${grniOrphanMove}${openingMoveSql})`,
     eq(accountingEntries.supplierId, supplierId),
     sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} <> 'CASH_CLEARING')`,
   ];
@@ -336,6 +366,7 @@ export async function getSupplierStatement(
     .select({
       id: accountingEntries.id,
       entryType: accountingEntries.entryType,
+      dedupeKey: accountingEntries.dedupeKey,
       purchaseOrderId: accountingEntries.purchaseOrderId,
       receiptId: accountingEntries.receiptId,
       amount: accountingEntries.amount,
@@ -361,14 +392,58 @@ export async function getSupplierStatement(
 
   // أموال بدقّة decimal.js (§٥).
   const totalPurchases = sumMoney(posWithTotals.map((p) => p.periodTotal ?? 0));
-  const totalPaid = sumMoney(posWithTotals.map((p) => p.paidAmount ?? 0));
+  // مراجعة Codex #966: كان totalPaid = Σ(paidAmount لكل أمرٍ معروض)، وpaidAmount = total − gl.balance
+  // بلا أيّ قيدٍ زمنيّ على gl (استعلام purchaseTotals لا يُصفّي entryDate) ⇒ رصيدٌ **كلّيّ** لا رصيد
+  // الفترة. فترةٌ تاريخية (شهرٌ ماضٍ مثلاً) كانت تُظهر «مسدَّد» يشمل دفعاتٍ وقعت لاحقاً فعلياً.
+  // البديل الصحيح: مجموع حركات الدفع الفعلية ضمن `payments` (مُصفّاةٌ بالفعل بـfrom/to أعلاه) —
+  // PAYMENT_OUT وEXCHANGE_SETTLE فقط، مطابقةً لـreducesAP في periodEntryEffect أدناه وpayTxs بالواجهة.
+  const totalPaid = payments.reduce(
+    (acc, p) => (p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE" ? acc.plus(money(p.amount)) : acc),
+    money(0),
+  );
   const periodEntryEffect = payments.reduce((acc, p) => {
     const amount = money(p.amount);
-    if (p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE") return acc.minus(amount);
-    return acc.plus(amount); // RETURN is already signed negative; PAYMENT_IN/PURCHASE are positive.
+    // عكسُ فاتورة المورّد GRNI يَدين AP (−)، وفاتورةُ GRNI المجمّعة تدائنها (+) — كلاهما amount موجب.
+    const grni = classifyGrniApEntry(p.entryType, p.dedupeKey);
+    if (p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE" || grni === "REVERSAL") return acc.minus(amount);
+    return acc.plus(amount); // RETURN مخزَّن سالباً؛ PAYMENT_IN/PURCHASE/فاتورة GRNI المجمّعة موجبة.
   }, money(0));
   const closingBalance = openingBalance.plus(totalPurchases).plus(periodEntryEffect);
   const unpaid = closingBalance.isPositive() ? closingBalance : money(0);
+  const currentBalance = branchId ? closingBalance : money(s.currentBalance ?? "0");
+
+  // أعمار الذمم لكل أمرٍ (منهجيةٌ مطابقة لـgetAPAging: DATEDIFF على تاريخ الاعتراف، دلاء
+  // ٠-٣٠/٣١-٦٠/٦١-٩٠/+٩٠). المجموع لا يُطابق بالضرورة currentBalance (دفعاتٌ غير مخصَّصة/رصيدٌ
+  // افتتاديّ) — الفرق يُكشَف صراحةً بدل إخفائه، بنفس تعامل getAPAging مع unbucketed.
+  // مراجعة Codex #966: كان الحساب فرقَ طوابع زمنية خام مقسوماً على ٢٤ ساعة (يفترض دورةً كاملةً)،
+  // بينما getAPAging أعلاه يستعمل DATEDIFF على تاريخَين خامّين (تقويميّ لا زمنيّ) — فأمرٌ تاريخُه
+  // قبل ٣١ يوماً تقويمياً بالضبط لكن أقلّ من ٣١×٢٤ ساعة (لم يمرّ وقت اليوم نفسه بعد) يقع هنا في
+  // ٠-٣٠ بينما تقرير أعمار الذمم يضعه في ٣١-٦٠ ⇒ تباعدٌ بين الشاشتين حتى يعبر وقت الترحيل الأصليّ.
+  // الإصلاح: نفس دلالة DATEDIFF(UTC_DATE(), DATE(x)) — فرق تاريخَين تقويميَّين بـUTC، لا فرق آنَين.
+  const utcDateOnlyMs = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const todayUtcMs = utcDateOnlyMs(new Date());
+  const agingBuckets = { d0_30: money(0), d31_60: money(0), d61_90: money(0), d91p: money(0) };
+  for (const p of posWithTotals) {
+    if (!p._openBalance || p._openBalance.lte(0) || !p._recognitionDate) continue;
+    const days = Math.round((todayUtcMs - utcDateOnlyMs(new Date(p._recognitionDate))) / 86400000);
+    if (days <= 30) agingBuckets.d0_30 = agingBuckets.d0_30.plus(p._openBalance);
+    else if (days <= 60) agingBuckets.d31_60 = agingBuckets.d31_60.plus(p._openBalance);
+    else if (days <= 90) agingBuckets.d61_90 = agingBuckets.d61_90.plus(p._openBalance);
+    else agingBuckets.d91p = agingBuckets.d91p.plus(p._openBalance);
+  }
+  const bucketedTotal = agingBuckets.d0_30.plus(agingBuckets.d31_60).plus(agingBuckets.d61_90).plus(agingBuckets.d91p);
+  // غير مصنَّف = الفرق بين الرصيد الحالي ومجموع الدلاء — يشمل الرصيد الافتتاديّ المستورد وشراء
+  // الأصول اليتيم (بلا أمر شراء)، ويُثبِّت الثابت: الدلاء + غير مصنَّف === الرصيد الحالي دائماً.
+  const unbucketed = currentBalance.minus(bucketedTotal);
+
+  // دفعاتٌ للمورد (PAYMENT_OUT) غير مربوطةٍ بأمر شراءٍ بعينه («دفعة مستقلة») — هذا هو السبب
+  // الجذريّ الأكثر شيوعاً لتباعد «المتبقّي» المجموع لكل الأوامر عن «غير مدفوع» الحقيقي: مبلغٌ
+  // دخل الحساب فعلاً وخفّض ما ندين به، لكن لم يُخصَّص بعد لفاتورةٍ محدَّدة فيبقى غامضاً في
+  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه.
+  const unallocatedPayments = payments.reduce(
+    (acc, p) => (p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null ? acc.plus(money(p.amount)) : acc),
+    money(0),
+  );
 
   return {
     supplier: s,
@@ -388,6 +463,7 @@ export async function getSupplierStatement(
       // entryType جديد: تميّز الواجهة بين دفعة مورد (PAYMENT_OUT)، استرداد من مورد (PAYMENT_IN)،
       // ومرتجع شراء (RETURN، مخزَّن بإشارة سالبة) — لكي يقرأ المحاسب الكشف بإشارته الصحيحة.
       entryType: p.entryType,
+      dedupeKey: p.dedupeKey ?? null,
       purchaseOrderId: p.purchaseOrderId ? Number(p.purchaseOrderId) : null,
       receiptId: p.receiptId ? Number(p.receiptId) : null,
       amount: String(p.amount),
@@ -405,8 +481,16 @@ export async function getSupplierStatement(
       totalPurchases: toDbMoney(totalPurchases),
       totalPaid: toDbMoney(totalPaid),
       unpaid: toDbMoney(unpaid),
-      currentBalance: toDbMoney(branchId ? closingBalance : money(s.currentBalance ?? "0")),
+      currentBalance: toDbMoney(currentBalance),
       openingBalance: toDbMoney(openingBalance),
+      unallocatedPayments: toDbMoney(unallocatedPayments),
+      aging: {
+        d0_30: toDbMoney(agingBuckets.d0_30),
+        d31_60: toDbMoney(agingBuckets.d31_60),
+        d61_90: toDbMoney(agingBuckets.d61_90),
+        d91p: toDbMoney(agingBuckets.d91p),
+        unbucketed: toDbMoney(unbucketed),
+      },
     },
   };
 }

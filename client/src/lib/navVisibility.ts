@@ -52,6 +52,7 @@ export const CASHIER_NAV_PATHS: readonly string[] = Object.freeze([
   "/pos",
   "/price-checker",
   "/invoices",
+  "/returns",
   "/work-orders",
   "/delivery",
   "/tasks",
@@ -125,6 +126,17 @@ export const INVOICE_LIST_GATE: RoleGate = {
     { module: "sales" },
     { module: "workorders", level: "FULL" },
     { module: "pos", level: "FULL" },
+  ],
+};
+
+/** محرّر التصحيح يحتاج قراءة الكتالوج، ويقبل مبيعات FULL أو محطة استقبال FULL. */
+export const INVOICE_CORRECTION_GATE: RoleGate = {
+  allOf: [
+    { module: "products", level: "READ" },
+    { anyOf: [
+      { module: "sales", level: "FULL" },
+      { module: "workorders", level: "FULL" },
+    ] },
   ],
 };
 

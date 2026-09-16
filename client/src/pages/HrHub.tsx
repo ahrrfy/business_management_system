@@ -4,6 +4,7 @@
 // مسارات موظف الإنشاء/التفصيل تبقى مستقلّة.
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
+import { trpc } from "@/lib/trpc";
 
 const Employees = lazy(() => import("@/pages/Employees"));
 const Attendance = lazy(() => import("@/pages/Attendance"));
@@ -42,5 +43,11 @@ const TABS: HubTab[] = [
 ];
 
 export default function HrHub() {
-  return <PageTabs tabs={TABS} ariaLabel="أقسام الموارد البشرية" />;
+  const bridge = trpc.hrDevices.bridgeStatus.useQuery();
+  // تعطيل الجسر سياسة تشغيلية صريحة، لا حالة تحميل: نخفي أدوات الأجهزة فقط عند false
+  // المؤكدة، ونبقيها عند التحميل/خطأ الشبكة كي لا تتحول مشكلة اتصال إلى اختفاءٍ مضلّل.
+  const visibleTabs = bridge.data?.enabled === false
+    ? TABS.filter((tab) => tab.value !== "devices")
+    : TABS;
+  return <PageTabs tabs={visibleTabs} ariaLabel="أقسام الموارد البشرية" />;
 }

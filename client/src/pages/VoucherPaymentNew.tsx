@@ -1,4 +1,4 @@
-import VoucherFormShared from "@/pages/_VoucherFormShared";
+import VoucherFormShared from "@/components/vouchers/VoucherFormShared";
 
 /** سند صرف جديد — OUT (المحلّ يَدفع لطرف خارجي بلا فاتورة). */
 export default function VoucherPaymentNew() {

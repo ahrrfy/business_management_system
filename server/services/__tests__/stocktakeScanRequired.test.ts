@@ -184,6 +184,18 @@ describe("الجرد بالمسح الإلزامي — إنفاذ الخادم",
     );
   });
 
+  it.each(["SCAN_HID", "SCAN_CAMERA"] as const)("FREE: %s requires nonempty scan evidence", async (entryMethod) => {
+    const r = await mkSession({ countMethod: "FREE" });
+    const id = await loginPin(r.code, pinOf(r));
+    for (const scannedBarcode of [undefined, "", "\r\n\u200f "]) {
+      await expect(submitCount(id, {
+        variantId: 1, qty: 5, entryMethod, scannedBarcode, clientRequestId: randomUUID(),
+      })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    }
+    expect(await db().select().from(s.stocktakeCountOperations).where(eq(s.stocktakeCountOperations.sessionId, r.sessionId))).toHaveLength(0);
+    expect(await db().select().from(s.stocktakeCounts).where(eq(s.stocktakeCounts.sessionId, r.sessionId))).toHaveLength(0);
+  });
+
   it("SCAN_REQUIRED: مسح بلا باركود مرفوض", async () => {
     const r = await mkSession({ countMethod: "SCAN_REQUIRED" });
     const id = await loginPin(r.code, pinOf(r));
@@ -249,6 +261,30 @@ describe("الجرد بالمسح الإلزامي — إنفاذ الخادم",
       qty: 3,
       entryMethod: "SCAN_CAMERA",
       scannedBarcode: "BC-PEN-ALT",
+      clientRequestId: randomUUID(),
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it.each(["FREE", "SCAN_REQUIRED"] as const)("%s: يرفض دليل المسح المتعارض بين وحدتين قبل تسجيل العد", async (countMethod) => {
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 2, barcode: " BC-PEN-1 " });
+    const r = await mkSession({ countMethod });
+    const id = await loginPin(r.code, pinOf(r));
+    await expect(submitCount(id, {
+      variantId: 1, qty: 3, entryMethod: "SCAN_CAMERA", scannedBarcode: "BC-PEN-1", clientRequestId: randomUUID(),
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await db().select().from(s.stocktakeCountOperations).where(eq(s.stocktakeCountOperations.sessionId, r.sessionId))).toHaveLength(0);
+  });
+
+  it("SCAN_REQUIRED: يقبل UPC-A من الكاميرا إذا كان EAN-13 المكافئ محفوظاً", async () => {
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 1, barcode: "0036000291452" });
+    const r = await mkSession({ countMethod: "SCAN_REQUIRED" });
+    const id = await loginPin(r.code, pinOf(r));
+    const res = await submitCount(id, {
+      variantId: 1,
+      qty: 3,
+      entryMethod: "SCAN_CAMERA",
+      scannedBarcode: "036000291452",
       clientRequestId: randomUUID(),
     });
     expect(res.ok).toBe(true);

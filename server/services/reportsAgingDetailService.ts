@@ -7,13 +7,31 @@
 //   - SQL خام بأسماء أعمدة DB الفعلية: invoices.status ⇒ العمود `invoiceStatus`،
 //     purchaseOrders.status ⇒ العمود `poStatus` (التحقّق في drizzle/schema.ts).
 //   - الأموال تُعاد نصوصاً (CAST AS CHAR) لتمرّ عبر decimal.js بلا فقد دقّة.
-//   - الشرائح بـDATEDIFF(CURDATE(), DATE(COALESCE(dueDate, invoiceDate))) لـAR
-//     و DATEDIFF(CURDATE(), DATE(orderDate)) لـAP — مرآة الملخّص.
-//   - المتبقّي/فاتورة AR = GREATEST(total - paidAmount - returnedTotal, 0)
-//     المتبقّي/أمر AP = GREATEST(total - paidAmount, 0).
+//   - الشرائح بـDATEDIFF(UTC_DATE(), …) لا CURDATE() — مرآة REP-03 في الملخّص:
+//     الأعمدة مخزّنة بـUTC، وCURDATE() يعطي تاريخ خادم MySQL المحلّي فينزاح الدلو يوماً.
+//     (كان هذا السطر يقول CURDATE() وهو وصفٌ متقادمٌ للشيفرة أدناه.)
+//   - المتبقّي/فاتورة AR = مسند «الرصيد المفتوح» المقصوص من `@shared/predicates/openBalance`
+//     (وضع `COLLECTIBLE`) — لا مكتوباً بيدٍ هنا.
+//   - المتبقّي/أمر AP لا يستعمل ذلك المسند أصلاً: مصدرُه رصيدُ دفتر الأستاذ لكلّ أمر
+//     (`gl.balance` المصفّى من `accountingEntries`) لأنّ `purchaseOrders` بلا `returnedTotal`.
+//     (كان هذا السطر يقول `GREATEST(total - paidAmount, 0)` وهو وصفٌ متقادمٌ للشيفرة أدناه.)
 import { sql } from "drizzle-orm";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import {
+  isSupplierApLedgerEntrySql,
+  isSupplierApRecognitionSql,
+  supplierApEffectSql,
+} from "./ledger/supplierApEffect";
+
+/** أعمدة القيد بالاسم المستعار `ae` (SQL خام) — أثر AP الموحَّد: القديم PURCHASE + الحديث GRNI. */
+const AE = {
+  entryType: sql`ae.entryType`,
+  amount: sql`ae.amount`,
+  liabilityAccount: sql`ae.purchaseLiabilityAccount`,
+  dedupeKey: sql`ae.dedupeKey`,
+} as const;
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -74,6 +92,12 @@ export async function getArApAgingDetail(opts: {
 
   const isAR = opts.side === "AR";
   const branchId = opts.branchId;
+  // مسند AR الواحد (موضعان: عمود `unpaid` وشرط الاستبعاد `> 0`) — كتابتُه مرّتين في استعلامٍ
+  // واحد هي بعينها الطريقة التي ينحرف بها العمودُ عن فلترِه فتظهر صفوفٌ بمتبقٍّ صفر.
+  const openBalance = openBalanceExpr(
+    { total: sql`i.total`, paidAmount: sql`i.paidAmount`, returnedTotal: sql`i.returnedTotal` },
+    "COLLECTIBLE",
+  );
 
   const raw = isAR
     ? rowsOf(
@@ -85,11 +109,11 @@ export async function getArApAgingDetail(opts: {
             DATE_FORMAT(i.invoiceDate, '%Y-%m-%d') AS date,
             DATE_FORMAT(i.dueDate, '%Y-%m-%d') AS dueDate,
             DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) AS daysOverdue,
-            CAST(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) AS CHAR) AS unpaid
+            CAST(${openBalance} AS CHAR) AS unpaid
           FROM invoices i
           LEFT JOIN customers c ON c.id = i.customerId
           WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
-            AND GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) > 0
+            AND ${openBalance} > 0
             ${branchId ? sql`AND i.branchId = ${branchId}` : sql``}
           ORDER BY daysOverdue DESC, i.id DESC
         `),
@@ -108,16 +132,12 @@ export async function getArApAgingDetail(opts: {
           LEFT JOIN suppliers s ON s.id = po.supplierId
           LEFT JOIN (
             SELECT ae.purchaseOrderId,
-              MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
-              COALESCE(SUM(CASE
-                WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-                WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
-                WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
-                ELSE 0 END), 0) AS balance
+              MIN(CASE WHEN ${isSupplierApRecognitionSql(AE)} THEN ae.entryDate END) AS recognitionDate,
+              COALESCE(SUM(${supplierApEffectSql(AE, { includeOpening: false })}), 0) AS balance
             FROM accountingEntries ae
             WHERE ae.purchaseOrderId IS NOT NULL
               AND ae.supplierId IS NOT NULL
-              AND ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')
+              AND ${isSupplierApLedgerEntrySql(AE, { includeOpening: false })}
             GROUP BY ae.purchaseOrderId
           ) gl ON gl.purchaseOrderId = po.id
           WHERE po.poStatus IN ('CONFIRMED', 'RECEIVED')

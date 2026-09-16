@@ -11,6 +11,7 @@ import {
   getVoucher,
   listVouchers,
   recentVouchersForParty,
+  listVoucherDeliveryParties,
   rejectVoucher,
 } from "../services/voucherService";
 import {
@@ -44,7 +45,7 @@ import {
 } from "../services/voucher/create";
 import { withMysqlDeadlockRetry } from "../services/voucher/deadlockRetry";
 
-const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
+const partyType = z.enum(["CUSTOMER", "SUPPLIER", "DELIVERY_PARTY", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
 // وفي المخطط للسجلات التاريخية فقط (فلترة/عرض السندات القديمة).
 const creatableMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
@@ -85,7 +86,9 @@ export const voucherRouter = router({
     .input(
       z.object({
         voucherType,
-        branchId: z.number().int().positive(),
+        // م٤ (الاستنتاج قبل السؤال): الفرعُ اختياريّ — الخادم يشتقّه من الفاعل حين يغيب، ويبقى
+        // مقبولاً صراحةً لمن يمرّره (أندرويد/أوفلاين/أدمن يعبُر الفروع بقصدٍ من قائمةٍ خادميّة).
+        branchId: z.number().int().positive().optional(),
         amount: moneyStr,
         paymentMethod: creatableMethod,
         partyType,
@@ -108,14 +111,21 @@ export const voucherRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إصدار سند" });
-      }
-      const actorBranchId = Number(ctx.user.branchId);
+      const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
       // #3 (تدقيق التثبيت): كان input.branchId من العميل يمرّ كما هو لـcreateVoucher ⇒ محاسب/مدير
       // فرع A يُصدر سنداً على خزينة فرع B (تلويث تسوية/Z-report فرع لا ينتمي إليه، ويُخفى عنه في
       // القراءة المعزولة). نثبّت الفرع على فرع الفاعل لغير الأدمن (مرآة sale.create/expense.create).
-      const scopedInput = ctx.user.role === "admin" ? input : { ...input, branchId: actorBranchId };
+      // م٤: الأدمن (عابرُ الفروع) يُصدر على الفرع الذي أرسله بقصدٍ صريح، وإلّا على فرعه المُسنَد؛
+      // وأدمنٌ بلا فرعٍ مُسنَد يعمل على ما اختاره من القائمة الخادميّة (`<InferredBranchField>`)
+      // — ولا يخترع أحدٌ فرعاً: غيابُ الاثنين معاً رفضٌ صريح لا «الفرع ١».
+      const voucherBranchId =
+        ctx.user.role === "admin" ? (input.branchId ?? assignedBranchId) : assignedBranchId;
+      if (voucherBranchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إصدار سند" });
+      }
+      // فرعُ الفاعل للأثر: المُسنَد إن وُجد، وإلّا فرعُ السند الذي اختاره الأدمن صراحةً.
+      const actorBranchId = assignedBranchId ?? voucherBranchId;
+      const scopedInput = { ...input, branchId: voucherBranchId };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await createVoucher(scopedInput, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role, isOwner: !!(ctx.user as any).isOwner });
@@ -123,6 +133,11 @@ export const voucherRouter = router({
             action: input.voucherType === "RECEIPT" ? "voucher.receipt.create" : "voucher.payment.create",
             entityType: "receipt",
             entityId: res.receiptId,
+            // تدقيق Codex (م٤): الأدمنُ عابرُ الفروع بلا فرعٍ مُسنَد يُصدر السندَ على `voucherBranchId`
+            // الذي اختاره صراحةً، لكنّ `logAudit(ctx)` يشتقّ الفرعَ من `ctx.user.branchId` (= null)
+            // ⇒ صفُّ تدقيقٍ بفرعٍ NULL يختفي من استعلامات التدقيق المفلترة بالفرع (auditRouter). نُثبّت
+            // فرعَ السند صراحةً على الأثر كي يظهر في تدقيق الفرع الذي تحرّك فيه المال فعلاً.
+            branchId: voucherBranchId,
             newValue: {
               voucherNumber: res.voucherNumber,
               amount: input.amount,
@@ -149,7 +164,7 @@ export const voucherRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء السند (تكرار)" });
     }),
 
-  /** اعتماد سند مُعلَّق (Maker-Checker) — مدير ثانٍ غير المُنشئ. */
+  /** اعتماد سند مُعلَّق — حساب مالكٍ نشط (قرار المالك ٣/٩/٢٦: لا اعتماد ثانٍ بعد المالك). */
   approve: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
@@ -338,6 +353,15 @@ export const voucherRouter = router({
         limit: input.limit,
       });
     }),
+
+  /** قائمة جهات التوصيل المتاحة لسندات القبض والصرف بالفرع. */
+  deliveryParties: treasuryManagerReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const branchId = restrict ? Number(ctx.user.branchId) : (input?.branchId ?? undefined);
+      return listVoucherDeliveryParties({ branchId });
+    }),
 });
 
 /* ============================ فئات السندات (admin CRUD) ============================ */
@@ -359,7 +383,15 @@ async function aggregateVouchers(input: VoucherListFilters) {
   if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
   if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
-  if (input.partyType) wheres.push(eq(receipts.partyType, input.partyType));
+  if (input.partyType === "DELIVERY_PARTY") {
+    wheres.push(eq(receipts.partyType, "OTHER"));
+    wheres.push(sql`${receipts.internalNote} LIKE 'DELIVERY_PARTY:%'`);
+  } else if (input.partyType === "OTHER") {
+    wheres.push(eq(receipts.partyType, "OTHER"));
+    wheres.push(sql`(${receipts.internalNote} NOT LIKE 'DELIVERY_PARTY:%' OR ${receipts.internalNote} IS NULL)`);
+  } else if (input.partyType) {
+    wheres.push(eq(receipts.partyType, input.partyType));
+  }
   if (input.partyId) wheres.push(eq(receipts.partyId, input.partyId));
   if (input.approvalStatus) wheres.push(eq(receipts.approvalStatus, input.approvalStatus));
   if (input.voucherCategoryId) wheres.push(eq(receipts.voucherCategoryId, input.voucherCategoryId));
@@ -404,34 +436,54 @@ async function aggregateVouchers(input: VoucherListFilters) {
   };
 }
 
+import { createTtlCache } from "../lib/ttlCache";
+
+const voucherCategoriesCache = createTtlCache<string, any[]>({
+  ttlMs: 60_000,
+  maxEntries: 5,
+});
+
+export function invalidateVoucherCategoriesCache(): void {
+  voucherCategoriesCache.clear();
+}
+
+async function fetchVoucherCategories(includeInactive: boolean) {
+  const db = getDb();
+  if (!db) return [];
+  const wheres: any[] = [];
+  if (!includeInactive) wheres.push(eq(voucherCategories.isActive, true));
+  const [rows, counts] = await Promise.all([
+    db.select().from(voucherCategories)
+      .where(wheres.length ? and(...wheres) : undefined)
+      .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id)),
+    db
+      .select({
+        categoryId: receipts.voucherCategoryId,
+        count: sql<number>`COUNT(*)`,
+      })
+      .from(receipts)
+      .where(isNotNull(receipts.voucherCategoryId))
+      .groupBy(receipts.voucherCategoryId),
+  ]);
+  const countById = new Map(
+    counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    usedReceiptCount: countById.get(Number(row.id)) ?? 0,
+  }));
+}
+
 export const voucherCategoryRouter = router({
   list: treasuryGlobalReadProcedure
     .input(z.object({ includeInactive: z.boolean().default(false) }).optional())
     .query(async ({ input }) => {
-      const db = getDb();
-      if (!db) return [];
-      const wheres: any[] = [];
-      if (!input?.includeInactive) wheres.push(eq(voucherCategories.isActive, true));
-      const [rows, counts] = await Promise.all([
-        db.select().from(voucherCategories)
-        .where(wheres.length ? and(...wheres) : undefined)
-        .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id)),
-        db
-          .select({
-            categoryId: receipts.voucherCategoryId,
-            count: sql<number>`COUNT(*)`,
-          })
-          .from(receipts)
-          .where(isNotNull(receipts.voucherCategoryId))
-          .groupBy(receipts.voucherCategoryId),
-      ]);
-      const countById = new Map(
-        counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
-      );
-      return rows.map((row) => ({
-        ...row,
-        usedReceiptCount: countById.get(Number(row.id)) ?? 0,
-      }));
+      const includeInactive = !!input?.includeInactive;
+      const cacheKey = includeInactive ? "all" : "active";
+      if (process.env.NODE_ENV === "test") {
+        return fetchVoucherCategories(includeInactive);
+      }
+      return voucherCategoriesCache.get(cacheKey, () => fetchVoucherCategories(includeInactive));
     }),
 
   create: treasuryGlobalProcedure
@@ -466,6 +518,7 @@ export const voucherCategoryRouter = router({
           }),
         );
         await logAudit(ctx, { action: "voucherCategory.create", entityType: "voucherCategory", entityId: id, newValue: { ...input, name } });
+        invalidateVoucherCategoriesCache();
         // نُعيد الصفّ كاملاً كي تنتقيه شاشة السند فوراً بلا جولةِ قراءةٍ ثانية.
         return {
           id,
@@ -503,6 +556,7 @@ export const voucherCategoryRouter = router({
         },
       });
     }
+    invalidateVoucherCategoriesCache();
     return result;
   }),
 
@@ -580,6 +634,7 @@ export const voucherCategoryRouter = router({
           return next;
         });
         await logAudit(ctx, { action: "voucherCategory.update", entityType: "voucherCategory", entityId: input.id, newValue: patch });
+        invalidateVoucherCategoriesCache();
         return { ok: true };
       } catch (e: any) {
         if (isDupEntry(e)) {
@@ -624,6 +679,7 @@ export const voucherCategoryRouter = router({
         entityType: "voucherCategory",
         entityId: input.id,
       });
+      invalidateVoucherCategoriesCache();
       return { ok: true };
     }),
 
@@ -695,6 +751,7 @@ export const voucherCategoryRouter = router({
         entityId: input.fromId,
         newValue: { mergedInto: input.toId },
       });
+      invalidateVoucherCategoriesCache();
       return { ok: true };
     }),
 

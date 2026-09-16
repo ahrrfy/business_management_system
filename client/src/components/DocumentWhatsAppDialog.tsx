@@ -19,6 +19,7 @@ import { notify } from "@/lib/notify";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { saveBase64Pdf } from "@/lib/exportPdf";
 
 interface Props {
   kind: "INVOICE" | "QUOTATION";
@@ -28,6 +29,8 @@ interface Props {
   defaultPhone?: string | null;
   fallbackMessage: string;
   autoOpen?: boolean;
+  /** يُستدعى بعد نجاح تسليم PDF فعلياً؛ لا بعد فتح نافذة الإرسال أو وضعه في الطابور. */
+  onDocumentSent?: () => void;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -40,18 +43,6 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: "أُلغي الإرسال",
 };
 
-function downloadBase64Pdf(filename: string, base64: string): void {
-  const binary = window.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-}
-
 export function DocumentWhatsAppDialog({
   kind,
   documentId,
@@ -60,6 +51,7 @@ export function DocumentWhatsAppDialog({
   defaultPhone,
   fallbackMessage,
   autoOpen = false,
+  onDocumentSent,
 }: Props) {
   const [open, setOpen] = useState(autoOpen);
   const [phone, setPhone] = useState(defaultPhone ?? "");
@@ -68,6 +60,7 @@ export function DocumentWhatsAppDialog({
   );
   const [outboxId, setOutboxId] = useState<number | null>(null);
   const notifiedStatusRef = useRef<string | null>(null);
+  const documentSentNotifiedRef = useRef(false);
   const debouncedPhone = useDebouncedValue(phone, 350);
 
   useEffect(() => {
@@ -83,13 +76,14 @@ export function DocumentWhatsAppDialog({
     { enabled: open, staleTime: 10_000 },
   );
   const downloadPdf = trpc.documentDelivery.downloadPdf.useMutation({
-    onSuccess: (result) => downloadBase64Pdf(result.filename, result.bytesBase64),
+    onSuccess: (result) => saveBase64Pdf(result.bytesBase64, result.filename),
     onError: (error) => notify.err(error),
   });
   const sendPdf = trpc.documentDelivery.sendWhatsAppPdf.useMutation({
     onSuccess: (result) => {
       setOutboxId(result.outboxId);
       notifiedStatusRef.current = null;
+      documentSentNotifiedRef.current = false;
       notify.info("تمت إضافة ملف PDF إلى طابور الإرسال.");
     },
     onError: (error) => notify.err(error),
@@ -113,11 +107,15 @@ export function DocumentWhatsAppDialog({
     if (value === "SENT" || value === "DELIVERED" || value === "READ") {
       notifiedStatusRef.current = value;
       if (value === "SENT") notify.ok("تم إرسال ملف PDF عبر واتساب.");
+      if (!documentSentNotifiedRef.current) {
+        documentSentNotifiedRef.current = true;
+        onDocumentSent?.();
+      }
     } else if (value === "FAILED") {
       notifiedStatusRef.current = value;
       notify.err(status.data?.lastError ?? "فشل إرسال ملف PDF عبر واتساب.");
     }
-  }, [status.data?.lastError, status.data?.status]);
+  }, [onDocumentSent, status.data?.lastError, status.data?.status]);
 
   const ready = readiness.data;
   const busy = downloadPdf.isPending || sendPdf.isPending;
@@ -139,6 +137,7 @@ export function DocumentWhatsAppDialog({
           setPhone(defaultPhone ?? "");
           setOutboxId(null);
           notifiedStatusRef.current = null;
+          documentSentNotifiedRef.current = false;
         }
       }}
     >

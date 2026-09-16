@@ -8,9 +8,10 @@
 // نقطيةً بعتبة لمعان مرفوعة (RECEIPT_THRESHOLD) تلتقط هالة التنعيم حول الحروف ⇒ خطوط أغمق وأوضح.
 import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
-import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
+import { CO, RECEIPT_PHONES, STOREFRONT_URL, fmt, logoUrl } from "./brand";
 import type { ReceiptBrowserData } from "./printTemplates";
 import { buildDigitalBlocks } from "./digitalReceiptLines";
+import { qrCodeDataUrl } from "./qr";
 
 const W = 576; // 80مم @ 203dpi — عرض الطباعة الفعلي للطابعات الحرارية
 const PAD = 12;
@@ -136,13 +137,15 @@ export async function receiptToCanvas(
   // محتجز ٣٠px + كتلة «متبقٍّ آجل» ٦٤px) — القصّ النهائي يُبقي الفعليّ فقط فلا هدر ورق.
   const digitalRows = (d.digitalDetails ?? []).length;
   const shiftRowH = d.shiftId != null ? 30 : 0;
+  const revisionBlockH = d.revision ? 180 : 0;
   const heldRowH = Number(d.heldDeposits ?? 0) > 0 ? 30 : 0;
   const creditBlockH = Number(d.credit ?? 0) > 0 ? 64 : 0; // كتلة «متبقٍّ (آجل)» مع الفاصل المتقطّع
   // هامش رسم إضافي يحمي التذييل من بلوغ سقف اللوحة عند اجتماع الشعار والباركود والتوصيل
   // والحقول الجديدة. لا يهدر ورقاً: الارتفاع المعاد أدناه يُقصّ إلى y الفعلي بعد اكتمال الرسم.
+  const promoBlockH = 250;
   const drawingHeadroom = 256;
   const estH = 1400 + d.items.length * 96 + digitalRows * 190
-    + shiftRowH + heldRowH + creditBlockH + drawingHeadroom;
+    + shiftRowH + revisionBlockH + heldRowH + creditBlockH + promoBlockH + drawingHeadroom;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = estH;
@@ -212,13 +215,48 @@ export async function receiptToCanvas(
   if (d.cashierName || d.time) metaRow(d.cashierName ? `الكاشير: ${d.cashierName}` : "", d.time ? `الوقت: ${d.time}` : "");
   if (d.shiftId != null) metaRow(`الوردية: #${d.shiftId}`, "");
   if (d.customerName) metaRow(`العميل: ${d.customerName}`, "", true);
+  if (d.revision) {
+    y += 8;
+    const textWidth = W - PAD * 2 - 20;
+    ctx.font = "900 19px Cairo, sans-serif";
+    const titleLines = wrapLines(ctx, `فاتورة معدلة — بديلة عن ${d.revision.originalReceiptNumber}`, textWidth, 2);
+    ctx.font = "700 16px Cairo, sans-serif";
+    const requestLines = wrapLines(ctx, `طلبها: ${d.revision.revisedByName} — ${d.revision.revisedAt}`, textWidth, 2);
+    const approvalLines = d.revision.approvedByName
+      ? wrapLines(ctx, `اعتمدها: ${d.revision.approvedByName}${d.revision.approvedAt ? ` — ${d.revision.approvedAt}` : ""}`, textWidth, 2)
+      : [];
+    const boxHeight = 16 + titleLines.length * 24 + requestLines.length * 22 + approvalLines.length * 22 + 10;
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#000";
+    roundRectPath(ctx, PAD + 1, y, W - PAD * 2 - 2, boxHeight, 5);
+    ctx.stroke();
+    ctx.restore();
+    ctx.font = "900 19px Cairo, sans-serif";
+    ctx.textAlign = "right";
+    let revisionY = y + 27;
+    for (const line of titleLines) {
+      ctx.fillText(line, W - PAD - 10, revisionY);
+      revisionY += 24;
+    }
+    ctx.font = "700 16px Cairo, sans-serif";
+    for (const line of requestLines) {
+      ctx.fillText(line, W - PAD - 10, revisionY);
+      revisionY += 22;
+    }
+    for (const line of approvalLines) {
+      ctx.fillText(line, W - PAD - 10, revisionY);
+      revisionY += 22;
+    }
+    y += boxHeight + 8;
+  }
 
   y += 2;
   dashedLine(ctx, y);
   y += 32;
 
   // ───── ٤) جدول المنتجات ─────
-  ctx.font = "700 21px Cairo, sans-serif";
+  ctx.font = "900 22px Cairo, sans-serif";
   ctx.textAlign = "right";
   ctx.fillText("المنتج", COL_NAME_R, y);
   ctx.textAlign = "center";
@@ -231,19 +269,21 @@ export async function receiptToCanvas(
   y += 30;
 
   for (const it of d.items) {
-    ctx.font = "600 21px Cairo, sans-serif";
+    ctx.font = "800 22px Cairo, sans-serif";
     const lines = wrapLines(ctx, it.name, COL_NAME_W);
     ctx.textAlign = "right";
     ctx.fillText(lines[0], COL_NAME_R, y);
+    ctx.font = "900 22px Cairo, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(String(it.quantity), COL_QTY_CENTER, y);
+    ctx.font = "800 22px Cairo, sans-serif";
     ctx.textAlign = "left";
     ctx.fillText(fmt(it.price), COL_PRICE_X, y);
-    ctx.font = "700 21px Cairo, sans-serif"; // المبلغ بارز
+    ctx.font = "900 23px Cairo, sans-serif"; // المبلغ بارز
     ctx.fillText(fmt(it.total), COL_AMOUNT_X, y);
     y += 28;
     if (lines[1]) {
-      ctx.font = "600 21px Cairo, sans-serif";
+      ctx.font = "800 22px Cairo, sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(lines[1], COL_NAME_R, y);
       y += 28;
@@ -264,7 +304,7 @@ export async function receiptToCanvas(
       ctx.fillText(block.lineName, W - PAD, y);
       y += 26;
       for (const row of block.rows) {
-        ctx.font = "700 19px Cairo, sans-serif";
+        ctx.font = "800 19px Cairo, sans-serif";
         ctx.textAlign = "right";
         ctx.fillText(`${row.label}:`, W - PAD, y);
         ctx.font = "900 19px Cairo, sans-serif";
@@ -282,10 +322,10 @@ export async function receiptToCanvas(
 
   // ───── ٥) الإجماليات ─────
   const totRow = (label: string, value: string, strong = false) => {
-    ctx.font = `${strong ? "800" : "600"} 22px Cairo, sans-serif`;
+    ctx.font = `${strong ? "900" : "800"} 22px Cairo, sans-serif`;
     ctx.textAlign = "right";
     ctx.fillText(label, W - PAD, y);
-    ctx.font = `${strong ? "800" : "700"} 22px Cairo, sans-serif`; // القيمة (المبلغ) أبرز من التسمية
+    ctx.font = "900 22px Cairo, sans-serif"; // القيمة (المبلغ) دائماً عريضة جداً
     ctx.textAlign = "left";
     ctx.fillText(value, PAD, y);
     y += 30;
@@ -304,7 +344,7 @@ export async function receiptToCanvas(
   y += 2;
   solidLine(ctx, y, 2);
   y += 42;
-  ctx.font = "900 29px Cairo, sans-serif";
+  ctx.font = "900 32px Cairo, sans-serif";
   ctx.textAlign = "right";
   ctx.fillText("الإجمالي:", W - PAD, y);
   ctx.textAlign = "left";
@@ -356,14 +396,49 @@ export async function receiptToCanvas(
   ctx.font = "900 25px Cairo, sans-serif";
   ctx.fillText("شكراً لتسوقكم معنا", W / 2, y);
   y += 28;
-  ctx.font = "600 19px Cairo, sans-serif";
+  ctx.font = "800 20px Cairo, sans-serif";
   ctx.fillText("نتمنى لكم تجربة ممتعة", W / 2, y);
   y += 18;
+  dashedLine(ctx, y);
+  y += 24;
+
+  // ───── ٦-ب) إعلان المتجر الإلكتروني وQR كود ─────
+  const promoBoxH = 216;
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#000";
+  roundRectPath(ctx, PAD + 2, y, W - PAD * 2 - 4, promoBoxH, 6);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.textAlign = "center";
+  ctx.font = "900 23px Cairo, sans-serif";
+  ctx.fillText("تسوق عبر متجرنا الإلكتروني", W / 2, y + 28);
+  ctx.font = "700 16px Cairo, sans-serif";
+  ctx.fillText("توصيل سريع لكافة المحافظات • قرطاسية ومطبوعات", W / 2, y + 50);
+
+  try {
+    const qrData = await qrCodeDataUrl(STOREFRONT_URL, { size: 90, margin: 1 });
+    const qrImg = await loadImage(qrData);
+    if (qrImg) {
+      ctx.drawImage(qrImg, (W - 84) / 2, y + 58, 84, 84);
+    }
+  } catch {
+    /* تدهور سلس */
+  }
+
+  ctx.font = "900 17px Cairo, sans-serif";
+  ctx.fillText("alarabiya.online/store", W / 2, y + 158);
+  ctx.font = "800 15px Cairo, sans-serif";
+  ctx.fillText("امسح الرمز للتسوق والتصفح المباشر", W / 2, y + 180);
+  ctx.font = "700 13px Cairo, sans-serif";
+  ctx.fillText("تطبيقنا قريباً على App Store & Google Play", W / 2, y + 200);
+  y += promoBoxH + 16;
   dashedLine(ctx, y);
   y += 34;
 
   // ───── ٧) أرقام التواصل ─────
-  ctx.font = "700 20px Cairo, sans-serif";
+  ctx.font = "900 21px Cairo, sans-serif";
   ctx.textAlign = "right";
   ctx.fillText("القسم", W - PAD, y);
   ctx.textAlign = "left";
@@ -372,10 +447,10 @@ export async function receiptToCanvas(
   solidLine(ctx, y, 2);
   y += 30;
   for (const p of RECEIPT_PHONES) {
-    ctx.font = "600 19px Cairo, sans-serif";
+    ctx.font = "800 20px Cairo, sans-serif";
     ctx.textAlign = "right";
     ctx.fillText(p.l, W - PAD, y);
-    ctx.font = "700 20px Cairo, sans-serif";
+    ctx.font = "900 21px Cairo, sans-serif";
     ctx.textAlign = "left";
     ctx.fillText(p.n, PAD, y);
     y += 9;
@@ -385,7 +460,7 @@ export async function receiptToCanvas(
 
   // ───── ٨) العنوان ─────
   y += 4;
-  ctx.font = "600 19px Cairo, sans-serif";
+  ctx.font = "800 20px Cairo, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(CO.address, W / 2, y);
   y += 18;
@@ -400,7 +475,7 @@ export async function receiptToCanvas(
   roundRectPath(ctx, PAD + 1, y, W - PAD * 2 - 2, boxH, 6);
   ctx.stroke();
   ctx.restore();
-  ctx.font = "700 19px Cairo, sans-serif";
+  ctx.font = "900 20px Cairo, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText("نعتذر عن قبول الاسترجاع — والاستبدال متاح", W / 2, y + 35);
   ctx.fillText("خلال 48 ساعة بشرط سلامة المنتج بـ100%", W / 2, y + 67);

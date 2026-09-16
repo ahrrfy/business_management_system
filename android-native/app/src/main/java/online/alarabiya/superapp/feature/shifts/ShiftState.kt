@@ -3,7 +3,6 @@ package online.alarabiya.superapp.feature.shifts
 import online.alarabiya.superapp.model.shifts.CurrentShift
 import online.alarabiya.superapp.model.shifts.ShiftAccessPolicy
 import online.alarabiya.superapp.model.shifts.ShiftFilters
-import online.alarabiya.superapp.model.shifts.ShiftHandoverRecipient
 import online.alarabiya.superapp.model.shifts.ShiftMoney
 import online.alarabiya.superapp.model.shifts.ShiftRecord
 import online.alarabiya.superapp.model.shifts.ShiftReport
@@ -20,7 +19,6 @@ data class ShiftCloseDraft(
     val shiftId: Long,
     val countedCash: String = "",
     val countedCashConfirmation: String = "",
-    val handoverRecipientUserId: Long? = null,
     val acknowledged: Boolean = false,
 )
 
@@ -38,10 +36,6 @@ data class ShiftUiState(
     val detail: ShiftDetailState = ShiftDetailState.None,
     val currentShifts: List<CurrentShift> = emptyList(),
     val currentChecked: Boolean = false,
-    val handoverRecipients: List<ShiftHandoverRecipient> = emptyList(),
-    val handoverRecipientsLoading: Boolean = false,
-    val handoverRecipientsLoaded: Boolean = false,
-    val handoverRecipientsError: String? = null,
     val closeDraft: ShiftCloseDraft? = null,
     val closing: Boolean = false,
     val error: String? = null,
@@ -84,17 +78,6 @@ internal object ShiftStatePolicy {
             ?: return "أعد إدخال النقد المعدود للتأكيد"
         if (counted != confirmation) return "قيمة التأكيد لا تطابق النقد المعدود"
         if (counted != report.expectedCash) return "يوجد فرق نقدي؛ راجع العمليات المسجلة قبل الإغلاق"
-        if (counted.isPositive()) {
-            if (state.handoverRecipientsLoading) return "انتظر تحميل مستلمي عهدة النقد"
-            if (!state.handoverRecipientsLoaded) {
-                return state.handoverRecipientsError ?: "تعذر التحقق من مستلمي عهدة النقد"
-            }
-            if (state.handoverRecipients.isEmpty()) return "لا يوجد مدير مستقل نشط في فرع الوردية لاستلام النقد"
-            val recipientId = draft.handoverRecipientUserId ?: return "اختر مديراً مستقلاً لاستلام عهدة النقد"
-            if (state.handoverRecipients.none { it.id == recipientId }) {
-                return "المستلم المختار لم يعد مؤهلاً لاستلام عهدة النقد"
-            }
-        }
         if (!draft.acknowledged) return "أكد مراجعة ملخص الإغلاق"
         if (!state.policy.canClose(report.shift)) return "لا تسمح صلاحية حسابك بإغلاق هذه الوردية"
         return null
@@ -103,13 +86,4 @@ internal object ShiftStatePolicy {
     fun variance(report: ShiftReport, rawCountedCash: String): ShiftMoney? =
         ShiftMoney.parseUnsigned(rawCountedCash)?.minus(report.expectedCash)
 
-    fun eligibleHandoverRecipients(
-        report: ShiftReport,
-        actorUserId: Long,
-        recipients: List<ShiftHandoverRecipient>,
-    ): List<ShiftHandoverRecipient> = recipients.filter { recipient ->
-        recipient.branchId == report.shift.branchId &&
-            recipient.id != actorUserId &&
-            recipient.id != report.shift.userId
-    }
 }

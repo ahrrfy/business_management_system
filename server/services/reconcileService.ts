@@ -18,6 +18,8 @@ import {
   suppliers,
 } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
+import { deliveryLedgerEntries } from "../../drizzle/schema";
+import { deriveCashInHandFromLedger } from "@shared/partyExposure";
 import {
   ACCOUNT_ROLES,
   ALL_POSTING_PROFILES,
@@ -26,6 +28,8 @@ import {
 } from "./accounting/postingEngine";
 import { money, round2 } from "./money";
 import { entryNotHoldReceiptCond } from "./reception/holdReceipts";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { supplierApEffectSql } from "./ledger/supplierApEffect";
 
 export interface ReconcileResult {
   entity: string;
@@ -564,15 +568,21 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   // مع عمود returnedTotal، الصيغة تبسّطت كثيراً:
   //   AR_per_invoice = total - paidAmount - returnedTotal (موقَّع، لا GREATEST(.,0))
   // CANCELLED وSUPERSEDED مستندان نهائيان بلا ذمة: البديلة وحدها تحمل الالتزام بعد التصحيح.
+  //
+  // ⭐ **غيابُ `GREATEST` هنا ليس سهواً** رغم أنّ عشرة مواضعَ أخرى تحمله — وهذا الموضعُ بالذات
+  // كان مشتبَهاً به. الطرفُ المقارَن `customers.currentBalance` **موقَّعٌ** وقد يكون سالباً
+  // (دفعٌ زائد — مسموحٌ بقرار المالك — أو مرتجعٌ نقديّ)، فقصُّ الطرف المُشتقّ عند الصفر يخترع
+  // «انحرافاً وهمياً» في كل حالةٍ مشروعة. وهي العلّةُ التي أُغلقت فعلاً وموثَّقةٌ في رأس هذه
+  // الدالّة («السابق استعمل GREATEST(.,0) … فأنتج انحرافاً وهمياً»).
+  // ⇒ الوضعُ الصحيح `SIGNED`، ومجموعةُ حالاته `VOIDED_INVOICE_STATUSES` = ('CANCELLED',
+  // 'SUPERSEDED') وهي حرفياً المكتوبة أدناه. التوحيدُ يُثبّت هذا القرار باسمٍ بدل تعليقٍ يُنسى.
   const invSum = await db
     .select({
       customerId: invoices.customerId,
       arGross: sql<string>`
         COALESCE(SUM(CASE
           WHEN ${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')
-          THEN CAST(${invoices.total} AS DECIMAL(15,2))
-             - CAST(${invoices.paidAmount} AS DECIMAL(15,2))
-             - CAST(${invoices.returnedTotal} AS DECIMAL(15,2))
+          THEN ${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "SIGNED")}
           ELSE 0
         END), 0)
       `,
@@ -631,15 +641,13 @@ export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
   const entrySum = await db
     .select({
       supplierId: accountingEntries.supplierId,
-      ap: sql<string>`COALESCE(SUM(CASE
-        WHEN ${accountingEntries.purchaseLiabilityAccount} = 'CASH_CLEARING' THEN 0
-        WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'RETURN'      THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'OPENING'     THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'EXCHANGE_SETTLE' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        ELSE 0 END), 0)`,
+      // مصدر أثر AP الموحَّد: القديم (PURCHASE) + الحديث (GRNI/ADJUST). راجع supplierApEffect.ts.
+      ap: sql<string>`COALESCE(SUM(${supplierApEffectSql({
+        entryType: accountingEntries.entryType,
+        amount: accountingEntries.amount,
+        liabilityAccount: accountingEntries.purchaseLiabilityAccount,
+        dedupeKey: accountingEntries.dedupeKey,
+      })}), 0)`,
     })
     .from(accountingEntries)
     .where(sql`${accountingEntries.supplierId} IS NOT NULL`)
@@ -705,6 +713,37 @@ export async function reconcileDeliveryFloat(): Promise<ReconcileResult[]> {
     const drift = expected.minus(actual).abs();
     if (drift.greaterThan("0.01")) {
       issues.push({ entity: "deliveryParty", id: partyId, expected: expected.toFixed(2), actual: actual.toFixed(2), drift: drift.toFixed(2) });
+    }
+  }
+
+  /**
+   * م١ (PR-3) — **الدفتر الإلحاقيّ مقابل العمود المخزَّن، لكلّ جهةٍ باسمها** (لا مجموعاً):
+   *   ledger = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+   *   (`deriveCashInHandFromLedger` — الصيغةُ الواحدة مع اللوحة و`cashSource.ts`).
+   * الكاشفُ أعلاه يطابق قيود المحاسبة؛ وهذا يطابق **الدفتر التشغيليّ** الذي سيصير المرجع عند قلب
+   * `courierLedgerDerived` — صفرُ انحرافٍ على كلّ الجهات لأيامٍ متتالية هو شرطُ القلب (§١٠).
+   */
+  const ledgerAgg = await db
+    .select({
+      partyId: deliveryLedgerEntries.partyId,
+      entryType: deliveryLedgerEntries.entryType,
+      total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
+    })
+    .from(deliveryLedgerEntries)
+    .groupBy(deliveryLedgerEntries.partyId, deliveryLedgerEntries.entryType);
+  const ledgerByParty = new Map<number, { entryType: string; amount: string }[]>();
+  for (const r of ledgerAgg) {
+    const list = ledgerByParty.get(Number(r.partyId)) ?? [];
+    list.push({ entryType: r.entryType, amount: String(r.total ?? "0") });
+    ledgerByParty.set(Number(r.partyId), list);
+  }
+  const ledgerParties = new Set<number>([...Array.from(ledgerByParty.keys()), ...Array.from(seen)]);
+  for (const partyId of Array.from(ledgerParties)) {
+    const ledger = money(deriveCashInHandFromLedger(ledgerByParty.get(partyId) ?? []));
+    const stored = money(actualMap.get(partyId) ?? "0");
+    const drift = ledger.minus(stored).abs();
+    if (drift.greaterThan("0.01")) {
+      issues.push({ entity: "deliveryPartyLedger", id: partyId, expected: ledger.toFixed(2), actual: stored.toFixed(2), drift: drift.toFixed(2) });
     }
   }
   return issues;

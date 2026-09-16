@@ -5,7 +5,7 @@ import {
   expenseExecutionMode,
   expenseStatusFromSearch,
   isExpenseFinanciallyPrintable,
-} from "./expenseUiPolicy";
+} from "@/lib/expenseUiPolicy";
 
 describe("سياسة عرض دورة المصروف", () => {
   it("أقل من الحد نقداً من الدرج فوري", () => {

@@ -12,14 +12,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import {
-  LoadingState,
-  ErrorState,
-  TableEmptyRow,
-} from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -79,6 +77,142 @@ export default function VoucherCategories() {
     );
   const [query, setQuery] = useState("");
   const rows = list.data ?? [];
+  // أعمدة قائمة الفئات — داخل المكوّن لأنّها تستدعي إجراءات الشاشة (تعديل/تفعيل/دمج).
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      {
+        id: "id",
+        header: "#",
+        accessorFn: (r) => Number(r.id),
+        meta: { kind: "number", align: "center", width: "id" },
+        cell: ({ row }) => <span className="text-xs text-muted-foreground">{Number(row.original.id)}</span>,
+      },
+      {
+        id: "name",
+        header: "الاسم",
+        accessorFn: (r) => r.name,
+        meta: { width: "wide" },
+        cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      },
+      {
+        id: "direction",
+        header: "الاتجاه",
+        // التسمية المعروضة لا الرمز الخامّ.
+        accessorFn: (r) => DIR_LABEL[r.direction] ?? r.direction,
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span
+            className={
+              "inline-block rounded-full px-2 py-0.5 text-xs " +
+              (row.original.direction === "IN"
+                ? "badge-status-active"
+                : row.original.direction === "OUT"
+                  ? "badge-status-cancelled"
+                  : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]")
+            }
+          >
+            {DIR_LABEL[row.original.direction]}
+          </span>
+        ),
+      },
+      {
+        id: "postingRole",
+        header: "الحساب المقابل",
+        accessorFn: (r) =>
+          isVoucherCategoryRoleCompatible(r.direction, r.postingRole)
+            ? voucherCategoryRoleLabel(r.postingRole)
+            : unresolvedCategoryLabel(r.name),
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => {
+          const r = row.original;
+          return isVoucherCategoryRoleCompatible(r.direction, r.postingRole) ? (
+            <span className="inline-flex items-center gap-1 text-xs text-[var(--sem-pos)]">
+              <CheckCircle2 aria-hidden className="size-3.5" />
+              {voucherCategoryRoleLabel(r.postingRole)}
+            </span>
+          ) : (
+            <span className="inline-flex flex-col gap-0.5 text-xs">
+              <span className="inline-flex items-center gap-1 text-[var(--sem-warn)] font-medium">
+                <AlertTriangle aria-hidden className="size-3.5" /> {unresolvedCategoryLabel(r.name)}
+              </span>
+              {replacementHint(r.name) && (
+                <span className="text-muted-foreground">البديل: {replacementHint(r.name)}</span>
+              )}
+            </span>
+          );
+        },
+      },
+      {
+        id: "description",
+        header: "الوصف",
+        accessorFn: (r) => r.description ?? "—",
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.description ?? "—"}</span>,
+      },
+      {
+        id: "sortOrder",
+        header: "ترتيب",
+        accessorFn: (r) => r.sortOrder,
+        meta: { kind: "number", align: "center" },
+        cell: ({ row }) => <span className="text-xs">{row.original.sortOrder}</span>,
+      },
+      {
+        id: "isActive",
+        header: "نَشِطة",
+        accessorFn: (r) => (r.isActive ? "نعم" : "لا"),
+        meta: { align: "center" },
+        cell: ({ row }) => <span className="text-xs">{row.original.isActive ? "نعم" : "لا"}</span>,
+      },
+      // عمود الإجراءات مشروطٌ بالصلاحية كما كان في الجدول الخامّ.
+      ...(canManage
+        ? ([
+            {
+              id: "actions",
+              header: "إجراء",
+              meta: { kind: "actions" },
+              enableSorting: false,
+              cell: ({ row }) => {
+                const r = row.original;
+                return (
+                  <RowActions
+                    mode="menu"
+                    actions={[
+                      {
+                        key: "edit",
+                        kind: "edit",
+                        label: "تعديل",
+                        icon: Edit3,
+                        onSelect: () => startEdit(r),
+                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                      },
+                      {
+                        key: "toggle",
+                        kind: "approve",
+                        label: r.isActive ? "تعطيل" : "تفعيل",
+                        variant: r.isActive ? "destructive" : "default",
+                        onSelect: () => void toggleActive(r),
+                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                      },
+                      {
+                        key: "merge",
+                        kind: "reverse",
+                        label: "دمج",
+                        hidden: !r.isActive,
+                        onSelect: () => void doMerge(r),
+                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                      },
+                    ]}
+                  />
+                );
+              },
+            },
+          ] as ColumnDef<Row, unknown>[])
+        : []),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canManage],
+  );
+
   const visibleRows = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
     return q
@@ -281,6 +415,45 @@ export default function VoucherCategories() {
     });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة كما تُرى: بطاقة التنبيه
+  // والنموذج المفتوح وشريط الأدوات وقوائم الإجراءات). نفس صفوف الجدول المعروضة وأعمدته
+  // بلا استعلامٍ جديد — بما فيها تحذير «تحتاج مساراً تخصصياً» وبديلُه، فهما جوهر الشاشة.
+  function printCategories() {
+    printReportDoc({
+      title: "فئات السندات",
+      headerExtra: [
+        { label: "عدد الفئات", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "بلا حساب مقابل", value: unresolvedCount.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "id", label: "#", align: "center" },
+        { key: "name", label: "الاسم" },
+        { key: "direction", label: "الاتجاه", align: "center" },
+        { key: "postingRole", label: "الحساب المقابل" },
+        { key: "description", label: "الوصف" },
+        { key: "sortOrder", label: "ترتيب", align: "center" },
+        { key: "isActive", label: "نَشِطة", align: "center" },
+      ],
+      rows: visibleRows.map((r) => {
+        const resolved = isVoucherCategoryRoleCompatible(r.direction, r.postingRole);
+        const hint = replacementHint(r.name);
+        return {
+          id: String(Number(r.id)),
+          name: r.name,
+          direction: DIR_LABEL[r.direction] ?? r.direction,
+          postingRole: resolved
+            ? voucherCategoryRoleLabel(r.postingRole)
+            : `${unresolvedCategoryLabel(r.name)}${hint ? ` — البديل: ${hint}` : ""}`,
+          description: r.description ?? "—",
+          sortOrder: String(r.sortOrder),
+          isActive: r.isActive ? "نعم" : "لا",
+        };
+      }),
+      emptyText: "لا فئات مطابقة للبحث.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -350,6 +523,8 @@ export default function VoucherCategories() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
+            {/* شبكةُ تحرير لا عرض: كل صفٍّ يحمل منتقي فئةٍ وزرَّ تعيينٍ خاصّين به —
+                `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
             <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
@@ -567,7 +742,7 @@ export default function VoucherCategories() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printCategories}
             exportSpec={{
               filename: "فئات-السندات",
               rows: visibleRows,
@@ -597,145 +772,23 @@ export default function VoucherCategories() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-center">#</th>
-                  <th className="p-2">الاسم</th>
-                  <th className="p-2 text-center">الاتجاه</th>
-                  <th className="p-2">الحساب المقابل</th>
-                  <th className="p-2">الوصف</th>
-                  <th className="p-2 text-center">ترتيب</th>
-                  <th className="p-2 text-center">نَشِطة</th>
-                  {canManage && <th className="p-2 text-center">إجراء</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {list.isLoading && (
-                  <tr>
-                    <td colSpan={8}>
-                      <LoadingState />
-                    </td>
-                  </tr>
-                )}
-                {list.isError && (
-                  <tr>
-                    <td colSpan={8}>
-                      <ErrorState
-                        message={list.error?.message}
-                        onRetry={() => void list.refetch()}
-                      />
-                    </td>
-                  </tr>
-                )}
-                {visibleRows.map((r) => (
-                  <tr
-                    key={Number(r.id)}
-                    className={`border-t ${r.isActive ? "" : "opacity-60"}`}
-                  >
-                    <td className="p-2 text-center text-xs text-muted-foreground">
-                      {Number(r.id)}
-                    </td>
-                    <td className="p-2 font-medium">{r.name}</td>
-                    <td className="p-2 text-center text-xs">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 ${
-                          r.direction === "IN"
-                            ? "badge-status-active"
-                            : r.direction === "OUT"
-                              ? "badge-status-cancelled"
-                              : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"
-                        }`}
-                      >
-                        {DIR_LABEL[r.direction]}
-                      </span>
-                    </td>
-                    <td className="p-2 text-xs">
-                      {isVoucherCategoryRoleCompatible(
-                        r.direction,
-                        r.postingRole,
-                      ) ? (
-                        <span className="inline-flex items-center gap-1 text-[var(--sem-pos)]">
-                          <CheckCircle2 aria-hidden className="size-3.5" />
-                          {voucherCategoryRoleLabel(r.postingRole)}
-                        </span>
-                      ) : (
-                        <span className="inline-flex flex-col gap-0.5">
-                          <span className="inline-flex items-center gap-1 text-[var(--sem-warn)] font-medium">
-                            <AlertTriangle aria-hidden className="size-3.5" />{" "}
-                            {unresolvedCategoryLabel(r.name)}
-                          </span>
-                          {replacementHint(r.name) && (
-                            <span className="text-muted-foreground">
-                              البديل: {replacementHint(r.name)}
-                            </span>
-                          )}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-xs text-muted-foreground">
-                      {r.description ?? "—"}
-                    </td>
-                    <td className="p-2 text-center text-xs tabular-nums">
-                      {r.sortOrder}
-                    </td>
-                    <td className="p-2 text-center text-xs">
-                      {r.isActive ? "نعم" : "لا"}
-                    </td>
-                    {canManage && (
-                      <td className="p-2 text-center">
-                        <RowActions
-                          mode="menu"
-                          actions={[
-                            {
-                              key: "edit",
-                              kind: "edit",
-                              label: "تعديل",
-                              icon: Edit3,
-                              onSelect: () => startEdit(r),
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "FULL",
-                              },
-                            },
-                            {
-                              key: "toggle",
-                              kind: "approve",
-                              label: r.isActive ? "تعطيل" : "تفعيل",
-                              variant: r.isActive ? "destructive" : "default",
-                              onSelect: () => void toggleActive(r),
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "FULL",
-                              },
-                            },
-                            {
-                              key: "merge",
-                              kind: "reverse",
-                              label: "دمج",
-                              hidden: !r.isActive,
-                              onSelect: () => void doMerge(r),
-                              gate: {
-                                roles: ["manager", "accountant"],
-                                module: "treasury",
-                                level: "FULL",
-                              },
-                            },
-                          ]}
-                        />
-                      </td>
-                    )}
-                  </tr>
-                ))}
-                {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow colSpan={8} message="لا فئات حتى الآن." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<Row>
+            columns={columns}
+            data={visibleRows}
+            /* البحث في ListToolbar أعلاه (يغذّي visibleRows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            /* بلا ترقيم: الفئات بياناتٌ مرجعية محدودة، والحاويةُ المحبوسة تُمرِّرها بترويسةٍ
+               لاصقة. (الطباعة لم تعُد تقرأ DOM بعد التحوّل إلى `printReportDoc` — تبني المستند
+               من `visibleRows` كاملةً ⇒ لا اقتطاع صامت أياً كان الترقيم. يبقى `Infinity`
+               قراراً عرضياً قائماً بذاته، ولم يُمَسّ.) */
+            pageSize={Infinity}
+            externalFiltersActive={query.trim() !== ""}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            getRowClassName={(r) => (r.isActive ? undefined : "opacity-60")}
+            emptyText="لا فئات حتى الآن."
+            emptyFilteredState="لا فئات مطابقة للبحث."
+          />
         </CardContent>
       </Card>
 

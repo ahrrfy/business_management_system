@@ -34,6 +34,7 @@ import { FileEdit, ShoppingCart } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
@@ -150,6 +151,10 @@ export default function ReorderAlerts() {
     clearBranchOverride.mutate({ variantId, branchId: branchIdOfRow });
   }
   const editSaving = setThresholds.isPending || setBranchOverride.isPending || clearBranchOverride.isPending;
+  // نصُّ انتظار زرّ «حفظ» يقتصر على مُغيّرَي العتبة: `editSaving` يشمل أيضاً مسح الـoverride
+  // («استعادة الافتراض») ⇒ استعمالُه في النصّ يجعل الزرّ يدّعي حفظاً لم يطلبه المستخدم أصلاً،
+  // بينما تعطيلُ الأزرار الثلاثة يبقى على العَلَم الجامع كما كان.
+  const thresholdSaving = setThresholds.isPending || setBranchOverride.isPending;
 
   // ── تحديد الصفوف + حوار المسوّدة ─────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -237,6 +242,18 @@ export default function ReorderAlerts() {
         { key: "quantity", header: "الرصيد", map: (r) => r.quantity },
         { key: "minStock", header: "الحد الأدنى", map: (r) => r.minStock },
         { key: "reorderPoint", header: "حدّ إعادة الطلب", map: (r) => r.reorderPoint },
+        { key: "dailyVelocity", header: "معدل البيع اليومي", map: (r) => r.dailyVelocity },
+        { key: "sales30d", header: "مبيعات 30 يوماً", map: (r) => r.sales30d },
+        {
+          key: "daysRemaining",
+          header: "الأيام المتبقية",
+          map: (r) => (r.daysRemaining !== null ? r.daysRemaining : "غير محدد"),
+        },
+        {
+          key: "urgency",
+          header: "درجة الإلحاح",
+          map: (r) => (r.urgency === "CRITICAL" ? "حرجة" : r.urgency === "WARNING" ? "تحذيرية" : "مستقرة"),
+        },
         { key: "suggestedQty", header: "الكمية المقترحة", map: (r) => r.suggestedQty },
       ],
     });
@@ -298,7 +315,7 @@ export default function ReorderAlerts() {
           <CardTitle className="text-base">المنتجات الواجب إعادة طلبها</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
+              {alerts.isLoading ? ACTION_LABELS.loading : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
             </span>
             {canWrite && overridesCount > 0 && (
               <span
@@ -342,6 +359,9 @@ export default function ReorderAlerts() {
                   <TableHead className="text-left">الرصيد</TableHead>
                   <TableHead className="text-left">الحد الأدنى</TableHead>
                   <TableHead className="text-left">حدّ إعادة الطلب</TableHead>
+                  <TableHead className="text-left">معدل البيع</TableHead>
+                  <TableHead className="text-left">الأيام المتبقية</TableHead>
+                  <TableHead className="text-center">درجة الإلحاح</TableHead>
                   <TableHead className="text-left">الكمية المقترحة</TableHead>
                   {canWrite && <TableHead className="text-center">العتبتان</TableHead>}
                 </TableRow>
@@ -409,7 +429,50 @@ export default function ReorderAlerts() {
                           fmtInt(r.reorderPoint)
                         )}
                       </TableCell>
-                      <TableCell className="text-left tabular-nums font-semibold text-primary">{fmtInt(r.suggestedQty)}</TableCell>
+                      <TableCell className="text-left tabular-nums text-xs">
+                        {r.dailyVelocity > 0 ? (
+                          <div title={`إجمالي مبيعات 30 يوماً: ${fmtInt(r.sales30d)} قطعة`}>
+                            <span className="font-semibold">{r.dailyVelocity}</span>
+                            <span className="text-muted-foreground text-[10px] mx-1">/ يوم</span>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-left tabular-nums text-xs font-medium">
+                        {r.daysRemaining !== null ? (
+                          <span className={r.daysRemaining <= 3 ? "text-destructive font-bold" : r.daysRemaining <= 7 ? "text-[var(--sem-warn)] font-semibold" : ""}>
+                            {fmtInt(r.daysRemaining)} {r.daysRemaining <= 10 ? "أيام" : "يوم"}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">غير محدد</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center text-xs">
+                        {r.urgency === "CRITICAL" ? (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-destructive/15 text-destructive border border-destructive/30">
+                            حرجة
+                          </span>
+                        ) : r.urgency === "WARNING" ? (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border border-[var(--sem-warn)]/30">
+                            تحذيرية
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground border border-muted">
+                            مستقرة
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-left tabular-nums font-semibold text-primary">
+                        <div>
+                          <span>{fmtInt(r.suggestedQty)}</span>
+                          {r.dailyVelocity > 0 && (
+                            <span className="block text-[9px] text-muted-foreground font-normal">
+                              تنبؤ ١٤ يوم + أمان
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
                       {canWrite && (
                         <TableCell className="text-center">
                           {isEditing ? (
@@ -437,8 +500,9 @@ export default function ReorderAlerts() {
                                 </label>
                               </div>
                               <div className="flex gap-1 justify-center">
+                                {/* كان نصُّ الانتظار نقاطاً مجرّدة؛ وُحِّد مع بقيّة الأزرار بعَلَمٍ مقصورٍ على الحفظ. */}
                                 <Button size="sm" onClick={() => saveEdit(r.variantId, r.branchId)} disabled={editSaving}>
-                                  {editSaving ? "…" : "حفظ"}
+                                  {thresholdSaving ? ACTION_LABELS.saving : "حفظ"}
                                 </Button>
                                 <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={editSaving}>
                                   إلغاء
@@ -470,7 +534,7 @@ export default function ReorderAlerts() {
                 })}
                 {!alerts.isLoading && rows.length === 0 && (
                   <TableEmptyRow
-                    colSpan={canWrite ? 9 : 7}
+                    colSpan={canWrite ? 12 : 10}
                     message="لا منتجات بلغت حدّ إعادة الطلب. اضبط «حدّ إعادة الطلب» من شاشة المنتج (أو من هنا) لتفعيل الإنذار المبكّر."
                   />
                 )}

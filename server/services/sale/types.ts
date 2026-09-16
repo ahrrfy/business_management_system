@@ -41,6 +41,23 @@ export interface SaleLineInput {
   internalLineToken?: string | null;
 }
 
+/**
+ * م١ (PR-1) — إسنادُ فاتورة البيع لجهة توصيل **داخل معاملة البيع نفسها**. نفس عقد
+ * `receptionCheckout.delivery` (workOrderRouter) حرفياً + `governorate` (العمود قائمٌ على
+ * `deliveryConsignments`، وهو مفتاح الإسناد التلقائيّ بالمنطقة في `suggestPartyForZoneTx`).
+ */
+export interface SaleDeliveryInput {
+  partyId: number;
+  /** أجرة التوصيل (تمريرٌ للمندوب لا إيراد). `null` ⇒ الأجرة الافتراضية للجهة (`deliveryParties.defaultFee`). */
+  fee?: string | null;
+  /** مَن يقبض الأجرة: COURIER (افتراضاً) من الزبون · COUNTER قُبضت الآن أمانةً (يلزمها `deliveryFeeHeld` مساوياً) · SHOP على المكتبة. */
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  recipientName?: string | null;
+  recipientPhone?: string | null;
+  address?: string | null;
+  governorate?: string | null;
+}
+
 export interface CreateSaleInput {
   branchId: number;
   shiftId?: number | null;
@@ -143,6 +160,24 @@ export interface CreateSaleInput {
    * التي ترفعه هي نفسها التي تُنشئ الإرسالية داخل المعاملة — فلا تُنشأ فاتورةٌ بلا حاملٍ لمالها.
    */
   codDispatchPending?: boolean;
+  /**
+   * م١ (PR-1) — الإسناد للتوصيل من البيع المباشر (`sales.create`) في **المعاملة نفسها**، بنفس
+   * نمط `checkoutReceptionInTx` (الفاتورة ثمّ `dispatchInvoiceInTx`). وجودُه يجعل البيع COD
+   * خادمياً: `codDispatchPending=true` (المتبقّي عهدةٌ على الجهة لا ذمّةٌ على زبونٍ عابر) و
+   * `paymentMode='COD'` (سقفُ ائتمان العميل المسجَّل لا يُفحَص — المال يأتي مع المندوب،
+   * `server/lib/credit.ts`). الذمّة على العميل تبقى حتى التسليم (AR)، والتعرّض على الجهة في
+   * دفتر التوصيل (`COD_ASSIGNED`) — لا تُنقَل الذمّة إلى الجهة عند الإسناد.
+   *
+   * ⛔ مرفوضٌ مع `offlineCapture`: الإسناد يحتاج حرّاس الجهة الحيّة (`assertFloatLimitTx` و
+   * `assertNoStaleOpenParcelsTx`) ورقمَ إرسالية، ولا تتوفّر لبيعٍ التُقط دون اتصال.
+   */
+  delivery?: SaleDeliveryInput | null;
+  /**
+   * أجرةُ التوصيل المقبوضة **الآن** أمانةً للمندوب (`feeCollection='COUNTER'`) — نقداً في الدرج
+   * حتماً: إيصال IN بمرجع `DLV-FEE-INV-{invoiceId}` + قيد `DELIVERY_FEE_HELD` على الفاتورة
+   * (`delivery/feeHeld.ts`، مرآة الاستقبال). يجب أن تساوي `delivery.fee` بالضبط.
+   */
+  deliveryFeeHeld?: string | null;
   /** الاستقبال (٨/٨): تأكيد الموظّف أن الصنف **متوفّر فيزيائياً** رغم أنه غير مجرود (رصيد سالب)
    *  في وضع الافتتاح — يفتح البيع بالسالب لطلب توصيل COD (unpaid>0) الذي يحمله المندوب بيده.
    *  بدونه يبقى الحاصر: بيعُ COD لبضاعةٍ غير موجودة فعلاً بلا مالٍ مقبوض. مشروطٌ بوضع الافتتاح
@@ -196,4 +231,7 @@ export interface CreateSaleResult {
   negativeDips?: { variantId: number; newQuantity: number }[];
   /** نتيجة داخلية لمسارات البيع المركّبة؛ الراوتر العام لا يرسل internalLineToken أصلاً. */
   createdLineItems?: { lineToken: string; invoiceItemId: number }[];
+  /** م١ (PR-1): الإرسالية المُنشأة في معاملة البيع حين وُجد `input.delivery` (تعود أيضاً في replay). */
+  consignmentId?: number;
+  consignmentNumber?: string;
 }

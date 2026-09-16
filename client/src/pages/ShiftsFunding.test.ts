@@ -2,12 +2,20 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+const readComponent = (relative: string) =>
+  readFileSync(path.resolve(process.cwd(), `client/src/components/${relative}`), "utf8");
+
 describe("Shifts — واجهة العهدة الإضافية", () => {
   it("تُظهر طلب المالك وقبول صاحب الوردية وتمنع اعتبار الطلب نقداً قبل الاستلام", () => {
-    const source = readFileSync(
-      path.resolve(process.cwd(), "client/src/pages/Shifts.tsx"),
-      "utf8",
-    );
+    const source =
+      readFileSync(
+        path.resolve(process.cwd(), "client/src/pages/Shifts.tsx"),
+        "utf8",
+      ) +
+      "\n" +
+      readComponent("shifts/ShiftFundingDialog.tsx") +
+      "\n" +
+      readComponent("shifts/ShiftFundingDecisionDialogs.tsx");
     expect(source).toContain("تمويل إضافي");
     expect(source).toContain("لا تُخصم الخزنة ولا يزيد الدرج حتى يستلم صاحب الوردية النقد فعلياً");
     expect(source).toContain("استلمت النقد");

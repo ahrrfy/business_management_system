@@ -8,9 +8,10 @@
 //
 // الإلغاء (سند بالطريق فقط): يعيد الكمية كاملة للمصدر بحركة TRANSFER_IN عكسية ويغلق السند.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { branches, branchStock, inventoryMovements, productVariants, products, stockTransferLines, stockTransfers, suppliers, users } from "../../drizzle/schema";
-import type { Tx } from "../db";
+import { branches, branchStock, inventoryMovements, productVariants, products, stockTransferLineBundleComponents, stockTransferLines, stockTransfers, suppliers, users } from "../../drizzle/schema";
+import type { DB, Tx } from "../db";
 import { getDb } from "../db";
 import { applyMovement } from "./inventoryService";
 import { lockInventoryVariants } from "./inventory/stockLock";
@@ -19,10 +20,13 @@ import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { money } from "./money";
 import { extractInsertId } from "../lib/insertId";
+import { classifyVariants, getBundleDefinitions, type BundleComponentRow } from "./bundleService";
 
 export type TransferActor = { userId: number; role: string; branchId: number | null };
 
 const COST_SNAPSHOT_RE = /\[COST_SNAPSHOT:([0-9]+(?:\.[0-9]{1,2})?)\]/;
+const MAX_TRANSFER_PHYSICAL_VARIANTS = 200;
+const MAX_TRANSFER_BUNDLE_SNAPSHOT_ROWS = 1_000;
 
 function transferCostSnapshot(notes: string | null | undefined): string | null {
   const match = notes?.match(COST_SNAPSHOT_RE);
@@ -55,8 +59,103 @@ export interface CreateTransferArgs {
   createdBy: number;
 }
 
+type TransferQueryDb = DB | Tx;
+
+interface TransferBundleSnapshot {
+  componentVariantId: number;
+  componentBaseQuantity: number;
+}
+
+function addBaseQuantity(target: Map<number, number>, variantId: number, baseQuantity: number): void {
+  target.set(variantId, (target.get(variantId) ?? 0) + baseQuantity);
+}
+
+function bundleDefinitionsFingerprint(
+  bundleVariantIds: number[],
+  definitions: Map<number, BundleComponentRow[]>,
+): string {
+  return bundleVariantIds
+    .slice()
+    .sort((a, b) => a - b)
+    .map((bundleVariantId) => {
+      const components = (definitions.get(bundleVariantId) ?? [])
+        .map((component) => `${component.componentVariantId}:${component.componentBaseQuantity}`)
+        .sort();
+      return `${bundleVariantId}=[${components.join(",")}]`;
+    })
+    .join("|");
+}
+
+async function loadTransferBundleSnapshots(
+  db: TransferQueryDb,
+  transferLineIds: number[],
+): Promise<Map<number, TransferBundleSnapshot[]>> {
+  const out = new Map<number, TransferBundleSnapshot[]>();
+  const ids = Array.from(new Set(transferLineIds));
+  if (!ids.length) return out;
+  const rows = await db
+    .select({
+      transferLineId: stockTransferLineBundleComponents.transferLineId,
+      componentVariantId: stockTransferLineBundleComponents.componentVariantId,
+      componentBaseQuantity: stockTransferLineBundleComponents.componentBaseQuantity,
+    })
+    .from(stockTransferLineBundleComponents)
+    .where(inArray(stockTransferLineBundleComponents.transferLineId, ids));
+  for (const row of rows) {
+    const lineId = Number(row.transferLineId);
+    const components = out.get(lineId) ?? [];
+    components.push({
+      componentVariantId: Number(row.componentVariantId),
+      componentBaseQuantity: Number(row.componentBaseQuantity),
+    });
+    out.set(lineId, components);
+  }
+  Array.from(out.values()).forEach((components: TransferBundleSnapshot[]) => {
+    components.sort((a: TransferBundleSnapshot, b: TransferBundleSnapshot) =>
+      a.componentVariantId - b.componentVariantId,
+    );
+  });
+  return out;
+}
+
+function expandTransferLine(
+  line: { id: number; variantId: number; quantitySent: number },
+  operationalQuantity: number,
+  snapshots: Map<number, TransferBundleSnapshot[]>,
+): Array<{ variantId: number; baseQuantity: number }> {
+  const components = snapshots.get(Number(line.id));
+  if (!components?.length) {
+    return [{ variantId: Number(line.variantId), baseQuantity: operationalQuantity }];
+  }
+  return components.map((component) => ({
+    variantId: component.componentVariantId,
+    baseQuantity: component.componentBaseQuantity * operationalQuantity,
+  }));
+}
+
+async function assertBundleSnapshotsPresent(
+  tx: Tx,
+  lines: Array<{ id: number; variantId: number }>,
+  snapshots: Map<number, TransferBundleSnapshot[]>,
+): Promise<void> {
+  const kinds = await classifyVariants(tx, lines.map((line) => Number(line.variantId)));
+  const missing = lines.find(
+    (line) => kinds.get(Number(line.variantId)) === "BUNDLE" && !snapshots.get(Number(line.id))?.length,
+  );
+  if (missing) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: `تعذّر استلام سطر البكج #${Number(missing.id)}`,
+        why: "لقطة مكوّنات البكج وقت الإرسال مفقودة، فلا يمكن معرفة المخزون الواجب إدخاله بأمان",
+        doThis: "ألغِ السند لاستعادة حركات الإرسال الفعلية، ثم أعد إرساله",
+      }),
+    });
+  }
+}
+
 /**
- * إنشاء سند تحويل + خصم المصدر (TRANSFER_OUT لكل سطر) داخل معاملة واحدة — إمّا يخرج السند
+ * إنشاء سند تحويل + خصم المصدر (TRANSFER_OUT لكل صنف مخزني فعلي) داخل معاملة واحدة — إمّا يخرج السند
  * كاملاً «بالطريق» أو لا شيء (نقص مخزون بأي سطر = ROLLBACK للكل).
  */
 /**
@@ -151,34 +250,195 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   const transferNumber = `TRF-${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, "0")}-${transferId}`;
   await tx.update(stockTransfers).set({ transferNumber }).where(eq(stockTransfers.id, transferId));
 
-  // ترتيب حتمي بالمتغيّر ⇒ سندان متزامنان يقفلان الصفوف بنفس الترتيب (لا deadlock).
+  // البكج يبقى سطراً تشغيلياً واحداً في السند، لكن الرصيد الفعلي لمكوّناته. نقرأ الوصفة أولاً
+  // لبناء إغلاق المتغيّرات دفعةً واحدة، ثم نعيد قراءتها بعد القفل. إن تغيّرت في نافذة السباق
+  // نرفض المعاملة كلّها؛ بذلك لا نمزج وصفةً قديمة بمكوّناتٍ جديدة ولا نعكس ترتيب الأقفال.
   const sorted = [...a.items].sort((x, y) => x.variantId - y.variantId);
   const sortedVariantIds = sorted.map((it) => it.variantId);
-  await lockInventoryVariants(tx, sortedVariantIds);
+  const provisionalKinds = await classifyVariants(tx, sortedVariantIds);
+  const unknownVariantId = sortedVariantIds.find((variantId) => !provisionalKinds.has(variantId));
+  if (unknownVariantId != null) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: `تعذّر إضافة الصنف #${unknownVariantId} إلى سند التحويل`,
+        why: "الصنف غير موجود في الكتالوج الحالي",
+        doThis: "أعد تحميل شاشة التحويل واختر الصنف من نتائج البحث الحالية",
+      }),
+    });
+  }
+  const serviceVariantId = sortedVariantIds.find((variantId) => provisionalKinds.get(variantId) === "SERVICE");
+  if (serviceVariantId != null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `تعذّر نقل الصنف الخدمي #${serviceVariantId}`,
+        why: "الخدمة بلا رصيد مخزني فعلي يمكن تحويله بين الفروع",
+        doThis: "احذف الخدمة من السند وانقل موادها المخزنية عند الحاجة",
+      }),
+    });
+  }
+  const provisionalBundleIds = sortedVariantIds.filter(
+    (variantId) => provisionalKinds.get(variantId) === "BUNDLE",
+  );
+  const provisionalDefinitions = await getBundleDefinitions(tx, provisionalBundleIds);
+  for (const bundleVariantId of provisionalBundleIds) {
+    if (!provisionalDefinitions.get(bundleVariantId)?.length) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر نقل البكج #${bundleVariantId}`,
+          why: "وصفة البكج لا تحتوي مكوّنات مخزنية",
+          doThis: "أكمل وصفة البكج من شاشة المنتجات ثم أعد إنشاء السند",
+        }),
+      });
+    }
+  }
+  const provisionalFingerprint = bundleDefinitionsFingerprint(
+    provisionalBundleIds,
+    provisionalDefinitions,
+  );
+  const provisionalComponentIds = Array.from(provisionalDefinitions.values())
+    .flatMap((components) => components.map((component) => component.componentVariantId));
+  await lockInventoryVariants(tx, sortedVariantIds.concat(provisionalComponentIds));
+
+  const lockedKinds = await classifyVariants(tx, sortedVariantIds);
+  const lockedBundleIds = sortedVariantIds.filter(
+    (variantId) => lockedKinds.get(variantId) === "BUNDLE",
+  );
+  const lockedDefinitions = await getBundleDefinitions(tx, lockedBundleIds);
+  if (
+    lockedBundleIds.join(",") !== provisionalBundleIds.join(",") ||
+    bundleDefinitionsFingerprint(lockedBundleIds, lockedDefinitions) !== provisionalFingerprint
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "توقّف إنشاء سند التحويل",
+        why: "تغيّرت وصفة أحد البكجات أثناء إعداد السند",
+        doThis: "أعد الإرسال لتُلتقط الوصفة الحالية كاملة",
+      }),
+    });
+  }
+
+  const bundleComponentIds = Array.from(lockedDefinitions.values())
+    .flatMap((components) => components.map((component) => component.componentVariantId));
+  if (bundleComponentIds.length) {
+    const componentRows = await tx
+      .select({
+        id: productVariants.id,
+        variantActive: productVariants.isActive,
+        productActive: products.isActive,
+        productName: products.name,
+        sku: productVariants.sku,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, Array.from(new Set(bundleComponentIds))));
+    const byId = new Map(componentRows.map((row) => [Number(row.id), row]));
+    for (const componentVariantId of Array.from(new Set(bundleComponentIds))) {
+      const row = byId.get(componentVariantId);
+      if (!row || row.variantActive === false || row.productActive === false) {
+        const label = row ? `«${row.productName} — ${row.sku}»` : `#${componentVariantId}`;
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر نقل مكوّن البكج ${label}`,
+            why: "المكوّن معطّل أو غير موجود في الكتالوج الحالي",
+            doThis: "فعّل المكوّن أو استبدله في وصفة البكج ثم أعد إنشاء السند",
+          }),
+        });
+      }
+    }
+  }
+
+  const movementTotals = new Map<number, number>();
+  for (const item of sorted) {
+    if (lockedKinds.get(item.variantId) === "BUNDLE") {
+      for (const component of lockedDefinitions.get(item.variantId) ?? []) {
+        addBaseQuantity(
+          movementTotals,
+          component.componentVariantId,
+          component.componentBaseQuantity * item.baseQuantity,
+        );
+      }
+    } else {
+      addBaseQuantity(movementTotals, item.variantId, item.baseQuantity);
+    }
+  }
+  const movementVariantIds = Array.from(movementTotals.keys()).sort((a, b) => a - b);
+  const bundleSnapshotRowCount = lockedBundleIds.reduce(
+    (total, bundleVariantId) => total + (lockedDefinitions.get(bundleVariantId)?.length ?? 0),
+    0,
+  );
+  if (
+    movementVariantIds.length > MAX_TRANSFER_PHYSICAL_VARIANTS ||
+    bundleSnapshotRowCount > MAX_TRANSFER_BUNDLE_SNAPSHOT_ROWS
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "سند التحويل أكبر من الحد التشغيلي الآمن",
+        why: `يتوسع السند إلى ${movementVariantIds.length} صنفاً مخزنياً و${bundleSnapshotRowCount} سطر مكوّن بكج`,
+        doThis: "قسّم الأصناف على أكثر من سند ثم أرسلها بالتتابع",
+      }),
+    });
+  }
   // نفس ترتيب أقفال WAVG في الشراء/الإنتاج: mutex الصنف ثم أرصدة الفروع.
   // بذلك تكون لقطة الإرسال هي التكلفة الفعلية لحظة خروج البضاعة، لا قراءة سبقت استلاماً متزامناً.
-  await lockTransferBranchStock(tx, sortedVariantIds, [a.fromBranchId, a.toBranchId]);
+  await lockTransferBranchStock(tx, movementVariantIds, [a.fromBranchId, a.toBranchId]);
   const costRows = await tx
     .select({ id: productVariants.id, costPrice: productVariants.costPrice })
     .from(productVariants)
-    .where(inArray(productVariants.id, sortedVariantIds))
+    .where(inArray(productVariants.id, movementVariantIds))
     .orderBy(asc(productVariants.id))
     .for("update");
   const costAtDispatch = new Map(costRows.map((row) => [Number(row.id), money(row.costPrice ?? "0").toFixed(2)]));
-  for (const it of sorted) {
-    const costSnapshot = costAtDispatch.get(it.variantId);
-    if (costSnapshot == null) {
-      throw new TRPCError({ code: "NOT_FOUND", message: `الصنف #${it.variantId} غير موجود` });
-    }
-    await tx.insert(stockTransferLines).values({
+  await tx.insert(stockTransferLines).values(
+    sorted.map((it) => ({
       transferId,
       variantId: it.variantId,
       quantitySent: it.baseQuantity,
-    });
+    })),
+  );
+  const persistedLines = await tx
+    .select({ id: stockTransferLines.id, variantId: stockTransferLines.variantId })
+    .from(stockTransferLines)
+    .where(eq(stockTransferLines.transferId, transferId));
+  if (persistedLines.length !== sorted.length) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تثبيت جميع أسطر سند التحويل" });
+  }
+  const transferLineIdByVariant = new Map(
+    persistedLines.map((line) => [Number(line.variantId), Number(line.id)]),
+  );
+  const bundleSnapshotValues: Array<typeof stockTransferLineBundleComponents.$inferInsert> = [];
+  for (const it of sorted) {
+    if (lockedKinds.get(it.variantId) === "BUNDLE") {
+      const transferLineId = transferLineIdByVariant.get(it.variantId);
+      if (transferLineId == null) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `تعذّر ربط سطر البكج #${it.variantId}` });
+      }
+      for (const component of lockedDefinitions.get(it.variantId) ?? []) {
+        bundleSnapshotValues.push({
+          transferLineId,
+          componentVariantId: component.componentVariantId,
+          componentBaseQuantity: component.componentBaseQuantity,
+        });
+      }
+    }
+  }
+  if (bundleSnapshotValues.length) {
+    await tx.insert(stockTransferLineBundleComponents).values(bundleSnapshotValues);
+  }
+  for (const variantId of movementVariantIds) {
+    const costSnapshot = costAtDispatch.get(variantId);
+    if (costSnapshot == null) {
+      throw new TRPCError({ code: "NOT_FOUND", message: `الصنف #${variantId} غير موجود` });
+    }
     await applyMovement(tx, {
-      variantId: it.variantId,
+      variantId,
       branchId: a.fromBranchId,
-      baseQuantity: it.baseQuantity,
+      baseQuantity: movementTotals.get(variantId)!,
       movementType: "TRANSFER_OUT",
       relatedBranchId: a.toBranchId,
       referenceType: "TRANSFER",
@@ -270,7 +530,21 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
   }
 
   const docLines = await tx.select().from(stockTransferLines).where(eq(stockTransferLines.transferId, a.transferId));
-  await lockInventoryVariants(tx, docLines.map((line) => Number(line.variantId)));
+  const bundleSnapshots = await loadTransferBundleSnapshots(
+    tx,
+    docLines.map((line) => Number(line.id)),
+  );
+  await assertBundleSnapshotsPresent(tx, docLines, bundleSnapshots);
+  const movementVariantIds = new Set<number>();
+  for (const line of docLines) {
+    for (const movement of expandTransferLine(line, Number(line.quantitySent), bundleSnapshots)) {
+      movementVariantIds.add(movement.variantId);
+    }
+  }
+  await lockInventoryVariants(
+    tx,
+    docLines.map((line) => Number(line.variantId)).concat(Array.from(movementVariantIds)),
+  );
   const byId = new Map(docLines.map((l) => [Number(l.id), l]));
   if (a.lines.length !== docLines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "يجب تسجيل كمية مستلَمة لكل أسطر السند (المطابقة الكاملة شرط الإقفال)" });
@@ -290,37 +564,53 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
     }
   }
 
-  // ترتيب حتمي بالمتغيّر (نفس منطق الإنشاء) لتفادي deadlock مع سندات متزامنة.
-  const sortedIn = [...a.lines].sort((x, y) => Number(byId.get(x.lineId)!.variantId) - Number(byId.get(y.lineId)!.variantId));
+  // السطر يبقى بوحدته التشغيلية (البكج = 1)، بينما الأثر المخزني يتوسع من لقطة الإرسال.
   let totalReceivedBase = 0;
-  const shortages: Array<{ variantId: number; qty: number }> = [];
-  for (const l of sortedIn) {
+  const receivedByVariant = new Map<number, number>();
+  const shortageByVariant = new Map<number, number>();
+  for (const l of a.lines) {
     const dl = byId.get(l.lineId)!;
     totalReceivedBase += l.quantityReceived;
     if (l.quantityReceived < dl.quantitySent) {
-      shortages.push({ variantId: Number(dl.variantId), qty: dl.quantitySent - l.quantityReceived });
+      for (const movement of expandTransferLine(
+        dl,
+        dl.quantitySent - l.quantityReceived,
+        bundleSnapshots,
+      )) {
+        addBaseQuantity(shortageByVariant, movement.variantId, movement.baseQuantity);
+      }
     }
     if (l.quantityReceived > 0) {
-      await applyMovement(tx, {
-        variantId: Number(dl.variantId),
-        branchId: Number(doc.toBranchId),
-        baseQuantity: l.quantityReceived,
-        movementType: "TRANSFER_IN",
-        relatedBranchId: Number(doc.fromBranchId),
-        referenceType: "TRANSFER",
-        referenceId: a.transferId,
-        notes:
-          l.quantityReceived === dl.quantitySent
-            ? `استلام سند ${doc.transferNumber} — مطابق`
-            : `استلام سند ${doc.transferNumber} — عجز ${dl.quantitySent - l.quantityReceived}: ${l.note?.trim()}`,
-        createdBy: a.actor.userId,
-      });
+      for (const movement of expandTransferLine(dl, l.quantityReceived, bundleSnapshots)) {
+        addBaseQuantity(receivedByVariant, movement.variantId, movement.baseQuantity);
+      }
     }
     await tx
       .update(stockTransferLines)
       .set({ quantityReceived: l.quantityReceived, note: l.note?.trim() || null })
       .where(eq(stockTransferLines.id, l.lineId));
   }
+
+  const operationalDiscrepancy = Number(doc.totalSentBase) - totalReceivedBase;
+  for (const variantId of Array.from(receivedByVariant.keys()).sort((a, b) => a - b)) {
+    await applyMovement(tx, {
+      variantId,
+      branchId: Number(doc.toBranchId),
+      baseQuantity: receivedByVariant.get(variantId)!,
+      movementType: "TRANSFER_IN",
+      relatedBranchId: Number(doc.fromBranchId),
+      referenceType: "TRANSFER",
+      referenceId: a.transferId,
+      notes:
+        operationalDiscrepancy === 0
+          ? `استلام سند ${doc.transferNumber} — مطابق`
+          : `استلام سند ${doc.transferNumber} — مع فروقات موثّقة على أسطر السند`,
+      createdBy: a.actor.userId,
+    });
+  }
+  const shortages = Array.from(shortageByVariant.entries())
+    .map(([variantId, qty]) => ({ variantId, qty }))
+    .sort((a, b) => a.variantId - b.variantId);
 
   // قيد خسارة نقل بقيمة التكلفة (قرار مالك ١٤/٧): العجز خرج من رصيد المصدر ولم يصل الوجهة ⇒
   // مصروف حقيقي في P&L (نمط قيد تسوية الجرد: cost موجب/profit سالب، بلا نقد). يُنسب لفرع
@@ -498,13 +788,41 @@ export async function cancelStockTransfer(tx: Tx, a: { transferId: number; actor
   }
 
   const docLines = await tx.select().from(stockTransferLines).where(eq(stockTransferLines.transferId, a.transferId));
-  await lockInventoryVariants(tx, docLines.map((line) => Number(line.variantId)));
-  const sorted = [...docLines].sort((x, y) => Number(x.variantId) - Number(y.variantId));
-  for (const dl of sorted) {
+  // الاسترجاع من حركات الإرسال نفسها هو مسار التعافي الأكثر أماناً: يعكس ما خُصم فعلياً حتى لو
+  // فُقدت لقطة وصفة بكج بسبب ترحيلٍ قديم أو إصلاحٍ يدوي، ولا يعيد تفسير الوصفة الحالية.
+  const restoreByVariant = new Map<number, number>();
+  const dispatchMovements = await tx
+    .select({ variantId: inventoryMovements.variantId, quantity: inventoryMovements.quantity })
+    .from(inventoryMovements)
+    .where(
+      and(
+        eq(inventoryMovements.referenceType, "TRANSFER"),
+        eq(inventoryMovements.referenceId, a.transferId),
+        eq(inventoryMovements.movementType, "TRANSFER_OUT"),
+      ),
+    );
+  for (const movement of dispatchMovements) {
+    addBaseQuantity(restoreByVariant, Number(movement.variantId), Number(movement.quantity));
+  }
+  if (!restoreByVariant.size) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر إلغاء سند التحويل",
+        why: "السند لا يحتوي حركات إرسال موثّقة يمكن عكسها بأمان",
+        doThis: "أوقف الإلغاء واطلب من مسؤول النظام مراجعة السند قبل تعديل المخزون",
+      }),
+    });
+  }
+  await lockInventoryVariants(
+    tx,
+    docLines.map((line) => Number(line.variantId)).concat(Array.from(restoreByVariant.keys())),
+  );
+  for (const variantId of Array.from(restoreByVariant.keys()).sort((a, b) => a - b)) {
     await applyMovement(tx, {
-      variantId: Number(dl.variantId),
+      variantId,
       branchId: Number(doc.fromBranchId),
-      baseQuantity: dl.quantitySent,
+      baseQuantity: restoreByVariant.get(variantId)!,
       movementType: "TRANSFER_IN",
       relatedBranchId: Number(doc.toBranchId),
       referenceType: "TRANSFER",
@@ -523,7 +841,7 @@ export async function cancelStockTransfer(tx: Tx, a: { transferId: number; actor
 
 export interface ListTransfersArgs {
   actor: TransferActor;
-  /** admin/manager فقط: حصر بفرع معيّن (وإلا كل الفروع). غير المرفوعين يُجبَرون على فرعهم. */
+  /** الأدمن فقط: حصر بفرع معيّن (وإلا كل الفروع). غير المرفوعين يُجبَرون على فرعهم. */
   branchId?: number | null;
   direction?: "in" | "out" | "all";
   status?: "IN_TRANSIT" | "RECEIVED" | "CANCELLED" | "all";
@@ -596,7 +914,7 @@ export async function getStockTransfer(transferId: number, actor: TransferActor)
     }
   }
 
-  const lines = await db
+  const rawLines = await db
     .select({
       id: stockTransferLines.id,
       variantId: stockTransferLines.variantId,
@@ -607,12 +925,73 @@ export async function getStockTransfer(transferId: number, actor: TransferActor)
       variantName: productVariants.variantName,
       color: productVariants.color,
       sku: productVariants.sku,
+      isBundle: products.isBundle,
     })
     .from(stockTransferLines)
     .innerJoin(productVariants, eq(productVariants.id, stockTransferLines.variantId))
     .innerJoin(products, eq(products.id, productVariants.productId))
     .where(eq(stockTransferLines.transferId, transferId))
     .orderBy(stockTransferLines.id);
+
+  const componentRows = rawLines.length
+    ? await db
+        .select({
+          transferLineId: stockTransferLineBundleComponents.transferLineId,
+          variantId: stockTransferLineBundleComponents.componentVariantId,
+          baseQuantityPerBundle: stockTransferLineBundleComponents.componentBaseQuantity,
+          productName: products.name,
+          variantName: productVariants.variantName,
+          sku: productVariants.sku,
+        })
+        .from(stockTransferLineBundleComponents)
+        .innerJoin(
+          productVariants,
+          eq(productVariants.id, stockTransferLineBundleComponents.componentVariantId),
+        )
+        .innerJoin(products, eq(products.id, productVariants.productId))
+        .where(
+          inArray(
+            stockTransferLineBundleComponents.transferLineId,
+            rawLines.map((line) => Number(line.id)),
+          ),
+        )
+        .orderBy(
+          stockTransferLineBundleComponents.transferLineId,
+          stockTransferLineBundleComponents.componentVariantId,
+        )
+    : [];
+  const componentsByLine = new Map<
+    number,
+    Array<{
+      variantId: number;
+      baseQuantityPerBundle: number;
+      productName: string;
+      variantName: string | null;
+      sku: string;
+    }>
+  >();
+  for (const component of componentRows) {
+    const lineId = Number(component.transferLineId);
+    const list = componentsByLine.get(lineId) ?? [];
+    list.push({
+      variantId: Number(component.variantId),
+      baseQuantityPerBundle: Number(component.baseQuantityPerBundle),
+      productName: component.productName,
+      variantName: component.variantName,
+      sku: component.sku,
+    });
+    componentsByLine.set(lineId, list);
+  }
+  const lines = rawLines.map((line) => {
+    const bundleComponents = componentsByLine.get(Number(line.id)) ?? [];
+    const isBundle = bundleComponents.length > 0 || line.isBundle === true;
+    return {
+      ...line,
+      isBundle,
+      unitLabel: isBundle ? "بكج" as const : "وحدة أساس" as const,
+      bundleComponents,
+    };
+  });
 
   const userIds = [doc.createdBy, doc.receivedBy, doc.cancelledBy].filter((x): x is number => x != null);
   const branchRows = await db
@@ -636,7 +1015,7 @@ export async function getStockTransfer(transferId: number, actor: TransferActor)
   };
 }
 
-/** عدد السندات الواردة «بالطريق» — شارة «بانتظار الاستلام». null = كل الفروع (أدمن/مدير). */
+/** عدد السندات الواردة «بالطريق» — شارة «بانتظار الاستلام». null = كل الفروع (أدمن). */
 export async function pendingIncomingCount(branchId: number | null): Promise<number> {
   const db = getDb();
   if (!db) return 0;

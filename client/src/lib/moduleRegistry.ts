@@ -2,8 +2,8 @@ import type { LucideIcon } from "lucide-react";
 import {
   BarChart3, Boxes, Briefcase, Building2, ClipboardCheck, CreditCard, DollarSign,
   FileCheck2, Gift, Images, Landmark, ListChecks, Lock, Package, PackageCheck, Printer,
-  Receipt, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
-  WalletCards,
+  Receipt, RotateCcw, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
+  WalletCards, BellRing,
 } from "lucide-react";
 import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE, type RoleGate } from "@/lib/navVisibility";
 
@@ -38,6 +38,16 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "myWork", href: "/my-work", label: "مطلوب مني الآن", description: "قرارات ومهام تنتظر الإجراء", section: 4, icon: ClipboardCheck },
   { id: "tasks", href: "/tasks", label: "المهام والتذاكر", description: "إسناد ومتابعة وSLA", section: 4, icon: ListChecks, module: "tasks" },
   { id: "sales", href: "/invoices", label: "المبيعات", description: "فواتير ومدفوعات", section: 1, icon: Receipt, ...INVOICE_LIST_GATE },
+  {
+    id: "returns",
+    href: "/returns",
+    label: "بوابة المرتجعات",
+    description: "مرتجعات شاملة وتحرٍّ جنائي",
+    section: 1,
+    icon: RotateCcw,
+    roles: ["admin", "manager", "cashier", "accountant", "auditor"],
+    module: "sales",
+  },
   { id: "treasury", href: "/treasury", label: "الخزينة والمدفوعات", description: "أرصدة وسندات وتحويلات", section: 3, icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
   { id: "cardAccount", href: "/card-account", label: "حساب البطاقة/البنك", description: "أرصدة وتسويات البطاقة", section: 3, icon: CreditCard, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "delivery", href: "/delivery", label: "التوصيل", description: "طلبات وشركات وتحصيل COD", section: 4, icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
@@ -46,7 +56,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "productStudio", href: "/catalog/image-studio", label: "استوديو المنتجات", description: "صور المنتجات والكتالوج", section: 4, icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
   { id: "contentDrafts", href: "/products/content-drafts", label: "مسودّات المحتوى", description: "مراجعة المحتوى المولّد للمنتجات", section: 4, icon: Sparkles, roles: ["admin", "manager"], module: "products" },
   { id: "inventory", href: "/inventory", label: "المخزون والبضاعة", description: "الأرصدة والتسويات", section: 2, icon: Boxes },
-  { id: "purchases", href: "/purchases", label: "المشتريات", description: "أوامر الشراء والاستلام", section: 2, icon: Package, module: "purchases" },
+  { id: "purchases", href: "/purchases", label: "المشتريات", description: "الفواتير والاعتمادات والترحيل التلقائي", section: 2, icon: Package, module: "purchases" },
   { id: "suppliers", href: "/suppliers", label: "الموردون", description: "إدارة الموردين وذممهم", section: 2, icon: Building2 },
   { id: "gifts", href: "/gifts", label: "الهدايا والمجانيات", description: "الحوافز والهدايا المجانية", section: 2, icon: Gift, roles: ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"], module: "gifts" },
   { id: "digitalCards", href: "/digital-cards", label: "البطاقات الرقمية", description: "مخزون وتسليم البطاقات", section: 2, icon: WalletCards, roles: ["admin", "manager", "accountant", "auditor"], module: "digital_cards" },
@@ -55,6 +65,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "statutoryAccounting", href: "/statutory-accounting", label: "الدليل المحاسبي النظامي", description: "تقارير وخرائط الامتثال المحاسبي", section: 3, icon: FileCheck2, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "exchange", href: "/exchange", label: "الصيرفة", description: "صرف وتسوية العملات", section: 3, icon: DollarSign, roles: ["admin", "manager", "accountant"], module: "treasury" },
   { id: "assets", href: "/assets", label: "الأصول الثابتة", description: "سجلّ وإهلاك وعهدة", section: 5, icon: Server, managerOnly: true },
+  { id: "announcements", href: "/announcements", label: "إعلانات وتوجيهات الشركة", description: "بث السبتلايت وتوجيهات الكادر والإقرارات", section: 5, icon: BellRing, roles: ["admin", "manager"], module: "announcements" },
   { id: "hr", href: "/hr", label: "الموارد البشرية", description: "موظفون وحضور ورواتب", section: 5, icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
   { id: "closing", href: "/closing", label: "الإقفال والرَقابة", description: "فترات واعتمادات وتوافق", section: 5, icon: Lock, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "settings", href: "/settings", label: "الإدارة والإعدادات", description: "فروع وأدوار وتكاملات", section: 5, icon: Settings, managerOnly: true },

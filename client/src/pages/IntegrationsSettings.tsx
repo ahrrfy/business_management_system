@@ -3,10 +3,12 @@ import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Activity, AlertCircle, AlertTriangle, Cable, CheckCircle2, ChevronDown, Clock, Copy, Eye, EyeOff, KeyRound, LayoutTemplate, Loader2, Plus, Power, RefreshCw, RotateCcw, Save, Scissors, Search, Settings2, ShoppingBag, Trash2, User, Wand2, MessageSquare } from "lucide-react";
+import { Activity, AlertCircle, AlertTriangle, Cable, CheckCircle2, ChevronDown, Clock, Copy, KeyRound, LayoutTemplate, Loader2, Plus, Power, RefreshCw, Save, Scissors, Search, Settings2, ShoppingBag, Trash2, User, MessageSquare } from "lucide-react";
+import { SecretField } from "@/components/integrations/SecretField";
+import { ImageStudioIntegrationCard, AiImageStudioIntegrationCard } from "@/components/integrations/ImageStudioIntegrations";
+import { NewIntegrationDialog } from "@/components/integrations/NewIntegrationDialog";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -21,6 +23,8 @@ import {
 } from "@/lib/integrationCenter";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Switch } from "@/components/ui/switch";
 import { useEffect, useMemo, useState } from "react";
 
@@ -80,52 +84,7 @@ function CenterMetric({
   );
 }
 
-/** حقل secret: قناع •••• افتراضي + زر إظهار + إدخال نصّ جديد (يستبدل القديم). */
-function SecretField({
-  label,
-  hint,
-  masked,
-  value,
-  onChange,
-  placeholder,
-}: {
-  label: string;
-  hint?: string;
-  masked: string | null;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  const [show, setShow] = useState(false);
-  return (
-    <div className="space-y-1">
-      <label className="text-xs font-medium">{label}</label>
-      {hint && <div className="text-[11px] text-muted-foreground">{hint}</div>}
-      <div className="flex gap-2">
-        <div className="relative flex-1" dir="ltr">
-          <input
-            type={show ? "text" : "password"}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={masked ? `الحالي: ${masked}` : (placeholder ?? "الصق القيمة الجديدة")}
-            dir="ltr"
-            aria-label={label}
-            className="w-full h-9 px-3 pe-9 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          <button
-            type="button"
-            onClick={() => setShow(!show)}
-            className="absolute end-1 top-1/2 -translate-y-1/2 size-7 grid place-items-center text-muted-foreground hover:text-foreground"
-            title={show ? "إخفاء" : "إظهار"}
-            aria-label={show ? `إخفاء ${label}` : `إظهار ${label}`}
-          >
-            {show ? <EyeOff aria-hidden className="size-4" /> : <Eye aria-hidden className="size-4" />}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+
 
 interface DraftState {
   displayName: string;
@@ -393,377 +352,7 @@ function IntegrationCard({ integ, onChanged, wide = false }: { integ: Integratio
   );
 }
 
-function NewIntegrationDialog({ onCreated, onClose, branches }: {
-  onCreated: () => void;
-  onClose: () => void;
-  branches: { id: number; name: string }[];
-}) {
-  const [branchId, setBranchId] = useState<number>(branches[0]?.id ?? 0);
-  const [channel, setChannel] = useState<IntegrationConnectionChannel>("WHATSAPP");
-  const upsert = trpc.integrations.upsert.useMutation({
-    onSuccess: () => { onCreated(); onClose(); },
-    onError: (e) => notify.err(e),
-  });
 
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent dir="rtl" className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>إضافة قناة اتصال</DialogTitle>
-          <DialogDescription>اختر الفرع والقناة، ثم أكمل الاعتمادات واختبر الإعداد بعد الإضافة.</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2 items-start">
-            <div>
-              <label className="text-xs text-muted-foreground">الفرع</label>
-              <AppSelect
-                value={String(branchId || "")}
-                onValueChange={(value) => setBranchId(Number(value))}
-                className="mt-1"
-                aria-label="الفرع"
-              >
-                {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </AppSelect>
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground">القناة</label>
-              <AppSelect
-                value={channel}
-                onValueChange={(value) => setChannel(value as IntegrationConnectionChannel)}
-                className="mt-1"
-                aria-label="القناة"
-              >
-                <option value="WHATSAPP">{CHANNEL_META.WHATSAPP.label}</option>
-                <option value="INSTAGRAM">{CHANNEL_META.INSTAGRAM.label}</option>
-                <option value="STORE">{CHANNEL_META.STORE.label}</option>
-              </AppSelect>
-            </div>
-          </div>
-          <div className="text-xs text-muted-foreground rounded-md bg-muted/30 border p-2.5">
-            بعد الإنشاء افتح «إدارة الاتصال» لإدخال الاعتمادات وإجراء التحقق. قناة المتجر الحالية تستقبل webhook موقّعاً فقط ولا تزامن المنتجات أو المخزون.
-          </div>
-        </div>
-        <DialogFooter className="sm:justify-stretch">
-          <Button variant="outline" onClick={onClose} className="flex-1">إلغاء</Button>
-          <Button
-            onClick={() => upsert.mutate({ branchId, channel })}
-            disabled={upsert.isPending || !branchId}
-            className="flex-1"
-          >
-            إضافة القناة
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/**
- * بطاقة «استوديو صور المنتجات» (remove.bg) — مسار Pro لقصّ خلفية الصور احترافياً. المفتاح مشفّر
- * (نفس INTEGRATIONS_ENCRYPTION_KEY). عند التعطيل/نفاد الرصيد يعمل المسار المجاني الآمن تلقائياً.
- * أمانة صارمة: remove.bg قصّ لا توليد (بكسلات المنتج تبقى).
- */
-function ImageStudioIntegrationCard() {
-  const settings = trpc.imageStudio.settings.useQuery();
-  const utils = trpc.useUtils();
-  const [keyDraft, setKeyDraft] = useState("");
-  const update = trpc.imageStudio.updateSettings.useMutation({
-    onSuccess: () => { notify.ok("تم الحفظ"); utils.imageStudio.settings.invalidate(); utils.imageStudio.proConfig.invalidate(); setKeyDraft(""); },
-    onError: (e) => notify.err(e),
-  });
-  const verify = trpc.imageStudio.verifyConnection.useMutation({
-    onSuccess: (r) => { (r.ok ? notify.ok : notify.warn)(r.ok ? "المفتاح صالح" : "فشل الفحص", r.message); utils.imageStudio.settings.invalidate(); },
-    onError: (e) => notify.err(e),
-  });
-  if (settings.isError) {
-    return <ErrorState message="تعذّر تحميل إعدادات remove.bg." onRetry={() => void settings.refetch()} />;
-  }
-  if (settings.isLoading || !settings.data) return <LoadingState />;
-  const s = settings.data;
-
-  return (
-    <Card className="border-violet-500/30 bg-violet-500/[0.03]">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="size-10 rounded-lg grid place-items-center flex-shrink-0 border bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-500/30">
-              <Scissors aria-hidden className="size-5" />
-            </div>
-            <div className="min-w-0">
-              <CardTitle className="text-base">استوديو صور المنتجات — remove.bg</CardTitle>
-              <div className="text-xs text-muted-foreground mt-0.5">قصّ خلفية احترافيّ لصور المنتجات (Pro اختياريّ مدفوع)</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline" className={s?.proEnabled ? "badge-status-active" : "badge-status-cancelled"}>
-              {s?.proEnabled ? "Pro مفعّل" : "Pro معطّل"}
-            </Badge>
-            {s?.lastVerifiedAt && (
-              <span className="text-[10px] text-muted-foreground" dir="ltr">آخر فحص {fmtDateTime(s.lastVerifiedAt)}</span>
-            )}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-md border bg-muted/30 p-2.5 text-xs text-muted-foreground space-y-1">
-          <p>قصّ احترافيّ للخلفية عبر remove.bg — <b>قصّ لا توليد</b> ⇒ بكسلات منتجك تبقى كما هي. مجانيّ حتى ~٥٠ صورة/شهر (دقّة معاينة منخفضة)، ثمّ مدفوع بالرصيد.</p>
-          <p>المفتاح من: remove.bg ← Dashboard ← <span dir="ltr">API Keys</span>. عند التعطيل أو نفاد الرصيد يعمل المسار المجانيّ الآمن (FLATTEN) تلقائياً.</p>
-        </div>
-
-        {s?.lastError && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-xs flex items-start gap-2">
-            <AlertCircle aria-hidden className="size-4 text-destructive flex-shrink-0 mt-0.5" />
-            <div className="text-destructive break-words">{s.lastError}</div>
-          </div>
-        )}
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <div className="flex-1">
-            <SecretField
-              label="مفتاح remove.bg API"
-              hint="الصق مفتاحاً جديداً ليشفّر ويحفظ. اتركه فارغاً لإبقاء الحاليّ."
-              masked={s?.removebgKeyMasked ?? null}
-              value={keyDraft}
-              onChange={setKeyDraft}
-              placeholder="الصق مفتاح remove.bg"
-            />
-          </div>
-          <Button onClick={() => update.mutate({ removebgKey: keyDraft.trim() })} disabled={update.isPending || !keyDraft.trim()}>
-            {update.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : null}
-            حفظ المفتاح
-          </Button>
-        </div>
-
-        <div className="flex gap-2 flex-wrap pt-1">
-          <Button
-            variant="outline"
-            onClick={() => verify.mutate()}
-            disabled={verify.isPending || !s?.hasKey}
-          >
-            {verify.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4 me-1" />}
-            فحص الاتصال والرصيد
-          </Button>
-          {s?.proEnabled ? (
-            <Button variant="outline" onClick={() => update.mutate({ proEnabled: false })} disabled={update.isPending}>
-              تعطيل Pro
-            </Button>
-          ) : (
-            <Button variant="outline" onClick={() => update.mutate({ proEnabled: true })} disabled={update.isPending || !s?.hasKey} title={!s?.hasKey ? "أدخل المفتاح أوّلاً" : undefined}>
-              تفعيل Pro
-            </Button>
-          )}
-          {s?.hasKey && (
-            <Button
-              variant="ghost"
-              className="text-destructive hover:bg-destructive/10"
-              onClick={async () => {
-                if (!(await confirm({
-                  variant: "danger",
-                  title: "حذف مفتاح remove.bg",
-                  description: "سيحذف المفتاح ويعطّل مسار Pro. سيعمل المسار المجانيّ الآمن. متابعة؟",
-                  confirmText: "حذف",
-                  cancelText: "تراجع",
-                }))) return;
-                update.mutate({ removebgKey: null });
-              }}
-              disabled={update.isPending}
-            >
-              <Trash2 aria-hidden className="size-4 me-1" /> حذف المفتاح
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-/**
- * بطاقة «استوديو الذكاء الاصطناعي» — إعادة تصميم صورة المنتج كاستوديو موحّد من برومت جاهز (Gemini/أي
- * مزوّد). المفتاح مشفّر (نفس INTEGRATIONS_ENCRYPTION_KEY). ⚠️ توليديّ (يعيد رسم البكسلات): يخضع
- * لمراجعة/اعتماد بشريّ في نموذج المنتج قبل استبدال الأصل، والأصل يبقى دائماً. معطّل افتراضياً.
- */
-function AiImageStudioIntegrationCard() {
-  const aiSettings = trpc.imageStudio.aiSettings.useQuery();
-  const utils = trpc.useUtils();
-  const [keyDraft, setKeyDraft] = useState("");
-  const [modelDraft, setModelDraft] = useState<string | null>(null);
-  const [promptDraft, setPromptDraft] = useState<string | null>(null);
-
-  const update = trpc.imageStudio.updateAiSettings.useMutation({
-    onSuccess: () => {
-      notify.ok("تم الحفظ");
-      utils.imageStudio.aiSettings.invalidate();
-      utils.imageStudio.aiConfig.invalidate();
-      setKeyDraft("");
-    },
-    onError: (e) => notify.err(e),
-  });
-  const verify = trpc.imageStudio.verifyAiConnection.useMutation({
-    onSuccess: (r) => { (r.ok ? notify.ok : notify.warn)(r.ok ? "المفتاح صالح" : "فشل الفحص", r.message); utils.imageStudio.aiSettings.invalidate(); },
-    onError: (e) => notify.err(e),
-  });
-  if (aiSettings.isError) {
-    return <ErrorState message="تعذّر تحميل إعدادات خدمة الصور التوليدية." onRetry={() => void aiSettings.refetch()} />;
-  }
-  if (aiSettings.isLoading || !aiSettings.data) return <LoadingState />;
-  const s = aiSettings.data;
-  const modelValue = modelDraft ?? s?.aiModel ?? "";
-  const promptValue = promptDraft ?? s?.aiStudioPrompt ?? "";
-
-  return (
-    <Card className="border-fuchsia-500/30 bg-fuchsia-500/[0.03]">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="size-10 rounded-lg grid place-items-center flex-shrink-0 border bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-400 border-fuchsia-500/30">
-              <Wand2 aria-hidden className="size-5" />
-            </div>
-            <div className="min-w-0">
-              <CardTitle className="text-base">استوديو الذكاء الاصطناعي — {s?.aiProvider ?? "Gemini"}</CardTitle>
-              <div className="text-xs text-muted-foreground mt-0.5">إعادة تصميم صور المنتجات كاستوديو موحّد من برومت جاهز (اختياريّ مدفوع)</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline" className={s?.aiEnabled ? "badge-status-active" : "badge-status-cancelled"}>
-              {s?.aiEnabled ? "مفعّل" : "معطّل"}
-            </Badge>
-            {s?.aiLastVerifiedAt && (
-              <span className="text-[10px] text-muted-foreground" dir="ltr">آخر فحص {fmtDateTime(s.aiLastVerifiedAt)}</span>
-            )}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-md border bg-muted/30 p-2.5 text-xs text-muted-foreground space-y-1">
-          <p>يعيد تصميم صورة المنتج كتصوير استوديو موحّد (خلفية بيضاء + إضاءة + ظلّ) — <b>كأنّ كل الصور من استوديو واحد</b>. برومت جاهز محصّن يأمر بحفظ المنتج وكتابته.</p>
-          <p className="flex items-start gap-1.5 text-[var(--sem-warn)] dark:text-[var(--sem-warn)]">
-            <AlertTriangle aria-hidden className="size-3.5 shrink-0 mt-0.5" />
-            <span>توليديّ (يعيد رسم الصورة، بخلاف remove.bg القاصّ) ⇒ قد يغيّر تفاصيل دقيقة/كتابة. لذلك النتيجة تعرض للمراجعة والاعتماد قبل استبدال الأصل، <b>والأصل يبقى دائماً</b>.</span>
-          </p>
-          <p>مفتاح Gemini من: <span dir="ltr">Google AI Studio ← Get API key</span>. النموذج الافتراضيّ <span dir="ltr">{s?.aiModelEffective ?? "gemini-2.5-flash-image"}</span>.</p>
-        </div>
-
-        {s?.aiLastError && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-xs flex items-start gap-2">
-            <AlertCircle aria-hidden className="size-4 text-destructive flex-shrink-0 mt-0.5" />
-            <div className="text-destructive break-words">{s.aiLastError}</div>
-          </div>
-        )}
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <div className="flex-1">
-            <SecretField
-              label="مفتاح API للذكاء الاصطناعي"
-              hint="الصق مفتاحاً جديداً ليشفّر ويحفظ. اتركه فارغاً لإبقاء الحاليّ."
-              masked={s?.aiKeyMasked ?? null}
-              value={keyDraft}
-              onChange={setKeyDraft}
-              placeholder="الصق مفتاح Gemini"
-            />
-          </div>
-          <Button onClick={() => update.mutate({ aiKey: keyDraft.trim() })} disabled={update.isPending || !keyDraft.trim()}>
-            {update.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : null}
-            حفظ المفتاح
-          </Button>
-        </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <div className="flex-1 space-y-1">
-            <label className="text-xs font-medium">النموذج (اختياري)</label>
-            <div className="text-[11px] text-muted-foreground">اتركه فارغاً للافتراضيّ. غيّره فقط لنموذج أحدث من نفس المزوّد.</div>
-            <input
-              type="text"
-              value={modelValue}
-              onChange={(e) => setModelDraft(e.target.value)}
-              placeholder="gemini-2.5-flash-image"
-              dir="ltr"
-              className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          </div>
-          <Button
-            variant="outline"
-            onClick={() => update.mutate({ aiModel: modelValue.trim() || null }, { onSuccess: () => setModelDraft(null) })}
-            disabled={update.isPending}
-          >
-            حفظ النموذج
-          </Button>
-        </div>
-
-        <div className="space-y-1">
-          <div className="flex items-center justify-between gap-2">
-            <label className="text-xs font-medium">البرومت الجاهز للاستوديو</label>
-            {s?.aiStudioPromptIsDefault && <Badge variant="outline" className="text-[10px]">الافتراضيّ</Badge>}
-          </div>
-          <div className="text-[11px] text-muted-foreground">يصف الخلفية والإضاءة والإطار الموحّد. حارس حفظ المنتج مبنيّ في النظام ولا يلغى بهذا النصّ.</div>
-          <textarea
-            value={promptValue}
-            onChange={(e) => setPromptDraft(e.target.value)}
-            rows={5}
-            dir="ltr"
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          <div className="flex gap-2 flex-wrap">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => update.mutate({ aiStudioPrompt: promptValue.trim() || null }, { onSuccess: () => setPromptDraft(null) })}
-              disabled={update.isPending}
-            >
-              حفظ البرومت
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => update.mutate({ aiStudioPrompt: null }, { onSuccess: () => setPromptDraft(null) })}
-              disabled={update.isPending || s?.aiStudioPromptIsDefault}
-            >
-              <RotateCcw aria-hidden className="size-3.5 me-1" /> استعادة الافتراضيّ
-            </Button>
-          </div>
-        </div>
-
-        <div className="flex gap-2 flex-wrap pt-1 border-t mt-1">
-          <Button
-            variant="outline"
-            onClick={() => verify.mutate()}
-            disabled={verify.isPending || !s?.hasAiKey}
-          >
-            {verify.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4 me-1" />}
-            فحص الاتصال
-          </Button>
-          {s?.aiEnabled ? (
-            <Button variant="outline" onClick={() => update.mutate({ aiEnabled: false })} disabled={update.isPending}>
-              تعطيل
-            </Button>
-          ) : (
-            <Button variant="outline" onClick={() => update.mutate({ aiEnabled: true })} disabled={update.isPending || !s?.hasAiKey} title={!s?.hasAiKey ? "أدخل المفتاح أوّلاً" : undefined}>
-              تفعيل
-            </Button>
-          )}
-          {s?.hasAiKey && (
-            <Button
-              variant="ghost"
-              className="text-destructive hover:bg-destructive/10"
-              onClick={async () => {
-                if (!(await confirm({
-                  variant: "danger",
-                  title: "حذف مفتاح الذكاء الاصطناعي",
-                  description: "سيحذف المفتاح ويعطّل المسار. متابعة؟",
-                  confirmText: "حذف",
-                  cancelText: "تراجع",
-                }))) return;
-                update.mutate({ aiKey: null });
-              }}
-              disabled={update.isPending}
-            >
-              <Trash2 aria-hidden className="size-4 me-1" /> حذف المفتاح
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 /**
  * مركز واتساب الأعمال — الإعدادات والأتمتة (T4.3). القسم كاملاً محصور بالأدمن (نفس بوّابة
@@ -1109,6 +698,9 @@ function AutomationSettingsCard() {
   );
 }
 
+/** صفُّ قالب Meta — مشتقٌّ من عقد `integrations.templates.list` فلا ينجرف عن الخادم. */
+type MetaTemplateRow = RouterOutputs["integrations"]["templates"]["list"][number];
+
 const TEMPLATE_STATUS_META: Record<string, { label: string; cls: string }> = {
   APPROVED: { label: "معتمد", cls: "badge-status-active" },
   PENDING: { label: "قيد المراجعة", cls: "badge-status-pending" },
@@ -1116,6 +708,43 @@ const TEMPLATE_STATUS_META: Record<string, { label: string; cls: string }> = {
   PAUSED: { label: "معلّق", cls: "badge-status-cancelled" },
   DISABLED: { label: "معطّل", cls: "badge-status-cancelled" },
 };
+
+const metaTemplateColumns: ColumnDef<MetaTemplateRow, unknown>[] = [
+  { id: "name", header: "الاسم", accessorFn: (t) => t.name, meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+  { id: "language", header: "اللغة", accessorFn: (t) => t.language, meta: { kind: "code", align: "center" }, cell: ({ row }) => row.original.language },
+  {
+    id: "category",
+    header: "الفئة",
+    accessorFn: (t) => t.category,
+    meta: { align: "center" },
+    cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.category}</span>,
+  },
+  {
+    id: "templateStatus",
+    header: "الحالة",
+    // التسمية المعروضة لا الرمز الخامّ.
+    accessorFn: (t) => (TEMPLATE_STATUS_META[t.templateStatus] ?? TEMPLATE_STATUS_META.PENDING).label,
+    meta: { kind: "status" },
+    cell: ({ row }) => {
+      const st = TEMPLATE_STATUS_META[row.original.templateStatus] ?? TEMPLATE_STATUS_META.PENDING;
+      return <Badge variant="outline" className={st.cls}>{st.label}</Badge>;
+    },
+  },
+  {
+    id: "variableCount",
+    header: "المتغيّرات",
+    accessorFn: (t) => t.variableCount,
+    meta: { kind: "number", align: "center" },
+    cell: ({ row }) => row.original.variableCount,
+  },
+  {
+    id: "syncedAt",
+    header: "آخر مزامنة",
+    accessorFn: (t) => (t.syncedAt ? fmtDateTime(t.syncedAt) : "—"),
+    meta: { kind: "datetime" },
+    cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.syncedAt ? fmtDateTime(row.original.syncedAt) : "—"}</span>,
+  },
+];
 
 /** مزامنة قوالب Meta + جدول القوالب المخزّنة (waTemplates — عامّة، ليست بحسب الفرع؛
  *  الفرع هنا يحدّد فقط أيّ تكامل واتساب ACTIVE يستعمل كمصدر للمزامنة). */
@@ -1161,44 +790,23 @@ function TemplateSyncSection({ branches }: { branches: { id: number; name: strin
         </div>
         <p className="text-[11px] text-muted-foreground">يتطلّب تكامل واتساب ACTIVE على الفرع المختار + WABA ID مضبوطاً في بطاقة تكامله أعلاه.</p>
 
-        {templatesQ.isLoading ? (
-          <LoadingState />
-        ) : templatesQ.isError ? (
-          <ErrorState message="تعذّر تحميل قوالب Meta." onRetry={() => void templatesQ.refetch()} />
-        ) : (templatesQ.data?.length ?? 0) === 0 ? (
+        {(templatesQ.data?.length ?? 0) === 0 && !templatesQ.isLoading && !templatesQ.isError ? (
           <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-4 text-center">
             لا قوالب مزامنة بعد. اضغط «مزامنة القوالب من Meta» بعد ضبط WABA ID.
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-md border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40 text-xs text-muted-foreground">
-                <tr>
-                  <th className="text-right p-2 font-medium">الاسم</th>
-                  <th className="text-center p-2 font-medium">اللغة</th>
-                  <th className="text-center p-2 font-medium">الفئة</th>
-                  <th className="text-center p-2 font-medium">الحالة</th>
-                  <th className="text-center p-2 font-medium">المتغيّرات</th>
-                  <th className="text-center p-2 font-medium">آخر مزامنة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {templatesQ.data?.map((t) => {
-                  const st = TEMPLATE_STATUS_META[t.templateStatus] ?? TEMPLATE_STATUS_META.PENDING;
-                  return (
-                    <tr key={t.id} className="border-t">
-                      <td className="p-2 font-medium">{t.name}</td>
-                      <td className="p-2 text-center" dir="ltr">{t.language}</td>
-                      <td className="p-2 text-center text-xs text-muted-foreground">{t.category}</td>
-                      <td className="p-2 text-center"><Badge variant="outline" className={st.cls}>{st.label}</Badge></td>
-                      <td className="p-2 text-center tabular-nums">{t.variableCount}</td>
-                      <td className="p-2 text-center text-xs text-muted-foreground" dir="ltr">{t.syncedAt ? fmtDateTime(t.syncedAt) : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          /* مُضمَّن: البطاقة تحمل عنوان «قوالب Meta» وأدواتها أعلاه. */
+          <DataTable<MetaTemplateRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={metaTemplateColumns}
+            data={templatesQ.data ?? []}
+            loading={templatesQ.isLoading}
+            errorState={{ isError: templatesQ.isError, message: "تعذّر تحميل قوالب Meta.", onRetry: () => void templatesQ.refetch() }}
+            emptyText="لا قوالب مزامنة بعد."
+          />
         )}
       </CardContent>
     </Card>
@@ -1444,6 +1052,7 @@ pnpm prod:deploy
       {showNew && (
         <NewIntegrationDialog
           branches={branches}
+          channelMeta={CHANNEL_META}
           onCreated={() => list.refetch()}
           onClose={() => setShowNew(false)}
         />

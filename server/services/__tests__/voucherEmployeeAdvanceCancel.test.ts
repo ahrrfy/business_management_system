@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { grantAdvance } from "../advancesService";
+import { cancelAdvance, grantAdvance } from "../advances";
 import { approveVoucher, rejectVoucher } from "../voucher/approval";
 import { cancelVoucher } from "../voucher/cancel";
 import { parseSystemPaymentRequest } from "../voucher/create";
@@ -151,7 +151,7 @@ beforeEach(async () => {
 describe("employee advance voucher cancellation", () => {
   it("يلغي السلفة غير المستعملة ذرياً مع الإيصال والقيد ويعيد الاعتماد idempotently", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-happy");
-    const cancellation = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const cancellation = await cancelVoucher(original.receiptId, MAKER);
     expect(cancellation.status).toBe("PENDING_APPROVAL");
 
     let [advance] = await db()
@@ -196,13 +196,48 @@ describe("employee advance voucher cancellation", () => {
     expect(await db().select().from(s.employeeAdvances)).toHaveLength(1);
   });
 
+  /*
+   * cancelAdvance المستقلّة (advancesService.ts) تشترط advance.status="ACTIVE" و
+   * receipt.status="REVERSED" معاً قبل أن تُنجح. لكن المسار الحقيقيّ أعلاه (cancelVoucher ثم
+   * approveVoucher) يقلب الاثنين معاً **ذرّياً داخل نفس المعاملة**: بحلول لحظة صيرورة السند
+   * REVERSED تكون السلفة CANCELLED فعلاً (تُرى في السطر ١٧٨ أعلاه). فالحالة التي تنتظرها
+   * cancelAdvance (نشطة + سندها معكوس) لا تقع أبداً لسلفةٍ مُرتبطة بسند — الزرّ المستقلّ في
+   * الشاشة (EmployeeAdvances.tsx) يصطدم دائماً برفضٍ آمن لا بنجاحٍ ثانٍ. هذا اختبارٌ يثبّت أنّ
+   * الاصطدام آمنٌ (رفضٌ واضح، لا إلغاءً مزدوجاً ولا حالةً فاسدة) لا أنه الطريق المُوصى به.
+   */
+  it("cancelAdvance المستقلّة بعد مسار السند الحقيقيّ: رفضٌ آمن لا إلغاءٌ مزدوج (مسارٌ ميت عملياً)", async () => {
+    const original = await requestAndApproveAdvance("advance-cancel-real-path-then-direct");
+    const cancellation = await cancelVoucher(original.receiptId, MAKER);
+    await approveVoucher(Number(cancellation.approvalReceiptId), SECOND_OWNER);
+
+    const [sourceReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, original.receiptId));
+    expect(sourceReceipt.status).toBe("REVERSED"); // السند عاد فعلاً — الحالة التي تشترطها cancelAdvance متحقّقة
+    const [advanceAfterVoucherFlow] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(original.advance.id)));
+    expect(advanceAfterVoucherFlow.status).toBe("CANCELLED"); // لكن السلفة أُلغيت أصلاً قبل أن تُستدعى cancelAdvance
+
+    await expect(
+      cancelAdvance({ advanceId: Number(original.advance.id) }, FIRST_OWNER),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("تُلغى السلف النشطة فقط") });
+
+    // لا أثرٌ إضافيّ — الرفض لم يُغيّر شيئاً (لا قيدَ ثالثاً ولا حالةً جديدة).
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(2);
+    const [advanceAfterDirectAttempt] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(original.advance.id)));
+    expect(advanceAfterDirectAttempt).toMatchObject({ status: "CANCELLED", remaining: "0.00" });
+  });
+
   it("يرفض السلفة المستقطعة جزئياً قبل إنشاء إيصال الإلغاء أو قيده", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-used");
     await materializePartialPayrollDeduction(original.advance, "2026-07");
     const receiptsBefore = await db().select().from(s.receipts);
     const entriesBefore = await db().select().from(s.accountingEntries);
 
-    await expect(cancelVoucher(original.receiptId, FIRST_OWNER)).rejects.toMatchObject({
+    await expect(cancelVoucher(original.receiptId, MAKER)).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
     });
 
@@ -219,7 +254,7 @@ describe("employee advance voucher cancellation", () => {
 
   it("يعيد فحص الاستعمال تحت القفل عند الاعتماد ولا يعكس طلب إلغاء سبق الخصم بعده", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-race");
-    const cancellation = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const cancellation = await cancelVoucher(original.receiptId, MAKER);
     await materializePartialPayrollDeduction(original.advance, "2026-08");
 
     await expect(
@@ -250,14 +285,14 @@ describe("employee advance voucher cancellation", () => {
 
   it("يرفض محاولة الإلغاء A1 ثم يعيد إصدار A2 مرتبطة بها مرة واحدة ويُبقي المفتاح القديم", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-reissue");
-    const first = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const first = await cancelVoucher(original.receiptId, MAKER);
     await rejectVoucher(
       Number(first.approvalReceiptId),
       SECOND_OWNER,
       "بيانات طلب الإلغاء تحتاج مراجعة",
     );
 
-    const second = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const second = await cancelVoucher(original.receiptId, MAKER);
     expect(second.approvalReceiptId).not.toBe(first.approvalReceiptId);
     const [secondReceipt] = await db()
       .select()
@@ -293,7 +328,7 @@ describe("employee advance voucher cancellation", () => {
     await expect(
       approveVoucher(Number(first.approvalReceiptId), SECOND_OWNER),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    const replay = await cancelVoucher(original.receiptId, FIRST_OWNER).catch(
+    const replay = await cancelVoucher(original.receiptId, MAKER).catch(
       (error: unknown) => error,
     );
     expect(replay).toMatchObject({ code: "BAD_REQUEST" });

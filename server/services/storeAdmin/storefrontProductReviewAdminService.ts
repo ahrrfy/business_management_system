@@ -2,7 +2,9 @@ import { TRPCError } from "@trpc/server";
 import { desc, eq } from "drizzle-orm";
 
 import { customers, products, storefrontProductReviews } from "../../../drizzle/schema";
+import { appErrorMessage } from "../../../shared/errors";
 import { getDb } from "../../db";
+import { withTx } from "../tx";
 
 export async function listStorefrontProductReviewsForAdmin(status: "PENDING" | "APPROVED" | "REJECTED") {
   const db = getDb();
@@ -30,9 +32,24 @@ export async function listStorefrontProductReviewsForAdmin(status: "PENDING" | "
 export async function moderateStorefrontProductReview(input: { reviewId: number; status: "APPROVED" | "REJECTED" }) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
-  const updated = await db.update(storefrontProductReviews)
-    .set({ status: input.status, moderatedAt: new Date() })
-    .where(eq(storefrontProductReviews.id, input.reviewId));
-  if (Number((updated as { rowsAffected?: number }).rowsAffected ?? 0) < 1) throw new TRPCError({ code: "NOT_FOUND", message: "المراجعة غير موجودة" });
-  return { ok: true as const };
+  return withTx(async (tx) => {
+    // القفل يجعل القرار الواحد نهائياً: لا يستطيع طلب API متأخر أن يقلب مراجعة منشورة
+    // أو مرفوضة بعد أن حسمها موظف آخر.
+    const review = (await tx.select({ status: storefrontProductReviews.status }).from(storefrontProductReviews)
+      .where(eq(storefrontProductReviews.id, input.reviewId)).for("update").limit(1))[0];
+    if (!review) throw new TRPCError({ code: "NOT_FOUND", message: "المراجعة غير موجودة" });
+    if (review.status !== "PENDING") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "لا يمكن تعديل قرار المراجعة",
+          why: "المراجعة حُسمت سابقاً ولا تعود إلى طابور الاعتماد",
+          doThis: "راجع سجل التدقيق أو أنشئ ملاحظة متابعة للعميل عند الحاجة",
+        }),
+      });
+    }
+    await tx.update(storefrontProductReviews).set({ status: input.status, moderatedAt: new Date() })
+      .where(eq(storefrontProductReviews.id, input.reviewId));
+    return { ok: true as const };
+  });
 }

@@ -2,17 +2,21 @@
  * /kiosk — مدخل **جهاز الكشك الخارجي** (شاشة قارئ أسعار مستقلّة).
  *
  * ليست خلف <Protected>: الهوية كوكي **جهاز** (لا مستخدم نظام). التسلسل:
- *  ① المُشغّل يفتح /kiosk#t=<token> ⇒ نقرأ الرمز من الـfragment، نبادله بكوكي جهاز (deviceLogin)،
- *     ثم نمسحه من شريط العنوان (history.replaceState) فلا يبقى ظاهراً.
+ *  ① المُشغّل يفتح /kiosk#t=<token> ⇒ نقرأ الرمز من الـfragment أو localStorage، نبادله بكوكي جهاز (deviceLogin).
+ *     لا نُزيل الرمز من العنوان (stripHash) إلا بعد نجاح التوثيق، ونحتفظ بنسخة في localStorage للحصانة ضد انقطاع الشبكة.
  *  ② إن وُجد كوكي صالح من إقلاع سابق ⇒ deviceMe ينجح بلا رمز.
- *  ③ غير مُصرَّح ⇒ شاشة واضحة + حقل تفعيل يدوي للموظّف (لصق الرمز).
+ *  ③ انقطاع شبكي أو إقلاع بطيء للراوتر ⇒ إعادة محاولة ذكية متكررة واستماع فوري لعودة الاتصال (online event).
+ *  ④ غير مُصرَّح بعد استنفاذ المحاولات ⇒ شاشة واضحة + حقل تفعيل يدوي للموظّف (لصق الرمز).
  *
  * البيانات آمنة للزبون (kioskRouter): بلا تكلفة ولا مخزون. الرمز نطاقه قراءة الأسعار فقط.
  */
 import { useEffect, useRef, useState } from "react";
-import { Lock } from "lucide-react";
+import { Lock, RefreshCw, WifiOff } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import KioskView from "@/components/kiosk/KioskView";
+import { useScreenWakeLock } from "@/lib/screenWakeLock";
+
+const KIOSK_DEVICE_TOKEN_KEY = "alroya_kiosk_device_token_v1";
 
 function readHashToken(): string | null {
   try {
@@ -23,6 +27,27 @@ function readHashToken(): string | null {
   } catch {
     return null;
   }
+}
+
+function getStoredToken(): string | null {
+  try {
+    const val = localStorage.getItem(KIOSK_DEVICE_TOKEN_KEY);
+    return val && val.trim() ? val.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function setStoredToken(t: string) {
+  try {
+    localStorage.setItem(KIOSK_DEVICE_TOKEN_KEY, t.trim());
+  } catch {/* ignore */}
+}
+
+function clearStoredToken() {
+  try {
+    localStorage.removeItem(KIOSK_DEVICE_TOKEN_KEY);
+  } catch {/* ignore */}
 }
 
 function stripHash() {
@@ -45,31 +70,104 @@ export default function Kiosk() {
   const tokenRef = useRef<string | null>(null);
   const [booted, setBooted] = useState(false);
   const [manual, setManual] = useState("");
+  const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
 
-  const deviceMe = trpc.kiosk.deviceMe.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const deviceMe = trpc.kiosk.deviceMe.useQuery(undefined, {
+    retry: (failureCount, error) => {
+      // إن كان الخطأ صريحاً بأن الرمز ملغى فلا فائدة من إعادة المحاولة
+      if ((error as any)?.data?.code === "UNAUTHORIZED") return false;
+      return failureCount < 5;
+    },
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
+    refetchInterval: 12 * 60 * 60 * 1000, // تجديد دوري تلقائي للكوكي كل ١٢ ساعة
+    refetchOnWindowFocus: false,
+  });
+
+  const [retryAttempt, setRetryAttempt] = useState(0);
+
   const login = trpc.kiosk.deviceLogin.useMutation({
     onSuccess: () => {
+      setRetryAttempt(0);
+      if (tokenRef.current) {
+        setStoredToken(tokenRef.current);
+      }
       stripHash();
       void utils.kiosk.deviceMe.invalidate();
     },
+    onError: (err) => {
+      // إذا كان الرمز غير صالح أو مرفوضاً من الخادم فلا نكرر الطلب
+      if (err.data?.code === "UNAUTHORIZED" || err.data?.httpStatus === 401) {
+        clearStoredToken();
+        tokenRef.current = null;
+        setRetryAttempt(0);
+        return;
+      }
+      setRetryAttempt((prev) => Math.min(prev + 1, 6));
+    },
   });
+
   const logout = trpc.kiosk.deviceLogout.useMutation({
     onSuccess: () => {
+      clearStoredToken();
+      tokenRef.current = null;
+      setRetryAttempt(0);
       void utils.kiosk.deviceMe.invalidate();
     },
   });
 
-  // إقلاع: التقط الرمز من الـfragment (إن وُجد) وبادله بكوكي.
+  // إقلاع: قراءة الرمز من الـfragment أو من التخزين المحلي الآمن.
   useEffect(() => {
-    const t = readHashToken();
+    const hashToken = readHashToken();
+    const storedToken = getStoredToken();
+    const t = hashToken || storedToken;
+
     if (t) {
       tokenRef.current = t;
-      stripHash();
+      if (hashToken) {
+        setStoredToken(hashToken);
+      }
       login.mutate({ token: t });
     }
     setBooted(true);
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      void utils.kiosk.deviceMe.invalidate();
+      const currentToken = tokenRef.current || getStoredToken();
+      if (currentToken && !deviceMe.data) {
+        login.mutate({ token: currentToken });
+      }
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [utils]);
+
+  // إبقاء الشاشة مستيقظة 24/7 طوال وقت عمل الكشك
+  useScreenWakeLock(true);
+
+  // استعادة الجلسة تلقائياً في الخلفية في حال سقوط الكوكي بعد أيام تشغيل طويلة
+  // يعالج كلاً من حالة الخطأ (isError) وحالة انتهاء الجلسة (deviceMe.data === null)
+  // مع تراجع أسي محدد (Bounded Exponential Backoff) لا يتجاوز سقف معدل الطلبات (30/15min)
+  useEffect(() => {
+    const isUnauthenticated = !deviceMe.isLoading && (deviceMe.isError || deviceMe.data === null);
+    if (booted && isUnauthenticated && !login.isPending && !logout.isPending) {
+      const t = tokenRef.current || getStoredToken();
+      if (t && retryAttempt < 6) {
+        const delay = Math.min(2000 * Math.pow(2, retryAttempt), 60000);
+        const id = setTimeout(() => {
+          login.mutate({ token: t });
+        }, delay);
+        return () => clearTimeout(id);
+      }
+    }
+  }, [booted, deviceMe.isLoading, deviceMe.isError, deviceMe.data, login, logout.isPending, retryAttempt]);
 
   const authed = !!deviceMe.data;
 
@@ -89,8 +187,38 @@ export default function Kiosk() {
     return (
       <div style={wrap}>
         <div style={card}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>جارٍ تجهيز شاشة قارئ الأسعار…</div>
-          <div style={{ fontSize: 13, opacity: 0.65, marginTop: 8 }}>لحظات من فضلك</div>
+          <div style={{ width: 54, height: 54, margin: "0 auto 16px", borderRadius: 14, background: "#1d2336", display: "flex", alignItems: "center", justifyContent: "center", color: "#6366f1" }}>
+            <RefreshCw className="motion-safe:animate-spin" size={26} aria-hidden />
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>جارٍ تجهيز شاشة قارئ الأسعار…</div>
+          <div style={{ fontSize: 13.5, opacity: 0.7, marginTop: 8 }}>لحظات للتحقق والاتصال بالخادم</div>
+        </div>
+      </div>
+    );
+  }
+
+  // في حال انقطاع الشبكة أثناء الإقلاع
+  if (!isOnline) {
+    return (
+      <div style={wrap}>
+        <div style={card}>
+          <div style={{ width: 56, height: 56, margin: "0 auto 14px", borderRadius: 16, background: "#2a1e24", display: "flex", alignItems: "center", justifyContent: "center", color: "#f87171" }}>
+            <WifiOff aria-hidden size={28} />
+          </div>
+          <div style={{ fontSize: 19, fontWeight: 800 }}>في انتظار الاتصال بالشبكة</div>
+          <p style={{ fontSize: 13.5, opacity: 0.75, lineHeight: 1.8, margin: "10px 0 18px" }}>
+            تعذّر الوصول إلى شبكة المتجر حالياً. سيعيد القارئ الاتصال تلقائياً فور توفر الشبكة.
+          </p>
+          <button
+            onClick={() => {
+              const t = tokenRef.current || getStoredToken();
+              if (t) login.mutate({ token: t });
+              else void utils.kiosk.deviceMe.invalidate();
+            }}
+            style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#3f46d6", color: "#fff", fontFamily: "inherit", fontWeight: 700, fontSize: 14, cursor: "pointer" }}
+          >
+            إعادة فحص الشبكة
+          </button>
         </div>
       </div>
     );
@@ -101,7 +229,9 @@ export default function Kiosk() {
   return (
     <div style={wrap}>
       <div style={card}>
-        <div style={{ width: 60, height: 60, margin: "0 auto 14px", borderRadius: 16, background: "#1d2336", display: "flex", alignItems: "center", justifyContent: "center" }}><Lock aria-hidden size={28} /></div>
+        <div style={{ width: 60, height: 60, margin: "0 auto 14px", borderRadius: 16, background: "#1d2336", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Lock aria-hidden size={28} />
+        </div>
         <div style={{ fontSize: 19, fontWeight: 800 }}>هذا الجهاز غير مُصرَّح</div>
         <p style={{ fontSize: 13.5, opacity: 0.75, lineHeight: 1.9, margin: "10px 0 18px" }}>
           {failed
@@ -123,16 +253,19 @@ export default function Kiosk() {
             style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,.14)", background: "#0b0d16", color: "#e9ecf5", fontFamily: "monospace", fontSize: 13 }}
           />
           <button
-            onClick={() => { const t = manual.trim(); if (t) { tokenRef.current = t; login.mutate({ token: t }); } }}
+            onClick={() => { const t = manual.trim(); if (t) { tokenRef.current = t; setStoredToken(t); login.mutate({ token: t }); } }}
             disabled={!manual.trim() || login.isPending}
             style={{ padding: "10px 18px", borderRadius: 10, border: "none", background: "#3f46d6", color: "#fff", fontFamily: "inherit", fontWeight: 700, fontSize: 14, cursor: "pointer" }}
           >
             تفعيل
           </button>
         </div>
-        {tokenRef.current && failed && (
+        {(tokenRef.current || getStoredToken()) && failed && (
           <button
-            onClick={() => login.mutate({ token: tokenRef.current as string })}
+            onClick={() => {
+              const t = tokenRef.current || getStoredToken();
+              if (t) login.mutate({ token: t });
+            }}
             style={{ marginTop: 12, border: "none", background: "transparent", color: "#9aa3e8", fontFamily: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
           >
             إعادة المحاولة بالرمز السابق

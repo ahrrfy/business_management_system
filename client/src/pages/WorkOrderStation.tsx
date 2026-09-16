@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Banknote, CalendarDays, Check, Undo2, CheckCircle2, ChevronRight, ClipboardList, CornerDownLeft, Layers, MapPin, Phone, Ruler, Truck, Timer as TimerIcon, UserRound } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
@@ -16,8 +18,9 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "wouter";
+import { PageHeader } from "@/components/PageHeader";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { paymentMethodCompact } from "@shared/terms";
 
 /**
  * محطة فني التنفيذ — `/work-orders/station` (دور print_operator + الكاشير/المدير).
@@ -33,18 +36,30 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
  */
 
 type WO = RouterOutputs["workOrders"]["list"][number];
+/** صفُّ مادّة مطلوبة من المخزون — مشتقٌّ من عقد `workOrders.get` (بلا تكلفة: مُخفاة عن الفني). */
+type WorkOrderMaterialRow = NonNullable<NonNullable<RouterOutputs["workOrders"]["get"]>["materials"]>[number];
+
+const materialColumns: ColumnDef<WorkOrderMaterialRow, unknown>[] = [
+  {
+    id: "product",
+    header: "المادة",
+    accessorFn: (m) => `${m.productName ?? "—"}${m.variantName ? ` · ${m.variantName}` : ""}`,
+    meta: { width: "wide", wrap: true },
+    cell: ({ row }) => `${row.original.productName ?? "—"}${row.original.variantName ? ` · ${row.original.variantName}` : ""}`,
+  },
+  { id: "sku", header: "SKU", accessorFn: (m) => m.sku ?? "—", meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs">{row.original.sku ?? "—"}</span> },
+  // `accessorFn` نصُّ العرض (بفواصل آلاف) ⇒ الفرز الافتراضيّ نصّيّ يقرأ «1,200» أصغر من «900»؛
+  // `sortingFn` صريحٌ على القيمة الخامّ.
+  { id: "baseQuantity", header: "الكمية (أساس)", accessorFn: (m) => fmtInt(m.baseQuantity), meta: { kind: "number", align: "center" }, sortingFn: (a, b) => Number(a.original.baseQuantity ?? 0) - Number(b.original.baseQuantity ?? 0), cell: ({ row }) => fmtInt(row.original.baseQuantity) },
+];
 
 const PRIORITIES: Record<string, { label: string; cls: string }> = {
   URGENT: { label: "عاجل", cls: "badge-stock-out border-transparent" },
   NORMAL: { label: "عادي", cls: "badge-status-pending border-transparent" },
   LOW: { label: "منخفض", cls: "badge-status-active border-transparent" },
 };
-const PAYMENT_METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-};
+// وصلُ برنامج v2 §٦ ق٦ (٤/٩/٢٦): تسميةُ طريقة الدفع من `shared/terms.ts` مباشرة — كان
+// قاموساً محلّياً بأربعة مفاتيح ينجرف مع نسخ الشاشات الأخرى. حارس `check:vocabulary`.
 const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
 
 function pad2(n: number) { return String(n).padStart(2, "0"); }
@@ -417,24 +432,16 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-sm">المواد المطلوبة من المخزون</CardTitle></CardHeader>
             <CardContent className="p-0">
-              {d.materials && d.materials.length > 0 ? (
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50"><tr>
-                    <th className="p-2">المادة</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th>
-                  </tr></thead>
-                  <tbody>
-                    {d.materials.map((m) => (
-                      <tr key={m.id} className="border-t">
-                        <td className="p-2">{m.productName ?? "—"}{m.variantName ? ` · ${m.variantName}` : ""}</td>
-                        <td className="p-2 font-mono text-xs" dir="ltr">{m.sku ?? "—"}</td>
-                        <td className="p-2 text-center tabular-nums">{fmtInt(m.baseQuantity)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="p-4 text-center text-muted-foreground text-sm">لا مواد محدّدة — خدمة تخصيص بلا استهلاك مخزون.</div>
-              )}
+              {/* مُضمَّن: العنوان في رأس البطاقة، والمواد قائمة قصيرة تُقرأ كاملةً بلا ترقيم. */}
+              <DataTable<WorkOrderMaterialRow>
+                embedded
+                searchable={false}
+                bounded={false}
+                pageSize={Infinity}
+                columns={materialColumns}
+                data={d.materials ?? []}
+                emptyText="لا مواد محدّدة — خدمة تخصيص بلا استهلاك مخزون."
+              />
             </CardContent>
           </Card>
 
@@ -480,7 +487,7 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
               <div className="flex items-center justify-between gap-3 border-t pt-2"><span className="font-bold">المتبقّي</span><span className="font-extrabold tabular-nums" dir="ltr">{fmtAr(remainingDue.toString())} د.ع</span></div>
               {Number(d.deposit ?? 0) > 0 && (
                 <div className="rounded-lg border bg-muted/20 p-2.5 text-xs">
-                  <div><span className="text-muted-foreground">طريقة الدفع: </span><span className="font-bold">{PAYMENT_METHOD_LABEL[d.paymentMethod ?? ""] ?? d.paymentMethod ?? "—"}</span></div>
+                  <div><span className="text-muted-foreground">طريقة الدفع: </span><span className="font-bold">{paymentMethodCompact(d.paymentMethod)}</span></div>
                   {d.paymentReference && <div className="mt-1"><span className="text-muted-foreground">المرجع: </span><span className="font-mono" dir="ltr">{d.paymentReference}</span></div>}
                 </div>
               )}
@@ -645,10 +652,11 @@ export default function WorkOrderStation() {
     <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-7rem)]">
       {/* القائمة الجانبية */}
       <div className="lg:w-[300px] lg:flex-none flex flex-col gap-3 overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg font-bold">محطة التنفيذ</h1>
-          <Link href="/work-orders" className="text-xs text-muted-foreground">اللوحة ←</Link>
-        </div>
+        {/* رأسٌ يدويّ (h1 + رابط «اللوحة ←» بمحرفٍ خامّ) ⇐ PageHeader بصيغة `workspace`:
+            شريط 44px بنفس مقاس العنوان الحاليّ (text-lg font-bold) كي لا يقضم عمودَ القوائم
+            في تخطيط `h-[calc(100vh-7rem)]`، والوجهة `/work-orders` كما هي (هذه الشاشة تبويبٌ
+            داخل PrintHub، فالرجوع إلى تبويب اللوحة). */}
+        <PageHeader variant="workspace" title="محطة التنفيذ" backHref="/work-orders" backLabel="اللوحة" />
 
         <Input
           value={search}

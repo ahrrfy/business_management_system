@@ -143,7 +143,7 @@ describe("purchaseService — receivedNet (last-installment correction = صفر 
       decisionKey: `financial-schema-po-approve:${randomUUID()}`,
       approve: true,
       reason: "راجعت قيمة الأمر المجزأة واعتمدتها قبل الاستلام",
-    }, { userId: 2, branchId: 1, role: "manager" });
+    }, { userId: 2, branchId: 1, role: "manager" }, { legacyConfirmOnly: true });
 
     await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(it.id), receivedBaseQuantity: 1 }] }, actor);
     await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(it.id), receivedBaseQuantity: 1 }] }, actor);

@@ -29,12 +29,17 @@ import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignServic
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
   partyId: number;
+  externalTrackingRef?: string | null;
+  deliveryAddress?: string | null;
+  notes?: string | null;
 }
 
 export interface DispatchOnlineOrderResult {
   orderId: number;
   invoiceId: number;
   invoiceNumber: string;
+  consignmentId?: number;
+  consignmentNumber?: string;
   partyId: number;
   total: string;
   alreadyDispatched?: boolean;
@@ -221,7 +226,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       notifyResult = sale;
     }
 
-    await dispatchInvoiceInTx(tx, {
+    const dispatchRes = await dispatchInvoiceInTx(tx, {
       invoiceId,
       partyId: input.partyId,
       // الشحن المجاني = الزبون يدفع صفراً، لكن المندوب يستحق الأجرة الفعلية على المكتبة.
@@ -230,14 +235,20 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         ? String(cur.deliveryWaivedAmount ?? "0")
         : String(cur.shippingCost ?? "0"),
       feeCollection: cur.deliveryFree === true ? "SHOP" : "COURIER",
-      deliveryAddress: cur.shippingAddress ?? null,
+      deliveryAddress: input.deliveryAddress ?? cur.shippingAddress ?? null,
+      notes: input.notes ?? null,
       governorate: cur.governorate ?? null,
       latitude: cur.latitude ?? null,
       longitude: cur.longitude ?? null,
       onlineOrderId: Number(cur.id),
       clientRequestId: `online-parcel:${cur.id}`,
+      externalTrackingRef: input.externalTrackingRef ?? null,
     }, actor);
-    await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, cur.id));
+    await tx.update(onlineOrders).set({
+      deliveryPartyId: input.partyId,
+      status: "SHIPPED",
+      ...(input.deliveryAddress?.trim() ? { shippingAddress: input.deliveryAddress.trim() } : {}),
+    }).where(eq(onlineOrders.id, cur.id));
     await enqueueStorefrontOrderStatusPush(tx, {
       orderId: Number(cur.id),
       orderNumber: cur.orderNumber,
@@ -246,7 +257,15 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
     });
     return {
       cancelled: false as const,
-      result: { orderId: Number(cur.id), invoiceId, invoiceNumber, partyId: input.partyId, total },
+      result: {
+        orderId: Number(cur.id),
+        invoiceId,
+        invoiceNumber,
+        consignmentId: dispatchRes.consignmentId,
+        consignmentNumber: dispatchRes.consignmentNumber,
+        partyId: input.partyId,
+        total,
+      },
     };
   });
 

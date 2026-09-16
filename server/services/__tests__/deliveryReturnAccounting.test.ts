@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchInvoiceToDelivery, returnConsignment } from "../deliveryService";
+import { createPrintSale } from "../printSaleService";
 import { truncateTables } from "./__testUtils__";
 
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
@@ -342,5 +343,59 @@ describe("delivery return — accounting mirrors", () => {
     const journal = await journalForSource(Number(entry.id));
     expect(journal.head.status).toBe("POSTED");
     expect(journal.lines.some((line) => line.role === "TAX_PAYABLE" && line.debit === "1000.00")).toBe(true);
+  });
+
+  /**
+   * رافدا خصمِ المخزون كلاهما (تدقيق ١/٩/٢٦، commit 2cab0e01): كل حالةٍ أعلاه تعيد بناء
+   * حركة OUT الأصليّة بـ`referenceType:"INVOICE"` يدوياً — فلا واحدةٌ منها كانت لتفشل لو
+   * ضاق `inArray(referenceType, ["INVOICE","PRINT_SALE"])` في delivery/returns.ts رجوعاً إلى
+   * قيمةٍ واحدة. هذه الحالة تمرّ فعلياً عبر `createPrintSale` (بيع كاشير الطباعة يَسِم
+   * حركته `PRINT_SALE`، ليس `INVOICE`) — كما يحدث حرفياً حين تكون فاتورة طباعةٍ بلا بيعٍ
+   * عاديٍّ مرافق هي «حاملة» طلب توصيل عند الاستقبال (receptionCheckoutService.ts:513/560:
+   * carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId).
+   */
+  it("restocks a PRINT_SALE-tagged invoice (print/digital-card counter) on delivery return", async () => {
+    await db().insert(s.products).values({
+      id: 1,
+      name: "كروت شخصية جاهزة",
+      productType: "PRINT_SERVICE",
+      isService: false,
+    });
+    await db().insert(s.productVariants).values({ id: 1, productId: 1, sku: "PRINT-CARD-1", costPrice: "3000.00" });
+    await db().insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 5 });
+
+    // زبونٌ عابر بلا عميل مسجَّل + عهدة توصيل معلَّقة (مرآة receptionCheckoutService عند بيع
+    // طباعةٍ محضٍ للتوصيل) — يتفادى فحص حدّ الائتمان ويلزم shiftId فقط للدفع النقدي (لا دفع هنا).
+    const printSale = await createPrintSale({
+      branchId: 1,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "5000.00" }],
+      codDispatchPending: true,
+      clientRequestId: "print-return-carrier",
+    }, MANAGER);
+
+    expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(4);
+    const outMovement = (await db().select().from(s.inventoryMovements)
+      .where(eq(s.inventoryMovements.referenceId, printSale.invoiceId)))[0];
+    expect(outMovement.referenceType).toBe("PRINT_SALE");
+
+    const dispatched = await dispatchInvoiceToDelivery({
+      invoiceId: printSale.invoiceId,
+      partyId: 1,
+      deliveryFee: "0.00",
+      feeCollection: "COURIER",
+      clientRequestId: "dispatch-print-return-carrier",
+    }, MANAGER);
+
+    await returnConsignment(dispatched.consignmentId, { ...MANAGER, clientRequestId: "return-print-sale-carrier" });
+
+    // الثابتُ تحت الاختبار: حركة OUT المُوسَمة PRINT_SALE (لا INVOICE) وُجدت وعادت فعلياً.
+    expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(5);
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, printSale.invoiceId)))[0];
+    expect(Number(item.returnedBaseQuantity)).toBe(1);
+    expect(Number(item.returnedRestockedBaseQuantity)).toBe(1);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, printSale.invoiceId)))[0];
+    expect(inv.status).toBe("RETURNED");
+    expect(Number(inv.returnedTotal)).toBe(5000);
   });
 });

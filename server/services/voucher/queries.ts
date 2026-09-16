@@ -1,7 +1,7 @@
 // قراءات السندات: القائمة المفلترة، سند منفرد موسَّع، والسندات الأخيرة لنفس الطرف (تحذير الازدواج).
-import { and, desc, eq, gte, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { customers, exchangeHouses, exchangeTransactions, idempotencyKeys, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
+import { customers, deliveryParties, exchangeHouses, exchangeTransactions, idempotencyKeys, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../dateRange";
@@ -123,6 +123,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
   const creator = alias(users, "voucherListCreator");
   const partyCustomer = alias(customers, "voucherListCustomer");
   const partySupplier = alias(suppliers, "voucherListSupplier");
+  const partyDelivery = alias(deliveryParties, "voucherListDeliveryParty");
   // receiptId ليس فريداً بنيوياً في exchangeTransactions. join مباشر يضاعف السند ويشوّه
   // limit/offset عند وجود أكثر من حركة تاريخية مرتبطة به. نختار أحدث حركة لكل سند داخل
   // subquery مجمّع، فيبقى الاستعلام واحداً وصفٌ واحدٌ حتماً لكل receipt (بلا N+1).
@@ -139,7 +140,13 @@ export async function listVouchers(input: ListVouchersInput = {}) {
   if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
   if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
-  if (input.partyType) wheres.push(eq(receipts.partyType, input.partyType));
+  if (input.partyType === "DELIVERY_PARTY") {
+    wheres.push(eq(receipts.partyType, "OTHER"), isNotNull(receipts.partyId), isNotNull(partyDelivery.id));
+  } else if (input.partyType === "OTHER") {
+    wheres.push(eq(receipts.partyType, "OTHER"), or(isNull(receipts.partyId), isNull(partyDelivery.id)));
+  } else if (input.partyType) {
+    wheres.push(eq(receipts.partyType, input.partyType));
+  }
   if (input.partyId) wheres.push(eq(receipts.partyId, input.partyId));
   if (input.approvalStatus) wheres.push(eq(receipts.approvalStatus, input.approvalStatus));
   if (input.voucherCategoryId) wheres.push(eq(receipts.voucherCategoryId, input.voucherCategoryId));
@@ -156,6 +163,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       sql`coalesce(${creator.name}, ${creator.username}, '') LIKE ${like} ESCAPE '!'`,
       sql`coalesce(${partyCustomer.name}, '') LIKE ${like} ESCAPE '!'`,
       sql`coalesce(${partySupplier.name}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${partyDelivery.name}, '') LIKE ${like} ESCAPE '!'`,
     ));
   }
   if (input.from) wheres.push(gte(receipts.createdAt, localDayStart(input.from)));
@@ -186,6 +194,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       partyName: sql<string | null>`CASE
         WHEN ${receipts.partyType} = 'CUSTOMER' THEN ${partyCustomer.name}
         WHEN ${receipts.partyType} = 'SUPPLIER' THEN ${partySupplier.name}
+        WHEN ${receipts.partyType} = 'OTHER' AND ${partyDelivery.name} IS NOT NULL THEN ${partyDelivery.name}
         ELSE ${receipts.counterpartyName}
       END`,
       voucherDate: receipts.voucherDate,
@@ -208,6 +217,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
     .leftJoin(creator, eq(creator.id, receipts.createdBy))
     .leftJoin(partyCustomer, and(eq(receipts.partyType, "CUSTOMER"), eq(partyCustomer.id, receipts.partyId)))
     .leftJoin(partySupplier, and(eq(receipts.partyType, "SUPPLIER"), eq(partySupplier.id, receipts.partyId)))
+    .leftJoin(partyDelivery, and(eq(receipts.partyType, "OTHER"), eq(partyDelivery.id, receipts.partyId)))
     .leftJoin(latestExchangeTxn, eq(latestExchangeTxn.receiptId, receipts.id))
     .leftJoin(exchangeTransactions, eq(exchangeTransactions.id, latestExchangeTxn.transactionId))
     .leftJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
@@ -251,6 +261,9 @@ export async function getVoucher(receiptId: number) {
   } else if (r.partyType === "SUPPLIER" && r.partyId != null) {
     const s = (await db.select({ name: suppliers.name }).from(suppliers).where(eq(suppliers.id, Number(r.partyId))).limit(1))[0];
     partyName = s?.name ?? null;
+  } else if (((r.partyType as string) === "DELIVERY_PARTY" || (r.partyType === "OTHER" && r.internalNote?.startsWith("DELIVERY_PARTY:"))) && r.partyId != null) {
+    const dp = (await db.select({ name: deliveryParties.name }).from(deliveryParties).where(eq(deliveryParties.id, Number(r.partyId))).limit(1))[0];
+    partyName = dp?.name ?? r.counterpartyName ?? null;
   } else if (r.partyType === "OTHER") {
     partyName = r.counterpartyName ?? null;
   }
@@ -271,7 +284,7 @@ export async function getVoucher(receiptId: number) {
 
 /** يَجلب السندات الأخيرة لنفس الطرف خلال نافذة أيام محدّدة — للتحذير من الازدواج (دفعة مكرّرة).
  *  للسندات OTHER: يَستعمل counterpartyName نصّياً (LIKE مُطابق تماماً) — أرخص من ngram.
- *  لـCUSTOMER/SUPPLIER: يَستعمل partyId. */
+ *  لـCUSTOMER/SUPPLIER/DELIVERY_PARTY: يَستعمل partyId. */
 export async function recentVouchersForParty(opts: {
   partyType: PartyType;
   partyId?: number | null;
@@ -288,12 +301,17 @@ export async function recentVouchersForParty(opts: {
     isNotNull(receipts.voucherNumber),
     gte(receipts.createdAt, since),
     ne(receipts.status, "REVERSED"),
-    eq(receipts.partyType, opts.partyType),
   ];
-  if (opts.partyType === "OTHER") {
+  if (opts.partyType === "DELIVERY_PARTY") {
+    if (!opts.partyId) return [];
+    wheres.push(eq(receipts.partyType, "OTHER"));
+    wheres.push(eq(receipts.partyId, opts.partyId));
+  } else if (opts.partyType === "OTHER") {
+    wheres.push(eq(receipts.partyType, "OTHER"));
     if (!opts.counterpartyName?.trim()) return [];
     wheres.push(eq(receipts.counterpartyName, opts.counterpartyName.trim()));
   } else {
+    wheres.push(eq(receipts.partyType, opts.partyType));
     if (!opts.partyId) return [];
     wheres.push(eq(receipts.partyId, opts.partyId));
   }
@@ -315,3 +333,27 @@ export async function recentVouchersForParty(opts: {
     .orderBy(desc(receipts.id))
     .limit(opts.limit ?? 5);
 }
+
+/** قائمة جهات التوصيل النشطة للفرع (لسندات القبض والصرف). */
+export async function listVoucherDeliveryParties(opts?: { branchId?: number | null }) {
+  const db = getDb();
+  if (!db) return [];
+  const wheres: any[] = [eq(deliveryParties.isActive, true)];
+  if (opts?.branchId != null) {
+    wheres.push(or(isNull(deliveryParties.branchId), eq(deliveryParties.branchId, opts.branchId)));
+  }
+  return db
+    .select({
+      id: deliveryParties.id,
+      name: deliveryParties.name,
+      partyType: deliveryParties.partyType,
+      phone: deliveryParties.phone,
+      currentBalance: deliveryParties.currentBalance,
+      branchId: deliveryParties.branchId,
+      isActive: deliveryParties.isActive,
+    })
+    .from(deliveryParties)
+    .where(and(...wheres))
+    .orderBy(deliveryParties.name);
+}
+

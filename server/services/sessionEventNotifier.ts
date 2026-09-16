@@ -5,7 +5,7 @@ import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
 
 /**
- * ن-٢-د (٢٤/٨) — إشعارات الإدارة على أحداث الدخول/الخروج/إبطال الجلسة.
+ * إشعارات الإدارة الأمنية على إبطال الجلسة. لا تُعامَل مصادقة الحساب كحضورٍ أو انصراف.
  *
  * القاعدة الحاكمة:
  *   1) الحدث يصلُ كلَّ إداريٍّ له علاقةٌ إدارية بالحساب المُلاحظ:
@@ -15,8 +15,8 @@ import { requireDb } from "./tx";
  *   2) الحمولةُ عناوينُ بلا أسرار (اسم مختصر + جهاز + IP مقنّع + وقت). لا كوكي، لا توكن.
  *   3) idempotency: eventKey يعتمد على (kind + userId + occurredAt) لكيلا يتكرّر عند
  *      إعادةِ محاولةٍ خادميّة سببها timeout.
- *   4) fail-open: أيّ عطلٍ في هذا المسار لا يوقف تسجيل الدخول أو الخروج — يُلتقَط ويُهمَل.
- *      وظيفةُ المسار إفصاحٌ إدارية، لا حرسٌ أمنيّ حاجز.
+ *   4) fail-open: أيّ عطلٍ في هذا المسار لا يوقف عملية إدارة الجلسة — يُلتقَط ويُهمَل.
+ *      وظيفةُ المسار إفصاحٌ إداري، لا حرسٌ أمنيّ حاجز.
  */
 export type SessionEventKind = "LOGIN" | "LOGOUT" | "SESSION_REVOKED";
 
@@ -153,11 +153,13 @@ async function listAdminRecipients(input: SessionEventInput): Promise<number[]> 
 }
 
 /**
- * ينشر الإشعار لكلّ مستقبلٍ إداريّ محتمل. `fail-open`: أيّ خطأ يُلتقَط ويُهمَل — لا يوقف
- * تسجيل الدخول أو الخروج. لا نُنتظِر النتائج لأنّ mutations من نوع «صياح»؛ إنشاء الإشعار
- * لا يُدخل قفلاً على مسار المصادقة.
+ * ينشر إشعار إبطال الجلسة لكلّ مستقبلٍ إداريّ محتمل. تبقى قيمتا LOGIN وLOGOUT
+ * مقبولتين توافقياً لكنهما تُهمَلان كيلا تختلط مصادقة الحساب بحركة جهاز البصمة.
  */
 export async function notifyAdminsOfSessionEvent(input: SessionEventInput): Promise<void> {
+  // دخول الحساب وخروجه ليسا حضوراً أو انصرافاً وظيفياً. طلب المالك أن تكون الإشعارات
+  // المنبثقة مرتبطة بحركة جهاز البصمة فقط؛ يبقى إبطال الجلسة تنبيهاً أمنياً مشروعاً.
+  if (input.kind === "LOGIN" || input.kind === "LOGOUT") return;
   try {
     const recipients = await listAdminRecipients(input);
     if (recipients.length === 0) return;

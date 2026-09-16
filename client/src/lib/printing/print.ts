@@ -42,7 +42,16 @@ async function buildReceiptBytes(doc: PrintDoc): Promise<Uint8Array | null> {
  * أي فشل في مستوى أعلى يتدهّور بسلاسة للمستوى التالي ⇒ لا تُسقَط الطباعة أبداً.
  */
 export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
-  // ١) جسر الخادم (الأولوية حين يكون مفعّلاً).
+  // إعادة ربط صامتة تلقائية بالطابعة الحرارية المتصلة عبر WebUSB (Zadig WinUSB) إن لم تكن مربوطة في الذاكرة
+  if (!isPaired() && isWebUsbSupported()) {
+    try {
+      await tryReconnectPrinter();
+    } catch {
+      // safe fallback
+    }
+  }
+
+  // ١) جسر الخادم (الأولوية حين يكون مفعّلاً ومضبوطاً).
   if (await isServerBridgeEnabled()) {
     const bytes = await buildReceiptBytes(doc);
     if (bytes) {
@@ -50,13 +59,21 @@ export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
         await sendRawToServer(bytes);
         return { via: "server", ok: true };
       } catch (e) {
-        // فشل الجسر ⇒ تدهور سلس للبدائل (لا نُسقط الطباعة).
+        // فشل الجسر ⇒ تدهور سلس للبديل الحراري المباشر (لا نُسقط الطباعة).
         console.warn("[print] فشل جسر الخادم، نتراجع للبديل:", e);
       }
     }
   }
 
-  // ٢) WebUSB (طابعة USB حرارية مربوطة).
+  // ٢) WebUSB (طابعة USB حرارية مربوطة عبر Zadig WinUSB أو WebUSB مباشر).
+  if (!isPaired() && isWebUsbSupported()) {
+    try {
+      await tryReconnectPrinter();
+    } catch {
+      // safe fallback
+    }
+  }
+
   if (isPaired()) {
     const bytes = await buildReceiptBytes(doc);
     if (bytes) {
@@ -82,7 +99,10 @@ export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
  *  ١) جسر الخادم  ٢) WebUSB  ٣) نافذة المتصفّح (قالب الإيصال المُعلَّم نفسه).
  * التصميم واحد في المسارات الثلاثة ⇒ لا يتفاوت شكل الإيصال بتفاوت الناقل.
  */
-export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> {
+export async function printReceipt(
+  d: ReceiptBrowserData,
+  options: { openDrawer?: boolean } = {},
+): Promise<PrintResult> {
   // ش٢ (§١٠) — حارسٌ بنيويّ: قالب الإيصال لمستندٍ محاسبيّ حقيقيّ حصراً. حمولةٌ بلا رقمٍ، أو
   // برقم مسوّدة (DRF-)، تُنتج ورقةً لا يميّزها الزبون عن إيصال دفعٍ فعليّ — تُطبَع المسوّدة
   // بقالبها المنفصل (printDraftTicket) الذي يعلن «غير محاسَبة» ويُمنع فيه سطرا مدفوع/الفكّة.
@@ -90,11 +110,9 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> 
   if (!num || num.startsWith("DRF-")) {
     throw new Error("قالب الإيصال يرفض حمولةً بلا رقم مستندٍ حقيقيّ — مسوّدة الطلب تُطبَع بقالب المسوّدة");
   }
-  // Restore a previously-authorized USB receipt printer at the point of use.
-  // Printing can be triggered from screens that do not own the POS reconnect
-  // effect, and a printer may have been unplugged and reconnected meanwhile.
-  const bridgeEnabled = await isServerBridgeEnabled();
-  if (!bridgeEnabled && !isPaired() && isWebUsbSupported()) {
+
+  // إعادة ربط صامتة مسبقة لضمان جاهزية الطابعة الحرارية المتصلة عبر WebUSB (Zadig WinUSB)
+  if (!isPaired() && isWebUsbSupported()) {
     try {
       await tryReconnectPrinter();
     } catch {
@@ -102,17 +120,28 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> 
     }
   }
 
+  const bridgeEnabled = await isServerBridgeEnabled();
+
   // النقطية تُبنى مرة واحدة لمساري الطباعة الصامتة (الجسر/WebUSB).
   if (bridgeEnabled || isPaired()) {
     const raster = await receiptToRaster(d);
     if (raster) {
-      const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
+      const command = new EscPos().init().raster(raster).feed(3).cut();
+      if (options.openDrawer !== false) command.openDrawer();
+      const bytes = command.bytes();
       if (bridgeEnabled) {
         try {
           await sendRawToServer(bytes);
           return { via: "server", ok: true };
         } catch (e) {
           console.warn("[print] فشل جسر الخادم، نتراجع للبديل:", e);
+        }
+      }
+      if (!isPaired() && isWebUsbSupported()) {
+        try {
+          await tryReconnectPrinter();
+        } catch {
+          // safe fallback
         }
       }
       if (isPaired()) {
@@ -129,6 +158,36 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> 
   return printBrowserReceipt(d)
     ? { via: "browser", ok: true }
     : { via: "browser", ok: false, reason: "popup-blocked" };
+}
+
+/**
+ * فتح درج النقود يدوياً عبر إرسال نبضة ESC/POS لطابعة الإيصالات الحرارية.
+ */
+export async function openCashDrawer(): Promise<{ ok: boolean; via?: "thermal" | "server" }> {
+  if (!isPaired() && isWebUsbSupported()) {
+    try { await tryReconnectPrinter(); } catch { /* ignore */ }
+  }
+  const bytes = new EscPos().init().openDrawer().bytes();
+  if (await isServerBridgeEnabled()) {
+    try {
+      await sendRawToServer(bytes);
+      return { ok: true, via: "server" };
+    } catch (e) {
+      console.warn("[drawer] فشل فتح الدرج عبر جسر الخادم:", e);
+    }
+  }
+  if (!isPaired() && isWebUsbSupported()) {
+    try { await tryReconnectPrinter(); } catch { /* ignore */ }
+  }
+  if (isPaired()) {
+    try {
+      await sendBytes(bytes);
+      return { ok: true, via: "thermal" };
+    } catch (e) {
+      console.warn("[drawer] فشل فتح الدرج عبر WebUSB:", e);
+    }
+  }
+  return { ok: false };
 }
 
 /**

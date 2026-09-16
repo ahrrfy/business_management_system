@@ -1,5 +1,6 @@
 // إنشاء مستند إنتاج: يستهلك المدخلات ويُنتج المخرجات ذرّياً + يُحدّث كلفة المخرجات (بلا قيد محاسبي).
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import { branchStock, productVariants, products, productionLines, productionOrders } from "../../../drizzle/schema";
@@ -151,14 +152,38 @@ async function resolveAndValidateLines(
     spoilage = plan.spoilage;
     linkedRecipeId = input.run.recipeId;
   } else {
-    if (!input.inputs?.length) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد مدخلاً واحداً على الأقل" });
-    if (!input.outputs?.length) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد مخرجاً واحداً على الأقل" });
+    if (!input.inputs?.length)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن ترحيل أمر إنتاج",
+          why: "قائمة المدخلات فارغة — الإنتاج يلزمه مادة خام واحدة على الأقل",
+          doThis: "أضف مدخلاً واحداً على الأقل من زر «إضافة مدخل»، أو اختر تشغيلاً بوصفة جاهزة",
+        }),
+      });
+    if (!input.outputs?.length)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن ترحيل أمر إنتاج",
+          why: "قائمة المخرجات فارغة — الإنتاج يلزمه منتج نهائي واحد على الأقل",
+          doThis: "أضف مخرجاً واحداً على الأقل من زر «إضافة مخرج»، أو اختر تشغيلاً بوصفة جاهزة",
+        }),
+      });
     inLines = [];
     for (const l of input.inputs) inLines.push(await resolveLine(tx, l));
     outLines = [];
     for (const l of input.outputs) outLines.push(await resolveLine(tx, l));
     laborCost = round2(money(input.laborCost ?? "0"));
-    if (laborCost.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمالة لا يمكن أن تكون سالبة" });
+    if (laborCost.isNegative())
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "قيمة العمالة غير صالحة",
+          why: `تكلفة العمالة يجب أن تكون صفراً أو موجباً (السالب يعني «عمالة تخصم»، لا معنى محاسبياً له)`,
+          doThis: "أدخل قيمة عمالة موجبة أو صفراً في حقل «تكلفة العمالة»",
+        }),
+      });
   }
 
   // التحويل الذاتي ممنوع دائماً: السماح به مع تكلفة تشغيل/عمالة كان يتيح رفع WAVG لنفس الصنف
@@ -166,7 +191,14 @@ async function resolveAndValidateLines(
   const inVarIds = new Set(inLines.map((l) => l.variantId));
   for (const o of outLines) {
     if (inVarIds.has(o.variantId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "صنف لا يكون مدخلاً ومخرجاً في آنٍ واحد (يُفسد حساب التكلفة)" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تحويلٌ ذاتي ممنوع",
+          why: "الصنف نفسه لا يكون مدخلاً ومخرجاً في أمر إنتاج واحد — التحويل الذاتي يرفع WAVG بلا تغيّر كمّي ولا مصدر قيمة",
+          doThis: "اقسم العملية إلى أمرين مستقلّين، أو استعمل «تحويل بين فروع» إن كان القصد نقلاً لا إنتاجاً",
+        }),
+      });
     }
   }
 
@@ -174,17 +206,38 @@ async function resolveAndValidateLines(
   const manualShares = outLines.filter((l) => l.manualSharePct != null);
   if (manualShares.length > 0) {
     if (manualShares.length !== outLines.length) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "إمّا توزيع يدوي لكل المخرجات أو تناسبي للكل (لا خلط)" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "توزيع تكلفة المخرجات غير متّسق",
+          why: "بعض المخرجات لها نسبة يدوية والباقي بلا نسبة — لا يجوز خلط الأسلوبين على أمرٍ واحد",
+          doThis: "إمّا حدّد نسبة يدوية لكل مخرج (مجموعها 100%)، أو احذف كل النسب لتوزيع تناسبي بحسب الكميات",
+        }),
+      });
     }
     for (const l of manualShares) {
       const pct = money(l.manualSharePct ?? "0");
       if (pct.lt(0) || pct.gt(100)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة توزيع تكلفة كل مخرج يجب أن تكون بين 0% و100%" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "نسبة توزيع تكلفة غير صالحة",
+            why: `نسبة توزيع كل مخرج يجب أن تكون بين 0% و100%، والقيمة المرسلة (${pct.toFixed(2)}%) خارج النطاق`,
+            doThis: "أصلح النسبة إلى قيمة بين 0 و100، أو احذفها لاستعمال التوزيع التناسبي",
+          }),
+        });
       }
     }
     const sumPct = manualShares.reduce((sum, l) => sum.plus(money(l.manualSharePct ?? "0")), new Decimal(0));
     if (sumPct.minus(100).abs().gt("0.01")) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مجموع نسب التوزيع اليدوي يجب أن يساوي 100%" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مجموع نسب التوزيع لا يساوي 100%",
+          why: `مجموع نسب المخرجات ${sumPct.toFixed(2)}% — لا 100% كما تشترط قسمة التكلفة الكاملة`,
+          doThis: `عدّل النسب حتى يصير مجموعها 100%، أو احذفها كلّها لاستعمال التوزيع التناسبي`,
+        }),
+      });
     }
   }
 
@@ -194,11 +247,35 @@ async function resolveAndValidateLines(
     .from(productVariants).innerJoin(products, eq(products.id, productVariants.productId)).where(inArray(productVariants.id, allVarIds));
   const existSet = new Set(existing.map((v: any) => Number(v.id)));
   for (const id of allVarIds) {
-    if (!existSet.has(id)) throw new TRPCError({ code: "NOT_FOUND", message: `صنف #${id} غير موجود` });
+    if (!existSet.has(id))
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: `تعذّر العثور على الصنف #${id}`,
+          why: "المعرّف يشير إلى متغيّر منتج محذوف أو غير موجود",
+          doThis: "أعد اختيار الصنف من قائمة المنتجات (قد يكون حُذف أو دُمج)",
+        }),
+      });
   }
   for (const variant of existing) {
-    if (variant.isService) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُرحّل المنتج الخدمي ضمن إنتاج مخزني؛ تُستهلك وصفته عند بيع الخدمة" });
-    if (variant.isBundle) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُرحّل المنتج البكج ضمن إنتاج مخزني؛ حرّك مكوّناته بدلًا منه" });
+    if (variant.isService)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن ترحيل منتج خدمي ضمن أمر إنتاج",
+          why: "المنتج الخدمي لا يُخزَّن — وصفته تُستهلك تلقائياً لحظة بيع الخدمة (طباعة/عمالة/…)",
+          doThis: "احذف المنتج الخدمي من قائمة المدخلات/المخرجات، أو استعمله من فاتورة الخدمة",
+        }),
+      });
+    if (variant.isBundle)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن ترحيل منتج بكج ضمن أمر إنتاج",
+          why: "البكج تجميعٌ لمكوّنات موجودة (لا يُصنَع ولا يُخزَّن ذاته) — الحركة تكون على المكوّنات لا عليه",
+          doThis: "أدرج مكوّنات البكج بدلاً منه في المدخلات/المخرجات، أو استعمله من فاتورة البيع مباشرةً",
+        }),
+      });
   }
 
   return { inLines, outLines, laborCost, spoilage, linkedRecipeId };
@@ -262,24 +339,53 @@ async function produceOutputs(
 ): Promise<void> {
   outLines.sort((a, b) => a.variantId - b.variantId);
   const totalOutBase = outLines.reduce((s, l) => s + l.baseQuantity, 0);
-  if (totalOutBase <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية المخرجات يجب أن تكون موجبة" });
+  if (totalOutBase <= 0)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "كمية المخرجات غير صالحة",
+        why: "مجموع كميات المخرجات صفر أو أقلّ — أمر إنتاجٍ بلا وحدة ناتجة لا يمكن أن يوزّع تكلفةً",
+        doThis: "أدخل كمية موجبة لكل مخرج، وتحقّق من صحة وحدات القياس المستعملة",
+      }),
+    });
 
   // توزيع يدوي: كلّه أو لا شيء، بمجموع ≈ 100.
   const manualCount = outLines.filter((l) => l.manualSharePct != null).length;
   const useManual = manualCount > 0;
   if (useManual && manualCount !== outLines.length) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "إمّا توزيع يدوي لكل المخرجات أو تناسبي للكل (لا خلط)" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "توزيع تكلفة المخرجات غير متّسق",
+        why: `بعض المخرجات (${manualCount} من ${outLines.length}) لها نسبة يدوية والباقي بلا نسبة — لا يجوز خلط الأسلوبين`,
+        doThis: "إمّا حدّد نسبة يدوية لكل مخرج (مجموعها 100%)، أو احذف كل النسب لتوزيع تناسبي بحسب الكميات",
+      }),
+    });
   }
   if (useManual) {
     for (const l of outLines) {
       const pct = money(l.manualSharePct ?? "0");
       if (pct.lt(0) || pct.gt(100)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة توزيع تكلفة كل مخرج يجب أن تكون بين 0% و100%" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "نسبة توزيع تكلفة غير صالحة",
+            why: `نسبة توزيع كل مخرج يجب أن تكون بين 0% و100%، والقيمة المرسلة (${pct.toFixed(2)}%) خارج النطاق`,
+            doThis: "أصلح النسبة إلى قيمة بين 0 و100، أو احذفها لاستعمال التوزيع التناسبي",
+          }),
+        });
       }
     }
     const sumPct = outLines.reduce((s, l) => s.plus(money(l.manualSharePct ?? "0")), new Decimal(0));
     if (sumPct.minus(100).abs().gt("0.01")) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مجموع نسب التوزيع اليدوي يجب أن يساوي 100%" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مجموع نسب التوزيع لا يساوي 100%",
+          why: `مجموع نسب المخرجات ${sumPct.toFixed(2)}% — لا 100% كما تشترط قسمة التكلفة الكاملة`,
+          doThis: `عدّل النسب حتى يصير مجموعها 100%، أو احذفها كلّها لاستعمال التوزيع التناسبي`,
+        }),
+      });
     }
   }
 

@@ -23,6 +23,8 @@ import {
   type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
 import { sql } from "drizzle-orm";
+import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql";
+import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
 
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
@@ -962,6 +964,7 @@ export const productUnits = mysqlTable(
       .default("1")
       .notNull(),
     barcode: varchar("barcode", { length: 64 }).unique(),
+    barcodeNormalized: barcodeIdentityColumn("barcodeNormalized").generatedAlwaysAs(sql.raw(barcodeIdentitySql("`barcode`")), { mode: "stored" }),
     isBaseUnit: boolean("isBaseUnit").default(false).notNull(),
     // قناة البيع مستقلة عن وحدة المخزون: قد يكون الأساس «ورقة» بينما المتجر يبيع «بند/كارتون».
     isStoreSaleUnit: boolean("isStoreSaleUnit").default(false).notNull(),
@@ -971,6 +974,7 @@ export const productUnits = mysqlTable(
   (table) => ({
     variantIdx: index("idx_unit_variant").on(table.variantId),
     barcodeIdx: index("idx_unit_barcode").on(table.barcode),
+    barcodeNormalizedIdx: index("idx_unit_barcode_normalized").on(table.barcodeNormalized),
   }),
 );
 
@@ -988,6 +992,7 @@ export const productUnitBarcodes = mysqlTable(
       .notNull()
       .references(() => productUnits.id, { onDelete: "cascade" }),
     barcode: varchar("barcode", { length: 64 }).notNull(),
+    barcodeNormalized: barcodeIdentityColumn("barcodeNormalized").generatedAlwaysAs(sql.raw(barcodeIdentitySql("`barcode`")), { mode: "stored" }),
     note: varchar("note", { length: 255 }),
     // `users.id` هو INT — يجب أن يطابق الـFK عمود الأب حرفياً وإلا فشل db:push بـERR 3780.
     createdBy: int("createdBy").references(() => users.id, {
@@ -997,6 +1002,7 @@ export const productUnitBarcodes = mysqlTable(
   },
   (table) => ({
     barcodeUq: unique("uq_unit_barcode_alias").on(table.barcode),
+    barcodeNormalizedIdx: index("idx_alias_barcode_normalized").on(table.barcodeNormalized, table.productUnitId),
     unitIdx: index("idx_alias_unit").on(table.productUnitId),
   }),
 );
@@ -1647,6 +1653,49 @@ export const stockTransferLines = mysqlTable(
 
 export type StockTransferLine = typeof stockTransferLines.$inferSelect;
 
+/**
+ * لقطة مكوّنات البكج وقت إرسال التحويل.
+ *
+ * سطر السند يبقى بكجاً واحداً في التشغيل والمطابقة، بينما حركات المخزون تُكتب على مكوّناته
+ * الفعلية. اللقطة غير قابلة للتعديل بعد الإرسال، لذلك لا يغيّر تعديل وصفة البكج لاحقاً ما خرج
+ * من المصدر أو ما يجب أن يدخل الوجهة/يعود عند الإلغاء.
+ */
+export const stockTransferLineBundleComponents = mysqlTable(
+  "stockTransferLineBundleComponents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    transferLineId: bigint("transferLineId", { mode: "number" }).notNull(),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull(),
+    /** كمية المكوّن بالوحدة الأساس لكل بكج واحد. */
+    componentBaseQuantity: int("componentBaseQuantity").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    componentIdx: index("idx_stlbc_component").on(table.componentVariantId),
+    lineComponentUq: unique("uq_stlbc_line_component").on(
+      table.transferLineId,
+      table.componentVariantId,
+    ),
+    quantityCheck: check(
+      "chk_stlbc_qty",
+      sql`${table.componentBaseQuantity} > 0`,
+    ),
+    lineFk: foreignKey({
+      columns: [table.transferLineId],
+      foreignColumns: [stockTransferLines.id],
+      name: "fk_stlbc_line",
+    }).onDelete("cascade"),
+    componentFk: foreignKey({
+      columns: [table.componentVariantId],
+      foreignColumns: [productVariants.id],
+      name: "fk_stlbc_component",
+    }).onDelete("restrict"),
+  }),
+);
+
+export type StockTransferLineBundleComponent =
+  typeof stockTransferLineBundleComponents.$inferSelect;
+
 /* ============================ ورديات الكاشير ============================ */
 
 export const shifts = mysqlTable(
@@ -1995,7 +2044,7 @@ export const invoiceItems = mysqlTable(
     // المدفوعة» يبقى سارياً، والهدية خارج وعاء العمولة تلقائياً (الوعاء يفلتر SALE/RETURN).
     isGift: boolean("isGift").default(false).notNull(),
     // product-content-governance (0251): الاسم الذي طُبع/اعتمد لحظة البيع، لا يتغير مع تحديث الكتالوج.
-    itemNameSnapshot: varchar("itemNameSnapshot", { length: 255 }),
+    itemNameSnapshot: varchar("itemNameSnapshot", { length: 512 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -2218,6 +2267,8 @@ export const couponPrograms = mysqlTable(
     validTo: date("validTo"),
     perCouponLimit: int("perCouponLimit").default(1).notNull(),
     perCustomerLimit: int("perCustomerLimit").default(1).notNull(),
+    /** برنامج اختياري يطلبه العميل الموثق قبل أول طلب متجر؛ لا يصدر تلقائياً. */
+    isFirstOrderSelfService: boolean("isFirstOrderSelfService").default(false).notNull(),
     codePrefix: varchar("codePrefix", { length: 12 }).default("CRM").notNull(),
     // لقطة تصميم قابلة للإصدار؛ تغيير القالب لاحقاً لا يغيّر بطاقة سبق إصدارها.
     designJson: json("designJson"),
@@ -2319,6 +2370,32 @@ export const couponRedemptions = mysqlTable(
 export type CouponProgram = typeof couponPrograms.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;
 export type CouponRedemption = typeof couponRedemptions.$inferSelect;
+
+/** قفل دائمي لطلب كوبون أول طلب: برنامج واحد × عميل واحد، حتى مع الضغط المتزامن. */
+export const storefrontFirstOrderCouponClaims = mysqlTable(
+  "storefrontFirstOrderCouponClaims",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    programId: bigint("programId", { mode: "number" })
+      .notNull()
+      .references(() => couponPrograms.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    couponId: bigint("couponId", { mode: "number" }).references(
+      () => coupons.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    programCustomerUq: unique("uq_store_first_coupon_program_customer").on(
+      table.programId,
+      table.customerId,
+    ),
+    couponUq: unique("uq_store_first_coupon_claim_coupon").on(table.couponId),
+  }),
+);
 
 /* ============================ متجر العملاء — الولاء والنقاط ============================ */
 
@@ -2507,6 +2584,8 @@ export const quotationItems = mysqlTable(
     quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
+    /** سعر الكتالوج عند إصدار العرض؛ يميز التفاوض اليدوي عن تغيّر الكتالوج لاحقاً. */
+    catalogUnitPrice: decimal("catalogUnitPrice", { precision: 15, scale: 2 }),
     discountAmount: decimal("discountAmount", {
       precision: 15,
       scale: 2,
@@ -2859,7 +2938,7 @@ export const cashMissedDailyCountExceptions = mysqlTable(
       sql`(
         (${table.status} = 'PENDING' AND ${table.version} = 1 AND ${table.decisionClientRequestId} IS NULL AND ${table.decisionHash} IS NULL AND ${table.reviewedByUserId} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionNote} IS NULL)
         OR
-        (${table.status} IN ('APPROVED','REJECTED') AND ${table.version} = 2 AND ${table.decisionClientRequestId} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.reviewedByUserId} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionNote} IS NOT NULL AND ${table.reviewedByUserId} <> ${table.requestedByUserId})
+        (${table.status} IN ('APPROVED','REJECTED') AND ${table.version} = 2 AND ${table.decisionClientRequestId} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.reviewedByUserId} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionNote} IS NOT NULL)
       )`,
     ),
   }),
@@ -4634,6 +4713,13 @@ export const productImageJobs = mysqlTable(
     /** لحظةُ تسليم المهمة لمنفّذ. زمنُ الدورة يُقاس منها لا من الإنشاء: مهامُ الحملة
         تُولَد بالآلاف في لحظةٍ واحدة، فقياسُها من الإنشاء يُبلّغ عمرَ الطابور لا زمنَ العمل. */
     assignedAt: timestamp("assignedAt"),
+    /** لا يكتب المصوّر في المهمة إلا بعد أن يؤكد الخادم مسح باركود المنتج المطابق. */
+    barcodeVerifiedBy: int("barcodeVerifiedBy").references(() => users.id),
+    barcodeVerifiedAt: timestamp("barcodeVerifiedAt"),
+    /** هوية من أعدّ محتوى الكتالوج للمهمة؛ حذف الحساب لا يمحو دليل الصلاحية وقت الكتابة. */
+    contentPreparedBy: int("contentPreparedBy").references(() => users.id, { onDelete: "set null" }),
+    /** صلاحية ثابتة تُكتب بعد تحقق الخادم من دور المدير، ولا يعاد استنتاجها من دورٍ قابل للتغيير. */
+    contentPreparedByManager: boolean("contentPreparedByManager").notNull().default(false),
     reviewedBy: int("reviewedBy").references(() => users.id),
     /** فتحة فريدة للمهمة النشطة: 1 أثناء العمل، NULL بعد الإغلاق؛ تمنع مهمتين لمنتج واحد. */
     activeSlot: tinyint("activeSlot"),
@@ -5041,7 +5127,8 @@ export const purchaseOrderControlRequests = mysqlTable(
       OR (${table.status} = 'APPROVED' AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NOT NULL AND ${table.pendingGuard} IS NULL)
       OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NULL)
     )`),
-    makerChecker: check("chk_po_control_maker_checker", sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`),
+    // `chk_po_control_maker_checker` أُسقط بالهجرة 0336؛ التطبيق يتحقق من المالك
+    // النشط قبل السماح بالاعتماد الذاتي، ويبقي الفصل لغيره.
   }),
 );
 
@@ -5175,7 +5262,10 @@ export const purchaseRequisitionControlRequests = mysqlTable(
       OR (${table.status} = 'APPROVED' AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NOT NULL AND ${table.pendingGuard} IS NULL)
       OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NULL)
     )`),
-    makerChecker: check("chk_purchase_req_control_maker_checker", sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`),
+    // ⭐ قرار المالك (٤/٩/٢٦): توسيع «لا اعتماد ثانٍ بعد المالك» — قيدُ maker-checker
+    // السابق (`chk_purchase_req_control_maker_checker`) أُسقط بالهجرة 0334. راجع
+    // [[owner-decision-no-second-approval]] والتعليق الموازي على الجداول الستّة
+    // الأولى (هجرة 0333).
   }),
 );
 
@@ -5412,10 +5502,8 @@ export const goodsReceiptReversalRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_grn_reversal_request_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٤/٩/٢٦): توسيع «لا اعتماد ثانٍ بعد المالك» — قيدُ maker-checker
+    // السابق (`chk_grn_reversal_request_maker_checker`) أُسقط بالهجرة 0334.
   }),
 );
 
@@ -6087,10 +6175,8 @@ export const supplierInvoiceApprovalRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_supplier_invoice_approval_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٤/٩/٢٦): توسيع «لا اعتماد ثانٍ بعد المالك» — قيدُ maker-checker
+    // السابق (`chk_supplier_invoice_approval_maker_checker`) أُسقط بالهجرة 0334.
   }),
 );
 
@@ -6390,10 +6476,9 @@ export const purchaseReturnRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_return_request_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_purchase_return_request_maker_checker`) أُسقط بالهجرة 0333؛ التطبيقُ وحده
+    // يفرض الآن «معتمِدٌ نشطٌ isOwner» (لا يمكن للقيد أن يقرأ isOwner من جدولٍ آخر).
   }),
 );
 
@@ -6542,10 +6627,9 @@ export const purchaseReturnReversalRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_return_reversal_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_purchase_return_reversal_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker` أعلاه.
   }),
 );
 
@@ -6842,10 +6926,9 @@ export const supplierPaymentRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_supplier_payment_request_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_supplier_payment_request_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker`.
   }),
 );
 
@@ -7128,10 +7211,9 @@ export const supplierPaymentRefundRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_supplier_payment_refund_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_supplier_payment_refund_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker`.
   }),
 );
 
@@ -7478,10 +7560,9 @@ export const purchaseChargeControlRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_charge_control_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_purchase_charge_control_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker`.
   }),
 );
 
@@ -7633,10 +7714,8 @@ export const purchaseIntegrityCases = mysqlTable(
         OR (${table.status} IN ('RESOLVED','DISMISSED') AND ${table.pendingResolutionGuard} IS NULL AND ${table.resolutionRequestKey} IS NOT NULL AND ${table.resolutionRequestHash} IS NOT NULL AND ${table.resolutionRequestedBy} IS NOT NULL AND ${table.resolutionRequestedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.resolutionDecision} IN ('APPROVE_RESOLVED','APPROVE_DISMISSED') AND ${table.resolvedBy} IS NOT NULL AND ${table.resolvedAt} IS NOT NULL AND ${table.decisionReason} IS NOT NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_integrity_resolution_sod",
-      sql`${table.resolvedBy} IS NULL OR ${table.resolvedBy} <> ${table.resolutionRequestedBy}`,
-    ),
+    // `chk_purchase_integrity_resolution_sod` أُسقط بالهجرة 0336 للسماح للمالك
+    // النشط بحسم طلبه عبر مسار القرار القانوني نفسه.
   }),
 );
 
@@ -7703,10 +7782,8 @@ export const purchaseIntegrityCaseEvents = mysqlTable(
       table.branchId,
       table.eventType,
     ),
-    makerChecker: check(
-      "chk_purchase_integrity_event_sod",
-      sql`${table.eventType} NOT IN ('RESOLUTION_APPROVED','DISMISSED') OR (${table.counterpartyActorId} IS NOT NULL AND ${table.counterpartyActorId} <> ${table.actorId})`,
-    ),
+    // `chk_purchase_integrity_event_sod` أُسقط بالهجرة 0336؛ سلطة الاستثناء
+    // تُحسم من users داخل الخدمة ولا يمكن تمثيلها في CHECK أحادي الجدول.
     actorShape: check(
       "chk_purchase_integrity_event_actor",
       sql`(${table.actorType} = 'USER' AND ${table.actorId} IS NOT NULL) OR (${table.actorType} = 'SYSTEM' AND ${table.actorId} IS NULL AND ${table.eventType} IN ('OPENED','EVIDENCE_ADDED'))`,
@@ -7782,6 +7859,23 @@ export const onlineOrders = mysqlTable(
     // كوبون المتجر المحقق خادمياً؛ يُستهلك عند إصدار الفاتورة الحقيقية.
     couponCode: varchar("couponCode", { length: 64 }),
     couponDiscount: decimal("couponDiscount", { precision: 15, scale: 2 }).default("0").notNull(),
+    // لقطة منفعة التسعير الوحيدة التي اختارها الخادم (جملة أو عرض أو كوبون، بلا تراكب).
+    // لا تُشتق من أسعار اليوم حتى يبقى طلب PENDING قابلاً للتدقيق بعد تغيير حملة أو سعر.
+    pricingBenefitType: mysqlEnum("pricingBenefitType", [
+      "NONE",
+      "WHOLESALE",
+      "OFFER",
+      "COUPON",
+    ])
+      .default("NONE")
+      .notNull(),
+    pricingBenefitLabel: varchar("pricingBenefitLabel", { length: 160 }),
+    pricingBenefitDiscount: decimal("pricingBenefitDiscount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     // جهة التوصيل المُسنَد إليها الطلب عند الإرسال (مندوب داخلي/شركة) — تغذّي شاشة المندوب (ش٥). هجرة 0067.
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     // سبب الإلغاء — يملؤه المندوب عند «تعذّر التسليم» (رفض الزبون/عنوان خاطئ...) ليراه الموظّف. هجرة 0069.
@@ -7897,6 +7991,122 @@ export const onlineOrderItems = mysqlTable(
 
 export type OnlineOrderItem = typeof onlineOrderItems.$inferSelect;
 export type InsertOnlineOrderItem = typeof onlineOrderItems.$inferInsert;
+
+/**
+ * طلب عرض سعر من المتجر: استفسار مبيعات فقط، لا يحجز مخزوناً ولا يثبت سعراً ولا يصدر فاتورة.
+ * يحوّله الموظف بعد المراجعة إلى quotations الرسمي المستقل عندما يتفق مع العميل.
+ */
+export const storefrontQuoteRequests = mysqlTable(
+  "storefrontQuoteRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestNumber: varchar("requestNumber", { length: 50 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    customerId: bigint("customerId", { mode: "number" }).references(
+      () => customers.id,
+      { onDelete: "set null" },
+    ),
+    requestType: mysqlEnum("requestType", [
+      "BULK",
+      "CUSTOM_PRINT",
+      "BUSINESS",
+      "GENERAL",
+    ]).notNull(),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "CONTACTED",
+      "QUOTED",
+      "CLOSED",
+      "CANCELLED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    companyName: varchar("companyName", { length: 255 }),
+    governorate: varchar("governorate", { length: 40 }),
+    contactPreference: mysqlEnum("contactPreference", [
+      "PHONE",
+      "WHATSAPP",
+    ])
+      .default("WHATSAPP")
+      .notNull(),
+    customerNote: text("customerNote").notNull(),
+    staffNote: text("staffNote"),
+    /** العرض الرسمي الصادر بعد مراجعة الموظف؛ الطلب نفسه لا يحمل سعراً أو أثراً مالياً. */
+    officialQuotationId: bigint("officialQuotationId", { mode: "number" }).references(
+      () => quotations.id,
+    ),
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
+    // صلاحية ضيف قصيرة العمر لتتبع طلب العرض من دون جعل رقم SRQ قابلاً للاستكشاف.
+    guestTrackingPublicId: char("guestTrackingPublicId", { length: 32 }),
+    guestTrackingTokenHash: char("guestTrackingTokenHash", { length: 64 }),
+    guestTrackingExpiresAt: timestamp("guestTrackingExpiresAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    requestNumberUq: unique("uq_store_quote_request_number").on(
+      table.requestNumber,
+    ),
+    branchStatusCreatedIdx: index("idx_store_quote_request_branch_status_created").on(
+      table.branchId,
+      table.status,
+      table.createdAt,
+    ),
+    customerCreatedIdx: index("idx_store_quote_request_customer_created").on(
+      table.customerId,
+      table.createdAt,
+    ),
+    officialQuotationUq: unique("uq_store_quote_request_official_quotation").on(
+      table.officialQuotationId,
+    ),
+    clientRequestUq: unique("uq_store_quote_request_client_request").on(
+      table.clientRequestId,
+    ),
+    guestTrackingPublicIdUq: unique("uq_store_quote_request_guest_tracking_public_id").on(
+      table.guestTrackingPublicId,
+    ),
+    guestTrackingTokenHashUq: unique("uq_store_quote_request_guest_tracking_hash").on(
+      table.guestTrackingTokenHash,
+    ),
+  }),
+);
+
+export type StorefrontQuoteRequest = typeof storefrontQuoteRequests.$inferSelect;
+export type InsertStorefrontQuoteRequest =
+  typeof storefrontQuoteRequests.$inferInsert;
+
+/** لقطة طلب العميل حتى لو تغيّر الكتالوج أو حُذفت وحدة البيع لاحقاً. */
+export const storefrontQuoteRequestItems = mysqlTable(
+  "storefrontQuoteRequestItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    quoteRequestId: bigint("quoteRequestId", { mode: "number" }).notNull(),
+    productUnitId: bigint("productUnitId", { mode: "number" }),
+    productName: varchar("productName", { length: 255 }).notNull(),
+    variantLabel: varchar("variantLabel", { length: 255 }),
+    unitName: varchar("unitName", { length: 40 }).notNull(),
+    quantity: int("quantity").notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    requestIdx: index("idx_store_quote_request_item_request").on(
+      table.quoteRequestId,
+    ),
+    requestFk: foreignKey({
+      columns: [table.quoteRequestId],
+      foreignColumns: [storefrontQuoteRequests.id],
+      name: "fk_store_quote_request_item_request",
+    }).onDelete("cascade"),
+  }),
+);
+
+export type StorefrontQuoteRequestItem =
+  typeof storefrontQuoteRequestItems.$inferSelect;
+export type InsertStorefrontQuoteRequestItem =
+  typeof storefrontQuoteRequestItems.$inferInsert;
 
 /** مراجعة المنتج من عميل استلم طلباً يحتويه؛ تبقى معلّقة إلى اعتماد المتجر. */
 export const storefrontProductReviews = mysqlTable(
@@ -8334,7 +8544,14 @@ export const idempotencyKeys = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     operation: varchar("operation", { length: 40 }).notNull(), // مثل "sale.pay" / "sale.return" / "purchase.receive"
-    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    /**
+     * ١٢٠ لا ٦٤ (هجرة 0328، ٣/٩/٢٦): عقودُ الراوترات والخدمات تقبل المفتاح حتى ١٢٠ محرفاً
+     * (`decisionKey`/`requestKey` `.max(120)`، وأعمدة goodsReceipts/supplierInvoices/purchaseCharges
+     * ١٢٠) بينما كان هذا العمود وحده ٦٤ ⇒ مفتاحُ قرار الشاشة
+     * `purchase-decision-PURCHASE_ORDER-<id>-approve-<uuid>` (~٨٠) يمرّ كلَّ الطبقات ثمّ يسقط هنا
+     * بـER_DATA_TOO_LONG فيُرفض اعتمادُ فاتورة الشراء ورفضُها معاً على الإنتاج.
+     */
+    clientRequestId: varchar("clientRequestId", { length: 120 }).notNull(),
     refId: bigint("refId", { mode: "number" }).notNull(), // المعرّف الناتج (إيصال/استرداد/استلام)
     // hash الحمولة القانونيّ (sha256، #٥): يكشف «نفس المفتاح بحمولةٍ مختلفة» ⇒ CONFLICT. nullable
     // للتوافق الخلفيّ (صفوف/مسارات بلا hash تبقى تُعيد refId المخزّن كالسابق).
@@ -9689,10 +9906,8 @@ export const accrualCorrectionRequests = mysqlTable(
         (${t.status} = 'REJECTED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND CHAR_LENGTH(TRIM(${t.rejectionReason})) > 0)
       )`,
     ),
-    makerCheckerCheck: check(
-      "chk_accrual_correction_maker_checker",
-      sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`,
-    ),
+    // `chk_accrual_correction_maker_checker` أُسقط بالهجرة 0336؛ الخدمة وحدها
+    // تسمح بالتطابق للمالك النشط.
     refundShapeCheck: check(
       "chk_accrual_correction_refund_shape",
       sql`(
@@ -10085,10 +10300,9 @@ export const payrollRemittanceRequests = mysqlTable(
       "chk_payroll_remittance_positive_amount",
       sql`${t.requestedAmount} > 0`,
     ),
-    makerChecker: check(
-      "chk_payroll_remittance_maker_checker",
-      sql`${t.approvedBy} IS NULL OR ${t.approvedBy} <> ${t.createdBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_payroll_remittance_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق الموازي
+    // على `chk_purchase_return_request_maker_checker`.
   }),
 );
 export type PayrollRemittanceRequest =
@@ -10591,6 +10805,8 @@ export const jobApplicants = mysqlTable(
     email: varchar("email", { length: 120 }),
     experience: varchar("experience", { length: 120 }),
     education: varchar("education", { length: 200 }),
+    residentialAddress: varchar("residentialAddress", { length: 300 }),
+    portfolioUrl: varchar("portfolioUrl", { length: 500 }),
     // 0018: DB-level CHECK (rating BETWEEN 0 AND 5، يسمح بـNULL) أُضيف في migration 0018.
     rating: int("rating").default(0),
     notes: text("notes"),
@@ -11096,10 +11312,8 @@ export const employeeTerminations = mysqlTable(
       "chk_term_evidence_attested",
       sql`${t.zeroAmountsAttested} = 1 AND CHAR_LENGTH(TRIM(${t.settlementEvidenceNote})) >= 10`,
     ),
-    recognitionMakerChecker: check(
-      "chk_term_recognition_maker_checker",
-      sql`${t.recognizedBy} IS NULL OR ${t.createdBy} IS NULL OR ${t.recognizedBy} <> ${t.createdBy}`,
-    ),
+    // `chk_term_recognition_maker_checker` أُسقط بالهجرة 0336 كي يستطيع المالك
+    // إكمال الإنهاء الذي أنشأه، بعد تحقق الخدمة من نشاطه وملكيته.
     recognitionLifecycle: check(
       "chk_term_recognition_lifecycle",
       sql`(
@@ -12420,6 +12634,12 @@ export const deliveryConsignments = mysqlTable(
     cancelledBy: int("cancelledBy").references(() => users.id),
     returnedAt: timestamp("returnedAt"),
     notes: text("notes"),
+    /**
+     * رقم التتبع / المرجع الخارجي لشركة التوصيل — اختياريّ.
+     * يُدخَل عند الإرسال أو لاحقاً من قِبَل الكاشير أو المدير.
+     * يظهر في: مسار الطلب، شاشة المندوب، بوليصة الشحن.
+     */
+    externalTrackingRef: varchar("externalTrackingRef", { length: 100 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -12728,10 +12948,8 @@ export const workOrderControlRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_wo_control_maker_checker",
-      sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`,
-    ),
+    // `chk_wo_control_maker_checker` أُسقط بالهجرة 0336؛ اعتماد المالك الذاتي
+    // محروس في الخدمة، وبقية الفاعلين يبقون تحت فصل المهام.
   }),
 );
 
@@ -13355,6 +13573,82 @@ export const nativePushDevices = mysqlTable(
 );
 export type NativePushDevice = typeof nativePushDevices.$inferSelect;
 export type InsertNativePushDevice = typeof nativePushDevices.$inferInsert;
+
+/**
+ * أجهزة Expo الخاصة بسوبر العربية فقط. لا نعيد استخدام جدول Android الأصلي ولا
+ * جدول متجر العملاء: الأول يحمل Firebase Installation ID والثاني هوية عميل
+ * المتجر، بينما هذا الجدول يربط Expo Push Token المشفّر بمفتاح إثبات جهاز موظف.
+ */
+export const superAppExpoPushDevices = mysqlTable(
+  "superAppExpoPushDevices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: char("tokenHash", { length: 64 }).notNull().unique(),
+    tokenCiphertext: text("tokenCiphertext").notNull(),
+    devicePublicKeyHash: char("devicePublicKeyHash", { length: 64 }).notNull(),
+    platform: mysqlEnum("platform", ["ANDROID", "IOS"]).notNull(),
+    environment: mysqlEnum("environment", ["dev", "staging", "prod"]).notNull(),
+    appVersion: varchar("appVersion", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+    revokedAt: timestamp("revokedAt"),
+  },
+  (table) => ({
+    userActiveIdx: index("idx_superapp_expo_push_user_active").on(
+      table.userId,
+      table.revokedAt,
+      table.environment,
+    ),
+    deviceOwnerIdx: index("idx_superapp_expo_push_device_owner").on(
+      table.userId,
+      table.devicePublicKeyHash,
+      table.revokedAt,
+    ),
+  }),
+);
+export type SuperAppExpoPushDevice = typeof superAppExpoPushDevices.$inferSelect;
+
+/**
+ * صندوق مستقل لتطبيق الموظفين. حمولة القفل هنا لا تتضمن راتباً أو حضوراً أو
+ * اسماً أو معرّف عمل؛ تفاصيل الحدث لا تقرأ إلا بعد فتح جلسة Expo الموثقة.
+ */
+export const superAppExpoPushOutbox = mysqlTable(
+  "superAppExpoPushOutbox",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    eventKey: varchar("eventKey", { length: 190 }).notNull().unique(),
+    payload: json("payload").notNull(),
+    environment: mysqlEnum("environment", ["dev", "staging", "prod"]).notNull(),
+    status: mysqlEnum("status", ["PENDING", "PROCESSING", "RETRY", "SENT", "DEAD"])
+      .default("PENDING")
+      .notNull(),
+    attemptCount: int("attemptCount").default(0).notNull(),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    lockedAt: timestamp("lockedAt"),
+    completedAt: timestamp("completedAt"),
+    lastError: varchar("lastError", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    dueIdx: index("idx_superapp_expo_push_outbox_due").on(
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    userCreatedIdx: index("idx_superapp_expo_push_outbox_user_created").on(
+      table.userId,
+      table.createdAt,
+    ),
+  }),
+);
+export type SuperAppExpoPushOutboxRow = typeof superAppExpoPushOutbox.$inferSelect;
 
 /** أجهزة عملاء متجر العملاء: رمز Expo Push مشفر، ومعرّفه التجزئي فقط للفهرسة ومنع التكرار. لا يرتبط
  * برقم هاتف؛ الربط الاختياري بالعميل يتم بعد تحقق Firebase في طبقة هوية منفصلة. */
@@ -15463,6 +15757,7 @@ export const digitalSaleIntents = mysqlTable(
       .default("PREPARED")
       .notNull(),
     cartFingerprint: varchar("cartFingerprint", { length: 64 }).notNull(),
+    checkoutSnapshot: json("checkoutSnapshot").$type<DigitalCheckoutSnapshot>(),
     paymentMethod: varchar("paymentMethod", { length: 20 }).notNull(),
     /** محاولة قبض الزبون بالبطاقة، مستقلة عن مرجع إصدار الكرت لدى مزوّد البطاقات. */
     externalPaymentAttemptId: bigint("externalPaymentAttemptId", {
@@ -15541,6 +15836,10 @@ export const digitalSaleIntentItems = mysqlTable(
       .notNull()
       .references(() => digitalSaleIntents.id),
     lineKey: varchar("lineKey", { length: 64 }).notNull(),
+    /** NULL for legacy single-card operations; one key per provider basket. */
+    providerBasketKey: varchar("providerBasketKey", { length: 64 }),
+    /** Only the owner retains the globally unique provider reference claim. */
+    referenceOwnerItemId: bigint("referenceOwnerItemId", { mode: "number" }),
     offeringId: bigint("offeringId", { mode: "number" })
       .notNull()
       .references(() => digitalOfferings.id),
@@ -15585,6 +15884,12 @@ export const digitalSaleIntentItems = mysqlTable(
   },
   (t) => ({
     intentLineUq: unique("uq_dsii_intent_line").on(t.intentId, t.lineKey),
+    basketOwnerTargetUq: unique("uq_dsii_basket_owner_target").on(t.intentId, t.providerId, t.providerBasketKey, t.id),
+    basketOwnerFk: foreignKey({
+      columns: [t.intentId, t.providerId, t.providerBasketKey, t.referenceOwnerItemId],
+      foreignColumns: [t.intentId, t.providerId, t.providerBasketKey, t.id],
+      name: "fk_dsii_basket_owner",
+    }),
     offeringIdx: index("idx_dsii_offering").on(t.offeringId),
     fkPv: foreignKey({
       columns: [t.priceVersionId],
@@ -16492,10 +16797,8 @@ export const yearEndReopenRequests = mysqlTable(
       "chk_yerr_identity",
       sql`${t.year} BETWEEN 2020 AND 2100 AND CHAR_LENGTH(TRIM(${t.reason})) >= 10 AND CHAR_LENGTH(${t.requestPayloadHash}) = 64`,
     ),
-    makerCheckerCheck: check(
-      "chk_yerr_maker_checker",
-      sql`${t.decidedBy} IS NULL OR ${t.decidedBy} <> ${t.requestedBy}`,
-    ),
+    // `chk_yerr_maker_checker` أُسقط بالهجرة 0336 للسماح بطلب المالك وحسمه
+    // في العملية نفسها بعد التحقق من حسابه في قاعدة البيانات.
     lifecycleCheck: check(
       "chk_yerr_lifecycle",
       sql`(
@@ -16914,9 +17217,8 @@ export const salesControlRequests = mysqlTable(
       OR (${t.status} = 'APPROVED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
       OR (${t.status} IN ('REJECTED','STALE','WITHDRAWN') AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
-    // السحبُ وحده يُستثنى: الساحبُ هو الطالبُ بالتعريف. ويبقى القيد مُلزِماً على
-    // APPROVED/REJECTED حيث يعني رقابةً فعليّة (هجرة 0326).
-    makerChecker: check("chk_sales_control_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.status} = 'WITHDRAWN' OR ${t.reviewedBy} <> ${t.requestedBy}`),
+    // `chk_sales_control_maker_checker` أُسقط بالهجرة 0336؛ التطبيق يستثني المالك
+    // النشط فقط ويبقي فصل المهام على الموظفين.
   }),
 );
 export type SalesControlRequest = typeof salesControlRequests.$inferSelect;
@@ -16954,7 +17256,7 @@ export const salesExchangeCommands = mysqlTable(
       columns: [t.controlRequestId],
       foreignColumns: [salesControlRequests.id],
     }),
-    makerChecker: check("chk_sales_exchange_maker_checker", sql`${t.requestedBy} <> ${t.approvedBy}`),
+    // `chk_sales_exchange_maker_checker` أُسقط بالهجرة 0336 لنفس عقد طلب البيع الأم.
     deltaNonnegative: check("chk_sales_exchange_delta_nonnegative", sql`${t.deltaAmount} >= 0`),
     invoiceDistinct: check("chk_sales_exchange_invoice_distinct", sql`${t.originalInvoiceId} <> ${t.replacementInvoiceId}`),
   }),
@@ -17011,7 +17313,7 @@ export const deliveryCodWriteOffRequests = mysqlTable(
       OR (${t.status} = 'APPROVED' AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
       OR (${t.status} IN ('REJECTED','STALE') AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
-    makerChecker: check("chk_delivery_cod_writeoff_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+    // `chk_delivery_cod_writeoff_maker_checker` أُسقط بالهجرة 0336؛ الحارس الخادمي باقٍ لغير المالك.
   }),
 );
 export type DeliveryCodWriteOffRequest = typeof deliveryCodWriteOffRequests.$inferSelect;
@@ -17053,8 +17355,230 @@ export const commissionRunApprovalRequests = mysqlTable(
       OR (${t.status} = 'APPROVED' AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
       OR (${t.status} IN ('REJECTED','STALE') AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
-    makerChecker: check("chk_commission_run_approval_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+    // `chk_commission_run_approval_maker_checker` أُسقط بالهجرة 0336؛ الحارس الخادمي باقٍ لغير المالك.
   }),
 );
 export type CommissionRunApprovalRequest = typeof commissionRunApprovalRequests.$inferSelect;
 export type InsertCommissionRunApprovalRequest = typeof commissionRunApprovalRequests.$inferInsert;
+
+/**
+ * ═══ documentEffects — سجلّ الأثر المستنديّ (القانون ق٧، هجرة 0329) ═══
+ *
+ * جدولٌ إلحاقيّ يوثّق كلّ أثرٍ ماليٍّ (مخزون/قيد/رصيد/عهدة/…) نُفّذ في مستندٍ ما.
+ * المحرّك `server/services/reversalEngine.ts` يقرأ صفوف `phase=APPLY` ويكتب صفوف
+ * `phase=REVERSE` مقابلة في **نفس المعاملة** التي تعكس المستند، وثابته المحروس:
+ *   Σ signedAmount   لكل (documentType,documentId,effectKind) = 0 بعد العكس الكامل.
+ *   Σ signedQuantity لكل (documentType,documentId,effectKind) = 0 بعد العكس الكامل.
+ *
+ * ⚠️ لا FK جامدة على الجداول المُتأثّرة (effectTable/effectRowId مرجعيّان بلا قيدٍ
+ * ضامن) كي لا يُبطل الحذفُ الرجعيّ السجلَّ ولا يُقيّد الاندماج التدريجيّ مع خدماتٍ لا
+ * تعرفه بعد.
+ */
+export const documentEffects = mysqlTable(
+  "documentEffects",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    documentType: varchar("documentType", { length: 40 }).notNull(),
+    documentId: bigint("documentId", { mode: "number" }).notNull(),
+    effectKind: mysqlEnum("effectKind", [
+      "INVENTORY",
+      "LEDGER_ENTRY",
+      "CUSTOMER_BALANCE",
+      "SUPPLIER_BALANCE",
+      "DELIVERY_CUSTODY",
+      "PAID_AMOUNT",
+      "COMMISSION",
+      "DEPOSIT",
+      "COUPON",
+      "GIFT",
+      "INSTALLMENT",
+      "CARD",
+      "CONSIGNMENT",
+      "ROUNDING",
+      "OFFLINE",
+    ]).notNull(),
+    phase: mysqlEnum("phase", ["APPLY", "REVERSE"]).notNull(),
+    effectTable: varchar("effectTable", { length: 64 }),
+    effectRowId: bigint("effectRowId", { mode: "number" }),
+    signedAmount: decimal("signedAmount", { precision: 15, scale: 4 })
+      .default("0")
+      .notNull(),
+    signedQuantity: int("signedQuantity").default(0).notNull(),
+    branchId: bigint("branchId", { mode: "number" }),
+    actorUserId: int("actorUserId"),
+    reversalOfEffectId: bigint("reversalOfEffectId", { mode: "number" }),
+    reason: varchar("reason", { length: 200 }),
+    scope: varchar("scope", { length: 40 }),
+    payloadJson: json("payloadJson"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    reversalFk: foreignKey({
+      columns: [t.reversalOfEffectId],
+      foreignColumns: [t.id],
+      name: "fk_document_effects_reversal_of",
+    }),
+    docIdx: index("idx_document_effects_doc").on(t.documentType, t.documentId),
+    docKindIdx: index("idx_document_effects_doc_kind").on(
+      t.documentType,
+      t.documentId,
+      t.effectKind,
+    ),
+    reversalIdx: index("idx_document_effects_reversal_of").on(
+      t.reversalOfEffectId,
+    ),
+    createdIdx: index("idx_document_effects_created").on(t.createdAt),
+    reversalShape: check(
+      "chk_document_effects_reversal_shape",
+      sql`(${t.phase} = 'APPLY' AND ${t.reversalOfEffectId} IS NULL)
+           OR (${t.phase} = 'REVERSE' AND ${t.reversalOfEffectId} IS NOT NULL)`,
+    ),
+  }),
+);
+
+export type DocumentEffect = typeof documentEffects.$inferSelect;
+export type InsertDocumentEffect = typeof documentEffects.$inferInsert;
+
+/**
+ * ═══ recordVersions — اللقطة والاستعادة (م٦ ق٨، هجرة 0330) ═══
+ *
+ * **المبدأ الحاكم:** لا لقطة ⇒ لا تعديل. كل تعديلٍ لكيانٍ مرجعيٍّ (منتج/عميل/…) يُنشئ صفَّ
+ * لقطةٍ داخل نفس المعاملة، يحمل الحمولةَ الكاملة قبل التعديل. الاستعادةُ = تعديلٌ جديدٌ
+ * يحمل حمولةَ إصدارٍ قديمٍ ويمرّ بكلّ حرّاس التعديل — لا كتابةٌ خامٌّ للجدول الأصل.
+ *
+ * ⚠️ بلا FK جامدة: الجدول polymorphic (`entityType`+`entityId`)، وحذفُ الطرف الأمّ يجب
+ * ألّا يُقيّده سجلّ التاريخ. الفهارس تكفي للاستعلامات الحاكمة.
+ *
+ * ⛔ الخدمة `versioning/recordVersion.ts` **لا تكتب** إلّا داخل `Tx`، وتفشل مغلقةً بلا
+ * سبب — انظر عقدها هناك.
+ */
+export const recordVersions = mysqlTable(
+  "recordVersions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    entityType: varchar("entityType", { length: 50 }).notNull(),
+    entityId: bigint("entityId", { mode: "number" }).notNull(),
+    versionNumber: int("versionNumber").notNull(),
+    payloadJson: json("payloadJson").notNull(),
+    reason: varchar("reason", { length: 500 }),
+    actorUserId: bigint("actorUserId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    uniqEntityVersion: unique("uniq_entity_version").on(
+      t.entityType,
+      t.entityId,
+      t.versionNumber,
+    ),
+    entityHistoryIdx: index("idx_entity_history").on(
+      t.entityType,
+      t.entityId,
+      t.createdAt,
+    ),
+    actorIdx: index("idx_actor").on(t.actorUserId, t.createdAt),
+  }),
+);
+
+export type RecordVersion = typeof recordVersions.$inferSelect;
+export type InsertRecordVersion = typeof recordVersions.$inferInsert;
+
+/* ════════════════════ controlRequests — الجدول الحوكميّ الموحّد (م٧، 0331) ════════════════════
+ *
+ * جدولٌ واحد لكلّ طلبات القرار في النظام، مفتاحه `decisionKey` من
+ * [`shared/decisionRegistry.ts`](../shared/decisionRegistry.ts). يحلّ محلَّ ٣٠ جدول «طلب
+ * اعتماد» متشظّية تدريجياً في موجاتٍ لاحقة.
+ *
+ * **فرضٌ بنيويّ لطلبٍ نشطٍ واحد لكل (قرار، كيان):** العمود المولَّد `activeSlot`
+ * (STORED) يحمل بصمة `(decisionKey, entityType, entityId)` حين `PENDING` فقط، وNULL
+ * بعد القرار. `UNIQUE(activeSlot)` يمنع الازدواج بلا حدود على المحسومة.
+ *
+ * ⛔ الخدمة `controlRequests/index.ts` **لا تقرأ `ctx`** — تستقبل `Actor` صريحاً (§٥
+ * من `CLAUDE.md`)، وتفشل مغلقةً بلا سبب أو خارج معاملة.
+ */
+export const controlRequests = mysqlTable(
+  "controlRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** مفتاحُ القرار — من `DECISION_REGISTRY`. مثال `purchases.approve`. */
+    decisionKey: varchar("decisionKey", { length: 80 }).notNull(),
+    /** نوعُ الكيان الذي يقع عليه القرار (`purchaseOrder`, `invoice`, `stocktakeSession`, …). */
+    entityType: varchar("entityType", { length: 50 }).notNull(),
+    /** معرّفُ الكيان في جدوله الأصلي. بلا FK جامدة — polymorphic. */
+    entityId: bigint("entityId", { mode: "number" }).notNull(),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "APPROVED",
+      "REJECTED",
+      "WITHDRAWN",
+      "SUPERSEDED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    requestedByUserId: bigint("requestedByUserId", { mode: "number" }).notNull(),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    decidedByUserId: bigint("decidedByUserId", { mode: "number" }),
+    decidedAt: timestamp("decidedAt"),
+    /** سببُ الطلب. **إلزاميّ** (CHECK صمام على مسار الرفض؛ الخدمة تفرضه في كل مسار). */
+    reason: varchar("reason", { length: 1000 }).notNull(),
+    /** ملاحظةُ القرار. إلزاميّة على `REJECTED` بـCHECK؛ اختيارية على `APPROVED`/`WITHDRAWN`. */
+    decisionNote: varchar("decisionNote", { length: 1000 }),
+    /** حمولةُ سياقٍ (مبلغ، أرقام، تفاصيل يعرضها المُقرِّر). */
+    payloadJson: json("payloadJson"),
+    branchId: bigint("branchId", { mode: "number" }),
+    /** بصمةُ الطلب النشط: `(decisionKey \t entityType \t entityId)` حين PENDING فقط. */
+    activeSlot: varchar("activeSlot", { length: 200 }).generatedAlwaysAs(
+      sql`(CASE WHEN status = 'PENDING' THEN CONCAT(decisionKey, '\t', entityType, '\t', CAST(entityId AS CHAR)) ELSE NULL END)`,
+      { mode: "stored" },
+    ),
+  },
+  (t) => ({
+    activeSlotUq: unique("uniq_active_control_request").on(t.activeSlot),
+    pendingByKindIdx: index("idx_control_request_pending_by_kind").on(
+      t.decisionKey,
+      t.status,
+      t.requestedAt,
+    ),
+    byEntityIdx: index("idx_control_request_by_entity").on(
+      t.entityType,
+      t.entityId,
+      t.requestedAt,
+    ),
+    byRequesterIdx: index("idx_control_request_by_requester").on(
+      t.requestedByUserId,
+      t.requestedAt,
+    ),
+    byDeciderIdx: index("idx_control_request_by_decider").on(
+      t.decidedByUserId,
+      t.decidedAt,
+    ),
+    /**
+     * شكلُ الحقول حسب الحالة:
+     *   PENDING     ⇒ لا مُقرِّر ولا وقت قرار ولا ملاحظة.
+     *   APPROVED/REJECTED/SUPERSEDED ⇒ مُقرِّر ووقت قرار (والملاحظة على REJECTED بحارسٍ منفصل).
+     *   WITHDRAWN   ⇒ وقت قرار موجود (لحظة السحب)؛ المُقرِّر يبقى NULL بحكم التعريف
+     *                 (الساحبُ هو الطالبُ، وهو ما يستثنيه Maker-Checker).
+     */
+    decisionShape: check(
+      "chk_control_request_decision_shape",
+      sql`(
+        (${t.status} = 'PENDING' AND ${t.decidedByUserId} IS NULL AND ${t.decidedAt} IS NULL AND ${t.decisionNote} IS NULL)
+        OR (${t.status} IN ('APPROVED','REJECTED','SUPERSEDED') AND ${t.decidedByUserId} IS NOT NULL AND ${t.decidedAt} IS NOT NULL)
+        OR (${t.status} = 'WITHDRAWN' AND ${t.decidedAt} IS NOT NULL)
+      )`,
+    ),
+    /** فصلُ المهام: المُقرِّر ليس المُنشئ. يُستثنى `WITHDRAWN` (الساحب = الطالب بالتعريف). */
+    makerChecker: check(
+      "chk_control_request_maker_checker",
+      sql`${t.decidedByUserId} IS NULL OR ${t.status} = 'WITHDRAWN' OR ${t.decidedByUserId} <> ${t.requestedByUserId}`,
+    ),
+    /** الرفضُ يلزمه ملاحظةٌ نصّية (تُعرض للطالب فيفهم لماذا رُفض ويصحّح). */
+    rejectNeedsNote: check(
+      "chk_control_request_reject_needs_note",
+      sql`${t.status} <> 'REJECTED' OR (${t.decisionNote} IS NOT NULL AND CHAR_LENGTH(TRIM(${t.decisionNote})) > 0)`,
+    ),
+  }),
+);
+
+export type ControlRequest = typeof controlRequests.$inferSelect;
+export type InsertControlRequest = typeof controlRequests.$inferInsert;

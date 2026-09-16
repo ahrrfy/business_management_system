@@ -10,6 +10,12 @@ import { normalizeSearchText } from "@shared/searchNormalize";
 import { stripDocPrefix } from "@shared/documentNumber";
 import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus,
 } from "@shared/invoiceStatus";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
+import { nextActionTerminalReason } from "@shared/nextAction";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { appErrorMessage } from "@shared/errors";
+import { deriveInvoiceNextAction } from "../services/nextActionDerivation";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
 import {
@@ -25,6 +31,7 @@ import {
   productVariants,
   products,
   receipts,
+  salesControlRequests,
   shifts,
   workOrders,
 } from "../../drizzle/schema";
@@ -40,7 +47,7 @@ import { requestSalesControl } from "../services/sale/controlRequests";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
 import { registerCounterCollectionTx } from "../services/delivery/counterCollection";
 import { randomUUID } from "node:crypto";
-import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope,
+import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesCorrectionProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope,
 } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -50,14 +57,19 @@ import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternal
 } from "../services/posExternalPayment";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
+import { lookupInvoiceForCorrection } from "../services/sale/correctionLookup";
 
 // فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
 // الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
 // الأصلي أيضاً، من دون توسيع كشف فواتير الموظفين الآخرين.
 const workOrderInvoiceCustomer = alias(customers, "workOrderInvoiceCustomer");
+const onlineOrderCustomer = alias(customers, "onlineOrderCustomer");
 // ١٠/٨ — توصيل قناة المتجر: طلب المتجر بلا إرسالية (عهدته عند تأكيد المندوب) — بدونه كانت
 // فاتورة متجرٍ بيد مندوب تظهر «بلا توصيل» في القائمة والفلتر. جهة الطلب لها alias مستقل.
 const onlineDeliveryParty = alias(deliveryParties, "onlineDeliveryParty");
+const correctionRequester = alias(users, "invoiceCorrectionRequester");
+const correctionReviewer = alias(users, "invoiceCorrectionReviewer");
+const correctionOriginalInvoice = alias(invoices, "invoiceCorrectionOriginal");
 // حالة توصيل موحَّدة للعرض/الفلتر: الإرسالية أولاً، وإلا اشتقاق من حالة طلب المتجر المُسنَد.
 const unifiedConsignmentStatus = sql<string | null>`COALESCE(${deliveryConsignments.status},
   CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN
@@ -67,6 +79,22 @@ const unifiedConsignmentStatus = sql<string | null>`COALESCE(${deliveryConsignme
       WHEN 'CANCELLED' THEN CASE WHEN ${onlineOrders.cancelReason} IS NOT NULL THEN 'RETURNED' END
     END
   END)`;
+
+/**
+ * مسند «الرصيد المفتوح» على `invoices` بوضع `COLLECTIBLE` (المقصوص) — مصدرٌ واحدٌ لفروع
+ * `balanceState` الأربعة بدل إعادة كتابة `total − paidAmount − returnedTotal` في كلٍّ منها.
+ * كانت مكتوبةً بيدٍ أربع مرّاتٍ في دالّةٍ واحدة، ثلاثٌ متطابقةٌ والرابع ناقصُ طرفٍ — وهو
+ * بالضبط نوعُ الاختلاف الذي لا يراه أحدٌ حتى ينحرف.
+ * (كائنُ `SQL` غيرُ قابلٍ للتغيير فيصحّ تشاركُه بين الاستعلامات — نظير `unifiedConsignmentStatus`.)
+ */
+const INVOICE_OPEN_BALANCE = openBalanceExpr(
+  {
+    total: invoices.total,
+    paidAmount: invoices.paidAmount,
+    returnedTotal: invoices.returnedTotal,
+  },
+  "COLLECTIBLE",
+);
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -154,7 +182,7 @@ export async function verifyManagerApproval(
   }
   // SOD-03 (فصل المهام): لا يجوز للمستخدم اعتماد عمليته بنفسه (كاشير بدور مدير يُدخل بيانات نفسه).
   // كان غياب الفحص يُتيح للمدير-الكاشير تجاوز حدّ الائتمان على بيعه ذاتياً بلا حسيب.
-  if (Number(u.id) === Number(ctx.user.id)) {
+  if (Number(u.id) === Number(ctx.user.id) && u.isOwner !== true) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.fail",
       entityType: "user",
@@ -362,23 +390,35 @@ export function buildSalesListConds(
         ? isNull(invoices.paymentMethod)
         : eq(invoices.paymentMethod, input.paymentMethod),
     );
+  // أربعةُ فروعٍ كانت تكتب المسند بيدها؛ صارت تستهلك `INVOICE_OPEN_BALANCE` (وضع `COLLECTIBLE`)
+  // لأنّ سؤال الفروع الأربعة واحد: «كم يصحّ أن نطالب به الآن؟».
+  // ⚠️ القصُّ لا يغيّر أيّ صفٍّ هنا لأنّ المقارنة تليه مباشرةً: `GREATEST(x,0) > 0 ≡ x > 0`
+  // و`GREATEST(x,0) <= 0 ≡ x <= 0` — التوحيد شكليٌّ لا سلوكيّ، مقصودٌ أن يبقى كذلك.
   if (input?.balanceState === "DEPOSIT_DUE") {
     conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
     conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`,
-    );
+    // ⚠️ هذا الفرعُ وحدَه **بلا** `notInArray(status, DEAD_INVOICE_STATUSES)` بينما إخوته
+    // الثلاثة يحملونه. لم يُضَف هنا عمداً: إضافتُه تغييرُ سلوكٍ (صفوفٌ تختفي من فلتر «عربونٌ
+    // مستحقّ تكملته») يقرّره المالك لا توحيدُ مسند.
+    // والفجوةُ **أضيقُ ممّا تبدو**: الشرطان أعلاه (`paidAmount > 0` و«المسند > 0») يُسقطان
+    // `SUPERSEDED` حتماً (`sale/correct.ts` يُصفّر `paidAmount` و`returnedTotal` معاً)
+    // ويُسقطان `RETURNED` (المسند يصير سالبَ المقبوض). و`sale/cancel.ts` يرفع `returnedTotal`
+    // إلى ما تبقّى من قيمة البيع فيصير المسند سالباً أيضاً — فما يعبر فعلاً حالاتٌ حافّة
+    // لا مسارٌ شائع. راجع جرد الانحراف (ب) في `openBalance.ts`.
+    conds.push(sql`${INVOICE_OPEN_BALANCE} > 0`);
   } else if (input?.balanceState === "OUTSTANDING") {
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`,
-    );
+    conds.push(sql`${INVOICE_OPEN_BALANCE} > 0`);
     conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   } else if (input?.balanceState === "UNPAID") {
+    // كان المسند هنا ناقصَ طرفٍ (`total − returnedTotal` بلا `− paidAmount`) ومكافئاً حسابياً
+    // **فقط** لاقترانه بشرط `paidAmount = 0` في السطر الذي قبله. المكافأةُ هشّة: من يحذف الشرط
+    // أو يعيد ترتيب السطرين يكسر المعنى بلا أن يلمس المسند. المسندُ الكامل يُغني عن الاقتران —
+    // وبما أنّ `CAST(paidAmount) = 0` مضمونٌ في نفس الـ`AND`، الرقمُ الناتج لم يتغيّر.
     conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) = 0`);
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`,
-    );
+    conds.push(sql`${INVOICE_OPEN_BALANCE} > 0`);
     conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   } else if (input?.balanceState === "SETTLED") {
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) <= 0`,
-    );
+    conds.push(sql`${INVOICE_OPEN_BALANCE} <= 0`);
     conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
@@ -428,8 +468,19 @@ export function buildSalesListConds(
 }
 
 export const saleRouter = router({
+  /** مسحٌ تشغيليّ سريع لبدء التعديل من الاستقبال؛ التنفيذ النهائي يعيد الحراس تحت الأقفال. */
+  lookupForCorrection: salesCorrectionProcedure
+    .input(z.object({ invoiceNumber: z.string().trim().min(1).max(80) }))
+    .query(({ input, ctx }) => lookupInvoiceForCorrection(input.invoiceNumber, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+      role: ctx.user.role,
+      scopedOwnerId: ctx.scopedOwnerId,
+      invoiceScope: ctx.invoiceCorrectionScope,
+    })),
+
   /** محاولة دفع خارجية مستقلة: INITIATED أولاً، بلا أثر على الفاتورة/الذمّة. */
-  initiateExternalPayment: salesCashierProcedure
+  initiateExternalPayment: salesCorrectionProcedure
     .input(z.object({
       branchId: z.number().int().positive(),
       method: externalMethod,
@@ -441,6 +492,16 @@ export const saleRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (ctx.invoiceCorrectionScope === "reception" && input.channel !== "SALES_COLLECTION") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر بدء عملية الدفع",
+            why: "محطة الاستقبال مخوّلة بفرق تعديل الفاتورة فقط",
+            doThis: "ابدأ التعديل من شاشة الاستقبال، أو استخدم نقطة البيع للعملية المستقلة",
+          }),
+        });
+      }
       const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
@@ -455,12 +516,22 @@ export const saleRouter = router({
     }),
 
   /** تأكيد خادمي مسجّل؛ البيع اللاحق يستهلك المحاولة مرةً واحدة داخل معاملته. */
-  confirmExternalPayment: salesCashierProcedure
+  confirmExternalPayment: salesCorrectionProcedure
     .input(z.object({ branchId: z.number().int().positive(), attemptId: z.number().int().positive(), deviceId: z.string().trim().min(1).max(64),
         channel: z.enum(["POS", "SALES_COLLECTION"]).default("POS"),
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (ctx.invoiceCorrectionScope === "reception" && input.channel !== "SALES_COLLECTION") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تأكيد عملية الدفع",
+            why: "محطة الاستقبال مخوّلة بفرق تعديل الفاتورة فقط",
+            doThis: "ارجع إلى شاشة تعديل الفاتورة، أو أكّد العملية المستقلة من نقطة البيع",
+          }),
+        });
+      }
       const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
@@ -492,6 +563,21 @@ export const saleRouter = router({
         // إفصاح التوصيل المجّاني (0152): يميّز «أُهديت أجرته» عن «بلا توصيل». بلا أثر ماليّ.
         deliveryFree: z.boolean().optional(),
         deliveryWaivedAmount: nonNegMoneyString.optional(),
+        // م١ (PR-1): إسنادُ البيع لجهة توصيل داخل معاملة البيع نفسها — نفس عقد
+        // `receptionCheckout.delivery` (workOrderRouter) + `governorate` للإسناد التلقائيّ بالمنطقة.
+        // وجودُه يجعل الفاتورة COD خادمياً: المتبقّي عهدةٌ على الجهة (`COD_ASSIGNED`) وسقفُ ائتمان
+        // العميل لا يُفحَص (المال يأتي مع المندوب — `server/lib/credit.ts`). مرفوضٌ من طابور الأوفلاين.
+        delivery: z.object({
+          partyId: z.number().int().positive(),
+          fee: nonNegMoneyString.nullish(),
+          feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+          recipientName: z.string().trim().max(255).nullish(),
+          recipientPhone: z.string().trim().max(32).nullish(),
+          address: z.string().trim().max(500).nullish(),
+          governorate: z.string().trim().max(40).nullish(),
+        }).nullish(),
+        // أجرة التوصيل المقبوضة الآن أمانةً للمندوب (COUNTER) — نقداً في الدرج حتماً، وتساوي `delivery.fee`.
+        deliveryFeeHeld: positiveMoneyString.nullish(),
         payment: z.object({
           amount: positiveMoneyString,
           method: posPaymentMethod,
@@ -540,6 +626,22 @@ export const saleRouter = router({
       // role إلزامي: خدمة البيع تفحص ملكية الوردية (SHIFT-OWN) وتُعفي admin/manager — بدونه يُحجب الجميع.
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role,
       };
+      // ⚠️ Codex #1006 P1 — حمولةُ `delivery` تُنشئ إرساليّةً وقيودَ عهدةٍ عبر `dispatchInvoiceInTx`،
+      // متجاوزةً بوّابةَ وحدة المتجر (`storeFulfillProcedure`) التي يمرّ بها `deliveryRouter.dispatchInvoice`.
+      // نفرض نفسَ القدرة خادمياً حين تكون `delivery` حاضرة: مَن مُنِع store:FULL لا يُنشئ إرساليّاتٍ من هذا الباب.
+      if (input.delivery != null) {
+        const override = (ctx.user as { permissionsOverride?: PermissionMap | null }).permissionsOverride ?? null;
+        if (!moduleAccessAllowed(ctx.user.role, override, "store", "FULL", ["manager", "cashier", "sales_rep"])) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا صلاحية لإسناد البيع لجهة توصيل",
+              why: "إسنادُ الفاتورة للتوصيل يُنشئ إرساليّةً وقيودَ عهدةٍ على المندوب، ويلزمه صلاحيّةُ وحدة «المتجر الإلكتروني» (كاملة) التي لا يملكها حسابك",
+              doThis: "أتمم البيع بلا توصيل، أو اطلب من المدير منحك صلاحيّة «المتجر الإلكتروني» (كاملة) من شاشة المستخدمين",
+            }),
+          });
+        }
+      }
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId,
@@ -564,6 +666,8 @@ export const saleRouter = router({
           // تدقيق مكرَّراً في كل مرة (كان يضخّم السجلّ بأحداث «بيع» وهميّة لعملية واحدة).
           if (!res.idempotentReplay) {
             await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy,
+                // م١ (PR-1): الإسناد وقع في معاملة البيع — أثرُه يُقرأ من سطر البيع نفسه.
+                ...(res.consignmentId != null ? { consignmentId: res.consignmentId, consignmentNumber: res.consignmentNumber ?? null } : {}),
               },
             });
             if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy },
@@ -796,7 +900,7 @@ export const saleRouter = router({
    * مديريّ فقط (قرار المالك §١٠، مرآة المرتجع). موافقة المدير تُغطّي تجاوز الائتمان/البيع تحت التكلفة.
    * التفصيل: docs/invoice-correction-design-2026-08-10.md. الخدمة correctSale (مُتحقَّقةٌ باختبارات).
    */
-  reissue: salesCashierProcedure
+  reissue: salesCorrectionProcedure
     .input(
       z.object({
         originalInvoiceId: z.number().int().positive(),
@@ -807,65 +911,31 @@ export const saleRouter = router({
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: nonNegMoneyString.nullish(),
         deliveryFee: nonNegMoneyString.nullish(),
+        deliveryFree: z.boolean().optional(),
+        deliveryWaivedAmount: nonNegMoneyString.nullish(),
         taxRatePercent: z.string().nullish(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").nullish(),
         notes: z.string().max(5000).nullish(),
-        // دفعةٌ إضافية تُحصَّل الآن عند زيادة المصحّح على المقبوض سلفاً (نقص).
+        // اقتراح قبض فرقٍ عند الاعتماد؛ لا درج ولا إثبات مزوّد يُنشأ في مرحلة الطلب.
         additionalPayment: z.object({
           amount: positiveMoneyString,
           method: posCashPaymentMethod,
-          reference: z.string().trim().min(1).max(100).nullish(),
-              externalPaymentAttemptId: z.number().int().positive().nullish(),
-              externalPaymentDeviceId: z
-                .string()
-                .trim()
-                .min(1)
-                .max(64)
-                .nullish(),
-            }).nullish(),
+        }).nullish(),
         // الفرق الزائد (المصحّح < المقبوض): رصيد دائن للعميل أو استرداد نقديّ (قرار المالك الهجين).
         overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
-        overpayRefundShiftId: z.number().int().positive().nullish(),
         reason: z.string().trim().min(3, "اكتب سبب التصحيح").max(500),
         clientRequestId: z.string().min(1).max(80).optional(),
         // موافقة مدير لتجاوز حدّ الائتمان أو البيع تحت التكلفة في السطور المصحّحة.
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
-      })
-        .superRefine((input, refinement) => {
-          const payment = input.additionalPayment;
-          if (!payment) return;
-          if (payment.method !== "CASH" && !payment.externalPaymentAttemptId) {
-            refinement.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["additionalPayment", "externalPaymentAttemptId"],
-              message: "أكّد الدفع الخارجي قبل تحصيل فرق التصحيح",
-            });
-          }
-          if (payment.method !== "CASH" && !payment.externalPaymentDeviceId) {
-            refinement.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["additionalPayment", "externalPaymentDeviceId"],
-              message: "جهاز محاولة الدفع مطلوب",
-            });
-          }
-          if (
-            payment.method === "CASH" &&
-            (payment.externalPaymentAttemptId != null ||
-              payment.externalPaymentDeviceId != null)
-          ) {
-            refinement.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["additionalPayment", "externalPaymentAttemptId"],
-              message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
-            });
-          }
-        }),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       const actor = {
         userId: ctx.user.id,
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
         role: ctx.user.role,
+        scopedOwnerId: ctx.scopedOwnerId,
+        invoiceScope: ctx.invoiceCorrectionScope,
       };
       // كلمة مرور الاعتماد القديمة لا تُخزَّن إطلاقاً. الاعتماد الآن قرار مستخدمٍ ثانٍ
       // على طلب صفر الأثر، وهو نفسه سلطة تجاوز الائتمان/السعر عند التنفيذ.
@@ -1153,6 +1223,15 @@ export const saleRouter = router({
             paidAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} != 'SUPERSEDED' THEN ${invoices.paidAmount} ELSE 0 END), 0)`,
             // المتبقي (AR الحقيقي): total − paidAmount − returnedTotal لغير الملغاة
             // (الملغاة لا ذمة عليها؛ المرتجع جزئياً يُخصم منه ما أُرجع).
+            //
+            // ⛔ **تُرِك مكتوباً بيدٍ عن قصد — لا يُوحَّد بـ`openBalanceExpr` بلا قرار المالك.**
+            // هذا الرأسُ **موقَّعٌ** (بلا `GREATEST`) ويستبعد `('CANCELLED','SUPERSEDED')`، بينما
+            // صفوفُ نفس الشاشة تُفلتَر بمسندٍ مقصوصٍ (`> 0`) وباستبعاد `DEAD_INVOICE_STATUSES`
+            // ⇒ **الرأس لا يساوي مجموع صفوفه** على عميلٍ دُفِع له زائداً أو أُرجِعت فاتورتُه
+            // بعد قبضها: السالبُ يُنقص هنا ذمّةَ فاتورةٍ أخرى مستحقّة، ولا يظهر صفّاً هناك.
+            // سؤالُ الموضع تحصيليّ ⇒ الصحيحُ `COLLECTIBLE` (المقصوص + `DEAD`) كما في الصفوف؛
+            // لكنّ تطبيقه **يرفع رقماً يراه المالك** في رأس قائمة المبيعات، فهو قرارُ سياسةٍ
+            // لا توحيدُ مسند. الجرد الكامل في `@shared/predicates/openBalance` (بند أ).
             dueAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')
               THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           })
@@ -1195,11 +1274,17 @@ export const saleRouter = router({
           // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
           // ١٠/٨: + الزبون العابر ومستلم الإرسالية (مرآة list — «عميل نقدي» للمجهول حقاً فقط).
           customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
+          contactName: invoices.contactName,
+          contactPhone: invoices.contactPhone,
           customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
           customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone}, NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
+          customerAddress: sql<string | null>`COALESCE(${deliveryConsignments.deliveryAddress}, NULLIF(${onlineOrders.shippingAddress}, ''), ${customers.address}, ${workOrderInvoiceCustomer.address})`,
+          recipientName: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientName}, ''), ${onlineOrderCustomer.name}, NULLIF(${invoices.contactName}, ''), ${customers.name}, ${workOrderInvoiceCustomer.name})`,
+          recipientPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${onlineOrderCustomer.whatsapp}, ''), NULLIF(${onlineOrderCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
           customerBalance: sql<string | null>`COALESCE(${customers.currentBalance}, ${workOrderInvoiceCustomer.currentBalance})`,
           priceTier: invoices.priceTier,
           invoiceDate: invoices.invoiceDate,
+          updatedAt: invoices.updatedAt,
           dueDate: invoices.dueDate,
           subtotal: invoices.subtotal,
           taxAmount: invoices.taxAmount,
@@ -1244,6 +1329,10 @@ export const saleRouter = router({
           consignmentStatus: unifiedConsignmentStatus,
           consignmentDispatchedAt: deliveryConsignments.dispatchedAt,
           consignmentSettledAt: deliveryConsignments.settledAt,
+          onlineOrderStatus: onlineOrders.status,
+          deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''))`,
+          deliveryGovernorate: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.governorate}, ''), NULLIF(${onlineOrders.governorate}, ''))`,
+          externalTrackingRef: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.externalTrackingRef}, ''), NULLIF(${onlineOrders.trackingNumber}, ''))`,
           deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
           workOrderCreatedBy: workOrders.createdBy,
         })
@@ -1259,6 +1348,7 @@ export const saleRouter = router({
         .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId),
           )
         .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+        .leftJoin(onlineOrderCustomer, eq(onlineOrderCustomer.id, onlineOrders.customerId))
         .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId),
           )
         .where(eq(invoices.id, input.invoiceId))
@@ -1347,6 +1437,32 @@ export const saleRouter = router({
         )
       .orderBy(asc(accountingEntries.id));
 
+    // أثر التعديل المنشور: المعرّفات ثابتة للتدقيق، والأسماء الحالية للعرض، مع الزمن ورقم الأصل.
+    const correctionAudit = inv.correctionOfInvoiceId == null ? null : (
+      await db
+        .select({
+          originalInvoiceId: salesControlRequests.invoiceId,
+          originalInvoiceNumber: correctionOriginalInvoice.invoiceNumber,
+          requestedBy: salesControlRequests.requestedBy,
+          requestedByName: correctionRequester.name,
+          requestedAt: salesControlRequests.createdAt,
+          reviewedBy: salesControlRequests.reviewedBy,
+          reviewedByName: correctionReviewer.name,
+          reviewedAt: salesControlRequests.reviewedAt,
+        })
+        .from(salesControlRequests)
+        .innerJoin(correctionOriginalInvoice, eq(correctionOriginalInvoice.id, salesControlRequests.invoiceId))
+        .leftJoin(correctionRequester, eq(correctionRequester.id, salesControlRequests.requestedBy))
+        .leftJoin(correctionReviewer, eq(correctionReviewer.id, salesControlRequests.reviewedBy))
+        .where(and(
+          eq(salesControlRequests.invoiceId, Number(inv.correctionOfInvoiceId)),
+          eq(salesControlRequests.resultInvoiceId, input.invoiceId),
+          eq(salesControlRequests.status, "APPROVED"),
+        ))
+        .orderBy(desc(salesControlRequests.id))
+        .limit(1)
+    )[0] ?? null;
+
     // توليد qrPayload موقَّعة بـ HMAC من الخادم — الواجهة تعرضها فقط
     const qrPayload = invoiceBarcodeSet({
       invoiceNumber: inv.invoiceNumber,
@@ -1357,14 +1473,30 @@ export const saleRouter = router({
     // حقل تفويض داخلي للاستعلام فقط؛ لا يكون جزءاً من عقد تفاصيل الفاتورة.
     const { workOrderCreatedBy: _workOrderCreatedBy, ...invoiceForView } = inv;
 
+    /**
+     * م٢ ق١١ — «الخطوة التالية»: حقلٌ اختياريٌّ يُلحَق بالردّ فتعرضه رقاقةُ الرأس بدل أن
+     * تُخمّنه كلُّ شاشةٍ لنفسها. `hasLiveConsignment` مشتقٌّ من الحالة الموحَّدة للإرسالية
+     * لا من أعمدةٍ متفرّقة. المستدعي القديم لا ينكسر — الحقلُ اضافةٌ لا تغيير.
+     */
+    const nextAction = deriveInvoiceNextAction({
+      invoiceId: inv.id,
+      status: inv.status,
+      hasLiveConsignment: isOpenConsignmentStatus(inv.consignmentStatus),
+      deliveryPartyLabel: inv.courierName,
+      replacementInvoiceId: inv.correctedByInvoiceId,
+      dueDate: inv.dueDate,
+    });
+    const nextActionReason =
+      nextAction == null ? nextActionTerminalReason("SALE_INVOICE", inv.status) : null;
+
     // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
     if (!canSeeCostForUser(ctx.user)) {
       const { costTotal: _c, ...invNoCost } = invoiceForView;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
-      return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload,
+      return { ...invNoCost, items: itemsNoCost, payments, returns, correctionAudit, qrPayload, nextAction, nextActionReason,
         };
     }
-    return { ...invoiceForView, items, payments, returns, qrPayload };
+    return { ...invoiceForView, items, payments, returns, correctionAudit, qrPayload, nextAction, nextActionReason };
   }),
 
   // إلغاء فاتورة بيع كاملاً (قرار مالك ١٢/٨) — عكسٌ كامل + إرجاع مخزون + استرداد بجهة صرفٍ مُصرَّحة.
@@ -1376,6 +1508,8 @@ export const saleRouter = router({
         invoiceId: z.number().int().positive(),
         // «لا دينار بلا مسار/سند/قيد» — طريقة الاسترداد إلزاميّة، لا افتراضية.
         refundPaymentMethod: method,
+        // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
+        reference: z.string().trim().min(1).max(100).optional(),
         reason: z.string().trim().min(3).max(500),
         // idempotency: نفس المفتاح ⇒ إلغاءٌ واحد (لا استرداد/عكس مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
@@ -1392,7 +1526,7 @@ export const saleRouter = router({
         invoiceId: input.invoiceId,
         requestType: "SALES_CANCEL",
         reason: input.reason,
-        payload: { refundPaymentMethod: input.refundPaymentMethod },
+        payload: { refundPaymentMethod: input.refundPaymentMethod, reference: input.reference ?? null },
       }, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,

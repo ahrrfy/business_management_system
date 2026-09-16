@@ -12,8 +12,15 @@
  * الأجرة = deliveryFeeFor(المحافظة) تقديرياً (يثبّتها الموظف عند الإسناد — شريحة ٤).
  */
 import { TRPCError } from "@trpc/server";
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   bundleComponents,
   categories,
@@ -27,6 +34,7 @@ import {
   products,
   storeSettings as storeSettingsTable,
 } from "../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
 import { deliveryFeeFor, governorateById } from "@shared/governorates";
 import { previewDeliveryQuote } from "./delivery/pricingRules";
 import { getDb, type Tx } from "../db";
@@ -39,6 +47,7 @@ import { withTx } from "./tx";
 import {
   lockCouponForSale,
   normalizeCouponCode,
+  releaseCouponReservationForOnlineOrder,
   reserveCouponForOnlineOrder,
   type LockedCoupon,
 } from "./couponService";
@@ -51,12 +60,19 @@ import {
 import { retryOnDup } from "../lib/retryDup";
 
 const RETAIL = "RETAIL" as const;
+const WHOLESALE = "WHOLESALE" as const;
+/**
+ * عقد المتجر: لا يصير سعر الجملة خياراً قابلاً للتلاعب من العميل. يجمع الخادم كل ألوان
+ * ووحدات المنتج نفسه بوحدة الأساس، ويستحقه العميل عند اثنتي عشرة قطعة فأكثر فقط.
+ */
+export const STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY = 12;
 const GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
 const GUEST_TRACKING_DOMAIN = "STORE_GUEST_TRACKING_V1";
 
 function guestTrackingSecret(): string {
-  const secret = process.env.BARCODE_SECRET;
-  if (!secret) throw new Error("BARCODE_SECRET غير مُعيَّن لتوقيع تتبّع طلب الضيف");
+  const secret = process.env.BARCODE_SECRET || (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
+  if (!secret)
+    throw new Error("BARCODE_SECRET غير مُعيَّن لتوقيع تتبّع طلب الضيف");
   return secret;
 }
 
@@ -83,16 +99,33 @@ function parseAndVerifyGuestTrackingToken(token: string): {
   const normalized = token.trim();
   const [publicId, expiryBase36, receivedMac, extra] = normalized.split(".");
   if (
-    extra != null || !/^[a-f0-9]{32}$/.test(publicId ?? "") ||
+    extra != null ||
+    !/^[a-f0-9]{32}$/.test(publicId ?? "") ||
     !/^[a-z0-9]{1,13}$/.test(expiryBase36 ?? "") ||
     !/^[A-Za-z0-9_-]{43}$/.test(receivedMac ?? "")
-  ) return null;
+  )
+    return null;
   const expiresAtSeconds = Number.parseInt(expiryBase36, 36);
-  if (!Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds <= Math.floor(Date.now() / 1000)) return null;
-  const expected = Buffer.from(guestTrackingMac(publicId, expiresAtSeconds), "utf8");
+  if (
+    !Number.isSafeInteger(expiresAtSeconds) ||
+    expiresAtSeconds <= Math.floor(Date.now() / 1000)
+  )
+    return null;
+  const expected = Buffer.from(
+    guestTrackingMac(publicId, expiresAtSeconds),
+    "utf8",
+  );
   const received = Buffer.from(receivedMac, "utf8");
-  if (expected.length !== received.length || !timingSafeEqual(expected, received)) return null;
-  return { publicId, tokenHash: hashGuestTrackingToken(normalized), expiresAtSeconds };
+  if (
+    expected.length !== received.length ||
+    !timingSafeEqual(expected, received)
+  )
+    return null;
+  return {
+    publicId,
+    tokenHash: hashGuestTrackingToken(normalized),
+    expiresAtSeconds,
+  };
 }
 
 /** حبيبة اليوم المحلي (بغداد UTC+3) YYYY-MM-DD — لتطابق نافذة العروض مع العرض في الكتالوج. */
@@ -111,15 +144,27 @@ export const MAX_ONLINE_ORDER_DISTINCT_UNITS = 30;
 export const MAX_ONLINE_ORDER_QUANTITY_PER_UNIT = 999;
 export const MAX_ONLINE_ORDER_TOTAL_QUANTITY = 10_000;
 
-function normalizeExpectedUnitPrice(value: string | null | undefined): string | null | undefined {
+function normalizeExpectedUnitPrice(
+  value: string | null | undefined,
+): string | null | undefined {
   if (value == null) return value;
   try {
-    if (!/^\d{1,15}(?:\.\d{1,2})?$/.test(value)) throw new Error("invalid price shape");
+    if (!/^\d{1,15}(?:\.\d{1,2})?$/.test(value))
+      throw new Error("invalid price shape");
     const parsed = money(value);
-    if (!parsed.isFinite() || parsed.lt(0) || parsed.decimalPlaces() > 2) throw new Error("invalid price");
+    if (!parsed.isFinite() || parsed.lt(0) || parsed.decimalPlaces() > 2)
+      throw new Error("invalid price");
     return toDbMoney(parsed);
   } catch {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "السعر المتوقع لأحد المنتجات غير صحيح" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تجهيز سلّتك",
+        why: "سعر أحد الأصناف وصل بصيغةٍ لا نقبلها (يجب أن يكون رقماً موجباً بمنزلتين عشريتين على الأكثر)",
+        doThis:
+          "حدّث الصفحة وأعد إضافة الأصناف إلى السلّة، وإن تكرّر الأمر فتواصل معنا",
+      }),
+    });
   }
 }
 
@@ -128,9 +173,22 @@ function normalizeExpectedUnitPrice(value: string | null | undefined): string | 
  * (وحدة/متغيّر مختلف) سطراً مستقلاً. الحدود تُطبّق بعد الدمج كي لا تتجاوزها دفعات مكررة.
  */
 export function normalizeOnlineOrderLines(
-  lines: ReadonlyArray<Pick<OnlineOrderLineInput, "productUnitId" | "quantity" | "expectedUnitPrice">>,
+  lines: ReadonlyArray<
+    Pick<
+      OnlineOrderLineInput,
+      "productUnitId" | "quantity" | "expectedUnitPrice"
+    >
+  >,
 ): OnlineOrderLineInput[] {
-  if (!lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
+  if (!lines.length)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إتمام الطلب",
+        why: "السلّة فارغة ولا صنف فيها",
+        doThis: "أضِف صنفاً واحداً على الأقل من المتجر ثمّ أعد تأكيد الطلب",
+      }),
+    });
   const normalized: OnlineOrderLineInput[] = [];
   const byUnit = new Map<number, OnlineOrderLineInput>();
   let totalQuantity = 0;
@@ -139,18 +197,35 @@ export function normalizeOnlineOrderLines(
     const productUnitId = line.productUnitId;
     const quantity = line.quantity;
     if (
-      !Number.isSafeInteger(productUnitId) || productUnitId <= 0 ||
-      !Number.isSafeInteger(quantity) || quantity <= 0
+      !Number.isSafeInteger(productUnitId) ||
+      productUnitId <= 0 ||
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0
     ) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية أو منتج غير صحيح" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تجهيز سلّتك",
+          why: "أحد أسطر السلّة وصل بصنفٍ غير معروف أو بكميةٍ ليست عدداً صحيحاً أكبر من 0",
+          doThis:
+            "احذف الصنف من السلّة وأضِفه من جديد من صفحة المنتج، ثمّ أعد المحاولة",
+        }),
+      });
     }
-    const expectedUnitPrice = normalizeExpectedUnitPrice(line.expectedUnitPrice);
+    const expectedUnitPrice = normalizeExpectedUnitPrice(
+      line.expectedUnitPrice,
+    );
     const current = byUnit.get(productUnitId);
     if (!current) {
       if (byUnit.size >= MAX_ONLINE_ORDER_DISTINCT_UNITS) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `السلة تقبل ${MAX_ONLINE_ORDER_DISTINCT_UNITS} وحدة بيع مختلفة كحد أقصى`,
+          message: appErrorMessage({
+            what: "تعذّر إتمام الطلب",
+            why: `سلّتك تحوي أصنافاً أكثر من الحدّ الأقصى للطلب الواحد (${MAX_ONLINE_ORDER_DISTINCT_UNITS} صنفاً مختلفاً)`,
+            doThis:
+              "احذف بعض الأصناف وأتمّ هذا الطلب، ثمّ أرسل الباقي في طلبٍ ثانٍ",
+          }),
         });
       }
       const added = { productUnitId, quantity, expectedUnitPrice };
@@ -158,12 +233,18 @@ export function normalizeOnlineOrderLines(
       normalized.push(added);
     } else {
       if (
-        current.expectedUnitPrice != null && expectedUnitPrice != null &&
+        current.expectedUnitPrice != null &&
+        expectedUnitPrice != null &&
         !money(current.expectedUnitPrice).eq(money(expectedUnitPrice))
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "السعر المتوقع متضارب لنفس المنتج — حدّث السلة",
+          message: appErrorMessage({
+            what: "تعذّر إتمام الطلب",
+            why: `الصنف نفسه موجودٌ في سلّتك بسعرين مختلفين (${current.expectedUnitPrice} و${expectedUnitPrice} د.ع)، فلا ندري أيّهما وافقتَ عليه`,
+            doThis:
+              "حدّث الصفحة لتظهر الأسعار الحالية، ثمّ راجع السلّة وأعد تأكيد الطلب",
+          }),
         });
       }
       current.quantity += quantity;
@@ -175,14 +256,22 @@ export function normalizeOnlineOrderLines(
     if (mergedQuantity > MAX_ONLINE_ORDER_QUANTITY_PER_UNIT) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الحد الأقصى لكمية المنتج الواحد ${MAX_ONLINE_ORDER_QUANTITY_PER_UNIT}`,
+        message: appErrorMessage({
+          what: "تعذّر إتمام الطلب",
+          why: `طلبتَ ${mergedQuantity} قطعة من صنفٍ واحد، والحدّ الأقصى للصنف الواحد ${MAX_ONLINE_ORDER_QUANTITY_PER_UNIT} قطعة في الطلب`,
+          doThis: `أنقص الكمية إلى ${MAX_ONLINE_ORDER_QUANTITY_PER_UNIT} أو أقلّ، أو تواصل معنا لطلبٍ بالجملة`,
+        }),
       });
     }
     totalQuantity += quantity;
     if (totalQuantity > MAX_ONLINE_ORDER_TOTAL_QUANTITY) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الحد الأقصى لمجموع كميات السلة ${MAX_ONLINE_ORDER_TOTAL_QUANTITY}`,
+        message: appErrorMessage({
+          what: "تعذّر إتمام الطلب",
+          why: `مجموع كميات سلّتك ${totalQuantity} قطعة، والحدّ الأقصى للطلب الواحد ${MAX_ONLINE_ORDER_TOTAL_QUANTITY} قطعة`,
+          doThis: "وزّع الكميات على أكثر من طلب، أو تواصل معنا لطلبٍ بالجملة",
+        }),
       });
     }
   }
@@ -239,8 +328,11 @@ export function normalizeStorePhone(raw: string): string {
   return normalizeIraqPhoneE164(raw);
 }
 
-const REQUEST_KEY_CONFLICT =
-  "رمز الطلب استُخدم لطلب مختلف — أنشئ رمزاً جديداً وحاول مجدداً";
+const REQUEST_KEY_CONFLICT = appErrorMessage({
+  what: "تعذّر إتمام الطلب",
+  why: "رمز هذا الطلب مستعمَلٌ لطلبٍ آخر، ولا نكشف تفاصيله حمايةً لخصوصية صاحبه",
+  doThis: "حدّث الصفحة ليُولَّد رمز طلبٍ جديد، ثمّ أعد تأكيد سلّتك",
+});
 
 /**
  * إعادة idempotent معزولة عن صاحبها. القراءة القافلة تُستعمل بعد variant mutex كي ترى
@@ -272,7 +364,9 @@ async function loadOwnedReplay(
       guestTrackingPublicId: onlineOrders.guestTrackingPublicId,
       guestTrackingTokenHash: onlineOrders.guestTrackingTokenHash,
       guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
-      reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
+      reservationExpiryMs: sql<
+        number | null
+      >`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
     })
     .from(onlineOrders)
     .where(eq(onlineOrders.clientRequestId, input.clientRequestId))
@@ -299,7 +393,10 @@ async function loadOwnedReplay(
       : ((lock ? await ownerQuery.for("update") : await ownerQuery)[0] ?? null);
   const ownerPhones = owner
     ? [owner.phone, owner.phone2, owner.phone3, owner.whatsapp]
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length > 0,
+        )
         .map(normalizeStorePhone)
     : [];
   if (!owner || !ownerPhones.includes(phone)) {
@@ -310,7 +407,15 @@ async function loadOwnedReplay(
     input.authenticatedCustomer != null &&
     Number(existing.customerId) !== input.authenticatedCustomer.customerId
   ) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "جلسة العميل لا تملك هذا الطلب" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر عرض هذا الطلب",
+        why: "الطلب مسجَّلٌ على حسابٍ غير الحساب الذي سجّلتَ الدخول به",
+        doThis:
+          "سجّل الدخول بالحساب صاحب الطلب، أو تواصل معنا ومعك رقم الطلب للتحقّق",
+      }),
+    });
   }
 
   const linesQuery = tx
@@ -336,8 +441,12 @@ async function loadOwnedReplay(
     Array.from(requestedLineQuantities.entries()).every(
       ([unitId, quantity]) => storedLineQuantities.get(unitId) === quantity,
     );
-  const requestedCouponCode = input.couponCode ? normalizeCouponCode(input.couponCode) : null;
-  const existingCouponCode = existing.couponCode ? normalizeCouponCode(existing.couponCode) : null;
+  const requestedCouponCode = input.couponCode
+    ? normalizeCouponCode(input.couponCode)
+    : null;
+  const existingCouponCode = existing.couponCode
+    ? normalizeCouponCode(existing.couponCode)
+    : null;
   if (
     existing.governorate !== input.governorate ||
     existing.shippingAddress !== requestedShippingAddress ||
@@ -346,26 +455,42 @@ async function loadOwnedReplay(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "رمز الطلب استُخدم لطلب مختلف — أعد تحميل السلة وحاول مجدداً",
+      message: appErrorMessage({
+        what: "تعذّر إتمام الطلب",
+        why: "رمز هذا الطلب مسجَّلٌ لطلبٍ سابق يختلف عن سلّتك الآن في الأصناف أو العنوان أو الكوبون",
+        doThis:
+          "حدّث الصفحة ليُولَّد رمز طلبٍ جديد، ثمّ أعد تأكيد السلّة الحالية",
+      }),
     });
   }
   let guestTrackingToken: string | null = null;
   if (
-    existing.guestTrackingPublicId && existing.guestTrackingTokenHash &&
+    existing.guestTrackingPublicId &&
+    existing.guestTrackingTokenHash &&
     existing.guestTrackingExpiresAt
   ) {
-    const rebuilt = buildGuestTrackingToken(existing.guestTrackingPublicId, existing.guestTrackingExpiresAt);
+    const rebuilt = buildGuestTrackingToken(
+      existing.guestTrackingPublicId,
+      existing.guestTrackingExpiresAt,
+    );
     if (hashGuestTrackingToken(rebuilt) !== existing.guestTrackingTokenHash) {
-      throw new Error("Online order guest tracking token snapshot is inconsistent");
+      throw new Error(
+        "Online order guest tracking token snapshot is inconsistent",
+      );
     }
     guestTrackingToken = rebuilt;
   }
   return {
     orderId: Number(existing.id),
     orderNumber: existing.orderNumber,
-    reservationExpiresAt: existing.reservationExpiryMs != null ? new Date(Number(existing.reservationExpiryMs)) : (() => {
-      throw new Error("Existing online order is missing its reservation expiry snapshot");
-    })(),
+    reservationExpiresAt:
+      existing.reservationExpiryMs != null
+        ? new Date(Number(existing.reservationExpiryMs))
+        : (() => {
+            throw new Error(
+              "Existing online order is missing its reservation expiry snapshot",
+            );
+          })(),
     branchId: Number(existing.branchId),
     subtotal: String(existing.subtotal),
     deliveryFee: String(existing.shippingCost),
@@ -380,7 +505,7 @@ async function loadOwnedReplay(
 }
 
 /** قفل العميل هو أول قفل أعمال مشترك، قبل المخزون، اتساقاً مع createSale/POS. */
-async function lockOrCreateOnlineCustomer(
+export async function lockOrCreateOnlineCustomer(
   tx: Tx,
   phone: string,
   name: string,
@@ -390,37 +515,64 @@ async function lockOrCreateOnlineCustomer(
     // الجلسة الموقعة تحمل customerId؛ هذا هو مفتاح الملكية، لا customers.phone وحده. نقفل الصف
     // نفسه ثم نعيد التحقق من أن الهاتف المطلوب واحدٌ من هواتفه canonical الحالية، كي تعمل
     // phone2/phone3/whatsapp ولا ينشأ عميل جديد بالرقم الثانوي.
-    const existing = (await tx
-      .select({
-        id: customers.id,
-        isActive: customers.isActive,
-        phone: customers.phone,
-        phone2: customers.phone2,
-        phone3: customers.phone3,
-        whatsapp: customers.whatsapp,
-      })
-      .from(customers)
-      .where(eq(customers.id, authenticatedCustomer.customerId))
-      .for("update")
-      .limit(1))[0];
+    const existing = (
+      await tx
+        .select({
+          id: customers.id,
+          isActive: customers.isActive,
+          phone: customers.phone,
+          phone2: customers.phone2,
+          phone3: customers.phone3,
+          whatsapp: customers.whatsapp,
+        })
+        .from(customers)
+        .where(eq(customers.id, authenticatedCustomer.customerId))
+        .for("update")
+        .limit(1)
+    )[0];
     const verifiedPhones = existing
       ? [existing.phone, existing.phone2, existing.phone3, existing.whatsapp]
-          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .filter(
+            (value): value is string =>
+              typeof value === "string" && value.trim().length > 0,
+          )
           .map(normalizeStorePhone)
       : [];
-    if (!existing || existing.isActive !== true || !verifiedPhones.includes(phone)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "جلسة العميل لا تطابق صاحب رقم الهاتف" });
+    if (
+      !existing ||
+      existing.isActive !== true ||
+      !verifiedPhones.includes(phone)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر إتمام الطلب",
+          why: "رقم الهاتف المُدخَل ليس من أرقام الحساب الذي سجّلتَ الدخول به، أو أنّ الحساب موقوف",
+          doThis:
+            "أدخِل رقم هاتفٍ مسجَّلاً في حسابك، أو سجّل الخروج وأكمِل الطلب كضيف، أو تواصل معنا",
+        }),
+      });
     }
     return Number(existing.id);
   }
 
   const custLock = `online-customer:${phone}`;
-  const lockRes = (await tx.execute(sql`SELECT GET_LOCK(${custLock}, 5) AS locked`)) as unknown;
+  const lockRes = (await tx.execute(
+    sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
+  )) as unknown;
   const lockedRow = Array.isArray(lockRes)
     ? (lockRes[0] as { locked?: number }[])?.[0]
     : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
   if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تأمين إنشاء العميل — أعد المحاولة" });
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: appErrorMessage({
+        what: "تعذّر إتمام الطلب الآن",
+        why: "ضغطٌ مؤقّت على النظام منع تثبيت بيانات حسابك، ولم يُسجَّل أيّ طلب ولم يُخصم شيء",
+        doThis:
+          "انتظر لحظاتٍ ثمّ اضغط «تأكيد الطلب» مجدداً، وإن تكرّر فتواصل معنا",
+      }),
+    });
   }
   try {
     const existing = (
@@ -464,6 +616,40 @@ interface PricedOnlineOrderLine {
   couponDiscountPerUnit?: string;
 }
 
+export type StorefrontPricingBenefitType =
+  | "NONE"
+  | "WHOLESALE"
+  | "OFFER"
+  | "COUPON";
+
+interface StorefrontPricingBenefit {
+  type: StorefrontPricingBenefitType;
+  label: string | null;
+  discount: string;
+  /** الكوبون صالح للسلة لكنه خسر أمام منفعة أعلى، فلا نحجزه ولا نستهلكه. */
+  couponSuperseded: boolean;
+}
+
+interface PricedOnlineOrderLines {
+  items: PricedOnlineOrderLine[];
+  benefit: StorefrontPricingBenefit;
+  /**
+   * إرشاد قراءةٍ فقط للسلة: يُظهر ما بقي من وحدة الأساس للوصول إلى الجملة،
+   * ويجمع ألوان ووحدات المنتج نفسه كما يفعل محرّك التسعير.
+   */
+  wholesaleProgress: StorefrontWholesaleProgress[];
+  /** يختلف عن benefit.discount: يستخدم فقط للتحقق من أن الكوبون يدخل السلة فعلاً. */
+  couponCandidateDiscount: string;
+}
+
+export interface StorefrontWholesaleProgress {
+  productId: number;
+  productName: string;
+  currentBaseQuantity: number;
+  minimumBaseQuantity: number;
+  remainingBaseQuantity: number;
+}
+
 export interface OnlineOrderQuoteInput {
   couponCode?: string | null;
   governorate: string;
@@ -476,6 +662,12 @@ export interface OnlineOrderQuoteResult {
   couponCode: string | null;
   couponProgramName: string | null;
   couponDiscount: string;
+  pricingBenefitType: StorefrontPricingBenefitType;
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
+  couponSuperseded: boolean;
+  /** منتجات قريبة من حدّ الجملة وتملك سعراً مخفضاً فعلياً للجملة. */
+  wholesaleProgress: StorefrontWholesaleProgress[];
   lines: Array<{
     productUnitId: number;
     quantity: number;
@@ -484,10 +676,16 @@ export interface OnlineOrderQuoteResult {
     unitPrice: string;
     lineTotal: string;
   }>;
+  /** قيمة المنتجات قبل منفعة السعر الواحدة؛ للعرض الشفاف فقط. */
+  retailSubtotal: string;
   subtotal: string;
   deliveryFee: string;
   deliveryFree: boolean;
   deliveryWaivedAmount: string;
+  /** العتبة التي فعّلتها الإدارة الآن؛ null يعني أن حافز التوصيل المجاني غير مفعّل. */
+  freeShippingThreshold: string | null;
+  /** ما ينقص من قيمة المنتجات لبلوغ العتبة؛ null عندما لا تكون هناك عتبة مفعّلة. */
+  freeShippingRemaining: string | null;
   total: string;
 }
 
@@ -497,8 +695,11 @@ async function priceOnlineOrderLines(
   branchId: number,
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
   options: { lock: boolean; coupon?: LockedCoupon | null },
-): Promise<PricedOnlineOrderLine[]> {
-  const unitIds = Array.from(new Set(lines.map((line) => Number(line.productUnitId)))).sort((a, b) => a - b);
+): Promise<PricedOnlineOrderLines> {
+  const unitIds = Array.from(
+    new Set(lines.map((line) => Number(line.productUnitId))),
+  ).sort((a, b) => a - b);
+  const wholesalePrices = alias(productPrices, "storefrontWholesalePrices");
   const query = tx
     .select({
       productId: products.id,
@@ -518,32 +719,64 @@ async function priceOnlineOrderLines(
       isBundle: products.isBundle,
       isCustomizable: products.isCustomizable,
       price: productPrices.price,
+      wholesalePrice: wholesalePrices.price,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(categories.id, products.categoryId))
-    .leftJoin(productPrices, and(
-      eq(productPrices.productUnitId, productUnits.id),
-      eq(productPrices.priceTier, RETAIL),
-    ))
+    .leftJoin(
+      productPrices,
+      and(
+        eq(productPrices.productUnitId, productUnits.id),
+        eq(productPrices.priceTier, RETAIL),
+      ),
+    )
+    .leftJoin(
+      wholesalePrices,
+      and(
+        eq(wholesalePrices.productUnitId, productUnits.id),
+        eq(wholesalePrices.priceTier, WHOLESALE),
+      ),
+    )
     .where(inArray(productUnits.id, unitIds))
     .orderBy(asc(productUnits.id));
   const rows = options.lock ? await query.for("update") : await query;
   const byUnit = new Map(rows.map((row) => [Number(row.productUnitId), row]));
   const todayYmd = todayYmdBaghdad();
-  const priced: PricedOnlineOrderLine[] = [];
+  const candidates: Array<
+    PricedOnlineOrderLine & {
+      automaticDiscountPerUnit: string;
+      automaticPromotionName: string | null;
+      couponDiscountCandidatePerUnit: string;
+      wholesaleUnitPrice: string | null;
+    }
+  > = [];
   for (const line of lines) {
     const quantity = Math.floor(line.quantity);
     const row = byUnit.get(Number(line.productUnitId));
     if (
-      !Number.isSafeInteger(quantity) || quantity <= 0 || !row || !row.productActive ||
-      !row.showInStore || (row.categoryId != null && (!row.categoryActive || !row.categoryShowInStore)) ||
-      row.isService || !row.variantActive || !row.unitActive || !row.unitAvailableInStore || row.price == null
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0 ||
+      !row ||
+      !row.productActive ||
+      !row.showInStore ||
+      (row.categoryId != null &&
+        (!row.categoryActive || !row.categoryShowInStore)) ||
+      row.isService ||
+      !row.variantActive ||
+      !row.unitActive ||
+      !row.unitAvailableInStore ||
+      row.price == null
     ) {
       throw new TRPCError({
         code: options.lock ? "CONFLICT" : "BAD_REQUEST",
-        message: "أحد المنتجات لم يعُد متاحاً — حدّث السلة",
+        message: appErrorMessage({
+          what: "تعذّر إتمام الطلب",
+          why: "أحد أصناف سلّتك لم يعُد متاحاً للبيع في المتجر (أُوقف عرضه أو تغيّرت وحدة بيعه أو رُفع سعره من القائمة)",
+          doThis:
+            "حدّث الصفحة واحذف الصنف الذي اختفى من سلّتك، أو تواصل معنا لنقترح عليك بديلاً",
+        }),
       });
     }
     // عقد الطلب الحالي يثبت productUnitId/quantity فقط ويدمج تكرار الوحدة. قبول منتج مخصص
@@ -553,12 +786,29 @@ async function priceOnlineOrderLines(
     if (row.isCustomizable === true) {
       throw new TRPCError({
         code: options.lock ? "CONFLICT" : "BAD_REQUEST",
-        message: "هذا المنتج يتطلب تخصيصاً لا يحفظه الطلب الإلكتروني بأمان حالياً — تواصل مع المكتبة لإتمامه",
+        message: appErrorMessage({
+          what: `تعذّر طلب «${row.productName}» عبر المتجر`,
+          why: "هذا الصنف يحتاج اختياراتِ تخصيص (مقاس أو تصميم أو نصّ طباعة) لا يستقبلها الطلب الإلكتروني بعد، وطلبُه بلا اختياراتك يُنتج شيئاً غير الذي تريد",
+          doThis:
+            "احذفه من السلّة وأكمِل بقيّة الطلب، وتواصل معنا لإتمام الصنف المخصَّص باختياراتك",
+        }),
       });
     }
     const base = money(quantity).times(row.conversionFactor ?? 1);
     if (!base.isInteger() || !base.gt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الوحدة لا تتحول إلى كمية أساس صحيحة" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          // ⚠️ **المخرجُ إحالةٌ لا أمرٌ بالتعديل** — أمسكته مراجعةٌ عدائية: `quantity` مضمونٌ
+          // **عددٌ صحيحٌ موجب** قبل بلوغ هذا السطر (`normalizeOnlineOrderLines`)، فالسببُ
+          // الوحيد الممكن هو `conversionFactor` كسريّ — **عطبُ بياناتٍ عندنا لا خطأٌ من
+          // الزبون**. «عدّل الكمية» كانت تُرسله ليُعيد المحاولة فيفشل ثانيةً بلا نهاية.
+          what: `تعذّر طلب «${row.productName}» عبر المتجر`,
+          why: "بيانات عبوة هذا الصنف غير مضبوطة عندنا، فلا تُحسَب كميّته بدقّة — والخلل من طرفنا لا من طلبك",
+          doThis:
+            "أكمِل بقيّة طلبك بلا هذا الصنف، وتواصل معنا لنضبطه ونُتمّه لك",
+        }),
+      });
     }
     const retail = round2(row.price);
     const productId = Number(row.productId);
@@ -578,7 +828,6 @@ async function priceOnlineOrderLines(
       lockForUpdate: options.lock,
     });
     const automaticDiscount = promo ? money(promo.discountForUnit) : money(0);
-    const priceAfterAutomatic = round2(retail.minus(automaticDiscount).lt(0) ? money(0) : retail.minus(automaticDiscount));
     const couponPromo = options.coupon
       ? await resolveCouponPromotionForLine(tx, options.coupon.promotionId, {
           branchId,
@@ -586,20 +835,20 @@ async function priceOnlineOrderLines(
           productId,
           variantId,
           categoryId,
-          unitPrice: priceAfterAutomatic.toFixed(2),
-          lineAmount: priceAfterAutomatic.times(quantity).toFixed(2),
+          // العروض والكوبونات منفعتان بديلتان في المتجر، لا طبقتا خصم. لذلك يُقاس
+          // الكوبون على سعر المفرد الأصلي لا على السعر بعد العرض التلقائي.
+          unitPrice: retail.toFixed(2),
+          lineAmount: retail.times(quantity).toFixed(2),
           hasContractPrice: false,
           todayYmd,
           includeStoreManaged: true,
           lockForUpdate: options.lock,
         })
       : null;
-    const couponDiscount = couponPromo ? money(couponPromo.discountForUnit) : money(0);
-    const discount = automaticDiscount.plus(couponDiscount).gt(retail)
-      ? retail
-      : automaticDiscount.plus(couponDiscount);
-    const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
-    priced.push({
+    const couponDiscount = couponPromo
+      ? money(couponPromo.discountForUnit)
+      : money(0);
+    candidates.push({
       productId,
       categoryId,
       variantId,
@@ -609,13 +858,172 @@ async function priceOnlineOrderLines(
       quantity,
       baseQuantity: base.toNumber(),
       retailUnitPrice: retail.toFixed(2),
-      discountPerUnit: round2(discount).toFixed(2),
-      couponDiscountPerUnit: round2(couponDiscount).toFixed(2),
-      unitPrice: unitPrice.toFixed(2),
-      lineTotal: round2(unitPrice.times(quantity)).toFixed(2),
+      automaticDiscountPerUnit: round2(automaticDiscount).toFixed(2),
+      automaticPromotionName: promo?.promotionName ?? null,
+      couponDiscountCandidatePerUnit: round2(couponDiscount).toFixed(2),
+      wholesaleUnitPrice:
+        row.wholesalePrice == null ? null : round2(row.wholesalePrice).toFixed(2),
+      // تُملأ بعد مقارنة مرشحي الجملة/العرض/الكوبون على مستوى السلة كاملة.
+      discountPerUnit: "0.00",
+      couponDiscountPerUnit: "0.00",
+      unitPrice: retail.toFixed(2),
+      lineTotal: round2(retail.times(quantity)).toFixed(2),
     });
   }
-  return priced;
+  const baseQuantityByProduct = new Map<number, number>();
+  for (const item of candidates) {
+    baseQuantityByProduct.set(
+      item.productId,
+      (baseQuantityByProduct.get(item.productId) ?? 0) + item.baseQuantity,
+    );
+  }
+  const wholesaleProgress = Array.from(baseQuantityByProduct.entries())
+    .flatMap(([productId, currentBaseQuantity]) => {
+      const productItems = candidates.filter(
+        (item) => item.productId === productId,
+      );
+      const hasDiscountedWholesalePrice = productItems.some(
+        (item) =>
+          item.wholesaleUnitPrice != null &&
+          money(item.wholesaleUnitPrice).lt(money(item.retailUnitPrice)),
+      );
+      if (
+        currentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY ||
+        !hasDiscountedWholesalePrice
+      ) {
+        return [];
+      }
+      return [{
+        productId,
+        productName: productItems[0]!.productName,
+        currentBaseQuantity,
+        minimumBaseQuantity: STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY,
+        remainingBaseQuantity:
+          STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY - currentBaseQuantity,
+      }];
+    })
+    .sort((left, right) => left.productName.localeCompare(right.productName, "ar"));
+
+  let wholesaleDiscount = money(0);
+  let offerDiscount = money(0);
+  let couponDiscount = money(0);
+  const offerNames = new Set<string>();
+  for (const item of candidates) {
+    const parentBaseQuantity = baseQuantityByProduct.get(item.productId) ?? 0;
+    const wholesaleDifference = item.wholesaleUnitPrice
+      ? money(item.retailUnitPrice).minus(item.wholesaleUnitPrice)
+      : money(0);
+    const wholesalePerUnit = wholesaleDifference.gt(0)
+      ? wholesaleDifference
+      : money(0);
+    if (parentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY) {
+      wholesaleDiscount = wholesaleDiscount.plus(
+        wholesalePerUnit.times(item.quantity),
+      );
+    }
+    const automaticPerUnit = money(item.automaticDiscountPerUnit);
+    offerDiscount = offerDiscount.plus(automaticPerUnit.times(item.quantity));
+    if (automaticPerUnit.gt(0) && item.automaticPromotionName) {
+      offerNames.add(item.automaticPromotionName);
+    }
+    couponDiscount = couponDiscount.plus(
+      money(item.couponDiscountCandidatePerUnit).times(item.quantity),
+    );
+  }
+
+  const candidatesByBenefit: Array<{
+    type: Exclude<StorefrontPricingBenefitType, "NONE">;
+    discount: ReturnType<typeof money>;
+    priority: number;
+    label: string;
+  }> = [
+    // عند التعادل لا نستهلك كوبوناً بلا توفير إضافي؛ تبقى قيمة الكوبون للعميل لاحقاً.
+    { type: "WHOLESALE" as const, discount: wholesaleDiscount, priority: 3, label: "سعر الجملة التلقائي" },
+    {
+      type: "OFFER" as const,
+      discount: offerDiscount,
+      priority: 2,
+      label:
+        offerNames.size === 1
+          ? Array.from(offerNames)[0]!
+          : "أفضل عرض تلقائي",
+    },
+    {
+      type: "COUPON" as const,
+      discount: couponDiscount,
+      priority: 1,
+      label: options.coupon?.programName ?? "خصم الكوبون",
+    },
+  ].filter((candidate) => candidate.discount.gt(0));
+  candidatesByBenefit.sort((a, b) => {
+    const compared = b.discount.comparedTo(a.discount);
+    return compared !== 0 ? compared : b.priority - a.priority;
+  });
+  const selected = candidatesByBenefit[0];
+  const benefit: StorefrontPricingBenefit = selected
+    ? {
+        type: selected.type,
+        label: selected.label,
+        discount: round2(selected.discount).toFixed(2),
+        couponSuperseded:
+          options.coupon != null &&
+          couponDiscount.gt(0) &&
+          selected.type !== "COUPON",
+      }
+    : {
+        type: "NONE",
+        label: null,
+        discount: "0.00",
+        couponSuperseded: false,
+      };
+
+  const items = candidates.map((item) => {
+    const parentBaseQuantity = baseQuantityByProduct.get(item.productId) ?? 0;
+    const wholesaleDifference =
+      parentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY &&
+      item.wholesaleUnitPrice
+        ? money(item.retailUnitPrice).minus(item.wholesaleUnitPrice)
+        : money(0);
+    const wholesalePerUnit = wholesaleDifference.gt(0)
+      ? wholesaleDifference
+      : money(0);
+    const selectedDiscount =
+      benefit.type === "WHOLESALE"
+        ? wholesalePerUnit
+        : benefit.type === "OFFER"
+          ? money(item.automaticDiscountPerUnit)
+          : benefit.type === "COUPON"
+            ? money(item.couponDiscountCandidatePerUnit)
+            : money(0);
+    const priceAfterBenefit = money(item.retailUnitPrice).minus(selectedDiscount);
+    const unitPrice = round2(
+      priceAfterBenefit.lt(0) ? money(0) : priceAfterBenefit,
+    );
+    return {
+      productId: item.productId,
+      categoryId: item.categoryId,
+      variantId: item.variantId,
+      productName: item.productName,
+      isBundle: item.isBundle,
+      productUnitId: item.productUnitId,
+      quantity: item.quantity,
+      baseQuantity: item.baseQuantity,
+      retailUnitPrice: item.retailUnitPrice,
+      discountPerUnit: round2(selectedDiscount).toFixed(2),
+      couponDiscountPerUnit:
+        benefit.type === "COUPON"
+          ? round2(selectedDiscount).toFixed(2)
+          : "0.00",
+      unitPrice: unitPrice.toFixed(2),
+      lineTotal: round2(unitPrice.times(item.quantity)).toFixed(2),
+    } satisfies PricedOnlineOrderLine;
+  });
+  return {
+    items,
+    benefit,
+    wholesaleProgress,
+    couponCandidateDiscount: round2(couponDiscount).toFixed(2),
+  };
 }
 
 /**
@@ -624,10 +1032,16 @@ async function priceOnlineOrderLines(
  *   ② الافتراض الثابت من `governorates.ts` (السلوك السابق — يبقى للتوافق ولمناطق بلا زون)
  * البذرة (H4، هجرة 0290) تنقل كلّ المحافظات الثمانية عشرة إلى المسار ①.
  */
-async function resolveDeliveryFee(tx: Tx, governorate: string): Promise<import("decimal.js").default> {
+async function resolveDeliveryFee(
+  tx: Tx,
+  governorate: string,
+): Promise<import("decimal.js").default> {
   const zone = (
-    await tx.select({ id: deliveryZones.id, isActive: deliveryZones.isActive })
-      .from(deliveryZones).where(eq(deliveryZones.code, governorate)).limit(1)
+    await tx
+      .select({ id: deliveryZones.id, isActive: deliveryZones.isActive })
+      .from(deliveryZones)
+      .where(eq(deliveryZones.code, governorate))
+      .limit(1)
   )[0];
   if (zone && zone.isActive) {
     const quote = await previewDeliveryQuote(tx, Number(zone.id), null, null);
@@ -641,69 +1055,151 @@ async function totalOnlineOrderQuote(
   items: Array<{ lineTotal: string }>,
   governorate: string,
   freeShippingThreshold: string | null | undefined,
-): Promise<Pick<OnlineOrderQuoteResult, "subtotal" | "deliveryFee" | "deliveryFree" | "deliveryWaivedAmount" | "total">> {
+  deliveryEligibilitySubtotal?: string,
+): Promise<
+  Pick<
+    OnlineOrderQuoteResult,
+    | "subtotal"
+    | "deliveryFee"
+    | "deliveryFree"
+    | "deliveryWaivedAmount"
+    | "freeShippingThreshold"
+    | "freeShippingRemaining"
+    | "total"
+  >
+> {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
+  const eligibilitySubtotal = deliveryEligibilitySubtotal == null
+    ? subtotal
+    : round2(money(deliveryEligibilitySubtotal));
   const actualDeliveryFee = await resolveDeliveryFee(tx, governorate);
   let customerDeliveryFee = actualDeliveryFee;
-  const freeThreshold = freeShippingThreshold ? money(freeShippingThreshold) : null;
-  const deliveryFree = Boolean(freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold));
+  const configuredThreshold = freeShippingThreshold
+    ? money(freeShippingThreshold)
+    : null;
+  const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
+  const deliveryFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
   if (deliveryFree) customerDeliveryFee = round2(money(0));
   return {
     subtotal: subtotal.toFixed(2),
     deliveryFee: customerDeliveryFee.toFixed(2),
     deliveryFree,
     deliveryWaivedAmount: deliveryFree ? actualDeliveryFee.toFixed(2) : "0.00",
+    freeShippingThreshold: freeThreshold?.toFixed(2) ?? null,
+    freeShippingRemaining: freeThreshold
+      ? (eligibilitySubtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(eligibilitySubtotal)).toFixed(2)
+      : null,
     total: round2(subtotal.plus(customerDeliveryFee)).toFixed(2),
   };
 }
 
-export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<OnlineOrderQuoteResult> {
+export async function quoteOnlineOrder(
+  input: OnlineOrderQuoteInput,
+): Promise<OnlineOrderQuoteResult> {
   const normalizedLines = normalizeOnlineOrderLines(input.lines);
-  if (!governorateById(input.governorate)) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير صحيحة" });
+  if (!governorateById(input.governorate))
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حساب أجرة التوصيل",
+        why: "المحافظة المختارة ليست من محافظات التوصيل المعروفة لدينا",
+        doThis: "اختر محافظتك من القائمة المنسدلة ثمّ أعد المحاولة",
+      }),
+    });
   // تسعيرةٌ قارئةٌ محضة: **بلا بوّابة الكتابة الماليّة** (فحص الحمل ٣١/٨/٢٦). كانت تأخذ
   // `FINANCIAL_WRITER` (قفلٌ مشترك على صفّ بوّابة الإقفال العالميّ) في كل نداءٍ مجهول من كلّ
   // زائر، وهي لا تكتب شيئاً إطلاقاً — والمعاملة تبقى قائمةً لضمان لقطةٍ متّسقة للأسعار
   // والتوفّر عبر الاستعلامات المتعدّدة، لا للذرّية.
-  return withTx(async (tx) => {
-    const context = await requireStorefrontContext(tx, { requireOpen: true });
-    const settings = (await tx.select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
-      .from(storeSettingsTable).where(eq(storeSettingsTable.id, 1)).limit(1))[0];
-    // بلا `FOR UPDATE` على الكوبون: التسعيرة لا تستهلك استخداماً، والقفل الحصريّ كان يُسلسل
-    // كلّ زائرٍ يجرّب الرمز نفسه. حماية الاستهلاك المزدوج تبقى في مسار الإنشاء (lock افتراضيّ).
-    const lockedCoupon = input.couponCode
-      ? await lockCouponForSale(
-          tx,
-          {
-            code: input.couponCode,
-            branchId: context.branchId,
-            customerId: input.authenticatedCustomer?.customerId ?? null,
-            requireAuthenticatedAssignedCustomer: true,
-            authenticatedCustomerId: input.authenticatedCustomer?.customerId ?? null,
-            todayYmd: todayYmdBaghdad(),
-          },
-          { lock: false },
-        )
-      : null;
-    const items = await priceOnlineOrderLines(tx, context.branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
-    const couponDiscountTotal = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
-    if (lockedCoupon && couponDiscountTotal.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
-    const totals = await totalOnlineOrderQuote(tx, items, input.governorate, settings?.freeShippingThreshold);
-    return {
-      couponCode: lockedCoupon?.code ?? null,
-      couponProgramName: lockedCoupon?.programName ?? null,
-      couponDiscount: couponDiscountTotal.toFixed(2),
-      lines: items.map((item) => ({
-        productUnitId: item.productUnitId,
-        quantity: item.quantity,
-        retailUnitPrice: item.retailUnitPrice,
-        discountPerUnit: item.discountPerUnit,
-        couponDiscountPerUnit: item.couponDiscountPerUnit ?? "0.00",
-        unitPrice: item.unitPrice,
-        lineTotal: item.lineTotal,
-      })),
-      ...totals,
-    };
-  }, { gate: "NONE" });
+  return withTx(
+    async (tx) => {
+      const context = await requireStorefrontContext(tx, { requireOpen: true });
+      const settings = (
+        await tx
+          .select({
+            freeShippingThreshold: storeSettingsTable.freeShippingThreshold,
+          })
+          .from(storeSettingsTable)
+          .where(eq(storeSettingsTable.id, 1))
+          .limit(1)
+      )[0];
+      // بلا `FOR UPDATE` على الكوبون: التسعيرة لا تستهلك استخداماً، والقفل الحصريّ كان يُسلسل
+      // كلّ زائرٍ يجرّب الرمز نفسه. حماية الاستهلاك المزدوج تبقى في مسار الإنشاء (lock افتراضيّ).
+      const lockedCoupon = input.couponCode
+        ? await lockCouponForSale(
+            tx,
+            {
+              code: input.couponCode,
+              branchId: context.branchId,
+              customerId: input.authenticatedCustomer?.customerId ?? null,
+              requireAuthenticatedAssignedCustomer: true,
+              authenticatedCustomerId:
+                input.authenticatedCustomer?.customerId ?? null,
+              todayYmd: todayYmdBaghdad(),
+            },
+            { lock: false },
+          )
+        : null;
+      const pricing = await priceOnlineOrderLines(
+        tx,
+        context.branchId,
+        normalizedLines,
+        { lock: false, coupon: lockedCoupon },
+      );
+      if (lockedCoupon && money(pricing.couponCandidateDiscount).lte(0))
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر تطبيق الكوبون «${lockedCoupon.code}»`,
+            why: "لا صنف في سلّتك يشمله هذا الكوبون، فخصمُه صفر",
+            doThis:
+              "أزِل الكوبون لإتمام الطلب بالسعر المعروض، أو أضِف صنفاً يشمله العرض",
+          }),
+        });
+      const retailSubtotal = round2(
+        pricing.items.reduce(
+          (sum, item) =>
+            sum.plus(money(item.retailUnitPrice).times(item.quantity)),
+          money(0),
+        ),
+      );
+      const totals = await totalOnlineOrderQuote(
+        tx,
+        pricing.items,
+        input.governorate,
+        settings?.freeShippingThreshold,
+        retailSubtotal.toFixed(2),
+      );
+      return {
+        couponCode:
+          pricing.benefit.type === "COUPON" ? lockedCoupon?.code ?? null : null,
+        couponProgramName:
+          pricing.benefit.type === "COUPON"
+            ? lockedCoupon?.programName ?? null
+            : null,
+        couponDiscount:
+          pricing.benefit.type === "COUPON"
+            ? pricing.benefit.discount
+            : "0.00",
+        pricingBenefitType: pricing.benefit.type,
+        pricingBenefitLabel: pricing.benefit.label,
+        pricingBenefitDiscount: pricing.benefit.discount,
+        couponSuperseded: pricing.benefit.couponSuperseded,
+        wholesaleProgress: pricing.wholesaleProgress,
+        retailSubtotal: retailSubtotal.toFixed(2),
+        lines: pricing.items.map((item) => ({
+          productUnitId: item.productUnitId,
+          quantity: item.quantity,
+          retailUnitPrice: item.retailUnitPrice,
+          discountPerUnit: item.discountPerUnit,
+          couponDiscountPerUnit: item.couponDiscountPerUnit ?? "0.00",
+          unitPrice: item.unitPrice,
+          lineTotal: item.lineTotal,
+        })),
+        ...totals,
+      };
+    },
+    { gate: "NONE" },
+  );
 }
 
 /** طلب متجر جديد — server-priced، مُتحقَّق، idempotent، ذرّي. لا أثر مالي (PENDING فقط). */
@@ -719,14 +1215,32 @@ function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {
   if (!gov)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "المحافظة غير معروفة",
+      message: appErrorMessage({
+        what: "تعذّر إتمام الطلب",
+        why: "المحافظة المُرسَلة ليست من محافظات التوصيل المعروفة لدينا، فلا نستطيع حساب الأجرة ولا إسناد المندوب",
+        doThis: "اختر محافظتك من القائمة المنسدلة ثمّ أعد تأكيد الطلب",
+      }),
     });
   const name = input.customerName.trim();
   const phone = normalizeStorePhone(input.customerPhone);
   if (!name)
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إتمام الطلب",
+        why: "حقل الاسم فارغ، والمندوب يحتاج اسماً يسأل عنه عند التسليم",
+        doThis: "اكتب اسمك في حقل «الاسم» ثمّ أعد تأكيد الطلب",
+      }),
+    });
   if (!phone)
-    throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الهاتف مطلوب" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إتمام الطلب",
+        why: "حقل رقم الهاتف فارغ، وهو الوسيلة الوحيدة لتأكيد الطلب معك ولتواصل المندوب",
+        doThis: "اكتب رقم هاتفك بصيغة 07XXXXXXXXX ثمّ أعد تأكيد الطلب",
+      }),
+    });
   if (input.authenticatedCustomer != null) {
     const sessionPhone = normalizeStorePhone(input.authenticatedCustomer.phone);
     if (
@@ -734,12 +1248,28 @@ function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {
       input.authenticatedCustomer.customerId <= 0 ||
       sessionPhone !== phone
     ) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "رقم الطلب لا يطابق جلسة العميل الموثّقة" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر إتمام الطلب",
+          why: "رقم الهاتف المكتوب في الطلب لا يطابق رقم الحساب الذي سجّلتَ الدخول به",
+          doThis:
+            "اكتب رقم حسابك في حقل الهاتف، أو سجّل الخروج وأكمِل الطلب كضيف بالرقم الذي تريده",
+        }),
+      });
     }
   }
   const address = input.addressText.trim();
   if (!address)
-    throw new TRPCError({ code: "BAD_REQUEST", message: "العنوان مطلوب" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إتمام الطلب",
+        why: "حقل العنوان فارغ، ولا يستطيع المندوب الوصول إليك بلا عنوان",
+        doThis:
+          "اكتب المنطقة وأقرب نقطةٍ دالّة في حقل «العنوان» ثمّ أعد تأكيد الطلب",
+      }),
+    });
   const requestedLineQuantities = new Map<number, number>();
   for (const line of normalizedLines) {
     requestedLineQuantities.set(line.productUnitId, line.quantity);
@@ -766,13 +1296,15 @@ export async function findOwnedOnlineOrderReplay(
 ): Promise<CreateOnlineOrderResult | null> {
   if (!input.clientRequestId) return null;
   const identity = normalizeOwnedReplayIdentity(input);
-  return withTx((tx) => loadOwnedReplay(
-    tx,
-    input,
-    identity.phone,
-    identity.requestedShippingAddress,
-    identity.requestedLineQuantities,
-  ));
+  return withTx((tx) =>
+    loadOwnedReplay(
+      tx,
+      input,
+      identity.phone,
+      identity.requestedShippingAddress,
+      identity.requestedLineQuantities,
+    ),
+  );
 }
 
 async function createOnlineOrderAttempt(
@@ -825,30 +1357,50 @@ async function createOnlineOrderAttempt(
 
     // أول قفل أعمال مشترك: العميل. منه نشتق customerId الحقيقي قبل فحص القسيمة، فلا تبقى
     // القسيمة الشخصية/حد العميل معلّقين على customerId=null. الجلسة الموثقة يجب أن تطابق الصف.
-    const customerId = await lockOrCreateOnlineCustomer(tx, phone, name, input.authenticatedCustomer);
+    const customerId = await lockOrCreateOnlineCustomer(
+      tx,
+      phone,
+      name,
+      input.authenticatedCustomer,
+    );
     const lockedCoupon = input.couponCode
       ? await lockCouponForSale(tx, {
           code: input.couponCode,
           branchId,
           customerId,
           requireAuthenticatedAssignedCustomer: true,
-          authenticatedCustomerId: input.authenticatedCustomer?.customerId ?? null,
+          authenticatedCustomerId:
+            input.authenticatedCustomer?.customerId ?? null,
           todayYmd: todayYmdBaghdad(),
         })
       : null;
 
     // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
     // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل الوحدات.
-    const items = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
+    const initialPricing = await priceOnlineOrderLines(tx, branchId, normalizedLines, {
+      lock: false,
+      coupon: lockedCoupon,
+    });
+    const items = initialPricing.items;
     const requestedBaseByVariant = new Map<number, number>();
 
     // ترتيب الأقفال العالمي: customer → productUnit → variant/branchStock → order/items.
     // نقفل معنى الكمية قبل الوصفة وATP؛ تعديل العامل المتزامن إمّا يسبقنا فنرفض
     // لقطة السلة القديمة، أو ينتظرنا ثم يرى الطلب النشط ويرفض التعديل.
-    const unitIds = Array.from(new Set(items.map((item) => item.productUnitId))).sort((a, b) => a - b);
+    const unitIds = Array.from(
+      new Set(items.map((item) => item.productUnitId)),
+    ).sort((a, b) => a - b);
     const currentUnits = await lockProductUnitsForOnlineAllocation(tx, unitIds);
-    const currentFactorByUnit = new Map(currentUnits.map((unit) => [unit.id, unit.conversionFactor]));
-    const currentItems = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: true, coupon: lockedCoupon });
+    const currentFactorByUnit = new Map(
+      currentUnits.map((unit) => [unit.id, unit.conversionFactor]),
+    );
+    const currentPricing = await priceOnlineOrderLines(
+      tx,
+      branchId,
+      normalizedLines,
+      { lock: true, coupon: lockedCoupon },
+    );
+    const currentItems = currentPricing.items;
     requestedBaseByVariant.clear();
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
@@ -857,12 +1409,19 @@ async function createOnlineOrderAttempt(
         ? currentFactorByUnit.get(current.productUnitId)
         : undefined;
       if (
-        !current || current.productUnitId !== item.productUnitId || factor == null ||
+        !current ||
+        current.productUnitId !== item.productUnitId ||
+        factor == null ||
         !money(item.quantity).times(factor).eq(item.baseQuantity)
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تغيّرت أهلية منتج أو وحدة في السلة أثناء الطلب — حدّث السلة وأعد المحاولة",
+          message: appErrorMessage({
+            what: "تعذّر إتمام الطلب",
+            why: "تغيّر أحد أصناف سلّتك في أثناء تأكيد الطلب فلم يعد متاحاً بالشكل الذي عُرض لك (تبدّلت عبوته أو أُوقف عرضه)",
+            doThis:
+              "حدّث الصفحة لترى السلّة بأصنافها وأسعارها الحالية، ثمّ أعد تأكيد الطلب",
+          }),
         });
       }
       item.productId = current.productId;
@@ -875,7 +1434,9 @@ async function createOnlineOrderAttempt(
       item.lineTotal = current.lineTotal;
       item.discountPerUnit = current.discountPerUnit;
       item.couponDiscountPerUnit = current.couponDiscountPerUnit;
-      const requestedBase = (requestedBaseByVariant.get(current.variantId) ?? 0) + current.baseQuantity;
+      const requestedBase =
+        (requestedBaseByVariant.get(current.variantId) ?? 0) +
+        current.baseQuantity;
       requestedBaseByVariant.set(current.variantId, requestedBase);
     }
     for (let index = 0; index < items.length; index++) {
@@ -883,7 +1444,12 @@ async function createOnlineOrderAttempt(
       if (expected != null && !round2(expected).eq(items[index].unitPrice)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تغيّر سعر أحد المنتجات منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
+          message: appErrorMessage({
+            what: "تغيّر سعر أحد الأصناف قبل تأكيد الطلب",
+            why: `السعر المعروض في سلّتك ${expected} د.ع والسعر الحالي ${items[index].unitPrice} د.ع، ولا نُتمّ طلباً بسعرٍ لم تره`,
+            doThis:
+              "حدّث الصفحة لترى السعر الجديد، ثمّ اضغط «تأكيد الطلب» للموافقة عليه",
+          }),
         });
       }
     }
@@ -945,7 +1511,12 @@ async function createOnlineOrderAttempt(
       if (!components.length) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `«${item.productName}» بكج غير مكتمل ولا يمكن طلبه`,
+          message: appErrorMessage({
+            what: `تعذّر طلب «${item.productName}»`,
+            why: "محتويات هذا العرض غير مكتملة عندنا الآن، فلا نستطيع تجهيزه كما هو معروض",
+            doThis:
+              "احذفه من السلّة وأكمِل بقيّة الطلب، أو تواصل معنا لنُخبرك متى يجهز",
+          }),
         });
       }
       for (const component of components) {
@@ -956,16 +1527,42 @@ async function createOnlineOrderAttempt(
         );
       }
     }
-    const couponDiscount = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
-    if (lockedCoupon && couponDiscount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
-    const quoteTotals = await totalOnlineOrderQuote(tx, items, input.governorate, storeSettings?.freeShippingThreshold);
+    if (lockedCoupon && money(currentPricing.couponCandidateDiscount).lte(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تطبيق الكوبون «${lockedCoupon.code}»`,
+          why: "لا صنف في سلّتك يشمله هذا الكوبون، فخصمُه صفر",
+          doThis:
+            "أزِل الكوبون لإتمام الطلب بالسعر المعروض، أو أضِف صنفاً يشمله العرض",
+        }),
+      });
+    const retailSubtotal = round2(items.reduce(
+      (sum, item) => sum.plus(money(item.retailUnitPrice).times(item.quantity)),
+      money(0),
+    ));
+    const quoteTotals = await totalOnlineOrderQuote(
+      tx,
+      items,
+      input.governorate,
+      storeSettings?.freeShippingThreshold,
+      retailSubtotal.toFixed(2),
+    );
     const subtotal = money(quoteTotals.subtotal);
     const deliveryFee = money(quoteTotals.deliveryFee);
     const total = money(quoteTotals.total);
-    if (input.expectedGrandTotal != null && !round2(input.expectedGrandTotal).eq(total)) {
+    if (
+      input.expectedGrandTotal != null &&
+      !round2(input.expectedGrandTotal).eq(total)
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر إجمالي الطلب أو أجرة التوصيل منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
+        message: appErrorMessage({
+          what: "تغيّر إجمالي الطلب قبل تأكيده",
+          why: `الإجمالي الذي وافقتَ عليه ${String(input.expectedGrandTotal)} د.ع والإجمالي الحالي ${quoteTotals.total} د.ع بعد احتساب الأصناف وأجرة التوصيل`,
+          doThis:
+            "راجِع الإجمالي الجديد في السلّة، ثمّ اضغط «تأكيد الطلب» للموافقة عليه",
+        }),
       });
     }
 
@@ -993,23 +1590,67 @@ async function createOnlineOrderAttempt(
     )) {
       const available = stockAvailability.get(variantId);
       if (available?.isService) continue;
-      if (
-        !available ||
-        available.isBundle ||
-        requiredBase > available.availableBase
-      ) {
+      // ⚠️ **ثلاثةُ أسبابٍ لا سببٌ واحد** — والشرطُ والترتيب والرمز كما كانت حرفياً، فُصلت
+      // الفروع للرسالة وحدها. أوّلُ صياغةٍ بالعقد جزمت بسببٍ واحد («الحجوزات تشغل المتوفّر»)
+      // فصار **كذباً محضاً** في فرعَي «الصنف غير معروض» و«صنفٌ مركّب»، و«أنقص الكمية» طريقاً
+      // مسدوداً فيهما: تخفيضُ الكمية لا يُصلح صنفاً ليس في خريطة التوفّر أصلاً.
+      // ⇒ **`why` سببٌ لا تخمين** (عقد `shared/errors.ts`)، والزبونُ يقرأ هذه الرسائل لا الموظّف.
+      if (!available) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message:
-            "لا تتوفر الكمية المطلوبة حالياً بعد احتساب الحجوزات النشطة والطلبات النشطة — حدّث السلة",
+          message: appErrorMessage({
+            what: "تعذّر إتمام الطلب",
+            why: "أحد أصناف سلّتك لم يعد معروضاً للبيع",
+            doThis:
+              "احذف الصنف من السلّة وأعد المحاولة، أو تواصل معنا لنوفّره لك",
+          }),
+        });
+      }
+      if (available.isBundle) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إتمام الطلب",
+            why: "أحد أصناف سلّتك عرضٌ مركّب لا يُتاح طلبه من المتجر",
+            doThis:
+              "احذف الصنف من السلّة وأعد المحاولة، وتواصل معنا لطلبه مباشرةً",
+          }),
+        });
+      }
+      if (requiredBase > available.availableBase) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إتمام الطلب",
+            why: // ⚠️ **عبارتان متعاقَدٌ عليهما في هذه الرسالة الواحدة، لا واحدة**:
+            // «الحجوزات النشطة» يطابقها اختبارُ ATP بعد الحجوزات، و«الطلبات النشطة»
+            // يطابقها اختبارُ البكج (`bundle-blocks-component`) — كلاهما في
+            // `onlineOrderAvailability.test.ts`. أوّلُ صياغةٍ حفظت الأولى وأسقطت الثانية،
+            // فمرّت الأنواعُ والحرّاسُ خضراءَ وسقطت الحزمةُ على CI وحدها.
+            // ⇒ أيّ إعادة صياغةٍ هنا تُبقي **العبارتين حرفياً**.
+            "الكمية المطلوبة من أحد أصناف سلّتك أكثر من المتوفّر الآن بعد احتساب الحجوزات النشطة والطلبات النشطة لزبائن آخرين",
+            doThis:
+              "أنقص الكمية أو احذف الصنف ثمّ أعد المحاولة، أو تواصل معنا لنحجزه لك حين يصل",
+          }),
         });
       }
     }
 
+    const selectedCoupon =
+      currentPricing.benefit.type === "COUPON" ? lockedCoupon : null;
+    const couponDiscount = selectedCoupon
+      ? money(currentPricing.benefit.discount)
+      : money(0);
+
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
     const guestTrackingPublicId = randomBytes(16).toString("hex");
-    const guestTrackingExpiresAt = new Date(Date.now() + GUEST_TRACKING_TTL_SECONDS * 1000);
-    const guestTrackingToken = buildGuestTrackingToken(guestTrackingPublicId, guestTrackingExpiresAt);
+    const guestTrackingExpiresAt = new Date(
+      Date.now() + GUEST_TRACKING_TTL_SECONDS * 1000,
+    );
+    const guestTrackingToken = buildGuestTrackingToken(
+      guestTrackingPublicId,
+      guestTrackingExpiresAt,
+    );
     const insOrder = await tx.insert(onlineOrders).values({
       orderNumber: `TMP-${randomUUID()}`,
       customerId,
@@ -1029,8 +1670,11 @@ async function createOnlineOrderAttempt(
       guestTrackingPublicId,
       guestTrackingTokenHash: hashGuestTrackingToken(guestTrackingToken),
       guestTrackingExpiresAt,
-      couponCode: lockedCoupon?.code ?? null,
+      couponCode: selectedCoupon?.code ?? null,
       couponDiscount: toDbMoney(couponDiscount),
+      pricingBenefitType: currentPricing.benefit.type,
+      pricingBenefitLabel: currentPricing.benefit.label,
+      pricingBenefitDiscount: toDbMoney(currentPricing.benefit.discount),
     });
     const orderId = extractInsertId(insOrder);
     const orderNumber = `ORD-${100000 + orderId}`;
@@ -1047,14 +1691,18 @@ async function createOnlineOrderAttempt(
     const persistedExpiry = (
       await tx
         .select({
-          reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)`,
+          reservationExpiryMs: sql<
+            number | null
+          >`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)`,
         })
         .from(onlineOrders)
         .where(eq(onlineOrders.id, orderId))
         .limit(1)
     )[0]?.reservationExpiryMs;
     if (persistedExpiry == null) {
-      throw new Error("Online order reservation expiry snapshot was not persisted");
+      throw new Error(
+        "Online order reservation expiry snapshot was not persisted",
+      );
     }
     const reservationExpiresAt = new Date(Number(persistedExpiry));
 
@@ -1070,8 +1718,8 @@ async function createOnlineOrderAttempt(
         total: it.lineTotal,
       });
     }
-    if (lockedCoupon) {
-      await reserveCouponForOnlineOrder(tx, lockedCoupon, {
+    if (selectedCoupon) {
+      await reserveCouponForOnlineOrder(tx, selectedCoupon, {
         onlineOrderId: orderId,
         customerId,
         branchId,
@@ -1101,6 +1749,9 @@ export interface OnlineOrderTracking {
   orderNumber: string;
   status: string;
   subtotal: string;
+  pricingBenefitType: StorefrontPricingBenefitType;
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
   deliveryFee: string;
   deliveryFree: boolean;
   deliveryWaivedAmount: string;
@@ -1124,7 +1775,15 @@ export async function trackOnlineOrder(
   _orderNumber: string,
   _phone: string,
 ): Promise<never> {
-  throw new TRPCError({ code: "NOT_FOUND", message: "مسار التتبّع القديم مغلق؛ استعمل جلسة العميل أو رمز التتبّع" });
+  throw new TRPCError({
+    code: "NOT_FOUND",
+    message: appErrorMessage({
+      what: "تعذّر تتبّع الطلب بهذه الطريقة",
+      why: "التتبّع برقم الطلب والهاتف أُغلق حمايةً لطلبات الزبائن من التخمين",
+      doThis:
+        "افتح رابط التتبّع الذي وصلك مع تأكيد الطلب، أو سجّل الدخول بحسابك لترى طلباتك",
+    }),
+  });
 }
 
 type TrackingHeader = {
@@ -1132,6 +1791,9 @@ type TrackingHeader = {
   orderNumber: string;
   status: string;
   subtotal: string;
+  pricingBenefitType: StorefrontPricingBenefitType;
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
   shippingCost: string;
   deliveryFree: boolean;
   deliveryWaivedAmount: string;
@@ -1165,6 +1827,9 @@ async function buildOnlineOrderTracking(
     orderNumber: order.orderNumber,
     status: order.status,
     subtotal: String(order.subtotal),
+    pricingBenefitType: order.pricingBenefitType,
+    pricingBenefitLabel: order.pricingBenefitLabel ?? null,
+    pricingBenefitDiscount: String(order.pricingBenefitDiscount ?? "0"),
     deliveryFee: String(order.shippingCost),
     deliveryFree: order.deliveryFree === true,
     deliveryWaivedAmount: String(order.deliveryWaivedAmount ?? "0"),
@@ -1187,6 +1852,9 @@ function trackingHeaderSelection() {
     orderNumber: onlineOrders.orderNumber,
     status: onlineOrders.status,
     subtotal: onlineOrders.subtotal,
+    pricingBenefitType: onlineOrders.pricingBenefitType,
+    pricingBenefitLabel: onlineOrders.pricingBenefitLabel,
+    pricingBenefitDiscount: onlineOrders.pricingBenefitDiscount,
     shippingCost: onlineOrders.shippingCost,
     deliveryFree: onlineOrders.deliveryFree,
     deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
@@ -1202,44 +1870,232 @@ export async function trackOnlineOrderForCustomer(
   customerId: number,
 ): Promise<OnlineOrderTracking> {
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-  const order = (await db
-    .select(trackingHeaderSelection())
-    .from(onlineOrders)
-    .where(and(
-      eq(onlineOrders.orderNumber, orderNumber.trim()),
-      eq(onlineOrders.customerId, customerId),
-    ))
-    .limit(1))[0];
-  if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  if (!db)
+    // ⭐ الرمزُ `INTERNAL_SERVER_ERROR` لا `NOT_FOUND` — أمسكته مراجعةٌ عدائية (٢/٩/٢٦):
+    // `!db` تعطُّلُ خدمةٍ لا مستندٌ مفقود. و[`Storefront.tsx`](../../client/src/pages/Storefront.tsx)
+    // **يتفرّع على الرمز ويُلغي نصَّ الرسالة** (`code === "NOT_FOUND" ? "notfound" : "error"`)
+    // ⇒ كان الزبون يرى «طلبك غير موجود» أثناء تعطُّل القاعدة: خبرٌ كاذبٌ عن طلبه هو، لا
+    // مجرّد تناقضٍ في الصياغة. وإصلاحُ النصّ وحده لا يبلغه أصلاً لأنّ الشاشة تطرحه.
+    // ⚠️ ولا يمسّ هذا `NOT_FOUND` **المقصود** على الرمز المزوَّر أو المُدوَّر أو طلبِ زبونٍ آخر
+    // (`onlineOrderTrackingSecurity.test.ts`): إخفاءُ الوجود هناك ضابطٌ يمنع الاستكشاف.
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: appErrorMessage({
+        what: "تعذّر عرض الطلب الآن",
+        why: "خدمة الطلبات غير متاحة مؤقّتاً — طلبك لم يُفقد ولم يتغيّر شيء فيه",
+        doThis: "أعد المحاولة بعد دقائق، وإن استمرّ الأمر فتواصل معنا",
+      }),
+    });
+  const order = (
+    await db
+      .select(trackingHeaderSelection())
+      .from(onlineOrders)
+      .where(
+        and(
+          eq(onlineOrders.orderNumber, orderNumber.trim()),
+          eq(onlineOrders.customerId, customerId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!order)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر عرض الطلب",
+        why: "لا يوجد طلبٌ بهذا الرقم على حسابك، أو أنّ الرقم غير صحيح",
+        doThis:
+          "افتح «طلباتي» واختر الطلب من القائمة، أو تواصل معنا ومعك رقم الطلب",
+      }),
+    });
   return buildOnlineOrderTracking(db, order);
 }
 
 /** تتبّع ضيف برمز opaque وحده؛ توقيع/انتهاء/تطابق hash تُفحص قبل إعادة أيّ بيانات. */
-export async function trackOnlineOrderByGuestToken(token: string): Promise<OnlineOrderTracking> {
+export async function trackOnlineOrderByGuestToken(
+  token: string,
+): Promise<OnlineOrderTracking> {
   const verified = parseAndVerifyGuestTrackingToken(token);
-  if (!verified) throw new TRPCError({ code: "NOT_FOUND", message: "رمز التتبّع غير صالح أو منتهي" });
+  if (!verified)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح صفحة تتبّع الطلب",
+        why: "رمز التتبّع غير صالح أو انتهت صلاحيته (الرمز يعمل 30 يوماً من تاريخ الطلب)",
+        doThis:
+          "افتح الرابط كاملاً كما وصلك مع تأكيد الطلب، أو سجّل الدخول بحسابك لترى طلباتك، أو تواصل معنا",
+      }),
+    });
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-  const order = (await db
-    .select({
-      ...trackingHeaderSelection(),
-      guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
-    })
-    .from(onlineOrders)
-    .where(and(
-      eq(onlineOrders.guestTrackingPublicId, verified.publicId),
-      eq(onlineOrders.guestTrackingTokenHash, verified.tokenHash),
-      sql`${onlineOrders.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
-    ))
-    .limit(1))[0];
-  const storedExpirySeconds = order?.guestTrackingExpiresAt == null
-    ? null
-    : Math.floor(order.guestTrackingExpiresAt.getTime() / 1000);
+  if (!db)
+    // ⭐ الرمزُ `INTERNAL_SERVER_ERROR` لا `NOT_FOUND` — أمسكته مراجعةٌ عدائية (٢/٩/٢٦):
+    // `!db` تعطُّلُ خدمةٍ لا مستندٌ مفقود. و[`Storefront.tsx`](../../client/src/pages/Storefront.tsx)
+    // **يتفرّع على الرمز ويُلغي نصَّ الرسالة** (`code === "NOT_FOUND" ? "notfound" : "error"`)
+    // ⇒ كان الزبون يرى «طلبك غير موجود» أثناء تعطُّل القاعدة: خبرٌ كاذبٌ عن طلبه هو، لا
+    // مجرّد تناقضٍ في الصياغة. وإصلاحُ النصّ وحده لا يبلغه أصلاً لأنّ الشاشة تطرحه.
+    // ⚠️ ولا يمسّ هذا `NOT_FOUND` **المقصود** على الرمز المزوَّر أو المُدوَّر أو طلبِ زبونٍ آخر
+    // (`onlineOrderTrackingSecurity.test.ts`): إخفاءُ الوجود هناك ضابطٌ يمنع الاستكشاف.
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: appErrorMessage({
+        what: "تعذّر عرض الطلب الآن",
+        why: "خدمة الطلبات غير متاحة مؤقّتاً — طلبك لم يُفقد ولم يتغيّر شيء فيه",
+        doThis: "أعد المحاولة بعد دقائق، وإن استمرّ الأمر فتواصل معنا",
+      }),
+    });
+  const order = (
+    await db
+      .select({
+        ...trackingHeaderSelection(),
+        guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
+      })
+      .from(onlineOrders)
+      .where(
+        and(
+          eq(onlineOrders.guestTrackingPublicId, verified.publicId),
+          eq(onlineOrders.guestTrackingTokenHash, verified.tokenHash),
+          sql`${onlineOrders.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
+        ),
+      )
+      .limit(1)
+  )[0];
+  const storedExpirySeconds =
+    order?.guestTrackingExpiresAt == null
+      ? null
+      : Math.floor(order.guestTrackingExpiresAt.getTime() / 1000);
   if (!order || storedExpirySeconds !== verified.expiresAtSeconds) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "رمز التتبّع غير صالح أو منتهي" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح صفحة تتبّع الطلب",
+        why: "رمز التتبّع غير صالح أو انتهت صلاحيته (الرمز يعمل 30 يوماً من تاريخ الطلب)",
+        doThis:
+          "افتح الرابط كاملاً كما وصلك مع تأكيد الطلب، أو سجّل الدخول بحسابك لترى طلباتك، أو تواصل معنا",
+      }),
+    });
   }
   return buildOnlineOrderTracking(db, order);
+}
+
+type CancellableOnlineOrder = {
+  id: number;
+  orderNumber: string;
+  status: string;
+};
+
+/** العميل لا يغيّر سير التشغيل: الإلغاء الذاتي متاح فقط قبل اعتماد الموظف. */
+async function cancelPendingOnlineOrder(
+  tx: Tx,
+  order: CancellableOnlineOrder | undefined,
+): Promise<{ orderNumber: string; status: "CANCELLED" }> {
+  if (!order)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح الطلب",
+        why: "لا يوجد طلب متاح بهذه الصلاحية",
+        doThis: "حدّث قائمة طلباتك أو تواصل معنا ومعك رقم الطلب",
+      }),
+    });
+  if (order.status !== "PENDING")
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "لا يمكن إلغاء الطلب ذاتياً الآن",
+        why: "اعتمد موظف المكتبة الطلب أو بدأ تجهيزه، فلا نغيّر حالته تلقائياً حتى لا يتعطل التجهيز أو التوصيل",
+        doThis: "أرسل طلب تعديل أو إلغاء إلى فريق المكتبة ليراجعه معك",
+      }),
+    });
+  const cancelReason = "أُلغي من العميل قبل تأكيد المكتبة";
+  await tx
+    .update(onlineOrders)
+    .set({ status: "CANCELLED", cancelReason })
+    .where(and(eq(onlineOrders.id, order.id), eq(onlineOrders.status, "PENDING")));
+  await releaseCouponReservationForOnlineOrder(tx, order.id, cancelReason);
+  return { orderNumber: order.orderNumber, status: "CANCELLED" };
+}
+
+/** إلغاء مالك موثّق: رقم الطلب selector فقط وملكية العميل محكومة بخادم الجلسة. */
+export async function cancelOnlineOrderForCustomer(
+  orderNumber: string,
+  customerId: number,
+): Promise<{ orderNumber: string; status: "CANCELLED" }> {
+  return withTx(async (tx) => {
+    const order = (
+      await tx
+        .select({
+          id: onlineOrders.id,
+          orderNumber: onlineOrders.orderNumber,
+          status: onlineOrders.status,
+        })
+        .from(onlineOrders)
+        .where(
+          and(
+            eq(onlineOrders.orderNumber, orderNumber.trim()),
+            eq(onlineOrders.customerId, customerId),
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    return cancelPendingOnlineOrder(
+      tx,
+      order && {
+        id: Number(order.id),
+        orderNumber: order.orderNumber,
+        status: order.status,
+      },
+    );
+  });
+}
+
+/** إلغاء ضيف بالرمز opaque نفسه المخصص للتتبّع؛ لا يقبل رقم طلب قابل للتخمين. */
+export async function cancelOnlineOrderByGuestToken(
+  token: string,
+): Promise<{ orderNumber: string; status: "CANCELLED" }> {
+  const verified = parseAndVerifyGuestTrackingToken(token);
+  if (!verified)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح الطلب",
+        why: "رمز التتبّع غير صالح أو انتهت صلاحيته",
+        doThis: "سجّل الدخول بحسابك لرؤية الطلب، أو تواصل معنا ومعك رقم الطلب",
+      }),
+    });
+  return withTx(async (tx) => {
+    const order = (
+      await tx
+        .select({
+          id: onlineOrders.id,
+          orderNumber: onlineOrders.orderNumber,
+          status: onlineOrders.status,
+          guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
+        })
+        .from(onlineOrders)
+        .where(
+          and(
+            eq(onlineOrders.guestTrackingPublicId, verified.publicId),
+            eq(onlineOrders.guestTrackingTokenHash, verified.tokenHash),
+            sql`${onlineOrders.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    const storedExpirySeconds =
+      order?.guestTrackingExpiresAt == null
+        ? null
+        : Math.floor(order.guestTrackingExpiresAt.getTime() / 1000);
+    if (!order || storedExpirySeconds !== verified.expiresAtSeconds) {
+      return cancelPendingOnlineOrder(tx, undefined);
+    }
+    return cancelPendingOnlineOrder(tx, {
+      id: Number(order.id),
+      orderNumber: order.orderNumber,
+      status: order.status,
+    });
+  });
 }
 
 /**
@@ -1257,11 +2113,33 @@ export async function readOnlineOrderLabel(
   }
 > {
   if (!verifyOnlineOrderLabelToken(orderNumber, token)) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "رمز الملصق غير صالح" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح ملصق الطرد",
+        why: "توقيع الملصق لا يطابق رقم الطلب المطبوع عليه، فقد يكون الملصق تالفاً أو المسح ناقصاً",
+        doThis:
+          "امسح رمز الملصق كاملاً من جديد، وإن تكرّر فاتّصل بالمكتبة لتأكيد الطرد",
+      }),
+    });
   }
   const db = getDb();
   if (!db)
-    throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+    // ⭐ الرمزُ `INTERNAL_SERVER_ERROR` لا `NOT_FOUND` — أمسكته مراجعةٌ عدائية (٢/٩/٢٦):
+    // `!db` تعطُّلُ خدمةٍ لا مستندٌ مفقود. و[`Storefront.tsx`](../../client/src/pages/Storefront.tsx)
+    // **يتفرّع على الرمز ويُلغي نصَّ الرسالة** (`code === "NOT_FOUND" ? "notfound" : "error"`)
+    // ⇒ كان الزبون يرى «طلبك غير موجود» أثناء تعطُّل القاعدة: خبرٌ كاذبٌ عن طلبه هو، لا
+    // مجرّد تناقضٍ في الصياغة. وإصلاحُ النصّ وحده لا يبلغه أصلاً لأنّ الشاشة تطرحه.
+    // ⚠️ ولا يمسّ هذا `NOT_FOUND` **المقصود** على الرمز المزوَّر أو المُدوَّر أو طلبِ زبونٍ آخر
+    // (`onlineOrderTrackingSecurity.test.ts`): إخفاءُ الوجود هناك ضابطٌ يمنع الاستكشاف.
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: appErrorMessage({
+        what: "تعذّر عرض الطلب الآن",
+        why: "خدمة الطلبات غير متاحة مؤقّتاً — طلبك لم يُفقد ولم يتغيّر شيء فيه",
+        doThis: "أعد المحاولة بعد دقائق، وإن استمرّ الأمر فتواصل معنا",
+      }),
+    });
   const order = (
     await db
       .select({
@@ -1269,6 +2147,9 @@ export async function readOnlineOrderLabel(
         orderNumber: onlineOrders.orderNumber,
         status: onlineOrders.status,
         subtotal: onlineOrders.subtotal,
+        pricingBenefitType: onlineOrders.pricingBenefitType,
+        pricingBenefitLabel: onlineOrders.pricingBenefitLabel,
+        pricingBenefitDiscount: onlineOrders.pricingBenefitDiscount,
         shippingCost: onlineOrders.shippingCost,
         deliveryFree: onlineOrders.deliveryFree,
         deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
@@ -1287,7 +2168,15 @@ export async function readOnlineOrderLabel(
       .limit(1)
   )[0];
   if (!order)
-    throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح ملصق الطرد",
+        why: "لا يوجد طلبٌ بالرقم المطبوع على الملصق",
+        doThis:
+          "تأكّد من مسح الملصق الصحيح، واتّصل بالمكتبة لتأكيد رقم الطلب إن بقي الأمر",
+      }),
+    });
   const items = await db
     .select({
       productName: products.name,
@@ -1308,6 +2197,9 @@ export async function readOnlineOrderLabel(
     orderNumber: order.orderNumber,
     status: order.status,
     subtotal: String(order.subtotal),
+    pricingBenefitType: order.pricingBenefitType,
+    pricingBenefitLabel: order.pricingBenefitLabel ?? null,
+    pricingBenefitDiscount: String(order.pricingBenefitDiscount ?? "0"),
     deliveryFee: String(order.shippingCost),
     deliveryFree: order.deliveryFree === true,
     deliveryWaivedAmount: String(order.deliveryWaivedAmount ?? "0"),

@@ -8,10 +8,12 @@ export {
   assignTask,
   cancelTask,
   claimTask,
+  resolveCurrentMobileTask,
   reopenTask,
   resolveTask,
   resumeTask,
   setWaiting,
+  startCurrentMobileTask,
 } from "./lifecycle";
 
 export type { ListTasksFilters, TaskKindFilter, TaskListCtx, TaskStatus } from "./list";

@@ -183,6 +183,7 @@ async function preparePurchase(unitPrice = "120.00"): Promise<{
       reason: "راجعت المورد والكميات والأسعار قبل اختبار أثر التكلفة",
     },
     approver,
+    { legacyConfirmOnly: true },
   );
   const line = (
     await db()

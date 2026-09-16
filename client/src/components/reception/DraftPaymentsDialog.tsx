@@ -12,23 +12,16 @@ import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDia
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
+// موجة D6 (٢/٩/٢٦): ثلاثةُ قواميس كانت هنا. نوعُ صفّ العربون وحالتُه مفهومان خاصّان بهذا
+// الجدول ⇒ `@shared/orderDeposit`؛ أمّا طريقةُ الدفع فمفهومٌ عامٌّ له مصدرُه الموحَّد
+// `@shared/terms` (وهو يُرجع النصوص نفسها حرفياً — لا تغيير على ما يراه الموظّف).
+import { orderDepositKindLabel, orderDepositStatusLabel } from "@shared/orderDeposit";
+import { paymentMethodCompact } from "@shared/terms";
 
 type RefundVars = RouterInputs["reception"]["refundDeposit"];
 
 const D = (v: string | number) => new Decimal(v || 0);
 const fmt = (n: number | string) => Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
-
-const KIND_AR: Record<string, string> = {
-  COLLECTION: "قبض عربون",
-  APPLICATION: "طُبِّق على مستند",
-  REFUND: "ردّ",
-};
-const METHOD_AR: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
-};
-const STATUS_AR: Record<string, string> = {
-  HELD: "محتجز", APPLIED: "مُطبَّق", REFUNDED: "مردود كاملاً",
-};
 
 export default function DraftPaymentsDialog({
   draftId,
@@ -121,9 +114,9 @@ export default function DraftPaymentsDialog({
                 <div key={String(r.id)} className={cn("rounded-lg border px-2.5 py-1.5 text-xs", r.kind === "REFUND" && "opacity-75")}>
                   <div className="flex items-center justify-between">
                     <span className="font-bold">
-                      {KIND_AR[r.kind] ?? r.kind}
-                      {r.method ? ` · ${METHOD_AR[String(r.method)] ?? r.method}` : ""}
-                      {isColl && r.status ? ` · ${STATUS_AR[String(r.status)] ?? r.status}` : ""}
+                      {orderDepositKindLabel(r.kind)}
+                      {r.method ? ` · ${paymentMethodCompact(String(r.method))}` : ""}
+                      {isColl && r.status ? ` · ${orderDepositStatusLabel(String(r.status))}` : ""}
                     </span>
                     <span className="font-extrabold tabular-nums" dir="ltr">{fmt(String(r.amount))} د.ع</span>
                   </div>
@@ -195,7 +188,7 @@ export default function DraftPaymentsDialog({
                             ? "جارٍ الردّ…"
                             : String(r.method) === "TELECOM"
                               ? "ردّ نقداً (أصله رصيد زين)"
-                              : `ردّ ${METHOD_AR[String(r.method)] ?? ""}`}
+                              : `ردّ ${r.method ? paymentMethodCompact(String(r.method)) : ""}`}
                         </Button>
                       </div>
                     </div>

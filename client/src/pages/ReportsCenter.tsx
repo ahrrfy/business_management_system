@@ -10,12 +10,12 @@ import { formatIqd } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import {
   Home, TrendingUp, Scale, BookOpen, Landmark, Droplet,
-  ScrollText, Search, Ruler, FileText, Hourglass, SearchCheck, CreditCard,
+  ScrollText, Search, FileText, SearchCheck, CreditCard,
   Package, RefreshCw, ClipboardList, AlertTriangle, FolderOpen, ListOrdered,
   Calculator, Receipt, Banknote, Clock, Clock8, Palmtree, User, Archive,
   Handshake, Recycle, Microscope, ShoppingCart, Users, Truck, Boxes,
   Wallet, Printer, Briefcase, Server, ShieldCheck, Factory, FileStack,
-  LayoutDashboard, Star, MessageCircle, type LucideIcon,
+  LayoutDashboard, Star, MessageCircle, UserCheck, type LucideIcon,
 } from "lucide-react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import type { RoleKey } from "@shared/permissions";
@@ -68,9 +68,7 @@ const SECTIONS: Section[] = [
     icon: ShoppingCart,
     items: [
       { title: "تقارير المبيعات المُوحَّدة", desc: "٣ زَوايا في صَفحة واحدة (مُلخّص/تَفصيلي/حَسَب البُعد)", href: "/reports/sales-hub", icon: LayoutDashboard, gate: "manager", status: "ready" },
-      { title: "تقرير المبيعات (مُلخّص)", desc: "فواتير + أكثر مبيعاً + بطيئة + ربح حسب الفئة", href: "/sales-report", icon: Receipt, gate: "manager", status: "ready" },
-      { title: "سجلّ المبيعات المفصّل", desc: "بمستوى بنود الفاتورة (drill-down)", href: "/reports/sales-register", icon: Search, gate: "manager", status: "ready" },
-      { title: "المبيعات حسب البُعد", desc: "عميل/فرع/كاشير/طريقة دفع", href: "/reports/sales-by-dimension", icon: Ruler, gate: "manager", status: "ready" },
+      // الملخّص والسجلّ والتوزيع تبويبات داخل المجمّع؛ تبقى مساراتها القديمة في App للروابط المحفوظة فقط.
       { title: "تحليل الربحية الحقيقي", desc: "ربح وهامش حسب منتج/فئة/عميل/فرع/كاشير + كشف تآكل الهامش", href: "/reports/profitability", icon: TrendingUp, gate: "manager", status: "ready" },
     ],
   },
@@ -81,8 +79,7 @@ const SECTIONS: Section[] = [
     items: [
       { title: "كشف حساب عميل", desc: "فواتير + دفعات + الرصيد الحالي", href: "/customers-statement", icon: FileText, gate: "manager", status: "ready" },
       { title: "أعمار الذمم المُوحَّدة (مدينة/دائنة)", desc: "مَدينة ودائنة + مُلخَّص/تَفصيل في صَفحة واحدة", href: "/reports/aging-hub", icon: LayoutDashboard, gate: "manager", status: "ready" },
-      { title: "أعمار الذمم المدينة (مُلخَّص)", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ar-aging", icon: Hourglass, gate: "manager", status: "ready" },
-      { title: "تفصيل أعمار الذمم (AR/AP)", desc: "مستندٌ بمستند مع المتبقّي والتأخّر", href: "/reports/aging-detail", icon: SearchCheck, gate: "manager", status: "ready" },
+      // الملخّص والتفصيل تبويبات داخل المجمّع؛ لا نكرّرهما كبطاقات مستقلة.
       { title: "التعرّض الائتماني للعملاء", desc: "أرصدة ومخاطر التحصيل + تصنيف خطر + تذكير واتساب", href: "/reports/credit-exposure", icon: CreditCard, gate: "manager", status: "ready" },
     ],
   },
@@ -92,7 +89,6 @@ const SECTIONS: Section[] = [
     icon: Truck,
     items: [
       { title: "كشف حساب مورد", desc: "أوامر شراء + مدفوعات + الرصيد الحالي", href: "/suppliers-statement", icon: FileText, gate: "manager", status: "ready" },
-      { title: "أعمار الذمم الدائنة", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ap-aging", icon: Hourglass, gate: "manager", status: "ready" },
       { title: "تقرير المشتريات", desc: "بالفترة/المورد + أكبر الموردين", href: "/reports/purchases", icon: Package, gate: "manager", status: "ready" },
       { title: "سجلّ المشتريات المفصّل", desc: "بنود أوامر الشراء سطر-سطر", href: "/reports/purchase-register", icon: Search, gate: "manager", status: "ready" },
     ],
@@ -173,6 +169,15 @@ const SECTIONS: Section[] = [
     items: [
       { title: "سجلّ التدقيق", desc: "كل العمليات الحسّاسة (من/ماذا/متى)", href: "/audit", icon: ScrollText, gate: "admin", status: "ready" },
       { title: "تدقيق التوافق المالي", desc: "كشف الانجراف في الأرصدة/المخزون/الدفتر", href: "/reconcile", icon: Microscope, gate: "admin", status: "ready" },
+      // الضابط التعويضي لقرار المالك «لا اعتماد ثانٍ بعد المالك» (٣/٩/٢٦، PR #962) —
+      // راجع shared/approvalPolicy.ts. مرئيٌّ للمُلّاك فقط (يعتمدون على بعضهم بعضاً).
+      // ⛔ gate:"admin" هنا كان يُحوَّل إلى adminOnly:true (resolveGate) — قيدٌ **إضافيّ**
+      // فوق ownerOnly (فلترة `(!ownerOnly || isOwner) && canSeeGate(...)`، أي AND لا OR)
+      // فيختفي المدخل عن أيّ مالكٍ دورُه ليس admin حرفياً (مراجعة Codex #982) — وهذا بالضبط
+      // ما دفع القرار كلّه: ملّاكٌ حقيقيون (وليد/شهد/نور) لا يحملون بالضرورة دور admin.
+      // gate:"all" يُرجع undefined من resolveGate ⇒ canSeeGate تعيد true دائماً، فيبقى
+      // ownerOnly وحده الحارس — يطابق حرفياً RequireOwner على المسار في App.tsx.
+      { title: "الاعتماد الذاتي", desc: "كل فعلٍ ماليّ اعتمده المالك على نفسه — مرتّبٌ بالمبلغ", href: "/reports/self-approvals", icon: UserCheck, gate: "all", status: "ready", ownerOnly: true },
     ],
   },
 ];
@@ -293,7 +298,7 @@ export default function ReportsCenter() {
         </Card>
         <Card>
           <CardContent className="pt-4 pb-3 text-center">
-            <p className="text-xs text-muted-foreground">الذمم المتأخّرة (+٣٠ يوم)</p>
+            <p className="text-xs text-muted-foreground">الذمم المتأخّرة (+30 يوم)</p>
             <p className="text-xl font-bold tabular-nums text-money-negative" dir="ltr">
               {metrics.isLoading ? "…" : formatIqd(metrics.data?.overdueAR.total ?? 0)}
             </p>

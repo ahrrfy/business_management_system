@@ -17,12 +17,14 @@ import {
 } from "@/components/ui/dialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { Plus } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -138,6 +140,132 @@ export default function Branches() {
     setActive.mutate({ id: b.id, isActive: !b.isActive });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات والقائمة الجانبية).
+  // نفس صفوف الجدول المعروضة (visibleRows بعد البحث) ونفس أعمدته — بلا استعلامٍ جديد.
+  function printBranches() {
+    printReportDoc({
+      title: "قائمة الفروع",
+      headerExtra: [
+        { label: "عدد الفروع", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "name", label: "الاسم" },
+        { key: "code", label: "الرمز" },
+        { key: "type", label: "النوع" },
+        { key: "address", label: "العنوان" },
+        { key: "phone", label: "الهاتف" },
+        { key: "isActive", label: "الحالة", align: "center" },
+      ],
+      rows: visibleRows.map((b) => ({
+        name: b.name,
+        code: b.code,
+        type: TYPE_LABEL[b.type] ?? b.type,
+        address: b.address || "—",
+        phone: b.phone || "—",
+        isActive: b.isActive ? "مفعّل" : "معطّل",
+      })),
+      emptyText: "لا فروع مطابقة.",
+    });
+  }
+
+  // الأعمدة تُبنى داخل العَرض لأنّها تُغلِق على `openEdit`/`toggle` وحالة `setActive.isPending`.
+  const columns: ColumnDef<BranchRow, unknown>[] = [
+    { id: "name", header: "الاسم", accessorFn: (b) => b.name, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+    { id: "code", header: "الرمز", accessorFn: (b) => b.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+    {
+      id: "type",
+      header: "النوع",
+      accessorFn: (b) => TYPE_LABEL[b.type] ?? b.type,
+      cell: ({ row }) => (
+        /* استباقاً لـCodex #764: `Popover` بدل `Tooltip` — يفتح بالنقر/التاب/Enter/Space
+           فيصلُ لمستعمِلي اللمس أيضاً (Radix Tooltip يفشل على اللمس لأنّ pointer-down
+           يُخفي focus-open). زرٌّ دلاليّاً بدل span، بـ`aria-label` لقارئ الشاشة. */
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={`ما معنى «${TYPE_LABEL[row.original.type] ?? row.original.type}»؟`}
+              className="cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm text-start"
+            >
+              {TYPE_LABEL[row.original.type] ?? row.original.type}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent side="top" className="max-w-xs text-xs">
+            {TYPE_TITLE[row.original.type] ?? TYPE_LABEL[row.original.type] ?? row.original.type}
+          </PopoverContent>
+        </Popover>
+      ),
+    },
+    {
+      id: "address",
+      header: "العنوان",
+      accessorFn: (b) => b.address || "—",
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.address || "—"}</span>,
+    },
+    {
+      id: "phone",
+      header: "الهاتف",
+      accessorFn: (b) => b.phone || "—",
+      meta: { kind: "phone" },
+      cell: ({ row }) => <span className="text-xs">{row.original.phone || "—"}</span>,
+    },
+    {
+      id: "isActive",
+      header: "الحالة",
+      accessorFn: (b) => (b.isActive ? "مفعّل" : "معطّل"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={row.original.isActive ? "شرح: الفرع مفعّل" : "شرح: الفرع معطّل"}
+              className={`inline-block cursor-help rounded-full px-2 py-0.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${row.original.isActive ? "badge-status-active" : "badge-stock-out"}`}
+            >
+              {row.original.isActive ? "مفعّل" : "معطّل"}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent side="top" className="max-w-xs text-xs">
+            {row.original.isActive
+              ? "الفرع نشط — يظهر في منتقيات العمليات الجديدة."
+              : "الفرع معطّل — مستثنى من المنتقيات؛ العمليات التاريخية المرتبطة به تبقى بلا مسّ."}
+          </PopoverContent>
+        </Popover>
+      ),
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          actions={[
+            {
+              key: "edit",
+              kind: "edit",
+              label: "تعديل",
+              onSelect: () => openEdit(row.original),
+              gate: { adminOnly: true },
+            },
+            {
+              key: "toggle",
+              kind: "approve",
+              label: row.original.isActive ? "تعطيل" : "تفعيل",
+              variant: row.original.isActive ? "destructive" : "default",
+              disabled: setActive.isPending,
+              disabledReason: "توجد عملية تحديث قيد التنفيذ",
+              onSelect: () => void toggle(row.original),
+              gate: { adminOnly: true },
+            },
+          ]}
+        />
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -159,7 +287,7 @@ export default function Branches() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printBranches}
             exportSpec={{
               filename: "الفروع",
               rows: visibleRows,
@@ -174,111 +302,25 @@ export default function Branches() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">الاسم</th>
-                  <th className="p-2">الرمز</th>
-                  <th className="p-2">النوع</th>
-                  <th className="p-2">العنوان</th>
-                  <th className="p-2">الهاتف</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((b) => (
-                  <tr key={b.id} className={`border-t ${b.isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">{b.name}</td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{b.code}</td>
-                    <td className="p-2">
-                      {/* استباقاً لـCodex #764: `Popover` بدل `Tooltip` — يفتح بالنقر/التاب/Enter/Space
-                          فيصلُ لمستعمِلي اللمس أيضاً (Radix Tooltip يفشل على اللمس لأنّ pointer-down
-                          يُخفي focus-open). زرٌّ دلاليّاً بدل span، بـ`aria-label` لقارئ الشاشة. */}
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <button
-                            type="button"
-                            aria-label={`ما معنى «${TYPE_LABEL[b.type] ?? b.type}»؟`}
-                            className="cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm text-start"
-                          >
-                            {TYPE_LABEL[b.type] ?? b.type}
-                          </button>
-                        </PopoverTrigger>
-                        <PopoverContent side="top" className="max-w-xs text-xs">
-                          {TYPE_TITLE[b.type] ?? TYPE_LABEL[b.type] ?? b.type}
-                        </PopoverContent>
-                      </Popover>
-                    </td>
-                    <td className="p-2 text-muted-foreground">{b.address || "—"}</td>
-                    <td className="p-2 text-xs" dir="ltr">{b.phone || "—"}</td>
-                    <td className="p-2 text-center">
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <button
-                            type="button"
-                            aria-label={b.isActive ? "شرح: الفرع مفعّل" : "شرح: الفرع معطّل"}
-                            className={`inline-block cursor-help rounded-full px-2 py-0.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}
-                          >
-                            {b.isActive ? "مفعّل" : "معطّل"}
-                          </button>
-                        </PopoverTrigger>
-                        <PopoverContent side="top" className="max-w-xs text-xs">
-                          {b.isActive
-                            ? "الفرع نشط — يظهر في منتقيات العمليات الجديدة."
-                            : "الفرع معطّل — مستثنى من المنتقيات؛ العمليات التاريخية المرتبطة به تبقى بلا مسّ."}
-                        </PopoverContent>
-                      </Popover>
-                    </td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            onSelect: () => openEdit(b),
-                            gate: { adminOnly: true },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: b.isActive ? "تعطيل" : "تفعيل",
-                            variant: b.isActive ? "destructive" : "default",
-                            disabled: setActive.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            onSelect: () => void toggle(b),
-                            gate: { adminOnly: true },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-                {list.isLoading && (
-                  <tr><td colSpan={7}><LoadingState /></td></tr>
-                )}
-                {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={7}
-                    message={
-                      query ? (
-                        <div className="space-y-2">
-                          <div>لا فروع مطابقة للبحث «{query}».</div>
-                          <Button variant="outline" size="sm" onClick={() => setQuery("")}>
-                            مسح البحث
-                          </Button>
-                        </div>
-                      ) : (
-                        "لا فروع بعد — أضِف أوّل فرع بزرّ «فرع جديد» أعلاه."
-                      )
-                    }
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<BranchRow>
+            columns={columns}
+            data={visibleRows}
+            /* البحث في ListToolbar أعلاه (يغذّي visibleRows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={query.trim() !== ""}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            getRowClassName={(b) => (b.isActive ? undefined : "opacity-60")}
+            emptyText="لا فروع بعد — أضِف أوّل فرع بزرّ «فرع جديد» أعلاه."
+            emptyFilteredState={
+              <div className="space-y-2">
+                <div>لا فروع مطابقة للبحث «{query}».</div>
+                <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                  مسح البحث
+                </Button>
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 
@@ -322,7 +364,7 @@ export default function Branches() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => void requestFormClose()}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
-              {createMut.isPending || updateMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {createMut.isPending || updateMut.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

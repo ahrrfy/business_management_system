@@ -185,6 +185,27 @@ describe("طابور الباركود المجهول (ب-٤)", () => {
     expect(byCode.get("GHOST-777")?.resolvedName).toBeNull();
   });
 
+  it("يعالج UPC-A في طابور المجهول عندما يكون الكتالوج قد حفظ EAN-13 المكافئ", async () => {
+    await db().insert(s.productUnitBarcodes).values({
+      productUnitId: 2,
+      barcode: "0036000291452",
+    });
+    const r = await mkSession();
+    const id = await loginPin(r.code, pinOf(r));
+    await recordUnknownScan(id, { barcode: "036000291452", clientRequestId: randomUUID() });
+
+    const list = await listUnknownScans(r.sessionId, { restrictBranchId: null });
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ barcode: "036000291452", resolvable: true, resolvedName: "دفتر 100 ورقة" });
+
+    const resolved = await resolveUnknownScan(
+      { sessionId: r.sessionId, barcode: "036000291452", action: "ADD_TO_SCOPE" },
+      adminActor,
+      { restrictBranchId: null },
+    );
+    expect(resolved.addedVariantId).toBe(2);
+  });
+
   it("الحسم ADD_TO_SCOPE: يُلحق المتغيّر بالجلسة (لقطة رصيد) ويُعلِّم RESOLVED", async () => {
     const r = await mkSession();
     const id = await loginPin(r.code, pinOf(r));

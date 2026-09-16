@@ -1,6 +1,4 @@
 import { RowActions } from "@/components/list";
-import { FinancialTraceDetails } from "@/components/financial/FinancialTraceDetails";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -10,15 +8,6 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
@@ -27,12 +16,8 @@ import { exportRows, type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
-import { printDoc } from "@/lib/printing/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { EXPENSE_BUCKET_LABEL } from "@shared/expenseCategories";
-import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
-import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
+import { trpc } from "@/lib/trpc";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -60,599 +45,38 @@ import {
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import {
-  expenseAuditDetail,
   expenseStatusFromSearch,
   isExpenseFinanciallyPrintable,
-} from "./expenseUiPolicy";
+} from "@/lib/expenseUiPolicy";
 import { selectClsFull } from "@/lib/ui/formStyles";
 
 
-// الدلو المحاسبيّ وتسميته من المصدر المشترك (كانت نسخةً محلّية رابعة تنجرف عن الباقي).
-const CATEGORY_LABEL: Record<string, string> = EXPENSE_BUCKET_LABEL;
-
-/** ما يُعرض للمستخدم: الفئة المُدارة إن وُجدت، وإلّا الدلو (سجلّات سبقت التصنيف). */
-function expenseCategoryText(row: {
-  category: string;
-  expenseCategoryName?: string | null;
-}): string {
-  return row.expenseCategoryName ?? CATEGORY_LABEL[row.category] ?? row.category;
-}
-
-const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  CHECK: "صك",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  ACCRUAL: "استحقاق",
-};
-
-// production-slice: مصدر الصرف من المخزون (نثرية/تلف) بدل طريقة الدفع.
-const STOCK_REASON_LABEL: Record<string, string> = {
-  INTERNAL_USE: "نثرية (مخزون)",
-  WASTAGE: "تلف (مخزون)",
-};
-function sourceLabel(r: {
-  source?: string | null;
-  stockReason?: string | null;
-  paymentMethod: string;
-}) {
-  if (r.source === "STOCK")
-    return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "مخزون";
-  return METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod;
-}
-
-const STATUS_CLS: Record<string, string> = {
-  PENDING_APPROVAL: "badge-status-pending",
-  ACTIVE: "badge-status-active",
-  REJECTED: "badge-status-cancelled",
-  CANCELLED: "badge-status-cancelled",
-};
-const STATUS_LABEL: Record<string, string> = {
-  PENDING_APPROVAL: "بانتظار اعتماد المالك",
-  ACTIVE: "نافذ",
-  REJECTED: "مرفوض بلا صرف",
-  CANCELLED: "مُلغى",
-};
-
-/** حجم صفحة القائمة — الخادم يُرقّم (سقفه ١٠٠٠). */
-const PAGE_SIZE = 50;
-
-type ExpenseRowBase = RouterOutputs["expenses"]["list"]["rows"][number];
-
-/**
- * عقد العرض الموسّع. جميع الحقول اختيارية عمداً حتى يبقى نشر الواجهة آمناً أثناء
- * ترقية خدمة المصروفات، وتظهر «—» بدلاً من كسر الشاشة عند سجل تاريخي ناقص.
- */
-type ExpenseRow = ExpenseRowBase &
-  Partial<{
-    cashBucket: "DRAWER" | "TREASURY" | null;
-    payee: string | null;
-    costCenter: string | null;
-    receiptId: number | null;
-    createdBy: number | null;
-    createdByName: string | null;
-    shiftOwnerName: string | null;
-    shiftType: string | null;
-    shiftStatus: string | null;
-    receiptVoucherNumber: string | null;
-    receiptStatus: string | null;
-    approvalStatus: string | null;
-    approvedByName: string | null;
-    updatedAt: string | Date | null;
-    fundingKind: string | null;
-    integrityWarnings: string[] | null;
-    accrualObligationId: number | null;
-    accrualKind: string | null;
-    settlementStatus: string | null;
-    accrualBeneficiaryName: string | null;
-    accrualEvidenceReference: string | null;
-    recognitionAccountingEntryId: number | null;
-    settlementAccountingEntryId: number | null;
-    settlementReceiptId: number | null;
-  }>;
-
-type ExpenseTotals = {
-  active?: string | number | null;
-  pendingApproval?: string | number | null;
-  rejected?: string | number | null;
-  count?: number | null;
-  drawer?: string | number | null;
-  treasury?: string | number | null;
-  nonCash?: string | number | null;
-  stock?: string | number | null;
-  cancelled?: string | number | null;
-  needsAudit?: string | number | null;
-  missingDescription?: string | number | null;
-  missingPayee?: string | number | null;
-  sourceMismatch?: string | number | null;
-  drawerMismatch?: string | number | null;
-  accruedUnpaid?: string | number | null;
-  accruedPaid?: string | number | null;
-};
-
-type FundingKind =
-  | "PENDING"
-  | "DRAWER"
-  | "TREASURY"
-  | "NON_CASH"
-  | "ACCRUED_UNPAID"
-  | "ACCRUED_PAID"
-  | "STOCK"
-  | "UNATTRIBUTED";
-
-type AuditFocus = "DESCRIPTION" | "PAYEE" | "SOURCE" | "DRAWER";
-
-const FUNDING_ORDER: FundingKind[] = [
-  "PENDING",
-  "DRAWER",
-  "TREASURY",
-  "NON_CASH",
-  "ACCRUED_UNPAID",
-  "ACCRUED_PAID",
-  "STOCK",
-  "UNATTRIBUTED",
-];
-const FUNDING_META: Record<
-  FundingKind,
-  { label: string; short: string; badge: string }
-> = {
-  PENDING: {
-    label: "طلبات اعتماد غير منفذة",
-    short: "بلا أثر مالي",
-    badge: "badge-status-pending",
-  },
-  DRAWER: {
-    label: "مصروفات الأدراج والورديات",
-    short: "درج وردية",
-    badge: "badge-status-active",
-  },
-  TREASURY: {
-    label: "مصروفات الخزينة الإدارية",
-    short: "خزينة إدارية",
-    badge: "badge-status-pending",
-  },
-  NON_CASH: {
-    label: "مصروفات غير نقدية",
-    short: "غير نقدي",
-    badge: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-  },
-  ACCRUED_UNPAID: {
-    label: "مصروفات مستحقة غير مدفوعة",
-    short: "مستحق غير مدفوع",
-    badge: "badge-status-pending",
-  },
-  ACCRUED_PAID: {
-    label: "مصروفات مستحقة سُوّيت فعلياً",
-    short: "استحقاق مسوّى",
-    badge: "badge-status-active",
-  },
-  STOCK: {
-    label: "مصروفات من المخزون بالكلفة",
-    short: "مخزون",
-    badge: "badge-stock-low",
-  },
-  UNATTRIBUTED: {
-    label: "مصروفات تحتاج تحديد مصدر التمويل",
-    short: "مصدر غير محسوم",
-    badge: "badge-status-cancelled",
-  },
-};
-
-const SHIFT_TYPE_LABEL: Record<string, string> = {
-  RETAIL: "تجزئة",
-  RECEPTION: "استقبال",
-  PRINT_SERVICES: "خدمات الطباعة",
-};
-const SHIFT_STATUS_LABEL: Record<string, string> = {
-  OPEN: "مفتوحة",
-  CLOSED: "مغلقة",
-};
-const APPROVAL_LABEL: Record<string, string> = {
-  APPROVED: "معتمد",
-  PENDING_APPROVAL: "بانتظار الاعتماد",
-  REJECTED: "مرفوض",
-};
-
-function fundingKindOf(r: ExpenseRow): FundingKind {
-  if (r.status === "PENDING_APPROVAL" || r.status === "REJECTED")
-    return "PENDING";
-  if (r.fundingKind && FUNDING_ORDER.includes(r.fundingKind as FundingKind))
-    return r.fundingKind as FundingKind;
-  if (r.source === "STOCK") return "STOCK";
-  if (r.paymentMethod !== "CASH") return "NON_CASH";
-  if (r.cashBucket === "TREASURY") return "TREASURY";
-  if (r.cashBucket === "DRAWER" || r.shiftId != null) return "DRAWER";
-  return "UNATTRIBUTED";
-}
-
-/** رسائل تدقيق مفهومة للمستخدم بدلاً من رموز السلامة الداخلية. */
-const AUDIT_WARNING_LABEL: Record<string, string> = {
-  DESCRIPTION_MISSING: "لا يوجد شرح للعملية",
-  PAYEE_MISSING: "المستفيد غير محدد",
-  RECEIPT_MISSING: "إيصال الصرف غير مرتبط",
-  RECEIPT_DIRECTION_MISMATCH: "اتجاه الإيصال لا يطابق عملية الصرف",
-  RECEIPT_AMOUNT_MISMATCH: "مبلغ الإيصال لا يطابق المصروف",
-  RECEIPT_BRANCH_MISMATCH: "فرع الإيصال لا يطابق فرع المصروف",
-  RECEIPT_SHIFT_MISMATCH: "وردية الإيصال لا تطابق وردية المصروف",
-  RECEIPT_PAYMENT_METHOD_MISMATCH: "طريقة دفع الإيصال غير مطابقة",
-  RECEIPT_CASH_BUCKET_MISMATCH: "مصدر النقد في الإيصال غير مطابق",
-  RECEIPT_CREATOR_MISMATCH: "منشئ الإيصال لا يطابق منشئ المصروف",
-  RECEIPT_STATUS_MISMATCH: "حالة الإيصال لا تطابق حالة المصروف",
-  RECEIPT_NOT_APPROVED: "إيصال الصرف غير معتمد",
-  CASH_FUNDING_UNKNOWN: "مصدر النقد غير محسوم",
-  DRAWER_WITHOUT_SHIFT: "صرف درج بلا وردية",
-  TREASURY_WITH_SHIFT: "صرف خزينة مرتبط خطأً بورديّة",
-  NON_CASH_HAS_CASH_BUCKET: "عملية غير نقدية مرتبطة بدرج أو خزينة",
-  STOCK_HAS_RECEIPT: "صرف مخزون مرتبط خطأً بإيصال نقدي",
-  STOCK_HAS_CASH_LOCATION: "صرف مخزون مرتبط خطأً بدرج أو خزينة",
-  PENDING_RECEIPT_MISMATCH: "طلب الاعتماد لا يطابق إيصالاً معلّقاً",
-  REJECTED_RECEIPT_MISMATCH: "رفض الطلب لا يطابق حالة الإيصال",
-  UNEXECUTED_HAS_CASH_LOCATION: "طلب غير منفذ مرتبط خطأً بمصدر نقد",
-  ACCRUAL_PAYMENT_METHOD_MISMATCH:
-    "طريقة المصروف المستحق لا تطابق عقد الاستحقاق",
-  ACCRUAL_HAS_DIRECT_RECEIPT:
-    "الاعتراف بالاستحقاق مرتبط خطأً بإيصال نقدي مباشر",
-  ACCRUAL_HAS_CASH_LOCATION: "الاعتراف بالاستحقاق مرتبط خطأً بدرج أو خزينة",
-  ACCRUAL_OBLIGATION_MISSING: "سجل التزام الاستحقاق مفقود",
-  ACCRUAL_RECOGNITION_ENTRY_MISSING: "قيد الاعتراف بالاستحقاق مفقود",
-  ACCRUAL_SETTLEMENT_TRACE_MISSING: "أثر تسوية الاستحقاق المدفوع غير مكتمل",
-  UNPAID_ACCRUAL_HAS_SETTLEMENT_EFFECT:
-    "استحقاق غير مدفوع يحمل أثر تسوية متناقضاً",
-};
-
-function warningsOf(r: ExpenseRow): string[] {
-  const warnings = new Set(
-    (r.integrityWarnings ?? [])
-      .filter(Boolean)
-      .map((warning) => AUDIT_WARNING_LABEL[warning] ?? warning),
-  );
-  if (!r.description?.trim()) warnings.add("لا يوجد شرح للعملية");
-  if (Object.prototype.hasOwnProperty.call(r, "payee") && !r.payee?.trim())
-    warnings.add("المستفيد غير محدد");
-  const funding = fundingKindOf(r);
-  if (funding === "UNATTRIBUTED") warnings.add("مصدر النقد غير محسوم");
-  if (funding === "DRAWER" && r.shiftId == null)
-    warnings.add("صرف درج بلا وردية");
-  return Array.from(warnings);
-}
-
-function fundingDetail(r: ExpenseRow): string {
-  const kind = fundingKindOf(r);
-  if (kind === "PENDING")
-    return r.paymentMethod === "CASH"
-      ? "طلب اعتماد خزينة — لم يُصرف"
-      : `طلب اعتماد ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod} — لم يُنفذ`;
-  if (kind === "ACCRUED_UNPAID")
-    return `${r.accrualBeneficiaryName ?? r.payee ?? "مستفيد غير موثق"} · اعتراف محاسبي بلا خروج نقدي`;
-  if (kind === "ACCRUED_PAID")
-    return `${r.accrualBeneficiaryName ?? r.payee ?? "مستفيد غير موثق"} · سُوّي بسند وقيد مستقلين`;
-  if (kind === "DRAWER") {
-    return (
-      [r.shiftOwnerName, r.shiftId != null ? `وردية #${r.shiftId}` : null]
-        .filter(Boolean)
-        .join(" · ") || "درج وردية"
-    );
-  }
-  if (kind === "TREASURY") return "الخزينة الإدارية";
-  if (kind === "STOCK")
-    return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "صرف مخزون";
-  if (kind === "NON_CASH")
-    return METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod;
-  return "يحتاج مطابقة مع الإيصال والوردية";
-}
-
-function metric(value: string | number | null | undefined): string {
-  return value == null ? "—" : fmt(value);
-}
-
-function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
-  const trace = trpc.expenses.trace.useQuery({ expenseId });
-
-  if (trace.isLoading) {
-    return (
-      <div className="flex min-h-28 items-center justify-center gap-2 rounded-lg border bg-muted/20 text-sm text-muted-foreground">
-        <Loader2 aria-hidden className="size-4 animate-spin" />
-        جارٍ تحميل مسار المستند والقيد…
-      </div>
-    );
-  }
-  if (trace.isError || !trace.data) {
-    return (
-      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-        تعذّر تحميل مسار التتبّع لهذا المصروف.
-      </div>
-    );
-  }
-
-  const expense = trace.data.expense as ExpenseRow;
-  const directReceiptId =
-    expense.receiptId == null ? null : Number(expense.receiptId);
-  const settlementReceiptId =
-    expense.settlementReceiptId == null
-      ? null
-      : Number(expense.settlementReceiptId);
-  const receiptId = settlementReceiptId ?? directReceiptId;
-  const obligationEvents = trace.data.obligationEvents ?? [];
-  const warnings = warningsOf(expense);
-  const reversal = trace.data.reversalReceipts[0];
-
-  return (
-    <FinancialTraceDetails
-      compact
-      title={`مسار المصروف EXP#${expenseId}`}
-      description="سلسلة المستند من الإدخال إلى إيصال الصرف والقيد المحاسبي وأي إلغاء أو عكس لاحق."
-      document={{
-        id: expenseId,
-        number: `EXP#${expenseId}`,
-        type: "مصروف",
-        status: STATUS_LABEL[expense.status] ?? expense.status,
-        statusTone:
-          expense.status === "REJECTED"
-            ? "critical"
-            : expense.status === "PENDING_APPROVAL" ||
-                expense.status === "CANCELLED"
-              ? "warning"
-              : "ok",
-        direction: "OUT",
-        amount: `${fmt(expense.amount)} د.ع`,
-        branch: expense.branchName,
-        reference: expense.referenceNumber,
-        description: expense.description?.trim() || "لا يوجد شرح للعملية",
-        extra: [
-          {
-            label: "الفئة / مركز التكلفة",
-            value: `${expenseCategoryText(expense)}${expense.costCenter ? ` · ${expense.costCenter}` : ""}`,
-          },
-          { label: "حالة الاعتماد", value: expense.approvalStatus },
-          { label: "حالة الاستحقاق", value: expense.settlementStatus },
-          {
-            label: "مرجع دليل المصدر",
-            value: expense.accrualEvidenceReference,
-          },
-        ],
-      }}
-      parties={{
-        recordedBy: {
-          name: expense.createdByName,
-          id: expense.createdBy,
-          at: fmtDateTime(expense.createdAt as unknown as string),
-        },
-        executedBy: {
-          name: expense.createdByName,
-          id: expense.createdBy,
-          note: receiptId
-            ? `منفذ إيصال الصرف R#${receiptId}`
-            : "لا يوجد إيصال صرف مرتبط",
-        },
-        beneficiary: { name: expense.payee || "غير محدد" },
-        approvedBy: expense.approvedByName
-          ? { name: expense.approvedByName, note: expense.approvalStatus }
-          : {
-              name: "غير موثق",
-              note: expense.approvalStatus ?? "لا توجد موافقة ظاهرة",
-            },
-        reversedBy: reversal
-          ? {
-              name:
-                reversal.createdByName ??
-                (reversal.createdBy ? `#${reversal.createdBy}` : "غير موثق"),
-              id: reversal.createdBy,
-              at: fmtDateTime(reversal.createdAt),
-              note: `إيصال عكس R#${reversal.id}`,
-            }
-          : null,
-      }}
-      moneyPath={{
-        paymentMethod: expense.paymentMethod,
-        source: fundingKindOf(expense),
-        cashBucket: expense.cashBucket,
-        branch: expense.branchName,
-        shiftId: expense.shiftId,
-        shiftLabel: expense.shiftType
-          ? `${SHIFT_TYPE_LABEL[expense.shiftType] ?? expense.shiftType} · ${SHIFT_STATUS_LABEL[expense.shiftStatus ?? ""] ?? expense.shiftStatus ?? "—"}`
-          : null,
-        shiftOwner: expense.shiftOwnerName,
-        from: fundingDetail(expense),
-        to: expense.payee || "المستفيد غير محدد",
-        externalReference: expense.referenceNumber,
-        extra: [
-          {
-            label: "المبلغ المصروف",
-            value: fmt(expense.amount),
-            dir: "ltr",
-            emphasis: true,
-          },
-          { label: "حالة الإيصال المباشر", value: expense.receiptStatus },
-          {
-            label: "قيد الاعتراف",
-            value: expense.recognitionAccountingEntryId
-              ? `JE#${expense.recognitionAccountingEntryId}`
-              : null,
-          },
-          {
-            label: "قيد التسوية",
-            value: expense.settlementAccountingEntryId
-              ? `JE#${expense.settlementAccountingEntryId}`
-              : null,
-          },
-        ],
-      }}
-      linkChain={[
-        {
-          kind: "DOCUMENT",
-          label: "المصروف",
-          value: `EXP#${expenseId}`,
-          status: STATUS_LABEL[expense.status] ?? expense.status,
-        },
-        ...(expense.source === "ACCRUAL"
-          ? obligationEvents.map((event) => ({
-              id: `accrual-event-${event.id}`,
-              kind: (event.accountingEntryId
-                ? "LEDGER"
-                : event.receiptId
-                  ? "RECEIPT"
-                  : "DOCUMENT") as "LEDGER" | "RECEIPT" | "DOCUMENT",
-              label:
-                event.eventType === "RECOGNIZED"
-                  ? "اعتراف الاستحقاق"
-                  : event.eventType === "PAYMENT_REQUESTED"
-                    ? "طلب التسوية — صفر أثر نقدي"
-                    : event.eventType === "PAYMENT_SETTLED"
-                      ? "التسوية الفعلية"
-                      : event.eventType === "RECOGNITION_REVERSED"
-                        ? "عكس الاعتراف"
-                        : event.eventType,
-              value: event.accountingEntryId
-                ? `JE#${event.accountingEntryId}`
-                : event.receiptId
-                  ? `R#${event.receiptId}`
-                  : `AOE#${event.id}`,
-              status: event.eventType,
-              subtitle: `${fmt(event.amount)} د.ع · ${event.evidenceReference}`,
-            }))
-          : [
-              {
-                kind: "RECEIPT" as const,
-                label: "إيصال الصرف",
-                value: directReceiptId ? `R#${directReceiptId}` : null,
-                status: expense.receiptStatus,
-                missing: !directReceiptId,
-              },
-            ]),
-        ...trace.data.ledgerEntries.map((entry) => ({
-          id: entry.id,
-          kind: "LEDGER" as const,
-          label: "القيد المحاسبي",
-          value: `JE#${entry.id}`,
-          status: entry.entryType,
-          subtitle: `${fmt(entry.amount ?? 0)} د.ع${entry.notes ? ` · ${entry.notes}` : ""}`,
-        })),
-        ...trace.data.reversalReceipts.map((entry) => ({
-          id: `reversal-${entry.id}`,
-          kind: "RECEIPT" as const,
-          label: "إيصال الإلغاء / العكس",
-          value: `R#${entry.id}`,
-          status: entry.status,
-          subtitle: `${fmt(entry.amount)} د.ع · ${entry.createdByName ?? "منفذ غير موثق"}`,
-        })),
-      ]}
-      timestamps={[
-        {
-          id: "expense-date",
-          label: "تاريخ المصروف",
-          value: fmtDate(expense.expenseDate as unknown as string),
-        },
-        {
-          id: "created-at",
-          label: "وقت الإدخال",
-          value: fmtDateTime(expense.createdAt as unknown as string),
-          actor: expense.createdByName,
-        },
-        {
-          id: "updated-at",
-          label: "آخر تحديث",
-          value: fmtDateTime(expense.updatedAt),
-        },
-      ]}
-      integrityWarnings={warnings.map((warning, index) => ({
-        id: `${expenseId}-${index}`,
-        severity: "warning" as const,
-        title: warning,
-        code: (expense.integrityWarnings ?? [])[index] ?? null,
-      }))}
-      auditTimeline={[
-        ...trace.data.auditTrail.map((event) => ({
-          id: `audit-${event.id}`,
-          action: event.action,
-          actor:
-            event.userName ?? (event.userId ? `#${event.userId}` : "غير موثق"),
-          at: fmtDateTime(event.createdAt),
-          detail: expenseAuditDetail(
-            event.action,
-            event.oldValue,
-            event.newValue,
-          ),
-          tone: "info" as const,
-        })),
-        ...trace.data.reversalReceipts.map((event) => ({
-          id: `reverse-event-${event.id}`,
-          action: "إلغاء / عكس المصروف",
-          actor:
-            event.createdByName ??
-            (event.createdBy ? `#${event.createdBy}` : "غير موثق"),
-          at: fmtDateTime(event.createdAt),
-          status: event.status,
-          detail: `${fmt(event.amount)} د.ع`,
-          tone: "warning" as const,
-        })),
-        ...trace.data.correctionRequests.map((event) => ({
-          id: `accrual-correction-${event.id}`,
-          action: "تصحيح مصدر الاستحقاق",
-          actor: `#${event.requestedBy}`,
-          at: fmtDateTime(event.requestedAt),
-          status: event.status,
-          detail: `${event.reason} · ${event.externalEvidenceReference}`,
-          tone:
-            event.status === "APPROVED"
-              ? ("ok" as const)
-              : event.status === "REJECTED"
-                ? ("warning" as const)
-                : ("info" as const),
-        })),
-      ]}
-    />
-  );
-}
-
-/** إيصال صرف عبر printDoc العام — نفس نواقل الطباعة الثلاثة (جسر الخادم/WebUSB/متصفح). */
-async function printExpenseReceipt(r: ExpenseRow) {
-  if (r.source === "ACCRUAL") {
-    notify.err(
-      "المصروف المستحق ليس إيصال صرف؛ اطبع سند التسوية الفعلي من شاشة السندات بعد اعتماده",
-    );
-    return;
-  }
-  if (!isExpenseFinanciallyPrintable(r.status)) {
-    notify.err("لا يمكن طباعة طلب مصروف غير منفذ كإيصال صرف");
-    return;
-  }
-  const warnings = warningsOf(r);
-  await printDoc({
-    kind: "receipt",
-    title: "الرؤية العربية",
-    subtitle: "إيصال صرف — مصروف",
-    meta: [
-      `مصروف #${Number(r.id)}`,
-      `التاريخ: ${r.expenseDate ? new Date(r.expenseDate as unknown as string).toISOString().slice(0, 10) : "—"}`,
-      `الفرع: ${r.branchName ?? "—"}`,
-      `الفئة: ${expenseCategoryText(r)}`,
-      `طريقة الدفع: ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`,
-      `مصدر التمويل: ${FUNDING_META[fundingKindOf(r)].short} — ${fundingDetail(r)}`,
-      ...(r.description ? [`البيان: ${r.description}`] : []),
-      ...(r.payee ? [`المستفيد: ${r.payee}`] : []),
-      ...(r.costCenter ? [`مركز التكلفة: ${r.costCenter}`] : []),
-      ...(r.referenceNumber ? [`المرجع: ${r.referenceNumber}`] : []),
-      ...(r.receiptVoucherNumber
-        ? [`رقم السند: ${r.receiptVoucherNumber}`]
-        : r.receiptId
-          ? [`إيصال #${r.receiptId}`]
-          : []),
-      ...(r.createdByName ? [`أنشأ العملية: ${r.createdByName}`] : []),
-      ...(r.approvedByName ? [`اعتمد العملية: ${r.approvedByName}`] : []),
-      ...(r.createdAt
-        ? [`سُجّلت: ${fmtDateTime(r.createdAt as unknown as string)}`]
-        : []),
-      ...(warnings.length ? [`ملاحظات التدقيق: ${warnings.join("؛ ")}`] : []),
-      // إيصال مصروف مُلغى يحمل حالته صراحةً — لا يُقرأ كصرف نافذ بالخطأ.
-      ...(r.status !== "ACTIVE"
-        ? [`الحالة: ${STATUS_LABEL[r.status] ?? r.status}`]
-        : []),
-    ],
-    totals: [{ label: "المبلغ", value: fmt(r.amount) }],
-    footer: "إيصال صرف داخلي",
-  });
-}
+// المساعدات والأنواع والمكوّنات مستخرَجة إلى components/expenses/ (ترشيق الصفحة).
+import { ExpenseTracePanel } from "@/components/expenses/ExpenseTracePanel";
+import { printExpenseReceipt } from "@/components/expenses/printExpenseReceipt";
+import {
+  APPROVAL_LABEL,
+  CATEGORY_LABEL,
+  expenseCategoryText,
+  fundingDetail,
+  fundingKindOf,
+  FUNDING_META,
+  FUNDING_ORDER,
+  METHOD_LABEL,
+  metric,
+  PAGE_SIZE,
+  SHIFT_STATUS_LABEL,
+  SHIFT_TYPE_LABEL,
+  sourceLabel,
+  STATUS_CLS,
+  STATUS_LABEL,
+  warningsOf,
+  type AuditFocus,
+  type ExpenseRow,
+  type ExpenseTotals,
+} from "@/components/expenses/expenseView";
+import { ExpenseRejectDialog } from "@/components/expenses/ExpenseRejectDialog";
+import { ExpenseCorrectionDialog } from "@/components/expenses/ExpenseCorrectionDialog";
 
 export default function Expenses() {
   const utils = trpc.useUtils();
@@ -677,26 +101,8 @@ export default function Expenses() {
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<ExpenseRow | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
   const [correctionTarget, setCorrectionTarget] = useState<ExpenseRow | null>(
     null,
-  );
-  const [correctionReason, setCorrectionReason] = useState("");
-  const [correctionEvidence, setCorrectionEvidence] = useState("");
-  const [correctionAttachment, setCorrectionAttachment] = useState<ImageItem[]>(
-    [],
-  );
-  const [correctionRefundMethod, setCorrectionRefundMethod] =
-    useState<InboundEnabledPaymentMethod>("CASH");
-  const [correctionRefundBucket, setCorrectionRefundBucket] = useState<
-    "DRAWER" | "TREASURY"
-  >("TREASURY");
-  const [correctionRefundReference, setCorrectionRefundReference] =
-    useState("");
-  const [correctionRefundCardTail, setCorrectionRefundCardTail] = useState("");
-  const [correctionReviewReason, setCorrectionReviewReason] = useState("");
-  const [correctionClientRequestId, setCorrectionClientRequestId] = useState(
-    () => crypto.randomUUID(),
   );
   const [advancedOpen, setAdvancedOpen] = useState(true);
   const [auditOnly, setAuditOnly] = useState(false);
@@ -744,10 +150,6 @@ export default function Expenses() {
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
-  const correctionHistory = trpc.expenses.accrualCorrections.useQuery(
-    { obligationId: Number(correctionTarget?.accrualObligationId ?? 0) },
-    { enabled: Number(correctionTarget?.accrualObligationId ?? 0) > 0 },
-  );
   const rows = (list.data?.rows ?? []) as ExpenseRow[];
   const totals = (list.data?.totals ?? {}) as ExpenseTotals;
   const total = Number(totals.count ?? 0);
@@ -1216,66 +618,6 @@ export default function Expenses() {
     },
     onError: (error) => notify.err(error),
   });
-  const reject = trpc.expenses.reject.useMutation({
-    onSuccess: async (_result, variables) => {
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
-      ]);
-      setRejectTarget(null);
-      setRejectReason("");
-      notify.ok("رُفض طلب المصروف بلا أثر مالي");
-    },
-    onError: (error) => notify.err(error),
-  });
-  const requestCorrection = trpc.expenses.requestAccrualCorrection.useMutation({
-    onSuccess: async () => {
-      notify.ok("سُجل طلب تصحيح المصدر بلا عكس أو قبض تلقائي");
-      setCorrectionClientRequestId(crypto.randomUUID());
-      setCorrectionReason("");
-      setCorrectionEvidence("");
-      setCorrectionAttachment([]);
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        correctionHistory.refetch(),
-      ]);
-    },
-    onError: (error) => notify.err(error),
-  });
-  const approveCorrection = trpc.expenses.approveAccrualCorrection.useMutation({
-    onSuccess: async () => {
-      notify.ok("اعتمد التصحيح وعُكس الاعتراف بقيد مستقل");
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        correctionHistory.refetch(),
-      ]);
-    },
-    onError: (error) => notify.err(error),
-  });
-  const rejectCorrection = trpc.expenses.rejectAccrualCorrection.useMutation({
-    onSuccess: async () => {
-      notify.ok("رُفض التصحيح وبقي الاستحقاق الأصلي قائماً");
-      setCorrectionReviewReason("");
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        correctionHistory.refetch(),
-      ]);
-    },
-    onError: (error) => notify.err(error),
-  });
-  const retryCorrectionRefund =
-    trpc.expenses.retryAccrualCorrectionRefund.useMutation({
-      onSuccess: async () => {
-        notify.ok("أُعيد تقديم طلب قبض الاسترداد، وينتظر اعتماد مالك آخر");
-        setCorrectionClientRequestId(crypto.randomUUID());
-        await Promise.all([
-          utils.expenses.list.invalidate(),
-          correctionHistory.refetch(),
-        ]);
-      },
-      onError: (error) => notify.err(error),
-    });
-
   function actionsFor(r: ExpenseRow) {
     return [
       {
@@ -1292,11 +634,10 @@ export default function Expenses() {
         kind: "approve" as const,
         icon: CircleCheck,
         label: "اعتماد وصرف",
-        hidden:
-          r.status !== "PENDING_APPROVAL" ||
-          !canApprove ||
-          Number(r.createdBy) === Number(me.data?.id),
-        disabled: approve.isPending || reject.isPending,
+        // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — canApprove أصلاً يشترط
+        // isOwner، فاستثناءُ صانع الطلب هنا كان يحجب الاعتماد الذاتي المسموح به خادمياً.
+        hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
+        disabled: approve.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () =>
           void (async () => {
@@ -1322,14 +663,10 @@ export default function Expenses() {
         icon: Ban,
         label: "رفض الطلب",
         variant: "destructive" as const,
-        hidden:
-          r.status !== "PENDING_APPROVAL" ||
-          !canApprove ||
-          Number(r.createdBy) === Number(me.data?.id),
-        disabled: approve.isPending || reject.isPending,
+        hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
+        disabled: approve.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () => {
-          setRejectReason("");
           setRejectTarget(r);
         },
       },
@@ -1350,14 +687,8 @@ export default function Expenses() {
             "REFUND_PENDING",
           ].includes(r.settlementStatus ?? "") ||
           !canCancel,
-        disabled: requestCorrection.isPending,
-        disabledReason: "يوجد طلب تصحيح قيد التسجيل",
         onSelect: () => {
           setCorrectionTarget(r);
-          setCorrectionReason("");
-          setCorrectionEvidence("");
-          setCorrectionAttachment([]);
-          setCorrectionReviewReason("");
         },
         gate: {
           roles: ["manager"] as RoleKey[],
@@ -1401,15 +732,6 @@ export default function Expenses() {
     ];
   }
 
-  const activeCorrection =
-    correctionHistory.data?.find((item) => item.status === "PENDING") ?? null;
-  const retryableRefundCorrection =
-    correctionHistory.data?.find(
-      (item) =>
-        item.status === "REJECTED" && item.previousObligationStatus === "PAID",
-    ) ?? null;
-  const correctionRequiresRefund =
-    correctionTarget?.settlementStatus === "PAID";
 
   // أموال العرض عبر fmt من @/lib/money (فواصل آلاف + منزلتان) — بديل الدالة المحلية السابقة.
   return (
@@ -2353,406 +1675,14 @@ export default function Expenses() {
       {cancel.error && (
         <p className="text-sm text-destructive">{cancel.error.message}</p>
       )}
-      <Dialog
-        open={rejectTarget != null}
-        onOpenChange={(open) => {
-          if (!open && !reject.isPending) {
-            setRejectTarget(null);
-            setRejectReason("");
-          }
-        }}
-      >
-        <DialogContent dir="rtl">
-          <DialogHeader>
-            <DialogTitle>رفض طلب المصروف</DialogTitle>
-            <DialogDescription>
-              سيبقى الطلب بلا صرف أو قيد مالي. سبب الرفض إلزامي ويُحفظ في مسار
-              التدقيق.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-1">
-            <Label htmlFor="expense-rejection-reason">سبب الرفض *</Label>
-            <Textarea
-              id="expense-rejection-reason"
-              value={rejectReason}
-              onChange={(event) => setRejectReason(event.target.value)}
-              placeholder="مثال: المستند المؤيد ناقص أو المبلغ يحتاج تصحيحاً"
-              rows={3}
-              maxLength={1000}
-              autoFocus
-            />
-            {rejectTarget && (
-              <p className="text-xs text-muted-foreground">
-                طلب #{Number(rejectTarget.id)} · {fmt(rejectTarget.amount)} د.ع
-              </p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setRejectTarget(null)}
-              disabled={reject.isPending}
-            >
-              تراجع
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={reject.isPending || rejectReason.trim().length < 3}
-              onClick={() => {
-                if (!rejectTarget || rejectReason.trim().length < 3) return;
-                reject.mutate({
-                  expenseId: Number(rejectTarget.id),
-                  reason: rejectReason.trim(),
-                });
-              }}
-            >
-              {reject.isPending ? (
-                <Loader2 aria-hidden className="size-4 animate-spin" />
-              ) : (
-                <Ban aria-hidden className="size-4" />
-              )}
-              رفض الطلب
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={correctionTarget != null}
-        onOpenChange={(open) => {
-          if (
-            !open &&
-            !requestCorrection.isPending &&
-            !approveCorrection.isPending &&
-            !rejectCorrection.isPending &&
-            !retryCorrectionRefund.isPending
-          ) {
-            setCorrectionTarget(null);
-            setCorrectionReason("");
-            setCorrectionEvidence("");
-            setCorrectionAttachment([]);
-            setCorrectionReviewReason("");
-          }
-        }}
-      >
-        <DialogContent dir="rtl" className="max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>تصحيح مصدر المصروف المستحق</DialogTitle>
-            <DialogDescription>
-              التصحيح يحفظ المصروف الأصلي ويضيف طلباً وحدثاً وعكساً مستقلاً.
-              المصروف المدفوع يتطلب استرداداً فعلياً موثقاً واعتماد مالك آخر.
-            </DialogDescription>
-          </DialogHeader>
-          {correctionTarget && (
-            <div className="space-y-3">
-              <div className="rounded-md border p-3 text-sm">
-                <div className="font-medium">
-                  EXP#{Number(correctionTarget.id)} ·{" "}
-                  {fmt(correctionTarget.amount)} د.ع
-                </div>
-                <div className="mt-1 text-muted-foreground">
-                  {correctionTarget.accrualBeneficiaryName ??
-                    correctionTarget.payee ??
-                    "مستفيد غير موثق"}{" "}
-                  · {FUNDING_META[fundingKindOf(correctionTarget)].short}
-                </div>
-                <div className="mt-1 text-xs" dir="ltr">
-                  {correctionTarget.accrualEvidenceReference ?? "—"}
-                </div>
-              </div>
-
-              {correctionHistory.isLoading ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ
-                  تحميل سجل التصحيح…
-                </div>
-              ) : activeCorrection ? (
-                <div className="space-y-3 rounded-md border badge-status-pending p-3 text-sm">
-                  <div className="font-medium">
-                    طلب تصحيح #{activeCorrection.id} بانتظار الاعتماد
-                  </div>
-                  <p>{activeCorrection.reason}</p>
-                  <p className="text-xs" dir="ltr">
-                    {activeCorrection.externalEvidenceReference}
-                  </p>
-                  {activeCorrection.previousObligationStatus === "PAID" ? (
-                    <p>
-                      أُنشئ طلب قبض استرداد معلّق بلا أثر نقدي. تتم المراجعة من
-                      شاشة سندات القبض لمطابقة دليل المزود قبل أي قيد.
-                    </p>
-                  ) : me.data?.isOwner === true &&
-                    Number(activeCorrection.requestedBy) !==
-                      Number(me.data.id) ? (
-                    <div className="space-y-2 border-t pt-3">
-                      <Label htmlFor="expense-correction-review-reason">
-                        سبب الرفض عند الرفض
-                      </Label>
-                      <Input
-                        id="expense-correction-review-reason"
-                        value={correctionReviewReason}
-                        onChange={(event) =>
-                          setCorrectionReviewReason(event.target.value)
-                        }
-                        placeholder="يُترك فارغاً عند الاعتماد"
-                      />
-                      <div className="flex gap-2">
-                        <Button
-                          disabled={
-                            approveCorrection.isPending ||
-                            rejectCorrection.isPending
-                          }
-                          onClick={async () => {
-                            if (
-                              !(await confirm({
-                                variant: "warning",
-                                title: "اعتماد تصحيح المصدر",
-                                description:
-                                  "سيُغلق المصدر التشغيلي ويُعكس قيد الاعتراف بقيد append-only مستقل.",
-                                confirmText: "اعتماد التصحيح",
-                              }))
-                            )
-                              return;
-                            approveCorrection.mutate({
-                              correctionRequestId: Number(activeCorrection.id),
-                            });
-                          }}
-                        >
-                          اعتماد التصحيح
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          disabled={
-                            correctionReviewReason.trim().length < 3 ||
-                            approveCorrection.isPending ||
-                            rejectCorrection.isPending
-                          }
-                          onClick={() =>
-                            rejectCorrection.mutate({
-                              correctionRequestId: Number(activeCorrection.id),
-                              reason: correctionReviewReason.trim(),
-                            })
-                          }
-                        >
-                          رفض التصحيح
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground">
-                      ينتظر مالكاً آخر؛ لا يستطيع منشئ الطلب اعتماده أو رفضه.
-                    </p>
-                  )}
-                </div>
-              ) : retryableRefundCorrection ? (
-                <div className="space-y-3 rounded-md border badge-status-rejected p-3 text-sm">
-                  <div className="font-medium">
-                    رُفض طلب قبض الاسترداد المرتبط بالتصحيح #
-                    {retryableRefundCorrection.id}
-                  </div>
-                  <p>
-                    {retryableRefundCorrection.rejectionReason ??
-                      "لم يُسجّل سبب الرفض."}
-                  </p>
-                  <p className="text-muted-foreground">
-                    يحتفظ النظام بالطلب المرفوض وسلسلة التدقيق. يمكن لمنشئ طلب
-                    التصحيح وحده إصدار طلب قبض بديل بمفتاح مستقل، ثم يعتمد مالك
-                    آخر الطلب الجديد.
-                  </p>
-                  {Number(retryableRefundCorrection.requestedBy) ===
-                  Number(me.data?.id) ? (
-                    <Button
-                      disabled={retryCorrectionRefund.isPending}
-                      onClick={() =>
-                        retryCorrectionRefund.mutate({
-                          correctionRequestId: Number(
-                            retryableRefundCorrection.id,
-                          ),
-                          clientRequestId: correctionClientRequestId,
-                        })
-                      }
-                    >
-                      {retryCorrectionRefund.isPending ? (
-                        <Loader2 aria-hidden className="size-4 animate-spin" />
-                      ) : null}
-                      إعادة تقديم طلب قبض الاسترداد
-                    </Button>
-                  ) : (
-                    <p className="text-muted-foreground">
-                      إعادة التقديم محصورة بمنشئ طلب التصحيح الأصلي.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-1">
-                    <Label htmlFor="expense-correction-reason">
-                      سبب التصحيح *
-                    </Label>
-                    <Textarea
-                      id="expense-correction-reason"
-                      rows={3}
-                      value={correctionReason}
-                      onChange={(event) =>
-                        setCorrectionReason(event.target.value)
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="expense-correction-evidence">
-                      مرجع الدليل الخارجي *
-                    </Label>
-                    <Input
-                      id="expense-correction-evidence"
-                      dir="ltr"
-                      value={correctionEvidence}
-                      onChange={(event) =>
-                        setCorrectionEvidence(event.target.value)
-                      }
-                    />
-                  </div>
-                  <ImageUploader
-                    value={correctionAttachment}
-                    onChange={setCorrectionAttachment}
-                    maxItems={1}
-                    singlePrimary={false}
-                    hint="مرفق فاتورة التصحيح/الإشعار الدائن إلزامي."
-                  />
-                  {correctionRequiresRefund && (
-                    <div className="space-y-3 rounded-md border p-3">
-                      <p className="font-medium">دليل الاسترداد الفعلي</p>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <Label>الطريقة</Label>
-                          <AppSelect
-                            className="h-9"
-                            value={correctionRefundMethod}
-                            onValueChange={(value) =>
-                              setCorrectionRefundMethod(
-                                value as typeof correctionRefundMethod,
-                              )
-                            }
-                          >
-                            {/* مشتقّة من سياسة القبض المشتركة — «صك» كان معروضاً ويرفضه الخادم
-                                في سند الاسترداد (`assertInboundPaymentMethodEnabled`) ⇒ صفر مسار نجاح. */}
-                            {INBOUND_METHOD_OPTIONS.map((m) => (
-                              <option key={m.v} value={m.v}>{m.label}</option>
-                            ))}
-                          </AppSelect>
-                        </div>
-                        {correctionRefundMethod === "CASH" ? (
-                          <div className="space-y-1">
-                            <Label>وجهة النقد</Label>
-                            <AppSelect
-                              className="h-9"
-                              value={correctionRefundBucket}
-                              onValueChange={(value) =>
-                              setCorrectionRefundBucket(
-                                value as typeof correctionRefundBucket,
-                              )
-                            }
-                            >
-                              <option value="TREASURY">الخزينة الإدارية</option>
-                              <option value="DRAWER">درج الوردية</option>
-                            </AppSelect>
-                          </div>
-                        ) : (
-                          <div className="space-y-1">
-                            <Label>مرجع مزود الاسترداد</Label>
-                            <Input
-                              dir="ltr"
-                              value={correctionRefundReference}
-                              onChange={(event) =>
-                                setCorrectionRefundReference(event.target.value)
-                              }
-                            />
-                          </div>
-                        )}
-                        {correctionRefundMethod === "CARD" && (
-                          <div className="space-y-1">
-                            <Label>آخر أربعة أرقام</Label>
-                            <Input
-                              dir="ltr"
-                              maxLength={4}
-                              value={correctionRefundCardTail}
-                              onChange={(event) =>
-                                setCorrectionRefundCardTail(
-                                  event.target.value
-                                    .replace(/\D/g, "")
-                                    .slice(0, 4),
-                                )
-                              }
-                            />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCorrectionTarget(null)}>
-              إغلاق
-            </Button>
-            {!activeCorrection &&
-              !retryableRefundCorrection &&
-              correctionTarget && (
-                <Button
-                  variant="destructive"
-                  disabled={
-                    correctionHistory.isLoading ||
-                    requestCorrection.isPending ||
-                    correctionReason.trim().length < 3 ||
-                    !correctionEvidence.trim() ||
-                    !correctionAttachment[0]?.dataUrl ||
-                    (correctionRequiresRefund &&
-                      correctionRefundMethod !== "CASH" &&
-                      !correctionRefundReference.trim()) ||
-                    (correctionRequiresRefund &&
-                      correctionRefundMethod === "CARD" &&
-                      !/^\d{4}$/.test(correctionRefundCardTail))
-                  }
-                  onClick={() =>
-                    requestCorrection.mutate({
-                      obligationId: Number(
-                        correctionTarget.accrualObligationId,
-                      ),
-                      reason: correctionReason.trim(),
-                      externalEvidenceReference: correctionEvidence.trim(),
-                      attachmentUrl: correctionAttachment[0]!.dataUrl,
-                      refundPaymentMethod: correctionRequiresRefund
-                        ? correctionRefundMethod
-                        : null,
-                      refundCashBucket:
-                        correctionRequiresRefund &&
-                        correctionRefundMethod === "CASH"
-                          ? correctionRefundBucket
-                          : null,
-                      refundReferenceNumber:
-                        correctionRequiresRefund &&
-                        correctionRefundMethod !== "CASH"
-                          ? correctionRefundReference.trim()
-                          : null,
-                      refundCardLastFour:
-                        correctionRequiresRefund &&
-                        correctionRefundMethod === "CARD"
-                          ? correctionRefundCardTail
-                          : null,
-                      clientRequestId: correctionClientRequestId,
-                    })
-                  }
-                >
-                  {requestCorrection.isPending ? (
-                    <Loader2 aria-hidden className="size-4 animate-spin" />
-                  ) : null}
-                  تسجيل طلب التصحيح
-                </Button>
-              )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ExpenseRejectDialog
+        target={rejectTarget}
+        onClose={() => setRejectTarget(null)}
+      />
+      <ExpenseCorrectionDialog
+        target={correctionTarget}
+        onClose={() => setCorrectionTarget(null)}
+      />
     </div>
   );
 }

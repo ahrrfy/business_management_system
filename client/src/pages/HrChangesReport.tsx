@@ -5,10 +5,10 @@ import { FILTER_LABELS } from "@shared/uiContracts";
 import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell } from "@/components/reports/ReportShell";
-import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField } from "@/components/list";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -25,6 +25,77 @@ const STATUS_CLS: Record<string, string> = {
   approved: "badge-status-active",
   completed: "badge-status-active",
 };
+
+/** شارة الحالة — مصدرُ التسمية والصنف واحدٌ للقائمتين. */
+function StatusBadge({ status, label }: { status: string; label: string }) {
+  return (
+    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[status] ?? "bg-muted text-muted-foreground"}`}>
+      {label}
+    </span>
+  );
+}
+
+/** جدولان مُضمَّنان في بطاقتَين تحملان عنوانَيهما — البحث في شريط الفلاتر أعلى الشاشة. */
+const EMBEDDED_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
+const promotionColumns: ColumnDef<Promo, unknown>[] = [
+  {
+    id: "employee",
+    header: "الموظف",
+    accessorFn: (p) => p.employeeName,
+    meta: { width: "wide" },
+    cell: ({ row }) => (
+      <Link href={`/hr/employees/${row.original.employeeId}`} className="font-medium hover:underline">
+        {row.original.employeeName}
+      </Link>
+    ),
+  },
+  {
+    id: "fromTitle",
+    header: "المسمّى السابق",
+    accessorFn: (p) => p.fromTitle ?? "—",
+    cell: ({ row }) => <span className="text-muted-foreground">{row.original.fromTitle ?? "—"}</span>,
+  },
+  {
+    id: "toTitle",
+    header: "المسمّى الجديد",
+    accessorFn: (p) => p.toTitle,
+    cell: ({ row }) => <span className="font-medium">{row.original.toTitle}</span>,
+  },
+  { id: "effectiveDate", header: "تاريخ النفاذ", accessorFn: (p) => p.effectiveDate, meta: { kind: "date" }, cell: ({ row }) => row.original.effectiveDate },
+  {
+    id: "status",
+    header: "الحالة",
+    // التسمية العربية لا الرمز الخامّ: «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+    accessorFn: (p) => PROMO_STATUS_LABEL[p.status] ?? p.status,
+    meta: { kind: "status" },
+    cell: ({ row }) => <StatusBadge status={row.original.status} label={PROMO_STATUS_LABEL[row.original.status] ?? row.original.status} />,
+  },
+];
+
+const terminationColumns: ColumnDef<Term, unknown>[] = [
+  {
+    id: "employee",
+    header: "الموظف",
+    accessorFn: (t) => t.employeeName,
+    meta: { width: "wide" },
+    cell: ({ row }) => (
+      <Link href={`/hr/employees/${row.original.employeeId}`} className="font-medium hover:underline">
+        {row.original.employeeName}
+      </Link>
+    ),
+  },
+  { id: "type", header: "النوع", accessorFn: (t) => t.type, cell: ({ row }) => row.original.type },
+  { id: "lastDay", header: "آخر يوم عمل", accessorFn: (t) => t.lastDay, meta: { kind: "date" }, cell: ({ row }) => row.original.lastDay },
+  { id: "settlement", header: "التسوية", accessorFn: (t) => fmtAr(t.settlement), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.settlement) },
+  {
+    id: "status",
+    header: "الحالة",
+    accessorFn: (t) => TERM_STATUS_LABEL[t.status] ?? t.status,
+    meta: { kind: "status" },
+    cell: ({ row }) => <StatusBadge status={row.original.status} label={TERM_STATUS_LABEL[row.original.status] ?? row.original.status} />,
+  },
+];
 
 export default function HrChangesReport() {
   const [from, setFrom] = useState("");
@@ -47,6 +118,8 @@ export default function HrChangesReport() {
     [allTerminations, query],
   );
   const hasAny = promotions.length > 0 || terminations.length > 0;
+  /* فلاترُ الشاشة (بحث/مدى تاريخ) تُغذّي الجدولين من خارجهما — لا بحثَ داخليّ فيهما. */
+  const filtersActive = query.trim() !== "" || from !== "" || to !== "";
 
   function onExport() {
     // ورقة واحدة موحَّدة: عمود «النوع» يميّز الترقية عن إنهاء الخدمة.
@@ -159,44 +232,15 @@ export default function HrChangesReport() {
       <Card>
         <CardContent className="p-0">
           <div className="border-b px-4 py-2.5 text-sm font-semibold">الترقيات</div>
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !promotions.length ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">لا ترقيات مسجّلة.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">الموظف</th>
-                    <th className="p-2.5 text-right font-medium">المسمّى السابق</th>
-                    <th className="p-2.5 text-right font-medium">المسمّى الجديد</th>
-                    <th className="p-2.5 text-right font-medium">تاريخ النفاذ</th>
-                    <th className="p-2.5 text-right font-medium">الحالة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {promotions.map((p, i) => (
-                    <tr key={i} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">
-                        <Link href={`/hr/employees/${p.employeeId}`} className="font-medium hover:underline">{p.employeeName}</Link>
-                      </td>
-                      <td className="p-2.5 text-right text-muted-foreground">{p.fromTitle ?? "—"}</td>
-                      <td className="p-2.5 text-right font-medium">{p.toTitle}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{p.effectiveDate}</td>
-                      <td className="p-2.5 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[p.status] ?? "bg-muted text-muted-foreground"}`}>
-                          {PROMO_STATUS_LABEL[p.status] ?? p.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          <DataTable<Promo>
+            {...EMBEDDED_TABLE}
+            columns={promotionColumns}
+            data={promotions}
+            externalFiltersActive={filtersActive}
+            loading={q.isLoading}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText="لا ترقيات مسجّلة."
+          />
         </CardContent>
       </Card>
 
@@ -204,44 +248,15 @@ export default function HrChangesReport() {
       <Card>
         <CardContent className="p-0">
           <div className="border-b px-4 py-2.5 text-sm font-semibold">إنهاء الخدمات</div>
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !terminations.length ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">لا حالات إنهاء خدمة مسجّلة.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">الموظف</th>
-                    <th className="p-2.5 text-right font-medium">النوع</th>
-                    <th className="p-2.5 text-right font-medium">آخر يوم عمل</th>
-                    <th className="p-2.5 text-right font-medium">التسوية</th>
-                    <th className="p-2.5 text-right font-medium">الحالة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {terminations.map((t, i) => (
-                    <tr key={i} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">
-                        <Link href={`/hr/employees/${t.employeeId}`} className="font-medium hover:underline">{t.employeeName}</Link>
-                      </td>
-                      <td className="p-2.5 text-right">{t.type}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{t.lastDay}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(t.settlement)}</td>
-                      <td className="p-2.5 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[t.status] ?? "bg-muted text-muted-foreground"}`}>
-                          {TERM_STATUS_LABEL[t.status] ?? t.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          <DataTable<Term>
+            {...EMBEDDED_TABLE}
+            columns={terminationColumns}
+            data={terminations}
+            externalFiltersActive={filtersActive}
+            loading={q.isLoading}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText="لا حالات إنهاء خدمة مسجّلة."
+          />
         </CardContent>
       </Card>
     </ReportShell>

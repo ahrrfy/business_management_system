@@ -1,14 +1,18 @@
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField, ListToolbar } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Link } from "wouter";
+import { useMemo } from "react";
+
+/** صفٌّ من عقد `digitalCards.subscriptions.list` — لا يُعاد تعريفه محلياً. */
+type SubscriptionRow = RouterOutputs["digitalCards"]["subscriptions"]["list"][number];
 
 const STATUS: Record<string, string> = {
   ISSUED: "مباع",
@@ -28,6 +32,47 @@ export default function DigitalSubscriptions() {
     branchId: f.branch ? Number(f.branch) : undefined,
     q: f.q.trim() || undefined,
   });
+
+  const columns = useMemo<ColumnDef<SubscriptionRow, unknown>[]>(() => [
+    { id: "invoiceDate", header: "وقت البيع", accessorFn: (r) => fmtDateTime(r.invoiceDate), meta: { kind: "datetime" }, cell: ({ row }) => fmtDateTime(row.original.invoiceDate) },
+    {
+      id: "invoice",
+      header: "الفاتورة",
+      accessorFn: (r) => r.invoiceNumber,
+      cell: ({ row }) => (
+        <Link href={`/invoices/${row.original.invoiceId}`} className="font-semibold text-primary hover:underline">
+          {row.original.invoiceNumber}
+        </Link>
+      ),
+    },
+    { id: "offering", header: "الاشتراك", accessorFn: (r) => r.offeringName, meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.offeringName}</span> },
+    {
+      id: "providerReference",
+      header: "رقم الاشتراك أو ID",
+      accessorFn: (r) => r.providerReference || "",
+      meta: { kind: "code" },
+      cell: ({ row }) => <span className="font-bold">{row.original.providerReference || "—"}</span>,
+    },
+    { id: "student", header: "الطالب", accessorFn: (r) => r.studentName || "", cell: ({ row }) => <span className="font-medium">{row.original.studentName || "—"}</span> },
+    { id: "phone", header: "الهاتف", accessorFn: (r) => r.studentPhone || "", meta: { kind: "phone" }, cell: ({ row }) => <span className="font-mono">{row.original.studentPhone || "—"}</span> },
+    { id: "price", header: "السعر", accessorFn: (r) => fmtAr(r.sellPrice), meta: { kind: "money" }, cell: ({ row }) => <span className="font-semibold">{fmtAr(row.original.sellPrice)}</span> },
+    // عمود الفرع لمن يعبر الفروع فقط — مرآةُ عزل مدير الفرع أعلاه.
+    ...(canPickBranch
+      ? [{ id: "branch", header: "الفرع", accessorFn: (r: SubscriptionRow) => r.branchName, cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span> } as ColumnDef<SubscriptionRow, unknown>]
+      : []),
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => STATUS[r.fulfillmentStatus] ?? r.fulfillmentStatus,
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-neutral">
+          {STATUS[row.original.fulfillmentStatus] ?? row.original.fulfillmentStatus}
+        </span>
+      ),
+    },
+  ], [canPickBranch]);
+
 
   return (
     <div className="space-y-4">
@@ -66,42 +111,15 @@ export default function DigitalSubscriptions() {
 
       <Card>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">وقت البيع</th>
-                  <th className="p-2 text-start">الفاتورة</th>
-                  <th className="p-2 text-start">الاشتراك</th>
-                  <th className="p-2 text-start">رقم الاشتراك أو ID</th>
-                  <th className="p-2 text-start">الطالب</th>
-                  <th className="p-2 text-start">الهاتف</th>
-                  <th className="p-2 text-start">السعر</th>
-                  {canPickBranch && <th className="p-2 text-start">الفرع</th>}
-                  <th className="p-2 text-center">الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(list.data ?? []).map((sale) => (
-                  <tr key={sale.id} className="border-t">
-                    <td className="p-2 tabular-nums whitespace-nowrap" dir="ltr">{fmtDateTime(sale.invoiceDate)}</td>
-                    <td className="p-2"><Link href={`/invoices/${sale.invoiceId}`} className="font-semibold text-primary hover:underline">{sale.invoiceNumber}</Link></td>
-                    <td className="p-2 font-medium">{sale.offeringName}</td>
-                    <td className="p-2 font-mono font-bold" dir="ltr">{sale.providerReference || "—"}</td>
-                    <td className="p-2 font-medium">{sale.studentName || "—"}</td>
-                    <td className="p-2 font-mono" dir="ltr">{sale.studentPhone || "—"}</td>
-                    <td className="p-2 tabular-nums font-semibold">{fmtAr(sale.sellPrice)}</td>
-                    {canPickBranch && <td className="p-2 text-muted-foreground">{sale.branchName}</td>}
-                    <td className="p-2 text-center"><span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-neutral">{STATUS[sale.fulfillmentStatus] ?? sale.fulfillmentStatus}</span></td>
-                  </tr>
-                ))}
-                {list.isLoading && <tr><td colSpan={canPickBranch ? 9 : 8}><LoadingState /></td></tr>}
-                {!list.isLoading && (list.data?.length ?? 0) === 0 && (
-                  <TableEmptyRow colSpan={canPickBranch ? 9 : 8} message="لا توجد مبيعات اشتراكات مطابقة." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            columns={columns}
+            data={list.data ?? []}
+            /* البحث في ListToolbar أعلاه (يذهب للخادم) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => list.refetch() }}
+            emptyText="لا توجد مبيعات اشتراكات مطابقة."
+          />
         </CardContent>
       </Card>
     </div>

@@ -56,19 +56,17 @@ export async function invalidateWorkOrderRefundCaches(utils: {
   ]);
 }
 
-/** بوابة العرض نفسها: غير المالك لا يركّب استعلام ownerProcedure أصلاً. */
-export function WorkOrderRefundApprovals({
-  isOwner,
-  currentUserId,
-}: {
-  isOwner: boolean;
-  currentUserId: number | null | undefined;
-}) {
+/**
+ * بوابة العرض نفسها: غير المالك لا يركّب استعلام ownerProcedure أصلاً.
+ * ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — كل مُشاهدي هذه الشاشة مالكون أصلاً
+ * (ownerProcedure)، فلا معنى لتعطيل زرّ الاعتماد لأنّ المالك أنشأ طلبه بنفسه.
+ */
+export function WorkOrderRefundApprovals({ isOwner }: { isOwner: boolean }) {
   if (!isOwner) return null;
-  return <OwnerWorkOrderRefundApprovals currentUserId={currentUserId} />;
+  return <OwnerWorkOrderRefundApprovals />;
 }
 
-function OwnerWorkOrderRefundApprovals({ currentUserId }: { currentUserId: number | null | undefined }) {
+function OwnerWorkOrderRefundApprovals() {
   const utils = trpc.useUtils();
   const queue = trpc.workOrders.pendingCancellationRefunds.useQuery();
   const [lastResult, setLastResult] = useState<ApprovalResult | null>(null);
@@ -81,10 +79,15 @@ function OwnerWorkOrderRefundApprovals({ currentUserId }: { currentUserId: numbe
     onError: (error) => notify.err(error),
   });
 
+  const rows = queue.data ?? [];
+  // إخفاء تلقائي عند الصفر: لا نثقل الشاشة بصندوق فارغ ما لم توجد طلبات معلقة أو نتيجة حديثة
+  if (rows.length === 0 && !lastResult) {
+    return null;
+  }
+
   return (
     <WorkOrderRefundApprovalsView
-      rows={queue.data ?? []}
-      currentUserId={currentUserId}
+      rows={rows}
       isLoading={queue.isLoading}
       errorMessage={queue.error?.message ?? null}
       lastResult={lastResult}
@@ -96,7 +99,6 @@ function OwnerWorkOrderRefundApprovals({ currentUserId }: { currentUserId: numbe
 
 export function WorkOrderRefundApprovalsView({
   rows,
-  currentUserId,
   isLoading,
   errorMessage,
   lastResult,
@@ -104,7 +106,6 @@ export function WorkOrderRefundApprovalsView({
   onApprove,
 }: {
   rows: PendingWorkOrderRefund[];
-  currentUserId: number | null | undefined;
   isLoading: boolean;
   errorMessage: string | null;
   lastResult: ApprovalResult | null;
@@ -171,7 +172,6 @@ export function WorkOrderRefundApprovalsView({
             <WorkOrderRefundApprovalRow
               key={receiptId}
               row={row}
-              currentUserId={currentUserId}
               reference={references[receiptId] ?? ""}
               isPending={pendingReceiptId === receiptId}
               anyApprovalPending={pendingReceiptId != null}
@@ -187,7 +187,6 @@ export function WorkOrderRefundApprovalsView({
 
 export function WorkOrderRefundApprovalRow({
   row,
-  currentUserId,
   reference,
   isPending,
   anyApprovalPending,
@@ -195,7 +194,6 @@ export function WorkOrderRefundApprovalRow({
   onSubmit,
 }: {
   row: PendingWorkOrderRefund;
-  currentUserId: number | null | undefined;
   reference: string;
   isPending: boolean;
   anyApprovalPending: boolean;
@@ -204,7 +202,6 @@ export function WorkOrderRefundApprovalRow({
 }) {
   const receiptId = Number(row.receiptId);
   const referenceError = reference.length > 0 ? refundReferenceError(reference) : null;
-  const ownRequest = row.createdBy != null && Number(row.createdBy) === Number(currentUserId);
   return (
     <section className="rounded-md border bg-background p-4" aria-labelledby={`refund-title-${receiptId}`}>
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.7fr)]">
@@ -241,12 +238,9 @@ export function WorkOrderRefundApprovalRow({
           <p id={`refund-help-${receiptId}`} className={referenceError ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
             {referenceError ?? "مرجع فريد من كشف البنك أو البطاقة أو المحفظة (3–100 محرف)."}
           </p>
-          {ownRequest && (
-            <p className="text-xs font-medium text-[var(--sem-warn)]">هذا الطلب أنشأه حسابك؛ يلزم مالك آخر لاعتماده.</p>
-          )}
           <Button
             className="w-full"
-            disabled={ownRequest || anyApprovalPending || refundReferenceError(reference) != null}
+            disabled={anyApprovalPending || refundReferenceError(reference) != null}
             onClick={() => void onSubmit(row, reference)}
           >
             {isPending ? "جارٍ تثبيت الرد…" : "تأكيد التنفيذ واعتماد الرد"}

@@ -1,9 +1,10 @@
 // دورة حياة أمر الشراء قبل الاستلام: الإنشاء (بالدينار أو بتثبيت دولاري) والإلغاء.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, inArray, like } from "drizzle-orm";
+import { desc, eq, inArray, like, sql } from "drizzle-orm";
 import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
 import { isWithinPriceDecimals, priceDecimalsMessage, type PriceCurrency } from "../../../shared/moneyPrecision";
+import { appErrorMessage } from "../../../shared/errors";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { convertToBaseQuantity } from "../inventoryService";
@@ -421,7 +422,11 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     if (agreedCurrency === "USD" && settlementType === "CASH") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة؛ اختر تسوية آجلة لأمر الشراء",
+        message: appErrorMessage({
+          what: "لا يمكن حفظ أمر شراءٍ دولاريّ بتسويةٍ نقدية",
+          why: "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة، لا من صرف الخزينة المباشر",
+          doThis: "اختر تسويةً آجلة لأمر الشراء، أو حوّل عملته إلى الدينار إن كانت التسوية نقدية",
+        }),
       });
     }
 
@@ -603,6 +608,19 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
 
     const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
       await computePurchaseDocument(tx, input);
+    // Codex (P1، ٦/٩/٢٦): التعديل لا يغيّر settlementType، لكنه كان يقبل agreedCurrency=USD
+    // بلا مطابقة الحارس نفسه في الإنشاء (order.ts:421) — مسوّدة CASH/IQD تُعدَّل إلى USD ثم
+    // يفشل اعتمادها لاحقاً بلا رجوع (automaticInvoicePosting.ts يسدّد نقداً بالدينار حصراً).
+    if (agreedCurrency === "USD" && po.settlementType === "CASH") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن تعديل أمر شراءٍ نقديّ إلى عملة الدولار",
+          why: "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة، لا من صرف الخزينة المباشر الذي يستعمله أمرٌ نقديّ",
+          doThis: "أبقِ عملة الأمر بالدينار، أو حوّله إلى تسويةٍ آجلة أولاً إن كانت الفاتورة دولارية فعلاً",
+        }),
+      });
+    }
 
     const previousRevisionId = po.currentRevisionId == null ? null : Number(po.currentRevisionId);
     await tx.update(purchaseOrders).set({
@@ -623,6 +641,10 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
       notes: input.notes ?? null,
       lastEditedBy: actor.userId,
+      // بلا هذا السطر يبقى `version` ثابتاً بعد التعديل الناجح ⇒ فحص `expectedVersion` أعلاه
+      // يفقد قدرته على كشف تعديلٍ متزامنٍ ثانٍ (تحديثٌ ضائع صامت — راجع نمط الترقيم في
+      // purchaseCharges.ts/supplierPayments.ts/returnGovernance.ts/requisitions.ts).
+      version: sql`${purchaseOrders.version} + 1`,
     }).where(eq(purchaseOrders.id, input.purchaseOrderId));
 
     await tx.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));

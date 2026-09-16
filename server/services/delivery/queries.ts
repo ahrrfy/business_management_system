@@ -6,8 +6,13 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { money } from "../money";
+import { money, round2 } from "../money";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { computePartyExposure } from "@shared/partyExposure";
+import { deliveryCashSource } from "./cashSource";
+import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { getDeliveryFinancialSummary } from "./lifecycle";
+import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 
 /**
  * ⭐ Tier-2 #1 (٢٥/٨): ترقيمُ الصفحات لقوائم التوصيل — كانت الدوال أدناه تُحمّل الصفوف كلّها
@@ -65,7 +70,7 @@ const partyHasPortalSql = sql<number>`(
 export async function countReadyForDispatch(branchId: number | null): Promise<number> {
   const db = getDb();
   if (!db) return 0;
-  const conds = [
+  const woConds = [
     eq(workOrders.status, "READY"),
     eq(workOrders.hasDelivery, true),
     sql`NOT EXISTS (
@@ -74,35 +79,49 @@ export async function countReadyForDispatch(branchId: number | null): Promise<nu
         AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
     )`,
   ];
-  if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
-  const row = (await db
+  if (branchId != null) woConds.push(eq(workOrders.branchId, branchId));
+  const woCount = (await db
     .select({ c: sql<number>`COUNT(*)` })
     .from(workOrders)
-    .where(and(...conds))
+    .where(and(...woConds))
   )[0];
-  return Number(row?.c ?? 0);
+
+  const onlineConds = [
+    inArray(onlineOrders.status, ["CONFIRMED", "PROCESSING"]),
+    isNull(onlineOrders.deliveryPartyId),
+    sql`NOT EXISTS (
+      SELECT 1 FROM deliveryConsignments dc
+      WHERE dc.sourceId = ${onlineOrders.id}
+        AND dc.sourceType = 'ONLINE_ORDER'
+        AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
+  ];
+  if (branchId != null) onlineConds.push(eq(onlineOrders.branchId, branchId));
+  const onlineCount = (await db
+    .select({ c: sql<number>`COUNT(*)` })
+    .from(onlineOrders)
+    .where(and(...onlineConds))
+  )[0];
+
+  return Number(woCount?.c ?? 0) + Number(onlineCount?.c ?? 0);
 }
 
-/** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
+/** أوامر الشغل وطلبات المتجر الجاهزة القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
 export async function listReadyForDispatch(branchId: number | null) {
   const db = getDb();
   if (!db) return [];
-  // هذه شاشة «الإرسال للتوصيل» فقط؛ الاستلام المباشر يبقى في طابور خدمة العملاء
-  // ولا يجوز أن يظهر هنا كأنه شحنة قابلة للإسناد.
-  const conds = [
+  const woConds = [
     eq(workOrders.status, "READY"),
     eq(workOrders.hasDelivery, true),
-    // ١٨/٨ (بلاغ المالك): الاستبعاد يخصّ الإرسالية **الحيّة** وحدها. كان `NOT EXISTS` غير
-    // مقيَّد بالحالة ⇒ إرساليةٌ ألغاها المدير (أو أُرجعت) تُسقط الأمر من هذا الطابور **إلى
-    // الأبد**: لا يظهر للإسناد ثانيةً ولا يُغلق — يعلق `READY` بلا مخرج.
     sql`NOT EXISTS (
       SELECT 1 FROM deliveryConsignments dc
       WHERE dc.workOrderId = ${workOrders.id}
         AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
     )`,
   ];
-  if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
-  return db
+  if (branchId != null) woConds.push(eq(workOrders.branchId, branchId));
+
+  const woRows = await db
     .select({
       id: workOrders.id,
       orderNumber: workOrders.orderNumber,
@@ -118,16 +137,53 @@ export async function listReadyForDispatch(branchId: number | null) {
       deliveryPhone: workOrders.deliveryPhone,
       hasDelivery: workOrders.hasDelivery,
       dueDate: workOrders.dueDate,
-      // Slice B (٢٩/٨/٢٦) — لعرض «إجمالي ما يدفعه العميل» في DispatchDialog صراحةً:
-      // COURIER ⇒ COD + fee (المندوب يجمعهما)، COUNTER ⇒ COD فقط (الأجرة قُبضت أمانةً في الاستقبال)،
-      // SHOP ⇒ COD فقط (المكتبة تدفع للمندوب). ولحقلٍ اقتراحيّ للأجرة كذلك (deliveryCost سلفاً محدَّد).
       deliveryFeeCollection: workOrders.deliveryFeeCollection,
       deliveryCost: workOrders.deliveryCost,
+      sourceType: sql<"WORK_ORDER" | "ONLINE_ORDER">`'WORK_ORDER'`,
     })
     .from(workOrders)
     .leftJoin(customers, eq(workOrders.customerId, customers.id))
-    .where(and(...conds))
+    .where(and(...woConds))
     .orderBy(desc(workOrders.id));
+
+  const onlineConds = [
+    inArray(onlineOrders.status, ["CONFIRMED", "PROCESSING"]),
+    isNull(onlineOrders.deliveryPartyId),
+    sql`NOT EXISTS (
+      SELECT 1 FROM deliveryConsignments dc
+      WHERE dc.sourceId = ${onlineOrders.id}
+        AND dc.sourceType = 'ONLINE_ORDER'
+        AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
+  ];
+  if (branchId != null) onlineConds.push(eq(onlineOrders.branchId, branchId));
+
+  const onlineRows = await db
+    .select({
+      id: onlineOrders.id,
+      orderNumber: onlineOrders.orderNumber,
+      title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
+      quantity: sql<number>`1`,
+      salePrice: onlineOrders.total,
+      deposit: sql<string>`'0.00'`,
+      branchId: onlineOrders.branchId,
+      customerId: onlineOrders.customerId,
+      customerName: customers.name,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      deliveryAddress: onlineOrders.shippingAddress,
+      deliveryPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
+      hasDelivery: sql<boolean>`true`,
+      dueDate: sql<Date | null>`NULL`,
+      deliveryFeeCollection: sql<"COURIER" | "COUNTER" | "SHOP">`CASE WHEN ${onlineOrders.deliveryFree} = 1 THEN 'SHOP' ELSE 'COURIER' END`,
+      deliveryCost: sql<string>`CASE WHEN ${onlineOrders.deliveryFree} = 1 THEN ${onlineOrders.deliveryWaivedAmount} ELSE ${onlineOrders.shippingCost} END`,
+      sourceType: sql<"WORK_ORDER" | "ONLINE_ORDER">`'ONLINE_ORDER'`,
+    })
+    .from(onlineOrders)
+    .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+    .where(and(...onlineConds))
+    .orderBy(desc(onlineOrders.id));
+
+  return [...woRows, ...onlineRows];
 }
 
 /** التزامات الجهة القابلة لإجراء موظف: COD مُسلّم للتوريد، طرد غير محصّل للإرجاع، أو أجرة مستحقة للدفع.
@@ -171,6 +227,10 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       collectedAmount: deliveryConsignments.collectedAmount,
       /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — الشاشة تعرض به المتبقّي الحيّ. */
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      // Codex #1012 P1 — عجزُ التسليم المُقيَّد على الطرد (Slice DFP1): نقدٌ لم تقبضه الجهة قطّ،
+      // فالمتبقّي الحيّ للتوريد = codAmount − collectedAmount − counterSettledAmount − shortfallAssigned.
+      // بدونه تحسب شاشة التسوية اليدويّة المتبقّي أعلى من الحدّ الخادميّ فيُرفَض كلُّ توريد.
+      shortfallAssigned: consignmentShortfallAssignedSql,
       /** المقبوضُ على المستند — تقديرُ ما يخرج من الدرج عند الإرجاع (انظر `listInTransitConsignments`). */
       invoicePaidAmount: invoices.paidAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
@@ -396,7 +456,12 @@ export async function getPartyStoreInTransit(partyId: number) {
     await db
       .select({
         count: sql<number>`COUNT(*)`,
-        value: sql<string>`COALESCE(SUM(GREATEST(CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)), 0)), 0)`,
+        // «ما بيد المندوب» سؤالُ تعرّضٍ ماليّ ⇒ `COLLECTIBLE` (مقصوص): طردٌ دُفِع فيه زائداً
+        // لا يجوز أن يُنقص تعرّضَ طردٍ آخر في نفس المجموع. القصُّ كان قائماً أصلاً.
+        // ⚠️ ترتيبُ الطرح تبدّل (`total − ret − paid` ⇐ `total − paid − ret`) وهو تجميعيّ على
+        // `DECIMAL` فالنتيجة واحدة رقماً برقم. وانتشارُ `NULL` محفوظ: الانضمامُ يساريّ وقد لا
+        // تكون فاتورة، و`GREATEST(NULL,0) = NULL` يتجاهله `SUM` — كما كان تماماً.
+        value: sql<string>`COALESCE(SUM(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0)`,
       })
       .from(onlineOrders)
       .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
@@ -576,6 +641,7 @@ export async function getConsignmentTimeline(consignmentId: number) {
         returnDeclaredReason: deliveryConsignments.returnDeclaredReason,
         remittanceId: deliveryConsignments.remittanceId,
         remittanceNumber: deliveryRemittances.remittanceNumber,
+        externalTrackingRef: deliveryConsignments.externalTrackingRef,
       })
       .from(deliveryConsignments)
       .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
@@ -728,19 +794,8 @@ export async function listPartyObligations(branchId: number | null) {
        * DELIVERED بحالة إغلاق PARTIAL يقع في «سُلِّم لم يُحصَّل»، وطردٌ ASSIGNED بحالة إغلاق DISPATCHED
        * في «بالطريق». نبقي codDueTotal كما هو (لا كسر واجهةٍ عبر ٢٠+ مستهلك).
        */
-      parcelsInTransitAmount: sql<string>`(SELECT COALESCE(SUM(CAST(dc.codAmount AS DECIMAL(15,2))), 0)
-        FROM deliveryConsignments dc
-        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
-          AND dc.parcelStatus IN ('ASSIGNED', 'OUT_FOR_DELIVERY'))`,
-      deliveredUncollectedAmount: sql<string>`(SELECT COALESCE(SUM(GREATEST(
-          CAST(dc.codAmount AS DECIMAL(15,2))
-          - CAST(dc.collectedAmount AS DECIMAL(15,2))
-          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0)), 0)
-        FROM deliveryConsignments dc
-        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
-          AND dc.parcelStatus = 'DELIVERED'
-          AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
-          AND dc.returnDeclaredAt IS NULL)`,
+      // م١ (PR-3): عمودا التعرّض (٢ و٣) لم يعودا SQL هنا — يُحسبان بعد الجلب بالدالّة النقيّة
+      // `computePartyExposure` من `loadPartyExposureInputsTx` (نفس الفرع `cnBranch`) — انظر أسفل الدالّة.
       lastRemittanceAt: sql<Date | null>`(SELECT MAX(dr.receivedAt) FROM deliveryRemittances dr
         WHERE dr.partyId = ${deliveryParties.id}${rmBranch})`,
       hasPortal: sql<number>`(
@@ -770,14 +825,30 @@ export async function listPartyObligations(branchId: number | null) {
     ));
   // «عليها التزام» = إرسالية مفتوحة أو أجرة مستحقّة أو عهدة قائمة. الفلترة والفرز في الذاكرة
   // عمداً: جهات التوصيل بالعشرات، وHAVING كان سيكرّر الاستعلامات المترابطة الثلاثة حرفياً.
-  return rows
+  const kept = rows
     .filter((r) =>
       Number(r.openCount) > 0
       || money(r.feeDueTotal ?? "0").gt(0)
       || money(r.currentBalance ?? "0").gt(0),
     )
-    .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1))
-    .map((r) => ({
+    .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1));
+  // م١ (PR-3): أعمدة التعرّض من **الدالّة النقيّة** (كانت SQL موازيةً لـ`parties.ts` انحرفت عنها).
+  const exposureInputs = await loadPartyExposureInputsTx(
+    db as unknown as Parameters<typeof loadPartyExposureInputsTx>[0],
+    kept.map((r) => Number(r.partyId)),
+    branchId,
+  );
+  const cashSource = deliveryCashSource();
+  return kept.map((r) => {
+    const inputs = exposureInputs.get(Number(r.partyId));
+    const cashInHandStored = round2(money(r.currentBalance ?? "0")).toFixed(2);
+    const cashInHandLedger = inputs?.cashInHandLedger ?? "0.00";
+    const exposure = computePartyExposure({
+      cashInHand: cashSource === "ledger" ? cashInHandLedger : cashInHandStored,
+      parcels: inputs?.parcels ?? [],
+      ledger: inputs?.ledger ?? [],
+    });
+    return {
       partyId: Number(r.partyId),
       name: r.name,
       partyType: r.partyType,
@@ -789,10 +860,15 @@ export async function listPartyObligations(branchId: number | null) {
       feeDueTotal: String(r.feeDueTotal ?? "0.00"),
       lastRemittanceAt: r.lastRemittanceAt ?? null,
       hasPortal: Number(r.hasPortal ?? 0) > 0,
-      // Slice DFP1 (٣٠/٨/٢٦) — أعمدة المسؤوليّة الأربعة الجديدة (٢ و٣ من partyExposure).
-      parcelsInTransitAmount: String(r.parcelsInTransitAmount ?? "0.00"),
-      deliveredUncollectedAmount: String(r.deliveredUncollectedAmount ?? "0.00"),
-    }));
+      // Slice DFP1 (٣٠/٨/٢٦) — أعمدة المسؤوليّة (٢ و٣ من partyExposure) — م١: من الدالّة النقيّة.
+      parcelsInTransitAmount: exposure.parcelsInTransit,
+      deliveredUncollectedAmount: exposure.deliveredUncollected,
+      // م١ (PR-3) — الطرح الظلّيّ: المصدران معاً وفرقهما.
+      cashInHandLedger,
+      cashInHandStored,
+      cashInHandDrift: round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2),
+    };
+  });
 }
 
 /**

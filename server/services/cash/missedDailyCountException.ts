@@ -23,10 +23,11 @@ import { logAuditTx, type AuditMetadata } from "../auditService";
 import { todayUtcDate, utcDayRange } from "../businessDay";
 import { cashEventAtSql } from "./cashEventAt";
 import { buildDailyCashEvidenceTx } from "../cashDailyReconciliationService";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, toDbMoney } from "../money";
 import { canonicalCloseJson, closeSha256 } from "../reports/monthCloseSequence";
 import { withTx, type Actor } from "../tx";
+import { resolveApprovalActor } from "../approval/ownerGate";
 
 export interface RequestMissedDailyCountExceptionInput {
   branchId: number;
@@ -405,7 +406,7 @@ export async function requestMissedDailyCountException(
     evidenceReference,
   });
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const [replay] = await tx
       .select()
       .from(cashMissedDailyCountExceptions)
@@ -417,7 +418,7 @@ export async function requestMissedDailyCountException(
       )
       .limit(1);
     if (replay) {
-      if (replay.requestHash !== requestHash) {
+      if (!payloadHashMatches(requestHash, replay.requestHash)) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل لاستثناء جرد مختلف",
@@ -533,6 +534,21 @@ export async function requestMissedDailyCountException(
       idempotent: false,
     };
   });
+  const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, actor));
+  if (resolvedActor.isOwner && result.status === "PENDING") {
+    return decideMissedDailyCountException(
+      {
+        exceptionId: Number(result.id),
+        expectedVersion: Number(result.version),
+        decision: "APPROVED",
+        note: "اعتماد تلقائي لأن منفذ العملية هو المالك",
+        clientRequestId: `owner-auto-${input.clientRequestId}`,
+      },
+      resolvedActor,
+      auditCtx,
+    );
+  }
+  return result;
 }
 
 export async function decideMissedDailyCountException(
@@ -576,7 +592,7 @@ export async function decideMissedDailyCountException(
       .limit(1);
     if (replayEvent) {
       if (
-        replayEvent.requestHash !== requestHash ||
+        !payloadHashMatches(requestHash, replayEvent.requestHash) ||
         replayEvent.eventType !== input.decision
       ) {
         throw new TRPCError({
@@ -604,7 +620,7 @@ export async function decideMissedDailyCountException(
         message: "طلب الاستثناء غير موجود",
       });
     }
-    if (Number(row.requestedByUserId) === actor.userId) {
+    if (!actor.isOwner && Number(row.requestedByUserId) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message:

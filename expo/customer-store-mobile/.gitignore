@@ -26,6 +26,10 @@ apple-api-key*.p8
 asc-auth*.json
 secrets/
 
+# Firebase client config — supplied locally or as EAS file variables
+/google-services.json
+/GoogleService-Info.plist
+
 # scratch / temporary output files
 .tmp_*
 tmp/

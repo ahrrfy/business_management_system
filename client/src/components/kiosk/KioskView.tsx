@@ -13,7 +13,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
-import { X, Maximize } from "lucide-react";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { X, Maximize, WifiOff, Package, Keyboard } from "lucide-react";
+import { fmtAr } from "@/lib/money";
+import { playScanSuccess, playScanNotFound } from "@/lib/audioFeedback";
+import { useScreenWakeLock } from "@/lib/screenWakeLock";
 
 export type KProduct = {
   productId: number;
@@ -23,9 +28,31 @@ export type KProduct = {
   variantName: string | null;
   unitName: string;
   price: string | null;
+  originalPrice?: string | null;
+  discountPercent?: string | null;
+  promotionName?: string | null;
   barcode: string | null;
   imageUrl: string | null;
+  availableUnits?: {
+    unitName: string;
+    conversionFactor: number;
+    price: string | null;
+    barcode: string | null;
+  }[];
 };
+
+export type KPromo = {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  imageUrl: string | null;
+  ctaLabel: string | null;
+};
+
+export type SlideItem =
+  | { type: "product"; product: KProduct; id: string }
+  | { type: "promo"; promo: KPromo; id: string };
+
 
 type Settings = {
   branchId: number | null;
@@ -38,6 +65,7 @@ type Settings = {
   showQr: boolean;
   contactLabel: string;
   contactUrl: string;
+  enableSound: boolean;
 };
 
 const DEFAULTS: Settings = {
@@ -51,6 +79,7 @@ const DEFAULTS: Settings = {
   showQr: true,
   contactLabel: "تابعنا وتواصل معنا",
   contactUrl: "https://wa.me/9647700000000",
+  enableSound: true,
 };
 const LS_KEY = "kiosk_settings_v1";
 
@@ -62,13 +91,13 @@ function loadSettings(): Settings {
   return { ...DEFAULTS };
 }
 
-const fmtPrice = (n: string | number) => Number(n).toLocaleString("en-US");
 const cssVar = (name: string, value: string | number) => ({ [name]: String(value) }) as React.CSSProperties;
 
 type ScanState =
   | { mode: "idle"; token: number }
   | { mode: "result"; product: KProduct; code: string; token: number }
-  | { mode: "notfound"; code: string; token: number };
+  | { mode: "notfound"; code: string; token: number }
+  | { mode: "neterror"; code: string; token: number };
 
 // ── أيقونات خطّية ───────────────────────────────────────────────────────────
 const IconScan = ({ s = 52 }: { s?: number }) => (
@@ -115,7 +144,7 @@ export function isNearActive(i: number, idx: number, n: number): boolean {
 function KioskImage({ p, defer = false }: { p: KProduct; defer?: boolean }) {
   // شريحةٌ بعيدة: لا `<img>` إطلاقاً ⇒ لا طلب. وهي بـopacity:0 أصلاً فلا أثر بصريّ.
   if (defer) return <div className="kpc-ph" aria-hidden="true" />;
-  if (p.imageUrl) return <img className="kpc-img" src={p.imageUrl} alt={p.productName} />;
+  if (p.imageUrl) return <img className="kpc-img" src={p.imageUrl} alt={p.productName} draggable={false} />;
   return (
     <div className="kpc-ph">
       <span className="kpc-ph-cat">{p.category ?? p.brand ?? "منتج"}</span>
@@ -124,15 +153,26 @@ function KioskImage({ p, defer = false }: { p: KProduct; defer?: boolean }) {
   );
 }
 
-// ── كتلة السعر (مشتركة بين البنر وبطاقة المسح) ───────────────────────────────
+// ── كتلة السعر (مشتركة بين البنر وبطاقة المسح مع دعم العروض والخصومات) ──────
 function PriceBlock({ p, priceScale }: { p: KProduct; priceScale: number }) {
+  const hasDiscount = !!(p.originalPrice && p.price && p.originalPrice !== p.price);
   return (
     <div className="price-wrap" style={cssVar("--ps", priceScale)}>
-      <div className="price-label">سعر المفرد</div>
+      <div className="price-label">
+        سعر المفرد
+        {p.promotionName && <span className="kpc-promo-tag">{p.promotionName}</span>}
+      </div>
       {p.price != null ? (
         <>
+          {hasDiscount && (
+            <div className="kpc-original-price">
+              <span className="kpc-was-num">{fmtAr(p.originalPrice)}</span>
+              <span className="kpc-was-cur">د.ع</span>
+              {p.discountPercent && <span className="kpc-discount-badge">{p.discountPercent}% خصم</span>}
+            </div>
+          )}
           <div className="price-row">
-            <span className="price-num">{fmtPrice(p.price)}</span>
+            <span className="price-num">{fmtAr(p.price)}</span>
             <span className="price-cur">د.ع</span>
           </div>
           <div className="price-unit">للـ{p.unitName} الواحدة</div>
@@ -144,8 +184,20 @@ function PriceBlock({ p, priceScale }: { p: KProduct; priceScale: number }) {
   );
 }
 
+// ── صورة الشريحة الترويجية ──────────────────────────────────────────────
+function PromoSlideMedia({ promo, defer = false }: { promo: KPromo; defer?: boolean }) {
+  if (defer) return <div className="kpc-ph" aria-hidden="true" />;
+  if (promo.imageUrl) return <img className="kpc-img" src={promo.imageUrl} alt={promo.title} draggable={false} />;
+  return (
+    <div className="kpc-ph">
+      <span className="kpc-ph-cat">عرض خاص</span>
+      <span className="kpc-ph-sub">الرؤية العربية</span>
+    </div>
+  );
+}
+
 // ── خلط Fisher-Yates (نسخة جديدة — لا يطال المصدر) ─────────────────────────
-function fisherYates(arr: KProduct[]): KProduct[] {
+function fisherYates<T>(arr: T[]): T[] {
   const copy = [...arr];
   for (let i = copy.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -154,33 +206,126 @@ function fisherYates(arr: KProduct[]): KProduct[] {
   return copy;
 }
 
-// ── البنر المتحرك — خلط مستمر بلا تكرار ─────────────────────────────────────
-function Banner({ products: source, rotateSec, priceScale, paused }: { products: KProduct[]; rotateSec: number; priceScale: number; paused: boolean }) {
-  const [display, setDisplay] = useState<KProduct[]>([]);
+// ── بناء حلقة الشرائح بدمج المنتجات مع البنرات الإعلانية الترويجية ─────────
+function buildSlideDeck(products: KProduct[], promos: KPromo[]): SlideItem[] {
+  if (products.length === 0 && promos.length === 0) return [];
+  if (promos.length === 0) {
+    return products.map((p) => ({ type: "product", product: p, id: `prod-${p.productId}` }));
+  }
+  if (products.length === 0) {
+    return promos.map((pr) => ({ type: "promo", promo: pr, id: `promo-${pr.id}` }));
+  }
+
+  const deck: SlideItem[] = [];
+  let promoIndex = 0;
+  for (let i = 0; i < products.length; i++) {
+    deck.push({ type: "product", product: products[i], id: `prod-${products[i].productId}` });
+    // إدراج شريحة إعلانية كل ٥ منتجات بتناوب تسويقي جذاب
+    if ((i + 1) % 5 === 0 && promos.length > 0) {
+      const pr = promos[promoIndex % promos.length];
+      deck.push({ type: "promo", promo: pr, id: `promo-${pr.id}-${i}` });
+      promoIndex++;
+    }
+  }
+  return deck;
+}
+
+// ── البنر المتحرك — خلط مستمر وعرض المنتجات والعروض بلا تكرار (حل فخ الـ 50 منتج) ─
+function Banner({
+  products: source,
+  promos = [],
+  rotateSec,
+  priceScale,
+  paused,
+  branchKey,
+}: {
+  products: KProduct[];
+  promos?: KPromo[];
+  rotateSec: number;
+  priceScale: number;
+  paused: boolean;
+  branchKey?: string | number | null;
+}) {
+  const [display, setDisplay] = useState<SlideItem[]>([]);
   const [idx, setIdx] = useState(0);
   const n = display.length;
   const rotateMs = Math.max(2, rotateSec) * 1000;
 
-  // خلط أوّلي عند تغيّر البيانات المصدرية (تحميل أوّل أو إعادة جلب كل ٥ دقائق)
-  useEffect(() => {
-    setDisplay(source.length > 1 ? fisherYates(source) : source);
-    setIdx(0);
-  }, [source]);
+  // حفظ أحدث مصدر وعروض في مراجع لتحديث الدورة القادمة بلا قطع الدورة الحالية
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+  const promosRef = useRef(promos);
+  promosRef.current = promos;
 
-  // دوران مع إعادة خلط عند إتمام دورة كاملة — كل منتج يُعرض قبل أي تكرار
+  // تهيئة أولية أو تحديث القائمة عند فراغها
+  useEffect(() => {
+    if (source.length === 0 && promos.length === 0) {
+      if (display.length > 0) {
+        setDisplay([]);
+        setIdx(0);
+      }
+      return;
+    }
+    if (display.length === 0) {
+      const shuffled = source.length > 1 ? fisherYates(source) : source;
+      setDisplay(buildSlideDeck(shuffled, promos));
+      setIdx(0);
+    }
+  }, [display.length, source, promos]);
+
+  // تبديل الفرع الصريح (للموظف) يعيد ضبط الكاروسيل للفرع الجديد
+  const prevBranchRef = useRef(branchKey);
+  useEffect(() => {
+    if (prevBranchRef.current !== branchKey) {
+      prevBranchRef.current = branchKey;
+      if (source.length === 0 && promos.length === 0) {
+        setDisplay([]);
+        setIdx(0);
+      } else {
+        const shuffled = source.length > 1 ? fisherYates(source) : source;
+        setDisplay(buildSlideDeck(shuffled, promos));
+        setIdx(0);
+      }
+    }
+  }, [branchKey, source, promos]);
+
+  // تطبيع المؤشر إذا تقلصت القائمة
+  useEffect(() => {
+    if (n > 0 && idx >= n) {
+      setIdx(((idx % n) + n) % n);
+    }
+  }, [idx, n]);
+
+  // دوران مستمر: تقدم سلس للشريحة التالية
   useEffect(() => {
     if (paused || n <= 1) return;
     const id = setInterval(() => {
-      setIdx(prev => {
-        if (prev + 1 >= n) {
-          setDisplay(d => d.length > 1 ? fisherYates(d) : d);
+      setIdx((prev) => {
+        const next = prev + 1;
+        if (next >= n) {
           return 0;
         }
-        return prev + 1;
+        return next;
       });
     }, rotateMs);
     return () => clearInterval(id);
   }, [paused, n, rotateMs]);
+
+  // عند العودة إلى الشريحة الأولى بعد إتمام الدورة، نخلط الكتالوج بهدوء للدورة التالية أو نفرغ القائمة إن انتهت
+  const prevIdxRef = useRef(idx);
+  useEffect(() => {
+    if (prevIdxRef.current > 0 && idx === 0) {
+      const curSource = sourceRef.current;
+      const curPromos = promosRef.current;
+      if (curSource.length === 0 && curPromos.length === 0) {
+        setDisplay([]);
+      } else {
+        const shuffled = curSource.length > 1 ? fisherYates(curSource) : curSource;
+        setDisplay(buildSlideDeck(shuffled, curPromos));
+      }
+    }
+    prevIdxRef.current = idx;
+  }, [idx]);
 
   if (n === 0) {
     return (
@@ -196,16 +341,44 @@ function Banner({ products: source, rotateSec, priceScale, paused }: { products:
   return (
     <div className="banner">
       <div className="slides">
-        {display.map((p, i) => (
-          <div key={p.productId} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
-            <div className="slide-media"><KioskImage p={p} defer={!isNearActive(i, idx, n)} /></div>
-            <div className="slide-info">
-              <div className="brand-chip">{[p.brand, p.category].filter(Boolean).join(" · ") || "منتج"}</div>
-              <h1 className="prod-name">{p.productName}</h1>
-              <PriceBlock p={p} priceScale={priceScale} />
+        {display.map((item, i) => {
+          // ترشيح وافتراضية DOM: تصيير الشرائح النشطة والمجاورة فقط (3 شرائح كحد أقصى بدل 1000)
+          if (!isNearActive(i, idx, n)) return null;
+          const defer = false;
+          if (item.type === "promo") {
+            const pr = item.promo;
+            return (
+              <div key={item.id} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
+                <div className="slide-promo">
+                  <div className="promo-banner-media">
+                    <PromoSlideMedia promo={pr} defer={defer} />
+                  </div>
+                  <div className="promo-info">
+                    <div className="promo-badge">عرض خاص</div>
+                    <h1 className="promo-title">{pr.title}</h1>
+                    {pr.subtitle && <p className="promo-subtitle">{pr.subtitle}</p>}
+                    {pr.ctaLabel && (
+                      <div className="promo-callout">
+                        <span>{pr.ctaLabel}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          const p = item.product;
+          return (
+            <div key={item.id} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
+              <div className="slide-media"><KioskImage p={p} defer={defer} /></div>
+              <div className="slide-info">
+                <div className="brand-chip">{[p.brand, p.category].filter(Boolean).join(" · ") || "منتج"}</div>
+                <h1 className="prod-name">{p.productName}</h1>
+                <PriceBlock p={p} priceScale={priceScale} />
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       {n > 1 && (
         <div className="banner-progress">
@@ -239,6 +412,20 @@ function ScanOverlay({ scan, priceDuration, priceScale, onDismiss }: { scan: Sca
 
   if (scan.mode === "idle") return null;
 
+  if (scan.mode === "neterror") {
+    return (
+      <div className="overlay" onClick={onDismiss}>
+        <div className="result-card neterror" onClick={(e) => e.stopPropagation()}>
+          <div className="nf-icon"><WifiOff size={56} aria-hidden /></div>
+          <h2>تعذّر الاتصال بالخادم</h2>
+          <div className="nf-code">{scan.code}</div>
+          <p>تحقّق من اتصال شبكة المتجر ثم أعد المحاولة.</p>
+          <button className="dismiss-btn" onClick={onDismiss}>عودة للعرض</button>
+        </div>
+      </div>
+    );
+  }
+
   if (scan.mode === "notfound") {
     return (
       <div className="overlay" onClick={onDismiss}>
@@ -264,12 +451,79 @@ function ScanOverlay({ scan, priceDuration, priceScale, onDismiss }: { scan: Sca
             <div className="brand-chip">{[p.brand, p.category].filter(Boolean).join(" · ") || "منتج"}</div>
             <h2 className="result-name">{p.productName}</h2>
             <div className="result-price"><PriceBlock p={p} priceScale={priceScale} /></div>
+            {p.availableUnits && p.availableUnits.length > 0 && (
+              <div className="kpc-units-box">
+                <div className="kpc-units-title">
+                  <Package className="size-5 text-primary" aria-hidden />
+                  <span>عبوات ووحدات أخرى متوفّرة لهذا الصنف:</span>
+                </div>
+                <div className="kpc-units-grid">
+                  {p.availableUnits.map((u, ui) => (
+                    <div key={ui} className="kpc-unit-card">
+                      <span className="kpc-unit-name">{u.unitName}</span>
+                      <span className="kpc-unit-factor">تحتوي {u.conversionFactor} قطعة</span>
+                      <span className="kpc-unit-price">{u.price != null ? `${fmtAr(u.price)} د.ع` : "غير متوفّر"}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div className="result-foot">
           <span className="barcode-mono">باركود · {p.barcode ?? scan.code}</span>
           <span className="countdown">عودة للعرض خلال {left} ثانية</span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── لوحة المفاتيح الرقمية باللمس للإدخال اليدوي ────────────────────────────────
+function TouchKeypadModal({
+  open,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSubmit: (code: string) => void;
+}) {
+  const [val, setVal] = useState("");
+  if (!open) return null;
+
+  const press = (char: string) => {
+    if (val.length < 24) setVal((prev) => prev + char);
+  };
+  const backspace = () => setVal((prev) => prev.slice(0, -1));
+  const clear = () => setVal("");
+  const submit = () => {
+    if (val.trim()) {
+      onSubmit(val.trim());
+      setVal("");
+      onClose();
+    }
+  };
+
+  return (
+    <div className="kpc-keypad-overlay" onClick={onClose}>
+      <div className="kpc-keypad-card" onClick={(e) => e.stopPropagation()}>
+        <div className="kpc-keypad-head">
+          <strong>إدخال رقم الباركود يدوياً</strong>
+          <button onClick={onClose} aria-label="إغلاق"><X className="size-6" /></button>
+        </div>
+        <div className="kpc-keypad-display">{val || "—"}</div>
+        <div className="kpc-keypad-grid">
+          {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((k) => (
+            <button key={k} className="kpc-key-btn" onClick={() => press(k)}>{k}</button>
+          ))}
+          <button className="kpc-key-btn clear-btn" onClick={clear}>مسح</button>
+          <button className="kpc-key-btn" onClick={() => press("0")}>0</button>
+          <button className="kpc-key-btn clear-btn" onClick={backspace}>⌫</button>
+        </div>
+        <button className="kpc-key-btn action-btn" onClick={submit} disabled={!val.trim()}>
+          بحث عن السعر
+        </button>
       </div>
     </div>
   );
@@ -290,6 +544,8 @@ export default function KioskView({
   const isDevice = mode === "device";
   const [, navigate] = useLocation();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  // تفعيل حارس استيقاظ الشاشة لمنع السكون والشاشة السوداء 24/7
+  const wakeLock = useScreenWakeLock(true);
   const setTweak = useCallback(<K extends keyof Settings>(k: K, v: Settings[K]) => {
     setSettings((prev) => {
       const next = { ...prev, [k]: v };
@@ -304,51 +560,75 @@ export default function KioskView({
   const staffBranchId = settings.branchId ?? branches[0]?.id ?? null;
   const branchName = isDevice ? (deviceBranchName ?? "—") : (branches.find((b) => b.id === staffBranchId)?.name ?? "—");
 
-  // البنر: كامل الكتالوج بلا سقف. الخلط يتمّ داخل مكوّن Banner عند كل دورة عرض كاملة.
+  // البنر: كامل الكتالوج بلا سقف. وضع الجهاز مفروض خادمياً من التوكن (بدون تمرير فرع من العميل).
+  const cachedProductsRef = useRef<KProduct[]>([]);
   const bannerQ = trpc.kiosk.banner.useQuery(
     isDevice ? {} : { branchId: staffBranchId ?? 0 },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 5 * 60 * 1000, refetchOnWindowFocus: false }
   );
-  const products = (bannerQ.data ?? []) as KProduct[];
+  if (bannerQ.data && bannerQ.data.length > 0) {
+    cachedProductsRef.current = bannerQ.data as KProduct[];
+  }
+  const products = (bannerQ.data && bannerQ.data.length > 0 ? bannerQ.data : cachedProductsRef.current) as KProduct[];
+
+  // العروض والبنرات الإعلانية لشاشة الكشك
+  const promosQ = trpc.kiosk.promotions.useQuery(
+    isDevice ? undefined : { branchId: staffBranchId ?? undefined },
+    { enabled: isDevice || staffBranchId != null, refetchInterval: 10 * 60 * 1000, refetchOnWindowFocus: false }
+  );
+  const promos = (promosQ.data ?? []) as KPromo[];
+
+  // إن ألغى المدير الجهاز من الخادم، يُرفض الاستعلام بـUNAUTHORIZED ونُنهي الجلسة فوراً بلا انتظار
+  useEffect(() => {
+    if (isDevice && bannerQ.error?.data?.code === "UNAUTHORIZED") {
+      onDeviceLogout?.();
+    }
+  }, [isDevice, bannerQ.error, onDeviceLogout]);
 
   // ── محرّك المسح ──
   const utils = trpc.useUtils();
   const [scan, setScan] = useState<ScanState>({ mode: "idle", token: 0 });
+  const [keypadOpen, setKeypadOpen] = useState(false);
+
   const handleScan = useCallback(async (code: string) => {
-    const clean = String(code).trim();
+    const clean = normalizeBarcodeScannerInput(String(code));
     if (!clean) return;
     if (!isDevice && staffBranchId == null) return;
+
+    // 1. فحص فوري بالذاكرة المحلية (استجابة 0ms وصوت نجاح فوري) إن كان الباركود ضمن الكتالوج النشط
+    const localMatch = products.find((pr) => pr.barcode === clean);
+    if (localMatch) {
+      if (settings.enableSound) playScanSuccess();
+      setScan({ mode: "result", product: localMatch, code: clean, token: Date.now() });
+    }
+
+    // 2. فحص موثوق من الخادم لجلب خصومات العروض المحدّثة ووحدات الصنف الأخرى والباركودات البديلة
     try {
       const p = (await utils.kiosk.lookup.fetch(
         isDevice ? { barcode: clean } : { branchId: staffBranchId ?? 0, barcode: clean }
       )) as KProduct | null;
-      setScan(p ? { mode: "result", product: p, code: clean, token: Date.now() } : { mode: "notfound", code: clean, token: Date.now() });
-    } catch {
-      setScan({ mode: "notfound", code: clean, token: Date.now() });
-    }
-  }, [isDevice, staffBranchId, utils]);
-
-  // الماسح يكتب بسرعة وينهي بـEnter — مع تجاهل حقول الإدخال (لوحة الإعدادات).
-  const scanRef = useRef(handleScan);
-  scanRef.current = handleScan;
-  useEffect(() => {
-    const buf = { s: "", last: 0 };
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName || "";
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable) return;
-      const now = Date.now();
-      if (now - buf.last > 120) buf.s = "";
-      buf.last = now;
-      if (e.key === "Enter") {
-        if (buf.s.length >= 3) scanRef.current(buf.s);
-        buf.s = "";
+      if (p) {
+        if (!localMatch && settings.enableSound) playScanSuccess();
+        setScan({ mode: "result", product: p, code: clean, token: Date.now() });
+      } else if (!localMatch) {
+        if (settings.enableSound) playScanNotFound();
+        setScan({ mode: "notfound", code: clean, token: Date.now() });
+      }
+    } catch (err: any) {
+      if (isDevice && err?.data?.code === "UNAUTHORIZED") {
+        onDeviceLogout?.();
         return;
       }
-      if (e.key.length === 1 && /[\w\-]/.test(e.key)) buf.s += e.key;
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+      if (!localMatch) {
+        if (settings.enableSound) playScanNotFound();
+        setScan({ mode: "neterror", code: clean, token: Date.now() });
+      }
+    }
+  }, [isDevice, onDeviceLogout, staffBranchId, utils, products, settings.enableSound]);
+
+  // نفس سياسة HID المشتركة؛ تقبل رموز الموردين القصيرة (محرفان) وكل ASCII القابل للطباعة،
+  // وتتجاهل حقول إعدادات الكشك من دون مستمعٍ محليّ ينحرف عن بقية الشاشات.
+  useBarcodeScanner(handleScan, { minLength: 2, thresholdMs: 120 });
 
   // الإغلاق التلقائي لنتيجة المسح.
   useEffect(() => {
@@ -357,13 +637,18 @@ export default function KioskView({
     return () => clearTimeout(id);
   }, [scan.mode, scan.token, settings.priceDuration]);
 
-  // ── التحجيم: لوحة 1920×1080 تُملأ في أي شاشة ──
+  // ── التحجيم: دعم شاشات الكشك العادية (1920×1080) والعمودية (Portrait 1080×1920) ──
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [isPortrait, setIsPortrait] = useState(false);
   useEffect(() => {
     const fit = () => {
       const c = canvasRef.current;
       if (!c) return;
-      const s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+      const portrait = window.innerHeight > window.innerWidth;
+      setIsPortrait(portrait);
+      const targetW = portrait ? 1080 : 1920;
+      const targetH = portrait ? 1920 : 1080;
+      const s = Math.min(window.innerWidth / targetW, window.innerHeight / targetH);
       c.style.transform = `translate(-50%, -50%) scale(${s})`;
     };
     fit();
@@ -387,8 +672,11 @@ export default function KioskView({
   const dismiss = () => setScan({ mode: "idle", token: 0 });
 
   return (
-    <div className={"kioskpc-root" + (settings.theme === "dark" ? " kpc-dark" : "")}>
-      <div className="kpc-canvas" ref={canvasRef}>
+    <div
+      className={"kioskpc-root" + (settings.theme === "dark" ? " kpc-dark" : "")}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className={"kpc-canvas" + (isPortrait ? " kpc-portrait" : "")} ref={canvasRef}>
         <div className="kiosk">
           {/* الترويسة */}
           <header className="kiosk-header">
@@ -401,6 +689,7 @@ export default function KioskView({
                     alt="شعار المكتبة العربية للطباعة والقرطاسية"
                     width={74}
                     height={74}
+                    draggable={false}
                     onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                   />
                 </div>
@@ -416,9 +705,16 @@ export default function KioskView({
             </div>
           </header>
 
-          <Banner products={products} rotateSec={settings.rotateSec} priceScale={settings.priceScale} paused={scan.mode !== "idle"} />
+          <Banner
+            products={products}
+            promos={promos}
+            rotateSec={settings.rotateSec}
+            priceScale={settings.priceScale}
+            paused={scan.mode !== "idle"}
+            branchKey={isDevice ? "dev" : staffBranchId}
+          />
 
-          {/* التذييل: تعليمات + QR */}
+          {/* التذييل: تعليمات + زر الإدخال اليدوي + QR */}
           <footer className="kiosk-footer">
             {settings.showInstruction ? (
               <div className="instruction">
@@ -429,9 +725,15 @@ export default function KioskView({
                 </div>
               </div>
             ) : <div />}
+
+            <button className="kpc-touch-trigger" onClick={() => setKeypadOpen(true)}>
+              <Keyboard aria-hidden className="size-5" />
+              <span>إدخال يدوي للرقم</span>
+            </button>
+
             {settings.showQr && qrUrl ? (
               <div className="qr-box">
-                <div className="qr-frame"><img src={qrUrl} alt="QR" /></div>
+                <div className="qr-frame"><img src={qrUrl} alt="QR" draggable={false} /></div>
                 <div className="qr-text">
                   <strong>{settings.contactLabel}</strong>
                   <span>امسح الرمز بكاميرا هاتفك</span>
@@ -441,6 +743,7 @@ export default function KioskView({
           </footer>
 
           <ScanOverlay scan={scan} priceDuration={settings.priceDuration} priceScale={settings.priceScale} onDismiss={dismiss} />
+          <TouchKeypadModal open={keypadOpen} onClose={() => setKeypadOpen(false)} onSubmit={(c) => handleScan(c)} />
         </div>
       </div>
 
@@ -509,6 +812,9 @@ export default function KioskView({
             <label className="kpc-toggle">رمز QR للتواصل
               <input type="checkbox" checked={settings.showQr} onChange={(e) => setTweak("showQr", e.target.checked)} />
             </label>
+            <label className="kpc-toggle">التنبيه الصوتي عند المسح
+              <input type="checkbox" checked={settings.enableSound} onChange={(e) => setTweak("enableSound", e.target.checked)} />
+            </label>
 
             <div className="kpc-field">
               <label>نص التواصل</label>
@@ -517,6 +823,18 @@ export default function KioskView({
             <div className="kpc-field">
               <label>رابط QR (واتساب/صفحة)</label>
               <input type="text" value={settings.contactUrl} onChange={(e) => setTweak("contactUrl", e.target.value)} />
+            </div>
+
+            <div className="kpc-field">
+              <label>وضع العمل المستمر (منع سكون الشاشة 24/7)</label>
+              <div className={`kpc-status-chip ${wakeLock.isLocked ? "active" : "inactive"}`}>
+                <span className={`kpc-status-dot ${wakeLock.isLocked ? "active" : "inactive"}`} />
+                <span>
+                  {wakeLock.isLocked
+                    ? "حارس استيقاظ الشاشة نشط ويعمل"
+                    : "حارس استيقاظ الشاشة غير نشط (تحقق من إعدادات المتصفح والنظام)"}
+                </span>
+              </div>
             </div>
 
             {/* محاكاة المسح — الموظّف داخل التطبيق فقط (لا تُعرض للزبون على الجهاز) */}

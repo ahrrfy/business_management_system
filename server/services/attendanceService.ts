@@ -13,6 +13,7 @@ import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
+import { assertPeriodOpen } from "./periodLockService";
 import { DEFAULT_WORK_SCHEDULE, standardMonthlyHours, type WorkSchedule } from "./hr/attendancePay";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
@@ -422,6 +423,8 @@ export async function recomputeMonthRates(input: {
           : `لا يمكن إعادة الاحتساب: مسيّر رواتب شهر ${period} ${label} — ألغِ اعتماد المسيّر أولاً`,
       );
     }
+    // حارس إقفال الفترة المالية العامّة — راجع الشرح المطابق في recordAttendance أعلاه.
+    await assertPeriodOpen(tx, new Date(`${period}-01`));
 
     const conds: SQL[] = [like(attendance.attendanceDate, `${period}%`)];
     // عزل الفرع: إعادة تسعير شهرٍ كامل تُعيد كتابة `hourlyRate`/`amount` لكل صفٍّ مطابق —
@@ -664,6 +667,14 @@ export async function recordAttendance(input: RecordAttendanceInput) {
         `لا يمكن تسجيل الحضور: مسيّر رواتب شهر ${period} ${lockedRun.status === "paid" ? "مدفوع" : "معتمَد"} — ألغِ اعتماد المسيّر أولاً للتعديل`,
       );
     }
+    /*
+     * حارس إقفال الفترة المالية العامّة (تدقيق ٤/٩، مطابقةً لنمط inventoryService.ts/H5):
+     * الحارس أعلاه يمنع فقط حين يوجد مسيّر رواتب معتمد/مدفوع لنفس الشهر — لا يستشير
+     * financialPeriods إطلاقاً. فترةٌ أُقفلت محاسبياً بلا أن يُولَّد لها مسيّر رواتب قطّ (موظّفٌ
+     * أُضيف متأخراً، مسيّرٌ أُعيد للمسودّة ولم يُعَد توليده…) تبقى قابلةً للتعديل/التأريخ الرجعيّ
+     * إلى الأبد رغم أنّ بقيّة الدفتر تعاملها مُقفلة نهائياً — يُفسد أساس تقاريرَ سابقة بصمت.
+     */
+    await assertPeriodOpen(tx, new Date(input.attendanceDate));
 
     const hoursDec = money(input.hours);
     if (hoursDec.isNegative()) throw new Error("الساعات لا يمكن أن تكون سالبة");

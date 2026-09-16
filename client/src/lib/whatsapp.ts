@@ -627,3 +627,216 @@ export function buildOperationalContactMessage(d: OperationalContactMessageData)
   L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
   return L.join("\n");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// قوالب الرسائل المرحلية الجاهزة (مراحل الطلب والتوصيل — العميل والمندوب)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CustomerOrderConfirmedData {
+  orderNumber: string;
+  title: string;
+  customerName?: string | null;
+  salePrice?: string | number | null;
+  deposit?: string | number | null;
+  dueDate?: string | null;
+  isDelivery?: boolean | null;
+}
+
+/** رسالة تأكيد استلام الطلب وتثبيته في النظام للعميل. */
+export function buildCustomerOrderConfirmedMessage(d: CustomerOrderConfirmedData): string {
+  const price = Number(d.salePrice ?? 0);
+  const dep = Number(d.deposit ?? 0);
+  const rem = Math.max(0, price - dep);
+
+  const L: string[] = [
+    `*تأكيد استلام طلبكم #${d.orderNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
+  L.push(`تمّ استلام وتأكيد طلبكم *${d.title}* بنجاح وهو الآن مدرج في جدول التنفيذ.`);
+  L.push("");
+  if (price > 0) L.push(`قيمة الطلب: ${fmtMoney(price)} د.ع`);
+  if (dep > 0) L.push(`العربون المدفوع: ${fmtMoney(dep)} د.ع`);
+  if (rem > 0) L.push(`المتبقي عند الاستلام: ${fmtMoney(rem)} د.ع`);
+  if (d.dueDate) L.push(`الموعد المتوقع: ${String(d.dueDate).slice(0, 10)}`);
+  L.push(`طريقة الاستلام: ${d.isDelivery ? "توصيل إلى موقعكم" : "استلام مباشر من الفرع"}`);
+  L.push("", `شكراً لثقتكم بنا — ${COMPANY_NAME}`);
+  return L.join("\n");
+}
+
+export interface CustomerLocationRequestData {
+  orderNumber: string;
+  title?: string | null;
+  customerName?: string | null;
+}
+
+/** رسالة طلب الموقع الجغرافي (Location) والعنوان التفصيلي من العميل. */
+export function buildCustomerLocationRequestMessage(d: CustomerLocationRequestData): string {
+  const L: string[] = [
+    `*تأكيد موقع التوصيل — طلب #${d.orderNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
+  L.push("نرجو منكم التكرم بإرسال موقعكم الحالي (Location) والعنوان التفصيلي عبر هذه المحادثة، لترتيب توجيه المندوب إليكم فور جاهزية الطلب.");
+  if (d.title) L.push(`بخصوص: ${d.title}`);
+  L.push("", `شكراً لتعاونكم معنا — ${COMPANY_NAME}`);
+  return L.join("\n");
+}
+
+export interface CustomerDeliveredData {
+  orderNumber: string;
+  title?: string | null;
+  customerName?: string | null;
+  courierName?: string | null;
+}
+
+/** رسالة تهنئة وشكر بعد إتمام تسليم الطلب للعميل. */
+export function buildCustomerDeliveredMessage(d: CustomerDeliveredData): string {
+  const L: string[] = [
+    `*تم تسليم طلبكم بنجاح #${d.orderNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
+  L.push(`تمّ تسليم طلبكم *${d.title ?? ""}* بنجاح${d.courierName ? ` عبر المندوب ${d.courierName}` : ""}.`);
+  L.push("سعدنا جداً بخدمتكم ونتطلع دائماً للتعاون معكم.");
+  L.push("", `لأي ملاحظات أو طلبات جديدة نحن في خدمتكم دائماً — ${COMPANY_NAME}`);
+  return L.join("\n");
+}
+
+export interface CustomerDeliveryFailedData {
+  orderNumber: string;
+  title?: string | null;
+  customerName?: string | null;
+  courierName?: string | null;
+  courierPhone?: string | null;
+}
+
+/** رسالة إشعار بتعذر التواصل أو التسليم لتحديد موعد بديل مع العميل. */
+export function buildCustomerDeliveryFailedMessage(d: CustomerDeliveryFailedData): string {
+  const L: string[] = [
+    `*تنبيه بخصوص توصيل طلبكم #${d.orderNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
+  L.push(`حاول المندوب${d.courierName ? ` ${d.courierName}` : ""} التواصل معكم لتسليم طلبكم *${d.title ?? ""}* ولكن تعذّر الوصول.`);
+  if (d.courierPhone) L.push(`رقم هاتف المندوب: ${d.courierPhone}`);
+  L.push("يرجى التفضل بالرد أو الاتصال بنا لتحديد موعد تسليم مناسب يناسبكم. طلبكم محفوظ وجاهز.");
+  L.push("", `مع تحيات إدارة ${COMPANY_NAME}`);
+  return L.join("\n");
+}
+
+export interface CourierUrgentDispatchData {
+  consignmentNumber: string;
+  orderNumber?: string | null;
+  title?: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  deliveryAddress?: string | null;
+  codAmount: string | number;
+  deliveryFee?: string | number | null;
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+}
+
+/** رسالة شحنة عاجلة للمندوب بأولوية قصوى. */
+export function buildCourierUrgentDispatchMessage(d: CourierUrgentDispatchData): string {
+  const cod = Number(d.codAmount);
+  const feeD = Number(d.deliveryFee ?? 0);
+  const feeCollection = d.feeCollection ?? "COURIER";
+  const L: string[] = [
+    `*تنبيه: شحنة عاجلة ذات أولوية #${d.consignmentNumber}*`,
+    COMPANY_NAME,
+    "",
+    "يرجى إعطاء الأولوية في التوصيل للشحنة التالية:",
+  ];
+  if (d.orderNumber) L.push(`رقم الطلب: ${d.orderNumber}`);
+  if (d.title) L.push(`الطلب: ${d.title}`);
+  if (d.customerName) L.push(`المستلم: ${d.customerName}`);
+  if (d.customerPhone) L.push(`الهاتف: ${d.customerPhone}`);
+  if (d.deliveryAddress) L.push(`العنوان: ${d.deliveryAddress}`);
+  L.push("");
+  L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
+  if (feeD > 0) {
+    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+    if (feeCollection === "COURIER") {
+      L.push(`*الإجماليّ المطلوب من العميل: ${fmtMoney(cod + feeD)} د.ع*`);
+    }
+  }
+  L.push("", "يرجى الإسراع بالتسليم وتحديث الحالة فور الإنجاز.", COMPANY_NAME);
+  return L.join("\n");
+}
+
+export interface CourierAddressUpdateData {
+  consignmentNumber: string;
+  orderNumber?: string | null;
+  customerName?: string | null;
+  newAddress: string;
+  notes?: string | null;
+}
+
+/** رسالة إبلاغ المندوب بعنوان محدث للعميل. */
+export function buildCourierAddressUpdateMessage(d: CourierAddressUpdateData): string {
+  const L: string[] = [
+    `*تحديث عنوان التوصيل للإرسالية #${d.consignmentNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.customerName) L.push(`العميل: ${d.customerName}`);
+  if (d.orderNumber) L.push(`رقم الطلب: ${d.orderNumber}`);
+  L.push("");
+  L.push(`*العنوان الجديد المعتمد*: ${d.newAddress}`);
+  if (d.notes) L.push(`ملاحظات: ${d.notes}`);
+  L.push("", "يرجى اعتماد هذا العنوان المحدّث للتسليم.", COMPANY_NAME);
+  return L.join("\n");
+}
+
+export interface CourierSettlementReminderData {
+  courierName: string;
+  openConsignmentsCount: number;
+  totalCodAmount: string | number;
+}
+
+/** رسالة تذكير للمندوب بتوريد وتسوية المبالغ والعهد المحصلة. */
+export function buildCourierSettlementReminderMessage(d: CourierSettlementReminderData): string {
+  const L: string[] = [
+    `*تذكير بتوريد عهد التوصيل — قسم الحسابات*`,
+    COMPANY_NAME,
+    "",
+    `مرحباً ${d.courierName}،`,
+    "نرجو التكرم بمراجعة قسم الحسابات/الكاشير لتوريد مبالغ الشحنات التي تم تسليمها وإغلاق عهدتها:",
+    "",
+    `عدد الشحنات قيد التوريد: ${d.openConsignmentsCount}`,
+    `*إجمالي مبالغ التحصيل (COD) المستحقة: ${fmtMoney(d.totalCodAmount)} د.ع*`,
+    "",
+    `شكراً لحرصكم والتزامكم الدائم — ${COMPANY_NAME}`,
+  ];
+  return L.join("\n");
+}
+
+export interface CourierCancellationData {
+  consignmentNumber: string;
+  orderNumber?: string | null;
+  customerName?: string | null;
+  reason?: string | null;
+}
+
+/** رسالة تنبيه للمندوب بإلغاء الإرسالية وعدم تسليمها للعميل وإعادتها. */
+export function buildCourierCancellationMessage(d: CourierCancellationData): string {
+  const L: string[] = [
+    `*تنبيه: إلغاء إرسالية توصيل #${d.consignmentNumber}*`,
+    COMPANY_NAME,
+    "",
+    "يرجى العلم بأنه تمّ *إلغاء* الإرسالية المذكورة رسمياً في النظام:",
+  ];
+  if (d.orderNumber) L.push(`رقم الطلب: ${d.orderNumber}`);
+  if (d.customerName) L.push(`العميل: ${d.customerName}`);
+  if (d.reason) L.push(`السبب: ${d.reason}`);
+  L.push("");
+  L.push("*توجيه هام*: يرجى عدم تسليم الطرد للعميل وإعادته لمقر المكتبة.");
+  L.push("", COMPANY_NAME);
+  return L.join("\n");
+}
+

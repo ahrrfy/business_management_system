@@ -46,17 +46,24 @@ const bundleId =
     .toLowerCase()
     .split(".")
     .map((segment) => (/^[a-zA-Z]/.test(segment) ? segment : "x" + segment))
-    .join(".") || "space.manus.app";
+    .join(".") || "online.alarabiya.customerstore";
 // رابط عميق ثابت لتطبيق العملاء؛ يلزم بناء تطوير/إصدار رسمي لتجربته، لا Expo Go.
 const schemeFromBundleId = "maktabaalarabiya";
 
 const env = {
   appName: "مكتبة العربية",
   appSlug: "customer-store-mobile",
-  logoUrl: "/manus-storage/icon_0519150d.png",
+  logoUrl: "./assets/images/icon.png",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
+};
+
+// ملفات Firebase لا تُتبع في Git. في EAS تُمرر كمتغيرات من نوع file،
+// بينما يبقى المسار المحلي المتجاهَل مناسباً للتطوير على جهاز المطور.
+const firebaseConfigFiles = {
+  ios: process.env.GOOGLE_SERVICE_INFO_PLIST || "./GoogleService-Info.plist",
+  android: process.env.GOOGLE_SERVICES_JSON || "./google-services.json",
 };
 
 /** @type {import('expo/config').ExpoConfig} */
@@ -72,13 +79,13 @@ const config = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
-    googleServicesFile: "./GoogleService-Info.plist",
+    googleServicesFile: firebaseConfigFiles.ios,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {
-    googleServicesFile: "./google-services.json",
+    googleServicesFile: firebaseConfigFiles.android,
     adaptiveIcon: {
       backgroundColor: "#FFF8F2",
       foregroundImage: "./assets/images/android-icon-foreground.png",
@@ -145,7 +152,7 @@ const config = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["arm64-v8a"],
+          buildArchs: ["arm64-v8a", "armeabi-v7a"],
           minSdkVersion: 26,
         },
         ios: {

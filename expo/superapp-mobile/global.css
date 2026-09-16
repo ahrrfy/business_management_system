@@ -1,0 +1,31 @@
+html,
+body,
+#root {
+  direction: rtl;
+  background: #f8f7fc;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+}
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  width: 100%;
+}
+
+@media (min-width: 700px) {
+  #root {
+    box-shadow: 0 0 36px rgba(22, 26, 58, 0.1);
+    max-width: 480px;
+  }
+}

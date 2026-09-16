@@ -24,14 +24,13 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
-import { usePulsedCountState } from "@/hooks/usePulsedCountState";
+import { usePulsedCountState, getServerClockOffsetMs } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
-import {
-  resolveProductBarcodeMatch,
-  type ProductBarcodeMatch,
-} from "@shared/productScan";
+import { resolveProductBarcodeItem, resolveProductBarcodeMatch, type ProductBarcodeMatch } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { CameraScanner } from "@/components/scan/CameraScanner";
+import { CountPortalQtySheet } from "@/components/stocktake/CountPortalQtySheet";
 import { cn } from "@/lib/utils";
 import {
   WifiOff,
@@ -81,18 +80,6 @@ function baseUnitName(item: CountItem): string {
 function displayBarcode(item: CountItem): string | null {
   const base = item.units.find((u) => u.factor === 1 && u.barcode);
   return base?.barcode ?? item.units.find((u) => u.barcode)?.barcode ?? null;
-}
-
-/** يحلّ الباركود عبر العقد المشترك ويعيد الصنف والوحدة المطابقين معاً. */
-function findBarcodeMatch(
-  items: readonly CountItem[],
-  raw: string,
-): { item: CountItem; match: ProductBarcodeMatch } | null {
-  for (const item of items) {
-    const match = resolveProductBarcodeMatch(item.units, raw);
-    if (match) return { item, match };
-  }
-  return null;
 }
 
 function CenterScreen({ children }: { children: ReactNode }) {
@@ -162,7 +149,6 @@ export default function CountPortal() {
     if (account.data && code) navigate(`/my-stocktake/${encodeURIComponent(code)}`, { replace: true });
   }, [account.data, code, navigate]);
 
-  if (account.data) return null;
 
   /* ── الدخول الصامت: كوكي سارٍ ⇒ مباشرة، وإلا auth بلا PIN (مستخدم نظام بتكليف USER)، وإلا شاشة PIN ── */
   const boot = useCallback(async () => {
@@ -259,13 +245,11 @@ export default function CountPortal() {
       for (const it of pending) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            variantId: it.variantId,
-            qty: it.qty,
-            unitBreakdown: it.unitBreakdown,
-            entryMethod: it.entryMethod,
+            sessionCode: code, variantId: it.variantId, qty: it.qty,
+            unitBreakdown: it.unitBreakdown, entryMethod: it.entryMethod,
             scannedBarcode: it.scannedBarcode ?? undefined,
-            clientRequestId: it.clientRequestId,
+            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt, clientSentAt: new Date().toISOString(),
+            clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
           });
           removeQueued(code, it.clientRequestId);
           synced++;
@@ -292,9 +276,9 @@ export default function CountPortal() {
       for (const u of pendingUnknown) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            unknownBarcode: u.barcode,
-            clientRequestId: u.clientRequestId,
+            sessionCode: code, unknownBarcode: u.barcode,
+            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt, clientSentAt: new Date().toISOString(),
+            clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
           });
           removeUnknown(code, u.clientRequestId);
         } catch (e) {
@@ -433,16 +417,22 @@ export default function CountPortal() {
     },
     [canCount, dupBlocked, scanRequired],
   );
-
   const handleBarcode = useCallback(
-    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
+    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" | "SEARCH_PICK" = "SCAN_HID") => {
       const scanned = raw.trim();
       if (!scanned) return;
-      const resolved = findBarcodeMatch(items, scanned);
-      if (!resolved) {
+      const resolved = resolveProductBarcodeItem(items, scanned);
+      if (resolved.status !== "FOUND") {
+        if (resolved.status === "AMBIGUOUS") {
+          notify.err(
+            "الباركود يطابق أكثر من مادة في جلسة الجرد — لم تُفتح أيّ بطاقة",
+            "اطلب من المشرف تصحيح الباركودات المتعارضة قبل متابعة العدّ.",
+          );
+          return;
+        }
         // باركودٌ خارج الجلسة (ب-٤): لا يضيع — يُوضَع في طابورٍ يُزامَن (كالعدّات) فيصمد الانقطاع
         // (مراجعة Codex #2: الإرسال-وانسَ كان يفقده أوفلاين رغم إبلاغ العامل بأنّه سُجّل).
-        if (canCount) {
+        if (source !== "SEARCH_PICK" && canCount) {
           const queued = enqueueUnknown(code, {
             clientRequestId: newClientRequestId(),
             barcode: scanned,
@@ -461,7 +451,7 @@ export default function CountPortal() {
             );
           }
         } else {
-          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
+          notify.warn(source === "SEARCH_PICK" ? "الرمز المُدخل يدوياً غير موجود ضمن منتجات هذه الجلسة" : "الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
         }
         return;
       }
@@ -481,7 +471,7 @@ export default function CountPortal() {
       }
       setFlashId(hit.variantId);
       window.setTimeout(() => setFlashId(null), 600);
-      openCard(hit, { method: source, scannedBarcode: scanned });
+      openCard(hit, { method: source, scannedBarcode: source === "SEARCH_PICK" ? null : scanned });
       // فتحُ بطاقةٍ في وضع التجميع يبدأ الوحدة الممسوحة عند ١ (عدٌّ طازج بالمسح).
       if (tallyMode) setBump({ unit: unitName, token: 1 });
     },
@@ -490,7 +480,7 @@ export default function CountPortal() {
   const barcodeInput = useBarcodeInput((code) => {
     setQ("");
     handleBarcode(code, "SCAN_HID");
-  });
+  }, { minLength: scanRequired ? 2 : 3 });
 
   useBarcodeScanner((raw) => handleBarcode(raw, "SCAN_HID"), {
     // في وضع التجميع يبقى القارئ حيّاً والبطاقة مفتوحة (كل مسحة +١)؛ وإلا يُعطَّل أثناء الفتح.
@@ -504,9 +494,14 @@ export default function CountPortal() {
   const tryOpenByQuery = useCallback(() => {
     const exact = q.trim();
     if (!exact) return;
-    const hit =
-      findBarcodeMatch(items, exact)?.item ??
-      items.find((i) => (i.sku ?? "") === exact);
+    const barcodeResolution = resolveProductBarcodeItem(items, exact);
+    if (barcodeResolution.status === "AMBIGUOUS") {
+      notify.err("الباركود يطابق أكثر من مادة — صحّح التعارض قبل الاختيار.");
+      return;
+    }
+    const hit = barcodeResolution.status === "FOUND"
+      ? barcodeResolution.item
+      : items.find((i) => (i.sku ?? "") === exact);
     if (hit) {
       setQ("");
       setFlashId(hit.variantId);
@@ -541,18 +536,16 @@ export default function CountPortal() {
   const saveCount = useCallback(
     (item: CountItem, mode: CountMode, qty: number, unitBreakdown: string | undefined) => {
       const clientRequestId = newClientRequestId();
+      const capturedAt = new Date().toISOString();
       // نسبُ العدّة كما فُتحت البطاقة — الخادم يعيد حلّ الباركود ويطابقه في المسح الإلزامي.
       const entryMethod = openEntry.method;
       const scannedBarcode = openEntry.scannedBarcode;
       submitMut.mutate(
         {
-          sessionCode: code,
-          variantId: item.variantId,
-          qty,
-          unitBreakdown,
-          entryMethod,
-          scannedBarcode: scannedBarcode ?? undefined,
-          clientRequestId,
+          sessionCode: code, variantId: item.variantId, qty,
+          unitBreakdown, entryMethod, scannedBarcode: scannedBarcode ?? undefined,
+          clientRequestId, clientCapturedAt: capturedAt, clientSentAt: new Date().toISOString(),
+          clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
         },
         {
           onSuccess: (res) => {
@@ -585,7 +578,7 @@ export default function CountPortal() {
                 unitBreakdown,
                 entryMethod,
                 scannedBarcode,
-                queuedAt: new Date().toISOString(),
+                queuedAt: capturedAt,
               });
               setQueueCount(queueSize(code));
               setOpenVariantId(null);
@@ -646,6 +639,15 @@ export default function CountPortal() {
 
   /* ═══════════════════════ العرض ═══════════════════════ */
 
+  /*
+   * ⚠️ **بعد كلّ الخطّافات** (٢/٩/٢٦): كان هذا الحارس فوقها بسبعةٍ وعشرين خطّافاً، فحين
+   * يصل `account.data` يخرج المكوّن مبكّراً ⇒ عددُ الخطّافات ينهار من ٢٧ إلى صفر بين
+   * تصييرَين وReact يسقط. كان يستتر خلف `useEffect` أعلاه ينقل المستعمِل في نفس اللحظة،
+   * فالسباقُ وحدَه ما كان يخفيه. أمسكه `react-hooks/rules-of-hooks` أوّلَ تشغيلٍ للمُدقّق.
+   * الخروجُ هنا يبقى بنفس الأثر (لا يُصيَّر شيء) بلا كسر ترتيب الخطّافات.
+   */
+  if (account.data) return null;
+
   const frame = (body: ReactNode) => (
     <div dir="rtl" className="fixed inset-0 z-0 flex justify-center overflow-hidden bg-muted/40 font-sans">
       <div className="relative flex h-full w-full max-w-md flex-col overflow-hidden bg-background sm:border-x sm:border-border sm:shadow-sm">
@@ -681,7 +683,7 @@ export default function CountPortal() {
       ) : (
         <CenterScreen>
           <BrandMark />
-          <p className="text-sm font-semibold text-muted-foreground">جارٍ التحقّق…</p>
+          <p className="text-sm font-semibold text-muted-foreground">{ACTION_LABELS.verifying}</p>
         </CenterScreen>
       ),
     );
@@ -1251,7 +1253,7 @@ export default function CountPortal() {
               scanned={openEntry.scannedBarcode != null}
               scanMatch={openScanMatch}
             />
-            <QtySheet
+            <CountPortalQtySheet
               key={`${openItem.variantId}-${openMode}`}
               item={openItem}
               mode={openMode}
@@ -1275,214 +1277,9 @@ export default function CountPortal() {
         onDetect={(raw) => {
           setCameraOpen(false);
           handleBarcode(raw, "SCAN_CAMERA");
-        }}
+        }} onManualDetect={(raw) => { setCameraOpen(false); handleBarcode(raw, "SEARCH_PICK"); }}
       />
     </>,
   );
 }
 
-/* ─────────────────────── ورقة إدخال الكمية ─────────────────────── */
-
-function QtySheet({
-  item,
-  mode,
-  recountReason,
-  queued,
-  saving,
-  tally = false,
-  bump = null,
-  onCancel,
-  onSave,
-}: {
-  item: CountItem;
-  mode: CountMode;
-  recountReason?: string;
-  queued?: QueuedCount;
-  saving: boolean;
-  /** وضع التجميع: عدٌّ طازجٌ بالمسح (بلا تعبئة مسبقة)، وكل مسحة تزيد وحدتها +١. */
-  tally?: boolean;
-  /** إشارة زيادةٍ من الأب عند كل مسحة (token تصاعديّ) — تزيد الوحدة المذكورة +١. */
-  bump?: { unit: string; token: number } | null;
-  onCancel: () => void;
-  onSave: (qty: number, unitBreakdown: string | undefined) => void;
-}) {
-  // وحدات مرتّبة من الأكبر للأصغر (كرتون ← درزن ← قطعة) بنسخة محلية مستقلة النوع.
-  const units = useMemo(() => {
-    const us = item.units.map((u) => ({ unitName: u.unitName, factor: u.factor, barcode: u.barcode ?? null }));
-    if (us.length === 0) us.push({ unitName: "قطعة", factor: 1, barcode: null });
-    return us.sort((a, b) => b.factor - a.factor);
-  }, [item.units]);
-  const baseUnit = baseUnitName(item);
-
-  const [vals, setVals] = useState<Record<string, string>>(() => {
-    // في وضع التجميع نبدأ فارغين دائماً (عدٌّ طازجٌ يتراكم بالمسح).
-    // وإلا: تعبئة مسبقة عند تعديل عدّي السابق فقط — إعادة العدّ/التحقّقي عدٌّ جديد أعمى من الصفر.
-    if (!tally && mode === "FIRST") {
-      const src = queued?.unitBreakdown ?? item.myCount?.unitBreakdown ?? null;
-      if (src) {
-        try {
-          const parsed = JSON.parse(src) as Record<string, unknown>;
-          const init: Record<string, string> = {};
-          for (const u of item.units) {
-            const v = parsed[u.unitName];
-            if (typeof v === "number" && Number.isInteger(v) && v >= 0) init[u.unitName] = String(v);
-          }
-          if (Object.keys(init).length > 0) return init;
-        } catch {
-          /* تفصيل غير قابل للقراءة — نبدأ فارغين */
-        }
-      }
-    }
-    return {};
-  });
-
-  // وضع التجميع: كل زيادةٍ من الأب (token جديد) تضيف ١ للوحدة الممسوحة.
-  // ⚠️ الشرط `tally` إلزاميّ: قد تُفتح بطاقةٌ في الوضع العاديّ و`bump` ما زال يحمل قيمةً قديمة من
-  // جلسة تجميعٍ سابقة (لا يُصفَّر إلا عند الإغلاق)، فبدونه يُطبَّق +١ وهميّ عند التركيب.
-  const lastBump = useRef(0);
-  useEffect(() => {
-    if (!tally || !bump || bump.token <= lastBump.current) return;
-    lastBump.current = bump.token;
-    setVals((v) => {
-      const cur = parseInt(v[bump.unit] || "0", 10) || 0;
-      return { ...v, [bump.unit]: String(Math.min(cur + 1, 9_999_999)) };
-    });
-  }, [bump, tally]);
-
-  const setVal = (unitName: string, raw: string) => {
-    setVals((v) => ({ ...v, [unitName]: raw.replace(/\D/g, "").slice(0, 7) }));
-  };
-  const step = (unitName: string, delta: number) => {
-    setVals((v) => {
-      const cur = parseInt(v[unitName] || "0", 10) || 0;
-      const next = Math.max(0, cur + delta);
-      return { ...v, [unitName]: String(next) };
-    });
-  };
-
-  // الكميات أعداد صحيحة (ليست أموالاً) — حساب عددي مباشر.
-  const entries: Record<string, number> = {};
-  for (const u of units) {
-    const raw = vals[u.unitName];
-    if (raw !== undefined && raw !== "") entries[u.unitName] = parseInt(raw, 10) || 0;
-  }
-  const total = units.reduce((s, u) => s + (entries[u.unitName] ?? 0) * u.factor, 0);
-  const anyEntered = Object.keys(entries).length > 0;
-  const valid = anyEntered && Number.isSafeInteger(total) && total >= 0;
-
-  const handleSave = () => {
-    if (!valid || saving) return;
-    const json = JSON.stringify(entries);
-    onSave(total, json.length <= 500 ? json : undefined);
-  };
-
-  const isVerify = mode === "VERIFY";
-  const isRecount = mode === "RECOUNT";
-
-  return (
-    <div className="flex flex-col">
-      <button type="button" onClick={onCancel} className="self-start py-2 text-sm font-bold text-primary">
-        → رجوع للقائمة
-      </button>
-
-      {tally && (
-        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold leading-relaxed text-primary">
-          <ListPlus aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-          <span>وضع التجميع: كل مسحةٍ لهذا الصنف تزيد وحدتها +١. احفظ عند الانتهاء ثم امسح الصنف التالي.</span>
-        </div>
-      )}
-      {isRecount && (
-        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-[var(--sem-warn-bg)] px-3 py-2 text-xs font-semibold leading-relaxed text-[var(--sem-warn)]">
-          <RefreshCw aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-          <span>مطلوب إعادة عدّ ثانية لهذا المنتج{recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد بتمعّن.</span>
-        </div>
-      )}
-      {isVerify && (
-        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold leading-relaxed text-violet-800 dark:bg-violet-950/50 dark:text-violet-300">
-          <span className="mt-0.5 inline-flex shrink-0 items-center -space-x-1 rtl:space-x-reverse">
-            <Check aria-hidden className="size-3.5" />
-            <Check aria-hidden className="size-3.5" />
-          </span>
-          <span>عدّ تحقّقي — المنتج عدّه زميلك سابقاً. عدّك لن يستبدل عدّه: إن تطابقا تأكّد الرقم، وإن اختلفا يُرفع
-          تعارض يفصل فيه المسؤول. (كميته لا تُعرض لك — جرد أعمى)</span>
-        </div>
-      )}
-      {!item.isMine && !isVerify && (
-        <div className="mb-2 rounded-lg bg-muted px-3 py-2 text-xs font-semibold leading-relaxed text-muted-foreground">
-          المنتج من منطقة زميل ولم يُعدّ بعد — سيُسجَّل العدّ الأول باسمك.
-        </div>
-      )}
-
-      <p className="mb-2 mt-3 text-sm font-bold">الكمية المعدودة فعلياً على الرف:</p>
-      <div className="space-y-2">
-        {units.map((u) => {
-          const cur = vals[u.unitName] ?? "";
-          return (
-            <div key={u.unitName} className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5">
-              <div className="min-w-0 flex-1">
-                <span className="block text-sm font-bold">{u.unitName}</span>
-                <span className="block text-[11px] text-muted-foreground">
-                  {u.factor === 1 ? "وحدة الأساس" : `= ${fmtInt(u.factor)} ${baseUnit}`}
-                </span>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5" dir="ltr">
-                <button
-                  type="button"
-                  aria-label={`إنقاص ${u.unitName}`}
-                  onClick={() => step(u.unitName, -1)}
-                  disabled={(parseInt(cur || "0", 10) || 0) === 0}
-                  className="grid size-11 place-items-center rounded-lg border border-border bg-background text-xl font-bold active:scale-95 disabled:opacity-40"
-                >
-                  −
-                </button>
-                <input
-                  inputMode="numeric"
-                  dir="ltr"
-                  value={cur}
-                  placeholder="0"
-                  onChange={(e) => setVal(u.unitName, e.target.value)}
-                  className="h-11 w-20 rounded-lg border border-border bg-background text-center font-mono text-lg font-bold focus:border-primary focus:outline-none"
-                  aria-label={`كمية ${u.unitName}`}
-                />
-                <button
-                  type="button"
-                  aria-label={`زيادة ${u.unitName}`}
-                  onClick={() => step(u.unitName, 1)}
-                  className="grid size-11 place-items-center rounded-lg border border-border bg-background text-xl font-bold active:scale-95"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-3 flex items-center justify-between rounded-xl bg-primary/5 px-4 py-3">
-        <span className="text-sm font-bold">الإجمالي بالوحدة الأساس</span>
-        <span className="font-mono text-xl font-bold tabular-nums text-primary" dir="ltr">
-          {fmtInt(total)} {baseUnit}
-        </span>
-      </div>
-
-      <button
-        type="button"
-        disabled={!valid || saving}
-        onClick={handleSave}
-        className={cn(
-          "mt-4 h-12 w-full rounded-xl text-base font-bold text-white transition-colors",
-          valid && !saving
-            ? isVerify
-              ? "bg-violet-600 active:bg-violet-700"
-              : "bg-primary active:bg-primary/90"
-            : "cursor-not-allowed bg-muted text-muted-foreground",
-        )}
-      >
-        {saving ? "جارٍ الحفظ…" : isVerify ? "تسجيل العدّ التحقّقي" : isRecount ? "تسجيل إعادة العدّ" : "تسجيل الكمية"}
-      </button>
-      <p className="mt-2 text-center text-[11px] text-muted-foreground">
-        يُسجَّل الإدخال باسمك ووقته — يمكنك تعديل العدّ قبل التسليم.
-      </p>
-    </div>
-  );
-}

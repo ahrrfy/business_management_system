@@ -28,13 +28,12 @@ data class PurchasingCapabilities(
     val allBranches: Boolean,
 ) {
     val canReadOrders get() = purchases.canRead
-    val canWriteOrders get() = purchases.canWrite && role in setOf("admin", "manager", "purchasing") && (branchId != null || role in setOf("admin", "manager"))
-    val canReceiveOrders get() = purchases.canWrite && branchId != null && role in setOf("admin", "manager", "purchasing", "warehouse")
+    val canWriteOrders get() = purchases.canWrite && (branchId != null || role == "admin")
     val canReadSuppliers get() = suppliers.canRead
     val canWriteSuppliers get() = suppliers.canWrite && role in setOf("admin", "manager", "purchasing", "warehouse")
     val canSetOpeningBalanceOnCreate get() = canWriteSuppliers
     val canEditOpeningBalance get() = canWriteSuppliers && role in setOf("admin", "manager")
-    val canReadReturns get() = purchases.canWrite && role in setOf("admin", "manager", "purchasing")
+    val canReadReturns get() = purchases.canWrite
     val canWriteReturns get() = canReadReturns && (branchId != null || role == "admin")
     val canReadReminders get() = suppliers.canWrite && role in setOf("admin", "manager", "purchasing", "warehouse")
     val canWriteReminders get() = canReadReminders && branchId != null
@@ -47,8 +46,7 @@ data class PurchasingCapabilities(
         }
 
     fun canConfirm(order: PurchaseOrderDetail) = canWriteOrders && order.status == PurchaseStatus.DRAFT
-    fun canCancel(order: PurchaseOrderDetail) = canWriteOrders && branchId != null && order.status in setOf(PurchaseStatus.DRAFT, PurchaseStatus.SENT, PurchaseStatus.CONFIRMED)
-    fun canReceive(order: PurchaseOrderDetail) = canReceiveOrders && order.status in setOf(PurchaseStatus.CONFIRMED, PurchaseStatus.RECEIVED)
+    fun canCancel(order: PurchaseOrderDetail) = canWriteOrders && branchId != null && order.status in setOf(PurchaseStatus.DRAFT, PurchaseStatus.SENT)
 
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap) = PurchasingCapabilities(
@@ -126,6 +124,7 @@ data class PurchaseOrderSummary(
     val returnedUsd: String?,
     val agreedRate: String?,
     val status: PurchaseStatus,
+    val version: Int = 1,
 )
 
 data class PurchaseOrderLine(
@@ -178,15 +177,11 @@ data class PurchaseOrderDraft(
     val agreedRate: String = "",
     val shippingCost: String = "0",
     val customsCost: String = "0",
-    val clientRequestId: String = UUID.randomUUID().toString(),
-)
-
-data class ReceiveLineDraft(val purchaseOrderItemId: Long, val receivedBaseQuantity: String)
-data class PurchaseReceiveDraft(
-    val purchaseOrderId: Long,
-    val lines: List<ReceiveLineDraft>,
-    val paymentAmount: String = "",
-    val paymentMethod: PaymentMethod = PaymentMethod.CASH,
+    val shippingPaymentMethod: String = "CASH",
+    val shippingPaymentReference: String = "",
+    val shippingCardLastFour: String = "",
+    val shippingBeneficiaryName: String = "",
+    val shippingEvidenceReference: String = "",
     val clientRequestId: String = UUID.randomUUID().toString(),
 )
 
@@ -273,7 +268,10 @@ object PurchasingValidation {
         else -> null
     }
 
-    fun order(draft: PurchaseOrderDraft, expectedBranchId: Long?): String? = when {
+    fun order(draft: PurchaseOrderDraft, expectedBranchId: Long?): String? {
+        val hasShipping = (draft.shippingCost.toBigDecimalOrNull()?.signum() ?: 0) > 0 ||
+            (draft.customsCost.toBigDecimalOrNull()?.signum() ?: 0) > 0
+        return when {
         draft.supplierId <= 0 -> "اختر المورد"
         draft.branchId == null || draft.branchId <= 0 -> "حدد الفرع"
         expectedBranchId != null && draft.branchId != expectedBranchId -> "لا يمكن إنشاء أمر لفرع آخر"
@@ -282,20 +280,15 @@ object PurchasingValidation {
         draft.items.any { !money(it.quantity, true) || !money(it.unitPrice) } -> "الكمية أو سعر الوحدة غير صالح"
         !money(draft.taxRatePercent) || draft.taxRatePercent.toBigDecimalOrNull()?.let { it > 100.toBigDecimal() } != false -> "نسبة الضريبة يجب أن تكون بين صفر و100"
         !money(draft.shippingCost) || !money(draft.customsCost) -> "تكلفة الشحن أو الجمارك غير صالحة"
+        hasShipping && draft.shippingPaymentMethod !in setOf("CASH", "CARD", "CHECK", "TRANSFER", "WALLET") -> "طريقة تسوية الشحن غير صالحة"
+        hasShipping && draft.shippingPaymentMethod in setOf("TRANSFER", "CHECK") && draft.shippingPaymentReference.isBlank() -> "مرجع تحويل/صك الشحن مطلوب"
+        hasShipping && draft.shippingPaymentMethod == "CARD" && !draft.shippingCardLastFour.matches(Regex("^[0-9]{4}$")) -> "آخر أربعة أرقام لبطاقة الشحن مطلوبة"
+        hasShipping && draft.shippingBeneficiaryName.isNotBlank() && draft.shippingBeneficiaryName.trim().length < 2 -> "اسم الناقل قصير"
+        hasShipping && draft.shippingEvidenceReference.isNotBlank() && draft.shippingEvidenceReference.trim().length < 2 -> "مرجع مستند الشحن قصير"
         draft.currency == Currency.USD && (!money(draft.usdTotal, true) || !money(draft.agreedRate, true)) -> "إجمالي الدولار وسعر الاتفاق مطلوبان"
         draft.clientRequestId.isBlank() -> "مفتاح الطلب غير صالح"
         else -> null
-    }
-
-    fun receive(draft: PurchaseReceiveDraft, detail: PurchaseOrderDetail): String? = when {
-        draft.purchaseOrderId != detail.id -> "أمر الاستلام غير مطابق"
-        draft.lines.isEmpty() -> "حدد كمية مستلمة"
-        draft.lines.map { it.purchaseOrderItemId }.distinct().size != draft.lines.size -> "لا يجوز تكرار بند الاستلام"
-        draft.lines.any { it.receivedBaseQuantity.toIntOrNull()?.let { q -> q <= 0 } != false } -> "كمية الاستلام يجب أن تكون عدداً صحيحاً موجباً"
-        draft.lines.any { input -> detail.lines.none { it.id == input.purchaseOrderItemId && input.receivedBaseQuantity.toInt() <= it.remainingBaseQuantity } } -> "كمية الاستلام تتجاوز المتبقي"
-        draft.paymentAmount.isNotBlank() && !money(draft.paymentAmount, true) -> "مبلغ الدفعة غير صالح"
-        draft.clientRequestId.isBlank() -> "مفتاح الطلب غير صالح"
-        else -> null
+        }
     }
 
     fun purchaseReturn(draft: PurchaseReturnDraft, expectedBranchId: Long?): String? = when {

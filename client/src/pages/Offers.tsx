@@ -11,10 +11,16 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { Field } from "@/components/product/variantBits";
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { confirm } from "@/lib/confirm";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { canSeeGate } from "@/lib/navVisibility";
 import { D, fmtAr, formatIqd } from "@/lib/money";
+import { ACTION_LABELS } from "@shared/actionLabels";
+
+/** صفُّ العرض — مشتقٌّ من عقد `salesPromotions.list` فلا ينجرف عن الخادم. */
+type OfferRow = RouterOutputs["salesPromotions"]["list"][number];
 
 type PromoType = "PERCENT" | "AMOUNT";
 type PromoScope = "ALL" | "CATEGORIES" | "PRODUCTS";
@@ -46,6 +52,13 @@ function toYmd(v: unknown): string {
 
 const CHANNEL_LABEL: Record<string, string> = { POS: "نقطة البيع", STORE: "المتجر الإلكتروني" };
 const APPLICATION_LABEL: Record<string, string> = { AUTO: "تلقائي", COUPON: "بكوبون" };
+function offerActivationState(offer: OfferRow, today: string) {
+  if (!offer.isActive) return { label:"معطَّل", variant:"secondary" as const, note:"لا يُطبّق" };
+  const startsOn = toYmd(offer.effectiveFrom); const endsOn = offer.effectiveTo ? toYmd(offer.effectiveTo) : "";
+  if (startsOn > today) return { label:"يبدأ لاحقاً", variant:"secondary" as const, note:`من ${startsOn}` };
+  if (endsOn && endsOn < today) return { label:"انتهى تاريخياً", variant:"destructive" as const, note:`انتهى في ${endsOn}` };
+  return { label:"سارٍ الآن", variant:"default" as const, note:"مفعل وضمن نافذته" };
+}
 
 function Kpi({ label, value, note }: { label: string; value: string | number; note?: string }) {
   return <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 text-xl font-bold tabular-nums">{value}</div>{note && <div className="mt-1 text-xs text-muted-foreground">{note}</div>}</CardContent></Card>;
@@ -59,6 +72,7 @@ export default function Offers() {
   const listQ = trpc.salesPromotions.list.useQuery({ includeInactive });
   const performanceQ = trpc.salesPromotions.performance.useQuery();
   const campaignsQ = trpc.crm.campaigns.list.useQuery();
+  const campaignById = useMemo(() => new Map((campaignsQ.data ?? []).map((campaign) => [campaign.id, campaign])), [campaignsQ.data]);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
   // فلاتر عميلية على القائمة (channel/validity) — لا تحتاج استدعاءً خادمياً جديداً؛ list يعيد كل
@@ -85,6 +99,7 @@ export default function Offers() {
   const [channel, setChannel] = useState<"POS" | "STORE">("POS");
   const [targets, setTargets] = useState<TargetPick[]>([]);
   const [productPicker, setProductPicker] = useState("");
+  const today = todayYmd();
 
   const productSearchQ = trpc.bundles.searchComponents.useQuery(
     { q: productPicker, limit: 20 },
@@ -225,7 +240,6 @@ export default function Offers() {
     [performanceQ.data?.rows],
   );
   const operationalSignals = useMemo(() => {
-    const today = todayYmd();
     const rows = listQ.data ?? [];
     const activeNow = rows.filter((p) => p.isActive && toYmd(p.effectiveFrom) <= today && (!p.effectiveTo || toYmd(p.effectiveTo) >= today));
     const scheduled = rows.filter((p) => p.isActive && toYmd(p.effectiveFrom) > today);
@@ -233,10 +247,9 @@ export default function Offers() {
     const unusedActive = activeNow.filter((p) => (performanceById.get(p.id)?.invoiceCount ?? 0) === 0);
     const negative = rows.filter((p) => D(performanceById.get(p.id)?.grossProfit).isNegative());
     return { activeNow, scheduled, expiredActive, unusedActive, negative };
-  }, [listQ.data, performanceById]);
+  }, [listQ.data, performanceById, today]);
 
   const list = useMemo(() => {
-    const today = todayYmd();
     const needle = searchQuery.trim().toLocaleLowerCase("ar");
     return (listQ.data ?? [])
       .map((p: any) => p)
@@ -248,13 +261,186 @@ export default function Offers() {
           const to = p.effectiveTo ? toYmd(p.effectiveTo) : null;
           const scheduled = from > today;
           const expired = to != null && to < today;
-          if (validityFilter === "SCHEDULED" && !scheduled) return false;
+          if (validityFilter === "SCHEDULED" && (!p.isActive || !scheduled)) return false;
           if (validityFilter === "EXPIRED" && !expired) return false;
-          if (validityFilter === "CURRENT" && (scheduled || expired)) return false;
+          if (validityFilter === "CURRENT" && (!p.isActive || scheduled || expired)) return false;
         }
         return true;
       });
-  }, [listQ.data, channelFilter, validityFilter, searchQuery]);
+  }, [listQ.data, channelFilter, validityFilter, searchQuery, today]);
+
+  /** هامشُ العرض نسبةً مئوية — null حين لا مبيعات مرتبطة (لا قسمة على صفر). */
+  const marginOf = (promotionId: number): string | null => {
+    const performance = performanceById.get(promotionId);
+    if (D(performance?.netSales).isZero()) return null;
+    return D(performance?.grossProfit).div(performance?.netSales ?? 1).times(100).toDecimalPlaces(1).toString();
+  };
+
+  /** عمودُ الإجراءات — يُضاف فقط لمن يملك الصلاحية (كما كان محتواه محجوباً بـ`canManage`). */
+  const offerActionsColumn: ColumnDef<OfferRow, unknown> = {
+    id: "actions",
+    header: "إجراء",
+    meta: { kind: "actions", width: "wide" },
+    cell: ({ row }) => {
+      const p = row.original;
+      return (
+        <div className="flex items-center justify-center gap-1">
+          <Button size="sm" variant="ghost" onClick={() => startEdit(p)}>
+            <FileEdit aria-hidden className="size-3.5" />
+            تعديل
+          </Button>
+          {p.isActive ? (
+            <Button size="sm" variant="ghost" onClick={() => doDeactivate(p)} disabled={deactivateM.isPending}>
+              تعطيل
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => reactivateM.mutate({ promotionId: Number(p.id) })}
+              disabled={reactivateM.isPending}
+            >
+              <RotateCcw aria-hidden className="size-3.5" />
+              تفعيل
+            </Button>
+          )}
+        </div>
+      );
+    },
+  };
+
+  /*
+   * أعمدة القائمة — داخل المكوّن لأنّها تقرأ مؤشّرات الأداء وتستدعي إجراءات الصفّ.
+   * عمودُ الإجراءات **مشروطٌ بالصلاحية** (`canManage`) كما كان محتواه في الجدول الخامّ.
+   */
+  const columns = useMemo<ColumnDef<OfferRow, unknown>[]>(
+    () => [
+      {
+        id: "name",
+        header: "الاسم",
+        accessorFn: (p) => p.name,
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          <div>
+            <div className="font-medium">{row.original.name}</div>
+            <div className="text-xs text-muted-foreground">أولوية {row.original.priority}</div>
+          </div>
+        ),
+      },
+      {
+        id: "type",
+        header: "النوع",
+        accessorFn: (p) => (p.type === "PERCENT" ? "نسبة" : "مبلغ ثابت"),
+        cell: ({ row }) => (row.original.type === "PERCENT" ? "نسبة" : "مبلغ ثابت"),
+      },
+      {
+        id: "value",
+        header: "قيمة العرض",
+        accessorFn: (p) => (p.type === "PERCENT" ? `${p.discountPercent}٪` : `${fmtAr(p.discountAmount)} د.ع/وحدة`),
+        cell: ({ row }) =>
+          row.original.type === "PERCENT"
+            ? `${row.original.discountPercent}٪`
+            : `${fmtAr(row.original.discountAmount)} د.ع/وحدة`,
+      },
+      {
+        id: "scope",
+        header: "النطاق",
+        accessorFn: (p) => (p.scope === "ALL" ? "الكل" : p.scope === "CATEGORIES" ? "فئات" : "منتجات"),
+        cell: ({ row }) => <div><div>{row.original.scope === "ALL" ? "الكل" : row.original.scope === "CATEGORIES" ? "فئات" : "منتجات"}</div><div className="text-xs text-muted-foreground">{row.original.scope === "ALL" ? "كل المنتجات المؤهلة" : "أهداف محفوظة عند الإنشاء"}</div></div>,
+      },
+      {
+        id: "campaign",
+        header: "الحملة",
+        accessorFn: (p) => p.campaignId == null ? "عرض مستقل" : campaignById.get(Number(p.campaignId))?.name ?? "حملة مرتبطة",
+        cell: ({ row }) => <span className="text-xs">{row.original.campaignId == null ? "عرض مستقل" : campaignById.get(Number(row.original.campaignId))?.name ?? "حملة مرتبطة"}</span>,
+      },
+      {
+        id: "channel",
+        header: "القناة",
+        accessorFn: (p) => CHANNEL_LABEL[p.isStoreManaged ? "STORE" : "POS"],
+        cell: ({ row }) => <span className="text-xs">{CHANNEL_LABEL[row.original.isStoreManaged ? "STORE" : "POS"]}</span>,
+      },
+      {
+        id: "applicationMode",
+        header: "التطبيق",
+        accessorFn: (p) => APPLICATION_LABEL[p.applicationMode as string] ?? p.applicationMode,
+        cell: ({ row }) => (
+          <span className="text-xs">{APPLICATION_LABEL[row.original.applicationMode as string] ?? row.original.applicationMode}</span>
+        ),
+      },
+      {
+        id: "period",
+        header: "من — إلى",
+        accessorFn: (p) => `${toYmd(p.effectiveFrom)} — ${p.effectiveTo ? toYmd(p.effectiveTo) : "مستمرّ"}`,
+        // kind: "date" يعزل اتّجاه التاريخين (بدل dir="ltr" اليدويّ)، وwide يمنع قصّ المدى.
+        meta: { kind: "date", width: "wide" },
+        cell: ({ row }) => (
+          <span className="text-xs text-muted-foreground">
+            {toYmd(row.original.effectiveFrom)} — {row.original.effectiveTo ? toYmd(row.original.effectiveTo) : "مستمرّ"}
+          </span>
+        ),
+      },
+      {
+        id: "invoiceCount",
+        header: "الفواتير",
+        accessorFn: (p) => performanceById.get(p.id)?.invoiceCount ?? 0,
+        meta: { kind: "number" },
+        cell: ({ row }) => performanceById.get(row.original.id)?.invoiceCount ?? 0,
+      },
+      {
+        id: "netSales",
+        header: "المبيعات",
+        accessorFn: (p) => formatIqd(performanceById.get(p.id)?.netSales ?? "0"),
+        meta: { kind: "money" },
+        cell: ({ row }) => formatIqd(performanceById.get(row.original.id)?.netSales ?? "0"),
+      },
+      {
+        id: "discount",
+        header: "خصم محقق",
+        accessorFn: (p) => formatIqd(performanceById.get(p.id)?.discount ?? "0"),
+        meta: { kind: "money" },
+        cell: ({ row }) => formatIqd(performanceById.get(row.original.id)?.discount ?? "0"),
+      },
+      {
+        id: "grossProfit",
+        header: "الربح",
+        accessorFn: (p) => formatIqd(performanceById.get(p.id)?.grossProfit ?? "0"),
+        meta: { kind: "money" },
+        cell: ({ row }) => {
+          const value = performanceById.get(row.original.id)?.grossProfit;
+          return <span className={D(value).isNegative() ? "text-destructive" : undefined}>{formatIqd(value ?? "0")}</span>;
+        },
+      },
+      {
+        id: "margin",
+        header: "الهامش",
+        accessorFn: (p) => {
+          const margin = marginOf(p.id);
+          return margin == null ? "—" : `${margin}٪`;
+        },
+        meta: { kind: "number" },
+        cell: ({ row }) => {
+          const margin = marginOf(row.original.id);
+          return (
+            <span className={margin != null && D(margin).isNegative() ? "text-destructive" : undefined}>
+              {margin == null ? "—" : `${margin}٪`}
+            </span>
+          );
+        },
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (p) => offerActivationState(p, today).label,
+        meta: { kind: "status" },
+        cell: ({ row }) => { const state = offerActivationState(row.original, today); return <div><Badge variant={state.variant}>{state.label}</Badge><div className="mt-1 text-xs text-muted-foreground">{state.note}</div></div>; },
+      },
+      // عمودُ الأفعال مشروطٌ بالصلاحية — كان محتواه محجوباً بـ`canManage` في الجدول الخامّ.
+      ...(canManage ? [offerActionsColumn] : []),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [performanceById, canManage, deactivateM.isPending, reactivateM.isPending, campaignById, today],
+  );
 
   return (
     <div className="max-w-7xl mx-auto space-y-4 pb-8">
@@ -275,6 +461,8 @@ export default function Offers() {
         <Kpi label="إجمالي الخصومات" value={formatIqd(performanceQ.data?.summary.discount ?? "0")} />
         <Kpi label="الربح الإجمالي المرتبط" value={formatIqd(performanceQ.data?.summary.grossProfit ?? "0")} note="بعد تكلفة البضاعة والمرتجعات" />
       </div>
+
+      <Card><CardContent className="p-4 text-sm"><div className="font-medium">ترتيب تطبيق العرض على سطر البيع</div><ol className="mt-2 grid gap-1 text-muted-foreground md:grid-cols-2"><li><span className="font-medium text-foreground">1.</span> السعر التعاقدي يفوز دائماً؛ لا يُطبّق معه أي عرض.</li><li><span className="font-medium text-foreground">2.</span> يجب أن يكون العرض مفعلاً وضمن التاريخ والقناة والفئة والنطاق والحد الأدنى المؤهلة.</li><li><span className="font-medium text-foreground">3.</span> العرض التلقائي ينافس العروض التلقائية فقط؛ عرض الكوبون يحتاج كوبوناً صالحاً.</li><li><span className="font-medium text-foreground">4.</span> عند التعارض: الأعلى أولوية، ثم الأكبر خصماً للوحدة، ثم أصغر رقم عرض.</li></ol></CardContent></Card>
 
       {(operationalSignals.negative.length > 0 || operationalSignals.unusedActive.length > 0 || operationalSignals.expiredActive.length > 0) && (
         <Card className="border-[var(--sem-warn)]/40">
@@ -314,16 +502,16 @@ export default function Offers() {
                 <MoneyInput value={discountAmount} onChange={setDiscountAmount} placeholder="500" />
               </Field>
             )}
-            <Field label="أولوية" hint="الأعلى يفوز عند تعارض عروض">
+            <Field label="أولوية" hint="الأعلى يفوز؛ ثم الأكبر خصماً للوحدة، ثم أصغر رقم عرض">
               <Input type="number" min={0} max={999} value={priority} onChange={(e) => setPriority(e.target.value)} />
             </Field>
-            <Field label="الحملة (اختياري)" hint={editingId != null ? "ثابتة منذ الإنشاء" : undefined}>
+            <Field label="الحملة (اختياري)" hint={editingId != null ? "ثابتة منذ الإنشاء" : "للتنظيم والمتابعة؛ لا تغيّر تفعيل العرض"}>
               <AppSelect value={campaignId} onValueChange={(next) => setCampaignId(next)} disabled={editingId != null} className="h-9 border-input px-3 py-1 text-sm disabled:opacity-60">
                 <option value="">عرض مستقل</option>
                 {(campaignsQ.data ?? []).map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
               </AppSelect>
             </Field>
-            <Field label="طريقة التطبيق" hint="الكوبون لا يعمل تلقائياً">
+            <Field label="طريقة التطبيق" hint="التلقائي ينافس التلقائي فقط؛ الكوبون لا يعمل تلقائياً">
               <AppSelect value={applicationMode} onValueChange={(next) => setApplicationMode(next as ApplicationMode)} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="AUTO">تلقائي</option>
                 <option value="COUPON">بكوبون صالح فقط</option>
@@ -353,7 +541,7 @@ export default function Offers() {
               <MoneyInput value={minLineAmount} onChange={setMinLineAmount} placeholder="0" />
             </Field>
             <div className="md:col-span-3 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-              قاعدة الحماية: السعر التعاقدي لا يتأثر، وعند تعارض عروض تلقائية يفوز الأعلى أولوية. راقب الربح الفعلي بعد التشغيل من الجدول أدناه؛ الأثر محسوب من لقطات الفواتير والمرتجعات لا من تعريف العرض.
+              قاعدة الحماية: السعر التعاقدي لا يتأثر، وعند تعارض عروض تلقائية يفوز الأعلى أولوية ثم الأكبر خصماً للوحدة ثم أصغر رقم عرض. ربط العرض بحملة لا يشغّله ولا يوقفه. راقب الربح الفعلي بعد التشغيل من الجدول أدناه؛ الأثر محسوب من لقطات الفواتير والمرتجعات لا من تعريف العرض.
             </div>
             {editingId != null ? (
               <Field label="النطاق" className="md:col-span-3" hint="ثابت منذ الإنشاء — أنشئ عرضاً جديداً لتغيير النطاق أو أهدافه">
@@ -403,6 +591,7 @@ export default function Offers() {
                     ))}
                   </div>
                 )}
+                <div className="md:col-span-3 rounded-md border border-border p-3 text-xs text-muted-foreground"><span className="font-medium text-foreground">ملخص الاستهداف: </span>{scope === "ALL" ? "كل المنتجات المؤهلة" : `${targets.length} ${scope === "CATEGORIES" ? "فئة" : "منتج"} محدد`}؛ القناة: {CHANNEL_LABEL[channel]}؛ التطبيق: {APPLICATION_LABEL[applicationMode]}.{scope !== "ALL" && " يتطلب الحفظ هدفاً واحداً على الأقل."}</div>
               </>
             )}
             {error && (
@@ -414,7 +603,7 @@ export default function Offers() {
             <div className="md:col-span-3 flex justify-end gap-2">
               <Button variant="outline" onClick={() => { setShowForm(false); resetForm(); }}>إلغاء</Button>
               <Button onClick={submit} disabled={createM.isPending || updateM.isPending}>
-                {createM.isPending || updateM.isPending ? "جارٍ الحفظ…" : editingId != null ? "حفظ التعديلات" : "حفظ العرض"}
+                {createM.isPending || updateM.isPending ? ACTION_LABELS.saving : editingId != null ? "حفظ التعديلات" : "حفظ العرض"}
               </Button>
             </div>
           </CardContent>
@@ -437,7 +626,7 @@ export default function Offers() {
             <AppSelect value={validityFilter} onValueChange={(v) => setValidityFilter(v as ValidityFilter)} className="h-8 w-36" size="sm">
               <option value="ALL">كل الحالات</option>
               <option value="CURRENT">ساري الآن</option>
-              <option value="SCHEDULED">مجدول لاحقاً</option>
+              <option value="SCHEDULED">يبدأ لاحقاً</option>
               <option value="EXPIRED">منتهٍ تاريخياً</option>
             </AppSelect>
             <label className="text-xs text-muted-foreground flex items-center gap-2">
@@ -447,81 +636,17 @@ export default function Offers() {
           </div>
         </CardHeader>
         <CardContent>
-          {list.length === 0 ? (
-            <div className="text-center text-sm text-muted-foreground py-12">لا عروض مطابقة للفلاتر.</div>
-          ) : (
-            <div className="overflow-x-auto rounded-md border">
-              <table className="w-full min-w-[1500px] text-sm">
-                <thead className="bg-muted/50 text-xs text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-right font-medium">الاسم</th>
-                    <th className="px-3 py-2 text-right font-medium">النوع</th>
-                    <th className="px-3 py-2 text-right font-medium">قيمة العرض</th>
-                    <th className="px-3 py-2 text-right font-medium">النطاق</th>
-                    <th className="px-3 py-2 text-right font-medium">القناة</th>
-                    <th className="px-3 py-2 text-right font-medium">التطبيق</th>
-                    <th className="px-3 py-2 text-right font-medium">من — إلى</th>
-                    <th className="px-3 py-2 text-right font-medium">الفواتير</th>
-                    <th className="px-3 py-2 text-right font-medium">المبيعات</th>
-                    <th className="px-3 py-2 text-right font-medium">خصم محقق</th>
-                    <th className="px-3 py-2 text-right font-medium">الربح</th>
-                    <th className="px-3 py-2 text-right font-medium">الهامش</th>
-                    <th className="px-3 py-2 text-right font-medium">الحالة</th>
-                    <th className="px-3 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((p: any) => {
-                    const performance = performanceById.get(p.id);
-                    const margin = D(performance?.netSales).isZero()
-                      ? null
-                      : D(performance?.grossProfit).div(performance?.netSales ?? 1).times(100).toDecimalPlaces(1).toString();
-                    return <tr key={p.id} className="border-t">
-                      <td className="px-3 py-2"><div className="font-medium">{p.name}</div><div className="text-xs text-muted-foreground">أولوية {p.priority}</div></td>
-                      <td className="px-3 py-2">{p.type === "PERCENT" ? "نسبة" : "مبلغ ثابت"}</td>
-                      <td className="px-3 py-2">
-                        {p.type === "PERCENT" ? `${p.discountPercent}٪` : `${fmtAr(p.discountAmount)} د.ع/وحدة`}
-                      </td>
-                      <td className="px-3 py-2">{p.scope === "ALL" ? "الكل" : p.scope === "CATEGORIES" ? "فئات" : "منتجات"}</td>
-                      <td className="px-3 py-2 text-xs">{CHANNEL_LABEL[p.isStoreManaged ? "STORE" : "POS"]}</td>
-                      <td className="px-3 py-2 text-xs">{APPLICATION_LABEL[p.applicationMode as string] ?? p.applicationMode}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground" dir="ltr">
-                        {toYmd(p.effectiveFrom)} — {p.effectiveTo ? toYmd(p.effectiveTo) : "مستمرّ"}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums">{performance?.invoiceCount ?? 0}</td>
-                      <td className="px-3 py-2 tabular-nums">{formatIqd(performance?.netSales ?? "0")}</td>
-                      <td className="px-3 py-2 tabular-nums">{formatIqd(performance?.discount ?? "0")}</td>
-                      <td className={`px-3 py-2 tabular-nums ${D(performance?.grossProfit).isNegative() ? "text-destructive" : ""}`}>{formatIqd(performance?.grossProfit ?? "0")}</td>
-                      <td className={`px-3 py-2 tabular-nums ${margin != null && D(margin).isNegative() ? "text-destructive" : ""}`}>{margin == null ? "—" : `${margin}٪`}</td>
-                      <td className="px-3 py-2">
-                        {p.isActive ? <Badge variant="default">نشط</Badge> : <Badge variant="secondary">معطَّل</Badge>}
-                      </td>
-                      <td className="px-3 py-2 text-left">
-                        {canManage && (
-                          <div className="flex items-center justify-end gap-1">
-                            <Button size="sm" variant="ghost" onClick={() => startEdit(p)}>
-                              <FileEdit aria-hidden className="size-3.5" />
-                              تعديل
-                            </Button>
-                            {p.isActive ? (
-                              <Button size="sm" variant="ghost" onClick={() => doDeactivate(p)} disabled={deactivateM.isPending}>
-                                تعطيل
-                              </Button>
-                            ) : (
-                              <Button size="sm" variant="ghost" onClick={() => reactivateM.mutate({ promotionId: Number(p.id) })} disabled={reactivateM.isPending}>
-                                <RotateCcw aria-hidden className="size-3.5" />
-                                تفعيل
-                              </Button>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                    </tr>;
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <DataTable<OfferRow>
+            columns={columns}
+            data={list}
+            /* البحث والفلاتر في ترويسة البطاقة أعلاه (تُغذّي `list`) — بلا هذا يظهر حقلا بحثٍ
+               متجاوران، وتُعلن الشاشةُ «لا عروض بعد» بينما الفلترُ وحده هو الحاجب. */
+            searchable={false}
+            externalFiltersActive={searchQuery.trim() !== "" || channelFilter !== "ALL" || validityFilter !== "ALL"}
+            loading={listQ.isLoading}
+            errorState={{ isError: listQ.isError, message: listQ.error?.message, onRetry: () => void listQ.refetch() }}
+            emptyText="لا عروض مطابقة للفلاتر."
+          />
         </CardContent>
       </Card>
     </div>

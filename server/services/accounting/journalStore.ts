@@ -330,8 +330,11 @@ export async function writeJournalGap(
 
 /**
  * يحذف القيد المزدوج لحدثٍ ماليّ (أسطرُه تُجرَف بـ`ON DELETE CASCADE`). يصمت إن لم يوجد قيد.
- * يُستعمل قبل إعادة كتابة قيدٍ تغيّر مبلغُه — `upsertOpeningEntry` يُعدّل مبالغ قيودٍ قائمة،
- * فلولا الحذف-ثمّ-الكتابة لبقي القيد المزدوج بائتاً يخالف الدفتر.
+ *
+ * ⚠️ لا يُستعمَل في أيّ مسار إنتاجيّ (تحقّق تدقيق م١، ١٣/٩): الرصيد الافتتاحيّ صار **إلحاقياً**
+ * — `upsertOpeningEntry` يُسجّل قيدَ فرقٍ موقَّعاً ولا يُعدّل مبلغاً قائماً، فزال داعي الحذف-ثمّ-الكتابة.
+ * يبقى هنا لتغطية اختبار `journalFoundation.test.ts` (سلوك CASCADE) وكمخرجٍ احتياطيّ؛ **لا تُعِد
+ * استعماله لتعديلٍ في المكان على قيدٍ حيّ** — ذلك يُعيد خطرَ القيد اليتيم الذي أزاله المسارُ الإلحاقيّ.
  */
 export async function dropJournal(tx: Tx, entryId: number): Promise<void> {
   await tx.delete(journalEntries).where(eq(journalEntries.entryId, entryId));

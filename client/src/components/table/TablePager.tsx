@@ -77,7 +77,11 @@ export function TablePager({
           </>
         ) : (
           <>
-            عرض {fmtInt(first)}–{fmtInt(last)}
+            {/* bidi: رقمان بشرطةٍ بلا كلمةٍ عربية فاصلة بينهما — نفس عطب دلاء الأعمار المُصلَح
+                في ReportShell/APAging/ARAging (٣/٩): يُعاد ترتيبهما بصرياً "last–first" داخل
+                حاويةٍ RTL بلا عزل. bdi هو الاصطلاح القائم فعلاً لهذا في DataTable (أعمدة
+                date/money/code) — نطابقه هنا بدل dir="ltr" خام. */}
+            عرض <bdi dir="ltr">{fmtInt(first)}–{fmtInt(last)}</bdi>
             {knownTotal ? <> من {fmtInt(total)}</> : null}
             {pages && pages > 1 ? (
               <>

@@ -3,7 +3,7 @@
 // المسح الإلزاميّ ينجح بقدر ما تكون البضاعة ملصَّقة. هذه الوحدة تحسب — لمجموعة متغيّرات —
 // كم منها يملك باركوداً قابلاً للمسح (باركود وحدةٍ نشطة أو باركود بديل)، وكم ينقصه، وتُعيد
 // وحدات الأساس الناقصة كي يُسلَّمها معالجُ الجرد لشاشة الملصقات دفعةً. قراءةٌ صرفة بلا آثار.
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   products,
   productUnitBarcodes,
@@ -11,6 +11,7 @@ import {
   productVariants,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
+import { normalizedStoredBarcodeSql } from "../catalog/barcodeAliases";
 import { chunk } from "./internal";
 
 export interface BarcodeCoverage {
@@ -60,7 +61,7 @@ export async function computeBarcodeCoverage(
         and(
           inArray(productUnits.variantId, part),
           eq(productUnits.isActive, true),
-          isNotNull(productUnits.barcode),
+          sql`${normalizedStoredBarcodeSql(productUnits.barcode)} <> ''`,
         ),
       );
     for (const r of withUnit) covered.add(Number(r.variantId));
@@ -70,7 +71,13 @@ export async function computeBarcodeCoverage(
       .selectDistinct({ variantId: productUnits.variantId })
       .from(productUnitBarcodes)
       .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
-      .where(and(inArray(productUnits.variantId, part), eq(productUnits.isActive, true)));
+      .where(
+        and(
+          inArray(productUnits.variantId, part),
+          eq(productUnits.isActive, true),
+          sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} <> ''`,
+        ),
+      );
     for (const r of withAlias) covered.add(Number(r.variantId));
   }
 

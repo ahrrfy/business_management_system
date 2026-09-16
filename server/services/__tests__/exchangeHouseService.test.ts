@@ -442,6 +442,22 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     await expect(approveExchangeDeposit(dep.txnId, actorB)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  it("المالك يعتمد إيداعه القديم المعلّق حتى إن لم تحمل حمولة الراوتر isOwner", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة طلب قديم" }, actor);
+    await buyUsdAtExchange(
+      { exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1500", confirmNegative: true },
+      actor,
+    );
+    const pending = await depositToExchange(
+      { exchangeHouseId: id, branchId: 1, amount: "100", currency: "USD", exchangeRate: "1500" },
+      actor,
+    );
+    // يحاكي طلبا تاريخيا أنشأه المالك قبل تفعيل الاعتماد التلقائي.
+    await db().update(s.exchangeTransactions).set({ createdBy: actorB.userId }).where(eq(s.exchangeTransactions.id, pending.txnId));
+
+    await expect(approveExchangeDeposit(pending.txnId, actorB)).resolves.toMatchObject({ status: "ACTIVE" });
+  });
+
   it("اعتماد إيداع دولار بلا حيازة كافية يفشل قبل أي أثر ويبقي الطلب معلّقاً", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة بلا دولار فعلي" }, actor);
     const dep = await depositToExchange(
@@ -750,7 +766,14 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
       actor,
     );
     const yesterday = new Date(utcTodayStart().getTime() - 12 * 60 * 60 * 1000);
-    await db().update(s.receipts).set({ createdAt: yesterday }).where(eq(s.receipts.id, Number(settled.receiptId)));
+    // هذا الإيصال يُعتمَد ذاتياً لحظة إنشائه (approvedBy=createdBy وapprovedAt=createdAt معاً
+    // في settleSupplier.ts) — فمحاكاةُ «حدث فعلاً بالأمس» تُبدّل الاثنين معاً، وإلا بقيت
+    // approvedAt عند «اليوم» وcashEventAtSql (يعتمد على وقوع اعتمادٍ فعليّ لا هويّة المعتمِد
+    // منذ قرار المالك ٣/٩/٢٦) يؤرّخ الحدث بها فيُخفي تدفّق الأمس زوراً.
+    await db()
+      .update(s.receipts)
+      .set({ createdAt: yesterday, approvedAt: yesterday })
+      .where(eq(s.receipts.id, Number(settled.receiptId)));
 
     await reverseExchangeTransaction(settled.txnId, reverser);
 

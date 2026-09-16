@@ -32,7 +32,11 @@ import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
-import { createSystemPaymentRequestTx } from "../voucher/create";
+import {
+  createSystemPaymentRequestTx,
+  finalizeOwnerSystemVoucherTx,
+} from "../voucher/create";
+import { resolveApprovalActor } from "../approval/ownerGate";
 import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 
@@ -230,6 +234,11 @@ export async function deposit(
       .update(digitalWalletTransactions)
       .set({ receiptId: request.receiptId })
       .where(eq(digitalWalletTransactions.id, transactionId));
+    const ownerApproved = await finalizeOwnerSystemVoucherTx(
+      tx,
+      request.receiptId,
+      actor,
+    );
     await auditLog(tx, actor, "digitalCards.wallet.depositRequested", input.walletId, {
       amount: toDbMoney(amount),
       requestReceiptId: request.receiptId,
@@ -238,7 +247,7 @@ export async function deposit(
       transactionId,
       receiptId: request.receiptId,
       balanceAfter: toDbMoney(money(w.currentBalance)),
-      pendingApproval: true,
+      pendingApproval: !ownerApproved,
     };
   }
 
@@ -448,6 +457,10 @@ export async function requestAdjustment(
     amount: toDbMoney(amount),
     direction: input.direction,
   });
+  const resolvedActor = await resolveApprovalActor(tx, actor);
+  if (resolvedActor.isOwner) {
+    await approveAdjustment(tx, { transactionId }, resolvedActor);
+  }
   return { transactionId };
 }
 

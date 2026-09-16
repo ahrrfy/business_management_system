@@ -89,7 +89,7 @@ export default defineConfig(({ mode }) => {
           "assets/app-*.js",
           "assets/index-*.css",
           STOREFRONT_SHELL_CHUNK_GLOB,
-          "assets/*.woff2",
+          "fonts/*.woff2",
         ],
         // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
         // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
@@ -145,19 +145,19 @@ export default defineConfig(({ mode }) => {
       },
       manifest: {
         id: "/store",
-        name: "مكتبة العربية",
-        short_name: "مكتبة العربية",
-        description: "قرطاسية وطباعة وهدايا مع توصيل داخل العراق والدفع عند الاستلام.",
+        name: "الرؤية العربية",
+        short_name: "الرؤية العربية",
+        description: "نظام إدارة أعمال الرؤية العربية والمكتبة للطباعة والقرطاسية والتجارة",
         lang: "ar",
         dir: "rtl",
         theme_color: "#1e4a63",
         background_color: "#fff8ef",
         display: "standalone",
-        start_url: "/store",
-        // هوية التطبيق المثبّت ومساراته للمتجر فقط. يبقى SW على الجذر لأن Web Push
-        // الحالي مشترك، لكن navigation fallback وprecache أعلاه لا يقدّمان ERP أوفلاين.
-        scope: "/store",
-        categories: ["shopping", "business"],
+        start_url: "/",
+        // النطاق على الجذر لتمكين تثبيت PWA بهوية النظام كاملة (المتجر العام والنظام الإداري)،
+        // مع بقاء navigation fallback محصوراً بـ /store فلا يُقدَّم ERP أوفلاين من كاش غير متصل.
+        scope: "/",
+        categories: ["business", "shopping"],
         icons: [
           { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
           { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
@@ -228,6 +228,12 @@ export default defineConfig(({ mode }) => {
           if (id.includes("node_modules/recharts")) return "charts";
           // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
           if (id.includes("node_modules/exceljs")) return EXCEL_CHUNK_NAME;
+          // حزم الحركة والتأثيرات البصرية المستقلة (framer-motion)
+          if (
+            id.includes("/node_modules/framer-motion/") ||
+            id.includes("/node_modules/motion-dom/") ||
+            id.includes("/node_modules/motion-utils/")
+          ) return "motion";
           // مكتبات البنية المشتركة تتغير بوتيرة أبطأ من شيفرة النظام. فصلها يقلل
           // حجم الحزمة الأساسية ويحافظ على كاش المتصفح عند نشر تعديلات الشاشات.
           if (
@@ -239,13 +245,19 @@ export default defineConfig(({ mode }) => {
           if (
             id.includes("/node_modules/@tanstack/") ||
             id.includes("/node_modules/@trpc/") ||
-            id.includes("/node_modules/superjson/")
+            id.includes("/node_modules/superjson/") ||
+            id.includes("/node_modules/decimal.js/")
           ) return "data-client";
           if (
             id.includes("/node_modules/@radix-ui/") ||
             id.includes("/node_modules/@floating-ui/") ||
             id.includes("/node_modules/cmdk/") ||
-            id.includes("/node_modules/vaul/")
+            id.includes("/node_modules/vaul/") ||
+            id.includes("/node_modules/tailwind-merge/") ||
+            id.includes("/node_modules/clsx/") ||
+            id.includes("/node_modules/sonner/") ||
+            id.includes("/node_modules/input-otp/") ||
+            id.includes("/node_modules/qrcode/")
           ) return "ui-vendor";
           if (id.includes("/node_modules/@sentry/")) return "observability";
           if (id.includes("/node_modules/dexie/")) return "offline-store";

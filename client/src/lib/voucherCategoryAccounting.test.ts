@@ -26,7 +26,7 @@ describe("voucher category accounting UI contract", () => {
       "utf8",
     );
     const voucherForm = readFileSync(
-      new URL("../pages/_VoucherFormShared.tsx", import.meta.url),
+      new URL("../components/vouchers/VoucherFormShared.tsx", import.meta.url),
       "utf8",
     );
     expect(categoriesPage).toContain("الحساب المحاسبي المقابل *");

@@ -50,6 +50,22 @@ const REQUIRED_WEB_TUNABLES = [
   "EVENT_LOOP_STOREFRONT_MAX_LAG_MS",
 ] as const;
 
+/** مفاتيح الاستوديو تُصرّح دائماً؛ الفراغ يمسح قيمة PM2 قديمة بدلاً من إبقائها بصمت. */
+const REQUIRED_STUDIO_ENV_KEYS = [
+  "INTEGRATIONS_ENCRYPTION_KEY",
+  "GEMINI_API_BASE",
+  "IMAGE_STORE_DRIVER",
+  "R2_ACCOUNT_ID",
+  "R2_IMAGE_BUCKET",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_MAX_CONCURRENCY",
+  "R2_MAX_QUEUE",
+  "R2_QUEUE_TIMEOUT_MS",
+  "R2_CIRCUIT_FAILURE_THRESHOLD",
+  "R2_CIRCUIT_OPEN_MS",
+] as const;
+
 /** أسرارٌ ممنوعة على عامل الويب مهما كان (مرآةُ webForbiddenEnvironmentKeys). */
 const FORBIDDEN_WEB_ENV_KEYS = [
   "DB_ROOT_PW",
@@ -70,6 +86,11 @@ describe("عقد تصريح بيئة PM2 لعامل الويب", () => {
     for (const key of REQUIRED_WEB_TUNABLES) {
       expect(ecosystem, `${key} غير مُدرَجٍ في webTunableKeys`).toContain(`"${key}"`);
     }
+    expect(block, "webStudioEnvironment غير مبسوطة في كتلة env").toContain("...webStudioEnvironment");
+    for (const key of REQUIRED_STUDIO_ENV_KEYS) {
+      expect(ecosystem, `${key} غير مُدرَج في عقد بيئة الاستوديو`).toContain(`"${key}"`);
+    }
+    expect(ecosystem, "غياب قيمة الاستوديو يجب أن يمسح الموروث القديم").toContain('process.env[key] ?? ""');
   });
 
   it("webTunables تُسقط غير المضبوط بدل تمريره نصّاً \"undefined\"", () => {

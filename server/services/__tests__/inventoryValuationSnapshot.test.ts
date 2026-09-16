@@ -18,6 +18,7 @@ const TABLES = [
   "inventoryValuationSnapshots",
   "financialPeriods",
   "inventoryMovements",
+  "stockTransferLineBundleComponents",
   "stockTransferLines",
   "stockTransfers",
   "branchStock",

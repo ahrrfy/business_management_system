@@ -16,6 +16,15 @@ import {
   reconcileCustomerBalances,
   reconcileSupplierBalances,
 } from "./reconcileService";
+import { supplierApEffectSql } from "./ledger/supplierApEffect";
+
+/** أعمدة القيد بالاسم المستعار `ae` — أثر AP الموحَّد (PURCHASE القديم + GRNI/ADJUST الحديث). */
+const AE_AP = {
+  entryType: sql`ae.entryType`,
+  amount: sql`ae.amount`,
+  liabilityAccount: sql`ae.purchaseLiabilityAccount`,
+  dedupeKey: sql`ae.dedupeKey`,
+} as const;
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -929,6 +938,10 @@ export interface FinancialPosition {
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
+  /** أساس الحقوق: "FORCED_BALANCE" = موازنةُ إجبار (أصول − خصوم)، لا اشتقاقٌ من الدفتر. */
+  equityBasis: "FORCED_BALANCE";
+  /** وضع الدفتر المزدوج وقت اللقطة — عند "ACTIVE" توجّه الشاشةُ للميزانية النظامية المُدقّقة. */
+  accountingMode: "OFF" | "SHADOW" | "ACTIVE";
   branchScoped: boolean;
   // FI-02: حارس انحراف مرئي — AR/AP يُقرآن من currentBalance القابل للتحوّل؛ نطابقه (قراءة فقط)
   // مع المُتوقَّع المُشتقّ عبر reconcile* فيظهر أيّ انحراف صامت بدل أن يُمرَّر بصمت في القوائم.
@@ -982,6 +995,8 @@ export async function getFinancialPosition(
     totalAssets: zero,
     totalLiabilities: zero,
     equity: zero,
+    equityBasis: "FORCED_BALANCE",
+    accountingMode: "OFF",
     branchScoped: !!opts.branchId,
     arReconciled: true,
     apReconciled: true,
@@ -1049,15 +1064,7 @@ export async function getFinancialPosition(
         CAST(COALESCE(SUM(CASE WHEN t.net > 0 THEN t.net ELSE 0 END), 0) AS CHAR) AS c,
         CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS d
       FROM (
-        SELECT ae.supplierId AS supplierId, SUM(CASE
-          WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-          WHEN ae.entryType = 'PURCHASE' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'PAYMENT_OUT' THEN -CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'PAYMENT_IN' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'RETURN' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'OPENING' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'EXCHANGE_SETTLE' THEN -CAST(ae.amount AS DECIMAL(15,2))
-          ELSE 0 END) AS net
+        SELECT ae.supplierId AS supplierId, SUM(${supplierApEffectSql(AE_AP)}) AS net
         FROM accountingEntries ae
         WHERE ae.supplierId IS NOT NULL AND ae.entryDate <= ${asOf}
         GROUP BY ae.supplierId
@@ -1183,10 +1190,15 @@ export async function getFinancialPosition(
     SELECT CAST(
       COALESCE(SUM(bs.quantity * pv.costPrice), 0)
       + COALESCE((
-          SELECT SUM((stl.quantitySent - COALESCE(stl.quantityReceived, 0)) * pv2.costPrice)
+          SELECT SUM(
+            (stl.quantitySent - COALESCE(stl.quantityReceived, 0))
+            * COALESCE(stlbc.componentBaseQuantity, 1)
+            * pv2.costPrice
+          )
           FROM stockTransfers st
           JOIN stockTransferLines stl ON stl.transferId = st.id
-          JOIN productVariants pv2 ON pv2.id = stl.variantId
+          LEFT JOIN stockTransferLineBundleComponents stlbc ON stlbc.transferLineId = stl.id
+          JOIN productVariants pv2 ON pv2.id = COALESCE(stlbc.componentVariantId, stl.variantId)
           JOIN products p2 ON p2.id = pv2.productId
           WHERE st.transferStatus = 'IN_TRANSIT'
             AND p2.isConsignment = false
@@ -1590,6 +1602,11 @@ export async function getFinancialPosition(
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),
+    // الحقوق أعلاه موازنةُ إجبار (أصول − خصوم) تُبقي الميزانية متوازنةً بناءً — لا اشتقاقٌ من الدفتر.
+    // نُصرّح بالأساس والوضع صراحةً كي لا تُقرأ موازنةُ الإجبار كأنها حقوقٌ حقيقيّة؛ وعند ACTIVE توجّه
+    // الشاشةُ للميزانية المُدقّقة من الدفتر في الكشوفات النظامية (getStatutoryBalanceSheet) بدل التكرار.
+    equityBasis: "FORCED_BALANCE" as const,
+    accountingMode: (payrollMode?.mode ?? "OFF") as "OFF" | "SHADOW" | "ACTIVE",
     branchScoped: !!bId,
     arReconciled: arDrift.length === 0,
     apReconciled: apDrift.length === 0,

@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, asc, desc, eq, lt } from "drizzle-orm";
 import {
   branches,
   purchaseOrderControlRequests,
@@ -8,11 +8,15 @@ import {
   purchaseOrders,
   users,
 } from "../../../drizzle/schema";
+import { purchaseOrderControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   checkIdempotency,
   idempotencyHash,
+  payloadHashMatches,
   recordIdempotencyKey,
 } from "../idempotency";
 import { money } from "../money";
@@ -25,6 +29,7 @@ import {
   releasePurchaseOrderRevisionAllocationsTx,
 } from "./requisitions";
 import { appendPurchaseOrderEventTx } from "./revisions";
+import { postApprovedPurchaseInvoiceInTx } from "./automaticInvoicePosting";
 
 export type PurchaseOrderControlKind =
   | "APPROVE_REVISION"
@@ -148,7 +153,7 @@ async function requestPurchaseOrderControlTx(
     .limit(1);
   if (existing) {
     if (
-      existing.payloadHash !== payloadHash ||
+      !payloadHashMatches(payloadHash, existing.payloadHash) ||
       Number(existing.purchaseOrderId) !== input.purchaseOrderId ||
       existing.kind !== input.kind
     ) {
@@ -253,7 +258,16 @@ export async function requestPurchaseOrderControl(
   input: PurchaseOrderControlRequestInput,
   actor: Actor,
 ) {
-  return withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  const result = await withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  // اعتماد المراجعة يثبت واقعةً مستقلة: وصول البضاعة كاملة ومطابقتها. إنشاء الطلب وحده
+  // لا يحمل هذا الإقرار، لذلك يبقى بانتظار تأكيد صريح حتى لو كان المنشئ هو المالك.
+  if (input.kind === "APPROVE_REVISION") return result;
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.order.control",
+    id: result.requestId,
+    reason: input.reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 /** DRAFT → SENT وإنشاء طلب اعتماد المراجعة في معاملة واحدة. */
@@ -273,7 +287,7 @@ export async function submitPurchaseOrderForApproval(
     expectedVersion: input.expectedVersion,
     reason,
   });
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const [po] = await tx
       .select()
       .from(purchaseOrders)
@@ -393,6 +407,9 @@ export async function submitPurchaseOrderForApproval(
       idempotent: false as const,
     };
   });
+  // لا نختلق إقرار استلام كامل من فعل «إرسال للاعتماد»؛ يظل هذا الطلب حتى يدخل
+  // المالك تأكيد الاستلام الصريح من شاشة القرار.
+  return result;
 }
 
 async function assertCancellationSafeTx(tx: Tx, purchaseOrderId: number) {
@@ -418,8 +435,10 @@ export async function decidePurchaseOrderControl(
     decisionKey: string;
     approve: boolean;
     reason: string;
+    confirmedFullReceipt?: boolean;
   },
   actor: Actor,
+  options: { legacyConfirmOnly?: true } = {},
 ) {
   const preview = (
     await requireDb()
@@ -440,6 +459,8 @@ export async function decidePurchaseOrderControl(
     requestId: input.requestId,
     approve: input.approve,
     reason,
+    confirmedFullReceipt: input.confirmedFullReceipt ?? false,
+    legacyConfirmOnly: options.legacyConfirmOnly ?? false,
   });
   return withTx(async (tx) => {
     // استعادة أهلية الصنف للجرد الافتتاحي تعتمد على رؤية كل أوامر الشراء غير الملغاة.
@@ -518,16 +539,28 @@ export async function decidePurchaseOrderControl(
         message: "حُسم طلب التحكم مسبقاً",
       });
     }
-    if (
-      actor.userId === Number(request.requestedBy) ||
-      actor.userId === Number(po.createdBy) ||
-      actor.userId === Number(po.lastEditedBy)
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "يلزم معتمد مستقل عن المنشئ وآخر محرر وصاحب الطلب",
-      });
-    }
+    // سياسةُ الاعتماد (shared/approvalPolicy.ts): البوّابة **بالفعل لا بالإجراء**. اعتمادُ
+    // المراجعة والاستثناءُ الطارئ والرفضُ بلا بوّابة؛ و**إلغاءُ الأمر** وحده محوُ أثر —
+    // لأنّه يمحو توقيعَ الجرد الافتتاحيّ (openingEligibility.ts:426). التفصيل ودليلُه في
+    // `shared/approvalTriggers.ts`.
+    let resolvedActor: Awaited<ReturnType<typeof resolveApprovalActor>>;
+    assertApprover({
+      actor: (resolvedActor = await resolveApprovalActor(tx, actor)),
+      trigger: purchaseOrderControlTrigger(request.kind, input.approve),
+      subject: `أمر الشراء ${po.poNumber}`,
+      legacy: () => {
+        if (
+          actor.userId === Number(request.requestedBy) ||
+          actor.userId === Number(po.createdBy) ||
+          actor.userId === Number(po.lastEditedBy)
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "يلزم معتمد مستقل عن المنشئ وآخر محرر وصاحب الطلب",
+          });
+        }
+      },
+    });
     if (Number(request.baseOrderVersion) !== Number(po.version)) {
       await tx
         .update(purchaseOrderControlRequests)
@@ -625,6 +658,12 @@ export async function decidePurchaseOrderControl(
 
     let applicationEvidence: Record<string, unknown> = {};
     if (request.kind === "APPROVE_REVISION") {
+      if (!options.legacyConfirmOnly && !input.confirmedFullReceipt) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "يلزم تأكيد وصول كامل كميات الفاتورة قبل الاعتماد والترحيل",
+        });
+      }
       if (
         po.status !== "SENT" ||
         po.currentRevisionId == null ||
@@ -659,6 +698,28 @@ export async function decidePurchaseOrderControl(
           approvedAt: new Date(),
         })
         .where(eq(purchaseOrders.id, po.id));
+      if (options.legacyConfirmOnly) {
+        // Internal migration/test seam for historical partial-receipt records.
+        // It is intentionally absent from every router and UI contract.
+        applicationEvidence = { legacyConfirmOnly: true };
+      } else {
+        const posting = await postApprovedPurchaseInvoiceInTx(
+          tx,
+          Number(po.id),
+          resolvedActor,
+          decisionKey,
+        );
+        applicationEvidence = {
+          automaticInvoicePosting: true,
+          fullyReceived: true,
+          goodsReceiptId: posting.goodsReceiptId,
+          supplierInvoiceId: posting.supplierInvoiceId,
+          matchRunId: posting.matchRunId,
+          accountingEntryId: posting.accountingEntryId,
+          shippingPaymentRequestReceiptId:
+            posting.shippingPaymentRequestReceiptId,
+        };
+      }
     } else if (request.kind === "CANCEL_ORDER") {
       if (!["DRAFT", "SENT", "CONFIRMED"].includes(po.status)) {
         throw new TRPCError({
@@ -767,7 +828,11 @@ export async function decidePurchaseOrderControl(
 
 export async function listPendingPurchaseOrderControls(
   actor: Actor,
-  page: { limit: number; cursor?: number | null },
+  /**
+   * `order: "ASC"` = الأقدم أوّلاً (صندوق القرارات): القصّ بالأحدث يُسقط أكثر الطلبات
+   * تأخّراً بالضبط حين يكثر المعلَّق (Codex على #1004). المؤشّر `cursor` يخصّ النزول فقط.
+   */
+  page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC" },
 ) {
   const db = requireDb();
   const branchCondition =
@@ -793,6 +858,8 @@ export async function listPendingPurchaseOrderControls(
       lastEditedBy: purchaseOrders.lastEditedBy,
       orderVersion: purchaseOrders.version,
       orderStatus: purchaseOrders.status,
+      shippingCost: purchaseOrders.shippingCost,
+      customsCost: purchaseOrders.customsCost,
     })
     .from(purchaseOrderControlRequests)
     .innerJoin(
@@ -809,7 +876,7 @@ export async function listPendingPurchaseOrderControls(
           : lt(purchaseOrderControlRequests.id, page.cursor),
       ),
     )
-    .orderBy(desc(purchaseOrderControlRequests.id))
+    .orderBy(page.order === "ASC" ? asc(purchaseOrderControlRequests.id) : desc(purchaseOrderControlRequests.id))
     .limit(page.limit + 1);
 }
 

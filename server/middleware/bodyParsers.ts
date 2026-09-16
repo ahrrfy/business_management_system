@@ -47,11 +47,10 @@ export function applyBodyParsers(app: Express): void {
     if (req.path.includes("catalog.createProduct") || req.path.includes("catalog.updateProductVariants")) {
       return express.json({ limit: "10mb" })(req, res, next);
     }
-    // استوديو صور المنتجات: proCutout يرسل صورة المنتج data-URL لقصّها عبر remove.bg (حتى ٢م.ب خام
-    // ⇒ ~٢.٧م.ب نصاً). استثناء ٤mb (نمط vouchers.create أعلاه). راجع server/routers/imageStudioRouter.ts.
-    // aiStudioTransform: يرسل صورة المنتج data-URL (وضع EDIT) لإعادة تصميمها عبر مزوّد الذكاء الاصطناعي — نفس الحجم.
+    // استوديو صور المنتجات: aiStudioTransform يرسل صورة المنتج data-URL (وضع EDIT) لإعادة تصميمها
+    // عبر مزوّد الذكاء الاصطناعي (حتى ٢م.ب خام ⇒ ~٢.٧م.ب نصاً). استثناء ٤mb، والكاتب يتحقّق
+    // خادمياً من المحتوى والحجم قبل حفظ أي نتيجة.
     if (
-      req.path.includes("imageStudio.proCutout") ||
       req.path.includes("imageStudio.aiStudioTransform") ||
       req.path.includes("productStudio.bindProcessingProof") ||
       req.path.includes("productStudio.submitCandidate")

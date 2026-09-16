@@ -4,12 +4,16 @@ import { CashFlowChart } from "@/components/treasury/CashFlowChart";
 import { OpenShiftsPanel } from "@/components/treasury/OpenShiftsPanel";
 import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
+import { DeliveryCustodyCard } from "@/components/treasury/DeliveryCustodyCard";
+import { PendingHandoversSection, CustodyQueryNotice } from "@/components/treasury/PendingHandoversSection";
+import { FundTreasuryDialog } from "@/components/treasury/FundTreasuryDialog";
 import { FinancialSourceBadge } from "@/components/financial";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { moduleAccessAllowed } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PageHeader } from "@/components/PageHeader";
 import { CashCounter } from "@/components/CashCounter";
 import {
   Dialog,
@@ -39,6 +43,7 @@ import {
   Loader2,
   Receipt as ReceiptIcon,
   RefreshCcw,
+  Send,
   Vault,
   Wallet,
   X,
@@ -71,41 +76,6 @@ const fmtRelativeShort = (iso: string) => {
   if (h < 24) return `منذ ${h.toLocaleString("ar-IQ-u-nu-latn")} س`;
   return fmtDT(iso);
 };
-
-function CustodyQueryNotice({
-  loading,
-  error,
-  loadingLabel,
-  errorLabel,
-  onRetry,
-}: {
-  loading: boolean;
-  error: boolean;
-  loadingLabel: string;
-  errorLabel: string;
-  onRetry: () => void;
-}) {
-  if (loading) {
-    return (
-      <div role="status" className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-        <Loader2 aria-hidden className="size-3.5 animate-spin" />
-        {loadingLabel}
-      </div>
-    );
-  }
-  if (!error) return null;
-  return (
-    <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-      <span className="flex items-center gap-2">
-        <AlertTriangle aria-hidden className="size-3.5" />
-        {errorLabel}
-      </span>
-      <Button type="button" size="sm" variant="outline" className="h-7 gap-1.5" onClick={onRetry}>
-        <RefreshCcw aria-hidden className="size-3.5" /> إعادة المحاولة
-      </Button>
-    </div>
-  );
-}
 
 interface MovementRow {
   id: string;
@@ -169,11 +139,6 @@ export default function Treasury() {
   const [movExporting, setMovExporting] = useState(false);
   // العهدة الوسيطة (imprest، ٢٨/٧/٢٦): تمويل الخزينة (رأس مال) — يُموّل عهد الورديات.
   const [fundOpen, setFundOpen] = useState(false);
-  const [fundBranch, setFundBranch] = useState<number | "">("");
-  const [fundAmount, setFundAmount] = useState("");
-  const [fundDesc, setFundDesc] = useState("");
-  const [fundNotes, setFundNotes] = useState("");
-  const [fundReqId, setFundReqId] = useState("");
 
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -280,6 +245,7 @@ export default function Treasury() {
     enabled: canGovernHandovers && (pendingQueue.data?.length ?? 0) > 0,
   });
   const canChooseBranch = isAdmin || isManager;
+  const canAccessTransfers = isAdmin || moduleAccessAllowed(userRole, (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null, "treasury", "READ", ["manager", "accountant"]);
   const hideTreasury = dashboard.data?.hideTreasury ?? false;
 
   const refreshAll = () => {
@@ -291,37 +257,6 @@ export default function Treasury() {
     void utils.treasury.getOpenShifts.invalidate();
     void utils.treasury.pendingHandoverReceipts.invalidate();
   };
-
-  const fundTreasuryM = trpc.treasury.fundTreasury.useMutation({
-    onSuccess: (r) => {
-      notify.ok(
-        "تم تمويل الخزينة",
-        `السند ${r.referenceNumber} — الرصيد بعده ${fmtAr(r.treasuryBalanceAfter)} د.ع`,
-      );
-      setFundOpen(false);
-      setFundAmount("");
-      setFundDesc("");
-      setFundNotes("");
-      refreshAll();
-    },
-    onError: (e) => notify.err(e),
-  });
-  const openFund = () => {
-    setFundReqId(newClientRequestId());
-    setFundBranch(
-      branchId !== ""
-        ? Number(branchId)
-        : isManager && me.data?.branchId != null
-          ? Number(me.data.branchId)
-          : "",
-    );
-    setFundAmount("");
-    setFundDesc("");
-    setFundNotes("");
-    setFundOpen(true);
-  };
-  const fundAmountValid =
-    /^\d+(\.\d{1,2})?$/.test(fundAmount) && Number(fundAmount) > 0;
 
   const movementCols: ColumnDef<MovementRow>[] = useMemo(
     () => [
@@ -707,96 +642,95 @@ export default function Treasury() {
   return (
     <div className="mx-auto max-w-[1600px] space-y-4" dir="rtl">
       {/* ═══ Header / Toolbar ═══ */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Vault className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold leading-tight">لوحة الخزينة</h1>
-            <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-              {dashboard.data?.generatedAt && (
-                <span className="tabular-nums" dir="ltr">
-                  آخر تحديث: {fmtRelativeShort(dashboard.data.generatedAt)}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="mr-auto flex flex-wrap items-center gap-2">
-          {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
+      {/* رأسٌ يدويّ (أيقونة + h1 + آخر تحديث + شريط أدوات بـ`mr-auto`) ⇐ PageHeader الموحّد.
+          هذه الصفحة تبويبُ «لوحة الخزينة» داخل TreasuryHub، وPageTabs لا يرسم h1 بنفسه
+          (كل صفحة مُضمَّنة تحمل رأسها) — فالرأس هنا رأسُ الشاشة لا عنوانَ قسم.
+          حاوية `actions` في PageHeader هي نفسها `flex flex-wrap items-center gap-2`، فسقط
+          الغلاف و`mr-auto` معاً (المحاذاة صارت بـ`justify-between` من الرأس). */}
+      {/* الأيقونة رمزٌ عارٍ `h-5 w-5 text-primary` — لا رقاقة ٤٠px كما كان الرأس اليدويّ.
+          `icon` يُصيَّر **داخل `<h1>`**، فرقاقةٌ بخلفيةٍ ترفع سطر العنوان إلى ٤٠px بينما
+          أشقّاء التبويب في TreasuryHub بين بلا أيقونة (المصروفات/السندات/الورديات/الفئتين)
+          وبين رمزٍ عارٍ بنفس المقاس (TreasuryTransfers: `<Send className="h-5 w-5 text-primary" />`)
+          ⇒ التنقّل بين تبويبات الوحدة نفسها كان يُقفز المحتوى رأسياً. ولا نظيرَ للرقاقة في
+          أيّ استعمالٍ آخر لـ`PageHeader` في المستودع — وإبقاؤها يُبقي زخرفةَ الرأس اليدويّ
+          داخل المكوّن الموحّد، وهو عين ما يُلغيه العقد. */}
+      <PageHeader
+        icon={<Vault aria-hidden className="h-5 w-5 text-primary" />}
+        title="لوحة الخزينة"
+        description={
+          dashboard.data?.generatedAt ? (
+            <span className="tabular-nums" dir="ltr">
+              آخر تحديث: {fmtRelativeShort(dashboard.data.generatedAt)}
+            </span>
+          ) : undefined
+        }
+        actions={
+          <>
+            {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(value) =>
+                  setBranchId(value ? Number(value) : "")
+                }
+              >
+                <option value="">كل الفروع</option>
+                {branches.data?.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </AppSelect>
+            )}
             <AppSelect
               className="h-9"
-              value={String(branchId)}
-              onValueChange={(value) =>
-                setBranchId(value ? Number(value) : "")
-              }
+              value={period}
+              onValueChange={(value) => setPeriod(value as Period)}
             >
-              <option value="">كل الفروع</option>
-              {branches.data?.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
+              {(["today", "yesterday", "week", "month"] as const).map((p) => (
+                <option key={p} value={p}>
+                  {PERIOD_AR[p]}
                 </option>
               ))}
             </AppSelect>
-          )}
-          <AppSelect
-            className="h-9"
-            value={period}
-            onValueChange={(value) => setPeriod(value as Period)}
-          >
-            {(["today", "yesterday", "week", "month"] as const).map((p) => (
-              <option key={p} value={p}>
-                {PERIOD_AR[p]}
-              </option>
-            ))}
-          </AppSelect>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={refreshAll}
-            title="تحديث"
-          >
-            <RefreshCcw className="h-3.5 w-3.5 me-1" />
-            تحديث
-          </Button>
-        </div>
-      </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={refreshAll}
+              title="تحديث"
+            >
+              <RefreshCcw className="h-3.5 w-3.5 me-1" />
+              تحديث
+            </Button>
+          </>
+        }
+      />
 
       {/* ═══ شريط أزرار سريعة ═══ */}
       <div className="flex flex-wrap gap-2">
         <Link href="/vouchers/receipt/new">
-          <Button size="sm" variant="default" className="gap-1.5">
-            <ArrowDownLeft className="h-4 w-4" />
-            سند قبض
-          </Button>
+          <Button size="sm" variant="default" className="gap-1.5"><ArrowDownLeft className="h-4 w-4" />سند قبض</Button>
         </Link>
         <Link href="/vouchers/payment/new">
-          <Button size="sm" variant="outline" className="gap-1.5">
-            <ArrowUpRight className="h-4 w-4" />
-            سند صرف
-          </Button>
+          <Button size="sm" variant="outline" className="gap-1.5"><ArrowUpRight className="h-4 w-4" />سند صرف</Button>
         </Link>
         <Link href="/expenses/new">
-          <Button size="sm" variant="outline" className="gap-1.5">
-            <ReceiptIcon className="h-4 w-4" />
-            مصروف يومي
-          </Button>
+          <Button size="sm" variant="outline" className="gap-1.5"><ReceiptIcon className="h-4 w-4" />مصروف يومي</Button>
         </Link>
+        {canAccessTransfers && (
+          <Link href="/treasury?tab=transfers">
+            <Button size="sm" variant="outline" className="gap-1.5"><Send className="h-4 w-4" />تحويل بين الخزائن</Button>
+          </Link>
+        )}
         <Link href="/shifts">
-          <Button size="sm" variant="ghost" className="gap-1.5">
-            <Layers className="h-4 w-4" />
-            الورديات
-            <ArrowRight className="h-3 w-3" />
-          </Button>
+          <Button size="sm" variant="ghost" className="gap-1.5"><Layers className="h-4 w-4" />الورديات<ArrowRight className="h-3 w-3" /></Button>
         </Link>
         {(isAdmin || isManager) && (
           <Button
             size="sm"
             variant="outline"
             className="gap-1.5"
-            onClick={openFund}
+            onClick={() => setFundOpen(true)}
             title="إيداع رأس مال / رصيد افتتاحيّ في الخزينة"
           >
             <Vault className="h-4 w-4" />
@@ -805,108 +739,14 @@ export default function Treasury() {
         )}
       </div>
 
-      {canGovernHandovers &&
-        (pendingQueue.isLoading ||
-          pendingQueue.isError ||
-          (pendingQueue.data?.length ?? 0) > 0) && (
-        <section className="rounded-md border p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <Clock3 className="h-4 w-4 text-muted-foreground" />
-            <div>
-              <h2 className="text-sm font-bold">نقدٌ معلَّق لدى مستلمين (رقابة المدير)</h2>
-              <p className="text-xs text-muted-foreground">
-                عهدٌ خرجت من الأدراج ولم تدخل رصيد الخزينة بعد. إن تعذّر على المستلم قبولها
-                (إجازة/تعطيل حساب) فأعِد إسنادها — المبلغ لا يتحرّك، يتغيّر المسؤول عن قبوله فقط.
-              </p>
-            </div>
-          </div>
-          <div className="space-y-3">
-            <CustodyQueryNotice
-              loading={pendingQueue.isLoading}
-              error={pendingQueue.isError}
-              loadingLabel="جارٍ تحميل طابور عهد الاستلام…"
-              errorLabel="تعذّر تحميل طابور عهد الاستلام؛ لا يمكن افتراض عدم وجود عهد معلّقة."
-              onRetry={() => void pendingQueue.refetch()}
-            />
-            {!pendingQueue.isLoading && !pendingQueue.isError && (
-              <>
-                <CustodyQueryNotice
-                  loading={handoverRecipients.isLoading}
-                  error={handoverRecipients.isError}
-                  loadingLabel="جارٍ تحميل المستلمين المؤهلين…"
-                  errorLabel="تعذّر تحميل قائمة المستلمين؛ أُوقفت إعادة الإسناد لحين نجاح التحميل."
-                  onRetry={() => void handoverRecipients.refetch()}
-                />
-                <div className="grid gap-2">
-                  {pendingQueue.data?.map((row) => (
-                    <div
-                      key={row.id}
-                      className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-semibold tabular-nums" dir="ltr">
-                            {row.referenceNumber}
-                          </span>
-                          {row.ageDays >= 2 && (
-                            <span className="rounded bg-[var(--sem-warn)]/15 px-1.5 py-0.5 text-xs text-[var(--sem-warn)]">
-                              معلَّقة منذ {row.ageDays} يوماً
-                            </span>
-                          )}
-                          {!row.assignedToActive && (
-                            <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
-                              المستلم معطَّل
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          مُسنَدة إلى:{" "}
-                          <span className="font-medium text-foreground">
-                            {row.assignedToName ?? `#${row.assignedToId}`}
-                          </span>
-                          {row.sourceEmployeeName ? <> · من وردية {row.sourceEmployeeName}</> : null}
-                        </div>
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        المبلغ مخفي لحماية العد المستقل
-                      </div>
-                      <AppSelect
-                        value=""
-                        onValueChange={(v) => {
-                          if (v) {
-                            reassignHandover.mutate({ receiptId: row.id, toUserId: Number(v) });
-                          }
-                        }}
-                        disabled={
-                          reassignHandover.isPending ||
-                          handoverRecipients.isLoading ||
-                          handoverRecipients.isError
-                        }
-                        placeholder="إعادة إسناد إلى…"
-                        className="w-48"
-                        aria-label={`إعادة إسناد العهدة ${row.referenceNumber}`}
-                      >
-                        {(handoverRecipients.data ?? [])
-                          // الخادم يحصر القائمة في فرع القارئ، والفلتر يبقيها مطابقةً لفرع العهدة أيضاً.
-                          .filter(
-                            (u) =>
-                              Number(u.id) !== row.assignedToId &&
-                              Number(u.branchId) === row.branchId,
-                          )
-                          .map((u) => (
-                            <option key={u.id} value={String(u.id)}>
-                              {u.name ?? `#${u.id}`}
-                            </option>
-                          ))}
-                      </AppSelect>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </section>
-      )}
+      <DeliveryCustodyCard branchId={branchId !== "" ? Number(branchId) : undefined} />
+
+      <PendingHandoversSection
+        canGovernHandovers={canGovernHandovers}
+        pendingQueue={pendingQueue}
+        handoverRecipients={handoverRecipients}
+        reassignHandover={reassignHandover}
+      />
 
       {(pendingHandovers.isLoading ||
         pendingHandovers.isError ||
@@ -1277,126 +1117,20 @@ export default function Treasury() {
         </div>
       </div>
 
-      {/* تمويل الخزينة (imprest، ٢٨/٧/٢٦) — إيداع رأس مال / رصيد افتتاحيّ يُموّل عهد الورديات. */}
-      {fundOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          dir="rtl"
-          onClick={() => setFundOpen(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-lg border bg-card p-5 shadow-xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label="تمويل الخزينة"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-1 flex items-center gap-2">
-              <Vault className="h-5 w-5 text-primary" />
-              <h2 className="text-base font-bold">تمويل الخزينة</h2>
-            </div>
-            <p className="mb-4 text-xs text-muted-foreground">
-              إيداع رأس مال / رصيد افتتاحيّ في خزينة الفرع — يُموّل عهد
-              الورديات. يُسجَّل بسند وقيدٍ للتدقيق.
-            </p>
-            <div className="grid gap-3">
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  الفرع
-                </label>
-                {isAdmin ? (
-                  <AppSelect
-                    className={selectCls + " w-full"}
-                    value={String(fundBranch)}
-                    onValueChange={(value) =>
-                      setFundBranch(
-                        value ? Number(value) : "",
-                      )
-                    }
-                  >
-                    <option value="">— اختر الفرع —</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </AppSelect>
-                ) : (
-                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                    {(branches.data ?? []).find(
-                      (b) => Number(b.id) === Number(fundBranch),
-                    )?.name ?? (fundBranch ? `فرع #${fundBranch}` : "—")}
-                  </div>
-                )}
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  المبلغ (د.ع)
-                </label>
-                <MoneyInput
-                  value={fundAmount}
-                  onChange={setFundAmount}
-                  placeholder="0"
-                  className={selectCls + " w-full text-right font-bold"}
-                  ariaLabel="مبلغ تمويل الخزينة"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  التبرير / المصدر (إلزامي)
-                </label>
-                <input
-                  value={fundDesc}
-                  maxLength={500}
-                  placeholder="مثال: إيداع رأس مال أوّليّ من المالك"
-                  onChange={(e) => setFundDesc(e.target.value)}
-                  className={selectCls + " w-full"}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  ملاحظة (اختياري)
-                </label>
-                <input
-                  value={fundNotes}
-                  maxLength={500}
-                  onChange={(e) => setFundNotes(e.target.value)}
-                  className={selectCls + " w-full"}
-                />
-              </div>
-            </div>
-            <div className="mt-5 flex gap-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => setFundOpen(false)}
-              >
-                إلغاء
-              </Button>
-              <Button
-                className="flex-1"
-                disabled={
-                  fundTreasuryM.isPending ||
-                  !fundBranch ||
-                  !fundAmountValid ||
-                  !fundDesc.trim()
-                }
-                onClick={() =>
-                  fundTreasuryM.mutate({
-                    branchId: Number(fundBranch),
-                    amount: fundAmount,
-                    description: fundDesc.trim(),
-                    notes: fundNotes.trim() || null,
-                    clientRequestId: fundReqId,
-                  })
-                }
-              >
-                {fundTreasuryM.isPending ? "جارٍ التمويل…" : "تمويل الخزينة"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <FundTreasuryDialog
+        open={fundOpen}
+        onOpenChange={setFundOpen}
+        defaultBranchId={
+          branchId !== ""
+            ? Number(branchId)
+            : isManager && me.data?.branchId != null
+              ? Number(me.data.branchId)
+              : ""
+        }
+        isAdmin={isAdmin}
+        branches={branches.data ?? []}
+        onSuccess={refreshAll}
+      />
     </div>
   );
 }

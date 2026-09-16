@@ -392,6 +392,88 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
   });
 });
 
+describe("cancelSale — البطاقة رافدُ ردٍّ فوريّ (قرار المالك ١٧/٨/٢٦، مطابقٌ لـreturnService)", () => {
+  it("زبونٌ عابر (بلا عميل) مدفوعٌ بالبطاقة + مرجع جهاز صحيح ⇒ فوريّ، بلا اشتراط عميل", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payment: { amount: "2000.00", method: "CASH" },
+      },
+      manager, // زبونٌ عابر — بلا customerId
+    );
+    // إعادة وسم إيصال القبض بطاقةً — يحاكي فاتورة بطاقةٍ بلا فتح مسار قبضٍ خارجيّ حيّ (نمط returnRefundRails.test.ts).
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-1" })
+      .where(sql`${s.receipts.invoiceId}=${sale.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const res = await cancelSale(
+      { invoiceId: sale.invoiceId, refundPaymentMethod: "CARD", reference: "TERM-REFUND-501" },
+      admin,
+    );
+    expect(res.refundAmount).toBe("2000.00");
+    expect(res.pendingRefundAmount).toBe("0.00");
+
+    const outs = await db()
+      .select()
+      .from(s.receipts)
+      .where(sql`${s.receipts.invoiceId}=${sale.invoiceId} AND ${s.receipts.direction}='OUT'`);
+    expect(outs).toHaveLength(1);
+    expect(outs[0]!.status).toBe("COMPLETED");
+    expect(outs[0]!.approvalStatus).toBe("APPROVED");
+    expect(outs[0]!.cashBucket).toBeNull();
+    expect(outs[0]!.voucherNumber).toBeNull(); // لم يدخل طابور السندات المعلَّقة
+    expect(outs[0]!.referenceNumber).toBe("TERM-REFUND-501");
+
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    expect(inv.status).toBe("CANCELLED");
+    expect(Number(inv.paidAmount)).toBeCloseTo(0, 2);
+
+    // قيدُ PAYMENT_OUT فوريّ — لا الاكتفاء بـpendingRefundAmount كما كان قبل الإصلاح.
+    const payOuts = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(sql`${s.accountingEntries.invoiceId}=${sale.invoiceId} AND ${s.accountingEntries.entryType}='PAYMENT_OUT'`);
+    expect(payOuts).toHaveLength(1);
+    expect(Number(payOuts[0]!.amount)).toBeCloseTo(2000, 2);
+  });
+
+  it("البطاقة بلا مرجع جهاز ⇒ يُرفض قبل أي أثر", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        shiftId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payment: { amount: "2000.00", method: "CASH" },
+      },
+      manager,
+    );
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-1" })
+      .where(sql`${s.receipts.invoiceId}=${sale.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    await expect(
+      cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CARD" }, admin),
+    ).rejects.toThrow(/مرجع عملية الاسترداد/);
+
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    expect(inv.status).not.toBe("CANCELLED");
+    expect(await stockOf(1, 1)).toBe(8); // لم يُعَد — رفضٌ صفري الأثر
+    const outs = await db()
+      .select()
+      .from(s.receipts)
+      .where(sql`${s.receipts.invoiceId}=${sale.invoiceId} AND ${s.receipts.direction}='OUT'`);
+    expect(outs).toHaveLength(0);
+  });
+});
+
 describe("cancelSale — ثابت ٤: الحراس (رفض خارج الفترة/عبر الفرع/فاتورة ملغاة أو مرتجعة)", () => {
   it("خارج الفترة المفتوحة (assertPeriodOpen) ⇒ FORBIDDEN من postEntry، لا كتابات جانبية", async () => {
     await setStock(1, 1, 10);

@@ -13,13 +13,24 @@ export interface SupplierPickerProps {
   supplierId: number | null;
   onSupplierChange: (id: number | null) => void;
   label?: string;
+  /** مصدر البيانات: "suppliers" (افتراضي، بوّابة وحدة suppliers — نماذج السندات) أو "reports"
+   *  (بوّابة وحدة reports — شاشات التقارير مثل كشف حساب مورد). دورٌ يملك reports:READ فقط
+   *  (بلا suppliers:READ) يُحجَب 403 من suppliers.search/get رغم امتلاكه صلاحية الشاشة نفسها
+   *  (مراجعة Codex #966) — لذا الاختيار صريحٌ لا افتراضاً واحداً يخدم الحالتين خطأً. */
+  source?: "suppliers" | "reports";
 }
 
-export default function SupplierPicker({ supplierId, onSupplierChange, label = "المورّد *" }: SupplierPickerProps) {
-  const fetched = trpc.suppliers.get.useQuery(
+export default function SupplierPicker({ supplierId, onSupplierChange, label = "المورّد *", source = "suppliers" }: SupplierPickerProps) {
+  const getEnabled = supplierId != null;
+  const fetchedFromSuppliers = trpc.suppliers.get.useQuery(
     { supplierId: supplierId ?? 0 },
-    { enabled: supplierId != null, staleTime: 60_000 },
+    { enabled: getEnabled && source === "suppliers", staleTime: 60_000 },
   );
+  const fetchedFromReports = trpc.reports.supplierGet.useQuery(
+    { supplierId: supplierId ?? 0 },
+    { enabled: getEnabled && source === "reports", staleTime: 60_000 },
+  );
+  const fetched = source === "reports" ? fetchedFromReports : fetchedFromSuppliers;
 
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -34,11 +45,16 @@ export default function SupplierPicker({ supplierId, onSupplierChange, label = "
   }, []);
 
   const trimmed = q.trim();
-  const enabled = trimmed.length >= 2 && supplierId == null;
-  const summary = trpc.suppliers.search.useQuery(
+  const searchEnabled = trimmed.length >= 2 && supplierId == null;
+  const summaryFromSuppliers = trpc.suppliers.search.useQuery(
     { q: trimmed, limit: 8 },
-    { enabled, staleTime: 30_000 },
+    { enabled: searchEnabled && source === "suppliers", staleTime: 30_000 },
   );
+  const summaryFromReports = trpc.reports.supplierSearch.useQuery(
+    { q: trimmed, limit: 8 },
+    { enabled: searchEnabled && source === "reports", staleTime: 30_000 },
+  );
+  const summary = source === "reports" ? summaryFromReports : summaryFromSuppliers;
   const suggestions = summary.data?.rows ?? [];
 
   function pickSuggestion(id: number) {
@@ -87,7 +103,7 @@ export default function SupplierPicker({ supplierId, onSupplierChange, label = "
             aria-autocomplete="list"
             aria-expanded={open}
           />
-          {open && enabled && (
+          {open && searchEnabled && (
             <div className="absolute z-20 top-full mt-1 right-0 w-full rounded-md border bg-popover shadow-md max-h-72 overflow-auto">
               {summary.isLoading && <div className="px-3 py-2 text-sm text-muted-foreground">جارٍ البحث…</div>}
               {!summary.isLoading && suggestions.length === 0 && (

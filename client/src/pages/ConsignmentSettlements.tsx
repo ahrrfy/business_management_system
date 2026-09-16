@@ -5,14 +5,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TableEmptyRow } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+
 import { confirm } from "@/lib/confirm";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Printer } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
@@ -32,6 +33,9 @@ function ymd(d: Date): string {
  * تسويات الأمانة (ش٥) — لكل مودِع: المستحق + بضاعته المتبقية، وزرّ «تسوية» يُنشئ سند صرف **معلَّقاً**
  * (اعتماد ثنائيّ عبر طابور السندات القائم). راجع design §٩.
  */
+/** الخصائص المشتركة لجداول هذه الشاشة: كلٌّ داخل بطاقةٍ تحمل عنوانَه. */
+const PANEL_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
 export default function ConsignmentSettlements() {
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
@@ -178,67 +182,83 @@ export default function ConsignmentSettlements() {
       <Card>
         <CardHeader><CardTitle className="text-base">أرصدة المودِعين</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">المودِع</th><th className="p-2 text-start">المستحق له</th>
-                  <th className="p-2 text-center">بضاعة متبقية</th><th className="p-2 text-start">قيمتها (بالحصة)</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
+          <DataTable
+            {...PANEL_TABLE}
+            data={rows}
+            loading={balances.isLoading}
+            emptyText="لا مودِعين بعد."
+            columns={[
+              {
+                id: "consignor",
+                header: "المودِع",
+                meta: { width: "wide" },
+                cell: ({ row }) => (
+                  <Link href={`/suppliers/${row.original.consignorId}/edit`} className="font-medium hover:underline">
+                    {row.original.consignorName}
+                  </Link>
+                ),
+              },
+              { id: "owed", header: "المستحق له", meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.owed) },
+              {
+                id: "remaining",
+                header: "بضاعة متبقية",
+                meta: { align: "center" },
+                cell: ({ row }) => (
+                  <>
+                    {row.original.remainingQty}{" "}
+                    <span className="text-xs text-muted-foreground">({row.original.variantCount} منتج)</span>
+                  </>
+                ),
+              },
+              {
+                id: "remainingValue",
+                header: "قيمتها (بالحصة)",
+                meta: { kind: "money" },
+                cell: ({ row }) => <span className="text-muted-foreground">{fmt(row.original.remainingValueByShare)}</span>,
+              },
+              {
+                id: "actions",
+                header: "إجراء",
+                meta: { kind: "actions" },
+                cell: ({ row }) => {
+                  const r = row.original;
                   const owed = Number(r.owed);
                   return (
-                    <tr key={r.consignorId} className="border-t">
-                      <td className="p-2 font-medium">
-                        <Link href={`/suppliers/${r.consignorId}/edit`} className="hover:underline">{r.consignorName}</Link>
-                      </td>
-                      <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(r.owed)}</td>
-                      <td className="p-2 text-center">{r.remainingQty} <span className="text-xs text-muted-foreground">({r.variantCount} منتج)</span></td>
-                      <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(r.remainingValueByShare)}</td>
-                      <td className="p-2 text-center">
-                        <RowActions
-                          mode="menu"
-                          actions={[
-                            {
-                              key: "settle",
-                              kind: "pay",
-                              label: owed > 0 ? "تسوية" : "لا مستحق",
-                              disabled: owed <= 0 || settle.isPending || needsBranchChoice,
-                              disabledReason: needsBranchChoice
-                                ? "اختر الفرع أولاً من أعلى الصفحة"
-                                : owed <= 0 ? "لا يوجد مبلغ مستحق للتسوية" : "توجد عملية تسوية قيد التنفيذ",
-                              onSelect: () => void doSettle(r.consignorId, r.consignorName, r.owed),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-                            },
-                            {
-                              key: "settlement-statement",
-                              kind: "view",
-                              label: "كشف تسوية",
-                              onSelect: () => setStmtConsignor(r.consignorId),
-                              gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
-                            },
-                            {
-                              key: "supplier-statement",
-                              kind: "view",
-                              label: "كشف حساب",
-                              href: `/suppliers-statement?id=${r.consignorId}`,
-                              gate: { module: "suppliers", level: "READ" },
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
+                    <RowActions
+                      mode="menu"
+                      actions={[
+                        {
+                          key: "settle",
+                          kind: "pay",
+                          label: owed > 0 ? "تسوية" : "لا مستحق",
+                          disabled: owed <= 0 || settle.isPending || needsBranchChoice,
+                          disabledReason: needsBranchChoice
+                            ? "اختر الفرع أولاً من أعلى الصفحة"
+                            : owed <= 0 ? "لا يوجد مبلغ مستحق للتسوية" : "توجد عملية تسوية قيد التنفيذ",
+                          onSelect: () => void doSettle(r.consignorId, r.consignorName, r.owed),
+                          gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                        },
+                        {
+                          key: "settlement-statement",
+                          kind: "view",
+                          label: "كشف تسوية",
+                          onSelect: () => setStmtConsignor(r.consignorId),
+                          gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
+                        },
+                        {
+                          key: "supplier-statement",
+                          kind: "view",
+                          label: "كشف حساب",
+                          href: `/suppliers-statement?id=${r.consignorId}`,
+                          gate: { module: "suppliers", level: "READ" },
+                        },
+                      ]}
+                    />
                   );
-                })}
-                {!balances.isLoading && rows.length === 0 && (
-                  <TableEmptyRow colSpan={5} message="لا مودِعين بعد." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+                },
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -258,47 +278,61 @@ export default function ConsignmentSettlements() {
               <Input type="date" value={endDate} min={startDate} onChange={(e) => setEndDate(e.target.value)} className="w-40" />
             </label>
           </div>
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">المودِع</th>
-                  <th className="p-2 text-center">كمية مباعة</th>
-                  <th className="p-2 text-start">المُباع (صافي)</th>
-                  <th className="p-2 text-start">حصّة المودِع</th>
-                  <th className="p-2 text-start">هامش المكتبة</th>
-                  <th className="p-2 text-center">النسبة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {marginRows.map((r) => (
-                  <tr key={r.consignorId} className="border-t">
-                    <td className="p-2 font-medium">
-                      <Link href={`/suppliers/${r.consignorId}/edit`} className="hover:underline">{r.consignorName}</Link>
-                    </td>
-                    <td className="p-2 text-center tabular-nums">{r.soldQty}</td>
-                    <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(r.soldValue)}</td>
-                    <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(r.consignorShare)}</td>
-                    <td className="p-2 text-start tabular-nums font-semibold text-[var(--money-positive)]" dir="ltr">{fmt(r.libraryMargin)}</td>
-                    <td className="p-2 text-center tabular-nums text-muted-foreground" dir="ltr">{r.marginPct}٪</td>
-                  </tr>
-                ))}
-                {!margins.isLoading && marginRows.length === 0 && (
-                  <TableEmptyRow colSpan={6} message="لا مبيعات أمانة في هذه الفترة." />
-                )}
-                {marginTotals && marginRows.length > 0 && (
-                  <tr className="border-t-2 bg-muted/30 font-semibold">
-                    <td className="p-2">الإجمالي</td>
-                    <td className="p-2"></td>
-                    <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(marginTotals.soldValue)}</td>
-                    <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(marginTotals.consignorShare)}</td>
-                    <td className="p-2 text-start tabular-nums text-[var(--money-positive)]" dir="ltr">{fmt(marginTotals.libraryMargin)}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{marginTotals.marginPct}٪</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            {...PANEL_TABLE}
+            data={marginRows}
+            loading={margins.isLoading}
+            emptyText="لا مبيعات أمانة في هذه الفترة."
+            columns={[
+              {
+                id: "consignor",
+                header: "المودِع",
+                meta: { width: "wide" },
+                // صفّ الإجماليات يُرسَم في <tfoot> عبر `footer` — لا صفَّ يدويّاً في <tbody>
+                // (كان يُحسَب صفَّ بياناتٍ فيدخل الفرزَ والعدّ ويكذب على قارئه).
+                footer: () => (marginRows.length > 0 ? "الإجمالي" : null),
+                cell: ({ row }) => (
+                  <Link href={`/suppliers/${row.original.consignorId}/edit`} className="font-medium hover:underline">
+                    {row.original.consignorName}
+                  </Link>
+                ),
+              },
+              { id: "soldQty", header: "كمية مباعة", meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.soldQty },
+              {
+                id: "soldValue",
+                header: "المُباع (صافي)",
+                meta: { kind: "money" },
+                footer: () => (marginTotals && marginRows.length > 0 ? fmt(marginTotals.soldValue) : null),
+                cell: ({ row }) => fmt(row.original.soldValue),
+              },
+              {
+                id: "share",
+                header: "حصّة المودِع",
+                meta: { kind: "money" },
+                footer: () => (marginTotals && marginRows.length > 0 ? fmt(marginTotals.consignorShare) : null),
+                cell: ({ row }) => <span className="text-muted-foreground">{fmt(row.original.consignorShare)}</span>,
+              },
+              {
+                id: "margin",
+                header: "هامش المكتبة",
+                meta: { kind: "money" },
+                footer: () =>
+                  marginTotals && marginRows.length > 0 ? (
+                    <span className="text-[var(--money-positive)]">{fmt(marginTotals.libraryMargin)}</span>
+                  ) : null,
+                cell: ({ row }) => (
+                  <span className="font-semibold text-[var(--money-positive)]">{fmt(row.original.libraryMargin)}</span>
+                ),
+              },
+              {
+                id: "marginPct",
+                header: "النسبة",
+                meta: { kind: "number", align: "center" },
+                footer: () => (marginTotals && marginRows.length > 0 ? `${marginTotals.marginPct}٪` : null),
+                cell: ({ row }) => <span className="text-muted-foreground">{row.original.marginPct}٪</span>,
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -307,7 +341,7 @@ export default function ConsignmentSettlements() {
           <DialogHeader>
             <DialogTitle>كشف تسوية مودِع{statement.data ? ` — ${statement.data.consignorName}` : ""}</DialogTitle>
           </DialogHeader>
-          {statement.isLoading && <p className="text-sm text-muted-foreground py-6 text-center">جارٍ التحميل…</p>}
+          {statement.isLoading && <p className="text-sm text-muted-foreground py-6 text-center">{ACTION_LABELS.loading}</p>}
           {statement.data && (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-2">
@@ -324,28 +358,29 @@ export default function ConsignmentSettlements() {
               </div>
               <div>
                 <div className="text-sm font-medium mb-1">تفصيل المبيعات (صافي المرتجعات)</div>
-                <ScrollTableShell bordered>
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/50">
-                      <tr>
-                        <th className="p-2">المنتج</th><th className="p-2 text-center">كمية</th>
-                        <th className="p-2 text-start">مُباع</th><th className="p-2 text-start">حصّة</th><th className="p-2 text-start">هامش</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {statement.data.lines.map((l) => (
-                        <tr key={l.variantId} className="border-t">
-                          <td className="p-2">{l.productName} <span className="text-xs text-muted-foreground">{l.sku}</span></td>
-                          <td className="p-2 text-center tabular-nums">{l.soldQty}</td>
-                          <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(l.soldValue)}</td>
-                          <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(l.share)}</td>
-                          <td className="p-2 text-start tabular-nums text-[var(--money-positive)]" dir="ltr">{fmt(l.margin)}</td>
-                        </tr>
-                      ))}
-                      {statement.data.lines.length === 0 && <TableEmptyRow colSpan={5} message="لا مبيعات في هذه الفترة." />}
-                    </tbody>
-                  </table>
-                </ScrollTableShell>
+                <DataTable
+                  {...PANEL_TABLE}
+                  bounded
+                  maxHeightClass="max-h-72"
+                  data={statement.data.lines}
+                  emptyText="لا مبيعات في هذه الفترة."
+                  columns={[
+                    {
+                      id: "product",
+                      header: "المنتج",
+                      meta: { width: "wide" },
+                      cell: ({ row }) => (
+                        <>
+                          {row.original.productName} <span className="text-xs text-muted-foreground">{row.original.sku}</span>
+                        </>
+                      ),
+                    },
+                    { id: "qty", header: "كمية", meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.soldQty },
+                    { id: "sold", header: "مُباع", meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.soldValue) },
+                    { id: "share", header: "حصّة", meta: { kind: "money" }, cell: ({ row }) => <span className="text-muted-foreground">{fmt(row.original.share)}</span> },
+                    { id: "margin", header: "هامش", meta: { kind: "money" }, cell: ({ row }) => <span className="text-[var(--money-positive)]">{fmt(row.original.margin)}</span> },
+                  ]}
+                />
               </div>
               <div className="flex items-center gap-6 text-sm border-t pt-3">
                 <span>البضاعة المتبقية لدى المكتبة: <b className="tabular-nums">{statement.data.remaining.qty}</b> قطعة</span>

@@ -8,14 +8,16 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { FilterField } from "@/components/list/FilterField";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
+import { DataTable } from "@/components/data-table/DataTable";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TableEmptyRow, TableSkeleton } from "@/components/PageState";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { cn } from "@/lib/utils";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -83,8 +85,53 @@ export default function ConsignmentNotes() {
   );
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE));
   const activeFilterCount = [f.type, f.consignor, isElevated ? f.branch : "", f.from, f.to].filter(Boolean).length;
+
+  // أعمدة السندات — داخل المكوّن لأنّ عمود الطباعة يستدعي `printFromNote` (تصريح دالّة مرفوع).
+  const noteColumns = useMemo<ColumnDef<NoteRow, unknown>[]>(
+    () => [
+      { id: "noteNumber", header: "الرقم", accessorFn: (n) => n.noteNumber, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.noteNumber },
+      {
+        id: "noteType",
+        header: "النوع",
+        // التسمية العربية لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+        accessorFn: (n) => TYPE_META[n.noteType as NoteType]?.label ?? n.noteType,
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", TYPE_META[row.original.noteType as NoteType].cls)}>
+            {TYPE_META[row.original.noteType as NoteType].label}
+          </span>
+        ),
+      },
+      { id: "consignorName", header: "المودِع", accessorFn: (n) => n.consignorName ?? "", meta: { width: "wide" }, cell: ({ row }) => row.original.consignorName },
+      {
+        id: "hasAttachment",
+        header: "مرفق",
+        accessorFn: (n) => (n.hasAttachment ? "نعم" : "لا"),
+        meta: { align: "center", width: "status" },
+        cell: ({ row }) => (row.original.hasAttachment ? <Paperclip aria-hidden className="size-3.5 inline text-[var(--sem-pos)]" /> : null),
+      },
+      {
+        id: "createdAt",
+        header: "التاريخ",
+        accessorFn: (n) => new Date(n.createdAt).toLocaleDateString("en-GB"),
+        meta: { kind: "date" },
+        cell: ({ row }) => new Date(row.original.createdAt).toLocaleDateString("en-GB"),
+      },
+      {
+        id: "print",
+        header: "طباعة",
+        enableSorting: false,
+        meta: { kind: "actions" },
+        cell: ({ row }) => (
+          <Button size="sm" variant="ghost" onClick={() => printFromNote(row.original.id)} title="طباعة السند">
+            <Printer aria-hidden className="size-4" />
+          </Button>
+        ),
+      },
+    ],
+    [],
+  );
 
   const exportColumns: ExportColumn<NoteRow>[] = [
     { key: "noteNumber", header: "رقم السند" },
@@ -192,56 +239,23 @@ export default function ConsignmentNotes() {
               }
             />
 
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">الرقم</th><th className="p-2">النوع</th><th className="p-2">المودِع</th>
-                    <th className="p-2">مرفق</th><th className="p-2">التاريخ</th><th className="p-2 text-center">طباعة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.isLoading && <TableSkeleton rows={6} cols={6} />}
-                  {!list.isLoading && rows.map((n) => (
-                    <tr key={n.id} className="border-t">
-                      <td className="p-2 font-mono text-xs" dir="ltr">{n.noteNumber}</td>
-                      <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", TYPE_META[n.noteType as NoteType].cls)}>{TYPE_META[n.noteType as NoteType].label}</span></td>
-                      <td className="p-2">{n.consignorName}</td>
-                      <td className="p-2 text-xs text-muted-foreground">{n.hasAttachment ? <Paperclip aria-hidden className="size-3.5 inline text-[var(--sem-pos)]" /> : null}</td>
-                      <td className="p-2 text-xs" dir="ltr">{new Date(n.createdAt).toLocaleDateString("en-GB")}</td>
-                      <td className="p-2 text-center">
-                        <Button size="sm" variant="ghost" onClick={() => printFromNote(n.id)} title="طباعة السند">
-                          <Printer aria-hidden className="size-4" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                  {!list.isLoading && rows.length === 0 && (
-                    <TableEmptyRow
-                      colSpan={6}
-                      message={activeFilterCount > 0 || f.q ? "لا سندات مطابقة للفلاتر." : "لا سندات بعد. أنشئ سند إيداع لأول مودِع."}
-                    />
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-
-            {/* ترقيم فعلي — السندات مستندات موقَّعة، اختفاؤها بعد حدّ الصفحة الصامت خطر حقيقي. */}
-            {total > PAGE && (
-              <div className="flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
-                <span>
-                  الصفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")} من {totalPages.toLocaleString("ar-IQ-u-nu-latn")} — {total.toLocaleString("ar-IQ-u-nu-latn")} سند
-                </span>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" disabled={page === 0 || list.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                    السابق
-                  </Button>
-                  <Button variant="outline" size="sm" disabled={page + 1 >= totalPages || list.isFetching} onClick={() => setPage((p) => p + 1)}>
-                    التالي
-                  </Button>
-                </div>
-              </div>
-            )}
+            {/*
+              * ترقيم خادميّ داخل الجدول — السندات مستندات موقَّعة، اختفاؤها بعد حدّ الصفحة
+              * الصامت خطر حقيقي. وشريط الترقيم صار من `DataTable` وحده (شريطان يقفزان
+              * بمقدارَين مختلفَين يُخفيان صفوفاً بصمت).
+              * البحث والفلاتر في `ListToolbar` أعلاه ⇒ `searchable={false}` بلا حقلَي بحث متجاورَين.
+              */}
+            <DataTable<NoteRow>
+              columns={noteColumns}
+              data={rows}
+              searchable={false}
+              externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
+              loading={list.isLoading}
+              errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => list.refetch() }}
+              serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, total, isFetching: list.isFetching }}
+              emptyState="لا سندات بعد. أنشئ سند إيداع لأول مودِع."
+              emptyFilteredState="لا سندات مطابقة للفلاتر."
+            />
           </CardContent>
         </Card>
       )}
@@ -435,22 +449,30 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
               ))}
               {(products.data?.length ?? 0) === 0 && <p className="text-xs text-muted-foreground">لا منتجات لهذا المودِع بعد — أضِف منتج أمانة من المنتجات باسمه.</p>}
             </div>
-            {/* أسطر السند */}
+            {/* أسطر السند — شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل حقلَ
+                الكمية وزرَّ حذف السطر يكتبان في حالة `lines` المحلّية قبل الحفظ؛ `DataTable`
+                أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. لكنّ قشرتها مشتركة: `ScrollTableShell`
+                تحبس الأسطر بارتفاعٍ مقيَّد بترويسةٍ لاصقة، فلا يدفع سندٌ طويل شريطَ الحفظ
+                خارج الشاشة ولا تغيب أسماء الأعمدة عند إدخال الكميات. `bordered=false` لأنّ
+                البطاقة تُؤطّرها أصلاً (ولا حدَّ في الأصل)، و`showColumnVisibility` معطَّل:
+                الأعمدة الأربعة اتجاهٌ ومنتجٌ وكميةٌ وحذف — لا معنى لإخفاء أيٍّ منها. */}
             {lines.length > 0 && (
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">المنتج</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
-                <tbody>
-                  {lines.map((l) => (
-                    <tr key={l.key} className="border-t">
-                      <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", l.direction === "IN" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]")}>{l.direction === "IN" ? "إيداع" : "سحب"}</span></td>
-                      <td className="p-2">{l.label}</td>
-                      {/* المخزون بالوحدة الأساس عدد صحيح (§٥) — يُرفَض إدخال كسور من الأصل. */}
-                      <td className="p-2 w-28"><Input dir="ltr" inputMode="numeric" value={l.quantity} onChange={(e) => setLines((ls) => ls.map((x) => x.key === l.key ? { ...x, quantity: e.target.value.replace(/[^\d]/g, "") } : x))} className="h-8" /></td>
-                      <td className="p-2"><button type="button" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} aria-label="حذف"><X aria-hidden className="size-4 text-muted-foreground hover:text-destructive" /></button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ScrollTableShell bordered={false} showColumnVisibility={false}>
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">المنتج</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
+                  <tbody>
+                    {lines.map((l) => (
+                      <tr key={l.key} className="border-t">
+                        <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", l.direction === "IN" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]")}>{l.direction === "IN" ? "إيداع" : "سحب"}</span></td>
+                        <td className="p-2">{l.label}</td>
+                        {/* المخزون بالوحدة الأساس عدد صحيح (§٥) — يُرفَض إدخال كسور من الأصل. */}
+                        <td className="p-2 w-28"><Input dir="ltr" inputMode="numeric" value={l.quantity} onChange={(e) => setLines((ls) => ls.map((x) => x.key === l.key ? { ...x, quantity: e.target.value.replace(/[^\d]/g, "") } : x))} className="h-8" /></td>
+                        <td className="p-2"><button type="button" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} aria-label="حذف"><X aria-hidden className="size-4 text-muted-foreground hover:text-destructive" /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </ScrollTableShell>
             )}
           </CardContent>
         </Card>
@@ -475,7 +497,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
 
       <div className="sticky bottom-0 z-10 flex items-center gap-2 border-t bg-background/95 py-3 backdrop-blur">
         <Button onClick={submit} disabled={create.isPending || !consignorId || !lines.length}>
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ السند"}
+          {create.isPending ? ACTION_LABELS.saving : "حفظ السند"}
         </Button>
         <Button variant="outline" onClick={onSaved}>إلغاء</Button>
       </div>

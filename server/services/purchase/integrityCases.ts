@@ -17,6 +17,10 @@ import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { assertIndependentPurchaseReviewer } from "./returnGovernance";
+import { purchaseIntegrityResolutionTrigger } from "@shared/approvalTriggers";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
+import { payloadHashMatches } from "../idempotency";
 
 export type IntegrityCode = typeof purchaseIntegrityCases.$inferInsert["code"];
 export type IntegritySeverity = typeof purchaseIntegrityCases.$inferInsert["severity"];
@@ -116,7 +120,7 @@ export async function openPurchaseIntegrityCase(input: OpenPurchaseIntegrityCase
 export async function requestPurchaseIntegrityResolution(input: RequestIntegrityResolutionInput, actor: Actor) {
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120); const reason = required(input.reason, "سبب الحل", 1000); const evidenceReference = required(input.evidenceReference, "مرجع دليل الحل", 500);
   const canonical = stableCanonical({ caseId: input.caseId, reason, evidenceReference }); const hash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const row = (await tx.select().from(purchaseIntegrityCases).where(eq(purchaseIntegrityCases.id, input.caseId)).for("update").limit(1))[0];
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "قضية النزاهة غير موجودة" }); assertPurchaseBranch(row, actor);
     if (row.status === "PENDING_RESOLUTION" && row.resolutionRequestKey === requestKey && row.resolutionRequestHash === hash) return { caseId: input.caseId, status: row.status, idempotent: true as const };
@@ -126,17 +130,26 @@ export async function requestPurchaseIntegrityResolution(input: RequestIntegrity
     await appendEvent(tx, { eventKey: `RESOLUTION-REQUEST:${requestKey}`, caseId: input.caseId, branchId: Number(row.branchId), eventType: "RESOLUTION_REQUESTED", previousStatus, newStatus: "PENDING_RESOLUTION", payload: { requestKey, hash, evidenceReference }, evidenceReference, reason, actorId: actor.userId });
     return { caseId: input.caseId, status: "PENDING_RESOLUTION" as const, idempotent: false as const };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.integrity.resolution",
+    id: result.caseId,
+    reason,
+    variant: "APPROVE_RESOLVED",
+  });
+  return approved ? { ...result, status: "RESOLVED" as const } : result;
 }
 
 export async function decidePurchaseIntegrityResolution(input: DecideIntegrityResolutionInput, actor: Actor) {
   const decisionKey = required(input.decisionKey, "مفتاح القرار", 120); const reason = required(input.reason, "سبب القرار", 1000); const canonical = stableCanonical({ caseId: input.caseId, decision: input.decision, reason }); const hash = sha256(canonical);
   return withTx(async (tx) => {
     const priorEvent = (await tx.select().from(purchaseIntegrityCaseEvents).where(eq(purchaseIntegrityCaseEvents.eventKey, `RESOLUTION-DECISION:${decisionKey}`)).limit(1))[0];
-    if (priorEvent) { if (priorEvent.payloadHash !== hash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح القرار مستعمل بقرار مختلف" }); assertPurchaseBranch(priorEvent, actor); return { caseId: input.caseId, status: priorEvent.newStatus, idempotent: true as const }; }
+    if (priorEvent) { if (!payloadHashMatches(hash, priorEvent.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح القرار مستعمل بقرار مختلف" }); assertPurchaseBranch(priorEvent, actor); return { caseId: input.caseId, status: priorEvent.newStatus, idempotent: true as const }; }
     const row = (await tx.select().from(purchaseIntegrityCases).where(eq(purchaseIntegrityCases.id, input.caseId)).for("update").limit(1))[0];
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "قضية النزاهة غير موجودة" }); assertPurchaseBranch(row, actor);
     if (row.status !== "PENDING_RESOLUTION" || row.resolutionRequestedBy == null) throw new TRPCError({ code: "CONFLICT", message: "لا يوجد طلب حل معلّق" });
-    assertIndependentPurchaseReviewer(Number(row.resolutionRequestedBy), actor.userId);
+    // حلُّ قضية السلامة لا مالَ فيه ولا محو: حالةٌ وحقولُ قرارٍ + حدثُ تدقيق، والمُفرَّغ
+    // عند الرفض محفوظٌ في حدث RESOLUTION_REQUESTED فلا يضيع. ⇒ لا بوّابة.
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseIntegrityResolutionTrigger(), subject: `قضية سلامة ${row.caseKey}`, legacy: () => assertIndependentPurchaseReviewer(Number(row.resolutionRequestedBy), actor.userId) });
     if (input.decision === "REJECT") {
       await tx.update(purchaseIntegrityCases).set({ status: "IN_REVIEW", resolutionRequestKey: null, resolutionRequestHash: null, resolutionRequestedBy: null, resolutionRequestedAt: null, resolutionReason: null, resolutionEvidenceReference: null, pendingResolutionGuard: null }).where(eq(purchaseIntegrityCases.id, input.caseId));
       await appendEvent(tx, { eventKey: `RESOLUTION-DECISION:${decisionKey}`, caseId: input.caseId, branchId: Number(row.branchId), eventType: "RESOLUTION_REJECTED", previousStatus: "PENDING_RESOLUTION", newStatus: "IN_REVIEW", payload: { caseId: input.caseId, decision: input.decision, reason }, reason, actorId: actor.userId, counterpartyActorId: Number(row.resolutionRequestedBy) });
@@ -149,11 +162,15 @@ export async function decidePurchaseIntegrityResolution(input: DecideIntegrityRe
   });
 }
 
-export async function listPurchaseIntegrityCases(input: { branchId: number; status?: typeof purchaseIntegrityCases.$inferSelect["status"]; severity?: IntegritySeverity; limit?: number }, actor: Actor) {
+/** `order: "ASC"` = الأقدم اكتشافاً أوّلاً (صندوق القرارات) — القصّ بالأحدث يُسقط أكثر القضايا تأخّراً. */
+export async function listPurchaseIntegrityCases(input: { branchId: number; status?: typeof purchaseIntegrityCases.$inferSelect["status"]; severity?: IntegritySeverity; limit?: number; order?: "ASC" | "DESC" }, actor: Actor) {
   assertPurchaseBranch({ branchId: input.branchId }, actor);
   return withTx(async (tx) => {
     const filters = [eq(purchaseIntegrityCases.branchId, input.branchId)]; if (input.status) filters.push(eq(purchaseIntegrityCases.status, input.status)); if (input.severity) filters.push(eq(purchaseIntegrityCases.severity, input.severity));
-    return tx.select().from(purchaseIntegrityCases).where(and(...filters)).orderBy(desc(purchaseIntegrityCases.detectedAt), desc(purchaseIntegrityCases.id)).limit(Math.min(input.limit ?? 100, 200));
+    const ordering = input.order === "ASC"
+      ? [asc(purchaseIntegrityCases.detectedAt), asc(purchaseIntegrityCases.id)]
+      : [desc(purchaseIntegrityCases.detectedAt), desc(purchaseIntegrityCases.id)];
+    return tx.select().from(purchaseIntegrityCases).where(and(...filters)).orderBy(...ordering).limit(Math.min(input.limit ?? 100, 200));
   }, { gate: "NONE" });
 }
 

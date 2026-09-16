@@ -21,7 +21,11 @@ import {
   decidePurchaseOrderControl,
   submitPurchaseOrderForApproval,
 } from "../purchase/controls";
-import { createGoodsReceipt } from "../purchase/goodsReceipts";
+import {
+  createGoodsReceipt,
+  decideGoodsReceiptReversal,
+  requestGoodsReceiptReversal,
+} from "../purchase/goodsReceipts";
 import {
   createSupplierInvoice,
   decideSupplierInvoiceApproval,
@@ -58,7 +62,9 @@ const TABLES = [
   "voucherCategories", "journalLines", "journalEntries",
   "purchaseReturnItems", "purchaseReturns", "purchaseReturnRequestItems", "purchaseReturnRequests",
   "supplierInvoiceApprovalRequests", "supplierInvoiceMatchAllocations", "supplierInvoiceMatchRuns",
-  "supplierInvoiceLines", "supplierInvoices", "goodsReceiptAccountingLinks", "goodsReceiptItems", "goodsReceipts",
+  "supplierInvoiceLines", "supplierInvoices",
+  "goodsReceiptReversalItems", "goodsReceiptReversals", "goodsReceiptReversalRequestItems", "goodsReceiptReversalRequests",
+  "goodsReceiptAccountingLinks", "goodsReceiptItems", "goodsReceipts",
   "externalPaymentAttempts",
   "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations", "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "workOrderEvents", "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks", "serviceTypes",
@@ -140,7 +146,7 @@ async function createApprovedPurchaseOrder(unitPrice: string) {
     decisionKey: `hardening2-po-approve:${randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
-  }, owner);
+  }, owner, { legacyConfirmOnly: true });
   return po;
 }
 
@@ -411,7 +417,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
     expect(unconsumed.consumedAt).toBeNull();
   });
 
-  it("purchases.receive مغلق وgoodsReceipts.create يعيد نفس الاستلام لنفس clientRequestId", async () => {
+  it("purchases.receive وgoodsReceipts.create محذوفان ولا ينشئان استلاماً منفصلاً", async () => {
     await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     const po = await createApprovedPurchaseOrder("5.00");
     const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
@@ -419,7 +425,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
       purchaseOrderId: po.purchaseOrderId,
       lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 5 }],
       clientRequestId: "legacy-recv-key-1",
-    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    })).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     const [approvedOrder] = await db().select().from(s.purchaseOrders)
       .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
@@ -430,19 +436,17 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
       lines: [{ purchaseOrderItemId: Number(poItem.id), acceptedBaseQuantity: 5 }],
       clientRequestId: "recv-key-1",
     };
-    const first = await warehouseCaller().goodsReceipts.create(input);
-    const replay = await warehouseCaller().goodsReceipts.create(input);
-    expect(Number(replay.id)).toBe(first.goodsReceiptId);
-    expect(replay.idempotentReplay).toBe(true);
-    expect(await db().select().from(s.goodsReceipts)).toHaveLength(1);
-    expect(await db().select().from(s.goodsReceiptItems)).toHaveLength(1);
+    await expect(warehouseCaller().goodsReceipts.create(input))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await db().select().from(s.goodsReceipts)).toHaveLength(0);
+    expect(await db().select().from(s.goodsReceiptItems)).toHaveLength(0);
     expect((await db().select().from(s.inventoryMovements)).filter((m) => m.movementType === "IN",
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect((await db().select().from(s.accountingEntries)).filter((e) =>
-      e.entryType === "ADJUST" && e.dedupeKey === `GRNI:RECEIPT:${first.goodsReceiptId}`,
+      e.entryType === "ADJUST" && e.dedupeKey?.startsWith("GRNI:RECEIPT:"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(sup.currentBalance).toBe("0.00"); // GRNI لا ينشئ AP قبل فاتورة المورد.
   });
@@ -713,5 +717,67 @@ describe("#6 تدقيق تطابق ذمم الموردين (AP)", () => {
     const issues = await reconcileSupplierBalances();
     expect(issues).toHaveLength(1);
     expect(issues[0].entity).toBe("supplier");
+  });
+});
+
+describe("#7 قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — توسيعُ حوكمة المشتريات", () => {
+  it("عكس استلام البضاعة: المالك يطلب ويعتمد عكس استلامٍ أنشأه هو بنفسه بلا فصل مهام", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    const po = await createApprovedPurchaseOrder("5.00");
+    const [approvedOrder] = await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const [poItem] = await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId));
+    if (!approvedOrder?.approvedRevisionId || !poItem) throw new Error("approved purchase-order source is incomplete");
+
+    const receipt = await createGoodsReceipt({
+      purchaseOrderId: po.purchaseOrderId,
+      purchaseOrderRevisionId: Number(approvedOrder.approvedRevisionId),
+      expectedOrderVersion: Number(approvedOrder.version),
+      clientRequestId: `hardening2-grn-self-approval:${randomUUID()}`,
+      supplierDeliveryNote: `DN-${randomUUID()}`,
+      lines: [{ purchaseOrderItemId: Number(poItem.id), acceptedBaseQuantity: 10 }],
+    }, warehouse);
+    const [receiptItem] = await db().select().from(s.goodsReceiptItems)
+      .where(eq(s.goodsReceiptItems.goodsReceiptId, Number(receipt.goodsReceiptId)));
+    if (!receiptItem) throw new Error("goods-receipt item missing");
+    const [receiptRow] = await db().select().from(s.goodsReceipts)
+      .where(eq(s.goodsReceipts.id, Number(receipt.goodsReceiptId)));
+    if (!receiptRow) throw new Error("goods-receipt row missing");
+
+    // المالك (id=2) يطلب عكس استلامٍ ثمّ يعتمد طلبه هو نفسه — كان هذا يُرفض بـFORBIDDEN
+    // (فصل المهام) قبل توسيع قرار ٣/٩/٢٦ إلى هذا المسار (purchase/goodsReceipts.ts).
+    const requested = await requestGoodsReceiptReversal({
+      goodsReceiptId: Number(receipt.goodsReceiptId),
+      expectedReceiptVersion: Number(receiptRow.version),
+      requestKey: `hardening2-grn-reversal-request:${randomUUID()}`,
+      reason: "عيّنةٌ اختباريةٌ للتحقّق من اعتماد المالك عكس استلامه هو نفسه",
+      lines: [{ goodsReceiptItemId: Number(receiptItem.id), baseQuantity: 10 }],
+    }, owner);
+    expect(requested.status).toBe("APPROVED");
+
+    const [reversedReceipt] = await db().select().from(s.goodsReceipts)
+      .where(eq(s.goodsReceipts.id, Number(receipt.goodsReceiptId)));
+    expect(reversedReceipt?.status).toBe("REVERSED");
+  });
+
+  it("عكس فاتورة المورّد: المالك يطلب ويعتمد عكس فاتورةٍ رحّلها هو بنفسه بلا فصل مهام", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    const source = await createGovernedPurchaseReturnSource("5.00");
+
+    // المالك (id=2) يطلب عكس الفاتورة المرحَّلة ثمّ يعتمد طلبه هو نفسه — كان هذا يُرفض
+    // بـFORBIDDEN (فصل المهام) قبل توسيع قرار ٣/٩/٢٦ إلى هذا المسار (purchase/supplierInvoices.ts).
+    const requested = await requestSupplierInvoiceApproval({
+      supplierInvoiceId: source.supplierInvoiceId,
+      expectedInvoiceVersion: source.supplierInvoiceVersion,
+      requestKey: `hardening2-invoice-reversal-request:${randomUUID()}`,
+      kind: "REVERSE_INVOICE",
+      reason: "عيّنةٌ اختباريةٌ للتحقّق من اعتماد المالك عكس فاتورةٍ رحّلها هو نفسه",
+      evidenceType: "OTHER",
+      evidenceReference: "دليل عكسٍ اختباريّ",
+    }, owner);
+    expect(requested.status).toBe("APPROVED");
+
+    const [reversedInvoice] = await db().select().from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, source.supplierInvoiceId));
+    expect(reversedInvoice?.status).toBe("REVERSED");
   });
 });

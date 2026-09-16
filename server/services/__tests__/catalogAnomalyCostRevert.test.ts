@@ -1,8 +1,9 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, like, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { revertCatalogCostChange } from "../catalogAnomalies/revertCostChange";
+import { money } from "../money";
 import { truncateTables } from "./__testUtils__";
 
 const TABLES = [
@@ -91,22 +92,61 @@ beforeEach(async () => {
 });
 
 describe("catalogAnomalies.revertChange — لا منفذ جانبيّ لـcostPrice", () => {
-  it("يرفض الاستعادة المباشرة عند وجود مخزون ويُرجع كل الآثار", async () => {
+  it("يستعيد التكلفة ذات المخزون ويُرحّل فرق القيمة بقيد إعادة تقييم", async () => {
     const logId = await seed(10);
 
-    await expect(revertCatalogCostChange(logId, actor)).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-    });
+    await expect(revertCatalogCostChange(logId, actor)).resolves.toEqual({ ok: true });
 
-    expect(await cost()).toBe("200.00");
-    expect(await reverted(logId)).toBe(0);
+    expect(await cost()).toBe("100.00");
+    expect(await reverted(logId)).toBe(1);
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(and(
+        eq(s.accountingEntries.entryType, "ADJUST"),
+        like(s.accountingEntries.dedupeKey, `COST_REVAL:ANOMALY_REVERT:${logId}:%`),
+      ));
+    expect(entries).toHaveLength(1);
+    expect(Number(entries[0].branchId)).toBe(1);
+    expect(money(entries[0].profit ?? 0).toFixed(2)).toBe("-1000.00");
+    expect(money(entries[0].cost ?? 0).toFixed(2)).toBe("1000.00");
+    expect(money(entries[0].amount ?? 0).toFixed(2)).toBe("0.00");
+    expect(
+      await db()
+        .select()
+        .from(s.auditLogs)
+        .where(eq(s.auditLogs.action, "catalogAnomaly.revertCostChange")),
+    ).toHaveLength(1);
     expect(
       await db()
         .select()
         .from(s.auditLogs)
         .where(eq(s.auditLogs.action, "product.costChange")),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
+    const reverseLogs = await db().execute(sql`
+      SELECT id FROM priceAnomalyLog
+      WHERE variantId = 1 AND oldValue = 200 AND newValue = 100
+    `);
+    expect((reverseLogs as unknown as [unknown[], unknown])[0]).toHaveLength(1);
+  });
+
+  it("قفل الفترة يُرجع التكلفة والقيد وحالة الشذوذ والتدقيق معاً", async () => {
+    const logId = await seed(10);
+    const today = new Date().toISOString().slice(0, 10);
+    await db().insert(s.financialPeriods).values({
+      cutoffDate: today,
+      lockedBy: actor.userId,
+      status: "LOCKED",
+    });
+
+    await expect(revertCatalogCostChange(logId, actor)).rejects.toThrow(/الفترة المالية مُقفَلة/);
+
+    expect(await cost()).toBe("200.00");
+    expect(await reverted(logId)).toBe(0);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.auditLogs)).toHaveLength(0);
+    const logs = await db().execute(sql`SELECT id FROM priceAnomalyLog WHERE variantId = 1`);
+    expect((logs as unknown as [unknown[], unknown])[0]).toHaveLength(1);
   });
 
   it("يستعيد تكلفة صنف صفريّ الرصيد مع تدقيق قبل/بعد داخل المعاملة", async () => {

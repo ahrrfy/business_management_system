@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { INVOICE_STATUSES } from "@shared/invoiceStatus";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
@@ -18,6 +19,7 @@ import {
   getTopProducts,
   getWIPReport,
 } from "../services/reportsService";
+import { getTodaySalesComposition } from "../services/reports/todaySales";
 import {
   getFinancialReconciliationDetails,
   toFinancialReconciliationSummary,
@@ -54,6 +56,8 @@ import {
 } from "../services/reportsInventoryAnalyticsService";
 import {
   getTreasurySummary,
+  getTreasuryStatement,
+  getTreasuryStatementExport,
   getExpensesReport,
   getCashOrphansReport,
 } from "../services/reportsTreasuryService";
@@ -380,6 +384,44 @@ export const reportsRouter = router({
       .orderBy(asc(suppliers.name));
   }),
 
+  /** بحث موردين لمنتقي كشف الحساب (SupplierPicker) تحت بوّابة reports — لا suppliers.
+   *  مراجعة Codex على #966: دورٌ يملك reports:READ فقط (بلا suppliers:READ) كان يفتح شاشة
+   *  الكشف نفسها لكن يُحجَب 403 عن اختيار مورد لأنّ SupplierPicker كان يستدعي suppliers.search
+   *  المحصور بوحدة suppliers. currentBalance غير مُقنَّع هنا عمداً — نفس ما تُرجعه
+   *  supplierStatement أعلاه بلا قناع، تحت نفس البوّابة بالضبط. */
+  supplierSearch: reportsProcedure
+    .input(z.object({ q: z.string().max(200).optional(), limit: z.number().int().positive().max(50).default(8) }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return { rows: [] };
+      const q = input.q?.trim();
+      if (!q) return { rows: [] };
+      const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+      const rows = await db
+        .select({ id: suppliers.id, name: suppliers.name, phone: suppliers.phone, currentBalance: suppliers.currentBalance })
+        .from(suppliers)
+        .where(and(eq(suppliers.isActive, true), or(sql`${suppliers.name} LIKE ${like}`, sql`${suppliers.phone} LIKE ${like}`)))
+        .orderBy(asc(suppliers.name))
+        .limit(input.limit);
+      return { rows };
+    }),
+
+  /** مورّدٌ واحد لمنتقي كشف الحساب — مرآة supplierSearch أعلاه، لعرض الاسم/الرصيد بعد الاختيار. */
+  supplierGet: reportsProcedure
+    .input(z.object({ supplierId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return null;
+      const row = (
+        await db
+          .select({ id: suppliers.id, name: suppliers.name, phone: suppliers.phone, currentBalance: suppliers.currentBalance })
+          .from(suppliers)
+          .where(eq(suppliers.id, input.supplierId))
+          .limit(1)
+      )[0];
+      return row ?? null;
+    }),
+
   /**
    * تقرير المبيعات التفصيلي — نطاق زمني اختياري + فلاتر.
    * يُعيد قائمة الفواتير مع ملخّص الإجماليات في النهاية.
@@ -534,7 +576,13 @@ export const reportsRouter = router({
             cnt: sql<number>`COUNT(*)`,
             total: sql<string>`CAST(COALESCE(SUM(${invoices.total}), 0) AS CHAR)`,
             paid: sql<string>`CAST(COALESCE(SUM(${invoices.paidAmount}), 0) AS CHAR)`,
-            unpaid: sql<string>`CAST(COALESCE(SUM(GREATEST(${invoices.total} - ${invoices.paidAmount} - ${invoices.returnedTotal}, 0)), 0) AS CHAR)`,
+            // «غير المدفوع» سؤالٌ تحصيليّ ⇒ وضع `COLLECTIBLE` (مقصوصٌ بـ`GREATEST`) — نفسُ
+            // الشكل القائم حرفياً، والقصُّ هو ما يمنع فاتورةً دُفِع فيها زائداً من أن تُنقص
+            // ذمّةَ فاتورةٍ أخرى في نفس المجموع.
+            // ⚠️ فلترُ الحالة يبقى عقدَ التقرير نفسَه (`statuses` من المستعمِل، وإلّا استبعادُ
+            // `SUPERSEDED` وحدها مرآةً لـ`sales.listSummary`) لا مجموعةَ المسند — مقصودٌ:
+            // المستعمِل يختار حالاتِه، والمُوحَّد هنا الحسابُ لا الفلتر.
+            unpaid: sql<string>`CAST(COALESCE(SUM(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0) AS CHAR)`,
           })
           .from(invoices)
           .where(filterWhere)
@@ -1026,6 +1074,52 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getTreasurySummary({ from: input.from, to: input.to, branchId });
+    }),
+
+  /** كشف حركة الخزينة النقدية — رصيدٌ جارٍ يشرح كل داخل/خارج؛ الرصيد الختاميّ ≡ رصيد الخزينة. manager + عزل الفرع. */
+  treasuryStatement: reportsBranchScoped
+    .input(
+      z.object({
+        from: ymdStr,
+        to: ymdStr,
+        branchId: z.number().int().positive().optional(),
+        limit: z.number().int().min(1).max(5000).optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getTreasuryStatement({
+        from: input.from,
+        to: input.to,
+        branchId,
+        limit: input.limit,
+      });
+    }),
+
+  /** تصدير كشف الخزينة كاملاً — مسار مستقلّ بلا حدّ العرض، من لقطة ذرّية واحدة. */
+  treasuryStatementExport: reportsBranchScoped
+    .input(
+      z.object({
+        from: ymdStr,
+        to: ymdStr,
+        branchId: z.number().int().positive().optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getTreasuryStatementExport({
+        from: input.from,
+        to: input.to,
+        branchId,
+      });
+    }),
+
+  /** تركيب مبيعات اليوم (نقد/غير نقد/آجل) — جسر «لماذا لا تساوي المبيعاتُ النقدَ في الدرج». manager + عزل الفرع. */
+  todaySalesComposition: reportsBranchScoped
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getTodaySalesComposition(branchId ?? undefined);
     }),
 
   /** تقرير المصروفات — مصنّفةً حسب الفئة + أكبر جهات الصرف. manager + عزل الفرع. */

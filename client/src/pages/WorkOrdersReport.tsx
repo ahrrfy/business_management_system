@@ -1,15 +1,17 @@
 // تقرير طلبات خدمة العملاء — توزيع الحالات (كلها بما فيها الملغاة) + قنوات الاستلام + ربحية المُسلَّم.
 // المصدر: reports.workOrdersReport. عرض + تصدير Excel (توزيع الحالات) + طباعة A4.
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -21,6 +23,18 @@ const STATUS_CLS: Record<string, string> = {
   DELIVERED: "badge-status-active",
   CANCELLED: "badge-stock-out",
 };
+
+type WOR = RouterOutputs["reports"]["workOrdersReport"];
+type StatusRow = WOR["statusDistribution"][number];
+type ChannelRow = WOR["byChannel"][number];
+
+/** جدولان مُضمَّنان في بطاقتَين تحملان عنوانَيهما — بلا بحثٍ ولا ترقيمٍ ولا شريطِ حالة. */
+const EMBEDDED_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
+const channelColumns: ColumnDef<ChannelRow, unknown>[] = [
+  { id: "channel", header: "القناة", accessorFn: (r) => r.label, cell: ({ row }) => row.original.label },
+  { id: "count", header: "عدد الأوامر", accessorFn: (r) => r.count, meta: { kind: "number" }, cell: ({ row }) => row.original.count },
+];
 
 export default function WorkOrdersReport() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
@@ -46,6 +60,34 @@ export default function WorkOrdersReport() {
         { label: "مجمل ربح الأشغال", value: fmtAr(delivered.grossProfit), tone: "positive" },
       ]
     : [];
+
+  /* صفُّ الإجمالي كان في `<tbody>` فيُفرَز ويُبحَث كأنّه بيانات — صار `footer` في `<tfoot>`. */
+  const statusColumns = useMemo<ColumnDef<StatusRow, unknown>[]>(
+    () => [
+      {
+        id: "status",
+        header: "الحالة",
+        // التسمية العربية لا الرمز الخامّ: «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+        accessorFn: (r) => r.label,
+        meta: { kind: "status" },
+        footer: "الإجمالي",
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
+            {row.original.label}
+          </span>
+        ),
+      },
+      {
+        id: "count",
+        header: "عدد الأوامر",
+        accessorFn: (r) => r.count,
+        meta: { kind: "number" },
+        footer: () => totalCount,
+        cell: ({ row }) => row.original.count,
+      },
+    ],
+    [totalCount],
+  );
 
   const periodLabel = `${period.from} — ${period.to}`;
   const branchLabel = branchId
@@ -121,32 +163,12 @@ export default function WorkOrdersReport() {
           <Card>
             <CardContent className="p-0">
               <div className="border-b px-4 py-3 text-sm font-medium">توزيع الحالات</div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-xs text-muted-foreground">
-                      <th className="p-2.5 text-right font-medium">الحالة</th>
-                      <th className="p-2.5 text-right font-medium">عدد الأوامر</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {statusRows.map((r) => (
-                      <tr key={r.status} className="border-b last:border-0 hover:bg-accent/40">
-                        <td className="p-2.5 text-right">
-                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
-                            {r.label}
-                          </span>
-                        </td>
-                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.count}</td>
-                      </tr>
-                    ))}
-                    <tr className="border-t bg-muted/40 font-medium">
-                      <td className="p-2.5 text-right">الإجمالي</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{totalCount}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              <DataTable<StatusRow>
+                {...EMBEDDED_TABLE}
+                columns={statusColumns}
+                data={statusRows}
+                emptyText="لا حالات في هذا النطاق."
+              />
             </CardContent>
           </Card>
 
@@ -154,28 +176,12 @@ export default function WorkOrdersReport() {
           <Card>
             <CardContent className="p-0">
               <div className="border-b px-4 py-3 text-sm font-medium">قنوات الاستلام</div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-xs text-muted-foreground">
-                      <th className="p-2.5 text-right font-medium">القناة</th>
-                      <th className="p-2.5 text-right font-medium">عدد الأوامر</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {channelRows.length ? (
-                      channelRows.map((r) => (
-                        <tr key={r.channel} className="border-b last:border-0 hover:bg-accent/40">
-                          <td className="p-2.5 text-right">{r.label}</td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.count}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <TableEmptyRow colSpan={2} message="لا بيانات قنوات." />
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              <DataTable<ChannelRow>
+                {...EMBEDDED_TABLE}
+                columns={channelColumns}
+                data={channelRows}
+                emptyText="لا بيانات قنوات."
+              />
             </CardContent>
           </Card>
         </div>

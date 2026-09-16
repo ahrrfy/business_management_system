@@ -2,6 +2,10 @@ import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
+import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
+import { QuranSidebarCard } from "@/components/quran/QuranSidebarCard";
+import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
+import { PushNotificationPrompt } from "@/components/notifications/PushNotificationPrompt";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -27,7 +31,8 @@ import {
   ClipboardCheck, History, Star,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
+
 import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
@@ -93,8 +98,29 @@ function isModuleActive(loc: string, href: string): boolean {
   return loc === href || loc.startsWith(href + "/");
 }
 
-export function AppLayout({ children }: { children: React.ReactNode }) {
-  const [loc] = useLocation();
+function AppLayoutInner({ children }: { children: React.ReactNode }) {
+  const [loc, setLocation] = useLocation();
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const handlePushNavigate = (event: MessageEvent) => {
+      if (
+        event.data &&
+        typeof event.data === "object" &&
+        event.data.type === "PUSH_NAVIGATE" &&
+        typeof event.data.url === "string" &&
+        event.data.url.startsWith("/") &&
+        !event.data.url.startsWith("//")
+      ) {
+        setLocation(event.data.url);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", handlePushNavigate);
+    return () => {
+      navigator.serviceWorker.removeEventListener("message", handlePushNavigate);
+    };
+  }, [setLocation]);
+
   const queryClient = useQueryClient();
   const connectivity = useConnectivity();
   const unlocked = useSyncExternalStore(
@@ -292,6 +318,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
+        {/* إذاعة القرآن الكريم — بطاقة بارزة في القائمة الجانبية */}
+        <QuranSidebarCard />
+
         <nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="التنقّل الرئيسي">
           {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب والكاشير: مساحتاهما مركّزتان) */}
           {!isCourier && !isCashier && (
@@ -488,7 +517,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <aside className="hidden lg:flex w-64 shrink-0 flex-col app-sidebar">
         <div className="sb-header px-4 py-4 flex items-center justify-between gap-1">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-1">
             <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />
@@ -513,7 +542,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </button>
           </SheetTrigger>
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-1">
+            {!coldStudio && <QuranHeaderButton />}
             <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />
@@ -529,7 +559,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <BroadcastTicker />
+        <div className="px-3 pt-3 md:px-6 md:pt-4 empty:hidden">
+          <PushNotificationPrompt />
+        </div>
+        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+      </div>
 
       {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
       {shellCapabilities.mountMobileBottomNav && (
@@ -545,4 +581,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       )}
     </div>
   );
+}
+
+export function AppLayout({ children }: { children: React.ReactNode }) {
+  return <AppLayoutInner>{children}</AppLayoutInner>;
 }

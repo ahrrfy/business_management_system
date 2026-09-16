@@ -6,7 +6,7 @@
 // بوحدته وباركوده وسعره، ثم يُفصَل الرصيد المدمج ميدانياً بجردٍ يدويّ على الصنفين (لا تعرف القاعدة
 // توزيعه). قرار المالك #4: تكلفة البديل = المُمرَّرة (آخر شراء معروف) وإلا تكلفة الوحدة المدمجة.
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   products,
   productPrices,
@@ -15,6 +15,8 @@ import {
   productVariants,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { normalizedStoredBarcodeSql } from "../catalog/barcodeAliases";
 import { toDbMoney } from "../money";
 import { requireDb, withTx } from "../tx";
 
@@ -177,7 +179,7 @@ export async function splitAliasToAlternative(
   input: { productUnitId: number; aliasBarcode: string; name: string; cost?: string | null },
 ): Promise<SplitResult> {
   const name = input.name?.trim();
-  const aliasBarcode = input.aliasBarcode?.trim();
+  const aliasBarcode = canonicalizeBarcodeInput(input.aliasBarcode ?? "");
   if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم البديل مطلوب." });
   if (!aliasBarcode) throw new TRPCError({ code: "BAD_REQUEST", message: "الباركود المُفصَل مطلوب." });
 
@@ -241,15 +243,21 @@ export async function splitAliasToAlternative(
     if (srcProduct.isBundle === true || srcProduct.isService === true)
       throw new TRPCError({ code: "BAD_REQUEST", message: "البكج والخدمة لا يُفصَل منهما بديل." });
 
-    // (٢) الباركود بديلٌ فعليّ لهذه الوحدة.
+    // (٢) الباركود بديلٌ فعليّ لهذه الوحدة. (٤/٩، مراجعة Codex P2) نطابق العمود المُطبَّع أيضاً لا الخام
+    // وحده: صفٌّ بديلٌ إرثيٌّ مخزَّنٌ بأرقامٍ عربية-هندية أو مسافةٍ يُعرَض للمستخدم بصيغته الخام، فلو قصرنا
+    // على المساواة الخامّة بعد تطبيع مُدخله لفشل «هذا الباركود ليس بديلاً» على بديلٍ كان يعمل قبل الإصلاح.
+    // نُبقيه ضمن الوحدة نفسها، والبديلُ المُرقّى يُخزَّن باركوداً أساسياً مُطبَّعاً (تنظيفٌ عابر).
     const aliasRow = (
       await tx
-        .select({ id: productUnitBarcodes.id })
+        .select({ id: productUnitBarcodes.id, barcode: productUnitBarcodes.barcode })
         .from(productUnitBarcodes)
         .where(
           and(
             eq(productUnitBarcodes.productUnitId, input.productUnitId),
-            eq(productUnitBarcodes.barcode, aliasBarcode),
+            or(
+              eq(productUnitBarcodes.barcode, aliasBarcode),
+              sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${aliasBarcode.toLowerCase()}`,
+            ),
           ),
         )
         .for("update")
@@ -301,7 +309,9 @@ export async function splitAliasToAlternative(
       conversionFactor: "1",
       isBaseUnit: true,
       isStoreSaleUnit: srcUnit.isStoreSaleUnit,
-      barcode: aliasBarcode,
+      // يُنقَل الباركود المخزَّن **حرفيّاً** (صيغة المصنع بمسافتها) لا الهوية المُطبَّعة —
+      // فلا تُفقَد المسافةُ عند الترقية (١٥/٩). المطابقةُ تبقى عبر barcodeNormalized المولَّد.
+      barcode: aliasRow.barcode ?? aliasBarcode,
     });
     const newUnitId = extractInsertId(uRes);
 

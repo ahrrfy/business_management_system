@@ -23,7 +23,7 @@ import {
   listAdvances,
   suggestDeductionsForPeriod,
   type GrantAdvanceInput,
-} from "../advancesService";
+} from "../advances";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, payRun, returnSalaryPayment, updateItem } from "../payrollService";
 import { approveVoucher } from "../voucherService";
