@@ -866,9 +866,11 @@ async function receivePurchaseInTx(
     ),
     postingSourceComponents: purchasePostingSource,
   });
-  await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
-  if (po.agreedCurrency === "USD") {
-    await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+  if (!useCashClearing) {
+    await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
+    if (po.agreedCurrency === "USD") {
+      await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+    }
   }
 
   // ═══ الشحن/الكمرك: طلب مصروف شركة مرتبط بالاستلام (قرار المالك ٥/٨/٢٦) ═══
@@ -1052,20 +1054,22 @@ async function receivePurchaseInTx(
       });
     }
     // PROC-05 (تدقيق ٢/٧): السقف الأوّل — رصيد المورد الفعلي (منع AP سالبة على مستوى المورد).
-    const supAfter = money(
-      (
-        await tx
-          .select({ b: suppliers.currentBalance })
-          .from(suppliers)
-          .where(eq(suppliers.id, Number(po.supplierId)))
-          .limit(1)
-      )[0]?.b ?? "0",
-    );
-    if (paidNow.gt(supAfter)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})`,
-      });
+    if (!useCashClearing) {
+      const supAfter = money(
+        (
+          await tx
+            .select({ b: suppliers.currentBalance })
+            .from(suppliers)
+            .where(eq(suppliers.id, Number(po.supplierId)))
+            .limit(1)
+        )[0]?.b ?? "0",
+      );
+      if (paidNow.gt(supAfter)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})`,
+        });
+      }
     }
     // السقف الحقيقي = رصيد GL المعترف به لهذا PO ناقص طلباته المعلّقة، لا إجمالي الأمر الاسمي.
     // يمنع دفع قيمة غير مستلمة، كما يمنع حجز المبلغ مرتين قبل الاعتماد.

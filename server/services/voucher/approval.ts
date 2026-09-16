@@ -1665,7 +1665,8 @@ export async function approveVoucherTx(
     effectivePartyType === "SUPPLIER" &&
     partyId != null &&
     direction === "OUT" &&
-    systemRequest?.kind !== "PURCHASE_SUPPLIER_USD"
+    systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+    !purchaseCashClearing
   ) {
     const [sup] = await tx
       .select({ kind: suppliers.supplierKind, bal: suppliers.currentBalance })
@@ -2121,7 +2122,8 @@ export async function approveVoucherTx(
     effectivePartyType === "SUPPLIER" &&
     partyId &&
     systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
-    cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD"
+    cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+    !purchaseCashClearing
   ) {
     await adjustSupplierBalance(
       tx,

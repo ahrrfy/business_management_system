@@ -564,11 +564,7 @@ export async function createVoucherTx(
   // المفتاح immutable حتى بعد الرفض/العكس: إعادة الإصدار تحتاج مفتاحاً جديداً صريحاً. حذف المفتاح
   // القديم كان يسمح لمحاولة شبكة متأخرة بإحياء السند الميت وإعادة تحريك النقد/الذمة.
   if (input.clientRequestId) {
-    const existingRefId = await findIdempotentRefId(
-      tx,
-      "voucher.create",
-      input.clientRequestId,
-    );
+    const existingRefId = await findIdempotentRefId(tx, "voucher.create", input.clientRequestId);
     if (existingRefId != null) {
       const r = (
         await tx
