@@ -48,7 +48,6 @@ export function supplierApEffectSql(cols: ApEntryCols, opts: { includeOpening?: 
   const includeOpening = opts.includeOpening ?? true;
   const amt = sql`CAST(${cols.amount} AS DECIMAL(15,2))`;
   return sql`CASE
-    WHEN ${cols.liabilityAccount} = 'CASH_CLEARING' THEN 0
     WHEN ${cols.entryType} = 'PURCHASE'        THEN ${amt}
     WHEN ${cols.entryType} = 'PAYMENT_OUT'     THEN -${amt}
     WHEN ${cols.entryType} = 'PAYMENT_IN'      THEN ${amt}
@@ -66,7 +65,7 @@ export function isSupplierApRecognitionSql(
   cols: Pick<ApEntryCols, "entryType" | "liabilityAccount" | "dedupeKey">,
 ): SQL {
   return sql`(
-    (${cols.entryType} = 'PURCHASE' AND (${cols.liabilityAccount} IS NULL OR ${cols.liabilityAccount} <> 'CASH_CLEARING'))
+    (${cols.entryType} = 'PURCHASE')
     OR (${cols.entryType} = 'ADJUST' AND ${cols.dedupeKey} REGEXP ${GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP})
   )`;
 }
