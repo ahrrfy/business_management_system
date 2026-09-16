@@ -96,7 +96,7 @@ export function PrintBottomToolbar({
   const change = paid - cashTotal;
   const credit = cashTotal - paid;
   const isChange = paid > 0 && paid >= cashTotal;
-  const isOwing = paid > 0 && paid < cashTotal;
+  const isOwing = payInput !== "" && paid < cashTotal;
   const hasZeroLine = cart.some((c) => c.price <= 0);
 
   const hasCustomerInfo =

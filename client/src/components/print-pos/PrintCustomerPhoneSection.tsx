@@ -83,6 +83,20 @@ export function PrintCustomerPhoneSection({
     }
   }, [api.customer.customerId, api.customer.name, api.phone, api.resolution, setCustomerId, setContactName, setContactPhone]);
 
+  // عند اختيار عميل من القائمة المنسدلة، مزامنة اسمه ورقمه في بيانات الطلب
+  useEffect(() => {
+    if (pickerMode === "COMBO" && pickedCustomer.data && customerId != null) {
+      if (pickedCustomer.data.name && pickedCustomer.data.name !== contactName) {
+        setContactName(pickedCustomer.data.name);
+      }
+      if (pickedCustomer.data.phone && pickedCustomer.data.phone !== contactPhone) {
+        setContactPhone(pickedCustomer.data.phone);
+        lastExternalPhone.current = pickedCustomer.data.phone;
+        api.setPhone(pickedCustomer.data.phone);
+      }
+    }
+  }, [pickerMode, pickedCustomer.data, customerId, contactName, contactPhone, setContactName, setContactPhone, api]);
+
   // مزامنة تغييرات الهاتف إلى الأب
   const handlePhoneChange = (digits: string) => {
     api.setPhone(digits);
