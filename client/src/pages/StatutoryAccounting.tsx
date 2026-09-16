@@ -9,7 +9,7 @@ import {
   ShieldCheck,
   Upload,
 } from "lucide-react";
-import { toast } from "sonner";
+import { notify } from "@/lib/notify";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -148,9 +148,9 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
     onSuccess: async ({ id }) => {
       setProfileId(id);
       await refresh();
-      toast.success("أُنشئت مسودة الإصدار النظامي.");
+      notify.ok("أُنشئت مسودة الإصدار النظامي.");
     },
-    onError: (error) => toast.error(error.message),
+    onError: (error) => notify.err(error.message),
   });
   const replaceAccounts = trpc.statutoryAccounting.replaceAccounts.useMutation({
     onSuccess: async ({ imported }) => {
@@ -158,33 +158,33 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
       setImportFileName("");
       setImportError(null);
       await refresh();
-      toast.success(`تم استيراد ${imported} حساباً بصورة ذرية.`);
+      notify.ok(`تم استيراد ${imported} حساباً بصورة ذرية.`);
     },
-    onError: (error) => toast.error(error.message),
+    onError: (error) => notify.err(error.message),
   });
   const replaceMappings = trpc.statutoryAccounting.replaceMappings.useMutation({
     onSuccess: async ({ mapped }) => {
       await refresh();
-      toast.success(`حُفظ ربط ${mapped} حساباً.`);
+      notify.ok(`حُفظ ربط ${mapped} حساباً.`);
     },
-    onError: (error) => toast.error(error.message),
+    onError: (error) => notify.err(error.message),
   });
   const approve = trpc.statutoryAccounting.approveProfile.useMutation({
     onSuccess: async () => {
       await refresh();
-      toast.success("اعتمد الإصدار وأصبح المرجع النظامي النافذ.");
+      notify.ok("اعتمد الإصدار وأصبح المرجع النظامي النافذ.");
     },
-    onError: (error) => toast.error(error.message),
+    onError: (error) => notify.err(error.message),
   });
   const seedIraqi = trpc.statutoryAccounting.seedIraqiUnified.useMutation({
     onSuccess: async ({ profileId: seededId, accountsImported, mappedAccounts, status }) => {
       setProfileId(seededId);
       await refresh();
-      toast.success(
+      notify.ok(
         `تم تثبيت الدليل المحاسبي الموحد العراقي (${accountsImported} حساباً، ${mappedAccounts} ربطاً آلياً) — الحالة: ${status === "ACTIVE" ? "نافذ" : "مسودة جاهزة للاعتماد"}.`,
       );
     },
-    onError: (error) => toast.error(error.message),
+    onError: (error) => notify.err(error.message),
   });
 
   const current = profiles.data?.find((item) => item.id === profileId);
@@ -212,7 +212,7 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
       setImportRows([]);
       setImportFileName(file.name);
       setImportError(message);
-      toast.error(message);
+      notify.err(message);
     } finally {
       setParsingImport(false);
     }
@@ -235,8 +235,8 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
     const suggested = suggestStatutoryMappings(detail.data.mappings, detail.data.accounts);
     const count = Object.keys(suggested).length;
     setMappingDraft((old) => ({ ...old, ...suggested }));
-    if (count) toast.success(`اقتُرح ${count} ربطاً للمراجعة؛ لم يُحفظ شيء بعد.`);
-    else toast.info("لا توجد مطابقات فريدة آمنة للاقتراح.");
+    if (count) notify.ok(`اقتُرح ${count} ربطاً للمراجعة؛ لم يُحفظ شيء بعد.`);
+    else notify.info("لا توجد مطابقات فريدة آمنة للاقتراح.");
   }
 
   function saveMappings() {
