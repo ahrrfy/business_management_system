@@ -167,6 +167,8 @@ export default defineConfig({
       "client/src/pages/__tests__/TaskDetailDesignApproval.test.tsx",
       "client/src/components/workorder/ReverseDeliveryRequestDialog.test.tsx",
       "client/src/components/pos/DigitalFulfillmentDialog.test.tsx",
+      "client/src/components/pos/digitalBasket.test.ts",
+      "client/src/components/invoice/__tests__/reducer.test.ts",
       // م١-عميل PR-B (٥/٩/٢٦) — آلتا حالة وضع «توصيل» و«العميل بالهاتف» (منطقٌ نقيٌّ بلا قاعدة).
       "client/src/components/pos/deliveryMode.test.ts",
       "client/src/components/customer/customerByPhoneMachine.test.ts",

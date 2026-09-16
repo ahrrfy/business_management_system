@@ -519,7 +519,9 @@ export function ProductTable({
                     </td>
                   )}
                   <td className={td}>
-                    {item.isGift ? (
+                    {item.digital ? (
+                      <span dir="ltr" className="text-sm font-bold tabular-nums">{fmtNum(item.price)}</span>
+                    ) : item.isGift ? (
                       // السطر المُهدى: لا حقلَ سعرٍ أصلاً (الخادم يُصفّره) — نُظهر الحالة لا مُدخَلاً
                       // يوهم بإمكان التسعير. السعر المخزَّن في الحالة يبقى كما هو ليعود عند إلغاء الإهداء.
                       <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-extrabold">
@@ -545,14 +547,18 @@ export function ProductTable({
                     )}
                   </td>
                   <td className={td}>
-                    <QuantityControl
-                      value={item.qty}
-                      onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "qty", value: v })}
-                    />
+                    {item.digital ? (
+                      <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border bg-muted/40 font-bold tabular-nums">1</span>
+                    ) : (
+                      <QuantityControl
+                        value={item.qty}
+                        onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "qty", value: v })}
+                      />
+                    )}
                   </td>
                   {showDiscountCol && (
                     <td className={td}>
-                      {item.isGift ? (
+                      {item.digital || item.isGift ? (
                         // خصمٌ على مجّانٍ لا معنى له — نُعطّل الحقل بدل تركه يوهم بأثرٍ لا يقع.
                         <span className="text-xs text-muted-foreground">—</span>
                       ) : readOnlyPricing ? (
@@ -571,20 +577,24 @@ export function ProductTable({
                   )}
                   {allowGiftLines && (
                     <td className={td}>
-                      <Button
-                        type="button"
-                        variant={item.isGift ? "default" : "outline"}
-                        size="icon"
-                        aria-pressed={item.isGift === true}
-                        aria-label={item.isGift ? `إلغاء إهداء ${item.name}` : `إهداء ${item.name} مجاناً`}
-                        title={item.isGift ? "إلغاء الإهداء (يعود السعر)" : "اجعل هذا الصنف هديةً مجانية"}
-                        className="h-8 w-8"
-                        onClick={() =>
-                          dispatch({ type: "UPDATE_ITEM", idx, field: "isGift", value: !item.isGift })
-                        }
-                      >
-                        <Gift aria-hidden className="size-4" />
-                      </Button>
+                      {item.digital ? (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant={item.isGift ? "default" : "outline"}
+                          size="icon"
+                          aria-pressed={item.isGift === true}
+                          aria-label={item.isGift ? `إلغاء إهداء ${item.name}` : `إهداء ${item.name} مجاناً`}
+                          title={item.isGift ? "إلغاء الإهداء (يعود السعر)" : "اجعل هذا الصنف هديةً مجانية"}
+                          className="h-8 w-8"
+                          onClick={() =>
+                            dispatch({ type: "UPDATE_ITEM", idx, field: "isGift", value: !item.isGift })
+                          }
+                        >
+                          <Gift aria-hidden className="size-4" />
+                        </Button>
+                      )}
                     </td>
                   )}
                   {showTaxCol && (

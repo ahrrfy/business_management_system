@@ -44,8 +44,9 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { releaseReservedPrintWindow, reservePrintWindow,
 } from "@/lib/printing/brand";
-import { DigitalCardsPickerDialog } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
+import { captureDigitalInvoiceBasketItems, toDigitalPrepareLine, toDigitalPrepareRegularLine, validateDigitalInvoiceCheckout } from "@/components/pos/digitalBasket";
 import { AlertTriangle, Lock, FileWarning, CreditCard } from "lucide-react";
 import {
   Dialog,
@@ -77,7 +78,6 @@ import {
   type PaymentMethod,
   type PaymentTerm,
   type PriceTier,
-  type DiscountType,
 } from "@/components/invoice";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
@@ -680,6 +680,14 @@ export default function SalesInvoice() {
   function validate(): string | null {
     if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
+    const digitalError = validateDigitalInvoiceCheckout(state.items, {
+      isCorrection, hasOpenShift: !!currentShift.data,
+      paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod,
+      paidTotal: computePaidStr(), grandTotal: totals.grandTotal,
+      globalDiscount: totals.globalDiscAmt, shippingFree: state.shippingFree,
+      shipping: totals.shipping, taxEnabled: state.taxEnabled, totalTax: totals.totalTax,
+    });
+    if (digitalError) return digitalError;
     // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
     // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
     if (state.shippingFree && !D(state.shipping || "0").gt(0)) {
@@ -714,8 +722,8 @@ export default function SalesInvoice() {
     return null;
   }
 
-  function startDigitalFulfillment(payload: any) {
-    if (!currentShift.data) return;
+  function startDigitalFulfillment() {
+    if (!currentShift.data) return notify.warn("يلزم فتح وردية في فرع الفاتورة قبل بيع الكروت والاشتراكات.");
     const regular = state.items.filter((c) => !c.digital);
     const digitalLines = state.items.filter((c) => c.digital);
     if (!digitalLines.length) return;
@@ -730,21 +738,25 @@ export default function SalesInvoice() {
       customerId: state.entityId ?? undefined,
       priceTier: state.tier,
       sourceType: "INVOICE",
-      sourcePayload: payload,
-      regularLines: regular.map((l) => ({
-        lineKey: String(l.productUnitId),
-        variantId: l.variantId,
-        productUnitId: l.productUnitId,
-        quantity: String(l.qty),
-        unitPriceOverride: l.price,
-      })),
-      lines: digitalLines.map((c) => ({
-        lineKey: c.digital!.internalLineToken,
-        offeringId: c.digital!.offeringId,
-        priceVersionId: 1, // Using dummy price version since the backend handles it or it's fetched from the dialog
-        expectedSellPrice: c.digital!.sellPriceSnapshot,
-        providerReference: c.sku,
-      })),
+      regularLines: regular.map(toDigitalPrepareRegularLine),
+      lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)),
+    });
+  }
+
+  function addDigitalBasket(basket: DigitalBasketCapture) {
+    try {
+      const items: InvoiceLine[] = captureDigitalInvoiceBasketItems(basket);
+      dispatch({ type: "ADD_ITEMS", items }); setCardsOpen(false);
+    } catch (error) {
+      notify.err(error);
+    }
+  }
+
+  function finalizeDigitalIntent(id: number) {
+    if (finalizeSale.isPending) return; finalizeSale.mutate({
+      intentId: id, clientRequestId, paymentAmount: externalAmount,
+      paymentMethod: state.paymentMethod as "CASH" | "CARD",
+      customerId: state.entityId ?? undefined,
     });
   }
 
@@ -790,11 +802,10 @@ export default function SalesInvoice() {
           reissue.mutate(correction);
         }
       } else {
-        const payload = buildPayload(approval);
         if (state.items.some((c) => !!c.digital)) {
-          startDigitalFulfillment(payload);
+          startDigitalFulfillment();
         } else {
-          create.mutate(payload);
+          create.mutate(buildPayload(approval));
         }
       }
     } catch {
@@ -1089,7 +1100,7 @@ export default function SalesInvoice() {
             /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
             taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
-            onOpenDigitalCardsPicker={() => setCardsOpen(true)}
+            onOpenDigitalCardsPicker={isCorrection ? undefined : () => setCardsOpen(true)}
             onNotify={(msg, kind) =>
               kind === "error" ? notify.err(msg) : notify.info(msg)
             }
@@ -1104,7 +1115,12 @@ export default function SalesInvoice() {
             tier={state.tier}
           />
           
-          <DigitalCardsPickerDialog open={cardsOpen} branchId={state.branchId} offline={false} onClose={() => setCardsOpen(false)} onPickBasket={(b) => { dispatch({ type: "ADD_ITEMS", items: b.lines.map(({ card }) => ({ productId: card.productId, variantId: card.variantId, productUnitId: card.productUnitId, name: card.name, sku: b.providerReference || "", barcode: null, unit: "قطعة", qty: 1, conversionFactor: "1", stockBase: 9999, price: String(card.sellPrice || 0), costBase: "0", discount: "0", discountType: "amount" as DiscountType, note: "", digital: { offeringId: card.offeringId, priceVersionId: card.priceVersionId, sellPriceSnapshot: String(card.sellPrice || 0), providerShareSnapshot: "0", internalLineToken: `D-${Date.now()}-${Math.random()}` } })) }); setCardsOpen(false); }} existingCardCount={state.items.filter(i => i.digital).length} />
+          <DigitalCardsPickerDialog
+            open={cardsOpen} branchId={state.branchId} offline={false}
+            onClose={() => setCardsOpen(false)} onPickBasket={addDigitalBasket}
+            existingReferences={state.items.flatMap((item) => item.digital ? [{ providerId: item.digital.providerId, providerReference: item.digital.providerReference }] : [])}
+            existingCardCount={state.items.filter((item) => item.digital).length}
+          />
         </div>
 
         <aside className="flex w-full shrink-0 flex-col gap-2 xl:w-80">
@@ -1240,7 +1256,10 @@ export default function SalesInvoice() {
         </DialogContent>
       </Dialog>
 
-      <DigitalFulfillmentDialog intentId={digitalIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError} onClose={() => { setDigitalIntentId(null); setDigitalFinalizeError(null); }} onAllExecuted={(id) => { if (!finalizeSale.isPending) finalizeSale.mutate({ intentId: id, clientRequestId: clientRequestId, paymentAmount: externalAmount, paymentMethod: state.paymentMethod as any, customerId: state.entityId ?? undefined }); }} />
+      <DigitalFulfillmentDialog intentId={digitalIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError}
+        onClose={() => { setDigitalIntentId(null); setDigitalFinalizeError(null); }}
+        onAllExecuted={finalizeDigitalIntent}
+      />
     </div>
   );
 }
