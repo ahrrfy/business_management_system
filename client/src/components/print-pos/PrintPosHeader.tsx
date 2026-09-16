@@ -203,7 +203,7 @@ export function PrintPosHeader({
       {/* ── حقل البحث المختصر ── */}
       <div
         style={{
-          width: 230,
+          width: 200,
           flexShrink: 0,
           position: "relative",
           display: "flex",
@@ -363,18 +363,18 @@ export function PrintPosHeader({
         </div>
 
         {customerMode === "REGISTERED" ? (
-          <div style={{ width: 210, flexShrink: 0 }}>
+          <div style={{ width: 240, flexShrink: 0 }}>
             <PrintCustomerCombo C={C as any} customerId={customerId} setCustomerId={setCustomerId} />
           </div>
         ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-            <div style={{ width: 155, flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <div style={{ width: 220, flexShrink: 0 }}>
               <IntlPhoneInput
                 value={contactPhone}
                 onChange={setContactPhone}
-                placeholder="770..."
+                placeholder="770 123 4567"
                 ariaLabel="هاتف الزبون"
-                className="h-[30px] text-xs w-full"
+                className="h-[34px] text-[13px] font-medium w-full"
               />
             </div>
             <input
@@ -383,14 +383,14 @@ export function PrintPosHeader({
               value={contactName}
               onChange={(e) => setContactName(e.target.value)}
               style={{
-                width: 105,
-                height: 30,
-                padding: "0 8px",
+                width: 140,
+                height: 34,
+                padding: "0 10px",
                 borderRadius: 6,
                 border: `1px solid ${C.border}`,
                 background: C.card,
                 color: C.fg,
-                fontSize: 11.5,
+                fontSize: 13,
                 fontFamily: "inherit",
                 outline: "none",
                 boxSizing: "border-box",
