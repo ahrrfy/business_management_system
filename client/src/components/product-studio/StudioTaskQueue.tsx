@@ -500,8 +500,8 @@ export function StudioTaskQueue({
                       {canManage && ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(selected.status) && (
                         <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_1fr_auto]">
                           <div className="space-y-1">
-                            <Label>أولوية المهمة</Label>
-                            <AppSelect className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={selectedPriority} onValueChange={(value) => setSelectedPriority(value as typeof selectedPriority)}>
+                            <Label htmlFor="studio-selected-priority">أولوية المهمة</Label>
+                            <AppSelect id="studio-selected-priority" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={selectedPriority} onValueChange={(value) => setSelectedPriority(value as typeof selectedPriority)}>
                               <option value="LOW">منخفضة</option>
                               <option value="NORMAL">عادية</option>
                               <option value="HIGH">عالية</option>
@@ -509,8 +509,8 @@ export function StudioTaskQueue({
                             </AppSelect>
                           </div>
                           <div className="space-y-1">
-                            <Label>موعد الإنجاز</Label>
-                            <Input type="datetime-local" value={selectedDueAt} onChange={(event) => setSelectedDueAt(event.target.value)} />
+                            <Label htmlFor="studio-selected-due-at">موعد الإنجاز</Label>
+                            <Input id="studio-selected-due-at" type="datetime-local" value={selectedDueAt} onChange={(event) => setSelectedDueAt(event.target.value)} />
                           </div>
                           <Button
                             type="button" variant="outline" className="min-h-11 self-end" disabled={offline || updateSchedule.isPending}

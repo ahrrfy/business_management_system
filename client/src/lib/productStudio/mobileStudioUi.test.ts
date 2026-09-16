@@ -55,8 +55,8 @@ describe("mobile studio workflow", () => {
 
     expect(page).toContain("عودة إلى المهام");
     expect(page).toContain("fixed bottom-24");
-    expect(page).toContain("الصورة الأصلية");
-    expect(page).toContain("المرشّح");
+    expect(preview).toContain("الصورة الأصلية");
+    expect(preview).toContain("المرشّح");
     expect(preview).toContain("تكبير الصورة");
     expect(page).toContain("STUDIO_REJECTION_PRESETS");
     expect(page).toContain("bulkAssign.mutate");

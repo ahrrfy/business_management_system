@@ -13,7 +13,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { loadStudioDraft, purgeStudioDraft, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForUser, loadStudioDraftIdentity, saveStudioDraftIdentity, type StudioDraft } from "@/lib/productStudio/studioDrafts";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
-import { AlertTriangle, ShieldCheck, Image, Megaphone, Loader2 } from "lucide-react";
+import { AlertTriangle, ShieldCheck, Image, Megaphone, Loader2, ChevronRight } from "lucide-react";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { getOfflineProfile, saveOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
@@ -507,6 +507,9 @@ export default function StudioPhotographerWorkspace({
            {!draftConflict && (
               <Card>
                 <CardHeader>
+                  <Button type="button" variant="ghost" className="-mr-2 min-h-11 self-start lg:hidden" onClick={() => setSelectedId(null)}>
+                    <ChevronRight aria-hidden className="size-4" /> عودة إلى المهام
+                  </Button>
                   <CardTitle className="flex items-center justify-between text-base">
                     <span>مساحة العمل: {selected.productName}</span>
                     <Badge variant="outline">مهمة #{selected.id}</Badge>

@@ -1386,8 +1386,8 @@ describe("product studio governed workflow", () => {
     ]);
     // للأساس صورتان معتمَدتان بمعرّف متغيّره (٢ ⇒ تتجاوز فحص SINGLE_IMAGE)؛ البديل بلا صورة.
     await d.insert(s.productImages).values([
-      { productId: 106, variantId: 106, url: "u1", reviewStatus: "APPROVED" },
-      { productId: 106, variantId: 106, url: "u2", reviewStatus: "APPROVED" },
+      { productId: 106, variantId: 106, url: "u1", reviewStatus: "APPROVED", width: 800 },
+      { productId: 106, variantId: 106, url: "u2", reviewStatus: "APPROVED", width: 800 },
     ]);
 
     // (١) الكشف: مسحُ باركود البديل الأبجديّ-رقميّ يحلّه إلى **متغيّر البديل** بالتحديد.
@@ -1419,7 +1419,7 @@ describe("product studio governed workflow", () => {
 
     // (٢) صورةُ البديل منفصلةٌ عن الأساس: إضافتُها بمعرّف متغيّر البديل تُغلق فجوته وحده،
     // فيصير المنتج سليماً ويغيب عن الكشف الافتراضيّ (الذي يستبعد HEALTHY).
-    await d.insert(s.productImages).values({ productId: 106, variantId: 107, url: "u3", reviewStatus: "APPROVED" });
+    await d.insert(s.productImages).values({ productId: 106, variantId: 107, url: "u3", reviewStatus: "APPROVED", width: 800 });
     const afterGap = await discoverImageGaps(manager, {});
     expect(afterGap.items.find((r) => r.productId === 106)).toBeUndefined();
   });
