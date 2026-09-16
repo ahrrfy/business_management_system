@@ -122,7 +122,7 @@ export function PrintCartList({
                       <span style={{ direction: "ltr", fontWeight: 900, fontSize: 14, color: C.fg }}>
                         {fmt(c.price * c.qty)} <span style={{ fontSize: 10, fontWeight: 500, color: C.mutedFg }}>د.ع</span>
                       </span>
-                      <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 24, height: 24, minHeight: 0, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 5, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={13} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 32, height: 32, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}><X aria-hidden size={15} /></button>
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
@@ -133,15 +133,15 @@ export function PrintCartList({
                           onChange={(e) => setPrice(c.uid, Math.max(0, parseInt(e.target.value.replace(/[^0-9]/g, ""), 10) || 0))}
                           onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditPriceUid(null); }}
                           onBlur={() => setEditPriceUid(null)}
-                          style={{ width: 72, height: 26, textAlign: "center", border: `1.5px solid ${C.primary}`, borderRadius: 6, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, outline: "none", direction: "ltr" }} />
+                          style={{ width: 72, height: 32, textAlign: "center", border: `1.5px solid ${C.primary}`, borderRadius: 6, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, outline: "none", direction: "ltr" }} />
                       ) : (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 3.5, direction: "ltr", color: isCustomPriceSku(c.svc.sku) ? C.amber : C.mutedFg, fontWeight: isCustomPriceSku(c.svc.sku) ? 800 : 600, fontSize: 11.5, padding: "2px 6px", borderRadius: 5, border: `1px dashed ${isCustomPriceSku(c.svc.sku) ? C.amber : C.border}` }}>
-                          {fmt(c.price)}<Pencil aria-hidden size={9} style={{ opacity: 0.7 }} />
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 3.5, direction: "ltr", color: isCustomPriceSku(c.svc.sku) ? C.amber : C.mutedFg, fontWeight: isCustomPriceSku(c.svc.sku) ? 800 : 600, fontSize: 11.5, padding: "4px 8px", borderRadius: 6, border: `1px dashed ${isCustomPriceSku(c.svc.sku) ? C.amber : C.border}` }}>
+                          {fmt(c.price)}<Pencil aria-hidden size={10} style={{ opacity: 0.7 }} />
                         </span>
                       )}
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty - 1); }} style={{ width: 28, height: 26, minHeight: 0, border: `1px solid ${C.border}`, borderRadius: 5, background: C.card, cursor: "pointer", fontSize: 16, fontWeight: 700, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>−</button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty - 1); }} aria-label="تقليل الكمية" style={{ width: 36, height: 34, border: `1px solid ${C.border}`, borderRadius: 6, background: C.card, cursor: "pointer", fontSize: 18, fontWeight: 700, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>−</button>
                       <input
                         type="text"
                         inputMode="numeric"
@@ -158,9 +158,9 @@ export function PrintCartList({
                         }}
                         onBlur={(e) => { if (e.currentTarget.value === "" || Number(e.currentTarget.value) < 1) changeQty(c.uid, 1); }}
                         aria-label="الكمية"
-                        style={{ width: 44, height: 26, textAlign: "center", fontWeight: 800, fontSize: 13.5, direction: "ltr", color: C.fg, background: C.card, border: `1px solid ${C.border}`, borderRadius: 5, outline: "none", fontFamily: "inherit" }}
+                        style={{ width: 44, height: 34, textAlign: "center", fontWeight: 800, fontSize: 14, direction: "ltr", color: C.fg, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, outline: "none", fontFamily: "inherit" }}
                       />
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty + 1); }} style={{ width: 28, height: 26, minHeight: 0, border: `1px solid ${C.border}`, borderRadius: 5, background: C.card, cursor: "pointer", fontSize: 16, fontWeight: 700, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>+</button>
+                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty + 1); }} aria-label="زيادة الكمية" style={{ width: 36, height: 34, border: `1px solid ${C.border}`, borderRadius: 6, background: C.card, cursor: "pointer", fontSize: 18, fontWeight: 700, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>+</button>
                     </div>
                   </div>
                 </div>

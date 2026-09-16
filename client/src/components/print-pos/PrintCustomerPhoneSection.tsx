@@ -70,18 +70,20 @@ export function PrintCustomerPhoneSection({
   // مزامنة حالة العميل المربوط تلقائياً إلى الأب
   useEffect(() => {
     if (api.customer.customerId) {
-      setCustomerId(api.customer.customerId);
-      if (api.customer.name) {
+      if (customerId !== api.customer.customerId) {
+        setCustomerId(api.customer.customerId);
+      }
+      if (api.customer.name && contactName !== api.customer.name) {
         setContactName(api.customer.name);
       }
-      if (api.phone) {
+      if (api.phone && contactPhone !== api.phone) {
         setContactPhone(api.phone);
         lastExternalPhone.current = api.phone;
       }
-    } else if (api.resolution === "NEEDS_NAME" || api.resolution === "EMPTY") {
+    } else if ((api.resolution === "NEEDS_NAME" || api.resolution === "EMPTY") && customerId != null) {
       setCustomerId(null);
     }
-  }, [api.customer.customerId, api.customer.name, api.phone, api.resolution, setCustomerId, setContactName, setContactPhone]);
+  }, [api.customer.customerId, api.customer.name, api.phone, api.resolution, customerId, contactName, contactPhone]);
 
   // عند اختيار عميل من القائمة المنسدلة، مزامنة اسمه ورقمه في بيانات الطلب
   useEffect(() => {

@@ -27,7 +27,7 @@ import {
 } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Vault, Clock, Undo2 } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -318,8 +318,24 @@ export default function PrintPOS() {
   }, [tabs, activeId, DRAFT_KEY, restoredDraftKey]);
 
   // ── تبويبات ──
-  const patch = (p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, ...p } : t)));
-  const patchTab = (id: number, p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...p } : t)));
+  const patch = useCallback((p: Partial<Tab>) => {
+    setTabs((prev) => {
+      const current = prev.find((t) => t.id === activeId);
+      if (!current) return prev;
+      const hasChange = Object.keys(p).some((k) => (current as Record<string, unknown>)[k] !== (p as Record<string, unknown>)[k]);
+      if (!hasChange) return prev;
+      return prev.map((t) => (t.id === activeId ? { ...t, ...p } : t));
+    });
+  }, [activeId]);
+  const patchTab = useCallback((id: number, p: Partial<Tab>) => {
+    setTabs((prev) => {
+      const current = prev.find((t) => t.id === id);
+      if (!current) return prev;
+      const hasChange = Object.keys(p).some((k) => (current as Record<string, unknown>)[k] !== (p as Record<string, unknown>)[k]);
+      if (!hasChange) return prev;
+      return prev.map((t) => (t.id === id ? { ...t, ...p } : t));
+    });
+  }, []);
   const setCart = (u: CartLine[] | ((c: CartLine[]) => CartLine[])) =>
     setTabs((prev) => prev.map((t) => (t.id !== activeId ? t : { ...t, cart: typeof u === "function" ? u(t.cart) : u })));
   const setPayInput = (u: string | ((s: string) => string)) =>
@@ -996,6 +1012,7 @@ export default function PrintPOS() {
   return (
     <div className="print-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
       <PrintPosHeader
+        tabId={activeId}
         C={C}
         dark={dark}
         toggleDark={toggleDark}

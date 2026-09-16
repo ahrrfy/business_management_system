@@ -176,6 +176,10 @@ export function PrintBottomToolbar({
         boxShadow: "0 -4px 14px rgba(0,0,0,0.07)",
         direction: "rtl",
         boxSizing: "border-box",
+        overflowX: "auto",
+        overflowY: "hidden",
+        maxWidth: "100%",
+        scrollbarWidth: "thin",
       }}
     >
       {/* ── اليمين: الإجمالي والمستلم والباقي ── */}
@@ -196,9 +200,24 @@ export function PrintBottomToolbar({
         >
           <span style={{ fontSize: 12.5, fontWeight: 700, opacity: 0.9 }}>الإجمالي:</span>
           <span style={{ fontSize: 21, fontWeight: 900, direction: "ltr", letterSpacing: "-0.5px" }}>
-            {fmt(total)}
+            {fmt(method === "CASH" ? cashTotal : total)}
           </span>
           <span style={{ fontSize: 11, opacity: 0.85 }}>د.ع</span>
+          {method === "CASH" && cashTotal !== total && (
+            <span
+              style={{
+                fontSize: 10.5,
+                fontWeight: 800,
+                opacity: 0.9,
+                background: "rgba(255,255,255,0.22)",
+                padding: "2px 6px",
+                borderRadius: 5,
+              }}
+              title={`الأصلي قبل التقريب: ${fmt(total)} د.ع`}
+            >
+              مقرّب نقداً
+            </span>
+          )}
         </div>
 
         {/* حقل المستلم وزر ملء الكل */}

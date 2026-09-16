@@ -115,6 +115,7 @@ export interface PrintPosHeaderProps {
   lastInv: { num: string; total: number } | null;
   channel: OrderChannel;
   setChannel: (c: OrderChannel) => void;
+  tabId?: string | number;
   customerId: number | null;
   setCustomerId: (id: number | null) => void;
   contactName: string;
@@ -126,6 +127,7 @@ export interface PrintPosHeaderProps {
 }
 
 export function PrintPosHeader({
+  tabId,
   C,
   dark,
   toggleDark,
@@ -317,6 +319,7 @@ export function PrintPosHeader({
 
       {/* ── العميل ورقم الهاتف (حقل لكل رقم + كود دولي ثابت + حفظ تلقائي) ── */}
       <PrintCustomerPhoneSection
+        key={tabId != null ? String(tabId) : undefined}
         C={C}
         customerId={customerId}
         setCustomerId={setCustomerId}

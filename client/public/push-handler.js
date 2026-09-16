@@ -49,7 +49,6 @@ self.addEventListener("push", (event) => {
       kind: payload?.kind || "SYSTEM",
       receivedAt: Date.now(),
     },
-    sound: "/notification.wav",
     // أزرار إجراءات سريعة على شاشة القفل ومركز الإشعارات
     actions: [
       { action: "open", title: "عرض" },
