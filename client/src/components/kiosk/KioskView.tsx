@@ -628,7 +628,11 @@ export default function KioskView({
 
   // نفس سياسة HID المشتركة؛ تقبل رموز الموردين القصيرة (محرفان) وكل ASCII القابل للطباعة،
   // وتتجاهل حقول إعدادات الكشك من دون مستمعٍ محليّ ينحرف عن بقية الشاشات.
-  useBarcodeScanner(handleScan, { minLength: 2, thresholdMs: 120 });
+  useBarcodeScanner(handleScan, {
+    minLength: 2,
+    thresholdMs: 120,
+    soundEnabled: settings.enableSound,
+  });
 
   // الإغلاق التلقائي لنتيجة المسح.
   useEffect(() => {

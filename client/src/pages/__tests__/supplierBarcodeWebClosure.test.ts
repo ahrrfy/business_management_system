@@ -31,7 +31,10 @@ describe("supplier barcode web closure", () => {
 
   it("يوحّد الكشك على hook الماسح ويقبل رمز مورد من محرفين", () => {
     const code = source("client/src/components/kiosk/KioskView.tsx");
-    expect(code).toContain("useBarcodeScanner(handleScan, { minLength: 2, thresholdMs: 120 })");
+    expect(code).toContain("useBarcodeScanner(handleScan, {");
+    expect(code).toContain("minLength: 2");
+    expect(code).toContain("thresholdMs: 120");
+    expect(code).toContain("soundEnabled: settings.enableSound");
     expect(code).not.toContain("if (buf.s.length >= 3)");
   });
 

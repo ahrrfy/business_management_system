@@ -13,6 +13,8 @@ export default defineConfig({
     environment: "node",
     include: [
       "client/src/lib/moneyInput.test.ts",
+      "client/src/lib/audioFeedback.test.ts",
+      "client/src/lib/notify.test.ts",
       "client/src/lib/applicantCvDownload.test.ts",
       "shared/expenseLabels.test.ts",
       "shared/digitalSale.test.ts",
