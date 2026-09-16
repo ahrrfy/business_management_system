@@ -65,8 +65,8 @@ export function PrintChannelCustomerBar({
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: 6,
-        padding: "8px 10px",
+        gap: 5,
+        padding: "5px 8px",
         background: C.card,
         borderRadius: 10,
         border: `1px solid ${C.border}`,
@@ -102,7 +102,9 @@ export function PrintChannelCustomerBar({
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 3.5,
-                    padding: "3px 7px",
+                    height: 26,
+                    minHeight: 0,
+                    padding: "0 7px",
                     borderRadius: 5,
                     border: "none",
                     background: active ? C.primary : "transparent",
@@ -132,6 +134,7 @@ export function PrintChannelCustomerBar({
             alignItems: "center",
             gap: 4,
             height: 28,
+            minHeight: 0,
             padding: "0 8px",
             borderRadius: 6,
             border: `1.5px solid ${heldCount > 0 ? "var(--sem-warn, #f59e0b)" : C.border}`,
@@ -188,7 +191,9 @@ export function PrintChannelCustomerBar({
               setCustomerId(null);
             }}
             style={{
-              padding: "4px 8px",
+              height: 26,
+              minHeight: 0,
+              padding: "0 8px",
               borderRadius: 5,
               border: "none",
               background: customerMode === "GUEST" ? C.primary : "transparent",
@@ -206,7 +211,9 @@ export function PrintChannelCustomerBar({
             type="button"
             onClick={() => setCustomerMode("REGISTERED")}
             style={{
-              padding: "4px 8px",
+              height: 26,
+              minHeight: 0,
+              padding: "0 8px",
               borderRadius: 5,
               border: "none",
               background: customerMode === "REGISTERED" ? C.primary : "transparent",
