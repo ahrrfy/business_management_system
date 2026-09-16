@@ -48,7 +48,7 @@ export interface FinalizeInput {
   intentId: number;
   /** مفتاح idempotency للفاتورة — إعادةُ نفسه تُعيد الفاتورة نفسها بلا أثرٍ ثانٍ. */
   clientRequestId: string;
-  /** المبلغ المقبوض فعلاً؛ يجب أن يساوي إجمالي النيّة (لا بيع رقميّ جزئيّ). */
+  /** المبلغ المقبوض فعلاً؛ يساوي الإجمالي للنقد/البطاقة وصفر للآجل الكامل. */
   paymentAmount: string;
   paymentMethod: PaymentMethod | "CREDIT";
   externalPaymentAttemptId?: number | null;
@@ -144,6 +144,13 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       doThis: "استعد النيّة المحفوظة بعميلها الأصلي؛ لا تُعِد إصدار الكروت",
     }) });
   }
+  if (input.paymentMethod === "CREDIT" && !money(input.paymentAmount).eq(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذّر تثبيت فاتورة الكروت الآجلة",
+      why: "طلب التثبيت يحمل مبلغاً مقبوضاً مع أن كامل الإجمالي ذمّة",
+      doThis: "أعد التثبيت بمقبوض صفر، أو غيّر شروط الدفع إلى نقد أو بطاقة قبل إصدار الكروت",
+    }) });
+  }
   if (input.paymentMethod !== "CREDIT" && !money(input.paymentAmount).eq(money(intent.expectedTotal))) {
     throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
       what: "المقبوض لا يطابق إجمالي الكروت والأصناف",
@@ -166,7 +173,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       });
     }
   } else if (input.externalPaymentAttemptId != null) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي أو الآجل لا يحمل محاولة دفع خارجية" });
   }
 
   /* ٢. إعادة الفاتورة القائمة إن كانت مُثبَّتة (idempotency). */
@@ -407,16 +414,20 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       contactPhone: null,
       couponCode: null,
       priceTier: checkout?.priceTier ?? null,
-      priceOverrideApproved: supervisor,
+      priceOverrideApproved: supervisor || checkout?.managerApprovedByUserId != null,
       sourceType: checkout?.sourceType === "INVOICE" ? "ORDER" : "POS",
       clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
-      payment: {
+      dueDate: checkout?.dueDate ?? null,
+      notes: checkout?.notes ?? null,
+      creditApproved: checkout?.creditApprovalId != null,
+      creditApprovalId: checkout?.creditApprovalId ?? undefined,
+      payment: input.paymentMethod === "CREDIT" ? undefined : {
         amount: input.paymentAmount,
         method: input.paymentMethod,
         externalPaymentAttemptId: boundExternalAttemptId,
         externalPaymentIntentId: input.intentId,
       },
-      requireExternalPaymentAttempt: input.paymentMethod !== "CASH",
+      requireExternalPaymentAttempt: input.paymentMethod === "CARD",
       deviceId: boundExternalDeviceId,
       lines: [...checkoutSnapshotToSaleLines(checkout), ...items.map((it) => {
         const m = meta.get(Number(it.offeringId))!;
@@ -432,14 +443,12 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     };
 
     sale = await createConfirmedPosSaleInTx(tx, salePayload as any, actor, DIGITAL_SALE_CAPABILITY);
-    if (checkout?.sourceType === "POS" || !checkout?.sourceType) {
-      if (!money(sale.total).eq(expectedTotal)) {
-        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
-          what: "تراجعت الفاتورة بالكامل",
-          why: "إجمالي الفاتورة المحسوب لا يطابق إجمالي النيّة المحفوظة",
-          doThis: "راجِع العملية دون إعادة إصدار الكروت أو قبض المبلغ ثانيةً",
-        }) });
-      }
+    if (!money(sale.total).eq(expectedTotal)) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تراجعت الفاتورة بالكامل",
+        why: "إجمالي الفاتورة المحسوب لا يطابق إجمالي النيّة المحفوظة",
+        doThis: "راجِع العملية دون إعادة إصدار الكروت أو قبض المبلغ ثانيةً",
+      }) });
     }
     for (const line of sale.createdLineItems ?? []) {
       if (line.lineToken) {
@@ -646,7 +655,7 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
     .where(eq(digitalSaleIntents.id, intentId))
     .limit(1);
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
-  if (intent.paymentMethod !== "CASH" && intent.paymentMethod !== "CARD") {
+  if (intent.paymentMethod !== "CASH" && intent.paymentMethod !== "CARD" && intent.paymentMethod !== "CREDIT") {
     throw new TRPCError({ code: "CONFLICT", message: "طريقة دفع النيّة غير قابلة للاسترداد" });
   }
   return finalize(
@@ -654,7 +663,7 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
     {
       intentId,
       clientRequestId: intent.clientRequestId,
-      paymentAmount: intent.expectedTotal,
+      paymentAmount: intent.paymentMethod === "CREDIT" ? "0" : intent.expectedTotal,
       paymentMethod: intent.paymentMethod,
       externalPaymentAttemptId: intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId),
       deviceId: intent.externalPaymentDeviceId,

@@ -77,11 +77,22 @@ async function publish(providerId: number, lines: { offeringId: number; provider
 let seq = 0;
 async function prepareAndExecute(
   lines: { offeringId: number; priced: { pv: number; price: string }; student?: intentService.PrepareLine["student"] }[],
+  options: {
+    paymentMethod?: "CASH" | "CREDIT";
+    customerId?: number;
+    sourceType?: "POS" | "INVOICE";
+    dueDate?: string;
+    notes?: string;
+  } = {},
 ) {
   const id = ++seq;
   const r = await withTx((tx) => intentService.prepare(tx, {
     clientRequestId: `prep-${id}-${Math.random().toString(36).slice(2, 8)}`,
-    branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: `fp${id}`,
+    branchId: 1, shiftId: 1, paymentMethod: options.paymentMethod ?? "CASH", cartFingerprint: `fp${id}`,
+    customerId: options.customerId,
+    sourceType: options.sourceType,
+    dueDate: options.dueDate,
+    notes: options.notes,
     lines: lines.map((l, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: l.offeringId, priceVersionId: l.priced.pv,
       expectedSellPrice: l.priced.price, providerReference: `REF-FIN-${id}-${i}`, student: l.student ?? null,
@@ -165,6 +176,59 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
     const [off] = await db().select().from(s.digitalOfferings).where(eq(s.digitalOfferings.id, offeringId));
     const [variant] = await db().select().from(s.productVariants).where(eq(s.productVariants.id, Number(off.variantId)));
     expect(variant.costPrice).toBe("0.00"); // لم يُمَسّ
+  });
+
+  it("يثبّت فاتورة الكروت الآجلة ذمّةً كاملة بلا إيصال ويحفظ الاستحقاق", async () => {
+    await db().insert(s.customers).values({
+      id: 1,
+      name: "عميل آجل",
+      defaultPriceTier: "RETAIL",
+      creditLimit: null,
+      currentBalance: "0",
+    });
+    const { providerId } = await mkProvider("آسياسيل آجل للعميل", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كارت آجل", walletId);
+    const priced = await publish(providerId, [
+      { offeringId, providerShare: "13400" },
+    ]);
+    const intentId = await prepareAndExecute(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      {
+        paymentMethod: "CREDIT",
+        customerId: 1,
+        sourceType: "INVOICE",
+        dueDate: "2026-10-31",
+        notes: "بيع آجل موثق",
+      },
+    );
+
+    const res = await withTx((tx) => finalizeService.finalize(tx, {
+      intentId,
+      clientRequestId: "fin-credit-001",
+      paymentAmount: "0.00",
+      paymentMethod: "CREDIT",
+      customerId: 1,
+    }, actor));
+
+    const [invoice] = await db().select().from(s.invoices).where(eq(s.invoices.id, res.invoiceId));
+    expect(invoice).toMatchObject({
+      customerId: 1,
+      paidAmount: "0.00",
+      paymentMethod: null,
+      status: "PENDING",
+      notes: "بيع آجل موثق",
+    });
+    expect(invoice.dueDate?.toISOString().slice(0, 10)).toBe("2026-10-31");
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, res.invoiceId))).toHaveLength(0);
+    const [customer] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(customer.currentBalance).toBe("14250.00");
+    const sale = (await entriesOf(res.invoiceId)).find((entry) => entry.entryType === "SALE")!;
+    expect(sale.amount).toBe("14250.00");
+    expect(sale.revenue).toBe("14250.00");
+    expect(sale.cost).toBe("13400.00");
+    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    expect(wallet.currentBalance).toBe("86600.00");
   });
 });
 

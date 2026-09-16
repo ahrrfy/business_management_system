@@ -247,7 +247,7 @@ describe("ش٧ — الإعداد (prepare)", () => {
     }, actor))).rejects.toThrow(/تغيّر سعر/);
   });
 
-  it("يرفض الآجل ووردية مغلقة ومفاتيح أسطر مكرّرة", async () => {
+  it("يرفض الآجل خارج الفاتورة المتقدمة أو بلا عميل، ويرفض وردية مغلقة ومفاتيح أسطر مكرّرة", async () => {
     const providerId = await mkProvider();
     const walletId = await mkWallet(providerId, "100000");
     const offeringId = await mkOffering(providerId, { walletId });
@@ -257,6 +257,11 @@ describe("ش٧ — الإعداد (prepare)", () => {
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-credit-1", branchId: 1, shiftId: 1, paymentMethod: "CREDIT", cartFingerprint: "fp", lines: [l],
     }, actor))).rejects.toThrow(/نقداً أو ببطاقة فقط/);
+
+    await expect(withTx((tx) => intentService.prepare(tx, {
+      clientRequestId: "req-credit-invoice-1", branchId: 1, shiftId: 1,
+      paymentMethod: "CREDIT", cartFingerprint: "fp", sourceType: "INVOICE", lines: [l],
+    }, actor))).rejects.toThrow(/عميلاً مسجّلاً/);
 
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-dupkey-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp",

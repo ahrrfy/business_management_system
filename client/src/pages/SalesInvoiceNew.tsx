@@ -46,7 +46,7 @@ import { releaseReservedPrintWindow, reservePrintWindow,
 } from "@/lib/printing/brand";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
-import { captureDigitalInvoiceBasketItems, toDigitalPrepareLine, toDigitalPrepareRegularLine, validateDigitalInvoiceCheckout } from "@/components/pos/digitalBasket";
+import { captureDigitalInvoiceBasketItems, resolveDigitalInvoiceSettlement, toDigitalPrepareLine, toDigitalPrepareRegularLine, validateDigitalInvoiceCheckout } from "@/components/pos/digitalBasket";
 import { AlertTriangle, Lock, FileWarning, CreditCard } from "lucide-react";
 import {
   Dialog,
@@ -444,9 +444,14 @@ export default function SalesInvoice() {
   
   const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
     onSuccess: (res) => {
-      setDigitalIntentId(res.intentId);
+      setDigitalIntentId(res.intentId); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير") || e.message.includes("نقديٌّ فقط"))) {
+        setCreditPrompt(e.message); return;
+      }
+      releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; notify.err(e);
+    },
   });
 
   const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
@@ -722,24 +727,19 @@ export default function SalesInvoice() {
     return null;
   }
 
-  function startDigitalFulfillment() {
+  function startDigitalFulfillment(approval?: Approval) {
     if (!currentShift.data) return notify.warn("يلزم فتح وردية في فرع الفاتورة قبل بيع الكروت والاشتراكات.");
     const regular = state.items.filter((c) => !c.digital);
     const digitalLines = state.items.filter((c) => c.digital);
-    if (!digitalLines.length) return;
+    if (!digitalLines.length) return; const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() });
     prepareIntent.mutate({
-      branchId: Number(state.branchId),
-      shiftId: currentShift.data.id,
-      clientRequestId,
-      paymentMethod: state.paymentMethod,
-      externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined,
-      externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined,
-      cartFingerprint: clientRequestId,
-      customerId: state.entityId ?? undefined,
-      priceTier: state.tier,
-      sourceType: "INVOICE",
-      regularLines: regular.map(toDigitalPrepareRegularLine),
-      lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)),
+      branchId: Number(state.branchId), shiftId: currentShift.data.id, clientRequestId,
+      paymentMethod: settlement.paymentMethod,
+      externalPaymentAttemptId: settlement.paymentMethod === "CARD" ? externalAttempt?.attemptId ?? undefined : undefined,
+      externalPaymentDeviceId: settlement.paymentMethod === "CARD" ? externalAttempt?.deviceId ?? undefined : undefined,
+      cartFingerprint: clientRequestId, customerId: state.entityId ?? undefined, priceTier: state.tier,
+      dueDate: state.paymentTerms === "CREDIT" && state.dueDate ? state.dueDate : undefined, notes: state.notes.trim() || undefined, sourceType: "INVOICE",
+      regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)), ...(approval ? { managerApproval: approval } : {}),
     });
   }
 
@@ -753,9 +753,9 @@ export default function SalesInvoice() {
   }
 
   function finalizeDigitalIntent(id: number) {
-    if (finalizeSale.isPending) return; finalizeSale.mutate({
-      intentId: id, clientRequestId, paymentAmount: externalAmount,
-      paymentMethod: state.paymentMethod as "CASH" | "CARD",
+    const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() }); if (finalizeSale.isPending) return; finalizeSale.mutate({
+      intentId: id, clientRequestId, paymentAmount: settlement.paymentAmount,
+      paymentMethod: settlement.paymentMethod,
       customerId: state.entityId ?? undefined,
     });
   }
@@ -803,7 +803,7 @@ export default function SalesInvoice() {
         }
       } else {
         if (state.items.some((c) => !!c.digital)) {
-          startDigitalFulfillment();
+          startDigitalFulfillment(approval);
         } else {
           create.mutate(buildPayload(approval));
         }
