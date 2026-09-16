@@ -76,7 +76,7 @@ export default defineConfig(({ mode }) => {
       // إصدارين ويصون الإدخال الجاري؛ PwaUpdateManager يطلب قرار الموظف ثم
       // يرسل SKIP_WAITING بعد حفظ لقطة استرداد محلية.
       registerType: "prompt",
-      includeAssets: ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "notification.wav"],
+      includeAssets: ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png"],
       // PWA المتجر تحفظ قشرة /store فقط. بيانات المنتجات والأسعار والطلب تبقى شبكة فقط؛
       // لا ندّعي تشغيل التجارة كاملةً دون اتصال ولا نعيد صفحات ERP من fallback مخبّأ.
       workbox: {

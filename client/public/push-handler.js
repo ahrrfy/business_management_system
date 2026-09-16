@@ -41,6 +41,7 @@ self.addEventListener("push", (event) => {
     badge: "/icon-192.png",
     // نمط اهتزاز ملموس يعطي الهاتف إحساس التنبيه الأصلي
     vibrate: [150, 80, 150, 80, 250],
+    silent: false,
     // tag موحّد حسب نوع الإشعار أو فريد؛ يمنع التراكم المزعج
     tag: payload?.tag || payload?.kind || `notif_${Date.now()}`,
     renotify: Boolean(payload?.tag || payload?.kind),
