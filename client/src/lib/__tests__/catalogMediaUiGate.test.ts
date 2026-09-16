@@ -71,10 +71,10 @@ describe("catalog media UI gate", () => {
   });
 
   it("does not turn an unknown server refresh into a destructive draft conflict", () => {
-    const page = source("client/src/pages/ProductImageStudio.tsx");
+    const page = source("client/src/components/product-studio/StudioPhotographerWorkspace.tsx");
     // Reconciliation must fetch the exact task, not infer absence from a list page.
     const selection = source("client/src/components/product-studio/useStudioSelectedTask.ts");
-    expect(page).toContain("useStudioSelectedTask(scope, selectedId, offline, taskItems, scannedTask)");
+    expect(page).toContain("useStudioSelectedTask(\"MINE\", selectedId, offline, [], null)");
     expect(selection).toMatch(/const selectedTaskQuery = trpc\.productStudio\.tasks\.useQuery\([\s\S]{0,100}taskId: selectedId/);
     const refresh = page.slice(page.indexOf("const refreshed = await selectedTaskQuery.refetch();"), page.indexOf("const result = await reconcileStudioDraftAfterReconnect("));
     expect(refresh).toMatch(/if \(refreshed\.isError\)\s*\{[\s\S]{0,250}setResumeRetry[\s\S]{0,100}return;/);
