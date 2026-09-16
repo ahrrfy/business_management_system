@@ -64,6 +64,7 @@ object NativeNotificationRenderer {
             .setStyle(NotificationCompat.BigTextStyle().bigText(payload.body))
             .setContentIntent(contentIntent)
             .setAutoCancel(true)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setOnlyAlertOnce(true)
             .setCategory(
                 if (payload.urgency == NotificationUrgency.ACTION) {
