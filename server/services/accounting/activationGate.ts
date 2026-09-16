@@ -427,6 +427,7 @@ export async function canActivate(options?: {
             and(
               eq(receipts.partyType, "OTHER"),
               isNull(receipts.voucherCategoryId),
+              isNull(receipts.invoiceId),
             ),
           ),
         executor
@@ -469,6 +470,9 @@ export async function canActivate(options?: {
     usedCategoryIds,
     activeAccountRoles,
   );
+  const isDeliveryRemittanceReference = (
+    reference: string | null | undefined,
+  ): boolean => Boolean(reference && /^DR-\d+-\d{8}-\d+$/.test(reference));
   const systemPaymentRows = allReceiptRows.filter(
     (row) =>
       hasSystemPaymentRequestEnvelope(row.internalNote) ||
@@ -477,7 +481,11 @@ export async function canActivate(options?: {
   const systemPaymentReceiptIds = systemPaymentRows.map((row) => Number(row.id));
   const systemPaymentReceiptIdSet = new Set(systemPaymentReceiptIds);
   const manualUnclassifiedOtherReceiptIds = unclassifiedOtherRows
-    .filter((row) => !systemPaymentReceiptIdSet.has(Number(row.id)))
+    .filter(
+      (row) =>
+        !systemPaymentReceiptIdSet.has(Number(row.id)) &&
+        !isDeliveryRemittanceReference(row.referenceNumber),
+    )
     .map((row) => Number(row.id));
   const canonicalAdvanceRequests = systemPaymentRows
     .map((row) => ({ row, request: parseSystemPaymentRequest(row.internalNote) }))

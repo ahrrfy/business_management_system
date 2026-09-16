@@ -12,7 +12,9 @@ import {
   getStatutoryActivationReadiness,
   replaceStatutoryAccounts,
   replaceStatutoryMappings,
+  seedIraqiUnifiedProfile,
 } from "../accounting/statutoryAccounting";
+import { IRAQI_UNIFIED_PROFILE_KEY } from "../accounting/iraqiUnifiedChartSeed";
 import { canActivate } from "../accounting/activationGate";
 import { writeJournal } from "../accounting/journalStore";
 import type { JournalLine } from "../accounting/postingEngine";
@@ -1006,5 +1008,35 @@ describe("statutory accounting compliance", () => {
     });
     expect(branchOne.available && branchOne.totals).toMatchObject({ debit: "10.00", credit: "0.00" });
     expect(branchTwo.available && branchTwo.totals).toMatchObject({ debit: "0.00", credit: "10.00" });
+  });
+
+  it("يبذر دليل النظام المحاسبي الموحد العراقي ويربط الحسابات التشغيلية بنسبة 100% ويجتاز بوابة الجاهزية", async () => {
+    await seedFoundation();
+    let seeded: Awaited<ReturnType<typeof seedIraqiUnifiedProfile>> | null = null;
+    await withTx(async (tx) => {
+      seeded = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+    });
+
+    expect(seeded).toBeDefined();
+    expect(seeded!.accountsImported).toBeGreaterThanOrEqual(50);
+    expect(seeded!.mappedAccounts).toBe(6);
+
+    await withTx(async (tx) => {
+      await approveStatutoryProfile(
+        tx,
+        {
+          profileId: seeded!.profileId,
+          accountantName: "مراقب الحسابات المعتمد",
+          approvalReference: "محضر المصادقة النظامي 1/2026",
+        },
+        ACTOR_ID,
+      );
+    });
+
+    const readiness = await getStatutoryActivationReadiness();
+    expect(readiness.ok).toBe(true);
+    expect(readiness.unmappedAccounts).toHaveLength(0);
+    expect(readiness.unresolvedJournalRoles).toHaveLength(0);
+    expect(readiness.activeProfile?.profileKey).toBe(IRAQI_UNIFIED_PROFILE_KEY);
   });
 });
