@@ -5,6 +5,7 @@ import {
   accrualCorrectionRequests,
   accrualObligationEvents,
   accrualObligations,
+  deliveryRemittances,
   doubleEntrySettings,
   employeeAdvances,
   employees,
@@ -385,6 +386,7 @@ export async function canActivate(options?: {
     categoryAccountRows,
     unclassifiedOtherRows,
     allReceiptRows,
+    deliveryRemittanceRows,
   ] = executor
     ? await Promise.all([
         executor
@@ -452,8 +454,14 @@ export async function canActivate(options?: {
             createdBy: receipts.createdBy,
           })
           .from(receipts),
+        executor
+          .select({
+            receiptInId: deliveryRemittances.receiptInId,
+            receiptOutId: deliveryRemittances.receiptOutId,
+          })
+          .from(deliveryRemittances),
       ])
-    : [[], [], [], [], []];
+    : [[], [], [], [], [], []];
   const usedCategoryIds = new Set(
     usedCategoryRows
       .map((row) => row.categoryId)
@@ -470,9 +478,13 @@ export async function canActivate(options?: {
     usedCategoryIds,
     activeAccountRoles,
   );
-  const isDeliveryRemittanceReference = (
-    reference: string | null | undefined,
-  ): boolean => Boolean(reference && /^DR-\d+-\d{8}-\d+$/.test(reference));
+  const deliveryRemittanceReceiptIds = new Set(
+    deliveryRemittanceRows.flatMap((row) =>
+      [row.receiptInId, row.receiptOutId]
+        .filter((id): id is number => id != null)
+        .map(Number),
+    ),
+  );
   const systemPaymentRows = allReceiptRows.filter(
     (row) =>
       hasSystemPaymentRequestEnvelope(row.internalNote) ||
@@ -484,7 +496,7 @@ export async function canActivate(options?: {
     .filter(
       (row) =>
         !systemPaymentReceiptIdSet.has(Number(row.id)) &&
-        !isDeliveryRemittanceReference(row.referenceNumber),
+        !deliveryRemittanceReceiptIds.has(Number(row.id)),
     )
     .map((row) => Number(row.id));
   const canonicalAdvanceRequests = systemPaymentRows
