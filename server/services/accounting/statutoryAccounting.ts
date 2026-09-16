@@ -19,6 +19,13 @@ import {
 import { getDb, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import type { JournalLine } from "./postingEngine";
+import {
+  IRAQI_UNIFIED_PROFILE_KEY,
+  IRAQI_UNIFIED_PROFILE_NAME,
+  IRAQI_UNIFIED_AUTHORITY_REF,
+  IRAQI_UNIFIED_ACCOUNTS,
+  SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE,
+} from "./iraqiUnifiedChartSeed";
 
 export type StatutoryAccountType =
   | "ASSET"
@@ -735,3 +742,103 @@ export async function snapshotJournalLines(
     };
   });
 }
+
+/**
+ * بذر دليل النظام المحاسبي الموحد العراقي تلقائياً وربطه بنسبة 100% بكافة أدوار وحسابات النظام.
+ */
+export async function seedIraqiUnifiedProfile(
+  tx: Tx,
+  actorId: number,
+): Promise<{
+  profileId: number;
+  status: string;
+  accountsImported: number;
+  mappedAccounts: number;
+}> {
+  // فحص ما إذا كان البروفايل موجوداً مسبقاً
+  let profile = (
+    await tx
+      .select()
+      .from(statutoryAccountingProfiles)
+      .where(
+        and(
+          eq(statutoryAccountingProfiles.profileKey, IRAQI_UNIFIED_PROFILE_KEY),
+          eq(statutoryAccountingProfiles.version, 1),
+        ),
+      )
+      .limit(1)
+  )[0];
+
+  let profileId: number;
+  if (!profile) {
+    const created = await createStatutoryProfile(
+      tx,
+      {
+        profileKey: IRAQI_UNIFIED_PROFILE_KEY,
+        version: 1,
+        name: IRAQI_UNIFIED_PROFILE_NAME,
+        authorityReference: IRAQI_UNIFIED_AUTHORITY_REF,
+        effectiveFrom: new Date().toISOString().slice(0, 10),
+      },
+      actorId,
+    );
+    profileId = created.id;
+  } else {
+    profileId = Number(profile.id);
+  }
+
+  // إذا كان البروفايل معتمداً بالفعل (ACTIVE)، نعيد حالته مباشرة دون تدمير البيانات
+  if (profile?.status === "ACTIVE") {
+    const readiness = await profileReadiness(tx, profileId);
+    return {
+      profileId,
+      status: "ACTIVE",
+      accountsImported: IRAQI_UNIFIED_ACCOUNTS.length,
+      mappedAccounts: readiness?.mappedAccounts ?? 0,
+    };
+  }
+
+  // بذر / استبدال حسابات الدليل العراقي الموحد
+  await replaceStatutoryAccounts(tx, profileId, IRAQI_UNIFIED_ACCOUNTS);
+
+  // جلب معرّفات الحسابات النظامية المفروزة برمز الحساب
+  const statutoryRows = await tx
+    .select({ id: statutoryAccounts.id, code: statutoryAccounts.code })
+    .from(statutoryAccounts)
+    .where(eq(statutoryAccounts.profileId, profileId));
+  const statutoryIdByCode = new Map(
+    statutoryRows.map((r) => [r.code, Number(r.id)]),
+  );
+
+  // جلب كافة الحسابات التشغيلية النشطة ذات الأدوار
+  const internalRows = await tx
+    .select({ id: accounts.id, systemRole: accounts.systemRole })
+    .from(accounts)
+    .where(and(eq(accounts.isActive, true), isNotNull(accounts.systemRole)));
+
+  // إنشاء مصفوفة الربط التلقائي بناءً على خريطة الأدوار
+  const mappings: MappingInput[] = [];
+  for (const internal of internalRows) {
+    if (!internal.systemRole) continue;
+    const targetStatutoryCode =
+      SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE[internal.systemRole];
+    if (targetStatutoryCode && statutoryIdByCode.has(targetStatutoryCode)) {
+      mappings.push({
+        internalAccountId: Number(internal.id),
+        statutoryAccountId: statutoryIdByCode.get(targetStatutoryCode)!,
+        rationale: `ربط آلي معتمد بالنظام المحاسبي الموحد العراقي لدور ${internal.systemRole}`,
+      });
+    }
+  }
+
+  // كتابة خرائط الربط
+  await replaceStatutoryMappings(tx, profileId, mappings, actorId);
+
+  return {
+    profileId,
+    status: "DRAFT",
+    accountsImported: IRAQI_UNIFIED_ACCOUNTS.length,
+    mappedAccounts: mappings.length,
+  };
+}
+
