@@ -15,10 +15,12 @@ import {
  */
 
 const actor = { userId: 1, branchId: 1, role: "cashier" };
+const manager = { userId: 2, branchId: 1, role: "manager" };
 const DATE = "2026-07-29";
 
 const TABLES = [
   "digitalSubscriptionContracts",
+  "creditApprovals",
   "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
   "digitalWalletTransactions", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
@@ -31,7 +33,10 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 
 async function seedBase() {
   await db().insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
-  await db().insert(s.users).values({ id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" });
+  await db().insert(s.users).values([
+    { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
+    { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
+  ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
 
@@ -83,6 +88,7 @@ async function prepareAndExecute(
     sourceType?: "POS" | "INVOICE";
     dueDate?: string;
     notes?: string;
+    managerOverrideByUserId?: number;
   } = {},
 ) {
   const id = ++seq;
@@ -93,6 +99,7 @@ async function prepareAndExecute(
     sourceType: options.sourceType,
     dueDate: options.dueDate,
     notes: options.notes,
+    managerOverrideByUserId: options.managerOverrideByUserId,
     lines: lines.map((l, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: l.offeringId, priceVersionId: l.priced.pv,
       expectedSellPrice: l.priced.price, providerReference: `REF-FIN-${id}-${i}`, student: l.student ?? null,
@@ -229,6 +236,74 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
     expect(sale.cost).toBe("13400.00");
     const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
     expect(wallet.currentBalance).toBe("86600.00");
+  });
+
+  it("ينشئ اعتماداً جديداً ضيقاً عند استرداد نيّة آجلة انتهت موافقتها بعد الإصدار", async () => {
+    await db().insert(s.customers).values({
+      id: 1,
+      name: "عميل استرداد آجل",
+      defaultPriceTier: "RETAIL",
+      creditLimit: "0",
+      currentBalance: "0",
+    });
+    const { providerId } = await mkProvider("مزوّد استرداد آجل", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كرت استرداد آجل", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const intentId = await prepareAndExecute(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      {
+        paymentMethod: "CREDIT",
+        customerId: 1,
+        sourceType: "INVOICE",
+        managerOverrideByUserId: manager.userId,
+      },
+    );
+    const [originalApproval] = await db().select().from(s.creditApprovals);
+    await db().update(s.creditApprovals)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(s.creditApprovals.id, Number(originalApproval.id)));
+    await db().update(s.digitalSaleIntents)
+      .set({ status: "NEEDS_REVIEW" })
+      .where(eq(s.digitalSaleIntents.id, intentId));
+
+    const recovered = await withTx((tx) => finalizeService.recoverNeedsReview(tx, intentId, manager));
+
+    expect(recovered.customerId).toBe(1);
+    const approvals = await db().select().from(s.creditApprovals);
+    expect(approvals).toHaveLength(2);
+    expect(approvals.find((approval) => Number(approval.id) !== Number(originalApproval.id))?.consumedByInvoiceId)
+      .toBe(recovered.invoiceId);
+    expect(approvals.find((approval) => Number(approval.id) === Number(originalApproval.id))?.consumedAt).toBeNull();
+  });
+
+  it("يتجاوز سباق تغيّر حد الائتمان عند استرداد كروت صدرت فعلاً باعتماد المدير", async () => {
+    await db().insert(s.customers).values({
+      id: 1,
+      name: "عميل سباق ائتمان",
+      defaultPriceTier: "RETAIL",
+      creditLimit: "20000",
+      currentBalance: "0",
+    });
+    const { providerId } = await mkProvider("مزوّد سباق ائتمان", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كرت سباق ائتمان", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const intentId = await prepareAndExecute(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1, sourceType: "INVOICE" },
+    );
+    expect(await db().select().from(s.creditApprovals)).toHaveLength(0);
+    await db().update(s.customers).set({ currentBalance: "10000" }).where(eq(s.customers.id, 1));
+    await db().update(s.digitalSaleIntents)
+      .set({ status: "NEEDS_REVIEW" })
+      .where(eq(s.digitalSaleIntents.id, intentId));
+
+    const recovered = await withTx((tx) => finalizeService.recoverNeedsReview(tx, intentId, manager));
+
+    expect(recovered.invoiceId).toBeGreaterThan(0);
+    const [approval] = await db().select().from(s.creditApprovals);
+    expect(approval.consumedByInvoiceId).toBe(recovered.invoiceId);
   });
 });
 

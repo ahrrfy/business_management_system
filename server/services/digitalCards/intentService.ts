@@ -42,6 +42,7 @@ import { normalizeIraqPhoneE164, phoneSuffix10 } from "../../lib/phone";
 import { assertCreditLimit } from "../../lib/credit";
 import { createApproval } from "../creditApprovalService";
 import { money, sumMoney, toDbMoney } from "../money";
+import { readOpeningWindowState } from "../openingModeService";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
@@ -470,13 +471,16 @@ export async function prepare(
     } else {
       // يفشل قبل إصدار أي كرت. تبقى نواة البيع تعيد الفحص عند التثبيت للحماية من تغيّر
       // الرصيد بين الإعداد والإصدار، أمّا موافقة المدير المحدّدة بالمبلغ فتُستهلك مرةً واحدة.
-      await assertCreditLimit(
-        tx,
-        customerId,
-        expectedTotal,
-        input.branchId,
-        "CREDIT",
-      );
+      const opening = await readOpeningWindowState(tx);
+      if (!opening.active) {
+        await assertCreditLimit(
+          tx,
+          customerId,
+          expectedTotal,
+          input.branchId,
+          "CREDIT",
+        );
+      }
     }
   }
   const checkoutSnapshot = { ...checkoutBase, creditApprovalId };
@@ -980,6 +984,7 @@ export async function listNeedsReview(db: DB, filters: { branchId?: number | nul
       shiftStatus: shifts.status,
       shiftOpenedAt: shifts.openedAt,
       shiftClosedAt: shifts.closedAt,
+      paymentMethod: digitalSaleIntents.paymentMethod,
       expectedTotal: digitalSaleIntents.expectedTotal,
       createdAt: digitalSaleIntents.createdAt,
       expiresAt: digitalSaleIntents.expiresAt,

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -27,6 +27,7 @@ const DATE = "2026-07-29";
 
 const TABLES = [
   "digitalSubscriptionContracts", "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "creditApprovals",
   "digitalWalletTransactions", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
@@ -44,6 +45,13 @@ async function seedBase() {
     { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
     { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await db().insert(s.customers).values({
+    id: 1,
+    name: "عميل آجل",
+    defaultPriceTier: "RETAIL",
+    creditLimit: null,
+    currentBalance: "0",
+  });
   await db().insert(s.receipts).values({
     branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
     cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
@@ -93,11 +101,17 @@ async function publish(providerId: number, lines: { offeringId: number; provider
 }
 
 let seq = 0;
-async function sell(offerings: { offeringId: number; priced: { pv: number; price: string } }[]) {
+async function sell(
+  offerings: { offeringId: number; priced: { pv: number; price: string } }[],
+  options: { paymentMethod?: "CASH" | "CREDIT"; customerId?: number } = {},
+) {
   const id = ++seq;
+  const paymentMethod = options.paymentMethod ?? "CASH";
   const r = await withTx((tx) => intentService.prepare(tx, {
     clientRequestId: `p-${id}-${Math.random().toString(36).slice(2, 9)}`, branchId: 1, shiftId: 1,
-    paymentMethod: "CASH", cartFingerprint: `fp${id}`,
+    paymentMethod, cartFingerprint: `fp${id}`,
+    customerId: options.customerId,
+    sourceType: paymentMethod === "CREDIT" ? "INVOICE" : "POS",
     lines: offerings.map((o, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: o.offeringId, priceVersionId: o.priced.pv, expectedSellPrice: o.priced.price,
       providerReference: `REF-REV-${id}-${i}`,
@@ -116,7 +130,9 @@ async function sell(offerings: { offeringId: number; priced: { pv: number; price
   const total = offerings.reduce((a, o) => a + Number(o.priced.price), 0);
   return withTx((tx) => finalizeService.finalize(tx, {
     intentId: r.intentId, clientRequestId: `f-${id}-${Math.random().toString(36).slice(2, 9)}`,
-    paymentAmount: total.toFixed(2), paymentMethod: "CASH",
+    paymentAmount: paymentMethod === "CREDIT" ? "0.00" : total.toFixed(2),
+    paymentMethod,
+    customerId: options.customerId,
   }, actor));
 }
 
@@ -245,6 +261,42 @@ describe("ش١٢ — معيار الخروج: صافي صفريّ عند الع�
     expect(out.some((r) => r.direction === "OUT" && r.amount === "14250.00")).toBe(true);
   });
 
+  it("فاتورة الكرت الآجلة تُخفض الذمّة بلا صرف نقد لم يُقبض", async () => {
+    const { providerId } = await mkProvider("مزوّد آجل للعميل", "PREPAID");
+    const walletId = await mkWallet(providerId, "1000000");
+    const offeringId = await mkOffering(providerId, "كرت آجل للعميل", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const sale = await sell(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1 },
+    );
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance)
+      .toBe("14250.00");
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+
+    const ids = await detailIds(sale.invoiceId);
+    const res = await withTx((tx) => reversalService.approveReversal(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+      reason: "المزوّد ألغى الكرت الآجل",
+    }, mgr));
+
+    expect(res.refunded).toBe("0.00");
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId))).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.entryType, "PAYMENT_OUT"),
+      eq(s.accountingEntries.invoiceId, sale.invoiceId),
+    ))).toHaveLength(0);
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("0.00");
+    const [invoice] = await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId));
+    expect(invoice).toMatchObject({ paidAmount: "0.00", returnedTotal: "14250.00", status: "RETURNED" });
+    expect(await reversalService.netForInvoice(db(), sale.invoiceId)).toEqual({
+      revenue: "0.00",
+      cost: "0.00",
+      profit: "0.00",
+    });
+  });
+
   it("الآجل: الدفتر يعود صفراً وذمّة المزوّد تعود لما كانت", async () => {
     const { providerId, supplierId } = await mkProvider("منصّة", "POSTPAID");
     const o = await mkOffering(providerId, "اشتراك", null);
@@ -338,6 +390,38 @@ describe("ش١٢ — ردّ الخسارة", () => {
 
     const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
     expect(d[0].fulfillmentStatus).toBe("LOSS_REFUND");
+  });
+
+  it("ردّ خسارة لفاتورة آجلة يزيل الذمّة بلا صرف نقد ويُبقي حصة المزوّد خسارة", async () => {
+    const { providerId } = await mkProvider("مزوّد خسارة آجلة", "PREPAID");
+    const walletId = await mkWallet(providerId, "1000000");
+    const offeringId = await mkOffering(providerId, "كرت خسارة آجل", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const sale = await sell(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1 },
+    );
+    const ids = await detailIds(sale.invoiceId);
+    await withTx((tx) => reversalService.requestLossRefund(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+      reason: "تعذر استرداد الكرت ولم يُسلّم للعميل",
+    }, mgr));
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+
+    const res = await withTx((tx) => reversalService.lossRefund(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+    }, mgr2));
+
+    expect(res).toMatchObject({ refunded: "0.00", loss: "13400.00" });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId))).toHaveLength(0);
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("0.00");
+    expect(await reversalService.netForInvoice(db(), sale.invoiceId)).toEqual({
+      revenue: "0.00",
+      cost: "13400.00",
+      profit: "-13400.00",
+    });
   });
 });
 
