@@ -178,7 +178,7 @@ export function PaymentBlock({
   );
 
   return (
-    <div style={{ flexShrink: 0, minHeight: 240, maxHeight: "38%", display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+    <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       <div style={{ padding: "7px 16px", background: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
         <span style={{ fontSize: 13.5, color: C.primaryFg, fontWeight: 700, opacity: 0.92 }}>الإجمالي</span>
         <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
@@ -186,7 +186,7 @@ export function PaymentBlock({
           <span style={{ fontSize: 12.5, color: C.primaryFg, opacity: 0.85 }}>د.ع</span>
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "8px 12px 0" }}>
+      <div style={{ flexShrink: 0, padding: "8px 12px 0" }}>
         <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minHeight: fluid(38, 5, 46), marginBottom: 8 }}>
           <span style={{ fontSize: 13, color: C.mutedFg, flexShrink: 0, fontWeight: 700 }}>
             {editingInvoice ? "دفعة إضافية (اختياري)" : "المبلغ المستلم"}
@@ -257,9 +257,9 @@ export function PaymentBlock({
           {cartLen > 0 && !!payInput && isChange && (<><span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span><CopyButton value={change} title="نسخ الباقي" successMessage="تم نسخ الباقي" /></span></>)}
           {cartLen > 0 && !!payInput && isOwing && (<><span style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>المتبقي (آجل)</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12, fontWeight: 500 }}>د.ع</span></span><CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" /></span></>)}
         </div>
-        <div style={{ display: "flex", gap: 7 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {!editingInvoice && (
-            <>
+            <div style={{ display: "flex", gap: 6 }}>
               <button disabled={!canQuickPay || isPending} onClick={onQuickPay}
                 title={
                   isPending ? ACTION_LABELS.saving :
@@ -268,8 +268,8 @@ export function PaymentBlock({
                   !externalFullPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
                   `دفع سريع وطباعة — ${METHOD_LABEL[method]}`
                 }
-                style={{ width: 104, height: fluid(48, 6, 54), background: canQuickPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: canQuickPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13, fontWeight: 900, cursor: canQuickPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 4, touchAction: "manipulation" }}>
-                <Zap aria-hidden size={16} />دفع سريع
+                style={{ flex: 1, height: 38, background: canQuickPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: canQuickPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 8, fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, cursor: canQuickPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 4, touchAction: "manipulation" }}>
+                <Zap aria-hidden size={15} />دفع سريع
               </button>
               <button disabled={!canReserve || isPending} onClick={onReserve}
                 title={
@@ -279,10 +279,10 @@ export function PaymentBlock({
                   !hasCustomerInfo ? "حجز الطلب يتطلب اسم أو هاتف الزبون أو اختيار عميل" :
                   "حجز الطلب كفاتورة معلقة بالتسليم مع حفظ العربون إن وجد"
                 }
-                style={{ width: 100, height: fluid(48, 6, 54), background: canReserve && !isPending ? "linear-gradient(135deg, oklch(0.58 0.16 230), oklch(0.50 0.18 240))" : C.muted, color: canReserve && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13, fontWeight: 800, cursor: canReserve && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 4, touchAction: "manipulation" }}>
-                <Clock aria-hidden size={15} />حجز الطلب
+                style={{ flex: 1, height: 38, background: canReserve && !isPending ? "linear-gradient(135deg, oklch(0.58 0.16 230), oklch(0.50 0.18 240))" : C.muted, color: canReserve && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 8, fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, cursor: canReserve && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 4, touchAction: "manipulation" }}>
+                <Clock aria-hidden size={14} />حجز الطلب
               </button>
-            </>
+            </div>
           )}
           <button disabled={!canPay || isPending} onClick={onPay}
             title={
@@ -294,7 +294,7 @@ export function PaymentBlock({
               editingInvoice ? "اعتماد الفاتورة البديلة المعدلة وإغلاق السابقة" :
               `إتمام الدفع — ${fmt(total)} د.ع`
             }
-            style={{ flex: 1, height: fluid(48, 6, 54), background: canPay && !isPending ? (editingInvoice ? "var(--sem-pos, #10b981)" : C.success) : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 15, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, touchAction: "manipulation" }}>
+            style={{ width: "100%", height: 46, background: canPay && !isPending ? (editingInvoice ? "var(--sem-pos, #10b981)" : C.success) : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 15, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, touchAction: "manipulation" }}>
             {isPending
               ? "جارٍ…"
               : !cartLen

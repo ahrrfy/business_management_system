@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
-import { Pencil, Receipt as ReceiptIcon, User, X } from "lucide-react";
+import { Pencil, Receipt as ReceiptIcon, X } from "lucide-react";
 import { isCustomPriceSku, serviceIcon } from "@/lib/printServices";
-import { PrintCustomerCombo } from "./PrintCustomerCombo";
 import type { RouterOutputs } from "@/lib/trpc";
 
 type Svc = RouterOutputs["printPos"]["services"][number];
@@ -70,9 +69,27 @@ export function PrintCartList({
           {cart.length > 0 && <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 11.5, fontWeight: 700 }}>{cart.length} · {items}</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: customerId != null ? C.primary : C.mutedFg }} aria-hidden><User size={14} /></span>
-          <PrintCustomerCombo C={C} customerId={customerId} setCustomerId={setCustomerId} />
-          {cart.length > 0 && <button onClick={onClear} style={{ height: 36, padding: "0 11px", background: "none", border: `1px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontSize: 12.5, color: C.danger, fontFamily: "inherit", fontWeight: 700 }}>تفريغ</button>}
+          {cart.length > 0 && (
+            <button
+              type="button"
+              onClick={onClear}
+              style={{
+                height: 30,
+                padding: "0 10px",
+                background: "none",
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                cursor: "pointer",
+                fontSize: 12,
+                color: C.danger,
+                fontFamily: "inherit",
+                fontWeight: 700,
+                transition: "all 0.15s ease",
+              }}
+            >
+              تفريغ
+            </button>
+          )}
         </div>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: cart.length ? 9 : 0 }}>

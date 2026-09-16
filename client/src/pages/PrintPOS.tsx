@@ -1027,7 +1027,31 @@ export default function PrintPOS() {
             </div>
           );
         })}
-        {tabs.length < 6 && <button aria-label="طلب طباعة جديد" onClick={addTab} style={{ width: 44, height: 44, borderRadius: 9, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>}
+        {tabs.length < 6 && (
+          <button
+            type="button"
+            aria-label="طلب طباعة جديد"
+            onClick={addTab}
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              background: C.card,
+              border: `1.5px dashed ${C.border}`,
+              cursor: "pointer",
+              fontSize: 18,
+              color: C.mutedFg,
+              flexShrink: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 1,
+              transition: "all 0.15s ease",
+            }}
+          >
+            +
+          </button>
+        )}
       </div>
 
       {/* ٢٤/٨ (Codex P2 على PR #741): الأرضيّة كانت `oklch(0.95 ...)` مثبَّتة فاتحة، والفَون
