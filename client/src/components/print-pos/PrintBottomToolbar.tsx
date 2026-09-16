@@ -56,6 +56,56 @@ const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: "نقدي", CARD: "�
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
 const riqd = (n: number) => roundCashIQD(n).toNumber();
 
+function Method({
+  m,
+  Icon,
+  label,
+  active,
+  onClick,
+  activeColor,
+  activeGradient,
+  activeBorder,
+  shadowColor,
+}: {
+  m: PaymentMethod;
+  Icon: React.ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  activeColor: string;
+  activeGradient: string;
+  activeBorder: string;
+  shadowColor: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        height: 42,
+        minHeight: 0,
+        padding: "0 16px",
+        borderRadius: 9,
+        border: active ? `2px solid ${activeBorder}` : `1.5px solid ${activeColor}66`,
+        background: active ? activeGradient : `${activeColor}14`,
+        color: active ? "#fff" : activeColor,
+        fontWeight: 900,
+        fontSize: 13.5,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        boxShadow: active ? `0 3px 10px ${shadowColor}` : "none",
+        transition: "all 0.15s ease",
+      }}
+    >
+      <Icon size={19} aria-hidden />
+      <span>{label}</span>
+    </button>
+  );
+}
+
 export function PrintBottomToolbar({
   C,
   cart,
@@ -289,85 +339,43 @@ export function PrintBottomToolbar({
         <span style={{ fontSize: 12.5, fontWeight: 800, color: C.mutedFg }}>التحصيل:</span>
 
         {/* نقدي — أخضر زمردي مميز */}
-        <button
-          type="button"
+        <Method
+          m="CASH"
+          Icon={Banknote}
+          label="نقدي"
+          active={method === "CASH"}
           onClick={() => setMethod("CASH")}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            height: 42,
-            minHeight: 0,
-            padding: "0 16px",
-            borderRadius: 9,
-            border: method === "CASH" ? "2px solid #059669" : "1.5px solid rgba(16, 185, 129, 0.4)",
-            background: method === "CASH" ? "linear-gradient(135deg, #10b981, #059669)" : "rgba(16, 185, 129, 0.08)",
-            color: method === "CASH" ? "#fff" : "#10b981",
-            fontWeight: 900,
-            fontSize: 13.5,
-            cursor: "pointer",
-            fontFamily: "inherit",
-            boxShadow: method === "CASH" ? "0 3px 10px rgba(16, 185, 129, 0.35)" : "none",
-            transition: "all 0.15s ease",
-          }}
-        >
-          <Banknote size={19} aria-hidden />
-          <span>نقدي</span>
-        </button>
+          activeColor="#10b981"
+          activeGradient="linear-gradient(135deg, #10b981, #059669)"
+          activeBorder="#059669"
+          shadowColor="rgba(16, 185, 129, 0.35)"
+        />
 
         {/* بطاقة — أزرق مميز */}
-        <button
-          type="button"
+        <Method
+          m="CARD"
+          Icon={CreditCard}
+          label="بطاقة"
+          active={method === "CARD"}
           onClick={() => setMethod("CARD")}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            height: 42,
-            minHeight: 0,
-            padding: "0 16px",
-            borderRadius: 9,
-            border: method === "CARD" ? "2px solid #1d4ed8" : "1.5px solid rgba(37, 99, 235, 0.4)",
-            background: method === "CARD" ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "rgba(37, 99, 235, 0.08)",
-            color: method === "CARD" ? "#fff" : "#2563eb",
-            fontWeight: 900,
-            fontSize: 13.5,
-            cursor: "pointer",
-            fontFamily: "inherit",
-            boxShadow: method === "CARD" ? "0 3px 10px rgba(37, 99, 235, 0.35)" : "none",
-            transition: "all 0.15s ease",
-          }}
-        >
-          <CreditCard size={19} aria-hidden />
-          <span>بطاقة</span>
-        </button>
+          activeColor="#2563eb"
+          activeGradient="linear-gradient(135deg, #2563eb, #1d4ed8)"
+          activeBorder="#1d4ed8"
+          shadowColor="rgba(37, 99, 235, 0.35)"
+        />
 
         {/* تحويل — بنفسجي مميز */}
-        <button
-          type="button"
+        <Method
+          m="TRANSFER"
+          Icon={RefreshCw}
+          label="تحويل"
+          active={method === "TRANSFER"}
           onClick={() => setMethod("TRANSFER")}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            height: 42,
-            minHeight: 0,
-            padding: "0 16px",
-            borderRadius: 9,
-            border: method === "TRANSFER" ? "2px solid #7c3aed" : "1.5px solid rgba(139, 92, 246, 0.4)",
-            background: method === "TRANSFER" ? "linear-gradient(135deg, #8b5cf6, #7c3aed)" : "rgba(139, 92, 246, 0.08)",
-            color: method === "TRANSFER" ? "#fff" : "#8b5cf6",
-            fontWeight: 900,
-            fontSize: 13.5,
-            cursor: "pointer",
-            fontFamily: "inherit",
-            boxShadow: method === "TRANSFER" ? "0 3px 10px rgba(139, 92, 246, 0.35)" : "none",
-            transition: "all 0.15s ease",
-          }}
-        >
-          <RefreshCw size={18} aria-hidden />
-          <span>تحويل</span>
-        </button>
+          activeColor="#8b5cf6"
+          activeGradient="linear-gradient(135deg, #8b5cf6, #7c3aed)"
+          activeBorder="#7c3aed"
+          shadowColor="rgba(139, 92, 246, 0.35)"
+        />
 
         {method !== "CASH" && (
           <div style={{ flexShrink: 0, minWidth: 180 }}>
