@@ -170,7 +170,9 @@ function validateImportedAccounts(rows: readonly ImportedStatutoryAccount[]) {
         message: `الحساب ${code} يشير إلى أب غير صالح (${parentCode}).`,
       });
     }
-    if (byCode.get(parentCode)?.type !== row.type) {
+    const parentType = byCode.get(parentCode)?.type;
+    const isLiabilityFinancingException = parentType === "LIABILITY" && row.type === "EQUITY";
+    if (parentType !== row.type && !isLiabilityFinancingException) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `نوع الحساب ${code} لا يطابق نوع أبيه ${parentCode}.`,
