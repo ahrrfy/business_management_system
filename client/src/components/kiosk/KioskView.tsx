@@ -631,7 +631,8 @@ export default function KioskView({
   useBarcodeScanner(handleScan, {
     minLength: 2,
     thresholdMs: 120,
-    soundEnabled: settings.enableSound,
+    // نتيجة البحث نفسها تصدر نجاحاً أو خطأً؛ تعطيل صفير الالتقاط يمنع نغمتين متعارضتين للمسح الواحد.
+    soundEnabled: false,
   });
 
   // الإغلاق التلقائي لنتيجة المسح.

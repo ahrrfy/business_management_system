@@ -34,7 +34,7 @@ describe("supplier barcode web closure", () => {
     expect(code).toContain("useBarcodeScanner(handleScan, {");
     expect(code).toContain("minLength: 2");
     expect(code).toContain("thresholdMs: 120");
-    expect(code).toContain("soundEnabled: settings.enableSound");
+    expect(code).toContain("soundEnabled: false");
     expect(code).not.toContain("if (buf.s.length >= 3)");
   });
 

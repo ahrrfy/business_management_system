@@ -10,6 +10,8 @@ import {
 } from "./audioFeedback";
 
 const frequencies: number[] = [];
+const contexts: FakeAudioContext[] = [];
+let nextAudioState: AudioContextState = "running";
 
 class FakeAudioParam {
   setValueAtTime(value: number) {
@@ -19,10 +21,15 @@ class FakeAudioParam {
 }
 
 class FakeAudioContext {
-  state: AudioContextState = "running";
+  state: AudioContextState;
   currentTime = 0;
   destination = {};
   resume = vi.fn(async () => {});
+
+  constructor() {
+    this.state = nextAudioState;
+    contexts.push(this);
+  }
 
   createOscillator() {
     return {
@@ -47,7 +54,14 @@ class FakeAudioContext {
 
 describe("audioFeedback", () => {
   beforeEach(() => {
+    contexts.forEach((context) => {
+      context.state = "closed";
+    });
+    contexts.length = 0;
+    nextAudioState = "running";
     frequencies.length = 0;
+    vi.restoreAllMocks();
+    setAudioFeedbackEnabled(true, null);
     localStorage.clear();
     document.body.innerHTML = "";
     vi.setSystemTime(new Date(Date.now() + 1_000));
@@ -77,6 +91,20 @@ describe("audioFeedback", () => {
     expect(frequencies).toEqual([]);
   });
 
+  it("يحفظ الكتم في الذاكرة عندما يتعذر التخزين المحلي", () => {
+    const blockedStorage = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(() => {
+        throw new Error("blocked");
+      }),
+    };
+
+    setAudioFeedbackEnabled(false, blockedStorage);
+
+    expect(isAudioFeedbackEnabled(blockedStorage)).toBe(false);
+    expect(isAudioFeedbackEnabled(null)).toBe(false);
+  });
+
   it("يولّد صفير مسح منفرداً ونجاحاً صاعداً بنغمتين", () => {
     expect(playAudioFeedback("scan")).toBe(true);
     expect(frequencies).toContain(1_080);
@@ -98,5 +126,24 @@ describe("audioFeedback", () => {
     button.click();
     expect(frequencies).toEqual([]);
     cleanup();
+  });
+
+  it("يستخدم ساعةً رتيبةً فلا يكتم الصوت عند رجوع ساعة النظام", () => {
+    const clock = vi
+      .spyOn(performance, "now")
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(2_000);
+
+    expect(playAudioFeedback("warning")).toBe(true);
+    vi.setSystemTime(new Date(0));
+    expect(playAudioFeedback("warning")).toBe(true);
+    expect(clock).toHaveBeenCalledTimes(2);
+  });
+
+  it("يسقط النغمة إذا بقي سياق الصوت معلّقاً", () => {
+    nextAudioState = "suspended";
+
+    // نوع غير مستخدم في الاختبارات السابقة لتجنّب تداخل مهلة التهدئة.
+    expect(playAudioFeedback("confirm")).toBe(false);
   });
 });

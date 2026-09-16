@@ -130,6 +130,7 @@ const MIN_INTERVAL_MS: Record<AudioFeedbackKind, number> = {
 
 let audioCtx: AudioContext | null = null;
 const lastPlayedAt: Partial<Record<AudioFeedbackKind, number>> = {};
+let inMemoryAudioPreference: boolean | null = null;
 
 function browserStorage(): AudioPreferenceStorage | null {
   if (typeof window === "undefined") return null;
@@ -145,9 +146,12 @@ export function isAudioFeedbackEnabled(
   storage: Pick<AudioPreferenceStorage, "getItem"> | null = browserStorage(),
 ): boolean {
   try {
-    return storage?.getItem(AUDIO_FEEDBACK_STORAGE_KEY) !== "0";
+    const stored = storage?.getItem(AUDIO_FEEDBACK_STORAGE_KEY);
+    if (stored === "0") return false;
+    if (stored === "1") return true;
+    return inMemoryAudioPreference ?? true;
   } catch {
-    return true;
+    return inMemoryAudioPreference ?? true;
   }
 }
 
@@ -155,6 +159,8 @@ export function setAudioFeedbackEnabled(
   enabled: boolean,
   storage: AudioPreferenceStorage | null = browserStorage(),
 ): void {
+  // يبقى الكتم نافذاً للجلسة حتى عندما يحظر المتصفح localStorage أو يفشل في الكتابة إليه.
+  inMemoryAudioPreference = enabled;
   try {
     storage?.setItem(AUDIO_FEEDBACK_STORAGE_KEY, enabled ? "1" : "0");
   } catch {
@@ -180,10 +186,15 @@ function getAudioContext(): AudioContext | null {
   if (!audioCtx || audioCtx.state === "closed") {
     audioCtx = new AudioContextClass();
   }
-  if (audioCtx.state === "suspended") {
-    void audioCtx.resume().catch(() => {});
-  }
   return audioCtx;
+}
+
+function monotonicNow(): number {
+  if (typeof performance !== "undefined") {
+    const now = performance.now();
+    if (Number.isFinite(now)) return now;
+  }
+  return Date.now();
 }
 
 function scheduleTone(ctx: AudioContext, tone: Tone): void {
@@ -227,13 +238,14 @@ function scheduleTone(ctx: AudioContext, tone: Tone): void {
 export function playAudioFeedback(kind: AudioFeedbackKind): boolean {
   if (!isAudioFeedbackEnabled()) return false;
 
-  const now = Date.now();
+  const now = monotonicNow();
   const previous = lastPlayedAt[kind];
   if (previous != null && now - previous < MIN_INTERVAL_MS[kind]) return false;
 
   try {
     const ctx = getAudioContext();
-    if (!ctx) return false;
+    // لا نُجدول نغمةً على ساعةٍ صوتية معلّقة؛ وإلا قد تُسمع لاحقاً عند أول تفاعل بلا سياقها.
+    if (!ctx || ctx.state !== "running") return false;
     lastPlayedAt[kind] = now;
     PATTERNS[kind].forEach((tone) => scheduleTone(ctx, tone));
     return true;
