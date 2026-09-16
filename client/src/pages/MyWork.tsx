@@ -9,6 +9,10 @@
  * **قراءةٌ محضة على مستوى الصفحة**: الحسمُ نفسه يقع داخل الصفّ عبر `decisions.decide` الذي
  * يوجّهه الخادم إلى دالّة الحسم الأصلية بحرّاسها. الإعلاناتُ والإشعاراتُ تبقى سجلّاً لا طابورَ
  * فعل (لا مسار كتابةٍ يُبطلها حين ينفّذ غيرُك الإجراء).
+ *
+ * **شريطُ الفرز السريع**: حين تتدفّق إلى هنا كلُّ الطوابير، تصير القائمةُ المسطّحة صعبةَ الفرز.
+ * فشريطُ الشرائح يُظهر عدّادَ كلّ نوعٍ معلَّقٍ الآن (والمتأخّرَ) ويُصفّيه **محلّياً وفوريّاً** —
+ * والخادمُ يُصفّي الفرعَ والعمر وحدهما كي يبقى العدّادُ كاملاً مهما كان الفلتر.
  */
 import { useMemo, useState } from "react";
 import { AlertCircle, Bell, CheckCircle2, ClipboardList, ExternalLink, Inbox as InboxIcon, Megaphone, RefreshCw } from "lucide-react";
@@ -35,18 +39,24 @@ const AGE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "168", label: "أقدم من أسبوع" },
 ];
 
+/** شريحةُ فرزٍ سريعة (نوعٌ أو «الكل») — نمطٌ موحَّد مع حالة التفعيل. */
+const CHIP_BASE =
+  "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-2xs font-bold transition-colors";
+const chipCls = (active: boolean) =>
+  `${CHIP_BASE} ${active ? "border-transparent bg-primary text-primary-foreground" : "hover:bg-muted"}`;
+
 export default function MyWork() {
   const me = trpc.auth.me.useQuery();
   const [kind, setKind] = useState("");
   const [branchId, setBranchId] = useState("");
   const [minAge, setMinAge] = useState("0");
+  const [breachedOnly, setBreachedOnly] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [decided, setDecided] = useState<DecidedRow[]>([]);
 
   const branches = trpc.branches.list.useQuery();
   const inbox = trpc.decisions.inbox.useQuery(
     {
-      kind: kind || undefined,
       branchId: branchId ? Number(branchId) : undefined,
       minAgeHours: Number(minAge) > 0 ? Number(minAge) : undefined,
       limit: 200,
@@ -60,29 +70,43 @@ export default function MyWork() {
   const markAnnouncementRead = trpc.announcements.markRead.useMutation({ onSuccess: () => void announcements.refetch() });
   const acknowledgeAnnouncement = trpc.announcements.acknowledge.useMutation({ onSuccess: () => void announcements.refetch() });
 
-  // الصفوفُ المحسومة للتوّ تبقى ظاهرةً بنتيجتها فوق المعلَّق (لا تختفي مع إعادة التحميل)،
-  // ويُستبعَد نظيرُها من المعلَّق إن بقي فيه (مثل STALE على طلبٍ لا يزال قائماً).
-  const decidedKeys = new Set(decided.map((d) => rowKey(d.row)));
-  const rows = (inbox.data?.rows ?? []).filter((r) => !decidedKeys.has(rowKey(r)));
+  // الصفوفُ المحسومة للتوّ تبقى ظاهرةً بنتيجتها فوق المعلَّق، ويُستبعَد نظيرُها من المعلَّق
+  // إن بقي فيه (مثل STALE على طلبٍ لا يزال قائماً).
+  const decidedKeys = useMemo(() => new Set(decided.map((d) => rowKey(d.row))), [decided]);
+  // الخادمُ يُصفّي الفرعَ والعمر؛ النوعُ والمتأخّرُ يُصفَّيان هنا كي يبقى شريطُ الفرز كاملاً وفوريّاً.
+  const allPending = useMemo(
+    () => (inbox.data?.rows ?? []).filter((r) => !decidedKeys.has(rowKey(r))),
+    [inbox.data?.rows, decidedKeys],
+  );
   const total = inbox.data?.total ?? 0;
   const failed = inbox.data?.failedSources ?? [];
-  // فلترُ النوع يعرض الأنواع التي يملك المستخدم بوّابتها — لا كلَّ السجلّ.
-  const kindOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const k of inbox.data?.kinds ?? []) {
-      const spec = decisionSpec(k);
-      if (spec && !seen.has(k)) seen.set(k, spec.title);
+  // الخادمُ قصَّ الطابورَ (أكثر من الحدّ) — لا مجرّدُ تصفيةٍ محلّية.
+  const loadedCapped = total > (inbox.data?.rows?.length ?? 0);
+  // عدّادُ كلّ نوعٍ له معلَّقٌ الآن — لا كلَّ السجلّ (نوعٌ بلا صفوفٍ لا شريحةَ له).
+  const kindCounts = useMemo(() => {
+    const m = new Map<string, { title: string; count: number }>();
+    for (const r of allPending) {
+      const prev = m.get(r.kind);
+      if (prev) prev.count += 1;
+      else m.set(r.kind, { title: decisionSpec(r.kind)?.title ?? r.kind, count: 1 });
     }
-    return Array.from(seen.entries()).sort((a, b) => a[1].localeCompare(b[1], "ar"));
-  }, [inbox.data?.kinds]);
-  const breached = rows.filter((r) => r.sla?.breached).length;
+    return Array.from(m.entries())
+      .map(([k, v]) => ({ kind: k, title: v.title, count: v.count }))
+      .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title, "ar"));
+  }, [allPending]);
+  const breached = allPending.filter((r) => r.sla?.breached).length;
+  const gatedKinds = inbox.data?.kinds?.length ?? 0;
+  // العرضُ النهائيّ: تصفيةُ النوع والمتأخّر محلّياً (فوريّة، بلا إعادة تحميل).
+  const rows = allPending.filter(
+    (r) => (!kind || r.kind === kind) && (!breachedOnly || r.sla?.breached),
+  );
 
   const notesData = notifications.data;
   const notes = Array.isArray(notesData) ? notesData : (notesData?.rows ?? []);
   const unread = Array.isArray(notesData) ? 0 : (notesData?.unreadCount ?? 0);
   const announcementRows = announcements.data?.rows ?? [];
   const unreadAnnouncements = announcements.data?.unreadCount ?? 0;
-  const hasFilters = kind !== "" || branchId !== "" || minAge !== "0";
+  const hasFilters = kind !== "" || branchId !== "" || minAge !== "0" || breachedOnly;
 
   return (
     <div className="mx-auto w-full max-w-[1180px] px-4 py-5">
@@ -109,19 +133,8 @@ export default function MyWork() {
                   {total}
                 </span>
               )}
-              {breached > 0 && (
-                <span className="rounded-full bg-[var(--sem-danger-bg)] px-2 py-0.5 text-2xs font-extrabold text-[var(--sem-danger)]" title="تجاوزت سقف القرار">
-                  {breached} متأخر
-                </span>
-              )}
             </h2>
             <div className="ms-auto flex flex-wrap items-center gap-2">
-              <AppSelect className="h-8 min-w-36 text-xs" value={kind} onValueChange={setKind} aria-label="النوع">
-                <option value="">كل الأنواع</option>
-                {kindOptions.map(([k, title]) => (
-                  <option key={k} value={k}>{title}</option>
-                ))}
-              </AppSelect>
               {(branches.data?.length ?? 0) > 1 && (
                 <AppSelect className="h-8 min-w-28 text-xs" value={branchId} onValueChange={setBranchId} aria-label="الفرع">
                   <option value="">كل الفروع</option>
@@ -137,6 +150,42 @@ export default function MyWork() {
               </AppSelect>
             </div>
           </div>
+
+          {/* ─── شريط الفرز السريع: عدّاد كل نوعٍ معلَّق + المتأخّر (تصفية محلّية فوريّة) ─── */}
+          {allPending.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="فرز سريع">
+              <button
+                type="button"
+                onClick={() => { setKind(""); setBreachedOnly(false); }}
+                aria-pressed={kind === "" && !breachedOnly}
+                className={chipCls(kind === "" && !breachedOnly)}
+              >
+                الكل <span className="tabular-nums">{allPending.length}</span>
+              </button>
+              {breached > 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setBreachedOnly((v) => !v); setKind(""); }}
+                  aria-pressed={breachedOnly}
+                  title="تجاوزت سقف القرار"
+                  className={`${CHIP_BASE} border-[var(--sem-danger-bg)] bg-[var(--sem-danger-bg)] text-[var(--sem-danger)] ${breachedOnly ? "ring-2 ring-[var(--sem-danger)]" : "hover:brightness-95"}`}
+                >
+                  <AlertCircle aria-hidden className="size-3" /> متأخّر <span className="tabular-nums">{breached}</span>
+                </button>
+              )}
+              {kindCounts.map((k) => (
+                <button
+                  key={k.kind}
+                  type="button"
+                  onClick={() => { setKind((cur) => (cur === k.kind ? "" : k.kind)); setBreachedOnly(false); }}
+                  aria-pressed={kind === k.kind}
+                  className={chipCls(kind === k.kind)}
+                >
+                  {k.title} <span className="tabular-nums">{k.count}</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {failed.length > 0 && (
             <Card>
@@ -169,8 +218,8 @@ export default function MyWork() {
               <p className="text-sm font-bold">{hasFilters ? "لا قرارات مطابقة للفلاتر" : "لا قرارات معلّقة"}</p>
               <p className="mt-1 text-2xs text-muted-foreground">
                 {hasFilters
-                  ? "وسّع النوع أو الفرع أو العمر."
-                  : kindOptions.length === 0
+                  ? "أزِل فلتراً أو وسّعه لترى الباقي."
+                  : gatedKinds === 0
                     ? "دورك لا يملك بوّابة اعتمادٍ على أيّ نوعٍ موصول بالصندوق."
                     : "لا شيء ينتظر قرارك الآن في الأنواع التي تملك بوّابتها."}
               </p>
@@ -195,8 +244,8 @@ export default function MyWork() {
               }}
             />
           ))}
-          {total > rows.length && (
-            <p className="text-center text-2xs text-muted-foreground">يُعرض {rows.length} من {total} — احسم ما يظهر ليظهر الباقي.</p>
+          {loadedCapped && (
+            <p className="text-center text-2xs text-muted-foreground">حُمِّل {inbox.data?.rows?.length ?? 0} من {total} — احسم ما يظهر ليظهر الباقي.</p>
           )}
         </section>
 
