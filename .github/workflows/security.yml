@@ -20,7 +20,7 @@ jobs:
     # فحص الاعتماديات دقائق معدودة (تنزيل osv-scanner + مسح ملف القفل) — ١٥ سقفٌ آمن.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Dependency vulnerability audit via OSV-Scanner (Google, maintained) against the
       # OSV database. Replaces `pnpm audit`, whose legacy npm endpoint npm retired
       # (HTTP 410, see #192). Scans pnpm-lock.yaml directly (no install needed) and
