@@ -228,7 +228,8 @@ export function PrintPosHeader({
           autoFocus
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="بحث عن خدمة… (F2)"
+          placeholder="بحث عن خدمة [F2]"
+          dir="rtl"
           style={{
             width: "100%",
             height: 34,

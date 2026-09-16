@@ -106,7 +106,7 @@ export function PrintBottomToolbar({
     cartLen > 0 &&
     !hasZeroLine &&
     (editingInvoice != null ||
-      ((payInput === "" || paid >= cashTotal) && (!isOwing || customerId != null) && externalPaymentConfirmed));
+      ((!isOwing || customerId != null) && externalPaymentConfirmed));
   const canQuickPay = cartLen > 0 && !hasZeroLine && !editingInvoice && externalFullPaymentConfirmed;
 
   return (
@@ -116,14 +116,14 @@ export function PrintBottomToolbar({
         alignItems: "center",
         justifyContent: "space-between",
         gap: 10,
-        padding: "6px 14px",
-        minHeight: 56,
+        padding: "7px 16px",
+        minHeight: 62,
         flexShrink: 0,
         background: C.card,
         borderTop: `1.5px solid ${C.border}`,
         position: "relative",
         zIndex: 30,
-        boxShadow: "0 -3px 12px rgba(0,0,0,0.06)",
+        boxShadow: "0 -4px 14px rgba(0,0,0,0.07)",
         direction: "rtl",
         boxSizing: "border-box",
       }}
@@ -135,16 +135,17 @@ export function PrintBottomToolbar({
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 7,
-            padding: "5px 13px",
-            borderRadius: 8,
+            gap: 8,
+            padding: "6px 14px",
+            borderRadius: 9,
             background: C.primary,
             color: C.primaryFg,
             flexShrink: 0,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
           }}
         >
-          <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.9 }}>الإجمالي:</span>
-          <span style={{ fontSize: 20, fontWeight: 900, direction: "ltr", letterSpacing: "-0.5px" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, opacity: 0.9 }}>الإجمالي:</span>
+          <span style={{ fontSize: 21, fontWeight: 900, direction: "ltr", letterSpacing: "-0.5px" }}>
             {fmt(total)}
           </span>
           <span style={{ fontSize: 11, opacity: 0.85 }}>د.ع</span>
@@ -158,13 +159,13 @@ export function PrintBottomToolbar({
             gap: 5,
             background: C.muted,
             border: `1.5px solid ${C.border}`,
-            borderRadius: 8,
+            borderRadius: 9,
             padding: "0 8px",
-            height: 38,
+            height: 42,
             flexShrink: 0,
           }}
         >
-          <span style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 700, whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 12, color: C.mutedFg, fontWeight: 700, whiteSpace: "nowrap" }}>
             {editingInvoice ? "دفعة إضافية:" : "المستلم:"}
           </span>
           <input
@@ -195,7 +196,7 @@ export function PrintBottomToolbar({
               border: "none",
               outline: "none",
               background: "transparent",
-              fontSize: 15,
+              fontSize: 16,
               fontWeight: 900,
               direction: "ltr",
               textAlign: "center",
@@ -209,15 +210,15 @@ export function PrintBottomToolbar({
             disabled={!cartLen}
             title="ملء المبلغ الإجمالي"
             style={{
-              height: 24,
+              height: 26,
               minHeight: 0,
-              padding: "0 7px",
+              padding: "0 8px",
               border: `1px solid ${C.primary}`,
-              borderRadius: 5,
+              borderRadius: 6,
               background: C.primarySoft,
               color: C.primary,
               fontFamily: "inherit",
-              fontSize: 11,
+              fontSize: 11.5,
               fontWeight: 800,
               cursor: cartLen ? "pointer" : "not-allowed",
               opacity: cartLen ? 1 : 0.5,
@@ -237,17 +238,17 @@ export function PrintBottomToolbar({
               alignItems: "center",
               gap: 5,
               background: "rgba(16, 185, 129, 0.12)",
-              border: "1px solid var(--sem-pos, #10b981)",
-              borderRadius: 7,
-              padding: "2px 8px",
-              height: 34,
+              border: "1.5px solid var(--sem-pos, #10b981)",
+              borderRadius: 8,
+              padding: "3px 10px",
+              height: 38,
               flexShrink: 0,
             }}
           >
-            <span style={{ fontSize: 11.5, color: "var(--sem-pos, #10b981)", fontWeight: 700 }}>
+            <span style={{ fontSize: 12, color: "var(--sem-pos, #10b981)", fontWeight: 700 }}>
               الباقي:
             </span>
-            <span style={{ fontSize: 14.5, fontWeight: 900, color: "var(--sem-pos, #10b981)", direction: "ltr" }}>
+            <span style={{ fontSize: 15, fontWeight: 900, color: "var(--sem-pos, #10b981)", direction: "ltr" }}>
               {fmt(change)} د.ع
             </span>
             <CopyButton value={change} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
@@ -262,17 +263,17 @@ export function PrintBottomToolbar({
               alignItems: "center",
               gap: 5,
               background: "rgba(245, 158, 11, 0.12)",
-              border: "1px solid var(--sem-warn, #f59e0b)",
-              borderRadius: 7,
-              padding: "2px 8px",
-              height: 34,
+              border: "1.5px solid var(--sem-warn, #f59e0b)",
+              borderRadius: 8,
+              padding: "3px 10px",
+              height: 38,
               flexShrink: 0,
             }}
           >
-            <span style={{ fontSize: 11.5, color: "var(--sem-warn, #d97706)", fontWeight: 700 }}>
+            <span style={{ fontSize: 12, color: "var(--sem-warn, #d97706)", fontWeight: 700 }}>
               المتبقي (آجل):
             </span>
-            <span style={{ fontSize: 14.5, fontWeight: 900, color: "var(--sem-warn, #d97706)", direction: "ltr" }}>
+            <span style={{ fontSize: 15, fontWeight: 900, color: "var(--sem-warn, #d97706)", direction: "ltr" }}>
               {fmt(credit)} د.ع
             </span>
             <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
@@ -281,88 +282,95 @@ export function PrintBottomToolbar({
       </div>
 
       {/* فاصل */}
-      <div style={{ width: 1, height: 32, background: C.border, flexShrink: 0 }} />
+      <div style={{ width: 1, height: 36, background: C.border, flexShrink: 0 }} />
 
-      {/* ── الوسط: طرق التحصيل (نقدي / بطاقة / تحويل) ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: C.mutedFg }}>التحصيل:</span>
+      {/* ── الوسط: طرق التحصيل ملونة وكبيرة ومميزة (نقدي / بطاقة / تحويل) ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 800, color: C.mutedFg }}>التحصيل:</span>
+
+        {/* نقدي — أخضر زمردي مميز */}
         <button
           type="button"
           onClick={() => setMethod("CASH")}
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 5,
-            height: 36,
+            gap: 6,
+            height: 42,
             minHeight: 0,
-            padding: "0 12px",
-            borderRadius: 7,
-            border: `1.5px solid ${method === "CASH" ? C.primary : C.border}`,
-            background: method === "CASH" ? C.primary : C.card,
-            color: method === "CASH" ? C.primaryFg : C.fg,
-            fontWeight: 800,
-            fontSize: 12.5,
+            padding: "0 16px",
+            borderRadius: 9,
+            border: method === "CASH" ? "2px solid #059669" : "1.5px solid rgba(16, 185, 129, 0.4)",
+            background: method === "CASH" ? "linear-gradient(135deg, #10b981, #059669)" : "rgba(16, 185, 129, 0.08)",
+            color: method === "CASH" ? "#fff" : "#10b981",
+            fontWeight: 900,
+            fontSize: 13.5,
             cursor: "pointer",
             fontFamily: "inherit",
+            boxShadow: method === "CASH" ? "0 3px 10px rgba(16, 185, 129, 0.35)" : "none",
             transition: "all 0.15s ease",
           }}
         >
-          <Banknote size={16} aria-hidden />
+          <Banknote size={19} aria-hidden />
           <span>نقدي</span>
         </button>
 
+        {/* بطاقة — أزرق مميز */}
         <button
           type="button"
           onClick={() => setMethod("CARD")}
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 5,
-            height: 36,
+            gap: 6,
+            height: 42,
             minHeight: 0,
-            padding: "0 12px",
-            borderRadius: 7,
-            border: `1.5px solid ${method === "CARD" ? C.primary : C.border}`,
-            background: method === "CARD" ? C.primary : C.card,
-            color: method === "CARD" ? C.primaryFg : C.fg,
-            fontWeight: 800,
-            fontSize: 12.5,
+            padding: "0 16px",
+            borderRadius: 9,
+            border: method === "CARD" ? "2px solid #1d4ed8" : "1.5px solid rgba(37, 99, 235, 0.4)",
+            background: method === "CARD" ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "rgba(37, 99, 235, 0.08)",
+            color: method === "CARD" ? "#fff" : "#2563eb",
+            fontWeight: 900,
+            fontSize: 13.5,
             cursor: "pointer",
             fontFamily: "inherit",
+            boxShadow: method === "CARD" ? "0 3px 10px rgba(37, 99, 235, 0.35)" : "none",
             transition: "all 0.15s ease",
           }}
         >
-          <CreditCard size={16} aria-hidden />
+          <CreditCard size={19} aria-hidden />
           <span>بطاقة</span>
         </button>
 
+        {/* تحويل — بنفسجي مميز */}
         <button
           type="button"
           onClick={() => setMethod("TRANSFER")}
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 5,
-            height: 36,
+            gap: 6,
+            height: 42,
             minHeight: 0,
-            padding: "0 12px",
-            borderRadius: 7,
-            border: `1.5px solid ${method === "TRANSFER" ? C.primary : C.border}`,
-            background: method === "TRANSFER" ? C.primary : C.card,
-            color: method === "TRANSFER" ? C.primaryFg : C.fg,
-            fontWeight: 800,
-            fontSize: 12.5,
+            padding: "0 16px",
+            borderRadius: 9,
+            border: method === "TRANSFER" ? "2px solid #7c3aed" : "1.5px solid rgba(139, 92, 246, 0.4)",
+            background: method === "TRANSFER" ? "linear-gradient(135deg, #8b5cf6, #7c3aed)" : "rgba(139, 92, 246, 0.08)",
+            color: method === "TRANSFER" ? "#fff" : "#8b5cf6",
+            fontWeight: 900,
+            fontSize: 13.5,
             cursor: "pointer",
             fontFamily: "inherit",
+            boxShadow: method === "TRANSFER" ? "0 3px 10px rgba(139, 92, 246, 0.35)" : "none",
             transition: "all 0.15s ease",
           }}
         >
-          <RefreshCw size={16} aria-hidden />
+          <RefreshCw size={18} aria-hidden />
           <span>تحويل</span>
         </button>
 
         {method !== "CASH" && (
-          <div style={{ flexShrink: 0, minWidth: 170 }}>
+          <div style={{ flexShrink: 0, minWidth: 180 }}>
             <PaymentReferenceField
               value={paymentRef}
               onChange={setPaymentRef}
@@ -395,10 +403,11 @@ export function PrintBottomToolbar({
       {/* مساحة مرنة */}
       <div style={{ flex: 1, minWidth: 10 }} />
 
-      {/* ── اليسار: أزرار الإجراءات (حجز الطلب / دفع سريع / إتمام الدفع) ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+      {/* ── اليسار: أزرار العمليات والدفع أكبر وأبرز وملونة ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
         {!editingInvoice && (
           <>
+            {/* حجز الطلب — أزرق سماوي داكن */}
             <button
               type="button"
               disabled={!canReserve || isPending}
@@ -417,26 +426,30 @@ export function PrintBottomToolbar({
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
-                height: 38,
+                gap: 6,
+                height: 42,
                 minHeight: 0,
-                padding: "0 13px",
-                borderRadius: 7,
-                border: `1.5px solid ${canReserve ? "oklch(0.65 0.14 240)" : C.border}`,
-                background: canReserve ? "oklch(0.55 0.16 240)" : C.muted,
+                padding: "0 16px",
+                borderRadius: 9,
+                border: canReserve ? "1.5px solid #0284c7" : `1.5px solid ${C.border}`,
+                background: canReserve
+                  ? "linear-gradient(135deg, #0284c7, #0369a1)"
+                  : C.muted,
                 color: canReserve ? "#fff" : C.mutedFg,
                 fontWeight: 800,
-                fontSize: 12.5,
+                fontSize: 13,
                 cursor: canReserve ? "pointer" : "not-allowed",
                 fontFamily: "inherit",
                 whiteSpace: "nowrap",
+                boxShadow: canReserve ? "0 2px 10px rgba(2, 132, 199, 0.35)" : "none",
                 transition: "all 0.15s ease",
               }}
             >
-              <Clock size={14} aria-hidden />
+              <Clock size={16} aria-hidden />
               <span>حجز الطلب</span>
             </button>
 
+            {/* دفع سريع — برتقالي متوهج */}
             <button
               type="button"
               disabled={!canQuickPay || isPending}
@@ -455,31 +468,32 @@ export function PrintBottomToolbar({
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
-                height: 38,
+                gap: 6,
+                height: 42,
                 minHeight: 0,
-                padding: "0 13px",
-                borderRadius: 7,
-                border: "none",
+                padding: "0 18px",
+                borderRadius: 9,
+                border: canQuickPay ? "1.5px solid #ea580c" : "none",
                 background: canQuickPay
-                  ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))"
+                  ? "linear-gradient(135deg, #f97316, #ea580c)"
                   : C.muted,
                 color: canQuickPay ? "#fff" : C.mutedFg,
-                fontWeight: 800,
-                fontSize: 12.5,
+                fontWeight: 900,
+                fontSize: 13.5,
                 cursor: canQuickPay ? "pointer" : "not-allowed",
                 fontFamily: "inherit",
                 whiteSpace: "nowrap",
+                boxShadow: canQuickPay ? "0 3px 12px rgba(249, 115, 22, 0.4)" : "none",
                 transition: "all 0.15s ease",
               }}
             >
-              <Zap size={14} aria-hidden />
+              <Zap size={16} aria-hidden />
               <span>دفع سريع</span>
             </button>
           </>
         )}
 
-        {/* زر إتمام الدفع الرئيسي */}
+        {/* إتمام الدفع الرئيسي — أخضر زمردي عريض وقوي */}
         <button
           type="button"
           disabled={!canPay || isPending}
@@ -502,19 +516,31 @@ export function PrintBottomToolbar({
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 6,
-            height: 40,
+            gap: 7,
+            height: 46,
             minHeight: 0,
-            padding: "0 18px",
-            borderRadius: 8,
-            border: "none",
-            background: canPay && !isPending ? (editingInvoice ? "var(--sem-pos, #10b981)" : C.success) : C.muted,
+            padding: "0 24px",
+            borderRadius: 10,
+            border: canPay && !isPending
+              ? (isOwing ? "1.5px solid #b45309" : "1.5px solid #047857")
+              : "none",
+            background: canPay && !isPending
+              ? (editingInvoice
+                  ? "linear-gradient(135deg, #10b981, #059669)"
+                  : isOwing
+                    ? "linear-gradient(135deg, #d97706, #b45309)"
+                    : "linear-gradient(135deg, #10b981, #047857)")
+              : C.muted,
             color: canPay && !isPending ? "#fff" : C.mutedFg,
             fontWeight: 900,
-            fontSize: 13.5,
+            fontSize: 15,
             cursor: canPay && !isPending ? "pointer" : "not-allowed",
             fontFamily: "inherit",
-            boxShadow: canPay && !isPending ? "0 2px 8px rgba(16,185,129,0.25)" : "none",
+            boxShadow: canPay && !isPending
+              ? (isOwing
+                  ? "0 4px 14px rgba(217, 119, 6, 0.45)"
+                  : "0 4px 14px rgba(16, 185, 129, 0.45)")
+              : "none",
             whiteSpace: "nowrap",
             transition: "all 0.15s ease",
           }}
@@ -523,23 +549,23 @@ export function PrintBottomToolbar({
             "جارٍ…"
           ) : editingInvoice ? (
             <>
-              <Check size={16} strokeWidth={3} aria-hidden />
+              <Check size={19} strokeWidth={3} aria-hidden />
               <span>اعتماد التعديل</span>
             </>
           ) : isOwing && customerId != null ? (
             <>
-              <Check size={16} strokeWidth={3} aria-hidden />
+              <Check size={19} strokeWidth={3} aria-hidden />
               <span>إتمام البيع (آجل)</span>
               <kbd
                 style={{
-                  background: "rgba(255,255,255,.24)",
+                  background: "rgba(255,255,255,.28)",
                   color: "#fff",
-                  borderRadius: 4,
-                  padding: "1px 5px",
+                  borderRadius: 5,
+                  padding: "2px 6px",
                   fontFamily: "monospace",
-                  fontSize: 10,
-                  fontWeight: 700,
-                  marginInlineStart: 3,
+                  fontSize: 11,
+                  fontWeight: 800,
+                  marginInlineStart: 4,
                 }}
               >
                 F4
@@ -547,18 +573,18 @@ export function PrintBottomToolbar({
             </>
           ) : (
             <>
-              <Check size={16} strokeWidth={3} aria-hidden />
+              <Check size={19} strokeWidth={3} aria-hidden />
               <span>إتمام الدفع</span>
               <kbd
                 style={{
-                  background: "rgba(255,255,255,.24)",
+                  background: "rgba(255,255,255,.28)",
                   color: "#fff",
-                  borderRadius: 4,
-                  padding: "1px 5px",
+                  borderRadius: 5,
+                  padding: "2px 6px",
                   fontFamily: "monospace",
-                  fontSize: 10,
-                  fontWeight: 700,
-                  marginInlineStart: 3,
+                  fontSize: 11,
+                  fontWeight: 800,
+                  marginInlineStart: 4,
                 }}
               >
                 F4
