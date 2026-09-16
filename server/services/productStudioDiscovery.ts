@@ -31,8 +31,13 @@ import type { ProductStudioActor } from "./productStudioService";
 
 /** كل الحالات الممكنة لصحّة صور المنتج. */
 export const IMAGE_HEALTH_STATES = [
-  "NO_IMAGES",
+  "HIGH_VALUE_NO_IMAGE",
+  "CONSIGNMENT_NO_IMAGE",
   "BUNDLE_NO_IMAGE",
+  "NO_IMAGES",
+  "CORRUPTED_OR_UNPROCESSED_IMAGE",
+  "HAS_IMAGE_NO_BARCODE",
+  "REDUNDANT_VARIANT_IMAGE",
   "SINGLE_IMAGE",
   "PARENT_ONLY_HAS_VARIANTS",
   "VARIANTS_INCOMPLETE",
@@ -84,6 +89,29 @@ function variantsWithOwnImageCountSql() {
   return sql<number>`(select count(distinct ${productVariants.id}) ${scope})`;
 }
 
+function isHighPrioritySql() {
+  const scope = sql`from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.minStock} > 0`;
+  return sql<number>`(select exists(select 1 ${scope}))`;
+}
+
+function missingBarcodesSql() {
+  const scope = sql`from ${productUnits} join ${productVariants} on ${productUnits.variantId} = ${productVariants.id} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1 and (${productUnits.barcode} is null or ${productUnits.barcode} = '')`;
+  return sql<number>`(select exists(select 1 ${scope}))`;
+}
+
+function corruptedImagesSql() {
+  const scope = sql`from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED' and (${productImages.width} is null or ${productImages.width} = 0)`;
+  return sql<number>`(select exists(select 1 ${scope}))`;
+}
+
+function redundantVariantImagesSql() {
+  const scope = sql`from ${productImages} vImg 
+    join ${productImages} pImg on pImg.productId = vImg.productId and pImg.variantId is null and pImg.reviewStatus = 'APPROVED'
+    where vImg.productId = ${products.id} and vImg.variantId is not null and vImg.reviewStatus = 'APPROVED'
+    and vImg.contentHash is not null and vImg.contentHash = pImg.contentHash`;
+  return sql<number>`(select exists(select 1 ${scope}))`;
+}
+
 /**
  * تعبيرُ SQL يحسب حالةَ صحّة الصور لكل منتج داخل الاستعلام مباشرةً. يُغني عن جولةٍ في
  * Node لتصنيف الصفوف. ترتيبُ CASE مهمّ: الأكثرُ خطورةً أوّلاً. كلّ عدّادٍ مُترابطٍ مبنيٌّ
@@ -94,11 +122,25 @@ function healthCaseSql() {
   const activeVariants = activeVariantCountSql();
   const variantsMissing = variantsMissingOwnImageCountSql();
   const parentImages = parentLevelImageCountSql();
+  
+  const isHighPriority = isHighPrioritySql();
+  const missingBarcodes = missingBarcodesSql();
+  const corruptedImages = corruptedImagesSql();
+  const redundantVariants = redundantVariantImagesSql();
+
   return sql<ImageHealthState>`(
     case
       when (${approved}) = 0 then (
-        case when ${products.isBundle} = 1 then 'BUNDLE_NO_IMAGE' else 'NO_IMAGES' end
+        case 
+          when (${isHighPriority}) = 1 then 'HIGH_VALUE_NO_IMAGE'
+          when ${products.isConsignment} = 1 then 'CONSIGNMENT_NO_IMAGE'
+          when ${products.isBundle} = 1 then 'BUNDLE_NO_IMAGE'
+          else 'NO_IMAGES'
+        end
       )
+      when (${corruptedImages}) = 1 then 'CORRUPTED_OR_UNPROCESSED_IMAGE'
+      when (${missingBarcodes}) = 1 then 'HAS_IMAGE_NO_BARCODE'
+      when (${redundantVariants}) = 1 then 'REDUNDANT_VARIANT_IMAGE'
       when (${approved}) = 1 then 'SINGLE_IMAGE'
       when (${activeVariants}) > 0 and (${variantsMissing}) > 0 and (${parentImages}) > 0 then 'PARENT_ONLY_HAS_VARIANTS'
       when (${activeVariants}) > 0 and (${variantsMissing}) > 0 then 'VARIANTS_INCOMPLETE'
@@ -131,8 +173,13 @@ export async function getImageHealthCounts(actor: ProductStudioActor) {
     .from(inner)
     .groupBy(inner.health);
   const counts: Record<ImageHealthState, number> = {
-    NO_IMAGES: 0,
+    HIGH_VALUE_NO_IMAGE: 0,
+    CONSIGNMENT_NO_IMAGE: 0,
     BUNDLE_NO_IMAGE: 0,
+    NO_IMAGES: 0,
+    CORRUPTED_OR_UNPROCESSED_IMAGE: 0,
+    HAS_IMAGE_NO_BARCODE: 0,
+    REDUNDANT_VARIANT_IMAGE: 0,
     SINGLE_IMAGE: 0,
     PARENT_ONLY_HAS_VARIANTS: 0,
     VARIANTS_INCOMPLETE: 0,
@@ -211,7 +258,7 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
   // حسبَ الحالة: نجرِّبُ إخفاء HEALTHY افتراضياً — لا فائدةَ من إظهار السليم في «كشف الفجوات».
   const stateFilter = input.states && input.states.length > 0
     ? input.states
-    : (["NO_IMAGES", "BUNDLE_NO_IMAGE", "SINGLE_IMAGE", "PARENT_ONLY_HAS_VARIANTS", "VARIANTS_INCOMPLETE"] as ImageHealthState[]);
+    : (IMAGE_HEALTH_STATES.filter((s) => s !== "HEALTHY") as ImageHealthState[]);
   // نُنفّذ التصفية بالحالة على subquery الخارجيّ كي لا نضيف CASE في WHERE (يتكرّر
   // الحساب في MySQL). النمط: SELECT ... FROM (SELECT ..., CASE ... FROM products WHERE ...)
   // AS x WHERE x.health IN (...)
@@ -310,8 +357,8 @@ export async function getTopGapCategories(actor: ProductStudioActor, limit = 10)
     .leftJoin(categories, eq(categories.id, products.categoryId))
     .where(and(eq(products.isActive, true), eq(products.isService, false)))
     .as("h");
-  const gapTotalSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE','SINGLE_IMAGE','PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end)`;
-  const noImagesSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE') then 1 else 0 end)`;
+  const gapTotalSql = sql<number>`sum(case when ${inner.health} != 'HEALTHY' then 1 else 0 end)`;
+  const noImagesSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE','HIGH_VALUE_NO_IMAGE','CONSIGNMENT_NO_IMAGE') then 1 else 0 end)`;
   const rows = await db
     .select({
       categoryId: inner.categoryId,

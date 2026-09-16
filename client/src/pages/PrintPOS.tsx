@@ -27,7 +27,7 @@ import {
 } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Vault, Clock, Undo2 } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -49,6 +49,7 @@ import { type OrderChannel } from "@/components/print-pos/PrintChannelCustomerBa
 import { HeldOrdersDrawer, type HeldSaleOrder } from "@/components/print-pos/HeldOrdersDrawer";
 import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/PrintPosHeader";
 import { CheckoutColumn, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
+import { PrintBottomToolbar } from "@/components/print-pos/PrintBottomToolbar";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { createPortal } from "react-dom";
 
@@ -317,8 +318,24 @@ export default function PrintPOS() {
   }, [tabs, activeId, DRAFT_KEY, restoredDraftKey]);
 
   // ── تبويبات ──
-  const patch = (p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, ...p } : t)));
-  const patchTab = (id: number, p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...p } : t)));
+  const patch = useCallback((p: Partial<Tab>) => {
+    setTabs((prev) => {
+      const current = prev.find((t) => t.id === activeId);
+      if (!current) return prev;
+      const hasChange = Object.keys(p).some((k) => (current as Record<string, unknown>)[k] !== (p as Record<string, unknown>)[k]);
+      if (!hasChange) return prev;
+      return prev.map((t) => (t.id === activeId ? { ...t, ...p } : t));
+    });
+  }, [activeId]);
+  const patchTab = useCallback((id: number, p: Partial<Tab>) => {
+    setTabs((prev) => {
+      const current = prev.find((t) => t.id === id);
+      if (!current) return prev;
+      const hasChange = Object.keys(p).some((k) => (current as Record<string, unknown>)[k] !== (p as Record<string, unknown>)[k]);
+      if (!hasChange) return prev;
+      return prev.map((t) => (t.id === id ? { ...t, ...p } : t));
+    });
+  }, []);
   const setCart = (u: CartLine[] | ((c: CartLine[]) => CartLine[])) =>
     setTabs((prev) => prev.map((t) => (t.id !== activeId ? t : { ...t, cart: typeof u === "function" ? u(t.cart) : u })));
   const setPayInput = (u: string | ((s: string) => string)) =>
@@ -994,8 +1011,26 @@ export default function PrintPOS() {
   // ── الشاشة الرئيسية ──
   return (
     <div className="print-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
-      <PrintPosHeader C={C} dark={dark} toggleDark={toggleDark} search={search} setSearch={setSearch} searchRef={searchRef}
-        lastInv={lastInv} />
+      <PrintPosHeader
+        tabId={activeId}
+        C={C}
+        dark={dark}
+        toggleDark={toggleDark}
+        search={search}
+        setSearch={setSearch}
+        searchRef={searchRef}
+        lastInv={lastInv}
+        channel={tab.channel}
+        setChannel={(c) => patch({ channel: c })}
+        customerId={tab.customerId}
+        setCustomerId={(id) => patch({ customerId: id })}
+        contactName={tab.contactName}
+        setContactName={(name) => patch({ contactName: name })}
+        contactPhone={tab.contactPhone}
+        setContactPhone={(phone) => patch({ contactPhone: phone })}
+        heldCount={heldCount}
+        onOpenHeldDrawer={() => setHeldDrawerOpen(true)}
+      />
 
       {headerActionsNode && createPortal(
         <PrintPosHeaderActions
@@ -1027,7 +1062,31 @@ export default function PrintPOS() {
             </div>
           );
         })}
-        {tabs.length < 6 && <button aria-label="طلب طباعة جديد" onClick={addTab} style={{ width: 44, height: 44, borderRadius: 9, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>}
+        {tabs.length < 6 && (
+          <button
+            type="button"
+            aria-label="طلب طباعة جديد"
+            onClick={addTab}
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              background: C.card,
+              border: `1.5px dashed ${C.border}`,
+              cursor: "pointer",
+              fontSize: 18,
+              color: C.mutedFg,
+              flexShrink: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 1,
+              transition: "all 0.15s ease",
+            }}
+          >
+            +
+          </button>
+        )}
       </div>
 
       {/* ٢٤/٨ (Codex P2 على PR #741): الأرضيّة كانت `oklch(0.95 ...)` مثبَّتة فاتحة، والفَون
@@ -1049,26 +1108,36 @@ export default function PrintPOS() {
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
           customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
-          contactName={tab.contactName} setContactName={(name) => patch({ contactName: name })}
-          contactPhone={tab.contactPhone} setContactPhone={(phone) => patch({ contactPhone: phone })}
-          channel={tab.channel} setChannel={(c) => patch({ channel: c })}
           editingInvoice={tab.editingInvoice} onCancelEdit={cancelEditingHeldOrder}
-          heldCount={heldCount} onOpenHeldDrawer={() => setHeldDrawerOpen(true)}
-          payInput={tab.payInput} setPayInput={setPayInput} method={tab.method} setMethod={(m) => patch({ method: m, externalPayment: null })}
-          paymentRef={tab.paymentRef ?? ""} setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
-          externalPaymentConfirmed={externalPaymentConfirmed}
-          externalFullPaymentConfirmed={externalFullPaymentConfirmed}
-          externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
-          onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
-          numPress={numPress}
-          onPay={() => submit(false)}
-          onQuickPay={() => submit(true)}
-          onReserve={() => submit(false, undefined, true)}
-          isPending={sale.isPending || correctSaleMut.isPending}
           addTick={addTick}
         />
         <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
+
+      {/* مسطرة الدفع والتحصيل أسفل الصفحة */}
+      <PrintBottomToolbar
+        C={C}
+        cart={cart}
+        total={total}
+        payInput={tab.payInput}
+        setPayInput={setPayInput}
+        method={tab.method}
+        setMethod={(m) => patch({ method: m, externalPayment: null })}
+        paymentRef={tab.paymentRef ?? ""}
+        setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
+        externalPaymentConfirmed={externalPaymentConfirmed}
+        externalFullPaymentConfirmed={externalFullPaymentConfirmed}
+        externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
+        onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
+        onPay={() => submit(false)}
+        onQuickPay={() => submit(true)}
+        onReserve={() => submit(false, undefined, true)}
+        isPending={sale.isPending || correctSaleMut.isPending}
+        customerId={tab.customerId}
+        contactName={tab.contactName}
+        contactPhone={tab.contactPhone}
+        editingInvoice={tab.editingInvoice}
+      />
 
       {receipt && (
         <ReceiptOverlay
