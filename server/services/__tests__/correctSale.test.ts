@@ -3,10 +3,10 @@
  *
  * النموذج: عكسٌ كامل (returnSaleInTx) + إعادة ترحيل (createSaleInTx) ذرّياً، والأصل SUPERSEDED.
  * تُثبت هذه الاختبارات على قاعدةٍ حقيقية: توازن الدفتر (Σإيراد الأصل=0، الجديد=المصحّح)، عكس COGS
- * + صافي المخزون. نقل المقبوضات التاريخية إلى البديل محظور في المرحلة الآمنة الحالية؛
- * والرفوضات، وidempotency، والربط ثنائيّ الاتجاه.
+ * + صافي المخزون. المقبوضات التاريخية تنتقل بمراجعها ووردياتها كما هي، والفرق فقط ينشئ
+ * قبضاً/استرداداً جديداً؛ والرفوضات وidempotency والربط ثنائيّ الاتجاه محروسة هنا.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -26,6 +26,7 @@ const admin = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
   "externalPaymentAttempts",
+  "salesControlRequests",
   "auditLogs", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
   "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits",
   "productVariants", "products", "shifts", "customers", "branches", "users",
@@ -156,6 +157,8 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     const corrected = await getInvoice(res.correctedInvoiceId);
     expect(Number(corrected.total)).toBeCloseTo(1000, 2);
     expect(Number(corrected.paidAmount)).toBeCloseTo(1000, 2);
+    expect(corrected.shiftId).toBe(1);
+    expect(corrected.paymentMethod).toBe("CASH");
   });
 
   it("الفرق الزائد لعميلٍ مسجَّل يصير رصيداً دائناً بلا مسّ الدرج (الافتراضي)", async () => {
@@ -375,6 +378,69 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
       .rejects.toThrowError(/تتجاوز الفرق المستحقّ/);
   });
 
+  it("يقبض فرق التصحيح النقدي في الوردية المختارة ويحدّث الذمة والمخزون معاً", async () => {
+    await seed({ withCustomer: true });
+    const sale = await creditSale(1);
+
+    const corrected = await correctSale({
+      originalInvoiceId: sale.invoiceId,
+      customerId: 1,
+      lines: [line(2)],
+      additionalPayment: { amount: "1000.00", method: "CASH", shiftId: 1 },
+      clientRequestId: "corr-cash-additional-1000",
+    }, admin);
+
+    const replacement = await getInvoice(corrected.correctedInvoiceId);
+    const cashReceipt = (
+      await db().select().from(s.receipts).where(and(
+        eq(s.receipts.invoiceId, corrected.correctedInvoiceId),
+        eq(s.receipts.direction, "IN"),
+        eq(s.receipts.paymentMethod, "CASH"),
+      ))
+    )[0];
+    expect(replacement).toMatchObject({ shiftId: 1, paymentMethod: "CASH", paidAmount: "1000.00" });
+    expect(cashReceipt).toMatchObject({ shiftId: 1, cashBucket: "DRAWER", amount: "1000.00" });
+    expect(await getCustomerBalance(1)).toBeCloseTo(1000, 2);
+    expect(await getStock(1, 1)).toBe(8);
+  });
+
+  it("يرفض درج فرق نقدي مغلقاً أو تابعاً لفرع آخر بلا أي أثر جزئي", async () => {
+    await seed({ withCustomer: true });
+    const closedShiftSale = await creditSale(1);
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, 1));
+    await expect(correctSale({
+      originalInvoiceId: closedShiftSale.invoiceId,
+      customerId: 1,
+      lines: [line(2)],
+      additionalPayment: { amount: "1000.00", method: "CASH", shiftId: 1 },
+      clientRequestId: "corr-cash-closed-shift",
+    }, admin)).rejects.toThrow(/غير مفتوحة|وردية مفتوحة/);
+    expect((await getInvoice(closedShiftSale.invoiceId)).status).toBe("PENDING");
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+    expect(await getStock(1, 1)).toBe(9);
+
+    await db().insert(s.shifts).values({
+      id: 2,
+      userId: 2,
+      branchId: 2,
+      status: "OPEN",
+      openedAt: new Date(),
+      openGuard: "2:2",
+      openingBalance: "0",
+    });
+    await expect(correctSale({
+      originalInvoiceId: closedShiftSale.invoiceId,
+      customerId: 1,
+      lines: [line(2)],
+      additionalPayment: { amount: "1000.00", method: "CASH", shiftId: 2 },
+      clientRequestId: "corr-cash-cross-branch-shift",
+    }, admin)).rejects.toThrow(/الفرع|لا تخص/);
+    expect((await getInvoice(closedShiftSale.invoiceId)).status).toBe("PENDING");
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+    expect(await getCustomerBalance(1)).toBeCloseTo(1000, 2);
+  });
+
   it("دفعة فرق التصحيح غير النقدية تستهلك محاولة SALES_COLLECTION مرة واحدة مع الإيصال", async () => {
     await seed({ withCustomer: true });
     const sale = await creditSale(1);
@@ -438,6 +504,192 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     expect(Number(consumed.invoiceId)).toBe(corrected.correctedInvoiceId);
     expect(Number(consumed.receiptId)).toBe(Number(receipt.id));
     expect(consumed.consumedAt).not.toBeNull();
+  });
+
+  it("ينقل وردية الاستقبال ويعرض CASH+CARD كدفع مختلط على الفاتورة البديلة", async () => {
+    await seed({ withCustomer: true });
+    const sale = await createSale({
+      branchId: 1,
+      customerId: 1,
+      shiftId: 1,
+      priceTier: "RETAIL",
+      sourceType: "POS",
+      lines: [line(1)],
+      payment: { amount: "1000.00", method: "CASH" },
+    }, admin);
+    const deviceId = "CORRECTION-CARD-DEVICE";
+    const attempt = await initiateExternalPaymentAttempt({
+      branchId: 1,
+      channel: "SALES_COLLECTION",
+      method: "CARD",
+      amount: "1000.00",
+      reference: "CORR-CARD-1001",
+      requestId: "corr-card-attempt-1001",
+      deviceId,
+    }, admin);
+    await confirmExternalPaymentAttempt({
+      attemptId: attempt.attemptId,
+      branchId: 1,
+      channel: "SALES_COLLECTION",
+      deviceId,
+    }, admin);
+
+    const corrected = await correctSale({
+      originalInvoiceId: sale.invoiceId,
+      customerId: 1,
+      lines: [line(2)],
+      additionalPayment: {
+        amount: "1000.00",
+        method: "CARD",
+        reference: "CORR-CARD-1001",
+        externalPaymentAttemptId: attempt.attemptId,
+        externalPaymentDeviceId: deviceId,
+      },
+      clientRequestId: "corr-card-1001",
+    }, admin);
+
+    const replacement = await getInvoice(corrected.correctedInvoiceId);
+    expect(replacement.shiftId).toBe(1);
+    expect(replacement.paymentMethod).toBe("MIXED");
+    expect(Number(replacement.paidAmount)).toBeCloseTo(2000, 2);
+  });
+
+  it("لا يكتب البديلة على وردية مغلقة وينقل قناة الأصل إلى وردية مفتوحة من النوع نفسه", async () => {
+    await seed({ withCustomer: true });
+    await db().update(s.shifts).set({ shiftType: "RECEPTION" }).where(eq(s.shifts.id, 1));
+    const sale = await createSale({
+      branchId: 1,
+      customerId: 1,
+      shiftId: 1,
+      priceTier: "RETAIL",
+      sourceType: "POS",
+      lines: [line(1)],
+      payment: { amount: "1000.00", method: "CASH" },
+    }, admin);
+    const receiptBefore = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId)))[0];
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, 1));
+    await db().insert(s.shifts).values({
+      id: 2,
+      userId: 1,
+      branchId: 1,
+      shiftType: "RECEPTION",
+      status: "OPEN",
+      openedAt: new Date(),
+      openGuard: "1:1:RECEPTION:2",
+      openingBalance: "0",
+    });
+
+    const corrected = await correctSale({
+      originalInvoiceId: sale.invoiceId,
+      lines: [line(1)],
+      clientRequestId: "corr-next-reception-shift",
+    }, admin);
+
+    expect((await getInvoice(corrected.correctedInvoiceId)).shiftId).toBe(2);
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.id, receiptBefore.id)))[0].shiftId).toBe(1);
+  });
+
+  it("يرفض تصحيح فاتورة استقبال بعد إغلاق ورديتها إن لم توجد وردية استقبال مفتوحة بديلة", async () => {
+    await seed();
+    await db().update(s.shifts).set({ shiftType: "RECEPTION" }).where(eq(s.shifts.id, 1));
+    const sale = await cashSale(1);
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, 1));
+
+    await expect(correctSale({
+      originalInvoiceId: sale.invoiceId,
+      lines: [line(1)],
+      clientRequestId: "corr-closed-reception-without-replacement",
+    }, admin)).rejects.toThrow(/وردية مفتوحة بديلة/);
+    expect((await getInvoice(sale.invoiceId)).status).toBe("PAID");
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+    expect(await getStock(1, 1)).toBe(9);
+  });
+
+  it("يحفظ التوصيل المجاني والمبلغ المتنازل عنه في البديلة من دون إضافته للإجمالي", async () => {
+    await seed({ withCustomer: true });
+    const sale = await createSale({
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      sourceType: "ORDER",
+      lines: [line(1)],
+      deliveryFee: "0.00",
+      deliveryFree: true,
+      deliveryWaivedAmount: "250.00",
+    }, admin);
+
+    const corrected = await correctSale({
+      originalInvoiceId: sale.invoiceId,
+      customerId: 1,
+      lines: [line(1)],
+      deliveryFee: "0.00",
+      deliveryFree: true,
+      deliveryWaivedAmount: "250.00",
+      clientRequestId: "corr-free-delivery-preserved",
+    }, admin);
+    const replacement = await getInvoice(corrected.correctedInvoiceId);
+    expect(replacement.deliveryFree).toBe(true);
+    expect(replacement.deliveryWaivedAmount).toBe("250.00");
+    expect(replacement.deliveryFee).toBe("0.00");
+    expect(replacement.total).toBe("1000.00");
+  });
+
+  it("تصحيح متوازن لزبون عابر بعد إغلاق الوردية لا يطلب درج استرداد بلا فائض", async () => {
+    await seed();
+    const sale = await cashSale(1);
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null, closedAt: new Date() })
+      .where(eq(s.shifts.id, 1));
+
+    const corrected = await correctSale({
+      originalInvoiceId: sale.invoiceId,
+      lines: [line(1)],
+      clientRequestId: "corr-equal-anonymous-closed-shift",
+    }, admin);
+
+    expect(corrected.overpay).toBe("0.00");
+    expect((await getInvoice(sale.invoiceId)).status).toBe("SUPERSEDED");
+    expect((await getInvoice(corrected.correctedInvoiceId)).status).toBe("PAID");
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
+  });
+
+  it("تفاصيل البديلة تعرض رقم الأصل ومن طلب التعديل ومن اعتمده وتواريخه", async () => {
+    await seed({ withCustomer: true });
+    const sale = await creditSale(1);
+    const corrected = await correctSale({
+      originalInvoiceId: sale.invoiceId,
+      customerId: 1,
+      lines: [line(1)],
+      clientRequestId: "corr-audit-details",
+    }, admin);
+    const decidedAt = new Date();
+    await db().insert(s.salesControlRequests).values({
+      requestKey: "corr-audit-request",
+      invoiceId: sale.invoiceId,
+      branchId: 1,
+      requestType: "SALES_REISSUE",
+      status: "APPROVED",
+      payload: {},
+      payloadHash: "a".repeat(64),
+      invoiceSnapshot: {},
+      snapshotHash: "b".repeat(64),
+      reason: "تصحيح موثق",
+      requestedBy: 1,
+      reviewedBy: 3,
+      reviewedAt: decidedAt,
+      appliedAt: decidedAt,
+      resultInvoiceId: corrected.correctedInvoiceId,
+    });
+    const user = (await db().select().from(s.users).where(eq(s.users.id, 1)).limit(1))[0];
+    const details = await appRouter.createCaller(makeCtx(user)).sales.get({ invoiceId: corrected.correctedInvoiceId });
+    expect(details?.correctionAudit).toMatchObject({
+      originalInvoiceId: sale.invoiceId,
+      originalInvoiceNumber: (await getInvoice(sale.invoiceId)).invoiceNumber,
+      requestedByName: "أدمن",
+      reviewedByName: "مدير ١",
+    });
+    expect(details?.updatedAt).toBeTruthy();
   });
 
   it("correctionHistory يعزل سجل التصحيح بفرع الفاتورة مع إبقاء عبور الأدمن", async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode, type FeedAction, type FlushResult } from "./barcodeScanTiming";
+import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode, isConfidentScanCode, type FeedAction, type FlushResult } from "./barcodeScanTiming";
 import type { ScannerKeyEvent } from "@shared/barcodeKeyDecode";
 
 /** يبني ضغطةً بموقعٍ فيزيائيّ مشتقٍّ من الرقم/الحرف (لتبسيط الاختبار على مدخلٍ لاتينيّ). */
@@ -286,5 +286,57 @@ describe("ScanBurstDetector — إعادة الضبط", () => {
     expect(det.length).toBe(0);
     // بعد الضبط تبدأ ضغطةٌ جديدة كمرشّحٍ أوّل.
     expect(det.feed(digit("9"), 5000)).toBe("pass");
+  });
+});
+
+describe("isConfidentScanCode — بوّابة الباركود الواثق (تفصل المسح عن الكتابة العربية السريعة، ١٥/٩)", () => {
+  it("يقبل الرقميّ المحض وALR والنظاميّ وبادئة الحرف اللاصقة لنواةٍ رقمية", () => {
+    expect(isConfidentScanCode("10172", 3)).toBe(true);
+    expect(isConfidentScanCode("6001000000017", 3)).toBe(true);
+    expect(isConfidentScanCode("ALR0001084", 3)).toBe(true);
+    expect(isConfidentScanCode("b51822572015", 3)).toBe(true); // «B…» مقاسُ مصنعٍ لاصقٌ لرقم
+  });
+
+  it("يرفض الحروفَ المحضة (اسمٌ عربيّ مفكوكٌ لِـASCII) والقصيرَ و«حرفان+فراغ+رقم»", () => {
+    expect(isConfidentScanCode("abcd", 3)).toBe(false); // حروفٌ بلا أرقام ⇒ ليست باركوداً
+    expect(isConfidentScanCode("hgsm", 3)).toBe(false); // «عمار» مفكوكاً تحت التخطيط ⇒ حروف
+    expect(isConfidentScanCode("abc", 3)).toBe(false); // أقصر من 4
+    expect(isConfidentScanCode("td 2026", 3)).toBe(false); // «في 2026» — الفراغ دليلُ عبارة بشرية
+    expect(isConfidentScanCode("", 3)).toBe(false);
+  });
+});
+
+describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّاف البحث الموحَّد مع الكاشير)", () => {
+  const letter = (c: string): ScannerKeyEvent => ({ code: `Key${c.toUpperCase()}`, key: c, shiftKey: false });
+
+  it("⭐ اسمٌ عربيّ سريع (يظهر ASCII بالفكّ) — accepted بالتوقيت، لكنّ isConfidentScanCode=false ⇒ يبقى بحثاً", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    // أربعةُ أحرفٍ لاتينية سريعة (نظيرُ اسمٍ عربيّ مفكوكٍ عبر event.code): ومضةٌ توقيتاً.
+    feedSequence(det, ["a", "b", "c", "d"].map(letter), [10, 10, 10]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true); // التوقيت وحده صنّفها ومضة
+    // في الوضع التمريريّ لا تُصدَر مسحاً لأنّها غيرُ واثقة ⇒ لا تحويلَ لإنجليزية ولا اختطافَ بحث.
+    expect(isConfidentScanCode(code, 3)).toBe(false);
+  });
+
+  it("مسحٌ رقميّ سريع — accepted **و** واثق ⇒ يُصدَر مسحاً في الوضع التمريريّ", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(det, ["6", "2", "8", "1"].map(digit), [10, 10, 10]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(isConfidentScanCode(code, 3)).toBe(true);
+    expect(code).toBe("6281");
+  });
+
+  it("⭐ باركودُ مورّدٍ أبجديّ سريع «MLZ6A» — accepted بالتوقيت لكن غيرُ واثق: يُصدَر عبر مسار Enter النشط لا التسوية (مراجعة Codex P1)", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(det, [letter("M"), letter("L"), letter("Z"), digit("6"), letter("A")], [10, 10, 10, 10]);
+    // نلتقط النشاطَ قبل الإفراغ — نظيرُ `wasActive` في مسار Enter بالخطّاف التمريريّ.
+    expect(det.isActive).toBe(true);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true); // ومضةٌ مؤكَّدة توقيتاً ⇒ Enter النشط يُصدرها
+    expect(code).toBe("mlz6a"); // الفكّ يُصغّر الحالة (المطابقةُ لا-حسّاسةٌ للحالة)
+    // لكنّها غيرُ واثقة ⇒ مسارُ التسوية (بلا Enter) لا يُصدرها فلا يُختطَف اسمٌ عربيّ سريع.
+    expect(isConfidentScanCode(code, 3)).toBe(false);
   });
 });

@@ -5,6 +5,8 @@ import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,6 +29,7 @@ import {
   useStorefrontCatalog,
   useStorefrontCategories,
   useStorefrontMarketing,
+  useStorefrontSettings,
   type StorefrontBanner,
 } from "@/lib/storefront-api";
 import { storefrontDesign } from "@/lib/storefront-design";
@@ -205,6 +208,27 @@ export default function HomeScreen() {
         ? (`/search?query=${encodeURIComponent(clean)}` as never)
         : ("/search" as never),
     );
+  };
+
+  const settings = useStorefrontSettings();
+  const openWhatsAppPrinting = async () => {
+    const rawNumber = settings?.whatsappNumber?.replace(/\D/g, "");
+    if (!rawNumber) {
+      Alert.alert(
+        "تواصل معنا",
+        "يمكنك التواصل مع خدمة الزبائن للاستفسار عن خدمات وتصاميم الطباعة الخاصة.",
+      );
+      return;
+    }
+    const message = "مرحباً مكتبة العربية، أود الاستفسار عن خدمات الطباعة والتصاميم الخاصة.";
+    const url = `https://wa.me/${rawNumber}?text=${encodeURIComponent(message)}`;
+    try {
+      const can = await Linking.canOpenURL(url);
+      if (can) await Linking.openURL(url);
+      else Alert.alert("واتساب", "تأكد من وجود تطبيق واتساب على جهازك للتواصل المباشر.");
+    } catch {
+      Alert.alert("واتساب", "تعذر فتح تطبيق واتساب حالياً.");
+    }
   };
 
   return (
@@ -464,6 +488,33 @@ export default function HomeScreen() {
             <Text style={styles.assuranceText}>سعر ومخزون مؤكدان</Text>
           </View>
         </View>
+
+        {/* بطاقة خدمات الطباعة المباشرة والتصاميم الخاصة عبر واتساب */}
+        <TouchableOpacity
+          accessibilityLabel="خدمات الطباعة والتصاميم الخاصة عبر واتساب"
+          accessibilityRole="button"
+          activeOpacity={0.88}
+          onPress={openWhatsAppPrinting}
+          style={styles.whatsappBanner}
+        >
+          <View style={styles.whatsappBannerRight}>
+            <View style={styles.whatsappBannerIcon}>
+              <MaterialIcons color="#FFFFFF" name="print" size={24} />
+            </View>
+            <View style={styles.whatsappBannerText}>
+              <Text style={styles.whatsappBannerTitle}>
+                خدمات الطباعة والتصاميم الخاصة
+              </Text>
+              <Text style={styles.whatsappBannerSub}>
+                اطبع بحوثك، ملازمك وتصاميمك وتواصل معنا مباشرة عبر واتساب
+              </Text>
+            </View>
+          </View>
+          <View style={styles.whatsappBadge}>
+            <MaterialIcons color="#157347" name="chat" size={16} />
+            <Text style={styles.whatsappBadgeText}>تواصل واطلب عبر واتساب</Text>
+          </View>
+        </TouchableOpacity>
 
         {offers.length > 0 && (
           <ScrollView
@@ -1455,5 +1506,59 @@ const styles = StyleSheet.create({
     height: 38,
     justifyContent: "center",
     width: 38,
+  },
+  whatsappBanner: {
+    backgroundColor: "#F2FBF6",
+    borderColor: "#C5EBD6",
+    borderRadius: 20,
+    borderWidth: 1,
+    marginHorizontal: 16,
+    marginTop: 14,
+    padding: 14,
+    gap: 12,
+  },
+  whatsappBannerRight: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 12,
+  },
+  whatsappBannerIcon: {
+    backgroundColor: "#0E806A",
+    borderRadius: 14,
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  whatsappBannerText: {
+    flex: 1,
+  },
+  whatsappBannerTitle: {
+    color: "#161A22",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 14,
+    textAlign: "right",
+  },
+  whatsappBannerSub: {
+    color: "#4F685D",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
+    textAlign: "right",
+  },
+  whatsappBadge: {
+    backgroundColor: "#E4F7EC",
+    borderRadius: 12,
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 8,
+  },
+  whatsappBadgeText: {
+    color: "#157347",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 12,
   },
 });

@@ -80,6 +80,10 @@ export interface CreatePrintSaleInput {
   /** ٥/٨ — زبونٌ عابر: اسمٌ/هاتفٌ مرجعيّان على الفاتورة بلا سجلّ عميل ولا ذمّة. */
   contactName?: string | null;
   contactPhone?: string | null;
+  /** قناة وصول العميل (مباشر/واتساب/تليغرام/هاتف). */
+  channel?: "WALK_IN" | "WHATSAPP" | "TELEGRAM" | "PHONE" | null;
+  /** حجز الفاتورة وتجهيزها (استلام لاحقاً أو توصيل) — يقبل متبقياً لزبون عابر بهاتف/اسم. */
+  isReservation?: boolean;
   priceTier?: PriceTier | null;
   lines: PrintSaleLineInput[];
   payment?: {
@@ -498,8 +502,18 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       }
     }
     // ش٧: متبقّي فاتورة التوصيل عهدةُ مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create حرفياً).
-    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
+    if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending && !input.isReservation) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
+    }
+    if (input.isReservation && !input.customerId && !input.contactName?.trim() && !input.contactPhone?.trim()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر حفظ وحجز الفاتورة",
+          why: "لم يتم تحديد هوية العميل أو بيانات الاتصال للطلب المحجوز",
+          doThis: "أدخل اسم العميل أو رقم هاتفه لحفظ الحجز في قائمة الانتظار",
+        }),
+      });
     }
     // B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج (أ) creditApprovalId أو (ب) managerOverrideByUserId.
     let effectivePrintApprovalId = input.creditApprovalId;
@@ -584,7 +598,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       // العاديّة حاملةَ COD وحدها؛ فمتى لا متبقٍّ تحمله الإرساليّة فهي PREPAID لا COD (نشتقّه من المتبقّي).
       paymentMode: input.paymentMode === "COD" && unpaid.lte(0) ? "PREPAID" : (input.paymentMode ?? "PREPAID"),
       paymentDate: paidNow.gt(0) ? new Date() : null,
-      notes: input.notes ?? null,
+      notes: [input.channel ? `[قناة: ${input.channel}]` : null, input.notes?.trim()].filter(Boolean).join(" - ") || null,
       // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
       contactName: input.contactName?.trim() || null,
       contactPhone: input.contactPhone?.trim() || null,

@@ -61,6 +61,8 @@ export interface OnlineOrderRow {
   deliveryFee: string;
   deliveryPartyId: number | null;
   cancelReason: string | null;
+  latitude?: string | null;
+  longitude?: string | null;
   itemCount: number;
   createdAt: Date;
 }
@@ -113,6 +115,8 @@ export async function listOnlineOrders(opts: {
       deliveryFee: onlineOrders.shippingCost,
       deliveryPartyId: onlineOrders.deliveryPartyId,
       cancelReason: onlineOrders.cancelReason,
+      latitude: onlineOrders.latitude,
+      longitude: onlineOrders.longitude,
       createdAt: onlineOrders.createdAt,
       itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
     })
@@ -187,6 +191,8 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
         governorate: onlineOrders.governorate,
         addressText: onlineOrders.shippingAddress,
+        latitude: onlineOrders.latitude,
+        longitude: onlineOrders.longitude,
         subtotal: onlineOrders.subtotal,
         deliveryFee: onlineOrders.shippingCost,
         deliveryPartyId: onlineOrders.deliveryPartyId,
@@ -235,6 +241,8 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     customerPhone: order.customerPhone ?? null,
     governorate: order.governorate ?? null,
     addressText: order.addressText ?? null,
+    latitude: order.latitude ? String(order.latitude) : null,
+    longitude: order.longitude ? String(order.longitude) : null,
     subtotal: String(order.subtotal),
     deliveryFee: String(order.deliveryFee),
     deliveryPartyId: order.deliveryPartyId != null ? Number(order.deliveryPartyId) : null,

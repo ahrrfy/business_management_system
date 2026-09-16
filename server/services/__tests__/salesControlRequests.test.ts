@@ -4,15 +4,21 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { idempotencyHash } from "../idempotency";
 import { createSale } from "../saleService";
+import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt } from "../posExternalPayment";
 import {
   approveSalesControlRequest,
+  claimSalesCorrectionPayment,
+  rejectSalesControlRequest,
+  releaseSalesCorrectionPaymentClaim,
   requestSalesControl,
+  withdrawSalesControlRequest,
 } from "../sale/controlRequests";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 
 const TABLES = [
-  "salesExchangeCommands", "salesControlRequests", "returnRequests", "idempotencyKeys",
-  "auditLogs", "accountingEntries", "receipts", "invoiceItems", "invoices",
+  "salesExchangeCommands", "salesControlRequests", "returnRequests", "digitalSaleDetails",
+  "installmentPlans", "deliveryConsignments", "onlineOrders", "idempotencyKeys",
+  "auditLogs", "accountingEntries", "externalPaymentAttempts", "receipts", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits",
   "productVariants", "products", "shifts", "customers", "branches", "users",
 ];
@@ -297,6 +303,179 @@ describe("حوكمة عمليات البيع الحرجة", () => {
     expect(commands[0].replacementInvoiceId).not.toBe(created.invoiceId);
     expect(commands[0].settlementKind).toBe("CUSTOMER_CREDIT");
     expect(commands[0].deltaAmount).toBe("2000.00");
+  });
+
+  it("فرق البطاقة يثبت دليله دائماً ثم تعيد المحاولة استهلاكه بلا تمرير ثانٍ", async () => {
+    const created = await sale();
+    const request = await requestSalesControl({
+      requestKey: "reissue-card-at-approval",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE",
+      reason: "إضافة دفتر بعد مراجعة الزبون",
+      payload: {
+        customerId: 1,
+        priceTier: "RETAIL",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "6" }],
+        additionalPayment: { amount: "1000.00", method: "CARD" },
+      },
+    }, CASHIER);
+
+    expect(await db().select().from(s.externalPaymentAttempts)).toHaveLength(0);
+    await expect(
+      approveSalesControlRequest(Number(request.id), MANAGER),
+    ).rejects.toThrow(/حجز/);
+    expect(await db().select().from(s.externalPaymentAttempts)).toHaveLength(0);
+    expect((await db().select().from(s.salesControlRequests)
+      .where(eq(s.salesControlRequests.id, Number(request.id))))[0].status).toBe("PENDING");
+    expect((await db().select().from(s.invoices)
+      .where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+
+    await expect(claimSalesCorrectionPayment(Number(request.id), MANAGER)).resolves.toMatchObject({ claimed: true });
+    // عطلٌ بعد نجاح الجهاز: المخزون لا يكفي للبديلة. دليل الجهاز يبقى CONFIRMED خارج
+    // ROLLBACK، والطلب القديم يصير STALE كي يمكن إنشاء طلب تعافٍ بالمرجع نفسه.
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await expect(approveSalesControlRequest(
+      Number(request.id),
+      MANAGER,
+      null,
+      { reference: "TERM-CORR-100", deviceId: "approval-device-1" },
+    )).rejects.toThrow();
+    const [durableAttempt] = await db().select().from(s.externalPaymentAttempts);
+    expect(durableAttempt.state).toBe("CONFIRMED");
+    expect(durableAttempt.invoiceId).toBeNull();
+    expect(durableAttempt.receiptId).toBeNull();
+    expect((await db().select().from(s.salesControlRequests)
+      .where(eq(s.salesControlRequests.id, Number(request.id))))[0].status).toBe("STALE");
+    expect((await db().select().from(s.invoices)
+      .where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+
+    // استعادة المخزون وطلب تعافٍ جديد ثم المرجع نفسه يستهلك الدليل؛ لا محاولة دفع ثانية.
+    await db().update(s.branchStock).set({ quantity: 95 }).where(eq(s.branchStock.variantId, 1));
+    const recovery = await requestSalesControl({
+      requestKey: "reissue-card-recovery",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE",
+      reason: "تعافٍ من قبض محفوظ لم يترحل",
+      payload: {
+        customerId: 1,
+        priceTier: "RETAIL",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "6" }],
+        additionalPayment: { amount: "1000.00", method: "CARD" },
+      },
+    }, CASHIER);
+    await expect(claimSalesCorrectionPayment(Number(recovery.id), MANAGER)).resolves.toMatchObject({ claimed: true });
+    const approved = await approveSalesControlRequest(
+      Number(recovery.id),
+      MANAGER,
+      null,
+      { reference: "TERM-CORR-100", deviceId: "approval-device-1" },
+    );
+    expect(approved.replayed).toBe(false);
+    const replacementId = Number(approved.request.resultInvoiceId);
+    const attempts = await db().select().from(s.externalPaymentAttempts);
+    expect(attempts).toHaveLength(1);
+    const [attempt] = attempts;
+    expect(attempt.state).toBe("CONFIRMED");
+    expect(Number(attempt.createdBy)).toBe(MANAGER.userId);
+    expect(Number(attempt.confirmedBy)).toBe(MANAGER.userId);
+    expect(Number(attempt.invoiceId)).toBe(replacementId);
+    expect(attempt.consumedAt).not.toBeNull();
+    const [cardReceipt] = await db().select().from(s.receipts).where(sql`
+      ${s.receipts.invoiceId}=${replacementId}
+      AND ${s.receipts.direction}='IN'
+      AND ${s.receipts.paymentMethod}='CARD'
+    `);
+    expect(cardReceipt.amount).toBe("1000.00");
+    expect(cardReceipt.referenceNumber).toBe("TERM-CORR-100");
+    expect(Number(attempt.receiptId)).toBe(Number(cardReceipt.id));
+    const [replacement] = await db().select().from(s.invoices)
+      .where(eq(s.invoices.id, replacementId));
+    expect(replacement.status).toBe("PAID");
+    expect(replacement.paymentMethod).toBe("MIXED");
+  });
+
+  it("حجز البطاقة حصري ويمكن تحريره، ويمنع الرفض والسحب أثناء احتمال تنفيذ الجهاز", async () => {
+    const created = await sale();
+    const requested = await requestSalesControl({
+      requestKey: "reissue-card-claim-lock",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE",
+      reason: "إضافة دفتر بفرق بطاقة",
+      payload: {
+        customerId: 1,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "6" }],
+        additionalPayment: { amount: "1000.00", method: "CARD" },
+      },
+    }, CASHIER);
+    await expect(claimSalesCorrectionPayment(Number(requested.id), MANAGER)).resolves.toMatchObject({ claimed: true });
+    await expect(claimSalesCorrectionPayment(Number(requested.id), { userId: 3, branchId: 1, role: "manager" }))
+      .rejects.toThrow(/مراجع آخر/);
+    await expect(rejectSalesControlRequest(Number(requested.id), "رفض بعد الحجز", { userId: 3, branchId: 1, role: "manager" }))
+      .rejects.toThrow(/حجز عملية دفع/);
+    await expect(withdrawSalesControlRequest(Number(requested.id), "سحبه الطالب", CASHIER))
+      .rejects.toThrow(/حجز عملية دفع/);
+    await expect(rejectSalesControlRequest(Number(requested.id), "الأدمن لا يتجاوز الحجز", ADMIN))
+      .rejects.toThrow(/حجز عملية دفع/);
+    await expect(releaseSalesCorrectionPaymentClaim(
+      Number(requested.id),
+      ADMIN,
+      "NO_EXTERNAL_PAYMENT_EXECUTED",
+    )).rejects.toThrow(/مراجع آخر/);
+    await expect(releaseSalesCorrectionPaymentClaim(
+      Number(requested.id),
+      MANAGER,
+      "NO_EXTERNAL_PAYMENT_EXECUTED",
+    ))
+      .resolves.toMatchObject({ released: true });
+    expect((await db().select().from(s.auditLogs).where(eq(
+      s.auditLogs.action,
+      "sales.correctionPaymentClaim.released",
+    )))).toHaveLength(1);
+    await expect(rejectSalesControlRequest(Number(requested.id), "رفض بعد تحرير الحجز", { userId: 3, branchId: 1, role: "manager" }))
+      .resolves.toMatchObject({ replayed: false });
+  });
+
+  it("لا يستولي التصحيح على إثبات SALES_COLLECTION عادي يخص عملية أخرى", async () => {
+    const created = await sale();
+    const requested = await requestSalesControl({
+      requestKey: "reissue-card-no-foreign-proof",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_REISSUE",
+      reason: "إضافة دفتر بفرق بطاقة مستقل",
+      payload: {
+        customerId: 1,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "6" }],
+        additionalPayment: { amount: "1000.00", method: "CARD" },
+      },
+    }, CASHIER);
+    await claimSalesCorrectionPayment(Number(requested.id), MANAGER);
+    const foreign = await initiateExternalPaymentAttempt({
+      branchId: 1,
+      channel: "SALES_COLLECTION",
+      method: "CARD",
+      amount: "1000.00",
+      reference: "ORDINARY-COLLECTION-1",
+      requestId: "ordinary-invoice-collection-1",
+      deviceId: "approval-device-1",
+    }, MANAGER);
+    await confirmExternalPaymentAttempt({
+      attemptId: foreign.attemptId,
+      branchId: 1,
+      channel: "SALES_COLLECTION",
+      deviceId: "approval-device-1",
+    }, MANAGER);
+
+    await expect(approveSalesControlRequest(
+      Number(requested.id),
+      MANAGER,
+      null,
+      { reference: "ORDINARY-COLLECTION-1", deviceId: "approval-device-1" },
+    )).rejects.toThrow(/أحادي الاستعمال/);
+    const [proof] = await db().select().from(s.externalPaymentAttempts);
+    expect(proof.requestId).toBe("ordinary-invoice-collection-1");
+    expect(proof.invoiceId).toBeNull();
+    expect((await db().select().from(s.salesControlRequests)
+      .where(eq(s.salesControlRequests.id, Number(requested.id))))[0].status).toBe("PENDING");
   });
 });
 

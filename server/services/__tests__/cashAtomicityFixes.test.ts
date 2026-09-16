@@ -24,6 +24,7 @@ const TABLES = [
   "auditLogs",
   "accountingEntries",
   "receipts",
+  "stockTransferLineBundleComponents",
   "stockTransferLines",
   "stockTransfers",
   "inventoryMovements",

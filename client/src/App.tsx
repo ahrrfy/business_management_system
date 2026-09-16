@@ -33,7 +33,7 @@ import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
@@ -120,6 +120,7 @@ const AssetEdit = lazy(() => import("@/pages/AssetEdit"));
 const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
 const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
+const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
 const PlatformAdmin = lazy(() => import("@/pages/PlatformAdmin"));
 const UserNew = lazy(() => import("@/pages/UserNew"));
 const UserEdit = lazy(() => import("@/pages/UserEdit"));
@@ -384,6 +385,11 @@ export default function App() {
       <Route path="/store/product/:productId" component={Storefront} />
       <Route path="/store/category/:categoryId" component={Storefront} />
       <Route path="/store" component={Storefront} />
+      {/* الصفحات القانونية وسياسة الخصوصية وحذف الحساب — عامة بلا دخول ومطلوبة لـ Google Play */}
+      <Route path="/legal/privacy" component={LegalDocument} />
+      <Route path="/legal/terms" component={LegalDocument} />
+      <Route path="/legal/returns" component={LegalDocument} />
+      <Route path="/legal/delete-account" component={LegalDocument} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>
@@ -415,8 +421,8 @@ export default function App() {
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><RequireRole gate={INVOICE_LIST_GATE}><SalesHub /></RequireRole></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
-      {/* تصحيح الفاتورة (0168): نفس شاشة البيع في وضع التصحيح (عكس + إعادة إصدار) — مديريّ فقط. */}
-      <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
+      {/* التصحيح: الكاشير يرفع طلباً صفريَّ الأثر من نفس شاشة البيع؛ مديرٌ مستقل يعتمد التنفيذ. */}
+      <Route path="/invoices/:id/correct"><Shell><RequireRole gate={INVOICE_CORRECTION_GATE}><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole></Shell></Route>
       <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}

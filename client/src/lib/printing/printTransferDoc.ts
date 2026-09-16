@@ -24,6 +24,12 @@ export interface TransferDocLine {
   variantName?: string | null;
   color?: string | null;
   sku: string;
+  unitLabel?: string;
+  bundleComponents?: Array<{
+    productName: string;
+    variantName?: string | null;
+    baseQuantityPerBundle: number;
+  }>;
   quantitySent: number;
   quantityReceived?: number | null;
   note?: string | null;
@@ -110,24 +116,30 @@ export function printTransferDoc(d: TransferDocData): boolean {
     d.lines.map((l) => {
       const name = `${l.productName}${l.variantName ? ` — ${l.variantName}` : l.color ? ` — ${l.color}` : ""}`;
       const diff = l.quantityReceived == null ? null : l.quantitySent - Number(l.quantityReceived);
+      const unitLabel = l.unitLabel || "وحدة أساس";
+      const componentSummary = l.bundleComponents?.length
+        ? ` | محتوى البكج: ${l.bundleComponents
+            .map((component) => `${fmt(component.baseQuantityPerBundle)} × ${component.productName}${component.variantName ? ` — ${component.variantName}` : ""}`)
+            .join(" + ")}`
+        : "";
       return {
-        item: name,
+        item: `${name}${componentSummary}`,
         sku: l.sku,
-        sent: fmt(l.quantitySent),
-        received: inTransit ? HAND_BOX : l.quantityReceived == null ? "—" : fmt(Number(l.quantityReceived)),
-        diff: inTransit ? HAND_BOX : diff == null ? "—" : diff === 0 ? "مطابق" : `−${fmt(diff)}`,
+        sent: `${fmt(l.quantitySent)} ${unitLabel}`,
+        received: inTransit ? HAND_BOX : l.quantityReceived == null ? "—" : `${fmt(Number(l.quantityReceived))} ${unitLabel}`,
+        diff: inTransit ? HAND_BOX : diff == null ? "—" : diff === 0 ? "مطابق" : `−${fmt(diff)} ${unitLabel}`,
         note: inTransit ? "" : l.note || "—",
       };
     }),
   );
 
   const totals = `<div style="margin-top:10px;display:flex;gap:14px;justify-content:flex-start;font-size:11.5px;font-weight:700">
-      <div>إجمالي المرسَل: <span style="direction:ltr;unicode-bidi:isolate">${esc(fmt(totalSent))}</span> وحدة</div>
+      <div>إجمالي كميات الأسطر المرسَلة: <span style="direction:ltr;unicode-bidi:isolate">${esc(fmt(totalSent))}</span></div>
       ${
         inTransit
           ? ""
           : `<div>إجمالي المستلَم: <span style="direction:ltr;unicode-bidi:isolate">${esc(fmt(totalReceived))}</span></div>
-             <div style="color:${totalDiff > 0 ? "#B42318" : "#0D6B52"}">${totalDiff > 0 ? `عجز موثَّق: ${esc(fmt(totalDiff))} وحدة` : "مطابقة كاملة"}</div>`
+             <div style="color:${totalDiff > 0 ? "#B42318" : "#0D6B52"}">${totalDiff > 0 ? `عجز موثَّق في كميات الأسطر: ${esc(fmt(totalDiff))}` : "مطابقة كاملة"}</div>`
       }
     </div>`;
 

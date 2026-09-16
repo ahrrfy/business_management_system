@@ -46,33 +46,56 @@ function safeD(v: string | number): Decimal {
   }
 }
 
+/** مرآة `server/services/billing.computeLineTotal`: تقريب الخصم ثم السطر قبل جمع الفاتورة. */
+function computeRoundedLine(item: InvoiceLine): {
+  gross: Decimal;
+  discount: Decimal;
+  total: Decimal;
+} {
+  if (item.isGift) return { gross: D(0), discount: D(0), total: D(0) };
+  const price = safeD(item.price);
+  const qty = safeD(item.qty);
+  const grossRaw = price.times(qty);
+  const gross = round2(grossRaw);
+  const discountRaw = item.discountType === "percent"
+    ? grossRaw.times(safeD(item.discount)).dividedBy(100)
+    : safeD(item.discount);
+  const requestedDiscount = round2(discountRaw);
+  const discount = requestedDiscount.gt(gross) ? gross : requestedDiscount;
+  const total = round2(grossRaw.minus(discount));
+  return {
+    gross,
+    // عرض الخصم يطابق الفرق المرئي بين الإجمالي الخام المقرّب وصافي السطر المثبّت.
+    discount: round2(gross.minus(total)),
+    total,
+  };
+}
+
 export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTotals {
   let subtotal = new Decimal(0);
   let totalDiscount = new Decimal(0);
+  let serverSubtotal = new Decimal(0);
 
   for (const item of items) {
     // هدايا الفاتورة (0149): السطر المُهدى صفرٌ في كلّ الحسابات — لا مجموعَ فرعيّاً ولا خصماً
     // (خصمٌ على مجّانٍ لا معنى له وينفخ «إجمالي الخصومات» زوراً). مرآةُ ما يفعله الخادم بالضبط
     // (`create.ts`: unitPrice=0 وdiscount=0 للسطر المُهدى) ⇒ الإجمالي المعروض = المحفوظ.
-    const price = item.isGift ? new Decimal(0) : safeD(item.price);
-    const qty = safeD(item.qty);
-    const lineBase = price.times(qty);
-    subtotal = subtotal.plus(lineBase);
-
-    const discRaw = item.isGift ? new Decimal(0) : safeD(item.discount);
-    const disc =
-      item.discountType === "percent"
-        ? lineBase.times(discRaw).dividedBy(100)
-        : discRaw;
-    totalDiscount = totalDiscount.plus(disc);
+    const line = computeRoundedLine(item);
+    subtotal = subtotal.plus(line.gross);
+    totalDiscount = totalDiscount.plus(line.discount);
+    serverSubtotal = serverSubtotal.plus(line.total);
   }
 
-  const afterItemDisc = subtotal.minus(totalDiscount);
+  const afterItemDisc = round2(serverSubtotal);
   const gdRaw = safeD(state.globalDiscount);
-  const globalDiscAmt =
+  const requestedGlobalDiscount = round2(
     state.globalDiscountType === "percent"
       ? afterItemDisc.times(gdRaw).dividedBy(100)
-      : gdRaw;
+      : gdRaw,
+  );
+  const globalDiscAmt = requestedGlobalDiscount.gt(afterItemDisc)
+    ? afterItemDisc
+    : requestedGlobalDiscount;
   const afterGlobalDisc = afterItemDisc.minus(globalDiscAmt);
 
   // ضريبة مستوى الفاتورة (اختيارية) — على (المجموع الفرعي − كل الخصومات)، مطابقة تماماً
@@ -80,13 +103,13 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
   let totalTax = new Decimal(0);
   if (state.taxEnabled) {
     const invoiceTaxRate = safeD(state.taxRatePercent ?? "0");
-    totalTax = afterGlobalDisc.times(invoiceTaxRate).dividedBy(100);
+    totalTax = round2(afterGlobalDisc.times(invoiceTaxRate).dividedBy(100));
   }
 
   // توصيلٌ مجّانيّ ⇒ صفرٌ في الإجمالي: قيمة `shipping` حينها هي المُتنازَل عنه لا مبلغٌ يُقبض.
-  const shipping = state.shippingFree ? new Decimal(0) : safeD(state.shipping);
-  const otherExpenses = safeD(state.otherExpenses);
-  const grandTotal = afterGlobalDisc.plus(totalTax).plus(shipping).plus(otherExpenses);
+  const shipping = state.shippingFree ? new Decimal(0) : round2(safeD(state.shipping));
+  const otherExpenses = round2(safeD(state.otherExpenses));
+  const grandTotal = round2(afterGlobalDisc.plus(totalTax).plus(shipping).plus(otherExpenses));
   const paid = safeD(state.paidAmount);
   const remaining = grandTotal.minus(paid);
 
@@ -105,17 +128,7 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
 
 /** Per-line total (after discount, pre-tax) — 2dp string. الضريبة على مستوى الفاتورة لا السطر. */
 export function calcLineTotal(item: InvoiceLine): string {
-  // هدايا الفاتورة (0149): إجمالي السطر المُهدى صفرٌ دائماً — مرآةُ `create.ts` خادمياً.
-  if (item.isGift) return "0.00";
-  const price = safeD(item.price);
-  const qty = safeD(item.qty);
-  const lineBase = price.times(qty);
-  const discRaw = safeD(item.discount);
-  const disc =
-    item.discountType === "percent"
-      ? lineBase.times(discRaw).dividedBy(100)
-      : discRaw;
-  return round2(lineBase.minus(disc)).toFixed(2);
+  return computeRoundedLine(item).total.toFixed(2);
 }
 
 /**

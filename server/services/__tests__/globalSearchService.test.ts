@@ -230,6 +230,15 @@ describe("globalSearch — توجيه حسب النمط", () => {
     expect(products[0].rank).toBe(0);
   });
 
+  it("BARCODE يطابق منتجاً بالأرقام العربية-الهندية الممسوحة (٦٢٩١٠٤١٥٠٠٢١٣)", async () => {
+    const out = await globalSearch({ query: "٦٢٩١٠٤١٥٠٠٢١٣", branchId: refs.branchMain, role: "admin" });
+    const products = out.filter((r) => r.type === "PRODUCT");
+    expect(products).toHaveLength(1);
+    expect(products[0].title).toContain("قلم");
+    expect(products[0].rank).toBe(0);
+    expect(products[0].meta).toContain("6291041500213");
+  });
+
   it("يجد باركود المورد القصير أو الحرفي أو UPC حتى إن صنّفه الموجّه وثيقةً أو نصاً", async () => {
     const d = db();
     const [unit] = await d

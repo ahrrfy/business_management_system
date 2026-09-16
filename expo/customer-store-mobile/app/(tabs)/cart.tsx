@@ -3,6 +3,7 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import {
   Alert,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -59,6 +60,28 @@ export default function CartScreen() {
     0,
     freeShippingThreshold - estimatedSubtotal,
   );
+
+  const shareCartViaWhatsApp = async () => {
+    if (lines.length === 0) return;
+    const rawNumber = settings?.whatsappNumber?.replace(/\D/g, "") || "";
+    let message = "مرحباً مكتبة العربية، أود مراجعة هذه السلة والطلب عبركم:\n";
+    lines.forEach((line, index) => {
+      const price = line.selectionDetails.unitSalePrice ?? line.selectionDetails.unitPrice;
+      message += `${index + 1}. ${line.product.title} (${selectionDescription(line.selectionDetails)}) - الكمية: ${line.quantity} ${price ? `- السعر: ${formatIqd(price)}` : ""}\n`;
+    });
+    message += `الإجمالي التقديري: ${formatIqd(estimatedSubtotal)}\nالدفع: عند الاستلام.`;
+    const url = rawNumber
+      ? `https://wa.me/${rawNumber}?text=${encodeURIComponent(message)}`
+      : `https://wa.me/?text=${encodeURIComponent(message)}`;
+    try {
+      const can = await Linking.canOpenURL(url);
+      if (can) await Linking.openURL(url);
+      else Alert.alert("واتساب", "تأكد من وجود تطبيق واتساب على جهازك لمشاركة السلة.");
+    } catch {
+      Alert.alert("واتساب", "تعذر فتح تطبيق واتساب حالياً.");
+    }
+  };
+
   if (isRestoring)
     return (
       <ScreenContainer className="px-4" containerClassName="bg-background">
@@ -322,9 +345,21 @@ export default function CartScreen() {
           onPress={() => router.push("/checkout" as never)}
           style={styles.checkout}
         >
-          <Text style={styles.checkoutText}>تابع لإتمام الطلب</Text>
+          <Text style={styles.checkoutText}>تابع لإتمام الطلب (الدفع عند الاستلام)</Text>
           <MaterialIcons color="#FFFFFF" name="arrow-back" size={20} />
         </TouchableOpacity>
+
+        <TouchableOpacity
+          accessibilityLabel="مشاركة السلة عبر واتساب"
+          accessibilityRole="button"
+          activeOpacity={0.88}
+          onPress={shareCartViaWhatsApp}
+          style={styles.shareWhatsAppBtn}
+        >
+          <MaterialIcons color="#157347" name="chat" size={18} />
+          <Text style={styles.shareWhatsAppText}>مشاركة السلة عبر واتساب</Text>
+        </TouchableOpacity>
+
         <Text style={styles.footerNote}>
           لن يتم إنشاء أي طلب قبل مراجعة بياناتك وتأكيده.
         </Text>
@@ -625,4 +660,21 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   browseText: { color: "#FFFFFF", fontFamily: "Cairo_700Bold", fontSize: 13 },
+  shareWhatsAppBtn: {
+    alignItems: "center",
+    backgroundColor: "#E8F8EE",
+    borderColor: "#A9E2BF",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 8,
+    justifyContent: "center",
+    marginTop: 10,
+    paddingVertical: 13,
+  },
+  shareWhatsAppText: {
+    color: "#157347",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 13,
+  },
 });

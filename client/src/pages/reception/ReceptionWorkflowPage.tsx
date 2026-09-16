@@ -1,11 +1,12 @@
 /**
  * DeliveryWorkflowPage - شاشة الإسناد والتوصيل /reception/workflow
- * ثلاثة أقسام: الإسناد، التحصيل والذمم، الإلغاء والمرتجع
+ * أربعة أقسام: الإسناد، التحصيل والذمم، تعديل الفاتورة، الإلغاء والمرتجع
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useSearch } from "wouter";
 
 import type { RouterOutputs } from "@/lib/trpc";
-import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FileText, Info, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
+import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FilePenLine, FileText, Info, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
@@ -28,8 +29,11 @@ import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing
 import { ReceptionCollectSection } from "@/components/reception/ReceptionCollectSection";
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
+import { fmtDateTime } from "@/lib/date";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
 
-type Section = "dispatch" | "collect" | "return";
+type Section = "dispatch" | "collect" | "edit" | "return";
+type CorrectionLookup = NonNullable<RouterOutputs["sales"]["lookupForCorrection"]>;
 
 interface ScannedOrder {
   id: number;
@@ -51,7 +55,14 @@ interface ScannedOrder {
 }
 
 export default function DeliveryWorkflowPage() {
-  const [activeSection, setActiveSection] = useState<Section>("dispatch");
+  const pageSearch = useSearch();
+  const [, navigate] = useLocation();
+  const [activeSection, setActiveSection] = useState<Section>(() => {
+    const requested = new URLSearchParams(pageSearch).get("section");
+    return requested === "collect" || requested === "edit" || requested === "return"
+      ? requested
+      : "dispatch";
+  });
   const [selectedPartyId, setSelectedPartyId] = useState<number | null>(null);
   const [lastDispatchedSlip, setLastDispatchedSlip] = useState<DispatchSlipData | null>(null);
   const [dispatchScanned, setDispatchScanned] = useState<ScannedOrder | null>(null);
@@ -63,11 +74,14 @@ export default function DeliveryWorkflowPage() {
   const [deliveryNotes, setDeliveryNotes] = useState("");
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const [collectScannedCode, setCollectScannedCode] = useState<string | null>(null);
+  const [editScanned, setEditScanned] = useState<CorrectionLookup | null>(null);
+  const [editBarcodeInput, setEditBarcodeInput] = useState("");
   const [returnScanned, setReturnScanned] = useState<ScannedOrder | null>(null);
   const [returnBarcodeInput, setReturnBarcodeInput] = useState("");
   const [returnType, setReturnType] = useState<"FULL" | "PARTIAL">("FULL");
   const [returnReason, setReturnReason] = useState("");
   const dispatchRef = useRef<HTMLInputElement>(null);
+  const editRef = useRef<HTMLInputElement>(null);
   const returnRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -135,27 +149,60 @@ export default function DeliveryWorkflowPage() {
     } catch (e) { notify.err(e, "تعذّر جلب الطلب"); }
   }, [utils]);
 
+  const lookupInvoiceForEdit = useCallback(async (raw: string) => {
+    const scanned = parseScan(raw);
+    if (["workOrder", "purchaseOrder", "quotation", "customer", "employee", "user"].includes(scanned.type)) {
+      notify.warn("امسح باركود فاتورة بيع (INV) أو أدخل رقم الفاتورة");
+      return;
+    }
+    const invoiceNumber = scanned.type === "invoice" ? scanned.number : raw.trim();
+    if (!invoiceNumber) return;
+    try {
+      const invoice = await utils.sales.lookupForCorrection.fetch({ invoiceNumber });
+      if (!invoice) {
+        notify.err(`لم توجد فاتورة بهذا الرقم في فرعك: ${invoiceNumber}`);
+        return;
+      }
+      setEditScanned(invoice);
+      setEditBarcodeInput("");
+    } catch (error) {
+      notify.err(error, "تعذّر جلب الفاتورة");
+    }
+  }, [utils]);
+
+  const directInvoiceLookupRef = useRef(false);
+  useEffect(() => {
+    const invoiceNumber = new URLSearchParams(pageSearch).get("invoice")?.trim();
+    if (activeSection !== "edit" || !invoiceNumber || directInvoiceLookupRef.current) return;
+    directInvoiceLookupRef.current = true;
+    void lookupInvoiceForEdit(invoiceNumber);
+  }, [activeSection, lookupInvoiceForEdit, pageSearch]);
+
   const dispatchEnabled = activeSection === "dispatch" && !dispatchScanned;
   const returnEnabled = activeSection === "return" && !returnScanned;
   const collectEnabled = activeSection === "collect";
+  const editEnabled = activeSection === "edit" && !editScanned;
 
   useBarcodeScanner(
     useCallback(async (raw: string) => {
       if (dispatchEnabled) await lookupWorkOrder(raw, "dispatch");
       else if (returnEnabled) await lookupWorkOrder(raw, "return");
       else if (collectEnabled) setCollectScannedCode(raw.trim());
+      else if (editEnabled) await lookupInvoiceForEdit(raw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [dispatchEnabled, returnEnabled, collectEnabled, lookupWorkOrder]),
-    { enabled: dispatchEnabled || returnEnabled || collectEnabled },
+    }, [dispatchEnabled, returnEnabled, collectEnabled, editEnabled, lookupWorkOrder, lookupInvoiceForEdit]),
+    { enabled: dispatchEnabled || returnEnabled || collectEnabled || editEnabled },
   );
 
   const dispatchBarcodeHook = useBarcodeInput((code) => void lookupWorkOrder(code, "dispatch"));
   const returnBarcodeHook = useBarcodeInput((code) => void lookupWorkOrder(code, "return"));
+  const editBarcodeHook = useBarcodeInput((code) => void lookupInvoiceForEdit(code));
 
   useEffect(() => {
     if (dispatchEnabled) dispatchRef.current?.focus();
     else if (returnEnabled) returnRef.current?.focus();
-  }, [dispatchEnabled, returnEnabled]);
+    else if (editEnabled) editRef.current?.focus();
+  }, [dispatchEnabled, returnEnabled, editEnabled]);
 
   function onDispatchSuccess(data: { consignmentNumber: string }, kind: "workOrder" | "invoice" | "onlineOrder") {
     notify.ok((kind === "invoice" ? "أُسندت الفاتورة #" : kind === "onlineOrder" ? "أُسند طلب المتجر #" : "أُسند #") + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
@@ -351,21 +398,24 @@ export default function DeliveryWorkflowPage() {
         />
       </div>
 
-      <div className="flex shrink-0 border-b bg-card">
+      <div className="grid shrink-0 grid-cols-2 border-b bg-card md:grid-cols-4" role="tablist" aria-label="أقسام التوصيل والفواتير">
         {([
           { key: "dispatch" as const, icon: <Truck aria-hidden className="size-4" />, label: "إسناد للمندوب" },
           { key: "collect" as const, icon: <Wallet aria-hidden className="size-4" />, label: "تحصيل وذمم" },
+          { key: "edit" as const, icon: <FilePenLine aria-hidden className="size-4" />, label: "تعديل فاتورة" },
           { key: "return" as const, icon: <RefreshCcw aria-hidden className="size-4" />, label: "إلغاء / مرتجع" },
         ]).map(({ key, icon, label }) => (
-          <button key={key} type="button" onClick={() => setActiveSection(key)}
-            className={cn("flex flex-1 items-center justify-center gap-2 py-3 text-sm font-bold transition-colors",
+          <button key={key} id={`workflow-tab-${key}`} type="button" role="tab"
+            aria-selected={activeSection === key} aria-controls="workflow-active-panel"
+            onClick={() => setActiveSection(key)}
+            className={cn("flex min-h-11 items-center justify-center gap-2 px-2 py-2.5 text-sm font-bold transition-colors",
               activeSection === key ? "border-b-2 border-primary text-primary" : "text-muted-foreground hover:bg-muted/40")}>
             {icon} {label}
           </button>
         ))}
       </div>
 
-      <div className="flex-1 overflow-auto p-4">
+      <div id="workflow-active-panel" role="tabpanel" aria-labelledby={`workflow-tab-${activeSection}`} className="flex-1 overflow-auto p-4">
         {activeSection === "dispatch" && (
           <div className="mx-auto max-w-2xl space-y-4">
             {lastDispatchedSlip && (
@@ -573,6 +623,105 @@ export default function DeliveryWorkflowPage() {
             scannedBarcode={collectScannedCode}
             onBarcodeConsumed={() => setCollectScannedCode(null)}
           />
+        )}
+
+        {activeSection === "edit" && (
+          <div className="mx-auto max-w-2xl space-y-4">
+            {!editScanned && (
+              <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-6 text-center">
+                <ScanLine aria-hidden className="mx-auto size-10 text-primary/60" />
+                <p className="mt-2 text-base font-extrabold text-primary">امسح باركود الفاتورة للتعديل</p>
+                <p className="mt-1 text-sm text-muted-foreground">أو أدخل رقم الفاتورة يدوياً</p>
+                <div className="mt-4 flex gap-2">
+                  <Input
+                    ref={editRef}
+                    value={editBarcodeInput}
+                    onChange={(event) => setEditBarcodeInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      editBarcodeHook.handleKeyDown(event, setEditBarcodeInput);
+                      if (!event.defaultPrevented && event.key === "Enter" && editBarcodeInput.trim()) {
+                        void lookupInvoiceForEdit(editBarcodeInput.trim());
+                      }
+                    }}
+                    placeholder="رقم الفاتورة (Enter)"
+                    className="flex-1 text-center font-bold"
+                    dir="ltr"
+                  />
+                  <Button variant="outline" onClick={() => void lookupInvoiceForEdit(editBarcodeInput.trim())} disabled={!editBarcodeInput.trim()}>
+                    بحث
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {editScanned && (
+              <Card className="overflow-hidden gap-0 py-0 shadow-sm">
+                <div className="flex items-start justify-between border-b bg-muted/30 p-4">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <FileText aria-hidden className="size-5 text-primary" />
+                      <span className="text-lg font-extrabold">فاتورة #{editScanned.invoiceNumber}</span>
+                      <Badge variant={invoiceStatusBadgeVariant(editScanned.status)} className="font-bold">
+                        {invoiceStatusLabel(editScanned.status)}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      أُنشئت {fmtDateTime(editScanned.invoiceDate)} · آخر تحديث {fmtDateTime(editScanned.updatedAt)}
+                    </p>
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => { setEditScanned(null); setEditBarcodeInput(""); }}>
+                    مسح فاتورة أخرى
+                  </Button>
+                </div>
+                <div className="space-y-4 p-4">
+                  <div className="grid overflow-hidden rounded-md border bg-background sm:grid-cols-2">
+                    <div className="border-b p-3 sm:border-e">
+                      <p className="text-xs text-muted-foreground">العميل</p>
+                      <p className="font-bold">{editScanned.customerName ?? "زبون نقدي"}</p>
+                      {editScanned.customerPhone && <p className="text-xs text-muted-foreground" dir="ltr">{editScanned.customerPhone}</p>}
+                    </div>
+                    <div className="border-b p-3">
+                      <p className="text-xs text-muted-foreground">الفاتورة والدفع</p>
+                      <p className="font-bold">{fmt(editScanned.total)} د.ع · مدفوع {fmt(editScanned.paidAmount)} د.ع</p>
+                      <p className="text-xs text-muted-foreground">{paymentMethodLabel(editScanned.paymentMethod)} · {editScanned.itemCount} صنف/خدمة</p>
+                    </div>
+                    <div className="border-b p-3 sm:border-b-0 sm:border-e">
+                      <p className="text-xs text-muted-foreground">أنشأها</p>
+                      <p className="font-bold">{editScanned.salespersonName ?? "غير موثّق"}</p>
+                      <p className="text-xs text-muted-foreground">{editScanned.shiftType === "RECEPTION" ? "نقطة الاستقبال" : "نقطة البيع"}</p>
+                    </div>
+                    <div className="p-3">
+                      <p className="text-xs text-muted-foreground">التوصيل</p>
+                      <p className="font-bold">{editScanned.consignmentNumber ?? "غير مسندة"}</p>
+                      <p className="text-xs text-muted-foreground">{editScanned.consignmentStatus ?? "لا توجد عهدة توصيل"}</p>
+                    </div>
+                  </div>
+
+                  {editScanned.blockReason && (
+                    <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm">
+                      <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
+                      <div>
+                        <p className="font-extrabold text-destructive">لا يمكن بدء التعديل الآن</p>
+                        <p className="text-muted-foreground">{editScanned.blockReason}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <Button
+                    className="w-full py-6 text-base font-extrabold"
+                    disabled={!editScanned.canCorrect}
+                    onClick={() => navigate(`/invoices/${editScanned.id}/correct?from=reception-edit`)}
+                  >
+                    <FilePenLine aria-hidden className="size-5" />
+                    تعديل الفاتورة
+                  </Button>
+                  <p className="text-center text-xs text-muted-foreground">
+                    يُفتح محرر الفاتورة الأصلي، ولا يتغير المال أو المخزون حتى يعتمد مدير آخر المقارنة النهائية.
+                  </p>
+                </div>
+              </Card>
+            )}
+          </div>
         )}
 
         {activeSection === "return" && (

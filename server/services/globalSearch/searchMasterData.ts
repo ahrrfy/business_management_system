@@ -1,6 +1,6 @@
 // بحث البيانات الرئيسية العابرة للفروع: المنتجات (+الباركود) والعملاء والموردون.
 import { and, asc, desc, eq, or, sql } from "drizzle-orm";
-import { customers, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
+import { branchStock, customers, productPrices, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { normalizeSearchText } from "../../../shared/searchNormalize";
@@ -13,6 +13,7 @@ async function searchProducts(
   kind: SearchKind,
   query: string,
   limit: number,
+  scopedBranchId: number | null = null,
 ): Promise<SearchResult[]> {
   // نحاول حلّ هوية المنتج قبل تصنيف الاستعلام. باركودات الموردين ليست محصورة في EAN:
   // قد تكون قصيرة مثل 10095، أو Code39/128 حروفية، أو تبدأ بـ+؛ وتصنيفها كوثيقة/نص/هاتف
@@ -40,18 +41,89 @@ async function searchProducts(
       .where(and(eq(productUnits.id, owner.productUnitId), eq(products.isActive, true)))
       .limit(limit);
 
-    return rows.map((r) => ({
-      type: "PRODUCT" as const,
-      id: r.productId,
-      title: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
-      subtitle: `${r.sku} · ${r.unitName}`,
-      meta: r.barcode,
-      // وجهة الـhub مع q (يُحمِّل الصفّ في القائمة الخادمية) + focus (يُبرزه ويمرّر إليه).
-      route: `/inventory?tab=products&q=${encodeURIComponent(query)}&focus=${r.productId}`,
-      rank: 0,
-    }));
+    if (rows.length > 0) {
+      // إثراء تشغيلي: جلب سعر المفرد ورصيد الفرع الحالي
+      const [priceRow] = await db
+        .select({ price: productPrices.price })
+        .from(productPrices)
+        .where(and(eq(productPrices.productUnitId, owner.productUnitId), eq(productPrices.priceTier, "RETAIL")))
+        .limit(1);
+
+      let stockQuantity: number | null = null;
+      if (scopedBranchId !== null) {
+        const [stockRow] = await db
+          .select({ quantity: branchStock.quantity })
+          .from(branchStock)
+          .where(and(eq(branchStock.variantId, owner.variantId), eq(branchStock.branchId, scopedBranchId)))
+          .limit(1);
+        if (stockRow?.quantity != null) stockQuantity = stockRow.quantity;
+      }
+
+      return rows.map((r) => {
+        const metaParts: string[] = [];
+        if (priceRow?.price != null) {
+          const p = Math.round(Number(priceRow.price));
+          metaParts.push(`${p.toLocaleString("en-US")} د.ع`);
+        }
+        if (stockQuantity !== null) {
+          metaParts.push(`الرصيد: ${stockQuantity}`);
+        }
+        if (r.barcode) {
+          metaParts.push(r.barcode);
+        }
+
+        return {
+          type: "PRODUCT" as const,
+          id: r.productId,
+          title: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+          subtitle: `${r.sku} · ${r.unitName}`,
+          meta: metaParts.length > 0 ? metaParts.join(" · ") : r.barcode,
+          // وجهة الـhub مع q (يُحمِّل الصفّ في القائمة الخادمية) + focus (يُبرزه ويمرّر إليه).
+          route: `/inventory?tab=products&q=${encodeURIComponent(query)}&focus=${r.productId}`,
+          rank: 0,
+        };
+      });
+    }
   }
-  if (kind === "BARCODE") return [];
+
+  if (kind === "BARCODE") {
+    // محاولة أخيرة عند مسح باركود: هل يطابق SKU لمنتج؟
+    const skuRows = await db
+      .select({
+        variantId: productVariants.id,
+        productId: products.id,
+        productName: products.name,
+        variantName: productVariants.variantName,
+        sku: productVariants.sku,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(and(eq(products.isActive, true), eq(productVariants.sku, query)))
+      .limit(limit);
+
+    if (skuRows.length > 0) {
+      const r = skuRows[0];
+      let stockPart = "";
+      if (scopedBranchId !== null) {
+        const [stockRow] = await db
+          .select({ quantity: branchStock.quantity })
+          .from(branchStock)
+          .where(and(eq(branchStock.variantId, r.variantId), eq(branchStock.branchId, scopedBranchId)))
+          .limit(1);
+        if (stockRow?.quantity != null) stockPart = `الرصيد: ${stockRow.quantity} · `;
+      }
+      return [{
+        type: "PRODUCT" as const,
+        id: r.productId,
+        title: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+        subtitle: `${r.sku} (مطابقة رمز SKU)`,
+        meta: `${stockPart}${r.sku}`,
+        route: `/inventory?tab=products&q=${encodeURIComponent(query)}&focus=${r.productId}`,
+        rank: 0,
+      }];
+    }
+    return [];
+  }
   if (kind === "PHONE" || kind === "DOC_NUMBER") return []; // المنتجات لا تُطابِق هاتفاً ولا رقم وثيقة
 
   const like_ = `%${escLike(query)}%`;

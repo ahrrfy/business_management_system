@@ -64,7 +64,7 @@ import {
   router,
 } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
-import { barcodeString, optionalBarcodeString } from "../lib/schemas";
+import { barcodeString, optionalBarcodeString, barcodeStorageString, optionalBarcodeStorageString } from "../lib/schemas";
 import type { UnitPricing } from "../../shared/priceSanity";
 import {
   extractProductFactsFromImage,
@@ -174,13 +174,13 @@ const customizationTemplateSchema = z.object({
 // (٤/٩) الباركود يُطبَّع على حدّ الـAPI (`barcodeString`/`optionalBarcodeString`): كان `z.string()` عارياً
 // فيُحفَظ «10095 » بمسافته ثم لا يُمسَح أبداً — المطابقة مساواةٌ SQL خامّة.
 const barcodeAliasSchema = z.object({
-  barcode: barcodeString,
+  barcode: barcodeStorageString,
   note: z.string().max(255).optional().nullable(),
 });
 const unitSchema = z.object({
   unitName: z.string().min(1),
   conversionFactor: z.string(),
-  barcode: optionalBarcodeString,
+  barcode: optionalBarcodeStorageString,
   isBaseUnit: z.boolean().optional(),
   isStoreSaleUnit: z.boolean().optional(),
   prices: z.array(priceSchema).optional(),
@@ -849,7 +849,7 @@ export const catalogRouter = router({
                     id: z.number().int().positive().optional(),
                     unitName: z.string().min(1),
                     conversionFactor: z.string(),
-                    barcode: optionalBarcodeString,
+                    barcode: optionalBarcodeStorageString,
                     isBaseUnit: z.boolean().optional(),
                     isStoreSaleUnit: z.boolean().optional(),
                     prices: z.array(priceSchema).optional(),
@@ -1209,7 +1209,7 @@ export const catalogRouter = router({
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
-        barcode: barcodeString,
+        barcode: barcodeStorageString,
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1355,7 +1355,7 @@ export const catalogRouter = router({
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
-        barcode: barcodeString,
+        barcode: barcodeStorageString,
         note: z.string().max(255).nullish(),
       }),
     )

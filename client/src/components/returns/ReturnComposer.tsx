@@ -49,12 +49,17 @@ const QUICK_REASONS = [
   "تلف أو كسر بالبضاعة",
 ];
 
-/** «٢ درزن (٢٤ قطعة)» — وللوحدة الأساس أو الكسور: «٢٤ قطعة». */
-function unitsLabel(base: number, factor: number, unitName: string): string {
+/** «٢ درزن (٢٤ قطعة)» أو «٢ بكج» — يحافظ على وحدة المستند التشغيلية. */
+export function returnQuantityLabel(
+  base: number,
+  factor: number,
+  unitName: string,
+  baseUnitName = "قطعة",
+): string {
   if (base <= 0) return "0";
-  if (factor <= 1) return `${base} ${unitName || "قطعة"}`;
-  if (base % factor !== 0) return `${base} قطعة`;
-  return `${base / factor} ${unitName} (${base} قطعة)`;
+  if (factor <= 1) return `${base} ${unitName || baseUnitName}`;
+  if (base % factor !== 0) return `${base} ${baseUnitName}`;
+  return `${base / factor} ${unitName} (${base} ${baseUnitName})`;
 }
 
 export interface ReturnComposerProps {
@@ -132,15 +137,20 @@ export function ReturnComposer({
   const lockedLines = approvingRequestId ? requestDetail.data?.lines ?? null : null;
   // تُملأ الكمّيات من الطلب مرّةً عند وصولها، فتحسب الشاشة (القيمة/السقف/الحوار) على ما سيُنفَّذ.
   useEffect(() => {
-    if (!lockedLines) return;
+    if (!lockedLines || !requestDetail.data) return;
     const next: Record<number, number> = {};
     for (const l of lockedLines) next[l.invoiceItemId] = l.baseQuantity;
     setQty(next);
-  }, [lockedLines]);
+    setReason(requestDetail.data.reason);
+  }, [lockedLines, requestDetail.data]);
 
   const inv = detail.data;
   const isWalkIn = !!inv?.walkInResolutionPolicy;
   const items = inv?.items ?? [];
+  const itemsById = useMemo(
+    () => new Map((inv?.items ?? []).map((item) => [item.invoiceItemId, item])),
+    [inv?.items],
+  );
 
   /** قيمة المرتجع — الصيغة في `lib/returnTotal` (مطابقةٌ لفرع الإرجاع الجزئيّ خادمياً، ومُختبَرة وحدها). */
   const returnValue = useMemo(
@@ -223,8 +233,11 @@ export function ReturnComposer({
       setManualAmount(null);
       setReason("");
       setClientRequestId(crypto.randomUUID());
-      await utils.returns.requests.invalidate();
-      await utils.returns.getInvoice.invalidate({ invoiceId });
+      await Promise.all([
+        utils.returns.requests.invalidate(),
+        utils.returns.getInvoice.invalidate({ invoiceId }),
+        utils.decisions.inbox.invalidate(),
+      ]);
       onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
     },
     onError: (e) => setError(e.message),
@@ -409,6 +422,13 @@ export function ReturnComposer({
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
     if (isLocked) return "هذه الفاتورة مرتجعة/ملغاة — لا يمكن تسجيل مرتجع جديد.";
+    if (
+      approvingRequestId &&
+      requestDetail.data &&
+      requestDetail.data.invoiceId !== invoiceId
+    ) {
+      return "طلب المرتجع لا يعود إلى هذه الفاتورة — أُوقف الاعتماد حمايةً من تنفيذ طلب على مستند آخر.";
+    }
     // لا اعتماد قبل أن تصل بنود الطلب — وإلّا اعتمد المدير على جدولٍ فارغ لا يمثّل ما سيُنفَّذ.
     if (approvingRequestId && !lockedLines) return "جارٍ تحميل بنود الطلب المطلوب اعتماده…";
     // طلبٌ معلّقٌ قائم ⇒ الخادم يرفض الثاني بالفهرس الفريد. نقولها هنا بدل خطأٍ خامّ بعد الملء.
@@ -435,7 +455,7 @@ export function ReturnComposer({
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");
@@ -461,7 +481,6 @@ export function ReturnComposer({
         }
       : undefined;
 
-    const pieces = selectedLines.reduce((s, l) => s + l.baseQuantity, 0);
     const railLabel = pickedRail ? REFUND_RAIL_LABEL[pickedRail] : REFUND_RAIL_LABEL.DRAWER;
     const cashSource = usesTreasury ? "من خزينة الفرع" : "من الدرج المحدّد";
     const moneySentence = resolution
@@ -470,7 +489,18 @@ export function ReturnComposer({
         ? `يستلم الزبون ${fmt(refund.amount)} د.ع عبر ${railLabel}`
       : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
     const stockSentence = restock ? "والبضاعة تعود للرفّ" : "والبضاعة تالفة لا تعود للمخزون";
-    const scope = `${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${pieces} قطعة)`;
+    const quantities = selectedLines.map((line) => {
+      const item = itemsById.get(line.invoiceItemId);
+      return item
+        ? `${item.productName}: ${returnQuantityLabel(
+          line.baseQuantity,
+          item.conversionFactor,
+          item.unitName,
+          item.baseUnitName,
+        )}`
+        : `${line.baseQuantity} وحدة`;
+    });
+    const scope = `${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${quantities.join("، ")})`;
 
     /**
      * ⭐ حوارُ التأكيد يقول الحقيقة (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ»).
@@ -642,6 +672,21 @@ export function ReturnComposer({
 
   return (
     <div className="space-y-4">
+      {approvingRequestId && requestDetail.data && (
+        <Card className="border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)]/35">
+          <CardContent className="flex items-start gap-2 p-4 text-sm">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
+            <div className="space-y-1">
+              <p className="font-bold text-[var(--sem-info)]">
+                مراجعة طلب الإرجاع #{requestDetail.data.id} — البنود والكميات والسبب مقفلة من الطلب الأصلي.
+              </p>
+              <p className="text-muted-foreground">
+                طلبه {requestDetail.data.createdByName ?? `المستخدم ${requestDetail.data.createdBy}`}؛ السبب: {requestDetail.data.reason}.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
       {/* الطلب المعلق إن وجد */}
       {pending && !approvingRequestId && (
         <Card className="border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30">
@@ -789,12 +834,15 @@ export function ReturnComposer({
                     <tr key={it.invoiceItemId} className={`border-t ${v > 0 ? "bg-[var(--sem-info-bg)]/40" : ""}`}>
                       <td className="p-2">
                         <div className="font-semibold">{it.productName}{it.variantLabel ? ` — ${it.variantLabel}` : ""}</div>
+                        {it.isBundle && (
+                          <div className="text-[11px] font-medium text-primary">يُرجع كبكج كامل؛ وعند إعادته للمخزون يعيد النظام مكوّناته تلقائياً</div>
+                        )}
                         {it.conversionFactor > 1 && (
-                          <div className="text-[11px] text-muted-foreground">١ {it.unitName} = {it.conversionFactor} قطعة</div>
+                          <div className="text-[11px] text-muted-foreground">١ {it.unitName} = {it.conversionFactor} {it.baseUnitName}</div>
                         )}
                       </td>
-                      <td className="p-2 text-center">{unitsLabel(it.baseQuantity, it.conversionFactor, it.unitName)}</td>
-                      <td className="p-2 text-center">{it.returnedBaseQuantity > 0 ? unitsLabel(it.returnedBaseQuantity, it.conversionFactor, it.unitName) : "—"}</td>
+                      <td className="p-2 text-center">{returnQuantityLabel(it.baseQuantity, it.conversionFactor, it.unitName, it.baseUnitName)}</td>
+                      <td className="p-2 text-center">{it.returnedBaseQuantity > 0 ? returnQuantityLabel(it.returnedBaseQuantity, it.conversionFactor, it.unitName, it.baseUnitName) : "—"}</td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
                       <td className="p-2">
                         {it.remaining <= 0 ? (
@@ -805,7 +853,7 @@ export function ReturnComposer({
                               disabled={isLocked || qtyLocked || v <= 0} onClick={() => setQtyClamped(it.invoiceItemId, v - step, it.remaining)}>−</Button>
                             <Input dir="ltr" inputMode="numeric" className="h-8 w-16 text-center font-bold tabular-nums"
                               value={v > 0 ? String(v) : ""} placeholder="0" disabled={isLocked || qtyLocked}
-                              aria-label={`كمية إرجاع ${it.productName} بالقطعة`}
+                              aria-label={`كمية إرجاع ${it.productName} بوحدة ${it.unitName}`}
                               onChange={(e) => {
                                 const raw = e.target.value.replace(/[^\d]/g, "");
                                 setQtyClamped(it.invoiceItemId, raw ? parseInt(raw, 10) : 0, it.remaining);
@@ -841,7 +889,7 @@ export function ReturnComposer({
                     <button
                       key={qr}
                       type="button"
-                      disabled={isLocked}
+                      disabled={isLocked || qtyLocked}
                       onClick={() => {
                         setReason(qr);
                         setError("");
@@ -861,7 +909,7 @@ export function ReturnComposer({
                   id="ret-reason"
                   value={reason}
                   maxLength={500}
-                  disabled={isLocked}
+                  disabled={isLocked || qtyLocked}
                   onChange={(event) => { setReason(event.target.value); setError(""); }}
                   placeholder="اختر سبباً من الأزرار أو اكتب هنا..."
                   className="h-9 text-xs"
@@ -1011,7 +1059,7 @@ export function ReturnComposer({
         <Button
           variant="secondary"
           onClick={triggerExpressReturn}
-          disabled={isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
+          disabled={qtyLocked || isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
           className="font-bold text-xs sm:text-sm gap-1.5"
         >
           <Zap className="size-4" aria-hidden />
@@ -1020,6 +1068,7 @@ export function ReturnComposer({
 
         <Button
           variant="outline"
+          disabled={qtyLocked}
           onClick={() => { setQty({}); setManualAmount(null); setReason(""); setError(""); setDone(""); setFastBarcode(""); }}
           className="text-xs sm:text-sm gap-1 text-muted-foreground"
         >

@@ -3,7 +3,9 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useMemo } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,10 +20,12 @@ import {
   formatLatinNumber,
   useStorefrontCatalog,
   useStorefrontCategories,
+  useStorefrontSettings,
 } from "@/lib/storefront-api";
 
 export default function CategoriesScreen() {
   const { category } = useLocalSearchParams<{ category?: string }>();
+  const settings = useStorefrontSettings();
   const { width } = useWindowDimensions();
   const columns = width >= 720 ? 2 : 1;
   const selectedId = Number(category);
@@ -34,6 +38,26 @@ export default function CategoriesScreen() {
     () => categories.find((item) => item.id === selected)?.name,
     [categories, selected],
   );
+
+  const openWhatsAppPrinting = async () => {
+    const rawNumber = settings?.whatsappNumber?.replace(/\D/g, "") || "";
+    if (!rawNumber) {
+      Alert.alert(
+        "تواصل معنا",
+        "يمكنك التواصل مع خدمة الزبائن للاستفسار عن خدمات الطباعة والكميات.",
+      );
+      return;
+    }
+    const message = `مرحباً مكتبة العربية، أود الاستفسار عن خدمات الطباعة أو طلب خاص لقسم: ${selectedName ?? "العام"}.`;
+    const url = `https://wa.me/${rawNumber}?text=${encodeURIComponent(message)}`;
+    try {
+      const can = await Linking.canOpenURL(url);
+      if (can) await Linking.openURL(url);
+      else Alert.alert("واتساب", "تأكد من وجود تطبيق واتساب على جهازك للتواصل المباشر.");
+    } catch {
+      Alert.alert("واتساب", "تعذر فتح تطبيق واتساب حالياً.");
+    }
+  };
   const setCategory = (id: number | null) =>
     router.replace(
       id == null
@@ -129,6 +153,32 @@ export default function CategoriesScreen() {
             {categoriesLoading && (
               <Text style={styles.loadingCategories}>جار تحديث الأقسام…</Text>
             )}
+            {/* بطاقة خدمات الطباعة والتجهيز عبر واتساب */}
+            <TouchableOpacity
+              accessibilityLabel="طلب طباعة خاصة أو تجهيز كميات عبر واتساب"
+              accessibilityRole="button"
+              activeOpacity={0.88}
+              onPress={openWhatsAppPrinting}
+              style={styles.whatsappCategoryBanner}
+            >
+              <View style={styles.whatsappCategoryRight}>
+                <View style={styles.whatsappCategoryIcon}>
+                  <MaterialIcons color="#FFFFFF" name="print" size={20} />
+                </View>
+                <View style={styles.whatsappCategoryText}>
+                  <Text style={styles.whatsappCategoryTitle}>
+                    هل تحتاج طباعة خاصة أو تجهيز كميات؟
+                  </Text>
+                  <Text style={styles.whatsappCategorySub}>
+                    تواصل مع مطبعة ومكتبة العربية مباشرة عبر واتساب
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.whatsappCategoryBadge}>
+                <MaterialIcons color="#157347" name="chat" size={15} />
+                <Text style={styles.whatsappCategoryBadgeText}>واتساب</Text>
+              </View>
+            </TouchableOpacity>
             <View style={styles.catalogHeader}>
               <Text style={styles.catalogTitle}>
                 {selectedName ? `منتجات ${selectedName}` : "المنتجات المتاحة"}
@@ -351,4 +401,60 @@ const styles = StyleSheet.create({
   },
   footer: { alignItems: "center", minHeight: 72, paddingVertical: 14 },
   endText: { color: "#71817B", fontFamily: "Cairo_600SemiBold", fontSize: 10 },
+  whatsappCategoryBanner: {
+    backgroundColor: "#F2FBF6",
+    borderColor: "#C5EBD6",
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 12,
+    marginBottom: 14,
+    gap: 10,
+  },
+  whatsappCategoryRight: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    flex: 1,
+    gap: 10,
+  },
+  whatsappCategoryIcon: {
+    backgroundColor: "#0E806A",
+    borderRadius: 12,
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  whatsappCategoryText: {
+    flex: 1,
+  },
+  whatsappCategoryTitle: {
+    color: "#161A22",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 12,
+    textAlign: "right",
+  },
+  whatsappCategorySub: {
+    color: "#4F685D",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 10,
+    marginTop: 1,
+    textAlign: "right",
+  },
+  whatsappCategoryBadge: {
+    backgroundColor: "#E4F7EC",
+    borderRadius: 10,
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    gap: 4,
+  },
+  whatsappCategoryBadgeText: {
+    color: "#157347",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
 });

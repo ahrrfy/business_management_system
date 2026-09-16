@@ -89,7 +89,7 @@ export default defineConfig(({ mode }) => {
           "assets/app-*.js",
           "assets/index-*.css",
           STOREFRONT_SHELL_CHUNK_GLOB,
-          "assets/*.woff2",
+          "fonts/*.woff2",
         ],
         // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
         // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
@@ -145,19 +145,19 @@ export default defineConfig(({ mode }) => {
       },
       manifest: {
         id: "/store",
-        name: "مكتبة العربية",
-        short_name: "مكتبة العربية",
-        description: "قرطاسية وطباعة وهدايا مع توصيل داخل العراق والدفع عند الاستلام.",
+        name: "الرؤية العربية",
+        short_name: "الرؤية العربية",
+        description: "نظام إدارة أعمال الرؤية العربية والمكتبة للطباعة والقرطاسية والتجارة",
         lang: "ar",
         dir: "rtl",
         theme_color: "#1e4a63",
         background_color: "#fff8ef",
         display: "standalone",
-        start_url: "/store",
-        // هوية التطبيق المثبّت ومساراته للمتجر فقط. يبقى SW على الجذر لأن Web Push
-        // الحالي مشترك، لكن navigation fallback وprecache أعلاه لا يقدّمان ERP أوفلاين.
-        scope: "/store",
-        categories: ["shopping", "business"],
+        start_url: "/",
+        // النطاق على الجذر لتمكين تثبيت PWA بهوية النظام كاملة (المتجر العام والنظام الإداري)،
+        // مع بقاء navigation fallback محصوراً بـ /store فلا يُقدَّم ERP أوفلاين من كاش غير متصل.
+        scope: "/",
+        categories: ["business", "shopping"],
         icons: [
           { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
           { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },

@@ -39,6 +39,8 @@ export interface InvoiceLine {
   availableBase?: number;
   /** خدمة (١٢/٨/٢٦): الخدمة بلا مخزون ذاتيّ ⇒ لا نُظهر تحذير «خارج المخزون»؛ createSale يخصم موادها من الوصفة. */
   isService?: boolean;
+  /** بكج مركّب: الكمية الأساس هنا عدد البكجات، والمخزون مشتق من المكوّنات. */
+  isBundle?: boolean;
   /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده ⇒ لا يُوسَم «نافذاً» ولا «ناقصاً». */
   allowBackorder?: boolean;
   /** Unit price (decimal string). */
@@ -55,6 +57,14 @@ export interface InvoiceLine {
    * (شراء/عرض سعر/مرتجع) التي تُنشئ أسطراً بلا هذا الحقل. التسعير والتكلفة يحسمهما الخادم.
    */
   isGift?: boolean;
+  /** كروت واشتراكات رقمية (٧/٩) */
+  digital?: {
+    offeringId: number;
+    priceVersionId: number;
+    sellPriceSnapshot: string;
+    providerShareSnapshot: string;
+    internalLineToken: string;
+  };
 }
 
 export interface InvoiceState {

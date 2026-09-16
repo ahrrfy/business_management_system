@@ -22,7 +22,7 @@ import type { InvoiceLine } from "@/components/invoice/types";
 /** سطر السلة — نستعمل شكل InvoiceLine نفسه (حقول السعر تُهمَل) لتوافق الشريطين المشتركين. */
 export type TransferCartLine = Pick<
   InvoiceLine,
-  "productId" | "variantId" | "productUnitId" | "name" | "sku" | "barcode" | "unit" | "qty" | "conversionFactor" | "stockBase"
+  "productId" | "variantId" | "productUnitId" | "name" | "sku" | "barcode" | "unit" | "qty" | "conversionFactor" | "stockBase" | "availableBase" | "isBundle"
 >;
 
 export interface TransferLineState {
@@ -44,7 +44,7 @@ export function computeLineStates(lines: TransferCartLine[]): TransferLineState[
   return lines.map((l) => {
     const f = Number(l.conversionFactor) || 1;
     const baseQty = (Number(l.qty) || 0) * f;
-    const availBase = Number(l.stockBase) || 0;
+    const availBase = Number(l.availableBase ?? l.stockBase) || 0;
     const reqBase = demandByVariant.get(l.variantId) ?? baseQty;
     const isOut = availBase <= 0;
     return {
@@ -103,8 +103,8 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
         next[i] = { ...next[i], qty: next[i].qty + 1 };
         return next;
       }
-      const { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase } = line;
-      return [...prev, { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase }];
+      const { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle } = line;
+      return [...prev, { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle }];
     });
   };
   const addMany = (items: InvoiceLine[]) => items.forEach(addLine);
@@ -127,7 +127,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
           </span>
           {lines.length > 0 && (
             <span className="rounded-full bg-primary px-2.5 py-0.5 text-xs font-bold text-primary-foreground">
-              {fmtInt(lines.length)} سطر · {fmtInt(totalBase)} وحدة أساس
+              {fmtInt(lines.length)} سطر · {fmtInt(totalBase)} وحدة سند
             </span>
           )}
         </div>
@@ -159,7 +159,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
               <th className={cn(th, "w-16")}>الوحدة</th>
               <th className={cn(th, "w-20")}>المتاح (مصدر)</th>
               <th className={cn(th, "w-36")}>الكمية</th>
-              <th className={cn(th, "w-24")}>يعادل بالأساس</th>
+              <th className={cn(th, "w-24")}>كمية السند</th>
               <th className={cn(th, "w-10")} aria-label="حذف" />
             </tr>
           </thead>
@@ -189,6 +189,9 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                   <td className={cn(td, "text-right")}>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-sm font-bold text-foreground">{l.name}</span>
+                      {l.isBundle && (
+                        <span className="inline-flex items-center rounded-md bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] font-extrabold text-[var(--sem-info)]">بكج كامل</span>
+                      )}
                       {st.isOut && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">نافذ — لا مخزون</span>
                       )}
@@ -217,8 +220,11 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                   </td>
                   <td className={cn(td, "text-sm font-extrabold tabular-nums")} dir="ltr">
                     {fmtInt(st.baseQty)}
-                    {Number(l.conversionFactor) > 1 && (
-                      <div className="text-[10px] font-normal text-muted-foreground" dir="rtl">×{fmtInt(Number(l.conversionFactor))}</div>
+                    {l.isBundle && (
+                      <div className="text-[10px] font-normal text-muted-foreground" dir="rtl">بكج</div>
+                    )}
+                    {!l.isBundle && Number(l.conversionFactor) > 1 && (
+                      <div className="text-[10px] font-normal text-muted-foreground" dir="rtl">وحدة أساس</div>
                     )}
                   </td>
                   <td className={td}>

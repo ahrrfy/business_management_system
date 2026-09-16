@@ -10,7 +10,7 @@
  */
 import type { Dispatch } from "react";
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
+import { AlertTriangle, Gift, Package, ShoppingCart, X, CreditCard } from "lucide-react";
 import { priceDecimalsFor } from "@shared/moneyPrecision";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +52,7 @@ export interface ProductTableProps {
    */
   allowGiftLines?: boolean;
   onOpenBulkPicker: () => void;
+  onOpenDigitalCardsPicker?: () => void;
   /** Toast hook. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
 }
@@ -157,6 +158,7 @@ export function ProductTable({
   taxShares,
   allowGiftLines = false,
   onOpenBulkPicker,
+  onOpenDigitalCardsPicker,
   onNotify,
 }: ProductTableProps) {
   const branchesQ = trpc.branches.list.useQuery();
@@ -286,6 +288,17 @@ export function ProductTable({
               onClick={onOpenBulkPicker}
             >
               <Package aria-hidden className="size-4" /> إضافة متعددة
+            </Button>
+          )}
+          {(!sourceLocked && onOpenDigitalCardsPicker) && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 border-violet-500/40 bg-violet-50 text-violet-700 hover:bg-violet-100"
+              onClick={onOpenDigitalCardsPicker}
+            >
+              <CreditCard aria-hidden className="size-4" /> الكروت والاشتراكات
             </Button>
           )}
           {items.length > 0 && (

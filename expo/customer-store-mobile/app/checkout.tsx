@@ -45,6 +45,27 @@ import { saveRecentOrder } from "@/lib/recent-orders";
 import { loadVerifiedCustomerSession, type VerifiedCustomerSession } from "@/lib/customer-session";
 import { enableTransactionalPush } from "@/lib/customer-notifications";
 
+function parseCoordinatesOrUrl(input: string): { lat: number; lng: number } | null {
+  const trimmed = input.trim();
+  const rawMatch = trimmed.match(/(-?\d{1,2}\.\d+)[,\s]+(-?\d{1,3}\.\d+)/);
+  if (rawMatch) {
+    const lat = parseFloat(rawMatch[1]);
+    const lng = parseFloat(rawMatch[2]);
+    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+    }
+  }
+  const urlMatch = trimmed.match(/(?:[?&]q=|@)(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/);
+  if (urlMatch) {
+    const lat = parseFloat(urlMatch[1]);
+    const lng = parseFloat(urlMatch[2]);
+    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+    }
+  }
+  return null;
+}
+
 export default function CheckoutScreen() {
   const { clearCart, isRestoring, itemCount, lines } = useCart();
   // سلّةٌ فارغةٌ عند الدخول ⇒ إعادة توجيهٍ سلسة بدل نموذجٍ يفشل عند الضغط برسالةٍ مبهمة.
@@ -58,6 +79,11 @@ export default function CheckoutScreen() {
   const [name, setName] = useState("");
   const [phoneLocal, setPhoneLocal] = useState("");
   const [address, setAddress] = useState("");
+  const [latitude, setLatitude] = useState<number | null>(null);
+  const [longitude, setLongitude] = useState<number | null>(null);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [pastedLocation, setPastedLocation] = useState("");
+  const [locationFeedback, setLocationFeedback] = useState<string | null>(null);
   const [governorate, setGovernorate] = useState("baghdad");
   const [quote, setQuote] = useState<StorefrontOrderQuote | null>(null);
   const [quoteCartFingerprint, setQuoteCartFingerprint] = useState<string | null>(null);
@@ -189,6 +215,8 @@ export default function CheckoutScreen() {
         customerPhone,
         governorate,
         addressText: address.trim(),
+        latitude,
+        longitude,
         notes: checkoutSelectionNotes(lines),
         lines: activeQuote.lines.map((line) => ({
           productUnitId: line.productUnitId,
@@ -357,6 +385,44 @@ export default function CheckoutScreen() {
                 setQuote(null);
               }}
             />
+            {/* منتقي موقع التوصيل على الخريطة */}
+            <View style={styles.line} />
+            {latitude && longitude ? (
+              <View style={styles.locationSuccessBox}>
+                <View style={styles.locationHeaderRow}>
+                  <View style={styles.locationTitleGroup}>
+                    <MaterialIcons color="#0C5A4B" name="location-on" size={18} />
+                    <Text style={styles.locationSuccessTitle}>تم تثبيت الموقع على الخريطة</Text>
+                  </View>
+                  <TouchableOpacity
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    onPress={() => {
+                      setLatitude(null);
+                      setLongitude(null);
+                      setLocationFeedback(null);
+                    }}
+                  >
+                    <Text style={styles.locationCancelText}>إلغاء</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.locationCoordsText}>GPS: {latitude}, {longitude}</Text>
+              </View>
+            ) : (
+              <View style={styles.locationActionBox}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  disabled={submitting}
+                  onPress={() => setShowLocationModal(true)}
+                  style={styles.locationButton}
+                >
+                  <MaterialIcons color="#0C5A4B" name="add-location-alt" size={18} />
+                  <Text style={styles.locationButtonText}>تحديد موقعي على الخريطة (GPS / رابط)</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {locationFeedback ? (
+              <Text style={styles.locationFeedbackText}>{locationFeedback}</Text>
+            ) : null}
           </View>
           <Text style={styles.label}>كوبون الخصم (اختياري)</Text>
           <View style={styles.couponRow}>
@@ -575,6 +641,65 @@ export default function CheckoutScreen() {
             )}
           />
         </View>
+      </Modal>
+      {/* نافذة تحديد الموقع على الخريطة */}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setShowLocationModal(false)}
+        transparent
+        visible={showLocationModal}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.locationModalOverlay}
+        >
+          <View style={styles.locationModalCard}>
+            <View style={styles.locationModalHeader}>
+              <Text style={styles.locationModalTitle}>تحديد موقع التوصيل على الخريطة</Text>
+              <TouchableOpacity onPress={() => setShowLocationModal(false)}>
+                <MaterialIcons color="#112A25" name="close" size={24} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.locationModalSubtitle}>
+              الصق رابط موقعك من تطبيق خرائط Google أو واتساب، أو اكتب الإحداثيات (خط العرض، خط الطول):
+            </Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setPastedLocation}
+              placeholder="https://maps.app.goo.gl/... أو 33.315, 44.366"
+              placeholderTextColor="#71817B"
+              style={styles.locationModalInput}
+              textAlign="left"
+              value={pastedLocation}
+            />
+            <View style={styles.locationModalButtonsRow}>
+              <TouchableOpacity
+                onPress={() => setShowLocationModal(false)}
+                style={styles.locationModalCancelBtn}
+              >
+                <Text style={styles.locationModalCancelBtnText}>إلغاء</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  const coords = parseCoordinatesOrUrl(pastedLocation);
+                  if (coords) {
+                    setLatitude(coords.lat);
+                    setLongitude(coords.lng);
+                    setShowLocationModal(false);
+                    setPastedLocation("");
+                    setLocationFeedback("تم تثبيت موقع الخريطة بنجاح");
+                  } else {
+                    setLocationFeedback("الرابط أو الإحداثيات غير صحيحة. يرجى التأكد.");
+                  }
+                }}
+                style={styles.locationModalConfirmBtn}
+              >
+                <Text style={styles.locationModalConfirmBtnText}>تثبيت الموقع</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </ScreenContainer>
   );
@@ -923,4 +1048,137 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   governorateItemText: { color: "#20372F", fontSize: 14, fontWeight: "700" },
+  locationSuccessBox: {
+    backgroundColor: "#F2FBF6",
+    borderColor: "#C5EBD6",
+    borderRadius: 12,
+    borderWidth: 1,
+    marginHorizontal: 12,
+    marginVertical: 8,
+    padding: 10,
+  },
+  locationHeaderRow: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+  },
+  locationTitleGroup: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    gap: 6,
+  },
+  locationSuccessTitle: {
+    color: "#0C5A4B",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  locationCancelText: {
+    color: "#B64B24",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  locationCoordsText: {
+    color: "#4F685D",
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 4,
+    textAlign: "left",
+  },
+  locationActionBox: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  locationButton: {
+    alignItems: "center",
+    backgroundColor: "#F2FBF6",
+    borderColor: "#C5EBD6",
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 8,
+    justifyContent: "center",
+    paddingVertical: 10,
+  },
+  locationButtonText: {
+    color: "#0C5A4B",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  locationFeedbackText: {
+    color: "#0C5A4B",
+    fontSize: 11,
+    fontWeight: "700",
+    marginHorizontal: 14,
+    marginBottom: 6,
+    textAlign: "right",
+  },
+  locationModalOverlay: {
+    backgroundColor: "rgba(0,0,0,0.5)",
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 20,
+  },
+  locationModalCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 18,
+  },
+  locationModalHeader: {
+    alignItems: "center",
+    borderBottomColor: "#EDF0ED",
+    borderBottomWidth: 1,
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+    paddingBottom: 12,
+  },
+  locationModalTitle: {
+    color: "#112A25",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  locationModalSubtitle: {
+    color: "#4F685D",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 12,
+    textAlign: "right",
+  },
+  locationModalInput: {
+    borderColor: "#D0D7D4",
+    borderRadius: 12,
+    borderWidth: 1,
+    color: "#112A25",
+    fontSize: 12,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    textAlign: "left",
+  },
+  locationModalButtonsRow: {
+    flexDirection: "row-reverse",
+    gap: 10,
+    justifyContent: "flex-end",
+    marginTop: 16,
+  },
+  locationModalConfirmBtn: {
+    backgroundColor: "#0C5A4B",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  locationModalConfirmBtnText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  locationModalCancelBtn: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  locationModalCancelBtnText: {
+    color: "#71817B",
+    fontSize: 12,
+    fontWeight: "700",
+  },
 });

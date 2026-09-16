@@ -192,6 +192,11 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
                 {it.unitPrice != null && it.unitPrice !== "" && (
                   <span className="font-bold tabular-nums" dir="ltr">{fmtAr(it.unitPrice)}</span>
                 )}
+                {it.timestamp && (
+                  <span className="text-muted-foreground tabular-nums" dir="ltr">
+                    {it.timestamp ? fmtDateTime(it.timestamp) : ""}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -308,7 +313,7 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
               {/* الصفُّ المحجوب يقود إلى الشاشة الكاملة التي تحمل المدخلات الناقصة (توجيه النقد مثلاً). */}
               <Button size="sm" variant={row.approveBlockedReason ? "outline" : "link"} asChild className="ms-auto">
                 <Link href={row.href}>
-                  <ExternalLink aria-hidden className="size-3.5 me-1" /> {row.approveBlockedReason ? "افتح الشاشة الكاملة" : "افتح المستند"}
+                  <ExternalLink aria-hidden className="size-3.5 me-1" /> {row.openActionLabel ?? (row.approveBlockedReason ? "افتح الشاشة الكاملة" : "افتح المستند")}
                 </Link>
               </Button>
             </div>

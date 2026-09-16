@@ -858,6 +858,14 @@ export interface ReceiptBrowserData {
   time?: string | null;
   cashierName?: string | null;
   customerName?: string | null;
+  /** أثر النسخة المعدلة؛ يثبت رقم الأصل ومَن طلب/اعتمد التعديل على الحرارية. */
+  revision?: {
+    originalReceiptNumber: string;
+    revisedAt: string;
+    revisedByName: string;
+    approvedByName?: string | null;
+    approvedAt?: string | null;
+  } | null;
   items: {
     name: string;
     quantity: number;
@@ -971,6 +979,11 @@ export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
   </div>
   ${d.shiftId != null ? `<div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:800;color:#000;margin-bottom:1mm;"><span>الوردية: <strong style="font-weight:900;">#${d.shiftId}</strong></span><span></span></div>` : ''}
   ${d.customerName ? `<div style="font-size:12.5px;font-weight:900;color:#000;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
+  ${d.revision ? `<div style="border:2px solid #000;padding:1.5mm;margin:1.5mm 0;font-size:10.5px;font-weight:800;color:#000;">
+    <div>فاتورة معدلة — بديلة عن: <strong>${esc(d.revision.originalReceiptNumber)}</strong></div>
+    <div>طلب التعديل: <strong>${esc(d.revision.revisedByName)}</strong> — ${esc(d.revision.revisedAt)}</div>
+    ${d.revision.approvedByName ? `<div>الاعتماد: <strong>${esc(d.revision.approvedByName)}</strong>${d.revision.approvedAt ? ` — ${esc(d.revision.approvedAt)}` : ''}</div>` : ''}
+  </div>` : ''}
   <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
   <table style="width:100%;font-size:11.5px;border-collapse:collapse;color:#000;">
     <thead><tr style="border-bottom:2px solid #000;">
@@ -1231,6 +1244,8 @@ export interface ShiftOpenData {
   branchName: string;
   /** وقت فتح الوردية — new Date() مباشرةً بعد onSuccess */
   openedAt: Date;
+  /** اختياري — اسم القسم/نوع الوردية (مثل: «قسم الطباعة والاستنساخ») */
+  departmentName?: string;
 }
 
 export function printShiftOpenBrowser(d: ShiftOpenData): void {
@@ -1241,6 +1256,7 @@ export function printShiftOpenBrowser(d: ShiftOpenData): void {
 
   const metaRows = [
     ['رقم الوردية', `#${d.shiftId}`],
+    ...(d.departmentName ? [['القسم', esc(d.departmentName)]] : []),
     ['التاريخ',     date],
     ['وقت الفتح',   time],
     ['الكاشير',     esc(d.cashierName)],
@@ -1339,6 +1355,8 @@ export interface ShiftCloseData {
   closedAt: Date;
   cashierName: string;
   branchName: string;
+  /** اختياري — اسم القسم/نوع الوردية (مثل: «قسم الطباعة والاستنساخ») */
+  departmentName?: string;
   /** من r.openingBalance (نتيجة shifts.close) */
   openingBalance: string | number;
   /** من rep?.invoiceCount (نتيجة shifts.report) */
@@ -1383,12 +1401,17 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   // صفوف بيانات الوردية
   const metaRows: [string, string, 'rtl' | 'ltr'][] = [
     ['رقم الوردية', `#${d.shiftId}`, 'ltr'],
+  ];
+  if (d.departmentName) {
+    metaRows.push(['القسم', esc(d.departmentName), 'rtl']);
+  }
+  metaRows.push(
     ['فُتحت',        esc(openedStr), 'ltr'],
     ['أُغلقت',       esc(closedStr), 'ltr'],
     ['مدة الوردية',  esc(duration), 'rtl'],
     ['الكاشير',      esc(d.cashierName), 'rtl'],
     ['الفرع',        esc(d.branchName), 'rtl'],
-  ];
+  );
   const metaRowsHtml = metaRows.map(([l, v, direction]) =>
     `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
       <span style="font-weight:600;color:#333;">${l}</span>

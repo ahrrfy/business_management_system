@@ -22,6 +22,7 @@ export default defineConfig({
       "client/src/lib/printing/couponCard.test.ts",
       "client/src/lib/printing/barcode.test.ts",
       "client/src/lib/printing/invoiceReceipt.test.ts",
+      "client/src/lib/printing/invoiceCorrectionPrint.test.ts",
       "client/src/lib/printing/receiptRaster.test.ts",
       "client/src/lib/printing/shiftRaster.test.ts",
       "client/src/lib/printing/printTemplates.test.ts",
@@ -33,6 +34,7 @@ export default defineConfig({
       "client/src/lib/printing/labelSize.test.ts",
       "client/src/lib/commissions/example.test.ts",
       "client/src/lib/navVisibility.test.ts",
+      "client/src/lib/salesCorrectionComparison.test.ts",
       "client/src/lib/navWorkspace.test.ts",
       "client/src/lib/payrollAccrual.test.ts",
       "client/src/lib/productImageThumbnail.test.ts",
@@ -174,6 +176,7 @@ export default defineConfig({
       "client/src/components/salesPipeline/policy.test.ts",
       "client/src/pages/__tests__/salesPipelineUx.test.tsx",
       "client/src/pages/__tests__/salesControlApprovals.test.tsx",
+      "client/src/pages/__tests__/receptionInvoiceCorrectionWorkflow.test.tsx",
       "client/src/pages/__tests__/deliveryCodWriteoffUi.test.tsx",
       "client/src/pages/__tests__/deliveryPartyDetailPermission.test.tsx",
       "client/src/pages/__tests__/finalOperationalCutover.test.tsx",
@@ -217,6 +220,7 @@ export default defineConfig({
       "server/services/__tests__/expenseCategoryDefaults.test.ts",
       "server/services/__tests__/reconcileSummary.test.ts",
       "server/services/__tests__/permissionParity.test.ts",
+      "server/services/__tests__/salesCorrectionLookup.test.ts",
       "server/services/__tests__/globalSearchRbac.test.ts",
       "server/services/__tests__/maintenanceService.test.ts",
       "server/services/__tests__/printService.test.ts",
@@ -347,6 +351,10 @@ export default defineConfig({
       "server/services/__tests__/capabilityGateEquivalence.test.ts",
       // تدقيق ومحاكاة مسارات وسيناريوهات المرتجعات الموحدة والحوكمة (نقي، بلا قاعدة).
       "server/services/__tests__/returnsAuditScenarios.test.ts",
+      // طلبات مرتجع البيع القديمة: حساب الأثر الحقيقي وربط شاشة الاعتماد بالطلب نفسه.
+      "server/services/decisions/sources/__tests__/returnRequestView.test.ts",
+      "server/services/returns/refundCaps.batch.test.ts",
+      "client/src/pages/__tests__/salesReturnLegacyApproval.test.tsx",
       // تطبيع ومعالجة مدخلات وقراءات باركود الشحنات والطلبات والفواتير
       "shared/barcodeScanner.test.ts",
       // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب

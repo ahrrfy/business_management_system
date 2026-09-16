@@ -7,7 +7,7 @@
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ClipboardList, FileText, Loader2, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -126,7 +126,31 @@ export default function OrderFulfillment() {
     { id: "orderNumber", header: "رقم الطلب", accessorFn: (o) => o.orderNumber, meta: { kind: "code", width: "id" }, cell: ({ row }) => <span className="font-bold tracking-wider">{row.original.orderNumber}</span> },
     { id: "customerName", header: "العميل", accessorFn: (o) => o.customerName ?? "—", cell: ({ row }) => row.original.customerName ?? "—" },
     { id: "customerPhone", header: "الهاتف", accessorFn: (o) => o.customerPhone ?? "—", meta: { kind: "phone" }, cell: ({ row }) => row.original.customerPhone ?? "—" },
-    { id: "governorate", header: "المحافظة", accessorFn: (o) => o.governorate ?? "—", cell: ({ row }) => row.original.governorate ?? "—" },
+    {
+      id: "governorate",
+      header: "المحافظة والعنوان",
+      accessorFn: (o) => o.governorate ?? "—",
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <div className="flex flex-col gap-0.5">
+            <span>{o.governorate ?? "—"}</span>
+            {o.latitude && o.longitude && (
+              <a
+                href={`https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:underline"
+                title="فتح موقع العميل على خرائط Google"
+              >
+                <MapPin className="size-3" />
+                الموقع على الخريطة
+              </a>
+            )}
+          </div>
+        );
+      },
+    },
     { id: "itemCount", header: "أصناف", accessorFn: (o) => o.itemCount, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.itemCount },
     // نصُّ العرض للنسخ، والفرز على القيمة الخامّ: الفرز النصّيّ على «1,234 د.ع» يقرأه أصغر
     // من «999 د.ع» فيقلب ترتيب مبالغ التحصيل عند الباب.
@@ -290,6 +314,8 @@ export default function OrderFulfillment() {
           customerPhone: d.customerPhone,
           governorate: d.governorate,
           addressText: d.addressText,
+          latitude: d.latitude,
+          longitude: d.longitude,
           total: d.total,
           deliveryPartyName: d.deliveryPartyName,
           createdAt: d.createdAt,

@@ -104,6 +104,7 @@ export function InvoiceHeaderCard({
               </span>
             </Field>
             <Field label="التاريخ">{fmtDate(data.invoiceDate)}</Field>
+            <Field label="آخر تحديث">{fmtDateTime(data.updatedAt)}</Field>
             <Field label="الاستحقاق">
               {data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}
             </Field>
@@ -206,6 +207,33 @@ export function InvoiceHeaderCard({
             />
           </div>
         </div>
+
+        {data.correctionAudit && (
+          <div className="grid gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 text-sm md:grid-cols-3">
+            <div>
+              <div className="text-xs text-muted-foreground">الفاتورة الأصلية</div>
+              <Link href={`/invoices/${data.correctionAudit.originalInvoiceId}`} className="font-mono font-bold text-primary hover:underline">
+                #{data.correctionAudit.originalInvoiceNumber}
+              </Link>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">طلب التعديل</div>
+              <div className="font-medium">
+                {data.correctionAudit.requestedByName ?? "حساب"}
+                {data.correctionAudit.requestedBy != null ? ` (#${data.correctionAudit.requestedBy})` : ""}
+              </div>
+              <div className="text-xs text-muted-foreground">{fmtDateTime(data.correctionAudit.requestedAt)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">اعتمد التعديل</div>
+              <div className="font-medium">
+                {data.correctionAudit.reviewedByName ?? "حساب"}
+                {data.correctionAudit.reviewedBy != null ? ` (#${data.correctionAudit.reviewedBy})` : ""}
+              </div>
+              <div className="text-xs text-muted-foreground">{fmtDateTime(data.correctionAudit.reviewedAt)}</div>
+            </div>
+          </div>
+        )}
 
         {data.notes && (
           <div className="rounded-md bg-muted/40 p-3 text-sm">

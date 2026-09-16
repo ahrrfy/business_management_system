@@ -69,6 +69,8 @@ export function SearchField({
     [onScan, onChange],
   );
 
+  // موحَّدٌ مع خطّاف الكاشير `useSmartScanInput` عبر `useBarcodeInput` (١٥/٩، بلاغ المالك): سلوكُ البحث
+  // بالاسم والمسح نفسُه في كلّ الشاشات — الكتابة العربية بالمسافة تُقبَل والمسح يُحلّ.
   const barcodeInput = useBarcodeInput(handleScan, { enabled: barcode });
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {

@@ -836,6 +836,7 @@ export const returnRouter = router({
         .select({
           invoiceItemId: invoiceItems.id,
           productName: products.name,
+          isBundle: products.isBundle,
           variantName: productVariants.variantName,
           color: productVariants.color,
           size: productVariants.size,
@@ -863,16 +864,24 @@ export const returnRouter = router({
           ([r.color, r.size].filter((v): v is string => !!v).join(" / ") ||
             r.sku);
         const remaining = r.baseQuantity - r.returnedBaseQuantity;
+        const conversionFactor = Number(r.conversionFactor ?? 1) || 1;
+        const baseUnitName = r.isBundle ? "بكج" : "قطعة";
         return {
           invoiceItemId: Number(r.invoiceItemId),
           productName: r.productName,
+          isBundle: r.isBundle === true,
           variantLabel,
           barcode: r.barcode ?? null,
           sku: r.sku ?? null,
-          unitName: r.unitName ?? "",
+          // البكج وحدة تشغيلية قائمة بذاتها. بعض البكجات القديمة ورثت اسم «قطعة» من القالب
+          // عند الإنشاء؛ لا نعرض ذلك الاسم المضلّل في المرتجع، فـ1 هنا يعني بكجاً كاملاً.
+          unitName: r.isBundle && conversionFactor === 1
+            ? "بكج"
+            : r.unitName?.trim() || baseUnitName,
+          baseUnitName,
           // معامل تحويل وحدة البيع (درزن=12…) — الشاشة تعرض «١ درزن = ١٢ قطعة» وتَخطو به،
           // فلا يحسب الموظف الوحدة الأساس ذهنياً (كان أكبر مصدر خطأ كميات المرتجع).
-          conversionFactor: Number(r.conversionFactor ?? 1) || 1,
+          conversionFactor,
           baseQuantity: r.baseQuantity,
           returnedBaseQuantity: r.returnedBaseQuantity,
           remaining,

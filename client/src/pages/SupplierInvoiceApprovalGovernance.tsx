@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FileWarning } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
+import { DecideInInboxNotice } from "@/components/purchases/DecideInInboxNotice";
 import type { GovernanceQueueRow } from "@/components/purchases/GovernanceApprovalQueue";
 import {
   SupplierInvoiceApprovalGovernanceWorkspace,
@@ -116,6 +117,7 @@ export default function SupplierInvoiceApprovalGovernance() {
           ) : undefined
         }
       />
+      <DecideInInboxNotice />
       {me.isLoading ? (
         <LoadingState />
       ) : branchId == null ? (

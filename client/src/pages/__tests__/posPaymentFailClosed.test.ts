@@ -15,6 +15,7 @@ const readComponent = (relative: string) =>
  * في المكوّن، والمحاولة الخارجية المؤكَّدة في الشاشة).
  */
 const readRetailPos = () => readPage("POS.tsx") + "\n" + readComponent("pos/PaymentPanel.tsx");
+const readPrintPos = () => readPage("PrintPOS.tsx") + "\n" + readComponent("print-pos/PrintPosCheckout.tsx");
 
 /**
  * العقد الحاكم للدفع غير النقدي في نقاط البيع:
@@ -55,7 +56,7 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   });
 
   it("شاشة المطبعة (PrintPOS) تتبع العقد نفسه", () => {
-    const source = readPage("PrintPOS.tsx");
+    const source = readPrintPos();
 
     expect(source).toContain('<Method m="CARD" Icon={CreditCard} label="بطاقة" />');
     expect(source).toContain('<Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />');

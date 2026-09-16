@@ -16,7 +16,7 @@ import {
   RotateCcw,
   ShoppingCart,
 } from "lucide-react";
-import { LoadingState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,6 +39,8 @@ import {
 } from "@/components/returns/printThermalReturnReceipt";
 import { SalesReturnPortal } from "@/components/returns/SalesReturnPortal";
 import { PurchaseReturnPortal } from "@/components/returns/PurchaseReturnPortal";
+import { ReturnComposer } from "@/components/returns/ReturnComposer";
+import { trpc } from "@/lib/trpc";
 
 const SalesReturns = lazy(() => import("@/pages/SalesReturns"));
 const PurchaseReturns = lazy(() => import("@/pages/PurchaseReturns"));
@@ -63,6 +65,15 @@ export default function ReturnsHub() {
   const searchStr = useSearch();
 
   const urlParams = useMemo(() => new URLSearchParams(searchStr), [searchStr]);
+  const requestIdParam = Number(urlParams.get("requestId"));
+  const approvingRequestId =
+    Number.isSafeInteger(requestIdParam) && requestIdParam > 0
+      ? requestIdParam
+      : null;
+  const approvalRequest = trpc.returns.getRequest.useQuery(
+    { requestId: approvingRequestId ?? 0 },
+    { enabled: approvingRequestId != null },
+  );
   const portalParam = urlParams.get("portal") || urlParams.get("tab");
   const initialMode = (portalParam === "purchases" ? "purchases" : "sales") as ReturnPortalMode;
   const [portalMode, setPortalMode] = useState<ReturnPortalMode>(initialMode);
@@ -163,6 +174,53 @@ export default function ReturnsHub() {
       void printPurchaseReturnVoucher(op.rawPurchaseData);
     }
   };
+
+  // رابط قرار المرتجع يحمل معرّف الطلب وحده. الفاتورة تُشتق من الطلب المخزّن، فلا يمكن
+  // تبديل invoice في الرابط وعرض فاتورةٍ ثم اعتماد طلبٍ يعود إلى فاتورة أخرى.
+  if (approvingRequestId != null) {
+    if (approvalRequest.isLoading) {
+      return <LoadingState message="جارٍ تحميل طلب المرتجع…" />;
+    }
+    if (approvalRequest.isError) {
+      return (
+        <ErrorState
+          message={approvalRequest.error.message}
+          onRetry={() => void approvalRequest.refetch()}
+        />
+      );
+    }
+    if (!approvalRequest.data) {
+      return <ErrorState message="طلب المرتجع غير موجود أو لا تملك صلاحية مراجعته." />;
+    }
+    if (approvalRequest.data.status !== "PENDING_APPROVAL") {
+      return (
+        <ErrorState
+          message={`حُسم طلب المرتجع مسبقاً وحالته الآن: ${approvalRequest.data.status}.`}
+        />
+      );
+    }
+
+    return (
+      <div className="space-y-4 pb-12">
+        <PageHeader
+          title="اعتماد طلب مرتجع بيع"
+          description="راجع البنود والأثر المالي ثم حدّد حالة البضاعة ومسار الاسترداد إن وُجد."
+          backHref="/my-work"
+          backLabel="طلباتي"
+        />
+        <ReturnComposer
+          invoiceId={approvalRequest.data.invoiceId}
+          approvingRequestId={approvingRequestId}
+          onDone={() => setLocation("/my-work")}
+          footer={
+            <Button asChild variant="outline">
+              <Link href="/my-work">رجوع بلا اعتماد</Link>
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3.5 pb-12">

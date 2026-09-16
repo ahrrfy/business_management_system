@@ -43,7 +43,7 @@ export async function globalSearch(input: GlobalSearchInput): Promise<SearchResu
 
   const tasks: Promise<SearchResult[]>[] = [];
 
-  if (requested.has("PRODUCT")) tasks.push(searchProducts(db, kind, query, perEntityLimit));
+  if (requested.has("PRODUCT")) tasks.push(searchProducts(db, kind, query, perEntityLimit, scopedBranchId));
   if (requested.has("CUSTOMER")) tasks.push(searchCustomers(db, kind, query, perEntityLimit));
   if (requested.has("SUPPLIER") && canSeeType(input.role, "SUPPLIER", override))
     tasks.push(searchSuppliers(db, kind, query, perEntityLimit));

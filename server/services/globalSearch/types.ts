@@ -26,7 +26,9 @@ export type SearchResult = {
   rank: number;
 };
 
-const DOC_PREFIX_RX = /^(INV|QT|PO|WO|SR|PR)[-\s]?/i;
+import { canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
+
+const DOC_PREFIX_RX = /^(INV|QT|PO|WO|SR|PR|ORD|CN|CNS)[-\s]?/i;
 const NUM_ONLY_RX = /^\d+$/;
 const PHONE_PREFIX_RX = /^\+/;
 
@@ -34,17 +36,19 @@ export function classifyQuery(raw: string): { kind: SearchKind; query: string } 
   const trimmed = (raw ?? "").trim();
   if (!trimmed) return { kind: "TEXT", query: "" };
 
-  // باركود ماسح ضوئي: أرقام صرفة + طول قياسي.
-  if (NUM_ONLY_RX.test(trimmed) && trimmed.length >= 8 && trimmed.length <= 14) {
-    return { kind: "BARCODE", query: trimmed };
+  const canon = canonicalizeBarcodeInput(trimmed);
+
+  // باركود ماسح ضوئي: أرقام صرفة + طول قياسي (يدعم الأرقام اللاتينية والمطوية من العربية-الهندية).
+  if (NUM_ONLY_RX.test(canon) && canon.length >= 8 && canon.length <= 14) {
+    return { kind: "BARCODE", query: canon };
   }
-  // مُعرّف وثيقة بصيغة المشروع: INV-2606-1234 / QT-... / PO-... / WO-... / SR-... / PR-...
+  // مُعرّف وثيقة بصيغة المشروع: INV-2606-1234 / QT-... / PO-... / WO-... / SR-... / PR-... / ORD-... / CN-...
   if (DOC_PREFIX_RX.test(trimmed)) {
     return { kind: "DOC_NUMBER", query: trimmed };
   }
   // رقم وثيقة قصير (المالك يكتب أحياناً «9164» قاصداً QT-2606-9164).
-  if (NUM_ONLY_RX.test(trimmed) && trimmed.length <= 7) {
-    return { kind: "DOC_NUMBER", query: trimmed };
+  if (NUM_ONLY_RX.test(canon) && canon.length <= 7) {
+    return { kind: "DOC_NUMBER", query: canon };
   }
   // هاتف بصيغة E.164 (+9647...). نمرّر بقية الأنماط لـTEXT (البحث في الهاتف يظل يعمل عبر LIKE).
   if (PHONE_PREFIX_RX.test(trimmed)) {
