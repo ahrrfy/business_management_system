@@ -58,6 +58,7 @@ import { parseScan } from "@/lib/scanRouter";
 import { buildDraftPayload } from "@/components/reception/draftPayloadBuilder";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
+import { captureDigitalReceptionCartLines, toDigitalPrepareLine } from "@/components/pos/digitalBasket";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -340,7 +341,7 @@ export default function Reception() {
   const [cardsOpen, setCardsOpen] = useState(false);
   const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
   const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
-  const digitalCheckoutRef = useRef<{ appliedPaidD: import('decimal.js').Decimal; method: PayMethod; customerId: number | null } | null>(null);
+  const digitalCheckoutRef = useRef<{ appliedPaidD: import("decimal.js").Decimal; customerId: number | null } | null>(null);
 
   const resetScreen = () => {
     setCart([]);
@@ -366,26 +367,19 @@ export default function Reception() {
     setReceptionPhone("");
   };
 
-  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
-    onSuccess: (r) => setFulfillIntentId(r.intentId),
-    onError: (e) => { digitalCheckoutRef.current = null; notify.err(e); },
-  });
-
+  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation();
   const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
     onMutate: () => setDigitalFinalizeError(null),
-    onSuccess: (res: any) => {
-      if (res.outcome === "SUCCESS" || res.invoiceNumber) {
-        setFulfillIntentId(null);
-        digitalCheckoutRef.current = null;
-        reqIdRef.current = crypto.randomUUID();
-        notify.ok(`تم إتمام الطلب — الفاتورة ${res.invoiceNumber ?? ""}`, "أُنجز بيع البطاقات الرقمية بنجاح.");
-        void utils.shifts.current.invalidate();
-        resetScreen();
-      } else {
-        setDigitalFinalizeError(res.message ?? "فشل الإتمام");
-      }
+    onSuccess: () => {
+      setFulfillIntentId(null);
+      digitalCheckoutRef.current = null;
+      reqIdRef.current = crypto.randomUUID();
+      notify.ok("تم إتمام الطلب والبطاقات الرقمية واعتماد الفاتورة");
+      void utils.sales.list.invalidate();
+      void utils.shifts.current.invalidate();
+      resetScreen();
     },
-    onError: (err: any) => setDigitalFinalizeError(err.message),
+    onError: (err) => setDigitalFinalizeError(err.message),
   });
 
   const [printerReady, setPrinterReady] = useState(isPaired());
@@ -474,11 +468,12 @@ export default function Reception() {
 
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
+  const hasDigitalCards = cart.some((line) => line.digital);
   const sumDirectD = cart.filter((c) => !isCustomKind(c)).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   // ٢٣/٨ — البيع الخالص (لا طباعة ولا تخصيص) هو وحده وعاء خصم رأس الفاتورة: عقد الخادم
   // (workOrderRouter.receptionCheckout.regularSale.invoiceDiscount) يمرّره لـcreateSaleInTx
   // الذي يحسبه على فاتورة البيع فقط. `printSale` فاتورةٌ مستقلّة و«التخصيص» أمرُ شغلٍ (workOrder).
-  const regularSumRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  const regularSumRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   const sumCustomD = cart.filter((c) => isCustomKind(c)).reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
   // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪ كما في POS): يُطبَّق **قبل** حساب grandTotal
   // ⇒ التقريب النقديّ والعربون المحتجَز والمقبوض النقديّ كلّها تُقاس على الصافي بعد الخصم بلا مسّ
@@ -488,10 +483,10 @@ export default function Reception() {
   // **السقف الفعّال المتبقّي** (مرآة POS.tsx حرفياً): بوّابة الخادم تقيس (refGross − invoiceNet)/refGross
   // مقابل ١٥٪، وترى انحراف السطر (عرض/كوبون/خصم يدويّ) والرأس معاً. لولا هذا: سلّةٌ عليها عرضٌ ١٠٪
   // + خصمُ رأسٍ ١٠٪ = انحراف ١٩٪ ⇒ رفضٌ خادميّ يُفاجأ به الكاشير (بلاغ Codex P1).
-  // بيع الاستقبال بلا مسار «كرت رقميّ» — عقد الخادم يرفضها بنيوياً — فلا استثناءٌ يخصمها.
+  // الكروت الرقمية ثابتة السعر ولا تدخل وعاء خصم رأس الفاتورة.
   const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
   const regularReferenceGrossD = cart
-    .filter((c) => !isCustomKind(c) && !c.row.isPrintService)
+    .filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital)
     .reduce((s, c) => {
       // بلا خصمٍ يدويّ = سعرُ القائمة (السعرُ الأصل قبل الخصم) × الكمية. `origPrice` يُضبَط من
       // Popover خصم السطر ⇒ نستعمله مرجعاً كي يحسب الانحراف السطريّ المسبق.
@@ -526,7 +521,7 @@ export default function Reception() {
   // حقلٌ يحمله، وعقدُ `commitDraft` يعيد بناء الإجمالي من الأسطر الخام فيرفض التثبيت لأنّ الصافي
   // لا يطابق. إخفاءُ الحقل عند وجود مسوّدة يمنع تسرّبَه لعقدٍ لا يفهمه — الشريحة الأوسع (توسيع
   // عقد المسوّدة) شغلٌ منفصل بمهاجرةٍ وحقولٍ خادميّة إضافيّة.
-  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft && !cart.some((c) => c.digital);
+  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft && !hasDigitalCards;
   const invoiceDiscountAmountD = invoiceDiscountAllowed
     ? round2(regularSumRawD.times(clampedInvoiceDiscountPctD).div(100))
     : D(0);
@@ -568,7 +563,7 @@ export default function Reception() {
   // لَسُدَّ الطريق النقديّ (المتوقّع 0 والخادم يطالب بالفارق الخام) ⇒ يسقط التقريب حينها.
   const draftHeldEarlyD = D(draftHeld || 0);
   const roundedWouldTrapHeld = draftHeldEarlyD.gt(0) && roundCashIQD(grandTotalD.toFixed(2)).lte(draftHeldEarlyD);
-  const cashRoundActive = method === "CASH" && cart.length > 0 && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
+  const cashRoundActive = method === "CASH" && cart.length > 0 && !hasDigitalCards && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
   // ش٦ — تقريب السلّة المختلطة (مرآة materialize/checkout حرفياً): فرق تقريب السلّة كلّها
   // يُحمَّل على الفاتورة الحاملة (بضاعة ثم طباعة). يسري **فقط** حين يُدفع المقرَّب كاملاً نقداً
   // الآن (يُحسم عند الإرسال) — هنا نحسب أهليّته ونعرض المقرَّب لأن المسار الاعتيادي دفعٌ كامل.
@@ -577,7 +572,7 @@ export default function Reception() {
   const mixedCarrier: "SALE" | "PRINT" | null = sumGoodsRawD.gt(0) ? "SALE" : sumPrintRawD.gt(0) ? "PRINT" : null;
   const mixedDeltaD = round2(roundCashIQD(grandTotalD.toFixed(2)).minus(grandTotalD));
   const mixedRoundEligible =
-    method === "CASH" && cart.length > 0 && !cashRoundActive && !offline && !roundedWouldTrapHeld
+    method === "CASH" && cart.length > 0 && !hasDigitalCards && !cashRoundActive && !offline && !roundedWouldTrapHeld
     && (cart.some(isCustomKind) || hasPrintInCart) && mixedCarrier != null && !mixedDeltaD.isZero()
     && (mixedCarrier === "SALE" ? sumGoodsRawD : sumPrintRawD).plus(mixedDeltaD).gt(0);
   const roundingDisplayActive = cashRoundActive || mixedRoundEligible;
@@ -676,7 +671,7 @@ export default function Reception() {
     clearCouponIfApplied();
     setCart((prev) => {
       // دمج كميّات الصنف الجاهز المُكرَّر وتصعيده لقمة السلة ليبقى في متناول يد ونظر الكاشير
-      const i = prev.findIndex((c) => !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
+      const i = prev.findIndex((c) => !c.digital && !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
       if (i >= 0) {
         const next = [...prev];
         const updated = { ...next[i], qty: next[i].qty + 1 };
@@ -692,6 +687,25 @@ export default function Reception() {
     // ٢٣/٨ (Codex P2): أشِر إلى الجدول أنّ إضافةً حدثت — يشمل رفع الكمّية على السطر الأصل.
     setAddTick((t) => t + 1);
   }, [clearCouponIfApplied]);
+
+  function addDigitalBasket(basket: DigitalBasketCapture) {
+    if (offline) return notify.err("البيع الرقمي يحتاج اتصالاً بالخادم.");
+    if (activeDraft) return notify.err("لا تُضاف الكروت إلى طلب محفوظ؛ ثبّت الطلب أو افتح سلة جديدة.");
+    try {
+      const captured = captureDigitalReceptionCartLines(basket, branchId) as CartLine[];
+      clearCouponIfApplied();
+      setInvoiceDiscountPct("");
+      setCart((previous) => [
+        ...captured,
+        ...previous,
+      ]);
+      setSelKey(captured[0]?.digital?.lineKey ?? null);
+      setAddTick((tick) => tick + 1);
+      setCardsOpen(false);
+    } catch (error) {
+      notify.err(error);
+    }
+  }
 
   const addRow = useCallback((row: PosRow) => {
     // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعرٍ
@@ -743,35 +757,6 @@ export default function Reception() {
     setShowDrop(false);
   }
 
-  function addDigitalBasket(basket: DigitalBasketCapture) {
-    if (cart.filter((c) => c.digital).length + basket.lines.length > 50) return;
-    clearCouponIfApplied();
-    setInvoiceDiscountPct("");
-    const added: CartLine[] = basket.lines.map(({ card, student }, idx) => ({
-      key: `digital-${card.productId}-${Date.now()}-${idx}-${Math.random()}`,
-      row: {
-        branchId, productId: card.productId, productName: card.name, variantId: card.variantId,
-        variantName: null, color: null, colorHex: null, size: null, sku: basket.providerReference || "",
-        productUnitId: card.productUnitId, unitName: "بطاقة", conversionFactor: "1.0000", barcode: null,
-        isBaseUnit: true, price: String(card.sellPrice || 0), stockBase: 0, reservedBase: 0, availableBase: 0,
-        openedAt: null, isService: true, allowBackorder: false, isCustomizable: false, isPrintService: false,
-        isContractPrice: false, isBundle: false, isConsignment: false, promotionId: null, promotionName: null,
-        promotionDiscountForUnit: "0.00", promotionEffectivePrice: null, costPriceBase: null,
-      } as PosRow,
-      qty: 1,
-      digital: {
-        offeringId: card.offeringId, priceVersionId: card.priceVersionId, providerId: card.providerId,
-        offeringType: card.offeringType as "CARD" | "SUBSCRIPTION", providerName: card.providerName, providerReference: basket.providerReference || "",
-        providerBasketKey: basket.providerBasketKey || null, faceValue: card.faceValue ? String(card.faceValue) : null,
-        subscriptionDurationDays: card.subscriptionDurationDays ?? null, requiresStudentData: card.requiresStudentData ?? false,
-        student,
-      },
-    }));
-    setCart((prev) => [...added, ...prev]);
-    setCardsOpen(false);
-    setAddTick((t) => t + 1);
-  }
-
   function saveCustomization(data: CustomizationData) {
     if (!showCustomization) return;
     const { row, editingKey } = showCustomization;
@@ -792,6 +777,7 @@ export default function Reception() {
     setCart((prev) =>
       prev.map((c) => {
         if (c.key !== lineKey) return c;
+        if (c.digital) return c;
         return {
           ...c,
           row: {
@@ -807,7 +793,7 @@ export default function Reception() {
   function changeQty(key: string, delta: number) {
     clearCouponIfApplied();
     setCart((prev) =>
-      prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
+      prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
     );
   }
   function removeRow(key: string) {
@@ -913,7 +899,7 @@ export default function Reception() {
   /** م٤ — الكمية داخل الصفّ: مدخلٌ رقميّ مباشر (والزرّان ± يبقيان للمس السريع). */
   function setQty(key: string, qty: number) {
     clearCouponIfApplied();
-    setCart((prev) => prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
+    setCart((prev) => prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
   }
   /** م٤ — الخصم داخل الصفّ (Popover خلية السعر): نسبةٌ 0..100، null = إزالة الخصم. */
   function setLineDiscount(key: string, pct: number | null) {
@@ -921,6 +907,7 @@ export default function Reception() {
     setCart((prev) =>
       prev.map((c) => {
         if (c.key !== key) return c;
+        if (c.digital) return c;
         if (pct == null || pct <= 0) return { ...c, disc: undefined };
         const base = c.origPrice ?? Number(c.row.price ?? 0);
         return { ...c, origPrice: base, disc: Math.min(100, pct) };
@@ -1164,8 +1151,8 @@ export default function Reception() {
 
   function saveDraft() {
     if (cart.length === 0 || !!activeDraft || offline) return;
-    if (cart.some((c) => c.digital)) {
-      notify.warn("لا يمكن حفظ مسودة تحتوي على بطاقات رقمية", "أتمم بيع البطاقات الرقمية أو احذفها لحفظ بقية الطلب كمسودة.");
+    if (cart.some((line) => line.digital)) {
+      notify.err("الكروت والاشتراكات لا تُحفظ كمسودة؛ يجب تنفيذها وتثبيتها فوراً مع اتصال فعّال.");
       return;
     }
     promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...getDraftPayload() });
@@ -1292,10 +1279,44 @@ export default function Reception() {
       return;
     }
     const directLines = cart.filter((c) => !isCustomKind(c));
+    const digitalLines = directLines.filter((c) => c.digital);
     // فصل خدمات الطباعة (تُباع عبر createPrintSale) عن البيع العادي (sales.create).
-    const regularLines = directLines.filter((c) => !c.row.isPrintService);
-    const printLines = directLines.filter((c) => c.row.isPrintService);
+    const regularLines = directLines.filter((c) => !c.digital && !c.row.isPrintService);
+    const printLines = directLines.filter((c) => !c.digital && c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
+
+    if (digitalLines.length > 0) {
+      if (offline || isDisconnected(connState)) {
+        notify.err("الكروت والاشتراكات تحتاج اتصالاً فعّالاً بالخادم.");
+        return;
+      }
+      if (activeDraft) {
+        notify.err("لا تُنفّذ الكروت ضمن طلب محفوظ؛ ثبّت الطلب أولاً أو افتح سلة جديدة.");
+        return;
+      }
+      if (customItems.length > 0 || printLines.length > 0 || orderDelivery) {
+        notify.err("افصل الكروت الرقمية عن أوامر الشغل والطباعة والتوصيل في عملية مستقلة.");
+        return;
+      }
+      if (method !== "CASH") {
+        notify.err("بيع الكروت من كاشير الاستقبال متاح نقداً فقط حالياً؛ الدفع بالبطاقة يحتاج إثبات جهاز دفع مرتبطاً بالعملية.");
+        return;
+      }
+      if (deferred) {
+        notify.err("الكروت والاشتراكات لا تقبل البيع الآجل أو الدفع الجزئي.");
+        return;
+      }
+      if (couponCode || rawInvoiceDiscountPctD.gt(0) || regularLines.some((line) => (line.disc ?? 0) > 0 || line.row.promotionId != null)) {
+        notify.err("لا تُطبّق الكوبونات أو الخصومات على عملية تحتوي كروتاً رقمية؛ افصلها في فاتورة أخرى.");
+        return;
+      }
+      const changedDigital = digitalLines.find((line) =>
+        line.qty !== 1 || !line.digital || !D(effectivePrice(line)).eq(line.digital.sellPriceSnapshot));
+      if (changedDigital) {
+        notify.err(`بيانات «${changedDigital.row.productName}» تغيّرت؛ احذفها وأعد إضافتها من سلة المزوّد.`);
+        return;
+      }
+    }
 
     // ٨/٨ (طلب المالك: التوصيل «غير موجود» لأمر شغلٍ خالص) — «توصيل هذا الطلب» كان يُبنى إسناداً
     // على الفاتورة الحاملة (dispatchInvoice)، وأمرُ الشغل الخالص بلا فاتورةٍ عند التثبيت ⇒ الخادم
@@ -1342,6 +1363,10 @@ export default function Reception() {
     });
 
     const isReserve = !!opts.isReservation;
+    if (isReserve && digitalLines.length > 0) {
+      notify.err("لا يمكن حجز الكروت الرقمية؛ يجب إصدارها وتثبيتها فوراً.");
+      return;
+    }
 
     // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
     // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
@@ -1351,6 +1376,10 @@ export default function Reception() {
       ? (paidD.gt(0) ? paidD : D(0))
       : (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
     const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
+    if (digitalLines.length > 0 && !round2(appliedPaidD).eq(round2(expectedNowD))) {
+      notify.err(`الكروت الرقمية تتطلب تسديد كامل العملية: ${fmt(expectedNowD.toFixed(2))} د.ع.`);
+      return;
+    }
 
     // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
     if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
@@ -1564,93 +1593,84 @@ export default function Reception() {
           }
         : undefined;
 
-      const digitalLines = cart.filter((c) => c.digital);
-      if (digitalLines.length > 0) {
-        if (offline) {
-          notify.errBig("لا بيع رقميّ دون اتصال", "الكروت تحتاج الخادم للتحقّق من السعر والتنفيذ.");
-          setSubmitting(false);
-          return;
-        }
-        if (activeDraft) {
-          notify.err("لا يمكن حفظ أو تثبيت مسودة تحتوي على بطاقات رقمية");
-          setSubmitting(false);
-          return;
-        }
-        const regularLinesOnly = regularLines.filter((c) => !c.digital);
-        const checkoutPayload = {
-          branchId,
-          shiftId: shift.id,
-          customerId: customerId ?? undefined,
-          contactName: customerId == null ? (customerName ?? undefined) : undefined,
-          contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-          paymentMethod: appliedPaidD.gt(0) ? method : undefined,
-          paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
-          paidAmount: round2(appliedPaidD).toFixed(2),
-          cashRoundIQD: cashRoundActive,
-          cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
-          deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
-          delivery: deliveryPayload,
-          openingSellUnavailableConfirmed: opts.openingConfirmed === true,
-          deferredDirect: willDefer,
-          managerApproval: mgrCredsRef.current ?? undefined,
-          clientRequestId: reqIdRef.current,
-          priceTier: effectiveTier,
-          couponCode: couponCode ?? undefined,
-          regularSale: regularLinesOnly.length > 0 ? {
-            amount: round2(regularLinesOnly.reduce((s, c) => s.plus(D(lineTotal(c))), D(0)).minus(invoiceDiscountAmountD)).toFixed(2),
-            ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-            lines: regularLinesOnly.map((c) => ({
+      const directCheckoutPayload = {
+        branchId,
+        shiftId: shift.id,
+        customerId: customerId ?? undefined,
+        contactName: customerId == null ? (customerName ?? undefined) : undefined,
+        contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
+        paymentMethod: appliedPaidD.gt(0) ? method : undefined,
+        paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
+        paidAmount: round2(appliedPaidD).toFixed(2),
+        cashRoundIQD: cashRoundActive,
+        cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
+        deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
+        delivery: deliveryPayload,
+        openingSellUnavailableConfirmed: opts.openingConfirmed === true,
+        deferredDirect: willDefer,
+        managerApproval: mgrCredsRef.current ?? undefined,
+        clientRequestId: reqIdRef.current,
+        priceTier: effectiveTier,
+        couponCode: couponCode ?? undefined,
+        regularSale: regularLines.length > 0 ? {
+          amount: saleAmount,
+          ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
+          lines: regularLines.map((c) => {
+            if (c.row.promotionEffectivePrice != null) {
+              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
+              const discAmt = listWhole.minus(D(c.row.promotionEffectivePrice)).times(c.qty);
+              return {
+                variantId: c.row.variantId,
+                productUnitId: c.row.productUnitId,
+                quantity: String(c.qty),
+                unitPriceOverride: listWhole.toFixed(2),
+                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+                ...(c.row.promotionId != null ? { promotionId: c.row.promotionId } : {}),
+              };
+            }
+            return {
               variantId: c.row.variantId,
               productUnitId: c.row.productUnitId,
               quantity: String(c.qty),
               ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
-            })),
-          } : null,
-          printSale: printLines.length > 0 ? {
-            amount: printAmount,
-            lines: printLines.map((c) => ({
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-            })),
-          } : null,
-          workOrders: workOrderPayloads.length > 0 ? workOrderPayloads : undefined,
-        };
+            };
+          }),
+        } : null,
+        printSale: printLines.length > 0 ? {
+          amount: printAmount,
+          lines: printLines.map((c) => ({
+            variantId: c.row.variantId,
+            productUnitId: c.row.productUnitId,
+            quantity: String(c.qty),
+            unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+          })),
+        } : null,
+        workOrders: workOrderPayloads,
+      };
 
-        digitalCheckoutRef.current = {
-          appliedPaidD,
-          method,
-          customerId,
-        };
-
-        prepareIntent.mutate({
+      if (digitalLines.length > 0) {
+        const prepared = await prepareIntent.mutateAsync({
           branchId,
           shiftId: shift.id,
           clientRequestId: reqIdRef.current,
-          paymentMethod: method === "CARD" ? "CARD" : "CASH",
+          paymentMethod: "CASH",
           cartFingerprint: reqIdRef.current,
           customerId: customerId ?? undefined,
           priceTier: effectiveTier,
           sourceType: "RECEPTION",
-          sourcePayload: checkoutPayload,
-          regularLines: regularLinesOnly.map((c, idx) => ({
-            lineKey: c.key || `reg-${idx}-${c.row.productUnitId}`,
-            variantId: c.row.variantId,
-            productUnitId: c.row.productUnitId,
-            quantity: String(c.qty),
-            unitPriceOverride: c.row.price ? String(c.row.price) : undefined,
+          // لا نخزّن بيانات اعتماد المدير داخل لقطة النيّة. هذا المسار يمنع الخصومات أصلاً.
+          sourcePayload: { ...directCheckoutPayload, managerApproval: undefined, deferredDirect: false },
+          regularLines: regularLines.map((line, index) => ({
+            lineKey: `regular:${index}:${line.row.productUnitId}`,
+            variantId: line.row.variantId,
+            productUnitId: line.row.productUnitId,
+            quantity: String(line.qty),
           })),
-          lines: digitalLines.map((c, idx) => ({
-            lineKey: c.key || `dig-${idx}-${c.digital!.offeringId}`,
-            offeringId: c.digital!.offeringId,
-            priceVersionId: c.digital!.priceVersionId,
-            expectedSellPrice: String(c.row.price || c.digital!.faceValue || 0),
-            providerReference: c.digital!.providerReference,
-            student: c.digital!.student,
-          })),
+          lines: digitalLines.map((line) => toDigitalPrepareLine(line.digital!)),
         });
-        setSubmitting(false);
+        digitalCheckoutRef.current = { appliedPaidD, customerId };
+        setDigitalFinalizeError(null);
+        setFulfillIntentId(prepared.intentId);
         return;
       }
 
@@ -1703,75 +1723,7 @@ export default function Reception() {
             void utils.reception.draftList.invalidate();
             return committed;
           })()
-        : await checkoutM.mutateAsync({
-        branchId,
-        shiftId: shift.id,
-        customerId: customerId ?? undefined,
-        // مرجع الزبون العابر: يُكتب على الفاتورة وأمر الشغل حتى بلا سجلّ عميل.
-        contactName: customerId == null ? (customerName ?? undefined) : undefined,
-        contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-        // صدق طريقة الدفع (١٨/٨): الطريقة تُرسَل **فقط حين يُقبض مالٌ الآن**. كانت تُرسل دائماً
-        // فتُختَم «نقدي» على فاتورةٍ آجلة/COD لم يدخلها دينار (بلاغ المالك)، وتسقط من فلتر «آجل».
-        paymentMethod: appliedPaidD.gt(0) ? method : undefined,
-        paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
-        paidAmount: round2(appliedPaidD).toFixed(2),
-        cashRoundIQD: cashRoundActive,
-        // ش٦: تسمية الفاتورة الحاملة لفرق التقريب المختلط (المبلغ مُبيَّتٌ فيها أعلاه).
-        cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
-        // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
-        deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
-        // مراجعة PR #495: الإسناد داخل نفس معاملة البيع (ذرّية الفاتورة + عهدة المندوب).
-        delivery: deliveryPayload,
-        // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
-        openingSellUnavailableConfirmed: opts.openingConfirmed === true,
-        // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من البضاعة الجاهزة بلا توصيل ⇒ المتبقّي ذمّة
-        // على العميل المسجَّل (حدّ الائتمان نافذ خادمياً). مسار مباشر فقط (لا مسوّدة، لا توصيل).
-        deferredDirect: willDefer,
-        // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
-        managerApproval: mgrCredsRef.current ?? undefined,
-        clientRequestId: reqIdRef.current,
-        priceTier: effectiveTier,
-        couponCode: couponCode ?? undefined,
-        regularSale: regularLines.length > 0 ? {
-          amount: saleAmount,
-          // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪): يمرَّر مطلقاً لـcreateSaleInTx على البيع
-          // المباشر فقط (لا يمسّ printSale ولا workOrders). فوقَ الحدّ يرفضه الخادم بـmanualGate إلّا
-          // باعتمادِ مديرٍ (POS.tsx يفعل نفس الشيء). صفر ⇒ حذفٌ من الحمولة.
-          ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-          lines: regularLines.map((c) => {
-            // كوبون/عرض: سعر قائمة صحيح الدينار + خصمٌ صريح (نمط POS.tsx buildSaleLine) — الخادم
-            // يتحقّق منه مقابل العرض الفعلي بلا رفضٍ لو تغيّر بين المعاينة والحفظ.
-            if (c.row.promotionEffectivePrice != null) {
-              const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
-              const discAmt = listWhole.minus(D(c.row.promotionEffectivePrice)).times(c.qty);
-              return {
-                variantId: c.row.variantId,
-                productUnitId: c.row.productUnitId,
-                quantity: String(c.qty),
-                unitPriceOverride: listWhole.toFixed(2),
-                ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
-                ...(c.row.promotionId != null ? { promotionId: c.row.promotionId } : {}),
-              };
-            }
-            return {
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
-            };
-          }),
-        } : null,
-        printSale: printLines.length > 0 ? {
-          amount: printAmount,
-          lines: printLines.map((c) => ({
-            variantId: c.row.variantId,
-            productUnitId: c.row.productUnitId,
-            quantity: String(c.qty),
-            unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-          })),
-        } : null,
-        workOrders: workOrderPayloads,
-      });
+        : await checkoutM.mutateAsync(directCheckoutPayload);
       checkoutCommitted = true;
 
       const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
@@ -2063,6 +2015,13 @@ export default function Reception() {
    */
   async function captureOfflineReception(): Promise<boolean> {
     if (!shift || cart.length === 0) return false;
+    if (cart.some((line) => line.digital)) {
+      notify.errBig(
+        "الكروت الرقمية تحتاج اتصالاً",
+        "لا يمكن إصدار الكرت أو حجز رصيد المزوّد دون اتصال. أعد الاتصال ثم أتمم العملية من السلة نفسها.",
+      );
+      return false;
+    }
     const capturedByUserId = me.data?.id;
     if (!Number.isInteger(capturedByUserId) || Number(capturedByUserId) <= 0) {
       notify.errBig("تعذّر تثبيت هوية الموظف — أعد تسجيل الدخول قبل قبض نقد دون اتصال");
@@ -2080,8 +2039,8 @@ export default function Reception() {
       return false;
     }
     const directLines = cart.filter((c) => !isCustomKind(c));
-    const regularLines = directLines.filter((c) => !c.row.isPrintService);
-    const printLines = directLines.filter((c) => c.row.isPrintService);
+    const regularLines = directLines.filter((c) => !c.digital && !c.row.isPrintService);
+    const printLines = directLines.filter((c) => !c.digital && c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
     if (customItems.length > 0) {
       notify.errBig(
@@ -2675,7 +2634,7 @@ export default function Reception() {
           activeDraftId={activeDraft?.id ?? null}
           offline={offline}
           compact={compactHeader}
-          canSave={cart.length > 0}
+          canSave={cart.length > 0 && !hasDigitalCards}
           onSave={saveDraft}
           onResume={(id) => void resumeDraft(id)}
           onPrintTicket={(id) => void printDraftTicketById(id)}
@@ -2835,13 +2794,26 @@ export default function Reception() {
         offline={offline}
         onClose={() => setCardsOpen(false)}
         onPickBasket={addDigitalBasket}
-        existingCardCount={cart.filter((c) => c.digital).length}
-        existingReferences={cart.filter((c) => c.digital).map((c) => ({
-          providerId: c.digital!.providerId,
-          providerReference: c.digital!.providerReference,
-        }))}
+        existingReferences={cart.flatMap((line) => line.digital
+          ? [{ providerId: line.digital.providerId, providerReference: line.digital.providerReference }]
+          : [])}
+        existingCardCount={cart.filter((line) => line.digital).length}
       />
-      <DigitalFulfillmentDialog intentId={fulfillIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError} onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }} onAllExecuted={(id: number) => { if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({ intentId: id, clientRequestId: reqIdRef.current, paymentAmount: round2(digitalCheckoutRef.current.appliedPaidD).toFixed(2), paymentMethod: digitalCheckoutRef.current.method as any, customerId: digitalCheckoutRef.current.customerId ?? undefined }); }} />
+      <DigitalFulfillmentDialog
+        intentId={fulfillIntentId}
+        finalizing={finalizeSale.isPending}
+        finalizeError={digitalFinalizeError}
+        onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
+        onAllExecuted={(id: number) => {
+          if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({
+            intentId: id,
+            clientRequestId: reqIdRef.current,
+            paymentAmount: round2(digitalCheckoutRef.current.appliedPaidD).toFixed(2),
+            paymentMethod: "CASH",
+            customerId: digitalCheckoutRef.current.customerId ?? undefined,
+          });
+        }}
+      />
     </div>
   );
 }

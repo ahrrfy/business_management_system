@@ -369,6 +369,9 @@ export function CartTable({
                       {isCustom || l.digital ? "—" : l.row.isService ? "∞" : stock.availInUnit}
                     </td>
                     <td className="px-1 py-1">
+                      {l.digital ? (
+                        <span className="inline-flex h-7 min-w-8 items-center justify-center rounded-md border bg-muted/40 text-xs font-extrabold tabular-nums">1</span>
+                      ) : (
                       <div className="flex items-center justify-center gap-1">
                         <button
                           type="button"
@@ -412,6 +415,7 @@ export function CartTable({
                           <Plus aria-hidden className="size-3" />
                         </button>
                       </div>
+                      )}
                     </td>
                     <td className="px-1 py-1.5 text-center text-sm font-extrabold tabular-nums" dir="ltr">{fmt(total)}</td>
                     <td className="px-1 py-1.5 text-center">

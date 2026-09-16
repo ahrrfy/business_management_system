@@ -73,6 +73,7 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
         ...state,
         tier: action.tier,
         items: state.items.map((item) => {
+          if (item.digital) return item;
           const price = action.pricesByUnitId[item.productUnitId];
           return price === undefined ? item : { ...item, price };
         }),
@@ -104,7 +105,11 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
       return { ...state, entityId: action.id };
 
     case "ADD_ITEM": {
-      const existing = state.items.findIndex((i) => i.productUnitId === action.item.productUnitId);
+      // كل كرت رقمي مثيلٌ مستقل له lineKey ومرجع تنفيذ؛ دمجه بالوحدة يفقد أحد
+      // التنفيذات ويحوّل الكمية إلى رقم لا يقبله مسار التثبيت.
+      const existing = action.item.digital
+        ? -1
+        : state.items.findIndex((i) => !i.digital && i.productUnitId === action.item.productUnitId);
       if (existing >= 0) {
         const items = [...state.items];
         items[existing] = { ...items[existing], qty: items[existing].qty + 1 };
@@ -114,10 +119,12 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
     }
 
     case "ADD_ITEMS": {
-      // Bulk add — merge duplicates by productUnitId.
+      // Bulk add — merge ordinary duplicates only. Digital instances remain one row each.
       const items = [...state.items];
       for (const newItem of action.items) {
-        const ix = items.findIndex((i) => i.productUnitId === newItem.productUnitId);
+        const ix = newItem.digital
+          ? -1
+          : items.findIndex((i) => !i.digital && i.productUnitId === newItem.productUnitId);
         if (ix >= 0) items[ix] = { ...items[ix], qty: items[ix].qty + newItem.qty };
         else items.push(newItem);
       }

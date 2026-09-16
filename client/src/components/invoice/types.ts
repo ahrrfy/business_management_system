@@ -6,6 +6,8 @@
  * are local to the editor's reducer/state and are merged with server rows on add.
  */
 
+import type { DigitalCheckoutLineMeta } from "@/components/pos/digitalBasket";
+
 export type InvoiceType = "SALE" | "PURCHASE" | "QUOTATION" | "SALE_RETURN" | "PURCHASE_RETURN";
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type PaymentTerm = "CASH" | "CREDIT" | "INSTALLMENT";
@@ -57,14 +59,8 @@ export interface InvoiceLine {
    * (شراء/عرض سعر/مرتجع) التي تُنشئ أسطراً بلا هذا الحقل. التسعير والتكلفة يحسمهما الخادم.
    */
   isGift?: boolean;
-  /** كروت واشتراكات رقمية (٧/٩) */
-  digital?: {
-    offeringId: number;
-    priceVersionId: number;
-    sellPriceSnapshot: string;
-    providerShareSnapshot: string;
-    internalLineToken: string;
-  };
+  /** بيانات تنفيذ الكرت/الاشتراك كما ثُبّتت عند إضافته من سلة المزوّد. */
+  digital?: DigitalCheckoutLineMeta;
 }
 
 export interface InvoiceState {

@@ -54,4 +54,42 @@ describe("invoiceReducer tier repricing", () => {
 
     expect(next.items.map((item) => item.price)).toEqual(["900.00", "2000.00"]);
   });
+
+  it("keeps repeated digital cards as independent fulfillment lines", () => {
+    const digital = (lineKey: string): InvoiceLine => ({
+      ...line(33, "5000.00"),
+      discount: "0",
+      digital: {
+        offeringId: 7,
+        providerId: 2,
+        priceVersionId: 19,
+        sellPriceSnapshot: "5000.00",
+        lineKey,
+        providerName: "المزوّد",
+        offeringType: "TELECOM_CARD",
+        providerReference: "TX-1",
+        providerBasketKey: "basket-1",
+        faceValue: "5000.00",
+        subscriptionDurationDays: null,
+        requiresStudentData: false,
+      },
+    });
+    const state = createInitialState("SALE");
+
+    const next = invoiceReducer(state, {
+      type: "ADD_ITEMS",
+      items: [digital("digital-1"), digital("digital-2")],
+    });
+
+    expect(next.items).toHaveLength(2);
+    expect(next.items.map((item) => item.digital?.lineKey)).toEqual(["digital-1", "digital-2"]);
+    expect(next.items.map((item) => item.qty)).toEqual([1, 1]);
+
+    const repriced = invoiceReducer(next, {
+      type: "SET_TIER_PRICES",
+      tier: "WHOLESALE",
+      pricesByUnitId: { 33: "1.00" },
+    });
+    expect(repriced.items.map((item) => item.price)).toEqual(["5000.00", "5000.00"]);
+  });
 });
