@@ -116,23 +116,30 @@ export function ExpenseCorrectionDialog({
     ) ?? null;
   const correctionRequiresRefund = target?.settlementStatus === "PAID";
 
+  const busy =
+    requestCorrection.isPending ||
+    approveCorrection.isPending ||
+    rejectCorrection.isPending ||
+    retryCorrectionRefund.isPending;
+  // إعادةُ ضبطٍ كاملةٌ عند الإغلاق: المكوّن دائمُ التركيب، فبلا هذا تتسرّب مسودّةُ مصروفٍ
+  // إلى آخرَ (دليلٌ/سببٌ/مرفقٌ يُرسَل ضدّ التزامٍ خاطئ — مراجعة Codex على #1147).
+  const handleClose = () => {
+    onClose();
+    setCorrectionReason("");
+    setCorrectionEvidence("");
+    setCorrectionAttachment([]);
+    setCorrectionReviewReason("");
+    setCorrectionRefundMethod("CASH");
+    setCorrectionRefundBucket("TREASURY");
+    setCorrectionRefundReference("");
+    setCorrectionRefundCardTail("");
+  };
+
   return (
     <Dialog
       open={target != null}
       onOpenChange={(open) => {
-        if (
-          !open &&
-          !requestCorrection.isPending &&
-          !approveCorrection.isPending &&
-          !rejectCorrection.isPending &&
-          !retryCorrectionRefund.isPending
-        ) {
-          onClose();
-          setCorrectionReason("");
-          setCorrectionEvidence("");
-          setCorrectionAttachment([]);
-          setCorrectionReviewReason("");
-        }
+        if (!open && !busy) handleClose();
       }}
     >
       <DialogContent dir="rtl" className="max-h-[90vh] overflow-y-auto">
@@ -389,7 +396,7 @@ export function ExpenseCorrectionDialog({
           </div>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={handleClose} disabled={busy}>
             إغلاق
           </Button>
           {!activeCorrection && !retryableRefundCorrection && target && (

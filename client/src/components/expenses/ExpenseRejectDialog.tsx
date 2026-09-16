@@ -39,14 +39,18 @@ export function ExpenseRejectDialog({
     onError: (error) => notify.err(error),
   });
 
+  // المكوّن دائمُ التركيب: بلا إعادة ضبطٍ عند الإغلاق يُفتَح المصروفُ التالي بسبب رفضٍ
+  // قديم وزرٍّ مفعَّل (مراجعة Codex على #1147). الإغلاقُ محجوبٌ أثناء تنفيذ الرفض.
+  const handleClose = () => {
+    setRejectReason("");
+    onClose();
+  };
+
   return (
     <Dialog
       open={target != null}
       onOpenChange={(open) => {
-        if (!open && !reject.isPending) {
-          onClose();
-          setRejectReason("");
-        }
+        if (!open && !reject.isPending) handleClose();
       }}
     >
       <DialogContent dir="rtl">
@@ -78,7 +82,7 @@ export function ExpenseRejectDialog({
           <Button
             type="button"
             variant="outline"
-            onClick={onClose}
+            onClick={handleClose}
             disabled={reject.isPending}
           >
             تراجع
