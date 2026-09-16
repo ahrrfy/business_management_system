@@ -49,6 +49,7 @@ import { type OrderChannel } from "@/components/print-pos/PrintChannelCustomerBa
 import { HeldOrdersDrawer, type HeldSaleOrder } from "@/components/print-pos/HeldOrdersDrawer";
 import { PrintPosHeader, PrintPosHeaderActions } from "@/components/print-pos/PrintPosHeader";
 import { CheckoutColumn, type PaymentMethod, type EditingInvoiceInfo } from "@/components/print-pos/PrintPosCheckout";
+import { PrintBottomToolbar } from "@/components/print-pos/PrintBottomToolbar";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { createPortal } from "react-dom";
 
@@ -994,8 +995,25 @@ export default function PrintPOS() {
   // ── الشاشة الرئيسية ──
   return (
     <div className="print-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
-      <PrintPosHeader C={C} dark={dark} toggleDark={toggleDark} search={search} setSearch={setSearch} searchRef={searchRef}
-        lastInv={lastInv} />
+      <PrintPosHeader
+        C={C}
+        dark={dark}
+        toggleDark={toggleDark}
+        search={search}
+        setSearch={setSearch}
+        searchRef={searchRef}
+        lastInv={lastInv}
+        channel={tab.channel}
+        setChannel={(c) => patch({ channel: c })}
+        customerId={tab.customerId}
+        setCustomerId={(id) => patch({ customerId: id })}
+        contactName={tab.contactName}
+        setContactName={(name) => patch({ contactName: name })}
+        contactPhone={tab.contactPhone}
+        setContactPhone={(phone) => patch({ contactPhone: phone })}
+        heldCount={heldCount}
+        onOpenHeldDrawer={() => setHeldDrawerOpen(true)}
+      />
 
       {headerActionsNode && createPortal(
         <PrintPosHeaderActions
@@ -1073,26 +1091,36 @@ export default function PrintPOS() {
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
           customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
-          contactName={tab.contactName} setContactName={(name) => patch({ contactName: name })}
-          contactPhone={tab.contactPhone} setContactPhone={(phone) => patch({ contactPhone: phone })}
-          channel={tab.channel} setChannel={(c) => patch({ channel: c })}
           editingInvoice={tab.editingInvoice} onCancelEdit={cancelEditingHeldOrder}
-          heldCount={heldCount} onOpenHeldDrawer={() => setHeldDrawerOpen(true)}
-          payInput={tab.payInput} setPayInput={setPayInput} method={tab.method} setMethod={(m) => patch({ method: m, externalPayment: null })}
-          paymentRef={tab.paymentRef ?? ""} setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
-          externalPaymentConfirmed={externalPaymentConfirmed}
-          externalFullPaymentConfirmed={externalFullPaymentConfirmed}
-          externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
-          onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
-          numPress={numPress}
-          onPay={() => submit(false)}
-          onQuickPay={() => submit(true)}
-          onReserve={() => submit(false, undefined, true)}
-          isPending={sale.isPending || correctSaleMut.isPending}
           addTick={addTick}
         />
         <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
+
+      {/* مسطرة الدفع والتحصيل أسفل الصفحة */}
+      <PrintBottomToolbar
+        C={C}
+        cart={cart}
+        total={total}
+        payInput={tab.payInput}
+        setPayInput={setPayInput}
+        method={tab.method}
+        setMethod={(m) => patch({ method: m, externalPayment: null })}
+        paymentRef={tab.paymentRef ?? ""}
+        setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
+        externalPaymentConfirmed={externalPaymentConfirmed}
+        externalFullPaymentConfirmed={externalFullPaymentConfirmed}
+        externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
+        onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
+        onPay={() => submit(false)}
+        onQuickPay={() => submit(true)}
+        onReserve={() => submit(false, undefined, true)}
+        isPending={sale.isPending || correctSaleMut.isPending}
+        customerId={tab.customerId}
+        contactName={tab.contactName}
+        contactPhone={tab.contactPhone}
+        editingInvoice={tab.editingInvoice}
+      />
 
       {receipt && (
         <ReceiptOverlay
