@@ -15,6 +15,11 @@ const expensesSource = readFileSync(
   "utf8",
 );
 
+const correctionDialogSource = readFileSync(
+  new URL("../../components/expenses/ExpenseCorrectionDialog.tsx", import.meta.url),
+  "utf8",
+);
+
 describe("asset accrual UI disclosure", () => {
   it("explains that recognition and depreciation do not wait for cash settlement", () => {
     expect(newSource).toContain("ثُبّت الأصل");
@@ -46,12 +51,14 @@ describe("asset accrual UI disclosure", () => {
   });
 
   it("يوصل إعادة تقديم استرداد التصحيح المرفوض من الواجهة إلى الإجراء الخادمي", () => {
-    expect(expensesSource).toContain(
+    // حوار التصحيح استُخرج إلى مكوّن مستقلّ؛ الصفحة تركّبه والمنطق فيه.
+    expect(expensesSource).toContain("<ExpenseCorrectionDialog");
+    expect(correctionDialogSource).toContain(
       "trpc.expenses.retryAccrualCorrectionRefund.useMutation",
     );
-    expect(expensesSource).toContain("إعادة تقديم طلب قبض الاسترداد");
-    expect(expensesSource).toContain("retryableRefundCorrection.requestedBy");
-    expect(expensesSource).toContain(
+    expect(correctionDialogSource).toContain("إعادة تقديم طلب قبض الاسترداد");
+    expect(correctionDialogSource).toContain("retryableRefundCorrection.requestedBy");
+    expect(correctionDialogSource).toContain(
       "clientRequestId: correctionClientRequestId",
     );
   });
