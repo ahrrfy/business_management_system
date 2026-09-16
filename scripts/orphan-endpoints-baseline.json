@@ -1,19 +1,6 @@
 {
   "generatedNote": "يتامى قائمون مسموحون مؤقّتاً (تدقيق ١٧/٧) — قلّصها بحذف الميت أو وصله بواجهة. لا تُوسِّعها.",
   "orphans": [
-    "productStudio.assignees",
-    "productStudio.bulkAssign",
-    "productStudio.campaignAnalytics",
-    "productStudio.campaignBoard",
-    "productStudio.candidatePreview",
-    "productStudio.createCampaignBacklog",
-    "productStudio.createTemporaryPhotographer",
-    "productStudio.previewCampaignBacklog",
-    "productStudio.revokeTemporaryPhotographers",
-    "productStudio.sendDueNotifications",
-    "productStudio.sourcePreview",
-    "productStudio.taskPreviousImages",
-    "productStudio.updateCampaignAssignees",
     "storefront.customerBenefitsPrivate"
   ]
 }

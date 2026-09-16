@@ -205,8 +205,9 @@ export function StudioTaskQueue({
 
   const mobileClaimByBarcode = trpc.productStudio.claimByBarcode.useMutation({
     onSuccess: async (data) => {
-      notify.ok(`التُقط المنتج`);
+      notify.ok(`التُقِط المنتج`);
       setSelectedId(Number(data.taskId));
+      setTaskScannerOpen(false);
       if (!offline) await utils.productStudio.invalidate();
     },
     onError: (error) => notify.err(error),

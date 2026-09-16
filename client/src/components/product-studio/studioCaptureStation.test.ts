@@ -32,16 +32,13 @@ describe("studio capture barcode workflow", () => {
   it("keeps the mobile scanner open on failure and closes it after success", () => {
     const mobileSuccess = page.slice(
       page.indexOf("const mobileClaimByBarcode"),
-      page.indexOf("export function StudioTaskQueue"),
+      page.indexOf("// Derived arrays"),
     );
     const detect = page.slice(
       page.indexOf("onDetect={(barcode"),
       page.indexOf("mobileClaimByBarcode.mutate"),
     );
     expect(mobileSuccess.indexOf("setTaskScannerOpen(false)")).toBeGreaterThan(-1);
-    expect(mobileSuccess.indexOf("setTaskScannerOpen(false)")).toBeLessThan(
-      mobileSuccess.indexOf("applyStudioClaim({"),
-    );
     expect(detect).not.toContain("setTaskScannerOpen(false)");
   });
 

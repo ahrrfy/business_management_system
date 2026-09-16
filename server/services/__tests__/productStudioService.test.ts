@@ -1402,7 +1402,7 @@ describe("product studio governed workflow", () => {
     // لا تُغطّيه)، مع عدّادٍ صادق: متغيّران، واحدٌ بصورة، وواحدٌ ناقص.
     const gap = await discoverImageGaps(manager, {});
     expect(gap.items.find((r) => r.productId === 106)).toMatchObject({
-      state: "HAS_IMAGE_NO_BARCODE",
+      state: "VARIANTS_INCOMPLETE",
       variantCount: 2,
       variantsWithImages: 1,
       variantsMissing: 1,
@@ -1410,12 +1410,12 @@ describe("product studio governed workflow", () => {
     // عدّادات لوحة الكشف (getImageHealthCounts) تعكس الفجوة أيضاً — لا منتجَ بلا متغيّرٍ ناقص
     // هنا سواه، فالعدّاد ١ بالضبط. مع الفخّ غير المُصلَح كان صفراً (يُصنَّف 106 خطأً NO_IMAGES).
     const counts = await getImageHealthCounts(manager);
-    expect(counts.counts.HAS_IMAGE_NO_BARCODE).toBe(1);
+    expect(counts.counts.VARIANTS_INCOMPLETE).toBe(1);
     // ملخّص أعلى الفئات فجوةً — المنتج بلا فئة، فتظهر فجوته في مجموعة «بلا فئة» (نفس فخّ
     // التأهيل + التجميع). مع الفخّ كان عمود «بدائل ناقصة» صفراً كاذباً.
     const cats = await getTopGapCategories(manager);
       const noCategory = cats.find((c) => c.categoryId === null);
-      // expect(noCategory?.variantsIncomplete ?? 0).toBeGreaterThanOrEqual(1);
+      expect(noCategory?.variantsIncomplete ?? 0).toBeGreaterThanOrEqual(1);
 
     // (٢) صورةُ البديل منفصلةٌ عن الأساس: إضافتُها بمعرّف متغيّر البديل تُغلق فجوته وحده،
     // فيصير المنتج سليماً ويغيب عن الكشف الافتراضيّ (الذي يستبعد HEALTHY).
