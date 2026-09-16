@@ -176,6 +176,16 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
     },
     onError: (error) => toast.error(error.message),
   });
+  const seedIraqi = trpc.statutoryAccounting.seedIraqiUnified.useMutation({
+    onSuccess: async ({ profileId: seededId, accountsImported, mappedAccounts, status }) => {
+      setProfileId(seededId);
+      await refresh();
+      toast.success(
+        `تم تثبيت الدليل المحاسبي الموحد العراقي (${accountsImported} حساباً، ${mappedAccounts} ربطاً آلياً) — الحالة: ${status === "ACTIVE" ? "نافذ" : "مسودة جاهزة للاعتماد"}.`,
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
 
   const current = profiles.data?.find((item) => item.id === profileId);
   const editable = canAdmin && current?.status === "DRAFT";
@@ -264,9 +274,12 @@ function SetupTab({ canAdmin }: { canAdmin: boolean }) {
             <div className="space-y-1"><Label>تاريخ النفاذ</Label><Input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} /></div>
             <div className="space-y-1 md:col-span-2"><Label>اسم الدليل</Label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
             <div className="space-y-1"><Label>مرجع الجهة أو التعليمات</Label><Input value={authorityReference} onChange={(e) => setAuthorityReference(e.target.value)} placeholder="رقم الكتاب وتاريخه" /></div>
-            <div className="md:col-span-3">
+            <div className="md:col-span-3 flex flex-wrap items-center gap-2">
               <Button disabled={createProfile.isPending || !authorityReference.trim()} onClick={() => createProfile.mutate({ profileKey, version, name, authorityReference, effectiveFrom })}>
                 إنشاء مسودة
+              </Button>
+              <Button variant="outline" disabled={seedIraqi.isPending} onClick={() => seedIraqi.mutate()}>
+                بذر الدليل المحاسبي الموحد العراقي تلقائياً
               </Button>
             </div>
           </CardContent>
