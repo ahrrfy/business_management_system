@@ -758,7 +758,7 @@ export async function seedIraqiUnifiedProfile(
   mappedAccounts: number;
 }> {
   // فحص ما إذا كان البروفايل موجوداً مسبقاً
-  let profile = (
+  const profile = (
     await tx
       .select()
       .from(statutoryAccountingProfiles)
@@ -771,36 +771,37 @@ export async function seedIraqiUnifiedProfile(
       .limit(1)
   )[0];
 
-  let profileId: number;
-  if (!profile) {
-    const created = await createStatutoryProfile(
-      tx,
-      {
-        profileKey: IRAQI_UNIFIED_PROFILE_KEY,
-        version: 1,
-        name: IRAQI_UNIFIED_PROFILE_NAME,
-        authorityReference: IRAQI_UNIFIED_AUTHORITY_REF,
-        effectiveFrom: new Date().toISOString().slice(0, 10),
-      },
-      actorId,
-    );
-    profileId = created.id;
-  } else {
-    profileId = Number(profile.id);
-  }
-
-  // إذا كان البروفايل معتمداً بالفعل (ACTIVE)، نعيد حالته مباشرة دون تدمير البيانات
-  if (profile?.status === "ACTIVE") {
-    const readiness = await profileReadiness(tx, profileId);
+  if (profile) {
+    const profileId = Number(profile.id);
+    const [readiness, existingAccounts] = await Promise.all([
+      profileReadiness(tx, profileId),
+      tx
+        .select({ id: statutoryAccounts.id })
+        .from(statutoryAccounts)
+        .where(eq(statutoryAccounts.profileId, profileId)),
+    ]);
     return {
       profileId,
-      status: "ACTIVE",
-      accountsImported: IRAQI_UNIFIED_ACCOUNTS.length,
+      status: profile.status,
+      accountsImported: existingAccounts.length,
       mappedAccounts: readiness?.mappedAccounts ?? 0,
     };
   }
 
-  // بذر / استبدال حسابات الدليل العراقي الموحد
+  const created = await createStatutoryProfile(
+    tx,
+    {
+      profileKey: IRAQI_UNIFIED_PROFILE_KEY,
+      version: 1,
+      name: IRAQI_UNIFIED_PROFILE_NAME,
+      authorityReference: IRAQI_UNIFIED_AUTHORITY_REF,
+      effectiveFrom: new Date().toISOString().slice(0, 10),
+    },
+    actorId,
+  );
+  const profileId = created.id;
+
+  // البذر التلقائي يملأ الإصدار الذي أنشأه للتو فقط؛ أي إصدار قائم يملكه المحاسب.
   await replaceStatutoryAccounts(tx, profileId, IRAQI_UNIFIED_ACCOUNTS);
 
   // جلب معرّفات الحسابات النظامية المفروزة برمز الحساب
