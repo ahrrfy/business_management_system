@@ -1,5 +1,4 @@
 import { RowActions } from "@/components/list";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -9,15 +8,6 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
@@ -28,8 +18,6 @@ import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
-import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
-import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -87,6 +75,8 @@ import {
   type ExpenseRow,
   type ExpenseTotals,
 } from "@/components/expenses/expenseView";
+import { ExpenseRejectDialog } from "@/components/expenses/ExpenseRejectDialog";
+import { ExpenseCorrectionDialog } from "@/components/expenses/ExpenseCorrectionDialog";
 
 export default function Expenses() {
   const utils = trpc.useUtils();
@@ -111,26 +101,8 @@ export default function Expenses() {
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<ExpenseRow | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
   const [correctionTarget, setCorrectionTarget] = useState<ExpenseRow | null>(
     null,
-  );
-  const [correctionReason, setCorrectionReason] = useState("");
-  const [correctionEvidence, setCorrectionEvidence] = useState("");
-  const [correctionAttachment, setCorrectionAttachment] = useState<ImageItem[]>(
-    [],
-  );
-  const [correctionRefundMethod, setCorrectionRefundMethod] =
-    useState<InboundEnabledPaymentMethod>("CASH");
-  const [correctionRefundBucket, setCorrectionRefundBucket] = useState<
-    "DRAWER" | "TREASURY"
-  >("TREASURY");
-  const [correctionRefundReference, setCorrectionRefundReference] =
-    useState("");
-  const [correctionRefundCardTail, setCorrectionRefundCardTail] = useState("");
-  const [correctionReviewReason, setCorrectionReviewReason] = useState("");
-  const [correctionClientRequestId, setCorrectionClientRequestId] = useState(
-    () => crypto.randomUUID(),
   );
   const [advancedOpen, setAdvancedOpen] = useState(true);
   const [auditOnly, setAuditOnly] = useState(false);
@@ -178,10 +150,6 @@ export default function Expenses() {
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
-  const correctionHistory = trpc.expenses.accrualCorrections.useQuery(
-    { obligationId: Number(correctionTarget?.accrualObligationId ?? 0) },
-    { enabled: Number(correctionTarget?.accrualObligationId ?? 0) > 0 },
-  );
   const rows = (list.data?.rows ?? []) as ExpenseRow[];
   const totals = (list.data?.totals ?? {}) as ExpenseTotals;
   const total = Number(totals.count ?? 0);
@@ -650,66 +618,6 @@ export default function Expenses() {
     },
     onError: (error) => notify.err(error),
   });
-  const reject = trpc.expenses.reject.useMutation({
-    onSuccess: async (_result, variables) => {
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
-      ]);
-      setRejectTarget(null);
-      setRejectReason("");
-      notify.ok("رُفض طلب المصروف بلا أثر مالي");
-    },
-    onError: (error) => notify.err(error),
-  });
-  const requestCorrection = trpc.expenses.requestAccrualCorrection.useMutation({
-    onSuccess: async () => {
-      notify.ok("سُجل طلب تصحيح المصدر بلا عكس أو قبض تلقائي");
-      setCorrectionClientRequestId(crypto.randomUUID());
-      setCorrectionReason("");
-      setCorrectionEvidence("");
-      setCorrectionAttachment([]);
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        correctionHistory.refetch(),
-      ]);
-    },
-    onError: (error) => notify.err(error),
-  });
-  const approveCorrection = trpc.expenses.approveAccrualCorrection.useMutation({
-    onSuccess: async () => {
-      notify.ok("اعتمد التصحيح وعُكس الاعتراف بقيد مستقل");
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        correctionHistory.refetch(),
-      ]);
-    },
-    onError: (error) => notify.err(error),
-  });
-  const rejectCorrection = trpc.expenses.rejectAccrualCorrection.useMutation({
-    onSuccess: async () => {
-      notify.ok("رُفض التصحيح وبقي الاستحقاق الأصلي قائماً");
-      setCorrectionReviewReason("");
-      await Promise.all([
-        utils.expenses.list.invalidate(),
-        correctionHistory.refetch(),
-      ]);
-    },
-    onError: (error) => notify.err(error),
-  });
-  const retryCorrectionRefund =
-    trpc.expenses.retryAccrualCorrectionRefund.useMutation({
-      onSuccess: async () => {
-        notify.ok("أُعيد تقديم طلب قبض الاسترداد، وينتظر اعتماد مالك آخر");
-        setCorrectionClientRequestId(crypto.randomUUID());
-        await Promise.all([
-          utils.expenses.list.invalidate(),
-          correctionHistory.refetch(),
-        ]);
-      },
-      onError: (error) => notify.err(error),
-    });
-
   function actionsFor(r: ExpenseRow) {
     return [
       {
@@ -729,7 +637,7 @@ export default function Expenses() {
         // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — canApprove أصلاً يشترط
         // isOwner، فاستثناءُ صانع الطلب هنا كان يحجب الاعتماد الذاتي المسموح به خادمياً.
         hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
-        disabled: approve.isPending || reject.isPending,
+        disabled: approve.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () =>
           void (async () => {
@@ -756,10 +664,9 @@ export default function Expenses() {
         label: "رفض الطلب",
         variant: "destructive" as const,
         hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
-        disabled: approve.isPending || reject.isPending,
+        disabled: approve.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () => {
-          setRejectReason("");
           setRejectTarget(r);
         },
       },
@@ -780,14 +687,8 @@ export default function Expenses() {
             "REFUND_PENDING",
           ].includes(r.settlementStatus ?? "") ||
           !canCancel,
-        disabled: requestCorrection.isPending,
-        disabledReason: "يوجد طلب تصحيح قيد التسجيل",
         onSelect: () => {
           setCorrectionTarget(r);
-          setCorrectionReason("");
-          setCorrectionEvidence("");
-          setCorrectionAttachment([]);
-          setCorrectionReviewReason("");
         },
         gate: {
           roles: ["manager"] as RoleKey[],
@@ -831,15 +732,6 @@ export default function Expenses() {
     ];
   }
 
-  const activeCorrection =
-    correctionHistory.data?.find((item) => item.status === "PENDING") ?? null;
-  const retryableRefundCorrection =
-    correctionHistory.data?.find(
-      (item) =>
-        item.status === "REJECTED" && item.previousObligationStatus === "PAID",
-    ) ?? null;
-  const correctionRequiresRefund =
-    correctionTarget?.settlementStatus === "PAID";
 
   // أموال العرض عبر fmt من @/lib/money (فواصل آلاف + منزلتان) — بديل الدالة المحلية السابقة.
   return (
@@ -1783,406 +1675,14 @@ export default function Expenses() {
       {cancel.error && (
         <p className="text-sm text-destructive">{cancel.error.message}</p>
       )}
-      <Dialog
-        open={rejectTarget != null}
-        onOpenChange={(open) => {
-          if (!open && !reject.isPending) {
-            setRejectTarget(null);
-            setRejectReason("");
-          }
-        }}
-      >
-        <DialogContent dir="rtl">
-          <DialogHeader>
-            <DialogTitle>رفض طلب المصروف</DialogTitle>
-            <DialogDescription>
-              سيبقى الطلب بلا صرف أو قيد مالي. سبب الرفض إلزامي ويُحفظ في مسار
-              التدقيق.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-1">
-            <Label htmlFor="expense-rejection-reason">سبب الرفض *</Label>
-            <Textarea
-              id="expense-rejection-reason"
-              value={rejectReason}
-              onChange={(event) => setRejectReason(event.target.value)}
-              placeholder="مثال: المستند المؤيد ناقص أو المبلغ يحتاج تصحيحاً"
-              rows={3}
-              maxLength={1000}
-              autoFocus
-            />
-            {rejectTarget && (
-              <p className="text-xs text-muted-foreground">
-                طلب #{Number(rejectTarget.id)} · {fmt(rejectTarget.amount)} د.ع
-              </p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setRejectTarget(null)}
-              disabled={reject.isPending}
-            >
-              تراجع
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={reject.isPending || rejectReason.trim().length < 3}
-              onClick={() => {
-                if (!rejectTarget || rejectReason.trim().length < 3) return;
-                reject.mutate({
-                  expenseId: Number(rejectTarget.id),
-                  reason: rejectReason.trim(),
-                });
-              }}
-            >
-              {reject.isPending ? (
-                <Loader2 aria-hidden className="size-4 animate-spin" />
-              ) : (
-                <Ban aria-hidden className="size-4" />
-              )}
-              رفض الطلب
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={correctionTarget != null}
-        onOpenChange={(open) => {
-          if (
-            !open &&
-            !requestCorrection.isPending &&
-            !approveCorrection.isPending &&
-            !rejectCorrection.isPending &&
-            !retryCorrectionRefund.isPending
-          ) {
-            setCorrectionTarget(null);
-            setCorrectionReason("");
-            setCorrectionEvidence("");
-            setCorrectionAttachment([]);
-            setCorrectionReviewReason("");
-          }
-        }}
-      >
-        <DialogContent dir="rtl" className="max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>تصحيح مصدر المصروف المستحق</DialogTitle>
-            <DialogDescription>
-              التصحيح يحفظ المصروف الأصلي ويضيف طلباً وحدثاً وعكساً مستقلاً.
-              المصروف المدفوع يتطلب استرداداً فعلياً موثقاً واعتماد مالك آخر.
-            </DialogDescription>
-          </DialogHeader>
-          {correctionTarget && (
-            <div className="space-y-3">
-              <div className="rounded-md border p-3 text-sm">
-                <div className="font-medium">
-                  EXP#{Number(correctionTarget.id)} ·{" "}
-                  {fmt(correctionTarget.amount)} د.ع
-                </div>
-                <div className="mt-1 text-muted-foreground">
-                  {correctionTarget.accrualBeneficiaryName ??
-                    correctionTarget.payee ??
-                    "مستفيد غير موثق"}{" "}
-                  · {FUNDING_META[fundingKindOf(correctionTarget)].short}
-                </div>
-                <div className="mt-1 text-xs" dir="ltr">
-                  {correctionTarget.accrualEvidenceReference ?? "—"}
-                </div>
-              </div>
-
-              {correctionHistory.isLoading ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ
-                  تحميل سجل التصحيح…
-                </div>
-              ) : activeCorrection ? (
-                <div className="space-y-3 rounded-md border badge-status-pending p-3 text-sm">
-                  <div className="font-medium">
-                    طلب تصحيح #{activeCorrection.id} بانتظار الاعتماد
-                  </div>
-                  <p>{activeCorrection.reason}</p>
-                  <p className="text-xs" dir="ltr">
-                    {activeCorrection.externalEvidenceReference}
-                  </p>
-                  {activeCorrection.previousObligationStatus === "PAID" ? (
-                    <p>
-                      أُنشئ طلب قبض استرداد معلّق بلا أثر نقدي. تتم المراجعة من
-                      شاشة سندات القبض لمطابقة دليل المزود قبل أي قيد.
-                    </p>
-                  ) : me.data?.isOwner === true &&
-                    Number(activeCorrection.requestedBy) !==
-                      Number(me.data.id) ? (
-                    <div className="space-y-2 border-t pt-3">
-                      <Label htmlFor="expense-correction-review-reason">
-                        سبب الرفض عند الرفض
-                      </Label>
-                      <Input
-                        id="expense-correction-review-reason"
-                        value={correctionReviewReason}
-                        onChange={(event) =>
-                          setCorrectionReviewReason(event.target.value)
-                        }
-                        placeholder="يُترك فارغاً عند الاعتماد"
-                      />
-                      <div className="flex gap-2">
-                        <Button
-                          disabled={
-                            approveCorrection.isPending ||
-                            rejectCorrection.isPending
-                          }
-                          onClick={async () => {
-                            if (
-                              !(await confirm({
-                                variant: "warning",
-                                title: "اعتماد تصحيح المصدر",
-                                description:
-                                  "سيُغلق المصدر التشغيلي ويُعكس قيد الاعتراف بقيد append-only مستقل.",
-                                confirmText: "اعتماد التصحيح",
-                              }))
-                            )
-                              return;
-                            approveCorrection.mutate({
-                              correctionRequestId: Number(activeCorrection.id),
-                            });
-                          }}
-                        >
-                          اعتماد التصحيح
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          disabled={
-                            correctionReviewReason.trim().length < 3 ||
-                            approveCorrection.isPending ||
-                            rejectCorrection.isPending
-                          }
-                          onClick={() =>
-                            rejectCorrection.mutate({
-                              correctionRequestId: Number(activeCorrection.id),
-                              reason: correctionReviewReason.trim(),
-                            })
-                          }
-                        >
-                          رفض التصحيح
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground">
-                      ينتظر مالكاً آخر؛ لا يستطيع منشئ الطلب اعتماده أو رفضه.
-                    </p>
-                  )}
-                </div>
-              ) : retryableRefundCorrection ? (
-                <div className="space-y-3 rounded-md border badge-status-rejected p-3 text-sm">
-                  <div className="font-medium">
-                    رُفض طلب قبض الاسترداد المرتبط بالتصحيح #
-                    {retryableRefundCorrection.id}
-                  </div>
-                  <p>
-                    {retryableRefundCorrection.rejectionReason ??
-                      "لم يُسجّل سبب الرفض."}
-                  </p>
-                  <p className="text-muted-foreground">
-                    يحتفظ النظام بالطلب المرفوض وسلسلة التدقيق. يمكن لمنشئ طلب
-                    التصحيح وحده إصدار طلب قبض بديل بمفتاح مستقل، ثم يعتمد مالك
-                    آخر الطلب الجديد.
-                  </p>
-                  {Number(retryableRefundCorrection.requestedBy) ===
-                  Number(me.data?.id) ? (
-                    <Button
-                      disabled={retryCorrectionRefund.isPending}
-                      onClick={() =>
-                        retryCorrectionRefund.mutate({
-                          correctionRequestId: Number(
-                            retryableRefundCorrection.id,
-                          ),
-                          clientRequestId: correctionClientRequestId,
-                        })
-                      }
-                    >
-                      {retryCorrectionRefund.isPending ? (
-                        <Loader2 aria-hidden className="size-4 animate-spin" />
-                      ) : null}
-                      إعادة تقديم طلب قبض الاسترداد
-                    </Button>
-                  ) : (
-                    <p className="text-muted-foreground">
-                      إعادة التقديم محصورة بمنشئ طلب التصحيح الأصلي.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-1">
-                    <Label htmlFor="expense-correction-reason">
-                      سبب التصحيح *
-                    </Label>
-                    <Textarea
-                      id="expense-correction-reason"
-                      rows={3}
-                      value={correctionReason}
-                      onChange={(event) =>
-                        setCorrectionReason(event.target.value)
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="expense-correction-evidence">
-                      مرجع الدليل الخارجي *
-                    </Label>
-                    <Input
-                      id="expense-correction-evidence"
-                      dir="ltr"
-                      value={correctionEvidence}
-                      onChange={(event) =>
-                        setCorrectionEvidence(event.target.value)
-                      }
-                    />
-                  </div>
-                  <ImageUploader
-                    value={correctionAttachment}
-                    onChange={setCorrectionAttachment}
-                    maxItems={1}
-                    singlePrimary={false}
-                    hint="مرفق فاتورة التصحيح/الإشعار الدائن إلزامي."
-                  />
-                  {correctionRequiresRefund && (
-                    <div className="space-y-3 rounded-md border p-3">
-                      <p className="font-medium">دليل الاسترداد الفعلي</p>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <Label>الطريقة</Label>
-                          <AppSelect
-                            className="h-9"
-                            value={correctionRefundMethod}
-                            onValueChange={(value) =>
-                              setCorrectionRefundMethod(
-                                value as typeof correctionRefundMethod,
-                              )
-                            }
-                          >
-                            {/* مشتقّة من سياسة القبض المشتركة — «صك» كان معروضاً ويرفضه الخادم
-                                في سند الاسترداد (`assertInboundPaymentMethodEnabled`) ⇒ صفر مسار نجاح. */}
-                            {INBOUND_METHOD_OPTIONS.map((m) => (
-                              <option key={m.v} value={m.v}>{m.label}</option>
-                            ))}
-                          </AppSelect>
-                        </div>
-                        {correctionRefundMethod === "CASH" ? (
-                          <div className="space-y-1">
-                            <Label>وجهة النقد</Label>
-                            <AppSelect
-                              className="h-9"
-                              value={correctionRefundBucket}
-                              onValueChange={(value) =>
-                              setCorrectionRefundBucket(
-                                value as typeof correctionRefundBucket,
-                              )
-                            }
-                            >
-                              <option value="TREASURY">الخزينة الإدارية</option>
-                              <option value="DRAWER">درج الوردية</option>
-                            </AppSelect>
-                          </div>
-                        ) : (
-                          <div className="space-y-1">
-                            <Label>مرجع مزود الاسترداد</Label>
-                            <Input
-                              dir="ltr"
-                              value={correctionRefundReference}
-                              onChange={(event) =>
-                                setCorrectionRefundReference(event.target.value)
-                              }
-                            />
-                          </div>
-                        )}
-                        {correctionRefundMethod === "CARD" && (
-                          <div className="space-y-1">
-                            <Label>آخر أربعة أرقام</Label>
-                            <Input
-                              dir="ltr"
-                              maxLength={4}
-                              value={correctionRefundCardTail}
-                              onChange={(event) =>
-                                setCorrectionRefundCardTail(
-                                  event.target.value
-                                    .replace(/\D/g, "")
-                                    .slice(0, 4),
-                                )
-                              }
-                            />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCorrectionTarget(null)}>
-              إغلاق
-            </Button>
-            {!activeCorrection &&
-              !retryableRefundCorrection &&
-              correctionTarget && (
-                <Button
-                  variant="destructive"
-                  disabled={
-                    correctionHistory.isLoading ||
-                    requestCorrection.isPending ||
-                    correctionReason.trim().length < 3 ||
-                    !correctionEvidence.trim() ||
-                    !correctionAttachment[0]?.dataUrl ||
-                    (correctionRequiresRefund &&
-                      correctionRefundMethod !== "CASH" &&
-                      !correctionRefundReference.trim()) ||
-                    (correctionRequiresRefund &&
-                      correctionRefundMethod === "CARD" &&
-                      !/^\d{4}$/.test(correctionRefundCardTail))
-                  }
-                  onClick={() =>
-                    requestCorrection.mutate({
-                      obligationId: Number(
-                        correctionTarget.accrualObligationId,
-                      ),
-                      reason: correctionReason.trim(),
-                      externalEvidenceReference: correctionEvidence.trim(),
-                      attachmentUrl: correctionAttachment[0]!.dataUrl,
-                      refundPaymentMethod: correctionRequiresRefund
-                        ? correctionRefundMethod
-                        : null,
-                      refundCashBucket:
-                        correctionRequiresRefund &&
-                        correctionRefundMethod === "CASH"
-                          ? correctionRefundBucket
-                          : null,
-                      refundReferenceNumber:
-                        correctionRequiresRefund &&
-                        correctionRefundMethod !== "CASH"
-                          ? correctionRefundReference.trim()
-                          : null,
-                      refundCardLastFour:
-                        correctionRequiresRefund &&
-                        correctionRefundMethod === "CARD"
-                          ? correctionRefundCardTail
-                          : null,
-                      clientRequestId: correctionClientRequestId,
-                    })
-                  }
-                >
-                  {requestCorrection.isPending ? (
-                    <Loader2 aria-hidden className="size-4 animate-spin" />
-                  ) : null}
-                  تسجيل طلب التصحيح
-                </Button>
-              )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ExpenseRejectDialog
+        target={rejectTarget}
+        onClose={() => setRejectTarget(null)}
+      />
+      <ExpenseCorrectionDialog
+        target={correctionTarget}
+        onClose={() => setCorrectionTarget(null)}
+      />
     </div>
   );
 }
