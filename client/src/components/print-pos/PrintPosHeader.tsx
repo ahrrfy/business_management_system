@@ -18,8 +18,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { openCashDrawer, isWebUsbSupported } from "@/lib/printing/print";
 import { notify } from "@/lib/notify";
-import { PrintCustomerCombo } from "@/components/printPos/PrintCustomerCombo";
-import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { PrintCustomerPhoneSection } from "./PrintCustomerPhoneSection";
 import type { OrderChannel } from "./PrintChannelCustomerBar";
 
 const SHOP = "الرؤية العربية";
@@ -145,10 +144,6 @@ export function PrintPosHeader({
   heldCount,
   onOpenHeldDrawer,
 }: PrintPosHeaderProps) {
-  const [customerMode, setCustomerMode] = useState<"REGISTERED" | "GUEST">(
-    customerId != null ? "REGISTERED" : "GUEST",
-  );
-
   const channels: Array<{ id: OrderChannel; label: string; icon: React.ComponentType<{ className?: string; size?: number }> }> = [
     { id: "WALK_IN", label: "حاضر", icon: User },
     { id: "WHATSAPP", label: "واتساب", icon: MessageCircle },
@@ -200,11 +195,12 @@ export function PrintPosHeader({
       {/* فاصل */}
       <div style={{ width: 1, height: 26, background: C.border, flexShrink: 0 }} />
 
-      {/* ── حقل البحث المختصر ── */}
+      {/* ── حقل البحث الموحد لكاشير الطباعة (طراز POS الموحد) ── */}
       <div
         style={{
-          width: 200,
-          flexShrink: 0,
+          flex: "1 1 280px",
+          minWidth: 240,
+          maxWidth: 380,
           position: "relative",
           display: "flex",
           alignItems: "center",
@@ -213,56 +209,61 @@ export function PrintPosHeader({
         <span
           style={{
             position: "absolute",
-            right: 10,
+            right: 12,
             color: C.mutedFg,
             pointerEvents: "none",
             display: "flex",
             alignItems: "center",
+            zIndex: 1,
           }}
           aria-hidden
         >
-          <Search size={15} />
+          <Search size={16} />
         </span>
         <input
           ref={searchRef}
           autoFocus
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="بحث عن خدمة [F2]"
+          placeholder="ابحث عن خدمة أو امسح الباركود… (F2)"
           dir="rtl"
           style={{
             width: "100%",
-            height: 34,
-            border: `1.5px solid ${C.border}`,
-            borderRadius: 8,
-            background: C.card,
+            height: 36,
+            border: `2px solid ${C.primary}`,
+            borderRadius: 9,
+            background: C.primarySoft,
+            boxShadow: `inset 0 0 0 1px ${C.primary}22`,
             color: C.fg,
             fontFamily: "inherit",
-            fontSize: 12.5,
+            fontSize: 13,
+            fontWeight: 600,
             outline: "none",
-            paddingRight: 34,
-            paddingLeft: search ? 28 : 10,
+            paddingRight: 38,
+            paddingLeft: search ? 36 : 12,
             boxSizing: "border-box",
+            transition: "all 0.15s ease",
           }}
-          onFocus={(e) => (e.target.style.borderColor = C.primary)}
-          onBlur={(e) => (e.target.style.borderColor = C.border)}
         />
         {search && (
           <button
-            onClick={() => setSearch("")}
+            onClick={() => {
+              setSearch("");
+              searchRef.current?.focus();
+            }}
             aria-label="مسح البحث"
             style={{
               position: "absolute",
-              left: 6,
+              left: 8,
               background: "none",
               border: "none",
               cursor: "pointer",
               color: C.mutedFg,
-              padding: 2,
+              padding: 3,
               display: "inline-flex",
             }}
           >
-            <X aria-hidden size={14} />
+            <X aria-hidden size={15} />
           </button>
         )}
       </div>
@@ -314,91 +315,16 @@ export function PrintPosHeader({
       {/* فاصل */}
       <div style={{ width: 1, height: 26, background: C.border, flexShrink: 0 }} />
 
-      {/* ── وضع العميل وبياناته (هاتف واسم / عميل مسجل) ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-        <div style={{ display: "flex", gap: 2, background: C.muted, padding: 2, borderRadius: 7, flexShrink: 0 }}>
-          <button
-            type="button"
-            onClick={() => {
-              setCustomerMode("GUEST");
-              setCustomerId(null);
-            }}
-            style={{
-              height: 26,
-              minHeight: 0,
-              padding: "0 8px",
-              borderRadius: 5,
-              border: "none",
-              background: customerMode === "GUEST" ? C.primary : "transparent",
-              color: customerMode === "GUEST" ? "#fff" : C.fg,
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-              fontFamily: "inherit",
-              whiteSpace: "nowrap",
-            }}
-          >
-            عابر
-          </button>
-          <button
-            type="button"
-            onClick={() => setCustomerMode("REGISTERED")}
-            style={{
-              height: 26,
-              minHeight: 0,
-              padding: "0 8px",
-              borderRadius: 5,
-              border: "none",
-              background: customerMode === "REGISTERED" ? C.primary : "transparent",
-              color: customerMode === "REGISTERED" ? "#fff" : C.fg,
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-              fontFamily: "inherit",
-              whiteSpace: "nowrap",
-            }}
-          >
-            مسجل
-          </button>
-        </div>
-
-        {customerMode === "REGISTERED" ? (
-          <div style={{ width: 240, flexShrink: 0 }}>
-            <PrintCustomerCombo C={C as any} customerId={customerId} setCustomerId={setCustomerId} />
-          </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <div style={{ width: 220, flexShrink: 0 }}>
-              <IntlPhoneInput
-                value={contactPhone}
-                onChange={setContactPhone}
-                placeholder="770 123 4567"
-                ariaLabel="هاتف الزبون"
-                className="h-[34px] text-[13px] font-medium w-full"
-              />
-            </div>
-            <input
-              type="text"
-              placeholder="اسم الزبون"
-              value={contactName}
-              onChange={(e) => setContactName(e.target.value)}
-              style={{
-                width: 140,
-                height: 34,
-                padding: "0 10px",
-                borderRadius: 6,
-                border: `1px solid ${C.border}`,
-                background: C.card,
-                color: C.fg,
-                fontSize: 13,
-                fontFamily: "inherit",
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
-        )}
-      </div>
+      {/* ── العميل ورقم الهاتف (حقل لكل رقم + كود دولي ثابت + حفظ تلقائي) ── */}
+      <PrintCustomerPhoneSection
+        C={C}
+        customerId={customerId}
+        setCustomerId={setCustomerId}
+        contactName={contactName}
+        setContactName={setContactName}
+        contactPhone={contactPhone}
+        setContactPhone={setContactPhone}
+      />
 
       {/* فاصل */}
       <div style={{ width: 1, height: 26, background: C.border, flexShrink: 0 }} />
