@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
+import { DecideInInboxNotice } from "@/components/purchases/DecideInInboxNotice";
 import {
   PurchaseIntegrityWorkspace,
   type LiveIntegrityFinding,
@@ -179,6 +180,7 @@ export default function PurchaseIntegrityCases() {
           ) : undefined
         }
       />
+      <DecideInInboxNotice />
       {me.isLoading ? (
         <LoadingState />
       ) : branchId == null ? (

@@ -30,13 +30,14 @@ describe("studio capture barcode workflow", () => {
   });
 
   it("keeps the mobile scanner open on failure and closes it after success", () => {
-    const mobileSuccess = page.slice(
-      page.indexOf("const mobileClaimByBarcode"),
-      page.indexOf("// Derived arrays"),
+    const queueCode = readFileSync(new URL("./StudioTaskQueue.tsx", import.meta.url), "utf8");
+    const mobileSuccess = queueCode.slice(
+      queueCode.indexOf("const mobileClaimByBarcode"),
+      queueCode.indexOf("// Derived arrays"),
     );
-    const detect = page.slice(
-      page.indexOf("onDetect={(barcode"),
-      page.indexOf("mobileClaimByBarcode.mutate"),
+    const detect = queueCode.slice(
+      queueCode.indexOf("onDetect={(barcode: string)"),
+      queueCode.indexOf("mobileClaimByBarcode.mutate"),
     );
     expect(mobileSuccess.indexOf("setTaskScannerOpen(false)")).toBeGreaterThan(-1);
     expect(detect).not.toContain("setTaskScannerOpen(false)");

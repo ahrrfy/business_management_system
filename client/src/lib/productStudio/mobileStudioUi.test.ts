@@ -46,7 +46,8 @@ describe("mobile studio workflow", () => {
       readFileSync(new URL("../../components/product-studio/StudioPhotographerWorkspace.tsx", import.meta.url), "utf8") +
       readFileSync(new URL("../../components/product-studio/StudioManagerDashboard.tsx", import.meta.url), "utf8") +
       readFileSync(new URL("../../components/product-studio/StudioCampaignsPanel.tsx", import.meta.url), "utf8") +
-      readFileSync(new URL("../../components/product-studio/StudioTaskQueue.tsx", import.meta.url), "utf8");
+      readFileSync(new URL("../../components/product-studio/StudioTaskQueue.tsx", import.meta.url), "utf8") +
+      readFileSync(new URL("../../components/product-studio/StudioManualTaskCreator.tsx", import.meta.url), "utf8");
     const uploader = readFileSync(new URL("../../components/form/ImageUploader.tsx", import.meta.url), "utf8");
     const studioUploader = readFileSync(new URL("../../components/product/ImageStudioUploader.tsx", import.meta.url), "utf8");
     const picker = readFileSync(new URL("../../components/product-studio/StudioProductPicker.tsx", import.meta.url), "utf8");
