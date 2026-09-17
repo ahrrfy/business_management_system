@@ -63,6 +63,9 @@ jobs:
       - name: Verify image-size stays out of the Metro graph
         run: pnpm check:image-size-security
 
+      - name: Verify Android release ABI coverage
+        run: pnpm check:android-release
+
       - name: TypeScript check
         run: pnpm check
 

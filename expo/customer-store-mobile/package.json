@@ -11,6 +11,8 @@
     "test": "node scripts/check-query-string-security-compat.mjs && vitest run",
     "check:firebase-config-security": "node ../../scripts/check-firebase-config-security.mjs",
     "check:image-size-security": "node scripts/check-image-size-security.mjs",
+    "check:android-release": "node scripts/check-android-release-abis.mjs",
+    "eas-build-post-install": "node scripts/check-android-release-abis.mjs",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "qr": "node scripts/generate_qr.mjs"
