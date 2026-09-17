@@ -6,6 +6,7 @@ import { playReadyBeep } from "@/lib/notifyBeep";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { printDeliverySlip, printReadyOrderLabel, type LabelPrintableOrder } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
+import { storefrontUrl } from "@/lib/siteHosts";
 import {
   ScanBarcode,
   Truck,
@@ -38,6 +39,7 @@ export interface DispatchedItemHistory {
   partyName: string;
   dispatchedAt: Date;
   externalTrackingRef?: string | null;
+  qrUrl?: string | null;
 }
 
 interface Props {
@@ -94,6 +96,7 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
       customerPhone: item.recipientPhone ?? null,
       deliveryAddress: item.deliveryAddress ?? null,
       deliveryCost: item.deliveryFee,
+      qrUrl: item.qrUrl ?? null,
     };
 
     try {
@@ -170,6 +173,11 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
         partyName: res.partyName || selectedParty?.name || "المندوب",
         dispatchedAt: new Date(),
         externalTrackingRef: externalTrackingRef.trim() || undefined,
+        qrUrl: res.labelToken
+          ? `${storefrontUrl()}?order=${encodeURIComponent(res.sourceNumber)}&token=${encodeURIComponent(res.labelToken)}`
+          : res.qrPayload
+            ? `${window.location.origin}/verify?payload=${encodeURIComponent(res.qrPayload)}`
+            : null,
       };
 
       if (instantPrint) {
@@ -188,6 +196,7 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
           customerPhone: res.recipientPhone ?? null,
           deliveryAddress: res.deliveryAddress ?? null,
           deliveryCost: res.deliveryFee,
+          qrUrl: historyItem.qrUrl ?? null,
         };
 
         printDeliverySlip(

@@ -50,6 +50,16 @@ export interface ShippingLabelData {
   qrUrl?: string | null;
 }
 
+export function resolveShippingLabelQrTarget(
+  o: Pick<ShippingLabelData, "orderNumber" | "qrUrl" | "latitude" | "longitude">,
+  _origin = "",
+): string | null {
+  if (o.latitude && o.longitude) {
+    return `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`;
+  }
+  return o.qrUrl?.trim() || null;
+}
+
 function fmtDate(d: Date | string | null | undefined): string {
   return d ? formatDate(d) : "";
 }
@@ -75,12 +85,8 @@ export async function shippingLabelHtml(
   let qr = "";
   const hasMap = Boolean(o.latitude && o.longitude);
   try {
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const mapUrl = hasMap
-      ? `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`
-      : null;
-    const targetPayload = mapUrl || o.qrUrl || (origin ? `${origin}/verify?payload=${encodeURIComponent(o.orderNumber)}` : o.orderNumber);
-    qr = await qrCodeSvg(targetPayload, { margin: 1 });
+    const targetPayload = resolveShippingLabelQrTarget(o);
+    if (targetPayload) qr = await qrCodeSvg(targetPayload, { margin: 1 });
   } catch {
     qr = "";
   }

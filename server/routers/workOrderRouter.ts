@@ -61,7 +61,7 @@ import { setWorkOrderDesign } from "../services/workOrder/design";
 import { maySeeDrawerCash as sharedMaySeeDrawerCash } from "@shared/workOrderControlAuthority";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersDirectCancelProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
-import { workOrderBarcodeSet } from "../services/barcodeService";
+import { invoiceBarcodeSet, onlineOrderLabelToken, workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -1247,6 +1247,7 @@ export const workOrderRouter = router({
           branchId: workOrders.branchId,
           version: workOrders.version,
           notes: workOrders.customizationText,
+          createdAt: workOrders.createdAt,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -1284,6 +1285,11 @@ export const workOrderRouter = router({
 
         return {
           ...row,
+          qrPayload: workOrderBarcodeSet({
+            orderNumber: row.orderNumber,
+            createdAt: row.createdAt,
+            branchId: Number(row.branchId),
+          }).qrPayload,
           kind: "workOrder" as const,
           activeConsignment: activeCn
             ? {
@@ -1318,6 +1324,7 @@ export const workOrderRouter = router({
           deliveryFeeCollection: sql<string | null>`'COURIER'`,
           branchId: invoices.branchId,
           notes: invoices.notes,
+          invoiceDate: invoices.invoiceDate,
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
@@ -1355,6 +1362,12 @@ export const workOrderRouter = router({
 
         return {
           ...inv,
+          qrPayload: invoiceBarcodeSet({
+            invoiceNumber: inv.orderNumber,
+            invoiceDate: inv.invoiceDate.toISOString(),
+            total: String(inv.salePrice),
+            branchId: Number(inv.branchId),
+          }).qrPayload,
           version: 1,
           kind: "invoice" as const,
           activeConsignment: activeCn
@@ -1435,6 +1448,7 @@ export const workOrderRouter = router({
 
         return {
           ...ord,
+          labelToken: onlineOrderLabelToken(ord.orderNumber),
           version: 1,
           kind: "onlineOrder" as const,
           activeConsignment: activeCn
