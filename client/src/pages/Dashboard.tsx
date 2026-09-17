@@ -580,16 +580,17 @@ function MorningBrief({
   const receivableHref = canViewReceivableBrief
     ? `/reports/ar-reminders?branch=${branchScope}`
     : undefined;
+  const canViewBrief = canViewWorkOrders || canViewReceivableBrief;
   // برنامج اليوم تنفيذيّ لا تجميعيّ: لا نختار أول فرع صامتاً للأدمن. المنتقي أعلى الشاشة هو
   // المصدر الواحد، والروابط تحمل الفرع نفسه إلى قائمة المتابعة.
   const metrics = trpc.reports.dashboardMetrics.useQuery(
     { branchId: branchScope, includeTodaySales: true },
-    { enabled: canViewWorkOrders && branchScope !== undefined },
+    { enabled: canViewBrief && branchScope !== undefined },
   );
 
-  // endpoint الملخّص يجلب عدّاد أوامر الشغل ضمن حزمة واحدة؛ عند حجب الوحدة نغلق الاستعلام
-  // كلّه كي لا تُستعاد بيانات أو روابط أخفاها ملف العمل المحلول.
-  if (!canViewWorkOrders) return null;
+  // الاستعلام المشترك يعمل إن وُجد نوع واحد على الأقل من البنود المسموحة؛ كل بطاقة أدناه
+  // تبقى محكومة ببوابتها المستقلة، فلا يحجب إطفاء أوامر الشغل تذكيرات الذمم والعكس.
+  if (!canViewBrief) return null;
   if (isAdmin && branchScope === undefined) {
     return (
       <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px" }}>
@@ -627,7 +628,7 @@ function MorningBrief({
   // promisedToday مجموعة جزئية من arRemindersDue؛ لا نعدّها مرّتين في إجمالي البنود.
   const total =
     (canViewReceivableBrief ? brief.arRemindersDue : 0) +
-    brief.overdueWorkOrders;
+    (canViewWorkOrders ? brief.overdueWorkOrders : 0);
   // كل الأصفار ⇒ لا حاجة لبانر «برنامج اليوم» — تنظيف بصريّ حين لا شيء يستحقّ الفعل.
   if (total === 0 && !remindersDegraded) return null;
 
@@ -691,7 +692,7 @@ function MorningBrief({
             icon={<ARIco color="var(--sem-info)" />}
           />
         )}
-        {brief.overdueWorkOrders > 0 && workOrdersHref && (
+        {canViewWorkOrders && brief.overdueWorkOrders > 0 && workOrdersHref && (
           <BriefCard
             href={`${workOrdersHref}?branch=${branchScope}`}
             label="أوامر شغل متأخّرة"
@@ -860,7 +861,9 @@ export default function Dashboard() {
     role: me.data.role as RoleKey,
     permissionsOverride: (me.data.permissionsOverride ?? null) as PermissionMap | null,
   });
-  const cashierStation = profile.defaultAction?.station;
+  const cashierStation = profile.defaultAction?.access.kind === "STATION"
+    ? profile.defaultAction.access.station
+    : undefined;
 
   // ملف العمل هو الذي يختار المحطة. كاشير بلا محطة فعلية يسقط إلى اللوحة العامة الآمنة
   // بدلاً من افتراض محطة تجزئة أو استنتاج الاستقبال من صلاحية أخرى.

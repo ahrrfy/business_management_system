@@ -63,7 +63,7 @@ describe("سجل وحدات التطبيق", () => {
 
     expect(resolveAt).toBeGreaterThan(-1);
     expect(cashierAt).toBeGreaterThan(resolveAt);
-    expect(dashboard).toContain("const cashierStation = profile.defaultAction?.station;");
+    expect(dashboard).toContain('profile.defaultAction?.access.kind === "STATION"');
     expect(dashboard).toContain("station={cashierStation}");
     expect(dashboard).toContain("defaultAction={profile.defaultAction}");
     expect(cashierHome).toContain('const isReception = station === "RECEPTION";');
@@ -94,27 +94,32 @@ describe("سجل وحدات التطبيق", () => {
         permissionsOverride: expected.permissionsOverride,
       });
       expect(profile.defaultAction).toMatchObject({
-        station: expected.station,
         href: expected.href,
+        access: { kind: "STATION", station: expected.station },
       });
     }
     const multiCashier = resolveWorkspaceProfile({ role: "cashier" });
     expect(multiCashier.id).toBe("cashier_multi");
-    expect(multiCashier.defaultAction?.station).toBe("RETAIL");
+    expect(multiCashier.defaultAction?.access).toEqual({
+      kind: "STATION",
+      station: "RETAIL",
+    });
     const stationlessCashier = resolveWorkspaceProfile({
       role: "cashier",
       permissionsOverride: { sales: "NONE", pos: "NONE", workorders: "NONE" },
     });
     expect(stationlessCashier.stations).toEqual([]);
-    expect(stationlessCashier.defaultAction?.station).toBeUndefined();
+    expect(stationlessCashier.defaultAction?.access.kind).not.toBe("STATION");
 
     expect(dashboard).toContain('hasModuleAccess(role, override, "treasury", "READ")');
     expect(dashboard).toContain("enabled: canViewTreasury && branchScope !== undefined");
     expect(dashboard).toContain('hasModuleAccess(role, override, "inventory", "READ")');
     expect(dashboard).toContain('profileActionHref(primaryNav, "inventory")');
     expect(dashboard).toContain('hasModuleAccess(role, override, "workorders", "READ")');
-    expect(dashboard).toContain("enabled: canViewWorkOrders && branchScope !== undefined");
-    expect(dashboard).toContain("if (!canViewWorkOrders) return null;");
+    expect(dashboard).toContain("const canViewBrief = canViewWorkOrders || canViewReceivableBrief;");
+    expect(dashboard).toContain("enabled: canViewBrief && branchScope !== undefined");
+    expect(dashboard).toContain("if (!canViewBrief) return null;");
+    expect(dashboard).toContain("canViewWorkOrders ? brief.overdueWorkOrders : 0");
     expect(dashboard).toContain('profileActionHref(primaryNav, "my_tasks")');
     expect(dashboard).not.toContain('href: "/inventory"');
     expect(dashboard).not.toContain('href={`/work-orders?branch=${branchScope}`}');
