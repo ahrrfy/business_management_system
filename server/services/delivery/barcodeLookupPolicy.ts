@@ -4,6 +4,7 @@ import {
   normalizeBarcodeScannerInput,
   normalizeKnownSystemBarcode,
 } from "@shared/barcodeScanner";
+import { stripDocPrefix } from "@shared/documentNumber";
 
 export type DeliveryBarcodeNamespace =
   | "CONSIGNMENT"
@@ -22,6 +23,8 @@ export type DeliveryBarcodeTargetKind =
 export interface DeliveryBarcodeTarget {
   kind: DeliveryBarcodeTargetKind;
   id: number;
+  /** رقم المستند الصريح (100) > مرجع خارجي (50) > معرّف قاعدة بيانات قديم (10). */
+  matchRank?: number;
 }
 
 export interface DeliveryBarcodeLookup {
@@ -33,6 +36,7 @@ export interface DeliveryBarcodeLookup {
 export interface PreparedDeliveryBarcodeLookup extends DeliveryBarcodeLookup {
   systemCode: string;
   trackingCode: string;
+  documentCode: string;
 }
 
 /**
@@ -63,7 +67,10 @@ export function prepareDeliveryBarcodeLookup(raw: string): PreparedDeliveryBarco
   const lookup = systemLookup.namespace === "REFERENCE"
     ? classifyDeliveryBarcode(trackingCode)
     : systemLookup;
-  return { ...lookup, systemCode, trackingCode };
+  const documentCode = lookup.namespace === "ONLINE_ORDER"
+    ? systemCode.replace(/^ORD-(\d+)$/i, "$1")
+    : stripDocPrefix(systemCode);
+  return { ...lookup, systemCode, trackingCode, documentCode };
 }
 
 export function namespaceAllowsTarget(
@@ -93,9 +100,11 @@ export function resolveUniqueDeliveryBarcodeTarget(
   code: string,
   candidates: readonly DeliveryBarcodeTarget[],
 ): DeliveryBarcodeTarget | null {
+  const valid = candidates.filter((candidate) => Number.isSafeInteger(candidate.id) && candidate.id > 0);
+  const highestRank = valid.reduce((highest, candidate) => Math.max(highest, candidate.matchRank ?? 0), 0);
   const unique = new Map<string, DeliveryBarcodeTarget>();
-  for (const candidate of candidates) {
-    if (!Number.isSafeInteger(candidate.id) || candidate.id <= 0) continue;
+  for (const candidate of valid) {
+    if ((candidate.matchRank ?? 0) !== highestRank) continue;
     unique.set(`${candidate.kind}:${candidate.id}`, candidate);
   }
 

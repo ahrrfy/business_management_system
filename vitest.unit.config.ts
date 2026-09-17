@@ -365,6 +365,7 @@ export default defineConfig({
       "shared/barcodeScanner.test.ts",
       // كشف شركة التوصيل: إلزام رقم البوليصة + طابور المطابقة بالباركود مع حفظ الأصفار البادئة.
       "server/services/delivery/trackingRefPolicy.test.ts",
+      "server/services/delivery/barcodeLookupPolicy.test.ts",
       "client/src/components/delivery/companyStatementQueue.test.ts",
       "client/src/components/delivery/statementDraft.test.ts",
       "client/src/components/delivery/CompanyStatementScanQueue.test.tsx",
