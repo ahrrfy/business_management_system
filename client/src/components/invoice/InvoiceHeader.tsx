@@ -27,6 +27,8 @@ import { EntityPicker } from "./EntityPicker";
 import {
   beginPricingSelectionIntent,
   createLatestPricingRequestGuard,
+  createPricingIntentEpoch,
+  type PricingIntentEpoch,
 } from "./productSearchResolution";
 import {
   CURRENCIES,
@@ -54,6 +56,8 @@ export interface InvoiceHeaderProps {
    * مسوّدةً بينما هو يعدّل أمراً معتمَداً على وشك الاستلام.
    */
   statusBadge?: string;
+  /** ساعة مشتركة مع منتقي المنتجات لإبطال نتائج التسعير القديمة لحظة نية العميل/الفئة. */
+  pricingIntentEpoch?: PricingIntentEpoch;
   /**
    * يُثبّت حقل الفرع حتى للأدمن. شاشةُ تعديلِ مستندٍ قائم تحتاجه: فرعُ المستند يحدّد ترقيمه
    * وعزلَه الأمنيّ فلا يُنقَل بتعديل، وتركُ المُنتقي مفتوحاً يجعل الاختيارَ يُهمَل بصمت.
@@ -109,7 +113,7 @@ function HeaderSection({
   );
 }
 
-export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusBadge, lockBranch }: InvoiceHeaderProps) {
+export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusBadge, pricingIntentEpoch, lockBranch }: InvoiceHeaderProps) {
   const typeInfo = INVOICE_TYPES[invoiceType];
   const isSale = invoiceType === "SALE" || invoiceType === "QUOTATION" || invoiceType === "SALE_RETURN";
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
@@ -124,6 +128,8 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
   const latestStateRef = useRef(state);
   latestStateRef.current = state;
   const pricingRequestGuardRef = useRef(createLatestPricingRequestGuard());
+  const localPricingIntentEpochRef = useRef(createPricingIntentEpoch());
+  const activePricingIntentEpoch = pricingIntentEpoch ?? localPricingIntentEpochRef.current;
   const [isRepricing, setIsRepricing] = useState(false);
 
   // رأس تكيّفيّ (هجين): يُطوى تلقائياً حين تحمل السلة منتجات ليتمدّد جدول السلة نزولاً ويعرض
@@ -147,8 +153,9 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
    * Reprice the current cart in one server round-trip when the tier changes.
    * Keep the tier and all line prices atomic so totals never render against a
    * new tier while still carrying the previous tier's prices.
-   */
+  */
   async function changePriceTier(nextTier: PriceTier) {
+    activePricingIntentEpoch.invalidate();
     const intent = beginPricingSelectionIntent(
       pricingRequestGuardRef.current,
       `tier:${nextTier}`,
@@ -221,6 +228,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
 
   /** يغيّر العميل وأسعار سلة البيع/العرض معاً كي لا يبقى سعر عميل سابق في مستند العميل الجديد. */
   async function changeEntity(nextId: number | null) {
+    activePricingIntentEpoch.invalidate();
     const intent = beginPricingSelectionIntent(
       pricingRequestGuardRef.current,
       `customer:${nextId ?? "none"}`,

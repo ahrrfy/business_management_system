@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   beginPricingSelectionIntent,
   buildProductPricingContext,
+  createPricingIntentEpoch,
   createPricingContextRequestGuard,
   createLatestPricingRequestGuard,
   resolveExactBeforeFuzzy,
@@ -159,5 +160,32 @@ describe("parallel barcode pricing context guard", () => {
     const changedCurrencyContext = context("IQD", "1400.000");
     guard.sync(changedCurrencyContext);
     expect(guard.isCurrent(beforeCurrencyChange, changedCurrencyContext)).toBe(false);
+  });
+
+  it("يبطل intent جديد نتيجة المسح القديمة فوراً قبل إعادة render لسياق الأسعار", async () => {
+    const contextGuard = createPricingContextRequestGuard("customer:A");
+    const intentEpoch = createPricingIntentEpoch();
+    const contextToken = contextGuard.capture();
+    const intentToken = intentEpoch.capture();
+    const added: string[] = [];
+    let resolveOldScan!: (value: string) => void;
+    const oldScanResponse = new Promise<string>((resolve) => { resolveOldScan = resolve; });
+
+    const oldScan = oldScanResponse.then((item) => {
+      // لم يحدث render بعد، لذلك ما زال سياق props الظاهر A. الـepoch المشترك وحده يغلق النافذة.
+      if (
+        contextGuard.isCurrent(contextToken, "customer:A") &&
+        intentEpoch.isCurrent(intentToken)
+      ) {
+        added.push(item);
+      }
+    });
+
+    intentEpoch.invalidate();
+    resolveOldScan("priced-for-A");
+    await oldScan;
+
+    expect(contextGuard.isCurrent(contextToken, "customer:A")).toBe(true);
+    expect(added).toEqual([]);
   });
 });

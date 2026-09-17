@@ -20,9 +20,11 @@ import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/Bar
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import {
   buildProductPricingContext,
+  createPricingIntentEpoch,
   createPricingContextRequestGuard,
   resolveExactBeforeFuzzy,
   type ExactProductResolution,
+  type PricingIntentEpoch,
 } from "./productSearchResolution";
 import { playReadyBeep } from "@/lib/notifyBeep";
 
@@ -31,6 +33,8 @@ export interface ProductSearchBarProps {
   branchId: number;
   tier: PriceTier;
   customerId?: number | null;
+  /** ساعة نية مشتركة مع InvoiceHeader؛ تبطل مسح السياق السابق قبل انتظار React render. */
+  pricingIntentEpoch?: PricingIntentEpoch;
   onAddProduct: (line: InvoiceLine) => void;
   /** Optional callback for "not found" / errors. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
@@ -88,6 +92,7 @@ export function ProductSearchBar({
   branchId,
   tier,
   customerId,
+  pricingIntentEpoch,
   onAddProduct,
   onNotify,
   purchaseCurrency = "IQD",
@@ -122,6 +127,8 @@ export function ProductSearchBar({
   });
   const pricingContextRef = useRef(pricingContext);
   const exactRequestGuardRef = useRef(createPricingContextRequestGuard(pricingContext));
+  const localPricingIntentEpochRef = useRef(createPricingIntentEpoch());
+  const activePricingIntentEpoch = pricingIntentEpoch ?? localPricingIntentEpochRef.current;
   // يغيّر الجيل فقط عند تغيّر سياق التسعير. المسوح المتوازية داخل السياق نفسه تبقى كلّها صالحة.
   exactRequestGuardRef.current.sync(pricingContext);
   pricingContextRef.current = pricingContext;
@@ -260,10 +267,11 @@ export function ProductSearchBar({
     options: { quietNotFound?: boolean } = {},
   ): Promise<ExactProductResolution> {
     const requestToken = exactRequestGuardRef.current.capture();
+    const intentToken = activePricingIntentEpoch.capture();
     const isCurrentRequest = () => exactRequestGuardRef.current.isCurrent(
       requestToken,
       pricingContextRef.current,
-    );
+    ) && activePricingIntentEpoch.isCurrent(intentToken);
     try {
       let row: Awaited<ReturnType<typeof utils.catalog.byBarcode.fetch>> | null = null;
       try {

@@ -82,6 +82,7 @@ import {
   type PaymentTerm,
   type PriceTier,
 } from "@/components/invoice";
+import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
 const INVOICE_TYPE = "SALE" as const;
@@ -108,6 +109,7 @@ export default function SalesInvoice() {
     undefined,
     () => createInitialState(INVOICE_TYPE, defaultBranchId),
   );
+  const pricingIntentEpochRef = useRef(createPricingIntentEpoch());
 
   // ── تصحيح الفاتورة (0168) — نفس شاشة البيع في وضع التصحيح (نمط المعيار: مسار + query + هيدرة مرّة) ──
   // كلّ ما يخصّ التصحيح محجوبٌ خلف isCorrection ⇒ تدفّق الإنشاء يبقى مطابقاً حرفاً بحرف حين لا تصحيح.
@@ -1106,7 +1108,12 @@ export default function SalesInvoice() {
       />
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط المالية) */}
-      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
+      <InvoiceHeader
+        state={state}
+        dispatch={dispatch}
+        invoiceType={INVOICE_TYPE}
+        pricingIntentEpoch={pricingIntentEpochRef.current}
+      />
 
       {openingModeQuery.data?.active === true && (
         <div className="flex items-center gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--sem-warn)]">
@@ -1133,6 +1140,7 @@ export default function SalesInvoice() {
             dispatch={dispatch}
             branchId={state.branchId}
             tier={state.tier} customerId={state.entityId}
+            pricingIntentEpoch={pricingIntentEpochRef.current}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
             /* هدايا الفاتورة (0149): مفتاح «هدية» لكلّ سطر — يُصفّر قيمته في الفاتورة وتُرحَّل

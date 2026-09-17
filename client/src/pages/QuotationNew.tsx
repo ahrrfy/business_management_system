@@ -37,6 +37,7 @@ import {
   INVOICE_TYPES,
   type InvoiceActionKind,
 } from "@/components/invoice";
+import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution";
 import { canSeeCost } from "@shared/permissions";
 
 const INVOICE_TYPE = "QUOTATION" as const;
@@ -70,6 +71,7 @@ export default function QuotationNew() {
     undefined,
     () => createInitialState(INVOICE_TYPE, defaultBranchId)
   );
+  const pricingIntentEpochRef = useRef(createPricingIntentEpoch());
 
   const taxDefaultsAppliedRef = useRef(false);
   const editHydratedRef = useRef(false);
@@ -533,7 +535,12 @@ export default function QuotationNew() {
       )}
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط + «صالح حتى» يظهر تلقائياً للنوع QUOTATION) */}
-      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
+      <InvoiceHeader
+        state={state}
+        dispatch={dispatch}
+        invoiceType={INVOICE_TYPE}
+        pricingIntentEpoch={pricingIntentEpochRef.current}
+      />
 
       {/* تنبيه ناعم لبنود بسعر صفر/سالب */}
       {hasZeroPriceLine && (
@@ -552,6 +559,7 @@ export default function QuotationNew() {
             branchId={state.branchId}
             tier={state.tier}
             customerId={state.entityId}
+            pricingIntentEpoch={pricingIntentEpochRef.current}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
             onOpenBulkPicker={() => setBulkOpen(true)}

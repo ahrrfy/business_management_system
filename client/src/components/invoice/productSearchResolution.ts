@@ -5,6 +5,32 @@ export interface PricingRequestToken {
   context: string;
 }
 
+export interface PricingIntentToken {
+  generation: number;
+}
+
+export interface PricingIntentEpoch {
+  capture(): PricingIntentToken;
+  invalidate(): void;
+  isCurrent(token: PricingIntentToken): boolean;
+}
+
+/** ساعة مشتركة بين رأس المحرّر ومنتقي المنتجات؛ لا تعتمد على اكتمال React render لإبطال القديم. */
+export function createPricingIntentEpoch(): PricingIntentEpoch {
+  let generation = 0;
+  return {
+    capture(): PricingIntentToken {
+      return { generation };
+    },
+    invalidate(): void {
+      generation += 1;
+    },
+    isCurrent(token: PricingIntentToken): boolean {
+      return token.generation === generation;
+    },
+  };
+}
+
 export interface PricingRequestGuard {
   begin(context: string): PricingRequestToken;
   isCurrent(token: PricingRequestToken, currentContext: string): boolean;
