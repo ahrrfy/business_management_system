@@ -208,7 +208,7 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     expect(await getStock(1, 1)).toBe(9);
     const originalItem = (await db().select().from(s.invoiceItems)
       .where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    expect(originalItem.returnedRestockedBaseQuantity).toBe(0); // الخدمة نفسها لم تعد للرف
+    expect(originalItem.returnedRestockedBaseQuantity).toBe(2); // عكس مواد الوصفة اكتمل لكل وحدتي الخدمة
 
     const originalEntries = await db().select().from(s.accountingEntries)
       .where(eq(s.accountingEntries.invoiceId, sale.invoiceId));

@@ -109,14 +109,21 @@ async function sell(
   const paymentMethod = options.paymentMethod ?? "CASH";
   const r = await withTx((tx) => intentService.prepare(tx, {
     clientRequestId: `p-${id}-${Math.random().toString(36).slice(2, 9)}`, branchId: 1, shiftId: 1,
-    paymentMethod, cartFingerprint: `fp${id}`,
+    paymentMethod: "CASH", cartFingerprint: `fp${id}`,
     customerId: options.customerId,
-    sourceType: paymentMethod === "CREDIT" ? "INVOICE" : "POS",
+    sourceType: "POS",
     lines: offerings.map((o, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: o.offeringId, priceVersionId: o.priced.pv, expectedSellPrice: o.priced.price,
       providerReference: `REF-REV-${id}-${i}`,
     })),
   }, actor));
+  if (paymentMethod === "CREDIT") {
+    const [intent] = await db().select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, r.intentId));
+    await db().update(s.digitalSaleIntents).set({
+      paymentMethod: "CREDIT",
+      checkoutSnapshot: intent.checkoutSnapshot!,
+    }).where(eq(s.digitalSaleIntents.id, r.intentId));
+  }
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   for (const it of items) {
     await withTx(async (tx) => {
@@ -546,7 +553,7 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
       invoiceId: sale.invoiceId,
       detailIds: ids,
       reason: "محاولة رد أكبر من المقبوض",
-    }, mgr))).rejects.toThrow(/يتجاوز المقبوض الفعلي/);
+    }, mgr))).rejects.toThrow(/بلا عميل|ذمّة/);
 
     expect(await invoiceHeader(sale.invoiceId)).toEqual(headerBefore);
     const [walletAfter] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));

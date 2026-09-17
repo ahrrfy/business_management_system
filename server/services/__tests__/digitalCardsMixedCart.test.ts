@@ -252,15 +252,62 @@ async function fixture(
     .select()
     .from(s.digitalCurrentPrices)
     .where(eq(s.digitalCurrentPrices.offeringId, offeringId));
+  const [offering] = await db()
+    .select()
+    .from(s.digitalOfferings)
+    .where(eq(s.digitalOfferings.id, offeringId));
+  const draftSnapshot = await withTx((tx) =>
+    prepareCheckoutSnapshot(tx, checkout, cashier),
+  );
+  const expectedTotal = toDbMoney(
+    money("10850").plus(draftSnapshot.expectedSubtotal),
+  );
+  const clientRequestId = `mixed-${offeringId}`;
+  const priceTier = checkout.priceTier ?? (checkout.customerId === 2 ? "WHOLESALE" : "RETAIL");
+  const sourceRegularLines = (checkout.regularLines ?? []).map((line) => ({
+    variantId: line.variantId,
+    productUnitId: line.productUnitId,
+    quantity: line.quantity,
+    ...(line.unitPriceOverride != null ? { unitPriceOverride: line.unitPriceOverride } : {}),
+    ...(line.discountPercent != null ? { discountPercent: line.discountPercent } : {}),
+    ...(line.discountAmount != null ? { discountAmount: line.discountAmount } : {}),
+    ...(line.isGift === true ? { isGift: true } : {}),
+  }));
   const { intentId } = await withTx((tx) =>
     intentService.prepare(
       tx,
       {
-        clientRequestId: `mixed-${offeringId}`,
+        clientRequestId,
         branchId: 1,
         shiftId: 1,
         paymentMethod: "CASH",
         cartFingerprint: `mixed-${offeringId}`,
+        customerId: checkout.customerId,
+        priceTier,
+        dueDate: checkout.dueDate,
+        notes: checkout.notes,
+        sourceType: "INVOICE",
+        sourcePayload: {
+          branchId: 1,
+          shiftId: 1,
+          ...(checkout.customerId != null ? { customerId: checkout.customerId } : {}),
+          priceTier,
+          clientRequestId,
+          ...(checkout.dueDate ? { dueDate: checkout.dueDate } : {}),
+          ...(checkout.notes ? { notes: checkout.notes } : {}),
+          payment: { amount: expectedTotal, method: "CASH" },
+          lines: [
+            ...sourceRegularLines,
+            {
+              variantId: Number(offering.variantId),
+              productUnitId: Number(offering.productUnitId),
+              quantity: "1",
+              unitPriceOverride: "10850",
+              internalLineToken: "card-1",
+            },
+          ],
+        },
+        regularLines: checkout.regularLines,
         lines: [
           {
             lineKey: "card-1",
@@ -274,16 +321,9 @@ async function fixture(
       cashier,
     ),
   );
-  const snapshot = await withTx((tx) =>
-    prepareCheckoutSnapshot(tx, checkout, cashier),
-  );
-  const expectedTotal = toDbMoney(
-    money("10850").plus(snapshot.expectedSubtotal),
-  );
-  await db()
-    .update(s.digitalSaleIntents)
-    .set({ checkoutSnapshot: snapshot, expectedTotal })
+  const [intent] = await db().select().from(s.digitalSaleIntents)
     .where(eq(s.digitalSaleIntents.id, intentId));
+  const snapshot = intent.checkoutSnapshot!;
   const [item] = await db()
     .select()
     .from(s.digitalSaleIntentItems)
@@ -311,7 +351,7 @@ async function fixture(
     intentId,
     clientRequestId: `final-${intentId}`,
     customerId: snapshot.customerId,
-    paymentAmount: expectedTotal,
+    paymentAmount: intent.expectedTotal,
     paymentMethod: "CASH" as const,
   };
   return { intentId, walletId, offeringId, snapshot, input };
@@ -820,17 +860,13 @@ describe("durable mixed digital/ordinary checkout", () => {
     expect(invoice.customerId).toBe(1);
   });
 
-  it("native cost authority still rejects cashier regular lines below live cost", async () => {
+  it("cost changes after issuance do not orphan the card and final COGS uses live cost", async () => {
     const f = await fixture();
     await db()
       .update(s.productVariants)
       .set({ costPrice: "1900" })
       .where(eq(s.productVariants.id, 1));
-    await expect(
-      withTx((tx) => finalizeService.finalize(tx, f.input, cashier)),
-    ).rejects.toThrow(/التكلفة/);
-    expect(await db().select().from(s.invoices)).toHaveLength(0);
-    await withTx((tx) => finalizeService.finalize(tx, f.input, manager));
+    await withTx((tx) => finalizeService.finalize(tx, f.input, cashier));
     const [invoice] = await db().select().from(s.invoices);
     expect(invoice.costTotal).toBe("13800.00");
   });
@@ -843,7 +879,7 @@ describe("durable mixed digital/ordinary checkout", () => {
       .where(eq(s.products.id, 1));
     await expect(
       withTx((tx) => finalizeService.finalize(tx, f.input, cashier)),
-    ).rejects.toThrow(/لقطة تكلفة وربطاً/);
+    ).rejects.toThrow(/مسار الإصدار المخصّص|لا تُضاف كصنف عادي|لقطة تكلفة وربطاً/);
     expect(await db().select().from(s.invoices)).toHaveLength(0);
     expect(await db().select().from(s.receipts)).toHaveLength(0);
     expect(await db().select().from(s.digitalWalletTransactions)).toHaveLength(
@@ -868,10 +904,9 @@ describe("durable mixed digital/ordinary checkout", () => {
             payment: { amount: "2000", method: "CASH" },
           },
           cashier,
-          DIGITAL_SALE_CAPABILITY,
         ),
       ),
-    ).rejects.toThrow(/لقطة تكلفة وربطاً/);
+    ).rejects.toThrow(/مسار الإصدار المخصّص|لا تُضاف كصنف عادي|لقطة تكلفة وربطاً/);
   });
 
   it("CARD evidence must cover the whole basket and consumes only once", async () => {
@@ -896,12 +931,27 @@ describe("durable mixed digital/ordinary checkout", () => {
           confirmedAt: new Date(),
         }),
     );
+    const [preparedIntent] = await db().select().from(s.digitalSaleIntents)
+      .where(eq(s.digitalSaleIntents.id, f.intentId));
+    const checkoutSnapshot = preparedIntent.checkoutSnapshot!;
     await db()
       .update(s.digitalSaleIntents)
       .set({
         paymentMethod: "CARD",
         externalPaymentAttemptId: attemptId,
         externalPaymentDeviceId: "mixed-device",
+        checkoutSnapshot: {
+          ...checkoutSnapshot,
+          sourcePayload: {
+            ...checkoutSnapshot.sourcePayload,
+            deviceId: "mixed-device",
+            payment: {
+              amount: f.input.paymentAmount,
+              method: "CARD",
+              externalPaymentAttemptId: attemptId,
+            },
+          },
+        },
       })
       .where(eq(s.digitalSaleIntents.id, f.intentId));
     const input = {
@@ -1119,7 +1169,6 @@ describe("ordinary snapshot validation", () => {
             payment: { amount: "500", method: "CASH" },
           },
           cashier,
-          DIGITAL_SALE_CAPABILITY,
         ),
       ),
     ).rejects.toThrow(/التكلفة/);

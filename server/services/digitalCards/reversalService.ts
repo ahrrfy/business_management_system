@@ -365,6 +365,17 @@ async function applyInvoiceReturnState(
     cashRefund: ReturnType<typeof money>;
   },
 ): Promise<{ paidAmount: string; returnedTotal: string; status: "PENDING" | "PARTIALLY_PAID" | "PAID" | "RETURNED" }> {
+  const receivableReduction = opts.sell.minus(opts.cashRefund);
+  if (receivableReduction.gt(0) && opts.customerId == null) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر إكمال استرجاع البيع الرقمي",
+        why: "الجزء غير النقدي من الاسترجاع بلا عميل ولا ذمّة مدينة يمكن تخفيضها",
+        doThis: "اربط الفاتورة بالعميل الصحيح أو سوِّ المبلغ المستحق قبل إعادة المحاولة",
+      }),
+    });
+  }
   const invoiceHeader = await persistInvoiceHeaderAfterDigitalRefund(
     tx,
     {
@@ -377,7 +388,6 @@ async function applyInvoiceReturnState(
     opts.sell,
     opts.cashRefund,
   );
-  const receivableReduction = opts.sell.minus(opts.cashRefund);
   if (opts.customerId != null && receivableReduction.gt(0)) {
     await adjustCustomerBalance(tx, opts.customerId, receivableReduction.neg());
   }

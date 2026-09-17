@@ -256,12 +256,12 @@ describe("ش٧ — الإعداد (prepare)", () => {
 
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-credit-1", branchId: 1, shiftId: 1, paymentMethod: "CREDIT", cartFingerprint: "fp", lines: [l],
-    }, actor))).rejects.toThrow(/نقداً أو ببطاقة فقط/);
+    }, actor))).rejects.toThrow(/الربط الذري|موقوف/);
 
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-credit-invoice-1", branchId: 1, shiftId: 1,
       paymentMethod: "CREDIT", cartFingerprint: "fp", sourceType: "INVOICE", lines: [l],
-    }, actor))).rejects.toThrow(/عميلاً مسجّلاً/);
+    }, actor))).rejects.toThrow(/الربط الذري|موقوف/);
 
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-dupkey-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp",
@@ -274,7 +274,7 @@ describe("ش٧ — الإعداد (prepare)", () => {
     }, actor))).rejects.toThrow(/لا وردية مفتوحة/);
   });
 
-  it("يحترم إعفاء حد الائتمان أثناء نافذة وضع الافتتاح", async () => {
+  it("لا يفتح وضع الافتتاح مسار إصدار رقمي آجل", async () => {
     await db().insert(s.customers).values({
       id: 1,
       name: "عميل افتتاح",
@@ -293,7 +293,7 @@ describe("ش٧ — الإعداد (prepare)", () => {
     const offeringId = await mkOffering(providerId, { walletId });
     const priced = await publish(1, providerId, [{ offeringId, providerShare: "9500" }]);
 
-    const prepared = await withTx((tx) => intentService.prepare(tx, {
+    await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-credit-opening-1",
       branchId: 1,
       shiftId: 1,
@@ -302,9 +302,7 @@ describe("ش٧ — الإعداد (prepare)", () => {
       sourceType: "INVOICE",
       customerId: 1,
       lines: [line(offeringId, priced.get(offeringId)!)],
-    }, actor));
-
-    expect(prepared.intentId).toBeGreaterThan(0);
+    }, actor))).rejects.toThrow(/الربط الذري|موقوف/);
   });
 
   it("الاشتراك التعليميّ يتطلّب بيانات الطالب، وغير التعليميّ يرفضها", async () => {

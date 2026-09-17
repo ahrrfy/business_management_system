@@ -214,9 +214,6 @@ export async function prepare(
   input: PrepareInput,
   actor: Actor,
 ): Promise<{ intentId: number; replay: boolean; expiresAt: Date }> {
-  const normalizedSource = normalizeIntentSource(input);
-  input = normalizedSource.input;
-  const invoicePayload = normalizedSource.invoicePayload;
   // يسبق replay حتى لا تعبر نيّة تاريخية CREDIT/طريقة معطّلة إلى claim ثم تفشل بعد الإصدار.
   if (!ALLOWED_PAYMENT_METHODS.has(input.paymentMethod)) {
     throw new TRPCError({
@@ -297,6 +294,9 @@ export async function prepare(
       }),
     });
   }
+  const normalizedSource = normalizeIntentSource(input);
+  input = normalizedSource.input;
+  const invoicePayload = normalizedSource.invoicePayload;
 
   if (!input.lines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا كروت في السلة" });

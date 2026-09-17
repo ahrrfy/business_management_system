@@ -165,6 +165,7 @@ describe("تسوية الصندوق — نسب الإيصالات للوردية
 
   it("دفع تسليم أمر الشغل النقدي يُنسب للوردية المفتوحة", async () => {
     const shiftId = await openShift(1);
+    await setStock(1, 1, 1);
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "درع تكريم", salePrice: "50.00" }, actor);
     await approveCurrentDesign(wo.workOrderId);
     await startWorkOrder(wo.workOrderId, actor);
@@ -367,12 +368,20 @@ describe("ميزان المراجعة / التسوية المستقلّة — ي
     const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(cust.currentBalance).toBe("15.00");
 
-    // ربح الدفتر متّسق: profit == revenue − cost لكل قيد (ميزان البُعد الربحي).
+    // ربح الدفتر متّسق في قيود P&L. قيد ADJUST_WIP_CONSUME إعادة تصنيف ميزانية
+    // (مخزون ← تحت التشغيل): يحمل كلفةً تحليلية لكن أثر الربح فيه صفر عمداً.
     const ents = await db().select().from(s.accountingEntries);
     expect(ents.length).toBeGreaterThan(0);
     for (const e of ents) {
+      if (e.entryType === "ADJUST") {
+        expect(e.profit).toBe("0.00");
+        continue;
+      }
       // فحص محاسبي على decimal أصيل: profit = revenue − cost بالضبط (لا تسامح float).
-      expect(money(e.profit).eq(money(e.revenue).sub(money(e.cost)))).toBe(true);
+      expect(
+        money(e.profit).eq(money(e.revenue).sub(money(e.cost))),
+        `${e.entryType}#${e.id}: profit=${e.profit}, revenue=${e.revenue}, cost=${e.cost}`,
+      ).toBe(true);
     }
   });
 });

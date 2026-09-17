@@ -373,11 +373,11 @@ describe("③ idempotency طبيعيّة + حرّاس", () => {
   it("يرفض عند الإنشاء كل مادة غير نشطة أو غير مخزنية مملوكة ذرّياً", async () => {
     const invalid: Array<[number, RegExp]> = [
       [3, /أمانة/],
-      [4, /معطّلة/],
-      [5, /معطّلة/],
+      [4, /معطّل/],
+      [5, /معطّل/],
       [6, /خدمة/],
       [7, /بكج/],
-      [8, /معطّلة/],
+      [8, /معطّل/],
     ];
     for (const [variantId, message] of invalid) {
       await expect(newWorkOrder([{ variantId, baseQuantity: 1 }])).rejects.toThrowError(message);
@@ -390,7 +390,7 @@ describe("③ idempotency طبيعيّة + حرّاس", () => {
     const stockBefore = await stockOf(1);
     await db().update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 1));
 
-    await expect(startApprovedWorkOrder(woId)).rejects.toThrowError(/معطّلة/);
+    await expect(startApprovedWorkOrder(woId)).rejects.toThrowError(/معطّل/);
 
     expect((await loadWo(woId)).status).toBe("RECEIVED");
     expect(await stockOf(1)).toBe(stockBefore);
@@ -453,7 +453,7 @@ describe("③ idempotency طبيعيّة + حرّاس", () => {
 
     await expect(editMaterials(woId, [
       { variantId: 1, baseQuantity: 10 },
-    ])).rejects.toThrowError(/معطّلة/);
+    ])).rejects.toThrowError(/معطّل/);
 
     expect(Number((await loadWo(woId)).materialsEditCount)).toBe(0);
   });

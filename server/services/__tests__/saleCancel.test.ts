@@ -756,7 +756,7 @@ describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
     expect(await stockOf(1, 1)).toBe(8);
   });
 
-  it("إلغاء سطر خدمة لا يوسمه كمُعاد إلى المخزون", async () => {
+  it("إلغاء سطر خدمة يوسمه مسترداً عند اكتمال عكس مواده", async () => {
     await db().insert(s.products).values({ id: 2, name: "خدمة تصميم", isService: true });
     await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "SVC-2", costPrice: "0.00" });
     await db().insert(s.productUnits).values({
@@ -778,7 +778,7 @@ describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
     const cancelledItem = (await db().select().from(s.invoiceItems)
       .where(eq(s.invoiceItems.id, Number(item.id))))[0];
     expect(cancelledItem.returnedBaseQuantity).toBe(2);
-    expect(cancelledItem.returnedRestockedBaseQuantity).toBe(0);
+    expect(cancelledItem.returnedRestockedBaseQuantity).toBe(2);
     expect(await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 2))).toHaveLength(0);
   });
 
