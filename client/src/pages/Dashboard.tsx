@@ -770,7 +770,7 @@ function TasksBrief({
   // MorningBrief (branchId مطابق) ⇒ react-query يُدَدِّب الطلب، لا شبكة إضافية.
   const metrics = trpc.reports.dashboardMetrics.useQuery(
     { branchId: branchScope, includeTodaySales: true },
-    { enabled: canSeeTasks },
+    { enabled: canSeeTasks && (role === "admin" || branchScope !== undefined) },
   );
   const overdueTasks = metrics.data?.morningBrief.overdueTasks ?? 0;
   const myOpenTasks = metrics.data?.morningBrief.myOpenTasks ?? 0;
@@ -872,6 +872,7 @@ export default function Dashboard() {
       <CashierHome
         station={cashierStation}
         defaultAction={profile.defaultAction}
+        primaryNav={profile.primaryNav}
         tasksBrief={(
           <TasksBrief
             branchScope={dashboardActionBranchId(me.data.branchId)}

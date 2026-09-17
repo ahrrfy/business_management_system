@@ -66,10 +66,17 @@ describe("سجل وحدات التطبيق", () => {
     expect(dashboard).toContain('profile.defaultAction?.access.kind === "STATION"');
     expect(dashboard).toContain("station={cashierStation}");
     expect(dashboard).toContain("defaultAction={profile.defaultAction}");
+    expect(dashboard).toContain("primaryNav={profile.primaryNav}");
     expect(cashierHome).toContain('const isReception = station === "RECEPTION";');
     expect(cashierHome).not.toContain('const isReception = can("workorders", "FULL");');
     expect(cashierHome).toContain("shiftType: station");
     expect(cashierHome).toContain('station === "RETAIL" ? "/pos" : defaultAction.href');
+    expect(cashierHome).toContain("cashierProfileActions(");
+    expect(cashierHome).toContain("receptionOperationAvailability({");
+    expect(cashierHome).toContain("if (branchId == null)");
+    expect(cashierHome).toContain("لا يوجد فرع مسند لهذا الحساب");
+    expect(cashierHome).toContain("isReception && branchId != null");
+    expect(cashierHome).not.toContain('can("sales")');
 
     const cashierCases = [
       {
@@ -121,6 +128,7 @@ describe("سجل وحدات التطبيق", () => {
     expect(dashboard).toContain("if (!canViewBrief) return null;");
     expect(dashboard).toContain("canViewWorkOrders ? brief.overdueWorkOrders : 0");
     expect(dashboard).toContain('profileActionHref(primaryNav, "my_tasks")');
+    expect(dashboard).toContain('canSeeTasks && (role === "admin" || branchScope !== undefined)');
     expect(dashboard).not.toContain('href: "/inventory"');
     expect(dashboard).not.toContain('href={`/work-orders?branch=${branchScope}`}');
     expect(dashboard).not.toContain('href="/tasks?tab=mine"');
