@@ -72,7 +72,7 @@ describe("سجل وحدات التطبيق", () => {
     expect(cashierHome).toContain("shiftType: station");
     expect(cashierHome).toContain('station === "RETAIL" ? "/pos" : defaultAction.href');
     expect(cashierHome).toContain("cashierProfileActions(");
-    expect(cashierHome).toContain("receptionOperationAvailability({");
+    expect(cashierHome).toContain("visibleReceptionOperationTabs({");
     expect(cashierHome).toContain("if (branchId == null)");
     expect(cashierHome).toContain("لا يوجد فرع مسند لهذا الحساب");
     expect(cashierHome).toContain("isReception && branchId != null");

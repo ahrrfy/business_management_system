@@ -6,7 +6,6 @@ import {
 } from "@shared/permissions";
 import {
   cashierProfileActions,
-  receptionOperationAvailability,
 } from "./cashierWorkspace";
 import { resolveWorkspaceProfile } from "./workspaceProfiles";
 
@@ -71,42 +70,4 @@ describe("cashierProfileActions", () => {
     ).toEqual(["price_checker"]);
   });
 
-  it("يغلق روابط الاستقبال التي تركب استعلامات الخزينة والمتجر عند سحبها", () => {
-    expect(
-      receptionOperationAvailability({
-        hasBranch: true,
-        canReadTreasury: false,
-        canReadStore: false,
-      }),
-    ).toEqual({
-      orders: true,
-      handover: false,
-      workflow: false,
-      invoices: false,
-    });
-    expect(
-      receptionOperationAvailability({
-        hasBranch: true,
-        canReadTreasury: true,
-        canReadStore: true,
-      }),
-    ).toEqual({
-      orders: true,
-      handover: true,
-      workflow: true,
-      invoices: true,
-    });
-    expect(
-      receptionOperationAvailability({
-        hasBranch: false,
-        canReadTreasury: true,
-        canReadStore: true,
-      }),
-    ).toEqual({
-      orders: true,
-      handover: false,
-      workflow: false,
-      invoices: false,
-    });
-  });
 });

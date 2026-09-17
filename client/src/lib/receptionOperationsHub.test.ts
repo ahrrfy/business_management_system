@@ -11,6 +11,7 @@ import {
   RECEPTION_INVOICES_GATE,
   RECEPTION_OPERATION_TAB_DEFINITIONS,
   RECEPTION_STATION_GATE,
+  visibleReceptionOperationTabs,
 } from "@/lib/receptionOperationsHub";
 
 const browser = vi.hoisted(() => ({
@@ -62,9 +63,11 @@ const visibleFor = (
   role: Parameters<typeof canSeeGate>[1],
   override: Parameters<typeof canSeeGate>[2] = null,
 ) =>
-  RECEPTION_OPERATION_TAB_DEFINITIONS.filter((tab) =>
-    canSeeGate(tab.gate, role, override),
-  ).map((tab) => tab.value);
+  visibleReceptionOperationTabs({
+    hasBranch: true,
+    role,
+    permissionsOverride: override,
+  });
 
 describe("ReceptionOperationsHub", () => {
   it("يثبت ترتيب التبويبات وعقد الرابط الافتراضي", () => {
@@ -102,6 +105,13 @@ describe("ReceptionOperationsHub", () => {
       "handover",
     ]);
     expect(visibleFor("cashier", { products: "NONE" })).toEqual(["orders"]);
+    expect(
+      visibleReceptionOperationTabs({
+        hasBranch: false,
+        role: "manager",
+        permissionsOverride: null,
+      }),
+    ).toEqual([]);
   });
 
   it("يحمل الصفحات الأربع كسولاً ولا يستورد أياً منها استيراداً eager", () => {

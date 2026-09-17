@@ -1,5 +1,12 @@
-import { POS_STATION_GATES } from "@shared/permissions";
-import { INVOICE_LIST_GATE, type RoleGate } from "@/lib/navVisibility";
+import {
+  POS_STATION_GATES,
+  type PermissionMap,
+} from "@shared/permissions";
+import {
+  canSeeGate,
+  INVOICE_LIST_GATE,
+  type RoleGate,
+} from "@/lib/navVisibility";
 
 export type ReceptionOperationsTabValue =
   | "orders"
@@ -99,3 +106,15 @@ export const RECEPTION_OPERATION_TAB_DEFINITIONS = [
     gate: RECEPTION_HANDOVER_GATE,
   },
 ] satisfies readonly ReceptionOperationsTabDefinition[];
+
+/** مصدر واحد لمرئية تبويبات المركز وبطاقات الرئيسية؛ غياب الفرع يغلقها كلها. */
+export function visibleReceptionOperationTabs(input: {
+  hasBranch: boolean;
+  role: string | null | undefined;
+  permissionsOverride?: PermissionMap | null;
+}): ReceptionOperationsTabValue[] {
+  if (!input.hasBranch) return [];
+  return RECEPTION_OPERATION_TAB_DEFINITIONS
+    .filter((tab) => canSeeGate(tab.gate, input.role, input.permissionsOverride))
+    .map((tab) => tab.value);
+}

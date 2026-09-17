@@ -17,13 +17,6 @@ export type CashierActionDescriptor = Readonly<{
   requiresBranch: boolean;
 }>;
 
-export type ReceptionOperationAvailability = Readonly<{
-  orders: true;
-  handover: boolean;
-  workflow: boolean;
-  invoices: boolean;
-}>;
-
 const ACTION_META: Readonly<
   Record<string, Readonly<{
     description: string;
@@ -97,18 +90,4 @@ export function cashierProfileActions(
       });
     })
     .filter((item) => options.hasBranch || !item.requiresBranch);
-}
-
-/** الصفحات الثلاث الحساسة تستعلم فور تركيبها؛ لا نظهرها قبل اكتمال كل بواباتها. */
-export function receptionOperationAvailability(input: {
-  hasBranch: boolean;
-  canReadTreasury: boolean;
-  canReadStore: boolean;
-}): ReceptionOperationAvailability {
-  return Object.freeze({
-    orders: true,
-    handover: input.hasBranch && input.canReadTreasury,
-    workflow: input.hasBranch && input.canReadTreasury && input.canReadStore,
-    invoices: input.hasBranch && input.canReadTreasury && input.canReadStore,
-  });
 }

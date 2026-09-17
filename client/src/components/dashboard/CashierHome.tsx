@@ -4,9 +4,9 @@ import { trpc } from "@/lib/trpc";
 import type { WorkspaceNavItem } from "@/lib/workspaceProfiles";
 import {
   cashierProfileActions,
-  receptionOperationAvailability,
   type CashierActionIcon,
 } from "@/lib/cashierWorkspace";
+import { visibleReceptionOperationTabs } from "@/lib/receptionOperationsHub";
 import {
   hasModuleAccess,
   type PermissionMap,
@@ -194,11 +194,11 @@ export function CashierHome({
   const isPrintServices = station === "PRINT_SERVICES";
   const canViewShift = can("treasury", "READ");
   const canViewStore = can("store", "READ");
-  const receptionOperations = receptionOperationAvailability({
+  const visibleReceptionTabs = new Set(visibleReceptionOperationTabs({
     hasBranch: branchId != null,
-    canReadTreasury: canViewShift,
-    canReadStore: canViewStore,
-  });
+    role,
+    permissionsOverride: override,
+  }));
   const stationTitle = isReception
     ? "محطة خدمة العملاء"
     : isPrintServices
@@ -218,7 +218,7 @@ export function CashierHome({
   );
 
   const deliveryReadyCountQ = trpc.delivery.readyForDispatchCount.useQuery(undefined, {
-    enabled: isReception && receptionOperations.workflow,
+    enabled: isReception && visibleReceptionTabs.has("workflow"),
     staleTime: 30_000,
   });
 
@@ -241,7 +241,7 @@ export function CashierHome({
    */
   const counterTiles: Tile[] = isReception
     ? [
-        ...(receptionOperations.handover
+        ...(visibleReceptionTabs.has("handover")
           ? [{
               href: "/reception/operations?tab=handover",
               name: "التسليم المباشر",
@@ -252,7 +252,7 @@ export function CashierHome({
               icon: CheckCircle2,
             }]
           : []),
-        ...(receptionOperations.workflow
+        ...(visibleReceptionTabs.has("workflow")
           ? [{
               href: "/reception/operations?tab=workflow",
               name: "الإسناد والتوصيل",
@@ -263,13 +263,15 @@ export function CashierHome({
               icon: Truck,
             }]
           : []),
-        {
-          href: "/reception/operations?tab=orders",
-          name: "طلبات محطّتي",
-          desc: "طابور أوامر الشغل — متابعة مراحل التنفيذ بالمطبعة والجاهز والمعلق",
-          icon: Package,
-        },
-        ...(receptionOperations.invoices
+        ...(visibleReceptionTabs.has("orders")
+          ? [{
+              href: "/reception/operations?tab=orders",
+              name: "طلبات محطّتي",
+              desc: "طابور أوامر الشغل — متابعة مراحل التنفيذ بالمطبعة والجاهز والمعلق",
+              icon: Package,
+            }]
+          : []),
+        ...(visibleReceptionTabs.has("invoices")
           ? [{
               href: "/reception/operations?tab=invoices",
               name: "فواتير للتحصيل",
