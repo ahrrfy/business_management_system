@@ -45,6 +45,17 @@ import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { assertExternalPaymentReplay, createConfirmedPosSaleInTx } from "../posExternalPayment";
 import { checkoutSnapshotToSaleLines } from "./mixedCartService";
+import {
+  consumeIntentInventory,
+  intentInventoryExemptions,
+} from "./inventoryReservationService";
+import {
+  assertInvoiceFullPayment,
+  assertInvoiceSourceEnvelope,
+  computeInvoiceIntentTotal,
+  parseInvoiceSourcePayload,
+  type InvoiceSourcePayload,
+} from "./intentSchemas";
 
 export interface FinalizeInput {
   intentId: number;
@@ -143,6 +154,10 @@ export async function finalize(
     });
   }
   const checkout = intent.checkoutSnapshot ?? null;
+  const invoicePayload: InvoiceSourcePayload | null =
+    checkout?.sourceType === "INVOICE"
+      ? parseInvoiceSourcePayload(checkout.sourcePayload)
+      : null;
   const boundCustomerId = checkout ? checkout.customerId : input.customerId ?? null;
   if (checkout && (input.customerId ?? null) !== boundCustomerId) {
     throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
@@ -167,6 +182,21 @@ export async function finalize(
   }
   const boundExternalAttemptId = intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId);
   const boundExternalDeviceId = intent.externalPaymentDeviceId ?? null;
+  if (invoicePayload) {
+    assertInvoiceSourceEnvelope(invoicePayload, {
+      branchId: Number(intent.branchId),
+      shiftId: Number(intent.shiftId),
+      customerId: checkout?.customerId ?? null,
+      priceTier: checkout?.priceTier ?? null,
+      clientRequestId: intent.clientRequestId,
+    });
+    assertInvoiceFullPayment(invoicePayload, {
+      paymentMethod: input.paymentMethod,
+      paymentAmount: intent.expectedTotal,
+      externalPaymentAttemptId: boundExternalAttemptId,
+      externalPaymentDeviceId: boundExternalDeviceId,
+    });
+  }
   if (input.paymentMethod === "CARD") {
     if (input.externalPaymentAttemptId != null && input.externalPaymentAttemptId !== boundExternalAttemptId) {
       throw new TRPCError({ code: "CONFLICT", message: "محاولة دفع البطاقة لا تطابق النيّة الرقمية" });
@@ -236,6 +266,18 @@ export async function finalize(
       message: `لا تُثبَّت نيّة حالتها ${intent.status} — يجب أن تنجح كل الكروت أوّلاً`,
     });
   }
+  if (checkout?.sourceType === "RECEPTION") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "نيّة استقبال رقمية قديمة لا تحمل عقداً آمناً للتثبيت — عالجها من طابور المراجعة ولا تنشئ فاتورة آلية",
+    });
+  }
+  const inventoryExemptions = await intentInventoryExemptions(
+    tx,
+    input.intentId,
+    checkout,
+  );
 
   const items = await tx
     .select()
@@ -251,8 +293,8 @@ export async function finalize(
     throw new TRPCError({ code: "CONFLICT", message: `${notSuccess.length} كرت لم ينجح تنفيذه — لا تُنشأ فاتورة` });
   }
 
-  const expectedTotal = sumMoney(items.map((i) => i.sellPriceSnapshot)).plus(money(checkout?.expectedSubtotal ?? "0"));
-  if (!money(intent.expectedTotal).eq(expectedTotal)) {
+  let expectedTotal = sumMoney(items.map((i) => i.sellPriceSnapshot)).plus(money(checkout?.expectedSubtotal ?? "0"));
+  if (!invoicePayload && !money(intent.expectedTotal).eq(expectedTotal)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({ what: "تعذّر تثبيت إجمالي السلة", why: "إجمالي النيّة لا يطابق لقطات بنودها", doThis: "أوقف التثبيت وراجِع العملية مع مسؤول النظام دون إعادة إصدار الكروت" }),
@@ -297,6 +339,35 @@ export async function finalize(
       faceValue: row.faceValue,
       subscriptionDurationDays: row.subscriptionDurationDays,
     });
+  }
+
+  let invoicePricing: ReturnType<typeof computeInvoiceIntentTotal> | null = null;
+  if (invoicePayload) {
+    invoicePricing = computeInvoiceIntentTotal({
+      regularSubtotal: checkout?.expectedSubtotal ?? "0",
+      sourcePayload: invoicePayload,
+      digitalLines: items.map((item) => {
+        const offering = meta.get(Number(item.offeringId))!;
+        return {
+          lineKey: item.lineKey,
+          variantId: offering.variantId,
+          productUnitId: offering.productUnitId,
+          sellPrice: item.sellPriceSnapshot,
+        };
+      }),
+    });
+    expectedTotal = money(invoicePricing.total);
+    if (!money(intent.expectedTotal).eq(expectedTotal)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت إجمالي فاتورة الكروت",
+          why: "خصومات أو بنود الفاتورة الدائمة لا تطابق إجمالي النيّة المحفوظ",
+          doThis:
+            "أوقف التثبيت وراجع العملية من طابور الكروت دون إعادة إصدار أو قبض",
+        }),
+      });
+    }
   }
 
   /* ٥. قفل المحافظ وحجوزاتها بترتيب walletId والتحقّق أنها ACTIVE وكافية. */
@@ -373,51 +444,7 @@ export async function finalize(
   /* ٦. نواة البيع داخل المعاملة نفسها — بيانات الطالب لقطة بيع فقط، بلا عقد أو ملف تشغيلي. */
   let sale: any;
   const invoiceItemByIntentItem = new Map<string, number>();
-
-  if (checkout?.sourceType === "RECEPTION") {
-    const { checkoutReceptionInTx } = await import("../receptionCheckoutService");
-    const payload = checkout.sourcePayload as any;
-
-    const digitalLines = items.map((it) => {
-      const m = meta.get(Number(it.offeringId))!;
-      return {
-        variantId: m.variantId,
-        productUnitId: m.productUnitId,
-        quantity: "1",
-        unitPriceOverride: it.sellPriceSnapshot,
-        unitCostOverride: it.providerShareSnapshot,
-        internalLineToken: String(it.id),
-      };
-    });
-
-    if (payload.regularSale) {
-      payload.regularSale.lines.push(...digitalLines);
-      const digitalAmount = digitalLines.reduce((acc, l) => acc + Number(l.unitPriceOverride), 0);
-      payload.regularSale.amount = String(Number(payload.regularSale.amount ?? 0) + digitalAmount);
-    } else {
-      payload.regularSale = {
-        amount: String(digitalLines.reduce((acc, l) => acc + Number(l.unitPriceOverride), 0)),
-        lines: digitalLines,
-      };
-    }
-
-    payload.paidAmount = input.paymentAmount;
-    payload.paymentMethod = input.paymentMethod;
-    payload.externalPaymentAttemptId = boundExternalAttemptId;
-    payload.externalPaymentDeviceId = boundExternalDeviceId;
-    payload.clientRequestId = `DIGITAL_INTENT:${input.intentId}`;
-
-    // Pass actor directly since checkoutReceptionInTx internally handles capability checking
-    const result = await checkoutReceptionInTx(tx, payload, actor);
-    sale = result.regularSale;
-    const createdLines = sale?.createdLineItems ?? [];
-    for (const line of createdLines) {
-      if (line.lineToken) {
-        invoiceItemByIntentItem.set(line.lineToken, line.invoiceItemId);
-      }
-    }
-  } else {
-    const salePayload = {
+  const salePayload = {
       branchId: Number(intent.branchId),
       shiftId: Number(intent.shiftId),
       customerId: checkout?.customerId ?? null,
@@ -425,11 +452,13 @@ export async function finalize(
       contactPhone: null,
       couponCode: null,
       priceTier: checkout?.priceTier ?? null,
-      priceOverrideApproved: supervisor || checkout?.managerApprovedByUserId != null,
-      sourceType: checkout?.sourceType === "INVOICE" ? "ORDER" : "POS",
+      priceOverrideApproved:
+        supervisor ||
+        checkout?.managerApprovedByUserId != null ||
+        checkout?.priceOverrideApproved === true,
+      // شاشة الفاتورة المتقدمة تبقى قناة بيع تجزئة؛ ORDER كانت تصنّفها خطأً كاستقبال.
+      sourceType: "POS",
       clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
-      dueDate: checkout?.dueDate ?? null,
-      notes: checkout?.notes ?? null,
       creditApproved: checkout?.creditApprovalId != null,
       creditApprovalId: checkout?.creditApprovalId ?? undefined,
       payment: input.paymentMethod === "CREDIT" ? undefined : {
@@ -439,38 +468,56 @@ export async function finalize(
         externalPaymentIntentId: input.intentId,
       },
       requireExternalPaymentAttempt: input.paymentMethod === "CARD",
+      formalReservationExemptions: inventoryExemptions,
       deviceId: boundExternalDeviceId,
-      lines: [...checkoutSnapshotToSaleLines(checkout), ...items.map((it) => {
+      invoiceDiscount: invoicePayload?.invoiceDiscount,
+      deliveryFee: invoicePayload?.deliveryFee,
+      deliveryFree: invoicePayload?.deliveryFree,
+      deliveryWaivedAmount: invoicePayload?.deliveryWaivedAmount,
+      taxRatePercent: invoicePayload?.taxRatePercent,
+      dueDate: invoicePayload?.dueDate ?? checkout?.dueDate ?? null,
+      notes: invoicePayload?.notes ?? checkout?.notes ?? null,
+      lines: [
+        ...checkoutSnapshotToSaleLines(checkout),
+        ...items.map((it) => {
         const m = meta.get(Number(it.offeringId))!;
+        const source = invoicePricing?.digitalSourceLines.get(it.lineKey);
         return {
           variantId: m.variantId,
           productUnitId: m.productUnitId,
           quantity: "1",
           unitPriceOverride: it.sellPriceSnapshot,
+          discountPercent: source?.discountPercent,
+          discountAmount: source?.discountAmount,
+          isGift: source?.isGift === true,
           unitCostOverride: it.providerShareSnapshot,
           internalLineToken: String(it.id),
         };
-      })],
+        }),
+      ],
     };
 
-    sale = await createConfirmedPosSaleInTx(tx, salePayload as any, actor, DIGITAL_SALE_CAPABILITY);
-    if (!money(sale.total).eq(expectedTotal)) {
-      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
-        what: "تراجعت الفاتورة بالكامل",
-        why: "إجمالي الفاتورة المحسوب لا يطابق إجمالي النيّة المحفوظة",
-        doThis: "راجِع العملية دون إعادة إصدار الكروت أو قبض المبلغ ثانيةً",
-      }) });
-    }
-    for (const line of sale.createdLineItems ?? []) {
-      if (line.lineToken) {
-        invoiceItemByIntentItem.set(line.lineToken, line.invoiceItemId);
-      }
+  sale = await createConfirmedPosSaleInTx(tx, salePayload as any, actor, DIGITAL_SALE_CAPABILITY);
+  if (!money(sale.total).eq(expectedTotal)) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تراجعت الفاتورة بالكامل",
+      why: "إجمالي الفاتورة المحسوب لا يطابق إجمالي النيّة المحفوظة",
+      doThis: "راجِع العملية دون إعادة إصدار الكروت أو قبض المبلغ ثانيةً",
+    }) });
+  }
+  for (const line of sale.createdLineItems ?? []) {
+    if (line.lineToken) {
+      invoiceItemByIntentItem.set(line.lineToken, line.invoiceItemId);
     }
   }
 
   if (invoiceItemByIntentItem.size !== items.length) {
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "عدد بنود الفاتورة لا يطابق بنود النيّة" });
   }
+
+  // حركات الفاتورة استعملت إعفاء النية نفسها. لا نُنقص reservationStock قبل نجاحها؛
+  // الاستهلاك هنا في المعاملة ذاتها، وأي فشل لاحق يعيد الفاتورة والحجز معاً.
+  await consumeIntentInventory(tx, input.intentId);
 
   /* ٩. استهلاك الحجوزات: خصم PREPAID، أو رفع ذمّة المزوّد للآجل. */
   const walletTxByWallet = new Map<number, number>();
@@ -590,8 +637,25 @@ export async function finalize(
 
     // Freeze the human description on the invoice row so later catalog edits cannot
     // change the card value/type/duration printed on this sale's receipt.
-    const [invoiceLine] = await tx.select({ name: invoiceItems.itemNameSnapshot }).from(invoiceItems)
+    const [invoiceLine] = await tx.select({
+      name: invoiceItems.itemNameSnapshot,
+      total: invoiceItems.total,
+      lineCost: invoiceItems.lineCost,
+    }).from(invoiceItems)
       .where(eq(invoiceItems.id, invoiceItemId)).limit(1);
+    if (!invoiceLine) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "تعذّر قراءة لقطة بند الكرت بعد إنشاء الفاتورة",
+      });
+    }
+    if (!money(invoiceLine.lineCost).eq(money(it.providerShareSnapshot))) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message:
+          "تكلفة بند الكرت في الفاتورة لا تطابق حصة المزوّد الموثقة — تراجعت المعاملة",
+      });
+    }
     const description = digitalOfferingDescription(m);
     // Product name (<=255) plus the bounded descriptor fits the 512-char snapshot;
     // never shorten the course/card identity to make room for display metadata.
@@ -607,9 +671,13 @@ export async function finalize(
       providerId: m.providerId,
       priceVersionId: Number(it.priceVersionId),
       settlementModeSnapshot: m.settlementMode as "PREPAID" | "POSTPAID",
-      sellPriceSnapshot: it.sellPriceSnapshot,
+      // مبلغ البيع/الاسترداد هو صافي سطر الفاتورة فعلاً (بعد خصم السطر أو الهدية)، لا سعر
+      // القائمة في النيّة. حصة المزوّد تبقى مستقلة، والربح التحليلي = الصافي − الحصة.
+      sellPriceSnapshot: invoiceLine.total,
       providerShareSnapshot: it.providerShareSnapshot,
-      profitSnapshot: it.marginSnapshot,
+      profitSnapshot: toDbMoney(
+        money(invoiceLine.total).minus(money(it.providerShareSnapshot)),
+      ),
       providerReference: it.providerReference,
       fulfillmentStatus: "ISSUED",
       studentCustomerId: null,
@@ -632,6 +700,11 @@ export async function finalize(
     invoiceId: sale.invoiceId,
     total: toDbMoney(expectedTotal),
     items: items.length,
+    priceApprovedBeforeIssuance: checkout?.priceOverrideApproved === true,
+    priceApprovedBy: checkout?.priceApprovedBy ?? null,
+    // true مع غياب اعتماد مدير يعني أن WAVG/مرجع السعر تغيّر بعد prepare؛ نُكمل الكرت
+    // الصادر تحت قدرة النيّة الموثقة ونترك أثراً واضحاً بدلاً من خلق بيع ضائع.
+    commitPricingGateTriggered: sale.priceOverride === true,
   });
 
   /* ١١. بيانات الطباعة من الخادم (§١٢.٣). */

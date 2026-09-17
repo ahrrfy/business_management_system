@@ -52,15 +52,12 @@ export function resolveDigitalInvoiceSettlement(input: {
   paymentMethod: string;
   paidTotal: string;
 }): DigitalInvoiceSettlement {
-  if (input.paymentTerms === "CREDIT") {
-    return { paymentAmount: "0.00", paymentMethod: "CREDIT" };
-  }
-  if (input.paymentMethod !== "CASH" && input.paymentMethod !== "CARD") {
-    throw new Error("دفع الكروت والاشتراكات متاح نقداً أو ببطاقة فقط.");
+  if (input.paymentTerms !== "CASH" || input.paymentMethod !== "CASH") {
+    throw new Error("الكروت والاشتراكات الرقمية تُباع نقداً حالياً.");
   }
   return {
     paymentAmount: round2(D(input.paidTotal)).toFixed(2),
-    paymentMethod: input.paymentMethod,
+    paymentMethod: "CASH",
   };
 }
 
@@ -201,14 +198,9 @@ export function validateDigitalInvoiceCheckout(
   if (digitalLines.length === 0) return null;
   if (input.isCorrection) return "لا تُضاف الكروت الرقمية إلى فاتورة تصحيح؛ أنشئ فاتورة بيع جديدة.";
   if (!input.hasOpenShift) return "يلزم فتح وردية في فرع الفاتورة قبل بيع الكروت والاشتراكات.";
-  if (input.paymentTerms === "INSTALLMENT") return "الأقساط الجزئية للكروت والاشتراكات تحتاج مسار تسوية مستقل؛ استخدم النقد/البطاقة أو الآجل الكامل.";
-  if (input.paymentTerms !== "CASH" && input.paymentTerms !== "CREDIT") return "شروط دفع الكروت والاشتراكات غير مدعومة.";
-  if (input.paymentTerms === "CREDIT") {
-    if (!round2(D(input.paidTotal)).eq(0)) return "فاتورة الكروت الآجلة لا تقبل قبضاً جزئياً؛ اجعل كامل المبلغ ذمّة.";
-  } else {
-    if (input.paymentMethod !== "CASH" && input.paymentMethod !== "CARD") return "دفع الكروت والاشتراكات متاح نقداً أو ببطاقة فقط.";
-    if (!round2(D(input.paidTotal)).eq(round2(D(input.grandTotal)))) return "الكروت والاشتراكات تتطلب تسديد كامل الفاتورة قبل الإصدار.";
-  }
+  if (input.paymentTerms !== "CASH") return "الكروت والاشتراكات الرقمية لا تدعم البيع الآجل أو الأقساط؛ يجب قبض الفاتورة كاملة قبل الإصدار.";
+  if (input.paymentMethod !== "CASH") return "الكروت الرقمية داخل فاتورة البيع تُقبض نقداً حالياً؛ الدفع بالبطاقة موقوف حتى يكتمل الربط الذري قبل القبض.";
+  if (!round2(D(input.paidTotal)).eq(round2(D(input.grandTotal)))) return "الكروت والاشتراكات تتطلب تسديد كامل الفاتورة قبل الإصدار.";
   if (D(input.globalDiscount).gt(0)) return "لا يُطبّق الخصم الإجمالي على فاتورة تحتوي كروتاً رقمية.";
   if (input.shippingFree || D(input.shipping).gt(0)) return "افصل أجرة التوصيل في فاتورة أخرى عند بيع الكروت الرقمية.";
   if (input.taxEnabled && D(input.totalTax).gt(0)) return "افصل الفاتورة الضريبية عن بيع الكروت الرقمية.";

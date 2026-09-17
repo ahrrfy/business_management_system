@@ -10,8 +10,9 @@
  * نقطة التهيئة: periodRouter.lock/unlock بـadminProcedure.
  */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, notInArray, or, sql } from "drizzle-orm";
 import {
+  digitalSaleIntents,
   financialPeriods,
   monthCloseCertificates,
   monthCloseRequests,
@@ -20,6 +21,7 @@ import {
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { lockCompanyMonthCloseGate } from "./reports/monthCloseGate";
+import { appErrorMessage } from "../../shared/errors";
 import {
   appendMonthCloseEvent,
   assertSequenceReady,
@@ -114,6 +116,46 @@ export async function lockPeriod(
       code: "BAD_REQUEST",
       message: `قفل سابق موجود حتى ${existing.cutoffDate} — لا يُسمح بقفل أقدم منه. لفتح الفترة استعمل unlockPeriod أوّلاً.`,
     });
+  }
+
+  // كتّاب النية الرقمية يمسكون بوابة الشركة المشتركة، وهذه الدالة تُستدعى تحت
+  // بوابتها الحصرية. إذا شمل cutoff يوم التنفيذ الحالي، فإقفال الفترة أثناء إصدار
+  // مزوّد غير محسوم قد يترك كرتاً صادراً ثم يمنع قيد الفاتورة. إقفال شهر سابق لا
+  // يتأثر لأن الفاتورة ستُرحّل بتاريخ اليوم المفتوح.
+  const closeDay = (input.lockedAt ?? new Date()).toISOString().slice(0, 10);
+  if (input.cutoffDate >= closeDay) {
+    const [blockingDigitalIntent] = await tx
+      .select({ id: digitalSaleIntents.id })
+      .from(digitalSaleIntents)
+      .where(
+        or(
+          notInArray(digitalSaleIntents.status, [
+            "FINALIZED",
+            "CANCELLED",
+            "EXPIRED",
+            "WRITTEN_OFF",
+          ]),
+          sql`EXISTS (
+            SELECT 1
+              FROM digitalSaleIntentItems dsi
+              INNER JOIN digitalSaleExecutionClaims dsec
+                ON dsec.intentItemId = dsi.id
+             WHERE dsi.intentId = ${digitalSaleIntents.id}
+               AND dsec.completedAt IS NULL
+          )`,
+        ),
+      )
+      .limit(1);
+    if (blockingDigitalIntent) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر إقفال الفترة حتى ${input.cutoffDate}`,
+          why: `عملية البيع الرقمي رقم ${Number(blockingDigitalIntent.id)} لم تُحسم بعد`,
+          doThis: "أكمل فاتورتها أو عالجها من طابور المراجعة ثم أعد الإقفال",
+        }),
+      });
+    }
   }
 
   const res = await tx.insert(financialPeriods).values({

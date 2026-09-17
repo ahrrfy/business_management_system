@@ -41,6 +41,7 @@ import {
   assertNoActiveOnlineOrderUnitChanges,
   lockProductUnitsForOnlineAllocation,
 } from "./variantAvailability";
+import { assertNoActiveDigitalInventoryBinding } from "../digitalCards/inventoryBindingGuard";
 
 /** نوعُ الكيان في `recordVersions` — مصدرٌ واحد للخدمة والاختبارات والواجهة. */
 export const PRODUCT_ENTITY_TYPE = "product";
@@ -148,8 +149,18 @@ export async function lockUnitsAndAssertNoActiveOnlineOrderChanges(
 
 /* ─────────────── ④ قفل المخزون ─────────────── */
 
-/** ترتيبُ الأقفال الحاكم نفسه في الشراء/WAVG — يُستدعى بعد ③ وقبل أيّ كتابة. */
-export const lockVariantsForUpdate = lockInventoryVariants;
+/** ترتيبُ الأقفال الحاكم نفسه في الشراء/WAVG — ويمنع تغيير كتالوجٍ تثبته نية رقمية نشطة. */
+export async function lockVariantsForUpdate(
+  tx: Tx,
+  variantIds: readonly number[],
+): Promise<void> {
+  await lockInventoryVariants(tx, Array.from(variantIds));
+  await assertNoActiveDigitalInventoryBinding(
+    tx,
+    variantIds,
+    "تعديل المنتج أثناء إصدار سلة رقمية",
+  );
+}
 
 /* ─────────────── ⑤ الأساس والتكلفة ─────────────── */
 

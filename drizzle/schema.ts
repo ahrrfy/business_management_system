@@ -2022,6 +2022,17 @@ export const invoiceItems = mysqlTable(
     unitCost: decimal("unitCost", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // الكلفة الكاملة المجمّدة للسطر. لا يمكن اشتقاقها دائماً من unitCost ذي منزلتين:
+    // خدمة تستهلك مادةً بكلفة 1.00 على 3 وحدات تُعرض unitCost=0.33 لكن كلفتها الحقيقية 1.00
+    // لا 0.99. كل الحسابات المالية/العكس تعتمد هذا العمود؛ unitCost يبقى للعرض والتوافق.
+    lineCost: decimal("lineCost", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    // يميّز خدمةً جديدة التُقطت موادها (حتى إن كانت pure labor بلا صفوف) من فاتورة تاريخية
+    // لا نملك لها لقطة موثوقة. العكس الآلي يفشل مغلقاً للحالة التاريخية بدلاً من التخمين.
+    serviceMaterialsSnapshotted: boolean("serviceMaterialsSnapshotted")
+      .default(false)
+      .notNull(),
     discountPercent: decimal("discountPercent", {
       precision: 5,
       scale: 2,
@@ -2064,6 +2075,51 @@ export const invoiceItems = mysqlTable(
 
 export type InvoiceItem = typeof invoiceItems.$inferSelect;
 export type InsertInvoiceItem = typeof invoiceItems.$inferInsert;
+
+/**
+ * لقطة مواد الخدمة وكلفتها لحظة البيع. الوصفة الحية قابلة للتعديل وnotes حقل حر؛ لذلك لا يصلح
+ * أي منهما مصدراً لإلغاء/تصحيح لاحق. هذه الصفوف أثر غير قابل للتعديل، داخل معاملة الفاتورة نفسها.
+ */
+export const invoiceItemServiceMaterials = mysqlTable(
+  "invoiceItemServiceMaterials",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull(),
+    materialVariantId: bigint("materialVariantId", { mode: "number" }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    unitCost: decimal("unitCost", { precision: 15, scale: 2 }).notNull(),
+    lineCost: decimal("lineCost", { precision: 15, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    itemMaterialUq: unique("uq_iism_item_material").on(
+      table.invoiceItemId,
+      table.materialVariantId,
+    ),
+    itemIdx: index("idx_iism_item").on(table.invoiceItemId),
+    materialIdx: index("idx_iism_material").on(table.materialVariantId),
+    itemFk: foreignKey({
+      columns: [table.invoiceItemId],
+      foreignColumns: [invoiceItems.id],
+      name: "fk_iism_item",
+    }).onDelete("cascade"),
+    materialFk: foreignKey({
+      columns: [table.materialVariantId],
+      foreignColumns: [productVariants.id],
+      name: "fk_iism_material",
+    }).onDelete("restrict"),
+    quantityPositive: check("chk_iism_quantity_positive", sql`${table.baseQuantity} > 0`),
+    costNonnegative: check(
+      "chk_iism_cost_nonnegative",
+      sql`${table.unitCost} >= 0 AND ${table.lineCost} >= 0`,
+    ),
+  }),
+);
+
+export type InvoiceItemServiceMaterial =
+  typeof invoiceItemServiceMaterials.$inferSelect;
+export type InsertInvoiceItemServiceMaterial =
+  typeof invoiceItemServiceMaterials.$inferInsert;
 
 /* ============================ CRM — الحملات التجارية ============================ */
 
@@ -3935,6 +3991,17 @@ export const workOrders = mysqlTable(
     baseVariantId: bigint("baseVariantId", { mode: "number" }).references(
       () => productVariants.id,
     ),
+    /**
+     * 0363 — لقطة وحدة/كمية الصنف الأساس لحظة إنشاء الأمر. لا يجوز للتسليم أن يختار
+     * أول وحدة حالية بعد أشهر، ولا أن يفترض quantity = baseQuantity. NULL في الأعمدة
+     * الثلاثة مع baseVariantId غير NULL يعني صفاً تاريخياً غير موثوق يفشل مغلقاً.
+     */
+    baseProductUnitId: bigint("baseProductUnitId", { mode: "number" }).references(
+      () => productUnits.id,
+    ),
+    baseBaseQuantity: int("baseBaseQuantity"),
+    /** TRUE = الصنف الأساس مادي ويجب أن يظهر مادةً إلزامية؛ FALSE = خدمة بلا خصمٍ لذاتها. */
+    baseConsumesInventory: boolean("baseConsumesInventory"),
     title: varchar("title", { length: 255 }).notNull(),
     customizationText: text("customizationText"),
     quantity: int("quantity").default(1).notNull(),
@@ -4097,6 +4164,31 @@ export const workOrders = mysqlTable(
     invoiceUq: unique("uq_wo_invoice").on(table.invoiceId),
     depositReceiptIdx: index("idx_wo_deposit_receipt").on(
       table.depositReceiptId,
+    ),
+    baseUnitIdx: index("idx_wo_base_unit").on(table.baseProductUnitId),
+    baseSnapshotQtyPositive: check(
+      "chk_wo_base_snapshot_qty_positive",
+      sql`${table.baseBaseQuantity} IS NULL OR ${table.baseBaseQuantity} > 0`,
+    ),
+    baseSnapshotShape: check(
+      "chk_wo_base_snapshot_shape",
+      sql`(
+        (${table.baseVariantId} IS NULL
+          AND ${table.baseProductUnitId} IS NULL
+          AND ${table.baseBaseQuantity} IS NULL
+          AND ${table.baseConsumesInventory} IS NULL)
+        OR
+        (${table.baseVariantId} IS NOT NULL
+          AND (
+            (${table.baseProductUnitId} IS NULL
+              AND ${table.baseBaseQuantity} IS NULL
+              AND ${table.baseConsumesInventory} IS NULL)
+            OR
+            (${table.baseProductUnitId} IS NOT NULL
+              AND ${table.baseBaseQuantity} IS NOT NULL
+              AND ${table.baseConsumesInventory} IS NOT NULL)
+          ))
+      )`,
     ),
   }),
 );
@@ -4346,6 +4438,13 @@ export const workOrderMaterials = mysqlTable(
       .notNull()
       .references(() => productVariants.id),
     baseQuantity: int("baseQuantity").notNull(),
+    /** السطر الوحيد الذي يحمل على الأقل حصة الصنف الأساس المادي الحاكمة. */
+    isBaseMaterial: boolean("isBaseMaterial").default(false).notNull(),
+    /** UNIQUE(workOrderId, baseMaterialSlot) يسمح بمواد كثيرة ويفرض سطر أساس واحداً فقط. */
+    baseMaterialSlot: tinyint("baseMaterialSlot").generatedAlwaysAs(
+      sql`(CASE WHEN isBaseMaterial = 1 THEN 1 ELSE NULL END)`,
+      { mode: "virtual" },
+    ),
     unitCost: decimal("unitCost", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -4354,6 +4453,10 @@ export const workOrderMaterials = mysqlTable(
   (table) => ({
     woIdx: index("idx_wom_wo").on(table.workOrderId),
     variantIdx: index("idx_wom_variant").on(table.variantId),
+    oneBaseMaterialUq: unique("uq_wom_one_base_material").on(
+      table.workOrderId,
+      table.baseMaterialSlot,
+    ),
   }),
 );
 
@@ -15829,6 +15932,76 @@ export type DigitalWalletReservation =
   typeof digitalWalletReservations.$inferSelect;
 export type InsertDigitalWalletReservation =
   typeof digitalWalletReservations.$inferInsert;
+
+/**
+ * حجز مخزون السلة المختلطة طوال نافذة إصدار البطاقة الخارجية.
+ * السطر ذو reservedBase=0 يقفل معنى sourceVariant فقط (وصفة/بكج/وحدة) بلا حجز كمية؛
+ * السطر الموجب يساهم أيضاً في reservationStock حتى لا يصدر الكرت ثم تفشل الفاتورة لنفاد المادة.
+ */
+export const digitalIntentInventoryReservations = mysqlTable(
+  "digitalIntentInventoryReservations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    intentId: bigint("intentId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    /** السطر العادي أو الخدمة أو البكج الذي ولّد الطلب. */
+    sourceVariantId: bigint("sourceVariantId", { mode: "number" }).notNull(),
+    /** الصنف المخزني المحجوز؛ يساوي المصدر لقفل كتالوج بلا كمية. */
+    stockVariantId: bigint("stockVariantId", { mode: "number" }).notNull(),
+    reservedBase: int("reservedBase").default(0).notNull(),
+    status: mysqlEnum("status", ["ACTIVE", "CONSUMED", "RELEASED"])
+      .default("ACTIVE")
+      .notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    consumedAt: timestamp("consumedAt"),
+    releasedAt: timestamp("releasedAt"),
+  },
+  (t) => ({
+    intentSourceStockUq: unique("uq_diir_intent_source_stock").on(
+      t.intentId,
+      t.sourceVariantId,
+      t.stockVariantId,
+    ),
+    intentStatusIdx: index("idx_diir_intent_status").on(t.intentId, t.status),
+    sourceStatusIdx: index("idx_diir_source_status").on(
+      t.sourceVariantId,
+      t.status,
+    ),
+    stockBranchStatusIdx: index("idx_diir_stock_branch_status").on(
+      t.stockVariantId,
+      t.branchId,
+      t.status,
+    ),
+    reservedNonnegativeChk: check(
+      "chk_diir_reserved_nonnegative",
+      sql`${t.reservedBase} >= 0`,
+    ),
+    intentFk: foreignKey({
+      columns: [t.intentId],
+      foreignColumns: [digitalSaleIntents.id],
+      name: "fk_diir_intent",
+    }).onDelete("restrict"),
+    branchFk: foreignKey({
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+      name: "fk_diir_branch",
+    }).onDelete("restrict"),
+    sourceVariantFk: foreignKey({
+      columns: [t.sourceVariantId],
+      foreignColumns: [productVariants.id],
+      name: "fk_diir_source_variant",
+    }).onDelete("restrict"),
+    stockVariantFk: foreignKey({
+      columns: [t.stockVariantId],
+      foreignColumns: [productVariants.id],
+      name: "fk_diir_stock_variant",
+    }).onDelete("restrict"),
+  }),
+);
+export type DigitalIntentInventoryReservation =
+  typeof digitalIntentInventoryReservations.$inferSelect;
+export type InsertDigitalIntentInventoryReservation =
+  typeof digitalIntentInventoryReservations.$inferInsert;
 
 /**
  * بنود نيّة البيع الرقمية: كل بند = عرض رقمي بلقطات سعر وحالة تنفيذ.

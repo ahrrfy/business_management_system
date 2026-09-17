@@ -23,6 +23,18 @@ describe("نافذة تنفيذ الكروت — سبب فشل التثبيت ا
   it("POS.tsx يمرّر خطأ finalizeSale الفعلي إلى النافذة بدل إسقاطه صامتاً", () => {
     expect(pos).toContain("finalizeError={finalizeSale.error ? errMsg(finalizeSale.error) : null}");
   });
+
+  it("يعرض صافي السطر المحصّل بعد الخصم لا سعر القائمة", () => {
+    expect(dialog).toContain("sum.plus(item.chargeAmount)");
+    expect(dialog).toContain("الصافي المحصّل {fmtAr(item.chargeAmount)}");
+    expect(dialog).toContain("الصافي المحصّل {fmtAr(it.chargeAmount)}");
+  });
+
+  it("يمنع POS من قبض CARD لسلة رقمية قبل إنشاء النية والحجز", () => {
+    expect(pos).toContain('if (activeTab.method !== "CASH")');
+    expect(pos).toContain("لم يبدأ النظام أي قبض خارجي");
+    expect(pos).toContain('!(cartHasDigital && activeTab.method !== "CASH")');
+  });
 });
 
 describe("تكامل بيع الكروت — الاستقبال والفاتورة المتقدمة", () => {

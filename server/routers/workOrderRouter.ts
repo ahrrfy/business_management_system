@@ -147,6 +147,7 @@ const workOrderCommercialPayload = z.object({
 });
 const receptionWorkOrderSchema = z.object({
   baseVariantId: z.number().int().positive().nullish(),
+  baseProductUnitId: z.number().int().positive().nullish(),
   title: z.string().trim().min(1),
   customizationText: z.string().nullish(),
   quantity: z.number().int().positive().default(1),
@@ -1777,6 +1778,7 @@ export const workOrderRouter = router({
         customerId: z.number().int().positive().nullish(),
         // v3-add-screens(100%): اختياري لخدمة تخصيص خالصة بلا منتج خام.
         baseVariantId: z.number().int().positive().nullish(),
+        baseProductUnitId: z.number().int().positive().nullish(),
         title: z.string().min(1),
         customizationText: z.string().nullish(),
         quantity: z.number().int().positive().default(1),

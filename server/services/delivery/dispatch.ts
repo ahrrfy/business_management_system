@@ -10,7 +10,6 @@ import {
   deliveryPartyMembers,
   invoiceItems,
   invoices,
-  productUnits,
   productVariants,
   products,
   receipts,
@@ -40,6 +39,10 @@ import {
   requireExternalTrackingRef,
   rethrowExternalTrackingRefDuplicate,
 } from "./trackingRefPolicy";
+import {
+  assertBaseProductUnitBinding,
+  requireWorkOrderBaseSnapshot,
+} from "../workOrder/baseInventorySnapshot";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -279,6 +282,10 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       });
     }
     const reusingInvoice = priorInvoice != null;
+    const baseSnapshot = reusingInvoice
+      ? null
+      : requireWorkOrderBaseSnapshot(wo);
+    if (baseSnapshot) await assertBaseProductUnitBinding(tx, baseSnapshot);
     // إخوةُ السلّة الواحدة — نفس حارس التسليم المباشر وإرسال الفاتورة.
     await assertSiblingsReady(tx, {
       draftId: wo.draftId,
@@ -378,25 +385,25 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const invoiceId = reusingInvoice ? Number(priorInvoice!.id) : extractInsertId(invRes!);
 
     // البنود والقيد والذمّة تُكتب **مرّةً واحدة** مع الفاتورة؛ إعادة التنشيط تتخطّاها كلّها.
-    if (!reusingInvoice && wo.baseVariantId != null) {
+    if (!reusingInvoice && baseSnapshot != null) {
       const productNameRow = (await tx
         .select({ name: products.name, invoiceLabel: products.invoiceLabel, shortTitle: products.shortTitle })
         .from(productVariants)
         .innerJoin(products, eq(productVariants.productId, products.id))
-        .where(eq(productVariants.id, Number(wo.baseVariantId)))
+        .where(eq(productVariants.id, baseSnapshot.variantId))
         .limit(1))[0];
       const itemNameSnapshot = productNameRow ? titleForChannel(productNameRow, "invoice") : null;
-      const baseUnit = (await tx.select({ id: productUnits.id }).from(productUnits).where(eq(productUnits.variantId, Number(wo.baseVariantId))).limit(1))[0];
       const unitPrice = round2(salePrice.dividedBy(quantity));
       await tx.insert(invoiceItems).values({
         invoiceId,
-        variantId: Number(wo.baseVariantId),
-        productUnitId: baseUnit ? Number(baseUnit.id) : null,
+        variantId: baseSnapshot.variantId,
+        productUnitId: baseSnapshot.productUnitId,
         workOrderId: Number(wo.id),
         quantity: Number(quantity).toFixed(3),
-        baseQuantity: quantity,
+        baseQuantity: baseSnapshot.baseQuantity,
         unitPrice: unitPrice.toFixed(2),
         unitCost: round2(costTotal.dividedBy(quantity)).toFixed(2),
+        lineCost: costTotal.toFixed(2),
         discountAmount: "0",
         total: salePrice.toFixed(2),
         itemNameSnapshot,

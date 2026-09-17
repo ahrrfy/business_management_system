@@ -1,7 +1,12 @@
 // إنشاء أمر شغل (RECEIVED) — لا يُستهلَك المخزون بعد؛ عربون مقبوض عند الإنشاء إن وُجد.
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
+  productionRecipeLines,
+  productionRecipes,
+  products,
+  productUnits,
   productVariants,
   receipts,
   shifts,
@@ -31,10 +36,123 @@ import type { CreateWorkOrderInput } from "./types";
 import type { Tx } from "../../db";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
+import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
+import { exactRecipeMaterialQuantity } from "../serviceRecipeConsumption";
 import {
   createWorkOrderDesignRevisionTx,
   normalizeDesignContentImages,
 } from "./designApproval";
+
+async function recipeMaterialScopeIds(
+  tx: Tx,
+  outputVariantId: number,
+): Promise<number[]> {
+  const heads = await tx
+    .select({ id: productionRecipes.id })
+    .from(productionRecipes)
+    .where(eq(productionRecipes.outputVariantId, outputVariantId))
+    .orderBy(productionRecipes.id);
+  if (!heads.length) return [];
+  const lines = await tx
+    .select({ inputVariantId: productionRecipeLines.inputVariantId })
+    .from(productionRecipeLines)
+    .where(
+      inArray(
+        productionRecipeLines.recipeId,
+        heads.map((head) => Number(head.id)),
+      ),
+    )
+    .orderBy(productionRecipeLines.inputVariantId);
+  return Array.from(
+    new Set(lines.map((line) => Number(line.inputVariantId))),
+  ).sort((a, b) => a - b);
+}
+
+/**
+ * يقرأ تعريف خدمةٍ قراءةً حالية بعد قفل نطاق output+materials. لا نستعمل هنا
+ * consistent read العام لأن المعاملة ربما انتظرت كاتب وصفة ثم بقيت على لقطة RR أقدم.
+ */
+async function loadLockedServiceRecipeLines(
+  tx: Tx,
+  outputVariantId: number,
+  lockedScope: ReadonlySet<number>,
+): Promise<Array<{ inputVariantId: number; qtyPerOutputBase: string }> | null> {
+  const heads = await tx
+    .select({
+      id: productionRecipes.id,
+      isActive: productionRecipes.isActive,
+    })
+    .from(productionRecipes)
+    .where(eq(productionRecipes.outputVariantId, outputVariantId))
+    .orderBy(productionRecipes.id)
+    .for("update");
+  const active = heads.filter((head) => head.isActive === true);
+  if (active.length > 1) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: `تعذّر إنشاء أمر الشغل للخدمة #${outputVariantId}`,
+        why: "مرتبطة بأكثر من وصفة مواد فعّالة",
+        doThis: "عطّل الوصفات الزائدة واترك وصفة فعّالة واحدة فقط",
+      }),
+    });
+  }
+  if (!active.length) {
+    if (!heads.length) return null;
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: `تعذّر إنشاء أمر الشغل للخدمة #${outputVariantId}`,
+        why: "وصفة مواد الخدمة معطلة حالياً رغم وجود تعريف تاريخي لها",
+        doThis: "فعّل وصفة مواد واحدة أو راجع إعداد الخدمة",
+      }),
+    });
+  }
+
+  const recipeId = Number(active[0].id);
+  const rows = await tx
+    .select({
+      inputVariantId: productionRecipeLines.inputVariantId,
+      qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+    })
+    .from(productionRecipeLines)
+    .where(eq(productionRecipeLines.recipeId, recipeId))
+    .orderBy(productionRecipeLines.id)
+    .for("update");
+  if (!rows.length) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: `وصفة الخدمة #${recipeId} غير قابلة للتنفيذ`,
+        why: "وصفة مواد الخدمة فعالة لكنها بلا مواد",
+        doThis: "أضف مواد الوصفة أو عطّلها قبل إنشاء أمر الشغل",
+      }),
+    });
+  }
+  const lines = rows.map((row) => ({
+    inputVariantId: Number(row.inputVariantId),
+    qtyPerOutputBase: String(row.qtyPerOutputBase),
+  }));
+  const outsideScope = lines.find(
+    (line) => !lockedScope.has(line.inputVariantId),
+  );
+  if (outsideScope) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تغيّرت وصفة الخدمة أثناء إنشاء أمر الشغل",
+        why: `أُضيفت المادة #${outsideScope.inputVariantId} بعد تجهيز نطاق الأقفال`,
+        doThis: "أعد المحاولة لقراءة الوصفة الجديدة كاملةً",
+      }),
+    });
+  }
+  await assertStockedOwnedMaterials(
+    tx,
+    lines.map((line) => line.inputVariantId),
+    "مكوّن وصفة الخدمة",
+  );
+  return lines;
+}
 
 async function requireLockedReceptionShift(
   tx: Tx,
@@ -161,40 +279,220 @@ export async function createWorkOrderInTx(
     }
   }
 
+  // القائمة الصريحة تبقى ذات الأولوية. عند خلوّها فقط، تستمد خدمةٌ ذات وصفة موادها من BOM؛
+  // الخدمة التي لم يكن لها أي تاريخ وصفة تبقى عملاً خالصاً مشروعاً بلا مواد.
+  const requestedMaterials = [...(input.materials ?? [])];
+  for (const m of requestedMaterials) {
+    if (
+      !Number.isInteger(m.variantId) ||
+      m.variantId <= 0 ||
+      !Number.isInteger(m.baseQuantity) ||
+      m.baseQuantity <= 0
+    )
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "كميات المواد يجب أن تكون أعداداً صحيحة موجبة",
+      });
+  }
+  const materialQuantities = new Map<number, number>();
+  for (const material of requestedMaterials) {
+    const total =
+      (materialQuantities.get(material.variantId) ?? 0) +
+      material.baseQuantity;
+    if (!Number.isSafeInteger(total)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تجميع كمية المادة #${material.variantId}`,
+          why: "الكمية تتجاوز الحد العددي الآمن",
+          doThis: "خفّض كمية المادة ثم أعد المحاولة",
+        }),
+      });
+    }
+    materialQuantities.set(material.variantId, total);
+  }
+  let materials = Array.from(materialQuantities, ([variantId, baseQuantity]) => ({
+    variantId,
+    baseQuantity,
+  })).sort((a, b) => a.variantId - b.variantId);
+
   // v3-add-screens(100%): baseVariantId اختياري — طلب خدمة قد يكون خدمة تخصيص بلا منتج خام.
+  // نقرأ نطاق الوصفة أولاً بلا قفل، ثم نقفل output+materials في SELECT واحد مرتب. هذا يطابق
+  // ترتيب كاتب الوصفة ويمنع دورة output→material مقابل material→output.
+  let baseIsService = false;
+  let baseProductUnitId: number | null = null;
+  let baseBaseQuantity: number | null = null;
+  let baseConsumesInventory: boolean | null = null;
+  let lockedBaseScope = new Set<number>();
+  if (input.baseVariantId == null && input.baseProductUnitId != null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء أمر الشغل",
+        why: "أُرسلت وحدة منتج بلا صنف أساس",
+        doThis: "اختر الصنف الأساس والوحدة معاً، أو اتركهما معاً لخدمة خالصة",
+      }),
+    });
+  }
   if (input.baseVariantId != null) {
-    const base = (
-      await tx
-        .select()
-        .from(productVariants)
-        .where(eq(productVariants.id, input.baseVariantId))
-        .limit(1)
-    )[0];
+    const recipeScope = materials.length === 0
+      ? await recipeMaterialScopeIds(tx, input.baseVariantId)
+      : [];
+    const scopeIds = Array.from(
+      new Set([
+        input.baseVariantId,
+        ...materials.map((material) => material.variantId),
+        ...recipeScope,
+      ]),
+    ).sort((a, b) => a - b);
+    const lockedScope = await tx
+      .select({
+        id: productVariants.id,
+        isService: products.isService,
+        productName: products.name,
+        productActive: products.isActive,
+        variantActive: productVariants.isActive,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, scopeIds))
+      .orderBy(productVariants.id)
+      .for("update");
+    lockedBaseScope = new Set(lockedScope.map((row) => Number(row.id)));
+    const base = lockedScope.find(
+      (row) => Number(row.id) === input.baseVariantId,
+    );
     if (!base)
       throw new TRPCError({
         code: "NOT_FOUND",
         message: "المنتج الأساس لطلب الخدمة غير موجود",
       });
+    if (base.productActive !== true || base.variantActive !== true) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `المنتج الأساس «${base.productName}» معطّل`,
+          why: "المنتج أو متغيّره ليس نشطاً عند إنشاء أمر الشغل",
+          doThis: "فعّل المنتج ومتغيّره، أو اختر منتجاً أساساً نشطاً",
+        }),
+      });
+    }
+    baseIsService = base.isService === true;
+    baseConsumesInventory = !baseIsService;
+
+    const selectedUnits = input.baseProductUnitId != null
+      ? await tx
+          .select({
+            id: productUnits.id,
+            variantId: productUnits.variantId,
+            conversionFactor: productUnits.conversionFactor,
+            isActive: productUnits.isActive,
+          })
+          .from(productUnits)
+          .where(eq(productUnits.id, input.baseProductUnitId))
+          .for("update")
+          .limit(1)
+      : await tx
+          .select({
+            id: productUnits.id,
+            variantId: productUnits.variantId,
+            conversionFactor: productUnits.conversionFactor,
+            isActive: productUnits.isActive,
+          })
+          .from(productUnits)
+          .where(
+            and(
+              eq(productUnits.variantId, input.baseVariantId),
+              eq(productUnits.isActive, true),
+            ),
+          )
+          .orderBy(desc(productUnits.isBaseUnit), asc(productUnits.id))
+          .for("update")
+          .limit(1);
+    const selectedUnit = selectedUnits[0];
+    if (
+      !selectedUnit ||
+      Number(selectedUnit.variantId) !== input.baseVariantId ||
+      selectedUnit.isActive !== true
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت وحدة الصنف الأساس",
+          why: input.baseProductUnitId != null
+            ? "الوحدة المختارة لا تخص الصنف الأساس أو أنها معطلة"
+            : "لا توجد للصنف الأساس وحدة نشطة قابلة للحفظ",
+          doThis: "اختر وحدة نشطة تخص الصنف ثم أعد إنشاء أمر الشغل",
+        }),
+      });
+    }
+    baseProductUnitId = Number(selectedUnit.id);
+    baseBaseQuantity = exactRecipeMaterialQuantity(
+      String(selectedUnit.conversionFactor),
+      qty,
+      "كمية الصنف الأساس",
+    );
   }
 
-  // Validate materials list — allow zero materials (printing-only WO).
-  for (const m of input.materials ?? []) {
-    if (!Number.isInteger(m.baseQuantity) || m.baseQuantity <= 0)
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "كميات المواد يجب أن تكون أعداداً صحيحة موجبة",
-      });
-    const v = await tx
-      .select({ id: productVariants.id })
-      .from(productVariants)
-      .where(eq(productVariants.id, m.variantId))
-      .limit(1);
-    if (!v[0])
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: `مادة #${m.variantId} غير موجودة`,
-      });
+  if (materials.length === 0 && baseIsService && input.baseVariantId != null) {
+    const recipeLines = await loadLockedServiceRecipeLines(
+      tx,
+      input.baseVariantId,
+      lockedBaseScope,
+    );
+    if (recipeLines) {
+      const derived = new Map<number, number>();
+      for (const line of recipeLines) {
+        const lineQuantity = exactRecipeMaterialQuantity(
+          line.qtyPerOutputBase,
+          baseBaseQuantity!,
+          `مادة وصفة الخدمة #${line.inputVariantId}`,
+        );
+        const total = (derived.get(line.inputVariantId) ?? 0) + lineQuantity;
+        if (!Number.isSafeInteger(total)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر اشتقاق مواد أمر الشغل",
+              why: `كمية مادة وصفة الخدمة #${line.inputVariantId} تتجاوز الحد الآمن`,
+              doThis: "خفّض كمية الأمر أو عدّل وصفة الخدمة ثم أعد المحاولة",
+            }),
+          });
+        }
+        derived.set(line.inputVariantId, total);
+      }
+      materials = Array.from(derived, ([variantId, baseQuantity]) => ({
+        variantId,
+        baseQuantity,
+      })).sort((a, b) => a.variantId - b.variantId);
+    }
   }
+
+  // الصنف الأساس المادي حصة إلزامية يشتقها الخادم من الوحدة المختارة. إن كانت الواجهة
+  // قد أرسلته ضمن المواد فلا نضاعفه؛ نحفظ الأكبر كي تبقى الزيادة المقصودة مادةً إضافية.
+  if (
+    input.baseVariantId != null &&
+    baseConsumesInventory === true &&
+    baseBaseQuantity != null
+  ) {
+    const explicit = materials.find(
+      (material) => material.variantId === input.baseVariantId,
+    )?.baseQuantity ?? 0;
+    const mergedQuantity = Math.max(explicit, baseBaseQuantity);
+    materials = materials.filter(
+      (material) => material.variantId !== input.baseVariantId,
+    );
+    materials.push({
+      variantId: input.baseVariantId,
+      baseQuantity: mergedQuantity,
+    });
+    materials.sort((a, b) => a.variantId - b.variantId);
+  }
+  await assertStockedOwnedMaterials(
+    tx,
+    materials.map((material) => material.variantId),
+    "مادة أمر الشغل",
+  );
 
   // البطاقة/التحويل/المحفظة مسارات غير نقدية قابلة للمطابقة؛ يلزم مرجع يمنع دفعة مجهولة المصدر.
   if (
@@ -223,6 +521,9 @@ export async function createWorkOrderInTx(
     draftId: input.draftId ?? null,
     customerId: input.customerId ?? null,
     baseVariantId: input.baseVariantId ?? null,
+    baseProductUnitId,
+    baseBaseQuantity,
+    baseConsumesInventory,
     title: input.title.trim(),
     customizationText: customizationSnapshot,
     quantity: qty,
@@ -449,11 +750,15 @@ export async function createWorkOrderInTx(
     });
   }
 
-  for (const m of input.materials ?? []) {
+  for (const m of materials) {
     await tx.insert(workOrderMaterials).values({
       workOrderId,
       variantId: m.variantId,
       baseQuantity: m.baseQuantity,
+      isBaseMaterial:
+        baseConsumesInventory === true &&
+        input.baseVariantId != null &&
+        m.variantId === input.baseVariantId,
       unitCost: "0", // snapshot on consumption
     });
   }

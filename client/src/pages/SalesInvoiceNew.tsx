@@ -391,7 +391,10 @@ export default function SalesInvoice() {
   /** إثبات الدفع الخارجي هنا للبيع الجديد فقط؛ فرق التصحيح يُنفّذه المراجع عند الاعتماد. */
   const externalAmountD = D(computePaidStr());
   const externalAmount = round2(externalAmountD).toFixed(2);
-  const externalNeeded = !isCorrection && state.paymentMethod !== "CASH" && externalAmountD.gt(0);
+  const hasDigitalItems = state.items.some((line) => line.digital != null);
+  // لا نبدأ قبضاً خارجياً لفاتورة رقمية قبل وجود نيّة وحجز ذريين؛ الخادم يفرض
+  // السياسة نفسها. الفواتير العادية غير النقدية تبقى على مسار الإثبات الحالي.
+  const externalNeeded = !isCorrection && !hasDigitalItems && state.paymentMethod !== "CASH" && externalAmountD.gt(0);
   const externalChannel = "POS" as const;
   const externalFingerprint = `${externalChannel}|${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
   const externalConfirmed =
@@ -401,6 +404,7 @@ export default function SalesInvoice() {
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
   async function confirmExternalPayment() {
+    if (hasDigitalItems) return notify.err("الدفع بالبطاقة لفاتورة تحتوي كروتاً رقمية موقوف مؤقتاً؛ لم يبدأ النظام أي عملية قبض خارجية.");
     const reference = paymentRef.trim();
     if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
     if (!externalAmountD.gt(0)) return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
@@ -447,10 +451,11 @@ export default function SalesInvoice() {
       setDigitalIntentId(res.intentId); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
     },
     onError: (e) => {
-      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير") || e.message.includes("نقديٌّ فقط"))) {
+      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير") || e.message.includes("اعتماد مدير"))) {
         setCreditPrompt(e.message); return;
       }
-      releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; notify.err(e);
+      releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false;
+      notify.err(e);
     },
   });
 
@@ -571,6 +576,8 @@ export default function SalesInvoice() {
         variantId: l.variantId,
         productUnitId: l.productUnitId,
         quantity: D(l.qty).toString(),
+        // يربط مثيل الكرت بنيّة الإصدار بعد أن تعيد نواة البيع ترتيب الأسطر تحت الأقفال.
+        ...(l.digital ? { internalLineToken: l.digital.lineKey } : {}),
         // الهدية: نُعلن النيّة فقط ولا نُرسل سعراً/خصماً — الخادم يُصفّرهما بنفسه ويُرحّل التكلفة
         // قيدَ GIFT_OUT. إرسال سعرٍ هنا يفتح باب «هديةٍ بسعر» لو انحرفت الشاشة يوماً.
         ...(l.isGift
@@ -700,6 +707,7 @@ export default function SalesInvoice() {
     }
     for (const l of state.items) {
       if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
+      if (l.digital && !D(l.qty).eq(1)) return `كل كرت رقمي في «${l.name}» يجب أن يبقى سطراً مستقلاً بكمية واحدة.`;
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
@@ -729,9 +737,11 @@ export default function SalesInvoice() {
 
   function startDigitalFulfillment(approval?: Approval) {
     if (!currentShift.data) return notify.warn("يلزم فتح وردية في فرع الفاتورة قبل بيع الكروت والاشتراكات.");
-    const regular = state.items.filter((c) => !c.digital);
-    const digitalLines = state.items.filter((c) => c.digital);
-    if (!digitalLines.length) return; const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() });
+    const regular = state.items.filter((c) => !c.digital); const digitalLines = state.items.filter((c) => c.digital); if (!digitalLines.length) return;
+    const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() });
+    const payload = buildPayload(approval);
+    // لا تُخزَّن بيانات اعتماد المدير في لقطة النيّة الدائمة. حقول الفاتورة التجارية كلها تبقى.
+    const { managerApproval: _managerApproval, ...sourcePayload } = payload;
     prepareIntent.mutate({
       branchId: Number(state.branchId), shiftId: currentShift.data.id, clientRequestId,
       paymentMethod: settlement.paymentMethod,
@@ -739,24 +749,18 @@ export default function SalesInvoice() {
       externalPaymentDeviceId: settlement.paymentMethod === "CARD" ? externalAttempt?.deviceId ?? undefined : undefined,
       cartFingerprint: clientRequestId, customerId: state.entityId ?? undefined, priceTier: state.tier,
       dueDate: state.paymentTerms === "CREDIT" && state.dueDate ? state.dueDate : undefined, notes: state.notes.trim() || undefined, sourceType: "INVOICE",
-      regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)), ...(approval ? { managerApproval: approval } : {}),
+      sourcePayload, regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)), ...(approval ? { managerApproval: approval } : {}),
     });
   }
 
   function addDigitalBasket(basket: DigitalBasketCapture) {
-    try {
-      const items: InvoiceLine[] = captureDigitalInvoiceBasketItems(basket);
-      dispatch({ type: "ADD_ITEMS", items }); setCardsOpen(false);
-    } catch (error) {
-      notify.err(error);
-    }
+    try { const items: InvoiceLine[] = captureDigitalInvoiceBasketItems(basket); dispatch({ type: "ADD_ITEMS", items }); setCardsOpen(false); }
+    catch (error) { notify.err(error); }
   }
 
   function finalizeDigitalIntent(id: number) {
     const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() }); if (finalizeSale.isPending) return; finalizeSale.mutate({
-      intentId: id, clientRequestId, paymentAmount: settlement.paymentAmount,
-      paymentMethod: settlement.paymentMethod,
-      customerId: state.entityId ?? undefined,
+      intentId: id, clientRequestId, paymentAmount: settlement.paymentAmount, paymentMethod: settlement.paymentMethod, customerId: state.entityId ?? undefined,
     });
   }
 

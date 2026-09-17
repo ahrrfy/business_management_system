@@ -442,25 +442,23 @@ describe("ش٧ — تسجيل التنفيذ", () => {
     expect(marked.status).toBe("SUCCESS");
   });
 
-  it("بعد استرداد المطالبة يبقى مفتاح المزوّد ثابتاً ويفشل الرمز القديم", async () => {
+  it("لا يُعاد إسناد مطالبة منتهية بلا تكامل مزوّد يستهلك مفتاح idempotency فعلياً", async () => {
     const p = await prepared();
     const intentItemId = Number(p.items[0].id);
-    const first = await withTx((tx) => intentService.claimExecution(tx, {
+    await withTx((tx) => intentService.claimExecution(tx, {
       intentId: p.intentId, intentItemId, claimToken: "old-window-claim",
     }, actor));
     await db().execute(sql`
       UPDATE digitalSaleExecutionClaims SET expiresAt = DATE_SUB(NOW(), INTERVAL 1 MINUTE)
       WHERE intentItemId = ${intentItemId}
     `);
-    const reclaimed = await withTx((tx) => intentService.claimExecution(tx, {
+    await expect(withTx((tx) => intentService.claimExecution(tx, {
       intentId: p.intentId, intentItemId, claimToken: "new-window-claim",
-    }, actor));
-    expect(reclaimed.providerIdempotencyKey).toBe(first.providerIdempotencyKey);
-    await expect(withTx((tx) => intentService.markExecution(tx, {
-      intentId: p.intentId, intentItemId, claimToken: "old-window-claim", status: "SUCCESS", providerReference: p.items[0].providerReference,
-    }, actor))).rejects.toThrow(/هذه النافذة|ابدأ إصدار/);
+    }, actor))).rejects.toThrow(/مراجعة|نافذة|قيد التنفيذ/);
+    // انتهاء المهلة لا يبطل المالك الأصلي بذاته. عند غياب exactly-once حقيقي لدى
+    // المزوّد، السماح لنافذة ثانية قد يكرر إصدار قيمة خارجية.
     await withTx((tx) => intentService.markExecution(tx, {
-      intentId: p.intentId, intentItemId, claimToken: "new-window-claim", status: "SUCCESS", providerReference: p.items[0].providerReference,
+      intentId: p.intentId, intentItemId, claimToken: "old-window-claim", status: "SUCCESS", providerReference: p.items[0].providerReference,
     }, actor));
   });
 

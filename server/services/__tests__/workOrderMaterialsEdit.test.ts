@@ -72,16 +72,26 @@ async function seed() {
     isActive: true,
   });
   await d.insert(s.customers).values({ id: 1, name: "عميل أ", defaultPriceTier: "RETAIL", currentBalance: "0" });
-  // ثلاث مواد: ورق (١٠٠٠)، حبر (٢٥٠٠)، وأمانةٌ (لا تصلح مادة).
+  // مواد صالحة وأصناف غير مؤهلة لاختبار الحارس المشترك عند الإنشاء/البدء/التحرير.
   await d.insert(s.products).values([
     { id: 1, name: "ورق" },
     { id: 2, name: "حبر" },
     { id: 3, name: "صنف أمانة", isConsignment: true, consignorId: null },
+    { id: 4, name: "منتج معطل", isActive: false },
+    { id: 5, name: "منتج متغيره معطل" },
+    { id: 6, name: "خدمة لا مخزون لها", isService: true },
+    { id: 7, name: "بكج بلا رصيد ذاتي", isBundle: true },
+    { id: 8, name: "منتج حالته غير محسومة", isActive: null },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "PAPER", costPrice: "1000.00" },
     { id: 2, productId: 2, sku: "INK", costPrice: "2500.00" },
     { id: 3, productId: 3, sku: "CONSIGN", costPrice: "500.00" },
+    { id: 4, productId: 4, sku: "INACTIVE-PRODUCT", costPrice: "500.00" },
+    { id: 5, productId: 5, sku: "INACTIVE-VARIANT", costPrice: "500.00", isActive: false },
+    { id: 6, productId: 6, sku: "SERVICE", costPrice: "0.00" },
+    { id: 7, productId: 7, sku: "BUNDLE", costPrice: "0.00" },
+    { id: 8, productId: 8, sku: "NULL-ACTIVE", costPrice: "500.00" },
   ]);
   await d.insert(s.productUnits).values([
     { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
@@ -303,9 +313,196 @@ describe("② بعد البدء — كل فرقٍ يقابله حركةٌ وقي
     // الفرق قطعةٌ واحدة بلقطة 1000 لا بـ9999.
     expect(Number((await loadWo(woId)).materialsCost)).toBeCloseTo(11000, 2);
   });
+
+  it("تخفيض مادة مستهلَكة يعيد فرقها بالقيمة التاريخية ويمزج WAVG", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+    await startApprovedWorkOrder(woId); // خرجت 10 @ 1000، فبقي 490.
+
+    // حالة استلام لاحق صحيحة مكافئة: 10 @ 3000 رفعت الرصيد إلى 500 وWAVG إلى 1040.
+    await db().update(s.branchStock).set({ quantity: 500 }).where(and(
+      eq(s.branchStock.variantId, 1),
+      eq(s.branchStock.branchId, 1),
+    ));
+    await db().update(s.productVariants).set({ costPrice: "1040.00" })
+      .where(eq(s.productVariants.id, 1));
+
+    await editMaterialsAfterStart(woId, [{ variantId: 1, baseQuantity: 5 }]);
+
+    // عاد الفرق 5 @ 1000: (500×1040 + 5×1000) / 505 = 1039.60.
+    expect(await stockOf(1)).toBe(505);
+    expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("1039.60");
+    expect(Number((await loadWo(woId)).materialsCost)).toBe(5000);
+  });
 });
 
 describe("③ idempotency طبيعيّة + حرّاس", () => {
+  it("يحمي حصة الصنف الأساس المادي قبل البدء وبعده ويسمح بالزيادة فقط", async () => {
+    const created = await createWorkOrder({
+      branchId: 1,
+      customerId: 1,
+      baseVariantId: 1,
+      baseProductUnitId: 1,
+      title: "طلب بصنف أساس مادي",
+      salePrice: "50000",
+      quantity: 5,
+      materials: [],
+    }, CASHIER);
+    const woId = Number((created as { workOrderId: number }).workOrderId);
+    expect(await loadMats(woId)).toMatchObject([
+      { variantId: 1, baseQuantity: 5, isBaseMaterial: true },
+    ]);
+
+    await expect(editMaterials(woId, [])).rejects.toThrowError(/الصنف الأساس/);
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 4 },
+    ])).rejects.toThrowError(/الصنف الأساس/);
+
+    await editMaterials(woId, [{ variantId: 1, baseQuantity: 6 }]);
+    expect(await loadMats(woId)).toMatchObject([
+      { variantId: 1, baseQuantity: 6, isBaseMaterial: true },
+    ]);
+
+    await startApprovedWorkOrder(woId);
+    await expect(editMaterialsAfterStart(woId, [])).rejects.toThrowError(/الصنف الأساس/);
+    expect(await loadMats(woId)).toMatchObject([
+      { variantId: 1, baseQuantity: 6, isBaseMaterial: true, unitCost: "1000.00" },
+    ]);
+  });
+
+  it("يرفض عند الإنشاء كل مادة غير نشطة أو غير مخزنية مملوكة ذرّياً", async () => {
+    const invalid: Array<[number, RegExp]> = [
+      [3, /أمانة/],
+      [4, /معطّلة/],
+      [5, /معطّلة/],
+      [6, /خدمة/],
+      [7, /بكج/],
+      [8, /معطّلة/],
+    ];
+    for (const [variantId, message] of invalid) {
+      await expect(newWorkOrder([{ variantId, baseQuantity: 1 }])).rejects.toThrowError(message);
+    }
+    expect(await db().select().from(s.workOrders)).toHaveLength(0);
+  });
+
+  it("يعيد التحقق عند البدء ويرفض مادة عُطّل متغيرها بعد الإنشاء بلا حركة أو تغيير حالة", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+    const stockBefore = await stockOf(1);
+    await db().update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 1));
+
+    await expect(startApprovedWorkOrder(woId)).rejects.toThrowError(/معطّلة/);
+
+    expect((await loadWo(woId)).status).toBe("RECEIVED");
+    expect(await stockOf(1)).toBe(stockBefore);
+    expect(await movementCount(woId)).toBe(0);
+  });
+
+  it("لا يحوّل allowBackorder إلى ترخيص لاستهلاك مادة أمر شغل بالسالب عند البدء", async () => {
+    await db()
+      .update(s.products)
+      .set({ allowBackorder: true })
+      .where(eq(s.products.id, 1));
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 501 }]);
+
+    await expect(startApprovedWorkOrder(woId)).rejects.toThrowError(
+      /المخزون غير كافٍ/,
+    );
+
+    expect((await loadWo(woId)).status).toBe("RECEIVED");
+    expect(await stockOf(1)).toBe(500);
+    expect(await movementCount(woId)).toBe(0);
+  });
+
+  it("لا يسمح allowBackorder بزيادة مادة مستهلَكة فوق الرصيد", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 500 }]);
+    await startApprovedWorkOrder(woId);
+    await db()
+      .update(s.products)
+      .set({ allowBackorder: true })
+      .where(eq(s.products.id, 1));
+
+    await expect(editMaterialsAfterStart(woId, [
+      { variantId: 1, baseQuantity: 501 },
+    ])).rejects.toThrowError(/المخزون غير كافٍ/);
+
+    expect(await stockOf(1)).toBe(0);
+    expect(await loadMats(woId)).toMatchObject([
+      { variantId: 1, baseQuantity: 500, unitCost: "1000.00" },
+    ]);
+    expect(Number((await loadWo(woId)).materialsCost)).toBe(500000);
+  });
+
+  it("يرفض عند التحرير إضافة خدمة أو بكج ولا يغيّر القائمة القائمة", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 10 },
+      { variantId: 6, baseQuantity: 1 },
+    ])).rejects.toThrowError(/خدمة/);
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 10 },
+      { variantId: 7, baseQuantity: 1 },
+    ])).rejects.toThrowError(/بكج/);
+
+    expect(await loadMats(woId)).toMatchObject([{ variantId: 1, baseQuantity: 10 }]);
+  });
+
+  it("يعيد التحقق حتى في تحرير بلا فرق ويرفض مادة أصبحت معطلة", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+    await db().update(s.products).set({ isActive: false }).where(eq(s.products.id, 1));
+
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 10 },
+    ])).rejects.toThrowError(/معطّلة/);
+
+    expect(Number((await loadWo(woId)).materialsEditCount)).toBe(0);
+  });
+
+  it("يسمح بعد البدء بحذف مادة عُطلت لاحقاً ويعيدها للرف", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+    await startApprovedWorkOrder(woId);
+    expect(await stockOf(1)).toBe(490);
+    await db().update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 1));
+
+    await editMaterialsAfterStart(woId, []);
+
+    expect(await loadMats(woId)).toHaveLength(0);
+    expect(await stockOf(1)).toBe(500);
+    expect(Number((await loadWo(woId)).materialsCost)).toBe(0);
+  });
+
+  it("يسمح بعد البدء بتخفيض مادة عُطلت لاحقاً جزئياً ويعكس الفرق فقط", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+    await startApprovedWorkOrder(woId);
+    await db().update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 1));
+
+    await editMaterialsAfterStart(woId, [
+      { variantId: 1, baseQuantity: 4 },
+    ]);
+
+    expect(await loadMats(woId)).toMatchObject([
+      { variantId: 1, baseQuantity: 4, unitCost: "1000.00" },
+    ]);
+    expect(await stockOf(1)).toBe(496);
+    expect(Number((await loadWo(woId)).materialsCost)).toBe(4000);
+  });
+
+  it("يرفض عكس مادة مستهلَكة أُعيد تصنيفها إلى خدمة كي لا يعكس WIP بلا حركة مخزون", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+    await startApprovedWorkOrder(woId);
+    await db().update(s.products).set({ isService: true }).where(eq(s.products.id, 1));
+
+    await expect(editMaterialsAfterStart(woId, [
+      { variantId: 1, baseQuantity: 5 },
+    ])).rejects.toThrowError(
+      /ليست مادة مخزنية/,
+    );
+
+    expect(await loadMats(woId)).toHaveLength(1);
+    expect(await stockOf(1)).toBe(490);
+    expect(Number((await loadWo(woId)).materialsCost)).toBe(10000);
+  });
+
   it("إرسال القائمة نفسها مرّتين: الثانية صفر حركة وصفر قيد", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
     await startApprovedWorkOrder(woId);
@@ -330,7 +527,7 @@ describe("③ idempotency طبيعيّة + حرّاس", () => {
     await expect(editMaterials(woId, [
       { variantId: 1, baseQuantity: 10 },
       { variantId: 3, baseQuantity: 2 },
-    ])).rejects.toThrowError(/الأمانة/);
+    ])).rejects.toThrowError(/مادة أمر الشغل/);
     expect(await loadMats(woId)).toHaveLength(1);
   });
 
