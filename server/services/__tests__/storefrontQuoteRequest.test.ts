@@ -563,6 +563,79 @@ describe("storefront quote requests", () => {
     });
   });
 
+  it("يقبل التجاوز اليدوي حين لم يوجد مرجع آلي وقت الإصدار ولا عند القبول", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة تسعير يدوي",
+      customerPhone: "07701234572",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "الصنف بلا سعر جملة ونحتاج عرضاً يدوياً راجعه الموظف.",
+      clientRequestId: "quote-manual-without-reference-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const [requestRow] = await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId));
+    await db().update(s.customers)
+      .set({ defaultPriceTier: "WHOLESALE" })
+      .where(eq(s.customers.id, Number(requestRow!.customerId)));
+    const official = await issueSentOfficialQuotation({
+      requestId: request.requestId,
+      customerId: Number(requestRow!.customerId),
+      clientRequestId: "quote-manual-without-reference-official",
+      validUntil: "2099-12-31",
+      unitPriceOverride: "2100.00",
+    });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
+
+    expect(await acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!)).toEqual({
+      outcome: "ACCEPTED",
+      quoteNumber: official.quoteNumber,
+      quoteStatus: "ACCEPTED",
+      alreadyAccepted: false,
+      nextStep: "STAFF_CONFIRMATION",
+    });
+  });
+
+  it("يعيد التجاوز اليدوي بلا مرجع للمراجعة إذا ظهر مرجع آلي لاحقاً", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة مرجع ظهر لاحقاً",
+      customerPhone: "07701234573",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "صدر السعر يدوياً ثم أضيف سعر الجملة قبل القبول.",
+      clientRequestId: "quote-manual-later-reference-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const [requestRow] = await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId));
+    await db().update(s.customers)
+      .set({ defaultPriceTier: "WHOLESALE" })
+      .where(eq(s.customers.id, Number(requestRow!.customerId)));
+    const official = await issueSentOfficialQuotation({
+      requestId: request.requestId,
+      customerId: Number(requestRow!.customerId),
+      clientRequestId: "quote-manual-later-reference-official",
+      validUntil: "2099-12-31",
+      unitPriceOverride: "2100.00",
+    });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
+    await db().insert(s.productPrices).values({
+      productUnitId: 1,
+      priceTier: "WHOLESALE",
+      price: "2200.00",
+    });
+
+    expect(await acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!)).toMatchObject({
+      outcome: "REQUOTE_REQUIRED",
+      quoteNumber: official.quoteNumber,
+      reasons: ["PRICE_CHANGED"],
+    });
+  });
+
   it("لا يرفض العرض عند تغيّر سعر الفئة ما دام العقد الفعّال ثابتاً", async () => {
     const request = await createStorefrontQuoteRequest({
       customerName: "شركة عقد ثابت",

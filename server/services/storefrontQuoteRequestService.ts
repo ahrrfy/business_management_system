@@ -621,15 +621,16 @@ async function acceptLockedOfficialQuotation(
       catalogUnitPrice: catalog.currentUnitPrice,
       contractUnitPrice: contractPrices.get(Number(line.productUnitId)),
     });
-    // أسطر legacy لا تحمل دليلاً يميّز العقد/الفئة/التجاوز؛ القبول يفشل بأمان
-    // ويعيدها للموظف بدلاً من تخمين نية مالية تاريخية.
-    if (
-      line.referenceUnitPrice == null ||
-      line.priceSource == null ||
-      currentReference.unitPrice == null ||
-      (line.priceSource !== "MANUAL" && line.priceSource !== currentReference.priceSource) ||
-      !currentReference.unitPrice.eq(money(line.referenceUnitPrice))
-    ) {
+    // legacy وحده (`priceSource=NULL`) ملتبس ويفشل بأمان. أمّا MANUAL بلا مرجع فحالة
+    // صالحة: يبقى مقبولاً ما دام المرجع الآلي ما زال غائباً، ويعاد للمراجعة إن ظهر لاحقاً.
+    const referenceChanged = line.priceSource == null
+      ? true
+      : line.referenceUnitPrice == null
+        ? line.priceSource !== "MANUAL" || currentReference.unitPrice != null
+        : currentReference.unitPrice == null ||
+          (line.priceSource !== "MANUAL" && line.priceSource !== currentReference.priceSource) ||
+          !currentReference.unitPrice.eq(money(line.referenceUnitPrice));
+    if (referenceChanged) {
       reasons.add("PRICE_CHANGED");
     }
     const baseQuantity = Number(line.baseQuantity);
