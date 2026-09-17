@@ -9,9 +9,10 @@
  *  - TSV لا يَسمَح بِالـtab/newline داخِل الخَلية ⇒ يُستَبدَل بِمَسافة.
  */
 
-import { fmtAr, round2, D } from "@/lib/money";
+import { fmtAr, round2, D, positiveDiff } from "@/lib/money";
 import { fmtDate, fmtDateTime, type DateInput } from "@/lib/date";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
+import { invoiceRemaining } from "@shared/predicates/invoiceRemaining";
 
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
 const SEP = "————————————————";
@@ -262,6 +263,26 @@ export interface WorkOrderCopyData {
   deliveryDate?: DateInput;
 }
 
+export function deriveWorkOrderCopyRemaining(input: {
+  status?: string | null;
+  invoiceId?: number | null;
+  salePrice?: string | number | null;
+  deposit?: string | number | null;
+  invoiceTotal?: string | number | null;
+  invoicePaidAmount?: string | number | null;
+  invoiceReturnedTotal?: string | number | null;
+}): string {
+  if (input.status === "DELIVERED" && input.invoiceId != null) {
+    const remaining = invoiceRemaining({
+      total: input.invoiceTotal ?? input.salePrice,
+      paidAmount: input.invoicePaidAmount,
+      returnedTotal: input.invoiceReturnedTotal,
+    });
+    return remaining.gt(0) ? remaining.toString() : "0";
+  }
+  return positiveDiff(input.salePrice, input.deposit).toString();
+}
+
 export function formatWorkOrderAsWhatsApp(wo: WorkOrderCopyData): string {
   const L: string[] = [];
   L.push(`*أَمر شُغل #${txt(wo.number)}*`);
@@ -392,7 +413,7 @@ export interface ZReportCopyData {
   openingFloat: string | number;
   cashIn: string | number;
   cashOut: string | number;
-  expectedCash: string | number;
+  expectedCash?: string | number | null;
   countedCash?: string | number | null;
   variance?: string | number | null;
 }
@@ -405,10 +426,15 @@ export function formatZReportAsText(z: ZReportCopyData): string {
   L.push(COMPANY_NAME);
   L.push(SEP);
 
+  const expected =
+    z.expectedCash !== null && z.expectedCash !== undefined
+      ? z.expectedCash
+      : round2(D(z.openingFloat).plus(D(z.cashIn)).minus(D(z.cashOut))).toString();
+
   L.push(`الرَصيد الافتِتاحي: ${fmtAr(z.openingFloat)} د.ع`);
   L.push(`النَقد الداخِل: ${fmtAr(z.cashIn)} د.ع`);
   L.push(`النَقد الخارِج: ${fmtAr(z.cashOut)} د.ع`);
-  L.push(`المُتَوَقَّع في الصُندوق: ${fmtAr(z.expectedCash)} د.ع`);
+  L.push(`المُتَوَقَّع في الصُندوق: ${fmtAr(expected)} د.ع`);
 
   if (z.countedCash !== null && z.countedCash !== undefined) {
     L.push(`المَعدود فِعلياً: ${fmtAr(z.countedCash)} د.ع`);
