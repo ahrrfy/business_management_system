@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { listForPos, lookupByBarcode } from "../catalogService";
+import { listByUnitIds, listForPos, lookupByBarcode } from "../catalogService";
 import {
   listContractPricesForCustomer,
   listContractPricesForCustomerPage,
@@ -13,6 +13,7 @@ import {
   setContractPriceActive,
   upsertContractPrice,
 } from "../contractPriceService";
+import { createQuotation, getQuotation, updateQuotation } from "../quotationService";
 import { createSale } from "../saleService";
 import { truncateTables } from "./__testUtils__";
 
@@ -22,7 +23,7 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 
 async function reset() {
   await truncateTables([
-    "customerContractPrices", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems",
+    "customerContractPrices", "quotationItems", "quotations", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems",
     "invoices", "branchStock", "productPrices", "productUnits", "productVariants", "products",
     "shifts", "customers", "branches", "users",
   ]);
@@ -220,6 +221,9 @@ describe("نقطة العرض (POS): listForPos/lookupByBarcode مع customerId"
     const scannedPlain = await lookupByBarcode(BARCODE, 1, "RETAIL");
     expect(scannedPlain?.price).toBe("100.00");
     expect(scannedPlain?.isContractPrice).toBe(false);
+
+    const [batchRow] = await listByUnitIds([1], 1, "RETAIL", 1);
+    expect(batchRow).toMatchObject({ price: "80.00", isContractPrice: true });
   });
 
   it("السعر التعاقدي المعطَّل لا يظهر في العرض", async () => {
@@ -286,5 +290,66 @@ describe("نقطة الفرض (تكاملي): createSale الحقيقي يُسع
       actor
     );
     expect(sale.total).toBe("200.00");
+  });
+});
+
+describe("تكافؤ سعر العقد في عرض السعر", () => {
+  it("يطبّق العقد في الإنشاء والتحديث بلا override، ويبقي التجاوز الصريح أعلى أسبقية", async () => {
+    await upsertContractPrice({ customerId: 1, productUnitId: 1, price: "80.00" }, actor);
+
+    const quote = await createQuotation({
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+    }, actor);
+    expect(quote.total).toBe("160.00");
+    let [line] = await db().select().from(s.quotationItems)
+      .where(eq(s.quotationItems.quotationId, quote.quotationId));
+    expect(line).toMatchObject({
+      unitPrice: "80.00",
+      catalogUnitPrice: "100.00",
+      total: "160.00",
+    });
+    expect((await getQuotation(quote.quotationId))?.items[0]).toMatchObject({
+      unitPrice: "80.00",
+      referenceUnitPrice: "80.00",
+    });
+
+    await upsertContractPrice({ customerId: 1, productUnitId: 1, price: "70.00" }, actor);
+    const updated = await updateQuotation({
+      quotationId: quote.quotationId,
+      customerId: 1,
+      priceTier: "RETAIL",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+    }, actor);
+    expect(updated.total).toBe("140.00");
+    [line] = await db().select().from(s.quotationItems)
+      .where(eq(s.quotationItems.quotationId, quote.quotationId));
+    expect(line).toMatchObject({ unitPrice: "70.00", total: "140.00" });
+
+    const manuallyPriced = await createQuotation({
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      lines: [{
+        variantId: 1,
+        productUnitId: 1,
+        quantity: "2",
+        unitPriceOverride: "90.00",
+      }],
+    }, actor);
+    expect(manuallyPriced.total).toBe("180.00");
+    const [manualLine] = await db().select().from(s.quotationItems)
+      .where(eq(s.quotationItems.quotationId, manuallyPriced.quotationId));
+    expect(manualLine).toMatchObject({
+      unitPrice: "90.00",
+      catalogUnitPrice: "100.00",
+      total: "180.00",
+    });
+    expect((await getQuotation(manuallyPriced.quotationId))?.items[0]).toMatchObject({
+      unitPrice: "90.00",
+      referenceUnitPrice: "70.00",
+    });
   });
 });

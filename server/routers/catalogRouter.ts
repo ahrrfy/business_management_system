@@ -419,6 +419,7 @@ export const catalogRouter = router({
         branchId: z.number().int().positive(),
         tier,
         productUnitIds: z.array(z.number().int().positive()).max(500),
+        customerId: z.number().int().positive().nullish(),
       }),
     )
     .query(async ({ input, ctx }) => {
@@ -426,6 +427,7 @@ export const catalogRouter = router({
         input.productUnitIds,
         scopeBranch(ctx, input.branchId),
         input.tier,
+        input.customerId ?? undefined,
       );
       return redactPosCost(rows, ctx.user);
     }),

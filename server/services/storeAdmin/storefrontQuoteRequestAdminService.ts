@@ -13,6 +13,7 @@ import {
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type Tx } from "../../db";
 import { withTx } from "../tx";
+import { resolveContractPrices } from "../contractPriceService";
 
 export type StorefrontQuoteRequestStatus =
   | "PENDING"
@@ -219,6 +220,9 @@ export async function getStorefrontQuoteRequestForOfficialQuotation(input: {
         .where(inArray(productPrices.productUnitId, unitIds))
     : [];
   const priceTier = request.customerPriceTier ?? "RETAIL";
+  const contractPrices = request.customerId && unitIds.length
+    ? await resolveContractPrices(db, Number(request.customerId), unitIds)
+    : new Map<number, string>();
   const priceByUnit = new Map<number, string>();
   const retailPriceByUnit = new Map<number, string>();
   for (const price of prices) {
@@ -257,7 +261,10 @@ export async function getStorefrontQuoteRequestForOfficialQuotation(input: {
         currentUnitName: isCurrentCatalogLine ? item.currentUnitName : null,
         conversionFactor: isCurrentCatalogLine ? item.conversionFactor : null,
         suggestedUnitPrice: productUnitId
-          ? priceByUnit.get(productUnitId) ?? retailPriceByUnit.get(productUnitId) ?? null
+          ? contractPrices.get(productUnitId)
+            ?? priceByUnit.get(productUnitId)
+            ?? retailPriceByUnit.get(productUnitId)
+            ?? null
           : null,
       };
     }),

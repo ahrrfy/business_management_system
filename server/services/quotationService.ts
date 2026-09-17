@@ -19,7 +19,8 @@ import { computeInvoiceTotals, computeLineTotal } from "./billing";
 import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, round2, toDateStr } from "./money";
-import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
+import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
+import { resolveContractPrices } from "./contractPriceService";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "./sale/create";
 import { openShiftIdTx } from "./shiftService";
 import {
@@ -64,6 +65,30 @@ export interface CreateQuotationInput {
 
 export interface UpdateQuotationInput extends Omit<CreateQuotationInput, "branchId" | "clientRequestId"> {
   quotationId: number;
+}
+
+/**
+ * أسبقية تسعير عرض السعر هي نفس البيع: تجاوزٌ يدوي صريح ← عقد العميل ← فئة السعر.
+ * `catalogUnitPrice` يبقى لقطة سعر الفئة وحده كي يحتفظ عمود قاعدة البيانات بدلالته
+ * وتستطيع بوابة قبول عرض المتجر كشف تغيّر الكتالوج مستقلةً عن السعر المتفاوض عليه.
+ */
+async function resolveQuotationLinePrice(
+  tx: Tx,
+  line: QuotationLineInput,
+  tier: PriceTier,
+  contractPrice: string | undefined,
+) {
+  const catalogUnitPrice = await tryGetUnitPrice(tx, line.productUnitId, tier);
+  const hasOverride = line.unitPriceOverride != null && line.unitPriceOverride !== "";
+  const unitPrice = hasOverride
+    ? money(line.unitPriceOverride!)
+    : contractPrice != null
+      ? money(contractPrice)
+      : catalogUnitPrice ?? await getUnitPrice(tx, line.productUnitId, tier);
+  return {
+    unitPrice,
+    catalogUnitPrice: catalogUnitPrice?.toFixed(2) ?? null,
+  };
 }
 
 async function nextQuoteNumber(tx: Tx, branchId: number): Promise<string> {
@@ -209,16 +234,17 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
     });
+    const contractPrices = input.customerId
+      ? await resolveContractPrices(tx, input.customerId, input.lines.map((line) => line.productUnitId))
+      : new Map<number, string>();
 
     const computed = [];
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId,
       );
-      const catalogUnitPrice = await getUnitPrice(tx, l.productUnitId, tier);
-      const unitPrice =
-        l.unitPriceOverride != null && l.unitPriceOverride !== ""
-          ? money(l.unitPriceOverride)
-          : catalogUnitPrice;
+      const { unitPrice, catalogUnitPrice } = await resolveQuotationLinePrice(
+        tx, l, tier, contractPrices.get(l.productUnitId),
+      );
       const lineRes = computeLineTotal({
         unitPrice,
         quantity: money(l.quantity),
@@ -230,7 +256,7 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         productUnitId: l.productUnitId,
         baseQuantity,
         unitPrice: lineRes.unitPrice,
-        catalogUnitPrice: catalogUnitPrice.toFixed(2),
+        catalogUnitPrice,
         quantity: lineRes.quantity,
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
@@ -343,13 +369,16 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
     });
+    const contractPrices = input.customerId
+      ? await resolveContractPrices(tx, input.customerId, input.lines.map((line) => line.productUnitId))
+      : new Map<number, string>();
 
     const computed: Array<{
       variantId: number;
       productUnitId: number;
       baseQuantity: number;
       unitPrice: string;
-      catalogUnitPrice: string;
+      catalogUnitPrice: string | null;
       quantity: string;
       discountAmount: string;
       total: string;
@@ -361,11 +390,9 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         line.quantity,
         line.variantId,
       );
-      const catalogUnitPrice = await getUnitPrice(tx, line.productUnitId, tier);
-      const unitPrice =
-        line.unitPriceOverride != null && line.unitPriceOverride !== ""
-          ? money(line.unitPriceOverride)
-          : catalogUnitPrice;
+      const { unitPrice, catalogUnitPrice } = await resolveQuotationLinePrice(
+        tx, line, tier, contractPrices.get(line.productUnitId),
+      );
       const result = computeLineTotal({
         unitPrice,
         quantity: money(line.quantity),
@@ -377,7 +404,7 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         productUnitId: line.productUnitId,
         baseQuantity,
         unitPrice: result.unitPrice,
-        catalogUnitPrice: catalogUnitPrice.toFixed(2),
+        catalogUnitPrice,
         quantity: result.quantity,
         discountAmount: result.discountAmount,
         total: result.total,
@@ -911,6 +938,7 @@ export async function getQuotation(quotationId: number) {
       quantity: quotationItems.quantity,
       baseQuantity: quotationItems.baseQuantity,
       unitPrice: quotationItems.unitPrice,
+      catalogUnitPrice: quotationItems.catalogUnitPrice,
       discountAmount: quotationItems.discountAmount,
       total: quotationItems.total,
       productName: products.name,
@@ -926,5 +954,17 @@ export async function getQuotation(quotationId: number) {
     .leftJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(quotationItems.productUnitId, productUnits.id))
     .where(eq(quotationItems.quotationId, quotationId));
-  return { ...q, items };
+  const contractPrices = q.customerId
+    ? await resolveContractPrices(db, Number(q.customerId), items.map((item) => Number(item.productUnitId)))
+    : new Map<number, string>();
+  return {
+    ...q,
+    items: items.map((item) => ({
+      ...item,
+      // مرجع المحرّر الحالي: عقد العميل يفوز، وإلا لقطة فئة السعر وقت إنشاء العرض.
+      // اختلاف unitPrice عنه هو override محفوظ؛ غياب الاثنين يبقى legacy fail-safe في العميل.
+      referenceUnitPrice:
+        contractPrices.get(Number(item.productUnitId)) ?? item.catalogUnitPrice ?? undefined,
+    })),
+  };
 }

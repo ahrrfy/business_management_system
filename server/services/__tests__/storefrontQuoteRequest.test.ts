@@ -16,6 +16,7 @@ import {
   updateStorefrontQuoteRequestStatus,
 } from "../storeAdmin/storefrontQuoteRequestAdminService";
 import { createQuotation, setQuotationStatus } from "../quotationService";
+import { upsertContractPrice } from "../contractPriceService";
 import { truncateAllTables } from "./__testUtils__";
 
 function db() {
@@ -123,6 +124,39 @@ beforeEach(async () => {
 });
 
 describe("storefront quote requests", () => {
+  it("يقترح سعر عقد العميل عند تجهيز طلب المتجر لعرض رسمي", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة العقد",
+      customerPhone: "07701112222",
+      companyName: "شركة العقد",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نحتاج عرضاً رسمياً بالسعر المتفق عليه في العقد.",
+      clientRequestId: "quote-contract-suggestion",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    await updateStorefrontQuoteRequestStatus({
+      requestId: request.requestId,
+      status: "CONTACTED",
+      scopedBranchId: 1,
+    });
+    const [stored] = await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId));
+    await upsertContractPrice({
+      customerId: Number(stored!.customerId),
+      productUnitId: 1,
+      price: "2100.00",
+    }, { userId: 1, branchId: 1 });
+
+    const prepared = await getStorefrontQuoteRequestForOfficialQuotation({
+      requestId: request.requestId,
+      scopedBranchId: 1,
+    });
+    expect(prepared.items[0]?.suggestedUnitPrice).toBe("2100.00");
+  });
+
   it("يلتقط طلب الشركات كصورة احتياج فقط بلا طلب بيع أو حجز مخزون", async () => {
     const created = await createStorefrontQuoteRequest({
       customerName: "شركة الرافدين",
