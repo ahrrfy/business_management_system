@@ -25,6 +25,7 @@ import {
 } from "./barcodeLookupPolicy";
 import { dispatchToDelivery } from "./dispatch";
 import { dispatchInvoiceToDelivery } from "./dispatchInvoice";
+import { invoiceBarcodeSet, onlineOrderLabelToken, workOrderBarcodeSet } from "../barcodeService";
 import type { DeliveryTxActor } from "./types";
 import type { Actor } from "../tx";
 
@@ -54,6 +55,8 @@ export interface BarcodeDispatchResult {
   recipientPhone?: string | null;
   deliveryAddress?: string | null;
   partyName: string;
+  qrPayload?: string | null;
+  labelToken?: string | null;
 }
 
 export async function dispatchByBarcode(
@@ -307,6 +310,7 @@ export async function dispatchByBarcode(
       recipientPhone: createdCn?.recipientPhone ?? onlineOrder.customerPhone ?? null,
       deliveryAddress: createdCn?.deliveryAddress ?? onlineOrder.shippingAddress ?? null,
       partyName: party.name,
+      labelToken: onlineOrderLabelToken(onlineOrder.orderNumber),
     };
   }
 
@@ -326,6 +330,7 @@ export async function dispatchByBarcode(
       deliveryAddress: workOrders.deliveryAddress,
       customerName: customers.name,
       customerPhone: customers.phone,
+      createdAt: workOrders.createdAt,
     })
     .from(workOrders)
     .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -403,6 +408,11 @@ export async function dispatchByBarcode(
       recipientPhone: workOrder.deliveryPhone ?? workOrder.customerPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? workOrder.deliveryAddress ?? null,
       partyName: party.name,
+      qrPayload: workOrderBarcodeSet({
+        orderNumber: workOrder.orderNumber,
+        createdAt: workOrder.createdAt,
+        branchId: Number(workOrder.branchId),
+      }).qrPayload,
     };
   }
 
@@ -419,6 +429,8 @@ export async function dispatchByBarcode(
       deliveryFee: invoices.deliveryFee,
       customerAddress: customers.address,
       invoiceNotes: invoices.notes,
+      invoiceDate: invoices.invoiceDate,
+      total: invoices.total,
     })
     .from(invoices)
     .leftJoin(customers, eq(invoices.customerId, customers.id))
@@ -447,7 +459,7 @@ export async function dispatchByBarcode(
     // إذا كانت الفاتورة مرتبطة بطلب متجر، نستدعي مسار طلب المتجر لضمان الربط السليم
     if (invoice.sourceType === "ONLINE") {
       const [linkedOrder] = await db
-        .select({ id: onlineOrders.id })
+        .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber })
         .from(onlineOrders)
         .where(eq(onlineOrders.invoiceId, Number(invoice.id)))
         .limit(1);
@@ -471,7 +483,7 @@ export async function dispatchByBarcode(
         return {
           sourceType: "ONLINE_ORDER",
           sourceId: Number(linkedOrder.id),
-          sourceNumber: invoice.invoiceNumber,
+          sourceNumber: linkedOrder.orderNumber,
           consignmentId: Number(res.consignmentId ?? createdCn?.id ?? 0),
           consignmentNumber: String(res.consignmentNumber ?? createdCn?.consignmentNumber ?? ""),
           invoiceId: res.invoiceId,
@@ -482,6 +494,7 @@ export async function dispatchByBarcode(
           recipientPhone: createdCn?.recipientPhone ?? invoice.contactPhone ?? null,
           deliveryAddress: createdCn?.deliveryAddress ?? input.deliveryAddress ?? invoice.customerAddress ?? null,
           partyName: party.name,
+          labelToken: onlineOrderLabelToken(linkedOrder.orderNumber),
         };
       }
     }
@@ -517,6 +530,12 @@ export async function dispatchByBarcode(
       recipientPhone: invoice.contactPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? invoice.customerAddress ?? null,
       partyName: party.name,
+      qrPayload: invoiceBarcodeSet({
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceDate: invoice.invoiceDate.toISOString(),
+        total: String(invoice.total),
+        branchId: Number(invoice.branchId),
+      }).qrPayload,
     };
   }
 
