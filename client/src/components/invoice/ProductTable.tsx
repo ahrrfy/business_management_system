@@ -33,6 +33,7 @@ export interface ProductTableProps {
   dispatch: Dispatch<InvoiceAction>;
   branchId: number;
   tier: PriceTier;
+  customerId?: number | null;
   invoiceType: InvoiceType;
   /** false = hide cost & margin columns (cashier role). */
   showCost: boolean;
@@ -150,6 +151,7 @@ export function ProductTable({
   dispatch,
   branchId,
   tier,
+  customerId,
   invoiceType,
   showCost,
   purchaseCurrency = "IQD",
@@ -257,6 +259,7 @@ export function ProductTable({
             invoiceType={invoiceType}
             branchId={branchId}
             tier={tier}
+            customerId={customerId}
             onAddProduct={(line) => { dispatch({ type: "ADD_ITEM", item: line }); setAddTick((t) => t + 1); }}
             onNotify={onNotify}
             // Codex #980: عملة الأمر وسعرُ تثبيته يمرَّان لِتقدير سعر الوحدة **بالدولار** بالقسمة

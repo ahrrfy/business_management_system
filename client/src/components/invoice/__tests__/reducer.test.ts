@@ -56,7 +56,26 @@ describe("invoiceReducer tier repricing", () => {
 
     expect(next.tier).toBe("WHOLESALE");
     expect(next.items.map((item) => item.price)).toEqual(["800.00", "1500.00"]);
+    expect(next.items.map((item) => item.referencePrice)).toEqual(["800.00", "1500.00"]);
     expect(next.items.map((item) => item.discount)).toEqual(["5", "5"]);
+  });
+
+  it("changes the customer and effective contract prices atomically", () => {
+    const state = {
+      ...createInitialState("QUOTATION"),
+      entityId: 3,
+      items: [line(11, "1000.00"), line(22, "2000.00")],
+    };
+
+    const next = invoiceReducer(state, {
+      type: "SET_ENTITY_PRICES",
+      id: 9,
+      pricesByUnitId: { 11: "700.00" },
+    });
+
+    expect(next.entityId).toBe(9);
+    expect(next.items.map((item) => item.price)).toEqual(["700.00", "2000.00"]);
+    expect(next.items.map((item) => item.referencePrice)).toEqual(["700.00", undefined]);
   });
 
   it("keeps a line unchanged when the server did not return its unit", () => {

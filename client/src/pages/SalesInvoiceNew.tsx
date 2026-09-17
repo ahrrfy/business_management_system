@@ -1132,7 +1132,7 @@ export default function SalesInvoice() {
             items={state.items}
             dispatch={dispatch}
             branchId={state.branchId}
-            tier={state.tier}
+            tier={state.tier} customerId={state.entityId}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
             /* هدايا الفاتورة (0149): مفتاح «هدية» لكلّ سطر — يُصفّر قيمته في الفاتورة وتُرحَّل
@@ -1153,7 +1153,7 @@ export default function SalesInvoice() {
             onAddItems={(items) => dispatch({ type: "ADD_ITEMS", items })}
             invoiceType={INVOICE_TYPE}
             branchId={state.branchId}
-            tier={state.tier}
+            tier={state.tier} customerId={state.entityId}
           />
           
           <DigitalCardsPickerDialog

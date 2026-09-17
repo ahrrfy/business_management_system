@@ -31,6 +31,7 @@ export interface BulkPickerProps {
   invoiceType: InvoiceType;
   branchId: number;
   tier: PriceTier;
+  customerId?: number | null;
   /**
    * Codex #980 (٤/٩/٢٦): عملةُ أمر الشراء وسعرُ تثبيته لتقدير سعر وحدة الصفّ بالدولار
    * (الفرع الدولاريّ يقسم على `agreedRate`). تُمرَّر من `PurchaseNew`/`PurchaseEdit`.
@@ -39,7 +40,7 @@ export interface BulkPickerProps {
   purchaseAgreedRate?: string;
 }
 
-export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: BulkPickerProps) {
+export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier, customerId, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: BulkPickerProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -54,7 +55,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   const [limit, setLimit] = useState(PAGE);
 
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: searchQ.trim(), limit, includeAllServices: isAdvancedSale },
+    { branchId, tier, query: searchQ.trim(), limit, includeAllServices: isAdvancedSale, customerId },
     { enabled: open && !isPurchase, placeholderData: keepPreviousData }
   );
   const purQ = trpc.catalog.forPurchase.useQuery(
@@ -163,6 +164,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         isBundle: r.isBundle,
         allowBackorder: r.allowBackorder,
         price: r.price || "0",
+        referencePrice: r.price || "0",
         costBase: r.costBase || "0",
         discount: "0",
         discountType: "percent",

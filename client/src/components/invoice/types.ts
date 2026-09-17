@@ -47,6 +47,11 @@ export interface InvoiceLine {
   allowBackorder?: boolean;
   /** Unit price (decimal string). */
   price: string;
+  /**
+   * السعر المرجعي الآلي الذي ملأه الكتالوج (عقد العميل أو فئته). اختلاف `price` عنه يعني
+   * تجاوزاً يدوياً صريحاً؛ غيابه في سطر legacy يجعل الحفظ يحافظ على السعر الظاهر fail-safe.
+   */
+  referencePrice?: string;
   /** Cost per base unit (decimal string) — hidden from cashier; required by purchases. */
   costBase: string;
   /** Per-line discount, percent (0-100) or absolute amount (in invoice currency). */
@@ -111,6 +116,7 @@ export type InvoiceAction =
   | { type: "REPLACE_STATE"; state: InvoiceState }
   | { type: "SET_FIELD"; field: keyof Omit<InvoiceState, "items">; value: InvoiceState[keyof Omit<InvoiceState, "items">] }
   | { type: "SET_TIER_PRICES"; tier: PriceTier; pricesByUnitId: Record<number, string> }
+  | { type: "SET_ENTITY_PRICES"; id: number | null; pricesByUnitId: Record<number, string> }
   | {
       type: "SET_STOCK_SNAPSHOTS";
       snapshotsByUnitId: Record<number, { stockBase: number; stockBranchId: number; reservedBase: number; availableBase: number; isService: boolean; allowBackorder: boolean }>;

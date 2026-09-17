@@ -25,6 +25,7 @@ export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
   branchId: number;
   tier: PriceTier;
+  customerId?: number | null;
   onAddProduct: (line: InvoiceLine) => void;
   /** Optional callback for "not found" / errors. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
@@ -80,6 +81,7 @@ export function ProductSearchBar({
   invoiceType,
   branchId,
   tier,
+  customerId,
   onAddProduct,
   onNotify,
   purchaseCurrency = "IQD",
@@ -112,7 +114,7 @@ export function ProductSearchBar({
   const canSearch = term.length >= 2;
   // Sale-side query
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale },
+    { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale, customerId },
     { enabled: !isPurchase && canSearch, placeholderData: keepPreviousData, staleTime: 0 }
   );
   // Purchase-side query
@@ -214,6 +216,7 @@ export function ProductSearchBar({
       isBundle: r.isBundle,
       allowBackorder: r.allowBackorder,
       price: r.price || "0",
+      referencePrice: r.price || "0",
       costBase: r.costBase || "0",
       discount: "0",
       discountType: "percent",
@@ -238,7 +241,7 @@ export function ProductSearchBar({
     try {
       let row: Awaited<ReturnType<typeof utils.catalog.byBarcode.fetch>> | null = null;
       try {
-        row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+        row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier, customerId });
       } catch {
         // إذا كان المستخدم لا يملك صلاحية كتالوج المنتجات أو حدث خطأ، ننتقل للفحص الاحتياطي
         row = null;

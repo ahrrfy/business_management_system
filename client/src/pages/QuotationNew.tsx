@@ -21,6 +21,7 @@ import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/in
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { buildQuotationLinePayload } from "@/lib/quotationPayload";
 
 import {
   InvoiceHeader,
@@ -108,6 +109,7 @@ export default function QuotationNew() {
           conversionFactor: item.conversionFactor ?? "1",
           stockBase: 0,
           price: item.unitPrice,
+          referencePrice: item.referenceUnitPrice,
           costBase: item.costBase ?? "0",
           discount: item.discountAmount ?? "0",
           discountType: "amount",
@@ -157,6 +159,7 @@ export default function QuotationNew() {
           conversionFactor: item.conversionFactor ?? "1",
           stockBase: 0,
           price: item.suggestedUnitPrice ?? "0",
+          referencePrice: item.suggestedUnitPrice ?? undefined,
           costBase: "0",
           discount: "0",
           discountType: "amount",
@@ -272,14 +275,7 @@ export default function QuotationNew() {
       clientRequestId,
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       taxRatePercent: state.taxEnabled ? D(state.taxRatePercent || "0").toFixed(2) : undefined,
-      lines: state.items.map((l) => ({
-        variantId: l.variantId,
-        productUnitId: l.productUnitId,
-        quantity: D(l.qty).toString(),
-        unitPriceOverride: D(l.price).toFixed(2),
-        discountPercent: l.discountType === "percent" ? D(l.discount || "0").toFixed(2) : undefined,
-        discountAmount: l.discountType === "amount" ? D(l.discount || "0").toFixed(2) : undefined,
-      })),
+      lines: state.items.map(buildQuotationLinePayload),
     };
   }
 
@@ -551,6 +547,7 @@ export default function QuotationNew() {
             dispatch={dispatch}
             branchId={state.branchId}
             tier={state.tier}
+            customerId={state.entityId}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
             onOpenBulkPicker={() => setBulkOpen(true)}
@@ -564,6 +561,7 @@ export default function QuotationNew() {
             invoiceType={INVOICE_TYPE}
             branchId={state.branchId}
             tier={state.tier}
+            customerId={state.entityId}
           />
         </div>
 
