@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -47,6 +48,12 @@ import { verifyManagerApproval } from "./saleRouter";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { dispatchToDelivery } from "../services/deliveryService";
+import {
+  namespaceAllowsTarget,
+  prepareDeliveryBarcodeLookup,
+  resolveUniqueDeliveryBarcodeTarget,
+  type DeliveryBarcodeTarget,
+} from "../services/delivery/barcodeLookupPolicy";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { nextActionTerminalReason } from "@shared/nextAction";
 import { deriveWorkOrderNextActionFromRow } from "../services/nextActionDerivation";
@@ -202,6 +209,8 @@ const receptionCheckoutSchema = z.object({
     recipientName: z.string().trim().max(255).nullish(),
     recipientPhone: z.string().trim().max(32).nullish(),
     address: z.string().trim().max(500).nullish(),
+    // رقم بوليصة شركة التوصيل — نصّ للحفاظ على الأصفار البادئة؛ إلزام الشركة داخل الخدمة.
+    externalTrackingRef: z.string().trim().max(100).nullish(),
   }).nullish(),
   // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
   openingSellUnavailableConfirmed: z.boolean().optional(),
@@ -1083,48 +1092,142 @@ export const workOrderRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return null;
-      const raw = input.orderNumber.trim();
-      let resolvedRaw = raw;
-      if (/^CN[S]?-/i.test(raw)) {
-        const [matchedCn] = await db
-          .select({
-            consignmentNumber: deliveryConsignments.consignmentNumber,
-            workOrderId: deliveryConsignments.workOrderId,
-            invoiceId: deliveryConsignments.invoiceId,
-            sourceType: deliveryConsignments.sourceType,
-            sourceId: deliveryConsignments.sourceId,
-          })
-          .from(deliveryConsignments)
-          .where(
-            or(
-              eq(deliveryConsignments.consignmentNumber, raw),
-              eq(deliveryConsignments.externalTrackingRef, raw),
-            ),
-          )
-          .limit(1);
+      const lookup = prepareDeliveryBarcodeLookup(input.orderNumber);
+      const { code, systemCode, trackingCode, namespace, numericId } = lookup;
+      const scopedBranchId = canCrossBranches(ctx.user)
+        ? null
+        : (ctx.user.branchId == null ? -1 : Number(ctx.user.branchId));
+      const branchFilter = scopedBranchId != null
+        ? scopedBranchId
+        : null;
 
-        if (matchedCn) {
-          if (matchedCn.workOrderId) {
-            const [wo] = await db.select({ n: workOrders.orderNumber }).from(workOrders).where(eq(workOrders.id, matchedCn.workOrderId)).limit(1);
-            if (wo?.n) resolvedRaw = wo.n;
-          } else if (matchedCn.sourceType === "ONLINE_ORDER" && matchedCn.sourceId) {
-            const [ordRow] = await db.select({ n: onlineOrders.orderNumber }).from(onlineOrders).where(eq(onlineOrders.id, matchedCn.sourceId)).limit(1);
-            if (ordRow?.n) resolvedRaw = ordRow.n;
-          } else if (matchedCn.invoiceId) {
-            const [ordRow] = await db.select({ n: onlineOrders.orderNumber }).from(onlineOrders).where(eq(onlineOrders.invoiceId, matchedCn.invoiceId)).limit(1);
-            if (ordRow?.n) {
-              resolvedRaw = ordRow.n;
-            } else {
-              const [invRow] = await db.select({ n: invoices.invoiceNumber }).from(invoices).where(eq(invoices.id, matchedCn.invoiceId)).limit(1);
-              if (invRow?.n) resolvedRaw = invRow.n;
-            }
-          }
+      const [workOrderCandidates, invoiceCandidates, onlineOrderCandidates, consignmentSources] = await Promise.all([
+        namespaceAllowsTarget(namespace, "WORK_ORDER")
+          ? db
+              .select({ id: workOrders.id })
+              .from(workOrders)
+              .where(and(
+                namespace === "WORK_ORDER"
+                  ? eq(workOrders.orderNumber, systemCode)
+                  : namespace === "NUMERIC"
+                    ? or(
+                        eq(workOrders.orderNumber, code),
+                        eq(workOrders.orderNumber, `WO-${code}`),
+                        numericId != null ? eq(workOrders.id, numericId) : sql`0=1`,
+                      )
+                    : eq(workOrders.orderNumber, code),
+                branchFilter != null ? eq(workOrders.branchId, branchFilter) : sql`1=1`,
+              ))
+              .limit(2)
+          : Promise.resolve([]),
+        namespaceAllowsTarget(namespace, "INVOICE")
+          ? db
+              .select({ id: invoices.id })
+              .from(invoices)
+              .where(and(
+                namespace === "INVOICE"
+                  ? eq(invoices.invoiceNumber, systemCode)
+                  : namespace === "NUMERIC"
+                    ? or(
+                        eq(invoices.invoiceNumber, code),
+                        eq(invoices.invoiceNumber, `INV-${code}`),
+                        numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
+                      )
+                    : eq(invoices.invoiceNumber, code),
+                branchFilter != null ? eq(invoices.branchId, branchFilter) : sql`1=1`,
+              ))
+              .limit(2)
+          : Promise.resolve([]),
+        namespaceAllowsTarget(namespace, "ONLINE_ORDER")
+          ? db
+              .select({ id: onlineOrders.id })
+              .from(onlineOrders)
+              .where(and(
+                namespace === "ONLINE_ORDER"
+                  ? eq(onlineOrders.orderNumber, systemCode)
+                  : namespace === "NUMERIC"
+                    ? or(
+                        eq(onlineOrders.orderNumber, code),
+                        eq(onlineOrders.orderNumber, `ORD-${code}`),
+                        numericId != null ? eq(onlineOrders.id, numericId) : sql`0=1`,
+                      )
+                    : eq(onlineOrders.orderNumber, code),
+                branchFilter != null ? eq(onlineOrders.branchId, branchFilter) : sql`1=1`,
+              ))
+              .limit(2)
+          : Promise.resolve([]),
+        namespaceAllowsTarget(namespace, "CONSIGNMENT")
+          ? db
+              .select({
+                id: deliveryConsignments.id,
+                workOrderId: deliveryConsignments.workOrderId,
+                invoiceId: deliveryConsignments.invoiceId,
+                sourceType: deliveryConsignments.sourceType,
+                sourceId: deliveryConsignments.sourceId,
+                linkedOnlineOrderId: onlineOrders.id,
+              })
+              .from(deliveryConsignments)
+              .leftJoin(onlineOrders, eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId))
+              .where(and(
+                namespace === "CONSIGNMENT"
+                  ? eq(deliveryConsignments.consignmentNumber, systemCode)
+                  : namespace === "NUMERIC"
+                    ? or(
+                        numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
+                        eq(deliveryConsignments.consignmentNumber, code),
+                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                      )
+                    : or(
+                        eq(deliveryConsignments.consignmentNumber, systemCode),
+                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                      ),
+                branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
+              ))
+              .groupBy(
+                deliveryConsignments.id,
+                deliveryConsignments.workOrderId,
+                deliveryConsignments.invoiceId,
+                deliveryConsignments.sourceType,
+                deliveryConsignments.sourceId,
+                onlineOrders.id,
+              )
+              .limit(2)
+          : Promise.resolve([]),
+      ]);
+
+      resolveUniqueDeliveryBarcodeTarget(
+        code,
+        consignmentSources.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id) })),
+      );
+      const consignmentTargets = consignmentSources.flatMap<DeliveryBarcodeTarget>((row) => {
+        if (row.workOrderId != null) {
+          return [{ kind: "WORK_ORDER", id: Number(row.workOrderId) }];
         }
-      }
+        if (row.sourceType === "WORK_ORDER" && row.sourceId != null) {
+          return [{ kind: "WORK_ORDER", id: Number(row.sourceId) }];
+        }
+        if (row.sourceType === "ONLINE_ORDER" && row.sourceId != null) {
+          return [{ kind: "ONLINE_ORDER", id: Number(row.sourceId) }];
+        }
+        if (row.linkedOnlineOrderId != null) {
+          return [{ kind: "ONLINE_ORDER", id: Number(row.linkedOnlineOrderId) }];
+        }
+        if (row.invoiceId != null) {
+          return [{ kind: "INVOICE", id: Number(row.invoiceId) }];
+        }
+        if (row.sourceType === "INVOICE" && row.sourceId != null) {
+          return [{ kind: "INVOICE", id: Number(row.sourceId) }];
+        }
+        return [];
+      });
 
-      const rawCode = resolvedRaw;
-      const stripped = rawCode.replace(/^WO-/i, "").replace(/^INV-/i, "").replace(/^ORD-/i, "");
-      const isNumeric = /^\d+$/.test(rawCode);
+      const selectedTarget = resolveUniqueDeliveryBarcodeTarget(code, [
+        ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id) })),
+        ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id) })),
+        ...onlineOrderCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id) })),
+        ...consignmentTargets,
+      ]);
+
       const [row] = await db
         .select({
           id: workOrders.id,
@@ -1146,15 +1249,12 @@ export const workOrderRouter = router({
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
-        .where(
-          or(
-            eq(workOrders.orderNumber, rawCode),
-            eq(workOrders.orderNumber, `WO-${stripped}`),
-            eq(workOrders.orderNumber, stripped),
-            like(workOrders.orderNumber, `%${stripped}%`),
-            isNumeric ? eq(workOrders.id, Number(rawCode)) : sql`0=1`,
-          ),
-        )
+        .where(and(
+          selectedTarget?.kind === "WORK_ORDER"
+            ? eq(workOrders.id, selectedTarget.id)
+            : sql`0=1`,
+          branchFilter != null ? eq(workOrders.branchId, branchFilter) : sql`1=1`,
+        ))
         .limit(1);
       if (row) {
         const [activeCn] = await db
@@ -1175,6 +1275,7 @@ export const workOrderRouter = router({
             and(
               eq(deliveryConsignments.workOrderId, row.id),
               notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+              branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
             )
           )
           .orderBy(desc(deliveryConsignments.id))
@@ -1219,15 +1320,12 @@ export const workOrderRouter = router({
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
-        .where(
-          or(
-            eq(invoices.invoiceNumber, rawCode),
-            eq(invoices.invoiceNumber, `INV-${stripped}`),
-            eq(invoices.invoiceNumber, stripped),
-            like(invoices.invoiceNumber, `%${stripped}%`),
-            isNumeric ? eq(invoices.id, Number(rawCode)) : sql`0=1`,
-          )
-        )
+        .where(and(
+          selectedTarget?.kind === "INVOICE"
+            ? eq(invoices.id, selectedTarget.id)
+            : sql`0=1`,
+          branchFilter != null ? eq(invoices.branchId, branchFilter) : sql`1=1`,
+        ))
         .limit(1);
       if (inv) {
         const [activeCn] = await db
@@ -1248,6 +1346,7 @@ export const workOrderRouter = router({
             and(
               eq(deliveryConsignments.invoiceId, inv.id),
               notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+              branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
             )
           )
           .orderBy(desc(deliveryConsignments.id))
@@ -1294,15 +1393,12 @@ export const workOrderRouter = router({
         })
         .from(onlineOrders)
         .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
-        .where(
-          or(
-            eq(onlineOrders.orderNumber, rawCode),
-            eq(onlineOrders.orderNumber, `ORD-${stripped}`),
-            eq(onlineOrders.orderNumber, stripped),
-            like(onlineOrders.orderNumber, `%${stripped}%`),
-            isNumeric ? eq(onlineOrders.id, Number(rawCode)) : sql`0=1`,
-          ),
-        )
+        .where(and(
+          selectedTarget?.kind === "ONLINE_ORDER"
+            ? eq(onlineOrders.id, selectedTarget.id)
+            : sql`0=1`,
+          branchFilter != null ? eq(onlineOrders.branchId, branchFilter) : sql`1=1`,
+        ))
         .limit(1);
 
       if (ord) {
@@ -1330,6 +1426,7 @@ export const workOrderRouter = router({
                 ord.invoiceId ? eq(deliveryConsignments.invoiceId, ord.invoiceId) : sql`0=1`,
               ),
               notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+              branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
             ),
           )
           .orderBy(desc(deliveryConsignments.id))
@@ -2127,7 +2224,8 @@ export const workOrderRouter = router({
           )[0];
           if (existingCn) continue;
 
-          // جلب جهة التوصيل النشطة للفرع
+          // التصريف الآلي لا يستطيع اختلاق باركود بوليصة شركة خارجية؛ لذلك يختار مندوباً
+          // فردياً فقط. الشركات تُسنَد من شاشة التوصيل بعد مسح بوليصتها الإلزامية.
           const parties = await db
             .select({ id: deliveryParties.id })
             .from(deliveryParties)
@@ -2135,6 +2233,7 @@ export const workOrderRouter = router({
               and(
                 or(eq(deliveryParties.branchId, Number(wo.branchId)), isNull(deliveryParties.branchId)),
                 eq(deliveryParties.isActive, true),
+                eq(deliveryParties.partyType, "INDIVIDUAL"),
               ),
             )
             .limit(1);

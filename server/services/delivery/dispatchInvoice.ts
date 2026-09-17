@@ -25,7 +25,12 @@ import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { assertSiblingsReady } from "../workOrder/siblings";
-import { normalizeExternalTrackingRef, requireExternalTrackingRef } from "./trackingRefPolicy";
+import {
+  assertExternalTrackingRefAvailable,
+  normalizeExternalTrackingRef,
+  requireExternalTrackingRef,
+  rethrowExternalTrackingRefDuplicate,
+} from "./trackingRefPolicy";
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -75,7 +80,7 @@ export async function dispatchInvoiceInTx(
   input: DispatchInvoiceInput,
   actor: DeliveryTxActor,
 ) {
-  {
+  try {
     const normalizedTrackingRef = normalizeExternalTrackingRef(input.externalTrackingRef);
     const feeCollection = input.feeCollection ?? "COURIER";
     // ش٦ (V15) — رُفع حظر COUNTER **مشروطاً**: يُقبل فقط إن سبق قبضُ الأمانة فعلاً (إيصال IN
@@ -204,6 +209,12 @@ export async function dispatchInvoiceInTx(
         message: "الإرسالية الملغاة تحمل تحصيلاً أو توريداً؛ لا يمكن إعادة تنشيطها",
       });
     }
+    await assertExternalTrackingRefAvailable(
+      tx,
+      Number(input.partyId),
+      externalTrackingRef,
+      already != null ? Number(already.id) : null,
+    );
 
     // ── ش٥: إخوةُ السلّة الواحدة (١٩/٨) ────────────────────────────────────────────
     // المسوّدةُ الواحدة تُنتج فاتورةَ بضاعةٍ **وأوامرَ شغلٍ** معاً؛ والإرسال يمسّ الفاتورة
@@ -388,5 +399,10 @@ export async function dispatchInvoiceInTx(
       deliveryFee: fee.toFixed(2),
       reactivated: already != null,
     };
+  } catch (error) {
+    rethrowExternalTrackingRefDuplicate(
+      error,
+      normalizeExternalTrackingRef(input.externalTrackingRef) ?? "",
+    );
   }
 }

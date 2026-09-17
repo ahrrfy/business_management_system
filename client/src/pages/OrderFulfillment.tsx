@@ -628,9 +628,9 @@ function DispatchModal({
   const [partyId, setPartyId] = useState<number | null>(null);
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const partiesQ = trpc.storeAdmin.orders.parties.useQuery();
-  // فقط الجهات المرتبطة بحساب مندوب (userId) — كي يستطيع المندوب تأكيد التسليم والتحصيل من «توصيلاتي».
-  // جهةٌ بلا حساب (شركة خارجية) لا مسار لها لإنهاء الطلب داخل النظام ⇒ يبقى عالقاً (مراجعة عدائية ١٢/٧).
-  const parties = (partiesQ.data ?? []).filter((p) => p.userId != null);
+  // الشركات الخارجية بلا حساب أصبحت تُغلق بكشف الشركة الممسوح؛ لذلك تظهر هنا مع المناديب،
+  // ويُفرض عليها رقم البوليصة أدناه بدل حجبها وإبقاء الطلب بلا مسار إرسال.
+  const parties = partiesQ.data ?? [];
   const selectedParty = parties.find((p) => p.id === partyId);
 
   useEffect(() => {
@@ -670,7 +670,7 @@ function DispatchModal({
           </div>
         ) : parties.length === 0 ? (
           <div className="rounded-lg bg-muted p-4 text-center text-sm text-muted-foreground">
-            لا يوجد مندوبٌ نشطٌ مرتبطٌ بحساب دخول. أنشئ حساب «مندوب توصيل» في المستخدمين، ثم اربطه بجهة توصيل من إدارة التوصيل ليظهر هنا (فيستطيع تأكيد التسليم عبر «توصيلاتي»).
+            لا توجد جهة توصيل نشطة. أضف مندوباً أو شركةً من إدارة التوصيل ثم أعد المحاولة.
           </div>
         ) : (
           <div className="max-h-64 space-y-2 overflow-y-auto">

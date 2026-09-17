@@ -20,6 +20,7 @@ import { printRemittanceReceipt } from "@/components/delivery/printRemittanceRec
 import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
 import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
 import { statementQueueRemaining, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
+import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
 
 export type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
@@ -59,6 +60,25 @@ export function ReceptionCollectSection({
   const [countedCash, setCountedCash] = useState("");
   const [collectBarcodeInput, setCollectBarcodeInput] = useState("");
   const [isSearchingCollect, setIsSearchingCollect] = useState(false);
+
+  const switchCollectParty = useCallback((
+    nextPartyId: number | null,
+    nextPartyType: "INDIVIDUAL" | "COMPANY" | null | undefined,
+  ) => {
+    const reset = companyStatementPartyTransition(selectedPartyId, nextPartyId, "");
+    if (reset) {
+      setSelectedPartyId(reset.partyId);
+      setStatementNumber(reset.statementNumber);
+      setStatementDeductions(reset.statementDeductions);
+      setStatementNotes(reset.statementNotes);
+      setSelectedStatementLines(reset.selections);
+      setStatementAmounts(reset.amounts);
+      setStatementQueueIds(reset.queueIds);
+      setCountedCash(reset.countedCash);
+    }
+    setSettleMode(nextPartyType === "COMPANY" ? "company" : "courier");
+  }, [selectedPartyId]);
+
   const utils = trpc.useUtils();
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
   const obligationsQ = trpc.delivery.obligations.useQuery(undefined, { staleTime: 10_000, refetchInterval: 30_000 });
@@ -294,14 +314,12 @@ export function ReceptionCollectSection({
         notify.warn(`الطلب #${doc.orderNumber} ليس له إرسالية توصيل نشطة حالياً.`);
         return;
       }
-      setSelectedPartyId(cn.partyId);
       const pInfo = (partiesQ.data ?? []).find((p) => p.id === cn.partyId);
+      switchCollectParty(cn.partyId, pInfo?.partyType);
       if (pInfo?.partyType === "COMPANY") {
-        setSettleMode("company");
         setSelectedStatementLines((prev) => ({ ...prev, [cn.id]: true }));
         notify.ok(`تم تحديد الإرسالية ${cn.consignmentNumber} لشركة ${pInfo.name}`);
       } else {
-        setSettleMode("courier");
         const remaining = Math.max(0, Number(cn.codAmount ?? 0) - Number(cn.collectedAmount ?? 0));
         if (cn.parcelStatus !== "DELIVERED") {
           const ok = await confirm({
@@ -329,7 +347,7 @@ export function ReceptionCollectSection({
     } finally {
       setIsSearchingCollect(false);
     }
-  }, [utils, partiesQ.data, staffConfirmMut]);
+  }, [utils, partiesQ.data, staffConfirmMut, switchCollectParty]);
 
   useEffect(() => {
     if (scannedBarcode) {
@@ -377,14 +395,8 @@ export function ReceptionCollectSection({
           value={selectedPartyId ? String(selectedPartyId) : ""}
           onValueChange={(v) => {
             const nextId = v ? Number(v) : null;
-            setSelectedPartyId(nextId);
-            setCountedCash("");
-            setSelectedStatementLines({});
-            setStatementAmounts({});
-            setStatementQueueIds([]);
             const info = (partiesQ.data ?? []).find((p) => p.id === nextId);
-            if (info?.partyType === "COMPANY") setSettleMode("company");
-            else setSettleMode("courier");
+            switchCollectParty(nextId, info?.partyType);
           }}
           className="h-12 w-full text-base font-bold"
         >

@@ -103,9 +103,13 @@ async function readyWorkOrder(): Promise<number> {
   return woId;
 }
 
-async function dispatchCn(partyId: number): Promise<number> {
+async function dispatchCn(partyId: number, externalTrackingRef?: string): Promise<number> {
   const woId = await readyWorkOrder();
-  const disp = await dispatchToDelivery({ workOrderId: woId, partyId }, CASHIER);
+  const disp = await dispatchToDelivery({
+    workOrderId: woId,
+    partyId,
+    ...(externalTrackingRef ? { externalTrackingRef } : {}),
+  }, CASHIER);
   return disp.consignmentId;
 }
 
@@ -194,7 +198,7 @@ describe("delivery staff transitions — قناة الموظف المستندي�
   it("لا يدهس سائقاً مُسنَداً — ويملأ الشاغر فقط (إرسالية شركة بلا حساب)", async () => {
     const { partyInd, partyCo } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
-    const vacant = await dispatchCn(partyCo); // شركة بلا حساب ⇒ assignedUserId=NULL
+    const vacant = await dispatchCn(partyCo, "STAFF-COMPANY-0001"); // شركة بلا حساب ⇒ assignedUserId=NULL
     const owned = await dispatchCn(partyInd); // فرد ⇒ أُسند تلقائياً للمستخدم 3
     expect((await cnRow(vacant)).assignedUserId).toBeNull();
     expect((await cnRow(owned)).assignedUserId).toBe(3);

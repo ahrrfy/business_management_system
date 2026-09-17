@@ -300,6 +300,7 @@ export default function Reception() {
   type OrderDeliveryValue = {
     partyId: number; partyName: string | null; fee: string; feeCollection: "COUNTER" | "COURIER" | "SHOP";
     recipientPhone: string | null; recipientName: string | null; address: string | null;
+    externalTrackingRef: string | null;
   };
   const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
   const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
@@ -1590,6 +1591,7 @@ export default function Reception() {
             recipientName: orderDelivery.recipientName || undefined,
             recipientPhone: orderDelivery.recipientPhone || undefined,
             address: orderDelivery.address || undefined,
+            externalTrackingRef: orderDelivery.externalTrackingRef?.trim() || undefined,
           }
         : undefined;
 

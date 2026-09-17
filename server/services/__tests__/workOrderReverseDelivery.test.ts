@@ -431,6 +431,7 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
       workOrderId: settled.workOrderId,
       partyId: 1,
       clientRequestId: "settled-redispatch",
+      externalTrackingRef: "REVERSE-REDISPATCH-0001",
     }, CASHIER as never);
     expect(redispatched.consignmentId).not.toBe(1);
     const historical = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 1)))[0]!;

@@ -216,8 +216,15 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     sql`${feeDue} > 0`,
   );
   // كشف الشركة مستندٌ يثبت التسليم والتحصيل معاً؛ لذلك يجب أن يرى كل طردٍ مفتوح للشركة
-  // حتى لو كان ACCEPTED/PICKED_UP/OUT_FOR_DELIVERY، لا ASSIGNED/FAILED فقط.
+  // حتى لو كان ACCEPTED/PICKED_UP/OUT_FOR_DELIVERY، لا ASSIGNED/FAILED فقط. هذه التوسعة
+  // تخصّ الشركات وحدها؛ تطبيقها على المندوب الفردي يعيد الطرد الوسيط إلى قائمة التسوية
+  // قبل أن يصبح قابلاً لأي إجراء مالي (وتبقى رؤيته الصحيحة في «قيد التوصيل»).
   const statementCandidate = and(
+    sql`EXISTS (
+      SELECT 1 FROM ${deliveryParties}
+      WHERE ${deliveryParties.id} = ${partyId}
+        AND ${deliveryParties.partyType} = 'COMPANY'
+    )`,
     eq(deliveryConsignments.status, "DISPATCHED"),
     sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED','RETURNED')`,
     sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL','NOT_APPLICABLE')`,

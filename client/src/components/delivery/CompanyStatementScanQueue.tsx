@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useId, useMemo, useRef, useState } from "react";
 import { CircleX, ScanBarcode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +33,7 @@ export function CompanyStatementScanQueue({
 }: CompanyStatementScanQueueProps) {
   const [barcode, setBarcode] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const scannerInputId = useId();
   const queuedSet = useMemo(() => new Set(queuedIds), [queuedIds]);
   const byId = useMemo(() => new Map(candidates.map((candidate) => [candidate.id, candidate])), [candidates]);
   const queued = queuedIds.flatMap((id) => {
@@ -43,10 +44,6 @@ export function CompanyStatementScanQueue({
   const focusScanner = useCallback(() => {
     setTimeout(() => inputRef.current?.focus(), 30);
   }, []);
-
-  useEffect(() => {
-    if (!disabled) focusScanner();
-  }, [disabled, focusScanner]);
 
   const scan = () => {
     const result = resolveCompanyStatementBarcode(candidates, barcode, queuedSet);
@@ -69,12 +66,13 @@ export function CompanyStatementScanQueue({
 
   return (
     <div className="space-y-3 rounded-xl border-2 border-dashed border-primary/45 bg-background/80 p-3">
-      <div className="flex items-center gap-2 text-sm font-extrabold text-primary">
+      <label htmlFor={scannerInputId} className="flex items-center gap-2 text-sm font-extrabold text-primary">
         <ScanBarcode aria-hidden className="size-4" />
         طابور كشف الشركة بالباركود
-      </div>
+      </label>
       <div className="flex gap-2">
         <Input
+          id={scannerInputId}
           ref={inputRef}
           value={barcode}
           onChange={(event) => setBarcode(event.target.value)}

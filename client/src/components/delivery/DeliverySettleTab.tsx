@@ -14,6 +14,7 @@ import { DeliverySettleSummaryCard } from "@/components/delivery/DeliverySettleS
 import { DeliveryConsignmentsTable } from "@/components/delivery/DeliveryConsignmentsTable";
 import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
 import type { CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
+import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -75,23 +76,33 @@ export function DeliverySettleTab() {
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
   const [countedCash, setCountedCash] = useState(0);
   const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
-
-  useEffect(() => {
-    const p = new URLSearchParams(settleSearch).get("party");
-    if (p && p !== partyId) {
-      setPartyId(p);
-      setRows({});
-      setStatementQueueIds([]);
-      setRemitReqId(crypto.randomUUID());
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settleSearch]);
-
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [statementNumber, setStatementNumber] = useState("");
   const [statementDate, setStatementDate] = useState("");
   const [statementDeductions, setStatementDeductions] = useState(0);
   const [statementNotes, setStatementNotes] = useState("");
+
+  const switchParty = (nextPartyId: string) => {
+    const reset = companyStatementPartyTransition(partyId, nextPartyId, 0);
+    if (!reset) return;
+
+    setPartyId(reset.partyId);
+    setRows(reset.selections);
+    setStatementQueueIds(reset.queueIds);
+    setCountedBreakdown(reset.countedBreakdown);
+    setCountedCash(reset.countedCash);
+    setStatementNumber(reset.statementNumber);
+    setStatementDate(reset.statementDate);
+    setStatementDeductions(reset.statementDeductions);
+    setStatementNotes(reset.statementNotes);
+    setRemitReqId(crypto.randomUUID());
+  };
+
+  useEffect(() => {
+    const p = new URLSearchParams(settleSearch).get("party");
+    if (p) switchParty(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settleSearch]);
 
   const resetAfterSettle = () => {
     setRows({});
@@ -252,7 +263,7 @@ export function DeliverySettleTab() {
         obligations={obligations}
         staleParties={staleParties}
         partyId={partyId}
-        onSelectParty={(p) => { setPartyId(p); setRows({}); setStatementQueueIds([]); setRemitReqId(crypto.randomUUID()); }}
+        onSelectParty={switchParty}
       />
 
       {/* ─── تسوية الجهة المختارة ─── */}
@@ -263,7 +274,7 @@ export function DeliverySettleTab() {
             id="delivery-settle-party"
             className="w-auto min-w-64 max-w-md"
             value={partyId}
-            onValueChange={(value) => { setPartyId(value); setRows({}); setStatementQueueIds([]); setRemitReqId(crypto.randomUUID()); }}
+            onValueChange={switchParty}
           >
             <option value="">— اختر —</option>
             {(obligations.data ?? []).map((p) => (

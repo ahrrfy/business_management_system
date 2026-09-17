@@ -34,7 +34,12 @@ import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatus
 import { deliveryWorkOrderSaleIntent } from "./posting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { workOrderInvoiceSourceId } from "../workOrder/helpers";
-import { normalizeExternalTrackingRef, requireExternalTrackingRef } from "./trackingRefPolicy";
+import {
+  assertExternalTrackingRefAvailable,
+  normalizeExternalTrackingRef,
+  requireExternalTrackingRef,
+  rethrowExternalTrackingRefDuplicate,
+} from "./trackingRefPolicy";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -69,7 +74,8 @@ function reopenedConsignmentSourceId(wo: { id: number | string; version: number 
 }
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
-  return withTx(async (tx) => {
+  try {
+    return await withTx(async (tx) => {
     const normalizedTrackingRef = normalizeExternalTrackingRef(input.externalTrackingRef);
     const payloadHash = idempotencyHash({
       workOrderId: Number(input.workOrderId),
@@ -256,6 +262,12 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const reusableCn = returnedConsignment && (
       !round2(money(priorCn!.collectedAmount ?? "0")).isZero() || priorCn!.remittanceId != null
     ) ? undefined : priorCn;
+    await assertExternalTrackingRefAvailable(
+      tx,
+      Number(input.partyId),
+      externalTrackingRef,
+      reusableCn != null ? Number(reusableCn.id) : null,
+    );
     // الفاتورة القائمة (من الإسناد الملغى) تُعاد استعمالها — ما لم تكن ميتة.
     const priorInvoice = wo.invoiceId != null
       ? (await tx.select().from(invoices).where(eq(invoices.id, Number(wo.invoiceId))).for("update").limit(1))[0]
@@ -567,5 +579,11 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.dispatch", input.clientRequestId, consignmentId, payloadHash);
 
     return { consignmentId, consignmentNumber, invoiceId, invoiceNumber, codAmount: codAmount.toFixed(2), deliveryFee: fee.toFixed(2) };
-  });
+    });
+  } catch (error) {
+    rethrowExternalTrackingRefDuplicate(
+      error,
+      normalizeExternalTrackingRef(input.externalTrackingRef) ?? "",
+    );
+  }
 }

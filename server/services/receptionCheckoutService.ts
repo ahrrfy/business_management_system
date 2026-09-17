@@ -86,6 +86,7 @@ export interface ReceptionCheckoutInput {
     recipientName?: string | null;
     recipientPhone?: string | null;
     address?: string | null;
+    externalTrackingRef?: string | null;
   } | null;
   /** أوفلاين (تعميم على كاشير الاستقبال — داخليّ، يضبطه `offline.replayReception` حصراً):
    *  وسم منشأ الفاتورتين (البيع المباشر وخدمات الطباعة) بالالتقاط دون اتصال. أوامر الشغل
@@ -656,6 +657,7 @@ export async function checkoutReceptionInTx(
             recipientName: input.delivery.recipientName ?? input.contactName ?? null,
             recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
             deliveryAddress: input.delivery.address ?? null,
+            externalTrackingRef: input.delivery.externalTrackingRef ?? null,
             clientRequestId: `${input.clientRequestId}-dispatch`,
           },
           { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role } as never,

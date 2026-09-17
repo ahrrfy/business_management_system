@@ -575,6 +575,7 @@ export const saleRouter = router({
           recipientPhone: z.string().trim().max(32).nullish(),
           address: z.string().trim().max(500).nullish(),
           governorate: z.string().trim().max(40).nullish(),
+          externalTrackingRef: z.string().trim().max(100).nullish(),
         }).nullish(),
         // أجرة التوصيل المقبوضة الآن أمانةً للمندوب (COUNTER) — نقداً في الدرج حتماً، وتساوي `delivery.fee`.
         deliveryFeeHeld: positiveMoneyString.nullish(),

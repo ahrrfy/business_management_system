@@ -100,7 +100,12 @@ async function dispatchedOrder(
   }, CASHIER);
   const woId = r.workOrders[0].workOrderId;
   await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
-  const d = await dispatchToDelivery({ workOrderId: woId, partyId: 1, clientRequestId: `d-${reqId}` }, CASHIER);
+  const d = await dispatchToDelivery({
+    workOrderId: woId,
+    partyId: 1,
+    clientRequestId: `d-${reqId}`,
+    externalTrackingRef: `TRACK-${reqId}`,
+  }, CASHIER);
   return { workOrderId: woId, consignmentId: d.consignmentId, invoiceId: d.invoiceId, codAmount: d.codAmount };
 }
 

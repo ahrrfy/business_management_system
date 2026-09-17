@@ -33,18 +33,25 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray } from "drizzle-orm";
-import { deliveryConsignments, deliveryRemittances } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryParties, deliveryRemittances } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import { money, round2 } from "../money";
 import { confirmConsignmentDelivery, recordSupplementaryStatementCollection, type ConfirmConsignmentResult } from "./courier";
-import { recordDeliveryRemittanceInTx, type RemittanceInput } from "./remittance";
+import {
+  findDeliveryRemittanceReplayInTx,
+  lockDeliveryRemittanceCashSourceInTx,
+  recordDeliveryRemittanceInTx,
+  type DeliveryRemittanceCashSourceLock,
+  type RemittanceInput,
+} from "./remittance";
 import type { DeliveryTxActor } from "./types";
 import { withTx } from "../tx";
 
 export interface CompanyStatementLineInput {
   consignmentId: number;
-  /** المُحصَّل فعلاً على هذا الطرد حسب الكشف (قد يقلّ عن COD — فرقٌ يبقى على العميل). */
+  /** ما حصّلته الشركة على هذا الطرد في هذا الكشف وحده (delta، وقد يقلّ عن المتبقّي). */
   collectedAmount: string;
   /**
    * م١ (PR-4) — **اختياريّ على مستوى السطر**: سببُ العجز من `shared/shortfallReason.ts` حين تقرّ
@@ -90,6 +97,26 @@ export interface CompanyStatementResult {
   /** كل أسطر الكشف إثباتُ تسليمٍ بلا نقد ⇒ تخطّينا المرحلة ② (التوريد) كلّياً. */
   proofOnly?: boolean;
   idempotentReplay?: boolean;
+}
+
+type DeliveryRemittanceReplay = NonNullable<
+  Awaited<ReturnType<typeof findDeliveryRemittanceReplayInTx>>
+>;
+
+function companyStatementReplayResult(
+  statementNumber: string,
+  replay: DeliveryRemittanceReplay,
+): CompanyStatementResult {
+  return {
+    remittanceId: replay.remittanceId,
+    remittanceNumber: replay.remittanceNumber,
+    statementNumber,
+    // replay لا ينفّذ أثراً جديداً؛ العدد يصف هذه المحاولة لا المحاولة الأصلية.
+    deliveriesConfirmed: 0,
+    collectedTotal: replay.collectedTotal,
+    netRemitted: replay.netRemitted,
+    idempotentReplay: true,
+  };
 }
 
 /** طول عمود `deliveryRemittances.companyStatementNumber` (varchar 64) — سقفُ أيّ رقم كشفٍ مشتقّ. */
@@ -163,7 +190,7 @@ async function loadStatementConsignments(input: {
 }
 
 /**
- * تحقّقٌ مسبقٌ لأسطر الكشف قبل الكتابة: تجاوز COD، رجوعٌ مُعلَن، وانحسارُ تحصيلٍ سابق.
+ * تحقّقٌ مسبقٌ لأسطر الكشف قبل الكتابة: تجاوز المتبقّي الحيّ أو رجوعٌ مُعلَن.
  * الحسمُ النهائيّ يبقى داخل المعاملة وتحت أقفال الصفوف في خدمات التسليم والتوريد.
  */
 async function preValidateStatementLines(
@@ -187,18 +214,11 @@ async function preValidateStatementLines(
     const declared = round2(money(l.collectedAmount));
     const codAmount = round2(money(cn.codAmount));
     const currentCollected = round2(money(cn.collectedAmount ?? "0"));
-    if (declared.gt(codAmount)) {
+    const available = round2(codAmount.minus(currentCollected));
+    if (declared.gt(available)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الإرسالية ${l.consignmentId}: المُعلَن ${declared.toFixed(2)} أكثر من مبلغ COD (${codAmount.toFixed(2)})`,
-      });
-    }
-    // للأسطر المختومة سلفاً: الدلتا سيقيسها `recordSupplementaryStatementCollection` — نتحقّق
-    // فقط من رفض الانحسار (declared < ما سبق تحصيله في كشفٍ آخر).
-    if (cn.parcelStatus === "DELIVERED" && declared.lt(currentCollected)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `الإرسالية ${l.consignmentId}: المُعلَن ${declared.toFixed(2)} أقلّ ممّا سبق تحصيله (${currentCollected.toFixed(2)}) — إلغاءُ تحصيلٍ سابقٍ ممنوع`,
+        message: `الإرسالية ${l.consignmentId}: مبلغ هذا الكشف ${declared.toFixed(2)} أكثر من المتبقّي ${available.isNegative() ? "0.00" : available.toFixed(2)} (COD ${codAmount.toFixed(2)} ناقص المحصّل سابقاً ${currentCollected.toFixed(2)})`,
       });
     }
   }
@@ -207,7 +227,7 @@ async function preValidateStatementLines(
   // كاذبة** حين تسدَّد الفاتورة بمسارٍ مشروعٍ سابقاً (عربونٌ عند الاستقبال أو دفعةٌ متجرية) فيبقى
   // `paidAmount>0` عند القراءة قبل الإثبات ⇒ نرفضُ تحصيلاً سيمرّ فعلاً داخل المعاملة (invoiceRemaining
   // يُحسَب من `collectedAmount + counterSettled + الأصل` لا paidAmount وحده). نتركُ الفحصَ لموقعه
-  // الأصليّ ونكتفي هنا بالسطور المحلّية (رجوعٌ مُعلَن، تجاوز COD، انحسار).
+  // الأصليّ ونكتفي هنا بالسطور المحلّية (رجوعٌ مُعلَن، تجاوز المتبقّي الحيّ).
 }
 
 /**
@@ -274,7 +294,96 @@ export async function recordCompanyStatement(
     }
   }
 
+  const remittanceInput: RemittanceInput | null = proofOnly
+    ? null
+    : {
+        branchId: input.branchId,
+        partyId: input.partyId,
+        lines: moneyLines,
+        countedCash: round2(money(input.countedCash)).toFixed(2),
+        shiftType: input.shiftType,
+        clientRequestId: input.clientRequestId ?? `stmt:${input.partyId}:${statementNumber}`,
+        targetShiftId: input.targetShiftId,
+        companyStatement: {
+          statementNumber,
+          statementDate: input.statementDate ?? null,
+          attachmentUrl: input.attachmentUrl ?? null,
+          deductionsTotal: input.deductionsTotal ?? null,
+          notes: input.notes ?? null,
+          statementLines: input.lines.map((line) => ({
+            consignmentId: Number(line.consignmentId),
+            collectedAmount: round2(money(line.collectedAmount)).toFixed(2),
+            shortfallReason: line.shortfallReason?.trim() || null,
+          })),
+        },
+      };
+
   return withTx(async (tx) => {
+  let cashSourceLock: DeliveryRemittanceCashSourceLock | undefined;
+  if (remittanceInput) {
+    // exact replay يسبق تعارض رقم الكشف: النقر المزدوج يعيد السند نفسه بلا أقفالٍ أو آثار.
+    const replay = await findDeliveryRemittanceReplayInTx(tx, remittanceInput);
+    if (replay) return companyStatementReplayResult(statementNumber, replay);
+
+    // الترتيب العالمي للمسارات المالية: مصدر النقد ← الجهة ← الإرسالية ← الفاتورة.
+    cashSourceLock = await lockDeliveryRemittanceCashSourceInTx(tx, remittanceInput, actor);
+  }
+
+  // بعد مصدر النقد (إن وُجد) نقفل الجهة، ثمّ تقفل خدماتُ التسليم الوثائقَ بترتيبها التصاعدي.
+  const party = (
+    await tx
+      .select({
+        id: deliveryParties.id,
+        partyType: deliveryParties.partyType,
+        branchId: deliveryParties.branchId,
+        isActive: deliveryParties.isActive,
+      })
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, input.partyId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!party || !party.isActive) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل كشف شركة التوصيل",
+        why: "جهة التوصيل غير موجودة أو معطّلة، ولا يُسجَّل كشف مالي على جهة غير نشطة",
+        doThis: "اختر شركة توصيل نشطة من القائمة أو اطلب من المدير إعادة تفعيلها أولاً",
+      }),
+    });
+  }
+  if (party.partyType !== "COMPANY") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل كشف شركة التوصيل",
+        why: "الجهة المختارة مندوب فردي وليست شركة توصيل؛ كشف الشركة مخصص لبوالص الشركات فقط",
+        doThis: "استخدم تسوية المندوب للجهة الفردية، أو اختر شركة التوصيل المطابقة للكشف",
+      }),
+    });
+  }
+  if (party.branchId != null && Number(party.branchId) !== input.branchId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل كشف شركة التوصيل",
+        why: "شركة التوصيل تخصّ فرعاً آخر غير فرع الكشف",
+        doThis: "افتح الكشف من فرع الشركة الصحيح أو اختر الشركة المرتبطة بهذا الفرع",
+      }),
+    });
+  }
+  if (remittanceInput) {
+    // إعادةُ الفحص تحت قفلَي المصدر والجهة تغلق سباق طلبَين حملا المفتاح نفسه.
+    const replayAfterLock = await findDeliveryRemittanceReplayInTx(
+      tx,
+      remittanceInput,
+      { forUpdate: true },
+    );
+    if (replayAfterLock) {
+      return companyStatementReplayResult(statementNumber, replayAfterLock);
+    }
+  }
   await assertStatementNotUsed(input.partyId, statementNumber, tx);
 
   // ── المرحلة ①: إثبات التسليم لكل سطرٍ غير مختوم — **بنوعَي السطر معاً** ──
@@ -313,8 +422,8 @@ export async function recordCompanyStatement(
    * **تحصيلٌ متمِّم على الطرود المختومة سلفاً** (Codex P1 #3 — ٢٢/٨): كشفٌ لاحقٌ يقول
    * «حُصِّل الباقي 8k» على طردٍ سبق ختمُه بكشفٍ سابق بـ12k. `confirmConsignmentDelivery`
    * ترتدّ `alreadyDelivered` بلا مساس ⇒ الفاتورة تبقى مدفوعةً جزئياً والعهدةُ لا ترتفع.
-   * ندعو `recordSupplementaryStatementCollection` بالمُعلَن الجديد؛ الدالّة تقيس الدلتا
-   * وترفض ما لا يزيد. `noChange` صامتٌ — لا يُعدّ في `deliveriesConfirmed`.
+   * مبلغُ السطر هو دلتا هذا الكشف وحده؛ تسجّله `recordSupplementaryStatementCollection`
+   * على الفاتورة والعهدة، ثمّ تضيفه آلةُ التوريد إلى إجمالي الإرسالية داخل المعاملة نفسها.
    */
   for (const id of alreadyDeliveredIds) {
     const declared = collectedByLine.get(id);
@@ -322,7 +431,7 @@ export async function recordCompanyStatement(
     await recordSupplementaryStatementCollection(
       {
         consignmentId: id,
-        newCollectedTotal: declared,
+        additionalCollectedAmount: declared,
         statementNumber,
         clientRequestId: `stmt-supp:${input.partyId}:${statementNumber}:${id}`,
       },
@@ -349,26 +458,16 @@ export async function recordCompanyStatement(
   // ── المرحلة ②: التوريد بالآلة القائمة كاملةً بحرّاسها — **بأسطر المال وحدها** ──
   // سطرُ الإثبات لا يُمرَّر: طردُه الصفريّ أُغلق `status=DELIVERED` في المرحلة ① فيرفضه حارس
   // «غير قابلة للتسوية»، وغيرُ المحصَّل ليس توريداً أصلاً (متبقّيه ذمّةُ عميلٍ تُقبض كاونترياً).
-  const remittanceInput: RemittanceInput = {
-    branchId: input.branchId,
-    partyId: input.partyId,
-    lines: moneyLines,
-    countedCash: round2(money(input.countedCash)).toFixed(2),
-    shiftType: input.shiftType,
-    clientRequestId: input.clientRequestId ?? `stmt:${input.partyId}:${statementNumber}`,
-    targetShiftId: input.targetShiftId,  // ش-ISOLATION: تمرير الدرج الصريح
-    companyStatement: {
-      statementNumber,
-      statementDate: input.statementDate ?? null,
-      attachmentUrl: input.attachmentUrl ?? null,
-      deductionsTotal: input.deductionsTotal ?? null,
-      notes: input.notes ?? null,
-    },
-  };
+  if (!remittanceInput || !cashSourceLock) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "تعذّر تهيئة قفل درج كشف شركة التوصيل",
+    });
+  }
 
   let res: Awaited<ReturnType<typeof recordDeliveryRemittanceInTx>>;
   try {
-    res = await recordDeliveryRemittanceInTx(tx, remittanceInput, actor);
+    res = await recordDeliveryRemittanceInTx(tx, remittanceInput, actor, cashSourceLock);
   } catch (e) {
     // سباقٌ على نفس الكشف من جلستين: القيد الفريد يفصل — نُترجمه لرسالةٍ مفهومة.
     if (isDupEntry(e)) {
