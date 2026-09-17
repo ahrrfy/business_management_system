@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -35,8 +35,9 @@ function buildPropertiesAndroid(config) {
 export function assertReleaseConfigSupportsAllAbis(config) {
   const configured = buildPropertiesAndroid(config).buildArchs;
   if (configured === undefined) return;
-  if (!Array.isArray(configured))
+  if (!Array.isArray(configured)) {
     fail("android.buildArchs must be an array when configured");
+  }
 
   const missing = RELEASE_ANDROID_ABIS.filter(
     (abi) => !configured.includes(abi),
@@ -71,7 +72,7 @@ export function zipEntryNames(buffer) {
   const centralDirectoryOffset = buffer.readUInt32LE(eocd + 16);
 
   if (entryCount === 0xffff || centralDirectoryOffset === 0xffffffff) {
-    fail("ZIP64 AABs are not supported by this lightweight verifier");
+    fail("ZIP64 AABs are not supported by this verifier");
   }
 
   const names = [];
@@ -88,8 +89,13 @@ export function zipEntryNames(buffer) {
     const commentLength = buffer.readUInt16LE(offset + 32);
     const nameStart = offset + 46;
     const nameEnd = nameStart + nameLength;
+    const nextOffset = nameEnd + extraLength + commentLength;
+    if (nameEnd > buffer.length || nextOffset > buffer.length) {
+      fail(`truncated central-directory entry at index ${index}`);
+    }
+
     names.push(buffer.toString("utf8", nameStart, nameEnd));
-    offset = nameEnd + extraLength + commentLength;
+    offset = nextOffset;
   }
   return names;
 }
@@ -108,64 +114,187 @@ export function assertAabHasReactNativeDsos(entryNames) {
   }
 }
 
-function centralDirectoryFixture(entryNames) {
-  const entries = entryNames.map((name) => {
-    const encodedName = Buffer.from(name);
-    const entry = Buffer.alloc(46 + encodedName.length);
-    entry.writeUInt32LE(0x02014b50, 0);
-    entry.writeUInt16LE(encodedName.length, 28);
-    encodedName.copy(entry, 46);
-    return entry;
-  });
-  const centralDirectory = Buffer.concat(entries);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(centralDirectory.length, 12);
-  eocd.writeUInt32LE(0, 16);
-  return Buffer.concat([centralDirectory, eocd]);
+export function findAabArtifacts(rootDirectory) {
+  if (!existsSync(rootDirectory)) return [];
+
+  const artifacts = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(entryPath);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".aab")) {
+        artifacts.push(entryPath);
+      }
+    }
+  };
+
+  visit(rootDirectory);
+  return artifacts.sort();
 }
 
-function runSelfTest() {
-  const completeEntries = RELEASE_ANDROID_ABIS.flatMap((abi) =>
-    REQUIRED_REACT_NATIVE_DSOS.map((dso) => `base/lib/${abi}/${dso}`),
-  );
-  const parsed = zipEntryNames(centralDirectoryFixture(completeEntries));
-  assertAabHasReactNativeDsos(parsed);
-
-  let caught = false;
-  try {
-    assertAabHasReactNativeDsos(
-      parsed.filter((entry) => !entry.includes("/x86_64/")),
-    );
-  } catch (error) {
-    caught =
-      error instanceof Error &&
-      error.message.includes("base/lib/x86_64/libreactnative.so");
+export function easBuildRequiresAabVerification(easConfig, env) {
+  if (env.EAS_BUILD !== "true" || env.EAS_BUILD_PLATFORM !== "android") {
+    return false;
   }
-  if (!caught)
-    fail("self-test did not catch a missing x86_64 React Native DSO");
+
+  const profileName = env.EAS_BUILD_PROFILE;
+  if (!profileName)
+    fail("EAS_BUILD_PROFILE is missing on an Android EAS build");
+
+  const seenProfiles = new Set();
+  let currentProfileName = profileName;
+  const profileChain = [];
+  while (currentProfileName) {
+    if (seenProfiles.has(currentProfileName)) {
+      fail(
+        `EAS build profile inheritance contains a cycle at '${currentProfileName}'`,
+      );
+    }
+    seenProfiles.add(currentProfileName);
+
+    const profile = easConfig.build?.[currentProfileName];
+    if (!profile) {
+      fail(
+        `EAS build profile '${currentProfileName}' is missing from eas.json`,
+      );
+    }
+    profileChain.push(profile);
+
+    if (profile.extends !== undefined && typeof profile.extends !== "string") {
+      fail(
+        `EAS build profile '${currentProfileName}' has an invalid extends value`,
+      );
+    }
+    currentProfileName = profile.extends;
+  }
+
+  const resolvedProfile = profileChain.reverse().reduce(
+    (resolved, profile) => {
+      const { android, extends: _extends, ...common } = profile;
+      return {
+        ...resolved,
+        ...common,
+        android: { ...resolved.android, ...android },
+      };
+    },
+    { android: {} },
+  );
+  const {
+    applicationArchivePath,
+    buildType,
+    gradleCommand,
+    distribution: androidDistribution,
+    developmentClient: androidDevelopmentClient,
+  } = resolvedProfile.android;
+  const distribution = androidDistribution ?? resolvedProfile.distribution;
+  const developmentClient =
+    androidDevelopmentClient ?? resolvedProfile.developmentClient;
+
+  let buildsAab;
+  if (gradleCommand !== undefined) {
+    if (typeof gradleCommand !== "string") {
+      fail(`EAS build profile '${profileName}' has an invalid gradleCommand`);
+    }
+    const tasks = gradleCommand
+      .split(/\s+/)
+      .filter((token) => token && !token.startsWith("-"))
+      .map((token) => token.split(":").at(-1)?.toLowerCase() ?? "");
+    buildsAab = tasks.some((task) => task.startsWith("bundle"));
+    const buildsApk = tasks.some((task) => task.startsWith("assemble"));
+    if (buildsAab === buildsApk) {
+      fail(
+        `cannot determine the Android artifact type from gradleCommand '${gradleCommand}'`,
+      );
+    }
+  } else if (developmentClient === true) {
+    buildsAab = false;
+  } else if (buildType !== undefined) {
+    buildsAab = buildType === "app-bundle";
+  } else {
+    buildsAab = distribution !== "internal" && developmentClient !== true;
+  }
+
+  if (buildsAab && applicationArchivePath !== undefined) {
+    fail(
+      `EAS build profile '${profileName}' uses android.applicationArchivePath, which this AAB verifier does not support`,
+    );
+  }
+  return buildsAab;
+}
+
+function verifyAab(artifact) {
+  assertAabHasReactNativeDsos(zipEntryNames(readFileSync(artifact)));
+  console.log(`Android release ABI artifact gate passed: ${artifact}`);
 }
 
 function artifactArgument(args) {
   const index = args.indexOf("--aab");
   if (index === -1) return null;
   const value = args[index + 1];
-  if (!value) fail("--aab requires a path");
+  if (!value || value.startsWith("--")) fail("--aab requires a path");
   return path.resolve(process.cwd(), value);
 }
 
+function assertKnownArguments(args) {
+  const known = new Set(["--aab", "--eas-on-success"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (!known.has(argument)) fail(`unknown argument: ${argument}`);
+    if (argument === "--aab") index += 1;
+  }
+  if (args.includes("--aab") && args.includes("--eas-on-success")) {
+    fail("use either --aab or --eas-on-success, not both");
+  }
+}
+
+export function verifyEasAabOnSuccess(
+  easConfig,
+  {
+    env = process.env,
+    outputDirectory = path.join(
+      projectDirectory,
+      "android",
+      "app",
+      "build",
+      "outputs",
+    ),
+  } = {},
+) {
+  if (!easBuildRequiresAabVerification(easConfig, env)) {
+    console.log("Android AAB artifact gate skipped for this EAS build profile");
+    return;
+  }
+
+  const artifacts = findAabArtifacts(outputDirectory);
+  if (artifacts.length === 0) {
+    fail(`no AAB found below ${outputDirectory}`);
+  }
+  for (const artifact of artifacts) verifyAab(artifact);
+}
+
 function main() {
-  runSelfTest();
+  const args = process.argv.slice(2);
+  assertKnownArguments(args);
+
   const appConfig = require(path.join(projectDirectory, "app.config.js"));
   assertReleaseConfigSupportsAllAbis(appConfig);
 
-  const artifact = artifactArgument(process.argv.slice(2));
-  if (artifact) {
-    assertAabHasReactNativeDsos(zipEntryNames(readFileSync(artifact)));
-    console.log(`Android release ABI gate passed for ${artifact}`);
+  const easConfig = JSON.parse(
+    readFileSync(path.join(projectDirectory, "eas.json"), "utf8"),
+  );
+  if (args.includes("--eas-on-success")) {
+    verifyEasAabOnSuccess(easConfig);
     return;
+  }
+
+  const artifact = artifactArgument(args);
+  if (artifact) {
+    verifyAab(artifact);
+    return;
+  }
+  if (process.env.EAS_BUILD === "true") {
+    easBuildRequiresAabVerification(easConfig, process.env);
   }
   console.log(
     `Android release ABI config gate passed: ${RELEASE_ANDROID_ABIS.join(", ")}`,
