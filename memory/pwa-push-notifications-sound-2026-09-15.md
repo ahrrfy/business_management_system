@@ -1,21 +1,35 @@
-# PWA and Native Notifications Sound
+# صوت واهتزاز إشعارات PWA وAndroid — 2026-09-15
 
-## Context
+## النتيجة النهائية
 
-Push notifications should request the platform's normal audible and vibration feedback without
-shipping a custom sound that browsers ignore or replaying the same native notification twice.
+- **Web PWA:** يمرّر `push-handler.js` إلى نظام التشغيل `silent: false` ونمط الاهتزاز
+  `[150, 80, 150, 80, 250]`، وينشئ `tag` دائماً مع `renotify: true`. لذلك يصدر تنبيه جديد
+  حتى عند استبدال إشعار سابق من النوع نفسه.
+- **Android الأصلي:** يستعمل `NativeNotificationRenderer` إعدادات النظام الافتراضية للصوت والاهتزاز
+  عبر `NotificationCompat.DEFAULT_ALL`، مع إبقاء `setOnlyAlertOnce(true)` لمنع تكرار الصوت عند
+  إعادة تسليم الحمولة نفسها. جميع القنوات المستخدمة عالية الأهمية وتسمح بالاهتزاز.
+- **قناة FCM الاحتياطية:** يشير `AndroidManifest.xml` إلى `system_updates_v2`، وهي قناة منشأة فعلياً،
+  بدلاً من المعرّف اليتيم السابق `business_updates`.
 
-## Changes
+## السبب الجذري وما أزيل
 
-- **Web PWA**: `client/public/push-handler.js` sets `silent: false`, provides an explicit vibration
-  pattern, and sets `renotify` for tagged notifications. Untagged notifications receive a unique tag,
-  so they alert naturally without the invalid `renotify: true` plus empty-tag combination. Browser and
-  operating-system notification settings still control whether sound or vibration is actually played.
-- **Android native app**: `NativeNotificationRenderer.kt` uses
-  `setDefaults(NotificationCompat.DEFAULT_ALL)` so pre-Android 8 devices request the default ringtone
-  and vibration. Android 8+ uses the existing high-importance notification channels, whose user-facing
-  settings remain authoritative.
-- **Duplicate delivery**: `setOnlyAlertOnce(true)` remains enabled. Redelivery of the same notification
-  ID updates the notification without replaying its sound, while a new notification ID alerts normally.
-- **Assets**: No custom `notification.wav` is shipped or added to the Vite PWA precache because the Web
-  Notifications API does not support a portable custom `sound` option.
+- Web Push لا يدعم ملف صوت مخصّصاً بصورة معيارية؛ لذلك لا يوجد `notification.wav` ولا إدخال وهمي
+  له في precache. الصوت الصحيح هو صوت الإشعار الافتراضي الذي يختاره نظام التشغيل.
+- كان `renotify` يتعطل عندما تصل حمولة بلا `kind` أو `tag` رغم أن المعالج يولّد `tag` احتياطياً؛
+  أصبح ثابتاً على `true` لأن شرط وجود `tag` متحقق دائماً.
+- كان Manifest يعلن قناة افتراضية غير منشأة، ما يسمح لـFCM بالهبوط إلى قناة احتياطية غير محكومة
+  إذا استُخدم مسار العرض التلقائي. أصبح المعرّف مطابقاً لقناة النظام الفعلية.
+
+## الحماية من الرجوع
+
+يحرس `shared/notificationAlertContract.test.ts` العقود التالية:
+
+1. صوت PWA غير صامت، والاهتزاز و`tag/renotify` حاضرة، ولا يُقبل حقل أو ملف صوت مخصّص.
+2. منشئ Android يطلب `DEFAULT_ALL` مرة واحدة ويبقي `setOnlyAlertOnce(true)` بلا كتم.
+3. كل قناة يستخدمها العارض منشأة بأهمية عالية، ومعرّف قناة FCM الافتراضية موجود ضمن القنوات المعلنة.
+
+## حد المنصة
+
+لا يستطيع التطبيق تجاوز الوضع الصامت، أو إذن الإشعارات المرفوض، أو قناة عطّل المستخدم صوتها، أو
+قيود المتصفح/نظام التشغيل. الضمان هنا أن التطبيق يطلب الصوت والاهتزاز بصورة صحيحة ومتسقة؛ القرار
+النهائي يبقى لإعدادات الجهاز احتراماً لتفضيلات المستخدم.
