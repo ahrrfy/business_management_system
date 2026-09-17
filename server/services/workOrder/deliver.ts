@@ -1,7 +1,7 @@
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
-import { customers, invoiceItems, invoices, productUnits, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
+import { customers, invoiceItems, invoices, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
 import { requiresFullPaymentAtHandover, COD_PICKUP_PAYMENT_ERROR_AR, type CodPaymentMode } from "@shared/codHandoverPolicy";
 import { extractInsertId } from "../../lib/insertId";
@@ -20,6 +20,10 @@ import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
+import {
+  assertBaseProductUnitBinding,
+  requireWorkOrderBaseSnapshot,
+} from "./baseInventorySnapshot";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -79,16 +83,9 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // أمر خدمة خالص (بلا منتج أساس): الفاتورة بلا سطر مخزون (invoiceItems.variantId = NOT NULL FK).
     // كانت deliver السابقة تُدرج variantId = Number(null) = 0 ⇒ انتهاك FK ⇒ تعذّر تسليم أوامر
     // التخصيص الخالصة. الآن: سطرٌ فقط حين يوجد منتج أساس؛ صافي الفاتورة/القيد محفوظ بـsalePrice.
-    const hasBaseVariant = wo.baseVariantId != null;
-    const baseUnit = hasBaseVariant
-      ? (
-          await tx
-            .select({ id: productUnits.id })
-            .from(productUnits)
-            .where(eq(productUnits.variantId, Number(wo.baseVariantId)))
-            .limit(1)
-        )[0]
-      : undefined;
+    const baseSnapshot = requireWorkOrderBaseSnapshot(wo);
+    if (baseSnapshot) await assertBaseProductUnitBinding(tx, baseSnapshot);
+    const hasBaseVariant = baseSnapshot != null;
 
     const quantity = wo.quantity;
     const salePrice = money(wo.salePrice);
@@ -277,20 +274,21 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
           .select({ name: products.name, invoiceLabel: products.invoiceLabel, shortTitle: products.shortTitle })
           .from(productVariants)
           .innerJoin(products, eq(productVariants.productId, products.id))
-          .where(eq(productVariants.id, Number(wo.baseVariantId)))
+          .where(eq(productVariants.id, baseSnapshot!.variantId))
           .limit(1))[0]
       : null;
     const itemNameSnapshot = productNameRow ? titleForChannel(productNameRow, "invoice") : null;
     if (hasBaseVariant) {
       await tx.insert(invoiceItems).values({
         invoiceId,
-        variantId: Number(wo.baseVariantId),
-        productUnitId: baseUnit ? Number(baseUnit.id) : null,
+        variantId: baseSnapshot!.variantId,
+        productUnitId: baseSnapshot!.productUnitId,
         workOrderId: Number(wo.id),
         quantity: Number(quantity).toFixed(3),
-        baseQuantity: quantity,
+        baseQuantity: baseSnapshot!.baseQuantity,
         unitPrice: unitPrice.toFixed(2),
         unitCost: round2(costTotal.dividedBy(quantity)).toFixed(2),
+        lineCost: costTotal.toFixed(2),
         discountAmount: "0",
         total: salePrice.toFixed(2),
         itemNameSnapshot,

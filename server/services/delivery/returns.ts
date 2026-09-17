@@ -176,6 +176,7 @@ export async function returnConsignment(
         variantId: invoiceItems.variantId,
         total: invoiceItems.total,
         unitCost: invoiceItems.unitCost,
+        lineCost: invoiceItems.lineCost,
         baseQuantity: invoiceItems.baseQuantity,
         isGift: invoiceItems.isGift,
         isService: products.isService,
@@ -232,7 +233,6 @@ export async function returnConsignment(
     // بخلاف مسار أمر الشغل) ⇒ التعليق القديم «لا AR — customerId=NULL» صار خاطئاً: البضاعة
     // عادت للرفّ والعميل يبقى مديناً بها للأبد. القيد يُختَم بالعميل، والذمّة تُخصَم أدناه.
     const total = money(inv.total);
-    const costTotal = money(inv.costTotal);
     const tax = round2(money(inv.taxAmount ?? "0"));
     const deliveryRevenue = round2(money(inv.deliveryFee ?? "0"));
     const sectorRevenue = round2(total.minus(tax).minus(deliveryRevenue));
@@ -286,11 +286,11 @@ export async function returnConsignment(
     let giftCost = money(0);
     let ownedGiftCost = money(0);
     for (const item of items) {
-      const share = round2(money(item.unitCost).times(item.baseQuantity));
+      const share = money(item.lineCost);
       if (item.isGift) {
         giftCost = giftCost.plus(share);
         if (!item.isConsignment) ownedGiftCost = ownedGiftCost.plus(share);
-      } else if (!item.isService && !item.isConsignment) {
+      } else if (!item.isConsignment) {
         ownedInventoryCost = ownedInventoryCost.plus(share);
       }
       if (item.isConsignment) {
@@ -310,20 +310,20 @@ export async function returnConsignment(
 
     const invCustomerId = inv.customerId != null ? Number(inv.customerId) : null;
     const revenueBeforeTax = round2(total.minus(tax));
-    // A returned delivery cancels the work order and does not put consumed
-    // materials back into stock or WIP. Keep that material COGS as the loss of
-    // the cancelled job; only the sale revenue is reversed. Inventory sales
-    // still reverse their physically-restocked owned cost as usual.
+    // أمر الشغل لا يعيد مواد WIP (حركاته ليست INVOICE/PRINT_SALE). أمّا خدمة نقطة البيع
+    // فمواد لقطة بيعها عادت فعلياً أعلاه مع OUT الأصلية، لذا يجب عكس COGS بذات lineCost.
     const operationalReturnCost = inv.sourceType === "WORKORDER"
       ? money(0)
-      : costTotal.neg();
+      : ownedInventoryCost.neg();
     const operationalReturnRevenue = revenueBeforeTax.neg();
     const revenueRoleEntries = Array.from(revenueByRole.entries()).map(([role, amount]) => ({
       role: role as "SALES_FLEX" | "SALES_PRINT" | "SALES_STATIONERY" | "OTHER_REVENUE",
       amount,
     }));
-    const reversesOwnedInventory = returnKind === "INVENTORY" ||
-      returnKind === "DIGITAL" || returnKind === "MIXED";
+    const accountingReturnKind: DeliveryReturnSaleKind =
+      returnKind === "SERVICE" && ownedInventoryCost.gt(0) ? "MIXED" : returnKind;
+    const reversesOwnedInventory = accountingReturnKind === "INVENTORY" ||
+      accountingReturnKind === "DIGITAL" || accountingReturnKind === "MIXED";
     const roleDebits: Partial<Record<AccountRole, Decimal>> = {};
     for (const { role, amount } of revenueRoleEntries) roleDebits[role] = amount;
     if (deliveryRevenue.gt(0)) roleDebits.DELIVERY_REVENUE = deliveryRevenue;
@@ -351,7 +351,7 @@ export async function returnConsignment(
         taxAmount: tax.neg(),
         postingSourceComponents: returnPostingSourceComponents,
         postingIntent: deliveryReturnSaleIntent({
-          kind: returnKind,
+          kind: accountingReturnKind,
           sectorRevenue,
           revenueByRole: revenueRoleEntries,
           deliveryRevenue,

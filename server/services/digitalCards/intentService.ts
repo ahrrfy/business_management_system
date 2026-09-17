@@ -28,6 +28,8 @@ import {
   digitalWalletReservations,
   digitalWallets,
   products,
+  productUnits,
+  productVariants,
   shifts,
   suppliers,
   users,
@@ -41,12 +43,35 @@ import { extractInsertId } from "../../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../../lib/phone";
 import { assertCreditLimit } from "../../lib/credit";
 import { createApproval } from "../creditApprovalService";
-import { money, sumMoney, toDbMoney } from "../money";
 import { readOpeningWindowState } from "../openingModeService";
+import {
+  invoiceDiscountExceedsThreshold,
+  lineDiscountExceedsThreshold,
+} from "../billing";
+import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
+import { money, sumMoney, toDbMoney } from "../money";
+import { assertPeriodOpen } from "../periodLockService";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
-import { assertCheckoutReplay, prepareCheckoutSnapshot } from "./mixedCartService";
+import {
+  assertCheckoutReplay,
+  prepareCheckoutSnapshot,
+  VERIFIED_DIGITAL_PRICE_APPROVAL,
+} from "./mixedCartService";
+import {
+  assertInvoiceFullPayment,
+  assertInvoiceLinePartition,
+  assertInvoiceSourceEnvelope,
+  computeInvoiceIntentTotal,
+  parseInvoiceSourcePayload,
+  type InvoiceSourcePayload,
+} from "./intentSchemas";
+import {
+  intentInventoryExemptions,
+  releaseIntentInventory,
+  reserveIntentInventory,
+} from "./inventoryReservationService";
 
 /* ────────── الأنواع ────────── */
 
@@ -91,9 +116,10 @@ export interface PrepareInput {
   notes?: string | null;
   regularLines?: DigitalCheckoutRegularLineInput[];
   sourceType?: "POS" | "INVOICE" | "RECEPTION";
-  sourcePayload?: any;
-  /** داخلي فقط؛ يحقنه الراوتر بعد التحقق من هوية المدير. */
-  managerOverrideByUserId?: number;
+  sourcePayload?: unknown;
+  /** process-local capability: cannot be supplied over JSON. */
+  priceApprovalCapability?: typeof VERIFIED_DIGITAL_PRICE_APPROVAL;
+  priceApprovedBy?: number | null;
 }
 
 /** مهلة النيّة: نافذةٌ معقولة لإصدار الكروت من جهاز المزوّد قبل أن تُعتبر مهجورة. */
@@ -137,6 +163,41 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
   }
 }
 
+function normalizeIntentSource(input: PrepareInput): {
+  input: PrepareInput;
+  invoicePayload: InvoiceSourcePayload | null;
+} {
+  if (input.sourceType === "RECEPTION") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "إصدار الكروت من سلة الاستقبال غير مفعّل بعقد آمن بعد — استخدم نقطة البيع أو فاتورة البيع",
+    });
+  }
+  if (input.sourceType === "INVOICE") {
+    const invoicePayload = parseInvoiceSourcePayload(input.sourcePayload);
+    assertInvoiceSourceEnvelope(invoicePayload, {
+      branchId: input.branchId,
+      shiftId: input.shiftId,
+      customerId: input.customerId,
+      priceTier: input.priceTier,
+      clientRequestId: input.clientRequestId,
+    });
+    assertInvoiceLinePartition(invoicePayload, input.regularLines ?? []);
+    return {
+      input: { ...input, sourcePayload: invoicePayload },
+      invoicePayload,
+    };
+  }
+  if (input.sourcePayload != null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "نقطة البيع الرقمية لا تقبل حمولة مصدر إضافية غير مستخدمة",
+    });
+  }
+  return { input: { ...input, sourcePayload: undefined }, invoicePayload: null };
+}
+
 /* ────────── إعداد النيّة ────────── */
 
 export async function prepare(
@@ -144,6 +205,19 @@ export async function prepare(
   input: PrepareInput,
   actor: Actor,
 ): Promise<{ intentId: number; replay: boolean; expiresAt: Date }> {
+  const normalizedSource = normalizeIntentSource(input);
+  input = normalizedSource.input;
+  const invoicePayload = normalizedSource.invoicePayload;
+  // يسبق replay حتى لا تعبر نيّة تاريخية CREDIT/طريقة معطّلة إلى claim ثم تفشل بعد الإصدار.
+  if (
+    !ALLOWED_PAYMENT_METHODS.has(input.paymentMethod) &&
+    !(input.paymentMethod === "CREDIT" && input.sourceType === "INVOICE")
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "البيع الرقميّ نقداً أو ببطاقة فقط — لا آجل على الكروت",
+    });
+  }
   // idempotency: نقرة مزدوجة/إعادة إرسال بنفس المفتاح تُعيد النيّة القائمة بدل حجزٍ ثانٍ.
   const [existing] = await tx
     .select({
@@ -199,6 +273,18 @@ export async function prepare(
     return { intentId: Number(existing.id), replay: true, expiresAt: existing.expiresAt };
   }
 
+  // فواتير البيع كانت تؤكد عملية البطاقة الخارجية قبل إنشاء النيّة وحجز المخزون.
+  // أي رفض لاحق (سعر/مخزون/اعتماد) يترك قبضاً مؤكداً بلا فاتورة ولا مسار عكس آلي.
+  // أبقِ replay/الإنقاذ للنيات التاريخية أعلاه، لكن لا تنشئ مخاطرة جديدة حتى يصبح
+  // الربط مرحلتين: PREPARED -> external payment -> READY_TO_ISSUE.
+  if (input.paymentMethod === "CARD") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "إصدار الكروت الرقمية بدفع البطاقة موقوف مؤقتاً حتى يكتمل الربط الذري للدفع؛ استخدم النقد ولا تؤكد أي قبض خارجي لهذه السلة",
+    });
+  }
+
   if (!input.lines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا كروت في السلة" });
   }
@@ -250,6 +336,7 @@ export async function prepare(
     .select({ id: shifts.id, branchId: shifts.branchId, userId: shifts.userId, status: shifts.status })
     .from(shifts)
     .where(eq(shifts.id, input.shiftId))
+    .for("update")
     .limit(1);
   if (!shift || shift.status !== "OPEN") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا وردية مفتوحة" });
@@ -261,13 +348,22 @@ export async function prepare(
     throw new TRPCError({ code: "FORBIDDEN", message: "الوردية تخصّ مستخدماً آخر" });
   }
 
-  const [branch] = await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1);
+  const [branch] = await tx
+    .select({ id: branches.id, isActive: branches.isActive })
+    .from(branches)
+    .where(eq(branches.id, input.branchId))
+    .limit(1);
   if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+  if (branch.isActive !== true) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع معطّل ولا يقبل إصدار بطاقات" });
+  }
 
   // تحقّق كل بند مقابل الحالة الخادمية اللحظية.
   type Resolved = {
     line: PrepareLine;
     offeringId: number;
+    variantId: number;
+    productUnitId: number;
     providerId: number;
     settlementMode: string;
     walletId: number | null;
@@ -286,14 +382,25 @@ export async function prepare(
     const [row] = await tx
       .select({
         offeringId: digitalOfferings.id,
+        variantId: digitalOfferings.variantId,
+        productUnitId: digitalOfferings.productUnitId,
         providerId: digitalOfferings.providerId,
         name: products.name,
         isActive: digitalOfferings.isActive,
+        productActive: products.isActive,
+        productType: products.productType,
+        productIsService: products.isService,
+        productIsBundle: products.isBundle,
+        productIsConsignment: products.isConsignment,
+        variantActive: productVariants.isActive,
+        unitActive: productUnits.isActive,
+        unitIsBase: productUnits.isBaseUnit,
         requiresStudentData: digitalOfferings.requiresStudentData,
         priceValidityHours: digitalOfferings.priceValidityHours,
         providerActive: digitalProviders.isActive,
         settlementMode: digitalProviders.settlementMode,
         branchActive: digitalOfferingBranches.isActive,
+        catalogBranchActive: branches.isActive,
         walletId: digitalOfferingBranches.walletId,
         currentVersionId: digitalCurrentPrices.priceVersionId,
         sellPrice: digitalPriceVersions.sellPrice,
@@ -304,6 +411,20 @@ export async function prepare(
       })
       .from(digitalOfferings)
       .innerJoin(products, eq(digitalOfferings.productId, products.id))
+      .innerJoin(
+        productVariants,
+        and(
+          eq(digitalOfferings.variantId, productVariants.id),
+          eq(productVariants.productId, products.id),
+        ),
+      )
+      .innerJoin(
+        productUnits,
+        and(
+          eq(digitalOfferings.productUnitId, productUnits.id),
+          eq(productUnits.variantId, productVariants.id),
+        ),
+      )
       .innerJoin(digitalProviders, eq(digitalOfferings.providerId, digitalProviders.id))
       .innerJoin(
         digitalOfferingBranches,
@@ -312,6 +433,7 @@ export async function prepare(
           eq(digitalOfferingBranches.branchId, input.branchId),
         ),
       )
+      .innerJoin(branches, eq(digitalOfferingBranches.branchId, branches.id))
       .leftJoin(
         digitalCurrentPrices,
         and(
@@ -324,8 +446,28 @@ export async function prepare(
       .limit(1);
 
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "بطاقة غير متاحة في هذا الفرع" });
-    if (!row.isActive || !row.providerActive || !row.branchActive) {
+    if (
+      row.isActive !== true ||
+      row.providerActive !== true ||
+      row.branchActive !== true ||
+      row.catalogBranchActive !== true
+    ) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `«${row.name}» لم تعد متاحة للبيع` });
+    }
+    if (
+      row.productType !== "DIGITAL_CARD" ||
+      row.productIsService !== true ||
+      row.productIsBundle === true ||
+      row.productIsConsignment === true ||
+      row.productActive !== true ||
+      row.variantActive !== true ||
+      row.unitActive !== true ||
+      row.unitIsBase !== true
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `ربط الكتالوج للبطاقة «${row.name}» غير صالح أو معطّل`,
+      });
     }
     if (row.currentVersionId == null || row.sellPrice == null) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `«${row.name}» بلا سعر منشور` });
@@ -384,6 +526,8 @@ export async function prepare(
     resolved.push({
       line,
       offeringId: Number(row.offeringId),
+      variantId: Number(row.variantId),
+      productUnitId: Number(row.productUnitId),
       providerId: Number(row.providerId),
       settlementMode: row.settlementMode,
       walletId: row.walletId != null ? Number(row.walletId) : null,
@@ -449,43 +593,229 @@ export async function prepare(
   }
 
   const expiresAt = new Date(Date.now() + INTENT_TTL_MINUTES * 60_000);
-  const checkoutBase = await prepareCheckoutSnapshot(
-    tx,
-    { ...input, managerApprovedByUserId: input.managerOverrideByUserId ?? null },
-    actor,
-  );
-  const expectedTotal = toDbMoney(sumMoney(resolved.map((r) => r.sellPrice)).plus(money(checkoutBase.expectedSubtotal)));
+  const checkoutBase = await prepareCheckoutSnapshot(tx, input, actor);
+  const digitalPriceLines = resolved.map((r) => ({
+    lineKey: r.line.lineKey,
+    variantId: r.variantId,
+    productUnitId: r.productUnitId,
+    sellPrice: r.sellPrice,
+  }));
+  let expectedTotal: string;
+  if (invoicePayload) {
+    const invoicePricing = computeInvoiceIntentTotal({
+      regularSubtotal: checkoutBase.expectedSubtotal,
+      digitalLines: digitalPriceLines,
+      sourcePayload: invoicePayload,
+    });
+    const regularGuard = checkoutBase.pricingGuard;
+    if (!regularGuard) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "تعذّر إنشاء لقطة حوكمة السعر قبل إصدار الكروت",
+      });
+    }
+    const digitalPaid = resolved.filter(
+      (line) =>
+        invoicePricing.digitalSourceLines.get(line.line.lineKey)?.isGift !== true,
+    );
+    const digitalGifts = resolved.filter(
+      (line) =>
+        invoicePricing.digitalSourceLines.get(line.line.lineKey)?.isGift === true,
+    );
+    const digitalLineBelowCost = digitalPaid.some((line) =>
+      money(invoicePricing.digitalLineTotals.get(line.line.lineKey) ?? "0").lt(
+        money(line.providerShare),
+      ),
+    );
+    const digitalManualDiscount = digitalPaid.some((line) =>
+      lineDiscountExceedsThreshold(
+        money(line.sellPrice),
+        money(1),
+        invoicePricing.digitalLineTotals.get(line.line.lineKey) ?? "0",
+      ),
+    );
+    const paidCostTotal = money(regularGuard.paidCostTotal).plus(
+      sumMoney(digitalPaid.map((line) => line.providerShare)),
+    );
+    const giftCostTotal = money(regularGuard.giftCostTotal).plus(
+      sumMoney(digitalGifts.map((line) => line.providerShare)),
+    );
+    const referenceGross = money(regularGuard.referenceGrossTotal).plus(
+      sumMoney(digitalPaid.map((line) => line.sellPrice)),
+    );
+    const invoiceNet = money(invoicePricing.subtotal).minus(
+      money(invoicePricing.discountAmount),
+    );
+    const belowCost =
+      regularGuard.paidLineBelowCost ||
+      digitalLineBelowCost ||
+      invoiceNet.lt(paidCostTotal);
+    const manualDiscount =
+      regularGuard.manualLineDiscountGate ||
+      digitalManualDiscount ||
+      invoiceDiscountExceedsThreshold(referenceGross, invoiceNet);
+    const giftApprovalNeeded = giftCostTotal.gt(money(GIFT_APPROVAL_THRESHOLD));
+    if (
+      (belowCost || manualDiscount || giftApprovalNeeded) &&
+      checkoutBase.priceOverrideApproved !== true
+    ) {
+      const why = belowCost
+        ? "بيع بأقل من التكلفة"
+        : giftApprovalNeeded
+          ? "تكلفة الهدايا تتجاوز حد الإهداء"
+          : "الخصم يتجاوز الحد المسموح";
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: `${why} ويتطلب اعتماد مدير قبل إصدار أي كرت`,
+      });
+    }
+    expectedTotal = invoicePricing.total;
+    if (input.paymentMethod === "CREDIT") {
+      if (invoicePayload.payment != null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الفاتورة الآجلة لا تحمل قبضاً نقدياً أو خارجياً",
+        });
+      }
+    } else {
+      assertInvoiceFullPayment(invoicePayload, {
+        paymentMethod: input.paymentMethod,
+        paymentAmount: expectedTotal,
+        externalPaymentAttemptId: input.externalPaymentAttemptId,
+        externalPaymentDeviceId: input.externalPaymentDeviceId,
+      });
+    }
+  } else {
+    expectedTotal = toDbMoney(
+      sumMoney(resolved.map((r) => r.sellPrice)).plus(
+        money(checkoutBase.expectedSubtotal),
+      ),
+    );
+    if (
+      resolved.some((line) => money(line.sellPrice).lt(money(line.providerShare))) &&
+      checkoutBase.priceOverrideApproved !== true
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "سعر كرت أقل من حصة المزوّد ويتطلب اعتماد مدير قبل الإصدار",
+      });
+    }
+  }
+
   let creditApprovalId: number | null = null;
   if (input.paymentMethod === "CREDIT") {
     const customerId = input.customerId!;
-    if (input.managerOverrideByUserId != null) {
+    if (input.priceApprovedBy != null) {
       const approval = await createApproval(tx, {
         customerId,
         branchId: input.branchId,
         maxAmount: expectedTotal,
-        approvedBy: input.managerOverrideByUserId,
+        approvedBy: input.priceApprovedBy,
         ttlMinutes: INTENT_TTL_MINUTES,
         notes: "digital-card credit approved before provider issuance",
       });
       creditApprovalId = approval.id;
     } else {
-      // يفشل قبل إصدار أي كرت. تبقى نواة البيع تعيد الفحص عند التثبيت للحماية من تغيّر
-      // الرصيد بين الإعداد والإصدار، أمّا موافقة المدير المحدّدة بالمبلغ فتُستهلك مرةً واحدة.
       const opening = await readOpeningWindowState(tx);
       if (!opening.active) {
-        await assertCreditLimit(
-          tx,
-          customerId,
-          expectedTotal,
-          input.branchId,
-          "CREDIT",
-        );
+        await assertCreditLimit(tx, customerId, expectedTotal, input.branchId, "CREDIT");
       }
     }
   }
   const checkoutSnapshot = { ...checkoutBase, creditApprovalId };
 
-  if (input.paymentMethod === "CARD" && input.externalPaymentAttemptId != null) {
+  let intentId: number;
+  try {
+    const intentRes = await tx.insert(digitalSaleIntents).values({
+      clientRequestId: input.clientRequestId,
+      branchId: input.branchId,
+      shiftId: input.shiftId,
+      createdBy: actor.userId,
+      status: "PREPARED",
+      cartFingerprint: digitalCartFingerprint(input),
+      checkoutSnapshot,
+      paymentMethod: input.paymentMethod,
+      externalPaymentAttemptId: input.externalPaymentAttemptId ?? null,
+      externalPaymentDeviceId: input.externalPaymentDeviceId?.trim() || null,
+      expectedTotal,
+      expiresAt,
+    });
+    intentId = extractInsertId(intentRes);
+  } catch (error) {
+    if (!isDuplicateEntry(error)) throw error;
+    // سباق نقرتين: القراءة المقفلة current-read ترى الفائز بعد حسم قيد UNIQUE حتى تحت RR.
+    const [winner] = await tx
+      .select({
+        id: digitalSaleIntents.id,
+        expiresAt: digitalSaleIntents.expiresAt,
+        status: digitalSaleIntents.status,
+        fp: digitalSaleIntents.cartFingerprint,
+        branchId: digitalSaleIntents.branchId,
+        shiftId: digitalSaleIntents.shiftId,
+        createdBy: digitalSaleIntents.createdBy,
+        paymentMethod: digitalSaleIntents.paymentMethod,
+        expectedTotal: digitalSaleIntents.expectedTotal,
+        externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
+        externalPaymentDeviceId: digitalSaleIntents.externalPaymentDeviceId,
+        checkoutSnapshot: digitalSaleIntents.checkoutSnapshot,
+      })
+      .from(digitalSaleIntents)
+      .where(eq(digitalSaleIntents.clientRequestId, input.clientRequestId))
+      .for("update")
+      .limit(1);
+    if (!winner) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "محاولة الدفع أو مفتاح النيّة مستخدم في عملية أخرى — لا تُعِد القبض أو الإصدار",
+      });
+    }
+    if (
+      winner.fp !== digitalCartFingerprint(input) ||
+      Number(winner.branchId) !== input.branchId ||
+      Number(winner.shiftId) !== input.shiftId ||
+      winner.paymentMethod !== input.paymentMethod ||
+      !money(winner.expectedTotal).eq(money(expectedTotal)) ||
+      (winner.externalPaymentAttemptId == null
+        ? null
+        : Number(winner.externalPaymentAttemptId)) !==
+        (input.externalPaymentAttemptId ?? null) ||
+      (winner.externalPaymentDeviceId ?? null) !==
+        (input.externalPaymentDeviceId?.trim() || null) ||
+      ((actor.role !== "admin" && actor.role !== "manager") &&
+        Number(winner.createdBy) !== actor.userId)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "تزامن مفتاح الطلب مع سلّة أو سياق مختلف — لا تُعِد القبض أو إصدار الكروت",
+      });
+    }
+    assertCheckoutReplay(winner.checkoutSnapshot, input);
+    if (!["PREPARED", "EXECUTING", "EXECUTED"].includes(winner.status)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "المحاولة المتزامنة أُغلقت؛ ابدأ طلباً جديداً",
+      });
+    }
+    if (input.paymentMethod === "CARD") {
+      await lockConfirmedExternalPaymentAttempt(tx, {
+        branchId: input.branchId,
+        channel: "POS",
+        method: "CARD",
+        amount: winner.expectedTotal,
+        attemptId: input.externalPaymentAttemptId,
+        deviceId: input.externalPaymentDeviceId,
+        digitalSaleIntentId: Number(winner.id),
+      }, actor);
+    }
+    return {
+      intentId: Number(winner.id),
+      replay: true,
+      expiresAt: winner.expiresAt,
+    };
+  }
+  if (input.paymentMethod === "CARD") {
     await lockConfirmedExternalPaymentAttempt(tx, {
       branchId: input.branchId,
       channel: "POS",
@@ -493,24 +823,14 @@ export async function prepare(
       amount: expectedTotal,
       attemptId: input.externalPaymentAttemptId,
       deviceId: input.externalPaymentDeviceId,
+      digitalSaleIntentId: intentId,
     }, actor);
   }
-
-  const intentRes = await tx.insert(digitalSaleIntents).values({
-    clientRequestId: input.clientRequestId,
+  await reserveIntentInventory(tx, {
+    intentId,
     branchId: input.branchId,
-    shiftId: input.shiftId,
-    createdBy: actor.userId,
-    status: "PREPARED",
-    cartFingerprint: digitalCartFingerprint(input),
-    checkoutSnapshot,
-    paymentMethod: input.paymentMethod,
-    externalPaymentAttemptId: input.externalPaymentAttemptId ?? null,
-    externalPaymentDeviceId: input.externalPaymentDeviceId?.trim() || null,
-    expectedTotal,
-    expiresAt,
+    snapshot: checkoutSnapshot,
   });
-  const intentId = extractInsertId(intentRes);
 
   for (const walletId of walletIds) {
     const [wallet] = await tx
@@ -643,6 +963,13 @@ export async function claimExecution(
 ): Promise<ClaimExecutionResult> {
   const intent = await lockIntent(tx, input.intentId);
   assertActorOwnsIntent(intent, actor);
+  if (!ALLOWED_PAYMENT_METHODS.has(intent.paymentMethod)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "هذه نيّة تاريخية بطريقة دفع غير مسموحة؛ لا تُصدر الكرت وعالجها إدارياً",
+    });
+  }
   const elevated = actor.role === "admin" || actor.role === "manager";
   if (!["PREPARED", "EXECUTING", "NEEDS_REVIEW"].includes(intent.status)) {
     throw new TRPCError({ code: "CONFLICT", message: "هذه العملية مغلقة ولا تقبل إصدار بطاقة جديدة" });
@@ -650,10 +977,47 @@ export async function claimExecution(
   if (intent.status === "NEEDS_REVIEW" && !elevated) {
     throw new TRPCError({ code: "FORBIDDEN", message: "تحتاج هذه العملية إلى مراجعة المدير قبل إعادة الإصدار" });
   }
+  const [issuanceShift] = await tx
+    .select({
+      id: shifts.id,
+      branchId: shifts.branchId,
+      userId: shifts.userId,
+      status: shifts.status,
+    })
+    .from(shifts)
+    .where(eq(shifts.id, Number(intent.shiftId)))
+    .for("update")
+    .limit(1);
+  if (
+    !issuanceShift ||
+    issuanceShift.status !== "OPEN" ||
+    Number(issuanceShift.branchId) !== Number(intent.branchId) ||
+    (!elevated && Number(issuanceShift.userId) !== actor.userId)
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "وردية النيّة أُغلقت أو تغيّر مالكها؛ لا تُصدر الكرت قبل فتح عملية جديدة أو مراجعتها إدارياً",
+    });
+  }
+  // هذه نقطة اللاعودة قبل لمس جهاز المزوّد. withTx يمسك بوابة الإقفال المالي
+  // المشتركة، لذلك لا يستطيع إقفال الشهر العبور بين هذا الفحص والتزام المطالبة.
+  // وبعد المطالبة يمنع lockPeriod الإقفال ما دامت النية غير محسومة.
+  await assertPeriodOpen(tx, new Date());
 
   const { item, items } = await lockExecutionItems(tx, input.intentId, input.intentItemId);
   const intentItemId = Number(item.id);
   const intentItemIds = items.map((member) => Number(member.id));
+  await assertOfferingsIssuable(
+    tx,
+    Number(intent.branchId),
+    items.map((member) => Number(member.offeringId)),
+  );
+  await intentInventoryExemptions(
+    tx,
+    input.intentId,
+    intent.checkoutSnapshot,
+  );
   if (items.some((member) => member.fulfillmentStatus === "SUCCESS")) {
     throw new TRPCError({ code: "CONFLICT", message: "هذه البطاقة صدرت وسُجلت بنجاح بالفعل" });
   }
@@ -666,7 +1030,7 @@ export async function claimExecution(
     throw new TRPCError({ code: "CONFLICT", message: "انتهت مهلة عملية البيع؛ ابدأ عملية جديدة أو راجع المدير" });
   }
   const claim = await lockExecutionClaim(tx, intentItemId);
-  if (claim && claim.completedAt == null && Number(claim.isActive) === 1) {
+  if (claim && claim.completedAt == null) {
     if (claim.claimToken === input.claimToken && Number(claim.claimedBy) === actor.userId) {
       return {
         intentItemId: Number(claim.intentItemId),
@@ -730,6 +1094,13 @@ export async function markExecution(
 ): Promise<{ itemId: number; itemIds: number[]; status: ExecutionStatus; allSettled: boolean; idempotent: boolean }> {
   const intent = await lockIntent(tx, input.intentId);
   assertActorOwnsIntent(intent, actor);
+  if (!ALLOWED_PAYMENT_METHODS.has(intent.paymentMethod)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "هذه نيّة تاريخية بطريقة دفع غير مسموحة؛ لا تسجل إصداراً جديداً وعالجها إدارياً",
+    });
+  }
   if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW"].includes(intent.status)) {
     throw new TRPCError({ code: "CONFLICT", message: `Intent status ${intent.status} is final and cannot be edited` });
   }
@@ -860,10 +1231,17 @@ export async function cancelIntent(
   }
 
   const unsafe = await hasUnsafeExecution(tx, input.intentId);
-  if (unsafe) {
+  const hasConfirmedExternalPayment = intent.externalPaymentAttemptId != null;
+  if (unsafe || hasConfirmedExternalPayment) {
     // الحجز **لا يُحرَّر**: كرتٌ صدر فعلاً وله أثرٌ ماليّ مستحقّ. المراجعة الإدارية تحسمه.
     await tx.update(digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(digitalSaleIntents.id, input.intentId));
-    await auditLog(tx, actor, "digitalCards.intent.needsReview", input.intentId, { reason: input.reason ?? "cancel-after-execution" });
+    await auditLog(tx, actor, "digitalCards.intent.needsReview", input.intentId, {
+      reason:
+        input.reason ??
+        (hasConfirmedExternalPayment
+          ? "cancel-after-confirmed-external-payment"
+          : "cancel-after-execution"),
+    });
     return { intentId: input.intentId, outcome: "NEEDS_REVIEW" };
   }
 
@@ -912,7 +1290,10 @@ export async function expireStaleIntents(
     ) {
       continue;
     }
-    if (await hasUnsafeExecution(tx, intentId)) {
+    if (
+      locked.externalPaymentAttemptId != null ||
+      await hasUnsafeExecution(tx, intentId)
+    ) {
       await tx.update(digitalSaleIntents).set({ status: "NEEDS_REVIEW" }).where(eq(digitalSaleIntents.id, intentId));
       needsReview++;
     } else {
@@ -942,6 +1323,8 @@ export async function getIntent(db: DB, intentId: number) {
       providerBasketKey: digitalSaleIntentItems.providerBasketKey,
       referenceOwnerItemId: digitalSaleIntentItems.referenceOwnerItemId,
       offeringId: digitalSaleIntentItems.offeringId,
+      variantId: digitalOfferings.variantId,
+      productUnitId: digitalOfferings.productUnitId,
       offeringType: digitalOfferings.offeringType,
       name: products.name,
       providerName: suppliers.name,
@@ -960,7 +1343,30 @@ export async function getIntent(db: DB, intentId: number) {
     .where(eq(digitalSaleIntentItems.intentId, intentId))
     .orderBy(asc(digitalSaleIntentItems.id));
 
-  return { intent, items };
+  let netByLineKey: Map<string, string> | null = null;
+  const checkout = intent.checkoutSnapshot ?? null;
+  if (checkout?.sourceType === "INVOICE") {
+    const payload = parseInvoiceSourcePayload(checkout.sourcePayload);
+    netByLineKey = computeInvoiceIntentTotal({
+      regularSubtotal: checkout.expectedSubtotal,
+      sourcePayload: payload,
+      digitalLines: items.map((item) => ({
+        lineKey: item.lineKey,
+        variantId: Number(item.variantId),
+        productUnitId: Number(item.productUnitId),
+        sellPrice: item.sellPrice,
+      })),
+    }).digitalLineTotals;
+  }
+
+  return {
+    intent,
+    items: items.map(({ variantId: _variantId, productUnitId: _productUnitId, ...item }) => ({
+      ...item,
+      /** المبلغ الفعلي المحصّل لهذا السطر؛ سعر القائمة وحده يضلّل عند خصم السطر. */
+      chargeAmount: netByLineKey?.get(item.lineKey) ?? item.sellPrice,
+    })),
+  };
 }
 
 /**
@@ -1079,6 +1485,87 @@ function digitalCartFingerprint(input: PrepareInput): string {
       student: line.student ? normalizeSaleStudent(line.student) : null,
     })),
   })).digest("hex");
+}
+
+/** آخر بوابة قبل لمس جهاز المزوّد؛ لقطة prepare لا تكفي إذا عُطّل الكتالوج بعدها. */
+async function assertOfferingsIssuable(
+  tx: Tx,
+  branchId: number,
+  offeringIds: number[],
+): Promise<void> {
+  const ids = Array.from(new Set(offeringIds)).sort((a, b) => a - b);
+  const rows = await tx
+    .select({
+      offeringId: digitalOfferings.id,
+      name: products.name,
+      offeringActive: digitalOfferings.isActive,
+      providerActive: digitalProviders.isActive,
+      assignmentActive: digitalOfferingBranches.isActive,
+      branchActive: branches.isActive,
+      productType: products.productType,
+      productActive: products.isActive,
+      productIsService: products.isService,
+      productIsBundle: products.isBundle,
+      productIsConsignment: products.isConsignment,
+      variantActive: productVariants.isActive,
+      unitActive: productUnits.isActive,
+      unitIsBase: productUnits.isBaseUnit,
+    })
+    .from(digitalOfferings)
+    .innerJoin(products, eq(digitalOfferings.productId, products.id))
+    .innerJoin(
+      productVariants,
+      and(
+        eq(digitalOfferings.variantId, productVariants.id),
+        eq(productVariants.productId, products.id),
+      ),
+    )
+    .innerJoin(
+      productUnits,
+      and(
+        eq(digitalOfferings.productUnitId, productUnits.id),
+        eq(productUnits.variantId, productVariants.id),
+      ),
+    )
+    .innerJoin(digitalProviders, eq(digitalOfferings.providerId, digitalProviders.id))
+    .innerJoin(
+      digitalOfferingBranches,
+      and(
+        eq(digitalOfferingBranches.offeringId, digitalOfferings.id),
+        eq(digitalOfferingBranches.branchId, branchId),
+      ),
+    )
+    .innerJoin(branches, eq(digitalOfferingBranches.branchId, branches.id))
+    .where(inArray(digitalOfferings.id, ids));
+  const byId = new Map(rows.map((row) => [Number(row.offeringId), row]));
+  for (const offeringId of ids) {
+    const row = byId.get(offeringId);
+    if (!row) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "ربط إحدى البطاقات تغيّر بعد تجهيز السلة؛ حدّث العملية قبل الإصدار",
+      });
+    }
+    if (
+      row.offeringActive !== true ||
+      row.providerActive !== true ||
+      row.assignmentActive !== true ||
+      row.branchActive !== true ||
+      row.productActive !== true ||
+      row.variantActive !== true ||
+      row.unitActive !== true ||
+      row.unitIsBase !== true ||
+      row.productType !== "DIGITAL_CARD" ||
+      row.productIsService !== true ||
+      row.productIsBundle === true ||
+      row.productIsConsignment === true
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `«${row.name}» عُطّلت أو لم تعد بطاقة رقمية صالحة؛ لا تُصدرها من جهاز المزوّد`,
+      });
+    }
+  }
 }
 
 /** The intent lock serializes the whole provider operation, including calls through a member. */
@@ -1238,6 +1725,7 @@ async function releaseReservations(tx: Tx, intentId: number): Promise<void> {
       .set({ status: "RELEASED", releasedAt: new Date() })
       .where(and(eq(digitalWalletReservations.id, Number(r.id)), eq(digitalWalletReservations.status, "ACTIVE")));
   }
+  await releaseIntentInventory(tx, intentId);
 }
 
 /** يُستعمل في اختبارات الاتساق: مجموع الحجوزات الفعّالة لمحفظة. */

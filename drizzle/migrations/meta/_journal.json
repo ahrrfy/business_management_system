@@ -2283,6 +2283,34 @@
 			"when": 1788148816000,
 			"tag": "0358_delivery_tracking_ref_unique",
 			"breakpoints": true
+		},
+		{
+			"idx": 359,
+			"version": "5",
+			"when": 1788148817000,
+			"tag": "0359_recipe_inventory_integrity",
+			"breakpoints": true
+		},
+		{
+			"idx": 360,
+			"version": "5",
+			"when": 1788148818000,
+			"tag": "0360_service_line_cost_snapshot",
+			"breakpoints": true
+		},
+		{
+			"idx": 362,
+			"version": "5",
+			"when": 1788148820000,
+			"tag": "0362_digital_intent_inventory_reservation",
+			"breakpoints": true
+		},
+		{
+			"idx": 363,
+			"version": "5",
+			"when": 1788148821000,
+			"tag": "0363_work_order_base_inventory_snapshot",
+			"breakpoints": true
 		}
 	]
 }

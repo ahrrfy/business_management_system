@@ -12,7 +12,7 @@
  *  O3 — الترحيل idempotent: إعادة الإرسال بنفس المفتاح لا تُنتج فاتورةً ثانية ولا نقداً ثانياً.
  *  O4 — نافذة الالتقاط مشتركة: ما تجاوز ٧٢ ساعة يُرفض PRECONDITION_FAILED (يُعلَّق للمراجعة).
  *  O5 — نقديّ فقط: غير النقد يُرفض في كلّ الأنواع.
- *  O6 — بيع طباعةٍ أوفلاينيّ يُرحَّل ويُوسَم، ويستهلك مواده كالمسار الأونلايني.
+ *  O6 — بيع طباعةٍ أوفلاينيّ يُرحَّل ويُوسَم، ويسجّل عجز مواده بالسالب لأن الواقعة حدثت فعلاً.
  */
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -24,8 +24,9 @@ import { replayOfflinePrintSale } from "../offline/replayPrintSale";
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts",
-  "invoiceItems", "invoices", "inventoryMovements", "branchStock",
+  "invoiceItemServiceMaterials", "invoiceItems", "invoices", "inventoryMovements", "branchStock",
   "workOrderMaterials", "workOrderImages", "workOrders",
+  "productionRecipeLines", "productionRecipes",
   "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "branches", "users",
 ];
@@ -55,10 +56,12 @@ async function seed() {
     { id: 1, name: "دفتر" },
     // productType على **المنتج** لا المتغيّر (createPrintSale ينضمّ إلى products).
     { id: 2, name: "طباعة ملوّنة", isService: true, productType: "PRINT_SERVICE" },
+    { id: 3, name: "ورق طباعة", allowBackorder: false },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "NB-1", costPrice: "500.00" },
     { id: 2, productId: 2, sku: "PR-1", costPrice: "0.00" },
+    { id: 3, productId: 3, sku: "PAPER-1", costPrice: "30.00" },
   ]);
   await d.insert(s.productUnits).values([
     { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: 1, isBaseUnit: true },
@@ -68,7 +71,24 @@ async function seed() {
     { productUnitId: 1, priceTier: "RETAIL", price: "1000.00" },
     { productUnitId: 2, priceTier: "RETAIL", price: "250.00" },
   ]);
-  await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 50 }]);
+  await d.insert(s.branchStock).values([
+    { variantId: 1, branchId: 1, quantity: 50 },
+    { variantId: 3, branchId: 1, quantity: 10 },
+  ]);
+  await d.insert(s.productionRecipes).values({
+    id: 1,
+    name: "[طباعة] ورق ملوّن",
+    outputVariantId: 2,
+    outputProductUnitId: 2,
+    laborPerOutputBase: "0",
+    wasteStdPct: "0",
+    isActive: true,
+  });
+  await d.insert(s.productionRecipeLines).values({
+    recipeId: 1,
+    inputVariantId: 3,
+    qtyPerOutputBase: "1.0000",
+  });
 }
 
 const nowIso = () => new Date().toISOString();
@@ -182,11 +202,12 @@ describe("تعميم الأوفلاين على أنواع الكاشير", () =>
     await expect(replayOfflinePrintSale(printNonCash, CASHIER)).rejects.toThrow(/نقدي فقط/);
   });
 
-  it("O6 — بيع طباعةٍ أوفلاينيّ يُرحَّل ويُوسَم بالمنشأ والرقم المؤقّت", async () => {
+  it("O6 — replay الطباعة وحده يسجّل استهلاك المادة بالسالب ويُوسَم بالمنشأ", async () => {
     const shift = await openShift(
       { branchId: 1, openingBalance: "0", shiftType: "PRINT_SERVICES" },
       { userId: 2, branchId: 1 },
     );
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 3));
     const res = await replayOfflinePrintSale(
       {
         branchId: 1,
@@ -206,5 +227,25 @@ describe("تعميم الأوفلاين على أنواع الكاشير", () =>
     expect(inv.originatedOffline).toBe(true);
     expect(inv.offlineReceiptNumber).toBe("OFF-1-ab-2");
     expect(inv.total).toBe("500.00");
+    expect(inv.costTotal).toBe("60.00");
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, res.invoiceId));
+    expect(item.lineCost).toBe("60.00");
+    expect(item.serviceMaterialsSnapshotted).toBe(true);
+    const [snapshot] = await db().select().from(s.invoiceItemServiceMaterials)
+      .where(eq(s.invoiceItemServiceMaterials.invoiceItemId, item.id));
+    expect(Number(snapshot.materialVariantId)).toBe(3);
+    expect(Number(snapshot.baseQuantity)).toBe(2);
+    expect(snapshot.lineCost).toBe("60.00");
+    const [materialStock] = await db().select().from(s.branchStock)
+      .where(sql`${s.branchStock.variantId} = 3 AND ${s.branchStock.branchId} = 1`);
+    expect(Number(materialStock.quantity)).toBe(-2);
+    const materialMoves = await db().select().from(s.inventoryMovements)
+      .where(eq(s.inventoryMovements.referenceId, res.invoiceId));
+    expect(materialMoves.map((movement) => [
+      Number(movement.variantId),
+      movement.movementType,
+      Number(movement.quantity),
+      movement.notes,
+    ])).toEqual([[3, "OUT", 2, "استهلاك مادة خدمة"]]);
   });
 });

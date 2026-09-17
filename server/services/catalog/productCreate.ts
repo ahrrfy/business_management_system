@@ -8,8 +8,6 @@ import {
   productUnitBarcodes,
   productVariants,
   products,
-  productionRecipeLines,
-  productionRecipes,
   suppliers,
 } from "../../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
@@ -24,6 +22,7 @@ import { setStock } from "../inventoryService";
 import { toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
+import { createRecipeInTx } from "../recipeService";
 import { type Actor, withTx } from "../tx";
 import { assertCreateHasNoLegacyMedia } from "./mediaWriteGuard";
 
@@ -390,29 +389,24 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     }
 
     // print-catalog: وصفة المواد الخام للخدمة — تُربَط بمتغيّر البَند الأوّل ووحدته الأساس.
-    // يَخصمها printSaleService عند البيع (snapshot كلفة المواد = COGS). idempotent بالاسم.
-    const recipe = (input.recipe ?? []).filter((r) => r.inputVariantId > 0 && Number(r.qtyPerOutputBase) > 0);
+    // تمرّ بالنواة المشتركة كي تُفرض صلاحية المواد/الدقة/فرادة الوصفة النشطة في كل المداخل.
+    const recipe = input.recipe ?? [];
     if (recipe.length) {
       if (recipeOutputVariantId == null || recipeOutputUnitId == null) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "تَعذّر ربط وصفة المواد: لا متغيّر/وحدة أساس للبَند" });
       }
-      const rRes = await tx.insert(productionRecipes).values({
-        name: `[طباعة] ${composedName} #${productId}`,
-        outputVariantId: recipeOutputVariantId,
-        outputProductUnitId: recipeOutputUnitId,
-        laborPerOutputBase: "0",
-        wasteStdPct: "0",
-        isActive: true,
-        createdBy: actor.userId,
-      });
-      const recipeId = extractInsertId(rRes);
-      for (const rl of recipe) {
-        await tx.insert(productionRecipeLines).values({
-          recipeId,
-          inputVariantId: rl.inputVariantId,
-          qtyPerOutputBase: toDbMoney(rl.qtyPerOutputBase),
-        });
-      }
+      await createRecipeInTx(
+        tx,
+        {
+          name: `[طباعة] ${composedName} #${productId}`,
+          outputVariantId: recipeOutputVariantId,
+          outputProductUnitId: recipeOutputUnitId,
+          laborPerOutputBase: "0",
+          wasteStdPct: "0",
+          lines: recipe,
+        },
+        actor,
+      );
     }
 
     // bundles: حفظ وصفة المكوّنات بعد إنشاء متغيّر البكج (متغيّر واحد بحكم القيود أعلاه).

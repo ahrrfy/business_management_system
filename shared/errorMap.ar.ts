@@ -522,6 +522,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_price_unit_tier: { msg: "لهذه الوحدة سعر مسجّل مسبقاً لنفس فئة التسعير — عدّل السعر الموجود بدل إضافة سطر جديد." },
   categories_name_unique: { field: "اسم الفئة", entity: "فئات المنتجات" },
   uq_recipe_name: { field: "اسم الوصفة", entity: "وصفات الإنتاج" },
+  uq_recipe_active_output: { msg: "لهذا الناتج وصفة فعّالة أخرى — عطّل الوصفة الحالية أولاً ثم فعّل الوصفة المطلوبة." },
   uq_bundle_component: { msg: "هذا المكوّن مُضاف مسبقاً لنفس البكج — عدّل كمية السطر الموجود بدل إضافته مرّة ثانية." },
   uq_stlbc_line_component: { msg: "لقطة مكوّن البكج مثبتة مسبقاً على سطر التحويل — أعد تحميل السند قبل المحاولة مجدداً." },
 

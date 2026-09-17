@@ -19,6 +19,8 @@ const actor = { userId: 1, branchId: 1 };
 const TABLES = [
   "inventoryMovements",
   "accountingEntries",
+  "invoiceItems",
+  "invoices",
   "onlineOrderItems",
   "onlineOrders",
   "storeSettings",
@@ -33,6 +35,7 @@ const TABLES = [
   "productVariants",
   "products",
   "customers",
+  "suppliers",
   "users",
   "branches",
 ];
@@ -68,6 +71,28 @@ async function seedBase() {
   await d.insert(s.products).values({ id: 2, name: "قلم حبر" });
   await d.insert(s.productVariants).values({ id: 2, productId: 2, sku: "PEN-2", costPrice: "250" });
   await d.insert(s.productUnits).values({ id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "BC-PEN-2" });
+}
+
+async function seedInvoiceHistoryForProductOne() {
+  await db().insert(s.invoices).values({
+    id: 70,
+    invoiceNumber: "INV-PRODUCT-CLASSIFICATION-HISTORY",
+    sourceType: "POS",
+    branchId: 1,
+    subtotal: "1000.00",
+    total: "1000.00",
+    status: "PAID",
+  });
+  await db().insert(s.invoiceItems).values({
+    invoiceId: 70,
+    variantId: 1,
+    productUnitId: 1,
+    quantity: "1",
+    baseQuantity: 1,
+    unitPrice: "1000.00",
+    unitCost: "500.00",
+    total: "1000.00",
+  });
 }
 
 beforeEach(async () => {
@@ -128,6 +153,80 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(rows[0].costPrice).toBe("500.00");
     const prod = (await db().select().from(s.products).where(eq(s.products.id, 1)))[0];
     expect(prod.name).toBe("دفتر ١٠٠ ورقة (مُحدَّث)");
+  });
+
+  it("يمنع تغيير الصنف المخزني إلى خدمة بعد وجود بند فاتورة حتى مع رصيد صفري", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await seedInvoiceHistoryForProductOne();
+
+    await expect(updateProductWithVariants(
+      { productId: 1, isService: true, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    )).rejects.toThrow(/أنشئ منتجاً جديداً/);
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product.isService).toBe(false);
+  });
+
+  it("يمنع تغيير productType بعد وجود بند فاتورة لأن نوعه يحدد مسار البيع", async () => {
+    await seedInvoiceHistoryForProductOne();
+
+    await expect(updateProductWithVariants(
+      { productId: 1, productType: "DIGITAL_CARD", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    )).rejects.toThrow(/أنشئ منتجاً جديداً/);
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product.productType).toBe("قرطاسية");
+  });
+
+  it("يمنع تغيير التصنيف بعد حركة مخزون سابقة حتى إن لم تُصدر فاتورة بعد", async () => {
+    await db().insert(s.inventoryMovements).values({
+      variantId: 1,
+      branchId: 1,
+      movementType: "OUT",
+      quantity: 1,
+      signedDelta: -1,
+      referenceType: "WORKORDER",
+      referenceId: 900,
+    });
+
+    await expect(updateProductWithVariants(
+      { productId: 1, productType: "DIGITAL_CARD", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    )).rejects.toThrow(/أنشئ منتجاً جديداً/);
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product.productType).toBe("قرطاسية");
+  });
+
+  it("يمنع تغيير وسم الأمانة أو المودِع بعد وجود بند فاتورة حتى مع رصيد صفري", async () => {
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 1));
+    await seedInvoiceHistoryForProductOne();
+
+    await expect(updateProductWithVariants(
+      { productId: 1, isConsignment: true, consignorId: 99, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    )).rejects.toThrow(/أنشئ منتجاً جديداً/);
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product.isConsignment).toBe(false);
+    expect(product.consignorId).toBeNull();
+
+    await db().insert(s.suppliers).values([
+      { id: 98, name: "المودِع التاريخي", supplierKind: "CONSIGNOR" },
+      { id: 99, name: "المودِع الجديد", supplierKind: "CONSIGNOR" },
+    ]);
+    await db().update(s.products).set({ isConsignment: true, consignorId: 98 }).where(eq(s.products.id, 1));
+
+    await expect(updateProductWithVariants(
+      { productId: 1, isConsignment: true, consignorId: 99, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    )).rejects.toThrow(/أنشئ منتجاً جديداً/);
+
+    const [unchangedConsignor] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(unchangedConsignor.isConsignment).toBe(true);
+    expect(Number(unchangedConsignor.consignorId)).toBe(98);
   });
 
   const swapToBase = (unitName: string) => ({

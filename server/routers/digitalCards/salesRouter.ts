@@ -6,6 +6,7 @@ import { z } from "zod";
 import { nonNegMoneyString } from "../../lib/schemas";
 import { finalizeService, intentService, reviewResolutionService, writeoffService } from "../../services/digitalCards";
 import { withTx } from "../../services/tx";
+import { VERIFIED_DIGITAL_PRICE_APPROVAL } from "../../services/digitalCards/mixedCartService";
 import {
   digitalCardsAdminReadProcedure,
   digitalCardsManagerProcedure,
@@ -40,12 +41,12 @@ export const salesRouter = router({
         priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
         notes: z.string().max(5000).nullish(),
-        managerApproval: z.object({
-          email: z.string().min(1),
-          password: z.string().min(1),
-        }).optional(),
         sourceType: z.enum(["POS", "INVOICE", "RECEPTION"]).default("POS"),
-        sourcePayload: z.any().optional(),
+        sourcePayload: z.unknown().optional(),
+        managerApproval: z
+          .object({ email: z.string().min(1), password: z.string().min(1) })
+          .strict()
+          .optional(),
         regularLines: z.array(z.object({
           lineKey: z.string().min(1).max(64),
           variantId: z.number().int().positive(),
@@ -85,15 +86,25 @@ export const salesRouter = router({
       if (scoped != null && input.branchId !== scoped) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا صلاحية على فرع آخر" });
       }
-      const { managerApproval, ...prepareInput } = input;
-      const managerOverrideByUserId = managerApproval
+      const { managerApproval, ...request } = input;
+      const approvedBy = managerApproval
         ? await verifyManagerApproval(managerApproval, ctx, input.branchId)
-        : undefined;
-      return withTx((tx) => intentService.prepare(
-        tx,
-        { ...prepareInput, managerOverrideByUserId },
-        actorOf(ctx),
-      ));
+        : null;
+      const actor = actorOf(ctx);
+      const elevated = actor.role === "admin";
+      return withTx((tx) =>
+        intentService.prepare(
+          tx,
+          {
+            ...request,
+            ...(approvedBy != null
+              ? { priceApprovalCapability: VERIFIED_DIGITAL_PRICE_APPROVAL }
+              : {}),
+            priceApprovedBy: approvedBy ?? (elevated ? actor.userId : null),
+          },
+          actor,
+        ),
+      );
     }),
 
   claimExecution: digitalCardsPosProcedure
@@ -130,6 +141,16 @@ export const salesRouter = router({
       const scoped = scopedBranchOf(ctx);
       if (scoped != null && Number(res.intent.branchId) !== scoped) {
         throw new TRPCError({ code: "FORBIDDEN", message: "النيّة تخصّ فرعاً آخر" });
+      }
+      if (
+        ctx.user.role !== "admin" &&
+        ctx.user.role !== "manager" &&
+        Number(res.intent.createdBy) !== Number(ctx.user.id)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "هذه النيّة تخصّ مستخدماً آخر",
+        });
       }
       return res;
     }),

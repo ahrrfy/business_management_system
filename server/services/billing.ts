@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { clampMoney, money, round2, sumMoney } from "./money";
 
@@ -87,17 +88,69 @@ export function computeInvoiceTotals(i: InvoiceTotalsInput): InvoiceTotals {
 /** Snapshot of the variant's cost per base unit at sale time. */
 export const snapshotUnitCost = (variantCostPrice: string): string => round2(money(variantCostPrice)).toFixed(2);
 
-/** COGS = Σ (unitCost × baseQuantity). */
-export function computeInvoiceCost(lines: { unitCost: string; baseQuantity: number }[]): string {
+/** COGS = Σ lineCost المجمّد، مع fallback تاريخي إلى unitCost × baseQuantity. */
+export function computeInvoiceCost(
+  lines: { unitCost: string; baseQuantity: number; lineCost?: string | null }[],
+): string {
   return round2(
-    lines.reduce<Decimal>((a, l) => a.plus(money(l.unitCost).times(l.baseQuantity)), new Decimal(0))
+    lines.reduce<Decimal>(
+      (a, l) => a.plus(
+        l.lineCost != null
+          ? money(l.lineCost)
+          : money(l.unitCost).times(l.baseQuantity),
+      ),
+      new Decimal(0),
+    ),
   ).toFixed(2);
+}
+
+/**
+ * يوزّع لقطة كلفة سطر كاملة على مقطع كميّة بلا انجراف: آخر مقطع يأخذ الباقي تماماً.
+ * يستعمله المرتجع/الإلغاء بدلاً من unitCost المدوّر.
+ */
+export function allocateLineCost(
+  totalLineCost: string | Decimal,
+  totalBaseQuantity: number,
+  returnedBefore: number,
+  quantity: number,
+): Decimal {
+  if (!Number.isInteger(totalBaseQuantity) || totalBaseQuantity <= 0) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر توزيع كلفة السطر",
+        why: "كمية أساس السطر غير موجبة أو ليست عدداً صحيحاً",
+        doThis: "راجِع تكامل بند الفاتورة قبل الإرجاع أو الإلغاء",
+      }),
+    });
+  }
+  if (
+    !Number.isInteger(returnedBefore) || returnedBefore < 0 ||
+    !Number.isInteger(quantity) || quantity <= 0 ||
+    returnedBefore + quantity > totalBaseQuantity
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر توزيع كلفة السطر",
+        why: "كمية الجزء المعكوس تتجاوز المتبقي أو ليست عدداً صحيحاً موجباً",
+        doThis: "حدّث الفاتورة ثم أعد العملية بالكمية المتبقية الصحيحة",
+      }),
+    });
+  }
+  const total = round2(money(totalLineCost));
+  const cumulative = (baseQuantity: number) =>
+    baseQuantity >= totalBaseQuantity
+      ? total
+      : round2(total.times(baseQuantity).div(totalBaseQuantity));
+  return round2(cumulative(returnedBefore + quantity).minus(cumulative(returnedBefore)));
 }
 
 export interface BelowCostLine {
   total: string;
   unitCost: string;
   baseQuantity: number;
+  lineCost?: string | null;
 }
 
 /** SALES-01/02: هل تَبيع الفاتورة بأقل من التكلفة؟ يَكشف (أ) بنداً يُباع تحت تكلفته (سعر/خصم سطر)
@@ -109,7 +162,13 @@ export function isInvoiceBelowCost(
   discountAmount: string,
   costTotal: string | Decimal,
 ): boolean {
-  const lineBelowCost = lines.some((l) => money(l.total).lt(money(l.unitCost).times(l.baseQuantity)));
+  const lineBelowCost = lines.some((l) =>
+    money(l.total).lt(
+      l.lineCost != null
+        ? money(l.lineCost)
+        : money(l.unitCost).times(l.baseQuantity),
+    ),
+  );
   const revenue = money(subtotal).minus(money(discountAmount));
   return lineBelowCost || revenue.lt(money(costTotal));
 }

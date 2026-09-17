@@ -19,6 +19,7 @@ import {
   digitalSaleReviewResolutions,
   digitalWalletReservations,
   digitalWallets,
+  externalPaymentAttempts,
   products,
   shifts,
   suppliers,
@@ -34,6 +35,7 @@ import type { Actor } from "../tx";
 import { recoverNeedsReview } from "./finalizeService";
 import { approveWriteoff } from "./writeoffService";
 import { resolveApprovalActor } from "../approval/ownerGate";
+import { releaseIntentInventory } from "./inventoryReservationService";
 
 export type ReviewDecision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS";
 export type ReviewItemOutcome = "ISSUED" | "NOT_ISSUED";
@@ -135,6 +137,7 @@ async function releaseReservations(tx: Tx, intentId: number): Promise<void> {
       .set({ status: "RELEASED", releasedAt: new Date() })
       .where(eq(digitalWalletReservations.id, Number(reservation.id)));
   }
+  await releaseIntentInventory(tx, intentId);
 }
 
 async function intentItems(tx: Tx, intentId: number) {
@@ -360,6 +363,29 @@ export async function approveResolution(
     providerReference: item.providerReference,
   })));
   validateDecision(resolution.decision, items);
+  if (
+    resolution.decision === "CANCEL_NO_ISSUE" &&
+    intent.externalPaymentAttemptId != null
+  ) {
+    const [attempt] = await tx
+      .select({ state: externalPaymentAttempts.state })
+      .from(externalPaymentAttempts)
+      .where(
+        eq(
+          externalPaymentAttempts.id,
+          Number(intent.externalPaymentAttemptId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!attempt || attempt.state !== "REVERSED") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "لا تُلغى نيّة قبضها الخارجي مؤكّد قبل إثبات عكس العملية لدى مزوّد الدفع؛ أبقها للمراجعة ولا تمرّر البطاقة ثانيةً",
+      });
+    }
+  }
 
   for (const item of items) {
     await tx

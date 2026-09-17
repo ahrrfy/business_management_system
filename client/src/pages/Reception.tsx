@@ -1542,6 +1542,7 @@ export default function Reception() {
         }
         return {
           baseVariantId: c.manualService ? null : c.row.variantId,
+          baseProductUnitId: c.manualService ? null : c.row.productUnitId,
           title: custom.title.trim() || c.row.productName,
           customizationText: finalText || null,
           quantity: c.qty,
