@@ -98,7 +98,7 @@ export const REPORT_VIEWER_GATE: RoleGate = {
 };
 
 export const TREASURY_READ_GATE: RoleGate = {
-  roles: ["manager", "accountant"],
+  roles: ["manager", "accountant", "cashier", "auditor"],
   module: "treasury",
   level: "READ",
 };

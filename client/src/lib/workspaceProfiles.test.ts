@@ -5,7 +5,10 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
-import { resolveWorkspaceProfile } from "./workspaceProfiles";
+import {
+  TREASURY_READ_GATE,
+  resolveWorkspaceProfile,
+} from "./workspaceProfiles";
 
 function sectionRole(key: string): {
   role: RoleKey;
@@ -121,6 +124,14 @@ describe("resolveWorkspaceProfile", () => {
         permissionsOverride: { reports: "NONE", treasury: "NONE" },
       }),
     ).toEqual([]);
+  });
+
+  it("يطابق ثابت قراءة الخزينة أدوار الإجراء الخادمي", () => {
+    expect(TREASURY_READ_GATE).toEqual({
+      roles: ["manager", "accountant", "cashier", "auditor"],
+      module: "treasury",
+      level: "READ",
+    });
   });
 
   it("يحرس الذمم المدينة والدائنة ببوابة قارئ التقارير", () => {
