@@ -33,12 +33,22 @@ describe("سجل وحدات التطبيق", () => {
     }
   });
 
-  it("يغذّي القائمة والرئيسية من السجل نفسه", () => {
+  it("يغذّي القائمة من سجل الوحدات والرئيسية من ملف العمل المسموح فقط", () => {
     const layout = readFileSync("client/src/components/AppLayout.tsx", "utf8");
     const dashboard = readFileSync("client/src/pages/Dashboard.tsx", "utf8");
     expect(layout).toContain("APPLICATION_MODULES as NAV_LINKS");
-    expect(dashboard).toContain("APPLICATION_MODULES.filter");
-    expect(dashboard).toContain("withRegisteredGate");
+    expect(dashboard).toContain("resolveWorkspaceProfile({");
+    expect(dashboard).toContain("profile.primaryNav");
+    expect(dashboard).toContain("href={item.href}");
+    expect(dashboard).not.toContain("const CORE_MODULES");
+    expect(dashboard).not.toContain("const ACTIONS");
+    expect(dashboard).not.toContain("APPLICATION_MODULES");
+    expect(dashboard).not.toContain("canSeeGate");
+    expect(dashboard).toContain("me.isLoading");
+    expect(dashboard).toContain("me.isError || !me.data");
+    expect(dashboard).toContain("<LoadingState");
+    expect(dashboard).toContain("<ErrorState");
+    expect(dashboard).not.toContain("if (!me.data) return null");
   });
 });
 
