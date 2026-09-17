@@ -15,7 +15,7 @@ import type { CreateWorkOrderInput } from "./workOrder/types";
 import { createWorkOrderInTx } from "./workOrder/create";
 import { dispatchInvoiceInTx } from "./delivery/dispatchInvoice";
 import { withTx, type Actor } from "./tx";
-import { findIdempotentRefId } from "./idempotency";
+import { checkIdempotency, findIdempotentRefId, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { money, round2 } from "./money";
 import { assertTelecomCollectAllowed } from "./reception/telecom";
 import { canonicalIraqiMobile } from "../lib/phone";
@@ -123,6 +123,25 @@ async function isCompleteReplay(tx: Parameters<Parameters<typeof withTx>[0]>[0],
   return true;
 }
 
+function assertCheckoutAmountMatches(
+  kind: "بيع البضاعة" | "خدمات الطباعة",
+  submittedAmount: string | null | undefined,
+  serverAmount: string | null | undefined,
+) {
+  if (submittedAmount == null || serverAmount == null) return;
+  const submitted = round2(money(submittedAmount));
+  const calculated = round2(money(serverAmount));
+  if (submitted.eq(calculated)) return;
+  throw new TRPCError({
+    code: "CONFLICT",
+    message: appErrorMessage({
+      what: `مبلغ ${kind} تغيّر أثناء التثبيت`,
+      why: `المبلغ المرسل ${submitted.toFixed(2)} لا يطابق الإجمالي المحسوب خادمياً ${calculated.toFixed(2)} — منع النظام توزيع الدفعة على إجمالي غير موثوق`,
+      doThis: "حدّث السلة والأسعار، ثم أعد التثبيت بمعرّف طلب جديد",
+    }),
+  });
+}
+
 /**
  * The reception commit boundary. A mixed basket is one business operation:
  * inventory sale, print-service sale, work orders, deposits, receipts and ledger
@@ -168,10 +187,21 @@ export async function checkoutReceptionInTx(
   // يسبق isCompleteReplay حتى لا يكشف مفتاحٌ مخمّن فاتورةً قديمة غير نقدية.
   assertReceptionPaymentMethod(input);
   {
+    const checkoutPayloadHash = idempotencyHash(input);
+    const checkoutReplayRefId = await checkIdempotency(
+      tx,
+      "reception.checkout",
+      input.clientRequestId,
+      checkoutPayloadHash,
+      { requireStoredHash: true },
+    );
     // إعادة ردّ عملية سبق التزامها لا تحتاج وردية ما زالت مفتوحة. هذا مهم إذا وصل الالتزام
     // إلى القاعدة ثم انقطع الرد وأُغلقت الوردية قبل إعادة المحاولة. أي عملية جديدة/ناقصة تمرّ
     // بالحارس الصارم أدناه؛ والحالة الناقصة لا يمكن أن تنتج عن هذه الخدمة لأن الالتزام ذرّي.
-    const completeReplay = await isCompleteReplay(tx, input);
+    // المفتاح المركّب جديد؛ غيابه قد يعني عمليةً تاريخية التزمت قبل إضافته. نحافظ على replay
+    // التاريخي الكامل، لكن لا نخترع له بصمةً لأن حمولة الالتزام الأصلية غير قابلة للإثبات.
+    const legacyCompleteReplay = checkoutReplayRefId == null && await isCompleteReplay(tx, input);
+    const completeReplay = checkoutReplayRefId != null || legacyCompleteReplay;
     if (!completeReplay) {
       const shift = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1);
       const current = shift[0];
@@ -535,6 +565,14 @@ export async function checkoutReceptionInTx(
       printSale = await buildPrint(null);
     }
 
+    // `amount` قادم من الواجهة ويُستعمل مؤقتاً لتوزيع المقبوض. لا يصبح سلطةً مالية: بعد أن
+    // تحسب خدمتَا البيع والطباعة الإجمالي الحقيقي داخل المعاملة، يلزم التطابق أو تُردّ كل الآثار.
+    // replay التاريخي وحده مستثنى لأن عملياتٍ قديمة التزمت قبل هذا الثابت وبمبالغ غير مطابقة.
+    if (!legacyCompleteReplay) {
+      assertCheckoutAmountMatches("بيع البضاعة", input.regularSale?.amount, regularSale?.total);
+      assertCheckoutAmountMatches("خدمات الطباعة", input.printSale?.amount, printSale?.total);
+    }
+
     if (!completeReplay && receptionDeferredAuthorized) {
       const deferredAmount = round2(
         money(regularSale?.total ?? "0")
@@ -740,6 +778,19 @@ export async function checkoutReceptionInTx(
       // ش٤: العربون الموزَّع يرافق النتيجة — تطبعه تذكرة الأمر («مدفوع مقدماً/المتبقّي») بلا
       // إعادة حسابٍ واجهيّ قد ينحرف عن الجشع الخادميّ.
       workOrders.push({ ...created, deposit: round2(money(order.deposit ?? "0")).toFixed(2) });
+    }
+
+    if (checkoutReplayRefId == null && !legacyCompleteReplay) {
+      const checkoutRefId = regularSale?.invoiceId ?? printSale?.invoiceId ?? workOrders[0]?.workOrderId;
+      if (checkoutRefId != null) {
+        await recordIdempotencyKey(
+          tx,
+          "reception.checkout",
+          input.clientRequestId,
+          checkoutRefId,
+          checkoutPayloadHash,
+        );
+      }
     }
 
     return { regularSale, printSale, workOrders, preSplit, dispatch };
