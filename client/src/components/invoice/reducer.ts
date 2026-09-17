@@ -73,6 +73,7 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
         ...state,
         tier: action.tier,
         items: state.items.map((item) => {
+          // السعر الرقميّ لقطة إصدار مؤكَّدة؛ تغيير فئة السعر لا يعيد تسعير كرتٍ سبق تأكيده.
           if (item.digital) return item;
           const price = action.pricesByUnitId[item.productUnitId];
           return price === undefined ? item : { ...item, price };
@@ -105,11 +106,13 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
       return { ...state, entityId: action.id };
 
     case "ADD_ITEM": {
-      // كل كرت رقمي مثيلٌ مستقل له lineKey ومرجع تنفيذ؛ دمجه بالوحدة يفقد أحد
-      // التنفيذات ويحوّل الكمية إلى رقم لا يقبله مسار التثبيت.
-      const existing = action.item.digital
-        ? -1
-        : state.items.findIndex((i) => !i.digital && i.productUnitId === action.item.productUnitId);
+      // كل كرتٍ رقميّ مثيل مستقل (مرجع/طالب/نسخة سعر)، ولو اتحد productUnitId.
+      if (action.item.digital) {
+        return { ...state, items: [...state.items, { ...action.item, qty: 1 }] };
+      }
+      const existing = state.items.findIndex(
+        (i) => !i.digital && i.productUnitId === action.item.productUnitId,
+      );
       if (existing >= 0) {
         const items = [...state.items];
         items[existing] = { ...items[existing], qty: items[existing].qty + 1 };
@@ -119,12 +122,16 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
     }
 
     case "ADD_ITEMS": {
-      // Bulk add — merge ordinary duplicates only. Digital instances remain one row each.
+      // الأصناف العادية فقط تُدمج. البطاقة الرقمية تبقى سطراً بكمية 1 لكل إصدار فعليّ.
       const items = [...state.items];
       for (const newItem of action.items) {
-        const ix = newItem.digital
-          ? -1
-          : items.findIndex((i) => !i.digital && i.productUnitId === newItem.productUnitId);
+        if (newItem.digital) {
+          items.push({ ...newItem, qty: 1 });
+          continue;
+        }
+        const ix = items.findIndex(
+          (i) => !i.digital && i.productUnitId === newItem.productUnitId,
+        );
         if (ix >= 0) items[ix] = { ...items[ix], qty: items[ix].qty + newItem.qty };
         else items.push(newItem);
       }
@@ -132,6 +139,10 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
     }
 
     case "UPDATE_ITEM": {
+      // لا يتحول مثيل كرتٍ واحد إلى كمية مجمّعة ولا ينفصل سعره عن نسخة السعر المؤكدة.
+      if (state.items[action.idx]?.digital && (action.field === "qty" || action.field === "price")) {
+        return state;
+      }
       const items = [...state.items];
       items[action.idx] = { ...items[action.idx], [action.field]: action.value };
       return { ...state, items };

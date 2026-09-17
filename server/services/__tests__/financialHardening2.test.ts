@@ -482,6 +482,7 @@ describe("#2 عربون أمر الشغل يدخل الصندوق/الدفتر �
     });
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor,
     );
+    await setStock(1, 1, 1);
     const wo = await createWorkOrder({ branchId: 1, customerId: 1, baseVariantId: 1, title: "لوحة", salePrice: "20.00", deposit: "5.00", paymentMethod: "CASH",
       }, actor,
     );

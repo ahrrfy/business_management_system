@@ -19,7 +19,7 @@ import {
   deliveryParties,
   digitalSaleDetails,
   invoiceItemBundleComponents,
-  inventoryMovements,
+  invoiceItemServiceMaterials,
   invoiceItems,
   invoices,
   productVariants,
@@ -50,6 +50,7 @@ import {
   recordIdempotencyKey,
 } from "./idempotency";
 import { applyMovement } from "./inventoryService";
+import { allocateLineCost } from "./billing";
 import {
   adjustCustomerBalance,
   adjustSupplierBalance,
@@ -1167,13 +1168,101 @@ export async function returnSaleInTx(
     baseQuantity: number;
   }
   const stockOps: StockOp[] = [];
+  const restoredServiceItemIds = new Set<number>();
+
+  // تصحيح الفاتورة ليس مرتجع عميل: قبل إعادة الإصدار يجب ردّ مواد وصفة الخدمة التي خرجت
+  // فعلاً مع الأصل، ثم سيستهلكها `createSaleInTx` وفق الفاتورة المصحّحة. المصدر الحاكم هو
+  // لقطة invoiceItemServiceMaterials البنيوية؛ لا الوصفة الحيّة ولا notes الحر.
+  // يبقى مرتجع العميل العادي بلا أي ردّ لمواد خدمة منفّذة.
+  if (input.internalCorrectionReversal && restock) {
+    const serviceWork = work.filter(
+      ({ item }) => kindByVariant.get(Number(item.variantId)) === "SERVICE",
+    );
+    for (const { item } of serviceWork) {
+      if (item.serviceMaterialsSnapshotted !== true) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تصحيح فاتورة خدمة تاريخية آلياً",
+            why: `البند ${Number(item.id)} لا يحمل لقطة مواد موثوقة وقت البيع؛ الاعتماد على الوصفة الحالية أو نص الحركة قد يضاعف الاستهلاك`,
+            doThis: "راجِع الحركات مع مسؤول المخزون وسجّل التسوية يدوياً قبل إعادة الإصدار",
+          }),
+        });
+      }
+    }
+    const serviceItemIds = serviceWork.map(({ item }) => Number(item.id));
+    const snapshots = serviceItemIds.length
+      ? await tx
+      .select({
+        invoiceItemId: invoiceItemServiceMaterials.invoiceItemId,
+        materialVariantId: invoiceItemServiceMaterials.materialVariantId,
+        baseQuantity: invoiceItemServiceMaterials.baseQuantity,
+        lineCost: invoiceItemServiceMaterials.lineCost,
+      })
+      .from(invoiceItemServiceMaterials)
+      .where(inArray(invoiceItemServiceMaterials.invoiceItemId, serviceItemIds))
+      : [];
+    const snapshotsByItem = new Map<number, typeof snapshots>();
+    for (const snapshot of snapshots) {
+      const itemId = Number(snapshot.invoiceItemId);
+      const list = snapshotsByItem.get(itemId) ?? [];
+      list.push(snapshot);
+      snapshotsByItem.set(itemId, list);
+    }
+    for (const { line, item } of serviceWork) {
+      const itemSnapshots = snapshotsByItem.get(Number(item.id)) ?? [];
+      const returnedLineCost = allocateLineCost(
+        item.lineCost,
+        Number(item.baseQuantity),
+        Number(item.returnedBaseQuantity ?? 0),
+        line.baseQuantity,
+      );
+      if (returnedLineCost.gt(0) && !itemSnapshots.length) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر إعادة مواد الخدمة قبل التصحيح",
+            why: `البند ${Number(item.id)} يحمل كلفة ${returnedLineCost.toFixed(2)} بلا صفوف لقطة مواد`,
+            doThis: "أوقف التصحيح وراجِع تكامل لقطة الفاتورة مع مسؤول النظام",
+          }),
+        });
+      }
+      for (const snapshot of itemSnapshots) {
+        const quantity = money(snapshot.baseQuantity)
+          .times(line.baseQuantity)
+          .div(Number(item.baseQuantity));
+        if (!quantity.isInteger()) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر توزيع مادة الخدمة على كمية التصحيح",
+              why: `لقطة المادة #${Number(snapshot.materialVariantId)} تنتج كمية كسرية ${quantity.toString()}`,
+              doThis: "صحّح كامل السطر دفعة واحدة أو نفّذ تسوية مخزون يدوية موثقة",
+            }),
+          });
+        }
+        if (quantity.gt(0)) {
+          stockOps.push({
+            variantId: Number(snapshot.materialVariantId),
+            baseQuantity: quantity.toNumber(),
+          });
+        }
+      }
+      restoredServiceItemIds.add(Number(item.id));
+    }
+  }
 
   for (const { line, item } of work) {
     const portion = new Decimal(line.baseQuantity).dividedBy(item.baseQuantity);
     returnedGrossNet = returnedGrossNet.plus(money(item.total).times(portion));
     // سطر الهدية: `item.total` صفر ⇒ لا إيراد يُعكَس (لا استرداد نقديّ — لم يُدفع شيء)، وتكلفته
     // تذهب لوعاء الهدايا لا لوعاء COGS.
-    const lineCost = round2(money(item.unitCost).times(line.baseQuantity));
+    const lineCost = allocateLineCost(
+      item.lineCost,
+      Number(item.baseQuantity),
+      Number(item.returnedBaseQuantity ?? 0),
+      line.baseQuantity,
+    );
     if (item.isGift) returnedGiftCost = returnedGiftCost.plus(lineCost);
     else returnedCost = returnedCost.plus(lineCost);
 
@@ -1219,7 +1308,7 @@ export async function returnSaleInTx(
           (item.returnedBaseQuantity ?? 0) + line.baseQuantity,
         // returnedRestockedBaseQuantity يزيد فقط حين عادت البضاعة للرفّ (restock) — يُميّز المُعاد
         // للمخزون عن التالف كي تطرح تقارير COGS التحليلية تكلفة المُعاد فقط (مطابِقةً للدفتر).
-        ...(restock
+        ...(restock && (kind !== "SERVICE" || restoredServiceItemIds.has(Number(item.id)))
           ? {
               returnedRestockedBaseQuantity:
                 (item.returnedRestockedBaseQuantity ?? 0) + line.baseQuantity,
@@ -1348,10 +1437,15 @@ export async function returnSaleInTx(
     }
   }
   const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
-  let returnedServicePaidCost = new Decimal(0);
-  let returnedServiceGiftCost = new Decimal(0);
+  let nonRestoredServicePaidCost = new Decimal(0);
+  let nonRestoredServiceGiftCost = new Decimal(0);
   for (const { line, item } of work) {
-    const share = round2(money(item.unitCost).times(line.baseQuantity));
+    const share = allocateLineCost(
+      item.lineCost,
+      Number(item.baseQuantity),
+      Number(item.returnedBaseQuantity ?? 0),
+      line.baseQuantity,
+    );
     const cId = consignByVariant.get(Number(item.variantId));
     if (cId != null) {
       const current = byConsignor.get(cId) ?? {
@@ -1361,10 +1455,13 @@ export async function returnSaleInTx(
       if (item.isGift) current.gift = current.gift.plus(share);
       else current.paid = current.paid.plus(share);
       byConsignor.set(cId, current);
-    } else if (kindByVariant.get(Number(item.variantId)) === "SERVICE") {
+    } else if (
+      kindByVariant.get(Number(item.variantId)) === "SERVICE" &&
+      !restoredServiceItemIds.has(Number(item.id))
+    ) {
       if (item.isGift)
-        returnedServiceGiftCost = returnedServiceGiftCost.plus(share);
-      else returnedServicePaidCost = returnedServicePaidCost.plus(share);
+        nonRestoredServiceGiftCost = nonRestoredServiceGiftCost.plus(share);
+      else nonRestoredServicePaidCost = nonRestoredServicePaidCost.plus(share);
     }
   }
   const consignmentPaidShare = round2(
@@ -1379,13 +1476,18 @@ export async function returnSaleInTx(
       new Decimal(0),
     ),
   );
+  // مواد الخدمة لا تعود في مرتجع العميل، فتظل كلفتها COGS. الاستثناء الوحيد هو عكس
+  // التصحيح الداخلي أعلاه: المواد الأصلية عادت فعلاً وستُستهلك مرةً أخرى عند إعادة الإصدار،
+  // لذلك نعكس لقطة COGS/GIFT_OUT الأصلية كي لا تتضاعف الكلفة.
+  nonRestoredServicePaidCost = round2(nonRestoredServicePaidCost);
+  nonRestoredServiceGiftCost = round2(nonRestoredServiceGiftCost);
   const ownedReversedCost = restock
     ? round2(
         Decimal.max(
           new Decimal(0),
           reversedCost
             .minus(consignmentPaidShare)
-            .minus(returnedServicePaidCost),
+            .minus(nonRestoredServicePaidCost),
         ),
       )
     : new Decimal(0);
@@ -1395,16 +1497,17 @@ export async function returnSaleInTx(
           new Decimal(0),
           reversedGiftCost
             .minus(consignmentGiftShare)
-            .minus(returnedServiceGiftCost),
+            .minus(nonRestoredServiceGiftCost),
         ),
       )
     : new Decimal(0);
-  // الخدمة لا تعود مخزوناً عند restock؛ لا نعكس هديتها لأن موادها المستهلكة لم تعد للرف.
+  // الخدمة لا تعود مخزوناً في المرتجع العادي؛ لا نعكس هديتها لأن موادها لم تعد للرف.
+  // عكس التصحيح الداخلي أعاد المواد أعلاه، ولذلك يعكس مصروف الهدية أيضاً.
   const financiallyReversedGiftCost = restock
     ? round2(
         Decimal.max(
           new Decimal(0),
-          reversedGiftCost.minus(returnedServiceGiftCost),
+          reversedGiftCost.minus(nonRestoredServiceGiftCost),
         ),
       )
     : new Decimal(0);
@@ -1500,7 +1603,10 @@ export async function returnSaleInTx(
   const returnProfile: PostingProfile =
     inv.sourceType === "WORKORDER"
       ? "RETURN_SALE_FLEX"
-      : returnClasses.size > 1
+      : returnClasses.size > 1 ||
+          (input.internalCorrectionReversal &&
+            returnClasses.has("SERVICE") &&
+            ownedReversedCost.gt(0))
         ? "RETURN_SALE_MIXED"
         : returnClasses.has("DIGITAL")
           ? "RETURN_SALE_DIGITAL"
@@ -1565,7 +1671,7 @@ export async function returnSaleInTx(
       createdByNameSnapshot: returnOperatorName,
       notes:
         `عكس كلفة تحليلية=${toDbMoney(reversedCost)}؛ عكس COGS مملوك=${toDbMoney(ownedReversedCost)}؛ ` +
-        `خدمة غير معادة=${toDbMoney(returnedServicePaidCost)}؛ أمانة مستقلة=${toDbMoney(consignmentPaidShare)}` +
+        `خدمة غير معادة=${toDbMoney(nonRestoredServicePaidCost)}؛ أمانة مستقلة=${toDbMoney(consignmentPaidShare)}` +
         (resolutionReason
           ? `؛ سبب المرتجع=${resolutionReason}؛ مصير البضاعة=${
               (resolutionDisposition ?? (restock ? "RESTOCK" : "DAMAGED")) ===

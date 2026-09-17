@@ -6,7 +6,7 @@
 // workSeconds/deliveredAt مباشرةً بعد التسليم فقط (قيمهما الحقيقية زمن-تشغيلية:
 // TIMESTAMPDIFF وNOW() — غير قابلة للتثبيت عبر الخدمات في اختبار).
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -35,6 +35,8 @@ const TABLES = [
   "workOrderItems",
   "workOrderImages",
   "workOrders",
+  "productionRecipeLines",
+  "productionRecipes",
   "serviceTypes",
   "inventoryMovements",
   "branchStock",
@@ -61,6 +63,7 @@ async function reset() {
 }
 
 const VARIANT_ID = 11;
+const SERVICE_VARIANT_ID = 21;
 const CUSTOMER_ID = 5;
 // costPrice للمتغيّر — يُلتقط لقطةً في startWorkOrder ⇒ materialsCost = 250 × baseQuantity.
 const UNIT_COST = "250.00";
@@ -97,13 +100,28 @@ async function seedBase() {
   });
   // creditLimit=null ⇒ بلا حدّ (يسمح بالتسليم الآجل بلا دفعة ولا وردية نقدية).
   await d.insert(s.customers).values({ id: CUSTOMER_ID, name: "عميل المطبعة" });
-  await d.insert(s.products).values({ id: 10, name: "خشب درع" });
-  await d.insert(s.productVariants).values({
-    id: VARIANT_ID,
-    productId: 10,
-    sku: "WOOD-1",
-    costPrice: UNIT_COST,
-  });
+  await d.insert(s.products).values([
+    { id: 10, name: "خشب درع" },
+    { id: 20, name: "حفر درع", isService: true },
+  ]);
+  await d.insert(s.productVariants).values([
+    {
+      id: VARIANT_ID,
+      productId: 10,
+      sku: "WOOD-1",
+      costPrice: UNIT_COST,
+    },
+    {
+      id: SERVICE_VARIANT_ID,
+      productId: 20,
+      sku: "ENGRAVE-1",
+      costPrice: "0.00",
+    },
+  ]);
+  await d.insert(s.productUnits).values([
+    { id: 11, variantId: VARIANT_ID, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 21, variantId: SERVICE_VARIANT_ID, unitName: "خدمة", conversionFactor: "1", isBaseUnit: true },
+  ]);
   // رصيد كافٍ في الفرعين — startWorkOrder يستهلك OUT ويرفض النقص.
   await d.insert(s.branchStock).values([
     { variantId: VARIANT_ID, branchId: 1, quantity: 1000 },
@@ -180,6 +198,116 @@ const RANGE = { from: "2026-06-01", to: "2026-06-30" };
 beforeEach(async () => {
   await reset();
   await seedBase();
+});
+
+describe("workOrder — اشتقاق مواد وصفة الخدمة", () => {
+  it("يشتق BOM عند خلو المواد ويضربه بكمية الأمر ثم يستهلكه عند البدء", async () => {
+    await db().insert(s.productionRecipes).values({
+      id: 1,
+      name: "[خدمة] حفر درع",
+      outputVariantId: SERVICE_VARIANT_ID,
+      outputProductUnitId: 21,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: true,
+    });
+    await db().insert(s.productionRecipeLines).values({
+      recipeId: 1,
+      inputVariantId: VARIANT_ID,
+      qtyPerOutputBase: "2.0000",
+    });
+
+    const { workOrderId } = await createWorkOrder(
+      {
+        branchId: 1,
+        customerId: CUSTOMER_ID,
+        baseVariantId: SERVICE_VARIANT_ID,
+        title: "ثلاثة دروع محفورة",
+        quantity: 3,
+        salePrice: "9000",
+        materials: [],
+      },
+      admin,
+    );
+
+    expect(
+      await db().select({
+        variantId: s.workOrderMaterials.variantId,
+        baseQuantity: s.workOrderMaterials.baseQuantity,
+      }).from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, workOrderId)),
+    ).toEqual([{ variantId: VARIANT_ID, baseQuantity: 6 }]);
+
+    await startWorkOrder(workOrderId, admin);
+
+    const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId)).limit(1))[0];
+    const stock = (await db().select().from(s.branchStock).where(and(
+      eq(s.branchStock.variantId, VARIANT_ID),
+      eq(s.branchStock.branchId, 1),
+    )).limit(1))[0];
+    expect(Number(wo.materialsCost)).toBe(1500);
+    expect(Number(stock.quantity)).toBe(994);
+  });
+
+  it("يبقي الخدمة العمالية بلا مواد إن لم يكن لها أي تاريخ وصفة", async () => {
+    const { workOrderId } = await createWorkOrder(
+      {
+        branchId: 1,
+        customerId: CUSTOMER_ID,
+        baseVariantId: SERVICE_VARIANT_ID,
+        title: "خدمة حفر يدوية",
+        quantity: 1,
+        salePrice: "3000",
+        materials: [],
+      },
+      admin,
+    );
+
+    expect(await db().select().from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, workOrderId))).toHaveLength(0);
+  });
+
+  it("يرفض منتج الأساس إذا لم تكن حالته نشطة صراحةً", async () => {
+    await db().update(s.products).set({ isActive: null }).where(eq(s.products.id, 20));
+
+    await expect(createWorkOrder(
+      {
+        branchId: 1,
+        customerId: CUSTOMER_ID,
+        baseVariantId: SERVICE_VARIANT_ID,
+        title: "خدمة أساسها معطّل",
+        quantity: 1,
+        salePrice: "3000",
+        materials: [],
+      },
+      admin,
+    )).rejects.toThrowError(/معطّل/);
+    expect(await db().select().from(s.workOrders)).toHaveLength(0);
+  });
+
+  it("يرفض الإنشاء إذا كان للخدمة تاريخ وصفة لكن لا توجد وصفة فعالة", async () => {
+    await db().insert(s.productionRecipes).values({
+      id: 2,
+      name: "[خدمة] وصفة حفر معطلة",
+      outputVariantId: SERVICE_VARIANT_ID,
+      outputProductUnitId: 21,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: false,
+    });
+
+    await expect(createWorkOrder(
+      {
+        branchId: 1,
+        customerId: CUSTOMER_ID,
+        baseVariantId: SERVICE_VARIANT_ID,
+        title: "خدمة بوصفة معطلة",
+        quantity: 1,
+        salePrice: "3000",
+        materials: [],
+      },
+      admin,
+    )).rejects.toThrowError(/وصفة.*معطلة/);
+    expect(await db().select().from(s.workOrders)).toHaveLength(0);
+  });
 });
 
 describe("workOrderProfitability — صحة الأرقام المالية", () => {

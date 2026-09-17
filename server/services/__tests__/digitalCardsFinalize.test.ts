@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
+import { createApproval } from "../creditApprovalService";
 import { withTx } from "../tx";
 import {
   finalizeService, intentService, offeringService, pricingService, providerService, subscriptionService, walletService,
@@ -92,19 +93,36 @@ async function prepareAndExecute(
   } = {},
 ) {
   const id = ++seq;
+  const historicalCredit = options.paymentMethod === "CREDIT";
   const r = await withTx((tx) => intentService.prepare(tx, {
     clientRequestId: `prep-${id}-${Math.random().toString(36).slice(2, 8)}`,
-    branchId: 1, shiftId: 1, paymentMethod: options.paymentMethod ?? "CASH", cartFingerprint: `fp${id}`,
+    branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: `fp${id}`,
     customerId: options.customerId,
-    sourceType: options.sourceType,
+    sourceType: "POS",
     dueDate: options.dueDate,
     notes: options.notes,
-    managerOverrideByUserId: options.managerOverrideByUserId,
     lines: lines.map((l, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: l.offeringId, priceVersionId: l.priced.pv,
       expectedSellPrice: l.priced.price, providerReference: `REF-FIN-${id}-${i}`, student: l.student ?? null,
     })),
   }, actor));
+  if (historicalCredit) {
+    const [intent] = await db().select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, r.intentId));
+    let creditApprovalId: number | null = null;
+    if (options.managerOverrideByUserId != null) {
+      creditApprovalId = (await withTx((tx) => createApproval(tx, {
+        customerId: options.customerId!, branchId: 1, maxAmount: intent.expectedTotal,
+        approvedBy: options.managerOverrideByUserId!, ttlMinutes: 15,
+        notes: "historical digital-card credit approval fixture",
+      }))).id;
+    }
+    await db().update(s.digitalSaleIntents).set({
+      paymentMethod: "CREDIT",
+      checkoutSnapshot: {
+        ...intent.checkoutSnapshot!, creditApprovalId,
+      },
+    }).where(eq(s.digitalSaleIntents.id, r.intentId));
+  }
   const items = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.intentId, r.intentId));
   for (const it of items) {
     await withTx(async (tx) => {

@@ -69,7 +69,7 @@ describe("عقد سلة الكروت للقنوات غير التجزئة", () =
     expect(canUseDigitalCardsSellingStation("warehouse")).toBe(false);
   });
 
-  it("يسمح ببيع الكرت أو الاشتراك آجلاً من الفاتورة المتقدمة", () => {
+  it("يفشل مغلقاً عند بيع الكرت أو الاشتراك آجلاً من الفاتورة المتقدمة", () => {
     const validation = validateDigitalInvoiceCheckout(
       [{
         name: "اشتراك تعليمي",
@@ -106,12 +106,12 @@ describe("عقد سلة الكروت للقنوات غير التجزئة", () =
       },
     );
 
-    expect(validation).toBeNull();
-    expect(resolveDigitalInvoiceSettlement({
+    expect(validation).toMatch(/البيع الآجل أو الأقساط/);
+    expect(() => resolveDigitalInvoiceSettlement({
       paymentTerms: "CREDIT",
       paymentMethod: "CASH",
       paidTotal: "0",
-    })).toEqual({ paymentAmount: "0.00", paymentMethod: "CREDIT" });
+    })).toThrow(/تُباع نقداً/);
   });
 
   it("يبقي التقسيط الجزئي خارج مسار الإصدار حتى يملك عقد تسوية مستقل", () => {
@@ -149,6 +149,6 @@ describe("عقد سلة الكروت للقنوات غير التجزئة", () =
         taxEnabled: false,
         totalTax: "0",
       },
-    )).toMatch(/الأقساط الجزئية/);
+    )).toMatch(/البيع الآجل أو الأقساط/);
   });
 });

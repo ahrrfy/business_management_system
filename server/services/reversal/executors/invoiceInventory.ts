@@ -22,7 +22,8 @@ import { eq, inArray } from "drizzle-orm";
 
 import { appErrorMessage } from "@shared/errors";
 
-import { invoiceItemBundleComponents, invoiceItems } from "../../../../drizzle/schema";
+import { invoiceItemBundleComponents, invoiceItemServiceMaterials, invoiceItems } from "../../../../drizzle/schema";
+import { allocateLineCost } from "../../billing";
 import { applyMovement } from "../../inventoryService";
 import { money, round2 } from "../../money";
 import type { EffectExecutor, ExecutionOutcome } from "../types";
@@ -70,14 +71,32 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
       });
     }
     const kind = ctx.kindByVariant.get(Number(item.variantId)) ?? "STOCKED";
+    const restoreServiceMaterials = restock && flavor === "CANCEL" && kind === "SERVICE";
+    if (restoreServiceMaterials && item.serviceMaterialsSnapshotted !== true) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء فاتورة خدمة تاريخية آلياً",
+          why: `البند ${Number(item.id)} لا يحمل لقطة موثوقة لمواد الخدمة وقت البيع؛ التخمين من الوصفة الحالية أو نص الحركة قد يعيد مادة خاطئة أو يكرر الاستهلاك`,
+          doThis: "راجِع حركات الفاتورة مع مسؤول المخزون وسجّل التسوية يدوياً قبل الإلغاء",
+        }),
+      });
+    }
     lines.push({
       itemId: Number(item.id),
       variantId: Number(item.variantId),
       kind,
       isGift: !!item.isGift,
       unitCost: money(item.unitCost),
+      lineCost: allocateLineCost(
+        item.lineCost,
+        Number(item.baseQuantity),
+        Number(item.returnedBaseQuantity ?? 0),
+        remaining,
+      ),
       quantity: remaining,
-      restocked: restock && kind !== "SERVICE",
+      restocked: restock && (kind !== "SERVICE" || restoreServiceMaterials),
+      serviceMaterialsRestored: restoreServiceMaterials,
     });
   }
 
@@ -101,12 +120,79 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
     }
   }
 
+  // ═══ لقطاتُ مواد الخدمة (للإلغاء فقط) ═══
+  const serviceItemIds = lines
+    .filter((line) => line.serviceMaterialsRestored)
+    .map((line) => line.itemId);
+  const serviceSnapshotByItem = new Map<
+    number,
+    Array<{ materialVariantId: number; baseQuantity: number; lineCost: string }>
+  >();
+  if (serviceItemIds.length) {
+    const rows = await tx
+      .select({
+        invoiceItemId: invoiceItemServiceMaterials.invoiceItemId,
+        materialVariantId: invoiceItemServiceMaterials.materialVariantId,
+        baseQuantity: invoiceItemServiceMaterials.baseQuantity,
+        lineCost: invoiceItemServiceMaterials.lineCost,
+      })
+      .from(invoiceItemServiceMaterials)
+      .where(inArray(invoiceItemServiceMaterials.invoiceItemId, serviceItemIds));
+    for (const row of rows) {
+      const itemId = Number(row.invoiceItemId);
+      const list = serviceSnapshotByItem.get(itemId) ?? [];
+      list.push({
+        materialVariantId: Number(row.materialVariantId),
+        baseQuantity: Number(row.baseQuantity),
+        lineCost: String(row.lineCost),
+      });
+      serviceSnapshotByItem.set(itemId, list);
+    }
+  }
+
   // ═══ حركاتُ المخزون المجمَّعة لكلّ متغيّر ═══
   const aggregated = new Map<number, number>();
   const variantsByItem = new Map<number, number[]>();
   for (const line of lines) {
     if (!line.restocked) continue;
-    if (line.kind === "BUNDLE") {
+    if (line.kind === "SERVICE") {
+      const item = itemById.get(line.itemId)!;
+      const snapshots = serviceSnapshotByItem.get(line.itemId) ?? [];
+      if (line.lineCost.gt(0) && !snapshots.length) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر إعادة مواد الخدمة عند الإلغاء",
+            why: `البند ${line.itemId} يحمل كلفة ${line.lineCost.toFixed(2)} بلا صفوف لقطة مواد`,
+            doThis: "أوقف الإلغاء وراجِع تكامل لقطة الفاتورة مع مسؤول النظام",
+          }),
+        });
+      }
+      const vids: number[] = [];
+      for (const snapshot of snapshots) {
+        const proportional = money(snapshot.baseQuantity)
+          .times(line.quantity)
+          .div(Number(item.baseQuantity));
+        if (!proportional.isInteger()) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر توزيع مادة خدمة على الجزء المتبقي من الإلغاء",
+              why: `لقطة المادة #${snapshot.materialVariantId} تنتج كمية كسرية ${proportional.toString()} لهذا الجزء`,
+              doThis: "نفّذ تسوية مخزون يدوية موثقة أو ألغِ كامل السطر دفعة واحدة",
+            }),
+          });
+        }
+        const qty = proportional.toNumber();
+        if (qty <= 0) continue;
+        aggregated.set(
+          snapshot.materialVariantId,
+          (aggregated.get(snapshot.materialVariantId) ?? 0) + qty,
+        );
+        vids.push(snapshot.materialVariantId);
+      }
+      variantsByItem.set(line.itemId, vids);
+    } else if (line.kind === "BUNDLE") {
       const def = snapshotByItem.get(line.itemId) ?? [];
       if (!def.length) {
         throw new TRPCError({
@@ -160,7 +246,7 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
       .update(invoiceItems)
       .set({
         returnedBaseQuantity: (item.returnedBaseQuantity ?? 0) + line.quantity,
-        ...(restock
+        ...(line.restocked
           ? { returnedRestockedBaseQuantity: (item.returnedRestockedBaseQuantity ?? 0) + line.quantity }
           : {}),
       })
@@ -174,6 +260,7 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
         variantId: line.variantId,
         kind: line.kind,
         physicalRestock: line.restocked && physicalMovementIds.length > 0,
+        serviceMaterialsRestored: line.serviceMaterialsRestored,
         movementIds: physicalMovementIds,
         restockDecision: restock,
       },

@@ -22,6 +22,25 @@ function line(productUnitId: number, price: string): InvoiceLine {
   };
 }
 
+function digitalLine(token: string, studentName?: string): InvoiceLine {
+  return {
+    ...line(77, "100.00"),
+    discount: "0",
+    discountType: "amount",
+    digital: {
+      providerId: 5,
+      offeringId: 9,
+      priceVersionId: 42,
+      sellPriceSnapshot: "100.00",
+      providerShareSnapshot: "80.00",
+      providerReference: "REF-ONE",
+      providerBasketKey: "basket-1",
+      student: studentName ? { studentName, studentPhone: "07701234567" } : undefined,
+      internalLineToken: token,
+    },
+  };
+}
+
 describe("invoiceReducer tier repricing", () => {
   it("changes the tier and all returned unit prices atomically", () => {
     const state = {
@@ -91,5 +110,53 @@ describe("invoiceReducer tier repricing", () => {
       pricesByUnitId: { 33: "1.00" },
     });
     expect(repriced.items.map((item) => item.price)).toEqual(["5000.00", "5000.00"]);
+  });
+});
+
+describe("invoiceReducer digital-card identity", () => {
+  it("يبقي مثيلين من الوحدة نفسها مستقلين ويحفظ الطالب والمفتاح لكل واحد", () => {
+    const state = createInitialState("SALE");
+    const next = invoiceReducer(state, {
+      type: "ADD_ITEMS",
+      items: [digitalLine("card-a", "مريم"), digitalLine("card-b", "سارة")],
+    });
+
+    expect(next.items).toHaveLength(2);
+    expect(next.items.map((item) => item.qty)).toEqual([1, 1]);
+    expect(next.items.map((item) => item.digital?.internalLineToken)).toEqual(["card-a", "card-b"]);
+    expect(next.items.map((item) => item.digital?.student?.studentName)).toEqual(["مريم", "سارة"]);
+  });
+
+  it("يواصل دمج الصنف العادي ولا يدمجه مع مثيل رقمي من الوحدة نفسها", () => {
+    const state = {
+      ...createInitialState("SALE"),
+      items: [digitalLine("card-a")],
+    };
+    const next = invoiceReducer(state, {
+      type: "ADD_ITEMS",
+      items: [line(77, "100.00"), line(77, "100.00")],
+    });
+
+    expect(next.items).toHaveLength(2);
+    expect(next.items[0].digital?.internalLineToken).toBe("card-a");
+    expect(next.items[1].qty).toBe(2);
+  });
+
+  it("يثبّت كمية وسعر المثيل الرقمي عند التعديل أو تغيير فئة السعر", () => {
+    const state = {
+      ...createInitialState("SALE"),
+      items: [digitalLine("card-a")],
+    };
+    const withQuantity = invoiceReducer(state, { type: "UPDATE_ITEM", idx: 0, field: "qty", value: 8 });
+    const withPrice = invoiceReducer(withQuantity, { type: "UPDATE_ITEM", idx: 0, field: "price", value: "1.00" });
+    const repriced = invoiceReducer(withPrice, {
+      type: "SET_TIER_PRICES",
+      tier: "WHOLESALE",
+      pricesByUnitId: { 77: "2.00" },
+    });
+
+    expect(repriced.items[0].qty).toBe(1);
+    expect(repriced.items[0].price).toBe("100.00");
+    expect(repriced.tier).toBe("WHOLESALE");
   });
 });
