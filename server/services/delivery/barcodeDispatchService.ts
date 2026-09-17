@@ -78,7 +78,7 @@ export async function dispatchByBarcode(
     });
   }
   const lookup = prepareDeliveryBarcodeLookup(rawCode);
-  const { code: cleanCode, systemCode, trackingCode, namespace, numericId } = lookup;
+  const { code: cleanCode, systemCode, trackingCode, documentCode, namespace, numericId } = lookup;
 
   const [party] = await db
     .select()
@@ -113,11 +113,14 @@ export async function dispatchByBarcode(
   const [onlineCandidates, workOrderCandidates, invoiceCandidates, consignmentCandidates] = await Promise.all([
     namespaceAllowsTarget(namespace, "ONLINE_ORDER")
       ? db
-          .select({ id: onlineOrders.id })
+          .select({
+            id: onlineOrders.id,
+            matchRank: sql<number>`CASE WHEN ${onlineOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`ORD-${cleanCode}`}) THEN 100 ELSE 10 END`,
+          })
           .from(onlineOrders)
           .where(and(
             namespace === "ONLINE_ORDER"
-              ? eq(onlineOrders.orderNumber, systemCode)
+              ? or(eq(onlineOrders.orderNumber, systemCode), eq(onlineOrders.orderNumber, documentCode))
               : namespace === "NUMERIC"
                 ? or(
                     eq(onlineOrders.orderNumber, cleanCode),
@@ -131,11 +134,14 @@ export async function dispatchByBarcode(
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "WORK_ORDER")
       ? db
-          .select({ id: workOrders.id })
+          .select({
+            id: workOrders.id,
+            matchRank: sql<number>`CASE WHEN ${workOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`WO-${cleanCode}`}) THEN 100 ELSE 10 END`,
+          })
           .from(workOrders)
           .where(and(
             namespace === "WORK_ORDER"
-              ? eq(workOrders.orderNumber, systemCode)
+              ? or(eq(workOrders.orderNumber, systemCode), eq(workOrders.orderNumber, documentCode))
               : namespace === "NUMERIC"
                 ? or(
                     eq(workOrders.orderNumber, cleanCode),
@@ -149,11 +155,14 @@ export async function dispatchByBarcode(
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "INVOICE")
       ? db
-          .select({ id: invoices.id })
+          .select({
+            id: invoices.id,
+            matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${cleanCode}, ${documentCode}, ${`INV-${cleanCode}`}) THEN 100 ELSE 10 END`,
+          })
           .from(invoices)
           .where(and(
             namespace === "INVOICE"
-              ? eq(invoices.invoiceNumber, systemCode)
+              ? or(eq(invoices.invoiceNumber, systemCode), eq(invoices.invoiceNumber, documentCode))
               : namespace === "NUMERIC"
                 ? or(
                     eq(invoices.invoiceNumber, cleanCode),
@@ -167,7 +176,13 @@ export async function dispatchByBarcode(
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "CONSIGNMENT")
       ? db
-          .select({ id: deliveryConsignments.id })
+          .select({
+            id: deliveryConsignments.id,
+            matchRank: sql<number>`CASE
+              WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}) THEN 100
+              WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
+              ELSE 10 END`,
+          })
           .from(deliveryConsignments)
           .where(and(
             namespace === "CONSIGNMENT"
@@ -199,10 +214,10 @@ export async function dispatchByBarcode(
   ]);
 
   const selectedTarget = resolveUniqueDeliveryBarcodeTarget(cleanCode, [
-    ...onlineCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id) })),
-    ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id) })),
-    ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id) })),
-    ...consignmentCandidates.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id) })),
+    ...onlineCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+    ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+    ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+    ...consignmentCandidates.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
   ]);
 
   // ١. فحص طلبات المتجر (Online Orders)
