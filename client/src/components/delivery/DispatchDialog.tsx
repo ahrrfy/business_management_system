@@ -47,7 +47,7 @@ export interface DispatchConfirmArgs {
   deliveryAddress?: string;
   notes?: string;
   assignedUserId?: number;
-  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (إلزامي للشركات). */
   externalTrackingRef?: string;
 }
 
@@ -121,6 +121,10 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   // ثانياً فوقها (نمط DeliveryHub الأصلي — راجع تعليقه التاريخي هناك).
   const submit = () => {
     if (!partyId) { notify.err("اختر جهة التوصيل"); return; }
+    if (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
+      notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح باركود البوليصة أو أدخل الرقم المطبوع أسفله.");
+      return;
+    }
     onConfirm({
       partyId: Number(partyId),
       fee: fee || "0",
@@ -248,13 +252,13 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
         {selectedParty?.partyType === "COMPANY" && (
           <div className="mb-3">
             <label className="mb-1.5 block text-sm font-bold">
-              رقم إيصال / مرجع الشركة
-              <span className="mr-1.5 text-xs font-normal text-muted-foreground">(اختياري)</span>
+              رقم تتبّع / بوليصة الشركة
+              <span className="mr-1.5 text-destructive">*</span>
             </label>
             <Input
               value={externalTrackingRef}
               onChange={(e) => setExternalTrackingRef(e.target.value)}
-              placeholder="أدخل رقم تتبع أو مرجع الشركة إن وُجد…"
+              placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم…"
               maxLength={100}
               className="h-9 text-sm font-mono"
               dir="ltr"
@@ -293,7 +297,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
             variant="destructive"
             className="flex-1"
             onClick={submit}
-            disabled={pending || !partyId}
+            disabled={pending || !partyId || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             isDispatching={pending}
             label="تأكيد التسليم للمندوب"
           />

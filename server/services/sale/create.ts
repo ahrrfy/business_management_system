@@ -1435,6 +1435,7 @@ export async function createSaleInTx(
           recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
           deliveryAddress: input.delivery.address ?? null,
           governorate: input.delivery.governorate ?? null,
+          externalTrackingRef: input.delivery.externalTrackingRef ?? null,
           clientRequestId: input.clientRequestId ? `${input.clientRequestId}-dispatch` : null,
         },
         { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role },

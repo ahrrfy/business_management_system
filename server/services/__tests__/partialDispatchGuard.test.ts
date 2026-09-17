@@ -72,7 +72,14 @@ async function draftWithChild(draftId: number, invoiceId: number, woStatus: stri
 
 const dispatch = (invoiceId: number, extra: Record<string, unknown> = {}) =>
   dispatchInvoiceToDelivery(
-    { invoiceId, partyId: 1, deliveryFee: "0", clientRequestId: `t-${invoiceId}-${JSON.stringify(extra)}`, ...extra },
+    {
+      invoiceId,
+      partyId: 1,
+      deliveryFee: "0",
+      externalTrackingRef: `PARTIAL-${invoiceId}`,
+      clientRequestId: `t-${invoiceId}-${JSON.stringify(extra)}`,
+      ...extra,
+    },
     ACTOR as never,
   );
 

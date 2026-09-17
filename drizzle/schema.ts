@@ -12669,6 +12669,11 @@ export const deliveryConsignments = mysqlTable(
     ),
     // حارس بنيوي: فاتورة واحدة ⇒ إرسالية واحدة (لا ازدواج عهدة على نفس البيع).
     invoiceUq: unique("uq_consignment_invoice").on(table.invoiceId),
+    // Canonical carrier references are unique within one delivery company; MySQL permits multiple NULLs.
+    trackingRefUq: unique("uq_consignment_party_tracking_ref").on(
+      table.partyId,
+      table.externalTrackingRef,
+    ),
   }),
 );
 export type DeliveryConsignment = typeof deliveryConsignments.$inferSelect;

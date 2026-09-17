@@ -56,6 +56,7 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
   const [instantPrint, setInstantPrint] = useState(true);
   const [recentDispatches, setRecentDispatches] = useState<DispatchedItemHistory[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
+  const selectedParty = parties.find((p) => p.id === selectedPartyId);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -132,12 +133,18 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
       focusInput();
       return;
     }
+    if (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
+      const message = "رقم بوليصة شركة التوصيل مطلوب قبل إسناد الطلب";
+      setLastError(message);
+      notify.err(message);
+      focusInput();
+      return;
+    }
 
     const cleanBarcode = normalizeBarcodeScannerInput(raw);
     const labelWin = instantPrint ? preopenShippingLabelWindow() : null;
 
     try {
-      const selectedParty = parties.find((p) => p.id === selectedPartyId);
       const res = await dispatchMutation.mutateAsync({
         barcode: cleanBarcode,
         partyId: selectedPartyId,
@@ -265,6 +272,7 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
               value={selectedPartyId ?? ""}
               onChange={(e) => {
                 setSelectedPartyId(Number(e.target.value) || null);
+                setExternalTrackingRef("");
                 focusInput();
               }}
               className="w-full h-10 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary"
@@ -305,13 +313,14 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
             </div>
           </div>
 
-          {/* رقم التتبع الخارجي (اختياري) */}
+          {/* رقم التتبع الخارجي — إلزامي للشركات لأنه مفتاح مطابقة كشف التحصيل. */}
           <div className="sm:col-span-3 space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              مرجع خارجي للشركة (اختياري)
+            <label className="text-xs font-bold text-foreground">
+              رقم بوليصة الشركة
+              {selectedParty?.partyType === "COMPANY" && <span className="ms-1 text-destructive">*</span>}
             </label>
             <Input
-              placeholder="رقم تتبع الشركة..."
+              placeholder={selectedParty?.partyType === "COMPANY" ? "امسح باركود بوليصة الشركة..." : "مرجع خارجي إن وُجد..."}
               value={externalTrackingRef}
               onChange={(e) => setExternalTrackingRef(e.target.value)}
               disabled={dispatchMutation.isPending}

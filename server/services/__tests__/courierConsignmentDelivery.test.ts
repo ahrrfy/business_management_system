@@ -280,7 +280,12 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     await addDeliveryPartyMember({ partyId: company.id, userId: 7, memberRole: "DRIVER" }, MANAGER);
 
     const woId = await readyReception();
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId: company.id, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({
+      workOrderId: woId,
+      partyId: company.id,
+      deliveryFee: "0",
+      externalTrackingRef: "COMPANY-QUEUE-0441446",
+    }, CASHIER);
     expect((await consignment(disp.consignmentId)).assignedUserId).toBeNull();
     expect((await listMyDeliveries(6)).toDeliver.some((r) => r.id === disp.consignmentId)).toBe(true);
     expect((await listMyDeliveries(7)).toDeliver.some((r) => r.id === disp.consignmentId)).toBe(true);
