@@ -75,8 +75,10 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
         items: state.items.map((item) => {
           // السعر الرقميّ لقطة إصدار مؤكَّدة؛ تغيير فئة السعر لا يعيد تسعير كرتٍ سبق تأكيده.
           if (item.digital) return item;
-          const price = action.pricesByUnitId[item.productUnitId];
-          return price === undefined ? item : { ...item, price, referencePrice: price };
+          const resolved = action.pricesByUnitId[item.productUnitId];
+          return resolved === undefined
+            ? item
+            : { ...item, price: resolved.price, referencePrice: resolved.price, priceSource: resolved.priceSource };
         }),
       };
 
@@ -86,8 +88,10 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
         entityId: action.id,
         items: state.items.map((item) => {
           if (item.digital) return item;
-          const price = action.pricesByUnitId[item.productUnitId];
-          return price === undefined ? item : { ...item, price, referencePrice: price };
+          const resolved = action.pricesByUnitId[item.productUnitId];
+          return resolved === undefined
+            ? item
+            : { ...item, price: resolved.price, referencePrice: resolved.price, priceSource: resolved.priceSource };
         }),
       };
 

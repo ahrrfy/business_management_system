@@ -309,14 +309,24 @@ describe("تكافؤ سعر العقد في عرض السعر", () => {
     expect(line).toMatchObject({
       unitPrice: "80.00",
       catalogUnitPrice: "100.00",
+      referenceUnitPrice: "80.00",
+      priceSource: "CONTRACT",
       total: "160.00",
     });
     expect((await getQuotation(quote.quotationId))?.items[0]).toMatchObject({
       unitPrice: "80.00",
       referenceUnitPrice: "80.00",
+      priceSource: "CONTRACT",
     });
 
     await upsertContractPrice({ customerId: 1, productUnitId: 1, price: "70.00" }, actor);
+    // مرجع المحرّر لقطةٌ من وقت الحفظ، لا العقد الحالي المتغيّر. لذلك hydrate ثم save
+    // يرسل بلا override، ويعيد الخادم التسعير إلى 70 بدلاً من تثبيت 80 كتجاوز يدوي زائف.
+    expect((await getQuotation(quote.quotationId))?.items[0]).toMatchObject({
+      unitPrice: "80.00",
+      referenceUnitPrice: "80.00",
+      priceSource: "CONTRACT",
+    });
     const updated = await updateQuotation({
       quotationId: quote.quotationId,
       customerId: 1,
@@ -326,7 +336,12 @@ describe("تكافؤ سعر العقد في عرض السعر", () => {
     expect(updated.total).toBe("140.00");
     [line] = await db().select().from(s.quotationItems)
       .where(eq(s.quotationItems.quotationId, quote.quotationId));
-    expect(line).toMatchObject({ unitPrice: "70.00", total: "140.00" });
+    expect(line).toMatchObject({
+      unitPrice: "70.00",
+      referenceUnitPrice: "70.00",
+      priceSource: "CONTRACT",
+      total: "140.00",
+    });
 
     const manuallyPriced = await createQuotation({
       branchId: 1,
@@ -345,11 +360,49 @@ describe("تكافؤ سعر العقد في عرض السعر", () => {
     expect(manualLine).toMatchObject({
       unitPrice: "90.00",
       catalogUnitPrice: "100.00",
+      referenceUnitPrice: "70.00",
+      priceSource: "MANUAL",
       total: "180.00",
     });
     expect((await getQuotation(manuallyPriced.quotationId))?.items[0]).toMatchObject({
       unitPrice: "90.00",
       referenceUnitPrice: "70.00",
+      priceSource: "MANUAL",
+    });
+  });
+
+  it("يحفظ لقطة العقد الآلي عند تعطيله ثم يعيد التسعير إلى exact tier بلا override زائف", async () => {
+    const contract = await upsertContractPrice(
+      { customerId: 1, productUnitId: 1, price: "80.00" },
+      actor,
+    );
+    const quote = await createQuotation({
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+    }, actor);
+
+    await setContractPriceActive(contract.id, false);
+    expect((await getQuotation(quote.quotationId))?.items[0]).toMatchObject({
+      unitPrice: "80.00",
+      referenceUnitPrice: "80.00",
+      priceSource: "CONTRACT",
+    });
+
+    const updated = await updateQuotation({
+      quotationId: quote.quotationId,
+      customerId: 1,
+      priceTier: "RETAIL",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+    }, actor);
+    expect(updated.total).toBe("200.00");
+    const [repricedLine] = await db().select().from(s.quotationItems)
+      .where(eq(s.quotationItems.quotationId, quote.quotationId));
+    expect(repricedLine).toMatchObject({
+      unitPrice: "100.00",
+      referenceUnitPrice: "100.00",
+      priceSource: "TIER",
     });
   });
 });

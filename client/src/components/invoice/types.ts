@@ -14,6 +14,11 @@ export type PaymentTerm = "CASH" | "CREDIT" | "INSTALLMENT";
 export type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "CHECK" | "WALLET";
 export type Currency = "IQD" | "USD";
 export type DiscountType = "percent" | "amount";
+export type PriceSource = "TIER" | "CONTRACT" | "MANUAL";
+export interface ResolvedLinePrice {
+  price: string;
+  priceSource: Exclude<PriceSource, "MANUAL">;
+}
 
 /** One line in the invoice cart. Money fields are kept as strings (decimal-safe). */
 export interface InvoiceLine {
@@ -51,7 +56,9 @@ export interface InvoiceLine {
    * السعر المرجعي الآلي الذي ملأه الكتالوج (عقد العميل أو فئته). اختلاف `price` عنه يعني
    * تجاوزاً يدوياً صريحاً؛ غيابه في سطر legacy يجعل الحفظ يحافظ على السعر الظاهر fail-safe.
    */
-  referencePrice?: string;
+  referencePrice?: string | null;
+  /** مصدر نيّة السعر المحفوظ؛ NULL/undefined يعني سطر legacy ملتبس ويُحفظ fail-safe كتجاوز. */
+  priceSource?: PriceSource | null;
   /** Cost per base unit (decimal string) — hidden from cashier; required by purchases. */
   costBase: string;
   /** Per-line discount, percent (0-100) or absolute amount (in invoice currency). */
@@ -115,8 +122,8 @@ export interface InvoiceState {
 export type InvoiceAction =
   | { type: "REPLACE_STATE"; state: InvoiceState }
   | { type: "SET_FIELD"; field: keyof Omit<InvoiceState, "items">; value: InvoiceState[keyof Omit<InvoiceState, "items">] }
-  | { type: "SET_TIER_PRICES"; tier: PriceTier; pricesByUnitId: Record<number, string> }
-  | { type: "SET_ENTITY_PRICES"; id: number | null; pricesByUnitId: Record<number, string> }
+  | { type: "SET_TIER_PRICES"; tier: PriceTier; pricesByUnitId: Record<number, ResolvedLinePrice> }
+  | { type: "SET_ENTITY_PRICES"; id: number | null; pricesByUnitId: Record<number, ResolvedLinePrice> }
   | {
       type: "SET_STOCK_SNAPSHOTS";
       snapshotsByUnitId: Record<number, { stockBase: number; stockBranchId: number; reservedBase: number; availableBase: number; isService: boolean; allowBackorder: boolean }>;

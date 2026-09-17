@@ -24,6 +24,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { EntityPicker } from "./EntityPicker";
+import { createLatestPricingRequestGuard } from "./productSearchResolution";
 import {
   CURRENCIES,
   INVOICE_TYPES,
@@ -35,6 +36,7 @@ import {
   type InvoiceType,
   type PaymentTerm,
   type PriceTier,
+  type ResolvedLinePrice,
 } from "./types";
 
 export interface InvoiceHeaderProps {
@@ -118,7 +120,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
   const utils = trpc.useUtils();
   const latestStateRef = useRef(state);
   latestStateRef.current = state;
-  const pricingRequestRef = useRef(0);
+  const pricingRequestGuardRef = useRef(createLatestPricingRequestGuard());
   const [isRepricing, setIsRepricing] = useState(false);
 
   // رأس تكيّفيّ (هجين): يُطوى تلقائياً حين تحمل السلة منتجات ليتمدّد جدول السلة نزولاً ويعرض
@@ -153,7 +155,8 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
       return;
     }
 
-    const requestId = ++pricingRequestRef.current;
+    const requestToken = pricingRequestGuardRef.current.begin(`tier:${nextTier}`);
+    const isCurrentRequest = () => pricingRequestGuardRef.current.isCurrent(requestToken, requestToken.context);
     setIsRepricing(true);
 
     try {
@@ -174,7 +177,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           productUnitIds: unitIds,
           customerId: snapshot.entityId,
         });
-        if (requestId !== pricingRequestRef.current) return;
+        if (!isCurrentRequest()) return;
 
         const current = latestStateRef.current;
         const currentUnitIds = Array.from(new Set(current.items.map((item) => item.productUnitId))).sort((a, b) => a - b);
@@ -184,18 +187,23 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           currentUnitIds.some((id, index) => id !== unitIds[index]);
         if (cartChanged) continue;
 
-        const pricesByUnitId: Record<number, string> = {};
-        for (const row of rows) pricesByUnitId[row.productUnitId] = row.price ?? "0";
+        const pricesByUnitId: Record<number, ResolvedLinePrice> = {};
+        for (const row of rows) {
+          pricesByUnitId[row.productUnitId] = {
+            price: row.price ?? "0",
+            priceSource: row.isContractPrice ? "CONTRACT" : "TIER",
+          };
+        }
 
         dispatch({ type: "SET_TIER_PRICES", tier: nextTier, pricesByUnitId });
         return;
       }
     } catch (error) {
-      if (requestId === pricingRequestRef.current) {
+      if (isCurrentRequest()) {
         notify.err(error, "تعذّر تطبيق فئة السعر الجديدة على المنتجات. بقيت الفئة والأسعار السابقة دون تغيير.");
       }
     } finally {
-      if (requestId === pricingRequestRef.current) setIsRepricing(false);
+      if (isCurrentRequest()) setIsRepricing(false);
     }
   }
 
@@ -207,7 +215,8 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
       return;
     }
 
-    const requestId = ++pricingRequestRef.current;
+    const requestToken = pricingRequestGuardRef.current.begin(`customer:${nextId ?? "none"}`);
+    const isCurrentRequest = () => pricingRequestGuardRef.current.isCurrent(requestToken, requestToken.context);
     setIsRepricing(true);
     try {
       for (;;) {
@@ -225,7 +234,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           productUnitIds: unitIds,
           customerId: nextId,
         });
-        if (requestId !== pricingRequestRef.current) return;
+        if (!isCurrentRequest()) return;
 
         const current = latestStateRef.current;
         const currentUnitIds = Array.from(new Set(current.items.map((item) => item.productUnitId)))
@@ -237,17 +246,22 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           currentUnitIds.some((id, index) => id !== unitIds[index]);
         if (cartChanged) continue;
 
-        const pricesByUnitId: Record<number, string> = {};
-        for (const row of rows) pricesByUnitId[row.productUnitId] = row.price ?? "0";
+        const pricesByUnitId: Record<number, ResolvedLinePrice> = {};
+        for (const row of rows) {
+          pricesByUnitId[row.productUnitId] = {
+            price: row.price ?? "0",
+            priceSource: row.isContractPrice ? "CONTRACT" : "TIER",
+          };
+        }
         dispatch({ type: "SET_ENTITY_PRICES", id: nextId, pricesByUnitId });
         return;
       }
     } catch (error) {
-      if (requestId === pricingRequestRef.current) {
+      if (isCurrentRequest()) {
         notify.err(error, "تعذّر تطبيق أسعار العميل على المنتجات. بقي العميل والأسعار السابقة دون تغيير.");
       }
     } finally {
-      if (requestId === pricingRequestRef.current) setIsRepricing(false);
+      if (isCurrentRequest()) setIsRepricing(false);
     }
   }
 

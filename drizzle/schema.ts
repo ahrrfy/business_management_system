@@ -2642,6 +2642,10 @@ export const quotationItems = mysqlTable(
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
     /** سعر الكتالوج عند إصدار العرض؛ يميز التفاوض اليدوي عن تغيّر الكتالوج لاحقاً. */
     catalogUnitPrice: decimal("catalogUnitPrice", { precision: 15, scale: 2 }),
+    /** لقطة السعر المرجعي الفعّال وقت الحفظ (عقد العميل أولاً، وإلا فئة العرض). NULL = سطر legacy. */
+    referenceUnitPrice: decimal("referenceUnitPrice", { precision: 15, scale: 2 }),
+    /** مصدر السعر المحفوظ؛ MANUAL يعني unitPriceOverride صريحاً. NULL = legacy fail-safe. */
+    priceSource: mysqlEnum("priceSource", ["TIER", "CONTRACT", "MANUAL"]),
     discountAmount: decimal("discountAmount", {
       precision: 15,
       scale: 2,

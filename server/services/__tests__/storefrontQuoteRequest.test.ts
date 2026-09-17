@@ -16,7 +16,7 @@ import {
   updateStorefrontQuoteRequestStatus,
 } from "../storeAdmin/storefrontQuoteRequestAdminService";
 import { createQuotation, setQuotationStatus } from "../quotationService";
-import { upsertContractPrice } from "../contractPriceService";
+import { setContractPriceActive, upsertContractPrice } from "../contractPriceService";
 import { truncateAllTables } from "./__testUtils__";
 
 function db() {
@@ -154,7 +154,44 @@ describe("storefront quote requests", () => {
       requestId: request.requestId,
       scopedBranchId: 1,
     });
-    expect(prepared.items[0]?.suggestedUnitPrice).toBe("2100.00");
+    expect(prepared.items[0]).toMatchObject({
+      suggestedUnitPrice: "2100.00",
+      suggestedPriceSource: "CONTRACT",
+    });
+  });
+
+  it("لا يسقط من فئة WHOLESALE إلى RETAIL عند غياب صف الفئة", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة الجملة",
+      customerPhone: "07701112223",
+      companyName: "شركة الجملة",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نحتاج تسعير الجملة الفعلي فقط، بلا تخمين من التجزئة.",
+      clientRequestId: "quote-wholesale-no-retail-fallback",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    await updateStorefrontQuoteRequestStatus({
+      requestId: request.requestId,
+      status: "CONTACTED",
+      scopedBranchId: 1,
+    });
+    const [stored] = await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId));
+    await db().update(s.customers)
+      .set({ defaultPriceTier: "WHOLESALE" })
+      .where(eq(s.customers.id, Number(stored!.customerId)));
+
+    const prepared = await getStorefrontQuoteRequestForOfficialQuotation({
+      requestId: request.requestId,
+      scopedBranchId: 1,
+    });
+    expect(prepared.items[0]).toMatchObject({
+      suggestedUnitPrice: null,
+      suggestedPriceSource: null,
+    });
   });
 
   it("يلتقط طلب الشركات كصورة احتياج فقط بلا طلب بيع أو حجز مخزون", async () => {
@@ -428,6 +465,141 @@ describe("storefront quote requests", () => {
       request.requestNumber,
       Number(requestRow.customerId),
     )).officialQuotation).toMatchObject({ status: "ACCEPTED" });
+  });
+
+  it.each([
+    { change: "changed" as const },
+    { change: "disabled" as const },
+  ])("يعيد العرض للمراجعة عند تغيّر العقد أو تعطيله ($change)", async ({ change }) => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: `شركة عقد ${change}`,
+      customerPhone: change === "changed" ? "07701234568" : "07701234569",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نحتاج عرضاً رسمياً مرتبطاً بسعر العقد الفعلي عند الإصدار.",
+      clientRequestId: `quote-contract-${change}-request`,
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const [requestRow] = await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId));
+    const contract = await upsertContractPrice({
+      customerId: Number(requestRow!.customerId),
+      productUnitId: 1,
+      price: "2100.00",
+    }, { userId: 1, branchId: 1 });
+    const official = await issueSentOfficialQuotation({
+      requestId: request.requestId,
+      customerId: Number(requestRow!.customerId),
+      clientRequestId: `quote-contract-${change}-official`,
+      validUntil: "2099-12-31",
+    });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
+
+    if (change === "changed") {
+      await upsertContractPrice({
+        customerId: Number(requestRow!.customerId),
+        productUnitId: 1,
+        price: "2200.00",
+      }, { userId: 1, branchId: 1 });
+    } else {
+      // نفس الرقم لا يكفي: تعطيل العقد يغيّر مصدر المرجع من CONTRACT إلى TIER.
+      await db().update(s.productPrices)
+        .set({ price: "2100.00" })
+        .where(eq(s.productPrices.productUnitId, 1));
+      await setContractPriceActive(contract.id, false);
+    }
+
+    const result = await acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!);
+    expect(result).toMatchObject({
+      outcome: "REQUOTE_REQUIRED",
+      quoteNumber: official.quoteNumber,
+      reasons: ["PRICE_CHANGED"],
+    });
+  });
+
+  it("يثبت العقد عند تغيّر الفئة، ويقبل عقداً بلا صف سعر للفئة", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة العقد المستقل",
+      customerPhone: "07701234570",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "العقد هو المرجع حتى لو لم يوجد سعر WHOLESALE في الكتالوج.",
+      clientRequestId: "quote-contract-without-tier-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const [requestRow] = await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId));
+    await db().update(s.customers)
+      .set({ defaultPriceTier: "WHOLESALE" })
+      .where(eq(s.customers.id, Number(requestRow!.customerId)));
+    await upsertContractPrice({
+      customerId: Number(requestRow!.customerId),
+      productUnitId: 1,
+      price: "2100.00",
+    }, { userId: 1, branchId: 1 });
+    const official = await issueSentOfficialQuotation({
+      requestId: request.requestId,
+      customerId: Number(requestRow!.customerId),
+      clientRequestId: "quote-contract-without-tier-official",
+      validUntil: "2099-12-31",
+    });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
+    // تغيّر فئة العميل لا يغيّر مرجع العرض: priceTier المحفوظ WHOLESALE وعقده ما زال 2100.
+    await db().update(s.customers)
+      .set({ defaultPriceTier: "GOVERNMENT" })
+      .where(eq(s.customers.id, Number(requestRow!.customerId)));
+
+    const result = await acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!);
+    expect(result).toEqual({
+      outcome: "ACCEPTED",
+      quoteNumber: official.quoteNumber,
+      quoteStatus: "ACCEPTED",
+      alreadyAccepted: false,
+      nextStep: "STAFF_CONFIRMATION",
+    });
+  });
+
+  it("لا يرفض العرض عند تغيّر سعر الفئة ما دام العقد الفعّال ثابتاً", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة عقد ثابت",
+      customerPhone: "07701234571",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "سعر العقد مستقل عن حركة سعر التجزئة.",
+      clientRequestId: "quote-stable-contract-tier-change-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const [requestRow] = await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId));
+    await upsertContractPrice({
+      customerId: Number(requestRow!.customerId),
+      productUnitId: 1,
+      price: "2100.00",
+    }, { userId: 1, branchId: 1 });
+    const official = await issueSentOfficialQuotation({
+      requestId: request.requestId,
+      customerId: Number(requestRow!.customerId),
+      clientRequestId: "quote-stable-contract-tier-change-official",
+      validUntil: "2099-12-31",
+    });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
+    await db().update(s.productPrices)
+      .set({ price: "2600.00" })
+      .where(eq(s.productPrices.productUnitId, 1));
+
+    expect(await acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!)).toEqual({
+      outcome: "ACCEPTED",
+      quoteNumber: official.quoteNumber,
+      quoteStatus: "ACCEPTED",
+      alreadyAccepted: false,
+      nextStep: "STAFF_CONFIRMATION",
+    });
   });
 
   it("يعيد العرض للمراجعة عند تغيّر السعر أو التوفر ولا يثبّت بيعاً", async () => {

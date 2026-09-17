@@ -37,6 +37,8 @@ import {
 } from "./onlineOrderService";
 import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
+import { resolveContractPrices } from "./contractPriceService";
+import { resolveEffectivePriceReference } from "./pricing";
 
 export type StorefrontQuoteRequestType =
   | "BULK"
@@ -548,6 +550,8 @@ async function acceptLockedOfficialQuotation(
       baseQuantity: quotationItems.baseQuantity,
       unitPrice: quotationItems.unitPrice,
       catalogUnitPrice: quotationItems.catalogUnitPrice,
+      referenceUnitPrice: quotationItems.referenceUnitPrice,
+      priceSource: quotationItems.priceSource,
     })
     .from(quotationItems)
     .where(eq(quotationItems.quotationId, Number(quote.id)))
@@ -589,6 +593,12 @@ async function acceptLockedOfficialQuotation(
   const catalogByUnit = new Map(
     currentCatalogLines.map((line) => [Number(line.productUnitId), line]),
   );
+  const contractPrices = await resolveContractPrices(
+    tx,
+    Number(quote.customerId),
+    unitIds,
+    { forUpdate: true },
+  );
 
   const reasons = new Set<"EXPIRED" | "PRICE_CHANGED" | "UNAVAILABLE">();
   const stockRequirements = new Map<number, number>();
@@ -607,11 +617,18 @@ async function acceptLockedOfficialQuotation(
       reasons.add("UNAVAILABLE");
       continue;
     }
+    const currentReference = resolveEffectivePriceReference({
+      catalogUnitPrice: catalog.currentUnitPrice,
+      contractUnitPrice: contractPrices.get(Number(line.productUnitId)),
+    });
+    // أسطر legacy لا تحمل دليلاً يميّز العقد/الفئة/التجاوز؛ القبول يفشل بأمان
+    // ويعيدها للموظف بدلاً من تخمين نية مالية تاريخية.
     if (
-      catalog.currentUnitPrice == null ||
-      !money(catalog.currentUnitPrice).eq(
-        money(line.catalogUnitPrice ?? line.unitPrice),
-      )
+      line.referenceUnitPrice == null ||
+      line.priceSource == null ||
+      currentReference.unitPrice == null ||
+      (line.priceSource !== "MANUAL" && line.priceSource !== currentReference.priceSource) ||
+      !currentReference.unitPrice.eq(money(line.referenceUnitPrice))
     ) {
       reasons.add("PRICE_CHANGED");
     }

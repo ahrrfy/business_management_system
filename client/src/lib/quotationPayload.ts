@@ -8,6 +8,7 @@ type QuotationPayloadLine = Pick<
   | "qty"
   | "price"
   | "referencePrice"
+  | "priceSource"
   | "discount"
   | "discountType"
 >;
@@ -17,8 +18,7 @@ type QuotationPayloadLine = Pick<
  * السطر القديم بلا مرجع يفشل بأمان: نحفظ سعره الظاهر كتجاوز ولا نعيد تسعيره صامتاً.
  */
 export function buildQuotationLinePayload(line: QuotationPayloadLine) {
-  const hasExplicitOverride =
-    line.referencePrice == null || !D(line.price).eq(D(line.referencePrice));
+  const hasExplicitOverride = shouldSendUnitPriceOverride(line);
   return {
     variantId: line.variantId,
     productUnitId: line.productUnitId,
@@ -35,4 +35,17 @@ export function buildQuotationLinePayload(line: QuotationPayloadLine) {
         ? D(line.discount || "0").toFixed(2)
         : undefined,
   };
+}
+
+/**
+ * لا نرسل السعر الآلي كتجاوز. MANUAL يبقى صريحاً حتى لو ساوى المرجع رقمياً، وأي سطر
+ * legacy بلا وسم/مرجع يحافظ على سعره الظاهر بدلاً من إعادة تسعيره صامتاً.
+ */
+export function shouldSendUnitPriceOverride(
+  line: Pick<InvoiceLine, "price" | "referencePrice" | "priceSource">,
+): boolean {
+  return line.priceSource == null ||
+    line.referencePrice == null ||
+    line.priceSource === "MANUAL" ||
+    !D(line.price).eq(D(line.referencePrice));
 }

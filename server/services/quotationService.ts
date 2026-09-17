@@ -19,7 +19,14 @@ import { computeInvoiceTotals, computeLineTotal } from "./billing";
 import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, round2, toDateStr } from "./money";
-import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
+import {
+  getUnitPrice,
+  resolveEffectivePriceReference,
+  resolveTier,
+  tryGetUnitPrice,
+  type AutomaticPriceSource,
+  type PriceTier,
+} from "./pricing";
 import { resolveContractPrices } from "./contractPriceService";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "./sale/create";
 import { openShiftIdTx } from "./shiftService";
@@ -69,8 +76,8 @@ export interface UpdateQuotationInput extends Omit<CreateQuotationInput, "branch
 
 /**
  * أسبقية تسعير عرض السعر هي نفس البيع: تجاوزٌ يدوي صريح ← عقد العميل ← فئة السعر.
- * `catalogUnitPrice` يبقى لقطة سعر الفئة وحده كي يحتفظ عمود قاعدة البيانات بدلالته
- * وتستطيع بوابة قبول عرض المتجر كشف تغيّر الكتالوج مستقلةً عن السعر المتفاوض عليه.
+ * `catalogUnitPrice` يبقى لقطة سعر الفئة للتدقيق، بينما `referenceUnitPrice` يلتقط المرجع
+ * الفعّال (عقد/فئة) و`priceSource` يثبت إن كان السعر آلياً أم تجاوزاً يدوياً.
  */
 async function resolveQuotationLinePrice(
   tx: Tx,
@@ -80,14 +87,23 @@ async function resolveQuotationLinePrice(
 ) {
   const catalogUnitPrice = await tryGetUnitPrice(tx, line.productUnitId, tier);
   const hasOverride = line.unitPriceOverride != null && line.unitPriceOverride !== "";
-  const unitPrice = hasOverride
-    ? money(line.unitPriceOverride!)
-    : contractPrice != null
-      ? money(contractPrice)
-      : catalogUnitPrice ?? await getUnitPrice(tx, line.productUnitId, tier);
+  const effective = resolveEffectivePriceReference({
+    catalogUnitPrice,
+    contractUnitPrice: contractPrice,
+  });
+  let referenceUnitPrice = effective.unitPrice;
+  let automaticSource: AutomaticPriceSource | null = effective.priceSource;
+  // التجاوز اليدوي مسموح حتى إن لم يكن للمنتج سعر فئة؛ أمّا السعر الآلي فيبقى fail-closed.
+  if (!hasOverride && referenceUnitPrice == null) {
+    referenceUnitPrice = await getUnitPrice(tx, line.productUnitId, tier);
+    automaticSource = "TIER";
+  }
+  const unitPrice = hasOverride ? money(line.unitPriceOverride!) : referenceUnitPrice!;
   return {
     unitPrice,
     catalogUnitPrice: catalogUnitPrice?.toFixed(2) ?? null,
+    referenceUnitPrice: referenceUnitPrice?.toFixed(2) ?? null,
+    priceSource: hasOverride ? "MANUAL" as const : automaticSource!,
   };
 }
 
@@ -242,7 +258,7 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId,
       );
-      const { unitPrice, catalogUnitPrice } = await resolveQuotationLinePrice(
+      const { unitPrice, catalogUnitPrice, referenceUnitPrice, priceSource } = await resolveQuotationLinePrice(
         tx, l, tier, contractPrices.get(l.productUnitId),
       );
       const lineRes = computeLineTotal({
@@ -257,6 +273,8 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         baseQuantity,
         unitPrice: lineRes.unitPrice,
         catalogUnitPrice,
+        referenceUnitPrice,
+        priceSource,
         quantity: lineRes.quantity,
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
@@ -296,6 +314,8 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         baseQuantity: c.baseQuantity,
         unitPrice: c.unitPrice,
         catalogUnitPrice: c.catalogUnitPrice,
+        referenceUnitPrice: c.referenceUnitPrice,
+        priceSource: c.priceSource,
         discountAmount: c.discountAmount,
         total: c.total,
       });
@@ -379,6 +399,8 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
       baseQuantity: number;
       unitPrice: string;
       catalogUnitPrice: string | null;
+      referenceUnitPrice: string | null;
+      priceSource: "TIER" | "CONTRACT" | "MANUAL";
       quantity: string;
       discountAmount: string;
       total: string;
@@ -390,7 +412,7 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         line.quantity,
         line.variantId,
       );
-      const { unitPrice, catalogUnitPrice } = await resolveQuotationLinePrice(
+      const { unitPrice, catalogUnitPrice, referenceUnitPrice, priceSource } = await resolveQuotationLinePrice(
         tx, line, tier, contractPrices.get(line.productUnitId),
       );
       const result = computeLineTotal({
@@ -405,6 +427,8 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         baseQuantity,
         unitPrice: result.unitPrice,
         catalogUnitPrice,
+        referenceUnitPrice,
+        priceSource,
         quantity: result.quantity,
         discountAmount: result.discountAmount,
         total: result.total,
@@ -939,6 +963,8 @@ export async function getQuotation(quotationId: number) {
       baseQuantity: quotationItems.baseQuantity,
       unitPrice: quotationItems.unitPrice,
       catalogUnitPrice: quotationItems.catalogUnitPrice,
+      referenceUnitPrice: quotationItems.referenceUnitPrice,
+      priceSource: quotationItems.priceSource,
       discountAmount: quotationItems.discountAmount,
       total: quotationItems.total,
       productName: products.name,
@@ -954,17 +980,10 @@ export async function getQuotation(quotationId: number) {
     .leftJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(quotationItems.productUnitId, productUnits.id))
     .where(eq(quotationItems.quotationId, quotationId));
-  const contractPrices = q.customerId
-    ? await resolveContractPrices(db, Number(q.customerId), items.map((item) => Number(item.productUnitId)))
-    : new Map<number, string>();
   return {
     ...q,
-    items: items.map((item) => ({
-      ...item,
-      // مرجع المحرّر الحالي: عقد العميل يفوز، وإلا لقطة فئة السعر وقت إنشاء العرض.
-      // اختلاف unitPrice عنه هو override محفوظ؛ غياب الاثنين يبقى legacy fail-safe في العميل.
-      referenceUnitPrice:
-        contractPrices.get(Number(item.productUnitId)) ?? item.catalogUnitPrice ?? undefined,
-    })),
+    // لا نعيد حل العقد الحالي هنا: هذان الحقلان لقطة نيّة السطر وقت آخر حفظ.
+    // NULL يعني سطر legacy ملتبس، فيتعامل معه العميل fail-safe كتجاوز صريح.
+    items,
   };
 }

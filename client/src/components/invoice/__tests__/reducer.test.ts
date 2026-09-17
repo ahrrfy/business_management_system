@@ -51,12 +51,16 @@ describe("invoiceReducer tier repricing", () => {
     const next = invoiceReducer(state, {
       type: "SET_TIER_PRICES",
       tier: "WHOLESALE",
-      pricesByUnitId: { 11: "800.00", 22: "1500.00" },
+      pricesByUnitId: {
+        11: { price: "800.00", priceSource: "TIER" },
+        22: { price: "1500.00", priceSource: "CONTRACT" },
+      },
     });
 
     expect(next.tier).toBe("WHOLESALE");
     expect(next.items.map((item) => item.price)).toEqual(["800.00", "1500.00"]);
     expect(next.items.map((item) => item.referencePrice)).toEqual(["800.00", "1500.00"]);
+    expect(next.items.map((item) => item.priceSource)).toEqual(["TIER", "CONTRACT"]);
     expect(next.items.map((item) => item.discount)).toEqual(["5", "5"]);
   });
 
@@ -70,12 +74,13 @@ describe("invoiceReducer tier repricing", () => {
     const next = invoiceReducer(state, {
       type: "SET_ENTITY_PRICES",
       id: 9,
-      pricesByUnitId: { 11: "700.00" },
+      pricesByUnitId: { 11: { price: "700.00", priceSource: "CONTRACT" } },
     });
 
     expect(next.entityId).toBe(9);
     expect(next.items.map((item) => item.price)).toEqual(["700.00", "2000.00"]);
     expect(next.items.map((item) => item.referencePrice)).toEqual(["700.00", undefined]);
+    expect(next.items.map((item) => item.priceSource)).toEqual(["CONTRACT", undefined]);
   });
 
   it("keeps a line unchanged when the server did not return its unit", () => {
@@ -87,7 +92,7 @@ describe("invoiceReducer tier repricing", () => {
     const next = invoiceReducer(state, {
       type: "SET_TIER_PRICES",
       tier: "GOVERNMENT",
-      pricesByUnitId: { 11: "900.00" },
+      pricesByUnitId: { 11: { price: "900.00", priceSource: "TIER" } },
     });
 
     expect(next.items.map((item) => item.price)).toEqual(["900.00", "2000.00"]);
@@ -126,7 +131,7 @@ describe("invoiceReducer tier repricing", () => {
     const repriced = invoiceReducer(next, {
       type: "SET_TIER_PRICES",
       tier: "WHOLESALE",
-      pricesByUnitId: { 33: "1.00" },
+      pricesByUnitId: { 33: { price: "1.00", priceSource: "TIER" } },
     });
     expect(repriced.items.map((item) => item.price)).toEqual(["5000.00", "5000.00"]);
   });

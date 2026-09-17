@@ -30,13 +30,13 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems,
-} from "@/lib/invoiceTransfer";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { getDeviceCode } from "@/lib/offline/outbox";
+import { shouldSendUnitPriceOverride } from "@/lib/quotationPayload";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -603,7 +603,7 @@ export default function SalesInvoice() {
         ...(l.isGift
           ? { isGift: true as const }
           : {
-              unitPriceOverride: round2(D(l.price)).toFixed(2),
+              ...(shouldSendUnitPriceOverride(l) ? { unitPriceOverride: round2(D(l.price)).toFixed(2) } : {}),
               discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
               discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
             }),

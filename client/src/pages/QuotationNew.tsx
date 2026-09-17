@@ -110,6 +110,7 @@ export default function QuotationNew() {
           stockBase: 0,
           price: item.unitPrice,
           referencePrice: item.referenceUnitPrice,
+          priceSource: item.priceSource,
           costBase: item.costBase ?? "0",
           discount: item.discountAmount ?? "0",
           discountType: "amount",
@@ -159,7 +160,10 @@ export default function QuotationNew() {
           conversionFactor: item.conversionFactor ?? "1",
           stockBase: 0,
           price: item.suggestedUnitPrice ?? "0",
-          referencePrice: item.suggestedUnitPrice ?? undefined,
+          // لا يوجد exact-tier ⇒ صفرٌ مرئي فقط، لا override تلقائي. إن لم يعدّله الموظف
+          // يرفض الخادم الحفظ لغياب سعر الفئة؛ وإذا عدّله يصبح الفرق تجاوزاً صريحاً.
+          referencePrice: item.suggestedUnitPrice ?? "0",
+          priceSource: item.suggestedPriceSource ?? "TIER",
           costBase: "0",
           discount: "0",
           discountType: "amount",
