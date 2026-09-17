@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  beginPricingSelectionIntent,
+  createPricingContextRequestGuard,
   createLatestPricingRequestGuard,
   resolveExactBeforeFuzzy,
 } from "./productSearchResolution";
@@ -55,5 +57,82 @@ describe("pricing context request guard", () => {
     await a;
 
     expect(applied).toEqual(["B"]);
+  });
+
+  it("يبطل طلب B عند رجوع المستخدم إلى A المثبتة قبل وصول B", async () => {
+    const guard = createLatestPricingRequestGuard();
+    let committedCustomer = "A";
+    let resolveB!: (value: string) => void;
+    const responseB = new Promise<string>((resolve) => { resolveB = resolve; });
+
+    const selectCustomer = async (nextCustomer: string, response: Promise<string>) => {
+      const intent = beginPricingSelectionIntent(
+        guard,
+        `customer:${nextCustomer}`,
+        committedCustomer,
+        nextCustomer,
+      );
+      // هذا هو مسار early-return الحقيقي: حتى الاختيار غير المتغيّر أعلن جيلاً جديداً أعلاه.
+      if (!intent.changed) return;
+
+      const resolvedCustomer = await response;
+      if (guard.isCurrent(intent.token, intent.token.context)) {
+        committedCustomer = resolvedCustomer;
+      }
+    };
+
+    const pendingB = selectCustomer("B", responseB);
+    await selectCustomer("A", Promise.resolve("A"));
+    resolveB("B");
+    await pendingB;
+
+    expect(committedCustomer).toBe("A");
+  });
+});
+
+describe("parallel barcode pricing context guard", () => {
+  it("يقبل مسحين سريعين في سياق التسعير نفسه ولو وصلت استجابتهما بترتيب معكوس", async () => {
+    const guard = createPricingContextRequestGuard("customer:A");
+    const added: string[] = [];
+    let resolveFirst!: (value: string) => void;
+    let resolveSecond!: (value: string) => void;
+    const firstResponse = new Promise<string>((resolve) => { resolveFirst = resolve; });
+    const secondResponse = new Promise<string>((resolve) => { resolveSecond = resolve; });
+
+    const scan = async (response: Promise<string>) => {
+      const token = guard.capture();
+      const item = await response;
+      if (guard.isCurrent(token, "customer:A")) added.push(item);
+    };
+
+    const first = scan(firstResponse);
+    const second = scan(secondResponse);
+    resolveSecond("second");
+    resolveFirst("first");
+    await Promise.all([first, second]);
+
+    expect(added).toEqual(["second", "first"]);
+  });
+
+  it("يبطل كل المسوح القديمة عند تغيّر سياق العميل أو الفئة", async () => {
+    const guard = createPricingContextRequestGuard("customer:A");
+    let currentContext = "customer:A";
+    const added: string[] = [];
+    let resolveOld!: (value: string) => void;
+    const oldResponse = new Promise<string>((resolve) => { resolveOld = resolve; });
+
+    const oldToken = guard.capture();
+    const oldScan = oldResponse.then((item) => {
+      if (guard.isCurrent(oldToken, currentContext)) added.push(item);
+    });
+
+    currentContext = "customer:B";
+    guard.sync(currentContext);
+    const newToken = guard.capture();
+    if (guard.isCurrent(newToken, currentContext)) added.push("new-context");
+    resolveOld("old-context");
+    await oldScan;
+
+    expect(added).toEqual(["new-context"]);
   });
 });

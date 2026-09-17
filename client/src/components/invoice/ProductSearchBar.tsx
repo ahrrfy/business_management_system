@@ -19,7 +19,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import {
-  createLatestPricingRequestGuard,
+  createPricingContextRequestGuard,
   resolveExactBeforeFuzzy,
   type ExactProductResolution,
 } from "./productSearchResolution";
@@ -113,8 +113,10 @@ export function ProductSearchBar({
   const wrapRef = useRef<HTMLDivElement>(null);
   const pricingContext = `${invoiceType}:${branchId}:${tier}:${customerId ?? "none"}`;
   const pricingContextRef = useRef(pricingContext);
+  const exactRequestGuardRef = useRef(createPricingContextRequestGuard(pricingContext));
+  // يغيّر الجيل فقط عند تغيّر سياق التسعير. المسوح المتوازية داخل السياق نفسه تبقى كلّها صالحة.
+  exactRequestGuardRef.current.sync(pricingContext);
   pricingContextRef.current = pricingContext;
-  const exactRequestGuardRef = useRef(createLatestPricingRequestGuard());
 
   // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + التفعيل من حرفين.
   // جانب البيع لا يُبقي نتائج سياق عميل/فئة سابق؛ الشراء وحده يحتفظ بنتائجه أثناء الجلب.
@@ -249,7 +251,7 @@ export function ProductSearchBar({
     code: string,
     options: { quietNotFound?: boolean } = {},
   ): Promise<ExactProductResolution> {
-    const requestToken = exactRequestGuardRef.current.begin(pricingContextRef.current);
+    const requestToken = exactRequestGuardRef.current.capture();
     const isCurrentRequest = () => exactRequestGuardRef.current.isCurrent(
       requestToken,
       pricingContextRef.current,

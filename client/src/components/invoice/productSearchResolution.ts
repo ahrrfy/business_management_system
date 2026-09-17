@@ -5,8 +5,13 @@ export interface PricingRequestToken {
   context: string;
 }
 
+export interface PricingRequestGuard {
+  begin(context: string): PricingRequestToken;
+  isCurrent(token: PricingRequestToken, currentContext: string): boolean;
+}
+
 /** حارس صغير يمنع استجابة بحث/باركود قديمة من الكتابة بعد تبدّل العميل أو الفئة أو الفرع. */
-export function createLatestPricingRequestGuard() {
+export function createLatestPricingRequestGuard(): PricingRequestGuard {
   let generation = 0;
   return {
     begin(context: string): PricingRequestToken {
@@ -14,6 +19,52 @@ export function createLatestPricingRequestGuard() {
     },
     isCurrent(token: PricingRequestToken, currentContext: string): boolean {
       return token.generation === generation && token.context === currentContext;
+    },
+  };
+}
+
+/**
+ * يسجّل نية اختيار العميل/الفئة قبل قرار «لا تغيير».
+ *
+ * هذا الترتيب مقصود: إذا كان طلب B معلّقاً بينما القيمة المثبّتة ما تزال A، ثم عاد المستخدم
+ * إلى A، فالعودة نفسها جيلٌ أحدث يجب أن يبطل B حتى لو لم تحتج dispatch جديداً.
+ */
+export function beginPricingSelectionIntent<T>(
+  guard: PricingRequestGuard,
+  context: string,
+  currentValue: T,
+  nextValue: T,
+): { token: PricingRequestToken; changed: boolean } {
+  const token = guard.begin(context);
+  return { token, changed: !Object.is(currentValue, nextValue) };
+}
+
+export interface PricingContextRequestGuard {
+  /** يعلن تبدّل سياق التسعير ويبطل كل الطلبات الملتقطة في السياق السابق. */
+  sync(context: string): void;
+  /** يلتقط الجيل الحالي بلا إبطال الطلبات المتوازية في السياق نفسه. */
+  capture(): PricingRequestToken;
+  isCurrent(token: PricingRequestToken, currentContext: string): boolean;
+}
+
+/**
+ * حارس لمسوح الباركود المتوازية: الجيل يتغيّر مع سياق التسعير لا مع كل مسح.
+ * لذلك يُسمح لعدة مسوح في العميل/الفئة/الفرع نفسها أن تضيف نتائجها، وتُرفض كلها فور تبدّل السياق.
+ */
+export function createPricingContextRequestGuard(initialContext: string): PricingContextRequestGuard {
+  let generation = 0;
+  let context = initialContext;
+  return {
+    sync(nextContext: string): void {
+      if (nextContext === context) return;
+      context = nextContext;
+      generation += 1;
+    },
+    capture(): PricingRequestToken {
+      return { generation, context };
+    },
+    isCurrent(token: PricingRequestToken, currentContext: string): boolean {
+      return token.generation === generation && token.context === context && context === currentContext;
     },
   };
 }

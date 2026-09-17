@@ -24,7 +24,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { EntityPicker } from "./EntityPicker";
-import { createLatestPricingRequestGuard } from "./productSearchResolution";
+import {
+  beginPricingSelectionIntent,
+  createLatestPricingRequestGuard,
+} from "./productSearchResolution";
 import {
   CURRENCIES,
   INVOICE_TYPES,
@@ -146,7 +149,16 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
    * new tier while still carrying the previous tier's prices.
    */
   async function changePriceTier(nextTier: PriceTier) {
-    if (nextTier === latestStateRef.current.tier) return;
+    const intent = beginPricingSelectionIntent(
+      pricingRequestGuardRef.current,
+      `tier:${nextTier}`,
+      latestStateRef.current.tier,
+      nextTier,
+    );
+    if (!intent.changed) {
+      setIsRepricing(false);
+      return;
+    }
 
     // Returns must retain the source invoice prices. Automatic repricing is
     // intentionally limited to new sales invoices and quotations.
@@ -155,7 +167,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
       return;
     }
 
-    const requestToken = pricingRequestGuardRef.current.begin(`tier:${nextTier}`);
+    const requestToken = intent.token;
     const isCurrentRequest = () => pricingRequestGuardRef.current.isCurrent(requestToken, requestToken.context);
     setIsRepricing(true);
 
@@ -209,13 +221,22 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
 
   /** يغيّر العميل وأسعار سلة البيع/العرض معاً كي لا يبقى سعر عميل سابق في مستند العميل الجديد. */
   async function changeEntity(nextId: number | null) {
-    if (nextId === latestStateRef.current.entityId) return;
+    const intent = beginPricingSelectionIntent(
+      pricingRequestGuardRef.current,
+      `customer:${nextId ?? "none"}`,
+      latestStateRef.current.entityId,
+      nextId,
+    );
+    if (!intent.changed) {
+      setIsRepricing(false);
+      return;
+    }
     if (invoiceType !== "SALE" && invoiceType !== "QUOTATION") {
       dispatch({ type: "SET_ENTITY", id: nextId });
       return;
     }
 
-    const requestToken = pricingRequestGuardRef.current.begin(`customer:${nextId ?? "none"}`);
+    const requestToken = intent.token;
     const isCurrentRequest = () => pricingRequestGuardRef.current.isCurrent(requestToken, requestToken.context);
     setIsRepricing(true);
     try {
