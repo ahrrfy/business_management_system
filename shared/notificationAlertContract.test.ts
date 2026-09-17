@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
@@ -6,8 +6,6 @@ type PushEventStub = {
   data: { json: () => Record<string, unknown> };
   waitUntil: (work: Promise<void>) => void;
 };
-
-const audioAsset = /\.(?:wav|mp3|ogg|m4a|aac|flac|opus|webm)$/iu;
 
 function activeKotlinSource(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/\/\/[^\r\n]*/gu, "");
@@ -133,24 +131,31 @@ describe("notification alert contract", () => {
     expect(shownOptions).toMatchObject({ silent: false });
     expect(shownOptions).not.toHaveProperty("sound");
 
-    const publicFiles = readdirSync(
-      new URL("../client/public/", import.meta.url),
-      { encoding: "utf8", recursive: true },
-    );
-    expect(publicFiles).not.toEqual(
-      expect.arrayContaining([expect.stringMatching(audioAsset)]),
-    );
+    expect(
+      existsSync(
+        new URL("../client/public/notification.wav", import.meta.url),
+      ),
+    ).toBe(false);
   });
 
   it("uses Android system defaults while suppressing repeat alerts", () => {
-    const source = readFileSync(
+    const rendererSource = readFileSync(
       new URL(
         "../android-native/app/src/main/java/online/alarabiya/superapp/core/notifications/NativeNotificationRenderer.kt",
         import.meta.url,
       ),
       "utf8",
     );
-    const guardedBuilder = notifiedBuilderContract(source);
+    const channelsSource = activeKotlinSource(
+      readFileSync(
+        new URL(
+          "../android-native/app/src/main/java/online/alarabiya/superapp/core/notifications/AppNotificationChannels.kt",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const guardedBuilder = notifiedBuilderContract(rendererSource);
 
     expect(guardedBuilder?.initializer).toMatch(
       /\.setDefaults\(\s*NotificationCompat\.DEFAULT_ALL\s*\)/u,
@@ -163,5 +168,35 @@ describe("notification alert contract", () => {
       1,
     );
     expect(guardedBuilder?.block).not.toMatch(/\.setSilent\(\s*true\s*\)/u);
+
+    const usedChannels = [
+      ...activeKotlinSource(rendererSource).matchAll(
+        /->\s*AppNotificationChannels\.([A-Z][A-Z0-9_]*)/gu,
+      ),
+    ].map((match) => match[1]);
+    const channelStarts = [
+      ...channelsSource.matchAll(
+        /NotificationChannel\(\s*([A-Z][A-Z0-9_]*)\s*,/gu,
+      ),
+    ];
+    const channelBlocks = new Map(
+      channelStarts.map((match, index) => [
+        match[1],
+        channelsSource.slice(
+          match.index,
+          channelStarts[index + 1]?.index ?? channelsSource.length,
+        ),
+      ]),
+    );
+
+    expect(usedChannels.length).toBeGreaterThan(0);
+    for (const channel of usedChannels) {
+      const block = channelBlocks.get(channel);
+      expect(block, `${channel} must be created`).toBeDefined();
+      expect(block?.match(/NotificationManager\.IMPORTANCE_[A-Z_]+/gu)).toEqual(
+        ["NotificationManager.IMPORTANCE_HIGH"],
+      );
+      expect(block).not.toMatch(/\.setSound\(/u);
+    }
   });
 });
