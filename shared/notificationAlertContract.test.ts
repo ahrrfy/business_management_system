@@ -128,13 +128,17 @@ describe("notification alert contract", () => {
     });
     await pending;
 
-    expect(shownOptions).toMatchObject({ silent: false });
+    expect(shownOptions).toMatchObject({
+      renotify: true,
+      silent: false,
+      vibrate: [150, 80, 150, 80, 250],
+    });
+    expect(shownOptions?.tag).toEqual(expect.any(String));
+    expect((shownOptions?.tag as string).length).toBeGreaterThan(0);
     expect(shownOptions).not.toHaveProperty("sound");
 
     expect(
-      existsSync(
-        new URL("../client/public/notification.wav", import.meta.url),
-      ),
+      existsSync(new URL("../client/public/notification.wav", import.meta.url)),
     ).toBe(false);
   });
 
@@ -154,6 +158,13 @@ describe("notification alert contract", () => {
         ),
         "utf8",
       ),
+    );
+    const manifestSource = readFileSync(
+      new URL(
+        "../android-native/app/src/main/AndroidManifest.xml",
+        import.meta.url,
+      ),
+      "utf8",
     );
     const guardedBuilder = notifiedBuilderContract(rendererSource);
 
@@ -198,5 +209,24 @@ describe("notification alert contract", () => {
       );
       expect(block).not.toMatch(/\.setSound\(/u);
     }
+
+    const defaultChannelMetadata = manifestSource
+      .match(/<meta-data\b[^>]*>/gu)
+      ?.find((tag) =>
+        tag.includes(
+          'android:name="com.google.firebase.messaging.default_notification_channel_id"',
+        ),
+      );
+    const defaultChannel = defaultChannelMetadata?.match(
+      /android:value="([^"]+)"/u,
+    )?.[1];
+    const declaredChannelIds = new Set(
+      [
+        ...channelsSource.matchAll(/const val [A-Z][A-Z0-9_]* = "([^"]+)"/gu),
+      ].map((match) => match[1]),
+    );
+
+    expect(defaultChannel).toBeDefined();
+    expect(declaredChannelIds).toContain(defaultChannel);
   });
 });
