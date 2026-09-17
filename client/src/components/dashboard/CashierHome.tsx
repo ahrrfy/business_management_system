@@ -243,7 +243,7 @@ export function CashierHome({
     ? [
         ...(receptionOperations.handover
           ? [{
-              href: "/reception/handover",
+              href: "/reception/operations?tab=handover",
               name: "التسليم المباشر",
               desc: "مسح باركود فوري — تحصيل (نقدي/شبكة/محفظة) وإغلاق ذري للطلب",
               badge: woCounts.data?.ready ?? 0,
@@ -254,7 +254,7 @@ export function CashierHome({
           : []),
         ...(receptionOperations.workflow
           ? [{
-              href: "/reception/workflow",
+              href: "/reception/operations?tab=workflow",
               name: "الإسناد والتوصيل",
               desc: "إسناد لمناديب الفرع وشركات الشحن — وتوريد الذمم والمرتجع",
               badge: deliveryReadyCountQ.data ?? 0,
@@ -264,14 +264,14 @@ export function CashierHome({
             }]
           : []),
         {
-          href: "/reception/orders",
+          href: "/reception/operations?tab=orders",
           name: "طلبات محطّتي",
           desc: "طابور أوامر الشغل — متابعة مراحل التنفيذ بالمطبعة والجاهز والمعلق",
           icon: Package,
         },
         ...(receptionOperations.invoices
           ? [{
-              href: "/reception/invoices",
+              href: "/reception/operations?tab=invoices",
               name: "فواتير للتحصيل",
               desc: "المبالغ المتبقية والذمم المعلقة — اقبضها مباشرة من الصف",
               icon: BadgeDollarSign,

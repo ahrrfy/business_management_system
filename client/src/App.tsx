@@ -34,6 +34,7 @@ import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { RECEPTION_STATION_GATE } from "@/lib/receptionOperationsHub";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
@@ -59,10 +60,7 @@ const CardAccount = lazy(() => import("@/pages/CardAccount"));
 const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const MyWork = lazy(() => import("@/pages/MyWork"));
-const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
-const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
-const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
-const ReceptionHandoverPage = lazy(() => import("@/pages/reception/ReceptionHandoverPage"));
+const ReceptionOperationsHub = lazy(() => import("@/pages/ReceptionOperationsHub"));
 
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 
@@ -498,11 +496,13 @@ export default function App() {
       {/* ش٦ — «مطلوب منّي الآن» على مسارٍ مسمّى. الوجهات القديمة نُقلت إلى مسارات الويب الفعلية،
           والوجهة الفاسدة تسقط إلى مسار غير معرّف حتى يبقى خلل الربط مرئيًا. */}
       <Route path="/my-work"><Shell><MyWork /></Shell></Route>
-      <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
-      <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
-      {/* شاشة التسليم المباشر والإسناد للمندوب — تعمل بالباركود */}
-      <Route path="/reception/workflow"><Shell><ReceptionWorkflowPage /></Shell></Route>
-      <Route path="/reception/handover"><Shell><ReceptionHandoverPage /></Shell></Route>
+      {/* محطة إنشاء الطلب تبقى في POS على /reception؛ ما بعد التثبيت يجتمع هنا في مركز خفيف. */}
+      <Route path="/reception/operations"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionOperationsHub /></RequireRole></Shell></Route>
+      {/* الروابط التاريخية تبقى صالحة وتحفظ section/invoice وأي سياق وارد. */}
+      <Route path="/reception/orders"><RedirectKeepQuery to="/reception/operations?tab=orders" /></Route>
+      <Route path="/reception/invoices"><RedirectKeepQuery to="/reception/operations?tab=invoices" /></Route>
+      <Route path="/reception/workflow"><RedirectKeepQuery to="/reception/operations?tab=workflow" /></Route>
+      <Route path="/reception/handover"><RedirectKeepQuery to="/reception/operations?tab=handover" /></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>

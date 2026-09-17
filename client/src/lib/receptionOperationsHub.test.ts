@@ -14,7 +14,7 @@ import {
 } from "@/lib/receptionOperationsHub";
 
 const browser = vi.hoisted(() => ({
-  location: "/reception",
+  location: "/reception/operations",
   search: "",
   navigate: vi.fn(),
 }));
@@ -47,6 +47,14 @@ const source = readFileSync(
 );
 const pageTabsSource = readFileSync(
   path.resolve(process.cwd(), "client/src/components/PageTabs.tsx"),
+  "utf8",
+);
+const appSource = readFileSync(
+  path.resolve(process.cwd(), "client/src/App.tsx"),
+  "utf8",
+);
+const cashierHomeSource = readFileSync(
+  path.resolve(process.cwd(), "client/src/components/dashboard/CashierHome.tsx"),
   "utf8",
 );
 
@@ -105,8 +113,10 @@ describe("ReceptionOperationsHub", () => {
     ];
 
     for (const page of pageModules) {
-      expect(source).toContain(
-        `lazy(\n  () => import("@/pages/reception/${page}"),\n)`,
+      expect(source).toMatch(
+        new RegExp(
+          `lazy\\(\\s*\\(\\) => import\\("@/pages/reception/${page}"\\),?\\s*\\)`,
+        ),
       );
     }
     expect(source).not.toMatch(
@@ -125,6 +135,20 @@ describe("ReceptionOperationsHub", () => {
       "const active = visible.find((t) => t.value === requested) ?? visible[0]",
     );
     expect(pageTabsSource).not.toContain("forceMount");
+  });
+
+  it("يبقي محطة إنشاء الطلب منفصلة ويوجه المسارات القديمة إلى المركز مع حفظ query", () => {
+    expect(appSource).toContain('<Route path="/reception">');
+    expect(appSource).toContain('<Redirect to="/pos?mode=RECEPTION" />');
+    expect(appSource).toContain('<Route path="/reception/operations">');
+    for (const tab of ["orders", "invoices", "workflow", "handover"]) {
+      expect(appSource).toContain(
+        `<RedirectKeepQuery to="/reception/operations?tab=${tab}" />`,
+      );
+      expect(cashierHomeSource).toContain(
+        `href: "/reception/operations?tab=${tab}"`,
+      );
+    }
   });
 
   it("يتبع رابط URL، يسقط من الممنوع، ولا يركب المحتوى المخفي", async () => {
@@ -199,7 +223,7 @@ describe("ReceptionOperationsHub", () => {
           new MouseEvent("mousedown", { bubbles: true, button: 0 }),
         );
       });
-      expect(browser.navigate).toHaveBeenCalledWith("/reception");
+      expect(browser.navigate).toHaveBeenCalledWith("/reception/operations");
     } finally {
       await act(async () => root.unmount());
       container.remove();
