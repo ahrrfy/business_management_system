@@ -507,6 +507,11 @@ describe("product studio governed workflow", () => {
       claimed: false,
       taskId: claimedBeforePause.taskId,
     });
+    await expect(saveStudioDraft(worker, {
+      taskId: claimedBeforePause.taskId,
+      proposedDescription: "مسودة محفوظة أثناء إيقاف الحملة",
+      expectedRevision: claimedBeforePause.revision,
+    })).resolves.toMatchObject({ ok: true });
     await expect(claimStudioProductByBarcode(worker, "6001000000921")).rejects.toMatchObject({
       code: "CONFLICT",
       message: expect.stringContaining("موقوفة"),

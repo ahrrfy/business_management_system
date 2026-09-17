@@ -82,6 +82,54 @@ describe("studio image export route", () => {
     expect(mocks.streamStudioImageExport).not.toHaveBeenCalled();
   });
 
+  it("يعتمد الدور المخصّص المحلول ويرفض غير المدير", async () => {
+    mocks.resolveCustomRole.mockImplementationOnce(async (user) => {
+      user.role = "cashier";
+    });
+    await withStudioExportServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/studio/export.zip?scope=ALL&preflight=1`,
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error: "التصدير للمدير فقط",
+      });
+    });
+    expect(mocks.resolveCustomRole).toHaveBeenCalledOnce();
+    expect(mocks.streamStudioImageExport).not.toHaveBeenCalled();
+  });
+
+  it("يرفض المدير حين لا يملك صلاحية وحدة الاستوديو", async () => {
+    mocks.hasModuleAccess.mockReturnValueOnce(false);
+    await withStudioExportServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/studio/export.zip?scope=ALL&preflight=1`,
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error: "لا صلاحيةَ للاستوديو",
+      });
+    });
+    expect(mocks.hasModuleAccess).toHaveBeenCalledOnce();
+    expect(mocks.streamStudioImageExport).not.toHaveBeenCalled();
+  });
+
+  it("يرفض التصدير حين تفرض السياسة تفعيل المصادقة الثنائية", async () => {
+    mocks.twoFactorEnrollmentRequired.mockReturnValueOnce(true);
+    await withStudioExportServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/studio/export.zip?scope=ALL&preflight=1`,
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error:
+          "يلزم تفعيل المصادقة الثنائية (2FA) للمتابعة — سياسة إلزامية للمدير/المشرف.",
+      });
+    });
+    expect(mocks.twoFactorEnrollmentRequired).toHaveBeenCalledOnce();
+    expect(mocks.streamStudioImageExport).not.toHaveBeenCalled();
+  });
+
   it("يفحص الجلسة والنطاق بخفة ثم يترك التنزيل الحقيقي لمسار البث", async () => {
     await withStudioExportServer(async (baseUrl) => {
       const preflight = await fetch(
