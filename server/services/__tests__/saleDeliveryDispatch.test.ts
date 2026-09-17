@@ -131,6 +131,36 @@ beforeEach(async () => {
 });
 
 describe("sales.create + delivery — الإسناد في معاملة البيع نفسها", () => {
+  it.each(["ONLINE", "ORDER", "WORKORDER"] as const)(
+    "يرفض حقن sourceType=%s في sales.create قبل أي كتابة مالية",
+    async (sourceType) => {
+      await expect(
+        caller().sales.create({
+          branchId: 1,
+          customerId: NEW_CUSTOMER,
+          sourceType,
+          lines: [LINE],
+          delivery: DELIVERY,
+          clientRequestId: `source-type-injection-${sourceType}`,
+        } as never),
+      ).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        cause: {
+          issues: expect.arrayContaining([
+            expect.objectContaining({ path: ["sourceType"] }),
+          ]),
+        },
+      });
+
+      expect(await invoiceCount()).toBe(0);
+      expect(await consignmentCount()).toBe(0);
+      expect(await db().select().from(s.invoiceItems)).toHaveLength(0);
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+    },
+  );
+
   it("⭐ عميلٌ جديد بحدّ «0» + بيعٌ بتوصيل ⇒ ينجح: فاتورة COD غير مدفوعة + إرسالية ASSIGNED + COD_ASSIGNED", async () => {
     const res = await caller().sales.create({
       branchId: 1, customerId: NEW_CUSTOMER, lines: [LINE],
@@ -141,6 +171,7 @@ describe("sales.create + delivery — الإسناد في معاملة البي�
     expect(res.consignmentNumber).toEqual(expect.any(String));
 
     const inv = await invoiceOf(res.invoiceId);
+    expect(inv.sourceType).toBe("POS");
     expect(inv.total).toBe("2000.00");
     expect(inv.paidAmount).toBe("0.00");
     expect(inv.status).toBe("PENDING");
