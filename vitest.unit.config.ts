@@ -25,6 +25,7 @@ export default defineConfig({
       "client/src/lib/printing/couponCard.test.ts",
       "client/src/lib/printing/barcode.test.ts",
       "client/src/lib/printing/invoiceReceipt.test.ts",
+      "shared/notificationAlertContract.test.ts",
       "client/src/lib/printing/invoiceCorrectionPrint.test.ts",
       "client/src/lib/printing/receiptRaster.test.ts",
       "client/src/lib/printing/shiftRaster.test.ts",
