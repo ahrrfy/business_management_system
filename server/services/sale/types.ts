@@ -56,6 +56,8 @@ export interface SaleDeliveryInput {
   recipientPhone?: string | null;
   address?: string | null;
   governorate?: string | null;
+  /** رقم بوليصة شركة التوصيل كنص؛ يحفظ الأصفار البادئة ويُلزم للشركات داخل خدمة الإرسال. */
+  externalTrackingRef?: string | null;
 }
 
 export interface CreateSaleInput {

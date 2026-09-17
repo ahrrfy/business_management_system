@@ -414,6 +414,7 @@ export const receptionRouter = router({
         recipientName: z.string().trim().max(255).nullish(),
         recipientPhone: z.string().trim().max(32).nullish(),
         address: z.string().trim().max(500).nullish(),
+        externalTrackingRef: z.string().trim().max(100).nullish(),
       }).nullish(),
       // ملاحظة ١.٨: الكوبون **مرفوض** على مسار التثبيت في v1 — يُطبَّق داخل createSaleInTx
       // فينسف expectedTotal وأرضية moneyLocked. الحقل موجود ليُرفض برسالةٍ صريحة لا صمتاً.

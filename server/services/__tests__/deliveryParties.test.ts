@@ -15,6 +15,7 @@ import {
   listCourierAccounts,
   listDeliveryParties,
   removeDeliveryPartyMember,
+  reassignDeliveryConsignment,
   setDeliveryPartyActive,
   updateDeliveryParty,
 } from "../deliveryService";
@@ -74,6 +75,150 @@ describe("Slice 1 — delivery parties", () => {
     const list = await listDeliveryParties({ branchId: 1, activeOnly: true });
     expect(list.length).toBe(1);
     expect(list[0].openConsignments).toBe(0);
+  });
+
+  it("يحوّل كل البوالص القديمة ذرياً ويحظر المفقود أو التصادم بعد التطبيع", async () => {
+    const { id } = await createDeliveryParty(
+      { partyType: "INDIVIDUAL", name: "مندوب بإرسالية قديمة", branchId: 1 },
+      { userId: 1, branchId: 1 },
+    );
+    await db().insert(s.invoices).values({
+      id: 1,
+      invoiceNumber: "INV-TRACKING-MIGRATION",
+      sourceType: "WORKORDER",
+      branchId: 1,
+      subtotal: "1000.00",
+      total: "1000.00",
+      createdBy: 1,
+    });
+    await db().insert(s.deliveryConsignments).values({
+      consignmentNumber: "CN-TRACKING-MIGRATION",
+      branchId: 1,
+      partyId: id,
+      invoiceId: 1,
+      sourceType: "INVOICE",
+      sourceId: 1,
+      codAmount: "1000.00",
+      status: "CANCELLED",
+      parcelStatus: "CANCELLED",
+      moneyStatus: "CANCELLED",
+      dispatchedBy: 1,
+    });
+
+    await expect(
+      updateDeliveryParty({ id, partyType: "COMPANY" }, { userId: 1, branchId: 1 }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ externalTrackingRef: "]C100441446" })
+      .where(eq(s.deliveryConsignments.partyId, id));
+    await db().insert(s.invoices).values({
+      id: 2,
+      invoiceNumber: "INV-TRACKING-DUPLICATE",
+      sourceType: "WORKORDER",
+      branchId: 1,
+      subtotal: "2000.00",
+      total: "2000.00",
+      createdBy: 1,
+    });
+    await db().insert(s.deliveryConsignments).values({
+      consignmentNumber: "CN-TRACKING-DUPLICATE",
+      branchId: 1,
+      partyId: id,
+      invoiceId: 2,
+      sourceType: "INVOICE",
+      sourceId: 2,
+      codAmount: "2000.00",
+      status: "DISPATCHED",
+      dispatchedBy: 1,
+      externalTrackingRef: "00441446",
+    });
+    await expect(
+      updateDeliveryParty({ id, partyType: "COMPANY" }, { userId: 1, branchId: 1 }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const afterCollision = await db()
+      .select({
+        invoiceId: s.deliveryConsignments.invoiceId,
+        externalTrackingRef: s.deliveryConsignments.externalTrackingRef,
+      })
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.partyId, id));
+    expect(afterCollision).toEqual(expect.arrayContaining([
+      { invoiceId: 1, externalTrackingRef: "]C100441446" },
+      { invoiceId: 2, externalTrackingRef: "00441446" },
+    ]));
+    expect((await getDeliveryParty(id))?.partyType).toBe("INDIVIDUAL");
+
+    await db()
+      .update(s.deliveryConsignments)
+      .set({ externalTrackingRef: "]C100441447" })
+      .where(eq(s.deliveryConsignments.invoiceId, 2));
+    await expect(
+      updateDeliveryParty({ id, partyType: "COMPANY" }, { userId: 1, branchId: 1 }),
+    ).resolves.toEqual({ id });
+
+    const converted = await db()
+      .select({
+        invoiceId: s.deliveryConsignments.invoiceId,
+        status: s.deliveryConsignments.status,
+        externalTrackingRef: s.deliveryConsignments.externalTrackingRef,
+      })
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.partyId, id));
+    expect(converted).toEqual(expect.arrayContaining([
+      { invoiceId: 1, status: "CANCELLED", externalTrackingRef: "00441446" },
+      { invoiceId: 2, status: "DISPATCHED", externalTrackingRef: "00441447" },
+    ]));
+    expect((await getDeliveryParty(id))?.partyType).toBe("COMPANY");
+  });
+
+  it("لا يعيد تنشيط إرسالية شركة تاريخية بلا بوليصة", async () => {
+    const { id } = await createDeliveryParty(
+      { partyType: "COMPANY", name: "شركة بإرسالية تاريخية", branchId: 1 },
+      { userId: 1, branchId: 1 },
+    );
+    await db().insert(s.invoices).values({
+      id: 1,
+      invoiceNumber: "INV-LEGACY-REASSIGN",
+      sourceType: "WORKORDER",
+      branchId: 1,
+      subtotal: "1000.00",
+      total: "1000.00",
+      createdBy: 1,
+    });
+    await db().insert(s.deliveryConsignments).values({
+      consignmentNumber: "CN-LEGACY-REASSIGN",
+      branchId: 1,
+      partyId: id,
+      invoiceId: 1,
+      sourceType: "INVOICE",
+      sourceId: 1,
+      codAmount: "1000.00",
+      status: "DISPATCHED",
+      parcelStatus: "FAILED",
+      dispatchedBy: 1,
+    });
+    const [legacyConsignment] = await db()
+      .select({ id: s.deliveryConsignments.id })
+      .from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.consignmentNumber, "CN-LEGACY-REASSIGN"));
+    if (!legacyConsignment) throw new Error("legacy consignment seed failed");
+    const consignmentId = Number(legacyConsignment.id);
+
+    await expect(reassignDeliveryConsignment(
+      { partyId: id, consignmentId, clientRequestId: "reassign-missing-ref" },
+      { userId: 1, branchId: 1 },
+    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await db().update(s.deliveryConsignments)
+      .set({ externalTrackingRef: "00441712" })
+      .where(eq(s.deliveryConsignments.id, consignmentId));
+    await expect(reassignDeliveryConsignment(
+      { partyId: id, consignmentId, clientRequestId: "reassign-with-ref" },
+      { userId: 1, branchId: 1 },
+    )).resolves.toMatchObject({ consignmentId });
   });
 
   it("يحظر تعطيل جهة عليها عهدة قائمة، ويسمح بلا عهدة", async () => {

@@ -281,6 +281,10 @@ export default function DeliveryWorkflowPage() {
       notify.err("يرجى اختيار جهة التوصيل أولاً");
       return;
     }
+    if (selectedPartyInfo?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
+      notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح الباركود المطبوع في كشف/بوليصة الشركة قبل الإسناد.");
+      return;
+    }
     if (dispatchScanned.activeConsignment) {
       notify.err(
         `لا يمكن إسناد الطلب — مسند حالياً لـ ${dispatchScanned.activeConsignment.partyName ?? "جهة أخرى"} بالإرسالية ${dispatchScanned.activeConsignment.consignmentNumber}`,
@@ -453,7 +457,12 @@ export default function DeliveryWorkflowPage() {
               </div>
               <AppSelect
                 value={selectedPartyId ? String(selectedPartyId) : ""}
-                onValueChange={(v) => { setSelectedPartyId(v ? Number(v) : null); setDispatchScanned(null); setDispatchBarcodeInput(""); }}
+                onValueChange={(v) => {
+                  setSelectedPartyId(v ? Number(v) : null);
+                  setDispatchScanned(null);
+                  setDispatchBarcodeInput("");
+                  setExternalTrackingRef("");
+                }}
                 className="h-12 w-full text-base font-bold"
               >
                 <option value="">— اختر المندوب أو شركة التوصيل —</option>
@@ -585,12 +594,12 @@ export default function DeliveryWorkflowPage() {
                       <div>
                         <label className="mb-1 flex items-center gap-1 text-xs font-bold">
                           <Package aria-hidden className="size-3.5 text-muted-foreground" />
-                          رقم تتبع / بوليصة الشركة الخارجية (اختياري)
+                          رقم تتبّع / بوليصة الشركة الخارجية <span className="text-destructive">*</span>
                         </label>
                         <Input
                           value={externalTrackingRef}
                           onChange={(e) => setExternalTrackingRef(e.target.value)}
-                          placeholder="رقم البوليصة أو شحنة الشركة..."
+                          placeholder="امسح باركود البوليصة أو أدخل الرقم..."
                           className="h-10 bg-background font-mono text-xs"
                           dir="ltr"
                         />
@@ -600,7 +609,7 @@ export default function DeliveryWorkflowPage() {
                   <Button
                     className="w-full py-6 text-base font-extrabold"
                     onClick={() => void handleDispatch()}
-                    disabled={dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending || !!dispatchScanned.activeConsignment}
+                    disabled={dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending || !!dispatchScanned.activeConsignment || (selectedPartyInfo?.partyType === "COMPANY" && !externalTrackingRef.trim())}
                   >
                     {dispatchScanned.activeConsignment
                       ? "مسند مسبقاً للإرسالية " + dispatchScanned.activeConsignment.consignmentNumber
