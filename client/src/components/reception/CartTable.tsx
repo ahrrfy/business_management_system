@@ -33,6 +33,7 @@ import {
  */
 export interface CartTableProps {
   branchId: number;
+  customerId?: number | null;
   cart: CartLine[]; selKey: string | null; onSelect: (key: string) => void;
   discountFor: string | null; setDiscountFor: (k: string | null) => void;
   isElevated: boolean;
@@ -52,6 +53,7 @@ export interface CartTableProps {
 
 function UnitSelector({
   branchId,
+  customerId,
   variantId,
   currentUnitId,
   currentUnitName,
@@ -60,6 +62,7 @@ function UnitSelector({
   onUnitChange,
 }: {
   branchId: number;
+  customerId?: number | null;
   variantId: number;
   currentUnitId: number;
   currentUnitName: string;
@@ -68,7 +71,7 @@ function UnitSelector({
   onUnitChange?: (newRow: PosRow) => void;
 }) {
   const unitsQ = trpc.catalog.variantUnits.useQuery(
-    { variantId, branchId, tier },
+    { variantId, branchId, tier, customerId: customerId ?? undefined },
     { enabled: variantId > 0 && !!onUnitChange, staleTime: 60_000 }
   );
 
@@ -101,6 +104,7 @@ function UnitSelector({
 
 export function CartTable({
   branchId,
+  customerId,
   cart, selKey, onSelect,
   discountFor, setDiscountFor,
   isElevated,
@@ -313,6 +317,7 @@ export function CartTable({
                       ) : (
                         <UnitSelector
                           branchId={branchId}
+                          customerId={customerId}
                           variantId={l.row.variantId}
                           currentUnitId={l.row.productUnitId}
                           currentUnitName={l.row.unitName}

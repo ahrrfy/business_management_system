@@ -4,6 +4,12 @@ import {
   type EncryptedEnvelope,
 } from "@/lib/offline/crypto";
 import { offlineDb } from "@/lib/offline/db";
+import {
+  isValidStudioTenantScope,
+  sameStudioTenantScope,
+  studioTenantScopeKey,
+  type StudioTenantScope,
+} from "@/lib/productStudio/studioTenantScope";
 import Dexie from "dexie";
 
 export const STUDIO_DRAFT_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -21,8 +27,7 @@ export interface StudioDraftTaskSnapshot {
   updatedAt: string;
 }
 
-export interface StudioDraftInput {
-  userId: number;
+export interface StudioDraftInput extends StudioTenantScope {
   taskId: number;
   revision: string;
   proposedName: string;
@@ -54,8 +59,7 @@ export interface StudioDraftIdentityRecord {
   envelope: EncryptedEnvelope;
 }
 
-export interface StudioDraftIdentity {
-  userId: number;
+export interface StudioDraftIdentity extends StudioTenantScope {
   savedAt: number;
 }
 
@@ -74,7 +78,7 @@ interface StudioDraftStoreOptions {
   encrypt?: (value: unknown) => Promise<EncryptedEnvelope>;
   decrypt?: <T>(envelope: EncryptedEnvelope) => Promise<T>;
   /** فهرس معتم قابل لإعادة الحساب؛ لا يضع userId/taskId في مفتاح IndexedDB. */
-  idFor?: (userId: number, taskId: number) => Promise<string>;
+  idFor?: (scope: StudioTenantScope, taskId: number) => Promise<string>;
 }
 
 export type StudioDraftReconciliation =
@@ -91,11 +95,12 @@ export function studioDraftWritesAllowed(result: StudioDraftReconciliation): boo
 const STUDIO_DRAFT_INDEX_KEY = "studio-draft-index-hmac";
 
 async function studioDraftOpaqueId(
-  userId: number,
+  scope: StudioTenantScope,
   taskId: number,
 ): Promise<string> {
+  const scopeKey = studioTenantScopeKey(scope);
   if (typeof crypto === "undefined" || !crypto.subtle) {
-    return `sd-insecure-${userId}-${taskId}`;
+    return `sd-insecure-${scopeKey}-${taskId}`;
   }
   try {
     let key = (await offlineDb.keys.get(STUDIO_DRAFT_INDEX_KEY))?.key;
@@ -111,12 +116,12 @@ async function studioDraftOpaqueId(
       await crypto.subtle.sign(
         "HMAC",
         key,
-        new TextEncoder().encode(`${userId}:${taskId}`),
+        new TextEncoder().encode(`${scopeKey}:task-${taskId}`),
       ),
     );
     return `sd-${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   } catch {
-    return `sd-fallback-${userId}-${taskId}`;
+    return `sd-fallback-${scopeKey}-${taskId}`;
   }
 }
 
@@ -124,7 +129,7 @@ function validDraft(value: unknown): value is StudioDraft {
   if (!value || typeof value !== "object") return false;
   const draft = value as Partial<StudioDraft>;
   return (
-    Number.isInteger(draft.userId) &&
+    isValidStudioTenantScope(value) &&
     Number.isInteger(draft.taskId) &&
     typeof draft.revision === "string" &&
     typeof draft.proposedName === "string" &&
@@ -187,15 +192,15 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
   }
 
   async function load(
-    userId: number,
+    scope: StudioTenantScope,
     taskId: number,
     at = now(),
   ): Promise<StudioDraft | null> {
-    const id = await idFor(userId, taskId);
+    const id = await idFor(scope, taskId);
     const row = await options.persistence.get(id);
     if (!row) return null;
     const draft = await readRow(row, at);
-    if (!draft || draft.userId !== userId || draft.taskId !== taskId) {
+    if (!draft || !sameStudioTenantScope(draft, scope) || draft.taskId !== taskId) {
       await options.persistence.delete(id);
       return null;
     }
@@ -204,12 +209,16 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
 
   return {
     async save(input: StudioDraftInput): Promise<StudioDraft> {
-      const id = await idFor(input.userId, input.taskId);
+      const id = await idFor(input, input.taskId);
       return options.persistence.readwrite(async () => {
         const timestamp = now();
         const row = await options.persistence.get(id);
         const existing = row ? await readRow(row, timestamp) : null;
-        if (existing && (existing.userId !== input.userId || existing.taskId !== input.taskId)) {
+        if (
+          existing &&
+          (!sameStudioTenantScope(existing, input) ||
+            existing.taskId !== input.taskId)
+        ) {
           await options.persistence.delete(id);
           throw new Error("تعارضت هوية مسودة الاستوديو المحلية");
         }
@@ -239,18 +248,18 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
 
     load,
 
-    async purge(userId: number, taskId: number): Promise<void> {
-      const id = await idFor(userId, taskId);
+    async purge(scope: StudioTenantScope, taskId: number): Promise<void> {
+      const id = await idFor(scope, taskId);
       await options.persistence.delete(id);
     },
 
-    async purgeUser(userId: number): Promise<void> {
+    async purgeOwner(scope: StudioTenantScope): Promise<void> {
       const rows = await options.persistence.entries();
       await Promise.all(
         rows.map(async (row) => {
           try {
             const draft = await decrypt<StudioDraft>(row.envelope);
-            if (!validDraft(draft) || draft.userId === userId) {
+            if (!validDraft(draft) || sameStudioTenantScope(draft, scope)) {
               await options.persistence.delete(row.id);
             }
           } catch {
@@ -285,27 +294,36 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
       );
     },
 
-    async listForUser(userId: number, at = now()): Promise<StudioDraft[]> {
+    async listForOwner(
+      scope: StudioTenantScope,
+      at = now(),
+    ): Promise<StudioDraft[]> {
       const rows = await options.persistence.entries();
       const drafts = await Promise.all(rows.map((row) => readRow(row, at)));
       return drafts
-        .filter((draft): draft is StudioDraft => draft?.userId === userId)
+        .filter(
+          (draft): draft is StudioDraft =>
+            draft != null && sameStudioTenantScope(draft, scope),
+        )
         .sort((a, b) => b.updatedAt - a.updatedAt);
     },
 
-    async reconcileAndClaimResume(context: {
-      userId: number;
+    async reconcileAndClaimResume(context: StudioTenantScope & {
       taskId: number;
       taskFound: boolean;
       revision: string | null;
       editable: boolean;
     }): Promise<StudioDraftReconciliation> {
-      const id = await idFor(context.userId, context.taskId);
+      const id = await idFor(context, context.taskId);
       return options.persistence.readwrite(async () => {
         const row = await options.persistence.get(id);
         if (!row) return { kind: "NONE" };
         const draft = await readRow(row, now());
-        if (!draft || draft.userId !== context.userId || draft.taskId !== context.taskId)
+        if (
+          !draft ||
+          !sameStudioTenantScope(draft, context) ||
+          draft.taskId !== context.taskId
+        )
           return { kind: "NONE" };
         if (
           !context.taskFound ||
@@ -361,8 +379,11 @@ export function createStudioDraftIdentityStore(
   const decrypt = options.decrypt ?? decryptJson;
   const id = "studio-identity" as const;
   return {
-    async save(userId: number): Promise<StudioDraftIdentity> {
-      const identity = { userId, savedAt: now() };
+    async save(scope: StudioTenantScope): Promise<StudioDraftIdentity> {
+      if (!isValidStudioTenantScope(scope)) {
+        throw new Error("هوية شركة مسودة الاستوديو غير صالحة");
+      }
+      const identity = { ...scope, savedAt: now() };
       await options.persistence.put({ id, envelope: await encrypt(identity) });
       return identity;
     },
@@ -372,8 +393,7 @@ export function createStudioDraftIdentityStore(
       try {
         const identity = await decrypt<StudioDraftIdentity>(row.envelope);
         if (
-          !Number.isInteger(identity?.userId) ||
-          identity.userId <= 0 ||
+          !isValidStudioTenantScope(identity) ||
           typeof identity.savedAt !== "number"
         ) {
           await options.persistence.delete(id);
@@ -418,13 +438,13 @@ const deviceStudioDraftIdentity = createStudioDraftIdentityStore({
 export const saveStudioDraft = deviceStudioDrafts.save;
 export const loadStudioDraft = deviceStudioDrafts.load;
 export const purgeStudioDraft = deviceStudioDrafts.purge;
-export const purgeStudioDraftsForUser = deviceStudioDrafts.purgeUser;
+export const purgeStudioDraftsForOwner = deviceStudioDrafts.purgeOwner;
 export async function purgeAllStudioDrafts(): Promise<void> {
   await deviceStudioDrafts.purgeAll();
   await deviceStudioDraftIdentity.clear();
 }
 export const purgeExpiredStudioDrafts = deviceStudioDrafts.purgeExpired;
-export const listStudioDraftsForUser = deviceStudioDrafts.listForUser;
+export const listStudioDraftsForOwner = deviceStudioDrafts.listForOwner;
 export const saveStudioDraftIdentity = deviceStudioDraftIdentity.save;
 export const loadStudioDraftIdentity = deviceStudioDraftIdentity.load;
 export const reconcileStudioDraftAfterReconnect =

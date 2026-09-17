@@ -427,7 +427,7 @@ export const catalogRouter = router({
         input.productUnitIds,
         scopeBranch(ctx, input.branchId),
         input.tier,
-        input.customerId ?? undefined,
+        input.customerId,
       );
       return redactPosCost(rows, ctx.user);
     }),
