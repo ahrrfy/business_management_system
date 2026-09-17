@@ -34,6 +34,7 @@ import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatus
 import { deliveryWorkOrderSaleIntent } from "./posting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { workOrderInvoiceSourceId } from "../workOrder/helpers";
+import { normalizeExternalTrackingRef, requireExternalTrackingRef } from "./trackingRefPolicy";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -50,7 +51,7 @@ export interface DispatchInput {
   assignedUserId?: number | null;
   /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
   partialDispatchConfirmed?: boolean;
-  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  /** رقم التتبع / المرجع الخارجي — إلزامي عند الإسناد إلى شركة توصيل. */
   externalTrackingRef?: string | null;
   /** ملاحظات التوصيل للمندوب أو شركة الشحن. */
   notes?: string | null;
@@ -69,6 +70,7 @@ function reopenedConsignmentSourceId(wo: { id: number | string; version: number 
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
+    const normalizedTrackingRef = normalizeExternalTrackingRef(input.externalTrackingRef);
     const payloadHash = idempotencyHash({
       workOrderId: Number(input.workOrderId),
       partyId: Number(input.partyId),
@@ -77,6 +79,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       recipientPhone: input.recipientPhone ?? null,
       assignedUserId: input.assignedUserId ?? null,
       deliveryAddress: input.deliveryAddress ?? null,
+      externalTrackingRef: normalizedTrackingRef,
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(tx, "delivery.dispatch", input.clientRequestId, payloadHash);
@@ -114,6 +117,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
+    const externalTrackingRef = requireExternalTrackingRef(party.partyType, normalizedTrackingRef);
     let assignedUserId = input.assignedUserId ?? null;
     if (assignedUserId == null && party.partyType === "INDIVIDUAL") {
       assignedUserId = party.userId != null ? Number(party.userId) : null;
@@ -467,6 +471,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         recipientName: input.recipientName ?? null,
         recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
         deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+        externalTrackingRef,
         notes: input.notes ?? (reusableCn.notes ?? null),
         feeCollection,
         feeSettledAt: null,
@@ -524,7 +529,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       status: "DISPATCHED",
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
-      externalTrackingRef: input.externalTrackingRef ?? null,
+      externalTrackingRef,
     });
     const consignmentId = reusableCn ? Number(reusableCn.id) : extractInsertId(cnRes!);
 

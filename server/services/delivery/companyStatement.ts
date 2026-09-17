@@ -10,16 +10,11 @@
  * ⇒ لا سطر يُختَم مُسلَّماً أبداً ⇒ لا توريد ولا أجرة، والمال يعلق بلا مخرج. الكشف يجعل سطرَه
  * هو الدليل: يقود **إثبات التسليم ثمّ التحصيل ثمّ التوريد**.
  *
- * ═══ الذرّية: لماذا مرحلتان لا معاملةٌ واحدة ═══
- * `withTx` = `db.transaction(fn)` **غير قابلة لإعادة الدخول**، و`confirmConsignmentDelivery`
- * تفتح معاملتها بنفسها. فبدل تفكيكها (٣٠٠ سطرٍ من منطقٍ ماليّ مُختبَر) نُنسّق مرحلتين:
- *   ① إثبات تسليم كل سطرٍ غير مختوم — كلٌّ في معاملته، **idempotent بمفتاحٍ مشتقٍّ من رقم
- *      الكشف والإرسالية** ⇒ إعادة المحاولة تُعيد النتيجة بلا تكرار قيد.
- *   ② التوريد كاملاً في معاملةٍ واحدة (الآلة القائمة بحرّاسها كلّها).
- * الانقطاع بين المرحلتين يترك حالةً **مشروعةً وواقعية**: طرودٌ سُلّمت ونقدُها لم يُستلَم بعد
- * — وهي بالضبط ما يقع في العالم الحقيقيّ بين تسليم الشركة وتوريدها. وإعادةُ إدخال الكشف
- * تُكمل من حيث توقّفت: المرحلة ① تُعاد بلا أثر، والمرحلة ② تقع.
- * ⚠️ الترتيب مقصود: لو ورّدنا أوّلاً لكان النقد في الدرج قبل إثبات ما يقابله.
+ * ═══ الذرّية الماليّة والمحاسبيّة ═══
+ * الكشفُ كلُّه وحدةُ عملٍ واحدة: إثبات التسليم، تحصيل الفاتورة، نقل ذمّة العميل إلى عهدة
+ * شركة التوصيل، ثمّ التوريد إلى الدرج والقيود المحاسبيّة وسجلّ التدقيق. كلُّ الخدمات الماليّة
+ * تُستدعى بجسمها الداخليّ على **نفس معاملة قاعدة البيانات**؛ أيّ رفضٍ في آخر خطوة يعيد كلّ
+ * ما سبقها، فلا توجد فاتورةٌ مختومة أو ذمّةٌ متغيّرة بلا سند توريدٍ مقابل.
  *
  * ═══ أسطر الصفر = إثبات تسليمٍ بلا نقد (٢١/٨) ═══
  * الكشف الواقعيّ يحمل نوعَي سطر: **سطرُ مالٍ** (`collectedAmount > 0`) يمرّ بالمرحلتين، و**سطرُ
@@ -39,12 +34,13 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray } from "drizzle-orm";
 import { deliveryConsignments, deliveryRemittances } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type Tx } from "../../db";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { money, round2 } from "../money";
 import { confirmConsignmentDelivery, recordSupplementaryStatementCollection, type ConfirmConsignmentResult } from "./courier";
-import { recordDeliveryRemittance, type RemittanceInput } from "./remittance";
+import { recordDeliveryRemittanceInTx, type RemittanceInput } from "./remittance";
 import type { DeliveryTxActor } from "./types";
+import { withTx } from "../tx";
 
 export interface CompanyStatementLineInput {
   consignmentId: number;
@@ -100,8 +96,12 @@ export interface CompanyStatementResult {
 const STATEMENT_NUMBER_MAX = 64;
 
 /** يرتدّ بخطأٍ مفهوم بدل خطأ قاعدةٍ خامّ حين يُعاد إدخال كشفٍ مسجَّل. */
-async function assertStatementNotUsed(partyId: number, statementNumber: string) {
-  const db = getDb();
+async function assertStatementNotUsed(
+  partyId: number,
+  statementNumber: string,
+  existingTx?: Tx,
+) {
+  const db = existingTx ?? getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
   const existing = (
     await db
@@ -129,8 +129,8 @@ async function loadStatementConsignments(input: {
   branchId: number;
   partyId: number;
   lines: CompanyStatementLineInput[];
-}) {
-  const db = getDb();
+}, existingTx?: Tx) {
+  const db = existingTx ?? getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
   const ids = input.lines.map((l) => Number(l.consignmentId));
   const rows = await db
@@ -163,12 +163,8 @@ async function loadStatementConsignments(input: {
 }
 
 /**
- * **تحقّقٌ مسبقٌ ذرّيّ لأسطر الكشف** (Codex P1 #5 — ٢٢/٨): `confirmConsignmentDelivery` تفتح
- * معاملتها بنفسها، فحلقةُ الأسطر ليست عمليةً ذرّيّةً واحدة — سطرٌ يفشل بعد سطرٍ نجح يترك حالةً
- * مقسّمة. `withTx` غير قابلة لإعادة الدخول (رأس الملف)، لذلك نحقّق كل شروط الفشل الشائعة
- * **قبل** الحلقة بلا كتابة: تجاوز COD، تجاوز متبقّي الفاتورة، رجوعٌ مُعلَن. لا يقضي على
- * السباقات (فاتورةٌ تُدفع بين التحقّق والكتابة) لكنه يمسك الأخطاء التصريحيّة قبل أن تُنتج
- * حالةً جزئية. الأسطر المرتدّة `alreadyDelivered` مسموحةٌ (تُصبح تحصيلاً متمِّماً).
+ * تحقّقٌ مسبقٌ لأسطر الكشف قبل الكتابة: تجاوز COD، رجوعٌ مُعلَن، وانحسارُ تحصيلٍ سابق.
+ * الحسمُ النهائيّ يبقى داخل المعاملة وتحت أقفال الصفوف في خدمات التسليم والتوريد.
  */
 async function preValidateStatementLines(
   input: { partyId: number; lines: CompanyStatementLineInput[] },
@@ -178,8 +174,6 @@ async function preValidateStatementLines(
     parcelStatus: string; returnDeclaredAt: unknown;
   }>,
 ) {
-  const db = getDb();
-  if (!db) return;
   // 1) تجاوزُ COD أو رجوعٌ مُعلَن لكل سطر — تحقّقٌ محلّيّ من صفوف الإرسالية.
   for (const l of input.lines) {
     const cn = byId.get(Number(l.consignmentId));
@@ -260,8 +254,6 @@ export async function recordCompanyStatement(
   if (!input.lines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكشف بلا أسطر" });
   }
-  await assertStatementNotUsed(input.partyId, statementNumber);
-
   const { collectedByLine, reasonByLine, moneyLines } = splitStatementLines(input.lines);
   const proofOnly = moneyLines.length === 0;
   if (proofOnly) {
@@ -282,16 +274,23 @@ export async function recordCompanyStatement(
     }
   }
 
+  return withTx(async (tx) => {
+  await assertStatementNotUsed(input.partyId, statementNumber, tx);
+
   // ── المرحلة ①: إثبات التسليم لكل سطرٍ غير مختوم — **بنوعَي السطر معاً** ──
   // القراءة قبل الكتابة تحدّد **ما يحتاج إثباتاً فعلاً**؛ الأسطر المختومة سلفاً (بوّابة مندوب
   // أو كشفٌ سابق) تمرّ بلا مساس، فالكشف الجزئيّ المتمِّم لا يعيد ختم ما خُتم.
   // سطرُ الإثبات (declared=0) يقبله الخادم أصلاً: يختم الطردَ الصفريّ ويُغلقه، ويُبقي متبقّي
   // طرد COD>0 ذمّةً حيّة على العميل (رأس الملف — قرار المالك).
-  const { ids, byId } = await loadStatementConsignments(input);
+  const { ids, byId } = await loadStatementConsignments(input, tx);
   // فحصٌ مسبقٌ لكل شروط الرفض المُنتظَرة قبل أيّ كتابة (Codex P1 #5).
   await preValidateStatementLines(input, ids, byId);
-  const needConfirm = ids.filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED");
-  const alreadyDeliveredIds = ids.filter((id) => byId.get(id)!.parcelStatus === "DELIVERED");
+  const needConfirm = ids
+    .filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED")
+    .sort((a, b) => a - b);
+  const alreadyDeliveredIds = ids
+    .filter((id) => byId.get(id)!.parcelStatus === "DELIVERED")
+    .sort((a, b) => a - b);
   for (const id of needConfirm) {
     // مفتاحٌ مشتقٌّ من (الكشف × الإرسالية): إعادة إدخال الكشف تُعيد النتيجة نفسها بلا قيدٍ ثانٍ.
     // ويُمرَّر **المُعلَن على الكشف** لا COD كاملاً: تحصيلٌ جزئيّ يُسجَّل كما وقع.
@@ -307,6 +306,7 @@ export async function recordCompanyStatement(
         },
       },
       { userId: actor.userId },
+      tx,
     );
   }
   /**
@@ -327,6 +327,7 @@ export async function recordCompanyStatement(
         clientRequestId: `stmt-supp:${input.partyId}:${statementNumber}:${id}`,
       },
       { userId: actor.userId },
+      tx,
     );
   }
 
@@ -365,9 +366,9 @@ export async function recordCompanyStatement(
     },
   };
 
-  let res: Awaited<ReturnType<typeof recordDeliveryRemittance>>;
+  let res: Awaited<ReturnType<typeof recordDeliveryRemittanceInTx>>;
   try {
-    res = await recordDeliveryRemittance(remittanceInput, actor);
+    res = await recordDeliveryRemittanceInTx(tx, remittanceInput, actor);
   } catch (e) {
     // سباقٌ على نفس الكشف من جلستين: القيد الفريد يفصل — نُترجمه لرسالةٍ مفهومة.
     if (isDupEntry(e)) {
@@ -388,6 +389,7 @@ export async function recordCompanyStatement(
     netRemitted: res.netRemitted,
     idempotentReplay: (res as { idempotentReplay?: boolean }).idempotentReplay,
   };
+  });
 }
 
 export interface DeliveryProofInput {

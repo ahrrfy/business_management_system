@@ -29,7 +29,7 @@ import {
   onlineOrders,
   workOrders,
 } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import {
   adjustCustomerBalance,
@@ -678,6 +678,7 @@ export async function confirmConsignmentDelivery(
     shortfallReason?: string;
   },
   actor: { userId: number },
+  existingTx?: Tx,
 ): Promise<ConfirmConsignmentResult> {
   const membership = input.statementWitness
     ? await resolveStatementWitnessAuthority(input.statementWitness.partyId)
@@ -708,7 +709,7 @@ export async function confirmConsignmentDelivery(
   const clientRequestId =
     input.clientRequestId ?? `confirm-consignment-${input.consignmentId}`;
   const payloadHash = idempotencyHash({ consignmentId: input.consignmentId });
-  return withTx(async (tx) => {
+  const run = async (tx: Tx): Promise<ConfirmConsignmentResult> => {
     const replay = await checkIdempotency(
       tx,
       "courier.confirmConsignment",
@@ -1162,7 +1163,8 @@ export async function confirmConsignmentDelivery(
       consignmentNumber: cn.consignmentNumber,
       deliveredAt,
     };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }
 
 export async function transitionConsignmentParcel(
@@ -1525,6 +1527,7 @@ export interface SupplementaryCollectionResult {
 export async function recordSupplementaryStatementCollection(
   input: SupplementaryCollectionInput,
   actor: { userId: number },
+  existingTx?: Tx,
 ): Promise<SupplementaryCollectionResult> {
   const clientRequestId = input.clientRequestId;
   if (!clientRequestId || clientRequestId.length < 8) {
@@ -1535,7 +1538,7 @@ export async function recordSupplementaryStatementCollection(
     }) });
   }
   const payloadHash = idempotencyHash(input);
-  return withTx(async (tx) => {
+  const run = async (tx: Tx): Promise<SupplementaryCollectionResult> => {
     const replay = await checkIdempotency(tx, "courier.supplementaryCollection", clientRequestId, payloadHash);
     if (replay != null) {
       return { consignmentId: replay, delta: "0.00", noChange: true, alreadyDelivered: true };
@@ -1685,6 +1688,7 @@ export async function recordSupplementaryStatementCollection(
     });
     await recordIdempotencyKey(tx, "courier.supplementaryCollection", clientRequestId, Number(cn.id), payloadHash);
     return { consignmentId: Number(cn.id), delta: delta.toFixed(2), alreadyDelivered: true };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }
 

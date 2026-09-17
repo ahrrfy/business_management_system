@@ -60,6 +60,7 @@ import { withTx } from "../services/tx";
 import { rolloutMode } from "../config/rolloutFlags";
 import { dispatchByBarcode } from "../services/delivery/barcodeDispatchService";
 import { returnByBarcode } from "../services/delivery/barcodeReturnService";
+import { requireExternalTrackingRef } from "../services/delivery/trackingRefPolicy";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -529,7 +530,7 @@ export const deliveryRouter = router({
         assignedUserId: z.number().int().positive().nullish(),
         /** إقرارُ إخراج جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
-        /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+        /** رقم التتبع / المرجع الخارجي — إلزامي للشركات وتفرضه الخدمة خادمياً. */
         externalTrackingRef: z.string().trim().max(100).nullish(),
         /** ملاحظات التوصيل (اختياري). */
         notes: z.string().max(1000).nullish(),
@@ -660,7 +661,7 @@ export const deliveryRouter = router({
           }),
         });
       }
-      await assertPartyInScope(Number(cn.partyId), scopedBranchOf(ctx));
+      const party = await assertPartyInScope(Number(cn.partyId), scopedBranchOf(ctx));
       if (cn.status === "CANCELLED") {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -671,14 +672,15 @@ export const deliveryRouter = router({
           }),
         });
       }
+      const externalTrackingRef = requireExternalTrackingRef(party.partyType, input.externalTrackingRef);
       await db.update(deliveryConsignments)
-        .set({ externalTrackingRef: input.externalTrackingRef ?? null })
+        .set({ externalTrackingRef })
         .where(eq(deliveryConsignments.id, input.consignmentId));
       await logAudit(ctx, {
         action: "delivery.updateTrackingRef",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { externalTrackingRef: input.externalTrackingRef },
+        newValue: { externalTrackingRef },
       });
       return { consignmentNumber: cn.consignmentNumber };
     }),

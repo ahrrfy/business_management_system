@@ -12,12 +12,14 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { cn } from "@/lib/utils";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, moneyInput, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
+import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
+import { statementQueueRemaining, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
 
 export type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
@@ -52,6 +54,8 @@ export function ReceptionCollectSection({
   const [statementDeductions, setStatementDeductions] = useState("");
   const [statementNotes, setStatementNotes] = useState("");
   const [selectedStatementLines, setSelectedStatementLines] = useState<Record<number, boolean>>({});
+  const [statementAmounts, setStatementAmounts] = useState<Record<number, string>>({});
+  const [statementQueueIds, setStatementQueueIds] = useState<number[]>([]);
   const [countedCash, setCountedCash] = useState("");
   const [collectBarcodeInput, setCollectBarcodeInput] = useState("");
   const [isSearchingCollect, setIsSearchingCollect] = useState(false);
@@ -68,12 +72,30 @@ export function ReceptionCollectSection({
   const inTransitAmount = selectedParty ? Number(selectedParty.parcelsInTransitAmount ?? 0) : 0;
 
   // الإرساليات المفتوحة للجهة المختارة — نحتاجها لبناء lines التوريد وتأكيد التسليم
-  const openConsQ = trpc.delivery.openConsignments.useQuery(
-    { partyId: selectedPartyId ?? 0, limit: 200 },
-    { enabled: !!selectedPartyId, staleTime: 10_000, refetchInterval: 30_000 },
+  const openConsQ = trpc.delivery.openConsignments.useInfiniteQuery(
+    { partyId: selectedPartyId ?? 0, limit: 500 },
+    {
+      enabled: !!selectedPartyId,
+      staleTime: 10_000,
+      refetchInterval: 30_000,
+      getNextPageParam: (last) => last.nextCursor ?? undefined,
+    },
   );
+  useEffect(() => {
+    if (openConsQ.hasNextPage && !openConsQ.isFetchingNextPage) void openConsQ.fetchNextPage();
+  }, [openConsQ.hasNextPage, openConsQ.isFetchingNextPage, openConsQ.fetchNextPage]);
 
-  const openRows = openConsQ.data?.rows ?? [];
+  const openRows = (openConsQ.data?.pages ?? []).flatMap((page) => page.rows);
+  const openConsStillLoading = openConsQ.isLoading || openConsQ.hasNextPage || openConsQ.isFetchingNextPage;
+  const statementRows = openRows.filter((row) => (
+    row.parcelStatus === "DELIVERED"
+      && (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL")
+  ) || (
+    row.status === "DISPATCHED"
+      && row.parcelStatus !== "CANCELLED"
+      && row.parcelStatus !== "RETURNED"
+      && (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL" || row.moneyStatus === "NOT_APPLICABLE")
+  ));
   const remittableRows = openRows.filter((r) => r.parcelStatus === "DELIVERED");
   const remittableTotal = remittableRows.reduce((sum, r) => {
     const due = Math.max(0, Number(r.codAmount ?? 0) - Number(r.collectedAmount ?? 0) - Number((r as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
@@ -81,13 +103,20 @@ export function ReceptionCollectSection({
   }, 0);
 
   // حسابات وضع كشف الشركة:
-  const statementSelectedRows = openRows.filter((r) => selectedStatementLines[r.id]);
-  const statementSelectedCodTotal = statementSelectedRows.reduce((sum, r) => {
-    const due = Math.max(0, Number(r.codAmount ?? 0) - Number(r.collectedAmount ?? 0) - Number((r as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
-    return sum + due;
-  }, 0);
-  const statementDeductionsNum = Number(statementDeductions || 0);
-  const statementNetExpected = Math.max(0, statementSelectedCodTotal - statementDeductionsNum);
+  const statementSelectedRows = statementRows.filter((r) => selectedStatementLines[r.id]);
+  const statementExpectedTotal = statementSelectedRows.reduce(
+    (sum, row) => sum.plus(statementQueueRemaining(row as CompanyStatementQueueCandidate)),
+    D(0),
+  );
+  const statementSelectedCodTotal = statementSelectedRows.reduce(
+    (sum, row) => sum.plus(moneyInput(
+      statementAmounts[row.id] ?? statementQueueRemaining(row as CompanyStatementQueueCandidate).toFixed(2),
+    )),
+    D(0),
+  );
+  const statementDeductionsNum = moneyInput(statementDeductions);
+  const statementNetRaw = statementSelectedCodTotal.minus(statementDeductionsNum);
+  const statementNetExpected = statementNetRaw.isNegative() ? D(0) : statementNetRaw;
 
   const staffConfirmMut = trpc.delivery.staffConfirm.useMutation({
     onSuccess: () => {
@@ -125,7 +154,8 @@ export function ReceptionCollectSection({
         settledAt: new Date(),
         notes: statementNotes.trim() || undefined,
       });
-      setStatementNumber(""); setStatementDeductions(""); setStatementNotes(""); setCountedCash(""); setSelectedStatementLines({});
+      setStatementNumber(""); setStatementDeductions(""); setStatementNotes(""); setCountedCash("");
+      setSelectedStatementLines({}); setStatementAmounts({}); setStatementQueueIds([]);
       void obligationsQ.refetch(); void openConsQ.refetch(); void utils.delivery.invalidate();
     },
     onError: (e) => notify.err(e, "تعذّر تسجيل كشف شركة التوصيل"),
@@ -201,16 +231,21 @@ export function ReceptionCollectSection({
       notify.err("يرجى إدخال رقم كشف الشركة");
       return;
     }
-    const lines = statementSelectedRows.map((r) => {
-      const due = Math.max(0, Number(r.codAmount ?? 0) - Number(r.collectedAmount ?? 0) - Number((r as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
-      return { consignmentId: r.id, collectedAmount: due.toFixed(2) };
+    const lines = statementSelectedRows.map((row) => {
+      const entered = round2(moneyInput(
+        statementAmounts[row.id] ?? statementQueueRemaining(row as CompanyStatementQueueCandidate).toFixed(2),
+      ));
+      return {
+        consignmentId: row.id,
+        collectedAmount: entered.isNegative() ? "0.00" : entered.toFixed(2),
+      };
     });
     if (lines.length === 0) {
       notify.err("يرجى تحديد طرد واحد على الأقل تم تسليمه في الكشف");
       return;
     }
-    const cash = D(countedCash || String(statementNetExpected));
-    if (cash.lte(0) && statementNetExpected > 0) {
+    const cash = moneyInput(countedCash || statementNetExpected.toFixed(2));
+    if (cash.lte(0) && statementNetExpected.gt(0)) {
       notify.err("أدخل المبلغ الصافي المستلم");
       return;
     }
@@ -220,10 +255,11 @@ export function ReceptionCollectSection({
         `الشركة: ${partyInfo?.name ?? ""}`,
         `رقم الكشف: ${statementNumber}`,
         `عدد الطرود المسلّمة بالكشف: ${lines.length}`,
-        `إجمالي مبالغ الطرود (COD): ${fmt(String(statementSelectedCodTotal))} د.ع`,
-        statementDeductionsNum > 0 ? `استقطاعات أجور الشركة: - ${fmt(String(statementDeductionsNum))} د.ع` : "",
+        `المطلوب حسب النظام: ${fmt(statementExpectedTotal.toFixed(2))} د.ع`,
+        `المثبت في كشف الشركة: ${fmt(statementSelectedCodTotal.toFixed(2))} د.ع`,
+        statementDeductionsNum.gt(0) ? `استقطاعات أجور الشركة: - ${fmt(statementDeductionsNum.toFixed(2))} د.ع` : "",
         `صافي النقد المورّد للدرج: ${fmt(cash.toFixed(2))} د.ع`,
-        openRows.length - lines.length > 0 ? `يبقى معلقاً بذمة الشركة: ${openRows.length - lines.length} طرود` : "تسوية شاملة لكل الطرود",
+        statementRows.length - lines.length > 0 ? `يبقى معلقاً بذمة الشركة: ${statementRows.length - lines.length} طرود` : "تسوية شاملة لكل الطرود",
       ].filter(Boolean).join("\n"),
       confirmText: "تأكيد التسوية والقبض",
     });
@@ -235,7 +271,7 @@ export function ReceptionCollectSection({
       shiftType: "RECEPTION",
       statementNumber: statementNumber.trim(),
       statementDate: new Date().toISOString().slice(0, 10),
-      deductionsTotal: statementDeductionsNum > 0 ? statementDeductionsNum.toFixed(2) : undefined,
+      deductionsTotal: statementDeductionsNum.gt(0) ? statementDeductionsNum.toFixed(2) : undefined,
       notes: statementNotes.trim() || undefined,
       lines,
       countedCash: cash.toFixed(2),
@@ -344,6 +380,8 @@ export function ReceptionCollectSection({
             setSelectedPartyId(nextId);
             setCountedCash("");
             setSelectedStatementLines({});
+            setStatementAmounts({});
+            setStatementQueueIds([]);
             const info = (partiesQ.data ?? []).find((p) => p.id === nextId);
             if (info?.partyType === "COMPANY") setSettleMode("company");
             else setSettleMode("courier");
@@ -444,7 +482,12 @@ export function ReceptionCollectSection({
                         <label className="mb-1 block text-xs font-bold">رقم الكشف المسلَّم من الشركة <span className="text-destructive">*</span></label>
                         <Input
                           value={statementNumber}
-                          onChange={(e) => setStatementNumber(e.target.value)}
+                          onChange={(e) => {
+                            setStatementNumber(e.target.value);
+                            setSelectedStatementLines({});
+                            setStatementAmounts({});
+                            setStatementQueueIds([]);
+                          }}
                           placeholder="مثال: STMT-2026-09"
                           className="h-10 bg-background font-mono font-bold"
                           dir="ltr"
@@ -463,11 +506,35 @@ export function ReceptionCollectSection({
                     </div>
                   </div>
 
+                  <CompanyStatementScanQueue
+                    candidates={statementRows as CompanyStatementQueueCandidate[]}
+                    queuedIds={statementQueueIds}
+                    collectedById={statementAmounts}
+                    disabled={statementNumber.trim().length < 2 || openConsStillLoading}
+                    onQueue={(candidate, collected) => {
+                      setStatementQueueIds((ids) => ids.includes(candidate.id) ? ids : [...ids, candidate.id]);
+                      setSelectedStatementLines((current) => ({ ...current, [candidate.id]: true }));
+                      setStatementAmounts((current) => ({ ...current, [candidate.id]: collected }));
+                    }}
+                    onRemove={(consignmentId) => {
+                      setStatementQueueIds((ids) => ids.filter((id) => id !== consignmentId));
+                      setSelectedStatementLines((current) => ({ ...current, [consignmentId]: false }));
+                      setStatementAmounts((current) => {
+                        const next = { ...current };
+                        delete next[consignmentId];
+                        return next;
+                      });
+                    }}
+                    onCollectedChange={(consignmentId, collected) => {
+                      setStatementAmounts((current) => ({ ...current, [consignmentId]: collected }));
+                    }}
+                  />
+
                   {/* قائمة الطرود مع إمكانية التحديد بالمطابقة */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <h3 className="text-xs font-bold text-muted-foreground">
-                        الطرود المفتوحة للشركة ({openRows.length})
+                        الطرود المفتوحة للشركة ({statementRows.length})
                       </h3>
                       <div className="flex gap-2">
                         <Button
@@ -476,8 +543,14 @@ export function ReceptionCollectSection({
                           className="text-xs h-7 font-bold"
                           onClick={() => {
                             const next: Record<number, boolean> = {};
-                            openRows.forEach((r) => { next[r.id] = true; });
+                            const amounts: Record<number, string> = {};
+                            statementRows.forEach((row) => {
+                              next[row.id] = true;
+                              amounts[row.id] = statementQueueRemaining(row as CompanyStatementQueueCandidate).toFixed(2);
+                            });
                             setSelectedStatementLines(next);
+                            setStatementAmounts(amounts);
+                            setStatementQueueIds(statementRows.map((row) => row.id));
                           }}
                         >
                           تحديد الكل
@@ -486,26 +559,39 @@ export function ReceptionCollectSection({
                           variant="ghost"
                           size="sm"
                           className="text-xs h-7 font-bold text-muted-foreground"
-                          onClick={() => setSelectedStatementLines({})}
+                          onClick={() => {
+                            setSelectedStatementLines({});
+                            setStatementAmounts({});
+                            setStatementQueueIds([]);
+                          }}
                         >
                           إلغاء التحديد
                         </Button>
                       </div>
                     </div>
 
-                    {openRows.length === 0 ? (
+                    {statementRows.length === 0 ? (
                       <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
                         لا توجد طرود مفتوحة لهذه الشركة
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        {openRows.map((row) => {
-                          const cod = Number(row.codAmount ?? 0);
+                        {statementRows.map((row) => {
+                          const cod = statementQueueRemaining(row as CompanyStatementQueueCandidate);
                           const isSelected = !!selectedStatementLines[row.id];
                           return (
                             <div
                               key={row.id}
-                              onClick={() => setSelectedStatementLines((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedStatementLines((current) => ({ ...current, [row.id]: false }));
+                                  setStatementQueueIds((ids) => ids.filter((id) => id !== row.id));
+                                  return;
+                                }
+                                setSelectedStatementLines((current) => ({ ...current, [row.id]: true }));
+                                setStatementAmounts((current) => ({ ...current, [row.id]: cod.toFixed(2) }));
+                                setStatementQueueIds((ids) => ids.includes(row.id) ? ids : [...ids, row.id]);
+                              }}
                               className={cn(
                                 "flex items-center justify-between gap-3 rounded-xl border p-3 cursor-pointer transition-colors shadow-xs",
                                 isSelected ? "border-primary bg-primary/5" : "bg-background hover:bg-muted/20",
@@ -519,6 +605,7 @@ export function ReceptionCollectSection({
                                   <div className="flex items-center gap-2">
                                     <span className="font-extrabold text-sm">فاتورة #{row.invoiceNumber ?? row.invoiceId}</span>
                                     <span className="text-xs text-muted-foreground font-mono">{row.consignmentNumber}</span>
+                                    {row.externalTrackingRef && <span className="text-xs font-bold text-primary font-mono" dir="ltr">{row.externalTrackingRef}</span>}
                                   </div>
                                   <div className="text-xs text-muted-foreground">
                                     {row.customerName && <span>الزبون: <strong className="text-foreground">{row.customerName}</strong></span>}
@@ -527,7 +614,7 @@ export function ReceptionCollectSection({
                               </div>
                               <div className="text-end">
                                 <span className="text-xs text-muted-foreground block">المطلوب (COD)</span>
-                                <span className="font-extrabold text-sm tabular-nums text-foreground">{fmt(String(cod))} د.ع</span>
+                                <span className="font-extrabold text-sm tabular-nums text-foreground">{fmt(cod.toFixed(2))} د.ع</span>
                               </div>
                             </div>
                           );
@@ -547,17 +634,17 @@ export function ReceptionCollectSection({
                         </div>
                         <div>
                           <span className="text-muted-foreground block">مجموع الـ COD</span>
-                          <span className="font-extrabold text-sm">{fmt(String(statementSelectedCodTotal))} د.ع</span>
+                          <span className="font-extrabold text-sm">{fmt(statementSelectedCodTotal.toFixed(2))} د.ع</span>
                         </div>
                         <div>
                           <span className="text-muted-foreground block">صافي النقد المتوقع</span>
-                          <span className="font-extrabold text-sm text-[var(--sem-pos)]">{fmt(String(statementNetExpected))} د.ع</span>
+                          <span className="font-extrabold text-sm text-[var(--sem-pos)]">{fmt(statementNetExpected.toFixed(2))} د.ع</span>
                         </div>
                       </div>
 
-                      {openRows.length - statementSelectedRows.length > 0 && (
+                      {statementRows.length - statementSelectedRows.length > 0 && (
                         <p className="text-xs text-[var(--sem-warn)] font-bold">
-                          يبقى معلقاً بذمة الشركة: {openRows.length - statementSelectedRows.length} طرود (لم تُذكر بالكشف أو مؤجلة)
+                          يبقى معلقاً بذمة الشركة: {statementRows.length - statementSelectedRows.length} طرود (لم تُذكر بالكشف أو مؤجلة)
                         </p>
                       )}
 
@@ -565,7 +652,7 @@ export function ReceptionCollectSection({
                         <MoneyInput
                           value={countedCash}
                           onChange={setCountedCash}
-                          placeholder={"المبلغ الصافي المستلم (المتوقع: " + fmt(String(statementNetExpected)) + ")"}
+                          placeholder={"المبلغ الصافي المستلم (المتوقع: " + fmt(statementNetExpected.toFixed(2)) + ")"}
                           className="flex-1 h-11 text-base font-bold bg-background"
                           ariaLabel="المبلغ الصافي المستلم"
                         />

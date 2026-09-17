@@ -215,6 +215,13 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     eq(deliveryConsignments.parcelStatus, "DELIVERED"),
     sql`${feeDue} > 0`,
   );
+  // كشف الشركة مستندٌ يثبت التسليم والتحصيل معاً؛ لذلك يجب أن يرى كل طردٍ مفتوح للشركة
+  // حتى لو كان ACCEPTED/PICKED_UP/OUT_FOR_DELIVERY، لا ASSIGNED/FAILED فقط.
+  const statementCandidate = and(
+    eq(deliveryConsignments.status, "DISPATCHED"),
+    sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED','RETURNED')`,
+    sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL','NOT_APPLICABLE')`,
+  );
   // ⚠️ Codex P1 (٢٥/٨): الترتيبُ ASC (الأقدم أوّلاً) للحفاظ على منهج «سدّ الالتزامات المتأخّرة
   // أوّلاً» — الأصل كان `ORDER BY dispatchedAt` ASC. Keyset ASC ⇒ `WHERE id > cursor` + `ORDER BY id ASC`.
   const rows = await db
@@ -223,6 +230,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       consignmentNumber: deliveryConsignments.consignmentNumber,
       invoiceId: deliveryConsignments.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
+      externalTrackingRef: deliveryConsignments.externalTrackingRef,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
       /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — الشاشة تعرض به المتبقّي الحيّ. */
@@ -253,7 +261,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(
       eq(deliveryConsignments.partyId, partyId),
-      or(remittable, returnable, unpaidFee),
+      or(remittable, returnable, unpaidFee, statementCandidate),
       branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
       page.cursor != null ? gt(deliveryConsignments.id, page.cursor) : undefined,
     ))

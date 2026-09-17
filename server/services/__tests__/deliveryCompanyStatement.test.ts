@@ -78,7 +78,12 @@ async function dispatchedOrder(reqId: string, salePrice: string) {
   }, CASHIER);
   const woId = r.workOrders[0].workOrderId;
   await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
-  const d = await dispatchToDelivery({ workOrderId: woId, partyId: 1, clientRequestId: `d-${reqId}` }, CASHIER);
+  const d = await dispatchToDelivery({
+    workOrderId: woId,
+    partyId: 1,
+    clientRequestId: `d-${reqId}`,
+    externalTrackingRef: `TRACK-${reqId}`,
+  }, CASHIER);
   return { workOrderId: woId, shiftId: shift.shiftId, consignmentId: d.consignmentId, invoiceId: d.invoiceId };
 }
 
@@ -130,6 +135,38 @@ describe("كشف شركة التوصيل — الدليل البديل عن بو
       .where(eq(s.deliveryEvents.consignmentId, a.consignmentId)))
       .find((e) => e.eventType === "DELIVERED");
     expect(JSON.stringify(ev?.payload ?? {})).toContain("COMPANY_STATEMENT");
+  });
+
+  it("⭐ ذرّية الكشف كاملة: فشل مطابقة النقد في آخر المسار يعيد التسليم والتحصيل والقيود كلّها", async () => {
+    const a = await dispatchedOrder("st-atomic", "7000.00");
+    const beforeAccounting = (await db().select().from(s.accountingEntries)).length;
+    const beforeLedger = (await db().select().from(s.deliveryLedgerEntries)).length;
+    const beforeEvents = (await db().select().from(s.deliveryEvents)).length;
+
+    // ختمُ التسليم وتحصيلُ الفاتورة يسبقان حارس النقد المعدود منطقياً. تعمّدُ عدم المطابقة
+    // يُفشل التوريد في آخر السلسلة، ويجب أن يعيد المعاملةُ الواحدة كلَّ ما سبقه.
+    await expect(recordCompanyStatement({
+      branchId: 1,
+      partyId: 1,
+      statementNumber: "ATOMIC-ROLLBACK-001",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "7000.00" }],
+      countedCash: "6999.00",
+      clientRequestId: "stmt-atomic-rollback-1",
+    }, CASHIER)).rejects.toThrow();
+
+    const cn = (await db().select().from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, a.consignmentId)))[0];
+    expect(cn.parcelStatus).toBe("ASSIGNED");
+    expect(cn.courierDeliveredAt).toBeNull();
+    expect(cn.collectedAmount).toBe("0.00");
+    expect(cn.moneyStatus).toBe("UNSETTLED");
+    expect((await invoiceOf(a.invoiceId)).paidAmount).toBe("0.00");
+    expect(await balanceOf(1)).toBe(7000);
+    expect(await partyBalance()).toBe(0);
+    expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(beforeAccounting);
+    expect(await db().select().from(s.deliveryLedgerEntries)).toHaveLength(beforeLedger);
+    expect(await db().select().from(s.deliveryEvents)).toHaveLength(beforeEvents);
   });
 
   it("⭐ إعادة إدخال الكشف نفسه ترتدّ — لا قيود مضاعفة", async () => {

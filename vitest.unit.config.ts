@@ -363,6 +363,9 @@ export default defineConfig({
       "client/src/pages/__tests__/salesReturnLegacyApproval.test.tsx",
       // تطبيع ومعالجة مدخلات وقراءات باركود الشحنات والطلبات والفواتير
       "shared/barcodeScanner.test.ts",
+      // كشف شركة التوصيل: إلزام رقم البوليصة + طابور المطابقة بالباركود مع حفظ الأصفار البادئة.
+      "server/services/delivery/trackingRefPolicy.test.ts",
+      "client/src/components/delivery/companyStatementQueue.test.ts",
       // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب
       "shared/barcodeKeyDecode.test.ts",
       "client/src/lib/barcodeScanTiming.test.ts",
