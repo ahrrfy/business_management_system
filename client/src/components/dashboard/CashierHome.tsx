@@ -1,7 +1,12 @@
 import type React from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
-import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
+import type { WorkspaceNavItem } from "@/lib/workspaceProfiles";
+import {
+  hasModuleAccess,
+  type PermissionMap,
+  type PosStation,
+} from "@shared/permissions";
 import {
   BadgeDollarSign,
   Barcode,
@@ -150,7 +155,15 @@ function TileGroup({
 
 /* ═══════════ مساحة عمل الكاشير والاستقبال المركّزة (٢٤/٧) ═══════════ */
 
-export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
+export function CashierHome({
+  station,
+  defaultAction,
+  tasksBrief,
+}: {
+  station: PosStation;
+  defaultAction: WorkspaceNavItem;
+  tasksBrief?: React.ReactNode;
+}) {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
@@ -159,8 +172,20 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
 
   const can = (mod: string, lvl: "READ" | "FULL" = "READ") =>
     Boolean(role && hasModuleAccess(role, override, mod, lvl));
-  // محطّة الاستقبال بوّابتها وحدة `workorders` (POS_STATION_GATES) — من لا يملكها لا يرى لوحاتها.
-  const isReception = can("workorders", "FULL");
+  const isReception = station === "RECEPTION";
+  const isPrintServices = station === "PRINT_SERVICES";
+  const canViewShift = can("treasury", "READ");
+  const stationTitle = isReception
+    ? "محطة خدمة العملاء"
+    : isPrintServices
+      ? "كاشير خدمات الطباعة"
+      : "نقطة البيع";
+  const stationDescription = isReception
+    ? "افتح الوردية واستقبل الطلب — السلّة والعميل وتسعير وتخصيص الطباعة والدفع في شاشة واحدة، وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."
+    : isPrintServices
+      ? "افتح وردية خدمات الطباعة وابدأ تسعير الطلبات وتحصيلها من المحطة المخصّصة."
+      : "افتح الوردية وابدأ البيع المباشر — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها.";
+  const stationHref = station === "RETAIL" ? "/pos" : defaultAction.href;
 
   // عدّادات التشغيل الحيّة
   const woCounts = trpc.workOrders.counts.useQuery(
@@ -181,8 +206,8 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
 
   // الوردية الحالية
   const shiftQ = trpc.shifts.current.useQuery(
-    branchId != null ? { branchId, shiftType: isReception ? "RECEPTION" : "RETAIL" } : undefined as any,
-    { enabled: branchId != null, staleTime: 30_000 },
+    branchId != null ? { branchId, shiftType: station } : undefined as any,
+    { enabled: canViewShift && branchId != null, staleTime: 30_000 },
   );
   const shift = shiftQ.data ?? null;
 
@@ -302,7 +327,7 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
           </div>
 
           {/* مؤشر الوردية المباشر في الرأس */}
-          <div>
+          {canViewShift && <div>
             {shift ? (
               <div
                 style={{
@@ -340,12 +365,12 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
                 <span>لا توجد وردية مفتوحة</span>
               </div>
             )}
-          </div>
+          </div>}
         </div>
 
         {/* بطاقة المحطة الرئيسية (Hero Card) */}
         <Link
-          href={isReception ? "/pos?mode=RECEPTION" : "/pos"}
+          href={stationHref}
           style={{
             display: "block",
             background: T.featuredBg,
@@ -376,18 +401,16 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
                   <Store style={{ width: 22, height: 22 }} />
                 </span>
                 <div style={{ fontSize: "clamp(22px, 2.4vw, 30px)", fontWeight: 800, color: T.text, letterSpacing: "-0.01em" }}>
-                  {isReception ? "محطة خدمة العملاء" : "نقطة البيع"}
+                  {stationTitle}
                 </div>
               </div>
               <div style={{ fontSize: "0.875rem", color: T.sub, lineHeight: 1.7, maxWidth: "68ch" }}>
-                {isReception
-                  ? "افتح الوردية واستقبل الطلب — السلّة والعميل وتسعير وتخصيص الطباعة والدفع في شاشة واحدة، وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."
-                  : "افتح الوردية وابدأ البيع المباشر — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."}
+                {stationDescription}
               </div>
             </div>
 
             <div style={{ alignSelf: "center" }}>
-              {shift ? (
+              {canViewShift && shift ? (
                 <span
                   style={{
                     display: "inline-flex",
@@ -419,7 +442,7 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
                     fontWeight: 800,
                   }}
                 >
-                  فتح وردية جديدة ←
+                  {canViewShift ? "فتح وردية جديدة ←" : "دخول المحطة ←"}
                 </span>
               )}
             </div>

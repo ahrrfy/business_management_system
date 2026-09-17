@@ -9,6 +9,7 @@ import {
 import { DISPLAY_SCALES, isDisplayScale } from "@/lib/displayScale";
 import { APPLICATION_MODULES } from "@/lib/moduleRegistry";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
+import { resolveWorkspaceProfile } from "@/lib/workspaceProfiles";
 
 describe("سجل وحدات التطبيق", () => {
   it("لا يكرر المعرّفات أو المسارات", () => {
@@ -49,6 +50,75 @@ describe("سجل وحدات التطبيق", () => {
     expect(dashboard).toContain("<LoadingState");
     expect(dashboard).toContain("<ErrorState");
     expect(dashboard).not.toContain("if (!me.data) return null");
+  });
+
+  it("يثبّت محطة الكاشير وبوابات مؤشرات الرئيسية من الملف المحلول", () => {
+    const dashboard = readFileSync("client/src/pages/Dashboard.tsx", "utf8");
+    const cashierHome = readFileSync(
+      "client/src/components/dashboard/CashierHome.tsx",
+      "utf8",
+    );
+    const resolveAt = dashboard.indexOf("const profile = resolveWorkspaceProfile({");
+    const cashierAt = dashboard.indexOf('me.data.role === "cashier" && cashierStation');
+
+    expect(resolveAt).toBeGreaterThan(-1);
+    expect(cashierAt).toBeGreaterThan(resolveAt);
+    expect(dashboard).toContain("const cashierStation = profile.defaultAction?.station;");
+    expect(dashboard).toContain("station={cashierStation}");
+    expect(dashboard).toContain("defaultAction={profile.defaultAction}");
+    expect(cashierHome).toContain('const isReception = station === "RECEPTION";');
+    expect(cashierHome).not.toContain('const isReception = can("workorders", "FULL");');
+    expect(cashierHome).toContain("shiftType: station");
+    expect(cashierHome).toContain('station === "RETAIL" ? "/pos" : defaultAction.href');
+
+    const cashierCases = [
+      {
+        permissionsOverride: { sales: "FULL", pos: "NONE", workorders: "NONE" } as const,
+        station: "RETAIL",
+        href: "/pos?mode=RETAIL",
+      },
+      {
+        permissionsOverride: { sales: "NONE", pos: "FULL", workorders: "NONE" } as const,
+        station: "PRINT_SERVICES",
+        href: "/pos?mode=PRINT_SERVICES",
+      },
+      {
+        permissionsOverride: { sales: "NONE", pos: "NONE", workorders: "FULL" } as const,
+        station: "RECEPTION",
+        href: "/pos?mode=RECEPTION",
+      },
+    ];
+    for (const expected of cashierCases) {
+      const profile = resolveWorkspaceProfile({
+        role: "cashier",
+        permissionsOverride: expected.permissionsOverride,
+      });
+      expect(profile.defaultAction).toMatchObject({
+        station: expected.station,
+        href: expected.href,
+      });
+    }
+    const multiCashier = resolveWorkspaceProfile({ role: "cashier" });
+    expect(multiCashier.id).toBe("cashier_multi");
+    expect(multiCashier.defaultAction?.station).toBe("RETAIL");
+    const stationlessCashier = resolveWorkspaceProfile({
+      role: "cashier",
+      permissionsOverride: { sales: "NONE", pos: "NONE", workorders: "NONE" },
+    });
+    expect(stationlessCashier.stations).toEqual([]);
+    expect(stationlessCashier.defaultAction?.station).toBeUndefined();
+
+    expect(dashboard).toContain('hasModuleAccess(role, override, "treasury", "READ")');
+    expect(dashboard).toContain("enabled: canViewTreasury && branchScope !== undefined");
+    expect(dashboard).toContain('hasModuleAccess(role, override, "inventory", "READ")');
+    expect(dashboard).toContain('profileActionHref(primaryNav, "inventory")');
+    expect(dashboard).toContain('hasModuleAccess(role, override, "workorders", "READ")');
+    expect(dashboard).toContain("enabled: canViewWorkOrders && branchScope !== undefined");
+    expect(dashboard).toContain("if (!canViewWorkOrders) return null;");
+    expect(dashboard).toContain('profileActionHref(primaryNav, "my_tasks")');
+    expect(dashboard).not.toContain('href: "/inventory"');
+    expect(dashboard).not.toContain('href={`/work-orders?branch=${branchScope}`}');
+    expect(dashboard).not.toContain('href="/tasks?tab=mine"');
   });
 });
 

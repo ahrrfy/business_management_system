@@ -183,7 +183,20 @@ function PrimaryActionsPanel({ items }: { items: readonly WorkspaceNavItem[] }) 
   );
 }
 
-function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
+function profileActionHref(
+  primaryNav: readonly WorkspaceNavItem[],
+  actionId: string,
+): string | undefined {
+  return primaryNav.find((item) => item.id === actionId)?.href;
+}
+
+function MetricsBar({
+  branchScope,
+  primaryNav,
+}: {
+  branchScope: number | undefined;
+  primaryNav: readonly WorkspaceNavItem[];
+}) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const isXNarrow = useMediaQuery("(max-width: 640px)");
@@ -191,6 +204,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
   const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
   const metricCols = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
   const role = me.data?.role ?? "";
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   // رؤية الأرقام المالية (ذمم متأخّرة/نبض المبيعات) — نفس بوّابة reportViewerProcedure/الخادم عبر
   // moduleAccessAllowed (لا قائمة أدوار حرفية ⇒ لا تباعُد). الخادم يُصفّر هذه الحقول لغير المخوّل؛
   // هنا نُخفي البطاقة كي لا تُعرَض «٠ ذمم متأخّرة» مضلِّلة لكاشير/مخزن (تدقيق تسريب dashboardMetrics).
@@ -198,23 +212,28 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
     !!role &&
     moduleAccessAllowed(
       role as RoleKey,
-      (me.data?.permissionsOverride ?? null) as PermissionMap | null,
+      override,
       "reports",
       "READ",
       ["manager", "accountant", "auditor"],
     );
+  const canViewTreasury = !!role && hasModuleAccess(role, override, "treasury", "READ");
+  const canViewInventory = !!role && hasModuleAccess(role, override, "inventory", "READ");
+  const canViewCollections = !!role && hasModuleAccess(role, override, "collections", "READ");
+  const canSeeStocktakes =
+    (role === "admin" || role === "manager" || role === "warehouse") &&
+    hasModuleAccess(role, override, "inventory", "FULL");
   const scopeReady = role === "admin" || branchScope !== undefined;
   const shift = trpc.shifts.current.useQuery(
     { branchId: branchScope ?? 0 },
-    { enabled: branchScope !== undefined },
+    { enabled: canViewTreasury && branchScope !== undefined },
   );
   // مقاييس لوحة التحكم: مخزون منخفض + ذمم متأخّرة (الخلفية تُطبّق عزل الفرع).
   const metrics = trpc.reports.dashboardMetrics.useQuery(
     { branchId: branchScope, includeTodaySales: true },
-    { enabled: Boolean(role) && scopeReady },
+    { enabled: (canViewReports || canViewInventory) && scopeReady },
   );
   // جلسات جرد بانتظار المراجعة — للأدوار المخوّلة فقط (الخادم warehouseProcedure).
-  const canSeeStocktakes = role === "admin" || role === "manager" || role === "warehouse";
   const stk = trpc.stocktakes.stats.useQuery(undefined, { enabled: canSeeStocktakes });
 
   const shiftLabel = shift.data ? "مفتوحة" : "لا وردية";
@@ -294,7 +313,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
       : []),
     // بطاقة نبض المبيعات: بلا معدّل ٧ أيام (لا مبيعات سابقة) = لا نص حشو — تُخفى كاملاً
     // (تدقيق الفجوات ٥/٧، بند ١٢) — نفس اصطلاح إخفاء بطاقة الجرد أدناه عبر spread شرطي.
-    ...(metrics.isLoading || pulseUnavailable || hasBaseline
+    ...(canViewReports && (metrics.isLoading || pulseUnavailable || hasBaseline)
       ? [
           {
             label: "مبيعات أمس مقابل المعدّل",
@@ -312,7 +331,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           },
         ]
       : []),
-    ...(branchScope !== undefined
+    ...(canViewTreasury && branchScope !== undefined
       ? [{
           label: "الوردية الحالية",
           value: shift.isLoading ? "—" : shift.isError ? "غير متاح" : shiftLabel,
@@ -326,19 +345,21 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           iBg: "var(--sem-info-bg)",
         }]
       : []),
-    {
-      label: "مخزون منخفض",
-      value: lowStockValue,
-      unit: metrics.isLoading ? ACTION_LABELS.refreshing : metricsUnavailable ? "حاول مجدداً" : "منتج",
-      copyText: metrics.isLoading || metricsUnavailable
-        ? ""
-        : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
-      ico: <WarnIco color="var(--sem-warn)" />,
-      iBg: "var(--sem-warn-bg)",
-      isAlert: true,
-      alertC: "var(--sem-warn)",
-      href: "/inventory",
-    },
+    ...(canViewInventory
+      ? [{
+          label: "مخزون منخفض",
+          value: lowStockValue,
+          unit: metrics.isLoading ? ACTION_LABELS.refreshing : metricsUnavailable ? "حاول مجدداً" : "منتج",
+          copyText: metrics.isLoading || metricsUnavailable
+            ? ""
+            : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
+          ico: <WarnIco color="var(--sem-warn)" />,
+          iBg: "var(--sem-warn-bg)",
+          isAlert: true,
+          alertC: "var(--sem-warn)",
+          href: profileActionHref(primaryNav, "inventory"),
+        }]
+      : []),
     // بطاقة الذمم المتأخّرة ماليّة ⇒ للمخوّلين برؤية التقارير فقط (الخادم يُصفّرها لغيرهم؛ نُخفيها
     // هنا كي لا يُعرَض صفرٌ مضلِّل لكاشير/مخزن). نفس بوّابة بطاقة «مبيعات أمس» أعلاه (تُخفى ذاتياً بالصفر).
     ...(canViewReports
@@ -356,7 +377,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
             iBg: "var(--sem-neg-bg)",
             isAlert: true,
             alertC: "var(--sem-neg)",
-            href: "/ar-aging",
+            href: canViewCollections ? profileActionHref(primaryNav, "ar") : undefined,
           },
         ]
       : []),
@@ -376,12 +397,16 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
             iBg: "var(--sem-info-bg)",
             isAlert: (stk.data?.review ?? 0) > 0,
             alertC: "var(--sem-info)",
-            href: "/stocktakes",
+            href: profileActionHref(primaryNav, "my_stocktakes"),
           },
         ]
       : []),
   ];
-  const hasRefreshIssue = metrics.isError || metrics.data?.health.status === "degraded" || (canSeeStocktakes && stk.isError);
+  const hasRefreshIssue =
+    ((canViewReports || canViewInventory) &&
+      (metrics.isError || metrics.data?.health.status === "degraded")) ||
+    (canViewTreasury && shift.isError) ||
+    (canSeeStocktakes && stk.isError);
 
   return (
     <section aria-label="مؤشرات اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "16px 24px 4px" }}>
@@ -392,7 +417,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
       {hasRefreshIssue && (
         <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10, padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
           <span>تعذّر تحديث بعض المؤشرات؛ القيم المتاحة ما زالت معروضة.</span>
-          <button type="button" onClick={() => { void metrics.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
+          <button type="button" onClick={() => { if (canViewReports || canViewInventory) void metrics.refetch(); if (canViewTreasury && branchScope !== undefined) void shift.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
             <RefreshCw aria-hidden size={13} />
             إعادة المحاولة
           </button>
@@ -442,14 +467,14 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           );
         })}
       </div>
-      <TodaySalesBreakdown branchScope={branchScope} canView={canViewReports} ready={scopeReady} />
+      <TodaySalesBreakdown branchScope={branchScope} canView={canViewReports} ready={canViewReports && scopeReady} />
     </section>
   );
 }
 
 /* ═══════════ MORNING BRIEF ═══════════
    قسم «برنامج اليوم» فوق الوحدات: ٣ بطاقات فعل (تذكيرات AR + وعود اليوم + أوامر شغل متأخّرة).
-   يظهر للمدير/الأدمن فقط (بيانات إشرافية عبر الفرع)؛ كاشير/موظف ميداني لا يحتاجه.
+   يظهر فقط حين يتيح ملف العمل المحلول مدخل أوامر الشغل وتسمح الوحدة فعلياً بقراءته.
    عند «كل الأصفار» يختفي القسم كلياً (لا نُشتت الشاشة بلوحة فارغة). */
 
 function BriefCard({
@@ -517,20 +542,54 @@ function BriefCard({
   );
 }
 
-function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefined; isAdmin: boolean }) {
+function MorningBrief({
+  branchScope,
+  isAdmin,
+  primaryNav,
+}: {
+  branchScope: number | undefined;
+  isAdmin: boolean;
+  primaryNav: readonly WorkspaceNavItem[];
+}) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
-  const elevated = role === "admin" || role === "manager";
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const workOrdersHref = profileActionHref(primaryNav, "work_orders");
+  const canViewWorkOrders =
+    !!role &&
+    !!workOrdersHref &&
+    hasModuleAccess(role, override, "workorders", "READ");
+  const canViewReceivableBrief =
+    !!role &&
+    !!profileActionHref(primaryNav, "reports") &&
+    moduleAccessAllowed(
+      role,
+      override,
+      "reports",
+      "READ",
+      ["manager", "accountant", "auditor"],
+    ) &&
+    moduleAccessAllowed(
+      role,
+      override,
+      "collections",
+      "FULL",
+      ["manager", "accountant"],
+    );
+  const receivableHref = canViewReceivableBrief
+    ? `/reports/ar-reminders?branch=${branchScope}`
+    : undefined;
   // برنامج اليوم تنفيذيّ لا تجميعيّ: لا نختار أول فرع صامتاً للأدمن. المنتقي أعلى الشاشة هو
   // المصدر الواحد، والروابط تحمل الفرع نفسه إلى قائمة المتابعة.
   const metrics = trpc.reports.dashboardMetrics.useQuery(
     { branchId: branchScope, includeTodaySales: true },
-    { enabled: elevated && branchScope !== undefined },
+    { enabled: canViewWorkOrders && branchScope !== undefined },
   );
 
-  // القسم للمدير/الأدمن حصراً — الموظّف الميداني لا يحتاج نظرة إشرافية.
-  if (!elevated) return null;
+  // endpoint الملخّص يجلب عدّاد أوامر الشغل ضمن حزمة واحدة؛ عند حجب الوحدة نغلق الاستعلام
+  // كلّه كي لا تُستعاد بيانات أو روابط أخفاها ملف العمل المحلول.
+  if (!canViewWorkOrders) return null;
   if (isAdmin && branchScope === undefined) {
     return (
       <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px" }}>
@@ -562,9 +621,13 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
     );
   }
   const brief = metrics.data.morningBrief;
-  const remindersDegraded = metrics.data.health.sourceErrors.includes("receivableReminders");
+  const remindersDegraded =
+    canViewReceivableBrief &&
+    metrics.data.health.sourceErrors.includes("receivableReminders");
   // promisedToday مجموعة جزئية من arRemindersDue؛ لا نعدّها مرّتين في إجمالي البنود.
-  const total = brief.arRemindersDue + brief.overdueWorkOrders;
+  const total =
+    (canViewReceivableBrief ? brief.arRemindersDue : 0) +
+    brief.overdueWorkOrders;
   // كل الأصفار ⇒ لا حاجة لبانر «برنامج اليوم» — تنظيف بصريّ حين لا شيء يستحقّ الفعل.
   if (total === 0 && !remindersDegraded) return null;
 
@@ -606,9 +669,9 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
           gap: 10,
         }}
       >
-        {brief.promisedToday > 0 && (
+        {receivableHref && brief.promisedToday > 0 && (
           <BriefCard
-            href={`/reports/ar-reminders?branch=${branchScope}`}
+            href={receivableHref}
             label="عملاء موعودون اليوم"
             count={brief.promisedToday}
             sub="راجع الوعود المستحقّة قبل نهاية اليوم"
@@ -617,9 +680,9 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
             icon={<PromiseIco color="var(--sem-warn)" />}
           />
         )}
-        {brief.arRemindersDue > 0 && (
+        {receivableHref && brief.arRemindersDue > 0 && (
           <BriefCard
-            href={`/reports/ar-reminders?branch=${branchScope}`}
+            href={receivableHref}
             label="تذكيرات ذمم مستحقّة"
             count={brief.arRemindersDue}
             sub="افتح قائمة العملاء ثم أرسل أو سجّل قرار المتابعة"
@@ -628,9 +691,9 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
             icon={<ARIco color="var(--sem-info)" />}
           />
         )}
-        {brief.overdueWorkOrders > 0 && (
+        {brief.overdueWorkOrders > 0 && workOrdersHref && (
           <BriefCard
-            href={`/work-orders?branch=${branchScope}`}
+            href={`${workOrdersHref}?branch=${branchScope}`}
             label="أوامر شغل متأخّرة"
             count={brief.overdueWorkOrders}
             sub="تجاوزت التاريخ المتوقّع للتسليم"
@@ -680,18 +743,27 @@ const TasksIco = ({ color }: { color: string }) => (
 /* ═══════════ المهام والتذاكر (نظام المهام الموحّد S2/T2.3) ═══════════
    بطاقتان: «مهامي المفتوحة» (شخصيّ — assignedTo=أنا، لا RESOLVED/CANCELLED) و«مهام متأخّرة»
    (تشغيليّ — نطاق فرع المستخدم نفسه المُستعمَل في MetricsBar/MorningBrief). يظهر لأي دور يملك
-   tasks≥READ (أوسع من MorningBrief المُقتصر على المدير/الأدمن — طابور شخصي يهمّ الكاشير/الفنّي
-   أيضاً)، ويختفي كلياً عند صفرَين (لا بانر فارغ).
+   tasks≥READ ويُبقي ملفُ عمله «مهامي» ضمن الإجراءات الرئيسية؛ ويختفي كلياً عند صفرَين.
    myOpenTasks يُحسب خادمياً بلا حدّ صفحات، والراوتر يمرّر هوية المستخدم المصادَق حصراً. */
-function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
+function TasksBrief({
+  branchScope,
+  primaryNav,
+}: {
+  branchScope: number | undefined;
+  primaryNav: readonly WorkspaceNavItem[];
+}) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const tasksHref = profileActionHref(primaryNav, "my_tasks");
 
   // بوّابة رؤية — مرآة hasModuleAccess (القالب فقط، بلا استثناء أدوار خارج القائمة) مطابقةً تماماً
   // لبوّابة الخادم tasksReadProcedure (requireModule("tasks","READ")، بلا قائمة أدوار صريحة هناك أيضاً).
-  const canSeeTasks = !!role && hasModuleAccess(role, override, "tasks", "READ");
+  const canSeeTasks =
+    !!role &&
+    !!tasksHref &&
+    hasModuleAccess(role, override, "tasks", "READ");
 
   // overdueTasks تشغيليّ — نفس مفتاح استعلام dashboardMetrics المُستهلَك أصلاً في MetricsBar/
   // MorningBrief (branchId مطابق) ⇒ react-query يُدَدِّب الطلب، لا شبكة إضافية.
@@ -702,7 +774,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
   const overdueTasks = metrics.data?.morningBrief.overdueTasks ?? 0;
   const myOpenTasks = metrics.data?.morningBrief.myOpenTasks ?? 0;
 
-  if (!canSeeTasks) return null;
+  if (!canSeeTasks || !tasksHref) return null;
   if (metrics.isLoading) {
     return (
       <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", color: T.muted, fontSize: "0.75rem" }}>
@@ -736,7 +808,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
         {myOpenTasks > 0 && (
           <BriefCard
-            href="/tasks?tab=mine"
+            href={tasksHref}
             label="مهامي المفتوحة"
             count={myOpenTasks}
             sub="مهام مُسنَدة إليك بانتظار المتابعة"
@@ -747,7 +819,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
         )}
         {overdueTasks > 0 && (
           <BriefCard
-            href="/tasks?tab=list&overdue=1"
+            href={`${tasksHref.split("?")[0]}?tab=list&overdue=1`}
             label="مهام متأخّرة"
             count={overdueTasks}
             sub="تجاوزت الاستحقاق الفعلي — تحتاج متابعة"
@@ -784,28 +856,38 @@ export default function Dashboard() {
     );
   }
 
-  // فئة الكاشير (القالبي + المخصّص المشتق «كاشير تجزئة/طباعة») ⇒ محطة عمل مركّزة لا شبكة الوحدات.
-  if (me.data.role === "cashier") {
-    return (
-      <CashierHome
-        tasksBrief={<TasksBrief branchScope={dashboardActionBranchId(me.data.branchId)} />}
-      />
-    );
-  }
-
   const profile = resolveWorkspaceProfile({
     role: me.data.role as RoleKey,
     permissionsOverride: (me.data.permissionsOverride ?? null) as PermissionMap | null,
   });
+  const cashierStation = profile.defaultAction?.station;
+
+  // ملف العمل هو الذي يختار المحطة. كاشير بلا محطة فعلية يسقط إلى اللوحة العامة الآمنة
+  // بدلاً من افتراض محطة تجزئة أو استنتاج الاستقبال من صلاحية أخرى.
+  if (me.data.role === "cashier" && cashierStation && profile.defaultAction) {
+    return (
+      <CashierHome
+        station={cashierStation}
+        defaultAction={profile.defaultAction}
+        tasksBrief={(
+          <TasksBrief
+            branchScope={dashboardActionBranchId(me.data.branchId)}
+            primaryNav={profile.primaryNav}
+          />
+        )}
+      />
+    );
+  }
+
   const isAdmin = me.data.role === "admin";
   const branchScope = isAdmin ? adminBranchScope : dashboardActionBranchId(me.data.branchId);
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }} style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
       <DashboardHeader branchScope={branchScope} isAdmin={isAdmin} onBranchScopeChange={setAdminBranchScope} />
       <PrimaryActionsPanel items={profile.primaryNav} />
-      <MetricsBar branchScope={branchScope} />
-      <MorningBrief branchScope={branchScope} isAdmin={isAdmin} />
-      <TasksBrief branchScope={branchScope} />
+      <MetricsBar branchScope={branchScope} primaryNav={profile.primaryNav} />
+      <MorningBrief branchScope={branchScope} isAdmin={isAdmin} primaryNav={profile.primaryNav} />
+      <TasksBrief branchScope={branchScope} primaryNav={profile.primaryNav} />
     </motion.div>
   );
 }
