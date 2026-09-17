@@ -19,6 +19,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import {
+  buildProductPricingContext,
   createPricingContextRequestGuard,
   resolveExactBeforeFuzzy,
   type ExactProductResolution,
@@ -111,7 +112,14 @@ export function ProductSearchBar({
   const [scanStatus, setScanStatus] = useState<"idle" | "success" | "error">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const pricingContext = `${invoiceType}:${branchId}:${tier}:${customerId ?? "none"}`;
+  const pricingContext = buildProductPricingContext({
+    invoiceType,
+    branchId,
+    tier,
+    customerId,
+    purchaseCurrency,
+    purchaseAgreedRate,
+  });
   const pricingContextRef = useRef(pricingContext);
   const exactRequestGuardRef = useRef(createPricingContextRequestGuard(pricingContext));
   // يغيّر الجيل فقط عند تغيّر سياق التسعير. المسوح المتوازية داخل السياق نفسه تبقى كلّها صالحة.

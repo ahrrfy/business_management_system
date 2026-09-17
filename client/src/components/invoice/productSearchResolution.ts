@@ -47,6 +47,23 @@ export interface PricingContextRequestGuard {
   isCurrent(token: PricingRequestToken, currentContext: string): boolean;
 }
 
+export function buildProductPricingContext(input: {
+  invoiceType: string;
+  branchId: number;
+  tier: string;
+  customerId?: number | null;
+  purchaseCurrency?: string;
+  purchaseAgreedRate?: string;
+}): string {
+  const base = `${input.invoiceType}:${input.branchId}:${input.tier}:${input.customerId ?? "none"}`;
+  const isPurchase = input.invoiceType === "PURCHASE" || input.invoiceType === "PURCHASE_RETURN";
+  if (!isPurchase) return base;
+
+  const currency = (input.purchaseCurrency ?? "IQD").trim().toUpperCase();
+  const agreedRate = (input.purchaseAgreedRate ?? "").trim() || "none";
+  return `${base}:purchase:${currency}:${agreedRate}`;
+}
+
 /**
  * حارس لمسوح الباركود المتوازية: الجيل يتغيّر مع سياق التسعير لا مع كل مسح.
  * لذلك يُسمح لعدة مسوح في العميل/الفئة/الفرع نفسها أن تضيف نتائجها، وتُرفض كلها فور تبدّل السياق.

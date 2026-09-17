@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   beginPricingSelectionIntent,
+  buildProductPricingContext,
   createPricingContextRequestGuard,
   createLatestPricingRequestGuard,
   resolveExactBeforeFuzzy,
@@ -134,5 +135,29 @@ describe("parallel barcode pricing context guard", () => {
     await oldScan;
 
     expect(added).toEqual(["new-context"]);
+  });
+
+  it("يبطل مسح الشراء عند تغيّر العملة أو سعر التثبيت مع ثبات بقية السياق", () => {
+    const context = (purchaseCurrency: string, purchaseAgreedRate: string) => buildProductPricingContext({
+      invoiceType: "PURCHASE",
+      branchId: 1,
+      tier: "RETAIL",
+      customerId: 7,
+      purchaseCurrency,
+      purchaseAgreedRate,
+    });
+    const initialContext = context("USD", " 1300.000 ");
+    expect(initialContext).toBe(context("usd", "1300.000"));
+
+    const guard = createPricingContextRequestGuard(initialContext);
+    const beforeRateChange = guard.capture();
+    const changedRateContext = context("USD", "1400.000");
+    guard.sync(changedRateContext);
+    expect(guard.isCurrent(beforeRateChange, changedRateContext)).toBe(false);
+
+    const beforeCurrencyChange = guard.capture();
+    const changedCurrencyContext = context("IQD", "1400.000");
+    guard.sync(changedCurrencyContext);
+    expect(guard.isCurrent(beforeCurrencyChange, changedCurrencyContext)).toBe(false);
   });
 });
