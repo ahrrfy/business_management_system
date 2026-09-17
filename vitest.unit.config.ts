@@ -38,6 +38,7 @@ export default defineConfig({
       "client/src/lib/printing/labelSize.test.ts",
       "client/src/lib/commissions/example.test.ts",
       "client/src/lib/navVisibility.test.ts",
+      "client/src/lib/workspaceProfiles.test.ts",
       "client/src/lib/salesCorrectionComparison.test.ts",
       "client/src/lib/navWorkspace.test.ts",
       "client/src/lib/payrollAccrual.test.ts",
