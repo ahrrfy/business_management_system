@@ -17,7 +17,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { Info, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
@@ -63,6 +63,10 @@ export default function ARAging() {
     branchId: canCrossBranches && f.branch ? Number(f.branch) : undefined,
   });
   const sel = useRowSelection<number>();
+
+  useEffect(() => {
+    sel.clear();
+  }, [f.branch, f.q, f.bucket, f.ctype, sel.clear]);
   // الفرز والترقيم صارا داخل `DataTable` (نقرُ الترويسة + شريط الحالة) — بلا حالةٍ محلّية.
 
   // عقد import-integration §٦: «رصيد غير مفوتر/افتتاحي» = الرصيد الجاري − غير المدفوع،

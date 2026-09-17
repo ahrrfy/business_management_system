@@ -17,7 +17,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { Info, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
@@ -61,6 +61,10 @@ export default function APAging() {
   const [f, setF, resetF] = useUrlFilters({ branch: "", q: "", bucket: "" });
   const aging = trpc.reports.apAging.useQuery({ branchId: f.branch ? Number(f.branch) : undefined });
   const sel = useRowSelection<number>();
+
+  useEffect(() => {
+    sel.clear();
+  }, [f.branch, f.q, f.bucket, sel.clear]);
 
   // الفرز صار داخل DataTable (تنازلي أولاً على أعمدة المال عبر `sortDescFirst`)،
   // والترقيم العميليّ صار داخله أيضاً بحجم صفحة PAGE — فزال شريط «السابق/التالي» اليدويّ.
