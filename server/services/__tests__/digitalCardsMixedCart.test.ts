@@ -262,7 +262,7 @@ async function fixture(
   const expectedTotal = toDbMoney(
     money("10850").plus(draftSnapshot.expectedSubtotal),
   );
-  const clientRequestId = `mixed-${offeringId}`;
+  const clientRequestId = `mixed-cart-${offeringId}`;
   const priceTier = checkout.priceTier ?? (checkout.customerId === 2 ? "WHOLESALE" : "RETAIL");
   const sourceRegularLines = (checkout.regularLines ?? []).map((line) => ({
     variantId: line.variantId,
