@@ -60,11 +60,11 @@ function saleConds(scope: Scope) {
 export async function summary(db: DB, scope: Scope) {
   const [row] = await db
     .select({
-      cards: sql<number>`COUNT(*)`,
-      invoicesCount: sql<number>`COUNT(DISTINCT ${digitalSaleDetails.invoiceId})`,
-      sales: sql<string>`COALESCE(SUM(${digitalSaleDetails.sellPriceSnapshot}), 0)`,
-      providerShare: sql<string>`COALESCE(SUM(${digitalSaleDetails.providerShareSnapshot}), 0)`,
-      profit: sql<string>`COALESCE(SUM(${digitalSaleDetails.profitSnapshot}), 0)`,
+      cards: sql<number>`SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN 1 ELSE 0 END)`,
+      invoicesCount: sql<number>`COUNT(DISTINCT CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.invoiceId} ELSE NULL END)`,
+      sales: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.sellPriceSnapshot} ELSE 0 END), 0)`,
+      providerShare: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} <> 'REVERSED' THEN ${digitalSaleDetails.providerShareSnapshot} ELSE 0 END), 0)`,
+      profit: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} = 'LOSS_REFUND' THEN -${digitalSaleDetails.providerShareSnapshot} WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.profitSnapshot} ELSE 0 END), 0)`,
     })
     .from(digitalSaleDetails)
     .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
@@ -73,10 +73,10 @@ export async function summary(db: DB, scope: Scope) {
   const byMode = await db
     .select({
       settlementMode: digitalSaleDetails.settlementModeSnapshot,
-      cards: sql<number>`COUNT(*)`,
-      sales: sql<string>`COALESCE(SUM(${digitalSaleDetails.sellPriceSnapshot}), 0)`,
-      providerShare: sql<string>`COALESCE(SUM(${digitalSaleDetails.providerShareSnapshot}), 0)`,
-      profit: sql<string>`COALESCE(SUM(${digitalSaleDetails.profitSnapshot}), 0)`,
+      cards: sql<number>`SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN 1 ELSE 0 END)`,
+      sales: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.sellPriceSnapshot} ELSE 0 END), 0)`,
+      providerShare: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} <> 'REVERSED' THEN ${digitalSaleDetails.providerShareSnapshot} ELSE 0 END), 0)`,
+      profit: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} = 'LOSS_REFUND' THEN -${digitalSaleDetails.providerShareSnapshot} WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.profitSnapshot} ELSE 0 END), 0)`,
     })
     .from(digitalSaleDetails)
     .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
@@ -354,9 +354,9 @@ export async function topOfferings(db: DB, scope: Scope, limit = 10) {
       offeringId: digitalSaleDetails.offeringId,
       offeringName: products.name,
       providerName: suppliers.name,
-      cards: sql<number>`COUNT(*)`,
-      sales: sql<string>`COALESCE(SUM(${digitalSaleDetails.sellPriceSnapshot}), 0)`,
-      profit: sql<string>`COALESCE(SUM(${digitalSaleDetails.profitSnapshot}), 0)`,
+      cards: sql<number>`SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN 1 ELSE 0 END)`,
+      sales: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.sellPriceSnapshot} ELSE 0 END), 0)`,
+      profit: sql<string>`COALESCE(SUM(CASE WHEN ${digitalSaleDetails.fulfillmentStatus} = 'LOSS_REFUND' THEN -${digitalSaleDetails.providerShareSnapshot} WHEN ${digitalSaleDetails.fulfillmentStatus} IN ('ISSUED','LOSS_REFUND_PENDING') THEN ${digitalSaleDetails.profitSnapshot} ELSE 0 END), 0)`,
     })
     .from(digitalSaleDetails)
     .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))

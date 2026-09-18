@@ -25,6 +25,12 @@ import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { assertSiblingsReady } from "../workOrder/siblings";
+import {
+  assertExternalTrackingRefAvailable,
+  normalizeExternalTrackingRef,
+  requireExternalTrackingRef,
+  rethrowExternalTrackingRefDuplicate,
+} from "./trackingRefPolicy";
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -51,7 +57,7 @@ export interface DispatchInvoiceInput {
    * ومن يقرّه صراحةً يُكتب قراره في حدث الإرسالية.
    */
   partialDispatchConfirmed?: boolean;
-  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  /** رقم التتبع / المرجع الخارجي — إلزامي عند الإسناد إلى شركة توصيل. */
   externalTrackingRef?: string | null;
   /** ملاحظات التوصيل للمندوب أو شركة الشحن. */
   notes?: string | null;
@@ -74,7 +80,8 @@ export async function dispatchInvoiceInTx(
   input: DispatchInvoiceInput,
   actor: DeliveryTxActor,
 ) {
-  {
+  try {
+    const normalizedTrackingRef = normalizeExternalTrackingRef(input.externalTrackingRef);
     const feeCollection = input.feeCollection ?? "COURIER";
     // ش٦ (V15) — رُفع حظر COUNTER **مشروطاً**: يُقبل فقط إن سبق قبضُ الأمانة فعلاً (إيصال IN
     // بمرجع DLV-FEE-INV-{الفاتورة} يكتبه checkoutReception عبر deliveryFeeHeld) وبما يغطّي
@@ -117,6 +124,7 @@ export async function dispatchInvoiceInTx(
       longitude: input.longitude ?? null,
       onlineOrderId: input.onlineOrderId ?? null,
       assignedUserId: input.assignedUserId ?? null,
+      externalTrackingRef: normalizedTrackingRef,
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(tx, "delivery.dispatchInvoice", input.clientRequestId, payloadHash);
@@ -136,6 +144,7 @@ export async function dispatchInvoiceInTx(
     // ترتيب أقفال موحّد مع dispatchToDelivery: الجهة ← الفاتورة (لا جمود متبادل).
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
+    const externalTrackingRef = requireExternalTrackingRef(party.partyType, normalizedTrackingRef);
     let assignedUserId = input.assignedUserId ?? null;
     if (assignedUserId == null && party.partyType === "INDIVIDUAL") {
       assignedUserId = party.userId != null ? Number(party.userId) : null;
@@ -200,6 +209,12 @@ export async function dispatchInvoiceInTx(
         message: "الإرسالية الملغاة تحمل تحصيلاً أو توريداً؛ لا يمكن إعادة تنشيطها",
       });
     }
+    await assertExternalTrackingRefAvailable(
+      tx,
+      Number(input.partyId),
+      externalTrackingRef,
+      already != null ? Number(already.id) : null,
+    );
 
     // ── ش٥: إخوةُ السلّة الواحدة (١٩/٨) ────────────────────────────────────────────
     // المسوّدةُ الواحدة تُنتج فاتورةَ بضاعةٍ **وأوامرَ شغلٍ** معاً؛ والإرسال يمسّ الفاتورة
@@ -262,6 +277,7 @@ export async function dispatchInvoiceInTx(
         governorate: input.governorate ?? null,
         latitude: input.latitude ?? null,
         longitude: input.longitude ?? null,
+        externalTrackingRef,
         notes: input.notes ?? (already.notes ?? null),
         parcelStatus: "ASSIGNED",
         moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
@@ -313,7 +329,7 @@ export async function dispatchInvoiceInTx(
         settledAt: codPositive ? null : dispatchedAt,
         dispatchedBy: actor.userId,
         dispatchedAt,
-        externalTrackingRef: input.externalTrackingRef ?? null,
+        externalTrackingRef,
       });
       consignmentId = extractInsertId(cnRes);
     }
@@ -383,5 +399,10 @@ export async function dispatchInvoiceInTx(
       deliveryFee: fee.toFixed(2),
       reactivated: already != null,
     };
+  } catch (error) {
+    rethrowExternalTrackingRefDuplicate(
+      error,
+      normalizeExternalTrackingRef(input.externalTrackingRef) ?? "",
+    );
   }
 }

@@ -15,9 +15,8 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
-  branchStock,
   productUnits,
   productVariants,
   products,
@@ -25,6 +24,8 @@ import {
   productionRecipes,
 } from "../../../drizzle/schema";
 import { batchMultipleNote, largestValidBatchAtMost, requiredBatchMultiple } from "../../../shared/batchDivisibility";
+import { appErrorMessage } from "../../../shared/errors";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { withTx } from "../tx";
 
 export interface RecipeCapacityComponent {
@@ -74,6 +75,9 @@ export async function recipeCapacity(args: {
           name: productionRecipes.name,
           isActive: productionRecipes.isActive,
           outputName: products.name,
+          outputIsService: products.isService,
+          outputIsBundle: products.isBundle,
+          outputIsConsignment: products.isConsignment,
           outputUnitName: productUnits.unitName,
         })
         .from(productionRecipes)
@@ -84,6 +88,36 @@ export async function recipeCapacity(args: {
         .limit(1)
     )[0];
     if (!head) throw new TRPCError({ code: "NOT_FOUND", message: "الوصفة غير موجودة" });
+    if (head.outputIsService) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن حساب طاقة إنتاج لوصفة خدمة",
+          why: "ناتج الوصفة منتج خدمي لا يُخزَّن — تُستهلك مكوّناته تلقائياً لحظة بيع الخدمة",
+          doThis: "استعمل وصفة الخدمة من فاتورة البيع، أو اختر وصفةً ناتجها صنف مخزني",
+        }),
+      });
+    }
+    if (head.outputIsBundle) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن حساب طاقة إنتاج لوصفة بكج",
+          why: "البكج تجميعٌ يُوسَّع إلى مكوّناته عند البيع ولا يُخزَّن كناتج تصنيع مستقل",
+          doThis: "استعمل البكج من فاتورة البيع، أو اختر وصفةً ناتجها صنف مخزني",
+        }),
+      });
+    }
+    if (head.outputIsConsignment) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن حساب طاقة إنتاج لوصفة بضاعة أمانة",
+          why: "ناتج الأمانة أصل غير مملوك للمنشأة ولا يدخل تصنيع المخزون أو WAVG المملوك",
+          doThis: "اختر وصفةً ناتجها صنف مخزني مملوك للمنشأة",
+        }),
+      });
+    }
 
     const recLines = await tx
       .select({
@@ -113,12 +147,19 @@ export async function recipeCapacity(args: {
 
     const inVarIds = Array.from(new Set(recLines.map((l: any) => Number(l.inputVariantId))));
     const availMap = new Map<number, number>();
-    const stockRows = await tx
-      .select({ variantId: branchStock.variantId, qty: branchStock.quantity })
-      .from(branchStock)
-      .where(and(inArray(branchStock.variantId, inVarIds), eq(branchStock.branchId, args.branchId)));
-    // صفٌّ غائب = رصيد صفر (لا «غير معلوم») — الصنف الذي لم يدخل الفرع قطّ يحدّ السقف بصفر.
-    for (const s of stockRows) availMap.set(Number(s.variantId), Number(s.qty));
+    const availability = await loadVariantAvailability(
+      tx,
+      args.branchId,
+      inVarIds,
+    );
+    // ATP لا on-hand: المخزون المحجوز رسمياً أو لطلب متجر نشط ليس متاحاً للإنتاج.
+    // صفٌّ غائب = صفر (لا «غير معلوم»).
+    for (const variantId of inVarIds) {
+      availMap.set(
+        variantId,
+        availability.get(variantId)?.availableBase ?? 0,
+      );
+    }
 
     /*
      * **الجمعُ بالمتغيّر قبل القسمة.** الوصفة قد تحمل المتغيّر نفسه في أكثر من سطر (لا قيد

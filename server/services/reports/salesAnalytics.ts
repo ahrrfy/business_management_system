@@ -18,9 +18,14 @@ import { money, toDbMoney } from "../money";
 const netBaseQuantitySql = sql`GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0)`;
 const netLineRevenueSql = sql`CASE WHEN ii.baseQuantity > 0
   THEN ii.total * ${netBaseQuantitySql} / ii.baseQuantity ELSE ii.total END`;
-const netLineCostSql = sql`GREATEST(
-  ii.baseQuantity - COALESCE(ii.returnedRestockedBaseQuantity, 0), 0
-) * ii.unitCost`;
+const netLineCostSql = sql`CASE
+  WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+  WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
+  ELSE ii.lineCost - ROUND(
+    ii.lineCost * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
+    2
+  )
+END`;
 
 export interface SalesAnalyticsFilters {
   from?: string; // YYYY-MM-DD

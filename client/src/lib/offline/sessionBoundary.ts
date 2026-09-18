@@ -2,18 +2,26 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
   loadStudioDraftIdentity,
   purgeAllStudioDrafts,
+  type StudioDraftIdentity,
 } from "@/lib/productStudio/studioDrafts";
+import { sameStudioTenantScope, type StudioTenantScope } from "@/lib/productStudio/studioTenantScope";
 import { pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 import { clearNotificationBadge } from "@/lib/push";
+import { markReceptionWorkspaceBoundaryBlocked, purgeReceptionWorkspaceSnapshots } from "@/lib/receptionWorkspaceState";
 
 type SessionBoundaryDependencies = {
-  loadStudioIdentity: () => Promise<{ userId: number } | null>;
+  loadStudioIdentity: () => Promise<StudioDraftIdentity | null>;
   purgeStudioDrafts: () => Promise<void>;
+  purgeReceptionSnapshots: () => void | Promise<void>;
 };
 
 const studioDraftDependencies: SessionBoundaryDependencies = {
   loadStudioIdentity: loadStudioDraftIdentity,
   purgeStudioDrafts: purgeAllStudioDrafts,
+  purgeReceptionSnapshots: () => {
+    if (typeof window === "undefined") return;
+    try { purgeReceptionWorkspaceSnapshots(window.sessionStorage); } catch { markReceptionWorkspaceBoundaryBlocked(); }
+  },
 };
 
 /**
@@ -28,22 +36,16 @@ export async function resetSessionQueryCache(
   queryClient.removeQueries();
 }
 
-/** يمسح مسودات الاستوديو فقط عند ثبوت انتقال الجهاز إلى موظف آخر. */
+/** يحافظ على مسودات النطاق نفسه فقط؛ الشركة والمستخدم معاً هما حد الهوية. */
 export async function resetSessionForLogin(
   queryClient: QueryClient,
-  nextUserId: number,
+  nextScope: StudioTenantScope,
   dependencies: SessionBoundaryDependencies = studioDraftDependencies,
 ): Promise<void> {
-  const previousIdentity = await dependencies
-    .loadStudioIdentity()
-    .catch(() => null);
   await resetSessionQueryCache(queryClient);
-  if (
-    previousIdentity != null &&
-    Number(previousIdentity.userId) !== Number(nextUserId)
-  ) {
-    await dependencies.purgeStudioDrafts().catch(() => undefined);
-  }
+  await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
+  const previousIdentity = await dependencies.loadStudioIdentity().catch(() => null);
+  if (!sameStudioTenantScope(previousIdentity, nextScope)) await dependencies.purgeStudioDrafts().catch(() => undefined);
 }
 
 /** تسجيل الخروج الصريح حد أمنيّ يمحو كل المسودات والهوية المحلية ويوقف الصوت. */
@@ -54,5 +56,6 @@ export async function resetSessionForLogout(
   pauseGlobalQuranAudio();
   void clearNotificationBadge();
   await resetSessionQueryCache(queryClient);
+  await Promise.resolve().then(() => dependencies.purgeReceptionSnapshots()).catch(() => undefined);
   await dependencies.purgeStudioDrafts().catch(() => undefined);
 }

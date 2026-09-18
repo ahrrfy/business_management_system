@@ -20,6 +20,7 @@ import { createRoot } from "react-dom/client";
 import { useLocation } from "wouter";
 import App from "./App";
 import { applyStoredDisplayScale } from "@/lib/displayScale";
+import { installGlobalInteractionAudio } from "@/lib/audioFeedback";
 // خط Cairo مستضاف محلياً ومباشراً عبر public/fonts في index.css (بلا اعتماد على Google Fonts CDN أو مسارات خارجية) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "./index.css";
 import "animate.css/animate.min.css";
@@ -29,6 +30,8 @@ import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون V
 
 // قبل أول رسم: يمنع قفزة التخطيط عند وجود مقياس محفوظ على الجهاز.
 applyStoredDisplayScale();
+// يفتح قناة Web Audio مع أول تفاعل موثوق، ثم يضيف نقرةً خفيفة للأزرار والروابط.
+installGlobalInteractionAudio();
 
 /** أدوات عامة قد تفتح بحثاً/مسحاً شبكياً؛ لا تُركب على Studio البارد. */
 function GlobalOverlays() {

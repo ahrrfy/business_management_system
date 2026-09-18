@@ -4,7 +4,7 @@
 // ٦/٧/٢٦: أُضيف بُعد الوحدة (module/level): عنصرٌ فشل قيدُ دوره يظهر مع ذلك لمن مُنح
 // وحدته صراحةً (permissionsOverride/دور مخصّص) — مرآةُ بوّابة الخادم requireModuleGate.
 // ⚠️ راحة بصرية فقط — الإنفاذ الأمني الحقيقي خادمي (server/trpc.ts) + RequireRole.
-import { hasModuleAccess, moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, moduleAccessAllowed, POS_STATION_GATES, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /** قيد وصول لعنصر تنقّل/تبويب — أيٌّ منها (أو لا شيء = مرئي للكل). */
 export type RoleGate = {
@@ -29,6 +29,13 @@ export type RoleGate = {
   anyOf?: RoleGate[];
   /** بوّابة مركّبة تقاطعية: لا يظهر العنصر إلا إذا مرّت كل الفروع. */
   allOf?: RoleGate[];
+};
+
+/** بوابة محطة الاستقبال المشتركة للمسار والتبويبات وبطاقات الرئيسية. */
+export const RECEPTION_STATION_GATE: RoleGate = {
+  roles: [...POS_STATION_GATES.RECEPTION.allowedRoles],
+  module: POS_STATION_GATES.RECEPTION.module,
+  level: "FULL",
 };
 
 /**

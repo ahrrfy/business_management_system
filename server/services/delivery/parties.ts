@@ -13,6 +13,12 @@ import { computePartyExposure } from "@shared/partyExposure";
 import { deliveryCashSource, partyCashInHandTx } from "./cashSource";
 import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { appendDeliveryEvent } from "./lifecycle";
+import {
+  assertExternalTrackingRefAvailable,
+  normalizeExternalTrackingRef,
+  requireExternalTrackingRef,
+  rethrowExternalTrackingRefDuplicate,
+} from "./trackingRefPolicy";
 import type { DeliveryActor, DeliveryPartyKind } from "./types";
 
 /** يمنع تعطيل/فكّ ربط جهة عليها طلبات متجر «مع المندوب» (SHIPPED) — وإلا تُيتَّم من مسار التحصيل
@@ -265,24 +271,94 @@ export interface UpdateDeliveryPartyInput {
 
 export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _actor: DeliveryActor): Promise<{ id: number }> {
   return withTx(async (tx) => {
+    const currentParty = (
+      await tx
+        .select({
+          id: deliveryParties.id,
+          userId: deliveryParties.userId,
+          partyType: deliveryParties.partyType,
+          branchId: deliveryParties.branchId,
+        })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, input.id))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!currentParty) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تعديل جهة التوصيل",
+          why: `جهة التوصيل رقم ${input.id} غير موجودة أو أُزيلت`,
+          doThis: "افتح شاشة «مناديب التوصيل» واختر جهةً موجودة من القائمة الحاليّة",
+        }),
+      });
+    }
+    if (input.partyType === "COMPANY" && currentParty.partyType !== "COMPANY") {
+      const legacyConsignments = await tx
+        .select({
+          id: deliveryConsignments.id,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          externalTrackingRef: deliveryConsignments.externalTrackingRef,
+        })
+        .from(deliveryConsignments)
+        .where(eq(deliveryConsignments.partyId, input.id))
+        .for("update");
+      const canonicalizedRefs = legacyConsignments.map((consignment) => ({
+        ...consignment,
+        canonicalRef: normalizeExternalTrackingRef(consignment.externalTrackingRef),
+      }));
+      const missingRefs = canonicalizedRefs.filter((consignment) => consignment.canonicalRef == null);
+      if (missingRefs.length > 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تحويل المندوب إلى شركة توصيل",
+            why: `للجهة ${missingRefs.length} إرسالية قديمة بلا رقم بوليصة؛ تحويل النوع الآن سيكسر المطابقة بالباركود`,
+            doThis: "أدخل رقم البوليصة لكل إرسالية من تفاصيلها أولاً، ثم أعد تحويل نوع الجهة إلى شركة",
+          }),
+        });
+      }
+      const consignmentByCanonicalRef = new Map<string, (typeof canonicalizedRefs)[number]>();
+      for (const consignment of canonicalizedRefs) {
+        // The missing-ref guard above narrows this invariant for the conversion batch.
+        const canonicalRef = consignment.canonicalRef as string;
+        const previous = consignmentByCanonicalRef.get(canonicalRef);
+        if (previous) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر تحويل المندوب إلى شركة توصيل",
+              why: `رقم البوليصة ${canonicalRef} يتطابق بعد التطبيع بين الإرساليتين ${previous.consignmentNumber} و${consignment.consignmentNumber}؛ الشركة تحتاج رقماً فريداً لكل طرد كي تكون المطابقة بالباركود قطعية`,
+              doThis: "صحّح أرقام البوالص المكررة من تفاصيل الإرساليات، ثم أعد تحويل نوع الجهة إلى شركة",
+            }),
+          });
+        }
+        consignmentByCanonicalRef.set(canonicalRef, consignment);
+      }
+      for (const consignment of canonicalizedRefs) {
+        const canonicalRef = consignment.canonicalRef as string;
+        if (consignment.externalTrackingRef === canonicalRef) continue;
+        try {
+          await tx
+            .update(deliveryConsignments)
+            .set({ externalTrackingRef: canonicalRef })
+            .where(and(
+              eq(deliveryConsignments.id, Number(consignment.id)),
+              eq(deliveryConsignments.partyId, input.id),
+            ));
+        } catch (error) {
+          rethrowExternalTrackingRefDuplicate(error, canonicalRef);
+        }
+      }
+    }
     const patch: Record<string, unknown> = {};
     if (input.partyType !== undefined) patch.partyType = input.partyType;
     if (input.name !== undefined) patch.name = input.name.trim();
     if (input.phone !== undefined) patch.phone = input.phone;
     if (input.phone2 !== undefined) patch.phone2 = input.phone2;
     if (input.userId !== undefined) {
-      const cur = (await tx.select({ userId: deliveryParties.userId, partyType: deliveryParties.partyType }).from(deliveryParties).where(eq(deliveryParties.id, input.id)).for("update").limit(1))[0];
-      if (!cur) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: appErrorMessage({
-            what: "تعذّر تعديل جهة التوصيل",
-            why: `جهة التوصيل رقم ${input.id} غير موجودة أو أُزيلت`,
-            doThis: "افتح شاشة «مناديب التوصيل» واختر جهةً موجودة من القائمة الحاليّة",
-          }),
-        });
-      }
-      const before = cur.userId == null ? null : Number(cur.userId);
+      const before = currentParty.userId == null ? null : Number(currentParty.userId);
       const after = input.userId == null ? null : Number(input.userId);
       // السماح بربط جهة يتيمة (null→حساب) يعيد إرسالياتها إلى البوابة. أما فك الربط أو نقلها
       // من حساب قائم فيُمنع ما دامت عليه أعمال مفتوحة كي لا تختفي من المستخدم الحالي.
@@ -305,7 +381,7 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
           await tx.insert(deliveryPartyMembers).values({
             partyId: input.id,
             userId: after,
-            memberRole: (input.partyType ?? cur.partyType) === "COMPANY" ? "MANAGER" : "DRIVER",
+            memberRole: (input.partyType ?? currentParty.partyType) === "COMPANY" ? "MANAGER" : "DRIVER",
             createdBy: _actor.userId,
           });
         }
@@ -316,18 +392,7 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
       // مراجعة عدائية ٩/٨ — نقل الجهة لفرعٍ آخر وعليها إرساليات مفتوحة يقفل توريدها للأبد:
       // فرعُها الجديد يرفض («الإرسالية تخصّ فرعاً آخر») وفرعُ الإرسالية يرفض («الجهة لا تخصّ
       // فرع التوريد») ⇒ المخرج الوحيد تسويةٌ حرّة تترك الفواتير غير مسدَّدة.
-      const cur = (await tx.select({ branchId: deliveryParties.branchId }).from(deliveryParties).where(eq(deliveryParties.id, input.id)).for("update").limit(1))[0];
-      if (!cur) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: appErrorMessage({
-            what: "تعذّر تعديل جهة التوصيل",
-            why: `جهة التوصيل رقم ${input.id} غير موجودة أو أُزيلت`,
-            doThis: "افتح شاشة «مناديب التوصيل» واختر جهةً موجودة من القائمة الحاليّة",
-          }),
-        });
-      }
-      const branchBefore = cur.branchId == null ? null : Number(cur.branchId);
+      const branchBefore = currentParty.branchId == null ? null : Number(currentParty.branchId);
       const branchAfter = input.branchId == null ? null : Number(input.branchId);
       if (branchBefore !== branchAfter) {
         const open = (await tx
@@ -741,6 +806,16 @@ export async function reassignDeliveryConsignment(
         }),
       });
     }
+    const externalTrackingRef = requireExternalTrackingRef(
+      party.partyType,
+      cn.externalTrackingRef,
+    );
+    await assertExternalTrackingRefAvailable(
+      tx,
+      Number(party.id),
+      externalTrackingRef,
+      Number(cn.id),
+    );
     if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -771,15 +846,21 @@ export async function reassignDeliveryConsignment(
         });
       }
     }
-    await tx.update(deliveryConsignments).set({
-      assignedUserId: input.assignedUserId ?? null,
-      parcelStatus: "ASSIGNED",
-      acceptedAt: null,
-      pickedUpAt: null,
-      outForDeliveryAt: null,
-      failedAt: null,
-      failureReason: null,
-    }).where(eq(deliveryConsignments.id, input.consignmentId));
+    try {
+      await tx.update(deliveryConsignments).set({
+        assignedUserId: input.assignedUserId ?? null,
+        externalTrackingRef,
+        parcelStatus: "ASSIGNED",
+        acceptedAt: null,
+        pickedUpAt: null,
+        outForDeliveryAt: null,
+        failedAt: null,
+        failureReason: null,
+      }).where(eq(deliveryConsignments.id, input.consignmentId));
+    } catch (error) {
+      if (externalTrackingRef == null) throw error;
+      rethrowExternalTrackingRefDuplicate(error, externalTrackingRef);
+    }
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${cn.id}:REASSIGNED:${input.clientRequestId}`,
       consignmentId: Number(cn.id),

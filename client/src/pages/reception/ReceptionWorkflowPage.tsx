@@ -26,6 +26,8 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { parseScan } from "@/lib/scanRouter";
 import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing/printDeliveryDispatchSlip";
+import { printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { storefrontUrl } from "@/lib/siteHosts";
 import { ReceptionCollectSection } from "@/components/reception/ReceptionCollectSection";
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
@@ -51,6 +53,7 @@ interface ScannedOrder {
   deliveryCost: string | null;
   version: number;
   invoiceId?: number | null;
+  qrUrl?: string | null;
   activeConsignment?: { id: number; consignmentNumber: string; partyId: number; partyName: string | null; partyType: "INDIVIDUAL" | "COMPANY" | null; parcelStatus: string; moneyStatus: string; codAmount: string; collectedAmount: string; } | null;
 }
 
@@ -105,7 +108,7 @@ export default function DeliveryWorkflowPage() {
 
   const lookupWorkOrder = useCallback(async (raw: string, target: "dispatch" | "return") => {
     const r = parseScan(raw);
-    const orderNumber = r.type === "workOrder" || r.type === "invoice" ? r.number : raw.trim();
+    const orderNumber = r.type === "workOrder" || r.type === "invoice" || r.type === "consignment" ? r.number : raw.trim();
     if (!orderNumber) return;
     try {
       const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
@@ -122,6 +125,9 @@ export default function DeliveryWorkflowPage() {
         }
       }
       const activeCn = (wo as { activeConsignment?: ScannedOrder["activeConsignment"] }).activeConsignment;
+      const qrUrl = wo.kind === "onlineOrder"
+        ? `${storefrontUrl()}?order=${encodeURIComponent(wo.orderNumber)}&token=${encodeURIComponent(wo.labelToken)}`
+        : `${window.location.origin}/verify?payload=${encodeURIComponent(wo.qrPayload)}`;
       const order: ScannedOrder = {
         id: wo.id, kind: wo.kind ?? "workOrder", orderNumber: wo.orderNumber, title: wo.title,
         status: wo.status ?? null, branchId: wo.branchId ? Number(wo.branchId) : null,
@@ -129,6 +135,7 @@ export default function DeliveryWorkflowPage() {
         salePrice: wo.salePrice, deposit: wo.deposit,
         deliveryAddress: wo.deliveryAddress, deliveryPhone: wo.deliveryPhone, deliveryCost: wo.deliveryCost,
         version: (wo as { version?: number }).version ?? 1,
+        qrUrl,
         invoiceId: (wo as { invoiceId?: number | null }).invoiceId ?? null,
         activeConsignment: activeCn ?? null,
       };
@@ -224,6 +231,7 @@ export default function DeliveryWorkflowPage() {
       feeCollection: "COURIER",
       title: dispatchScanned?.title,
       dispatchedAt: new Date(),
+      qrUrl: dispatchScanned?.qrUrl ?? null,
     };
     setLastDispatchedSlip(slip);
     printDeliveryDispatchSlip(slip);
@@ -231,6 +239,26 @@ export default function DeliveryWorkflowPage() {
     setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
     setDeliveryAddress(""); setDeliveryNotes(""); setExternalTrackingRef("");
     void utils.workOrders.invalidate(); void utils.delivery.invalidate();
+  }
+
+  function printAssignedShippingLabel(slip: DispatchSlipData) {
+    void printReadyOrderLabel({
+      orderNumber: slip.orderNumber,
+      title: slip.title ?? `طلب #${slip.orderNumber}`,
+      quantity: 1,
+      salePrice: slip.salePrice,
+      deposit: slip.deposit ?? "0",
+      customerName: slip.recipientName,
+      customerPhone: slip.recipientPhone,
+      deliveryAddress: slip.deliveryAddress,
+      deliveryCost: slip.deliveryFee ?? "0",
+      deliveryFeeCollection: slip.feeCollection ?? "COURIER",
+      qrUrl: slip.qrUrl ?? null,
+    }, {
+      partyName: slip.partyName,
+      trackingNumber: slip.consignmentNumber,
+      cod: slip.codAmount,
+    });
   }
 
   const dispatchMut = trpc.delivery.dispatch.useMutation({
@@ -279,6 +307,10 @@ export default function DeliveryWorkflowPage() {
     if (!dispatchScanned) return;
     if (!selectedPartyId) {
       notify.err("يرجى اختيار جهة التوصيل أولاً");
+      return;
+    }
+    if (selectedPartyInfo?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
+      notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح الباركود المطبوع في كشف/بوليصة الشركة قبل الإسناد.");
       return;
     }
     if (dispatchScanned.activeConsignment) {
@@ -419,7 +451,7 @@ export default function DeliveryWorkflowPage() {
         {activeSection === "dispatch" && (
           <div className="mx-auto max-w-2xl space-y-4">
             {lastDispatchedSlip && (
-              <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/20 p-3.5">
+              <div className="grid gap-3 rounded-2xl border-2 border-[var(--sem-pos)] bg-[var(--sem-pos-bg)]/20 p-4 sm:grid-cols-[1fr_auto] sm:items-center">
                 <div className="flex items-center gap-2 text-sm">
                   <CheckCircle2 className="size-5 text-[var(--sem-pos)] shrink-0" />
                   <div>
@@ -427,15 +459,19 @@ export default function DeliveryWorkflowPage() {
                     <p className="text-xs text-muted-foreground">إرسالية: {lastDispatchedSlip.consignmentNumber} · المندوب: {lastDispatchedSlip.partyName}</p>
                   </div>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => printDeliveryDispatchSlip(lastDispatchedSlip)}
-                  className="font-bold text-xs h-9 gap-1.5 shrink-0 bg-background"
-                >
-                  <Printer className="size-3.5 text-primary" />
-                  إعادة طباعة البوليصة
-                </Button>
+                <div className="grid gap-2 sm:min-w-64">
+                  <Button
+                    size="lg"
+                    onClick={() => printAssignedShippingLabel(lastDispatchedSlip)}
+                    className="h-12 gap-2 text-base font-extrabold"
+                  >
+                    <Printer className="size-5" />
+                    طباعة ملصق الشحن الكبير الآن
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => printDeliveryDispatchSlip(lastDispatchedSlip)} className="h-9 gap-1.5 bg-background text-xs font-bold">
+                    <Printer className="size-3.5 text-primary" /> إعادة طباعة البوليصة
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -453,7 +489,12 @@ export default function DeliveryWorkflowPage() {
               </div>
               <AppSelect
                 value={selectedPartyId ? String(selectedPartyId) : ""}
-                onValueChange={(v) => { setSelectedPartyId(v ? Number(v) : null); setDispatchScanned(null); setDispatchBarcodeInput(""); }}
+                onValueChange={(v) => {
+                  setSelectedPartyId(v ? Number(v) : null);
+                  setDispatchScanned(null);
+                  setDispatchBarcodeInput("");
+                  setExternalTrackingRef("");
+                }}
                 className="h-12 w-full text-base font-bold"
               >
                 <option value="">— اختر المندوب أو شركة التوصيل —</option>
@@ -585,12 +626,12 @@ export default function DeliveryWorkflowPage() {
                       <div>
                         <label className="mb-1 flex items-center gap-1 text-xs font-bold">
                           <Package aria-hidden className="size-3.5 text-muted-foreground" />
-                          رقم تتبع / بوليصة الشركة الخارجية (اختياري)
+                          رقم تتبّع / بوليصة الشركة الخارجية <span className="text-destructive">*</span>
                         </label>
                         <Input
                           value={externalTrackingRef}
                           onChange={(e) => setExternalTrackingRef(e.target.value)}
-                          placeholder="رقم البوليصة أو شحنة الشركة..."
+                          placeholder="امسح باركود البوليصة أو أدخل الرقم..."
                           className="h-10 bg-background font-mono text-xs"
                           dir="ltr"
                         />
@@ -600,7 +641,7 @@ export default function DeliveryWorkflowPage() {
                   <Button
                     className="w-full py-6 text-base font-extrabold"
                     onClick={() => void handleDispatch()}
-                    disabled={dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending || !!dispatchScanned.activeConsignment}
+                    disabled={dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending || !!dispatchScanned.activeConsignment || (selectedPartyInfo?.partyType === "COMPANY" && !externalTrackingRef.trim())}
                   >
                     {dispatchScanned.activeConsignment
                       ? "مسند مسبقاً للإرسالية " + dispatchScanned.activeConsignment.consignmentNumber

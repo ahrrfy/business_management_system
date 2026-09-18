@@ -3,6 +3,7 @@ import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
 import { Button } from "@/components/ui/button";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
 import { reconcileStudioDraftAfterReconnect, saveStudioDraft, purgeStudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
+import type { StudioTenantScope } from "@/lib/productStudio/studioTenantScope";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref, type ReactNode } from "react";
 
@@ -27,7 +28,7 @@ interface Props {
   children?: ReactNode;
   ref?: Ref<StudioCampaignImageBatchHandle>;
   taskId: number;
-  userId: number | null;
+  owner: StudioTenantScope | null;
   productName: string;
   primaryImages: ImageItem[];
   onPrimaryImage: (image: ImageItem) => void;
@@ -70,10 +71,10 @@ export function StudioCampaignImageBatch(props: Props) {
       if (current && (!current.lockedUntil || current.lockedUntil > Date.now())) {
         return { ...current, ...row };
       }
-      const reconciliation = props.userId == null
+      const reconciliation = props.owner == null
         ? { kind: "NONE" as const }
         : await reconcileStudioDraftAfterReconnect({
-            userId: props.userId,
+            ...props.owner,
             taskId: row.taskId,
             taskFound: true,
             revision: String(row.revision),
@@ -133,10 +134,10 @@ export function StudioCampaignImageBatch(props: Props) {
     setSlots((current) => current.map((slot) => slot.taskId === taskId ? { ...slot, ...change } : slot));
   }
 
-  async function persistSlotDraft(userId: number, slot: Slot): Promise<void> {
+  async function persistSlotDraft(owner: StudioTenantScope, slot: Slot): Promise<void> {
     if (!slot.image) return;
     await saveStudioDraft({
-      userId, taskId: slot.taskId, revision: String(slot.revision),
+      ...owner, taskId: slot.taskId, revision: String(slot.revision),
       proposedName: slot.proposedName ?? "", proposedDescription: slot.proposedDescription ?? "", proposedMarketingCopy: slot.proposedMarketingCopy ?? "",
       imageDataUrl: slot.image.dataUrl, originalDataUrl: slot.original || null,
       processingReceipt: slot.receipt, mode: slot.mode,
@@ -147,14 +148,14 @@ export function StudioCampaignImageBatch(props: Props) {
   }
 
   useEffect(() => {
-    if (!ready || props.userId == null) return;
-    const userId = props.userId;
+    if (!ready || props.owner == null) return;
+    const owner = props.owner;
     const timer = window.setTimeout(() => {
       for (const slot of slots.filter((candidate) =>
         !candidate.sent && !candidate.conflict && !candidate.ownershipLost &&
         (!candidate.lockedUntil || candidate.lockedUntil <= Date.now()) && candidate.image,
       )) {
-        void persistSlotDraft(userId, slot).catch((cause) => {
+        void persistSlotDraft(owner, slot).catch((cause) => {
           if (cause instanceof Error && cause.message.includes("تبويب آخر")) {
             patch(slot.taskId, { ownershipLost: true });
             return;
@@ -164,7 +165,7 @@ export function StudioCampaignImageBatch(props: Props) {
       }
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [slots, ready, props.userId, props.productName]);
+  }, [slots, ready, props.owner, props.productName]);
 
   async function addImages(images: ImageItem[]) {
     if (!images.length || locked.current || busy || props.offline) return;
@@ -207,11 +208,11 @@ export function StudioCampaignImageBatch(props: Props) {
       try {
         // Separate requests stay below the HTTP payload cap and permit partial retry.
         for (const slot of pending) {
-          if (props.userId != null) {
+          if (props.owner != null) {
             try {
               // حفظٌ ذري قبل الشبكة يجدد ملكية هذه الصورة؛ إن استحوذ تبويب آخر عليها
               // نوقف الإرسال ولا نعتمد على علم conflict قديم من لحظة فتح الشاشة.
-              await persistSlotDraft(props.userId, slot);
+              await persistSlotDraft(props.owner, slot);
             } catch (cause) {
               if (cause instanceof Error && cause.message.includes("تبويب آخر")) {
                 patch(slot.taskId, { ownershipLost: true });
@@ -232,7 +233,10 @@ export function StudioCampaignImageBatch(props: Props) {
             proposedMarketingCopy: slot.proposedMarketingCopy,
           });
           patch(slot.taskId, { sent: true });
-          if (props.userId != null) await purgeStudioDraft(props.userId, slot.taskId).catch(() => undefined);
+          if (props.owner != null)
+            await purgeStudioDraft(props.owner, slot.taskId).catch(
+              () => undefined,
+            );
         }
       } finally {
         locked.current = false;

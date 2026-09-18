@@ -16,6 +16,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { playAudioFeedback } from "@/lib/audioFeedback";
 import {
   _subscribeConfirm,
   type ConfirmRequest,
@@ -74,6 +75,7 @@ export function ConfirmHost() {
   function settle(ok: boolean) {
     const req = currentRef.current;
     currentRef.current = null; // امنع الحلّ المزدوج فوراً
+    if (req && ok) playAudioFeedback("confirm");
     if (req) req.resolve(ok);
     setCurrent(null);
     setTyped("");
@@ -128,6 +130,7 @@ export function ConfirmHost() {
           <AlertDialogAction
             className={meta.confirmClass}
             disabled={!canConfirm}
+            data-audio-feedback="none"
             onClick={() => settle(true)}
           >
             {opts?.confirmText ?? "تأكيد"}

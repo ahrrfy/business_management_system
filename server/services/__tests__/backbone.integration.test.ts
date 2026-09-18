@@ -551,18 +551,25 @@ describe("أوامر الشغل/المطبعة", () => {
     expect(r.orderNumber).toMatch(/^\d+$/);
     expect(Number(r.orderNumber)).toBeGreaterThan(5000);
 
-    // RECEIVED → IN_PROGRESS: خصم المادة (1 من INK-BL)
+    // RECEIVED → IN_PROGRESS: خصم قطعتين من الصنف الأساس + المادة الإضافية.
     await approveCurrentDesign(r.workOrderId);
     await startWorkOrder(r.workOrderId, actor);
+    expect(await stockOf(1, 1)).toBe(8);
     expect(await stockOf(99, 1)).toBe(4);
     let wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
     expect(wo.status).toBe("IN_PROGRESS");
-    expect(wo.materialsCost).toBe("20.00"); // 1 × 20.00
+    expect(wo.materialsCost).toBe("28.00"); // (2 × 4.00 أساس) + (1 × 20.00 مادة إضافية)
     // شَريحة #4: ختم بدء التَنفيذ من DB clock + workSeconds يُصفَّر عند البدء (لو سَبق إعادة).
     expect(wo.workStartedAt).not.toBeNull();
     expect(wo.workSeconds).toBeNull();
     const mats = await db().select().from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, r.workOrderId));
-    expect(mats[0].unitCost).toBe("20.00"); // snapshot
+    expect(mats).toHaveLength(2);
+    expect(mats.map((m) => ({ variantId: Number(m.variantId), unitCost: m.unitCost }))).toEqual(
+      expect.arrayContaining([
+        { variantId: 1, unitCost: "4.00" },
+        { variantId: 99, unitCost: "20.00" },
+      ]),
+    );
 
     // IN_PROGRESS → READY
     await markWorkOrderReady(r.workOrderId);
@@ -583,16 +590,16 @@ describe("أوامر الشغل/المطبعة", () => {
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, d.invoiceId)))[0];
     expect(inv.sourceType).toBe("WORKORDER");
     expect(inv.total).toBe("500.00");
-    expect(inv.costTotal).toBe("120.00"); // مواد 20 + عمالة 100
+    expect(inv.costTotal).toBe("128.00"); // مواد 28 + عمالة 100
     expect(inv.paidAmount).toBe("500.00");
     expect(inv.status).toBe("PAID");
 
     // قيد SALE + قيد PAYMENT_IN + إيصال IN
     const sale = (await entries("SALE"))[0];
     expect(sale.revenue).toBe("500.00");
-    // قيد COGS يستهلك المواد فقط؛ أجر العامل يُعترف به عبر الرواتب ولا يُرسمل مرتين.
-    expect(sale.cost).toBe("20.00");
-    expect(sale.profit).toBe("480.00");
+    // قيد COGS يستهلك الصنف الأساس والمواد الإضافية فقط؛ أجر العامل يُعترف به عبر الرواتب ولا يُرسمل مرتين.
+    expect(sale.cost).toBe("28.00");
+    expect(sale.profit).toBe("472.00");
 
     const pin = await entries("PAYMENT_IN");
     expect(pin).toHaveLength(1);
@@ -602,11 +609,13 @@ describe("أوامر الشغل/المطبعة", () => {
     expect(inn).toHaveLength(1);
     expect(inn[0].amount).toBe("500.00");
 
-    // التسليم لا يلمس المخزون مرة أخرى (المواد خُصمت عند البدء)
+    // التسليم لا يلمس المخزون مرة أخرى (الصنف الأساس والمواد خُصمت عند البدء)
+    expect(await stockOf(1, 1)).toBe(8);
     expect(await stockOf(99, 1)).toBe(4);
   });
 
   it("إلغاء بعد البدء: المواد تعود للمخزون والحالة CANCELLED", async () => {
+    await setStock(1, 1, 1);
     await db().insert(s.products).values({ id: 99, name: "حبر" });
     await db().insert(s.productVariants).values({ id: 99, productId: 99, sku: "INK-X", costPrice: "10.00" });
     await db().insert(s.productUnits).values({ id: 99, variantId: 99, unitName: "علبة", conversionFactor: "1", isBaseUnit: true });
@@ -618,6 +627,7 @@ describe("أوامر الشغل/المطبعة", () => {
     );
     await approveCurrentDesign(r.workOrderId);
     await startWorkOrder(r.workOrderId, actor);
+    expect(await stockOf(1, 1)).toBe(0);
     expect(await stockOf(99, 1)).toBe(1);
     const [current] = await db().select({ version: s.workOrders.version })
       .from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId));
@@ -634,6 +644,7 @@ describe("أوامر الشغل/المطبعة", () => {
       owner,
       "راجعت سبب الإلغاء وإرجاع المواد للمخزون",
     );
+    expect(await stockOf(1, 1)).toBe(1); // عاد الصنف الأساس
     expect(await stockOf(99, 1)).toBe(3); // عادت
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
     expect(wo.status).toBe("CANCELLED");
@@ -643,6 +654,7 @@ describe("أوامر الشغل/المطبعة", () => {
   });
 
   it("رفض البيع الآجل بلا عميل", async () => {
+    await setStock(1, 1, 1);
     const r = await createWorkOrder(
       { branchId: 1, baseVariantId: 1, title: "أمر بسيط", quantity: 1, salePrice: "300.00" },
       actor

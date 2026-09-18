@@ -164,6 +164,7 @@ describe("تسوية الصندوق — نسب الإيصالات للوردية
   });
 
   it("دفع تسليم أمر الشغل النقدي يُنسب للوردية المفتوحة", async () => {
+    await setStock(1, 1, 1);
     const shiftId = await openShift(1);
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "درع تكريم", salePrice: "50.00" }, actor);
     await approveCurrentDesign(wo.workOrderId);
@@ -370,9 +371,12 @@ describe("ميزان المراجعة / التسوية المستقلّة — ي
     // ربح الدفتر متّسق: profit == revenue − cost لكل قيد (ميزان البُعد الربحي).
     const ents = await db().select().from(s.accountingEntries);
     expect(ents.length).toBeGreaterThan(0);
-    for (const e of ents) {
-      // فحص محاسبي على decimal أصيل: profit = revenue − cost بالضبط (لا تسامح float).
-      expect(money(e.profit).eq(money(e.revenue).sub(money(e.cost)))).toBe(true);
-    }
+    const inconsistentProfit = ents
+      .filter((entry) => !money(entry.profit).eq(money(entry.revenue).sub(money(entry.cost))))
+      .map((entry) => ({
+        id: Number(entry.id), entryType: entry.entryType,
+        revenue: entry.revenue, cost: entry.cost, profit: entry.profit,
+      }));
+    expect(inconsistentProfit).toEqual([]);
   });
 });

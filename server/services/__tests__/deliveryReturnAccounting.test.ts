@@ -150,6 +150,7 @@ async function seedDispatchedInvoice(input: {
     baseQuantity: 1,
     unitPrice: line.unitPrice,
     unitCost: line.unitCost,
+    lineCost: line.unitCost,
     total: line.total,
     isGift: line.isGift ?? false,
   })));

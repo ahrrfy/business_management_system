@@ -1,5 +1,5 @@
-// اختبارات بيع خدمات الطباعة (printSaleService): الإيراد + COGS من الوصفة، خصم المواد بصمت،
-// allowNegative (لا تُرفَض الخدمة عند نفاد المادة)، التقريب النقدي IQD، الذمم/الائتمان،
+// اختبارات بيع خدمات الطباعة (printSaleService): الإيراد + COGS من الوصفة، خصم المواد الصارم،
+// رفض نفاد المادة/فساد الوصفة ذرياً، التقريب النقدي IQD، الذمم/الائتمان،
 // idempotency، فحص الوردية، وحارس «خدمات فقط». تطابق ثوابت المحرّك المالي المُدقّق.
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -14,7 +14,7 @@ const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 const TABLES = [
-  "accountingEntries", "receipts", "invoiceItems", "invoices",
+  "accountingEntries", "receipts", "invoiceItemServiceMaterials", "invoiceItems", "invoices",
   "productionRecipeLines", "productionRecipes", "inventoryMovements", "branchStock",
   "productPrices", "productUnits", "productVariants", "products",
   "customers", "shifts", "branches", "users", "idempotencyKeys",
@@ -100,9 +100,18 @@ async function invoice(id: number) {
 }
 async function entries() { return db().select().from(s.accountingEntries); }
 async function movements() { return db().select().from(s.inventoryMovements); }
+async function expectNoSaleArtifacts() {
+  expect(await db().select().from(s.invoices)).toHaveLength(0);
+  expect(await db().select().from(s.invoiceItems)).toHaveLength(0);
+  expect(await db().select().from(s.invoiceItemServiceMaterials)).toHaveLength(0);
+  expect(await db().select().from(s.receipts)).toHaveLength(0);
+  expect(await entries()).toHaveLength(0);
+  expect(await movements()).toHaveLength(0);
+}
 
 describe("بيع الطباعة: الإيراد + كلفة المواد + خصم المخزون", () => {
   it("بيع نقدي كامل يخصم المواد ويُحتسب COGS من الوصفة", async () => {
+    await db().update(s.branchStock).set({ quantity: 5 }).where(sql`${s.branchStock.variantId} IN (1, 2) AND ${s.branchStock.branchId} = 1`);
     const r = await createPrintSale({
       branchId: 1, shiftId: 1,
       lines: [{ variantId: 10, productUnitId: 10, quantity: "5" }],
@@ -114,8 +123,8 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
     expect(inv.total).toBe("1250.00");
     expect(inv.costTotal).toBe("275.00"); // 5×35 + 5×20
     // المواد خُصمت، والخدمة نفسها بلا مخزون ذاتي.
-    expect(await stock(1)).toBe(95);
-    expect(await stock(2)).toBe(95);
+    expect(await stock(1)).toBe(0);
+    expect(await stock(2)).toBe(0);
     expect(await stock(10)).toBeNull();
     // قيد البيع: revenue 1250، cost 275، profit 975 + PAYMENT_IN.
     const es = await entries();
@@ -132,6 +141,20 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
     // كلفة وحدة السطر = 275 / 5.
     const item = (await db().select().from(s.invoiceItems))[0];
     expect(item.unitCost).toBe("55.00");
+    expect(item.lineCost).toBe("275.00");
+    expect(item.serviceMaterialsSnapshotted).toBe(true);
+    const snapshots = await db().select().from(s.invoiceItemServiceMaterials)
+      .where(eq(s.invoiceItemServiceMaterials.invoiceItemId, item.id))
+      .orderBy(s.invoiceItemServiceMaterials.materialVariantId);
+    expect(snapshots.map((snapshot) => [
+      Number(snapshot.materialVariantId),
+      Number(snapshot.baseQuantity),
+      snapshot.unitCost,
+      snapshot.lineCost,
+    ])).toEqual([
+      [1, 5, "35.00", "175.00"],
+      [2, 5, "20.00", "100.00"],
+    ]);
   });
 
   it("خدمة إلكترونية بلا وصفة ⇒ COGS صفر ولا حركة مخزون", async () => {
@@ -169,18 +192,117 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
     expect(moves[0].movementType).toBe("OUT");
   });
 
-  it("الخدمة لا تُرفَض عند نفاد المادة (allowNegative) لكن الاستهلاك يُتعقَّب", async () => {
-    await db().update(s.branchStock).set({ quantity: 2 }).where(sql`${s.branchStock.variantId} = 1 AND ${s.branchStock.branchId} = 1`);
-    const r = await createPrintSale({
+  it("نقص مادة وصفة الخدمة يرفض البيع ذرياً حتى لو كانت المادة موسومة للبيع بالطلب", async () => {
+    await db().update(s.products).set({ allowBackorder: true }).where(eq(s.products.id, 2));
+    await db().update(s.branchStock).set({ quantity: 5 }).where(sql`${s.branchStock.variantId} = 1 AND ${s.branchStock.branchId} = 1`);
+    await db().update(s.branchStock).set({ quantity: 2 }).where(sql`${s.branchStock.variantId} = 2 AND ${s.branchStock.branchId} = 1`);
+    await expect(createPrintSale({
       branchId: 1, shiftId: 1,
       lines: [{ variantId: 10, productUnitId: 10, quantity: "5" }],
       payment: { amount: "1250", method: "CASH" },
+    }, actor)).rejects.toThrow(/المخزون غير كاف/);
+    // المادة 1 تُعالَج أولاً، ثم تفشل المادة 2؛ رجوع الأولى يثبت ذرّية الحركة لا مجرد فشل مبكر.
+    expect(await stock(1)).toBe(5);
+    expect(await stock(2)).toBe(2);
+    await expectNoSaleArtifacts();
+  });
+
+  it("وسم offlineCapture وحده لا يمنح المستدعي الحي صلاحية الرصيد السالب", async () => {
+    await db().update(s.products).set({ allowBackorder: true }).where(eq(s.products.id, 2));
+    await db().update(s.branchStock).set({ quantity: 0 }).where(eq(s.branchStock.variantId, 2));
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+      offlineCapture: {
+        capturedAt: new Date(),
+        offlineReceiptNumber: "FORGED-OFFLINE-METADATA",
+      },
+    }, actor)).rejects.toThrow(/المخزون غير كاف/);
+    expect(await stock(2)).toBe(0);
+    await expectNoSaleArtifacts();
+  });
+
+  it("وصفة خدمة معطلة لا تتحول إلى خدمة عمالية بكلفة صفر", async () => {
+    await db().update(s.productionRecipes).set({ isActive: false }).where(eq(s.productionRecipes.id, 1));
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow(/وصفة مواد الخدمة.*معطلة/);
+    await expectNoSaleArtifacts();
+  });
+
+  it("وصفة خدمة فعالة بلا مواد توقف البيع", async () => {
+    await db().delete(s.productionRecipeLines).where(eq(s.productionRecipeLines.recipeId, 1));
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow(/فعالة لكنها بلا مواد/);
+    await expectNoSaleArtifacts();
+  });
+
+  it("كمية وصفة كسرية لا تُقرّب صامتاً إلى وحدة مخزون", async () => {
+    await db().update(s.productionRecipeLines)
+      .set({ qtyPerOutputBase: "0.5000" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow(/كمية كسرية/);
+    expect(await stock(1)).toBe(100);
+    expect(await stock(2)).toBe(100);
+    await expectNoSaleArtifacts();
+  });
+
+  it("وصفة كسرية قابلة للتتبع 0.5×2 تخصم وحدة واحدة وتحسب COGS بدقة", async () => {
+    await db().update(s.productionRecipeLines)
+      .set({ qtyPerOutputBase: "0.5000" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    const result = await createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "2" }],
+      payment: { amount: "500", method: "CASH" },
     }, actor);
-    expect(r.invoiceId).toBeGreaterThan(0);
-    expect(await stock(1)).toBe(-3); // 2 − 5: رصيد سالب = إشارة تزويد، الاستهلاك مُسجَّل بالكامل
-    const move = (await movements()).find((m: any) => Number(m.variantId) === 1)!;
-    expect(Number(move.quantity)).toBe(5);
-    expect(move.movementType).toBe("OUT");
+    expect((await invoice(result.invoiceId)).costTotal).toBe("75.00");
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, result.invoiceId));
+    expect(item.unitCost).toBe("37.50");
+    expect(item.lineCost).toBe("75.00");
+    expect(await stock(1)).toBe(99);
+    expect(await stock(2)).toBe(98);
+    const materialMoves = (await movements()).sort((a, b) => Number(a.variantId) - Number(b.variantId));
+    expect(materialMoves.map((move: any) => [Number(move.variantId), Number(move.quantity), move.notes])).toEqual([
+      [1, 1, "استهلاك مادة خدمة"],
+      [2, 2, "استهلاك مادة خدمة"],
+    ]);
+  });
+
+  it("lineCost يحفظ كلفة الخدمة الدقيقة حين لا يعيد unitCost المدوّر إنتاجها", async () => {
+    await db().delete(s.productionRecipeLines)
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 2`);
+    await db().update(s.productionRecipeLines)
+      .set({ qtyPerOutputBase: "0.5000" })
+      .where(sql`${s.productionRecipeLines.recipeId} = 1 AND ${s.productionRecipeLines.inputVariantId} = 1`);
+    await db().update(s.productVariants).set({ costPrice: "0.01" }).where(eq(s.productVariants.id, 1));
+
+    const result = await createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "6" }],
+      payment: { amount: "1500", method: "CASH" },
+    }, actor);
+
+    const inv = await invoice(result.invoiceId);
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, result.invoiceId));
+    expect(item.unitCost).toBe("0.01");
+    expect(item.lineCost).toBe("0.03");
+    expect(inv.costTotal).toBe("0.03");
+    const [snapshot] = await db().select().from(s.invoiceItemServiceMaterials)
+      .where(eq(s.invoiceItemServiceMaterials.invoiceItemId, item.id));
+    expect(Number(snapshot.baseQuantity)).toBe(3);
+    expect(snapshot.lineCost).toBe("0.03");
+    expect(await stock(1)).toBe(97);
   });
 });
 
@@ -255,6 +377,36 @@ describe("بيع الطباعة: التقريب النقدي + الذمم + idem
 });
 
 describe("بيع الطباعة: الحراسات", () => {
+  it("تعطيل المنتج الأب يمنع بيعه في PrintPOS حتى لو بقي المتغيّر فعالاً", async () => {
+    await db().update(s.products).set({ isActive: false }).where(eq(s.products.id, 10));
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow(/معطّلة/);
+    await expectNoSaleArtifacts();
+  });
+
+  it("حالة تفعيل NULL للمنتج تفشل مغلقاً بعد القفل", async () => {
+    await db().update(s.products).set({ isActive: null }).where(eq(s.products.id, 10));
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow(/معطّلة/);
+    await expectNoSaleArtifacts();
+  });
+
+  it("حالة تفعيل NULL للمتغيّر تفشل مغلقاً بعد قفل المتغيّرات", async () => {
+    await db().update(s.productVariants).set({ isActive: null }).where(eq(s.productVariants.id, 10));
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow(/معطّلة/);
+    await expectNoSaleArtifacts();
+  });
+
   it("وردية مغلقة ⇒ يُرفض البيع", async () => {
     await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, 1));
     await expect(createPrintSale({

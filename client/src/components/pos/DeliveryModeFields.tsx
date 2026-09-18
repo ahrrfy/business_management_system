@@ -60,8 +60,26 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
   const parties: DeliveryPartyOption[] = (partiesQ.data ?? []).map((p) => ({
     id: Number(p.id),
     name: p.name,
+    partyType: p.partyType,
     defaultFee: String(p.defaultFee ?? "0"),
   }));
+
+  // ترقية مسودات POS القديمة المحفوظة قبل إضافة partyType. من دونها قد تُستعاد شركةٌ
+  // كأنها جهة غير معروفة، فيختفي حقل البوليصة حتى يعيد الموظف اختيار الشركة يدوياً.
+  useEffect(() => {
+    if (draft.partyId == null || draft.partyType != null) return;
+    const selected = parties.find((party) => party.id === draft.partyId);
+    if (!selected) return;
+    onChange({
+      ...draft,
+      partyType: selected.partyType,
+      partyName: draft.partyName || selected.name,
+      externalTrackingRef: draft.externalTrackingRef ?? "",
+    });
+  // parties تُشتق من partiesQ.data؛ حصر التبعيات بالقيم المستقرة يمنع إعادة كتابة المسودة كل render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partiesQ.data, draft.partyId, draft.partyType]);
+
   const issues = disabled ? [] : validateDeliveryDraft(draft);
 
   return (
@@ -132,6 +150,25 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
           disabled={disabled}
         />
       </div>
+
+      {draft.partyType === "COMPANY" && (
+        <div>
+          <label className={LABEL} htmlFor="pos-delivery-external-tracking-ref">
+            رقم بوليصة شركة التوصيل (إلزامي)
+          </label>
+          <Input
+            id="pos-delivery-external-tracking-ref"
+            value={draft.externalTrackingRef}
+            onChange={(e) => onChange({ ...draft, externalTrackingRef: e.target.value })}
+            placeholder="امسح باركود البوليصة أو اكتب الرقم"
+            autoComplete="off"
+            maxLength={100}
+            dir="ltr"
+            className="h-9 font-mono text-xs"
+            disabled={disabled}
+          />
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2">
         <div>

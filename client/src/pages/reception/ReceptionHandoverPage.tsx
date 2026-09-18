@@ -85,7 +85,7 @@ export default function ReceptionHandoverPage() {
   const lookupOrder = useCallback(
     async (raw: string) => {
       const r = parseScan(raw);
-      const orderNumber = r.type === "workOrder" || r.type === "invoice" ? r.number : raw.trim();
+      const orderNumber = r.type === "workOrder" || r.type === "invoice" || r.type === "consignment" ? r.number : raw.trim();
       if (!orderNumber) return;
       try {
         const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
