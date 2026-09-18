@@ -25,6 +25,7 @@ import {
 } from "./barcodeLookupPolicy";
 import { dispatchToDelivery } from "./dispatch";
 import { dispatchInvoiceToDelivery } from "./dispatchInvoice";
+import { invoiceBarcodeSet, onlineOrderLabelToken, workOrderBarcodeSet } from "../barcodeService";
 import type { DeliveryTxActor } from "./types";
 import type { Actor } from "../tx";
 
@@ -54,6 +55,8 @@ export interface BarcodeDispatchResult {
   recipientPhone?: string | null;
   deliveryAddress?: string | null;
   partyName: string;
+  qrPayload?: string | null;
+  labelToken?: string | null;
 }
 
 export async function dispatchByBarcode(
@@ -75,7 +78,7 @@ export async function dispatchByBarcode(
     });
   }
   const lookup = prepareDeliveryBarcodeLookup(rawCode);
-  const { code: cleanCode, systemCode, trackingCode, namespace, numericId } = lookup;
+  const { code: cleanCode, systemCode, trackingCode, documentCode, namespace, numericId } = lookup;
 
   const [party] = await db
     .select()
@@ -110,11 +113,14 @@ export async function dispatchByBarcode(
   const [onlineCandidates, workOrderCandidates, invoiceCandidates, consignmentCandidates] = await Promise.all([
     namespaceAllowsTarget(namespace, "ONLINE_ORDER")
       ? db
-          .select({ id: onlineOrders.id })
+          .select({
+            id: onlineOrders.id,
+            matchRank: sql<number>`CASE WHEN ${onlineOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`ORD-${cleanCode}`}) THEN 100 ELSE 10 END`,
+          })
           .from(onlineOrders)
           .where(and(
             namespace === "ONLINE_ORDER"
-              ? eq(onlineOrders.orderNumber, systemCode)
+              ? or(eq(onlineOrders.orderNumber, systemCode), eq(onlineOrders.orderNumber, documentCode))
               : namespace === "NUMERIC"
                 ? or(
                     eq(onlineOrders.orderNumber, cleanCode),
@@ -128,11 +134,14 @@ export async function dispatchByBarcode(
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "WORK_ORDER")
       ? db
-          .select({ id: workOrders.id })
+          .select({
+            id: workOrders.id,
+            matchRank: sql<number>`CASE WHEN ${workOrders.orderNumber} IN (${cleanCode}, ${documentCode}, ${`WO-${cleanCode}`}) THEN 100 ELSE 10 END`,
+          })
           .from(workOrders)
           .where(and(
             namespace === "WORK_ORDER"
-              ? eq(workOrders.orderNumber, systemCode)
+              ? or(eq(workOrders.orderNumber, systemCode), eq(workOrders.orderNumber, documentCode))
               : namespace === "NUMERIC"
                 ? or(
                     eq(workOrders.orderNumber, cleanCode),
@@ -146,11 +155,14 @@ export async function dispatchByBarcode(
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "INVOICE")
       ? db
-          .select({ id: invoices.id })
+          .select({
+            id: invoices.id,
+            matchRank: sql<number>`CASE WHEN ${invoices.invoiceNumber} IN (${cleanCode}, ${documentCode}, ${`INV-${cleanCode}`}) THEN 100 ELSE 10 END`,
+          })
           .from(invoices)
           .where(and(
             namespace === "INVOICE"
-              ? eq(invoices.invoiceNumber, systemCode)
+              ? or(eq(invoices.invoiceNumber, systemCode), eq(invoices.invoiceNumber, documentCode))
               : namespace === "NUMERIC"
                 ? or(
                     eq(invoices.invoiceNumber, cleanCode),
@@ -164,7 +176,13 @@ export async function dispatchByBarcode(
       : Promise.resolve([]),
     namespaceAllowsTarget(namespace, "CONSIGNMENT")
       ? db
-          .select({ id: deliveryConsignments.id })
+          .select({
+            id: deliveryConsignments.id,
+            matchRank: sql<number>`CASE
+              WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}) THEN 100
+              WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
+              ELSE 10 END`,
+          })
           .from(deliveryConsignments)
           .where(and(
             namespace === "CONSIGNMENT"
@@ -196,10 +214,10 @@ export async function dispatchByBarcode(
   ]);
 
   const selectedTarget = resolveUniqueDeliveryBarcodeTarget(cleanCode, [
-    ...onlineCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id) })),
-    ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id) })),
-    ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id) })),
-    ...consignmentCandidates.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id) })),
+    ...onlineCandidates.map((row) => ({ kind: "ONLINE_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+    ...workOrderCandidates.map((row) => ({ kind: "WORK_ORDER" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+    ...invoiceCandidates.map((row) => ({ kind: "INVOICE" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
+    ...consignmentCandidates.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id), matchRank: Number(row.matchRank) })),
   ]);
 
   // ١. فحص طلبات المتجر (Online Orders)
@@ -307,6 +325,7 @@ export async function dispatchByBarcode(
       recipientPhone: createdCn?.recipientPhone ?? onlineOrder.customerPhone ?? null,
       deliveryAddress: createdCn?.deliveryAddress ?? onlineOrder.shippingAddress ?? null,
       partyName: party.name,
+      labelToken: onlineOrderLabelToken(onlineOrder.orderNumber),
     };
   }
 
@@ -326,6 +345,7 @@ export async function dispatchByBarcode(
       deliveryAddress: workOrders.deliveryAddress,
       customerName: customers.name,
       customerPhone: customers.phone,
+      createdAt: workOrders.createdAt,
     })
     .from(workOrders)
     .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -403,6 +423,11 @@ export async function dispatchByBarcode(
       recipientPhone: workOrder.deliveryPhone ?? workOrder.customerPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? workOrder.deliveryAddress ?? null,
       partyName: party.name,
+      qrPayload: workOrderBarcodeSet({
+        orderNumber: workOrder.orderNumber,
+        createdAt: workOrder.createdAt,
+        branchId: Number(workOrder.branchId),
+      }).qrPayload,
     };
   }
 
@@ -419,6 +444,8 @@ export async function dispatchByBarcode(
       deliveryFee: invoices.deliveryFee,
       customerAddress: customers.address,
       invoiceNotes: invoices.notes,
+      invoiceDate: invoices.invoiceDate,
+      total: invoices.total,
     })
     .from(invoices)
     .leftJoin(customers, eq(invoices.customerId, customers.id))
@@ -447,7 +474,7 @@ export async function dispatchByBarcode(
     // إذا كانت الفاتورة مرتبطة بطلب متجر، نستدعي مسار طلب المتجر لضمان الربط السليم
     if (invoice.sourceType === "ONLINE") {
       const [linkedOrder] = await db
-        .select({ id: onlineOrders.id })
+        .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber })
         .from(onlineOrders)
         .where(eq(onlineOrders.invoiceId, Number(invoice.id)))
         .limit(1);
@@ -471,7 +498,7 @@ export async function dispatchByBarcode(
         return {
           sourceType: "ONLINE_ORDER",
           sourceId: Number(linkedOrder.id),
-          sourceNumber: invoice.invoiceNumber,
+          sourceNumber: linkedOrder.orderNumber,
           consignmentId: Number(res.consignmentId ?? createdCn?.id ?? 0),
           consignmentNumber: String(res.consignmentNumber ?? createdCn?.consignmentNumber ?? ""),
           invoiceId: res.invoiceId,
@@ -482,6 +509,7 @@ export async function dispatchByBarcode(
           recipientPhone: createdCn?.recipientPhone ?? invoice.contactPhone ?? null,
           deliveryAddress: createdCn?.deliveryAddress ?? input.deliveryAddress ?? invoice.customerAddress ?? null,
           partyName: party.name,
+          labelToken: onlineOrderLabelToken(linkedOrder.orderNumber),
         };
       }
     }
@@ -517,6 +545,12 @@ export async function dispatchByBarcode(
       recipientPhone: invoice.contactPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? invoice.customerAddress ?? null,
       partyName: party.name,
+      qrPayload: invoiceBarcodeSet({
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceDate: invoice.invoiceDate.toISOString(),
+        total: String(invoice.total),
+        branchId: Number(invoice.branchId),
+      }).qrPayload,
     };
   }
 
