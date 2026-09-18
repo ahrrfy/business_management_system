@@ -66,6 +66,14 @@ import { appErrorMessage } from "@shared/errors";
 // البيع المباشر (POS) والطلبات (ORDER) وأوامر الشغل (WORKORDER). ONLINE (المتجر) خارج النطاق.
 const OPENING_RECEPTION_CHANNELS = new Set(["POS", "ORDER", "WORKORDER"]);
 
+function saleDefinitionChangedError(why: string): string {
+  return appErrorMessage({
+    what: "تعذّر حفظ فاتورة البيع",
+    why,
+    doThis: "حدّث الأصناف ثم أعد إنشاء الفاتورة",
+  });
+}
+
 /**
  * نواة البيع الذرّية — تعمل داخل معاملة موجودة.
  * تصدير داخلي فقط: يستعمله `createSale` (المغلّف) و`digitalCards.sales.finalize` (تركيب).
@@ -571,7 +579,7 @@ export async function createSaleInTx(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر تعريف أحد البكجات أثناء حفظ الفاتورة — أعد المحاولة",
+        message: saleDefinitionChangedError("تغيّر تعريف أحد البكجات أثناء حفظ الفاتورة"),
       });
     }
     bundleDefs = currentBundleDefs;
@@ -585,7 +593,7 @@ export async function createSaleInTx(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّرت وصفة مواد إحدى الخدمات أثناء حفظ الفاتورة — أعد المحاولة",
+        message: saleDefinitionChangedError("تغيّرت وصفة مواد إحدى الخدمات أثناء حفظ الفاتورة"),
       });
     }
     serviceDefinitions = currentServiceDefinitions;

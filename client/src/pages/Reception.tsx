@@ -282,12 +282,9 @@ export default function Reception() {
   // ش٢ (§٨.٢): المسوّدة المُرقّاة — السلّة محليّةٌ بالافتراض، وتترقّى بحفظٍ صريح؛ بعدها تُزامَن
   // بالجملة بdebounce ~٨٠٠مث وversion تفاؤليّ (تعارضُ زميلٍ ⇒ إعادة تحميلٍ لا طمس).
   const [activeDraft, setActiveDraft] = useState<{ id: number; version: number } | null>(null);
-  const activeDraftRef = useRef(activeDraft);
-  useEffect(() => { activeDraftRef.current = activeDraft; }, [activeDraft]);
-  const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null), draftResumeEpochRef = useRef(0);
-  const draftSyncQueueRef = useRef<ReceptionDraftSyncQueue<ReturnType<typeof buildDraftPayload>> | null>(null), draftPromotionFlightRef = useRef(false), draftRecoveryPromptRef = useRef(false);
-  const [draftTransitionPending, setDraftTransitionPending] = useState(false), [draftPromotionPending, setDraftPromotionPending] = useState(false), [draftPromotionShiftId, setDraftPromotionShiftId] = useState<number | null>(null), [workspaceSafetyBlocked, setWorkspaceSafetyBlocked] = useState(false), [detachedRecoveryPending, setDetachedRecoveryPending] = useState(false), [draftRestoreRecovery, setDraftRestoreRecovery] = useState<{ snapshot: ReceptionServerDraftPointer; serverAvailable: boolean } | null>(null);
-  useEffect(() => () => { draftResumeEpochRef.current += 1; activeDraftRef.current = null; draftSyncQueueRef.current?.reset(); }, []);
+  const activeDraftRef = useRef(activeDraft); useEffect(() => { activeDraftRef.current = activeDraft; }, [activeDraft]);
+  const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null), draftResumeEpochRef = useRef(0); const draftSyncQueueRef = useRef<ReceptionDraftSyncQueue<ReturnType<typeof buildDraftPayload>> | null>(null), draftPromotionFlightRef = useRef(false), draftRecoveryPromptRef = useRef(false);
+  const [draftTransitionPending, setDraftTransitionPending] = useState(false), [draftPromotionPending, setDraftPromotionPending] = useState(false), [draftPromotionShiftId, setDraftPromotionShiftId] = useState<number | null>(null), [workspaceSafetyBlocked, setWorkspaceSafetyBlocked] = useState(false), [detachedRecoveryPending, setDetachedRecoveryPending] = useState(false), [draftRestoreRecovery, setDraftRestoreRecovery] = useState<{ snapshot: ReceptionServerDraftPointer; serverAvailable: boolean } | null>(null); useEffect(() => () => { draftResumeEpochRef.current += 1; activeDraftRef.current = null; draftSyncQueueRef.current?.reset(); }, []);
   // ش٤: صافي العربون المقبوض على الطلب المحفوظ النشط — يقلّص «المتوقّع الآن» ويظهر في اللوحة.
   const [draftHeld, setDraftHeld] = useState("0.00");
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);

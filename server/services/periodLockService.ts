@@ -10,6 +10,7 @@
  * نقطة التهيئة: periodRouter.lock/unlock بـadminProcedure.
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, notInArray, or, sql } from "drizzle-orm";
 import {
   digitalSaleIntents,
@@ -148,8 +149,11 @@ export async function lockPeriod(
     if (blockingDigitalIntent) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message:
-          `لا يمكن إقفال الفترة حتى ${input.cutoffDate}: عملية بيع رقمي رقم ${Number(blockingDigitalIntent.id)} لم تُحسم. أكمل الفاتورة أو عالج العملية الرقمية أولاً.`,
+        message: appErrorMessage({
+          what: `تعذّر إقفال الفترة حتى ${input.cutoffDate}`,
+          why: `عملية البيع الرقمية رقم ${Number(blockingDigitalIntent.id)} لم تُحسم`,
+          doThis: "أكمل الفاتورة أو عالج العملية الرقمية ثم أعد الإقفال",
+        }),
       });
     }
   }

@@ -107,11 +107,37 @@ async function sell(
 ) {
   const id = ++seq;
   const paymentMethod = options.paymentMethod ?? "CASH";
+  const clientRequestId = `p-${id}-${Math.random().toString(36).slice(2, 9)}`;
+  const invoiceLines = paymentMethod === "CREDIT"
+    ? await Promise.all(offerings.map(async (offering, index) => {
+        const [row] = await db()
+          .select({ variantId: s.digitalOfferings.variantId, productUnitId: s.digitalOfferings.productUnitId })
+          .from(s.digitalOfferings)
+          .where(eq(s.digitalOfferings.id, offering.offeringId));
+        if (!row?.variantId || !row.productUnitId) throw new Error("digital offering catalog binding missing");
+        return {
+          variantId: Number(row.variantId),
+          productUnitId: Number(row.productUnitId),
+          quantity: "1",
+          unitPriceOverride: offering.priced.price,
+          internalLineToken: `lk-${id}-${index}`,
+        };
+      }))
+    : undefined;
   const r = await withTx((tx) => intentService.prepare(tx, {
-    clientRequestId: `p-${id}-${Math.random().toString(36).slice(2, 9)}`, branchId: 1, shiftId: 1,
+    clientRequestId, branchId: 1, shiftId: 1,
     paymentMethod, cartFingerprint: `fp${id}`,
     customerId: options.customerId,
+    priceTier: paymentMethod === "CREDIT" ? "RETAIL" : undefined,
     sourceType: paymentMethod === "CREDIT" ? "INVOICE" : "POS",
+    sourcePayload: invoiceLines == null ? undefined : {
+      branchId: 1,
+      shiftId: 1,
+      customerId: options.customerId,
+      priceTier: "RETAIL",
+      clientRequestId,
+      lines: invoiceLines,
+    },
     lines: offerings.map((o, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: o.offeringId, priceVersionId: o.priced.pv, expectedSellPrice: o.priced.price,
       providerReference: `REF-REV-${id}-${i}`,

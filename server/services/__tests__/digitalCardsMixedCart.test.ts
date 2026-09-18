@@ -22,6 +22,7 @@ import {
   prepareCheckoutSnapshot,
   type CheckoutSnapshotInput,
 } from "../digitalCards/mixedCartService";
+import { reserveIntentInventory } from "../digitalCards/inventoryReservationService";
 import { truncateAllTables } from "./__testUtils__";
 
 const cashier = { userId: 1, branchId: 1, role: "cashier" };
@@ -280,10 +281,13 @@ async function fixture(
   const expectedTotal = toDbMoney(
     money("10850").plus(snapshot.expectedSubtotal),
   );
-  await db()
-    .update(s.digitalSaleIntents)
-    .set({ checkoutSnapshot: snapshot, expectedTotal })
-    .where(eq(s.digitalSaleIntents.id, intentId));
+  await withTx(async (tx) => {
+    await tx
+      .update(s.digitalSaleIntents)
+      .set({ checkoutSnapshot: snapshot, expectedTotal })
+      .where(eq(s.digitalSaleIntents.id, intentId));
+    await reserveIntentInventory(tx, { intentId, branchId: 1, snapshot });
+  });
   const [item] = await db()
     .select()
     .from(s.digitalSaleIntentItems)
@@ -634,7 +638,7 @@ describe("durable mixed digital/ordinary checkout", () => {
       ),
     );
 
-    const read = await intentService.getIntent(db(), preparedInvoice.intentId);
+    const read = await intentService.getIntent(db(), preparedInvoice.intentId, cashier);
     expect(read?.items[0]).toMatchObject({
       sellPrice: "10850.00",
       chargeAmount: "10849.00",
@@ -820,7 +824,7 @@ describe("durable mixed digital/ordinary checkout", () => {
     expect(invoice.customerId).toBe(1);
   });
 
-  it("native cost authority still rejects cashier regular lines below live cost", async () => {
+  it("يثبّت فاتورة الكرت الصادر إذا ارتفعت كلفة السطر العادي بعد الفحص المسبق", async () => {
     const f = await fixture();
     await db()
       .update(s.productVariants)
@@ -828,10 +832,10 @@ describe("durable mixed digital/ordinary checkout", () => {
       .where(eq(s.productVariants.id, 1));
     await expect(
       withTx((tx) => finalizeService.finalize(tx, f.input, cashier)),
-    ).rejects.toThrow(/التكلفة/);
-    expect(await db().select().from(s.invoices)).toHaveLength(0);
-    await withTx((tx) => finalizeService.finalize(tx, f.input, manager));
-    const [invoice] = await db().select().from(s.invoices);
+    ).resolves.toMatchObject({ intentId: f.intentId, total: "14450.00" });
+    const invoices = await db().select().from(s.invoices);
+    expect(invoices).toHaveLength(1);
+    const [invoice] = invoices;
     expect(invoice.costTotal).toBe("13800.00");
   });
 
@@ -1119,7 +1123,6 @@ describe("ordinary snapshot validation", () => {
             payment: { amount: "500", method: "CASH" },
           },
           cashier,
-          DIGITAL_SALE_CAPABILITY,
         ),
       ),
     ).rejects.toThrow(/التكلفة/);

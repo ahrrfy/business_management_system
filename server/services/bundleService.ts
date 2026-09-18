@@ -30,6 +30,15 @@ import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
 import { assertNoActiveOnlineOrderBundleChange } from "./catalog/variantAvailability";
 import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
+import { appErrorMessage } from "@shared/errors";
+
+function bundleChangeError(why: string): string {
+  return appErrorMessage({
+    what: "تعذّر حفظ تعريف البكج",
+    why,
+    doThis: "حدّث الصفحة، راجع المنتج ومكوّناته النشطة، ثم أعد الحفظ",
+  });
+}
 
 /** القراءات المشتركة تعمل على الاتصال العام أو داخل معاملة — نفس المنطق، مصدرٌ واحد. */
 type BundleQueryDb = DB | Tx;
@@ -100,7 +109,7 @@ async function lockBundleVariantScope(
   if (missing.length) {
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: `متغيّرات البكج غير موجودة: ${missing.map((id) => `#${id}`).join("، ")}`,
+      message: bundleChangeError(`متغيّرات البكج غير موجودة: ${missing.map((id) => `#${id}`).join("، ")}`),
     });
   }
 
@@ -144,14 +153,14 @@ async function lockBundleVariantScope(
     if (refByVariant.get(id) !== productId) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر ربط أحد متغيّرات البكج أثناء الحفظ — حدّث الصفحة وأعد المحاولة",
+        message: bundleChangeError("تغيّر ربط أحد متغيّرات البكج أثناء الحفظ"),
       });
     }
     const product = productById.get(productId);
     if (!product) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر منتج أحد متغيّرات البكج أثناء الحفظ — حدّث الصفحة وأعد المحاولة",
+        message: bundleChangeError("تغيّر منتج أحد متغيّرات البكج أثناء الحفظ"),
       });
     }
     out.set(id, {
@@ -170,7 +179,7 @@ async function lockBundleVariantScope(
   if (out.size !== ids.length) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تغيّر نطاق متغيّرات البكج أثناء الحفظ — حدّث الصفحة وأعد المحاولة",
+      message: bundleChangeError("تغيّر نطاق متغيّرات البكج أثناء الحفظ"),
     });
   }
   return out;
@@ -373,7 +382,7 @@ export async function replaceBundleComponents(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تغيّر تعريف البكج أثناء الحفظ — حدّث الصفحة وراجع المكوّنات ثم أعد المحاولة",
+      message: bundleChangeError("تغيّر تعريف البكج أثناء الحفظ"),
     });
   }
 
@@ -394,7 +403,7 @@ export async function replaceBundleComponents(
   if (parent.productActive !== true || parent.variantActive !== true) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "لا يمكن تعديل تعريف بكج معطّل — فعّل المنتج ومتغيّره أولاً",
+      message: bundleChangeError("المنتج أو متغيّر البكج معطّل"),
     });
   }
   // نفس mutex الذي يقفله createOnlineOrder قبل قراءة الوصفة. إمّا أن تلتزم الوصفة

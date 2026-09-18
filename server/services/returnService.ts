@@ -1308,7 +1308,7 @@ export async function returnSaleInTx(
           (item.returnedBaseQuantity ?? 0) + line.baseQuantity,
         // returnedRestockedBaseQuantity يزيد فقط حين عادت البضاعة للرفّ (restock) — يُميّز المُعاد
         // للمخزون عن التالف كي تطرح تقارير COGS التحليلية تكلفة المُعاد فقط (مطابِقةً للدفتر).
-        ...(restock && (kind !== "SERVICE" || restoredServiceItemIds.has(Number(item.id)))
+        ...(restock && kind !== "SERVICE"
           ? {
               returnedRestockedBaseQuantity:
                 (item.returnedRestockedBaseQuantity ?? 0) + line.baseQuantity,

@@ -22,6 +22,15 @@ import { extractInsertId } from "../../lib/insertId";
 import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { appErrorMessage } from "../../../shared/errors";
+
+function offeringBindingError(why: string): string {
+  return appErrorMessage({
+    what: "تعذّر حفظ العرض الرقمي",
+    why,
+    doThis: "راجع المنتج ومتغيّره ووحدته والفروع النشطة، ثم أعد الحفظ",
+  });
+}
 
 /* ────────── Enum validation ────────── */
 const OFFERING_TYPES = ["TELECOM_CARD", "GLOBAL_CARD", "EDUCATIONAL_SUBSCRIPTION", "OTHER"] as const;
@@ -75,7 +84,7 @@ async function assertDigitalCatalogLink(
   if (!row) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "ربط المنتج والمتغيّر ووحدة العرض الرقمي غير متطابق",
+      message: offeringBindingError("ربط المنتج والمتغيّر ووحدة العرض الرقمي غير متطابق"),
     });
   }
   if (
@@ -86,7 +95,7 @@ async function assertDigitalCatalogLink(
   ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "العرض الرقمي يجب أن يرتبط بمنتج خدمي من نوع DIGITAL_CARD فقط",
+      message: offeringBindingError("العرض الرقمي يجب أن يرتبط بمنتج خدمي من نوع DIGITAL_CARD فقط"),
     });
   }
   if (
@@ -97,7 +106,7 @@ async function assertDigitalCatalogLink(
   ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "منتج العرض الرقمي أو متغيّره أو وحدة أساسه معطّل",
+      message: offeringBindingError("منتج العرض الرقمي أو متغيّره أو وحدة أساسه معطّل"),
     });
   }
 }
@@ -303,10 +312,10 @@ export async function createOffering(
       prod.isService !== true ||
       prod.isBundle === true
     ) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يجب أن يكون بطاقة رقمية خدمية من نوع DIGITAL_CARD" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: offeringBindingError("المنتج ليس بطاقة رقمية خدمية من نوع DIGITAL_CARD") });
     }
     if (prod.isActive !== true) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "منتج البطاقة الرقمية معطّل" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: offeringBindingError("منتج البطاقة الرقمية معطّل") });
     }
     if (prod.isConsignment || prod.consignorId != null) {
       throw new TRPCError({
@@ -421,7 +430,7 @@ async function insertOfferingBranches(
       throw new TRPCError({ code: "NOT_FOUND", message: `الفرع ${b.branchId} غير موجود` });
     }
     if (branch.isActive !== true) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `الفرع ${b.branchId} معطّل` });
+      throw new TRPCError({ code: "BAD_REQUEST", message: offeringBindingError(`الفرع ${b.branchId} معطّل`) });
     }
 
     if (providerSettlementMode === "PREPAID" && b.walletId == null) {
@@ -515,7 +524,7 @@ export async function updateOffering(
     if (input.branches !== undefined && input.branches.length === 0) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن تفعيل عرض رقمي بلا فرع فعال",
+        message: offeringBindingError("لا يمكن تفعيل عرض رقمي بلا فرع فعال"),
       });
     }
     await assertDigitalCatalogLink(tx, {
@@ -543,7 +552,7 @@ export async function updateOffering(
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يمكن إبقاء العرض الرقمي فعالاً بلا فرع فعال",
+          message: offeringBindingError("لا يمكن إبقاء العرض الرقمي فعالاً بلا فرع فعال"),
         });
       }
     }

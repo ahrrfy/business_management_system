@@ -136,22 +136,8 @@ export const salesRouter = router({
   getIntent: digitalCardsPosProcedure
     .input(z.object({ intentId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
-      const res = await intentService.getIntent(requireDb(), input.intentId);
+      const res = await intentService.getIntent(requireDb(), input.intentId, actorOf(ctx));
       if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
-      const scoped = scopedBranchOf(ctx);
-      if (scoped != null && Number(res.intent.branchId) !== scoped) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "النيّة تخصّ فرعاً آخر" });
-      }
-      if (
-        ctx.user.role !== "admin" &&
-        ctx.user.role !== "manager" &&
-        Number(res.intent.createdBy) !== Number(ctx.user.id)
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "هذه النيّة تخصّ مستخدماً آخر",
-        });
-      }
       return res;
     }),
 

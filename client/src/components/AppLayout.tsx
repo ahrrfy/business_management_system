@@ -1,5 +1,4 @@
 import { MobileBottomNav } from "@/components/MobileBottomNav";
-import { HybridSidebarNav } from "@/components/navigation/HybridSidebarNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
@@ -32,6 +31,12 @@ import {
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
+
+const HybridSidebarNav = lazy(() =>
+  import("@/components/navigation/HybridSidebarNav").then((module) => ({
+    default: module.HybridSidebarNav,
+  })),
+);
 
 import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
@@ -297,18 +302,20 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
         {/* إذاعة القرآن الكريم — بطاقة بارزة في القائمة الجانبية */}
         <QuranSidebarCard />
 
-        <HybridSidebarNav
-          currentPath={loc}
-          currentSearch={search}
-          showDashboard={!isCourier && !isCashier}
-          hasMyStocktake={hasMyStocktake}
-          primaryNav={primaryNav}
-          visibleModules={visibleNav}
-          workspace={navWorkspace}
-          onToggleFavorite={handleFavorite}
-          workOrderReadyCount={workOrderReadyCount}
-          deliveryReadyCount={deliveryReadyCount}
-        />
+        <Suspense fallback={<nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="جار تحميل التنقل" />}>
+          <HybridSidebarNav
+            currentPath={loc}
+            currentSearch={search}
+            showDashboard={!isCourier && !isCashier}
+            hasMyStocktake={hasMyStocktake}
+            primaryNav={primaryNav}
+            visibleModules={visibleNav}
+            workspace={navWorkspace}
+            onToggleFavorite={handleFavorite}
+            workOrderReadyCount={workOrderReadyCount}
+            deliveryReadyCount={deliveryReadyCount}
+          />
+        </Suspense>
 
         {/* معلومات المستخدم والخروج — كارت واضح النقر (مدخل «حسابي») + زرّ الخروج.
             كان الرابط سابقاً نصّاً خافتاً بلا أيقونة ⇒ المالك لم يجد كيف يفتح /account (٦/٧).

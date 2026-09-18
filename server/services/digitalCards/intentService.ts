@@ -73,6 +73,14 @@ import {
   reserveIntentInventory,
 } from "./inventoryReservationService";
 
+function intentOperationError(why: string, doThis = "راجع السلة والوردية وطريقة الدفع، ثم ابدأ عملية جديدة قبل إصدار أي كرت"): string {
+  return appErrorMessage({
+    what: "تعذّر متابعة عملية الكروت الرقمية",
+    why,
+    doThis,
+  });
+}
+
 /* ────────── الأنواع ────────── */
 
 export interface PrepareLine {
@@ -131,6 +139,14 @@ const EXECUTION_CLAIM_TTL_MINUTES = 10;
 /** طرق الدفع المسموحة للبيع الرقميّ (§٢ من الوثيقة: لا آجل على الكروت في الإصدار الأول). */
 const ALLOWED_PAYMENT_METHODS = new Set(["CASH", "CARD"]);
 
+function isAllowedIntentPayment(intent: {
+  paymentMethod: string;
+  checkoutSnapshot?: { sourceType?: string } | null;
+}): boolean {
+  return ALLOWED_PAYMENT_METHODS.has(intent.paymentMethod) ||
+    (intent.paymentMethod === "CREDIT" && intent.checkoutSnapshot?.sourceType === "INVOICE");
+}
+
 function normalizeSaleStudent(input: SaleStudentSnapshot): SaleStudentSnapshot {
   const studentName = input.studentName.trim();
   if (!studentName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الطالب مطلوب" });
@@ -170,8 +186,10 @@ function normalizeIntentSource(input: PrepareInput): {
   if (input.sourceType === "RECEPTION") {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "إصدار الكروت من سلة الاستقبال غير مفعّل بعقد آمن بعد — استخدم نقطة البيع أو فاتورة البيع",
+      message: intentOperationError(
+        "إصدار الكروت من سلة الاستقبال غير مفعّل بعقد آمن بعد",
+        "استخدم نقطة البيع أو فاتورة البيع المتقدمة حتى يكتمل عقد الاستقبال الآمن",
+      ),
     });
   }
   if (input.sourceType === "INVOICE") {
@@ -192,7 +210,7 @@ function normalizeIntentSource(input: PrepareInput): {
   if (input.sourcePayload != null) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "نقطة البيع الرقمية لا تقبل حمولة مصدر إضافية غير مستخدمة",
+      message: intentOperationError("نقطة البيع الرقمية تحمل بيانات مصدر إضافية لا تستعملها"),
     });
   }
   return { input: { ...input, sourcePayload: undefined }, invoicePayload: null };
@@ -215,7 +233,7 @@ export async function prepare(
   ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "البيع الرقميّ نقداً أو ببطاقة فقط — لا آجل على الكروت",
+      message: intentOperationError("البيع الرقمي نقداً أو ببطاقة فقط؛ الدفع الآجل مسموح عبر الفاتورة المتقدمة وحدها"),
     });
   }
   // idempotency: نقرة مزدوجة/إعادة إرسال بنفس المفتاح تُعيد النيّة القائمة بدل حجزٍ ثانٍ.
@@ -280,8 +298,10 @@ export async function prepare(
   if (input.paymentMethod === "CARD") {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "إصدار الكروت الرقمية بدفع البطاقة موقوف مؤقتاً حتى يكتمل الربط الذري للدفع؛ استخدم النقد ولا تؤكد أي قبض خارجي لهذه السلة",
+      message: intentOperationError(
+        "دفع البطاقة موقوف حتى يكتمل الربط الذري بين القبض والإصدار",
+        "استخدم النقد ولا تؤكد أي قبض خارجي لهذه السلة",
+      ),
     });
   }
 
@@ -355,7 +375,7 @@ export async function prepare(
     .limit(1);
   if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
   if (branch.isActive !== true) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع معطّل ولا يقبل إصدار بطاقات" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: intentOperationError("الفرع معطّل ولا يقبل إصدار بطاقات", "اختر فرعاً نشطاً ثم أعد إعداد السلة") });
   }
 
   // تحقّق كل بند مقابل الحالة الخادمية اللحظية.
@@ -466,7 +486,7 @@ export async function prepare(
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `ربط الكتالوج للبطاقة «${row.name}» غير صالح أو معطّل`,
+        message: intentOperationError(`ربط الكتالوج للبطاقة «${row.name}» غير صالح أو معطّل`, "حدّث السلة وأعد إضافة البطاقة من العرض النافذ"),
       });
     }
     if (row.currentVersionId == null || row.sellPrice == null) {
@@ -666,7 +686,7 @@ export async function prepare(
           : "الخصم يتجاوز الحد المسموح";
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: `${why} ويتطلب اعتماد مدير قبل إصدار أي كرت`,
+        message: intentOperationError(`${why} ويتطلب اعتماد مدير قبل إصدار أي كرت`, "اطلب اعتماد مدير ثم أعد إعداد العملية، أو صحّح السعر والخصم"),
       });
     }
     expectedTotal = invoicePricing.total;
@@ -674,7 +694,7 @@ export async function prepare(
       if (invoicePayload.payment != null) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "الفاتورة الآجلة لا تحمل قبضاً نقدياً أو خارجياً",
+          message: intentOperationError("الفاتورة الآجلة تحمل قبضاً نقدياً أو خارجياً", "أزل بيانات القبض واجعل كامل الإجمالي ذمّة ثم أعد الإعداد"),
         });
       }
     } else {
@@ -697,7 +717,7 @@ export async function prepare(
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "سعر كرت أقل من حصة المزوّد ويتطلب اعتماد مدير قبل الإصدار",
+        message: intentOperationError("سعر كرت أقل من حصة المزوّد ويتطلب اعتماد مدير قبل الإصدار", "اطلب اعتماد مدير أو صحّح سعر الكرت ثم أعد الإعداد"),
       });
     }
   }
@@ -766,8 +786,10 @@ export async function prepare(
     if (!winner) {
       throw new TRPCError({
         code: "CONFLICT",
-        message:
-          "محاولة الدفع أو مفتاح النيّة مستخدم في عملية أخرى — لا تُعِد القبض أو الإصدار",
+        message: intentOperationError(
+          "محاولة الدفع أو مفتاح النيّة مستخدم في عملية أخرى",
+          "افتح العملية القائمة ولا تُعِد القبض أو إصدار الكروت",
+        ),
       });
     }
     if (
@@ -787,15 +809,17 @@ export async function prepare(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message:
-          "تزامن مفتاح الطلب مع سلّة أو سياق مختلف — لا تُعِد القبض أو إصدار الكروت",
+        message: intentOperationError(
+          "تزامن مفتاح الطلب مع سلّة أو سياق مختلف",
+          "ابدأ طلباً جديداً ولا تُعِد القبض أو إصدار الكروت للعملية القديمة",
+        ),
       });
     }
     assertCheckoutReplay(winner.checkoutSnapshot, input);
     if (!["PREPARED", "EXECUTING", "EXECUTED"].includes(winner.status)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المحاولة المتزامنة أُغلقت؛ ابدأ طلباً جديداً",
+        message: intentOperationError("المحاولة المتزامنة أُغلقت", "ابدأ طلباً جديداً قبل أي قبض أو إصدار"),
       });
     }
     if (input.paymentMethod === "CARD") {
@@ -963,11 +987,10 @@ export async function claimExecution(
 ): Promise<ClaimExecutionResult> {
   const intent = await lockIntent(tx, input.intentId);
   assertActorOwnsIntent(intent, actor);
-  if (!ALLOWED_PAYMENT_METHODS.has(intent.paymentMethod)) {
+  if (!isAllowedIntentPayment(intent)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "هذه نيّة تاريخية بطريقة دفع غير مسموحة؛ لا تُصدر الكرت وعالجها إدارياً",
+      message: intentOperationError("هذه نيّة تاريخية بطريقة دفع غير مسموحة", "لا تُصدر الكرت؛ افتحها في طابور المراجعة وعالجها إدارياً"),
     });
   }
   const elevated = actor.role === "admin" || actor.role === "manager";
@@ -996,8 +1019,7 @@ export async function claimExecution(
   ) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "وردية النيّة أُغلقت أو تغيّر مالكها؛ لا تُصدر الكرت قبل فتح عملية جديدة أو مراجعتها إدارياً",
+      message: intentOperationError("وردية النيّة أُغلقت أو تغيّر مالكها", "لا تُصدر الكرت؛ افتح عملية جديدة أو اطلب مراجعة النيّة إدارياً"),
     });
   }
   // هذه نقطة اللاعودة قبل لمس جهاز المزوّد. withTx يمسك بوابة الإقفال المالي
@@ -1094,11 +1116,10 @@ export async function markExecution(
 ): Promise<{ itemId: number; itemIds: number[]; status: ExecutionStatus; allSettled: boolean; idempotent: boolean }> {
   const intent = await lockIntent(tx, input.intentId);
   assertActorOwnsIntent(intent, actor);
-  if (!ALLOWED_PAYMENT_METHODS.has(intent.paymentMethod)) {
+  if (!isAllowedIntentPayment(intent)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "هذه نيّة تاريخية بطريقة دفع غير مسموحة؛ لا تسجل إصداراً جديداً وعالجها إدارياً",
+      message: intentOperationError("هذه نيّة تاريخية بطريقة دفع غير مسموحة", "لا تسجل إصداراً جديداً؛ عالج النيّة من طابور المراجعة"),
     });
   }
   if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW"].includes(intent.status)) {
@@ -1312,9 +1333,10 @@ export async function expireStaleIntents(
 
 /* ────────── قراءات ────────── */
 
-export async function getIntent(db: DB, intentId: number) {
+export async function getIntent(db: DB, intentId: number, actor: Actor) {
   const [intent] = await db.select().from(digitalSaleIntents).where(eq(digitalSaleIntents.id, intentId)).limit(1);
   if (!intent) return null;
+  assertActorOwnsIntent(intent, actor);
 
   const items = await db
     .select({
@@ -1543,7 +1565,7 @@ async function assertOfferingsIssuable(
     if (!row) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "ربط إحدى البطاقات تغيّر بعد تجهيز السلة؛ حدّث العملية قبل الإصدار",
+        message: intentOperationError("ربط إحدى البطاقات تغيّر بعد تجهيز السلة", "حدّث العملية وأعد إضافة البطاقة قبل الإصدار"),
       });
     }
     if (
@@ -1562,7 +1584,7 @@ async function assertOfferingsIssuable(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: `«${row.name}» عُطّلت أو لم تعد بطاقة رقمية صالحة؛ لا تُصدرها من جهاز المزوّد`,
+        message: intentOperationError(`«${row.name}» عُطّلت أو لم تعد بطاقة رقمية صالحة`, "لا تُصدرها من جهاز المزوّد؛ احذفها وحدّث السلة"),
       });
     }
   }

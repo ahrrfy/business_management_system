@@ -88,20 +88,49 @@ async function prepareAndExecute(
     sourceType?: "POS" | "INVOICE";
     dueDate?: string;
     notes?: string;
-    managerOverrideByUserId?: number;
+    priceApprovedBy?: number;
   } = {},
 ) {
   const id = ++seq;
+  const clientRequestId = `prep-${id}-${Math.random().toString(36).slice(2, 8)}`;
+  const lineKeys = lines.map((_, index) => `lk-${id}-${index}`);
+  const invoiceLines = options.sourceType === "INVOICE"
+    ? await Promise.all(lines.map(async (line, index) => {
+        const [offering] = await db()
+          .select({ variantId: s.digitalOfferings.variantId, productUnitId: s.digitalOfferings.productUnitId })
+          .from(s.digitalOfferings)
+          .where(eq(s.digitalOfferings.id, line.offeringId));
+        if (!offering?.variantId || !offering.productUnitId) throw new Error("digital offering catalog binding missing");
+        return {
+          variantId: Number(offering.variantId),
+          productUnitId: Number(offering.productUnitId),
+          quantity: "1",
+          unitPriceOverride: line.priced.price,
+          internalLineToken: lineKeys[index],
+        };
+      }))
+    : undefined;
   const r = await withTx((tx) => intentService.prepare(tx, {
-    clientRequestId: `prep-${id}-${Math.random().toString(36).slice(2, 8)}`,
+    clientRequestId,
     branchId: 1, shiftId: 1, paymentMethod: options.paymentMethod ?? "CASH", cartFingerprint: `fp${id}`,
     customerId: options.customerId,
+    priceTier: options.sourceType === "INVOICE" ? "RETAIL" : undefined,
     sourceType: options.sourceType,
     dueDate: options.dueDate,
     notes: options.notes,
-    managerOverrideByUserId: options.managerOverrideByUserId,
+    sourcePayload: invoiceLines == null ? undefined : {
+      branchId: 1,
+      shiftId: 1,
+      customerId: options.customerId,
+      priceTier: "RETAIL",
+      clientRequestId,
+      dueDate: options.dueDate,
+      notes: options.notes,
+      lines: invoiceLines,
+    },
+    priceApprovedBy: options.priceApprovedBy,
     lines: lines.map((l, i) => ({
-      lineKey: `lk-${id}-${i}`, offeringId: l.offeringId, priceVersionId: l.priced.pv,
+      lineKey: lineKeys[i], offeringId: l.offeringId, priceVersionId: l.priced.pv,
       expectedSellPrice: l.priced.price, providerReference: `REF-FIN-${id}-${i}`, student: l.student ?? null,
     })),
   }, actor));
@@ -256,7 +285,7 @@ describe("ش٨ — البيع من مزوّد مسبق الدفع (§٦.٢)", ()
         paymentMethod: "CREDIT",
         customerId: 1,
         sourceType: "INVOICE",
-        managerOverrideByUserId: manager.userId,
+        priceApprovedBy: manager.userId,
       },
     );
     const [originalApproval] = await db().select().from(s.creditApprovals);

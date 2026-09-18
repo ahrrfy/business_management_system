@@ -381,8 +381,11 @@ export async function approveResolution(
     if (!attempt || attempt.state !== "REVERSED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message:
-          "لا تُلغى نيّة قبضها الخارجي مؤكّد قبل إثبات عكس العملية لدى مزوّد الدفع؛ أبقها للمراجعة ولا تمرّر البطاقة ثانيةً",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء نيّة البيع الرقمية",
+          why: "قبضها الخارجي مؤكّد ولم يُثبت عكس العملية لدى مزوّد الدفع",
+          doThis: "أبقها للمراجعة، واعكس القبض لدى المزوّد، ولا تمرّر البطاقة ثانيةً",
+        }),
       });
     }
   }

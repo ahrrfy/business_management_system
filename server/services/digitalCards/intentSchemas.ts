@@ -4,6 +4,7 @@ import { z } from "zod";
 import { computeInvoiceTotals, computeLineTotal } from "../billing";
 import { money } from "../money";
 import type { DigitalCheckoutRegularLineInput } from "../../../shared/digitalSale";
+import { appErrorMessage } from "../../../shared/errors";
 
 const nonNegativeMoney = z
   .string()
@@ -123,7 +124,11 @@ export type InvoiceSourceLine = z.infer<typeof invoiceSourceLineSchema>;
 function sourcePayloadError(message: string): TRPCError {
   return new TRPCError({
     code: "BAD_REQUEST",
-    message: `حمولة فاتورة البيع الرقمية غير صالحة — ${message}`,
+    message: appErrorMessage({
+      what: "حمولة فاتورة البيع الرقمية غير صالحة",
+      why: message,
+      doThis: "حدّث الفاتورة، راجع بنودها وطريقة دفعها، ثم أعد الإعداد قبل إصدار أي كرت",
+    }),
   });
 }
 

@@ -99,6 +99,33 @@ function line(offeringId: number, priced: { pv: number; price: string }, over: P
   };
 }
 
+async function invoiceSourcePayload(
+  offeringId: number,
+  digitalLine: intentService.PrepareLine,
+  clientRequestId: string,
+  customerId?: number,
+) {
+  const [offering] = await db()
+    .select({ variantId: s.digitalOfferings.variantId, productUnitId: s.digitalOfferings.productUnitId })
+    .from(s.digitalOfferings)
+    .where(eq(s.digitalOfferings.id, offeringId));
+  if (!offering?.variantId || !offering.productUnitId) throw new Error("digital offering catalog binding missing");
+  return {
+    branchId: 1,
+    shiftId: 1,
+    customerId,
+    priceTier: "RETAIL" as const,
+    clientRequestId,
+    lines: [{
+      variantId: Number(offering.variantId),
+      productUnitId: Number(offering.productUnitId),
+      quantity: "1",
+      unitPriceOverride: digitalLine.expectedSellPrice,
+      internalLineToken: digitalLine.lineKey,
+    }],
+  };
+}
+
 async function wallet(walletId: number) {
   const [w] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
   return w;
@@ -258,9 +285,12 @@ describe("ش٧ — الإعداد (prepare)", () => {
       clientRequestId: "req-credit-1", branchId: 1, shiftId: 1, paymentMethod: "CREDIT", cartFingerprint: "fp", lines: [l],
     }, actor))).rejects.toThrow(/نقداً أو ببطاقة فقط/);
 
+    const missingCustomerRequestId = "req-credit-invoice-1";
+    const missingCustomerPayload = await invoiceSourcePayload(offeringId, l, missingCustomerRequestId);
     await expect(withTx((tx) => intentService.prepare(tx, {
-      clientRequestId: "req-credit-invoice-1", branchId: 1, shiftId: 1,
-      paymentMethod: "CREDIT", cartFingerprint: "fp", sourceType: "INVOICE", lines: [l],
+      clientRequestId: missingCustomerRequestId, branchId: 1, shiftId: 1,
+      paymentMethod: "CREDIT", cartFingerprint: "fp", sourceType: "INVOICE", priceTier: "RETAIL",
+      sourcePayload: missingCustomerPayload, lines: [l],
     }, actor))).rejects.toThrow(/عميلاً مسجّلاً/);
 
     await expect(withTx((tx) => intentService.prepare(tx, {
@@ -293,15 +323,20 @@ describe("ش٧ — الإعداد (prepare)", () => {
     const offeringId = await mkOffering(providerId, { walletId });
     const priced = await publish(1, providerId, [{ offeringId, providerShare: "9500" }]);
 
+    const openingRequestId = "req-credit-opening-1";
+    const openingLine = line(offeringId, priced.get(offeringId)!);
+    const openingPayload = await invoiceSourcePayload(offeringId, openingLine, openingRequestId, 1);
     const prepared = await withTx((tx) => intentService.prepare(tx, {
-      clientRequestId: "req-credit-opening-1",
+      clientRequestId: openingRequestId,
       branchId: 1,
       shiftId: 1,
       paymentMethod: "CREDIT",
       cartFingerprint: "fp-opening-credit",
       sourceType: "INVOICE",
       customerId: 1,
-      lines: [line(offeringId, priced.get(offeringId)!)],
+      priceTier: "RETAIL",
+      sourcePayload: openingPayload,
+      lines: [openingLine],
     }, actor));
 
     expect(prepared.intentId).toBeGreaterThan(0);

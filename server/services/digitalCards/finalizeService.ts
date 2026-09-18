@@ -198,7 +198,11 @@ export async function finalize(
         externalPaymentDeviceId: boundExternalDeviceId,
       });
     } else if (invoicePayload.payment != null) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة الآجلة لا تحمل قبضاً نقدياً أو خارجياً" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "تعذّر تثبيت الفاتورة الآجلة",
+        why: "الحمولة تحمل قبضاً نقدياً أو خارجياً مع أن كامل الإجمالي ذمّة",
+        doThis: "أزل بيانات القبض وثبّت الفاتورة بمقبوض صفر، أو أنشئ عملية دفع جديدة قبل إصدار الكروت",
+      }) });
     }
   }
   if (input.paymentMethod === "CARD") {

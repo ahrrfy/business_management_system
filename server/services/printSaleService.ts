@@ -72,6 +72,14 @@ export const PRINT_SERVICE_TYPE = "PRINT_SERVICE";
 /** رمز خادمي لا يمكن صياغته من حمولة tRPC؛ يفتح السالب لوقائع الطباعة الملتقطة أوفلاين فقط. */
 export const OFFLINE_PRINT_REPLAY_CAPABILITY = Symbol("OFFLINE_PRINT_REPLAY_CAPABILITY");
 
+function printServiceCatalogError(why: string): string {
+  return appErrorMessage({
+    what: "تعذّر حفظ بيع خدمات الطباعة",
+    why,
+    doThis: "حدّث الخدمات والوصفات ثم أعد إنشاء الفاتورة",
+  });
+}
+
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface PrintSaleLineInput {
@@ -330,7 +338,10 @@ export async function createPrintSaleInTx(
       preparedLineRows.map((row) => [Number(row.id), Number(row.productId)]),
     );
     function throwMissingPrintService(variantId: number | string): never {
-      throw new TRPCError({ code: "NOT_FOUND", message: `الخدمة ${variantId} غير موجودة` });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: printServiceCatalogError(`الخدمة ${variantId} غير موجودة`),
+      });
     }
     if (preparedProductIdByVariant.size !== lineVarIds.length) {
       const missing = lineVarIds.find((variantId) => !preparedProductIdByVariant.has(variantId));
@@ -401,10 +412,16 @@ export async function createPrintSaleInTx(
     }
 
     function throwDisabledPrintService(variantId: number): never {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `الخدمة ${variantId} معطّلة` });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: printServiceCatalogError(`الخدمة ${variantId} معطّلة`),
+      });
     }
     function throwNonPrintService(): never {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الشاشة تبيع خدمات الطباعة فقط" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: printServiceCatalogError("هذه الشاشة تبيع خدمات الطباعة فقط"),
+      });
     }
     // فحص المنتج المقفول قبل تحميل وصفته يحافظ على رسالة القناة الصحيحة للصنف غير الصالح.
     for (const l of input.lines) {
@@ -442,7 +459,7 @@ export async function createPrintSaleInTx(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّرت وصفة مواد خدمة الطباعة أثناء حفظ الفاتورة — أعد المحاولة",
+        message: printServiceCatalogError("تغيّرت وصفة مواد خدمة الطباعة أثناء حفظ الفاتورة"),
       });
     }
     serviceRecipes = currentServiceRecipes;

@@ -33,8 +33,7 @@ import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
-import { RECEPTION_STATION_GATE } from "@/lib/receptionOperationsHub";
+import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, RECEPTION_STATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 

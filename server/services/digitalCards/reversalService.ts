@@ -205,6 +205,16 @@ function invoiceHeaderAfterDigitalRefund(
       }),
     });
   }
+  if (sell.gt(paid) && inv.customerId == null) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر استرداد البطاقة الرقمية",
+        why: `مبلغ الرد يتجاوز المقبوض الفعلي: قيمة البنود ${toDbMoney(sell)} والمقبوض ${toDbMoney(paid)}، ولا يوجد عميل مسجّل لتحويل الباقي إلى رصيد دائن`,
+        doThis: "راجع سندات القبض وربط العميل بالفاتورة قبل إعادة الاسترداد",
+      }),
+    });
+  }
   if (cashRefund.lt(0) || cashRefund.gt(sell) || cashRefund.gt(paid)) {
     throw new TRPCError({
       code: "CONFLICT",

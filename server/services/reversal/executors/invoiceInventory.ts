@@ -242,11 +242,13 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
     const physicalMovementIds = (variantsByItem.get(line.itemId) ?? [])
       .map((vid) => movementIdByVariant.get(vid))
       .filter((id): id is number => id != null);
+    // موادُ الخدمة قد تعود فعلياً، أمّا بندُ الخدمة نفسه فلا يصبح مخزوناً على الرف.
+    const invoiceLineRestocked = line.restocked && line.kind !== "SERVICE";
     await tx
       .update(invoiceItems)
       .set({
         returnedBaseQuantity: (item.returnedBaseQuantity ?? 0) + line.quantity,
-        ...(line.restocked
+        ...(invoiceLineRestocked
           ? { returnedRestockedBaseQuantity: (item.returnedRestockedBaseQuantity ?? 0) + line.quantity }
           : {}),
       })

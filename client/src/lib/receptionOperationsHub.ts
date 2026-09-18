@@ -1,10 +1,8 @@
-import {
-  POS_STATION_GATES,
-  type PermissionMap,
-} from "@shared/permissions";
+import { type PermissionMap } from "@shared/permissions";
 import {
   canSeeGate,
   INVOICE_LIST_GATE,
+  RECEPTION_STATION_GATE,
   type RoleGate,
 } from "@/lib/navVisibility";
 
@@ -20,15 +18,7 @@ export type ReceptionOperationsTabDefinition = {
   gate: RoleGate;
 };
 
-/**
- * مرآة بوابة محطة الاستقبال المشتركة. إبقاء الدور والوحدة معاً مهم: الدور القالبي
- * يمرّ فقط إذا بقيت workorders=FULL، والدور الآخر يحتاج منحة FULL صريحة.
- */
-export const RECEPTION_STATION_GATE: RoleGate = {
-  roles: [...POS_STATION_GATES.RECEPTION.allowedRoles],
-  module: POS_STATION_GATES.RECEPTION.module,
-  level: "FULL",
-};
+export { RECEPTION_STATION_GATE } from "@/lib/navVisibility";
 
 /** العمليات المالية والتسليم النهائي تتبع workordersCashierProcedure، لا بوابة التنفيذ الأوسع. */
 const RECEPTION_CASHIER_GATE: RoleGate = {
