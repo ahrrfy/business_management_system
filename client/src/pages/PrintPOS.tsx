@@ -12,6 +12,7 @@ import {
   printShiftOpen, printReceipt, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
   getServerBridgeStatus, serverPrintTest,
 } from "@/lib/printing/print";
+import { printShippingLabel } from "@/lib/printing/shippingLabel";
 import { isCustomPriceSku } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -1151,8 +1152,19 @@ export default function PrintPOS() {
           }}
           onPrint={() => {
             void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
-              if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
-            }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }));
+              if (!printed.ok) setMessage({ kind: "err", text: "تم الإصدار ولكن فشلت الطباعة الحرارية." });
+            }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "فشلت الطباعة" }));
+          }}
+          onPrintLabel={() => {
+            void printShippingLabel({
+              orderNumber: receipt.invoiceNumber || receipt.num || "",
+              customerName: receipt.customerName || tab.contactName || null,
+              customerPhone: tab.contactPhone || null,
+              governorate: receipt.delivery && "governorate" in receipt.delivery ? String(receipt.delivery.governorate) : null,
+              addressText: receipt.delivery?.address ?? null,
+              total: String(receipt.total),
+              items: receipt.lines.map(line => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
+            }).then(r => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); });
           }}
         />
       )}
