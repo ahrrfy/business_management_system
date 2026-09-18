@@ -29,6 +29,7 @@ const TABLES = [
   "salesControlRequests",
   "auditLogs", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
   "productionRecipeLines", "productionRecipes",
+  "invoiceItemServiceMaterials",
   "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits",
   "productVariants", "products", "shifts", "customers", "branches", "users",
 ];
@@ -194,6 +195,9 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
       lines: [{ variantId: 2, productUnitId: 2, quantity: "2" }],
     }, admin);
     expect(await getStock(1, 1)).toBe(6); // 10 − (2 مادة × 2 خدمة)
+    // تغيّر WAVG بعد البيع: العكس يجب أن يعيد قيمة اللقطة القديمة، لا أن يضيف الأربع بسعر اليوم.
+    await db().update(s.productVariants).set({ costPrice: "900.00" })
+      .where(eq(s.productVariants.id, 1));
     // غيّر الوصفة بعد البيع: العكس يجب أن يعتمد حركة الأصل (4)، لا وصفة اليوم (2).
     await db().update(s.productionRecipeLines).set({ qtyPerOutputBase: "1.0000" })
       .where(eq(s.productionRecipeLines.recipeId, 1));
@@ -217,7 +221,9 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     expect(originalEntries.reduce((sum, entry) => sum + Number(entry.cost), 0)).toBeCloseTo(0, 2);
     const replacementEntries = await db().select().from(s.accountingEntries)
       .where(eq(s.accountingEntries.invoiceId, corrected.correctedInvoiceId));
-    expect(replacementEntries.reduce((sum, entry) => sum + Number(entry.cost), 0)).toBeCloseTo(600, 2);
+    expect(replacementEntries.reduce((sum, entry) => sum + Number(entry.cost), 0)).toBeCloseTo(780, 2);
+    expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("780.00");
 
     const originalMaterialMoves = await db().select().from(s.inventoryMovements)
       .where(and(

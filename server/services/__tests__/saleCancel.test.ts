@@ -41,8 +41,11 @@ const TABLES = [
   "receipts",
   "inventoryMovements",
   "invoiceItemBundleComponents",
+  "invoiceItemServiceMaterials",
   "invoiceItems",
   "invoices",
+  "productionRecipeLines",
+  "productionRecipes",
   "branchStock",
   "productPrices",
   "productUnits",
@@ -756,13 +759,26 @@ describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
     expect(await stockOf(1, 1)).toBe(8);
   });
 
-  it("إلغاء سطر خدمة لا يوسمه كمُعاد إلى المخزون", async () => {
+  it("إلغاء سطر خدمة يعيد موادها بقيمة اللقطة ولا يوسم الخدمة نفسها كمخزون", async () => {
     await db().insert(s.products).values({ id: 2, name: "خدمة تصميم", isService: true });
     await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "SVC-2", costPrice: "0.00" });
     await db().insert(s.productUnits).values({
       id: 2, variantId: 2, unitName: "خدمة", conversionFactor: "1", isBaseUnit: true,
     });
-    await db().insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "500.00" });
+    await db().insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "1000.00" });
+    await setStock(1, 1, 10);
+    await db().insert(s.productionRecipes).values({
+      id: 1,
+      name: "وصفة خدمة الإلغاء",
+      outputVariantId: 2,
+      outputProductUnitId: 2,
+      isActive: true,
+    });
+    await db().insert(s.productionRecipeLines).values({
+      recipeId: 1,
+      inputVariantId: 1,
+      qtyPerOutputBase: "2.0000",
+    });
 
     const sale = await createSale({
       branchId: 1,
@@ -772,6 +788,9 @@ describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
     }, admin);
     const item = (await db().select().from(s.invoiceItems)
       .where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    expect(await stockOf(1, 1)).toBe(6);
+    await db().update(s.productVariants).set({ costPrice: "900.00" })
+      .where(eq(s.productVariants.id, 1));
 
     await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin);
 
@@ -780,6 +799,9 @@ describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
     expect(cancelledItem.returnedBaseQuantity).toBe(2);
     expect(cancelledItem.returnedRestockedBaseQuantity).toBe(0);
     expect(await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 2))).toHaveLength(0);
+    expect(await stockOf(1, 1)).toBe(10);
+    expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("700.00");
   });
 
   it("P2: replay بعد استرداد فعليّ يعيد بناء refundAmount الحقيقيّ (لا صفراً وهمياً)", async () => {

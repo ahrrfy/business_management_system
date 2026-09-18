@@ -24,7 +24,7 @@ import { appErrorMessage } from "@shared/errors";
 
 import { invoiceItemBundleComponents, invoiceItemServiceMaterials, invoiceItems } from "../../../../drizzle/schema";
 import { allocateLineCost } from "../../billing";
-import { applyMovement } from "../../inventoryService";
+import { applyMovement, applyValuedInboundMovement } from "../../inventoryService";
 import { money, round2 } from "../../money";
 import type { EffectExecutor, ExecutionOutcome } from "../types";
 import { invoiceContext, writeInventoryState, type ReversedLine } from "./invoiceState";
@@ -152,6 +152,10 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
 
   // ═══ حركاتُ المخزون المجمَّعة لكلّ متغيّر ═══
   const aggregated = new Map<number, number>();
+  const valuedAggregated = new Map<
+    number,
+    { quantity: number; historicalValue: ReturnType<typeof money> }
+  >();
   const variantsByItem = new Map<number, number[]>();
   for (const line of lines) {
     if (!line.restocked) continue;
@@ -185,10 +189,20 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
         }
         const qty = proportional.toNumber();
         if (qty <= 0) continue;
-        aggregated.set(
-          snapshot.materialVariantId,
-          (aggregated.get(snapshot.materialVariantId) ?? 0) + qty,
+        const valued = valuedAggregated.get(snapshot.materialVariantId) ?? {
+          quantity: 0,
+          historicalValue: money(0),
+        };
+        valued.quantity += qty;
+        valued.historicalValue = valued.historicalValue.plus(
+          allocateLineCost(
+            snapshot.lineCost,
+            Number(item.baseQuantity),
+            Number(item.returnedBaseQuantity ?? 0),
+            line.quantity,
+          ),
         );
+        valuedAggregated.set(snapshot.materialVariantId, valued);
         vids.push(snapshot.materialVariantId);
       }
       variantsByItem.set(line.itemId, vids);
@@ -218,21 +232,42 @@ export const invoiceInventoryExecutor: EffectExecutor = async (tx, effects, run)
     }
   }
   const movementIdByVariant = new Map<number, number>();
-  for (const vid of Array.from(aggregated.keys()).sort((a, b) => a - b)) {
-    const qty = aggregated.get(vid)!;
-    if (qty <= 0) continue;
-    const mv = await applyMovement(tx, {
-      variantId: vid,
-      branchId: Number(ctx.invoice.branchId),
-      baseQuantity: qty,
-      movementType: "RETURN",
-      referenceType: "RETURN",
-      referenceId: run.documentId,
-      createdBy: run.actor.userId,
-      notes: flavor === "CANCEL" ? "إلغاء فاتورة بيع — إرجاع كامل البضاعة للمخزون" : undefined,
-    });
-    // متغيّرٌ خدميّ يُعيد movementId=0 بلا رصيد — لا نختلق مرجعاً له (Codex #957).
-    if (mv.movementId) movementIdByVariant.set(vid, mv.movementId);
+  const movementVariantIds = Array.from(
+    new Set([
+      ...Array.from(aggregated.keys()),
+      ...Array.from(valuedAggregated.keys()),
+    ]),
+  ).sort((a, b) => a - b);
+  for (const vid of movementVariantIds) {
+    const plainQuantity = aggregated.get(vid) ?? 0;
+    if (plainQuantity > 0) {
+      const mv = await applyMovement(tx, {
+        variantId: vid,
+        branchId: Number(ctx.invoice.branchId),
+        baseQuantity: plainQuantity,
+        movementType: "RETURN",
+        referenceType: "RETURN",
+        referenceId: run.documentId,
+        createdBy: run.actor.userId,
+        notes: flavor === "CANCEL" ? "إلغاء فاتورة بيع — إرجاع كامل البضاعة للمخزون" : undefined,
+      });
+      if (mv.movementId) movementIdByVariant.set(vid, mv.movementId);
+    }
+    const valued = valuedAggregated.get(vid);
+    if (valued && valued.quantity > 0) {
+      const mv = await applyValuedInboundMovement(tx, {
+        variantId: vid,
+        branchId: Number(ctx.invoice.branchId),
+        baseQuantity: valued.quantity,
+        historicalValue: valued.historicalValue,
+        movementType: "RETURN",
+        referenceType: "RETURN",
+        referenceId: run.documentId,
+        createdBy: run.actor.userId,
+        notes: flavor === "CANCEL" ? "إلغاء فاتورة بيع — إعادة مواد الخدمة بقيمتها التاريخية" : undefined,
+      });
+      if (mv.movementId) movementIdByVariant.set(vid, mv.movementId);
+    }
   }
 
   // ═══ تحديثُ البند: المُرجَع كلُّه، والعائدُ للرفّ بما عاد فعلاً ═══

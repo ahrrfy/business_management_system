@@ -49,7 +49,7 @@ import {
   idempotencyHash,
   recordIdempotencyKey,
 } from "./idempotency";
-import { applyMovement } from "./inventoryService";
+import { applyMovement, applyValuedInboundMovement } from "./inventoryService";
 import { allocateLineCost } from "./billing";
 import {
   adjustCustomerBalance,
@@ -1166,6 +1166,7 @@ export async function returnSaleInTx(
   interface StockOp {
     variantId: number;
     baseQuantity: number;
+    historicalValue?: Decimal;
   }
   const stockOps: StockOp[] = [];
   const restoredServiceItemIds = new Set<number>();
@@ -1245,6 +1246,12 @@ export async function returnSaleInTx(
           stockOps.push({
             variantId: Number(snapshot.materialVariantId),
             baseQuantity: quantity.toNumber(),
+            historicalValue: allocateLineCost(
+              snapshot.lineCost,
+              Number(item.baseQuantity),
+              Number(item.returnedBaseQuantity ?? 0),
+              line.baseQuantity,
+            ),
           });
         }
       }
@@ -1320,31 +1327,55 @@ export async function returnSaleInTx(
 
   // تجميع + تطبيق بترتيب variantId التصاعدي — نفس نمط sale/create.ts (خطوة 10).
   if (restock) {
-    const aggregated = new Map<number, number>();
+    const aggregated = new Map<number, {
+      plainQuantity: number;
+      valuedQuantity: number;
+      historicalValue: Decimal;
+    }>();
     for (const op of stockOps) {
-      aggregated.set(
-        op.variantId,
-        (aggregated.get(op.variantId) ?? 0) + op.baseQuantity,
-      );
+      const current = aggregated.get(op.variantId) ?? {
+        plainQuantity: 0,
+        valuedQuantity: 0,
+        historicalValue: money(0),
+      };
+      if (op.historicalValue === undefined) {
+        current.plainQuantity += op.baseQuantity;
+      } else {
+        current.valuedQuantity += op.baseQuantity;
+        current.historicalValue = current.historicalValue.plus(op.historicalValue);
+      }
+      aggregated.set(op.variantId, current);
     }
     const sortedVariantIds = Array.from(aggregated.keys()).sort(
       (a, b) => a - b,
     );
     for (const vid of sortedVariantIds) {
-      const qty = aggregated.get(vid)!;
-      if (qty <= 0) continue;
-      const mv = await applyMovement(tx, {
-        variantId: vid,
-        branchId: Number(inv.branchId),
-        baseQuantity: qty,
-        movementType: "RETURN",
-        referenceType: "RETURN",
-        referenceId: input.invoiceId,
-        createdBy: actor.userId,
-      });
+      const operation = aggregated.get(vid)!;
+      if (operation.plainQuantity > 0) {
+        await applyMovement(tx, {
+          variantId: vid,
+          branchId: Number(inv.branchId),
+          baseQuantity: operation.plainQuantity,
+          movementType: "RETURN",
+          referenceType: "RETURN",
+          referenceId: input.invoiceId,
+          createdBy: actor.userId,
+        });
+      }
+      if (operation.valuedQuantity > 0) {
+        await applyValuedInboundMovement(tx, {
+          variantId: vid,
+          branchId: Number(inv.branchId),
+          baseQuantity: operation.valuedQuantity,
+          historicalValue: operation.historicalValue,
+          movementType: "RETURN",
+          referenceType: "RETURN",
+          referenceId: input.invoiceId,
+          createdBy: actor.userId,
+        });
+      }
       // ق٧: لا تسجيلَ ظلّيّ هنا — المرتجعُ الجزئيّ يبقى يدوياً ويُصالحه مُجسِّد محرّك العكس
       // (server/services/reversal/materialize/invoice.ts) بالفرق عند أوّل عكسٍ كامل أو إلغاء.
-      void mv;
     }
   }
 
