@@ -39,6 +39,12 @@ export interface ShippingLabelData {
   longitude?: string | number | null;
   /** مبلغ التحصيل عند الاستلام (COD) — إجمالي الطلب. */
   total: string;
+  /** إجمالي سعر المنتجات/الخدمات قبل رسوم التوصيل. */
+  subtotal?: string | null;
+  /** رسوم التوصيل (يُضاف للـCOD عند تحصيله من المستلم). */
+  shippingFee?: string | null;
+  /** المبلغ المدفوع مسبقاً (عربون/دفعة أولى). */
+  paidAmount?: string | null;
   /** الفاتورة المدفوعة بالكامل تُوسَم مدفوعة ولا تطلب من المندوب تحصيل صفرٍ «نقداً». */
   paymentState?: "COD" | "PREPAID";
   deliveryPartyName?: string | null;
@@ -52,12 +58,17 @@ export interface ShippingLabelData {
 
 export function resolveShippingLabelQrTarget(
   o: Pick<ShippingLabelData, "orderNumber" | "qrUrl" | "latitude" | "longitude">,
-  _origin = "",
+  origin = typeof window !== "undefined" ? window.location.origin : "",
 ): string | null {
   if (o.latitude && o.longitude) {
     return `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`;
   }
-  return o.qrUrl?.trim() || null;
+  if (o.qrUrl?.trim()) return o.qrUrl.trim();
+  // توليد رابط تلقائي من رقم الطلب — يضمن دائماً وجود QR قابل للمسح
+  if (o.orderNumber && origin) {
+    return `${origin}/verify?ref=${encodeURIComponent(o.orderNumber)}`;
+  }
+  return null;
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
@@ -142,6 +153,8 @@ ${CAIRO_FONT}
   .ft-info{flex:1 1 auto;min-width:0;font-size:8.5pt;line-height:1.35}
   .ft-info b{font-weight:900}
   .ft-c{margin-top:0.6mm;font-weight:700;font-size:7.5pt;line-height:1.2}
+  /* صف التفاصيل المالية: سعر الطلب · رسوم التوصيل · مدفوع مسبقاً */
+  .fin-row{font-size:7.5pt;font-weight:700;color:#333;padding:1mm 0 0.5mm;border-top:1px dashed #999;margin-top:1mm;display:flex;flex-wrap:wrap;gap:0 3mm}
 </style></head>
 <body>
   <div class="pg">
@@ -169,6 +182,11 @@ ${CAIRO_FONT}
       <div class="cod-l">${o.paymentState === "PREPAID" ? "مدفوع مسبقاً" : "الدفع عند الاستلام"}<small>${o.paymentState === "PREPAID" ? "لا يُحصَّل مبلغ عند التسليم" : "COD — تُحصَّل نقداً"}</small></div>
       <div class="cod-v">${o.paymentState === "PREPAID" ? "مدفوع" : `${esc(fmt(o.total))}<u>د.ع</u>`}</div>
     </div>
+    ${(o.subtotal || o.shippingFee || o.paidAmount) ? `<div class="fin-row">${[
+      o.subtotal ? `<span><b>سعر الطلب:</b> ${esc(fmt(o.subtotal))} د.ع</span>` : "",
+      o.shippingFee ? `<span><b>رسوم التوصيل:</b> ${esc(fmt(o.shippingFee))} د.ع</span>` : "",
+      o.paidAmount && Number(o.paidAmount) > 0 ? `<span><b>مدفوع مسبقاً:</b> ${esc(fmt(o.paidAmount))} د.ع</span>` : "",
+    ].filter(Boolean).join(" · ")}</div>` : ""}
 
     <div class="items"><b>أصناف التجهيز (${itemCount}):</b> <span class="items-list">${esc(contents || "—")}</span></div>
 
