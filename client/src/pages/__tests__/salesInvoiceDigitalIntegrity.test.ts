@@ -6,6 +6,10 @@ const source = readFileSync(
   path.resolve(import.meta.dirname, "../SalesInvoiceNew.tsx"),
   "utf8",
 );
+const basketSource = readFileSync(
+  path.resolve(import.meta.dirname, "../../components/pos/digitalBasket.ts"),
+  "utf8",
+);
 
 const fulfillmentStart = source.indexOf("function startDigitalFulfillment");
 const fulfillmentEnd = source.indexOf("function addDigitalBasket", fulfillmentStart);
@@ -13,37 +17,33 @@ const fulfillmentSource = source.slice(fulfillmentStart, fulfillmentEnd);
 
 describe("SalesInvoiceNew digital invoice contract", () => {
   it("يمرر عقد البطاقة المؤكد كاملاً ولا يعيد نسخة سعر وهمية", () => {
-    expect(source).toContain("priceVersionId: c.digital!.priceVersionId");
-    expect(source).toContain("providerBasketKey: c.digital!.providerBasketKey");
-    expect(source).toContain("providerReference: c.digital!.providerReference");
-    expect(source).toContain("student: c.digital!.student ?? null");
-    expect(source).not.toMatch(/priceVersionId:\s*1\b/);
+    expect(source).toContain("toDigitalPrepareLine(c.digital!)");
+    expect(basketSource).toContain("priceVersionId: meta.priceVersionId");
+    expect(basketSource).toContain("providerBasketKey: meta.providerBasketKey");
+    expect(basketSource).toContain("providerReference: meta.providerReference");
+    expect(basketSource).toContain("student: meta.student ?? null");
+    expect(source + basketSource).not.toMatch(/priceVersionId:\s*1\b/);
   });
 
   it("يحفظ كل مثيل بمفتاح UUID ويمنع الآجل والدفع الجزئي والقبض الخارجي قبل الحجز", () => {
-    expect(source).toContain("internalLineToken: crypto.randomUUID()");
-    expect(source).toContain('state.paymentTerms !== "CASH"');
-    expect(source).toContain('state.paymentMethod !== "CASH"');
-    expect(source).toContain("!D(computePaidStr()).eq(D(totals.grandTotal))");
+    expect(basketSource).toContain("globalThis.crypto.randomUUID()");
+    expect(basketSource).toContain('input.paymentTerms === "INSTALLMENT"');
+    expect(basketSource).toContain('input.paymentMethod !== "CASH"');
+    expect(basketSource).toContain("D(input.paidTotal)).eq(round2(D(input.grandTotal))");
     expect(source).toContain("!hasDigitalItems && state.paymentMethod !== \"CASH\"");
     expect(source).toContain("لم يبدأ النظام أي عملية قبض خارجية");
   });
 
   it("يرفض خصم الرأس والضريبة والتوصيل عند وجود كرت رقمي", () => {
-    expect(source).toContain("D(totals.globalDiscAmt).gt(0)");
-    expect(source).toContain('(state.taxEnabled && D(state.taxRatePercent || "0").gt(0))');
-    expect(source).toContain("state.shippingFree");
-    expect(source).toContain("D(totals.shipping).gt(0)");
-    expect(source).toContain(
-      "لا تجمع الكروت الرقمية مع خصم رأس الفاتورة أو الضريبة أو التوصيل؛ افصلها في فاتورة مستقلة حتى يبقى كل استرداد دقيقاً.",
-    );
+    expect(basketSource).toContain("D(input.globalDiscount).gt(0)");
+    expect(basketSource).toContain("input.taxEnabled && D(input.totalTax).gt(0)");
+    expect(basketSource).toContain("input.shippingFree");
+    expect(basketSource).toContain("D(input.shipping).gt(0)");
   });
 
   it("يرفض إهداء السطر الرقمي برسالة تشغيلية واضحة", () => {
-    expect(source).toContain("line.digital != null && line.isGift");
-    expect(source).toContain(
-      "لا يمكن إهداء كرت رقمي صادر؛ استخدم خصماً صريحاً ضمن الصلاحية أو افصل قرار الإهداء بمسار إداري.",
-    );
+    expect(basketSource).toContain("line.isGift === true");
+    expect(basketSource).toContain("بيانات «${changed.name}» الرقمية تغيّرت");
   });
 
   it("يفصل بيانات اعتماد المدير عن sourcePayload الدائم", () => {

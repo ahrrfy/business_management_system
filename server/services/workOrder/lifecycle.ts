@@ -250,7 +250,11 @@ export async function startWorkOrder(
         entryType: "ADJUST",
         dedupeKey: `WO-WIP-CONSUME:${workOrderId}`,
         branchId: Number(wo.branchId),
-        cost: materialsCost,
+        // تحويل أصلٍ إلى أصل (مخزون → إنتاج تحت التشغيل)، لا COGS ولا خسارة.
+        // تُحفظ قيمة التحويل في amount وتظهر تفاصيل الطرفين في postingIntent.
+        revenue: money(0),
+        cost: money(0),
+        profit: money(0),
         amount: materialsCost,
         notes: `تحويل مواد أمر الشغل ${wo.orderNumber} إلى إنتاج تحت التشغيل`,
         postingIntent: createPostingIntent(
