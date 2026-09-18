@@ -60,6 +60,10 @@ const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const MyWork = lazy(() => import("@/pages/MyWork"));
 const ReceptionOperationsHub = lazy(() => import("@/pages/ReceptionOperationsHub"));
+const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
+const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
+const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
+const ReceptionHandoverPage = lazy(() => import("@/pages/reception/ReceptionHandoverPage"));
 
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 
@@ -498,10 +502,11 @@ export default function App() {
       {/* محطة إنشاء الطلب تبقى في POS على /reception؛ ما بعد التثبيت يجتمع هنا في مركز خفيف. */}
       <Route path="/reception/operations"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionOperationsHub /></RequireRole></Shell></Route>
       {/* الروابط التاريخية تبقى صالحة وتحفظ section/invoice وأي سياق وارد. */}
-      <Route path="/reception/orders"><RedirectKeepQuery to="/reception/operations?tab=orders" /></Route>
-      <Route path="/reception/invoices"><RedirectKeepQuery to="/reception/operations?tab=invoices" /></Route>
-      <Route path="/reception/workflow"><RedirectKeepQuery to="/reception/operations?tab=workflow" /></Route>
-      <Route path="/reception/handover"><RedirectKeepQuery to="/reception/operations?tab=handover" /></Route>
+        {/* استعادة الشاشات المستقلة لمحطة الاستقبال بناءً على طلب المستخدم */}
+        <Route path="/reception/orders"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionOrdersPage /></RequireRole></Shell></Route>
+        <Route path="/reception/invoices"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionInvoicesPage /></RequireRole></Shell></Route>
+        <Route path="/reception/workflow"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionWorkflowPage /></RequireRole></Shell></Route>
+        <Route path="/reception/handover"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionHandoverPage /></RequireRole></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>
