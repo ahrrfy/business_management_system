@@ -183,7 +183,7 @@ export const authRouter = router({
     const mustEnroll2FA = twoFactorEnrollmentRequired(safe);
     // معرّف الشركة من AsyncLocalStorage الخادميّ، لا من localStorage/حقل دخول قابل للتلاعب.
     // `null` يعني نشر شركة واحدة، ويستعمله العميل لعزل أي حالة تشغيلية في المتصفح.
-    return { ...safe, companyId: getCurrentCompanyId(), mustEnroll2FA, mustEnrollTwoFactor: mustEnroll2FA };
+    return { ...safe, role: safe.isOwner ? "admin" : safe.role, companyId: getCurrentCompanyId(), mustEnroll2FA, mustEnrollTwoFactor: mustEnroll2FA };
   }),
 
   /** هل الخادم في وضع تعدّد الشركات؟ تستعملها شاشة الدخول لإظهار/إخفاء حقل "رمز الشركة"
