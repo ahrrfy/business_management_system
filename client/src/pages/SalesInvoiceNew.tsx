@@ -36,7 +36,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
-import { getDeviceCode } from "@/lib/offline/outbox";
+import { getDeviceCode } from "@/lib/offline/outbox"; import { shouldSendUnitPriceOverride } from "@/lib/quotationPayload";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,7 +79,7 @@ import {
   type PaymentTerm,
   type PriceTier,
 } from "@/components/invoice";
-import { ACTION_LABELS } from "@shared/actionLabels";
+import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution"; import { ACTION_LABELS } from "@shared/actionLabels";
 
 const INVOICE_TYPE = "SALE" as const;
 
@@ -88,23 +88,17 @@ type Approval = { email: string; password: string };
 
 /** تنسيق تاريخ (بقيم UTC — التواريخ يومية مخزَّنة عند منتصف ليل UTC) إلى YYYY-MM-DD أو "". */
 function toYmdUtc(v: unknown): string {
-  const d = v instanceof Date ? v : v ? new Date(v as string) : null;
-  if (!d || Number.isNaN(d.getTime())) return "";
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-}
+  const d = v instanceof Date ? v : v ? new Date(v as string) : null; if (!d || Number.isNaN(d.getTime())) return ""; return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`; }
 
 export default function SalesInvoice() {
   const [, navigate] = useLocation();
-  const me = trpc.auth.me.useQuery();
-  const utils = trpc.useUtils();
-
-  const defaultBranchId = me.data?.branchId || 1;
+  const me = trpc.auth.me.useQuery(); const utils = trpc.useUtils(); const defaultBranchId = me.data?.branchId || 1;
 
   const [state, dispatch] = useReducer(
     invoiceReducer,
     undefined,
     () => createInitialState(INVOICE_TYPE, defaultBranchId),
-  );
+  ); const pricingIntentEpochRef = useRef(createPricingIntentEpoch());
 
   // ── تصحيح الفاتورة (0168) — نفس شاشة البيع في وضع التصحيح (نمط المعيار: مسار + query + هيدرة مرّة) ──
   // كلّ ما يخصّ التصحيح محجوبٌ خلف isCorrection ⇒ تدفّق الإنشاء يبقى مطابقاً حرفاً بحرف حين لا تصحيح.
@@ -389,9 +383,11 @@ export default function SalesInvoice() {
     } | null
   >(null);
   /** إثبات الدفع الخارجي هنا للبيع الجديد فقط؛ فرق التصحيح يُنفّذه المراجع عند الاعتماد. */
-  const externalAmountD = D(computePaidStr());
-  const externalAmount = round2(externalAmountD).toFixed(2);
-  const externalNeeded = !isCorrection && state.paymentMethod !== "CASH" && externalAmountD.gt(0);
+  const externalAmountD = D(computePaidStr()); const externalAmount = round2(externalAmountD).toFixed(2);
+  const hasDigitalItems = state.items.some((line) => line.digital != null);
+  // لا نبدأ قبضاً خارجياً لفاتورة رقمية قبل وجود نيّة وحجز ذريين؛ الخادم يفرض
+  // السياسة نفسها. الفواتير العادية غير النقدية تبقى على مسار الإثبات الحالي.
+  const externalNeeded = !isCorrection && !hasDigitalItems && state.paymentMethod !== "CASH" && externalAmountD.gt(0);
   const externalChannel = "POS" as const;
   const externalFingerprint = `${externalChannel}|${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
   const externalConfirmed =
@@ -401,6 +397,7 @@ export default function SalesInvoice() {
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
   async function confirmExternalPayment() {
+    if (hasDigitalItems) return notify.err("الدفع بالبطاقة لفاتورة تحتوي كروتاً رقمية موقوف مؤقتاً؛ لم يبدأ النظام أي عملية قبض خارجية.");
     const reference = paymentRef.trim();
     if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
     if (!externalAmountD.gt(0)) return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
@@ -447,7 +444,7 @@ export default function SalesInvoice() {
       setDigitalIntentId(res.intentId); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
     },
     onError: (e) => {
-      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير") || e.message.includes("نقديٌّ فقط"))) {
+      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير") || e.message.includes("اعتماد مدير"))) {
         setCreditPrompt(e.message); return;
       }
       releaseReservedPrintWindow(); printAfterSaveRef.current = false; shareAfterSaveRef.current = false; notify.err(e);
@@ -571,12 +568,13 @@ export default function SalesInvoice() {
         variantId: l.variantId,
         productUnitId: l.productUnitId,
         quantity: D(l.qty).toString(),
+        ...(l.digital ? { internalLineToken: l.digital.lineKey } : {}),
         // الهدية: نُعلن النيّة فقط ولا نُرسل سعراً/خصماً — الخادم يُصفّرهما بنفسه ويُرحّل التكلفة
         // قيدَ GIFT_OUT. إرسال سعرٍ هنا يفتح باب «هديةٍ بسعر» لو انحرفت الشاشة يوماً.
         ...(l.isGift
           ? { isGift: true as const }
           : {
-              unitPriceOverride: round2(D(l.price)).toFixed(2),
+              ...(shouldSendUnitPriceOverride(l) ? { unitPriceOverride: round2(D(l.price)).toFixed(2) } : {}),
               discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
               discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
             }),
@@ -693,6 +691,7 @@ export default function SalesInvoice() {
       shipping: totals.shipping, taxEnabled: state.taxEnabled, totalTax: totals.totalTax,
     });
     if (digitalError) return digitalError;
+    if (hasDigitalItems && state.paymentTerms === "CASH" && state.paymentMethod === "CARD") return "دفع البطاقة للكروت الرقمية موقوف مؤقتاً حتى يكتمل الربط الذري قبل القبض؛ استخدم النقد أو اجعل الفاتورة آجلة كاملة.";
     // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
     // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
     if (state.shippingFree && !D(state.shipping || "0").gt(0)) {
@@ -700,6 +699,7 @@ export default function SalesInvoice() {
     }
     for (const l of state.items) {
       if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
+      if (l.digital && !D(l.qty).eq(1)) return `كل كرت رقمي في «${l.name}» يجب أن يبقى سطراً مستقلاً بكمية واحدة.`;
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
@@ -732,6 +732,7 @@ export default function SalesInvoice() {
     const regular = state.items.filter((c) => !c.digital);
     const digitalLines = state.items.filter((c) => c.digital);
     if (!digitalLines.length) return; const settlement = resolveDigitalInvoiceSettlement({ paymentTerms: state.paymentTerms, paymentMethod: state.paymentMethod, paidTotal: computePaidStr() });
+    const payload = buildPayload(approval); const { managerApproval, ...sourcePayload } = payload;
     prepareIntent.mutate({
       branchId: Number(state.branchId), shiftId: currentShift.data.id, clientRequestId,
       paymentMethod: settlement.paymentMethod,
@@ -739,7 +740,7 @@ export default function SalesInvoice() {
       externalPaymentDeviceId: settlement.paymentMethod === "CARD" ? externalAttempt?.deviceId ?? undefined : undefined,
       cartFingerprint: clientRequestId, customerId: state.entityId ?? undefined, priceTier: state.tier,
       dueDate: state.paymentTerms === "CREDIT" && state.dueDate ? state.dueDate : undefined, notes: state.notes.trim() || undefined, sourceType: "INVOICE",
-      regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)), ...(approval ? { managerApproval: approval } : {}),
+      sourcePayload, regularLines: regular.map(toDigitalPrepareRegularLine), lines: digitalLines.map((c) => toDigitalPrepareLine(c.digital!)), ...(managerApproval ? { managerApproval } : {}),
     });
   }
 
@@ -1065,7 +1066,7 @@ export default function SalesInvoice() {
       />
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط المالية) */}
-      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
+      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} pricingIntentEpoch={pricingIntentEpochRef.current} />
 
       {openingModeQuery.data?.active === true && (
         <div className="flex items-center gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--sem-warn)]">
@@ -1091,7 +1092,7 @@ export default function SalesInvoice() {
             items={state.items}
             dispatch={dispatch}
             branchId={state.branchId}
-            tier={state.tier}
+            tier={state.tier} customerId={state.entityId} pricingIntentEpoch={pricingIntentEpochRef.current}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
             /* هدايا الفاتورة (0149): مفتاح «هدية» لكلّ سطر — يُصفّر قيمته في الفاتورة وتُرحَّل
@@ -1112,14 +1113,14 @@ export default function SalesInvoice() {
             onAddItems={(items) => dispatch({ type: "ADD_ITEMS", items })}
             invoiceType={INVOICE_TYPE}
             branchId={state.branchId}
-            tier={state.tier}
+            tier={state.tier} customerId={state.entityId}
           />
           
           <DigitalCardsPickerDialog
             open={cardsOpen} branchId={state.branchId} offline={false}
             onClose={() => setCardsOpen(false)} onPickBasket={addDigitalBasket}
-            existingReferences={state.items.flatMap((item) => item.digital ? [{ providerId: item.digital.providerId, providerReference: item.digital.providerReference }] : [])}
             existingCardCount={state.items.filter((item) => item.digital).length}
+            existingReferences={state.items.flatMap((item) => item.digital ? [{ providerId: item.digital.providerId, providerReference: item.digital.providerReference }] : [])}
           />
         </div>
 

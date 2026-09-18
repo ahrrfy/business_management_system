@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { calcLineTotal, calcMargin, calcUnitCost, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
+import type { PricingIntentEpoch } from "./productSearchResolution";
 import { getLineStockState } from "./stockAvailability";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
 
@@ -33,6 +34,9 @@ export interface ProductTableProps {
   dispatch: Dispatch<InvoiceAction>;
   branchId: number;
   tier: PriceTier;
+  customerId?: number | null;
+  /** ساعة مشتركة لإبطال نتائج البحث القديمة فور نية تغيير العميل/الفئة. */
+  pricingIntentEpoch?: PricingIntentEpoch;
   invoiceType: InvoiceType;
   /** false = hide cost & margin columns (cashier role). */
   showCost: boolean;
@@ -150,6 +154,8 @@ export function ProductTable({
   dispatch,
   branchId,
   tier,
+  customerId,
+  pricingIntentEpoch,
   invoiceType,
   showCost,
   purchaseCurrency = "IQD",
@@ -257,6 +263,8 @@ export function ProductTable({
             invoiceType={invoiceType}
             branchId={branchId}
             tier={tier}
+            customerId={customerId}
+            pricingIntentEpoch={pricingIntentEpoch}
             onAddProduct={(line) => { dispatch({ type: "ADD_ITEM", item: line }); setAddTick((t) => t + 1); }}
             onNotify={onNotify}
             // Codex #980: عملة الأمر وسعرُ تثبيته يمرَّان لِتقدير سعر الوحدة **بالدولار** بالقسمة

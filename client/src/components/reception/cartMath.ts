@@ -39,6 +39,10 @@ export type CartLine = {
   row: PosRow;
   qty: number;
   origPrice?: number;
+  /** سعر الكوبون الملتقط للمسودة؛ منفصل عن السعر الأساس كي تعود إزالة الكوبون للسعر الصحيح. */
+  couponPriceSnapshot?: number;
+  /** العرض التلقائي الذي كان على السطر قبل أن يستبدله الكوبون. */
+  couponBasePromotion?: { promotionId: number | null; promotionName: string | null; promotionEffectivePrice: string | null };
   disc?: number; // نسبة خصم
   custom?: CustomizationData; // إن كان مخصّصاً
   manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
@@ -55,7 +59,7 @@ export function effectivePrice(line: CartLine): number {
   // (custom): تسعيره الإضافي بلا كتالوج ترويجيّ.
   const promoPrice = !line.custom ? line.row.promotionEffectivePrice : null;
   // التخصيص إضافيّ: سعر الوحدة للسطر المخصّص = سعر المنتج الأساس + سعر التخصيص (فوقه)، لا بديلاً عنه.
-  const base = line.origPrice ?? (
+  const base = line.couponPriceSnapshot ?? line.origPrice ?? (
     promoPrice != null ? Number(promoPrice) :
     line.custom
       ? Number(line.row.price ?? 0) + Number(line.custom.unitPrice ?? 0)

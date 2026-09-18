@@ -40,6 +40,16 @@ function compLineCost(c: Comp) {
   return round2(D(c.costPriceBase).times(compBaseQty(c)));
 }
 
+function recipeKindMeta(recipe: any) {
+  if (recipe.outputIsService) {
+    return { label: "وصفة خدمة", className: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" };
+  }
+  if (recipe.outputIsBundle) {
+    return { label: "بكج غير مدعوم", className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" };
+  }
+  return { label: "إنتاج مخزني", className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" };
+}
+
 export default function ProductionRecipes() {
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
@@ -50,6 +60,7 @@ export default function ProductionRecipes() {
   const list = trpc.production.recipes.list.useQuery({ activeOnly: activeOnly || undefined });
 
   const [editId, setEditId] = useState<number | null>(null);
+  const [createAsInactive, setCreateAsInactive] = useState(false);
   const [name, setName] = useState("");
   const [out, setOut] = useState<OutPick | null>(null);
   const [labor, setLabor] = useState("0");
@@ -60,7 +71,7 @@ export default function ProductionRecipes() {
   const [q, setQ] = useState("");
 
   function resetForm() {
-    setEditId(null); setName(""); setOut(null); setLabor("0"); setWastePct("0"); setComps([]); setError(""); setShowForm(false);
+    setEditId(null); setCreateAsInactive(false); setName(""); setOut(null); setLabor("0"); setWastePct("0"); setComps([]); setError(""); setShowForm(false);
   }
 
   function pickComp(v: PurchaseRow, units: PurchaseRow[]) {
@@ -78,6 +89,7 @@ export default function ProductionRecipes() {
   async function startEdit(id: number) {
     const r: any = await utils.production.recipes.get.fetch({ id });
     setEditId(id);
+    setCreateAsInactive(false);
     setName(r.name);
     setOut({ variantId: r.outputVariantId, productName: r.outputProductName ?? `#${r.outputVariantId}`, sku: r.outputSku ?? "", costPriceBase: String(r.outputCostPrice ?? "0"), units: [], unitId: r.outputProductUnitId, unitName: r.outputUnitName ?? "" });
     setLabor(String(r.laborPerOutputBase ?? "0"));
@@ -98,18 +110,32 @@ export default function ProductionRecipes() {
     setShowForm(true);
   }
 
-  function duplicate(r: any) {
-    startEdit(Number(r.id)).then(() => { setEditId(null); setName((r.name ?? "") + " (نسخة)"); });
+  async function duplicate(r: any) {
+    await startEdit(Number(r.id));
+    setEditId(null);
+    setCreateAsInactive(true);
+    setName((r.name ?? "") + " (نسخة)");
   }
 
   const saveMut = trpc.production.recipes.create.useMutation();
   const updateMut = trpc.production.recipes.update.useMutation();
   const setActive = trpc.production.recipes.setActive.useMutation({
-    onSuccess: () => utils.production.recipes.list.invalidate(),
+    onSuccess: async () => {
+      await Promise.all([
+        utils.production.recipes.list.invalidate(),
+        utils.production.recipes.listRunnable.invalidate(),
+      ]);
+    },
     onError: (e) => notify.err(e),
   });
   const remove = trpc.production.recipes.remove.useMutation({
-    onSuccess: () => { notify.ok("حُذفت الوصفة"); utils.production.recipes.list.invalidate(); },
+    onSuccess: async () => {
+      notify.ok("حُذفت الوصفة");
+      await Promise.all([
+        utils.production.recipes.list.invalidate(),
+        utils.production.recipes.listRunnable.invalidate(),
+      ]);
+    },
     onError: (e) => notify.err(e),
   });
 
@@ -160,13 +186,17 @@ export default function ProductionRecipes() {
       outputProductUnitId: out!.unitId,
       laborPerOutputBase: D(labor).toFixed(2),
       wasteStdPct: D(wastePct).div(100).toFixed(2),
+      ...(createAsInactive ? { isActive: false } : {}),
       lines: comps.map((c) => ({ inputVariantId: c.inputVariantId, inputProductUnitId: c.productUnitId, qtyPerOutputBase: compBaseQty(c).toFixed(4) })),
     };
     try {
       if (editId) await updateMut.mutateAsync({ id: editId, ...payload });
       else await saveMut.mutateAsync(payload);
-      notify.ok(editId ? "حُدِّثت الوصفة" : "أُنشئت الوصفة");
-      await utils.production.recipes.list.invalidate();
+      notify.ok(editId ? "حُدِّثت الوصفة" : createAsInactive ? "أُنشئت النسخة كمسودة معطّلة" : "أُنشئت الوصفة");
+      await Promise.all([
+        utils.production.recipes.list.invalidate(),
+        utils.production.recipes.listRunnable.invalidate(),
+      ]);
       resetForm();
     } catch (e: any) {
       setError(e?.message ?? "تعذّر الحفظ");
@@ -184,7 +214,7 @@ export default function ProductionRecipes() {
     <div className="space-y-4" dir="rtl">
       <PageHeader
         title="وصفات الإنتاج"
-        description="عرّف منتجاً متكرّراً مرّة واحدة (ملزمة/كتاب/كيس) ⇒ في الإنتاج تختار الوصفة وتكتب العدد فقط. مسار لا يقبل خطأ الموظف."
+        description="إدارة وصفات الإنتاج المخزني ووصفات استهلاك الخدمة. الإنتاج المخزني يُشغَّل من شاشة الإنتاج، ووصفة الخدمة تُستهلك تلقائياً عند البيع."
         actions={!showForm ? <Button onClick={() => { resetForm(); setShowForm(true); }}>＋ وصفة جديدة</Button> : undefined}
       />
 
@@ -361,12 +391,16 @@ export default function ProductionRecipes() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {filtered.map((r) => (
-              <Card key={Number(r.id)} className={r.isActive ? "" : "opacity-60"}>
+            {filtered.map((r) => {
+              const kind = recipeKindMeta(r);
+              return <Card key={Number(r.id)} className={r.isActive ? "" : "opacity-60"}>
                 <CardContent className="pt-4 space-y-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="font-semibold leading-snug">{r.name}</div>
-                    <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-xs ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>{r.isActive ? "مفعّلة" : "معطّلة"}</span>
+                    <div className="flex flex-wrap justify-end gap-1">
+                      <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-xs ${kind.className}`}>{kind.label}</span>
+                      <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-xs ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>{r.isActive ? "مفعّلة" : "معطّلة"}</span>
+                    </div>
                   </div>
                   <div className="text-sm text-muted-foreground">→ {r.outputProductName} <span className="text-xs">({r.outputUnitName})</span></div>
                   <div className="grid grid-cols-3 gap-2 border-y py-2 text-center">
@@ -375,9 +409,13 @@ export default function ProductionRecipes() {
                     <div><div className="text-[10px] text-muted-foreground font-semibold">هدر معياري</div><b className="text-sm tabular-nums" dir="ltr">{pct(r.wasteStdPct ?? 0)}</b></div>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    {r.isActive
-                      ? <Link href={`/production/new?recipe=${Number(r.id)}`}><Button size="sm">إنتاج بهذه الوصفة ←</Button></Link>
-                      : <Button size="sm" disabled>إنتاج بهذه الوصفة ←</Button>}
+                    {r.outputIsService
+                      ? <span className="text-xs font-semibold text-[var(--sem-info)]">تُستهلك عند بيع الخدمة</span>
+                      : r.outputIsBundle
+                        ? <span className="text-xs font-semibold text-[var(--sem-warn)]">البكج يُوسَّع عند البيع</span>
+                        : r.isActive && r.canRunProduction
+                          ? <Link href={`/production/new?recipe=${Number(r.id)}`}><Button size="sm">إنتاج بهذه الوصفة ←</Button></Link>
+                          : <Button size="sm" disabled>{r.isActive ? "غير جاهزة للإنتاج" : "إنتاج بهذه الوصفة ←"}</Button>}
                     <button className="text-primary text-xs font-semibold" onClick={() => startEdit(Number(r.id))}>تعديل</button>
                     <button className="text-muted-foreground hover:text-primary text-xs font-semibold" onClick={() => duplicate(r)}>تكرار</button>
                     <button className="text-[var(--sem-warn)] text-xs font-semibold" onClick={async () => {
@@ -390,8 +428,8 @@ export default function ProductionRecipes() {
                     }}>حذف</button>
                   </div>
                 </CardContent>
-              </Card>
-            ))}
+              </Card>;
+            })}
           </div>
           {!list.isLoading && filtered.length === 0 && (
             <Card><CardContent className="p-6 text-center text-muted-foreground">{q.trim() ? "لا نتائج." : "لا وصفات بعد."}</CardContent></Card>

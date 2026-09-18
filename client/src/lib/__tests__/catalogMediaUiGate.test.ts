@@ -90,7 +90,7 @@ describe("catalog media UI gate", () => {
 
   it("revalidates each additional draft ownership immediately before its own submit", () => {
     const batch = source("client/src/components/product-studio/StudioCampaignImageBatch.tsx");
-    expect(batch).toMatch(/for \(const slot of pending\)[\s\S]{0,700}await persistSlotDraft\(props\.userId, slot\)[\s\S]{0,900}await submit\.mutateAsync/);
+    expect(batch).toMatch(/for \(const slot of pending\)[\s\S]{0,700}await persistSlotDraft\(props\.owner, slot\)[\s\S]{0,900}await submit\.mutateAsync/);
     expect(batch).toContain("patch(slot.taskId, { ownershipLost: true })");
     expect(batch).toMatch(/pending\.some\(\(slot\) => slot\.conflict \|\| slot\.ownershipLost/);
   });

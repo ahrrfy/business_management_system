@@ -151,11 +151,17 @@ export default function Login() {
     }
     const freshMe = await utils.client.auth.me.query();
     if (freshMe?.id) {
-      await resetSessionForLogin(queryClient, Number(freshMe.id));
+      await resetSessionForLogin(queryClient, {
+        companyId: freshMe.companyId ?? null,
+        userId: Number(freshMe.id),
+      });
     }
     utils.auth.me.setData(undefined, freshMe);
     if (freshMe?.id && (typeof navigator === "undefined" || navigator.onLine)) {
-      await saveStudioDraftIdentity(Number(freshMe.id)).catch(() => undefined);
+      await saveStudioDraftIdentity({
+        companyId: freshMe.companyId ?? null,
+        userId: Number(freshMe.id),
+      }).catch(() => undefined);
       await saveOfflineProfile(studioOfflineProfileInput(freshMe)).catch(() => undefined);
     }
     const role = freshMe?.role;

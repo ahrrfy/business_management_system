@@ -270,6 +270,82 @@ function collectOnlineOrderReservationGuardErrors(triggerRows) {
   return errors;
 }
 
+/**
+ * عقد 0359 مستقل عن snapshot: activeSlot عمود مساعد GENERATED خارج schema.ts،
+ * واسم الفهرس وحده لا يثبت أنه فريد أو أنه يستعمل العمودين بالترتيب الصحيح.
+ */
+function collectRecipeActiveContractErrors({
+  columnRows = [],
+  indexRows = [],
+  duplicateGroups = [],
+  transitionTriggers = [],
+}) {
+  const errors = [];
+  const normalizedExpression = (value) =>
+    String(value ?? "")
+      .toLowerCase()
+      .replace(/[`()\s]/g, "");
+
+  if (columnRows.length !== 1) {
+    errors.push(
+      `productionRecipes.activeSlot يجب أن يوجد مرة واحدة؛ الموجود ${columnRows.length}.`,
+    );
+  } else {
+    const column = columnRows[0];
+    if (
+      String(column.dataType).toLowerCase() !== "tinyint" ||
+      String(column.columnType).toLowerCase().includes("unsigned") ||
+      String(column.isNullable).toUpperCase() !== "YES" ||
+      !String(column.extra).toUpperCase().includes("VIRTUAL GENERATED") ||
+      normalizedExpression(column.generationExpression) !==
+        "casewhenisactive=1then1elsenullend"
+    ) {
+      errors.push(
+        "productionRecipes.activeSlot يجب أن يكون TINYINT VIRTUAL GENERATED بصيغة CASE WHEN isActive = 1 THEN 1 ELSE NULL END.",
+      );
+    }
+  }
+
+  const orderedIndexes = [...indexRows].sort(
+    (a, b) => Number(a.seqInIndex) - Number(b.seqInIndex),
+  );
+  const expectedColumns = ["outputVariantId", "activeSlot"];
+  const indexShapeOk =
+    orderedIndexes.length === expectedColumns.length &&
+    orderedIndexes.every(
+      (row, index) =>
+        row.indexName === "uq_recipe_active_output" &&
+        Number(row.seqInIndex) === index + 1 &&
+        row.columnName === expectedColumns[index] &&
+        Number(row.nonUnique) === 0 &&
+        row.subPart == null &&
+        row.indexExpression == null &&
+        String(row.indexType).toUpperCase() === "BTREE" &&
+        String(row.isVisible).toUpperCase() === "YES" &&
+        String(row.collation).toUpperCase() === "A",
+    );
+  if (!indexShapeOk) {
+    errors.push(
+      "productionRecipes.uq_recipe_active_output يجب أن يكون UNIQUE BTREE مرئياً على (outputVariantId, activeSlot) بهذا الترتيب ومن دون prefix/expression.",
+    );
+  }
+
+  if (duplicateGroups.length) {
+    errors.push(
+      `يوجد ${duplicateGroups.length} ناتجاً له أكثر من وصفة فعّالة بعد 0359.`,
+    );
+  }
+  if (transitionTriggers.length) {
+    errors.push(
+      `بقيت حراس 0359 الانتقالية بعد نجاح الهجرة: ${transitionTriggers
+        .map((row) => row.triggerName)
+        .join(", ")}.`,
+    );
+  }
+
+  return errors;
+}
+
 function runOperationalContractSelftest({ quiet = false } = {}) {
   const validInput = {
     databaseName: "erp_contract_test",
@@ -502,6 +578,81 @@ function runOperationalContractSelftest({ quiet = false } = {}) {
     ]).some((error) => error.includes("COALESCE")),
   );
 
+  const validRecipeActiveContract = {
+    columnRows: [
+      {
+        dataType: "tinyint",
+        columnType: "tinyint",
+        isNullable: "YES",
+        extra: "VIRTUAL GENERATED",
+        generationExpression:
+          "case when (`isActive` = 1) then 1 else NULL end",
+      },
+    ],
+    indexRows: [
+      {
+        indexName: "uq_recipe_active_output",
+        columnName: "outputVariantId",
+        seqInIndex: 1,
+        nonUnique: 0,
+        subPart: null,
+        indexExpression: null,
+        indexType: "BTREE",
+        isVisible: "YES",
+        collation: "A",
+      },
+      {
+        indexName: "uq_recipe_active_output",
+        columnName: "activeSlot",
+        seqInIndex: 2,
+        nonUnique: 0,
+        subPart: null,
+        indexExpression: null,
+        indexType: "BTREE",
+        isVisible: "YES",
+        collation: "A",
+      },
+    ],
+    duplicateGroups: [],
+    transitionTriggers: [],
+  };
+  assert.deepEqual(
+    collectRecipeActiveContractErrors(validRecipeActiveContract),
+    [],
+  );
+  assert.ok(
+    collectRecipeActiveContractErrors({
+      ...validRecipeActiveContract,
+      columnRows: validRecipeActiveContract.columnRows.map((row) => ({
+        ...row,
+        generationExpression: "case when (`isActive` = 0) then 1 end",
+      })),
+    }).some((error) => error.includes("activeSlot")),
+  );
+  assert.ok(
+    collectRecipeActiveContractErrors({
+      ...validRecipeActiveContract,
+      indexRows: validRecipeActiveContract.indexRows.map((row, index) => ({
+        ...row,
+        columnName: validRecipeActiveContract.indexRows[1 - index].columnName,
+        nonUnique: 1,
+        isVisible: "NO",
+      })),
+    }).some((error) => error.includes("uq_recipe_active_output")),
+  );
+  const unsafeRecipeStateErrors = collectRecipeActiveContractErrors({
+    ...validRecipeActiveContract,
+    duplicateGroups: [{ outputVariantId: 41, activeCount: 2 }],
+    transitionTriggers: [{ triggerName: "trg_0359_recipe_active_bi" }],
+  });
+  assert.equal(unsafeRecipeStateErrors.length, 2);
+  assert.ok(
+    unsafeRecipeStateErrors.some((error) => error.includes("وصفة فعّالة")),
+  );
+  assert.ok(
+    unsafeRecipeStateErrors.some((error) => error.includes("الانتقالية")),
+  );
+
   if (!quiet) console.log("db schema operational contracts selftest: OK");
 }
 
@@ -629,6 +780,11 @@ try {
     ["invoices", "idx_invoice_corrected_by"],
     ["deliveryConsignments", "idx_consignment_workorder"],
     ["exchangeTransactions", "idx_exchange_custody_scope"],
+    ["invoiceItemServiceMaterials", "uq_iism_item_material"], // 0360: لقطة مادة واحدة لكل بند/متغيّر
+    ["digitalIntentInventoryReservations", "uq_diir_intent_source_stock"], // 0362: قفل واحد لكل مصدر/مخزون داخل النية
+    ["digitalIntentInventoryReservations", "idx_diir_stock_branch_status"],
+    ["workOrders", "idx_wo_base_unit"], // 0363: لقطة وحدة الصنف الأساس
+    ["workOrderMaterials", "uq_wom_one_base_material"], // 0363: سطر أساس مادي واحد لكل أمر
   ];
   const [idxRows] = await conn.query(
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
@@ -650,6 +806,77 @@ try {
     );
     console.error(
       "   عالِج: راجع الهجرة المعنيّة وأعد إنشاء الفهرس (نمط idempotent كـ0030/0031/0032).",
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  // 0359: الاسم وحده لا يثبت الحماية. افحص العمود المولّد وتعبيره ونوعه، ثم فريدية
+  // الفهرس وترتيب جزأيه ورؤيته، وصفر الازدواج، وألا تكون بوابة النشر المؤقتة قد بقيت.
+  const [recipeActiveColumns] = await conn.query(
+    `SELECT DATA_TYPE AS dataType,
+            COLUMN_TYPE AS columnType,
+            IS_NULLABLE AS isNullable,
+            EXTRA AS extra,
+            GENERATION_EXPRESSION AS generationExpression
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = 'productionRecipes'
+        AND COLUMN_NAME = 'activeSlot'`,
+    [dbName],
+  );
+  const [recipeActiveIndexes] = await conn.query(
+    `SELECT INDEX_NAME AS indexName,
+            COLUMN_NAME AS columnName,
+            SEQ_IN_INDEX AS seqInIndex,
+            NON_UNIQUE AS nonUnique,
+            SUB_PART AS subPart,
+            EXPRESSION AS indexExpression,
+            INDEX_TYPE AS indexType,
+            IS_VISIBLE AS isVisible,
+            COLLATION AS collation
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = 'productionRecipes'
+        AND INDEX_NAME = 'uq_recipe_active_output'
+      ORDER BY SEQ_IN_INDEX`,
+    [dbName],
+  );
+  const [recipeActiveDuplicateGroups] = await conn.query(
+    `SELECT outputVariantId, COUNT(*) AS activeCount
+       FROM productionRecipes
+      WHERE isActive = 1
+      GROUP BY outputVariantId
+     HAVING COUNT(*) > 1
+      LIMIT 1`,
+  );
+  const [recipeActiveTransitionTriggers] = await conn.query(
+    `SELECT TRIGGER_NAME AS triggerName
+       FROM information_schema.TRIGGERS
+      WHERE TRIGGER_SCHEMA = ?
+        AND EVENT_OBJECT_TABLE = 'productionRecipes'
+        AND TRIGGER_NAME IN (
+          'trg_0359_recipe_active_pre_bi',
+          'trg_0359_recipe_active_pre_bu',
+          'trg_0359_recipe_active_bi',
+          'trg_0359_recipe_active_bu'
+        )`,
+    [dbName],
+  );
+  const recipeActiveContractErrors = collectRecipeActiveContractErrors({
+    columnRows: recipeActiveColumns,
+    indexRows: recipeActiveIndexes,
+    duplicateGroups: recipeActiveDuplicateGroups,
+    transitionTriggers: recipeActiveTransitionTriggers,
+  });
+  if (recipeActiveContractErrors.length) {
+    console.error(
+      "⛔ عقد 0359 لوصفة فعّالة واحدة لكل ناتج غير مطابق:",
+    );
+    for (const error of recipeActiveContractErrors)
+      console.error(`   - ${error}`);
+    console.error(
+      "   الإصلاح: راجع وأعد تطبيق drizzle/migrations/0359_recipe_inventory_integrity.sql.",
     );
     await conn.end();
     process.exit(1);
@@ -743,6 +970,8 @@ try {
     // 0203: managed expense categories.  A missing table degrades the expense
     // picker to an empty list rather than failing loudly at deploy time.
     "expenseCategories",
+    "invoiceItemServiceMaterials", // 0360: لقطة مواد الخدمة وقت البيع
+    "digitalIntentInventoryReservations", // 0362: حجز مخزون السلة الرقمية خلال الإصدار الخارجي
   ];
   const CRITICAL_COLUMNS = [
     ["externalPaymentAttempts", "externalPaymentChannel"],
@@ -807,6 +1036,24 @@ try {
     ["invoices", "correctionOfInvoiceId"],
     ["invoices", "correctedByInvoiceId"], // 0169 correction lineage
     ["invoiceItems", "isGift"], // 0149 gift line disclosure
+    ["invoiceItems", "lineCost"], // 0360 exact aggregate line COGS
+    ["invoiceItems", "serviceMaterialsSnapshotted"], // 0360 fail-closed legacy distinction
+    ["invoiceItemServiceMaterials", "invoiceItemId"],
+    ["invoiceItemServiceMaterials", "materialVariantId"],
+    ["invoiceItemServiceMaterials", "baseQuantity"],
+    ["invoiceItemServiceMaterials", "unitCost"],
+    ["invoiceItemServiceMaterials", "lineCost"],
+    ["digitalIntentInventoryReservations", "intentId"],
+    ["digitalIntentInventoryReservations", "branchId"],
+    ["digitalIntentInventoryReservations", "sourceVariantId"],
+    ["digitalIntentInventoryReservations", "stockVariantId"],
+    ["digitalIntentInventoryReservations", "reservedBase"],
+    ["digitalIntentInventoryReservations", "status"],
+    ["workOrders", "baseProductUnitId"],
+    ["workOrders", "baseBaseQuantity"],
+    ["workOrders", "baseConsumesInventory"],
+    ["workOrderMaterials", "isBaseMaterial"],
+    ["workOrderMaterials", "baseMaterialSlot"],
     ["workOrders", "deliveryFeeCollection"],
     ["workOrders", "contactName"],
     ["workOrders", "contactPhone"],
@@ -1234,6 +1481,9 @@ try {
   );
   console.log(
     "✓ حارس حجز طلب المتجر: final BEFORE UPDATE صحيح وpre-trigger المؤقت غائب.",
+  );
+  console.log(
+    "✓ عقد 0359: activeSlot مولّد بالتعبير الصحيح، والفهرس الفريد مطابق، ولا ازدواج أو حارس انتقالي باقٍ.",
   );
   console.log(
     `✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`,

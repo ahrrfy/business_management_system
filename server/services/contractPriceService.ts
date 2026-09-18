@@ -284,12 +284,13 @@ export async function removeContractPrice(id: number): Promise<{ id: number }> {
 export async function resolveContractPrices(
   executor: Tx | DB,
   customerId: number,
-  productUnitIds: number[]
+  productUnitIds: number[],
+  options: { forUpdate?: boolean } = {},
 ): Promise<Map<number, string>> {
   const map = new Map<number, string>();
   if (!productUnitIds.length) return map;
   const uniqueIds = Array.from(new Set(productUnitIds));
-  const rows = await executor
+  const query = executor
     .select({
       productUnitId: customerContractPrices.productUnitId,
       price: customerContractPrices.price,
@@ -301,7 +302,9 @@ export async function resolveContractPrices(
         eq(customerContractPrices.isActive, true),
         inArray(customerContractPrices.productUnitId, uniqueIds)
       )
-    );
+    )
+    .orderBy(customerContractPrices.productUnitId);
+  const rows = options.forUpdate ? await query.for("update") : await query;
   for (const r of rows) map.set(Number(r.productUnitId), String(r.price));
   return map;
 }

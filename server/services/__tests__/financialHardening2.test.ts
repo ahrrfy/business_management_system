@@ -480,6 +480,7 @@ describe("#2 عربون أمر الشغل يدخل الصندوق/الدفتر �
   it("العربون ⇒ receipt(IN)+shiftId+PAYMENT_IN عند الإنشاء، ويُضمّ لمدفوع الفاتورة عند التسليم", async () => {
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0",
     });
+    await setStock(1, 1, 1);
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor,
     );
     const wo = await createWorkOrder({ branchId: 1, customerId: 1, baseVariantId: 1, title: "لوحة", salePrice: "20.00", deposit: "5.00", paymentMethod: "CASH",

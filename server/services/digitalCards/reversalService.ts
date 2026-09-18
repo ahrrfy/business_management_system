@@ -18,6 +18,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   accountingEntries,
   auditLogs,
@@ -54,7 +55,6 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
     // best-effort
   }
 }
-
 function assertManager(actor: Actor): void {
   if (actor.role !== "admin" && actor.role !== "manager") {
     throw new TRPCError({ code: "FORBIDDEN", message: "عكس بيع الكروت قرارٌ مديريّ" });
@@ -148,7 +148,109 @@ async function lockDetails(
   return rows;
 }
 
-/** قيد RETURN سالب، ومعه استرداد نقدي بقدر المقبوض فقط. مشتركٌ بين المسارين. */
+type LockedInvoiceHeader = {
+  id: number;
+  branchId: number;
+  customerId: number | null;
+  total: string;
+  paidAmount: string;
+  returnedTotal: string;
+  status: string;
+};
+
+/**
+ * يشتق رأس الفاتورة بعد استردادٍ رقمي تحت قفل صفّ الفاتورة.
+ *
+ * هذا الحارس متعمّد الصرامة: ردّ الكرت يخرج نقداً فوراً، لذلك لا يجوز أن يزيد عن المقبوض
+ * الفعلي، ولا أن يرفع المرتجعات فوق إجمالي الفاتورة. أيّ رأسٍ تاريخيّ منحرف يتوقّف قبل
+ * إنشاء إيصال/قيد، بدل أن نُخفي الانحراف بـ clamp ونصرف مالاً غير مُغطّى.
+ */
+function invoiceHeaderAfterDigitalRefund(
+  inv: LockedInvoiceHeader,
+  sell: ReturnType<typeof money>,
+  cashRefund: ReturnType<typeof money>,
+) {
+  const total = money(inv.total);
+  const paid = money(inv.paidAmount);
+  const returned = money(inv.returnedTotal ?? "0");
+  const remainingReturnable = total.minus(returned);
+
+  if (["CANCELLED", "RETURNED", "SUPERSEDED"].includes(inv.status)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر استرداد البطاقة الرقمية",
+        why: `حالة الفاتورة ${inv.status} نهائية ولا تقبل استرداداً جديداً`,
+        doThis: "راجع سجل الفاتورة وحدّد المعالجة السابقة قبل إعادة المحاولة",
+      }),
+    });
+  }
+  if (total.lt(0) || paid.lt(0) || returned.lt(0) || returned.gt(total) || paid.gt(remainingReturnable)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر استرداد البطاقة الرقمية",
+        why: `رأس الفاتورة غير متّسق: الإجمالي ${toDbMoney(total)}، المدفوع ${toDbMoney(paid)}، والمرتجع السابق ${toDbMoney(returned)}`,
+        doThis: "راجع الفاتورة وحركات قبضها ومرتجعاتها، ثم صحّح الانحراف قبل إعادة الاسترداد",
+      }),
+    });
+  }
+  if (sell.lt(0) || sell.gt(remainingReturnable)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر استرداد البطاقة الرقمية",
+        why: `قيمة البنود المرتجعة ${toDbMoney(sell)} تتجاوز المتبقي القابل للإرجاع ${toDbMoney(remainingReturnable)}`,
+        doThis: "حدّد بنوداً لم تُعكس سابقاً وتأكد من قيمة الفاتورة قبل إعادة المحاولة",
+      }),
+    });
+  }
+  if (sell.gt(paid) && inv.customerId == null) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر استرداد البطاقة الرقمية",
+        why: `مبلغ الرد يتجاوز المقبوض الفعلي: قيمة البنود ${toDbMoney(sell)} والمقبوض ${toDbMoney(paid)}، ولا يوجد عميل مسجّل لتحويل الباقي إلى رصيد دائن`,
+        doThis: "راجع سندات القبض وربط العميل بالفاتورة قبل إعادة الاسترداد",
+      }),
+    });
+  }
+  if (cashRefund.lt(0) || cashRefund.gt(sell) || cashRefund.gt(paid)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر استرداد البطاقة الرقمية",
+        why: `مبلغ الاسترداد النقدي ${toDbMoney(cashRefund)} لا تغطيه قيمة البنود ${toDbMoney(sell)} أو المقبوض المتبقي ${toDbMoney(paid)}`,
+        doThis: "راجع سندات القبض والصرف على الفاتورة قبل إعادة الاسترداد",
+      }),
+    });
+  }
+
+  const paidAmount = paid.minus(cashRefund);
+  const returnedTotal = returned.plus(sell);
+  const status = returnedTotal.eq(total)
+    ? "RETURNED" as const
+    : computeInvoiceStatus(inv.total, toDbMoney(paidAmount), toDbMoney(returnedTotal));
+  return { paidAmount, returnedTotal, status };
+}
+
+async function persistInvoiceHeaderAfterDigitalRefund(
+  tx: Tx,
+  inv: LockedInvoiceHeader,
+  sell: ReturnType<typeof money>,
+  cashRefund: ReturnType<typeof money>,
+): Promise<{ paidAmount: string; returnedTotal: string; status: "PENDING" | "PARTIALLY_PAID" | "PAID" | "RETURNED" }> {
+  const next = invoiceHeaderAfterDigitalRefund(inv, sell, cashRefund);
+  const paidAmount = toDbMoney(next.paidAmount);
+  const returnedTotal = toDbMoney(next.returnedTotal);
+  await tx
+    .update(invoices)
+    .set({ paidAmount, returnedTotal, status: next.status })
+    .where(eq(invoices.id, inv.id));
+  return { paidAmount, returnedTotal, status: next.status };
+}
+
+/** استرداد نقديّ للزبون + قيد RETURN سالب. مشتركٌ بين المسارين. */
 async function refundAndPostReturn(
   tx: Tx,
   opts: {
@@ -262,29 +364,14 @@ async function refundAndPostReturn(
   return receiptId;
 }
 
-async function applyInvoiceReturnState(
+async function adjustReturnedReceivable(
   tx: Tx,
   opts: {
-    invoiceId: number;
-    total: string;
-    paidAmount: string;
-    returnedTotal: string;
     customerId: number | null;
     sell: ReturnType<typeof money>;
     cashRefund: ReturnType<typeof money>;
   },
 ): Promise<void> {
-  const paidAfterRefund = money(opts.paidAmount).minus(opts.cashRefund);
-  const newPaid = paidAfterRefund.lt(0) ? money(0) : paidAfterRefund;
-  const newReturned = money(opts.returnedTotal).plus(opts.sell);
-  const status = newReturned.gte(money(opts.total))
-    ? "RETURNED"
-    : computeInvoiceStatus(opts.total, toDbMoney(newPaid), toDbMoney(newReturned));
-  await tx.update(invoices).set({
-    paidAmount: toDbMoney(newPaid),
-    returnedTotal: toDbMoney(newReturned),
-    status,
-  }).where(eq(invoices.id, opts.invoiceId));
   const receivableReduction = opts.sell.minus(opts.cashRefund);
   if (opts.customerId != null && receivableReduction.gt(0)) {
     await adjustCustomerBalance(tx, opts.customerId, receivableReduction.neg());
@@ -316,6 +403,7 @@ export async function approveReversal(
       total: invoices.total,
       paidAmount: invoices.paidAmount,
       returnedTotal: invoices.returnedTotal,
+      status: invoices.status,
     })
     .from(invoices)
     .where(eq(invoices.id, input.invoiceId))
@@ -334,6 +422,7 @@ export async function approveReversal(
   const share = sumMoney(details.map((d) => d.providerShareSnapshot));
   const paid = money(inv.paidAmount);
   const cashRefund = paid.lt(sell) ? paid : sell;
+  const invoiceHeader = await persistInvoiceHeaderAfterDigitalRefund(tx, inv, sell, cashRefund);
 
   const receiptId = await refundAndPostReturn(
     tx,
@@ -349,11 +438,7 @@ export async function approveReversal(
     },
     actor,
   );
-  await applyInvoiceReturnState(tx, {
-    invoiceId: input.invoiceId,
-    total: inv.total,
-    paidAmount: inv.paidAmount,
-    returnedTotal: inv.returnedTotal ?? "0",
+  await adjustReturnedReceivable(tx, {
     customerId: inv.customerId != null ? Number(inv.customerId) : null,
     sell,
     cashRefund,
@@ -491,6 +576,7 @@ export async function approveReversal(
     refunded: toDbMoney(cashRefund),
     receivableReduced: toDbMoney(sell.minus(cashRefund)),
     shareReturned: toDbMoney(share),
+    invoiceHeader,
     reason,
   });
 
@@ -597,6 +683,7 @@ export async function lossRefund(
       total: invoices.total,
       paidAmount: invoices.paidAmount,
       returnedTotal: invoices.returnedTotal,
+      status: invoices.status,
     })
     .from(invoices)
     .where(eq(invoices.id, input.invoiceId))
@@ -622,6 +709,7 @@ export async function lossRefund(
   const share = sumMoney(details.map((d) => d.providerShareSnapshot));
   const paid = money(inv.paidAmount);
   const cashRefund = paid.lt(sell) ? paid : sell;
+  const invoiceHeader = await persistInvoiceHeaderAfterDigitalRefund(tx, inv, sell, cashRefund);
 
   await refundAndPostReturn(
     tx,
@@ -638,11 +726,7 @@ export async function lossRefund(
     },
     actor,
   );
-  await applyInvoiceReturnState(tx, {
-    invoiceId: input.invoiceId,
-    total: inv.total,
-    paidAmount: inv.paidAmount,
-    returnedTotal: inv.returnedTotal ?? "0",
+  await adjustReturnedReceivable(tx, {
     customerId: inv.customerId != null ? Number(inv.customerId) : null,
     sell,
     cashRefund,
@@ -663,6 +747,7 @@ export async function lossRefund(
     refunded: toDbMoney(cashRefund),
     receivableReduced: toDbMoney(sell.minus(cashRefund)),
     loss: toDbMoney(share),
+    invoiceHeader,
     requestedBy: Array.from(requesters),
     reason,
   });

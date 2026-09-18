@@ -12,7 +12,7 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 
 const TABLES = [
   "productionLines", "productionOrders", "productionRecipeLines", "productionRecipes",
-  "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
+  "inventoryMovements", "onlineOrderItems", "onlineOrders", "reservationStock", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "branches", "users",
 ];
 
@@ -76,12 +76,23 @@ describe("recipeCapacity — سقف الإنتاج الممكن", () => {
   });
 
   it("⭐ P2: المتغيّر المكرَّر على سطرين يُجمَع قبل القسمة", async () => {
-    // سطران من الورق بمعامل 10 لكلٍّ ⇒ الاستهلاك الحقيقيّ 20/دفتر ⇒ 1000÷20 = 50 لا 100.
-    const r = await makeRecipe([
-      { inputVariantId: 1, qtyPerOutputBase: "10" },
-      { inputVariantId: 1, qtyPerOutputBase: "10" },
+    // الكاتب الجديد يرفض التكرار، لكن بيانات ما قبل الحارس قد تحتويه؛ نزرع لقطة إرثية مباشرة
+    // كي يبقى قارئ السعة دفاعياً: 10+10 للورق ⇒ 1000÷20 = 50 لا 100.
+    await db().insert(s.productionRecipes).values({
+      id: 99,
+      name: "وصفة إرثية مكررة",
+      outputVariantId: 2,
+      outputProductUnitId: 2,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: true,
+      createdBy: 1,
+    });
+    await db().insert(s.productionRecipeLines).values([
+      { recipeId: 99, inputVariantId: 1, qtyPerOutputBase: "10" },
+      { recipeId: 99, inputVariantId: 1, qtyPerOutputBase: "10" },
     ]);
-    const cap = await recipeCapacity({ recipeId: r.recipeId, branchId: 1 });
+    const cap = await recipeCapacity({ recipeId: 99, branchId: 1 });
     expect(cap.maxByStock).toBe(50);
     expect(cap.components).toHaveLength(1);          // صفٌّ واحد للمتغيّر لا صفّان
     expect(cap.components[0].perOutputBase).toBe("20");
@@ -137,5 +148,44 @@ describe("recipeCapacity — سقف الإنتاج الممكن", () => {
 
   it("وصفةٌ غير موجودة تُرفَض صراحةً", async () => {
     await expect(recipeCapacity({ recipeId: 9999, branchId: 1 })).rejects.toThrow();
+  });
+
+  it("يحسب السقف من ATP بعد طرح الحجز لا من on-hand الخام", async () => {
+    const r = await makeRecipe([
+      { inputVariantId: 1, qtyPerOutputBase: "10" },
+    ]);
+    await db().insert(s.reservationStock).values({
+      variantId: 1,
+      branchId: 1,
+      reservedBase: 900,
+    });
+
+    const cap = await recipeCapacity({ recipeId: r.recipeId, branchId: 1 });
+
+    expect(cap.components[0].available).toBe(100);
+    expect(cap.maxByStock).toBe(10);
+    expect(cap.maxBatch).toBe(10);
+  });
+
+  it.each([
+    { productId: 6, recipeId: 106, name: "خدمة تغليف", flags: { isService: true }, error: /خدمة/ },
+    { productId: 7, recipeId: 107, name: "بكج مدرسي", flags: { isBundle: true }, error: /بكج/ },
+    { productId: 8, recipeId: 108, name: "ناتج أمانة", flags: { isConsignment: true }, error: /أمانة/ },
+  ])("يرفض حساب السقف لوصفة غير مخزنية: $name", async ({ productId, recipeId, name, flags, error }) => {
+    await db().insert(s.products).values({ id: productId, name, ...flags });
+    await db().insert(s.productVariants).values({ id: productId, productId, sku: `NON-STOCK-${productId}`, costPrice: "0.00" });
+    await db().insert(s.productUnits).values({ id: productId, variantId: productId, unitName: "وحدة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productionRecipes).values({
+      id: recipeId,
+      name: `وصفة ${name}`,
+      outputVariantId: productId,
+      outputProductUnitId: productId,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: true,
+    });
+    await db().insert(s.productionRecipeLines).values({ recipeId, inputVariantId: 1, qtyPerOutputBase: "1" });
+
+    await expect(recipeCapacity({ recipeId, branchId: 1 })).rejects.toThrow(error);
   });
 });

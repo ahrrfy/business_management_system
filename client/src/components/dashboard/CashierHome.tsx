@@ -1,23 +1,33 @@
 import type React from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
-import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
+import type { WorkspaceNavItem } from "@/lib/workspaceProfiles";
+import {
+  cashierProfileActions,
+  type CashierActionIcon,
+} from "@/lib/cashierWorkspace";
+import { visibleReceptionOperationTabs } from "@/lib/receptionOperationsHub";
+import {
+  hasModuleAccess,
+  type PermissionMap,
+  type PosStation,
+} from "@shared/permissions";
 import {
   BadgeDollarSign,
   Barcode,
   CalendarClock,
   CheckCircle2,
-  CheckSquare,
   Clock,
+  MapPinOff,
   MessageSquare,
   Package,
   Printer,
   ReceiptText,
+  RotateCcw,
   ShoppingBag,
   Store,
   Ticket,
   Truck,
-  User,
 } from "lucide-react";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════ */
@@ -148,9 +158,30 @@ function TileGroup({
   );
 }
 
+function cashierActionIcon(icon: CashierActionIcon): Tile["icon"] {
+  switch (icon) {
+    case "station": return Store;
+    case "invoice": return ReceiptText;
+    case "returns": return RotateCcw;
+    case "workorders": return Printer;
+    case "price": return Barcode;
+    case "tasks": return Ticket;
+  }
+}
+
 /* ═══════════ مساحة عمل الكاشير والاستقبال المركّزة (٢٤/٧) ═══════════ */
 
-export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
+export function CashierHome({
+  station,
+  defaultAction,
+  primaryNav,
+  tasksBrief,
+}: {
+  station: PosStation;
+  defaultAction: WorkspaceNavItem;
+  primaryNav: readonly WorkspaceNavItem[];
+  tasksBrief?: React.ReactNode;
+}) {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
@@ -159,8 +190,26 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
 
   const can = (mod: string, lvl: "READ" | "FULL" = "READ") =>
     Boolean(role && hasModuleAccess(role, override, mod, lvl));
-  // محطّة الاستقبال بوّابتها وحدة `workorders` (POS_STATION_GATES) — من لا يملكها لا يرى لوحاتها.
-  const isReception = can("workorders", "FULL");
+  const isReception = station === "RECEPTION";
+  const isPrintServices = station === "PRINT_SERVICES";
+  const canViewShift = can("treasury", "READ");
+  const canViewStore = can("store", "READ");
+  const visibleReceptionTabs = new Set(visibleReceptionOperationTabs({
+    hasBranch: branchId != null,
+    role,
+    permissionsOverride: override,
+  }));
+  const stationTitle = isReception
+    ? "محطة خدمة العملاء"
+    : isPrintServices
+      ? "كاشير خدمات الطباعة"
+      : "نقطة البيع";
+  const stationDescription = isReception
+    ? "افتح الوردية واستقبل الطلب — السلّة والعميل وتسعير وتخصيص الطباعة والدفع في شاشة واحدة، وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."
+    : isPrintServices
+      ? "افتح وردية خدمات الطباعة وابدأ تسعير الطلبات وتحصيلها من المحطة المخصّصة."
+      : "افتح الوردية وابدأ البيع المباشر — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها.";
+  const stationHref = station === "RETAIL" ? "/pos" : defaultAction.href;
 
   // عدّادات التشغيل الحيّة
   const woCounts = trpc.workOrders.counts.useQuery(
@@ -169,7 +218,7 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
   );
 
   const deliveryReadyCountQ = trpc.delivery.readyForDispatchCount.useQuery(undefined, {
-    enabled: isReception && can("store"),
+    enabled: isReception && visibleReceptionTabs.has("workflow"),
     staleTime: 30_000,
   });
 
@@ -181,8 +230,8 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
 
   // الوردية الحالية
   const shiftQ = trpc.shifts.current.useQuery(
-    branchId != null ? { branchId, shiftType: isReception ? "RECEPTION" : "RETAIL" } : undefined as any,
-    { enabled: branchId != null, staleTime: 30_000 },
+    branchId != null ? { branchId, shiftType: station } : undefined as any,
+    { enabled: canViewShift && branchId != null, staleTime: 30_000 },
   );
   const shift = shiftQ.data ?? null;
 
@@ -192,36 +241,44 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
    */
   const counterTiles: Tile[] = isReception
     ? [
-        {
-          href: "/reception/handover",
-          name: "التسليم المباشر",
-          desc: "مسح باركود فوري — تحصيل (نقدي/شبكة/محفظة) وإغلاق ذري للطلب",
-          badge: woCounts.data?.ready ?? 0,
-          badgeHint: "طلب جاهز بانتظار استلام العميل",
-          badgeVariant: "success",
-          icon: CheckCircle2,
-        },
-        {
-          href: "/reception/workflow",
-          name: "الإسناد والتوصيل",
-          desc: "إسناد لمناديب الفرع وشركات الشحن — وتوريد الذمم والمرتجع",
-          badge: deliveryReadyCountQ.data ?? 0,
-          badgeHint: "شحنة جاهزة للتوصيل والإسناد",
-          badgeVariant: "info",
-          icon: Truck,
-        },
-        {
-          href: "/reception/orders",
-          name: "طلبات محطّتي",
-          desc: "طابور أوامر الشغل — متابعة مراحل التنفيذ بالمطبعة والجاهز والمعلق",
-          icon: Package,
-        },
-        {
-          href: "/reception/invoices",
-          name: "فواتير للتحصيل",
-          desc: "المبالغ المتبقية والذمم المعلقة — اقبضها مباشرة من الصف",
-          icon: BadgeDollarSign,
-        },
+        ...(visibleReceptionTabs.has("handover")
+          ? [{
+              href: "/reception/operations?tab=handover",
+              name: "التسليم المباشر",
+              desc: "مسح باركود فوري — تحصيل (نقدي/شبكة/محفظة) وإغلاق ذري للطلب",
+              badge: woCounts.data?.ready ?? 0,
+              badgeHint: "طلب جاهز بانتظار استلام العميل",
+              badgeVariant: "success" as const,
+              icon: CheckCircle2,
+            }]
+          : []),
+        ...(visibleReceptionTabs.has("workflow")
+          ? [{
+              href: "/reception/operations?tab=workflow",
+              name: "الإسناد والتوصيل",
+              desc: "إسناد لمناديب الفرع وشركات الشحن — وتوريد الذمم والمرتجع",
+              badge: deliveryReadyCountQ.data ?? 0,
+              badgeHint: "شحنة جاهزة للتوصيل والإسناد",
+              badgeVariant: "info" as const,
+              icon: Truck,
+            }]
+          : []),
+        ...(visibleReceptionTabs.has("orders")
+          ? [{
+              href: "/reception/operations?tab=orders",
+              name: "طلبات محطّتي",
+              desc: "طابور أوامر الشغل — متابعة مراحل التنفيذ بالمطبعة والجاهز والمعلق",
+              icon: Package,
+            }]
+          : []),
+        ...(visibleReceptionTabs.has("invoices")
+          ? [{
+              href: "/reception/operations?tab=invoices",
+              name: "فواتير للتحصيل",
+              desc: "المبالغ المتبقية والذمم المعلقة — اقبضها مباشرة من الصف",
+              icon: BadgeDollarSign,
+            }]
+          : []),
       ]
     : [];
 
@@ -229,7 +286,7 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
    * ② خدمة وقنوات العملاء:
    * المحادثات والتواصل والحجوزات الإلكترونية.
    */
-  const channelTiles: Tile[] = isReception
+  const channelTiles: Tile[] = isReception && branchId != null
     ? [
         ...(can("channels")
           ? [{
@@ -250,7 +307,7 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
               icon: CalendarClock,
             }]
           : []),
-        ...(can("store")
+        ...(canViewStore
           ? [{
               href: "/store-admin?tab=orders",
               name: "طلبات الموقع",
@@ -261,18 +318,72 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
       ]
     : [];
 
-  /**
-   * ③ أدوات العمل والمساندة:
-   * قارئ الأسعار، لوحة الإنتاج، مطلوب مني الآن، فواتيري، والمهام.
-   */
-  const toolTiles: Tile[] = [
-    { href: "/price-checker", name: "قارئ الأسعار", desc: "فحص سعر أي منتج سريعاً بالباركود", icon: Barcode },
-    ...(isReception ? [{ href: "/work-orders", name: "لوحة الإنتاج", desc: "كانبان الطلبات ومراحل التنفيذ بالمطبعة", icon: Printer }] : []),
-    { href: "/my-work", name: "مطلوب منّي الآن", desc: "قراراتٌ تنتظر موافقتك وما يخصّك من عمل", icon: CheckSquare },
-    ...(can("sales") ? [{ href: "/invoices", name: "كل فواتيري", desc: "بحثٌ وفلترةٌ وإعادة طباعة الفواتير", icon: ReceiptText }] : []),
-    ...(can("tasks") ? [{ href: "/tasks", name: "المهام والتذاكر", desc: "طلبات العملاء المُسنَدة إليك ومتابعتها", icon: Ticket }] : []),
-    { href: "/account", name: "حسابي", desc: "بياناتك وكلمة المرور وجلساتك", icon: User },
-  ];
+  // ما بعد بطاقة المحطة يأتي حصراً من profile المحلول؛ لا إعادة تخمين للصلاحية بحسب sales
+  // ولا فقد لمحطات الطباعة/الاستقبال أو الفواتير ذات النطاق المقصور.
+  const profileTiles: Tile[] = cashierProfileActions(
+    primaryNav,
+    defaultAction.id,
+    { hasBranch: branchId != null },
+  ).map((item) => ({
+    href: item.href,
+    name: item.name,
+    desc: item.description,
+    icon: cashierActionIcon(item.icon),
+  }));
+
+  // المستخدم التشغيلي بلا فرع لا يستطيع عبور branchScopedProcedure. نوقف المحطة وكل
+  // المسارات التشغيلية هنا بدلاً من إرساله إلى صفحات تنتهي بـFORBIDDEN؛ قارئ الأسعار
+  // وحده غير مقصور بفرع ويمكن أن يبقى إن كان ضمن profile المصرح به.
+  if (branchId == null) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: T.bg,
+          direction: "rtl",
+          fontFamily: "'Cairo', sans-serif",
+          margin: "-24px",
+          padding: "clamp(24px, 4vw, 44px) clamp(20px, 4vw, 48px) 56px",
+        }}
+      >
+        <div style={{ width: "100%", maxWidth: 760, margin: "0 auto", display: "flex", flexDirection: "column", gap: 24 }}>
+          <section
+            role="status"
+            aria-live="polite"
+            style={{
+              background: T.cardBg,
+              border: `1px solid ${T.cardBord}`,
+              borderRadius: 16,
+              padding: "28px 24px",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 14,
+            }}
+          >
+            <MapPinOff aria-hidden style={{ width: 24, height: 24, color: "var(--sem-warn)", flexShrink: 0 }} />
+            <div>
+              <h1 style={{ fontSize: "1.25rem", fontWeight: 800, color: T.text, margin: 0 }}>
+                {me.isLoading ? "جارٍ تحميل مساحة العمل" : "لا يوجد فرع مسند لهذا الحساب"}
+              </h1>
+              <p style={{ fontSize: "0.875rem", color: T.sub, lineHeight: 1.8, margin: "8px 0 0" }}>
+                {me.isLoading
+                  ? "انتظر لحظة حتى يكتمل تحميل بيانات الحساب."
+                  : "لا يمكن فتح محطة البيع أو المسارات التشغيلية قبل إسناد فرع. راجع مدير النظام لتحديد فرعك ثم أعد تحميل الصفحة."}
+              </p>
+            </div>
+          </section>
+
+          {!me.isLoading && (
+            <TileGroup
+              label="أدوات متاحة دون فرع"
+              hint="لا تتطلب نطاقاً تشغيلياً"
+              tiles={profileTiles}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -302,7 +413,7 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
           </div>
 
           {/* مؤشر الوردية المباشر في الرأس */}
-          <div>
+          {canViewShift && <div>
             {shift ? (
               <div
                 style={{
@@ -340,12 +451,12 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
                 <span>لا توجد وردية مفتوحة</span>
               </div>
             )}
-          </div>
+          </div>}
         </div>
 
         {/* بطاقة المحطة الرئيسية (Hero Card) */}
         <Link
-          href={isReception ? "/pos?mode=RECEPTION" : "/pos"}
+          href={stationHref}
           style={{
             display: "block",
             background: T.featuredBg,
@@ -376,18 +487,16 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
                   <Store style={{ width: 22, height: 22 }} />
                 </span>
                 <div style={{ fontSize: "clamp(22px, 2.4vw, 30px)", fontWeight: 800, color: T.text, letterSpacing: "-0.01em" }}>
-                  {isReception ? "محطة خدمة العملاء" : "نقطة البيع"}
+                  {stationTitle}
                 </div>
               </div>
               <div style={{ fontSize: "0.875rem", color: T.sub, lineHeight: 1.7, maxWidth: "68ch" }}>
-                {isReception
-                  ? "افتح الوردية واستقبل الطلب — السلّة والعميل وتسعير وتخصيص الطباعة والدفع في شاشة واحدة، وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."
-                  : "افتح الوردية وابدأ البيع المباشر — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."}
+                {stationDescription}
               </div>
             </div>
 
             <div style={{ alignSelf: "center" }}>
-              {shift ? (
+              {canViewShift && shift ? (
                 <span
                   style={{
                     display: "inline-flex",
@@ -419,7 +528,7 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
                     fontWeight: 800,
                   }}
                 >
-                  فتح وردية جديدة ←
+                  {canViewShift ? "فتح وردية جديدة ←" : "دخول المحطة ←"}
                 </span>
               )}
             </div>
@@ -444,11 +553,11 @@ export function CashierHome({ tasksBrief }: { tasksBrief?: React.ReactNode }) {
           />
         )}
 
-        {/* المجموعة 3: أدوات ومتابعة */}
+        {/* المجموعة 3: بقية إجراءات profile المصرح بها (المحطة الافتراضية ممثلة بالبطاقة الكبرى). */}
         <TileGroup
-          label="أدوات ومتابعة"
-          hint="الأسعار والإنتاج والمهام وحسابك"
-          tiles={toolTiles}
+          label="مسارات عملي"
+          hint="المداخل اليومية المصرح بها لهذا الحساب"
+          tiles={profileTiles}
         />
       </div>
 

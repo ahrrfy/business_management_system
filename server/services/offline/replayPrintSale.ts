@@ -9,7 +9,7 @@
 //  - `createPrintSale` يخصم **المواد** بصمت (ورق/حبر) لا الصنف المُباع نفسه.
 //  - الوردية من نوع PRINT_SERVICES، وبوّابتها `pos` لا `sales`.
 import type { Actor } from "../tx";
-import { createPrintSale } from "../printSaleService";
+import { createPrintSale, OFFLINE_PRINT_REPLAY_CAPABILITY } from "../printSaleService";
 import type { CreatePrintSaleInput, CreatePrintSaleResult, PrintSaleLineInput } from "../printSaleService";
 import { assertCaptureWindow, assertCashOnly } from "./captureWindow";
 
@@ -59,10 +59,9 @@ export async function replayOfflinePrintSale(
         offlineReceiptNumber: input.offlineReceiptNumber,
         deviceId: input.deviceId ?? null,
       },
-      // ملاحظة: لا حاجة لـallowNegativeStock هنا — استهلاك المواد في createPrintSale
-      // يمرّ أصلاً بـallowNegative: true (الخدمة لا تُرفض عند نفاد المادة، والاستهلاك يبقى مُتعقَّباً).
       priceOverrideApproved: input.priceOverrideApproved ?? false,
     },
     actor,
+    OFFLINE_PRINT_REPLAY_CAPABILITY,
   );
 }

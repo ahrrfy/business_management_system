@@ -10,15 +10,32 @@
 // العرضية، ومقارنة الهاش ثابتة الزمن.
 
 import { offlineDb, type OfflineProfileRow } from "./db";
+import {
+  isValidStudioTenantScope,
+  sameStudioTenantScope,
+  type StudioTenantScope,
+} from "@/lib/productStudio/studioTenantScope";
 
 const PBKDF2_ITERATIONS = 310_000;
 
 export interface OfflineProfile {
+  /** `undefined` يعني ملفاً قديماً؛ يصلح لـPOS القديم ولا يفتح Studio البارد. */
+  companyId: number | null | undefined;
   userId: number;
   name: string;
   role: string;
   branchId: number | null;
   hasPin: boolean;
+}
+
+function shouldPreserveOfflinePin(
+  existing: OfflineProfileRow | undefined,
+  nextScope: StudioTenantScope,
+): boolean {
+  return (
+    isValidStudioTenantScope(existing) &&
+    sameStudioTenantScope(existing, nextScope)
+  );
 }
 
 async function derivePinHash(pin: string, salt: Uint8Array): Promise<Uint8Array> {
@@ -48,21 +65,28 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 /** يُحدَّث عند كل دخول/جلسة أونلاين ناجحة (من POS) — هوية «آخر مستخدم معروف» للجهاز. */
 export async function saveOfflineProfile(user: {
   id: number;
+  companyId: number | null;
   name: string;
   role: string;
   branchId: number | null;
 }): Promise<void> {
   try {
     const existing = await offlineDb.profile.get("profile");
+    const nextScope: StudioTenantScope = {
+      companyId: user.companyId,
+      userId: user.id,
+    };
+    const preservePin = shouldPreserveOfflinePin(existing, nextScope);
     await offlineDb.profile.put({
       key: "profile",
+      companyId: user.companyId,
       userId: user.id,
       name: user.name,
       role: user.role,
       branchId: user.branchId,
-      // تغيّر المستخدم على الجهاز ⇒ PIN القديم يخص غيره فيُمسح (يُعاد ضبطه للمستخدم الجديد).
-      pinSalt: existing && existing.userId === user.id ? existing.pinSalt : null,
-      pinHash: existing && existing.userId === user.id ? existing.pinHash : null,
+      // تغيّر الشركة أو المستخدم على الجهاز ⇒ PIN القديم يخص نطاقاً آخر فيُمسح ويُعاد ضبطه.
+      pinSalt: preservePin && existing ? existing.pinSalt : null,
+      pinHash: preservePin && existing ? existing.pinHash : null,
       savedAt: new Date().toISOString(),
     });
   } catch {
@@ -75,6 +99,12 @@ export async function getOfflineProfile(): Promise<OfflineProfile | null> {
     const row = await offlineDb.profile.get("profile");
     if (!row) return null;
     return {
+      companyId:
+        Object.prototype.hasOwnProperty.call(row, "companyId") &&
+        (row.companyId === null ||
+          (Number.isInteger(row.companyId) && Number(row.companyId) > 0))
+          ? row.companyId
+          : undefined,
       userId: row.userId,
       name: row.name,
       role: row.role,
@@ -114,7 +144,10 @@ export async function verifyOfflinePin(pin: string): Promise<boolean> {
 
 type UnlockListener = () => void;
 let unlocked = false;
-let unlockedProfile: Pick<OfflineProfile, "userId" | "role"> | null = null;
+let unlockedProfile: Pick<
+  OfflineProfile,
+  "companyId" | "userId" | "role"
+> | null = null;
 const listeners = new Set<UnlockListener>();
 
 export function isOfflineUnlocked(): boolean {
@@ -122,7 +155,7 @@ export function isOfflineUnlocked(): boolean {
 }
 
 export function markOfflineUnlocked(
-  profile?: Pick<OfflineProfile, "userId" | "role">,
+  profile?: Pick<OfflineProfile, "companyId" | "userId" | "role">,
 ): void {
   unlocked = true;
   unlockedProfile = profile ?? null;
@@ -132,7 +165,7 @@ export function markOfflineUnlocked(
 /** ملف جلسة PIN عابر للذاكرة؛ لا يكفي وحده لفتح Studio بلا مطابقة هوية المسودة. */
 export function getOfflineUnlockedProfile(): Pick<
   OfflineProfile,
-  "userId" | "role"
+  "companyId" | "userId" | "role"
 > | null {
   return unlockedProfile;
 }
@@ -145,4 +178,8 @@ export function subscribeOfflineUnlock(cb: UnlockListener): () => void {
 }
 
 // ── الدوال النقية للاختبار (بيئة node تملك WebCrypto) ────────────────────────
-export const __testables = { derivePinHash, constantTimeEqual };
+export const __testables = {
+  derivePinHash,
+  constantTimeEqual,
+  shouldPreserveOfflinePin,
+};

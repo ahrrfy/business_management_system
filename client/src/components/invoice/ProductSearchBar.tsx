@@ -14,17 +14,27 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
-import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
+import type { Currency, InvoiceLine, InvoiceType, PriceSource, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
-import { resolveExactBeforeFuzzy, type ExactProductResolution } from "./productSearchResolution";
+import {
+  buildProductPricingContext,
+  createPricingIntentEpoch,
+  createPricingContextRequestGuard,
+  resolveExactBeforeFuzzy,
+  type ExactProductResolution,
+  type PricingIntentEpoch,
+} from "./productSearchResolution";
 import { playReadyBeep } from "@/lib/notifyBeep";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
   branchId: number;
   tier: PriceTier;
+  customerId?: number | null;
+  /** ساعة نية مشتركة مع InvoiceHeader؛ تبطل مسح السياق السابق قبل انتظار React render. */
+  pricingIntentEpoch?: PricingIntentEpoch;
   onAddProduct: (line: InvoiceLine) => void;
   /** Optional callback for "not found" / errors. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
@@ -65,6 +75,7 @@ interface NormalizedRow {
   allowBackorder: boolean;
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
   price: string;
+  priceSource?: PriceSource;
   /** Cost in base unit (purchase side carries this; sale side gets it null when hidden). */
   costBase: string;
   category?: string | null;
@@ -80,6 +91,8 @@ export function ProductSearchBar({
   invoiceType,
   branchId,
   tier,
+  customerId,
+  pricingIntentEpoch,
   onAddProduct,
   onNotify,
   purchaseCurrency = "IQD",
@@ -104,16 +117,31 @@ export function ProductSearchBar({
   const [scanStatus, setScanStatus] = useState<"idle" | "success" | "error">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const pricingContext = buildProductPricingContext({
+    invoiceType,
+    branchId,
+    tier,
+    customerId,
+    purchaseCurrency,
+    purchaseAgreedRate,
+  });
+  const pricingContextRef = useRef(pricingContext);
+  const exactRequestGuardRef = useRef(createPricingContextRequestGuard(pricingContext));
+  const localPricingIntentEpochRef = useRef(createPricingIntentEpoch());
+  const activePricingIntentEpoch = pricingIntentEpoch ?? localPricingIntentEpochRef.current;
+  // يغيّر الجيل فقط عند تغيّر سياق التسعير. المسوح المتوازية داخل السياق نفسه تبقى كلّها صالحة.
+  exactRequestGuardRef.current.sync(pricingContext);
+  pricingContextRef.current = pricingContext;
 
-  // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + إبقاء النتائج
-  // السابقة أثناء الجلب (لا وميض) + التفعيل من حرفين. التطبيع العربي والترتيب على الخادم.
+  // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + التفعيل من حرفين.
+  // جانب البيع لا يُبقي نتائج سياق عميل/فئة سابق؛ الشراء وحده يحتفظ بنتائجه أثناء الجلب.
   const debounced = useDebouncedValue(query, 180);
   const term = debounced.trim();
   const canSearch = term.length >= 2;
   // Sale-side query
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale },
-    { enabled: !isPurchase && canSearch, placeholderData: keepPreviousData, staleTime: 0 }
+    { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale, customerId },
+    { enabled: !isPurchase && canSearch, staleTime: 0 }
   );
   // Purchase-side query
   const purQ = trpc.catalog.forPurchase.useQuery(
@@ -126,7 +154,7 @@ export function ProductSearchBar({
 
   const utils = trpc.useUtils();
 
-  // ما يُعرض/يُبحر فيه: عند النزول تحت حرفين تُخفى النتائج القديمة العالقة (keepPreviousData)
+  // ما يُعرض/يُبحر فيه: عند النزول تحت حرفين تُخفى النتائج القديمة العالقة
   // كي لا تُعرض مضلِّلةً ولا يضيفها Enter/الأسهم خطأً.
   const results: NormalizedRow[] = useMemo(() => {
     if (query.trim().length < 2) return [];
@@ -174,6 +202,7 @@ export function ProductSearchBar({
       isBundle: r.isBundle === true,
       allowBackorder: r.allowBackorder === true,
       price: r.price ?? "0",
+      priceSource: r.isContractPrice ? "CONTRACT" : "TIER",
       // التكلفة تصل من الخادم (`catalog.posList`) للمستخدم المخوَّل برؤيتها (مدير/أدمن)، ويُحجب
       // إلى null لغير المخوَّلين (كاشير) في `catalogRouter.redactPosCost` قبل الإرسال ⇒ لا تسرب.
       // شاشات المبيعات المتقدّمة (`SalesInvoiceNew`) تعرض عمود «التكلفة» و«الهامش٪» بهذه القيمة.
@@ -214,6 +243,8 @@ export function ProductSearchBar({
       isBundle: r.isBundle,
       allowBackorder: r.allowBackorder,
       price: r.price || "0",
+      referencePrice: r.price || "0",
+      priceSource: r.priceSource,
       costBase: r.costBase || "0",
       discount: "0",
       discountType: "percent",
@@ -235,14 +266,22 @@ export function ProductSearchBar({
     code: string,
     options: { quietNotFound?: boolean } = {},
   ): Promise<ExactProductResolution> {
+    const requestToken = exactRequestGuardRef.current.capture();
+    const intentToken = activePricingIntentEpoch.capture();
+    const isCurrentRequest = () => exactRequestGuardRef.current.isCurrent(
+      requestToken,
+      pricingContextRef.current,
+    ) && activePricingIntentEpoch.isCurrent(intentToken);
     try {
       let row: Awaited<ReturnType<typeof utils.catalog.byBarcode.fetch>> | null = null;
       try {
-        row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+        row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier, customerId });
       } catch {
+        if (!isCurrentRequest()) return "STALE";
         // إذا كان المستخدم لا يملك صلاحية كتالوج المنتجات أو حدث خطأ، ننتقل للفحص الاحتياطي
         row = null;
       }
+      if (!isCurrentRequest()) return "STALE";
 
       if (row) {
         if (isPurchase) {
@@ -252,8 +291,10 @@ export function ProductSearchBar({
           try {
             purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
           } catch {
+            if (!isCurrentRequest()) return "STALE";
             purchaseRows = [];
           }
+          if (!isCurrentRequest()) return "STALE";
           const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
           if (purchaseRow) {
             addRow({
@@ -300,6 +341,7 @@ export function ProductSearchBar({
             isBundle: row.isBundle === true,
             allowBackorder: row.allowBackorder === true,
             price: row.price ?? "0",
+            priceSource: row.isContractPrice ? "CONTRACT" : "TIER",
             costBase: "0",
           });
           return "FOUND";
@@ -309,6 +351,7 @@ export function ProductSearchBar({
       // خط دفاع/احتياط للمرتجعات: فحص الأصناف المتوقفة/غير النشطة أو عند غياب صلاحية الكتالوج المباشرة
       try {
         const retItem = await utils.returns.lookupItemForReturn.fetch({ barcode: code });
+        if (!isCurrentRequest()) return "STALE";
         if (retItem) {
           addRow({
             productId: retItem.productId,
@@ -332,9 +375,11 @@ export function ProductSearchBar({
           return "FOUND";
         }
       } catch {
+        if (!isCurrentRequest()) return "STALE";
         // تجاهل الخطأ في الفحص الاحتياطي
       }
 
+      if (!isCurrentRequest()) return "STALE";
       if (!options.quietNotFound) {
         setScanStatus("error");
         onScanStatus?.("error");
@@ -345,6 +390,7 @@ export function ProductSearchBar({
       }
       return "NOT_FOUND";
     } catch (error) {
+      if (!isCurrentRequest()) return "STALE";
       setScanStatus("error");
       onScanStatus?.("error");
       setTimeout(() => {
@@ -398,6 +444,8 @@ export function ProductSearchBar({
   };
 
   const loading = (isPurchase ? purQ.isFetching : posQ.isFetching) && query.trim().length > 0;
+  // يشمل مهلة debounce أيضاً: لا تُثبّت نتيجة النص السابق قبل أن يصبح query الحالي مستقراً.
+  const salePricingPending = !isPurchase && !settled;
 
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
@@ -498,14 +546,16 @@ export function ProductSearchBar({
               {loading ? "جارٍ البحث…" : <>لا نتائج لـ «{query.trim()}» — جرّب كلمة أقصر أو امسح الباركود</>}
             </div>
           )}
-          {/* النتائج السابقة تبقى ظاهرة أثناء الجلب (باهتة قليلاً) — لا وميض اختفاء */}
+          {/* لا يمكن تثبيت نتيجة بيع أثناء جلب سياق عميل/فئة جديد. */}
           <div className={cn("max-h-80 overflow-auto", loading && "opacity-60")}>
           {results.map((p, i) => (
               <div
                 key={p.productUnitId}
-                onClick={() => addRow(p)}
+                onClick={() => { if (!salePricingPending) addRow(p); }}
+                aria-disabled={salePricingPending}
                 className={cn(
                   "grid cursor-pointer grid-cols-[1fr_auto] gap-3 border-b px-4 py-2.5 last:border-b-0 transition",
+                  salePricingPending && "cursor-not-allowed",
                   i === selectedIdx ? "bg-primary/10" : "hover:bg-muted"
                 )}
               >

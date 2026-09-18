@@ -63,6 +63,27 @@ export interface DigitalCheckoutRegularLineSnapshot {
   isGift: boolean;
 }
 
+/** ملخص خادمي لبَوّابات السعر؛ لا يقبل أي قيمة من العميل. */
+export interface DigitalCheckoutPricingGuardSnapshot {
+  paidCostTotal: string;
+  giftCostTotal: string;
+  paidLineBelowCost: boolean;
+  manualLineDiscountGate: boolean;
+  referenceGrossTotal: string;
+}
+
+/**
+ * قفل كتالوج/مخزون دائم مرتبط بنية البيع المختلط.
+ * reservedBase=0 يعني قفل معنى المصدر فقط (خدمة عمالية أو صنف backorder)، ولا يحجز كمية.
+ */
+export interface DigitalCheckoutInventoryReservationSnapshot {
+  sourceVariantId: number;
+  stockVariantId: number;
+  /** الطلب الحقيقي من التعريف المتجمّد؛ يبقى موجباً حتى لو كان الصنف backorder بلا حجز. */
+  demandedBase: number;
+  reservedBase: number;
+}
+
 /** Server-owned, durable checkout binding; legacy digital-only intents have NULL. */
 export interface DigitalCheckoutSnapshot {
   version: 1;
@@ -70,6 +91,13 @@ export interface DigitalCheckoutSnapshot {
   customerId: number | null;
   priceTier: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   regularLines: DigitalCheckoutRegularLineSnapshot[];
+  /** غائب في النيات التاريخية قبل هجرة 0362. */
+  inventoryReservations?: DigitalCheckoutInventoryReservationSnapshot[];
+  /** لقطة سلطة اعتماد السعر، بلا أي كلمة مرور أو سر مصادقة. */
+  priceOverrideApproved?: boolean;
+  priceApprovedBy?: number | null;
+  /** غائب فقط في النيات التاريخية السابقة لتشديد بوابة ما قبل الإصدار. */
+  pricingGuard?: DigitalCheckoutPricingGuardSnapshot;
   expectedSubtotal: string;
   /** حقول الفاتورة المتقدمة التي يجب أن تبقى مرتبطة بالنيّة حتى التثبيت/الاسترداد. */
   dueDate?: string | null;

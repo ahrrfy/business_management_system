@@ -19,6 +19,8 @@ import {
   digitalSaleIntentItems,
   productImages,
   products,
+  productUnits,
+  productVariants,
   suppliers,
 } from "../../../drizzle/schema";
 import { normalizeDigitalSaleReference } from "../../../shared/digitalSale";
@@ -72,14 +74,27 @@ export async function listCards(
   db: DB,
   input: { branchId: number; category?: CardCategory; providerId?: number; q?: string; now?: Date },
 ): Promise<PosCard[]> {
-  const [branch] = await db.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1);
-  if (!branch) return [];
+  const [branch] = await db
+    .select({ id: branches.id, isActive: branches.isActive })
+    .from(branches)
+    .where(eq(branches.id, input.branchId))
+    .limit(1);
+  if (!branch || branch.isActive !== true) return [];
 
   const conds = [
     eq(digitalOfferingBranches.branchId, input.branchId),
     eq(digitalOfferingBranches.isActive, true),
+    eq(branches.isActive, true),
     eq(digitalOfferings.isActive, true),
     eq(digitalProviders.isActive, true),
+    eq(products.isActive, true),
+    eq(products.productType, "DIGITAL_CARD"),
+    eq(products.isService, true),
+    eq(products.isBundle, false),
+    eq(products.isConsignment, false),
+    eq(productVariants.isActive, true),
+    eq(productUnits.isActive, true),
+    eq(productUnits.isBaseUnit, true),
   ];
   if (input.providerId != null) conds.push(eq(digitalOfferings.providerId, input.providerId));
   if (input.category && input.category !== "ALL" && input.category !== "FAVORITES") {
@@ -113,9 +128,24 @@ export async function listCards(
     })
     .from(digitalOfferings)
     .innerJoin(digitalOfferingBranches, eq(digitalOfferingBranches.offeringId, digitalOfferings.id))
+    .innerJoin(branches, eq(digitalOfferingBranches.branchId, branches.id))
     .innerJoin(digitalProviders, eq(digitalOfferings.providerId, digitalProviders.id))
     .innerJoin(suppliers, eq(digitalProviders.supplierId, suppliers.id))
     .innerJoin(products, eq(digitalOfferings.productId, products.id))
+    .innerJoin(
+      productVariants,
+      and(
+        eq(digitalOfferings.variantId, productVariants.id),
+        eq(productVariants.productId, products.id),
+      ),
+    )
+    .innerJoin(
+      productUnits,
+      and(
+        eq(digitalOfferings.productUnitId, productUnits.id),
+        eq(productUnits.variantId, productVariants.id),
+      ),
+    )
     .leftJoin(
       digitalCurrentPrices,
       and(
