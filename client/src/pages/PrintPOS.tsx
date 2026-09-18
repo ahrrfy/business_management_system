@@ -1156,13 +1156,19 @@ export default function PrintPOS() {
             }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "فشلت الطباعة" }));
           }}
           onPrintLabel={() => {
+            const origin = typeof window !== "undefined" ? window.location.origin : "";
+            const orderRef = receipt.invoiceNumber || receipt.num || "";
+            const deliveryFee = receipt.delivery?.fee ? String(receipt.delivery.fee) : null;
             void printShippingLabel({
-              orderNumber: receipt.invoiceNumber || receipt.num || "",
+              orderNumber: orderRef,
               customerName: receipt.customerName || tab.contactName || null,
               customerPhone: tab.contactPhone || null,
-              governorate: receipt.delivery && "governorate" in receipt.delivery ? String(receipt.delivery.governorate) : null,
+              governorate: receipt.delivery && "governorate" in receipt.delivery ? String((receipt.delivery as any).governorate) : null,
               addressText: receipt.delivery?.address ?? null,
               total: String(receipt.total),
+              subtotal: receipt.subtotal != null ? String(receipt.subtotal) : String(receipt.total),
+              shippingFee: deliveryFee && Number(deliveryFee) > 0 ? deliveryFee : null,
+              qrUrl: orderRef && origin ? `${origin}/verify?ref=${encodeURIComponent(orderRef)}` : null,
               items: receipt.lines.map(line => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
             }).then(r => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); });
           }}
