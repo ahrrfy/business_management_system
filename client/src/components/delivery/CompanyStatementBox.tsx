@@ -22,6 +22,7 @@ import {
 } from "./companyStatementReconciliation";
 
 export interface CompanyStatementBoxProps {
+  required?: boolean;
   statementNumber: string;
   onStatementNumberChange: (v: string) => void;
   statementDate: string;
@@ -44,6 +45,7 @@ const VERDICT_CLS: Record<StatementLineVerdict, string> = {
 const VERDICTS: readonly StatementLineVerdict[] = ["MATCHED", "MISMATCH", "MISSING"];
 
 export function CompanyStatementBox({
+  required = false,
   statementNumber, onStatementNumberChange, statementDate, onStatementDateChange, deductions, onDeductionsChange,
   notes, onNotesChange, lines, onSelectAll, onClearSelection,
 }: CompanyStatementBoxProps) {
@@ -56,7 +58,7 @@ export function CompanyStatementBox({
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-sm font-black text-[var(--sem-info)]">
           <FileText aria-hidden className="size-4" />
-          كشف شركة التوصيل (اختياريّ)
+          كشف شركة التوصيل {required ? <span className="text-destructive">*</span> : <span className="font-normal">(اختياريّ)</span>}
         </div>
         {statementMode && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -68,7 +70,7 @@ export function CompanyStatementBox({
       </div>
       <div className="grid gap-3 md:grid-cols-4">
         <div className="space-y-1">
-          <Label htmlFor="stmt-no" className="text-xs">رقم الكشف</Label>
+          <Label htmlFor="stmt-no" className="text-xs">رقم الكشف {required && <span className="text-destructive">*</span>}</Label>
           <Input id="stmt-no" value={statementNumber} maxLength={64} dir="ltr"
             onChange={(e) => onStatementNumberChange(e.target.value)} placeholder="STMT-…" className="h-9" />
         </div>
@@ -90,7 +92,7 @@ export function CompanyStatementBox({
       </div>
       {statementMode && (
         <p className="mt-2 text-[11px] font-bold text-[var(--sem-info)]">
-          وضعُ الكشف مُفعَّل: الصفوف تبدأ **غير محدَّدة** (opt-in). حدّد ما ورد في الكشف الورقيّ يدوياً — الأسطر الصفرية تُثبِت التسليم بلا نقد.
+          وضعُ الكشف مُفعَّل: الصفوف تبدأ غير محدَّدة. امسح باركود كل بوليصة لإضافتها إلى الطابور، أو حدّد الصف يدوياً عند الحاجة.
         </p>
       )}
       {rec && (

@@ -19,7 +19,15 @@ import { computeInvoiceTotals, computeLineTotal } from "./billing";
 import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, round2, toDateStr } from "./money";
-import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
+import {
+  getUnitPrice,
+  resolveEffectivePriceReference,
+  resolveTier,
+  tryGetUnitPrice,
+  type AutomaticPriceSource,
+  type PriceTier,
+} from "./pricing";
+import { resolveContractPrices } from "./contractPriceService";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "./sale/create";
 import { openShiftIdTx } from "./shiftService";
 import {
@@ -64,6 +72,39 @@ export interface CreateQuotationInput {
 
 export interface UpdateQuotationInput extends Omit<CreateQuotationInput, "branchId" | "clientRequestId"> {
   quotationId: number;
+}
+
+/**
+ * أسبقية تسعير عرض السعر هي نفس البيع: تجاوزٌ يدوي صريح ← عقد العميل ← فئة السعر.
+ * `catalogUnitPrice` يبقى لقطة سعر الفئة للتدقيق، بينما `referenceUnitPrice` يلتقط المرجع
+ * الفعّال (عقد/فئة) و`priceSource` يثبت إن كان السعر آلياً أم تجاوزاً يدوياً.
+ */
+async function resolveQuotationLinePrice(
+  tx: Tx,
+  line: QuotationLineInput,
+  tier: PriceTier,
+  contractPrice: string | undefined,
+) {
+  const catalogUnitPrice = await tryGetUnitPrice(tx, line.productUnitId, tier);
+  const hasOverride = line.unitPriceOverride != null && line.unitPriceOverride !== "";
+  const effective = resolveEffectivePriceReference({
+    catalogUnitPrice,
+    contractUnitPrice: contractPrice,
+  });
+  let referenceUnitPrice = effective.unitPrice;
+  let automaticSource: AutomaticPriceSource | null = effective.priceSource;
+  // التجاوز اليدوي مسموح حتى إن لم يكن للمنتج سعر فئة؛ أمّا السعر الآلي فيبقى fail-closed.
+  if (!hasOverride && referenceUnitPrice == null) {
+    referenceUnitPrice = await getUnitPrice(tx, line.productUnitId, tier);
+    automaticSource = "TIER";
+  }
+  const unitPrice = hasOverride ? money(line.unitPriceOverride!) : referenceUnitPrice!;
+  return {
+    unitPrice,
+    catalogUnitPrice: catalogUnitPrice?.toFixed(2) ?? null,
+    referenceUnitPrice: referenceUnitPrice?.toFixed(2) ?? null,
+    priceSource: hasOverride ? "MANUAL" as const : automaticSource!,
+  };
 }
 
 async function nextQuoteNumber(tx: Tx, branchId: number): Promise<string> {
@@ -209,16 +250,17 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
     });
+    const contractPrices = input.customerId
+      ? await resolveContractPrices(tx, input.customerId, input.lines.map((line) => line.productUnitId))
+      : new Map<number, string>();
 
     const computed = [];
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId,
       );
-      const catalogUnitPrice = await getUnitPrice(tx, l.productUnitId, tier);
-      const unitPrice =
-        l.unitPriceOverride != null && l.unitPriceOverride !== ""
-          ? money(l.unitPriceOverride)
-          : catalogUnitPrice;
+      const { unitPrice, catalogUnitPrice, referenceUnitPrice, priceSource } = await resolveQuotationLinePrice(
+        tx, l, tier, contractPrices.get(l.productUnitId),
+      );
       const lineRes = computeLineTotal({
         unitPrice,
         quantity: money(l.quantity),
@@ -230,7 +272,9 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         productUnitId: l.productUnitId,
         baseQuantity,
         unitPrice: lineRes.unitPrice,
-        catalogUnitPrice: catalogUnitPrice.toFixed(2),
+        catalogUnitPrice,
+        referenceUnitPrice,
+        priceSource,
         quantity: lineRes.quantity,
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
@@ -270,6 +314,8 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         baseQuantity: c.baseQuantity,
         unitPrice: c.unitPrice,
         catalogUnitPrice: c.catalogUnitPrice,
+        referenceUnitPrice: c.referenceUnitPrice,
+        priceSource: c.priceSource,
         discountAmount: c.discountAmount,
         total: c.total,
       });
@@ -343,13 +389,18 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
     });
+    const contractPrices = input.customerId
+      ? await resolveContractPrices(tx, input.customerId, input.lines.map((line) => line.productUnitId))
+      : new Map<number, string>();
 
     const computed: Array<{
       variantId: number;
       productUnitId: number;
       baseQuantity: number;
       unitPrice: string;
-      catalogUnitPrice: string;
+      catalogUnitPrice: string | null;
+      referenceUnitPrice: string | null;
+      priceSource: "TIER" | "CONTRACT" | "MANUAL";
       quantity: string;
       discountAmount: string;
       total: string;
@@ -361,11 +412,9 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         line.quantity,
         line.variantId,
       );
-      const catalogUnitPrice = await getUnitPrice(tx, line.productUnitId, tier);
-      const unitPrice =
-        line.unitPriceOverride != null && line.unitPriceOverride !== ""
-          ? money(line.unitPriceOverride)
-          : catalogUnitPrice;
+      const { unitPrice, catalogUnitPrice, referenceUnitPrice, priceSource } = await resolveQuotationLinePrice(
+        tx, line, tier, contractPrices.get(line.productUnitId),
+      );
       const result = computeLineTotal({
         unitPrice,
         quantity: money(line.quantity),
@@ -377,7 +426,9 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         productUnitId: line.productUnitId,
         baseQuantity,
         unitPrice: result.unitPrice,
-        catalogUnitPrice: catalogUnitPrice.toFixed(2),
+        catalogUnitPrice,
+        referenceUnitPrice,
+        priceSource,
         quantity: result.quantity,
         discountAmount: result.discountAmount,
         total: result.total,
@@ -911,6 +962,9 @@ export async function getQuotation(quotationId: number) {
       quantity: quotationItems.quantity,
       baseQuantity: quotationItems.baseQuantity,
       unitPrice: quotationItems.unitPrice,
+      catalogUnitPrice: quotationItems.catalogUnitPrice,
+      referenceUnitPrice: quotationItems.referenceUnitPrice,
+      priceSource: quotationItems.priceSource,
       discountAmount: quotationItems.discountAmount,
       total: quotationItems.total,
       productName: products.name,
@@ -926,5 +980,10 @@ export async function getQuotation(quotationId: number) {
     .leftJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(quotationItems.productUnitId, productUnits.id))
     .where(eq(quotationItems.quotationId, quotationId));
-  return { ...q, items };
+  return {
+    ...q,
+    // لا نعيد حل العقد الحالي هنا: هذان الحقلان لقطة نيّة السطر وقت آخر حفظ.
+    // NULL يعني سطر legacy ملتبس، فيتعامل معه العميل fail-safe كتجاوز صريح.
+    items,
+  };
 }

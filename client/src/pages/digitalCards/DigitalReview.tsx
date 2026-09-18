@@ -26,7 +26,9 @@ type ReviewDetails = RouterOutputs["digitalCards"]["sales"]["reviewDetails"];
 type Decision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS";
 type ItemOutcome = "ISSUED" | "NOT_ISSUED";
 
-const DECISION_COPY: Record<Decision, { title: string; detail: string; effect: string }> = {
+type DecisionCopy = Record<Decision, { title: string; detail: string; effect: string }>;
+
+const PAID_DECISION_COPY: DecisionCopy = {
   CANCEL_NO_ISSUE: {
     title: "لم يصدر أي كرت",
     detail: "استخدمه بعد مطابقة تقرير جهاز المزوّد والتأكد أن العملية لم تُنفّذ.",
@@ -43,6 +45,30 @@ const DECISION_COPY: Record<Decision, { title: string; detail: string; effect: s
     effect: "عند الاعتماد تُسجل خسارة واضحة وتُغلق المبالغ المعلقة؛ لا تُنشأ مبيعات وهمية.",
   },
 };
+
+const CREDIT_DECISION_COPY: DecisionCopy = {
+  ...PAID_DECISION_COPY,
+  FINALIZE_SALE: {
+    title: "صدر الكرت — أثبت الفاتورة الآجلة",
+    detail: "استخدمه عند تسليم الكرت للعميل المسجّل؛ عدم القبض طبيعي لأن كامل القيمة ذمّة.",
+    effect: "عند الاعتماد تُنشأ فاتورة آجلة بلا سند قبض وتُرحّل كامل القيمة على ذمّة العميل.",
+  },
+  WRITEOFF_LOSS: {
+    title: "صدر الكرت ولا يجوز تحميله على العميل",
+    detail: "استخدمه فقط إذا لم يُسلَّم الكرت للعميل أو ثبت أن الذمّة لا تخصه وتعذّر استرداد الكرت.",
+    effect: "عند الاعتماد تُسجل خسارة واضحة وتُغلق المبالغ المعلقة؛ لا تُنشأ ذمّة على العميل.",
+  },
+};
+
+function decisionCopy(paymentMethod: string | null | undefined): DecisionCopy {
+  return paymentMethod === "CREDIT" ? CREDIT_DECISION_COPY : PAID_DECISION_COPY;
+}
+
+function paymentMethodLabel(paymentMethod: string): string {
+  if (paymentMethod === "CASH") return "نقداً";
+  if (paymentMethod === "CREDIT") return "آجل كامل (ذمّة على العميل)";
+  return "بطاقة/شبكة";
+}
 
 const AUDIT_ACTION_LABEL: Record<string, string> = {
   "digitalCards.intent.prepared": "جهّز عملية البيع وحجز المبلغ",
@@ -61,7 +87,7 @@ function causeFor(row: QueueRow): { title: string; detail: string; next: string 
   if (row.resolutionStatus === "PENDING") {
     return {
       title: "قرار المعالجة ينتظر مديراً آخر",
-      detail: DECISION_COPY[row.resolutionDecision as Decision]?.title ?? "تم إرسال قرار للمعالجة",
+      detail: decisionCopy(row.paymentMethod)[row.resolutionDecision as Decision]?.title ?? "تم إرسال قرار للمعالجة",
       next: "مراجعة القرار واعتماده أو رفضه",
     };
   }
@@ -73,10 +99,15 @@ function causeFor(row: QueueRow): { title: string; detail: string; next: string 
     };
   }
   if (Number(row.successCount) === Number(row.itemCount) && Number(row.itemCount) > 0) {
+    const credit = row.paymentMethod === "CREDIT";
     return {
       title: "صدرت الكروت ولم تُنشأ الفاتورة",
-      detail: "سُجل نجاح الإصدار، لكن البيع توقف قبل إنشاء الفاتورة والقبض.",
-      next: "طابق تقرير الجهاز ثم أكمل البيع أو أثبت الخسارة",
+      detail: credit
+        ? "سُجل نجاح الإصدار، لكن البيع توقف قبل إنشاء الفاتورة الآجلة وترحيل الذمّة."
+        : "سُجل نجاح الإصدار، لكن البيع توقف قبل إنشاء الفاتورة والقبض.",
+      next: credit
+        ? "طابق تقرير الجهاز ثم أثبت الفاتورة الآجلة؛ لا تعتبر عدم القبض خسارة"
+        : "طابق تقرير الجهاز ثم أكمل البيع أو أثبت الخسارة",
     };
   }
   if (Number(row.openClaimCount) > 0) {
@@ -515,7 +546,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
 
   async function approve() {
     if (!data?.resolution) return;
-    const copy = DECISION_COPY[data.resolution.decision as Decision];
+    const copy = decisionCopy(data.intent.paymentMethod)[data.resolution.decision as Decision];
     if (!(await confirm({
       variant: data.resolution.decision === "FINALIZE_SALE" ? "info" : "danger",
       title: `اعتماد: ${copy.title}`,
@@ -540,7 +571,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
           <div className="max-h-[65vh] space-y-4 overflow-y-auto px-1">
             <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-sm sm:grid-cols-2 lg:grid-cols-5">
               <div><span className="text-muted-foreground">قيمة البيع</span><p className="font-bold tabular-nums">{fmtAr(data.intent.expectedTotal)}</p></div>
-              <div><span className="text-muted-foreground">طريقة الدفع المحفوظة</span><p className="font-medium">{data.intent.paymentMethod === "CASH" ? "نقداً" : "بطاقة/شبكة"}</p></div>
+              <div><span className="text-muted-foreground">طريقة الدفع المحفوظة</span><p className="font-medium">{paymentMethodLabel(data.intent.paymentMethod)}</p></div>
               <div><span className="text-muted-foreground">الفرع</span><p className="font-medium">{data.intent.branchName}</p></div>
               <div><span className="text-muted-foreground">الموظف والحساب</span><p className="font-medium">{data.intent.createdByName || `حساب #${data.intent.createdBy}`}</p><p className="text-xs" dir="ltr">{data.intent.createdByUsername ? `@${data.intent.createdByUsername}` : `#${data.intent.createdBy}`}</p></div>
               <div><span className="text-muted-foreground">الوردية</span><p className="font-medium">#{data.intent.shiftId} · {data.intent.shiftStatus === "OPEN" ? "مفتوحة" : "مغلقة"}</p><p className="text-xs text-muted-foreground">بدأت <span dir="ltr">{fmtDateTime(data.intent.shiftOpenedAt)}</span></p></div>
@@ -565,8 +596,8 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                 <div className="space-y-2">
                   <p className="text-sm font-semibold">1. ما الذي أثبته تقرير جهاز المزوّد؟</p>
                   <div className="grid gap-2 md:grid-cols-3">
-                    {(Object.keys(DECISION_COPY) as Decision[]).map((key) => {
-                      const copy = DECISION_COPY[key];
+                    {(Object.keys(PAID_DECISION_COPY) as Decision[]).map((key) => {
+                      const copy = decisionCopy(data.intent.paymentMethod)[key];
                       return (
                         <button
                           key={key}
@@ -657,7 +688,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                       <span>أؤكد أنني راجعت تقرير جهاز المزوّد ورقم العملية، وأن النتيجة أعلاه مطابقة لما حدث فعلاً.</span>
                     </label>
                     <div className="rounded-lg bg-muted p-3 text-sm">
-                      <strong>ما سيحدث بعد الاعتماد:</strong> {DECISION_COPY[decision].effect}
+                      <strong>ما سيحدث بعد الاعتماد:</strong> {decisionCopy(data.intent.paymentMethod)[decision].effect}
                     </div>
                   </div>
                 )}
@@ -713,7 +744,7 @@ function PendingResolution({
   onReject: () => void;
 }) {
   const resolution = data.resolution!;
-  const copy = DECISION_COPY[resolution.decision as Decision];
+  const copy = decisionCopy(data.intent.paymentMethod)[resolution.decision as Decision];
   const requestItems = new Map(resolution.items.map((item) => [Number(item.intentItemId), item]));
   return (
     <div className="space-y-4">

@@ -169,6 +169,26 @@ describe("ش٤ — إلغاء أمر الشغل: قرار الخامة والس�
     expect((await wipNet()).toFixed(2)).toBe("0.00");
   });
 
+  it("يرجع الخامة بقيمة لقطة البدء ويمزجها مع WAVG اللاحق", async () => {
+    const woId = await startedOrder("cw-valued-return");
+    // الورق خرج 10 @ 500 فبقي 90. نمثّل استلاماً لاحقاً 10 @ 1500:
+    // الرصيد 100 وتكلفته المتوسطة 600. إرجاع الأمر يعيد 10 @ 500 التاريخية،
+    // فيصبح المتوسط (100×600 + 10×500) / 110 = 590.91.
+    await db().update(s.branchStock).set({ quantity: 100 }).where(and(
+      eq(s.branchStock.variantId, 1),
+      eq(s.branchStock.branchId, 1),
+    ));
+    await db().update(s.productVariants).set({ costPrice: "600.00" })
+      .where(eq(s.productVariants.id, 1));
+
+    await cancelGoverned(woId, { reason: "إلغاء بعد استلام خامة لاحق" });
+
+    expect(await stockOf(1)).toBe(110);
+    expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("590.91");
+    expect((await wipNet()).toFixed(2)).toBe("0.00");
+  });
+
   it("⭐ (ب)+(ج) قرارٌ جزئيّ: يعود المقرَّر وحده، والباقي خسارةٌ بلا حركة مخزون، وWIP يصفر", async () => {
     const woId = await startedOrder("cw-2");
     const mats = await matsOf(woId);

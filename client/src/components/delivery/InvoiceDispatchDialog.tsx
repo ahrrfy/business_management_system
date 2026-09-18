@@ -58,6 +58,7 @@ export function InvoiceDispatchDialog({
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [assignedUserId, setAssignedUserId] = useState("");
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
 
   const parties = partiesQ.data ?? [];
   const party = parties.find((p) => String(p.id) === partyId);
@@ -104,6 +105,10 @@ export function InvoiceDispatchDialog({
 
   const submit = (partialDispatchConfirmed?: boolean) => {
     if (!invoice) return;
+    if (party?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
+      notify.err("رقم بوليصة شركة التوصيل مطلوب", "امسح الباركود المطبوع على البوليصة قبل الإسناد.");
+      return;
+    }
     dispatch.mutate({
       invoiceId: invoice.id,
       partyId: Number(partyId),
@@ -113,6 +118,7 @@ export function InvoiceDispatchDialog({
       recipientPhone: phone.trim(),
       deliveryAddress: address.trim(),
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
+      externalTrackingRef: externalTrackingRef.trim() || undefined,
       clientRequestId: crypto.randomUUID(),
       ...(partialDispatchConfirmed ? { partialDispatchConfirmed: true } : {}),
     });
@@ -128,6 +134,7 @@ export function InvoiceDispatchDialog({
     setPhone(invoice.customerPhone ?? "");
     setAddress(invoice.deliveryAddress ?? "");
     setAssignedUserId("");
+    setExternalTrackingRef("");
   }, [invoice, open]);
 
   function resetFromInvoice(nextOpen: boolean) {
@@ -156,6 +163,7 @@ export function InvoiceDispatchDialog({
               onValueChange={(value) => {
                 setPartyId(value);
                 setAssignedUserId("");
+                setExternalTrackingRef("");
                 const selected = parties.find((p) => String(p.id) === value);
                 if (selected) setFee(selected.defaultFee ?? "0");
               }}
@@ -193,6 +201,23 @@ export function InvoiceDispatchDialog({
                 </AppSelect>
               </div>
             )}
+
+          {party?.partyType === "COMPANY" && (
+            <div className="space-y-1">
+              <Label htmlFor="invoice-dispatch-tracking">
+                رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="invoice-dispatch-tracking"
+                value={externalTrackingRef}
+                onChange={(event) => setExternalTrackingRef(event.target.value)}
+                placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم"
+                maxLength={100}
+                dir="ltr"
+                className="font-mono"
+              />
+            </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
@@ -297,6 +322,7 @@ export function InvoiceDispatchDialog({
               !name.trim() ||
               !phone.trim() ||
               !address.trim() ||
+              (party?.partyType === "COMPANY" && !externalTrackingRef.trim()) ||
               dispatch.isPending
             }
             isDispatching={dispatch.isPending}

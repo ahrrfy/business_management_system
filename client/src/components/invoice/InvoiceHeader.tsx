@@ -25,6 +25,12 @@ import {
 } from "lucide-react";
 import { EntityPicker } from "./EntityPicker";
 import {
+  beginPricingSelectionIntent,
+  createLatestPricingRequestGuard,
+  createPricingIntentEpoch,
+  type PricingIntentEpoch,
+} from "./productSearchResolution";
+import {
   CURRENCIES,
   INVOICE_TYPES,
   PAYMENT_TERMS,
@@ -35,6 +41,7 @@ import {
   type InvoiceType,
   type PaymentTerm,
   type PriceTier,
+  type ResolvedLinePrice,
 } from "./types";
 
 export interface InvoiceHeaderProps {
@@ -49,6 +56,8 @@ export interface InvoiceHeaderProps {
    * مسوّدةً بينما هو يعدّل أمراً معتمَداً على وشك الاستلام.
    */
   statusBadge?: string;
+  /** ساعة مشتركة مع منتقي المنتجات لإبطال نتائج التسعير القديمة لحظة نية العميل/الفئة. */
+  pricingIntentEpoch?: PricingIntentEpoch;
   /**
    * يُثبّت حقل الفرع حتى للأدمن. شاشةُ تعديلِ مستندٍ قائم تحتاجه: فرعُ المستند يحدّد ترقيمه
    * وعزلَه الأمنيّ فلا يُنقَل بتعديل، وتركُ المُنتقي مفتوحاً يجعل الاختيارَ يُهمَل بصمت.
@@ -104,7 +113,7 @@ function HeaderSection({
   );
 }
 
-export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusBadge, lockBranch }: InvoiceHeaderProps) {
+export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusBadge, pricingIntentEpoch, lockBranch }: InvoiceHeaderProps) {
   const typeInfo = INVOICE_TYPES[invoiceType];
   const isSale = invoiceType === "SALE" || invoiceType === "QUOTATION" || invoiceType === "SALE_RETURN";
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
@@ -118,7 +127,9 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
   const utils = trpc.useUtils();
   const latestStateRef = useRef(state);
   latestStateRef.current = state;
-  const tierRequestRef = useRef(0);
+  const pricingRequestGuardRef = useRef(createLatestPricingRequestGuard());
+  const localPricingIntentEpochRef = useRef(createPricingIntentEpoch());
+  const activePricingIntentEpoch = pricingIntentEpoch ?? localPricingIntentEpochRef.current;
   const [isRepricing, setIsRepricing] = useState(false);
 
   // رأس تكيّفيّ (هجين): يُطوى تلقائياً حين تحمل السلة منتجات ليتمدّد جدول السلة نزولاً ويعرض
@@ -142,9 +153,19 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
    * Reprice the current cart in one server round-trip when the tier changes.
    * Keep the tier and all line prices atomic so totals never render against a
    * new tier while still carrying the previous tier's prices.
-   */
+  */
   async function changePriceTier(nextTier: PriceTier) {
-    if (nextTier === latestStateRef.current.tier) return;
+    activePricingIntentEpoch.invalidate();
+    const intent = beginPricingSelectionIntent(
+      pricingRequestGuardRef.current,
+      `tier:${nextTier}`,
+      latestStateRef.current.tier,
+      nextTier,
+    );
+    if (!intent.changed) {
+      setIsRepricing(false);
+      return;
+    }
 
     // Returns must retain the source invoice prices. Automatic repricing is
     // intentionally limited to new sales invoices and quotations.
@@ -153,7 +174,8 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
       return;
     }
 
-    const requestId = ++tierRequestRef.current;
+    const requestToken = intent.token;
+    const isCurrentRequest = () => pricingRequestGuardRef.current.isCurrent(requestToken, requestToken.context);
     setIsRepricing(true);
 
     try {
@@ -172,8 +194,9 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           branchId: snapshot.branchId,
           tier: nextTier,
           productUnitIds: unitIds,
+          customerId: snapshot.entityId,
         });
-        if (requestId !== tierRequestRef.current) return;
+        if (!isCurrentRequest()) return;
 
         const current = latestStateRef.current;
         const currentUnitIds = Array.from(new Set(current.items.map((item) => item.productUnitId))).sort((a, b) => a - b);
@@ -183,18 +206,91 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           currentUnitIds.some((id, index) => id !== unitIds[index]);
         if (cartChanged) continue;
 
-        const pricesByUnitId: Record<number, string> = {};
-        for (const row of rows) pricesByUnitId[row.productUnitId] = row.price ?? "0";
+        const pricesByUnitId: Record<number, ResolvedLinePrice> = {};
+        for (const row of rows) {
+          pricesByUnitId[row.productUnitId] = {
+            price: row.price ?? "0",
+            priceSource: row.isContractPrice ? "CONTRACT" : "TIER",
+          };
+        }
 
         dispatch({ type: "SET_TIER_PRICES", tier: nextTier, pricesByUnitId });
         return;
       }
     } catch (error) {
-      if (requestId === tierRequestRef.current) {
+      if (isCurrentRequest()) {
         notify.err(error, "تعذّر تطبيق فئة السعر الجديدة على المنتجات. بقيت الفئة والأسعار السابقة دون تغيير.");
       }
     } finally {
-      if (requestId === tierRequestRef.current) setIsRepricing(false);
+      if (isCurrentRequest()) setIsRepricing(false);
+    }
+  }
+
+  /** يغيّر العميل وأسعار سلة البيع/العرض معاً كي لا يبقى سعر عميل سابق في مستند العميل الجديد. */
+  async function changeEntity(nextId: number | null) {
+    activePricingIntentEpoch.invalidate();
+    const intent = beginPricingSelectionIntent(
+      pricingRequestGuardRef.current,
+      `customer:${nextId ?? "none"}`,
+      latestStateRef.current.entityId,
+      nextId,
+    );
+    if (!intent.changed) {
+      setIsRepricing(false);
+      return;
+    }
+    if (invoiceType !== "SALE" && invoiceType !== "QUOTATION") {
+      dispatch({ type: "SET_ENTITY", id: nextId });
+      return;
+    }
+
+    const requestToken = intent.token;
+    const isCurrentRequest = () => pricingRequestGuardRef.current.isCurrent(requestToken, requestToken.context);
+    setIsRepricing(true);
+    try {
+      for (;;) {
+        const snapshot = latestStateRef.current;
+        const unitIds = Array.from(new Set(snapshot.items.map((item) => item.productUnitId)))
+          .sort((a, b) => a - b);
+        if (unitIds.length === 0) {
+          dispatch({ type: "SET_ENTITY", id: nextId });
+          return;
+        }
+
+        const rows = await utils.catalog.byUnitIds.fetch({
+          branchId: snapshot.branchId,
+          tier: snapshot.tier,
+          productUnitIds: unitIds,
+          customerId: nextId,
+        });
+        if (!isCurrentRequest()) return;
+
+        const current = latestStateRef.current;
+        const currentUnitIds = Array.from(new Set(current.items.map((item) => item.productUnitId)))
+          .sort((a, b) => a - b);
+        const cartChanged =
+          current.branchId !== snapshot.branchId ||
+          current.tier !== snapshot.tier ||
+          currentUnitIds.length !== unitIds.length ||
+          currentUnitIds.some((id, index) => id !== unitIds[index]);
+        if (cartChanged) continue;
+
+        const pricesByUnitId: Record<number, ResolvedLinePrice> = {};
+        for (const row of rows) {
+          pricesByUnitId[row.productUnitId] = {
+            price: row.price ?? "0",
+            priceSource: row.isContractPrice ? "CONTRACT" : "TIER",
+          };
+        }
+        dispatch({ type: "SET_ENTITY_PRICES", id: nextId, pricesByUnitId });
+        return;
+      }
+    } catch (error) {
+      if (isCurrentRequest()) {
+        notify.err(error, "تعذّر تطبيق أسعار العميل على المنتجات. بقي العميل والأسعار السابقة دون تغيير.");
+      }
+    } finally {
+      if (isCurrentRequest()) setIsRepricing(false);
     }
   }
 
@@ -312,7 +408,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             <EntityPicker
               type={invoiceType}
               selectedId={state.entityId}
-              onSelect={(id) => dispatch({ type: "SET_ENTITY", id })}
+              onSelect={(id) => void changeEntity(id)}
               placeholder={isReturn ? `نقدي — بلا ${isSale ? "عميل" : "مورّد"} (اختياري)` : undefined}
             />
           </FieldGroup>

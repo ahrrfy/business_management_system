@@ -1,10 +1,8 @@
 import type { StartOrderFromConversation } from "@/pages/Inbox";
-import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel } from "@shared/receptionChannel";
+import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel, receptionChannelOptions } from "@shared/receptionChannel";
 import { ChannelMark } from "@/components/ChannelBadge";
-import { receptionChannelOptions } from "@shared/receptionChannel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   CalendarClock,
@@ -58,6 +56,7 @@ import { parseScan } from "@/lib/scanRouter";
 import { buildDraftPayload } from "@/components/reception/draftPayloadBuilder";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
+import { captureDigitalReceptionCartLines, toDigitalPrepareLine } from "@/components/pos/digitalBasket";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -68,8 +67,7 @@ import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
 import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
-// تفكيك §١٣ ش١ (٥/٨): الأنواع/الدوال النقيّة والمكوّنات الثقيلة (السلة/الدفع/الإيصال) صارت
-// وحدات مستقلّة تحت components/reception — نقلٌ حرفيّ بصفر تغيير سلوكي.
+import { applyReceptionCouponPreview, clearReceptionCouponPricing, createReceptionDraftPointer, createReceptionDraftSyncQueue, isDefinitiveReceptionPromotionRejection, prepareReceptionConversationStart, prepareReceptionDepositDraft, prepareReceptionDraftCart, prepareReceptionDraftSwitch, prepareReceptionLocalWorkspaceRestore, resolveReceptionRestoredPricingContext, type ReceptionDraftSyncOutcome as DraftSyncOutcome, type ReceptionDraftSyncQueue, type ReceptionLocalWorkspaceSnapshot, type ReceptionServerDraftPointer, updateRestoredReceptionCustomization, useReceptionWorkspacePersistence } from "@/lib/receptionWorkspaceState";
 import {
   customLineGrand,
   effectivePrice,
@@ -87,6 +85,7 @@ import {
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
+import { triggerReceptionShippingLabel } from "@/components/reception/receptionShippingLabel";
 import type { DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { buildReceptionDepartureData } from "@/components/reception/receptionDepartureHelper";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
@@ -164,11 +163,6 @@ export default function Reception() {
   const canReadCustomerContext = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "crm", "READ", CRM_READ_ROLES,
   );
-  // مرآة بوّابة customers.create الخادمية بالضبط (customerReceptionCreateAllowed في server/trpc.ts):
-  // crm=FULL (الأدوار القياسية) **أو** workorders=FULL (بوّابة محطة الاستقبال). قرار المالك العاجل
-  // (١٢/٨): يُلغى حاجز crm≥READ من مراجعة Codex — كاشير الاستقبال يحفظ العميل ويبيع بلا عربون
-  // ولو كان دوره المخصّص بلا صلاحيّة CRM أصلاً. CONFLICT الهاتف نظريّ: يحدث فقط عند تكرار هاتفٍ
-  // حرفياً، ورسالة الخادم توضّح فيصعّد الموظّف للمدير عندها.
   const canCreateCustomer = me.data != null && (
     moduleAccessAllowed(
       me.data.role, reservationPermissions, "crm", "FULL", CUSTOMER_CREATE_ROLES,
@@ -203,8 +197,7 @@ export default function Reception() {
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
   // اِستقبال (تكامل التوصيل، ٤/٨): عدّاد «جاهز» على زرّ طابور الطلبات — مؤشّر سريع بلا فتح الطابور.
   const shift = shiftQ.data ?? null;
-  const [opening, setOpening] = useState("0");
-  const [closing, setClosing] = useState(false);
+  const [opening, setOpening] = useState("0"), [closing, setClosing] = useState(false);
   const branchName = useMemo(
     () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
     [branchesQ.data, branchId],
@@ -243,10 +236,7 @@ export default function Reception() {
   // ٢٣/٨ (Codex P2) — عدّاد إضافةٍ صريح: يزيد فقط عند فعل الإضافة (`addDirectLine`) ولو أدّى
   // إلى رفع كمّية سطرٍ قائم — إعادة مسح نفس السطر تُشغّل التمرير أيضاً. لا يزيد عند حذف/تعديل
   // كمّية/تحميل مسوّدة ⇒ لا يقفز الجدول من دون فعل الكاشير.
-  const [addTick, setAddTick] = useState(0);
-  const [selKey, setSelKey] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [showDrop, setShowDrop] = useState(false);
+  const [addTick, setAddTick] = useState(0), [selKey, setSelKey] = useState<string | null>(null), [search, setSearch] = useState(""), [showDrop, setShowDrop] = useState(false);
   // م٤: لوحة الأرقام صارت لوحة **مبلغٍ** خالصة — أوضاع الكمية/الخصم حُذفت (الكمية داخل الصفّ،
   // والخصم Popover في خلية السعر). لا وضعيّة خفيّة بعد اليوم: اللوحة تعني المبلغ دائماً.
   const [payInput, setPayInput] = useState("");
@@ -276,10 +266,7 @@ export default function Reception() {
     navigate("/pos?mode=RECEPTION", { replace: true });
   }, [requestedWorkspace, navigate, canReadChannels]);
   // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
-  const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
-  const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
-  const [deliveryDeparture, setDeliveryDeparture] = useState<DeliveryDepartureData | null>(null);
-  const [cashDropping, setCashDropping] = useState(false);
+  const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null), [showReceiptOverlay, setShowReceiptOverlay] = useState(false), [deliveryDeparture, setDeliveryDeparture] = useState<DeliveryDepartureData | null>(null), [cashDropping, setCashDropping] = useState(false);
   const [depositMenuOpen, setDepositMenuOpen] = useState(false);
   const [discountFor, setDiscountFor] = useState<string | null>(null);
   const [approvalAsk, setApprovalAsk] = useState<{ lineKey: string; pct: number } | null>(null);
@@ -288,7 +275,9 @@ export default function Reception() {
   // ش٢ (§٨.٢): المسوّدة المُرقّاة — السلّة محليّةٌ بالافتراض، وتترقّى بحفظٍ صريح؛ بعدها تُزامَن
   // بالجملة بdebounce ~٨٠٠مث وversion تفاؤليّ (تعارضُ زميلٍ ⇒ إعادة تحميلٍ لا طمس).
   const [activeDraft, setActiveDraft] = useState<{ id: number; version: number } | null>(null);
-  const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeDraftRef = useRef(activeDraft); useEffect(() => { activeDraftRef.current = activeDraft; }, [activeDraft]);
+  const draftSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null), draftResumeEpochRef = useRef(0); const draftSyncQueueRef = useRef<ReceptionDraftSyncQueue<ReturnType<typeof buildDraftPayload>> | null>(null), draftPromotionFlightRef = useRef(false), draftRecoveryPromptRef = useRef(false);
+  const [draftTransitionPending, setDraftTransitionPending] = useState(false), [draftPromotionPending, setDraftPromotionPending] = useState(false), [draftPromotionShiftId, setDraftPromotionShiftId] = useState<number | null>(null), [workspaceSafetyBlocked, setWorkspaceSafetyBlocked] = useState(false), [detachedRecoveryPending, setDetachedRecoveryPending] = useState(false), [draftRestoreRecovery, setDraftRestoreRecovery] = useState<{ snapshot: ReceptionServerDraftPointer; serverAvailable: boolean } | null>(null); useEffect(() => () => { draftResumeEpochRef.current += 1; activeDraftRef.current = null; draftSyncQueueRef.current?.reset(); }, []);
   // ش٤: صافي العربون المقبوض على الطلب المحفوظ النشط — يقلّص «المتوقّع الآن» ويظهر في اللوحة.
   const [draftHeld, setDraftHeld] = useState("0.00");
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
@@ -299,6 +288,7 @@ export default function Reception() {
   type OrderDeliveryValue = {
     partyId: number; partyName: string | null; fee: string; feeCollection: "COUNTER" | "COURIER" | "SHOP";
     recipientPhone: string | null; recipientName: string | null; address: string | null;
+    externalTrackingRef: string | null;
   };
   const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
   const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
@@ -313,14 +303,20 @@ export default function Reception() {
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   // م١ PR-B: آلة «العميل بالهاتف» صارت مشتركة مع كاشير التجزئة (`useCustomerByPhone`) — كانت مضمَّنة هنا.
   // تغيّر الهاتف يُسقط «آجل» (تعلّق بعميلٍ آخر) كما كان؛ الفئة والأهليّة تُسقطهما الآلة نفسها.
-  const phoneCustomer = useCustomerByPhone({ onPhoneChange: () => setDeferred(false) });
+  const pendingDeferredRestoreRef = useRef(false), suppressHydratedPhoneResetRef = useRef(false);
+  const phoneCustomer = useCustomerByPhone({ onPhoneChange: () => {
+    if (suppressHydratedPhoneResetRef.current) { suppressHydratedPhoneResetRef.current = false; return; }
+    pendingDeferredRestoreRef.current = false; setDeferred(false);
+  } });
   const {
     customer, setCustomer, phone: receptionPhone, setPhone: setReceptionPhone,
     resolution: phoneResolution, error: phoneResolutionError,
-    tier: resolvedCustomerTier, resolve: resolveReceptionCustomer,
+    tier: resolvedCustomerTier, resolve: resolveReceptionCustomer, creditLimit: customerCreditLimit, setCreditLimit: setCustomerCreditLimit, deferredEligible: phoneDeferredEligible,
   } = phoneCustomer;
+  useEffect(() => { if (pendingDeferredRestoreRef.current && phoneResolution === "RESOLVED") { pendingDeferredRestoreRef.current = false; setDeferred(phoneDeferredEligible); if (!phoneDeferredEligible) notify.warn("لم تُستعد طريقة الآجل", "العميل لم يعد مؤهلاً للبيع الآجل؛ اختر طريقة دفع أخرى."); } }, [phoneDeferredEligible, phoneResolution]);
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
+  const [hydratedAutomaticTier, setHydratedAutomaticTier] = useState<Tier | null>(null);
   const [couponInput, setCouponInput] = useState("");
   // الكوبون مطويّ افتراضياً في الدرجات الضيّقة؛ هذه الراية تفتحه بطلب الموظّف.
   const [couponOpen, setCouponOpen] = useState(false);
@@ -340,52 +336,34 @@ export default function Reception() {
   const [cardsOpen, setCardsOpen] = useState(false);
   const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
   const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
-  const digitalCheckoutRef = useRef<{ appliedPaidD: import('decimal.js').Decimal; method: PayMethod; customerId: number | null } | null>(null);
-
+  const digitalCheckoutRef = useRef<{ appliedPaidD: import("decimal.js").Decimal; customerId: number | null } | null>(null);
   const resetScreen = () => {
-    setCart([]);
-    setAddTick(0);
-    setSelKey(null);
-    setSearch("");
-    setPayInput("");
-    setDeferred(false);
-    setMethod("CASH");
-    setPaymentReference("");
-    setActiveDraft(null);
-    setDraftHeld("0.00");
-    setDraftInfo(null);
-    setOrderDelivery(null);
-    setCustomerContextId(null);
-    setTierOverride(null);
-    setCouponInput("");
-    setInvoiceDiscountPct("");
-    setCouponCode(null);
-    setCouponLabel(null);
-    setLinkedConversationId(null);
-    setCustomer({ customerId: null, name: "", phone: null, isNew: false });
-    setReceptionPhone("");
+    draftResumeEpochRef.current += 1; if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+    draftSyncQueueRef.current?.reset(); setDraftTransitionPending(false); setDraftPromotionPending(false); setDraftPromotionShiftId(null); setWorkspaceSafetyBlocked(false); setDraftRestoreRecovery(null); setDetachedRecoveryPending(false);
+    mgrCredsRef.current = null; pendingDeferredRestoreRef.current = false; suppressHydratedPhoneResetRef.current = false;
+    setDiscountFor(null); setApprovalAsk(null);
+    setCart([]); setAddTick(0); setSelKey(null); setSearch("");
+    setPayInput(""); setDeferred(false); setMethod("CASH"); setPaymentReference("");
+    activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null);
+    setOrderDelivery(null); setCustomerContextId(null);
+    setTierOverride(null); setHydratedAutomaticTier(null); setInvoiceDiscountPct("");
+    setCouponInput(""); setCouponCode(null); setCouponLabel(null);
+    setChannel("WALK_IN"); setChannelHandle(""); setLinkedConversationId(null);
+    setCustomer({ customerId: null, name: "", phone: null, isNew: false }); setReceptionPhone(""); setCustomerCreditLimit("");
   };
 
-  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
-    onSuccess: (r) => setFulfillIntentId(r.intentId),
-    onError: (e) => { digitalCheckoutRef.current = null; notify.err(e); },
-  });
-
+  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation();
   const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
     onMutate: () => setDigitalFinalizeError(null),
-    onSuccess: (res: any) => {
-      if (res.outcome === "SUCCESS" || res.invoiceNumber) {
-        setFulfillIntentId(null);
-        digitalCheckoutRef.current = null;
-        reqIdRef.current = crypto.randomUUID();
-        notify.ok(`تم إتمام الطلب — الفاتورة ${res.invoiceNumber ?? ""}`, "أُنجز بيع البطاقات الرقمية بنجاح.");
-        void utils.shifts.current.invalidate();
-        resetScreen();
-      } else {
-        setDigitalFinalizeError(res.message ?? "فشل الإتمام");
-      }
+    onSuccess: () => {
+      setFulfillIntentId(null);
+      digitalCheckoutRef.current = null;
+      notify.ok("تم إتمام الطلب والبطاقات الرقمية واعتماد الفاتورة");
+      void utils.sales.list.invalidate();
+      void utils.shifts.current.invalidate();
+      resetAfterCommittedWorkspace();
     },
-    onError: (err: any) => setDigitalFinalizeError(err.message),
+    onError: (err) => setDigitalFinalizeError(err.message),
   });
 
   const [printerReady, setPrinterReady] = useState(isPaired());
@@ -407,7 +385,10 @@ export default function Reception() {
     { enabled: !!customer.customerId && canReadCustomerContext, staleTime: 60_000 },
   );
   const effectiveTier: Tier =
-    tierOverride ?? resolvedCustomerTier ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+    tierOverride ?? hydratedAutomaticTier ?? resolvedCustomerTier ?? ((fetchedCustomer.data?.defaultPriceTier as Tier | undefined) ?? "RETAIL");
+  const barcodePricingContextRef = useRef("");
+  barcodePricingContextRef.current = `${branchId}:${customer.customerId ?? "walk-in"}:${effectiveTier}`;
+  useEffect(() => { if (hydratedAutomaticTier && phoneResolution === "RESOLVED" && resolvedCustomerTier) setHydratedAutomaticTier(null); }, [hydratedAutomaticTier, phoneResolution, resolvedCustomerTier]);
   // تبديل العميل يُسقط أيّ تجاوز فئة يدوي سابق (تعلّق بعميلٍ آخر) وأيّ كوبون مُطبَّق (أسعاره
   // قد تختلف بفئة العميل الجديد — يلزم إعادة تطبيق).
   const prevCustomerIdRef = useRef<number | null>(customer.customerId);
@@ -415,15 +396,64 @@ export default function Reception() {
     if (prevCustomerIdRef.current === customer.customerId) return;
     prevCustomerIdRef.current = customer.customerId;
     setTierOverride(null);
+    setHydratedAutomaticTier(null);
     if (couponCode) {
       setCouponCode(null);
       setCouponLabel(null);
       setCouponInput("");
-      setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+      setCart(clearReceptionCouponPricing);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customer.customerId]);
 
+  const restoreCouponPreviewM = trpc.crm.coupons.preview.useMutation();
+  const restoreCustomerM = trpc.customers.receptionResolveByPhone.useMutation();
+  const resolvePromotionM = trpc.reception.draftResolvePromotion.useMutation();
+  async function restoreLocalWorkspace(snapshot: ReceptionLocalWorkspaceSnapshot, isCurrent: () => boolean, preserveStoredPrices = false): Promise<boolean> {
+    try {
+      if (snapshot.draftPromotionPending) {
+        setDraftPromotionPending(true); setDraftPromotionShiftId(snapshot.draftPromotionShiftId); const payload = buildDraftPayload({ customer: snapshot.customer, effectiveTier: snapshot.effectiveTier, channel: snapshot.channel.kind, channelHandle: snapshot.channel.handle, linkedConversationId: snapshot.channel.linkedConversationId, cart: snapshot.cart });
+        const resolved = await resolvePromotionM.mutateAsync({ branchId, shiftId: snapshot.draftPromotionShiftId, clientRequestId: snapshot.clientRequestId, ...payload });
+        if (!isCurrent()) return false; if (resolved?.payloadMatches) return attachResolvedPromotion(resolved); if (resolved) { setDraftPromotionPending(false); setDraftRestoreRecovery({ snapshot: createReceptionDraftPointer({ activeDraftId: resolved.draftId, draftVersion: resolved.version, pendingLocal: { ...snapshot, draftPromotionPending: false, detachedRecoveryPending: true } }), serverAvailable: true }); return false; }
+      }
+      const restored = await prepareReceptionLocalWorkspaceRestore(snapshot, { isCurrent,
+        resolveAutomaticPricingContext: (input) => resolveReceptionRestoredPricingContext(input, (phone) => restoreCustomerM.mutateAsync({ phone }), (customerId) => utils.customers.receptionResolveById.fetch({ customerId }, { staleTime: 0 })),
+        loadCatalog: async ({ productUnitIds, tier, customerId }) => utils.catalog.byUnitIds.fetch({ branchId, tier, productUnitIds, customerId: customerId ?? undefined }) as Promise<PosRow[]>, previewCoupon: async ({ code, tier, customerId, lines }) => restoreCouponPreviewM.mutateAsync({ code, branchId, customerId: customerId ?? undefined, customerTier: tier, lines }), preserveStoredPrices: preserveStoredPrices || snapshot.draftPromotionPending });
+      if (!isCurrent()) return false;
+      if (!restored.ok) {
+        if (restored.reason === "MISSING_CATALOG") notify.warn("تعذّر استعادة السلة بأمان", `وحدة أو صنف لم يعد متاحاً (${restored.missingUnitIds?.join("، ")})؛ لم نستخدم أسعاراً أو معاملات قديمة.`);
+        else if (restored.reason === "NO_COUPON_LINES") notify.warn("تعذّر استعادة الكوبون بأمان", "لم تعد في السلة بنود صالحة للكوبون؛ فرّغ الحالة وابدأ طلباً جديداً.");
+        return false;
+      }
+      const droppedPrivilegedDiscount = !isElevatedRole && (restored.cart.some((line) => (line.disc ?? 0) > 10) || Number(snapshot.invoiceDiscountPct || 0) > 15);
+      const restoredCart = droppedPrivilegedDiscount ? restored.cart.map((line) => (line.disc ?? 0) > 10 ? { ...line, disc: undefined } : line) : restored.cart;
+      if (droppedPrivilegedDiscount) notify.warn("أُزيل خصم يحتاج اعتماداً جديداً", "بيانات اعتماد المدير لا تُخزّن؛ أعد تطبيق الخصم ليُطلب الاعتماد بأمان.");
+      prevCustomerIdRef.current = restored.customer.customerId; pendingDeferredRestoreRef.current = snapshot.payment.deferred; suppressHydratedPhoneResetRef.current = snapshot.phoneInput !== receptionPhone;
+      setCart(restoredCart); setSelKey(null); setReceptionPhone(snapshot.phoneInput); setCustomer(restored.customer); setCustomerCreditLimit(snapshot.customerCreditLimit);
+      setTierOverride(snapshot.tierOverride); setHydratedAutomaticTier(snapshot.tierOverride == null ? restored.tier : null); setInvoiceDiscountPct(droppedPrivilegedDiscount && Number(snapshot.invoiceDiscountPct || 0) > 15 ? "" : snapshot.invoiceDiscountPct); setPayInput(snapshot.payment.amount);
+      setMethod(snapshot.payment.method); setPaymentReference(""); setDeferred(false); setCouponInput(snapshot.coupon.input); setCouponCode(restored.couponCode); setCouponLabel(restored.couponLabel);
+      setChannel(snapshot.channel.kind); setChannelHandle(snapshot.channel.handle); setLinkedConversationId(snapshot.channel.linkedConversationId); setDraftPromotionPending(snapshot.draftPromotionPending); setDraftPromotionShiftId(snapshot.draftPromotionShiftId); setDetachedRecoveryPending(snapshot.detachedRecoveryPending); activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null); mgrCredsRef.current = null;
+      return true;
+    } catch (error) { if (isCurrent()) notify.warn("تعذّر التحقق من السلة المحفوظة", error instanceof Error ? error.message : "تحقّق من الاتصال ثم أعد تحميل الصفحة"); return false; }
+  }
+
+  const { clearPersistedWorkspace, markDraftPromotionPending, workspaceState, workspaceDirty, persistenceDegraded } = useReceptionWorkspacePersistence({
+    companyId: me.data === undefined ? undefined : (me.data?.companyId ?? null),
+    userId: me.data?.id != null ? Number(me.data.id) : null,
+    branchId: me.data?.branchId != null ? Number(me.data.branchId) : pickedBranch,
+    activeDraftId: activeDraft?.id ?? null, activeDraftVersion: activeDraft?.version ?? null, clientRequestIdRef: reqIdRef,
+    local: {
+      cart,
+      customer: { customerId: customer.customerId ?? null, name: customer.name, phone: customer.phone ?? null, isNew: customer.isNew },
+      phoneInput: receptionPhone, customerCreditLimit, tierOverride, effectiveTier, draftPromotionPending, draftPromotionShiftId, detachedRecoveryPending, payInput, method, deferred,
+      invoiceDiscountPct, couponInput, couponCode, couponLabel,
+      channel, channelHandle, linkedConversationId,
+    },
+    paymentReference, draftHeld, onRestoreLocal: restoreLocalWorkspace, onWorkspaceChange: resetScreen,
+    onRestoreServerDraft: (snapshot: ReceptionServerDraftPointer, isCurrent) => resumeDraft(snapshot.activeDraftId, isCurrent, false, snapshot.legacyIdentityOnly ? undefined : snapshot),
+    onStorageError: () => notify.warn("تعذّر حفظ سلة الاستقبال مؤقتاً", "قد تكون مساحة المتصفح ممتلئة؛ أبقِ الشاشة مفتوحة أو احفظ الطلب كمسوّدة خادمية."),
+  });
+  function resetAfterCommittedWorkspace(): boolean { if (!clearPersistedWorkspace()) { setWorkspaceSafetyBlocked(true); notify.warn("تمت العملية، لكن تعذّر تنظيف حالتها المحلية", "لا تعِد الإرسال. أعد تحميل الصفحة أو فرّغ الحالة المحفوظة قبل عملية جديدة."); return false; } reqIdRef.current = crypto.randomUUID(); resetScreen(); return true; }
   const connectPrinter = async () => {
     try {
       await pairPrinter();
@@ -474,11 +504,12 @@ export default function Reception() {
 
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
+  const hasDigitalCards = cart.some((line) => line.digital);
   const sumDirectD = cart.filter((c) => !isCustomKind(c)).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   // ٢٣/٨ — البيع الخالص (لا طباعة ولا تخصيص) هو وحده وعاء خصم رأس الفاتورة: عقد الخادم
   // (workOrderRouter.receptionCheckout.regularSale.invoiceDiscount) يمرّره لـcreateSaleInTx
   // الذي يحسبه على فاتورة البيع فقط. `printSale` فاتورةٌ مستقلّة و«التخصيص» أمرُ شغلٍ (workOrder).
-  const regularSumRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  const regularSumRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   const sumCustomD = cart.filter((c) => isCustomKind(c)).reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
   // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪ كما في POS): يُطبَّق **قبل** حساب grandTotal
   // ⇒ التقريب النقديّ والعربون المحتجَز والمقبوض النقديّ كلّها تُقاس على الصافي بعد الخصم بلا مسّ
@@ -488,10 +519,10 @@ export default function Reception() {
   // **السقف الفعّال المتبقّي** (مرآة POS.tsx حرفياً): بوّابة الخادم تقيس (refGross − invoiceNet)/refGross
   // مقابل ١٥٪، وترى انحراف السطر (عرض/كوبون/خصم يدويّ) والرأس معاً. لولا هذا: سلّةٌ عليها عرضٌ ١٠٪
   // + خصمُ رأسٍ ١٠٪ = انحراف ١٩٪ ⇒ رفضٌ خادميّ يُفاجأ به الكاشير (بلاغ Codex P1).
-  // بيع الاستقبال بلا مسار «كرت رقميّ» — عقد الخادم يرفضها بنيوياً — فلا استثناءٌ يخصمها.
+  // الكروت الرقمية ثابتة السعر ولا تدخل وعاء خصم رأس الفاتورة.
   const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
   const regularReferenceGrossD = cart
-    .filter((c) => !isCustomKind(c) && !c.row.isPrintService)
+    .filter((c) => !isCustomKind(c) && !c.row.isPrintService && !c.digital)
     .reduce((s, c) => {
       // بلا خصمٍ يدويّ = سعرُ القائمة (السعرُ الأصل قبل الخصم) × الكمية. `origPrice` يُضبَط من
       // Popover خصم السطر ⇒ نستعمله مرجعاً كي يحسب الانحراف السطريّ المسبق.
@@ -526,7 +557,7 @@ export default function Reception() {
   // حقلٌ يحمله، وعقدُ `commitDraft` يعيد بناء الإجمالي من الأسطر الخام فيرفض التثبيت لأنّ الصافي
   // لا يطابق. إخفاءُ الحقل عند وجود مسوّدة يمنع تسرّبَه لعقدٍ لا يفهمه — الشريحة الأوسع (توسيع
   // عقد المسوّدة) شغلٌ منفصل بمهاجرةٍ وحقولٍ خادميّة إضافيّة.
-  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft && !cart.some((c) => c.digital);
+  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft && !hasDigitalCards;
   const invoiceDiscountAmountD = invoiceDiscountAllowed
     ? round2(regularSumRawD.times(clampedInvoiceDiscountPctD).div(100))
     : D(0);
@@ -568,7 +599,7 @@ export default function Reception() {
   // لَسُدَّ الطريق النقديّ (المتوقّع 0 والخادم يطالب بالفارق الخام) ⇒ يسقط التقريب حينها.
   const draftHeldEarlyD = D(draftHeld || 0);
   const roundedWouldTrapHeld = draftHeldEarlyD.gt(0) && roundCashIQD(grandTotalD.toFixed(2)).lte(draftHeldEarlyD);
-  const cashRoundActive = method === "CASH" && cart.length > 0 && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
+  const cashRoundActive = method === "CASH" && cart.length > 0 && !hasDigitalCards && !cart.some(isCustomKind) && !hasPrintInCart && !offline && !roundedWouldTrapHeld;
   // ش٦ — تقريب السلّة المختلطة (مرآة materialize/checkout حرفياً): فرق تقريب السلّة كلّها
   // يُحمَّل على الفاتورة الحاملة (بضاعة ثم طباعة). يسري **فقط** حين يُدفع المقرَّب كاملاً نقداً
   // الآن (يُحسم عند الإرسال) — هنا نحسب أهليّته ونعرض المقرَّب لأن المسار الاعتيادي دفعٌ كامل.
@@ -577,7 +608,7 @@ export default function Reception() {
   const mixedCarrier: "SALE" | "PRINT" | null = sumGoodsRawD.gt(0) ? "SALE" : sumPrintRawD.gt(0) ? "PRINT" : null;
   const mixedDeltaD = round2(roundCashIQD(grandTotalD.toFixed(2)).minus(grandTotalD));
   const mixedRoundEligible =
-    method === "CASH" && cart.length > 0 && !cashRoundActive && !offline && !roundedWouldTrapHeld
+    method === "CASH" && cart.length > 0 && !hasDigitalCards && !cashRoundActive && !offline && !roundedWouldTrapHeld
     && (cart.some(isCustomKind) || hasPrintInCart) && mixedCarrier != null && !mixedDeltaD.isZero()
     && (mixedCarrier === "SALE" ? sumGoodsRawD : sumPrintRawD).plus(mixedDeltaD).gt(0);
   const roundingDisplayActive = cashRoundActive || mixedRoundEligible;
@@ -631,8 +662,8 @@ export default function Reception() {
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier: effectiveTier, query: debounced, limit: 15, includeReceptionServices: true },
-    { enabled: !offline && debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
+    { branchId, tier: effectiveTier, query: debounced, limit: 15, includeReceptionServices: true, customerId: customer.customerId ?? undefined },
+    { enabled: !offline && debounced.trim().length >= 2, staleTime: 15_000 },
   );
   // أوفلاين: البحث يُخدَم من النموذج المحلي بنفس شكل PosRow — بقية الشاشة (addRow/السلة/الأسعار)
   // لا تعرف الفرق. خدمات الطباعة مشمولة (includePrintServices) مطابقةً لـincludeReceptionServices
@@ -666,7 +697,7 @@ export default function Reception() {
     setCouponCode((prev) => {
       if (!prev) return prev;
       setCouponLabel(null);
-      setCart((c) => c.map((line) => (line.custom ? line : { ...line, row: { ...line.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
+      setCart(clearReceptionCouponPricing);
       return null;
     });
   }, []);
@@ -676,7 +707,7 @@ export default function Reception() {
     clearCouponIfApplied();
     setCart((prev) => {
       // دمج كميّات الصنف الجاهز المُكرَّر وتصعيده لقمة السلة ليبقى في متناول يد ونظر الكاشير
-      const i = prev.findIndex((c) => !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
+      const i = prev.findIndex((c) => !c.digital && !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
       if (i >= 0) {
         const next = [...prev];
         const updated = { ...next[i], qty: next[i].qty + 1 };
@@ -692,6 +723,25 @@ export default function Reception() {
     // ٢٣/٨ (Codex P2): أشِر إلى الجدول أنّ إضافةً حدثت — يشمل رفع الكمّية على السطر الأصل.
     setAddTick((t) => t + 1);
   }, [clearCouponIfApplied]);
+
+  function addDigitalBasket(basket: DigitalBasketCapture) {
+    if (offline) return notify.err("البيع الرقمي يحتاج اتصالاً بالخادم.");
+    if (activeDraft) return notify.err("لا تُضاف الكروت إلى طلب محفوظ؛ ثبّت الطلب أو افتح سلة جديدة.");
+    try {
+      const captured = captureDigitalReceptionCartLines(basket, branchId) as CartLine[];
+      clearCouponIfApplied();
+      setInvoiceDiscountPct("");
+      setCart((previous) => [
+        ...captured,
+        ...previous,
+      ]);
+      setSelKey(captured[0]?.digital?.lineKey ?? null);
+      setAddTick((tick) => tick + 1);
+      setCardsOpen(false);
+    } catch (error) {
+      notify.err(error);
+    }
+  }
 
   const addRow = useCallback((row: PosRow) => {
     // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعرٍ
@@ -743,40 +793,11 @@ export default function Reception() {
     setShowDrop(false);
   }
 
-  function addDigitalBasket(basket: DigitalBasketCapture) {
-    if (cart.filter((c) => c.digital).length + basket.lines.length > 50) return;
-    clearCouponIfApplied();
-    setInvoiceDiscountPct("");
-    const added: CartLine[] = basket.lines.map(({ card, student }, idx) => ({
-      key: `digital-${card.productId}-${Date.now()}-${idx}-${Math.random()}`,
-      row: {
-        branchId, productId: card.productId, productName: card.name, variantId: card.variantId,
-        variantName: null, color: null, colorHex: null, size: null, sku: basket.providerReference || "",
-        productUnitId: card.productUnitId, unitName: "بطاقة", conversionFactor: "1.0000", barcode: null,
-        isBaseUnit: true, price: String(card.sellPrice || 0), stockBase: 0, reservedBase: 0, availableBase: 0,
-        openedAt: null, isService: true, allowBackorder: false, isCustomizable: false, isPrintService: false,
-        isContractPrice: false, isBundle: false, isConsignment: false, promotionId: null, promotionName: null,
-        promotionDiscountForUnit: "0.00", promotionEffectivePrice: null, costPriceBase: null,
-      } as PosRow,
-      qty: 1,
-      digital: {
-        offeringId: card.offeringId, priceVersionId: card.priceVersionId, providerId: card.providerId,
-        offeringType: card.offeringType as "CARD" | "SUBSCRIPTION", providerName: card.providerName, providerReference: basket.providerReference || "",
-        providerBasketKey: basket.providerBasketKey || null, faceValue: card.faceValue ? String(card.faceValue) : null,
-        subscriptionDurationDays: card.subscriptionDurationDays ?? null, requiresStudentData: card.requiresStudentData ?? false,
-        student,
-      },
-    }));
-    setCart((prev) => [...added, ...prev]);
-    setCardsOpen(false);
-    setAddTick((t) => t + 1);
-  }
-
   function saveCustomization(data: CustomizationData) {
     if (!showCustomization) return;
     const { row, editingKey } = showCustomization;
     if (editingKey) {
-      setCart((prev) => prev.map((c) => (c.key === editingKey ? { ...c, custom: data } : c)));
+      setCart((prev) => prev.map((c) => (c.key === editingKey ? updateRestoredReceptionCustomization(c, data) : c)));
     } else {
       const key = `c-${row.productUnitId}-${Date.now()}`;
       setCart((prev) => [{ key, row, qty: 1, custom: data, manualService: row.variantId === 0 }, ...prev]);
@@ -792,8 +813,10 @@ export default function Reception() {
     setCart((prev) =>
       prev.map((c) => {
         if (c.key !== lineKey) return c;
+        if (c.digital) return c;
+        const { origPrice: _oldUnitPrice, ...rest } = c;
         return {
-          ...c,
+          ...rest,
           row: {
             ...newRow,
             isCustomizable: c.row.isCustomizable,
@@ -807,7 +830,7 @@ export default function Reception() {
   function changeQty(key: string, delta: number) {
     clearCouponIfApplied();
     setCart((prev) =>
-      prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
+      prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, c.qty + delta) } : c)),
     );
   }
   function removeRow(key: string) {
@@ -816,26 +839,23 @@ export default function Reception() {
     if (selKey === key) setSelKey(null);
   }
   async function clearCart() {
-    if (cart.length === 0) return;
+    if (draftTransitionPending || draftPromotionFlightRef.current || cart.length === 0) return;
+    if (draftPromotionPending) { notify.warn("لا تفرّغ محاولة حفظ غير محسومة", "اضغط حفظ الطلب مرة أخرى للتحقق من نتيجتها أولاً؛ التفريغ الآن قد يتيح إنشاء طلب مكرر."); return; }
     if (!(await confirm({
       variant: "warning",
       title: "تفريغ السلّة",
       description: "سيُمسح كلّ ما في الطلب الحالي. متابعة؟",
       confirmText: "تفريغ",
     }))) return;
-    setCouponCode(null);
-    setCouponLabel(null);
-    setCouponInput("");
-    // ش٢: التفريغ يفكّ ارتباط المسوّدة **قبل** مسح السلة (وإلا زامنت المزامنة المؤجَّلة أسطراً
-    // فارغة فمُحيت المسوّدة المحفوظة عن بُعد) — المسوّدة تبقى سليمة في الشريط (ومعها عربونها).
+    await draftSyncQueueRef.current?.supersedeAndDrain();
+    if (!clearPersistedWorkspace()) return;
+    reqIdRef.current = crypto.randomUUID(); draftResumeEpochRef.current += 1; setDetachedRecoveryPending(false); setDraftRestoreRecovery(null);
+    setCouponCode(null); setCouponLabel(null); setCouponInput("");
+    // يفكّ الارتباط قبل مسح السلة حتى لا تمسح مزامنة مؤجلة المسودة البعيدة.
     if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
-    setActiveDraft(null);
-    setDraftHeld("0.00");
-    setDraftInfo(null);
-    setCart([]);
-    setSelKey(null);
-    setPayInput("");
-    setDeferred(false);
+    activeDraftRef.current = null; setActiveDraft(null); setDraftHeld("0.00"); setDraftInfo(null);
+    setCart([]); setSelKey(null); setPayInput(""); setDeferred(false);
+    setMethod("CASH"); setPaymentReference("");
     // ٢٣/٨ — تفريغ خصم رأس الفاتورة مع تفريغ السلّة كي لا يُطبَّق سهواً على سلّةٍ جديدةٍ لعميلٍ آخر.
     setInvoiceDiscountPct("");
   }
@@ -843,18 +863,20 @@ export default function Reception() {
   // ───── الباركود ───────────────────────────────────────────────────────────
   const lookupBarcode = useCallback(
     async (code: string) => {
+      const lookupEpoch = draftResumeEpochRef.current, pricingContext = barcodePricingContextRef.current;
       try {
         // أوفلاين: المطابقة من النموذج المحلي (الباركود الأساسي + البدائل)، نمط POS.tsx.
         const row = offline
           ? await offlineFindByBarcode(code, effectiveTier, branchId)
-          : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
+          : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: customer.customerId ?? undefined });
+        if (lookupEpoch !== draftResumeEpochRef.current || pricingContext !== barcodePricingContextRef.current) return;
         if (!row) notify.err(`باركود غير معروف: ${code}`);
         else addRow(row as PosRow);
       } catch (e: unknown) {
-        notify.err(e, "خطأ في المسح");
+        if (lookupEpoch === draftResumeEpochRef.current && pricingContext === barcodePricingContextRef.current) notify.err(e, "خطأ في المسح");
       }
     },
-    [branchId, addRow, utils, effectiveTier, offline],
+    [branchId, addRow, utils, effectiveTier, offline, customer.customerId],
   );
 
   const handleWorkOrderScan = useCallback(
@@ -867,6 +889,7 @@ export default function Reception() {
 
   const handleHidScan = useCallback(
     async (raw: string) => {
+      if (draftPromotionFlightRef.current || draftTransitionPending) return;
       const r = parseScan(raw);
       if (r.type === "workOrder") {
         await handleWorkOrderScan(r.number);
@@ -879,9 +902,9 @@ export default function Reception() {
         notify.ok(`تم تحديد العميل #${r.id}`);
       }
     },
-    [lookupBarcode, handleWorkOrderScan],
+    [lookupBarcode, handleWorkOrderScan, draftTransitionPending],
   );
-  useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
+  useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting && !draftTransitionPending });
   // مطابقة الماسح داخل حقل البحث المركَّز عبر hook مخصّص (PR #501): توقيتُ الحرف نفسه + تطبيع
   // مسح لوحة المفاتيح العربية (normalizeBarcodeScannerInput) — يحلّ خطأ «الباركود لا يُضاف
   // تلقائياً» بلا الاعتماد على استقرار البحث المؤجَّل، ويصحّح المسح حين تكون اللوحة عربيةً.
@@ -913,7 +936,7 @@ export default function Reception() {
   /** م٤ — الكمية داخل الصفّ: مدخلٌ رقميّ مباشر (والزرّان ± يبقيان للمس السريع). */
   function setQty(key: string, qty: number) {
     clearCouponIfApplied();
-    setCart((prev) => prev.map((c) => (c.key === key ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
+    setCart((prev) => prev.map((c) => (c.key === key && !c.digital ? { ...c, qty: Math.max(1, Math.trunc(qty) || 1) } : c)));
   }
   /** م٤ — الخصم داخل الصفّ (Popover خلية السعر): نسبةٌ 0..100، null = إزالة الخصم. */
   function setLineDiscount(key: string, pct: number | null) {
@@ -921,6 +944,7 @@ export default function Reception() {
     setCart((prev) =>
       prev.map((c) => {
         if (c.key !== key) return c;
+        if (c.digital) return c;
         if (pct == null || pct <= 0) return { ...c, disc: undefined };
         const base = c.origPrice ?? Number(c.row.price ?? 0);
         return { ...c, origPrice: base, disc: Math.min(100, pct) };
@@ -948,32 +972,33 @@ export default function Reception() {
   /** ش٤ — «قبض عربون الآن»: يقبض مبلغاً **فوراً بإيصالٍ وسند** على الطلب المحفوظ (يُرقّى تلقائياً
    *  إن لزم — §٨.٢/أ: قبض العربون سببُ ترقيةٍ حقيقيّ). يختلف عن أزرار التعبئة (تملأ الحقل فقط). */
   async function openDepositCollect() {
-    setDepositMenuOpen(false);
+    setDepositMenuOpen(false); if (detachedRecoveryPending) { notify.warn("راجع النسخة المستعادة أولاً", "احفظها كطلب محفوظ جديد قبل قبض أي مبلغ كي لا يتكرر طلب خادمي أقدم."); return; }
+    if (draftPromotionPending) { notify.warn("نتيجة حفظ الطلب غير محسومة", "أعد الضغط على حفظ الطلب للتحقق قبل قبض أي مبلغ."); return; }
+    if (couponCode) { notify.warn("الكوبون لا يُحفظ داخل طلب محفوظ", "أزل الكوبون لقبض عربون، أو ثبّت البيع مباشرةً ليُتحقق من الكوبون ويُستهلك ذرّياً."); return; }
     if (offline) { notify.errBig("لا قبض عربون دون اتصال", "العربون يحتاج إيصالاً خادمياً — أعد المحاولة عند عودة الاتصال."); return; }
+    if (phoneResolution === "CHECKING" || phoneCustomer.isPending || couponPreview.isPending) { notify.warn("انتظر اكتمال التحقق", "جارٍ حسم العميل أو الكوبون قبل قبض العربون."); return; }
     if (cart.length === 0) { notify.warn("السلة فارغة", "أضف ما يريده الزبون ثم اقبض العربون"); return; }
     if (!shift) { notify.errBig("افتح وردية استقبال أولاً", "العربون يدخل درجك وتُحاسَب عليه عند الإغلاق."); return; }
+    if (draftPromotionFlightRef.current) return;
+    const draftBeforeDeposit = activeDraftRef.current ?? activeDraft, promotingForDeposit = draftBeforeDeposit == null;
+    if (promotingForDeposit && !markDraftPromotionPending(shift.id)) { notify.warn("تعذّر تأمين حفظ الطلب", "لم نرسل الطلب لأن مفتاح منع التكرار لم يُحفظ محلياً."); return; }
+    if (promotingForDeposit) { setDraftPromotionPending(true); setDraftPromotionShiftId(shift.id); }
+    const transitionEpoch = ++draftResumeEpochRef.current;
+    draftPromotionFlightRef.current = true; setDraftTransitionPending(true);
     try {
-      if (!activeDraft) {
-        const p = await promoteM.mutateAsync({ branchId, shiftId: shift?.id ?? null, ...getDraftPayload() });
-        setDraftInfo({ draftNumber: p.draftNumber });
-      } else {
-        // مراجعة ش٤: تفريغ المزامنة المؤجَّلة قبل فتح الحوار (نمط مسار التثبيت) — سقف الحوار
-        // من السلة الحيّة بينما الخادم يحسب على أسطره؛ بلا التفريغ يُرفض عربونٌ مشروع بعد
-        // إضافة صنفٍ للتوّ، والتقادم يدوم بعد عطل نقلٍ عابر (لا نبضة إلا بتغيير السلة).
-        if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
-        const live = activeDraftRef.current ?? activeDraft;
-        try {
-          await syncM.mutateAsync({ draftId: live.id, version: live.version, ...getDraftPayload() });
-        } catch {
-          // syncM.onError عالج (CONFLICT ⇒ إعادة ربط، انغلاق ⇒ فكّ) — لا نفتح على أسطرٍ متقادمة.
-          notify.warn("تعذّرت مزامنة الطلب قبل القبض", "تحقّق من الاتصال ثم أعد المحاولة");
-          return;
-        }
+      const result = await prepareReceptionDepositDraft({ active: draftBeforeDeposit,
+        isCurrent: () => transitionEpoch === draftResumeEpochRef.current, flush: () => flushActiveDraft(),
+        promote: () => promoteM.mutateAsync({ branchId, shiftId: shift.id, clientRequestId: reqIdRef.current, ...getDraftPayload() }) });
+      if (!result.ok) {
+        if (result.reason === "SYNC") notify.warn("تعذّرت مزامنة الطلب قبل القبض", "تحقّق من الاتصال ثم أعد المحاولة");
+        else if (result.reason === "PROMOTE") { if (isDefinitiveReceptionPromotionRejection(result.error)) { setDraftPromotionPending(false); setDraftPromotionShiftId(null); notify.err(result.error, "رفض الخادم حفظ الطلب؛ صحّح البيانات ثم أعد المحاولة"); } else notify.warn("لم يُحسم حفظ الطلب قبل قبض العربون", "لم يُقبض شيء. اضغط حفظ الطلب للتحقق من محاولة الحفظ قبل المتابعة."); void utils.reception.draftList.invalidate(); }
+        else void utils.reception.draftList.invalidate(); return; }
+      if (result.idempotentReplay) {
+        await attachResolvedPromotion({ draftId: result.draft.id, version: result.draft.version, draftNumber: result.draftNumber! }); return;
       }
+      if (result.promoted) { setDraftPromotionPending(false); setDraftPromotionShiftId(null); activeDraftRef.current = result.draft; setActiveDraft(result.draft); setDraftInfo({ draftNumber: result.draftNumber! }); setDraftHeld("0.00"); setDetachedRecoveryPending(false); void utils.reception.draftList.invalidate(); }
       setDepositOpen(true);
-    } catch {
-      /* promoteM.onError أبلغ */
-    }
+    } finally { draftPromotionFlightRef.current = false; if (transitionEpoch === draftResumeEpochRef.current) setDraftTransitionPending(false); }
   }
   /** خيارات «عربون» المنسدلة — تُحسب هنا (sumDirectD/sumCustomD ملك الصفحة) وتستهلكها PaymentPanel.
    *  خيارات التعبئة النسبية للمخصّص فقط؛ القبض الفوريّ لأيّ سلة (م٢: عربونٌ على أيّ طلب). */
@@ -1009,66 +1034,42 @@ export default function Reception() {
     return id;
   }
 
-  // كوبون خصم (نمط POS.tsx couponPreview) — يُطبَّق على أصناف البيع الجاهزة (المباشرة) فقط، لا
-  // خدمات الطباعة (لا كوبون خادمياً هناك) ولا الأصناف المخصّصة (تسعيرها إضافيّ لا كتالوجيّ). أيّ
-  // تعديلٍ لاحق على السلة يُسقطه (clearCouponIfApplied) — لا إعادة معاينة تلقائية.
-  const couponPreview = trpc.crm.coupons.preview.useMutation({
-    onSuccess: (result) => {
-      const byUnit = new Map(result.lines.map((line) => [Number(line.productUnitId), line]));
-      setCart((items) => items.map((item) => {
-        if (item.custom || item.row.isPrintService) return item;
-        const applied = byUnit.get(Number(item.row.productUnitId));
-        if (!applied) return item;
-        return {
-          ...item,
-          row: {
-            ...item.row,
-            promotionId: applied.promotionId,
-            promotionName: applied.promotionName,
-            promotionEffectivePrice: applied.promotionEffectivePrice,
-          },
-        };
-      }));
-      setCouponCode(result.code);
-      setCouponLabel(result.programName);
-      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
-    },
-    onError: (e) => notify.err(e, "تعذّر تطبيق الكوبون"),
-  });
-
-  function applyCoupon() {
+  // الكوبون للبيع المباشر الجاهز فقط؛ أي تعديل لاحق للسلة يسقطه ولا يعيد معاينته تلقائياً.
+  const couponPreview = trpc.crm.coupons.preview.useMutation();
+  const couponContextRef = useRef("");
+  couponContextRef.current = JSON.stringify([branchId, couponInput.trim(), customer.customerId, effectiveTier, cart.map((c) => [c.key, c.row.productId, c.row.variantId, c.row.productUnitId, c.qty, c.row.price, !!c.row.isContractPrice, c.row.promotionEffectivePrice, c.origPrice, c.disc, c.custom?.unitPrice, c.digital?.sellPriceSnapshot])]);
+  async function applyCoupon() {
     const code = couponInput.trim();
-    if (!code) return;
-    const eligible = cart.filter((c) => !c.custom && !c.row.isPrintService);
+    if (!code || draftTransitionPending || draftPromotionFlightRef.current) return;
+    if (activeDraftRef.current) { notify.warn("الكوبون غير متاح للطلب المحفوظ", "ثبّت الطلب المحفوظ أولاً أو افتح سلة جديدة؛ الكوبون يُستهلك فقط مع البيع المباشر."); return; }
+    const eligible = cart.filter((c) => !c.custom && !c.row.isPrintService && !c.digital);
     if (eligible.length === 0) {
       notify.err("أضف صنفاً جاهزاً غير خدمة طباعة أولاً — الكوبون لا ينطبق على المخصّص/الطباعة");
       return;
     }
-    couponPreview.mutate({
-      code,
-      branchId,
-      customerId: customer.customerId ?? undefined,
-      customerTier: effectiveTier,
-      lines: eligible.map((c) => ({
+    if (eligible.some((line) => (line.disc ?? 0) > 0)) { notify.warn("أزل خصم السطر أولاً", "لا يُدمج الكوبون مع خصم يدوي على السطر كي يبقى السعر المعروض مطابقاً للتثبيت."); return; }
+    const transitionEpoch = draftResumeEpochRef.current, context = couponContextRef.current;
+    try {
+      const result = await couponPreview.mutateAsync({ code, branchId, customerId: customer.customerId ?? undefined, customerTier: effectiveTier,
+        lines: eligible.map((c) => ({
         productId: c.row.productId,
         variantId: c.row.variantId,
         productUnitId: c.row.productUnitId,
         unitPrice: String(c.row.price ?? "0"),
         quantity: c.qty,
         hasContractPrice: !!c.row.isContractPrice,
-      })),
-    });
+        })),
+      });
+      if (transitionEpoch !== draftResumeEpochRef.current || context !== couponContextRef.current) return;
+      setCart((items) => applyReceptionCouponPreview(items, result)); setCouponCode(result.code); setCouponLabel(result.programName);
+      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
+    } catch (error) {
+      if (transitionEpoch === draftResumeEpochRef.current && context === couponContextRef.current) notify.err(error, "تعذّر تطبيق الكوبون");
+    }
   }
-  function clearCoupon() {
-    setCouponCode(null);
-    setCouponLabel(null);
-    setCouponInput("");
-    setCart((prev) => prev.map((c) => (c.custom ? c : { ...c, row: { ...c.row, promotionId: null, promotionName: null, promotionEffectivePrice: null } })));
-  }
-
+  function clearCoupon() { setCouponCode(null); setCouponLabel(null); setCouponInput(""); setCart(clearReceptionCouponPricing); }
   // نقطة التزام خادمية واحدة للسلة الهجينة: بيع + طباعة + أوامر شغل + **إسناد التوصيل** (PR #495).
   const checkoutM = trpc.workOrders.receptionCheckout.useMutation();
-
   // ───── ش٢: المسوّدة المُرقّاة (حفظ/استئناف/مزامنة) ─────────────────────────
   /** تحويل السلّة الحالية إلى حمولة مسوّدة (الخصم اليدويّ مطويّ في unitPrice الفعّال).
    *  `customerIdOverride` (مراجعة PR #495): عند «احفظه كعميل» أثناء التثبيت يعود المعرّف من
@@ -1084,91 +1085,78 @@ export default function Reception() {
    * بعملاء وهميّين لكل من راسل المكتبة مرّة.
    */
   function startOrderFromConversation(v: StartOrderFromConversation) {
-    setLinkedConversationId(v.conversationId);
-    // ⛔ لا تحويلَ `OTHER → WALK_IN`: محادثةُ المتجر/غيرِها كانت تُسجَّل **طلبَ حضورٍ
-    // شخصيّ** فتكذب نسبةُ القنوات وتقريرُها — والقاموس المشترك يعرّف `STORE → OTHER` صراحةً.
-    setChannel(toWorkOrderChannel(v.channel));
-    setChannelHandle(v.channelHandle);
-    // ⚠ الرقم يصل من القناة بصيغة E.164 (`+9647…`) وحقلُ المحطّة يطلب المحليّة
-    // (`07…`) ويحرسها `isValidIqMobile` عند الإتمام ⤇ بلا هذا التطبيع يفتح الموظّف الطلب
-    // ويملأ السلّة ثمّ يصطدم بـ«رقم الهاتف إلزامي» رغم أنّ الرقم وصل مع المحادثة.
-    // (ومعرّفُ إنستغرام/تيك توك ليس هاتفاً ⤇ يُترك الحقل ليملأه الموظّف.)
-    const localPhone = toLocalIqMobileDigits(v.channelHandle);
-    if (isValidIqMobile(localPhone)) setReceptionPhone(localPhone);
-    setCustomer({
-      customerId: v.customerId,
-      name: v.displayName ?? "",
-      phone: isValidIqMobile(localPhone) ? localPhone : null,
-      isNew: false,
-    });
-    setShowInbox(false);
+    const prepared = prepareReceptionConversationStart(v);
+    setLinkedConversationId(prepared.linkedConversationId);
+    setChannel(prepared.channel); setChannelHandle(prepared.channelHandle);
+    if (prepared.localPhone) setReceptionPhone(prepared.localPhone);
+    setCustomer(prepared.customer); setShowInbox(false);
     notify.ok(`فُتح طلبٌ من محادثة ${v.displayName ?? v.channelHandle} — أضف ما يطلبه الزبون`);
   }
-
-  function getDraftPayload(customerIdOverride?: number | null) {
-    return buildDraftPayload({
-      customer,
-      effectiveTier,
-      channel,
-      channelHandle,
-      linkedConversationId,
-      cart,
-      customerIdOverride
+  const getDraftPayload = (customerIdOverride?: number | null) => buildDraftPayload({ customer, effectiveTier, channel, channelHandle, linkedConversationId, cart, customerIdOverride });
+  const promoteM = trpc.reception.draftPromote.useMutation(), syncM = trpc.reception.draftSync.useMutation();
+  async function attachResolvedPromotion(result: { draftId: number; version: number; draftNumber: string }): Promise<boolean> { const draft = { id: result.draftId, version: result.version }; setDraftPromotionPending(false); setDraftPromotionShiftId(null); activeDraftRef.current = draft; setActiveDraft(draft);
+    if (!(await resumeDraft(result.draftId, () => true, true))) { setWorkspaceSafetyBlocked(true); notify.warn("تعذّر التحقق من الطلب المحفوظ", "حُجبت السلة لمنع قبض أو تثبيت مكرر. أعد التحميل ثم تحقق من الطلب المحفوظ."); return false; }
+    setDetachedRecoveryPending(false); void utils.reception.draftList.invalidate(); return true; }
+  if (!draftSyncQueueRef.current) {
+    draftSyncQueueRef.current = createReceptionDraftSyncQueue({ getActive: () => activeDraftRef.current,
+      sync: ({ draftId, version, payload }) => syncM.mutateAsync({ draftId, version, ...payload }),
+      applyVersion: (draftId, version) => {
+        const current = activeDraftRef.current; if (current?.id !== draftId) return;
+        const next = { ...current, version }; activeDraftRef.current = next; setActiveDraft(next); },
     });
   }
-
-  const promoteM = trpc.reception.draftPromote.useMutation({
-    onSuccess: (r) => {
-      setActiveDraft({ id: r.draftId, version: r.version });
-      setDraftInfo({ draftNumber: r.draftNumber });
-      setDraftHeld("0.00"); // طلبٌ جديد — لا مقبوض عليه بعد
+  function handleDraftSyncFailure(outcome: Extract<DraftSyncOutcome, { ok: false }>) {
+    if (outcome.reason !== "FAILED" || outcome.draftId == null || activeDraftRef.current?.id !== outcome.draftId) return;
+    const error = outcome.error as { data?: { code?: string }; message?: string }, code = error?.data?.code, message = error?.message ?? "تعذّرت مزامنة الطلب المحفوظ";
+    if (code === "CONFLICT") {
+      notify.warn("تعارضت نسخة الطلب المحفوظ", "احتفظنا بتعديلاتك المحلية ولم نستبدل السلة. افتح الطلب من جهاز واحد ثم أعد المحاولة أو فرّغه صراحةً."); void utils.reception.draftList.invalidate();
+    } else if (code === "PRECONDITION_FAILED") {
+      const i3Guard = /مبلغٌ مقبوض|المقبوض سلفاً/.test(message);
+      notify.warn(i3Guard ? "الطلب عليه مبلغ مقبوض" : "توقّفت مزامنة الطلب المحفوظ", message);
+      void utils.reception.draftList.invalidate();
+    } else {
+      notify.warn("لم تصل آخر تعديلات الطلب إلى الخادم", "احتفظنا بها على هذا الجهاز؛ أبقِ الطلب مفتوحاً أو أعد الاتصال لتُزامَن تلقائياً.");
+    }
+    if ((code === "CONFLICT" || code === "PRECONDITION_FAILED") && !draftRecoveryPromptRef.current) {
+      draftRecoveryPromptRef.current = true;
+      void confirm({ variant: "warning", title: "هل تُهمِل التعديلات المحلية؟", description: `${message}\n\nاختر «تحميل نسخة الخادم» فقط إن كنت موافقاً على استبدال السلة المحلية الحالية.`, confirmText: "تحميل نسخة الخادم" })
+        .then((accepted) => accepted && activeDraftRef.current?.id === outcome.draftId ? resumeDraft(outcome.draftId!, () => true, true) : false)
+        .finally(() => { draftRecoveryPromptRef.current = false; });
+    }
+    // عطل النقل يبقي الربط؛ التعديل/المحاولة التالية يعيدان الإرسال ولا يُستبدل الطلب محلياً.
+  }
+  const queueActiveDraftSync = (customerIdOverride?: number | null) => draftSyncQueueRef.current!.enqueue(activeDraftRef.current?.id ?? null, getDraftPayload(customerIdOverride));
+  async function flushActiveDraft(customerIdOverride?: number | null, handleFailure = true): Promise<DraftSyncOutcome> {
+    if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current); draftSyncTimer.current = null;
+    const outcome = await queueActiveDraftSync(customerIdOverride);
+    if (!outcome.ok && handleFailure) handleDraftSyncFailure(outcome); return outcome;
+  }
+  async function saveDraft() {
+    if (cart.length === 0 || !!activeDraftRef.current || offline || promoteM.isPending || draftPromotionFlightRef.current) return;
+    if (phoneResolution === "CHECKING" || phoneCustomer.isPending || couponPreview.isPending) { notify.warn("انتظر اكتمال التحقق", "جارٍ حسم العميل أو الكوبون قبل حفظ الطلب."); return; }
+    if (couponCode) { notify.warn("لا يمكن حفظ طلب عليه كوبون", "أزل الكوبون ثم احفظ، أو ثبّت البيع مباشرةً ليُعاد التحقق من الكوبون ويُستهلك ذرّياً."); return; }
+    if (cart.some((line) => line.digital)) { notify.err("الكروت والاشتراكات لا تُحفظ كمسودة؛ يجب تنفيذها وتثبيتها فوراً مع اتصال فعّال."); return; }
+    if (draftPromotionPending) {
+      try { const payload = getDraftPayload(), resolved = await resolvePromotionM.mutateAsync({ branchId, shiftId: draftPromotionShiftId, clientRequestId: reqIdRef.current, ...payload }); if (resolved?.payloadMatches) { await attachResolvedPromotion(resolved); return; } if (resolved) { if (!clearPersistedWorkspace(true)) { setWorkspaceSafetyBlocked(true); return; } reqIdRef.current = crypto.randomUUID(); setDraftPromotionPending(false); setDraftPromotionShiftId(null); setDetachedRecoveryPending(true); notify.warn("فُصلت هذه السلة عن محاولة جهاز آخر", "المفتاح استُعمل بحمولة مختلفة؛ بقي الطلب الخادمي محفوظاً وهذه نسخة محلية جديدة للمراجعة والحفظ."); return; } }
+      catch { notify.warn("تعذّر التحقق من محاولة الحفظ", "أبقينا السلة محجوبة؛ تحقق من الاتصال ثم اضغط الزر مرة أخرى."); return; }
+    }
+    const promotionShiftId = shift?.id ?? null;
+    if (!markDraftPromotionPending(promotionShiftId)) { notify.warn("تعذّر تأمين محاولة الحفظ", "لم نرسل الطلب لأن المتصفح لم يستطع حفظ مفتاح منع التكرار؛ حرّر مساحة التخزين أو أعد تحميل الصفحة."); return; }
+    setDraftPromotionPending(true); setDraftPromotionShiftId(promotionShiftId); const epoch = ++draftResumeEpochRef.current;
+    draftPromotionFlightRef.current = true; setDraftTransitionPending(true);
+    try {
+      const r = await promoteM.mutateAsync({ branchId, shiftId: shift?.id ?? null, clientRequestId: reqIdRef.current, ...getDraftPayload() });
+      if (epoch !== draftResumeEpochRef.current) { void utils.reception.draftList.invalidate(); return; }
+      setDraftPromotionPending(false); setDraftPromotionShiftId(null);
+      if (r.idempotentReplay) {
+        await attachResolvedPromotion(r); return;
+      }
+      const draft = { id: r.draftId, version: r.version }; activeDraftRef.current = draft; setActiveDraft(draft);
+      setDraftInfo({ draftNumber: r.draftNumber }); setDraftHeld("0.00"); setDetachedRecoveryPending(false);
       notify.ok(`حُفظ الطلب — ${r.draftNumber}`, "يُزامَن تلقائياً مع كل تعديل، ويستطيع زميلك إكماله من جهازه");
       void utils.reception.draftList.invalidate();
-    },
-    onError: (e) => notify.err(e),
-  });
-  const syncM = trpc.reception.draftSync.useMutation({
-    onSuccess: (r) => setActiveDraft((prev) => (prev ? { ...prev, version: r.version } : prev)),
-    onError: (e, vars) => {
-      // مراجعة عدائية (٥/٨): التمييز بالكود — فكُّ الربط على كل خطأ كان يترك مسوّداتٍ يتيمةً
-      // OPEN لبيعٍ أُتمّ (زميل يثبّتها = ازدواج) ويقطع الحفظ على عطل شبكةٍ عابر.
-      const code = (e as { data?: { code?: string } }).data?.code;
-      if (code === "CONFLICT") {
-        // تعارض زميل (I9) أو نسخة closure قديمة ⇒ أعد الجلب والربط بالنسخة الحيّة بلا طمس.
-        notify.warn("حُدِّث الطلب المحفوظ", "أُعيد تحميله بأحدث نسخة — راجعه ثم تابع");
-        void resumeDraft(vars.draftId);
-      } else if (code === "PRECONDITION_FAILED") {
-        // انغلقت (ثُبِّتت/أُلغيت/انقضت) أو حارس I3 (مموّلة: حذف بند/خفض دون المقبوض) ⇒ الرسالة تشرح.
-        // حارس I3 لا يفكّ الربط — الطلب حيٌّ والموظّف يصحّح (يعيد البند أو يردّ العربون).
-        const i3Guard = /مبلغٌ مقبوض|المقبوض سلفاً/.test(e.message);
-        notify.warn(i3Guard ? "الطلب عليه مبلغ مقبوض" : "توقّفت مزامنة الطلب المحفوظ", e.message);
-        if (!i3Guard) {
-          setActiveDraft(null);
-          setDraftHeld("0.00");
-          setDraftInfo(null);
-          void utils.reception.draftList.invalidate();
-        } else if (activeDraftRef.current) {
-          // استرجع النسخة الخادمية الصادقة (البنود قبل الحذف المرفوض).
-          void resumeDraft(activeDraftRef.current.id);
-        }
-      }
-      // عطل نقلٍ عابر (code فارغ): أبقِ الربط — النبضة القادمة تعيد المحاولة.
-    },
-  });
-  // نسخة المسوّدة في ref — المؤقّت المجدول أثناء ذهابِ مزامنةٍ سابقة كان يحمل closure قديمة
-  // فيطلق CONFLICT «ذاتيّ المنشأ» (توست «حدّثها زميل» بلا زميل).
-  const activeDraftRef = useRef(activeDraft);
-  useEffect(() => {
-    activeDraftRef.current = activeDraft;
-  }, [activeDraft]);
-
-  function saveDraft() {
-    if (cart.length === 0 || !!activeDraft || offline) return;
-    if (cart.some((c) => c.digital)) {
-      notify.warn("لا يمكن حفظ مسودة تحتوي على بطاقات رقمية", "أتمم بيع البطاقات الرقمية أو احذفها لحفظ بقية الطلب كمسودة.");
-      return;
-    }
-    promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...getDraftPayload() });
+    } catch (error) { if (epoch === draftResumeEpochRef.current) { if (isDefinitiveReceptionPromotionRejection(error)) { setDraftPromotionPending(false); setDraftPromotionShiftId(null); notify.err(error, "رفض الخادم حفظ الطلب؛ صحّح البيانات ثم أعد المحاولة"); } else notify.warn("لم يُحسم وصول طلب الحفظ", "لا تقبض ولا تثبّت ولا تعدّل السلة؛ أعد الضغط على حفظ الطلب ليفحص الخادم المفتاح نفسه."); void utils.reception.draftList.invalidate(); } }
+    finally { draftPromotionFlightRef.current = false; if (epoch === draftResumeEpochRef.current) setDraftTransitionPending(false); }
   }
   /** ش٣ — التثبيت الذرّي من المسوّدة نفسها (يستبدل جسر «الطيّ» المؤقّت من ش٢). */
   const commitDraftM = trpc.reception.draftCommit.useMutation();
@@ -1176,81 +1164,74 @@ export default function Reception() {
   /** مزامنة بالجملة بdebounce (§٦ — لا سطراً-سطراً: مسح ١٢ باركوداً متتابعاً يمرّ بلا CONFLICT).
    *  النسخة تُقرأ من ref **لحظة الإطلاق** لا من closure الجدولة (مراجعة عدائية — سباق ذاتي المنشأ). */
   useEffect(() => {
-    if (!activeDraft || offline) return;
+    if (!activeDraft || offline || draftTransitionPending) return;
     if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
-    draftSyncTimer.current = setTimeout(() => {
-      const live = activeDraftRef.current;
-      if (!live) return;
-      syncM.mutate({ draftId: live.id, version: live.version, ...getDraftPayload() });
-    }, 800);
-    return () => {
-      if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
-    };
+    draftSyncTimer.current = setTimeout(() => { void flushActiveDraft(); }, 800);
+    return () => { if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, channelHandle, linkedConversationId, activeDraft?.id]);
+  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, channelHandle, linkedConversationId, activeDraft?.id, offline, draftTransitionPending]);
 
   /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
-  async function resumeDraft(draftId: number) {
+  async function resumeDraft(draftId: number, isHydrationCurrent: () => boolean = () => true, forceReload = false, shadow?: ReceptionServerDraftPointer): Promise<boolean> {
+    if (!forceReload && !shadow && activeDraftRef.current?.id === draftId) return true;
+    if (!forceReload && (phoneResolution === "CHECKING" || phoneCustomer.isPending || couponPreview.isPending)) { notify.warn("لم يُفتح الطلب الآخر", "انتظر اكتمال التحقق من العميل أو الكوبون أولاً."); return false; }
+    const resumeEpoch = ++draftResumeEpochRef.current; setDraftTransitionPending(true);
+    const isCurrent = () => resumeEpoch === draftResumeEpochRef.current && isHydrationCurrent();
     try {
+      if (forceReload) { if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current); draftSyncTimer.current = null; await draftSyncQueueRef.current?.supersedeAndDrain(); if (!isCurrent()) return false; }
       // staleTime:0 إلزاميّ (مراجعة ش٤): الافتراض العام ٦٠ث كان يعيد نسخة الكاش بعد CONFLICT/
       // حارس I3 — heldTotal وversion وبنوداً متقادمة دقيقةً كاملة ⇒ حلقة CONFLICT وتحصيلٌ زائد.
-      const d = await utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 });
+      const switched = await prepareReceptionDraftSwitch({ active: activeDraftRef.current, targetDraftId: draftId, forceReload, localDirty: shadow == null && workspaceDirty, offline, isCurrent,
+        flush: () => flushActiveDraft(undefined, false), load: () => utils.reception.draftGet.fetch({ draftId }, { staleTime: 0 }) });
+      if (!switched.ok) {
+        if (switched.reason === "OFFLINE") notify.warn("لم يُفتح الطلب الآخر", "الطلب الحالي يحمل تعديلات؛ أعد الاتصال ليُحفظ أولاً.");
+        else if (switched.reason === "LOCAL_DIRTY") notify.warn("السلة الحالية لم تُحفظ", "احفظها كطلب محفوظ أو فرّغها صراحةً قبل فتح طلب آخر.");
+        else if (switched.reason === "SYNC") { const failed = switched.syncOutcome!; const code = (failed.error as { data?: { code?: string } })?.data?.code; if (code === "PRECONDITION_FAILED" || code === "CONFLICT") handleDraftSyncFailure(failed); notify.warn("لم يُفتح الطلب الآخر", "تعذّر حفظ تعديلات الطلب الحالي؛ بقي مفتوحاً ولم تُستبدل سلته."); }
+        return false; }
+      if (switched.kind === "NOOP") return true;
+      const d = switched.draft;
+      if (d.status !== "OPEN") {
+        const closedMessage = d.status === "COMMITTED" ? "ثُبّت الطلب من جهاز آخر؛ افتح الفواتير أو أوامر الشغل لمراجعة النتيجة." : "أُلغي الطلب أو انتهت صلاحيته؛ اختر طلباً مفتوحاً من الشريط.";
+        if (activeDraftRef.current?.id === draftId) { activeDraftRef.current = null; setActiveDraft(null); }
+        if (shadow) setDraftRestoreRecovery({ snapshot: shadow, serverAvailable: false });
+        notify.warn("الطلب المحفوظ لم يعد مفتوحاً", closedMessage); return false;
+      }
+      if (shadow) { if (Number(d.version) !== shadow.draftVersion) { setDraftRestoreRecovery({ snapshot: shadow, serverAvailable: true }); notify.warn("توجد نسخة أحدث للطلب المحفوظ", "احتفظنا بالنسخة المحلية؛ اختر تحميل الخادم أو استعادتها منفصلةً للمراجعة."); return false; } if (!(await restoreLocalWorkspace(shadow.pendingLocal, isCurrent, true)) || !isCurrent()) return false;
+        const restoredDraft = { id: draftId, version: Number(d.version) }; activeDraftRef.current = restoredDraft; setActiveDraft(restoredDraft); setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00")); setDraftInfo({ draftNumber: d.draftNumber });
+        setDraftRestoreRecovery(null); setDetachedRecoveryPending(false); notify.ok(`استُعيدت تعديلات ${d.draftNumber}`, "ستُزامَن تلقائياً مع نسخة الخادم الحالية"); return true;
+      }
       const unitIds = Array.from(new Set(d.lines.map((l) => Number(l.productUnitId)).filter((n) => n > 0)));
       const live = unitIds.length
-        ? await utils.catalog.byUnitIds.fetch({ branchId, tier: (d.priceTier as Tier) ?? "RETAIL", productUnitIds: unitIds })
-        : [];
-      const byUnit = new Map(live.map((r) => [Number(r.productUnitId), r as PosRow]));
-      let skipped = 0;
-      const newCart: CartLine[] = [];
-      for (const l of d.lines) {
-        const qty = Math.max(1, Math.trunc(Number(l.quantity)));
-        if (l.lineKind === "CUSTOM") {
-          let spec: Partial<CustomizationData> = {};
-          let imgs: Array<{ url: string; caption?: string | null }> = [];
-          try { spec = l.printSpec ? JSON.parse(l.printSpec) : {}; } catch { /* مواصفة تالفة ⇒ افتراضي */ }
-          try { imgs = l.designImages ? JSON.parse(l.designImages) : []; } catch { /* صور تالفة ⇒ بلا صور */ }
-          const custom: CustomizationData = {
-            ...emptyCustomization(l.title ?? ""),
-            ...spec,
-            designImages: imgs.map((im, ix) => ({ id: `r-${l.id}-${ix}`, dataUrl: im.url, name: im.caption ?? undefined, isPrimary: ix === 0 })),
-            paymentReceiptImages: [],
-          };
-          const row = byUnit.get(Number(l.productUnitId)) ?? ({
-            variantId: Number(l.variantId ?? 0), productUnitId: Number(l.productUnitId ?? 0),
-            productName: l.title ?? "خدمة / أمر شغل", sku: "SERVICE", unitName: "خدمة",
-            conversionFactor: "1", price: "0", stockBase: 0,
-            isService: true, isPrintService: false, isCustomizable: true,
-          } as PosRow);
-          newCart.push({ key: `r-${l.id}`, row, qty, custom, manualService: l.variantId == null });
-          continue;
-        }
-        const row = byUnit.get(Number(l.productUnitId));
-        if (!row) { skipped += 1; continue; }
-        const line: CartLine = { key: `r-${l.id}`, row, qty };
-        // السعر المخزَّن (الفعّال وقت الحفظ) يُثبَّت — تغيّر سعر الكتالوج لا يُعيد التسعير صامتاً.
-        if (Number(l.unitPrice) !== Number(row.price ?? 0)) line.origPrice = Number(l.unitPrice);
-        newCart.push(line);
-      }
-      clearCouponIfApplied();
-      setCart(newCart);
-      setCustomer({ customerId: d.customerId != null ? Number(d.customerId) : null, name: d.contactName ?? "", phone: d.contactPhone ?? null, isNew: false });
-      setReceptionPhone(toLocalIqMobileDigits(d.contactPhone ?? ""));
+        ? await utils.catalog.byUnitIds.fetch({ branchId, tier: (d.priceTier as Tier) ?? "RETAIL", productUnitIds: unitIds, customerId: d.customerId != null ? Number(d.customerId) : undefined })
+        : []; if (!isCurrent()) return false;
+      const prepared = prepareReceptionDraftCart(d.lines, live as PosRow[]);
+      if (!prepared.ok) { if (activeDraftRef.current?.id === draftId) { activeDraftRef.current = null; setActiveDraft(null); } notify.warn("تعذّر فتح الطلب المحفوظ بأمان", `${prepared.missingCount} بند غير متاح في الكتالوج؛ لم نغيّر المسوّدة كي لا تُحذف بنودها.`); return false; }
+      clearCouponIfApplied(); setCart(prepared.cart); setReceptionPhone(toLocalIqMobileDigits(d.contactPhone ?? ""));
+      const restoredCustomerId = d.customerId != null ? Number(d.customerId) : null;
+      prevCustomerIdRef.current = restoredCustomerId; setCustomer({ customerId: restoredCustomerId, name: d.contactName ?? "", phone: d.contactPhone ?? null, isNew: false });
       setTierOverride((d.priceTier as Tier) ?? null);
-      setActiveDraft({ id: draftId, version: Number(d.version) });
+      setChannel(toWorkOrderChannel(d.channel)); setChannelHandle(d.channelHandle ?? "");
+      setLinkedConversationId(d.conversationId != null ? Number(d.conversationId) : null);
+      setPayInput(""); setMethod("CASH"); setPaymentReference(""); setDeferred(false); setCustomerCreditLimit("");
+      setInvoiceDiscountPct(""); setCouponInput("");
+      const restoredDraft = { id: draftId, version: Number(d.version) }; activeDraftRef.current = restoredDraft; setActiveDraft(restoredDraft);
       // ش٤: صافي المقبوض سلفاً يرافق الاستئناف — «المتوقّع الآن» يهبط به فوراً.
       setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00"));
-      setDraftInfo({ draftNumber: d.draftNumber });
+      setDraftInfo({ draftNumber: d.draftNumber }); setDraftRestoreRecovery(null); setDetachedRecoveryPending(false);
       const heldNote = Number((d as { heldTotal?: string }).heldTotal ?? 0) > 0
         ? ` — عليها عربون مقبوض ${fmt(Number((d as { heldTotal?: string }).heldTotal))} د.ع`
         : "";
       notify.ok(
         `فُتحت المسوّدة ${d.draftNumber}${heldNote}`,
-        skipped > 0 ? `تنبيه: ${skipped} بند تعذّر استرجاعه (منتج غير متاح)` : "تعديلاتك تُزامَن وتُسجَّل باسمك",
+        "تعديلاتك تُزامَن وتُسجَّل باسمك",
       );
-    } catch (e) {
-      notify.err(e, "تعذّر فتح المسوّدة");
-    }
+      return true;
+    } catch (e) { if (!isCurrent()) return false; if (shadow) setDraftRestoreRecovery({ snapshot: shadow, serverAvailable: true }); notify.err(e, "تعذّر فتح المسوّدة"); return false; }
+    finally { if (isCurrent()) setDraftTransitionPending(false); }
   }
+
+  async function recoverDraftFromServer() { const recovery = draftRestoreRecovery; if (!recovery?.serverAvailable || !(await resumeDraft(recovery.snapshot.activeDraftId, () => true, true))) return; if (!clearPersistedWorkspace(true)) { setWorkspaceSafetyBlocked(true); return; } setDraftRestoreRecovery(null); setDetachedRecoveryPending(false); notify.ok("حُمّلت نسخة الخادم", "أُهملت النسخة المحلية بعد اختيارك ولم تعد قابلة للتثبيت المكرر."); }
+  async function recoverDraftAsLocalCopy() { const recovery = draftRestoreRecovery; if (!recovery || !(await restoreLocalWorkspace(recovery.snapshot.pendingLocal, () => true, true))) return; reqIdRef.current = crypto.randomUUID(); if (!clearPersistedWorkspace(true)) { setWorkspaceSafetyBlocked(true); return; } setDraftRestoreRecovery(null); setDetachedRecoveryPending(true); notify.warn("استُعيدت نسخة محلية منفصلة", "راجعها واحفظها كطلب جديد قبل قبض مبلغ أو التثبيت؛ قد تكون بعض تعديلات النسخة القديمة وصلت إلى الخادم."); }
 
   async function printDraftTicketById(draftId: number) {
     try {
@@ -1270,6 +1251,11 @@ export default function Reception() {
   }
 
   async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean; isReservation?: boolean }) {
+    if (draftTransitionPending || draftPromotionFlightRef.current) return; if (draftPromotionPending) { notify.warn("نتيجة حفظ الطلب غير محسومة", "أعد الضغط على حفظ الطلب للتحقق قبل أي تثبيت."); return; } if (detachedRecoveryPending) { notify.warn("لا تثبّت نسخة الاسترداد مباشرةً", "راجعها ثم احفظها كطلب محفوظ جديد؛ هذا يمنع تكرار طلب ربما وصلت بعض تعديلاته إلى الخادم."); return; }
+    const draftAtSubmit = activeDraftRef.current ?? activeDraft;
+    if (draftAtSubmit && couponCode) { notify.warn("لا تثبّت طلباً محفوظاً مع كوبون", "أزل الكوبون؛ الطلب المحفوظ لا يملك عقد استهلاك كوبون ذرياً."); return; }
+    const hadActiveDraftAtSubmit = draftAtSubmit != null;
+    if (phoneResolution === "CHECKING" || phoneCustomer.isPending || couponPreview.isPending) { notify.warn("انتظر اكتمال التحقق", "جارٍ حسم العميل أو الكوبون قبل التثبيت."); return; }
     // Fail before customer creation/offline capture: a stale external method must not
     // leave an orphan customer when the checkout service rejects the payment.
     if (!isPosPaymentMethodEnabled(String(method))) {
@@ -1281,21 +1267,51 @@ export default function Reception() {
       notify.err("ابدأ الوردية أولاً قبل إتمام طلب العميل");
       return;
     }
-    const invalidCustom = cart.find((line) => {
-      if (!line.custom) return false;
-      const unitTotal = D(line.row.price || 0).plus(D(line.custom.unitPrice || 0));
-      return !line.custom.title.trim() || unitTotal.lte(0);
-    });
+    const invalidCustom = cart.find((line) => line.custom && (!line.custom.title.trim() || D(effectivePrice(line)).lte(0)));
     if (invalidCustom) {
       setSelKey(invalidCustom.key);
       notify.err("راجع تفاصيل أمر الشغل: العنوان وسعر البيع مطلوبان");
       return;
     }
     const directLines = cart.filter((c) => !isCustomKind(c));
+    const digitalLines = directLines.filter((c) => c.digital);
     // فصل خدمات الطباعة (تُباع عبر createPrintSale) عن البيع العادي (sales.create).
-    const regularLines = directLines.filter((c) => !c.row.isPrintService);
-    const printLines = directLines.filter((c) => c.row.isPrintService);
+    const regularLines = directLines.filter((c) => !c.digital && !c.row.isPrintService);
+    const printLines = directLines.filter((c) => !c.digital && c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
+
+    if (digitalLines.length > 0) {
+      if (offline || isDisconnected(connState)) {
+        notify.err("الكروت والاشتراكات تحتاج اتصالاً فعّالاً بالخادم.");
+        return;
+      }
+      if (draftAtSubmit) {
+        notify.err("لا تُنفّذ الكروت ضمن طلب محفوظ؛ ثبّت الطلب أولاً أو افتح سلة جديدة.");
+        return;
+      }
+      if (customItems.length > 0 || printLines.length > 0 || orderDelivery) {
+        notify.err("افصل الكروت الرقمية عن أوامر الشغل والطباعة والتوصيل في عملية مستقلة.");
+        return;
+      }
+      if (method !== "CASH") {
+        notify.err("بيع الكروت من كاشير الاستقبال متاح نقداً فقط حالياً؛ الدفع بالبطاقة يحتاج إثبات جهاز دفع مرتبطاً بالعملية.");
+        return;
+      }
+      if (deferred) {
+        notify.err("الكروت والاشتراكات لا تقبل البيع الآجل أو الدفع الجزئي.");
+        return;
+      }
+      if (couponCode || rawInvoiceDiscountPctD.gt(0) || regularLines.some((line) => (line.disc ?? 0) > 0 || line.row.promotionId != null)) {
+        notify.err("لا تُطبّق الكوبونات أو الخصومات على عملية تحتوي كروتاً رقمية؛ افصلها في فاتورة أخرى.");
+        return;
+      }
+      const changedDigital = digitalLines.find((line) =>
+        line.qty !== 1 || !line.digital || !D(effectivePrice(line)).eq(line.digital.sellPriceSnapshot));
+      if (changedDigital) {
+        notify.err(`بيانات «${changedDigital.row.productName}» تغيّرت؛ احذفها وأعد إضافتها من سلة المزوّد.`);
+        return;
+      }
+    }
 
     // ٨/٨ (طلب المالك: التوصيل «غير موجود» لأمر شغلٍ خالص) — «توصيل هذا الطلب» كان يُبنى إسناداً
     // على الفاتورة الحاملة (dispatchInvoice)، وأمرُ الشغل الخالص بلا فاتورةٍ عند التثبيت ⇒ الخادم
@@ -1306,7 +1322,7 @@ export default function Reception() {
     const routeDeliveryToWO = orderDelivery != null && !hasCarrierInvoice;
     // القبض الآن (COUNTER) على أمر شغلٍ **محفوظٍ** (مسوّدة) غير مدعومٍ خادمياً (collectNow لا
     // يغطّيه بنيوياً — reception/commit.ts) ⇒ نمنعه برسالةٍ واضحة بدل خطأ خادميّ غامض.
-    if (routeDeliveryToWO && activeDraft && orderDelivery?.feeCollection === "COUNTER") {
+    if (routeDeliveryToWO && draftAtSubmit && orderDelivery?.feeCollection === "COUNTER") {
       notify.err(
         "قبض أجرة التوصيل الآن غير متاح لطلبٍ محفوظ",
         "اجعل المندوب يقبضها من الزبون، أو المكتبة تتحمّلها — أو أتمّ الطلب مباشرةً (بلا حفظ المسوّدة) لقبضها الآن.",
@@ -1342,6 +1358,10 @@ export default function Reception() {
     });
 
     const isReserve = !!opts.isReservation;
+    if (isReserve && digitalLines.length > 0) {
+      notify.err("لا يمكن حجز الكروت الرقمية؛ يجب إصدارها وتثبيتها فوراً.");
+      return;
+    }
 
     // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
     // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
@@ -1351,6 +1371,10 @@ export default function Reception() {
       ? (paidD.gt(0) ? paidD : D(0))
       : (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
     const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
+    if (digitalLines.length > 0 && !round2(appliedPaidD).eq(round2(expectedNowD))) {
+      notify.err(`الكروت الرقمية تتطلب تسديد كامل العملية: ${fmt(expectedNowD.toFixed(2))} د.ع.`);
+      return;
+    }
 
     // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
     if (method !== "CASH" && inputPaidD.gt(0) && !paymentReference.trim()) {
@@ -1385,7 +1409,7 @@ export default function Reception() {
     // مسار مباشر حصراً (لا مسوّدة — توزيعها يفترض دفعاً كاملاً، ولا توصيل — يُحصَّل عند الاستلام)،
     // ويلزمه عميلٌ مسجَّل (لا ذمّة بلا صاحب — createSaleInTx يرفض الآجل بلا customerId).
     if (deferred && !isReserve) {
-      if (activeDraft) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
+        if (draftAtSubmit) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
       if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
     }
     const hasCustomLines = customWithDeposits.length > 0;
@@ -1414,7 +1438,7 @@ export default function Reception() {
       return;
     }
     // الافتراضي يقبل الفواتير بدون ائتمان: وجود عميل مسجّل يحوّل أي نقص نقدي إلى آجل (ذمّة) تلقائياً.
-    const willDefer = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !activeDraft);
+    const willDefer = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !draftAtSubmit);
     if (!orderDelivery && !willDefer && appliedPaidD.plus(heldD).lt(directFloorD)) {
       const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
       notify.errBig(
@@ -1448,7 +1472,7 @@ export default function Reception() {
         setSubmitting(false);
         return;
       }
-      await captureOfflineReception();
+      await captureOfflineReception(hadActiveDraftAtSubmit);
       setSubmitting(false);
       return;
     }
@@ -1512,6 +1536,7 @@ export default function Reception() {
         }
         return {
           baseVariantId: c.manualService ? null : c.row.variantId,
+          baseProductUnitId: c.manualService ? null : c.row.productUnitId,
           title: custom.title.trim() || c.row.productName,
           customizationText: finalText || null,
           quantity: c.qty,
@@ -1561,186 +1586,33 @@ export default function Reception() {
             recipientName: orderDelivery.recipientName || undefined,
             recipientPhone: orderDelivery.recipientPhone || undefined,
             address: orderDelivery.address || undefined,
+            externalTrackingRef: orderDelivery.externalTrackingRef?.trim() || undefined,
           }
         : undefined;
 
-      const digitalLines = cart.filter((c) => c.digital);
-      if (digitalLines.length > 0) {
-        if (offline) {
-          notify.errBig("لا بيع رقميّ دون اتصال", "الكروت تحتاج الخادم للتحقّق من السعر والتنفيذ.");
-          setSubmitting(false);
-          return;
-        }
-        if (activeDraft) {
-          notify.err("لا يمكن حفظ أو تثبيت مسودة تحتوي على بطاقات رقمية");
-          setSubmitting(false);
-          return;
-        }
-        const regularLinesOnly = regularLines.filter((c) => !c.digital);
-        const checkoutPayload = {
-          branchId,
-          shiftId: shift.id,
-          customerId: customerId ?? undefined,
-          contactName: customerId == null ? (customerName ?? undefined) : undefined,
-          contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-          paymentMethod: appliedPaidD.gt(0) ? method : undefined,
-          paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
-          paidAmount: round2(appliedPaidD).toFixed(2),
-          cashRoundIQD: cashRoundActive,
-          cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
-          deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
-          delivery: deliveryPayload,
-          openingSellUnavailableConfirmed: opts.openingConfirmed === true,
-          deferredDirect: willDefer,
-          managerApproval: mgrCredsRef.current ?? undefined,
-          clientRequestId: reqIdRef.current,
-          priceTier: effectiveTier,
-          couponCode: couponCode ?? undefined,
-          regularSale: regularLinesOnly.length > 0 ? {
-            amount: round2(regularLinesOnly.reduce((s, c) => s.plus(D(lineTotal(c))), D(0)).minus(invoiceDiscountAmountD)).toFixed(2),
-            ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-            lines: regularLinesOnly.map((c) => ({
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
-            })),
-          } : null,
-          printSale: printLines.length > 0 ? {
-            amount: printAmount,
-            lines: printLines.map((c) => ({
-              variantId: c.row.variantId,
-              productUnitId: c.row.productUnitId,
-              quantity: String(c.qty),
-              unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
-            })),
-          } : null,
-          workOrders: workOrderPayloads.length > 0 ? workOrderPayloads : undefined,
-        };
-
-        digitalCheckoutRef.current = {
-          appliedPaidD,
-          method,
-          customerId,
-        };
-
-        prepareIntent.mutate({
-          branchId,
-          shiftId: shift.id,
-          clientRequestId: reqIdRef.current,
-          paymentMethod: method === "CARD" ? "CARD" : "CASH",
-          cartFingerprint: reqIdRef.current,
-          customerId: customerId ?? undefined,
-          priceTier: effectiveTier,
-          sourceType: "RECEPTION",
-          sourcePayload: checkoutPayload,
-          regularLines: regularLinesOnly.map((c, idx) => ({
-            lineKey: c.key || `reg-${idx}-${c.row.productUnitId}`,
-            variantId: c.row.variantId,
-            productUnitId: c.row.productUnitId,
-            quantity: String(c.qty),
-            unitPriceOverride: c.row.price ? String(c.row.price) : undefined,
-          })),
-          lines: digitalLines.map((c, idx) => ({
-            lineKey: c.key || `dig-${idx}-${c.digital!.offeringId}`,
-            offeringId: c.digital!.offeringId,
-            priceVersionId: c.digital!.priceVersionId,
-            expectedSellPrice: String(c.row.price || c.digital!.faceValue || 0),
-            providerReference: c.digital!.providerReference,
-            student: c.digital!.student,
-          })),
-        });
-        setSubmitting(false);
-        return;
-      }
-
-      // ش٣: طلبٌ محفوظٌ (مسوّدة نشطة) يُثبَّت **من مسوّدته** ذرّياً عبر reception.draftCommit —
-      // idempotency ثلاثية (version + FOR UPDATE + commitRequestId الخادمي). قبله «تفريغُ
-      // مزامنةٍ» متزامنٌ يقتل سباق «عدّلتُ ثم ثبّتُّ قبل نبضة الـdebounce»، وexpectedTotal
-      // (الخام قبل تقريب IQD) حزام أمانٍ ضدّ انجراف العرض.
-      const result = activeDraft
-        ? await (async () => {
-            if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
-            const live = activeDraftRef.current ?? activeDraft;
-            // تفريغ المزامنة قبل التثبيت (يقتل سباق التعديل قبل نبضة debounce). مراجعة عدائية:
-            // إن رُفض بـ«ثُبِّتت فاتورةً» (فُقد ردُّ تثبيتٍ سابق) **نتابع** إلى commitDraft —
-            // الخادم يعيد النتيجة المبنيّة من مفاتيح idempotency، لا نفكّ الربط فنزدوج بمسارٍ مباشر.
-            let commitVersion = live.version;
-            try {
-              const synced = await syncM.mutateAsync({
-                draftId: live.id,
-                version: live.version,
-                // مراجعة PR #495: العميل المُنشأ للتوّ يُمرَّر صراحةً (حالة React لم تُحدَّث بعد).
-                ...getDraftPayload(customerId),
-              });
-              commitVersion = synced.version;
-            } catch (syncErr) {
-              const code = (syncErr as { data?: { code?: string } }).data?.code;
-              if (code !== "PRECONDITION_FAILED") throw syncErr; // CONFLICT/نقل ⇒ المسار العام
-              // مسوّدة مغلقة: إن كانت COMMITTED فcommitDraft يعيد النتيجة نفسها (rebuild يسبق فحص version).
-            }
-            const committed = await commitDraftM.mutateAsync({
-              draftId: live.id,
-              version: commitVersion,
-              expectedTotal: round2(grandTotalD).toFixed(2),
-              shiftId: shift.id,
-              collectNow: appliedPaidD.gt(0)
-                ? { amount: round2(appliedPaidD).toFixed(2), method, reference: method === "CASH" ? undefined : paymentReference.trim() }
-                : null,
-              // ش٦: العلم يشمل المختلط — materialize خادمياً يعيد اشتقاق الهدف والفرق من الأسطر.
-              cashRoundIQD: cashRoundActive || mixedRoundApplied,
-              // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
-              deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
-              // مراجعة PR #495: الإسناد داخل نفس معاملة التثبيت (لا نداءً لاحقاً).
-              delivery: deliveryPayload,
-              // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
-              openingSellUnavailableConfirmed: opts.openingConfirmed === true,
-              managerApproval: mgrCredsRef.current ?? undefined,
-            });
-            setActiveDraft(null);
-            setDraftHeld("0.00");
-            setDraftInfo(null);
-            void utils.reception.draftList.invalidate();
-            return committed;
-          })()
-        : await checkoutM.mutateAsync({
+      const directCheckoutPayload = {
         branchId,
         shiftId: shift.id,
         customerId: customerId ?? undefined,
-        // مرجع الزبون العابر: يُكتب على الفاتورة وأمر الشغل حتى بلا سجلّ عميل.
         contactName: customerId == null ? (customerName ?? undefined) : undefined,
         contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-        // صدق طريقة الدفع (١٨/٨): الطريقة تُرسَل **فقط حين يُقبض مالٌ الآن**. كانت تُرسل دائماً
-        // فتُختَم «نقدي» على فاتورةٍ آجلة/COD لم يدخلها دينار (بلاغ المالك)، وتسقط من فلتر «آجل».
         paymentMethod: appliedPaidD.gt(0) ? method : undefined,
         paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
         paidAmount: round2(appliedPaidD).toFixed(2),
         cashRoundIQD: cashRoundActive,
-        // ش٦: تسمية الفاتورة الحاملة لفرق التقريب المختلط (المبلغ مُبيَّتٌ فيها أعلاه).
         cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
-        // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
         deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
-        // مراجعة PR #495: الإسناد داخل نفس معاملة البيع (ذرّية الفاتورة + عهدة المندوب).
         delivery: deliveryPayload,
-        // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
         openingSellUnavailableConfirmed: opts.openingConfirmed === true,
-        // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من البضاعة الجاهزة بلا توصيل ⇒ المتبقّي ذمّة
-        // على العميل المسجَّل (حدّ الائتمان نافذ خادمياً). مسار مباشر فقط (لا مسوّدة، لا توصيل).
         deferredDirect: willDefer,
-        // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
         priceTier: effectiveTier,
         couponCode: couponCode ?? undefined,
         regularSale: regularLines.length > 0 ? {
           amount: saleAmount,
-          // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪): يمرَّر مطلقاً لـcreateSaleInTx على البيع
-          // المباشر فقط (لا يمسّ printSale ولا workOrders). فوقَ الحدّ يرفضه الخادم بـmanualGate إلّا
-          // باعتمادِ مديرٍ (POS.tsx يفعل نفس الشيء). صفر ⇒ حذفٌ من الحمولة.
           ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
           lines: regularLines.map((c) => {
-            // كوبون/عرض: سعر قائمة صحيح الدينار + خصمٌ صريح (نمط POS.tsx buildSaleLine) — الخادم
-            // يتحقّق منه مقابل العرض الفعلي بلا رفضٍ لو تغيّر بين المعاينة والحفظ.
             if (c.row.promotionEffectivePrice != null) {
               const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4);
               const discAmt = listWhole.minus(D(c.row.promotionEffectivePrice)).times(c.qty);
@@ -1771,7 +1643,84 @@ export default function Reception() {
           })),
         } : null,
         workOrders: workOrderPayloads,
-      });
+      };
+
+      if (digitalLines.length > 0) {
+        const prepared = await prepareIntent.mutateAsync({
+          branchId,
+          shiftId: shift.id,
+          clientRequestId: reqIdRef.current,
+          paymentMethod: "CASH",
+          cartFingerprint: reqIdRef.current,
+          customerId: customerId ?? undefined,
+          priceTier: effectiveTier,
+          sourceType: "RECEPTION",
+          // لا نخزّن بيانات اعتماد المدير داخل لقطة النيّة. هذا المسار يمنع الخصومات أصلاً.
+          sourcePayload: { ...directCheckoutPayload, managerApproval: undefined, deferredDirect: false },
+          regularLines: regularLines.map((line, index) => ({
+            lineKey: `regular:${index}:${line.row.productUnitId}`,
+            variantId: line.row.variantId,
+            productUnitId: line.row.productUnitId,
+            quantity: String(line.qty),
+          })),
+          lines: digitalLines.map((line) => toDigitalPrepareLine(line.digital!)),
+        });
+        digitalCheckoutRef.current = { appliedPaidD, customerId };
+        setDigitalFinalizeError(null);
+        setFulfillIntentId(prepared.intentId);
+        return;
+      }
+
+      // ش٣: طلبٌ محفوظٌ (مسوّدة نشطة) يُثبَّت **من مسوّدته** ذرّياً عبر reception.draftCommit —
+      // idempotency ثلاثية (version + FOR UPDATE + commitRequestId الخادمي). قبله «تفريغُ
+      // مزامنةٍ» متزامنٌ يقتل سباق «عدّلتُ ثم ثبّتُّ قبل نبضة الـdebounce»، وexpectedTotal
+      // (الخام قبل تقريب IQD) حزام أمانٍ ضدّ انجراف العرض.
+      const result = draftAtSubmit
+        ? await (async () => {
+            if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
+            const live = activeDraftRef.current ?? draftAtSubmit;
+            // تفريغ المزامنة قبل التثبيت (يقتل سباق التعديل قبل نبضة debounce). مراجعة عدائية:
+            // إن رُفض بـ«ثُبِّتت فاتورةً» (فُقد ردُّ تثبيتٍ سابق) **نتابع** إلى commitDraft —
+            // الخادم يعيد النتيجة المبنيّة من مفاتيح idempotency، لا نفكّ الربط فنزدوج بمسارٍ مباشر.
+            let commitVersion = live.version;
+            const syncOutcome = await flushActiveDraft(customerId, false);
+            if (syncOutcome.ok) {
+              commitVersion = syncOutcome.version;
+            } else {
+              const code = (syncOutcome.error as { data?: { code?: string } })?.data?.code;
+              if (code !== "PRECONDITION_FAILED") {
+                handleDraftSyncFailure(syncOutcome);
+                throw syncOutcome.error;
+              }
+              const currentDraft = await utils.reception.draftGet.fetch({ draftId: live.id }, { staleTime: 0 });
+              if (currentDraft.status !== "COMMITTED") { handleDraftSyncFailure(syncOutcome); throw syncOutcome.error; }
+              // COMMITTED فقط: commitDraft يعيد النتيجة نفسها (rebuild يسبق فحص version).
+            }
+            const committed = await commitDraftM.mutateAsync({
+              draftId: live.id,
+              version: commitVersion,
+              expectedTotal: round2(grandTotalD).toFixed(2),
+              shiftId: shift.id,
+              collectNow: appliedPaidD.gt(0)
+                ? { amount: round2(appliedPaidD).toFixed(2), method, reference: method === "CASH" ? undefined : paymentReference.trim() }
+                : null,
+              // ش٦: العلم يشمل المختلط — materialize خادمياً يعيد اشتقاق الهدف والفرق من الأسطر.
+              cashRoundIQD: cashRoundActive || mixedRoundApplied,
+              // ش٦ (V15): أجرة توصيل الطلب المقبوضة الآن — إيصال أمانةٍ نقديّ مع الفاتورة.
+              deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
+              // مراجعة PR #495: الإسناد داخل نفس معاملة التثبيت (لا نداءً لاحقاً).
+              delivery: deliveryPayload,
+              // الاستقبال (٨/٨): تأكيد توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في الافتتاح).
+              openingSellUnavailableConfirmed: opts.openingConfirmed === true,
+              managerApproval: mgrCredsRef.current ?? undefined,
+            });
+            setActiveDraft(null);
+            setDraftHeld("0.00");
+            setDraftInfo(null);
+            void utils.reception.draftList.invalidate();
+            return committed;
+          })()
+        : await checkoutM.mutateAsync(directCheckoutPayload);
       checkoutCommitted = true;
 
       const invoiceId = result.regularSale?.invoiceId ?? result.printSale?.invoiceId ?? null;
@@ -1985,22 +1934,7 @@ export default function Reception() {
         printFailures,
       });
       setShowReceiptOverlay(true);
-      mgrCredsRef.current = null;
-      setDiscountFor(null);
-      setApprovalAsk(null);
-      setCart([]);
-      setSelKey(null);
-      setPayInput("");
-      setPaymentReference("");
-      setDeferred(false);
-      // ٢٣/٨ — تفريغ خصم رأس الفاتورة بعد البيع الناجح كي لا يمرَّ سهواً إلى العميل التالي.
-      setInvoiceDiscountPct("");
-      setCustomer({ customerId: null, name: "", phone: null, isNew: false });
-      setReceptionPhone("");
-      setChannel("WALK_IN");
-    setLinkedConversationId(null);
-      setChannelHandle("");
-      reqIdRef.current = crypto.randomUUID();
+      resetAfterCommittedWorkspace();
       // تحديث القوائم.
       utils.workOrders.list.invalidate().catch(() => {});
       utils.shifts.current.invalidate().catch(() => {});
@@ -2026,7 +1960,7 @@ export default function Reception() {
       // فخّ «النقرة الأولى» بعد قطعٍ صامت: المتصفّح لم يُحدِّث حالة الاتصال بعد, فيفشل النقل
       // بلا كود tRPC. تدهورٌ سلس: نلتقط بدل أن نُعيد خطأً غامضاً والنقد بيد الموظّف.
       // شرطٌ حاسم: **لم يلتزم شيء** (checkoutCommitted=false) — وإلا لَازدوجت العملية.
-      const isTransportFailure = !checkoutCommitted
+      const isTransportFailure = !checkoutCommitted && !hadActiveDraftAtSubmit
         && (e as { data?: { code?: string } } | null)?.data?.code == null;
       if (isTransportFailure && (await captureOfflineReception())) {
         return;
@@ -2061,8 +1995,15 @@ export default function Reception() {
    * النقد المقبوض يُطبَع عليه إيصالٌ مؤقّت OFF-… ويُرحَّل تلقائياً عبر offline.replayReception
    * بنفس clientRequestId ⇒ لا ازدواج حتى لو كان الالتزام قد وصل الخادم قبل انقطاع الردّ.
    */
-  async function captureOfflineReception(): Promise<boolean> {
+  async function captureOfflineReception(hadActiveDraft = false): Promise<boolean> {
     if (!shift || cart.length === 0) return false;
+    if (cart.some((line) => line.digital)) {
+      notify.errBig(
+        "الكروت الرقمية تحتاج اتصالاً",
+        "لا يمكن إصدار الكرت أو حجز رصيد المزوّد دون اتصال. أعد الاتصال ثم أتمم العملية من السلة نفسها.",
+      );
+      return false;
+    }
     const capturedByUserId = me.data?.id;
     if (!Number.isInteger(capturedByUserId) || Number(capturedByUserId) <= 0) {
       notify.errBig("تعذّر تثبيت هوية الموظف — أعد تسجيل الدخول قبل قبض نقد دون اتصال");
@@ -2072,7 +2013,7 @@ export default function Reception() {
     // التثبيت يلتزم خادمياً بمفتاح المسوّدة (commitRequestId) بينما الالتقاط كان سيرحّل
     // بمفتاح الواجهة (reqIdRef) المختلف ⇒ uq_invoice_source عاجزٌ عن صدّ فاتورةٍ ثانية
     // إذا كان الالتزام وصل قبل انقطاع الردّ. المسوّدة الخادمية **هي** الأثر الناجي.
-    if (activeDraftRef.current) {
+    if (hadActiveDraft || activeDraftRef.current) {
       notify.errBig(
         "طلبك محفوظٌ على الخادم — لا يُلتقَط دون اتصال",
         "عند عودة الاتصال افتح الطلب من «طلبات محفوظة» واضغط التثبيت — لن يتكرّر ولن يضيع.",
@@ -2080,8 +2021,8 @@ export default function Reception() {
       return false;
     }
     const directLines = cart.filter((c) => !isCustomKind(c));
-    const regularLines = directLines.filter((c) => !c.row.isPrintService);
-    const printLines = directLines.filter((c) => c.row.isPrintService);
+    const regularLines = directLines.filter((c) => !c.digital && !c.row.isPrintService);
+    const printLines = directLines.filter((c) => !c.digital && c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
     if (customItems.length > 0) {
       notify.errBig(
@@ -2210,18 +2151,7 @@ export default function Reception() {
       `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`,
       "الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)",
     );
-    setCart([]);
-    setSelKey(null);
-    setPayInput("");
-    setPaymentReference("");
-    // ٢٣/٨ — Codex P1: تفريغ الخصم بعد الالتقاط الأوفلايني كي لا يتسرّب لعميل التالي.
-    setInvoiceDiscountPct("");
-    setCustomer({ customerId: null, name: "", phone: null, isNew: false });
-    setReceptionPhone("");
-    setChannel("WALK_IN");
-    setLinkedConversationId(null);
-    setChannelHandle("");
-    reqIdRef.current = crypto.randomUUID();
+    resetAfterCommittedWorkspace();
     return true;
   }
 
@@ -2260,6 +2190,7 @@ export default function Reception() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (draftTransitionPending) { e.preventDefault(); return; }
       if (showCustomization) return;
       if (showReceiptOverlay) {
         if (e.key === "Escape") { e.preventDefault(); setShowReceiptOverlay(false); }
@@ -2295,7 +2226,7 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, cardsOpen, offline]);
+  }, [showInbox, showDrop, showCustomization, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, cardsOpen, offline, draftTransitionPending]);
 
   /** F12 — تفريغ بتأكيد (clearCart تُعرَّف بعد هذا الأثر ⇒ ref يحمل أحدث نسخة). */
   const clearCartRef = useRef<() => Promise<void>>(async () => {});
@@ -2304,9 +2235,9 @@ export default function Reception() {
   });
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
-  if (me.isLoading || shiftQ.isLoading) {
-    return <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
-  }
+  if (me.isLoading || shiftQ.isLoading || workspaceState === "HYDRATING" || draftTransitionPending) return <div className="p-8 text-center text-muted-foreground">{draftTransitionPending ? "جارٍ حفظ الطلب والتحقق منه…" : ACTION_LABELS.loading}</div>;
+  if (workspaceState === "BLOCKED" || workspaceSafetyBlocked) return <div className="flex h-full items-center justify-center bg-background p-4" dir="rtl"><div className="max-w-lg rounded-xl border bg-card p-6 text-center"><p className="mb-4 font-bold">{draftPromotionPending ? "محاولة حفظ غير محسومة ولا يجوز تفريغها. أعد الاتصال ثم تحقق منها أولاً." : draftRestoreRecovery ? "توجد نسخة محلية لمسوّدة تغيّرت على الخادم. لم نحذفها؛ اختر بوضوح أي نسخة تريد متابعتها." : "تعذّر استعادة الطلب المحفوظ بأمان. أعد تحميل الصفحة للمحاولة، أو ابدأ طلباً جديداً بعد تفريغه صراحةً."}</p><div className="flex flex-wrap justify-center gap-2">{draftPromotionPending ? <Button onClick={() => window.location.reload()}>إعادة التحقق</Button> : <>{draftRestoreRecovery?.serverAvailable && <Button onClick={() => void recoverDraftFromServer()}>تحميل نسخة الخادم</Button>}{draftRestoreRecovery && <Button variant="outline" onClick={() => void recoverDraftAsLocalCopy()}>استعادة المحلي للمراجعة</Button>}<Button variant="outline" onClick={() => { if (clearPersistedWorkspace()) { reqIdRef.current = crypto.randomUUID(); resetScreen(); } }}>تفريغ الحالة المحفوظة</Button></>}</div></div></div>;
+  if (draftPromotionPending) return <div className="flex h-full items-center justify-center bg-background p-4" dir="rtl"><div className="max-w-lg rounded-xl border border-[var(--sem-warn)] bg-card p-6 text-center"><p className="mb-4 font-bold">محاولة حفظ الطلب لم يُحسم ردّها. السلة محجوبة عن التعديل والقبض والتثبيت حتى نتحقق كي لا يتكرر الطلب.</p><Button onClick={() => void saveDraft()} disabled={offline || promoteM.isPending}>التحقق وإعادة حفظ الطلب</Button></div></div>;
 
   // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
   if (!shift) {
@@ -2378,6 +2309,7 @@ export default function Reception() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background" dir="rtl">
+      {persistenceDegraded && <div role="alert" className="border-b border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] px-4 py-2 text-center text-xs font-bold text-[var(--sem-warn)]">الحفظ المحلي غير متاح الآن؛ أبقِ الشاشة مفتوحة واحفظ الطلب كمسودة خادمية قبل المغادرة.</div>}{detachedRecoveryPending && <div role="alert" className="border-b border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] px-4 py-2 text-center text-xs font-bold text-[var(--sem-warn)]">هذه نسخة استرداد منفصلة للمراجعة؛ احفظها كطلب جديد قبل القبض أو التثبيت.</div>}
       {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && shift && (
         <ReceptionShiftCloseDialog
@@ -2675,7 +2607,7 @@ export default function Reception() {
           activeDraftId={activeDraft?.id ?? null}
           offline={offline}
           compact={compactHeader}
-          canSave={cart.length > 0}
+          canSave={cart.length > 0 && !hasDigitalCards}
           onSave={saveDraft}
           onResume={(id) => void resumeDraft(id)}
           onPrintTicket={(id) => void printDraftTicketById(id)}
@@ -2728,6 +2660,7 @@ export default function Reception() {
 
             <CartTable
               branchId={branchId}
+              customerId={customer.customerId}
               cart={cart}
               selKey={selKey}
               onSelect={setSelKey}
@@ -2823,8 +2756,8 @@ export default function Reception() {
 
       {customerContextId != null && <Contact360Panel kind="customer" id={customerContextId} onClose={() => setCustomerContextId(null)} onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }} />}
 
-      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة وانطلاق التوصيل. */}
-      {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onClose={() => setShowReceiptOverlay(false)} />}
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام */}
+      {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onReprintLabel={() => triggerReceptionShippingLabel(lastSale, deliveryDeparture, customer.phone)} onClose={() => setShowReceiptOverlay(false)} />}
 
       {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
       {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(email, password) => { mgrCredsRef.current = { email, password }; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
@@ -2835,13 +2768,26 @@ export default function Reception() {
         offline={offline}
         onClose={() => setCardsOpen(false)}
         onPickBasket={addDigitalBasket}
-        existingCardCount={cart.filter((c) => c.digital).length}
-        existingReferences={cart.filter((c) => c.digital).map((c) => ({
-          providerId: c.digital!.providerId,
-          providerReference: c.digital!.providerReference,
-        }))}
+        existingReferences={cart.flatMap((line) => line.digital
+          ? [{ providerId: line.digital.providerId, providerReference: line.digital.providerReference }]
+          : [])}
+        existingCardCount={cart.filter((line) => line.digital).length}
       />
-      <DigitalFulfillmentDialog intentId={fulfillIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError} onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }} onAllExecuted={(id: number) => { if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({ intentId: id, clientRequestId: reqIdRef.current, paymentAmount: round2(digitalCheckoutRef.current.appliedPaidD).toFixed(2), paymentMethod: digitalCheckoutRef.current.method as any, customerId: digitalCheckoutRef.current.customerId ?? undefined }); }} />
+      <DigitalFulfillmentDialog
+        intentId={fulfillIntentId}
+        finalizing={finalizeSale.isPending}
+        finalizeError={digitalFinalizeError}
+        onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
+        onAllExecuted={(id: number) => {
+          if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({
+            intentId: id,
+            clientRequestId: reqIdRef.current,
+            paymentAmount: round2(digitalCheckoutRef.current.appliedPaidD).toFixed(2),
+            paymentMethod: "CASH",
+            customerId: digitalCheckoutRef.current.customerId ?? undefined,
+          });
+        }}
+      />
     </div>
   );
 }
