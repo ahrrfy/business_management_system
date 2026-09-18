@@ -1,7 +1,6 @@
 import type { StartOrderFromConversation } from "@/pages/Inbox";
-import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel } from "@shared/receptionChannel";
+import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel, receptionChannelOptions } from "@shared/receptionChannel";
 import { ChannelMark } from "@/components/ChannelBadge";
-import { receptionChannelOptions } from "@shared/receptionChannel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -68,8 +67,6 @@ import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
 import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
-// تفكيك §١٣ ش١ (٥/٨): الأنواع/الدوال النقيّة والمكوّنات الثقيلة (السلة/الدفع/الإيصال) صارت
-// وحدات مستقلّة تحت components/reception — نقلٌ حرفيّ بصفر تغيير سلوكي.
 import {
   customLineGrand,
   effectivePrice,
@@ -87,6 +84,7 @@ import {
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
+import { triggerReceptionShippingLabel } from "@/components/reception/receptionShippingLabel";
 import type { DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { buildReceptionDepartureData } from "@/components/reception/receptionDepartureHelper";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
@@ -164,11 +162,6 @@ export default function Reception() {
   const canReadCustomerContext = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "crm", "READ", CRM_READ_ROLES,
   );
-  // مرآة بوّابة customers.create الخادمية بالضبط (customerReceptionCreateAllowed في server/trpc.ts):
-  // crm=FULL (الأدوار القياسية) **أو** workorders=FULL (بوّابة محطة الاستقبال). قرار المالك العاجل
-  // (١٢/٨): يُلغى حاجز crm≥READ من مراجعة Codex — كاشير الاستقبال يحفظ العميل ويبيع بلا عربون
-  // ولو كان دوره المخصّص بلا صلاحيّة CRM أصلاً. CONFLICT الهاتف نظريّ: يحدث فقط عند تكرار هاتفٍ
-  // حرفياً، ورسالة الخادم توضّح فيصعّد الموظّف للمدير عندها.
   const canCreateCustomer = me.data != null && (
     moduleAccessAllowed(
       me.data.role, reservationPermissions, "crm", "FULL", CUSTOMER_CREATE_ROLES,
@@ -2823,8 +2816,8 @@ export default function Reception() {
 
       {customerContextId != null && <Contact360Panel kind="customer" id={customerContextId} onClose={() => setCustomerContextId(null)} onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }} />}
 
-      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة وانطلاق التوصيل. */}
-      {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onClose={() => setShowReceiptOverlay(false)} />}
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام */}
+      {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onReprintLabel={() => triggerReceptionShippingLabel(lastSale, deliveryDeparture, customer.phone)} onClose={() => setShowReceiptOverlay(false)} />}
 
       {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
       {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(email, password) => { mgrCredsRef.current = { email, password }; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
