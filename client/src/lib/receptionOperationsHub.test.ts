@@ -150,13 +150,12 @@ describe("ReceptionOperationsHub", () => {
   it("يبقي محطة إنشاء الطلب منفصلة ويوجه المسارات القديمة إلى المركز مع حفظ query", () => {
     expect(appSource).toContain('<Route path="/reception">');
     expect(appSource).toContain('<Redirect to="/pos?mode=RECEPTION" />');
-    expect(appSource).toContain('<Route path="/reception/operations">');
     for (const tab of ["orders", "invoices", "workflow", "handover"]) {
       expect(appSource).toContain(
-        `<RedirectKeepQuery to="/reception/operations?tab=${tab}" />`,
+        `<Route path="/reception/${tab}">`,
       );
       expect(cashierHomeSource).toContain(
-        `href: "/reception/operations?tab=${tab}"`,
+        `href: "/reception/${tab}"`,
       );
     }
   });

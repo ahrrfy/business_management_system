@@ -241,44 +241,44 @@ export function CashierHome({
    */
   const counterTiles: Tile[] = isReception
     ? [
-        ...(visibleReceptionTabs.has("handover")
-          ? [{
-              href: "/reception/operations?tab=handover",
-              name: "التسليم المباشر",
-              desc: "مسح باركود فوري — تحصيل (نقدي/شبكة/محفظة) وإغلاق ذري للطلب",
-              badge: woCounts.data?.ready ?? 0,
-              badgeHint: "طلب جاهز بانتظار استلام العميل",
-              badgeVariant: "success" as const,
-              icon: CheckCircle2,
-            }]
-          : []),
-        ...(visibleReceptionTabs.has("workflow")
-          ? [{
-              href: "/reception/operations?tab=workflow",
-              name: "الإسناد والتوصيل",
-              desc: "إسناد لمناديب الفرع وشركات الشحن — وتوريد الذمم والمرتجع",
-              badge: deliveryReadyCountQ.data ?? 0,
-              badgeHint: "شحنة جاهزة للتوصيل والإسناد",
-              badgeVariant: "info" as const,
-              icon: Truck,
-            }]
-          : []),
-        ...(visibleReceptionTabs.has("orders")
-          ? [{
-              href: "/reception/operations?tab=orders",
-              name: "طلبات محطّتي",
-              desc: "طابور أوامر الشغل — متابعة مراحل التنفيذ بالمطبعة والجاهز والمعلق",
-              icon: Package,
-            }]
-          : []),
-        ...(visibleReceptionTabs.has("invoices")
-          ? [{
-              href: "/reception/operations?tab=invoices",
-              name: "فواتير للتحصيل",
-              desc: "المبالغ المتبقية والذمم المعلقة — اقبضها مباشرة من الصف",
-              icon: BadgeDollarSign,
-            }]
-          : []),
+          ...(visibleReceptionTabs.has("handover")
+            ? [{
+                href: "/reception/handover",
+                name: "تسليم للعميل",
+                desc: "فرز الطلبات الجاهزة / تسليم (كامل/جزئي/نقدي) للعملاء في الفرع",
+                badge: woCounts.data?.ready ?? 0,
+                badgeHint: "أمر عمل جاهز للتسليم الآن",
+                badgeVariant: "success" as const,
+                icon: CheckCircle2,
+              }]
+            : []),
+          ...(visibleReceptionTabs.has("workflow")
+            ? [{
+                href: "/reception/workflow",
+                name: "التوصيل والإسناد",
+                desc: "إسناد الطلبات الجاهزة لمندوب / تحصيل ذمم المندوبين وتعديلها",
+                badge: deliveryReadyCountQ.data ?? 0,
+                badgeHint: "طرد جاهز للإسناد لمندوب",
+                badgeVariant: "info" as const,
+                icon: Truck,
+              }]
+            : []),
+          ...(visibleReceptionTabs.has("orders")
+            ? [{
+                href: "/reception/orders",
+                name: "سجل الطلبات",
+                desc: "سجل طلبات الفرع / متابعة حالة التصميم والإنتاج والمرفقات",
+                icon: Package,
+              }]
+            : []),
+          ...(visibleReceptionTabs.has("invoices")
+            ? [{
+                href: "/reception/invoices",
+                name: "فواتير المبيعات",
+                desc: "الفواتير الضريبية للفرع / تعديل الفواتير / تحصيل الذمم",
+                icon: BadgeDollarSign,
+              }]
+            : []),
       ]
     : [];
 
