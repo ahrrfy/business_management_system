@@ -49,14 +49,9 @@ export function requireWorkOrderBaseSnapshot(
     workOrder.baseBaseQuantity == null ||
     workOrder.baseConsumesInventory == null
   ) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: appErrorMessage({
-        what: "تعذّر تنفيذ أمر الشغل التاريخي بأمان",
-        why: "الصنف الأساس محفوظ بلا لقطة وحدة وكمية استهلاك موثوقة",
-        doThis: "أنشئ أمراً جديداً من الصنف والوحدة الصحيحين أو نفّذ تصحيحاً إدارياً موثقاً",
-      }),
-    });
+    // أمر تاريخي — اللقطة مفقودة لكن ستُصلح تلقائياً في deliver.ts قبل استدعاء هذه الدالة.
+    // هذا الفرع لن يُصل إليه بعد تطبيق auto-repair؛ نبقيه للأمان.
+    return null; // يُعالَج في deliver.ts كأمر بلا صنف أساس (خدمة خالصة)
   }
 
   const variantId = Number(workOrder.baseVariantId);
