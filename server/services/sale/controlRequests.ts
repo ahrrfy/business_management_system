@@ -906,7 +906,9 @@ export async function approveSalesControlRequest(
         originalInvoiceId: Number(request.invoiceId),
         clientRequestId: `sales-control-${requestId}`,
         creditApproved: true,
-        managerOverrideByUserId: actor.userId,
+        // مُصدر قرار الائتمان = المعتمِد (actor.userId)؛ المستهلك = طالب الطلب (request.requestedBy).
+        // `assertReviewerSeparation` فوق تضمن actor ≠ requestedBy — الفصل حقيقيّ لا شكلي.
+        managerOverrideByUserId: Number(request.requestedBy),
         priceOverrideApproved: true,
         controlExpectedSnapshot: storedSnapshot,
       }, effectiveActor);
