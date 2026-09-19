@@ -34,17 +34,19 @@ describe("سجل وحدات التطبيق", () => {
     }
   });
 
-  it("يغذّي القائمة من سجل الوحدات والرئيسية من ملف العمل المسموح فقط", () => {
+  it("يغذّي القائمة والبطاقات من سجل الوحدات، ويُبقي الإجراءات اليومية من ملف العمل", () => {
     const layout = readFileSync("client/src/components/AppLayout.tsx", "utf8");
     const dashboard = readFileSync("client/src/pages/Dashboard.tsx", "utf8");
     expect(layout).toContain("APPLICATION_MODULES as NAV_LINKS");
     expect(dashboard).toContain("resolveWorkspaceProfile({");
     expect(dashboard).toContain("profile.primaryNav");
     expect(dashboard).toContain("href={item.href}");
+    expect(dashboard).toContain("APPLICATION_MODULES.filter");
+    expect(dashboard).toContain("canSeeGate(module, role, permissionsOverride)");
+    expect(dashboard).toContain('aria-label="وحدات النظام"');
+    expect(dashboard).toContain("<SystemModulesPanel");
     expect(dashboard).not.toContain("const CORE_MODULES");
     expect(dashboard).not.toContain("const ACTIONS");
-    expect(dashboard).not.toContain("APPLICATION_MODULES");
-    expect(dashboard).not.toContain("canSeeGate");
     expect(dashboard).toContain("me.isLoading");
     expect(dashboard).toContain("me.isError || !me.data");
     expect(dashboard).toContain("<LoadingState");
