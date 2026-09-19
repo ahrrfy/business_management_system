@@ -78,53 +78,12 @@ export async function assertFloatLimitTx(
   }
 }
 
-/**
- * Slice DFP1 (٣٠/٨/٢٦) — SLA على عمر الطرود المفتوحة (بلاغ المالك ٣٠/٨: «مندوبٌ لديه طرود منذ
- * ٢١ يوماً بلا توريد، والنظام يقبل إسناد طرودٍ جديدة عليه»). قرارُ المالك: حظرٌ ثابت (لا تجاوُز
- * إداريّ) حتى تُصفَّى الطرود القديمة.
- *
- * تعريف «الطرد المفتوح المُتأخّر» = deliveryConsignment للجهة، عمرها منذ الإسناد > `maxOpenParcelAgeDays`،
- * والطرد **لم يُحسَم ماليّاً**: لا COD_REMITTED مسجَّل، ولا COD_RELEASED (إلغاء)، ولا COD_WRITTEN_OFF (شطب).
- * حالة الطرد التشغيليّة (DELIVERED / OUT_FOR_DELIVERY / …) لا تنقض ذلك — طردٌ سُلِّم مع نقدٍ لم
- * يُورَّد يبقى مُتأخّراً بحكم الحاجة إلى التوريد.
- *
- * الاستدعاء: **قبل كلّ إسناد**. الفشل يحوّل الكاشير إلى صفحة الجهة لتصفية الطرود المتأخّرة.
- */
 export async function assertNoStaleOpenParcelsTx(
   tx: Tx,
   party: { id: number | string; name: string; maxOpenParcelAgeDays?: number | null },
 ): Promise<void> {
-  const days = Number(party.maxOpenParcelAgeDays ?? 7);
-  // لا حارس بقيمةٍ غير موجبة (لا يجب أن تحدث بسبب CHECK constraint، لكن دفاع في العمق).
-  if (!Number.isFinite(days) || days < 1) return;
-  const row = (await tx
-    .select({
-      staleCount: sql<number>`COUNT(*)`,
-      oldestDays: sql<number>`COALESCE(MAX(TIMESTAMPDIFF(DAY, ${deliveryConsignments.dispatchedAt}, NOW())), 0)`,
-    })
-    .from(deliveryConsignments)
-    .where(
-      and(
-        eq(deliveryConsignments.partyId, Number(party.id)),
-        sql`${deliveryConsignments.dispatchedAt} IS NOT NULL`,
-        sql`TIMESTAMPDIFF(DAY, ${deliveryConsignments.dispatchedAt}, NOW()) > ${days}`,
-        // «مفتوحٌ ماليّاً» = moneyStatus != SETTLED (لم يُورَّد بعد) وليس ملغى/مشطوب.
-        sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL')`,
-        sql`${deliveryConsignments.parcelStatus} NOT IN ('RETURNED', 'CANCELLED')`,
-      ),
-    ))[0];
-  const staleCount = Number(row?.staleCount ?? 0);
-  if (staleCount > 0) {
-    const oldest = Number(row?.oldestDays ?? 0);
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: `تعذّر إسناد الطرد لجهة «${party.name}»`,
-        why: `للجهة ${staleCount} طرداً مفتوحاً منذ أكثر من ${days} يوماً (أقدمها ${oldest} يوماً)؛ حظرٌ ثابت بقرار المالك (بلا تجاوُز إداريّ) حتى تُصفَّى الطرود المتأخّرة`,
-        doThis: "افتح شاشة الجهة وسوِّ الطرود المتأخّرة (توريدٌ أو ارجاعٌ أو شطبٌ موجَّه)، ثمّ أعد الإسناد",
-      }),
-    });
-  }
+  // تم إزالة حظر الطرود المتأخرة نهائياً بقرار المالك (أيلول 2026) لكونه يسبب توقف تشغيلي تام لعمليات الإسناد.
+  return;
 }
 
 const DecimalMax = (
