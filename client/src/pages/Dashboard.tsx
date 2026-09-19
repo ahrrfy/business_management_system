@@ -7,6 +7,8 @@ import { useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
+import { APPLICATION_MODULES, type ApplicationModule } from "@/lib/moduleRegistry";
+import { canSeeGate } from "@/lib/navVisibility";
 import { resolveWorkspaceProfile, type WorkspaceNavItem } from "@/lib/workspaceProfiles";
 import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -24,6 +26,7 @@ const T = {
   bg:          "var(--dash-bg)",
   cardBg:      "var(--dash-card-bg)",
   cardBord:    "var(--dash-card-bord)",
+  secLine:     "var(--dash-sec-line)",
   secLabel:    "var(--dash-sec-label)",
   text:        "var(--dash-text)",
   sub:         "var(--dash-sub)",
@@ -35,6 +38,14 @@ const T = {
   metricsBord: "var(--dash-metrics-bord)",
 } as const;
 const useT = () => T;
+
+const SYSTEM_SECTIONS = [
+  { id: 1, label: "المبيعات والتحصيل", accent: "var(--sec1-ink)" },
+  { id: 2, label: "المخزون والمشتريات", accent: "var(--sec2-ink)" },
+  { id: 3, label: "المالية والحسابات", accent: "var(--sec3-ink)" },
+  { id: 4, label: "التشغيل والقنوات", accent: "var(--sec4-ink)" },
+  { id: 5, label: "الإدارة والنظام", accent: "var(--sec5-ink)" },
+] as const;
 
 /* ═══════════ METRICS BAR ═══════════ */
 
@@ -179,6 +190,135 @@ function PrimaryActionsPanel({ items }: { items: readonly WorkspaceNavItem[] }) 
           ))}
         </nav>
       </div>
+    </section>
+  );
+}
+
+function ModuleCard({
+  module,
+  accent,
+}: {
+  module: ApplicationModule;
+  accent: string;
+}) {
+  const T = useT();
+  const Icon = module.icon;
+
+  return (
+    <article
+      style={{
+        minWidth: 0,
+        minHeight: 154,
+        border: `1px solid ${T.cardBord}`,
+        borderRadius: 10,
+        background: T.cardBg,
+        overflow: "hidden",
+      }}
+    >
+      <Link
+        href={module.href}
+        aria-label={`فتح ${module.label}`}
+        style={{
+          height: "100%",
+          minHeight: 154,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 14,
+          padding: "14px",
+          color: T.text,
+          textDecoration: "none",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 8,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: accent,
+            background: `color-mix(in oklch, ${accent} 12%, transparent)`,
+          }}
+        >
+          <Icon size={21} strokeWidth={1.8} />
+        </span>
+        <span style={{ display: "grid", gap: 3, minWidth: 0 }}>
+          <span style={{ fontSize: "0.875rem", fontWeight: 900, lineHeight: 1.35 }}>
+            {module.label}
+          </span>
+          <span style={{ fontSize: "0.75rem", color: T.sub, lineHeight: 1.5 }}>
+            {module.description}
+          </span>
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.75rem", fontWeight: 800, color: accent }}>
+          فتح الوحدة
+          <ArrowLeft aria-hidden size={15} />
+        </span>
+      </Link>
+    </article>
+  );
+}
+
+function SystemModulesPanel({
+  role,
+  permissionsOverride,
+}: {
+  role: RoleKey;
+  permissionsOverride: PermissionMap | null;
+}) {
+  const T = useT();
+  const isXNarrow = useMediaQuery("(max-width: 640px)");
+  const isNarrow = useMediaQuery("(max-width: 1023px)");
+  const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
+  const columns = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
+  const visibleModules = APPLICATION_MODULES.filter((module) =>
+    canSeeGate(module, role, permissionsOverride),
+  );
+
+  if (visibleModules.length === 0) return null;
+
+  return (
+    <section
+      aria-label="وحدات النظام"
+      style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 4px", display: "grid", gap: 18 }}
+    >
+      <header>
+        <h2 style={{ margin: 0, fontSize: "0.9375rem", fontWeight: 900, color: T.text }}>
+          وحدات النظام
+        </h2>
+        <p style={{ margin: "3px 0 0", fontSize: "0.75rem", color: T.muted }}>
+          اختر الوحدة المطلوبة، وتظهر لك الوحدات المتاحة حسب دورك وصلاحياتك.
+        </p>
+      </header>
+
+      {SYSTEM_SECTIONS.map((section) => {
+        const sectionModules = visibleModules.filter((module) => module.section === section.id);
+        if (sectionModules.length === 0) return null;
+
+        return (
+          <section key={section.id} aria-labelledby={`dashboard-section-${section.id}`} style={{ display: "grid", gap: 10 }}>
+            <header style={{ display: "flex", alignItems: "center", gap: 9 }}>
+              <span aria-hidden style={{ width: 3, height: 16, borderRadius: 2, background: section.accent }} />
+              <h3 id={`dashboard-section-${section.id}`} style={{ margin: 0, fontSize: "0.8125rem", fontWeight: 900, color: T.secLabel }}>
+                {section.label}
+              </h3>
+              <span style={{ color: T.muted, fontSize: "0.6875rem", fontWeight: 800 }}>
+                {fmtAr(sectionModules.length)} وحدات
+              </span>
+              <span aria-hidden style={{ flex: 1, height: 1, background: T.secLine }} />
+            </header>
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gap: 10 }}>
+              {sectionModules.map((module) => (
+                <ModuleCard key={module.id} module={module} accent={section.accent} />
+              ))}
+            </div>
+          </section>
+        );
+      })}
     </section>
   );
 }
@@ -889,6 +1029,10 @@ export default function Dashboard() {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }} style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
       <DashboardHeader branchScope={branchScope} isAdmin={isAdmin} onBranchScopeChange={setAdminBranchScope} />
       <PrimaryActionsPanel items={profile.primaryNav} />
+      <SystemModulesPanel
+        role={me.data.role as RoleKey}
+        permissionsOverride={(me.data.permissionsOverride ?? null) as PermissionMap | null}
+      />
       <MetricsBar branchScope={branchScope} primaryNav={profile.primaryNav} />
       <MorningBrief branchScope={branchScope} isAdmin={isAdmin} primaryNav={profile.primaryNav} />
       <TasksBrief branchScope={branchScope} primaryNav={profile.primaryNav} />
