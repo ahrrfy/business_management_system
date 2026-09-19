@@ -8,6 +8,7 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { printShiftClose } from "@/lib/printing/print";
+import { ShiftCashReconciliationMini } from "../pos/ShiftCashReconciliationMini";
 
 export interface ReceptionShiftCloseDialogProps {
   open: boolean;
@@ -95,7 +96,7 @@ export function ReceptionShiftCloseDialog({
       onClick={onClose}
     >
       <div
-        className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-card p-6 shadow-2xl"
+        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-card p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="mb-1 text-lg font-extrabold">إنهاء الوردية وعدّ النقدية</h3>
@@ -140,10 +141,6 @@ export function ReceptionShiftCloseDialog({
                       ] as [string, string],
                     ]
                   : []),
-                ["المبلغ عند بدء الوردية", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
-                ...(showRecExpected
-                  ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]
-                  : []),
               ] as [string, string][]
             ).map(([l, v]) => (
               <div key={l} className="flex justify-between border-b py-2 text-sm">
@@ -153,6 +150,16 @@ export function ReceptionShiftCloseDialog({
                 </span>
               </div>
             ))}
+
+            {/* تفصيل وبيان نقد الوردية ومصادر النقد المتوقع */}
+            <ShiftCashReconciliationMini
+              cashReconciliation={reportQ.data?.cashReconciliation}
+              invoiceCount={reportQ.data?.invoiceCount ?? 0}
+              salesTotal={reportQ.data?.salesTotal ?? "0"}
+              openingBalance={Number(shift.openingBalance ?? 0)}
+              expectedCash={recExpected}
+              showExpected={showRecExpected}
+            />
             <div
               className="my-4 space-y-1.5"
               onBlur={() => setCountEntered(counted.trim() !== "")}
