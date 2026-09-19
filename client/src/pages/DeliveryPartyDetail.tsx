@@ -1144,19 +1144,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
               <Input value={form.vehicleInfo} onChange={(e) => setForm({ ...form, vehicleInfo: e.target.value })} className="mt-1 h-10" placeholder="نوع/لون/رقم اللوحة" />
             </label>
           </div>
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <label className="block text-sm font-bold">مهلة إغلاق الطرود المفتوحة (بالأيام — 0 = بلا حظر SLA)
-              <Input
-                type="number"
-                min={0}
-                max={365}
-                value={form.maxOpenParcelAgeDays}
-                onChange={(e) => setForm({ ...form, maxOpenParcelAgeDays: e.target.value === "" ? 7 : Number(e.target.value) })}
-                className="mt-1 h-10 text-end tabular-nums"
-              />
-              <span className="mt-1 block text-xs font-normal text-muted-foreground">الافتراضي 7 أيام. القيمة 0 تعني جهة موثوقة لا تُحظر برمجياً عند تأخر إغلاق الطرود.</span>
-            </label>
-          </div>
+
           <label className="block text-sm font-bold">ملاحظات
             <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="mt-1 h-10" />
           </label>
