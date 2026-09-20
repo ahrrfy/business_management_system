@@ -52,26 +52,27 @@ describe("HTML ملصق الشحن بقياس متغيّر", () => {
     items: [{ productName: "دفتر A4", unitName: "درزن", quantity: "2" }],
   };
 
-  it("الافتراضي (٨٠×١٢٠): @page بالقياس الصحيح ومعامل تحجيم 0.8", async () => {
+  it("الافتراضي (٨٠×١٢٠): @page بالقياس الصحيح وحاوية بأبعاد مباشرة", async () => {
     const html = await shippingLabelHtml(order);
-    expect(html).toContain("@page{size:80mm 120mm;margin:0}");
-    expect(html).toContain("width:80mm;height:120mm");
-    expect(html).toContain("transform:scale(0.8)");
-    // الارتفاع الداخلي = 120 / 0.8 = 150مم (اللوحة المرجعية تملأ الملصق بعد التحجيم)
-    expect(html).toContain("height:150.000mm");
+    expect(html).toContain("@page{size:80mm 120mm;margin:0mm !important}");
+    expect(html).toContain("width:80mm");
+    expect(html).toContain("height:120mm"); // html,body height matches label
+    // الحاوية .lbl-container تأخذ أبعاد الملصق مباشرة بلا transform
+    expect(html).toContain("lbl-container");
   });
 
-  it("قياس 4×6 (١٠٠×١٥٠): معامل 1 وارتفاع داخلي 150مم", async () => {
+  it("قياس 4×6 (١٠٠×١٥٠): أبعاد حاوية مطابقة", async () => {
     const html = await shippingLabelHtml(order, { widthMm: 100, heightMm: 150 });
-    expect(html).toContain("@page{size:100mm 150mm;margin:0}");
-    expect(html).toContain("transform:scale(1)");
-    expect(html).toContain("height:150.000mm");
+    expect(html).toContain("@page{size:100mm 150mm;margin:0mm !important}");
+    expect(html).toContain("width:100mm");
+    expect(html).toContain("height:150mm");
   });
 
-  it("قياس مخصّص بنسبة مختلفة (١٠٠×١٠٠): الفرق يمتصّه شريط الباركود المرن", async () => {
+  it("قياس مخصّص بنسبة مختلفة (١٠٠×١٠٠): الحاوية تتكيّف", async () => {
     const html = await shippingLabelHtml(order, { widthMm: 100, heightMm: 100 });
-    expect(html).toContain("@page{size:100mm 100mm;margin:0}");
-    expect(html).toContain("height:100.000mm");
+    expect(html).toContain("@page{size:100mm 100mm;margin:0mm !important}");
+    expect(html).toContain("width:100mm");
+    expect(html).toContain("height:100mm");
   });
 
   it("مضمون الملصق ثابت بأي قياس: مستلِم/COD/باركود/محتويات", async () => {
@@ -80,7 +81,8 @@ describe("HTML ملصق الشحن بقياس متغيّر", () => {
     expect(html).toContain("ON-2026-000123");
     expect(html).toContain("الدفع عند الاستلام");
     expect(html).toContain("بغداد"); // baghdad ⇒ اسم المحافظة
-    expect(html).toContain("دفتر A4 (درزن) ×2");
+    expect(html).toContain("دفتر A4 (درزن)");
+    expect(html).toContain("×2");
     expect(html).toContain("مندوب الكرخ");
   });
 });
