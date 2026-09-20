@@ -79,6 +79,7 @@ const AdminHub = lazy(() => import("@/pages/AdminHub"));
 const AuditLogs = lazy(() => import("@/pages/AuditLogs"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const MobileDesignPreview = lazy(() => import("@/pages/MobileDesignPreview"));
+const PrintStudio = lazy(() => import("@/pages/PrintStudio"));
 const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
 const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
 const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
@@ -360,6 +361,8 @@ export default function App() {
       <Route path="/login" component={Login} />
       {/* معاينة تصميم الهاتف/اللوحي: واجهة تجريبية ثابتة بلا بيانات تشغيلية. */}
       <Route path="/mobile-design-preview" component={MobileDesignPreview} />
+      {/* استوديو المطبوعات والهوية البصرية: معاينة ومراجعة المطبوعات الحرارية وبوالص الشحن محلياً */}
+      <Route path="/print-studio" component={PrintStudio} />
       {/* نقطة البيع الموحَّدة — Shell واحد لـ٣ أوضاع (تجزئة/خدمات طباعة/استقبال أوامر شغل) */}
       <Route path="/pos">
         <Protected>
