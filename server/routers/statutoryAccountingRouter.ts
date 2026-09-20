@@ -9,6 +9,7 @@ import {
   listStatutoryProfiles,
   replaceStatutoryAccounts,
   replaceStatutoryMappings,
+  seedIraqiUnifiedProfile,
 } from "../services/accounting/statutoryAccounting";
 import {
   getStatutoryAccountLedger,
@@ -195,6 +196,19 @@ export const statutoryAccountingRouter = router({
         return result;
       }),
     ),
+
+  seedIraqiUnified: reportsAdminProcedure.mutation(({ ctx }) =>
+    withTx(async (tx) => {
+      const result = await seedIraqiUnifiedProfile(tx, ctx.user.id);
+      await logAuditTx(tx, ctx, {
+        action: "statutory.profile.seed_iraqi_unified",
+        entityType: "statutoryAccountingProfile",
+        entityId: result.profileId,
+        newValue: result,
+      });
+      return result;
+    }),
+  ),
 
   replaceAccounts: reportsAdminProcedure
     .input(

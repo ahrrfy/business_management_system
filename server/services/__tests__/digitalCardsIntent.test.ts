@@ -21,7 +21,7 @@ const TABLES = [
   "digitalPriceChangeReports", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWalletTransactions", "digitalWallets", "digitalProviders",
   "shifts", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products",
-  "auditLogs", "studentProfiles", "customers", "suppliers", "categories", "users", "branches",
+  "auditLogs", "studentProfiles", "openingModeSettings", "customers", "suppliers", "categories", "users", "branches",
 ];
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set for tests"); return d; }
@@ -96,6 +96,33 @@ function line(offeringId: number, priced: { pv: number; price: string }, over: P
     expectedSellPrice: priced.price,
     providerReference: `REF-${offeringId}-${token}`,
     ...over,
+  };
+}
+
+async function invoiceSourcePayload(
+  offeringId: number,
+  digitalLine: intentService.PrepareLine,
+  clientRequestId: string,
+  customerId?: number,
+) {
+  const [offering] = await db()
+    .select({ variantId: s.digitalOfferings.variantId, productUnitId: s.digitalOfferings.productUnitId })
+    .from(s.digitalOfferings)
+    .where(eq(s.digitalOfferings.id, offeringId));
+  if (!offering?.variantId || !offering.productUnitId) throw new Error("digital offering catalog binding missing");
+  return {
+    branchId: 1,
+    shiftId: 1,
+    customerId,
+    priceTier: "RETAIL" as const,
+    clientRequestId,
+    lines: [{
+      variantId: Number(offering.variantId),
+      productUnitId: Number(offering.productUnitId),
+      quantity: "1",
+      unitPriceOverride: digitalLine.expectedSellPrice,
+      internalLineToken: digitalLine.lineKey,
+    }],
   };
 }
 
@@ -247,7 +274,7 @@ describe("ش٧ — الإعداد (prepare)", () => {
     }, actor))).rejects.toThrow(/تغيّر سعر/);
   });
 
-  it("يرفض الآجل ووردية مغلقة ومفاتيح أسطر مكرّرة", async () => {
+  it("يرفض الآجل خارج الفاتورة المتقدمة أو بلا عميل، ويرفض وردية مغلقة ومفاتيح أسطر مكرّرة", async () => {
     const providerId = await mkProvider();
     const walletId = await mkWallet(providerId, "100000");
     const offeringId = await mkOffering(providerId, { walletId });
@@ -258,6 +285,14 @@ describe("ش٧ — الإعداد (prepare)", () => {
       clientRequestId: "req-credit-1", branchId: 1, shiftId: 1, paymentMethod: "CREDIT", cartFingerprint: "fp", lines: [l],
     }, actor))).rejects.toThrow(/نقداً أو ببطاقة فقط/);
 
+    const missingCustomerRequestId = "req-credit-invoice-1";
+    const missingCustomerPayload = await invoiceSourcePayload(offeringId, l, missingCustomerRequestId);
+    await expect(withTx((tx) => intentService.prepare(tx, {
+      clientRequestId: missingCustomerRequestId, branchId: 1, shiftId: 1,
+      paymentMethod: "CREDIT", cartFingerprint: "fp", sourceType: "INVOICE", priceTier: "RETAIL",
+      sourcePayload: missingCustomerPayload, lines: [l],
+    }, actor))).rejects.toThrow(/عميلاً مسجّلاً/);
+
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-dupkey-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp",
       lines: [l, { ...l }],
@@ -267,6 +302,44 @@ describe("ش٧ — الإعداد (prepare)", () => {
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-shift-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp", lines: [l],
     }, actor))).rejects.toThrow(/لا وردية مفتوحة/);
+  });
+
+  it("يحترم إعفاء حد الائتمان أثناء نافذة وضع الافتتاح", async () => {
+    await db().insert(s.customers).values({
+      id: 1,
+      name: "عميل افتتاح",
+      defaultPriceTier: "RETAIL",
+      creditLimit: "0",
+      currentBalance: "0",
+    });
+    await db().insert(s.openingModeSettings).values({
+      id: 1,
+      enabled: true,
+      endsAt: new Date(Date.now() + 86_400_000),
+      maxNegativeQtyPerLine: 100,
+    });
+    const providerId = await mkProvider();
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, { walletId });
+    const priced = await publish(1, providerId, [{ offeringId, providerShare: "9500" }]);
+
+    const openingRequestId = "req-credit-opening-1";
+    const openingLine = line(offeringId, priced.get(offeringId)!);
+    const openingPayload = await invoiceSourcePayload(offeringId, openingLine, openingRequestId, 1);
+    const prepared = await withTx((tx) => intentService.prepare(tx, {
+      clientRequestId: openingRequestId,
+      branchId: 1,
+      shiftId: 1,
+      paymentMethod: "CREDIT",
+      cartFingerprint: "fp-opening-credit",
+      sourceType: "INVOICE",
+      customerId: 1,
+      priceTier: "RETAIL",
+      sourcePayload: openingPayload,
+      lines: [openingLine],
+    }, actor));
+
+    expect(prepared.intentId).toBeGreaterThan(0);
   });
 
   it("الاشتراك التعليميّ يتطلّب بيانات الطالب، وغير التعليميّ يرفضها", async () => {
@@ -404,25 +477,23 @@ describe("ش٧ — تسجيل التنفيذ", () => {
     expect(marked.status).toBe("SUCCESS");
   });
 
-  it("بعد استرداد المطالبة يبقى مفتاح المزوّد ثابتاً ويفشل الرمز القديم", async () => {
+  it("لا يُعاد إسناد مطالبة منتهية بلا تكامل مزوّد يستهلك مفتاح idempotency فعلياً", async () => {
     const p = await prepared();
     const intentItemId = Number(p.items[0].id);
-    const first = await withTx((tx) => intentService.claimExecution(tx, {
+    await withTx((tx) => intentService.claimExecution(tx, {
       intentId: p.intentId, intentItemId, claimToken: "old-window-claim",
     }, actor));
     await db().execute(sql`
       UPDATE digitalSaleExecutionClaims SET expiresAt = DATE_SUB(NOW(), INTERVAL 1 MINUTE)
       WHERE intentItemId = ${intentItemId}
     `);
-    const reclaimed = await withTx((tx) => intentService.claimExecution(tx, {
+    await expect(withTx((tx) => intentService.claimExecution(tx, {
       intentId: p.intentId, intentItemId, claimToken: "new-window-claim",
-    }, actor));
-    expect(reclaimed.providerIdempotencyKey).toBe(first.providerIdempotencyKey);
-    await expect(withTx((tx) => intentService.markExecution(tx, {
-      intentId: p.intentId, intentItemId, claimToken: "old-window-claim", status: "SUCCESS", providerReference: p.items[0].providerReference,
-    }, actor))).rejects.toThrow(/هذه النافذة|ابدأ إصدار/);
+    }, actor))).rejects.toThrow(/مراجعة|نافذة|قيد التنفيذ/);
+    // انتهاء المهلة لا يبطل المالك الأصلي بذاته. عند غياب exactly-once حقيقي لدى
+    // المزوّد، السماح لنافذة ثانية قد يكرر إصدار قيمة خارجية.
     await withTx((tx) => intentService.markExecution(tx, {
-      intentId: p.intentId, intentItemId, claimToken: "new-window-claim", status: "SUCCESS", providerReference: p.items[0].providerReference,
+      intentId: p.intentId, intentItemId, claimToken: "old-window-claim", status: "SUCCESS", providerReference: p.items[0].providerReference,
     }, actor));
   });
 

@@ -211,6 +211,14 @@ async function seed() {
     );
   }
 
+  // بذر الدليل المحاسبي الموحد العراقي وربطه آلياً بكافة الأدوار التشغيلية (إنتاجاً وتطويراً)
+  // يعمل بشكل آمن وidempotent ولا يتدخل إذا كان الدليل معتمداً مسبقاً.
+  const { seedIraqiUnifiedProfile } = await import("./services/accounting/statutoryAccounting");
+  await withTx(async (tx) => {
+    const result = await seedIraqiUnifiedProfile(tx, admin.id);
+    console.log(`✓ seeded Iraqi Unified Statutory Chart: profile #${result.profileId} (${result.status}), accounts: ${result.accountsImported}, mapped: ${result.mappedAccounts}`);
+  });
+
   if (isProd) {
     // فئات الأساس فقط (idempotent بالاسم) — شاشات المنتج تحتاج فئة واحدة على الأقل، ولا عيّنات.
     for (const name of ["قرطاسية", "طباعة", "هدايا وتخرج", "تجهيزات مكتبية"]) {

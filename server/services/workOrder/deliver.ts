@@ -20,6 +20,10 @@ import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
+import {
+  assertBaseProductUnitBinding,
+  requireWorkOrderBaseSnapshot,
+} from "./baseInventorySnapshot";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -76,19 +80,76 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       });
     }
 
+    // ─── تصحيح تلقائي ذري للأوامر التاريخية ─────────────────────────────────
+    // الأوامر التي أُنشئت قبل هجرة 0363 لديها baseVariantId لكن لقطة الوحدة/الكمية
+    // مفقودة. نصحّحها داخل نفس المعاملة كي يُسلَّم الأمر فوراً دون تدخل يدوي.
+    if (wo.baseVariantId != null && (wo as any).baseProductUnitId == null) {
+      // أ) نجلب أفضل وحدة للصنف (نفس أولوية create.ts)
+      const allUnits = await tx
+        .select({
+          id: productUnits.id,
+          isBaseUnit: productUnits.isBaseUnit,
+          isActive: productUnits.isActive,
+          conversionFactor: productUnits.conversionFactor,
+        })
+        .from(productUnits)
+        .where(eq(productUnits.variantId, Number(wo.baseVariantId)));
+
+      type UnitRow = typeof allUnits[number];
+      const pickBestUnit = (rows: UnitRow[]): UnitRow | undefined => {
+        const byIdAsc = (a: UnitRow, b: UnitRow) => Number(a.id) - Number(b.id);
+        const t1 = rows.filter((u) => u.isBaseUnit && u.isActive);
+        if (t1.length) return t1.sort(byIdAsc)[0];
+        const t2 = rows.filter((u) => u.isActive && Number(u.conversionFactor) === 1);
+        if (t2.length) return t2.sort(byIdAsc)[0];
+        const t3 = rows.filter((u) => u.isBaseUnit);
+        if (t3.length) return t3.sort(byIdAsc)[0];
+        return rows.sort(byIdAsc)[0];
+      };
+      const bestUnit = pickBestUnit(allUnits);
+
+      // ب) نجلب isService للصنف لتحديد baseConsumesInventory
+      const productRow = bestUnit
+        ? (
+            await tx
+              .select({ isService: products.isService })
+              .from(productVariants)
+              .innerJoin(products, eq(productVariants.productId, products.id))
+              .where(eq(productVariants.id, Number(wo.baseVariantId)))
+              .limit(1)
+          )[0]
+        : undefined;
+
+      if (bestUnit && productRow != null) {
+        const convFactor = Number(bestUnit.conversionFactor);
+        const computedBaseQty = Math.round(Number(wo.quantity) * convFactor);
+        const baseConsumesInventory = productRow.isService === false;
+
+        // ج) تحديث ذري داخل المعاملة — WHERE idempotency guard
+        await tx.execute(
+          sql`UPDATE \`workOrders\`
+              SET \`baseProductUnitId\`     = ${Number(bestUnit.id)},
+                  \`baseBaseQuantity\`      = ${computedBaseQty},
+                  \`baseConsumesInventory\` = ${baseConsumesInventory ? 1 : 0}
+              WHERE id = ${Number(wo.id)}
+                AND \`baseProductUnitId\` IS NULL`,
+        );
+
+        // د) نُحدّث wo في الذاكرة كي تراه requireWorkOrderBaseSnapshot
+        (wo as any).baseProductUnitId    = Number(bestUnit.id);
+        (wo as any).baseBaseQuantity     = computedBaseQty;
+        (wo as any).baseConsumesInventory = baseConsumesInventory;
+      }
+      // هـ) إن لم نجد وحدة → تمرير كـnull (يُعامَل كأمر خدمة خالصة بلا سطر مخزون)
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // أمر خدمة خالص (بلا منتج أساس): الفاتورة بلا سطر مخزون (invoiceItems.variantId = NOT NULL FK).
     // كانت deliver السابقة تُدرج variantId = Number(null) = 0 ⇒ انتهاك FK ⇒ تعذّر تسليم أوامر
     // التخصيص الخالصة. الآن: سطرٌ فقط حين يوجد منتج أساس؛ صافي الفاتورة/القيد محفوظ بـsalePrice.
-    const hasBaseVariant = wo.baseVariantId != null;
-    const baseUnit = hasBaseVariant
-      ? (
-          await tx
-            .select({ id: productUnits.id })
-            .from(productUnits)
-            .where(eq(productUnits.variantId, Number(wo.baseVariantId)))
-            .limit(1)
-        )[0]
-      : undefined;
+    const baseSnapshot = requireWorkOrderBaseSnapshot(wo as any);
+    if (baseSnapshot) await assertBaseProductUnitBinding(tx, baseSnapshot);
+    const hasBaseVariant = baseSnapshot != null;
 
     const quantity = wo.quantity;
     const salePrice = money(wo.salePrice);
@@ -277,18 +338,18 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
           .select({ name: products.name, invoiceLabel: products.invoiceLabel, shortTitle: products.shortTitle })
           .from(productVariants)
           .innerJoin(products, eq(productVariants.productId, products.id))
-          .where(eq(productVariants.id, Number(wo.baseVariantId)))
+          .where(eq(productVariants.id, baseSnapshot!.variantId))
           .limit(1))[0]
       : null;
     const itemNameSnapshot = productNameRow ? titleForChannel(productNameRow, "invoice") : null;
     if (hasBaseVariant) {
       await tx.insert(invoiceItems).values({
         invoiceId,
-        variantId: Number(wo.baseVariantId),
-        productUnitId: baseUnit ? Number(baseUnit.id) : null,
+        variantId: baseSnapshot!.variantId,
+        productUnitId: baseSnapshot!.productUnitId,
         workOrderId: Number(wo.id),
         quantity: Number(quantity).toFixed(3),
-        baseQuantity: quantity,
+        baseQuantity: baseSnapshot!.baseQuantity,
         unitPrice: unitPrice.toFixed(2),
         unitCost: round2(costTotal.dividedBy(quantity)).toFixed(2),
         discountAmount: "0",
@@ -409,7 +470,13 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 
     await tx
       .update(workOrders)
-      .set({ status: "DELIVERED", kanbanState: "NORMAL", invoiceId, deliveredAt: new Date() })
+      .set({
+        status: "DELIVERED",
+        kanbanState: "NORMAL",
+        blockedReason: null,
+        invoiceId,
+        deliveredAt: new Date(),
+      })
       .where(eq(workOrders.id, Number(wo.id)));
 
     if (input.clientRequestId) {

@@ -24,6 +24,12 @@ import { money, round2, toDbMoney } from "./money";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./delivery/lifecycle";
 import { nextConsignmentNumber } from "./delivery/numbering";
 import { assertFloatLimitTx } from "./delivery/parties";
+import {
+  assertExternalTrackingRefAvailable,
+  normalizeExternalTrackingRef,
+  requireExternalTrackingRef,
+  rethrowExternalTrackingRefDuplicate,
+} from "./delivery/trackingRefPolicy";
 import { withTx } from "./tx";
 
 export const DELIVERY_LEGACY_REPAIR_ACTIONS = [
@@ -48,6 +54,7 @@ export type DeliveryLegacyRepairInput = {
   gatewayUserId?: number | null;
   deliveredAt?: string | null;
   evidenceRef?: string | null;
+  externalTrackingRef?: string | null;
   feeSettlementAction?: "EARN_ONLY" | "EARN_AND_DIRECT_PAID" | null;
   customerBalanceAction?: "IDENTITY_ONLY" | "ADD_OUTSTANDING" | null;
 };
@@ -132,6 +139,8 @@ export async function getDeliveryLegacyFindings(input: { branchId?: number | nul
       orderNumber: workOrders.orderNumber,
       partyId: deliveryConsignments.partyId,
       partyName: deliveryParties.name,
+      partyType: deliveryParties.partyType,
+      externalTrackingRef: deliveryConsignments.externalTrackingRef,
       status: deliveryConsignments.status,
       parcelStatus: deliveryConsignments.parcelStatus,
       moneyStatus: deliveryConsignments.moneyStatus,
@@ -312,6 +321,7 @@ export async function getDeliveryLegacyFindings(input: { branchId?: number | nul
     .select({
       id: deliveryParties.id,
       name: deliveryParties.name,
+      partyType: deliveryParties.partyType,
       branchId: deliveryParties.branchId,
       userId: deliveryParties.userId,
     })
@@ -417,6 +427,7 @@ async function beginDecision(tx: Tx, input: DeliveryLegacyRepairInput) {
     gatewayUserId: input.gatewayUserId ?? null,
     deliveredAt: input.deliveredAt ?? null,
     evidenceRef: input.evidenceRef?.trim() ?? null,
+    externalTrackingRef: normalizeExternalTrackingRef(input.externalTrackingRef),
     feeSettlementAction: input.feeSettlementAction ?? null,
     customerBalanceAction: input.customerBalanceAction ?? null,
   });
@@ -517,21 +528,6 @@ async function createMissingConsignment(
       }),
     });
   }
-  const existing = (await tx
-    .select({ id: deliveryConsignments.id })
-    .from(deliveryConsignments)
-    .where(sql`${deliveryConsignments.workOrderId} = ${wo.id} OR ${deliveryConsignments.invoiceId} = ${wo.invoiceId}`)
-    .limit(1))[0];
-  if (existing)
-    throw new TRPCError({
-      code: "CONFLICT",
-      message: appErrorMessage({
-        what: "تعذّر إنشاء إرسالية جديدة",
-        why: "للأمر (أو فاتورته) إرساليةٌ قائمة — لا تُنشأ إرسالية موازية لنفس المستند",
-        doThis: "افتح الإرسالية القائمة من قائمة التوصيل بدل إنشاء أخرى",
-      }),
-    });
-
   const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
   if (!party || !party.isActive)
     throw new TRPCError({
@@ -552,6 +548,27 @@ async function createMissingConsignment(
       }),
     });
   }
+  // يحافظ على ترتيب مسار الإسناد التشغيلي: أمر الشغل ← الجهة ← الإرسالية.
+  const existing = (await tx
+    .select({ id: deliveryConsignments.id })
+    .from(deliveryConsignments)
+    .where(sql`${deliveryConsignments.workOrderId} = ${wo.id} OR ${deliveryConsignments.invoiceId} = ${wo.invoiceId}`)
+    .for("update")
+    .limit(1))[0];
+  if (existing)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء إرسالية جديدة",
+        why: "للأمر (أو فاتورته) إرساليةٌ قائمة — لا تُنشأ إرسالية موازية لنفس المستند",
+        doThis: "افتح الإرسالية القائمة من قائمة التوصيل بدل إنشاء أخرى",
+      }),
+    });
+  const externalTrackingRef = requireExternalTrackingRef(
+    party.partyType,
+    normalizeExternalTrackingRef(input.externalTrackingRef),
+  );
+  await assertExternalTrackingRefAvailable(tx, Number(party.id), externalTrackingRef);
   const invoice = (await tx.select().from(invoices).where(eq(invoices.id, Number(wo.invoiceId))).for("update").limit(1))[0];
   if (!invoice || invoice.status === "CANCELLED" || invoice.status === "RETURNED") {
     throw new TRPCError({
@@ -604,30 +621,37 @@ async function createMissingConsignment(
   if (codAmount.gt(0)) await assertFloatLimitTx(tx, party, codAmount);
 
   const consignmentNumber = await nextConsignmentNumber(tx, Number(wo.branchId));
-  const inserted = await tx.insert(deliveryConsignments).values({
-    consignmentNumber,
-    branchId: Number(wo.branchId),
-    partyId: input.partyId,
-    invoiceId: Number(invoice.id),
-    workOrderId: Number(wo.id),
-    sourceType: "WORK_ORDER",
-    sourceId: Number(wo.id),
-    endCustomerId: wo.customerId ?? null,
-    codAmount: toDbMoney(codAmount),
-    collectedAmount: "0.00",
-    deliveryFee: toDbMoney(fee),
-    feeCollection,
-    recipientName: wo.contactName ?? null,
-    recipientPhone: wo.deliveryPhone ?? wo.contactPhone ?? null,
-    deliveryAddress: wo.deliveryAddress ?? null,
-    // لا نعدّ الدفع الكامل إثبات تسليم: الإرسالية تبدأ مفتوحة دائماً.
-    parcelStatus: "ASSIGNED",
-    moneyStatus: codAmount.gt(0) ? "UNSETTLED" : "NOT_APPLICABLE",
-    status: "DISPATCHED",
-    settledAt: codAmount.isZero() ? new Date() : null,
-    dispatchedBy: ctx.user?.id ?? null,
-    notes: input.note.trim(),
-  });
+  const inserted = await (async () => {
+    try {
+      return await tx.insert(deliveryConsignments).values({
+        consignmentNumber,
+        branchId: Number(wo.branchId),
+        partyId: Number(party.id),
+        invoiceId: Number(invoice.id),
+        workOrderId: Number(wo.id),
+        sourceType: "WORK_ORDER",
+        sourceId: Number(wo.id),
+        endCustomerId: wo.customerId ?? null,
+        codAmount: toDbMoney(codAmount),
+        collectedAmount: "0.00",
+        deliveryFee: toDbMoney(fee),
+        feeCollection,
+        recipientName: wo.contactName ?? null,
+        recipientPhone: wo.deliveryPhone ?? wo.contactPhone ?? null,
+        deliveryAddress: wo.deliveryAddress ?? null,
+        externalTrackingRef,
+        // لا نعدّ الدفع الكامل إثبات تسليم: الإرسالية تبدأ مفتوحة دائماً.
+        parcelStatus: "ASSIGNED",
+        moneyStatus: codAmount.gt(0) ? "UNSETTLED" : "NOT_APPLICABLE",
+        status: "DISPATCHED",
+        settledAt: codAmount.isZero() ? new Date() : null,
+        dispatchedBy: ctx.user?.id ?? null,
+        notes: input.note.trim(),
+      });
+    } catch (error) {
+      rethrowExternalTrackingRefDuplicate(error, externalTrackingRef ?? "");
+    }
+  })();
   const consignmentId = extractInsertId(inserted);
   await appendDeliveryEvent(tx, {
     eventKey: `CN:${consignmentId}:LEGACY_ASSIGNED`,
@@ -636,7 +660,7 @@ async function createMissingConsignment(
     toParcelStatus: "ASSIGNED",
     toMoneyStatus: codAmount.gt(0) ? "UNSETTLED" : "NOT_APPLICABLE",
     actorUserId: ctx.user?.id ?? null,
-    payload: { legacyRepair: true, sourceType: "WORK_ORDER", sourceId: Number(wo.id), decisionNote: input.note.trim() },
+    payload: { legacyRepair: true, sourceType: "WORK_ORDER", sourceId: Number(wo.id), externalTrackingRef, decisionNote: input.note.trim() },
   });
   if (codAmount.gt(0)) {
     await appendDeliveryLedgerEntry(tx, {
@@ -659,6 +683,7 @@ async function createMissingConsignment(
       consignmentId,
       consignmentNumber,
       partyId: input.partyId,
+      externalTrackingRef,
       codAmount: toDbMoney(codAmount),
       deliveryFee: toDbMoney(fee),
       feeCollection,
@@ -669,7 +694,7 @@ async function createMissingConsignment(
       decisionNote: input.note.trim(),
     },
   });
-  return { consignmentId, consignmentNumber };
+  return { consignmentId, consignmentNumber, externalTrackingRef };
 }
 
 async function recordPrepaidProof(
@@ -816,6 +841,31 @@ async function reopenPrepaidConsignment(
   input: DeliveryLegacyRepairInput,
   ctx: Pick<TrpcContext, "user" | "req">,
 ) {
+  const preview = (await tx
+    .select({ partyId: deliveryConsignments.partyId })
+    .from(deliveryConsignments)
+    .where(eq(deliveryConsignments.id, input.targetId))
+    .limit(1))[0];
+  if (!preview)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ الإصلاح",
+        why: `الإرسالية بالرقم ${input.targetId} غير موجودة — الرقم مغلوط أو الإرسالية محذوفة`,
+        doThis: "افتح قائمة الإرساليات واختر إرساليةً موجودة، ثم أعد الإصلاح",
+      }),
+    });
+  // معاينة بلا قفل للحصول على الجهة، ثم ترتيب موحّد: الجهة ← الإرسالية.
+  const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, Number(preview.partyId))).for("update").limit(1))[0];
+  if (!party)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر إعادة فتح الإرسالية القديمة",
+        why: "جهة التوصيل المرتبطة بالإرسالية لم تعد موجودة",
+        doThis: "راجع بيانات الجهة والإرسالية ثم أعد تشغيل تقرير الإصلاح",
+      }),
+    });
   const row = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, input.targetId)).for("update").limit(1))[0];
   if (!row)
     throw new TRPCError({
@@ -826,6 +876,16 @@ async function reopenPrepaidConsignment(
         doThis: "افتح قائمة الإرساليات واختر إرساليةً موجودة، ثم أعد الإصلاح",
       }),
     });
+  if (Number(row.partyId) !== Number(party.id)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر إعادة فتح الإرسالية القديمة",
+        why: "تغيّرت جهة التوصيل أثناء مراجعة الصف، لذلك لم يعد القرار يطابق البيانات المقروءة",
+        doThis: "حدّث تقرير الإصلاح وافتح الصف مرةً أخرى قبل إعادة المحاولة",
+      }),
+    });
+  }
   requireConfirmation(row.consignmentNumber, input.confirmation);
   if (!money(row.codAmount).isZero() || row.parcelStatus !== "DELIVERED" || row.courierDeliveredAt != null) {
     throw new TRPCError({
@@ -837,11 +897,21 @@ async function reopenPrepaidConsignment(
       }),
     });
   }
-  await tx.update(deliveryConsignments).set({
-    status: "DISPATCHED",
-    parcelStatus: "ASSIGNED",
-    moneyStatus: "NOT_APPLICABLE",
-  }).where(eq(deliveryConsignments.id, row.id));
+  const externalTrackingRef = requireExternalTrackingRef(
+    party.partyType,
+    normalizeExternalTrackingRef(input.externalTrackingRef ?? row.externalTrackingRef),
+  );
+  await assertExternalTrackingRefAvailable(tx, Number(party.id), externalTrackingRef, Number(row.id));
+  try {
+    await tx.update(deliveryConsignments).set({
+      status: "DISPATCHED",
+      parcelStatus: "ASSIGNED",
+      moneyStatus: "NOT_APPLICABLE",
+      externalTrackingRef,
+    }).where(eq(deliveryConsignments.id, row.id));
+  } catch (error) {
+    rethrowExternalTrackingRefDuplicate(error, externalTrackingRef ?? "");
+  }
   await appendDeliveryEvent(tx, {
     eventKey: `CN:${row.id}:LEGACY_REOPENED`,
     consignmentId: Number(row.id),
@@ -851,22 +921,23 @@ async function reopenPrepaidConsignment(
     fromMoneyStatus: row.moneyStatus,
     toMoneyStatus: "NOT_APPLICABLE",
     actorUserId: ctx.user?.id ?? null,
-    payload: { legacyRepair: true, decisionNote: input.note.trim() },
+    payload: { legacyRepair: true, externalTrackingRef, decisionNote: input.note.trim() },
   });
   await logAuditTx(tx, ctx, {
     action: "delivery.legacy.prepaidReopened",
     entityType: "deliveryConsignment",
     entityId: row.id,
-    oldValue: { status: row.status, parcelStatus: row.parcelStatus, moneyStatus: row.moneyStatus, courierDeliveredAt: null },
+    oldValue: { status: row.status, parcelStatus: row.parcelStatus, moneyStatus: row.moneyStatus, courierDeliveredAt: null, externalTrackingRef: row.externalTrackingRef },
     newValue: {
       status: "DISPATCHED",
       parcelStatus: "ASSIGNED",
       moneyStatus: "NOT_APPLICABLE",
       courierDeliveredAt: null,
+      externalTrackingRef,
       decisionNote: input.note.trim(),
     },
   });
-  return { status: "DISPATCHED" };
+  return { status: "DISPATCHED", externalTrackingRef };
 }
 
 async function acknowledgePartial(

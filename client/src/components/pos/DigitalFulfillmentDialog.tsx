@@ -180,11 +180,11 @@ export function DigitalFulfillmentDialog({
                 <span style={{ fontSize: 19, fontWeight: 900, color: C.fg }}>{current.providerName}</span>
                 <span style={{ fontSize: 13, color: C.mutedFg }}>{current.providerName}</span>
                 <div style={{ flex: 1 }} />
-                <span style={{ fontSize: 22, fontWeight: 900, color: C.fg, direction: "ltr" }}>{fmtAr(currentGroup.reduce((sum, item) => sum.plus(item.sellPrice), D(0)).toFixed(2))} د.ع</span>
+                <span style={{ fontSize: 22, fontWeight: 900, color: C.fg, direction: "ltr" }}>{fmtAr(currentGroup.reduce((sum, item) => sum.plus(item.chargeAmount), D(0)).toFixed(2))} د.ع</span>
               </div>
               {currentGroup.map((item) => <div key={item.id} style={{ display: "flex", gap: 8, flexWrap: "wrap", borderBottom: `1px solid ${C.border}`, paddingBottom: 6 }}>
                 <strong style={{ flex: 1 }}>{item.name}{item.studentName ? ` — ${item.studentName}` : ""}</strong>
-                <span>الكمية 1 · السعر والإجمالي {fmtAr(item.sellPrice)} د.ع</span>
+                <span>الكمية 1 · الصافي المحصّل {fmtAr(item.chargeAmount)} د.ع</span>
               </div>)}
               <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 9, padding: "9px 11px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12.5, fontWeight: 800, color: C.mutedFg }}>رقم عملية المزوّد</span>
@@ -277,7 +277,7 @@ export function DigitalFulfillmentDialog({
                   <span style={{ fontSize: 14, fontWeight: 700, color: C.fg, flex: 1, minWidth: 0 }}>
                     {it.name}
                     {it.studentName ? ` — ${it.studentName}` : ""}
-                    <span style={{ display: "block", fontSize: 12, fontWeight: 500 }}>الكمية 1 · سعر البيع {fmtAr(it.sellPrice)} د.ع</span>
+                    <span style={{ display: "block", fontSize: 12, fontWeight: 500 }}>الكمية 1 · الصافي المحصّل {fmtAr(it.chargeAmount)} د.ع</span>
                   </span>
                   {it.providerReference && (
                     <span style={{ fontSize: 11.5, color: C.mutedFg, direction: "ltr", fontFamily: "monospace" }}>{it.providerReference}</span>

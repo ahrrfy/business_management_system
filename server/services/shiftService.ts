@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import { hasCashVariance } from "@shared/cashDailyReconciliation";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, gt, inArray, like, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, like, notInArray, or, sql } from "drizzle-orm";
 import {
+  digitalSaleIntents,
   expenses,
   invoices,
   receipts,
@@ -310,6 +311,50 @@ export async function closeShift(
             : null,
         alreadyClosed: true as const,
       };
+    }
+
+    // الوردية هي mutex دورة حياة الإصدار الرقمي: prepare/claim يقفلان الصف نفسه قبل
+    // إنشاء نيّة أو بدء مطالبة مزوّد. لذلك لا يمكن أن تنجح هذه القراءة ثم تُنشأ عملية
+    // جديدة خلف ظهر الإغلاق. المطالبة غير المكتملة تمنع الإغلاق حتى لو انحرفت حالة
+    // النيّة إلى حالة نهائية، لأن المزوّد قد يكون أصدر الكرت ولم تُسجَّل النتيجة بعد.
+    const [blockingDigitalIntent] = await tx
+      .select({
+        id: digitalSaleIntents.id,
+        status: digitalSaleIntents.status,
+      })
+      .from(digitalSaleIntents)
+      .where(
+        and(
+          eq(digitalSaleIntents.shiftId, input.shiftId),
+          or(
+            notInArray(digitalSaleIntents.status, [
+              "FINALIZED",
+              "CANCELLED",
+              "EXPIRED",
+              "WRITTEN_OFF",
+            ]),
+            sql`EXISTS (
+              SELECT 1
+              FROM digitalSaleIntentItems dsi
+              INNER JOIN digitalSaleExecutionClaims dsec
+                ON dsec.intentItemId = dsi.id
+              WHERE dsi.intentId = ${digitalSaleIntents.id}
+                AND dsec.completedAt IS NULL
+            )`,
+          ),
+        ),
+      )
+      .limit(1);
+    if (blockingDigitalIntent) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر إغلاق الوردية",
+          why: `عملية بيع رقمي رقم ${Number(blockingDigitalIntent.id)} لم تُحسم بعد`,
+          doThis:
+            "أكمل إصدار الكروت وفوترتها، أو ألغِ النيّة/عالجها من شاشة مراجعة العمليات الرقمية ثم أعد الإغلاق",
+        }),
+      });
     }
 
     const expected = await computeExpectedCash(

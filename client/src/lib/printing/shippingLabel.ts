@@ -41,6 +41,12 @@ export interface ShippingLabelData {
   notes?: string | null;
   /** مبلغ التحصيل عند الاستلام (COD) — إجمالي الطلب. */
   total: string;
+  /** إجمالي سعر المنتجات/الخدمات قبل رسوم التوصيل. */
+  subtotal?: string | null;
+  /** رسوم التوصيل (يُضاف للـCOD عند تحصيله من المستلم). */
+  shippingFee?: string | null;
+  /** المبلغ المدفوع مسبقاً (عربون/دفعة أولى). */
+  paidAmount?: string | null;
   /** الفاتورة المدفوعة بالكامل تُوسَم مدفوعة ولا تطلب من المندوب تحصيل صفرٍ «نقداً». */
   paymentState?: "COD" | "PREPAID";
   deliveryPartyName?: string | null;
@@ -51,6 +57,21 @@ export interface ShippingLabelData {
   /** رابط عام موقّع للملصق؛ عند المسح يفتح ملخص الطلب بدلاً من نص باركود غير مفيد. */
   qrUrl?: string | null;
   isReprint?: boolean;
+}
+
+export function resolveShippingLabelQrTarget(
+  o: Pick<ShippingLabelData, "orderNumber" | "qrUrl" | "latitude" | "longitude">,
+  origin = typeof window !== "undefined" ? window.location.origin : "",
+): string | null {
+  if (o.latitude && o.longitude) {
+    return `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`;
+  }
+  if (o.qrUrl?.trim()) return o.qrUrl.trim();
+  // توليد رابط تلقائي من رقم الطلب — يضمن دائماً وجود QR قابل للمسح
+  if (o.orderNumber && origin) {
+    return `${origin}/verify?ref=${encodeURIComponent(o.orderNumber)}`;
+  }
+  return null;
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
@@ -76,12 +97,8 @@ export async function shippingLabelHtml(
   let qr = "";
   const hasMap = Boolean(o.latitude && o.longitude);
   try {
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const mapUrl = hasMap
-      ? `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`
-      : null;
-    const targetPayload = mapUrl || o.qrUrl || (origin ? `${origin}/verify?payload=${encodeURIComponent(o.orderNumber)}` : o.orderNumber);
-    qr = await qrCodeSvg(targetPayload, { margin: 1 });
+    const targetPayload = resolveShippingLabelQrTarget(o);
+    if (targetPayload) qr = await qrCodeSvg(targetPayload, { margin: 1 });
   } catch {
     qr = "";
   }

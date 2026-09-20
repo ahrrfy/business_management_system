@@ -24,6 +24,7 @@ export interface LabelPrintableOrder {
    *  الطرد يجب أن يعرض الإجماليّ الذي سيدفعه الزبون للمندوب: COD + الأجرة (COURIER) أو COD وحده. */
   deliveryCost?: string | null;
   deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  qrUrl?: string | null;
 }
 
 /** بوليصة توصيل حرارية (جسر/WebUSB/متصفح) عند الإرسال. */
@@ -125,6 +126,7 @@ export async function printReadyOrderLabel(
       total: totalDue,
       deliveryPartyName: opts?.partyName ?? null,
       externalTrackingRef: opts?.externalTrackingRef ?? null,
+      qrUrl: order.qrUrl ?? null,
       createdAt: new Date(),
       items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
     },

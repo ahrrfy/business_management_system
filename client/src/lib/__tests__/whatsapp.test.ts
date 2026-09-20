@@ -3,6 +3,7 @@ import {
   buildInvoiceMessage,
   buildWhatsAppLinks,
   buildOperationalContactMessage,
+  buildPrintPricingMessage,
   buildQuotationMessage,
   buildReconciliationMessage,
   buildStatementMessage,
@@ -148,6 +149,23 @@ describe("بناة رسائل الواتساب خالية من الإيموجي"
     expect(noEmoji(m)).toBe(true);
     expect(m).toContain("*عرض سعر #Q-1*");
     expect(m).toContain("صالح حتى: 2026-07-01");
+  });
+
+  it("buildPrintPricingMessage لا يكشف حقول الكلفة الزائدة وقت التشغيل", () => {
+    const m = buildPrintPricingMessage({
+      jobDescription: "100 بطاقة دعوة ملوّنة",
+      suggestedPrice: 125000,
+      unitPrice: 1250,
+      lines: [{ label: "كلفة الورق السرية", detail: "سعر المورد", amount: 73111 }],
+      totalCost: 73111,
+    } as any);
+
+    expect(m).toContain("100 بطاقة دعوة ملوّنة");
+    expect(m).toContain("*السعر الإجمالي المقترح: 125,000 د.ع.*");
+    expect(m).toContain("سعر الوحدة الواحدة: 1,250 د.ع.");
+    expect(m).not.toContain("كلفة الورق السرية");
+    expect(m).not.toContain("سعر المورد");
+    expect(m).not.toContain("73,111");
   });
 
   it("buildStatementMessage", () => {

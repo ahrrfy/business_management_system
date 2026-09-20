@@ -31,6 +31,7 @@ export type {
 } from './printTemplatesV2';
 import { qrCodeSvg, qrSvgSync } from './qr';
 import { code128Svg } from './barcode';
+import { docBarcode } from '@shared/documentNumber';
 import { buildDigitalBlocks, type DigitalReceiptDetail } from './digitalReceiptLines';
 import { type LabelRenderItem, type LabelRenderOpts } from './labelRaster';
 import { getLabelSize, type LabelSize } from './labelSize';
@@ -1085,10 +1086,11 @@ import type { WorkOrderReceiptData } from './workOrderRaster';
 
 export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   const logo = logoUrl();
+  const machineBarcode = docBarcode("WO", d.orderNumber);
 
   let barSvg = '';
   try {
-    const bc = code128Svg(d.orderNumber, { moduleWidth: 0.8, height: 35, showText: true });
+    const bc = code128Svg(machineBarcode, { moduleWidth: 0.8, height: 35, showText: true });
     barSvg = bc.svg;
   } catch { /* بلا باركود */ }
 
