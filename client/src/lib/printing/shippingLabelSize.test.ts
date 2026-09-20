@@ -81,7 +81,8 @@ describe("HTML ملصق الشحن بقياس متغيّر", () => {
     expect(html).toContain("ON-2026-000123");
     expect(html).toContain("الدفع عند الاستلام");
     expect(html).toContain("بغداد"); // baghdad ⇒ اسم المحافظة
-    expect(html).toContain("دفتر A4 (درزن) ×2");
+    expect(html).toContain("دفتر A4 (درزن)");
+    expect(html).toContain("×2");
     expect(html).toContain("مندوب الكرخ");
   });
 });

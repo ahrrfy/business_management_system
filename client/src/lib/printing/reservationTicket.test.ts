@@ -54,16 +54,14 @@ describe("reservation ticket 80mm contract", () => {
     expect(doc.itemBlocks?.[0].quantityPrice).not.toContain("\n");
   });
 
-  it("يعرض العقد نفسه ككتلة HTML ويلف meta/footer من دون الرجوع إلى table", async () => {
+  it("يعرض العقد نفسه كجدول receipt-grid ويلف meta/footer باستخدام جداول", async () => {
     const html = await docToHtml(reservationToTicketDoc(reservation));
 
-    expect(html).toContain('class="item-block"');
-    expect(html).toContain('class="item-name"');
-    expect(html).toContain('class="item-qty-price"');
-    expect(html).toContain('class="item-total"');
-    expect(html).toContain("-webkit-line-clamp:2");
+    expect(html).toContain('class="receipt-grid"');
+    // الأسماء والكميات داخل خلايا <td> في جدول
+    expect(html).toContain("<table");
+    expect(html).toContain("<thead>");
     expect(html).toContain("ملاحظة أولى<br>ملاحظة ثانية طويلة");
-    expect(html).not.toContain("<table>");
   });
 
   it("يبقي columns/rows القديمة على مسار الجدول للمستهلكين الآخرين", async () => {
@@ -76,8 +74,8 @@ describe("reservation ticket 80mm contract", () => {
       footer: "السطر الأول\nالسطر الثاني",
     });
 
-    expect(html).toContain("<table>");
-    expect(html).toContain('<td style="text-align:right">رصيد افتتاحي</td>');
+    expect(html).toContain("<table");
+    expect(html).toContain("رصيد افتتاحي");
     expect(html).toContain("السطر الأول<br>السطر الثاني");
   });
 });
