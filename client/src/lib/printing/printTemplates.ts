@@ -18,6 +18,7 @@ import {
   printQuotationV2, printWorkOrderV2, printStatementV2,
   printSalesReportV2,
 } from './printTemplatesV2';
+import { formatArabicMoneyWords } from './tafqit';
 
 /** إعادة تصدير قوالب V2 الرَسميّة للاستخدام المباشر (فاتورة مشتريات + تقرير مبيعات جديدان بلا نظير قديم). */
 export {
@@ -905,7 +906,7 @@ export interface ReceiptBrowserData {
   heldDeposits?: string | number | null;
 }
 
-export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
+export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const logo = logoUrl();
 
   let barSvg = '';
@@ -914,36 +915,53 @@ export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
     barSvg = bc.svg;
   } catch { /* ignore */ }
 
-  const storeQr = qrSvgSync(STOREFRONT_URL, 76);
+  const storeQr = qrSvgSync(STOREFRONT_URL, 72);
 
-  const itemRows = d.items.map(it => `<tr style="border-bottom:1px solid #000;">
-    <td style="padding:1.5mm 0;font-weight:800;font-size:12px;color:#000;line-height:1.35;">${esc(it.name)}</td>
-    <td style="text-align:center;padding:1.5mm 0;font-weight:900;font-size:12.5px;color:#000;">${it.quantity}</td>
-    <td style="text-align:left;padding:1.5mm 0;font-weight:800;font-size:12px;color:#000;direction:ltr;">${fmt(it.price)}</td>
-    <td style="text-align:left;padding:1.5mm 0;font-weight:900;font-size:13px;color:#000;direction:ltr;">${fmt(it.total)}</td>
-  </tr>`).join('');
+  const metaRows = [
+    ['رقم الإيصال', `#${esc(d.receiptNumber)}`],
+    ['التاريخ والوقت', `${esc(d.date)}${d.time ? ` · ${esc(d.time)}` : ''}`],
+    ...(d.cashierName ? [['الكاشير', esc(d.cashierName)]] : []),
+    ...(d.shiftId != null ? [['الوردية', `#${d.shiftId}`]] : []),
+    ...(d.customerName ? [['العميل', esc(d.customerName)]] : []),
+  ].map(([l, v]) => `
+    <tr>
+      <td style="width:36%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">${l}</td>
+      <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">${v}</td>
+    </tr>
+  `).join('');
 
-  const contactRows = RECEIPT_PHONES.map(p => `<tr style="border-bottom:1px dashed #000;">
-    <td style="padding:1.2mm 0;font-weight:800;font-size:11px;color:#000;">${esc(p.l)}</td>
-    <td style="padding:1.2mm 0;text-align:left;direction:ltr;font-weight:900;font-size:11.5px;letter-spacing:0.4px;color:#000;">${esc(p.n)}</td>
-  </tr>`).join('');
+  const itemRows = d.items.map(it => `
+    <tr>
+      <td style="padding:1.5mm 1mm;font-weight:900;font-size:11.5px;color:#000;line-height:1.25;border:1px solid #000;">${esc(it.name)}</td>
+      <td style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;direction:ltr;">${it.quantity}</td>
+      <td style="text-align:left;padding:1.5mm 1mm;font-weight:800;font-size:11.5px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.price)}</td>
+      <td style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.total)}</td>
+    </tr>
+  `).join('');
 
-  // البطاقات الرقمية (ش١٠): كتلة تفاصيل تحت جدول الأصناف — نفس الأسطر التي يرسمها المسار الحراريّ.
+  const contactRows = RECEIPT_PHONES.map(p => `
+    <tr>
+      <td style="padding:1mm 1.5mm;font-weight:900;font-size:10.5px;color:#000;border:1px solid #000;">${esc(p.l)}</td>
+      <td style="padding:1mm 1.5mm;text-align:left;direction:ltr;font-weight:900;font-size:11px;letter-spacing:0.3px;color:#000;border:1px solid #000;">${esc(p.n)}</td>
+    </tr>
+  `).join('');
+
+  // البطاقات الرقمية
   const digitalBlocks = buildDigitalBlocks(d.digitalDetails, { maskPhones: d.maskPhones });
   const digitalHtml = digitalBlocks.length
-    ? `<div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>` +
+    ? `<table style="width:100%;font-size:10.5px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+        <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;border:1px solid #000;text-align:right;">بيانات الشحن الرقمي</th></tr></thead>
+        <tbody>` +
       digitalBlocks.map(b => `
-        <div style="font-size:11px;margin-bottom:1.5mm;color:#000;">
-          <div style="font-weight:900;font-size:12px;margin-bottom:0.7mm;color:#000;">${esc(b.lineName)}</div>
-          ${b.rows.map(r => `<div style="display:flex;justify-content:space-between;gap:2mm;font-size:11px;">
-            <span style="font-weight:800;color:#000;">${esc(r.label)}:</span>
-            <span style="font-weight:900;color:#000;direction:${/هاتف|رقم|ID/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
-          </div>`).join('')}
-        </div>`).join('')
+        <tr><td colspan="2" style="font-weight:900;padding:1mm 1.5mm;background:#000;color:#fff;border:1px solid #000;">${esc(b.lineName)}</td></tr>
+        ${b.rows.map(r => `<tr>
+          <td style="width:38%;font-weight:800;padding:1mm 1.5mm;border:1px solid #000;">${esc(r.label)}</td>
+          <td style="font-weight:900;padding:1mm 1.5mm;direction:${/هاتف|رقم|ID/.test(r.label) ? 'ltr' : 'rtl'};text-align:${/هاتف|رقم|ID/.test(r.label) ? 'left' : 'right'};border:1px solid #000;">${esc(r.value)}</td>
+        </tr>`).join('')}
+      `).join('') + `</tbody></table>`
     : '';
 
-  // ٨/٨ — كتلة التوصيل على الإيصال: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة
-  // خارج `total` دائماً (تمريرٌ لا إيراد) — «يدفع الزبون» = الإجمالي + الأجرة (إلا SHOP فمجّاني).
+  // كتلة التوصيل
   const deliveryHtml = d.delivery ? (() => {
     const dl = d.delivery!;
     const fee = Number(dl.fee || 0);
@@ -951,99 +969,111 @@ export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
     const pays = Number(d.total || 0) + (shop ? 0 : fee);
     const who = dl.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : shop ? "على المكتبة — مجاناً للزبون" : "يقبضها المندوب من الزبون";
     return `
-  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
-  <div style="font-size:11px;border:2px solid #000;border-radius:3px;padding:2mm;color:#000;">
-    <div style="text-align:center;font-weight:900;font-size:13px;margin-bottom:1mm;color:#000;">التوصيل</div>
-    <div style="display:flex;justify-content:space-between;"><span>الجهة:</span><span style="font-weight:900;">${esc(dl.partyName)}</span></div>
-    ${dl.address ? `<div style="display:flex;justify-content:space-between;gap:2mm;"><span>العنوان:</span><span style="text-align:left;font-weight:800;">${esc(dl.address)}</span></div>` : ''}
-    <div style="display:flex;justify-content:space-between;"><span>أجرة التوصيل:</span><span style="font-weight:900;">${shop ? "مجاناً" : fmt(fee)} <span style="font-weight:700;font-size:9.5px;">(${who})</span></span></div>
-    ${shop ? '' : `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;margin-top:1.5mm;padding-top:1.5mm;border-top:1.5px dashed #000;color:#000;"><span>يدفع الزبون شاملاً التوصيل:</span><span style="direction:ltr;">${fmt(pays)} د.ع</span></div>`}
-  </div>`;
+    <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+      <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1.2mm;font-weight:900;border:1px solid #000;">بيانات التوصيل</th></tr></thead>
+      <tbody>
+        <tr><td style="width:35%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الجهة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.partyName)}</td></tr>
+        ${dl.address ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">العنوان</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.address)}</td></tr>` : ''}
+        <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">أجرة التوصيل</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${shop ? "مجاناً" : fmt(fee)} (${who})</td></tr>
+        ${shop ? '' : `<tr style="background:#000;color:#fff;font-weight:900;"><td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون شاملاً التوصيل</td><td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(pays)} د.ع</td></tr>`}
+      </tbody>
+    </table>`;
   })() : '';
 
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
-    <img src="${logo}" style="width:20mm;height:20mm;object-fit:contain;" alt="" onerror="this.style.display='none'">
-    <div style="font-size:20px;font-weight:900;margin-top:1.5mm;letter-spacing:-0.3px;color:#000;">مكتبة العربية</div>
-    <div style="font-size:13px;font-weight:900;margin-top:0.5mm;color:#000;">للطباعة والقرطاسية</div>
-    <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:0.5mm;">${esc(CO.name)}</div>
+    <img src="${logo}" style="width:18mm;height:18mm;object-fit:contain;filter:grayscale(100%) contrast(1000%);" alt="" onerror="this.style.display='none'">
+    <div style="font-size:18px;font-weight:900;margin-top:1mm;color:#000;">مكتبة العربية</div>
+    <div style="font-size:12.5px;font-weight:900;margin-top:0.3mm;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:0.3mm;">${esc(CO.name)}</div>
   </div>
-  <div style="border-bottom:2.5px solid #000;margin:2mm 0;"></div>
+
+  <div style="border-top:2px solid #000;border-bottom:2px solid #000;text-align:center;padding:1.2mm 0;margin:2mm 0;">
+    <div style="font-size:14px;font-weight:900;letter-spacing:0.5px;">إيصال مبيعات التجزئة</div>
+  </div>
+
   <div style="margin:2mm 0;text-align:center;">${barSvg}</div>
-  <div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:800;color:#000;margin-bottom:1mm;">
-    <span>رقم: <strong style="font-weight:900;">${esc(d.receiptNumber)}</strong></span><span>${esc(d.date)}</span>
-  </div>
-  <div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:800;color:#000;margin-bottom:1mm;">
-    ${d.cashierName ? `<span>الكاشير: <strong style="font-weight:900;">${esc(d.cashierName)}</strong></span>` : '<span></span>'}
-    ${d.time ? `<span>الوقت: <strong style="font-weight:900;">${esc(d.time)}</strong></span>` : '<span></span>'}
-  </div>
-  ${d.shiftId != null ? `<div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:800;color:#000;margin-bottom:1mm;"><span>الوردية: <strong style="font-weight:900;">#${d.shiftId}</strong></span><span></span></div>` : ''}
-  ${d.customerName ? `<div style="font-size:12.5px;font-weight:900;color:#000;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
-  ${d.revision ? `<div style="border:2px solid #000;padding:1.5mm;margin:1.5mm 0;font-size:10.5px;font-weight:800;color:#000;">
-    <div>فاتورة معدلة — بديلة عن: <strong>${esc(d.revision.originalReceiptNumber)}</strong></div>
-    <div>طلب التعديل: <strong>${esc(d.revision.revisedByName)}</strong> — ${esc(d.revision.revisedAt)}</div>
-    ${d.revision.approvedByName ? `<div>الاعتماد: <strong>${esc(d.revision.approvedByName)}</strong>${d.revision.approvedAt ? ` — ${esc(d.revision.approvedAt)}` : ''}</div>` : ''}
-  </div>` : ''}
-  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
-  <table style="width:100%;font-size:11.5px;border-collapse:collapse;color:#000;">
-    <thead><tr style="border-bottom:2px solid #000;">
-      <th style="text-align:right;padding:1.5mm 0;font-weight:900;font-size:12.5px;color:#000;">المنتج</th>
-      <th style="text-align:center;padding:1.5mm 0;font-weight:900;font-size:12.5px;color:#000;width:9mm;">عدد</th>
-      <th style="text-align:left;padding:1.5mm 0;font-weight:900;font-size:12.5px;color:#000;width:15mm;">السعر</th>
-      <th style="text-align:left;padding:1.5mm 0;font-weight:900;font-size:12.5px;color:#000;width:17mm;">المبلغ</th>
+
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <tbody>${metaRows}</tbody>
+  </table>
+
+  ${d.revision ? `
+  <table style="width:100%;border-collapse:collapse;border:2px solid #000;margin:2mm 0;font-size:10.5px;color:#000;">
+    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;">فاتورة معدلة — بديلة عن: ${esc(d.revision.originalReceiptNumber)}</th></tr></thead>
+    <tbody>
+      <tr><td style="width:35%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طلب التعديل</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(d.revision.revisedByName)} — ${esc(d.revision.revisedAt)}</td></tr>
+      ${d.revision.approvedByName ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الاعتماد</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(d.revision.approvedByName)}${d.revision.approvedAt ? ` — ${esc(d.revision.approvedAt)}` : ''}</td></tr>` : ''}
+    </tbody>
+  </table>` : ''}
+
+  <table style="width:100%;font-size:11px;border-collapse:collapse;color:#000;table-layout:fixed;border:1.5px solid #000;margin:2mm 0;">
+    <thead><tr style="background:#000;color:#fff;">
+      <th style="text-align:right;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;">المنتج</th>
+      <th style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:9mm;">عدد</th>
+      <th style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:16mm;">السعر</th>
+      <th style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:18mm;">المبلغ</th>
     </tr></thead>
     <tbody>${itemRows}</tbody>
   </table>
+
   ${digitalHtml}
-  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
-  <div style="font-size:11.5px;font-weight:800;color:#000;">
-    <div style="display:flex;justify-content:space-between;margin-bottom:0.8mm;"><span>المجموع:</span><span style="font-weight:900;direction:ltr;">${fmt(d.subtotal)}</span></div>
-    ${Number(d.discount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:0.8mm;"><span>الخصم:</span><span style="font-weight:900;direction:ltr;">-${fmt(d.discount)}</span></div>` : ''}
-    ${Number(d.tax ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:0.8mm;"><span>الضريبة:</span><span style="font-weight:900;direction:ltr;">${fmt(d.tax)}</span></div>` : ''}
-    ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:0.8mm;"><span>تقريب نقديّ:</span><span style="font-weight:900;direction:ltr;">${Number(d.cashRounding) > 0 ? '+' : ''}${fmt(d.cashRounding)}</span></div>` : ''}
-    <div style="display:flex;justify-content:space-between;font-weight:900;font-size:17px;margin:2mm 0;
-      padding:2mm 1mm;border-top:2.5px solid #000;border-bottom:2.5px solid #000;color:#000;background:#fff;">
-      <span>الإجمالي:</span><span style="direction:ltr;">${fmt(d.total)} د.ع</span>
-    </div>
-    ${d.paymentMethod ? `<div style="display:flex;justify-content:space-between;font-weight:900;margin-bottom:0.8mm;"><span>طريقة الدفع:</span><span>${esc(d.paymentMethod)}</span></div>` : ''}
-    ${d.paid != null ? `<div style="display:flex;justify-content:space-between;font-weight:900;margin-bottom:0.8mm;"><span>المدفوع:</span><span style="direction:ltr;">${fmt(d.paid)}</span></div>` : ''}
-    ${d.change != null ? `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:13px;margin-bottom:0.8mm;"><span>الباقي:</span><span style="direction:ltr;">${fmt(d.change)}</span></div>` : ''}
-    ${Number(d.heldDeposits ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:900;margin-bottom:0.8mm;"><span>عربون محتجز:</span><span style="direction:ltr;">${fmt(d.heldDeposits)}</span></div>` : ''}
-    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;padding:1.5mm 0;border-top:2px dashed #000;margin-top:1.5mm;color:#000;"><span>متبقٍّ (آجل):</span><span style="direction:ltr;">${fmt(d.credit)} د.ع</span></div>` : ''}
-  </div>
+
+  <!-- جدول الإجماليات والتفقيط -->
+  <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <tbody>
+      <tr><td style="width:55%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المجموع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.subtotal)}</td></tr>
+      ${Number(d.discount ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الخصم</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">-${fmt(d.discount)}</td></tr>` : ''}
+      ${Number(d.tax ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الضريبة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.tax)}</td></tr>` : ''}
+      ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">تقريب نقدي</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${Number(d.cashRounding) > 0 ? '+' : ''}${fmt(d.cashRounding)}</td></tr>` : ''}
+      <tr style="background:#000;color:#fff;font-weight:900;">
+        <td style="border:1px solid #000;padding:1.5mm;font-size:13px;">الإجمالي النهائي</td>
+        <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmt(d.total)} د.ع</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="text-align:center;font-weight:900;font-size:10px;padding:1.2mm;border:1px solid #000;">
+          ${formatArabicMoneyWords(d.total)}
+        </td>
+      </tr>
+      ${d.paymentMethod ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">طريقة الدفع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${esc(d.paymentMethod)}</td></tr>` : ''}
+      ${d.paid != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المدفوع</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.paid)}</td></tr>` : ''}
+      ${d.change != null ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المتبقي (الفكة)</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.change)}</td></tr>` : ''}
+      ${Number(d.heldDeposits ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">عربون محتجز</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.heldDeposits)}</td></tr>` : ''}
+      ${Number(d.credit ?? 0) > 0 ? `<tr style="border:2px solid #000;"><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">متبقٍّ (حساب آجل)</td><td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(d.credit)} د.ع</td></tr>` : ''}
+    </tbody>
+  </table>
+
   ${deliveryHtml}
-  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
-  <div style="text-align:center;margin:3mm 0 1.5mm;color:#000;">
-    <div style="font-size:13px;font-weight:900;">شكراً لتسوقكم معنا</div>
-    <div style="font-size:10px;font-weight:800;margin-top:0.5mm;">نتمنى لكم تجربة ممتعة</div>
-  </div>
-  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
-  <div style="text-align:center;margin:2.5mm 0;padding:2.5mm;border:2px solid #000;border-radius:4px;background:#fff;color:#000;">
-    <div style="font-size:13px;font-weight:900;margin-bottom:0.8mm;color:#000;">تسوق عبر متجرنا الإلكتروني</div>
-    <div style="font-size:10px;font-weight:800;color:#000;margin-bottom:2mm;">توصيل سريع لكافة المحافظات • قرطاسية ومطبوعات</div>
+
+  <div style="text-align:center;margin:2.5mm 0;padding:2mm;border:1.5px solid #000;background:#fff;color:#000;">
+    <div style="font-size:12px;font-weight:900;margin-bottom:0.5mm;color:#000;">متجرنا الإلكتروني — تسوق وتوصيل مباشر</div>
     <div style="margin:1.5mm auto;display:flex;justify-content:center;">${storeQr}</div>
-    <div style="font-size:11px;font-weight:900;letter-spacing:0.3px;direction:ltr;margin-top:1.5mm;color:#000;">alarabiya.online/store</div>
-    <div style="font-size:10px;font-weight:800;margin-top:1.5mm;color:#000;">امسح الرمز للتسوق والتصفح المباشر</div>
-    <div style="font-size:9.5px;font-weight:800;margin-top:1mm;border-top:1px dashed #000;padding-top:1mm;color:#000;">تطبيقنا قريباً على Google Play &amp; App Store</div>
+    <div style="font-size:10.5px;font-weight:900;direction:ltr;letter-spacing:0.3px;color:#000;">alarabiya.online/store</div>
+    <div style="font-size:9pt;font-weight:800;margin-top:1mm;color:#000;">امسح الرمز للتسوق السريع</div>
   </div>
-  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
-  <table style="width:100%;font-size:10.5px;border-collapse:collapse;margin:1.5mm 0;color:#000;">
-    <thead><tr style="border-bottom:2px solid #000;">
-      <th style="text-align:right;padding:1.2mm 0;font-weight:900;color:#000;">القسم</th>
-      <th style="text-align:left;padding:1.2mm 0;font-weight:900;color:#000;">رقم التواصل</th>
+
+  <table style="width:100%;font-size:10px;border-collapse:collapse;margin:2mm 0;color:#000;border:1.5px solid #000;">
+    <thead><tr style="background:#000;color:#fff;">
+      <th style="text-align:right;padding:1mm 1.5mm;font-weight:900;border:1px solid #000;">القسم</th>
+      <th style="text-align:left;padding:1mm 1.5mm;font-weight:900;border:1px solid #000;">رقم التواصل</th>
     </tr></thead>
     <tbody>${contactRows}</tbody>
   </table>
-  <div style="text-align:center;font-size:10.5px;font-weight:800;margin:2mm 0 1mm;color:#000;">
+
+  <div style="text-align:center;font-size:10px;font-weight:900;margin:1.5mm 0;color:#000;">
     بغداد — العامرية / شارع العمل الشعبي
   </div>
-  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
-  <div style="text-align:center;margin:2mm 0;padding:2.5mm;border:2px solid #000;border-radius:3px;font-size:10.5px;font-weight:900;line-height:1.6;color:#000;">
+
+  <div style="text-align:center;margin:2mm 0;padding:2mm;border:1.5px solid #000;font-size:10px;font-weight:900;line-height:1.5;color:#000;">
     نعتذر عن قبول الاسترجاع — والاستبدال متاح<br>
     خلال 48 ساعة بشرط سلامة المنتج بـ100%
   </div>`;
 
-  return openPrintWindow(wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body), 'width=380,height=700');
+  return wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body);
+}
+
+export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
+  return openPrintWindow(buildBrowserReceiptHtml(d), 'width=380,height=700');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1248,7 +1278,7 @@ export interface ShiftOpenData {
   departmentName?: string;
 }
 
-export function printShiftOpenBrowser(d: ShiftOpenData): void {
+export function buildShiftOpenHtml(d: ShiftOpenData): string {
   const logo    = logoUrl();
   const date    = fmtDate(d.openedAt);
   const time    = fmtDateTime(d.openedAt).split('، ')[1] ?? '—';
@@ -1262,12 +1292,12 @@ export function printShiftOpenBrowser(d: ShiftOpenData): void {
     ['الكاشير',     esc(d.cashierName)],
     ['الفرع',       esc(d.branchName)],
     ['طُبعت في',    esc(printed)],
-  ].map(([l, v]) =>
-    `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
-      <span style="font-weight:600;color:#333;">${l}</span>
-      <span style="font-weight:800;">${v}</span>
-    </div>`,
-  ).join('');
+  ].map(([l, v]) => `
+    <tr>
+      <td style="width:38%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">${l}</td>
+      <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">${v}</td>
+    </tr>
+  `).join('');
 
   const phones = RECEIPT_PHONES.slice(0, 2)
     .map(p => `<div>${esc(p.l)}: <strong>${esc(p.n)}</strong></div>`)
@@ -1275,72 +1305,78 @@ export function printShiftOpenBrowser(d: ShiftOpenData): void {
 
   const body = `
   <!-- رأس الشركة -->
-  <div style="text-align:center;padding:14px 0 10px;">
-    <img src="${logo}" style="width:52px;height:52px;object-fit:contain;margin-bottom:6px;"
+  <div style="text-align:center;padding:2mm 0;">
+    <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:19px;font-weight:900;">مكتبة العربية</div>
-    <div style="font-size:14px;font-weight:800;margin-top:1px;">للطباعة والقرطاسية</div>
-    <div style="font-size:10.5px;font-weight:600;margin-top:3px;line-height:1.45;">
+    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>
   </div>
 
-  <div style="height:2.5px;background:#000;margin-bottom:8px;"></div>
-
-  <!-- شارة العنوان — معكوسة -->
-  <div style="background:#000;color:#fff;text-align:center;padding:8px 0;margin-bottom:10px;border-radius:2px;">
-    <div style="font-size:16px;font-weight:900;letter-spacing:.5px;">فتح الوردية</div>
-    <div style="font-size:11px;font-weight:600;opacity:.85;">بيان الرصيد الافتتاحي</div>
+  <!-- شارة العنوان -->
+  <div style="border-top:2px solid #000;border-bottom:2px solid #000;text-align:center;padding:1.5mm 0;margin:2mm 0;">
+    <div style="font-size:15px;font-weight:900;letter-spacing:.5px;color:#000;">فتح الوردية</div>
+    <div style="font-size:11px;font-weight:800;color:#000;">بيان الرصيد الافتتاحي للصندوق</div>
   </div>
 
-  <!-- بيانات الوردية -->
-  ${metaRows}
+  <!-- بيانات الوردية في جدول بحدود واضحة -->
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <tbody>${metaRows}</tbody>
+  </table>
 
-  <div style="border-top:1.5px dashed #000;margin:10px 0;"></div>
-
-  <!-- الرصيد الافتتاحي — معكوس كبير -->
-  <div style="background:#000;color:#fff;text-align:center;padding:12px 8px;margin:8px 0;border-radius:2px;">
-    <div style="font-size:11.5px;font-weight:700;opacity:.9;margin-bottom:4px;">الرصيد الافتتاحي للصندوق</div>
-    <div style="font-size:36px;font-weight:900;direction:ltr;line-height:1;letter-spacing:-1px;">${fmt(d.openingBalance)}</div>
-    <div style="font-size:14px;font-weight:800;margin-top:4px;">دينار عراقي</div>
+  <!-- الرصيد الافتتاحي — صندوق مالي مؤطر بحدود سميكة -->
+  <div style="border:2.5px solid #000;text-align:center;padding:2.5mm 2mm;margin:2.5mm 0;background:#fff;color:#000;">
+    <div style="font-size:11px;font-weight:900;color:#000;margin-bottom:1mm;">الرصيد الافتتاحي للصندوق</div>
+    <div style="font-size:32px;font-weight:900;direction:ltr;line-height:1;letter-spacing:-1px;font-variant-numeric:tabular-nums;color:#000;">${fmt(d.openingBalance)}</div>
+    <div style="font-size:12px;font-weight:900;color:#000;margin-top:1mm;">دينار عراقي</div>
+    <div style="font-size:10px;font-weight:900;color:#000;margin-top:1.5mm;padding-top:1.5mm;border-top:1px dashed #000;">
+      ${formatArabicMoneyWords(d.openingBalance)}
+    </div>
   </div>
 
   <!-- صندوق تحقق الكاشير -->
-  <div style="border:1.5px solid #000;border-radius:2px;padding:8px 10px;margin-bottom:10px;">
-    <div style="text-align:center;font-size:11.5px;font-weight:800;margin-bottom:6px;">تحقق الكاشير من الرصيد المستلم</div>
-    <div style="display:flex;justify-content:space-between;font-size:13px;">
-      <span style="font-weight:600;">مستلم نقداً:</span>
-      <span style="font-weight:900;direction:ltr;border-bottom:1px solid #000;
-            min-width:90px;text-align:left;display:inline-block;">
-        ${fmt(d.openingBalance)} د.ع
-      </span>
-    </div>
-  </div>
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;font-size:11px;border:1px solid #000;">إقرار الكاشير باستلام العهدة النقدية</th></tr></thead>
+    <tbody>
+      <tr>
+        <td style="width:45%;font-weight:900;padding:1.5mm;border:1px solid #000;font-size:11.5px;">المبلغ المستلم نقداً</td>
+        <td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;padding:1.5mm;border:1px solid #000;font-size:13px;">${fmt(d.openingBalance)} د.ع</td>
+      </tr>
+    </tbody>
+  </table>
 
-  <div style="border-top:1.5px dashed #000;margin:10px 0;"></div>
+  <!-- توقيعات في جدول بحدود واضحة -->
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:3mm 0;color:#000;">
+    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;font-size:10.5px;border:1px solid #000;">التوقيع والاعتماد الميداني</th></tr></thead>
+    <tbody>
+      <tr>
+        <td style="width:50%;text-align:center;padding:2mm 1.5mm;border:1px solid #000;">
+          <div style="font-size:9.5px;font-weight:900;margin-bottom:12mm;">توقيع الكاشير المستلم</div>
+          <div style="border-top:1px solid #000;padding-top:1mm;font-size:9px;font-weight:800;">الاسم: ${esc(d.cashierName)}</div>
+        </td>
+        <td style="width:50%;text-align:center;padding:2mm 1.5mm;border:1px solid #000;">
+          <div style="font-size:9.5px;font-weight:900;margin-bottom:12mm;">توقيع المشرف / الإدارة</div>
+          <div style="border-top:1px solid #000;padding-top:1mm;font-size:9px;font-weight:800;">الختم أو الاعتماد</div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
 
-  <!-- توقيعات -->
-  <div style="text-align:center;font-size:11.5px;font-weight:800;margin-bottom:8px;">التوقيعات</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:8px 0 4px;">
-    <div style="text-align:center;">
-      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
-      <div style="font-size:10.5px;font-weight:700;">توقيع الكاشير</div>
-    </div>
-    <div style="text-align:center;">
-      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
-      <div style="font-size:10.5px;font-weight:700;">توقيع المشرف</div>
-    </div>
-  </div>
-
-  <div style="height:2px;background:#000;margin:10px 0;"></div>
+  <div style="height:1.5px;background:#000;margin:2mm 0;"></div>
 
   <!-- فوتر -->
-  <div style="text-align:center;font-size:11.5px;font-weight:600;line-height:1.7;padding-bottom:4px;">
-    <div style="font-weight:900;font-size:13px;">${esc(CO.footer)}</div>
+  <div style="text-align:center;font-size:10px;font-weight:800;line-height:1.5;padding-bottom:1mm;color:#000;">
+    <div style="font-weight:900;font-size:11.5px;">${esc(CO.footer)}</div>
     ${phones}
   </div>`;
 
-  openPrintWindow(wrapReceiptDoc(`فتح الوردية #${d.shiftId}`, body), 'width=380,height=720');
+  return wrapReceiptDoc(`فتح الوردية #${d.shiftId}`, body);
+}
+
+export function printShiftOpenBrowser(d: ShiftOpenData): void {
+  openPrintWindow(buildShiftOpenHtml(d), 'width=380,height=720');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1349,52 +1385,36 @@ export function printShiftOpenBrowser(d: ShiftOpenData): void {
 
 export interface ShiftCloseData {
   shiftId: number;
-  /** وقت فتح الوردية — من shift?.openedAt */
   openedAt: Date | string | null;
-  /** وقت الإغلاق — new Date() مباشرةً بعد onSuccess */
   closedAt: Date;
   cashierName: string;
   branchName: string;
-  /** اختياري — اسم القسم/نوع الوردية (مثل: «قسم الطباعة والاستنساخ») */
   departmentName?: string;
-  /** من r.openingBalance (نتيجة shifts.close) */
   openingBalance: string | number;
-  /** من rep?.invoiceCount (نتيجة shifts.report) */
   invoiceCount: number;
-  /** من rep?.salesTotal */
   salesTotal: string | number;
-  /** اختياري — إجمالي الخصومات (إن أُضيف لـ shifts.report مستقبلاً) */
   discountsTotal?: string | number | null;
-  /** اختياري — إجمالي المرتجعات */
   returnsTotal?: string | number | null;
-  /** من rep?.payments */
   payments: {
     method: string;
     direction: 'IN' | 'OUT';
     count: number;
     total: string | number;
   }[];
-  /** من r.expectedCash */
   expectedCash: string | number;
-  /** من r.countedCash */
   countedCash: string | number;
-  /** من r.variance */
   variance: string | number;
-  /** ش٤ (I14) — عرابين محجوزة لطلبات لم تُثبَّت قُبضت على هذه الوردية (إفصاح، اختياري). */
   heldDepositsCount?: number | null;
   heldDepositsTotal?: string | number | null;
-  /** سند الترحيل الآلي الناتج عن الإغلاق: خرج النقد من الدرج ودخل الخزينة فوراً. */
   treasuryReturn?: {
     amount: string | number;
     referenceNumber: string;
   } | null;
 }
 
-export function printShiftCloseBrowser(d: ShiftCloseData): void {
+export function buildShiftCloseHtml(d: ShiftCloseData): string {
   const logo     = logoUrl();
-  const openedStr  = d.openedAt
-    ? fmtDateTime(d.openedAt)
-    : '—';
+  const openedStr  = d.openedAt ? fmtDateTime(d.openedAt) : '—';
   const closedStr  = fmtDateTime(d.closedAt);
   const duration   = calcDuration(d.openedAt, d.closedAt);
 
@@ -1412,12 +1432,12 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
     ['الكاشير',      esc(d.cashierName), 'rtl'],
     ['الفرع',        esc(d.branchName), 'rtl'],
   );
-  const metaRowsHtml = metaRows.map(([l, v, direction]) =>
-    `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
-      <span style="font-weight:600;color:#333;">${l}</span>
-      <span dir="${direction}" style="font-weight:800;direction:${direction};unicode-bidi:isolate;">${v}</span>
-    </div>`,
-  ).join('');
+  const metaRowsHtml = metaRows.map(([l, v, direction]) => `
+    <tr>
+      <td style="width:36%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">${l}</td>
+      <td dir="${direction}" style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;direction:${direction};unicode-bidi:isolate;">${v}</td>
+    </tr>
+  `).join('');
 
   // جدول طرق الدفع
   const payRows = d.payments
@@ -1425,12 +1445,11 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
     .map(p => {
       const label  = `${METHOD_AR[p.method] ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`;
       const amtStr = p.direction === 'OUT' ? `( ${fmt(p.total)} )` : fmt(p.total);
-      return `<div data-payment-row style="display:grid;grid-template-columns:minmax(0,1fr) 34px 88px;font-size:12px;
-               padding:5px 0;border-bottom:1px dashed #999;align-items:center;">
-        <span style="font-weight:700;">${esc(label)}</span>
-        <span style="text-align:center;font-weight:600;">${p.count}</span>
-        <span style="text-align:left;direction:ltr;font-weight:800;">${amtStr}</span>
-      </div>`;
+      return `<tr>
+        <td style="padding:1mm 1.5mm;font-weight:900;font-size:11px;border:1px solid #000;">${esc(label)}</td>
+        <td style="text-align:center;padding:1mm 1.5mm;font-weight:800;font-size:11px;border:1px solid #000;">${p.count}</td>
+        <td style="text-align:left;direction:ltr;font-weight:900;font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap;padding:1mm 1.5mm;border:1px solid #000;">${amtStr}</td>
+      </tr>`;
     }).join('');
 
   // حساب صافي المبيعات
@@ -1440,163 +1459,127 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
 
   // الفرق: label + قيمة
   const varNum   = Number(d.variance);
-  const varLabel = varNum === 0 ? 'مطابق تماماً ✓' : varNum > 0 ? 'الفرق — زيادة' : 'الفرق — عجز';
-  const varVal   = varNum === 0 ? 'صفر' : `${varNum > 0 ? '+' : '−'} ${fmt(Math.abs(varNum))} د.ع`;
+  const varLabel = varNum === 0 ? 'مطابق تماماً ✓' : varNum > 0 ? 'الفرق — زيادة نقدية' : 'الفرق — عجز بالصندوق';
+  const varVal   = varNum === 0 ? '0 د.ع' : `${varNum > 0 ? '+' : '−'} ${fmt(Math.abs(varNum))} د.ع`;
 
   const phones = RECEIPT_PHONES.slice(0, 2)
     .map(p => `<div>${esc(p.l)}: <strong>${esc(p.n)}</strong></div>`)
     .join('');
 
-  const sectionHdr = (title: string) =>
-    `<div style="background:#000;color:#fff;text-align:center;padding:5px 0;
-      font-size:12px;font-weight:900;letter-spacing:.5px;margin:8px 0 4px;border-radius:2px;">
-      ${esc(title)}
-    </div>`;
-
   const body = `
   <!-- رأس الشركة -->
-  <div style="text-align:center;padding:14px 0 10px;">
-    <img src="${logo}" style="width:52px;height:52px;object-fit:contain;margin-bottom:6px;"
+  <div style="text-align:center;padding:2mm 0;">
+    <img src="${logo}" style="width:40px;height:40px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%);"
          alt="" onerror="this.style.display='none'">
-    <div style="font-size:19px;font-weight:900;">مكتبة العربية</div>
-    <div style="font-size:14px;font-weight:800;margin-top:1px;">للطباعة والقرطاسية</div>
-    <div style="font-size:10.5px;font-weight:600;margin-top:3px;line-height:1.45;">
+    <div style="font-size:17px;font-weight:900;color:#000;">مكتبة العربية</div>
+    <div style="font-size:12px;font-weight:900;margin-top:1px;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:9.5px;font-weight:800;margin-top:2px;line-height:1.3;color:#000;">
       ${esc(CO.name)}<br>${esc(CO.address)}
     </div>
   </div>
 
-  <div style="height:2.5px;background:#000;margin-bottom:8px;"></div>
-
   <!-- شارة العنوان -->
-  <div style="background:#000;color:#fff;text-align:center;padding:8px 0;margin-bottom:10px;border-radius:2px;">
-    <div style="font-size:16px;font-weight:900;letter-spacing:.5px;">إغلاق الوردية</div>
-    <div style="font-size:11px;font-weight:600;opacity:.85;">تقرير نهاية اليوم — Z Report</div>
+  <div style="border-top:2px solid #000;border-bottom:2px solid #000;text-align:center;padding:1.5mm 0;margin:2mm 0;">
+    <div style="font-size:15px;font-weight:900;letter-spacing:.5px;">إغلاق الوردية — Z Report</div>
+    <div style="font-size:11px;font-weight:800;color:#000;">تقرير الإقفال المالي والعملياتي</div>
   </div>
 
-  <!-- بيانات الوردية -->
-  ${metaRowsHtml}
-  <div style="border-top:1.5px dashed #000;margin:8px 0;"></div>
+  <!-- بيانات الوردية في جدول بحدود -->
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <tbody>${metaRowsHtml}</tbody>
+  </table>
 
-  <!-- ملخص المبيعات -->
-  ${sectionHdr('ملخّص المبيعات')}
+  <!-- جدول ملخص المبيعات -->
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;font-size:11px;border:1px solid #000;">ملخّص المبيعات</th></tr></thead>
+    <tbody>
+      <tr><td style="width:55%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">عدد الفواتير</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">${d.invoiceCount} فاتورة</td></tr>
+      <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">إجمالي المبيعات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12.5px;">${fmt(d.salesTotal)} د.ع</td></tr>
+      ${discounts > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">إجمالي الخصومات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">-${fmt(discounts)} د.ع</td></tr>` : ''}
+      ${returns > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">المرتجعات</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">-${fmt(returns)} د.ع</td></tr>` : ''}
+      ${Number(d.heldDepositsCount ?? 0) > 0 ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">عرابين محجوزة (${d.heldDepositsCount})</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">${fmt(d.heldDepositsTotal ?? 0)} د.ع</td></tr>` : ''}
+      <tr style="background:#000;color:#fff;font-weight:900;">
+        <td style="border:1px solid #000;padding:1.5mm;font-size:12.5px;">صافي المبيعات</td>
+        <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:14.5px;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmt(netSales)} د.ع</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="text-align:center;font-weight:900;font-size:10px;padding:1.2mm;border:1px solid #000;">
+          ${formatArabicMoneyWords(netSales)}
+        </td>
+      </tr>
+    </tbody>
+  </table>
 
-  <div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
-    <span style="font-weight:600;color:#333;">عدد الفواتير</span>
-    <span style="font-size:16px;font-weight:900;">${d.invoiceCount} فاتورة</span>
-  </div>
-  <div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
-    <span style="font-weight:600;color:#333;">إجمالي المبيعات</span>
-    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(d.salesTotal)} د.ع</span>
-  </div>
-  ${discounts > 0 ? `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
-    <span style="font-weight:600;color:#333;">إجمالي الخصومات</span>
-    <span style="font-weight:800;direction:ltr;">${fmt(discounts)} د.ع</span>
-  </div>` : ''}
-  ${returns > 0 ? `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
-    <span style="font-weight:600;color:#333;">المرتجعات</span>
-    <span style="font-weight:800;direction:ltr;">${fmt(returns)} د.ع</span>
-  </div>` : ''}
-  ${Number(d.heldDepositsCount ?? 0) > 0 ? `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
-    <span style="font-weight:600;color:#333;">عرابين محجوزة لطلبات لم تُثبَّت (${d.heldDepositsCount})</span>
-    <span style="font-weight:800;direction:ltr;">${fmt(d.heldDepositsTotal ?? 0)} د.ع</span>
-  </div>` : ''}
+  <!-- جدول تفصيل طرق الدفع -->
+  <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <thead>
+      <tr style="background:#000;color:#fff;">
+        <th style="text-align:right;padding:1mm 1.5mm;font-weight:900;border:1px solid #000;">طريقة الدفع</th>
+        <th style="text-align:center;padding:1mm 1.5mm;font-weight:900;border:1px solid #000;width:35px;">عدد</th>
+        <th style="text-align:left;padding:1mm 1.5mm;font-weight:900;border:1px solid #000;width:80px;">المبلغ</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${payRows || '<tr><td colspan="3" style="font-size:11px;padding:2mm;text-align:center;border:1px solid #000;">لا توجد حركات</td></tr>'}
+    </tbody>
+  </table>
 
-  <!-- صافي المبيعات — معكوس -->
-  <div style="background:#000;color:#fff;display:flex;justify-content:space-between;
-    align-items:center;padding:7px 6px;margin:4px 0;border-radius:2px;">
-    <span style="font-size:14px;font-weight:900;">صافي المبيعات</span>
-    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(netSales)} د.ع</span>
-  </div>
-
-  <!-- تفصيل طرق الدفع -->
-  ${sectionHdr('تفصيل طرق الدفع')}
-
-  <div data-payment-row style="display:grid;grid-template-columns:minmax(0,1fr) 34px 88px;font-size:11px;font-weight:800;
-    padding:3px 0;border-bottom:2px solid #000;">
-    <span style="text-align:right;">الطريقة</span>
-    <span style="text-align:center;">عدد</span>
-    <span style="text-align:left;">المبلغ</span>
-  </div>
-  ${payRows || '<div style="font-size:12px;padding:6px 0;text-align:center;">لا حركات</div>'}
-
-  <!-- تسوية الصندوق -->
-  ${sectionHdr('تسوية الصندوق النقدي')}
-
-  <div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
-    <span style="font-weight:600;color:#333;">الرصيد الافتتاحي</span>
-    <span style="font-weight:800;direction:ltr;">${fmt(d.openingBalance)} د.ع</span>
-  </div>
-
-  <!-- النقد المتوقع — صندوق بارز -->
-  <div style="display:flex;justify-content:space-between;align-items:center;
-    padding:6px;border:2px solid #000;border-radius:2px;margin:4px 0;">
-    <span style="font-size:13px;font-weight:900;">النقد المتوقع</span>
-    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(d.expectedCash)} د.ع</span>
-  </div>
-
-  <!-- النقد المعدود — صندوق بارز -->
-  <div style="display:flex;justify-content:space-between;align-items:center;
-    padding:6px;border:2.5px solid #000;border-radius:2px;margin:4px 0;">
-    <span style="font-size:13px;font-weight:900;">النقد المعدود</span>
-    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(d.countedCash)} د.ع</span>
-  </div>
-
-  <!-- الفرق — معكوس -->
-  <div style="background:#000;color:#fff;display:flex;justify-content:space-between;
-    align-items:center;padding:9px 10px;margin:8px 0;border-radius:2px;">
-    <div>
-      <div style="font-size:14px;font-weight:900;">${esc(varLabel)}</div>
-      ${varNum !== 0 ? '<div style="font-size:10.5px;font-weight:700;opacity:.8;">يتطلّب مراجعة المشرف</div>' : ''}
-    </div>
-    <div style="font-size:22px;font-weight:900;direction:ltr;">${esc(varVal)}</div>
-  </div>
+  <!-- جدول تسوية الصندوق النقدي -->
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;font-size:11px;border:1px solid #000;">تسوية ومطابقة الصندوق النقدي</th></tr></thead>
+    <tbody>
+      <tr><td style="width:55%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">الرصيد الافتتاحي</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12px;">${fmt(d.openingBalance)} د.ع</td></tr>
+      <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;font-size:11px;">النقد المتوقع بالدرج</td><td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1mm 1.5mm;font-size:12.5px;">${fmt(d.expectedCash)} د.ع</td></tr>
+      <tr style="background:#000;color:#fff;font-weight:900;"><td style="border:1px solid #000;padding:1.2mm 1.5mm;font-size:11.5px;">النقد الفعلي المعدود</td><td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-size:14px;font-variant-numeric:tabular-nums;">${fmt(d.countedCash)} د.ع</td></tr>
+      <tr>
+        <td style="font-weight:900;border:1px solid #000;padding:1.5mm;font-size:12px;">${esc(varLabel)}</td>
+        <td style="font-weight:900;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;border:1px solid #000;padding:1.5mm;font-size:14px;">${esc(varVal)}</td>
+      </tr>
+    </tbody>
+  </table>
 
   ${d.treasuryReturn ? `
-  ${sectionHdr('ترحيل النقد إلى الخزينة')}
-  <div style="border:2px solid #000;padding:7px;margin:4px 0;font-size:12px;line-height:1.8;">
-    <div><strong>المبلغ:</strong> <span style="direction:ltr;font-weight:900;">${fmt(d.treasuryReturn.amount)} د.ع</span></div>
-    <div><strong>رقم سند الترحيل:</strong> <span style="direction:ltr;font-weight:900;">${esc(d.treasuryReturn.referenceNumber)}</span></div>
-    <div style="font-size:10px;font-weight:700;">تم الترحيل إلى الخزينة تلقائياً عند إغلاق الوردية</div>
-  </div>` : ''}
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;font-size:10.5px;">
+    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;border:1px solid #000;">ترحيل النقد إلى الخزينة الرئيسية</th></tr></thead>
+    <tbody>
+      <tr><td style="width:40%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">المبلغ المرحل</td><td style="font-weight:900;direction:ltr;text-align:left;border:1px solid #000;padding:1mm 1.5mm;">${fmt(d.treasuryReturn.amount)} د.ع</td></tr>
+      <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">رقم سند التوريد</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${esc(d.treasuryReturn.referenceNumber)}</td></tr>
+    </tbody>
+  </table>` : ''}
 
-  <!-- الإجمالي الكبير — معكوس -->
-  <div style="background:#000;color:#fff;text-align:center;padding:12px 8px;
-    margin:10px 0;border-radius:2px;">
-    <div style="font-size:11.5px;font-weight:700;opacity:.9;margin-bottom:4px;">إجمالي مبيعات الوردية</div>
-    <div style="font-size:36px;font-weight:900;direction:ltr;line-height:1;letter-spacing:-1px;">
-      ${fmt(d.salesTotal)}
-    </div>
-    <div style="font-size:14px;font-weight:800;margin-top:4px;">دينار عراقي</div>
+  <!-- توقيعات في جدول بحدود واضحة -->
+  <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;margin:3mm 0;color:#000;">
+    <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1mm;font-weight:900;font-size:10.5px;border:1px solid #000;">التوقيعات والاعتماد</th></tr></thead>
+    <tbody>
+      <tr>
+        <td style="width:50%;text-align:center;padding:2mm 1.5mm;border:1px solid #000;">
+          <div style="font-size:9.5px;font-weight:900;margin-bottom:12mm;">توقيع الكاشير</div>
+          <div style="border-top:1px solid #000;padding-top:1mm;font-size:9px;font-weight:800;">الاسم: ${esc(d.cashierName)}</div>
+        </td>
+        <td style="width:50%;text-align:center;padding:2mm 1.5mm;border:1px solid #000;">
+          <div style="font-size:9.5px;font-weight:900;margin-bottom:12mm;">توقيع المشرف / الإدارة</div>
+          <div style="border-top:1px solid #000;padding-top:1mm;font-size:9px;font-weight:800;">الختم أو الاعتماد</div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- تاريخ وطباعة الإغلاق -->
+  <div style="text-align:center;font-size:9.5px;font-weight:800;margin:2mm 0;color:#000;">
+    تاريخ الإغلاق: <span dir="ltr" style="font-weight:900;">${esc(closedStr)}</span> · نسخة رسمية
   </div>
 
-  <div style="border-top:1.5px dashed #000;margin:10px 0;"></div>
-
-  <!-- توقيعات -->
-  <div style="text-align:center;font-size:11.5px;font-weight:800;margin-bottom:8px;">التوقيعات والمراجعة</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:8px 0 4px;">
-    <div style="text-align:center;">
-      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
-      <div style="font-size:10.5px;font-weight:700;">توقيع الكاشير</div>
-    </div>
-    <div style="text-align:center;">
-      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
-      <div style="font-size:10.5px;font-weight:700;">توقيع المشرف</div>
-    </div>
-  </div>
-
-  <!-- تاريخ الطباعة -->
-  <div style="border-top:1px dashed #aaa;margin:8px 0;"></div>
-  <div style="text-align:center;font-size:10.5px;font-weight:600;margin-bottom:8px;direction:rtl;">
-    طُبع: <span dir="ltr" style="direction:ltr;unicode-bidi:isolate;">${esc(closedStr)}</span> · نسخة أصلية
-  </div>
-
-  <div style="height:2px;background:#000;margin-bottom:10px;"></div>
+  <div style="height:1.5px;background:#000;margin:2mm 0;"></div>
 
   <!-- فوتر -->
-  <div style="text-align:center;font-size:11.5px;font-weight:600;line-height:1.7;padding-bottom:4px;">
-    <div style="font-weight:900;font-size:13px;">نهاية الوردية — شكراً</div>
+  <div style="text-align:center;font-size:10.5px;font-weight:800;line-height:1.5;padding-bottom:1mm;color:#000;">
+    <div style="font-weight:900;font-size:12px;">نهاية الوردية — شكراً لجهودكم</div>
     ${phones}
   </div>`;
 
-  openPrintWindow(wrapShiftReceiptDoc(`إغلاق الوردية #${d.shiftId}`, body), 'width=380,height=920');
+  return wrapShiftReceiptDoc(`إغلاق الوردية #${d.shiftId}`, body);
+}
+
+export function printShiftCloseBrowser(d: ShiftCloseData): void {
+  openPrintWindow(buildShiftCloseHtml(d), 'width=380,height=920');
 }
