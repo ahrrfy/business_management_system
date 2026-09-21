@@ -46,7 +46,7 @@ export interface ThematicCollectionsConfig {
   updatedAt?: string;
 }
 
-interface ThematicArchetype {
+export interface ThematicArchetype {
   id: string;
   tag: string;
   title: string;
@@ -61,11 +61,12 @@ interface ThematicArchetype {
   minRelevanceThreshold: number;
   positiveKeywords: Array<{ word: string; weight: number }>;
   negativeKeywords: string[];
+  negativeCategories?: string[];
   preferredCategories: string[];
   requireSaleOrBundle?: boolean;
 }
 
-const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
+export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
   {
     id: "calligraphy",
     tag: "مختارات النخبة",
@@ -78,29 +79,51 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "category",
     defaultFilterValue: "2",
     baseWeight: 28,
-    minRelevanceThreshold: 20,
+    minRelevanceThreshold: 40,
     positiveKeywords: [
+      { word: "حبر خط", weight: 50 },
+      { word: "حبر عربي", weight: 50 },
+      { word: "حبر صيني", weight: 50 },
+      { word: "حبر سائل", weight: 45 },
+      { word: "قلم حبر", weight: 45 },
+      { word: "حبر قلم", weight: 45 },
+      { word: "قلم خط", weight: 45 },
+      { word: "ريشة خط", weight: 45 },
+      { word: "سيت قلم ريشة", weight: 45 },
+      { word: "قلم ريشة", weight: 45 },
+      { word: "قلم حبر زجاجي", weight: 45 },
+      { word: "طقم تحبير هندسي", weight: 45 },
+      { word: "محبرة", weight: 45 },
       { word: "روترينغ", weight: 45 },
       { word: "رابيدوغراف", weight: 45 },
-      { word: "تحبير", weight: 40 },
-      { word: "حبر", weight: 30 },
-      { word: "خط", weight: 35 },
-      { word: "باركر", weight: 30 },
-      { word: "كاليجرافي", weight: 40 },
+      { word: "كاليجرافي", weight: 45 },
+      { word: "مخطوطات", weight: 40 },
       { word: "مخطوط", weight: 40 },
-      { word: "محبرة", weight: 40 },
-      { word: "ريشة", weight: 35 },
-      { word: "قلم توقيع", weight: 30 },
-      { word: "جيل", weight: 20 },
-      { word: "سيغنو", weight: 25 },
+      { word: "قلم تحبير", weight: 40 },
+      { word: "تحبير هندسي", weight: 40 },
+      { word: "باركر", weight: 30 },
+      { word: "ريشة", weight: 25 },
+      { word: "قلم توقيع", weight: 25 },
+      { word: "سيغنو", weight: 20 },
       { word: "يوني بول", weight: 20 },
-      { word: "مفكرة جلدية", weight: 20 },
     ],
     negativeKeywords: [
+      "طابعة", "طابعات", "طابعه", "ايبسون", "ابسون", "epson", "كانون", "canon", "اتش بي", "hp", "براذر", "brother",
+      "تونر", "toner", "انك جيت", "inkjet", "سولفنت", "solvent", "فلات بد", "flatbed", "uv", "vivid", "فيفيد", "جوكر",
+      "ختم", "أختام", "اختام", "ستمبة", "ستمبه", "colop", "shiny", "حبر سحري", "بصمة", "بصمات",
+      "سبورة", "سبوره", "مساحة حبر", "فرشة حبر", "تصحيح", "مصحح", "whiteout", "correction",
       "مدرسي", "طالب", "تظليل", "فسفوري", "هايلايت", "ممحاة", "براية", "مقلمة",
       "حقيبة ظهر", "صلصال", "تلوين اطفال", "خرامة", "كباسة", "حامل كمبيوتر", "درع زجاجي"
     ],
-    preferredCategories: ["أقلام وأدوات كتابة"],
+    negativeCategories: [
+      "التجهيزات الالكترونية والكهربائية",
+      "الاختام التجارية والشخصية والشركات",
+      "المواد الخام",
+      "السبورات بكافة احجامها وملحقاتها",
+      "مستهلكات الطباعة",
+      "استنساخ وطباعة",
+    ],
+    preferredCategories: ["أقلام وأدوات كتابة", "اقلام الحبر"],
   },
   {
     id: "executive",
@@ -114,15 +137,15 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "category",
     defaultFilterValue: "6",
     baseWeight: 26,
-    minRelevanceThreshold: 20,
+    minRelevanceThreshold: 30,
     positiveKeywords: [
+      { word: "طقم منظم مكتب", weight: 45 },
+      { word: "منظم مكتب معدني", weight: 45 },
+      { word: "صندوق هدايا", weight: 40 },
       { word: "ملكي", weight: 40 },
       { word: "فاخر", weight: 35 },
-      { word: "صندوق هدايا", weight: 40 },
       { word: "حامل كمبيوتر", weight: 35 },
       { word: "ألمنيوم", weight: 30 },
-      { word: "طقم منظم مكتب", weight: 40 },
-      { word: "منظم مكتب معدني", weight: 40 },
       { word: "درع زجاجي", weight: 30 },
       { word: "باركر", weight: 25 },
       { word: "مفكرة جلدية", weight: 25 },
@@ -131,8 +154,8 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       { word: "خرامة أوراق معدنية", weight: 20 },
     ],
     negativeKeywords: [
-      "مدرسي", "طالب", "روضة", "اطفال", "حقيبة ظهر", "مقلمة", "تلوين", "رسم مائي",
-      "كانسون", "علبة هندسة", "دفتر ٤٠"
+      "مدرسي", "طالب", "روضة", "اطفال", "أطفال", "حقيبة ظهر", "مقلمة", "تلوين", "رسم مائي",
+      "كانسون", "علبة هندسة", "دفتر 40", "دفتر ٤٠", "باكيت", "لعبة", "العاب", "ألعاب"
     ],
     preferredCategories: ["تجهيزات ومستلزمات مكتبية", "بكجات وهدايا راقية"],
   },
@@ -148,21 +171,22 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "category",
     defaultFilterValue: "3",
     baseWeight: 30,
-    minRelevanceThreshold: 20,
+    minRelevanceThreshold: 30,
     positiveKeywords: [
-      { word: "جامعي", weight: 40 },
-      { word: "مدرسي", weight: 35 },
-      { word: "طالب", weight: 40 },
-      { word: "دفاتر سلك", weight: 40 },
-      { word: "دفتر سلك", weight: 40 },
-      { word: "دفتر", weight: 20 },
-      { word: "تظليل", weight: 40 },
-      { word: "باستيل", weight: 20 },
-      { word: "ستيدلر", weight: 20 },
+      { word: "دفاتر سلك", weight: 45 },
+      { word: "دفتر سلك", weight: 45 },
+      { word: "علبة هندسة", weight: 45 },
+      { word: "طقم أقلام تظليل", weight: 45 },
       { word: "حقيبة ظهر", weight: 40 },
       { word: "مقلمة", weight: 40 },
-      { word: "علبة هندسة", weight: 40 },
+      { word: "جامعي", weight: 40 },
+      { word: "مدرسي", weight: 35 },
+      { word: "طالب", weight: 35 },
+      { word: "تظليل", weight: 35 },
+      { word: "دفتر", weight: 25 },
       { word: "قلم رصاص ميكانيكي", weight: 25 },
+      { word: "باستيل", weight: 20 },
+      { word: "ستيدلر", weight: 20 },
     ],
     negativeKeywords: [
       "ملكي فاخر", "صندوق هدايا مكتبي", "درع زجاجي", "حامل كمبيوتر"
@@ -181,17 +205,31 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "deal",
     defaultFilterValue: "deals",
     baseWeight: 35,
-    minRelevanceThreshold: 15,
+    minRelevanceThreshold: 35,
     requireSaleOrBundle: true,
     positiveKeywords: [
       { word: "بكج", weight: 45 },
-      { word: "باك", weight: 40 },
-      { word: "طقم", weight: 30 },
-      { word: "مجموعة", weight: 30 },
-      { word: "عرض", weight: 30 },
-      { word: "توفير", weight: 35 },
+      { word: "باقة", weight: 45 },
+      { word: "طقم متكامل", weight: 40 },
+      { word: "مجموعة متكاملة", weight: 40 },
+      { word: "شنطة متكاملة", weight: 40 },
+      { word: "حقيبة متكاملة", weight: 40 },
+      { word: "سيت متكامل", weight: 40 },
+      { word: "عرض توفير", weight: 35 },
+      { word: "بكج توفير", weight: 35 },
+      { word: "باك", weight: 30 },
+      { word: "طقم", weight: 25 },
+      { word: "مجموعة", weight: 25 },
+      { word: "توفير", weight: 25 },
     ],
-    negativeKeywords: [],
+    negativeKeywords: [
+      "باكيت", "باكت", "درزن",
+      "لعبة", "العاب", "ألعاب", "بزل", "اونو", "ورق لعب", "بوكر", "حية ودرج", "ليدو", "دومينو", "كارتات", "صلصال"
+    ],
+    negativeCategories: [
+      "تجهيزات الالعاب",
+      "العاب الذكاء",
+    ],
     preferredCategories: ["بكجات وهدايا راقية"],
   },
   {
@@ -206,13 +244,16 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "category",
     defaultFilterValue: "4",
     baseWeight: 22,
-    minRelevanceThreshold: 20,
+    minRelevanceThreshold: 30,
     positiveKeywords: [
+      { word: "طقم منظم مكتب", weight: 45 },
       { word: "منظم مكتب", weight: 40 },
-      { word: "شبكي", weight: 40 },
-      { word: "كباسة", weight: 40 },
-      { word: "خرامة", weight: 40 },
+      { word: "كباسة مكتبية", weight: 40 },
+      { word: "خرامة أوراق", weight: 40 },
       { word: "تخطيط مهام", weight: 40 },
+      { word: "شبكي", weight: 40 },
+      { word: "كباسة", weight: 35 },
+      { word: "خرامة", weight: 35 },
       { word: "حامل كمبيوتر", weight: 35 },
       { word: "نوتبوك", weight: 20 },
       { word: "مكتبي", weight: 20 },
@@ -235,14 +276,16 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "keyword",
     defaultFilterValue: "رسم",
     baseWeight: 20,
-    minRelevanceThreshold: 20,
+    minRelevanceThreshold: 30,
     positiveKeywords: [
-      { word: "رسم", weight: 45 },
+      { word: "تحبير هندسي", weight: 45 },
+      { word: "رسم مائي", weight: 45 },
+      { word: "كراس رسم", weight: 45 },
       { word: "كانسون", weight: 45 },
+      { word: "رسم", weight: 40 },
       { word: "مائي", weight: 40 },
-      { word: "فني", weight: 35 },
       { word: "باستيل", weight: 35 },
-      { word: "تحبير هندسي", weight: 40 },
+      { word: "فني", weight: 35 },
       { word: "روترينغ", weight: 35 },
       { word: "تلوين", weight: 25 },
       { word: "ستيدلر", weight: 20 },
@@ -252,14 +295,146 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     negativeKeywords: [
       "كباسة", "خرامة", "حامل كمبيوتر", "درع زجاجي", "صندوق هدايا مكتبي", "حقيبة ظهر مدرسية"
     ],
-    preferredCategories: ["دفاتر ومذكرات", "أقلام وأدوات كتابة"],
+    preferredCategories: ["دفاتر ومذكرات", "أقلام وأدوات كتابة", "مستلزمات وادوات الرسم والفن"],
   },
 ];
 
 const THEMATIC_CACHE_TTL_MS = 5 * 60 * 1000; // 5 دقائق
 const thematicCache = createTtlCache<string, ThematicCollectionCard[]>({ ttlMs: THEMATIC_CACHE_TTL_MS, maxEntries: 20 });
 
-function calculateProductRelevance(
+/** توحيد الأرقام المشرقية (٠-٩) إلى أرقام لاتينية (0-9) */
+function normalizeDigits(text: string): string {
+  return text.replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)));
+}
+
+/**
+ * تطبيع دلالي موحّد للنصوص: توحيد الأحرف العربية والأرقام وعزل الرموز والواصلات
+ * بمسافات لضمان دقة استخراج الرموز (Tokens) وحدود الكلمات.
+ */
+export function normalizeThematicText(text: string): string {
+  if (!text) return "";
+  let norm = normalizeArabicSearch(text);
+  norm = normalizeDigits(norm);
+  norm = norm.replace(/[\/\\()\[\]{}*+\-_:;,."'`!?<>~#@%^&=]/g, " ");
+  return norm.replace(/\s+/g, " ").trim();
+}
+
+/** استخراج مجموعة الرموز والكلمات المستقلة من النص */
+export function extractWordTokens(normText: string): Set<string> {
+  if (!normText) return new Set();
+  return new Set(normText.split(/\s+/).filter(Boolean));
+}
+
+/** فحص وجود كلمة كاملة كرمز مستقل (Word Boundary Token Match) */
+export function hasWordToken(tokens: Set<string>, targetWord: string): boolean {
+  const normTarget = normalizeThematicText(targetWord);
+  return tokens.has(normTarget);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * فحص وجود عبارة أو تركيب مركب أو كلمة مفردة بحدود كلمات صريحة
+ * لا يبتلع الكلمات المشابهة جزئياً (مثال: «باك» لا تطابق «باكيت» ولا «شباك»).
+ */
+export function hasPhrase(normText: string, phrase: string): boolean {
+  const normPhrase = normalizeThematicText(phrase);
+  if (!normPhrase) return false;
+  const parts = normPhrase.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return false;
+  if (parts.length === 1) {
+    return extractWordTokens(normText).has(parts[0]);
+  }
+  const pattern = new RegExp(`(^|\\s)${parts.map(escapeRegExp).join("\\s+")}($|\\s)`);
+  return pattern.test(normText);
+}
+
+const TOY_AND_GAME_TERMS = [
+  "لعبة", "العاب", "ألعاب", "بزل", "اونو", "ورق لعب", "بوكر", "حية ودرج", "ليدو", "دومينو", "كارتات", "صلصال"
+];
+
+const PACKET_AND_SINGLE_UNITS = [
+  "باكيت", "باكت", "درزن"
+];
+
+const BUNDLE_POSITIVE_PHRASES = [
+  "طقم متكامل", "مجموعة متكاملة", "شنطة متكاملة", "حقيبة متكاملة", "سيت متكامل", "عرض توفير", "بكج توفير"
+];
+
+const BUNDLE_POSITIVE_TOKENS = [
+  "بكج", "باقة"
+];
+
+/**
+ * التحقق الدلالي من كون الصنف حزمة ترويجية حقيقية (Bundle) وليس عبوة تجزئة مفردة:
+ * ١. يستبعد قطعياً وحدات وعبارات التجزئة الفردية («باكيت»، «باكت»، «درزن»).
+ * ٢. يستبعد قطعياً ألعاب الأطفال والتسلية والورق.
+ * ٣. يقبل الحزم الصريحة: إما isBundle===true، أو توكنز الباقة/البكج، أو التراكيب المركبة («طقم متكامل»، «مجموعة متكاملة»).
+ */
+export function isQualifiedBundle(item: {
+  productName: string;
+  category?: string | null;
+  unitName?: string | null;
+  isBundle?: boolean;
+}): boolean {
+  const normName = normalizeThematicText(item.productName || "");
+  const normCat = normalizeThematicText(item.category || "");
+  const normUnit = normalizeThematicText(item.unitName || "");
+  const nameTokens = extractWordTokens(normName);
+
+  // ١. استبعاد فوري لألعاب الأطفال والتسلية وفئاتها
+  for (const toy of TOY_AND_GAME_TERMS) {
+    if (hasPhrase(normName, toy) || hasPhrase(normCat, toy)) {
+      return false;
+    }
+  }
+
+  // ٢. استبعاد عبوات التجزئة الفردية ووحدات الباكيت والدرزن
+  for (const unit of PACKET_AND_SINGLE_UNITS) {
+    if (hasWordToken(nameTokens, unit) || normUnit === normalizeThematicText(unit)) {
+      return false;
+    }
+  }
+
+  // ٣. التحقق الإيجابي: الحزم المعتمدة نظامياً
+  if (item.isBundle === true) {
+    return true;
+  }
+
+  // توكنز البكجات الصريحة
+  for (const tok of BUNDLE_POSITIVE_TOKENS) {
+    if (hasWordToken(nameTokens, tok) || normUnit === normalizeThematicText(tok)) {
+      return true;
+    }
+  }
+
+  // التراكيب العبارية الصريحة
+  for (const phrase of BUNDLE_POSITIVE_PHRASES) {
+    if (hasPhrase(normName, phrase)) {
+      return true;
+    }
+  }
+
+  // توكن "باك" المنفصل (يُقبل فقط كتوكن مستقل متى ما اقترن بدلالة حزمة متعددة ولا يطابق باكيت)
+  if (hasWordToken(nameTokens, "باك")) {
+    if (hasPhrase(normName, "مجموعة") || hasPhrase(normName, "دفاتر") || hasPhrase(normName, "اقلام") || normUnit === "باقة" || normUnit === "باقه") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * احتساب درجة الملاءمة الدلالية لصنف معين بالنسبة لنمط تحريري:
+ * - فحص الاستبعاد الفئوي أولاً (Negative Categories).
+ * - فحص الكلمات والعبارات المستبعدة بحدود الكلمات (Whole-Token / Phrase Boundaries).
+ * - اشتراط حزمة حقيقية لنمط deals واستبعاد ألعاب التسلية وعبوات التجزئة.
+ * - احتساب أوزان التراكيب الصريحة والكلمات المفتاحية الموزونة.
+ */
+export function calculateProductRelevance(
   item: {
     productName: string;
     description?: string | null;
@@ -268,49 +443,69 @@ function calculateProductRelevance(
     price?: string | null;
     isBundle?: boolean;
     imageUrl?: string | null;
+    unitName?: string | null;
   },
   arch: ThematicArchetype
 ): number {
-  const normName = normalizeArabicSearch(item.productName || "");
-  const normDesc = normalizeArabicSearch(item.description || "");
-  const normCat = normalizeArabicSearch(item.category || "");
-  const fullText = `${normName} ${normDesc}`;
+  const normName = normalizeThematicText(item.productName || "");
+  const normDesc = normalizeThematicText(item.description || "");
+  const normCat = normalizeThematicText(item.category || "");
+  const fullText = `${normName} ${normDesc}`.trim();
 
-  // 1. فحص الاستبعادات الصارمة أولاً
+  // ١. فحص الاستبعاد الفئوي الصارم أولاً
+  if (arch.negativeCategories && arch.negativeCategories.length > 0) {
+    for (const negCat of arch.negativeCategories) {
+      if (hasPhrase(normCat, negCat)) {
+        return -100;
+      }
+    }
+  }
+
+  // ٢. فحص الاستبعادات الصارمة للكلمات والعبارات
   for (const neg of arch.negativeKeywords) {
-    const normNeg = normalizeArabicSearch(neg);
-    if (fullText.includes(normNeg)) {
+    if (hasPhrase(fullText, neg) || hasPhrase(normCat, neg)) {
       return -100;
     }
   }
 
-  // 2. شرط العروض والبكجات الحقيقية
+  // ٣. شرط العروض والبكجات الحقيقية
   if (arch.requireSaleOrBundle) {
     const hasDiscount = item.salePrice != null && Number(item.salePrice) < Number(item.price);
-    const isBundle = item.isBundle === true || normName.includes("بكج") || normName.includes("عرض") || normName.includes("طقم") || normName.includes("باك");
-    if (!hasDiscount && !isBundle) {
+    const bundlePass = isQualifiedBundle(item);
+
+    if (!bundlePass && !hasDiscount) {
       return -100;
+    }
+
+    // حتى مع وجود خصم، نمنع ألعاب التسلية وعبوات الباكيت الفردية من تصدر كرت البكجات
+    if (!bundlePass) {
+      const nameTokens = extractWordTokens(normName);
+      const isSinglePacketOrToy =
+        PACKET_AND_SINGLE_UNITS.some((u) => hasWordToken(nameTokens, u) || item.unitName === u) ||
+        TOY_AND_GAME_TERMS.some((t) => hasPhrase(normName, t) || hasPhrase(normCat, t));
+      if (isSinglePacketOrToy) {
+        return -100;
+      }
     }
   }
 
   let score = 0;
 
-  // 3. الكلمات المفتاحية الإيجابية الموزونة
+  // ٤. مطابقة الكلمات والتراكيب الإيجابية بحدود الكلمات الصارمة
   for (const pos of arch.positiveKeywords) {
-    const normPos = normalizeArabicSearch(pos.word);
-    if (fullText.includes(normPos)) {
+    if (hasPhrase(fullText, pos.word)) {
       score += pos.weight;
     }
   }
 
-  // 4. الفئات الداعمة المفضلة
+  // ٥. الفئات الداعمة المفضلة
   for (const cat of arch.preferredCategories) {
-    if (normCat.includes(normalizeArabicSearch(cat))) {
+    if (hasPhrase(normCat, cat)) {
       score += 15;
     }
   }
 
-  // 5. نقاط تفضيلية للعروض ووجود الصورة
+  // ٦. نقاط تفضيلية للعروض ووجود الصورة
   if (item.salePrice != null && Number(item.salePrice) < Number(item.price)) {
     score += 10;
   }
