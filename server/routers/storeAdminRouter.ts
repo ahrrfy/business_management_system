@@ -52,6 +52,11 @@ import {
   reactivateStorePromotion,
   updateStorePromotion,
 } from "../services/storeAdmin/storePromotionService";
+import {
+  computeAlgorithmicThematicCollections,
+  getThematicCollectionsConfig,
+  updateThematicCollectionsConfig,
+} from "../services/storefrontThematicService";
 import { getStoreAnalytics } from "../services/storeAdmin/storeAnalyticsService";
 import { getStoreCustomers } from "../services/storeAdmin/storeCustomerService";
 import { resolveStorefrontBranchId } from "../services/storefrontService";
@@ -677,6 +682,45 @@ const quoteRequestsRouter = router({
     }),
 });
 
+/** التشكيلات التحريرية الذكية: محرك خوارزمي مؤتمت + خيار التحرير المخصص للمدير. */
+const thematicCollectionsRouter = router({
+  get: storeReadProcedure.query(async ({ ctx }) => {
+    const config = await getThematicCollectionsConfig();
+    const algorithmicCards = await computeAlgorithmicThematicCollections(ctx.scopedBranchId);
+    return { config, algorithmicCards };
+  }),
+  preview: storeReadProcedure.query(async ({ ctx }) => {
+    return computeAlgorithmicThematicCollections(ctx.scopedBranchId);
+  }),
+  update: storeManagerProcedure
+    .input(z.object({
+      mode: z.enum(["AUTO", "CUSTOM"]),
+      customCards: z.array(z.object({
+        id: z.string(),
+        tag: z.string().trim().min(1).max(50),
+        title: z.string().trim().min(1).max(100),
+        description: z.string().trim().min(1).max(300),
+        cta: z.string().trim().min(1).max(50),
+        bgGradient: z.string(),
+        borderColor: z.string(),
+        iconName: z.enum(["Briefcase", "GraduationCap", "PenTool", "Tag", "LayoutGrid", "Palette", "BookOpen", "Sparkles"]),
+        filterType: z.enum(["category", "keyword", "deal"]),
+        filterValue: z.string(),
+        itemCount: z.number().int().min(0),
+      })).max(10).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateThematicCollectionsConfig(input, ctx.user.id);
+      await logAudit(ctx, {
+        action: "store.thematic_collections.update",
+        entityType: "storeSettings",
+        entityId: 1,
+        newValue: { mode: input.mode, count: input.customCards?.length ?? 0 },
+      });
+      return res;
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
@@ -690,4 +734,5 @@ export const storeAdminRouter = router({
   notifications: notificationsRouter,
   reviews: reviewsRouter,
   quoteRequests: quoteRequestsRouter,
+  thematicCollections: thematicCollectionsRouter,
 });

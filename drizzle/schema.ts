@@ -8450,6 +8450,8 @@ export const storeSettings = mysqlTable(
         scale: 2,
       },
     ),
+    // إعدادات التشكيلات التحريرية الذكية (JSON string: نمط العمل AUTO/CUSTOM + أي تخصيصات إدارية)
+    thematicCollectionsConfig: text("thematicCollectionsConfig"),
     updatedBy: int("updatedBy").references(() => users.id),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

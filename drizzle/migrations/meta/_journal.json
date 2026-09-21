@@ -2332,6 +2332,13 @@
 			"when": 1788148823000,
 			"tag": "0365_store_settings_free_shipping_governorates",
 			"breakpoints": true
+		},
+		{
+			"idx": 366,
+			"version": "5",
+			"when": 1788148824000,
+			"tag": "0366_store_thematic_collections",
+			"breakpoints": true
 		}
 	]
 }

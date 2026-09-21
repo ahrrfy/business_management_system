@@ -2589,7 +2589,7 @@ function StorefrontContent() {
                 onUpdateQuantity={handleProductQuantityDelta}
               />
             </div>
-            <StorefrontThematicGrid onSelectKeyword={(kw) => { setSearch(kw); scrollToResults(); }} />
+            <StorefrontThematicGrid onSelectCollection={(c) => { if (c.filterType === "category") { setSearch(""); setCategoryId(Number(c.filterValue)); scrollToResults(); } else if (c.filterType === "deal") { const el = document.getElementById("store-deals"); if (el) { el.scrollIntoView({ behavior: "smooth" }); } else { setCategoryId(null); setSearch("عرض"); scrollToResults(); } } else { setCategoryId(null); setSearch(c.filterValue); scrollToResults(); } }} onSelectKeyword={(kw) => { setSearch(kw); scrollToResults(); }} />
           </>
         )}
 

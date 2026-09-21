@@ -18,6 +18,7 @@ import {
   storefrontPublicReadProcedure,
   storefrontPublicWriteProcedure,
 } from "../trpc";
+import { getStorefrontThematicCollections } from "../services/storefrontThematicService";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated, storefrontCartRecommendations } from "../services/storefrontService";
 import {
   createOnlineOrder,
@@ -76,6 +77,9 @@ const labelSummaryProcedure = publicProcedure.use(requireOnlineOrderLabel);
 export const storefrontRouter = router({
   /** فئات المتجر (لأشرطة الفلترة). */
   categories: publicProcedure.query(() => storefrontCategories()),
+
+  /** التشكيلات التحريرية الذكية والمؤتمتة (أعلى ٣ تشكيلات متوفرة برصيد حقيقي). */
+  thematicCollections: publicProcedure.query(() => getStorefrontThematicCollections()),
 
   /** العروض والخصومات الفعّالة اليوم (بنرات مشتقّة تلقائياً). */
   offers: publicProcedure.query(() => storefrontOffers()),
