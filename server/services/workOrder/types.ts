@@ -14,6 +14,8 @@ export interface CreateWorkOrderInput {
   customerId?: number | null;
   // v3-add-screens(100%): اختياري لطلب خدمة خدمة تخصيص خالصة بلا منتج خام.
   baseVariantId?: number | null;
+  /** الوحدة التي اختارها العميل للصنف الأساس؛ الخادم يثبت منها baseBaseQuantity. */
+  baseProductUnitId?: number | null;
   title: string;
   customizationText?: string | null;
   quantity?: number; // default 1

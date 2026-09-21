@@ -8,6 +8,7 @@ import {
   webPushOutbox,
 } from "../../drizzle/schema";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { normalizeLegacyDeliveryNotificationText } from "@shared/deliveryNotificationLabels";
 import { type AppPushPayload } from "./pushService";
 import {
   NATIVE_PUSH_ENVIRONMENTS,
@@ -480,7 +481,23 @@ export async function listUserNotifications(
         ),
       ),
   ]);
-  return { rows, unreadCount: Number(countRows[0]?.count ?? 0) };
+  const normalizedRows = rows.map((row) => {
+    if (row.title === "تحديث طرد توصيل" || row.entityType === "deliveryConsignment") {
+      const normalized = normalizeLegacyDeliveryNotificationText({
+        title: row.title,
+        body: row.body,
+      });
+      if (normalized.title !== row.title || normalized.body !== row.body) {
+        return {
+          ...row,
+          title: normalized.title,
+          body: normalized.body,
+        };
+      }
+    }
+    return row;
+  });
+  return { rows: normalizedRows, unreadCount: Number(countRows[0]?.count ?? 0) };
 }
 
 export async function markNotificationRead(userId: number, id: number) {

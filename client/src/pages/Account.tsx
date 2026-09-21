@@ -14,12 +14,13 @@ import { describeUserAgent } from "@/lib/userAgent";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertTriangle, Copy, Monitor, Bell, BellOff, ShieldCheck, ShieldOff } from "lucide-react";
+import { AlertTriangle, Copy, Monitor, Bell, BellOff, ShieldCheck, ShieldOff, Volume2, VolumeX } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { MyPerformanceCard } from "@/components/account/MyPerformanceCard";
 import { notify } from "@/lib/notify";
 import { isPushSupported, getPermissionState, subscribeToPush, unsubscribeFromPushBrowser } from "@/lib/push";
 import { ROLE_LABEL } from "@/lib/roles";
+import { AUDIO_FEEDBACK_CHANGE_EVENT, isAudioFeedbackEnabled, playAudioFeedback, setAudioFeedbackEnabled } from "@/lib/audioFeedback";
 
 export default function Account() {
   const [location, navigate] = useLocation();
@@ -58,6 +59,7 @@ export default function Account() {
   // الاشتراك ذاتي لكل حساب؛ الخادم وحده يقرر الأحداث التي تخص هذا المستخدم.
   const pushKey = trpc.push.publicKey.useQuery(undefined, { enabled: !!me.data });
   const pushStatus = trpc.push.myStatus.useQuery(undefined, { enabled: !!me.data });
+  const [soundEnabled, setSoundEnabled] = useState(() => isAudioFeedbackEnabled());
   const pushSubscribeMut = trpc.push.subscribe.useMutation({
     onSuccess: async () => { await utils.push.myStatus.invalidate(); notify.ok("تمّ تفعيل إشعارات النظام على هذا الجهاز"); },
     onError: (e) => notify.err(e.message || "تعذّر التفعيل"),
@@ -67,6 +69,27 @@ export default function Account() {
     onError: (e) => notify.err(e.message || "تعذّر الإيقاف"),
   });
   const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    const syncSoundPreference = () => setSoundEnabled(isAudioFeedbackEnabled());
+    window.addEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, syncSoundPreference);
+    window.addEventListener("storage", syncSoundPreference);
+    return () => {
+      window.removeEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, syncSoundPreference);
+      window.removeEventListener("storage", syncSoundPreference);
+    };
+  }, []);
+
+  function toggleSoundFeedback() {
+    if (soundEnabled) {
+      // اسمع التأكيد قبل حفظ الكتم؛ بعدها تصمت الواجهة فوراً.
+      playAudioFeedback("confirm");
+      setAudioFeedbackEnabled(false);
+      return;
+    }
+    setAudioFeedbackEnabled(true);
+    playAudioFeedback("notification");
+  }
 
   async function enablePush() {
     if (!pushKey.data?.enabled || !pushKey.data.publicKey) {
@@ -146,6 +169,27 @@ export default function Account() {
 
       {/* أدائي — ذاتي بحت (وحدة الأهداف والعمولات)؛ تختفي لمن لا موظف/خطة/هدف له. */}
       <MyPerformanceCard />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            {soundEnabled ? <Volume2 className="size-4" aria-hidden /> : <VolumeX className="size-4" aria-hidden />}
+            أصوات الواجهة
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <div>
+            <p>{soundEnabled ? "مفعّلة على هذا الجهاز" : "مكتومة على هذا الجهاز"}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              تشمل قراءة الباركود، نتائج العمليات، التحذيرات، التأكيدات، والنقرات التفاعلية الخفيفة.
+            </p>
+          </div>
+          <Button type="button" size="sm" variant="outline" data-audio-feedback="none" onClick={toggleSoundFeedback}>
+            {soundEnabled ? <VolumeX className="size-3.5" aria-hidden /> : <Volume2 className="size-3.5" aria-hidden />}
+            {soundEnabled ? "كتم الأصوات" : "تشغيل الأصوات"}
+          </Button>
+        </CardContent>
+      </Card>
 
       {/* إشعارات الدفع لكل حساب. البطاقة لا تختفي
           صامتةً كلياً حين VAPID غير مضبوطة أو المتصفّح لا يدعم Push — الآن تظهر بحالة معطَّلة

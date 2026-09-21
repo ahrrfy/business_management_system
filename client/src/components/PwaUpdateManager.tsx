@@ -15,7 +15,7 @@ import {
 import { isPublicHost } from "@/lib/siteHosts";
 import { Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { notify } from "@/lib/notify";
 import { useLocation } from "wouter";
 
 const UPDATE_CHECK_TIMEOUT_MS = 8_000;
@@ -405,7 +405,7 @@ export function PwaUpdateManager() {
             }
           },
           onOfflineReady() {
-            toast.success(
+            notify.ok(
               pwaOfflineReadyMessage({
                 hostname: window.location.hostname,
                 pathname: window.location.pathname,
@@ -526,10 +526,10 @@ export function PwaUpdateManager() {
           clearPwaAutoAttempt();
         }
         setPwaUpdatePending(false);
-        toast.success("تم تحديث النظام بنجاح");
+        notify.ok("تم تحديث النظام بنجاح");
       } else {
         // لا ندّعي نجاحاً إن لم تصبح الصفحة تحت العامل الجديد بعد إعادة فتحها.
-        toast.warning("فُتح النظام بأمان، لكن تعذّر تأكيد نسخة التحديث.");
+        notify.warn("فُتح النظام بأمان، لكن تعذّر تأكيد نسخة التحديث.");
       }
     });
   }, []);
@@ -555,7 +555,7 @@ export function PwaUpdateManager() {
       const message =
         "اكتمل تفعيل النسخة، لكن تعذّر تأمين سجل إعادة الفتح؛ أعد تحميل الصفحة يدوياً لحماية طلبك.";
       setUpdateError(message);
-      toast.warning(message);
+      notify.warn(message);
       return;
     }
     setPhase("reopening");
@@ -578,7 +578,7 @@ export function PwaUpdateManager() {
   async function applyUpdate(options: { automatic?: boolean } = {}): Promise<void> {
     if (applying) return;
     if (!("serviceWorker" in navigator)) {
-      toast.error("خدمة تحديث النظام غير متاحة في هذا المتصفح.");
+      notify.err("خدمة تحديث النظام غير متاحة في هذا المتصفح.");
       return;
     }
 
@@ -606,7 +606,7 @@ export function PwaUpdateManager() {
         const message =
           "تعذّر حفظ السلة أو بيانات الطلب محلياً؛ لم نحدّث الصفحة. راجع طلبك ثم أعد المحاولة.";
         setUpdateError(message);
-        toast.error(message);
+        notify.err(message);
         return;
       }
 
@@ -636,7 +636,7 @@ export function PwaUpdateManager() {
 
       if (action === "UNAVAILABLE") {
         markAttemptFailed();
-        toast.error("خدمة تحديث النظام غير متاحة في هذا المتصفح حالياً.");
+        notify.err("خدمة تحديث النظام غير متاحة في هذا المتصفح حالياً.");
         return;
       }
 
@@ -656,7 +656,7 @@ export function PwaUpdateManager() {
           const message =
             "اختفى عامل التحديث قبل إثبات تفعيله؛ لن نعيد فتح الصفحة تلقائياً. أعد المحاولة يدوياً.";
           setUpdateError(message);
-          toast.error(message);
+          notify.err(message);
           return;
         }
         reopenWithVerifiedUpdate();
@@ -678,12 +678,12 @@ export function PwaUpdateManager() {
           const message =
             "لم يعد عامل التحديث متاحاً ولم نثبت تفعيله؛ بقيت الصفحة كما هي ويمكنك إعادة المحاولة.";
           setUpdateError(message);
-          toast.error(message);
+          notify.err(message);
           return;
         }
         setPwaUpdatePending(false);
         setReady(false);
-        toast.message("لا يوجد تحديث منتظر الآن؛ النظام على أحدث نسخة.");
+        notify.info("لا يوجد تحديث منتظر الآن؛ النظام على أحدث نسخة.");
         return;
       }
 
@@ -724,13 +724,13 @@ export function PwaUpdateManager() {
       const message =
         "لم يكتمل التفعيل ولم يُفقد طلبك. لن نعيد فتح الصفحة تلقائياً؛ أعد المحاولة يدوياً.";
       setUpdateError(message);
-      toast.error(message);
+      notify.err(message);
     } catch (error) {
       console.warn("[pwa] update application failed", error);
       markAttemptFailed();
       const message = "تعذّر تطبيق التحديث الآن؛ بقي عملك محفوظاً ويمكنك إعادة المحاولة.";
       setUpdateError(message);
-      toast.error(message);
+      notify.err(message);
     } finally {
       setApplying(false);
     }

@@ -31,9 +31,11 @@ type DC = RouterOutputs["reports"]["dayCloseReconciliation"];
 
 
 const NOTE =
-  "المتوقَّع = الرصيد الافتتاحي + المقبوضات النقدية − المرتجعات والمصروفات النقدية (النقد فقط، درج الكاشير). " +
-  "عهد الإغلاق تُعرَض منفصلةً ولا تُطرَح من المتوقَّع لأنها غادرت الدرج بعد العدّ؛ خروجها لا يعني أن الخزينة قبلتها. «المتبقّي في الدرج» = المعدود − العهد الخارجة. " +
-  "الفرق = المعدود − المتوقَّع (يطابق فرق الوردية في تقرير Z): موجب = فائض، سالب = عجز.";
+  "معادلة المطابقة المحاسبية: " +
+  "للورديات المغلقة: المعدود الفعلي − المتوقَّع الدفتري = الفرق (فائض أو عجز). " +
+  "للورديات المفتوحة: الرصيد الافتتاحي + المقبوضات النقدية − المصروفات = النقد الجاري بالدرج (يُجرد ويُثبت عند الإغلاق). " +
+  "إجمالي نقد الأدراج الفعلي = نقد الورديات المغلقة (المعدود) + نقد الورديات المفتوحة (الجاري). " +
+  "المتبقّي بالدرج = المعدود − العهد الخارجة إلى الخزينة.";
 
 /** تاريخ اليوم YYYY-MM-DD (UTC) — قيمة ابتدائية لمنتقي التاريخ. */
 function todayUtc(): string {
@@ -124,10 +126,71 @@ export default function DayCloseReport() {
 
   const kpis: KpiItem[] = dc
     ? [
-        { label: "المتوقَّع في الدرج", value: fmtAr(dc.totals.expected), tone: "info", hint: "الرصيد الافتتاحي + المقبوضات − المرتجعات والمصروفات" },
-        { label: "المعدود عند الإغلاق", value: fmtAr(dc.totals.counted), tone: "default", hint: `${dc.totals.closedCount} وردية مغلقة` },
-        { label: "الفرق (فائض/عجز)", value: fmtAr(dc.totals.drift), tone: driftTone(dc.totals.drift), hint: dc.driftCount === 0 ? "كل الورديات مطابقة" : `${dc.driftCount} وردية بفرق` },
-        { label: "خرج إلى العهدة", value: fmtAr(dc.totals.handoversCash), tone: "default", hint: `المتبقّي في الأدراج: ${fmtAr(dc.totals.retainedInDrawer)}` },
+        ...(dc.totals.openCount > 0
+          ? [
+              {
+                label: "المتوقَّع (المغلقة)",
+                value: fmtAr(dc.totals.closedExpected),
+                tone: "info" as const,
+                hint: `${dc.totals.closedCount} وردية مغلقة خاضعة للمطابقة`,
+              },
+              {
+                label: "المعدود الفعلي (المغلقة)",
+                value: fmtAr(dc.totals.counted),
+                tone: "default" as const,
+                hint: "النقد الفعلي المعدود عند إغلاق الورديات",
+              },
+              {
+                label: "فرق الورديات المغلقة",
+                value: fmtAr(dc.totals.drift),
+                tone: driftTone(dc.totals.drift),
+                hint: dc.driftCount === 0 ? "مطابقة تامة بلا فروقات" : `${dc.driftCount} وردية بفرق`,
+              },
+              {
+                label: "النقد الجاري (ورديات مفتوحة)",
+                value: fmtAr(dc.totals.openRunningExpected),
+                tone: "default" as const,
+                hint: `${dc.totals.openCount} وردية جارية لم تُغلق بعد`,
+              },
+              {
+                label: "إجمالي نقد الأدراج الفعلي",
+                value: fmtAr(dc.totals.physicalDrawerCash),
+                tone: "positive" as const,
+                hint: "المعدود بالمغلقة + الجاري بالمفتوحة",
+              },
+            ]
+          : [
+              {
+                label: "المتوقَّع في الأدراج",
+                value: fmtAr(dc.totals.closedExpected),
+                tone: "info" as const,
+                hint: "الرصيد الافتتاحي + المقبوضات − المرتجعات والمصروفات",
+              },
+              {
+                label: "المعدود عند الإغلاق",
+                value: fmtAr(dc.totals.counted),
+                tone: "default" as const,
+                hint: `${dc.totals.closedCount} وردية مغلقة ومطابقة`,
+              },
+              {
+                label: "الفرق (فائض/عجز)",
+                value: fmtAr(dc.totals.drift),
+                tone: driftTone(dc.totals.drift),
+                hint: dc.driftCount === 0 ? "كل الورديات مطابقة تماماً" : `${dc.driftCount} وردية بفرق`,
+              },
+              {
+                label: "المتبقّي في الأدراج",
+                value: fmtAr(dc.totals.retainedInDrawer),
+                tone: "default" as const,
+                hint: "المعدود − المبالغ المسلّمة للخزينة",
+              },
+              {
+                label: "خرج إلى العهدة / الخزينة",
+                value: fmtAr(dc.totals.handoversCash),
+                tone: "default" as const,
+                hint: "المبالغ المحولة بمستندات تسليم العهدة",
+              },
+            ]),
       ]
     : [];
 
@@ -328,7 +391,7 @@ export default function DayCloseReport() {
         { label: "الفرق (فائض/عجز)", value: formatIqd(dc.totals.drift), large: true, bold: true },
       ],
     });
-    if (!opened) alert("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+    if (!opened) notify.warn("حجب نافذة الطباعة", "اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
   }
 
   // تنقّل سريع ليوم سابق/تالٍ (لا يتجاوز اليوم — نفس سقف منتقي التاريخ أدناه).
@@ -411,7 +474,7 @@ export default function DayCloseReport() {
           <PartialBlindCountWarning count={dc.withheldBlindCountShiftCount} />
           {dailyPanel}
           {missedDailyPanel}
-          <ReconciliationHero dc={dc} />
+          <ReconciliationHero dc={dc} daily={daily} />
           <ShiftTable dc={dc} />
         </div>
       )}
@@ -437,44 +500,104 @@ function PartialBlindCountWarning({ count }: { count: number }) {
 }
 
 /** لوحة «المتوقَّع مقابل المعدود مقابل الفرق» — بلونٍ دلاليّ واضح على مجموع اليوم. */
-function ReconciliationHero({ dc }: { dc: DC }) {
+function ReconciliationHero({ dc, daily }: { dc: DC; daily?: RouterOutputs["treasury"]["dailyCashReconciliation"] }) {
   const drift = Number(dc.totals.drift);
   const balanced = dc.driftCount === 0 && dc.totals.counted !== "0.00";
   const driftCls = drift === 0 ? "text-money-positive" : drift > 0 ? "text-stock-low" : "text-money-negative";
   const driftLabel = drift === 0 ? "مطابق" : drift > 0 ? "فائض" : "عجز";
+  const hasOpen = dc.totals.openCount > 0;
+  const saved = daily?.reconciliation;
+  const hasTreasuryCount = saved && saved.countedTreasuryCash != null;
 
   return (
     <Card className={balanced ? "border-money-positive/40" : dc.driftCount > 0 ? "border-money-negative/40" : undefined}>
-      <CardContent className="p-4">
-        <div className="grid grid-cols-1 items-center gap-3 sm:grid-cols-[1fr_auto_1fr_auto_1fr]">
-          {/* المتوقَّع */}
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground">المتوقَّع في الدرج</p>
-            <p className="text-2xl font-bold tabular-nums text-[var(--sem-info)]" dir="ltr">{fmtAr(dc.totals.expected)}</p>
+      <CardContent className="p-4 space-y-3">
+        {/* الورديات المغلقة: معادلة المطابقة الصريحة الدقيقة */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-bold text-muted-foreground">
+              {hasOpen ? "مطابقة الورديات المغلقة (المكتملة)" : "مطابقة نقد الأدراج"}
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              {dc.totals.closedCount} وردية مغلقة من أصل {dc.totals.shiftCount}
+            </span>
           </div>
-          <div className="hidden text-muted-foreground sm:block" aria-hidden>
-            <ArrowLeftRight className="size-5" />
-          </div>
-          {/* المعدود */}
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground">المعدود عند الإغلاق</p>
-            <p className="text-2xl font-bold tabular-nums" dir="ltr">{fmtAr(dc.totals.counted)}</p>
-          </div>
-          <div className="hidden text-muted-foreground sm:block" aria-hidden>=</div>
-          {/* الفرق */}
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground">الفرق</p>
-            <p className={`inline-flex items-center justify-center gap-1 text-2xl font-bold tabular-nums ${driftCls}`} dir="ltr">
-              {drift === 0 ? (
-                <CheckCircle2 aria-hidden className="size-5" />
-              ) : (
-                <AlertTriangle aria-hidden className="size-5" />
-              )}
-              {fmtAr(dc.totals.drift)}
-            </p>
-            <p className={`mt-0.5 text-[11px] font-medium ${driftCls}`}>{driftLabel}</p>
+          <div className="grid grid-cols-1 items-center gap-3 sm:grid-cols-[1fr_auto_1fr_auto_1fr] rounded-lg bg-muted/20 p-3">
+            {/* المتوقَّع المغلق */}
+            <div className="text-center">
+              <p className="text-xs text-muted-foreground">المتوقَّع بالدفتر</p>
+              <p className="text-2xl font-bold tabular-nums text-[var(--sem-info)]" dir="ltr">{fmtAr(dc.totals.closedExpected)}</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">الافتتاحي + المقبوضات − المصروفات</p>
+            </div>
+            <div className="hidden text-muted-foreground sm:block" aria-hidden>
+              <ArrowLeftRight className="size-5" />
+            </div>
+            {/* المعدود */}
+            <div className="text-center">
+              <p className="text-xs text-muted-foreground">المعدود عند الإغلاق</p>
+              <p className="text-2xl font-bold tabular-nums" dir="ltr">{fmtAr(dc.totals.counted)}</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">النقد الفعلي المسلّم من الكاشير</p>
+            </div>
+            <div className="hidden text-muted-foreground sm:block" aria-hidden>=</div>
+            {/* الفرق */}
+            <div className="text-center">
+              <p className="text-xs text-muted-foreground">فرق المطابقة</p>
+              <p className={`inline-flex items-center justify-center gap-1 text-2xl font-bold tabular-nums ${driftCls}`} dir="ltr">
+                {drift === 0 ? (
+                  <CheckCircle2 aria-hidden className="size-5" />
+                ) : (
+                  <AlertTriangle aria-hidden className="size-5" />
+                )}
+                {fmtAr(dc.totals.drift)}
+              </p>
+              <p className={`mt-0.5 text-[11px] font-bold ${driftCls}`}>{driftLabel}</p>
+            </div>
           </div>
         </div>
+
+        {/* الورديات المفتوحة إن وجدت */}
+        {hasOpen && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <Clock className="size-4 text-primary" />
+              <span>
+                يوجد <strong>{dc.totals.openCount}</strong> وردية جارية لم تُغلق بعد — النقد الجاري التقديري بالدرج:{" "}
+                <strong className="tabular-nums" dir="ltr">{fmtAr(dc.totals.openRunningExpected)} د.ع</strong>
+              </span>
+            </div>
+            <div className="text-foreground">
+              إجمالي نقد الأدراج الفعلي (المعدود + الجاري):{" "}
+              <strong className="text-money-positive tabular-nums text-sm font-bold" dir="ltr">
+                {fmtAr(dc.totals.physicalDrawerCash)} د.ع
+              </strong>
+            </div>
+          </div>
+        )}
+
+        {/* الموقف النقدي الشامل للفرع (الأدراج + الخزينة) */}
+        {hasTreasuryCount && daily && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 border-t pt-2 text-xs">
+            <div className="rounded border bg-muted/10 p-2 text-center">
+              <span className="text-muted-foreground">نقد الأدراج الفعلي: </span>
+              <span className="font-bold tabular-nums" dir="ltr">{fmtAr(dc.totals.physicalDrawerCash)} د.ع</span>
+            </div>
+            <div className="rounded border bg-muted/10 p-2 text-center">
+              <span className="text-muted-foreground">نقد الخزينة الفعلي: </span>
+              <span className="font-bold tabular-nums" dir="ltr">{fmtAr(saved.countedTreasuryCash)} د.ع</span>
+              {saved.variance && !D(saved.variance).isZero() && (
+                <span className={`mr-1 font-semibold ${D(saved.variance).gt(0) ? "text-stock-low" : "text-money-negative"}`} dir="ltr">
+                  ({fmtAr(saved.variance)})
+                </span>
+              )}
+            </div>
+            <div className="rounded border border-money-positive/30 bg-money-positive/5 p-2 text-center">
+              <span className="text-muted-foreground">إجمالي نقد الفرع الفعلي: </span>
+              <span className="font-bold text-money-positive tabular-nums text-sm" dir="ltr">
+                {fmtAr(D(dc.totals.physicalDrawerCash).plus(saved.countedTreasuryCash).toString())} د.ع
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* سطر جسر التسليم (إن وُجد) */}
         {dc.totals.handoversCash !== "0.00" && (
@@ -571,12 +694,21 @@ function useShiftColumns(dc: DC) {
     {
       id: "expected", header: "المتوقَّع", accessorFn: (sh) => Number(sh.expected),
       cell: ({ row }) => <span className="font-semibold text-[var(--sem-info)]">{fmtAr(row.original.expected)}</span>,
-      footer: () => <span className="text-[var(--sem-info)]">{fmtAr(dc.totals.expected)}</span>, meta: { kind: "money" },
+      footer: () => (
+        <span className="text-[var(--sem-info)]" title={dc.totals.openCount > 0 ? `المغلقة: ${fmtAr(dc.totals.closedExpected)} · الجارية: ${fmtAr(dc.totals.openRunningExpected)}` : undefined}>
+          {fmtAr(dc.totals.expected)}
+        </span>
+      ),
+      meta: { kind: "money" },
     },
     {
       id: "counted", header: "المعدود", accessorFn: (sh) => (sh.counted == null ? -1 : Number(sh.counted)),
-      cell: ({ row }) => row.original.counted == null ? "—" : fmtAr(row.original.counted),
-      footer: () => fmtAr(dc.totals.counted), meta: { kind: "money" },
+      cell: ({ row }) => row.original.counted == null ? (
+        <span className="text-xs text-muted-foreground">جارية (لم تُغلق)</span>
+      ) : (
+        <span className="font-semibold">{fmtAr(row.original.counted)}</span>
+      ),
+      footer: () => <span title="المغلقة فقط">{fmtAr(dc.totals.counted)}</span>, meta: { kind: "money" },
     },
     {
       id: "drift", header: "الفرق", accessorFn: (sh) => (sh.drift == null ? 0 : Number(sh.drift)),
@@ -585,7 +717,7 @@ function useShiftColumns(dc: DC) {
         const drift = sh.drift == null ? null : Number(sh.drift);
         const cls = drift == null ? "text-muted-foreground" : drift === 0 ? "text-money-positive" : drift > 0 ? "text-stock-low" : "text-money-negative";
         return sh.drift == null ? (
-          <span className="text-[10px] text-muted-foreground">مفتوحة</span>
+          <span className="text-[11px] text-muted-foreground">—</span>
         ) : (
           <span className={`inline-flex items-center justify-end gap-1 font-semibold ${cls}`}>
             {drift === 0 ? <CheckCircle2 aria-hidden className="size-3.5" /> : <AlertTriangle aria-hidden className="size-3.5" />}
@@ -620,6 +752,18 @@ function ShiftTable({ dc }: { dc: DC }) {
           searchable={false}
           emptyText="لا ورديات في هذا اليوم."
         />
+        {dc.totals.openCount > 0 && (
+          <div className="border-t bg-muted/10 p-3 text-xs text-muted-foreground flex flex-wrap items-center justify-between gap-2">
+            <span>
+              يوجد <strong className="text-foreground">{dc.totals.openCount}</strong> وردية جارية مفتوحة برصيد متوقع:{" "}
+              <strong className="text-foreground tabular-nums" dir="ltr">{fmtAr(dc.totals.openRunningExpected)} د.ع</strong> لم تُعد بعد.
+            </span>
+            <span>
+              إجمالي النقد الفعلي بالأدراج (المعدود + الجاري):{" "}
+              <strong className="text-money-positive tabular-nums" dir="ltr">{fmtAr(dc.totals.physicalDrawerCash)} د.ع</strong>
+            </span>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

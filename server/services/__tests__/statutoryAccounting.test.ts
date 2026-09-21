@@ -12,7 +12,9 @@ import {
   getStatutoryActivationReadiness,
   replaceStatutoryAccounts,
   replaceStatutoryMappings,
+  seedIraqiUnifiedProfile,
 } from "../accounting/statutoryAccounting";
+import { IRAQI_UNIFIED_PROFILE_KEY } from "../accounting/iraqiUnifiedChartSeed";
 import { canActivate } from "../accounting/activationGate";
 import { writeJournal } from "../accounting/journalStore";
 import type { JournalLine } from "../accounting/postingEngine";
@@ -1006,5 +1008,188 @@ describe("statutory accounting compliance", () => {
     });
     expect(branchOne.available && branchOne.totals).toMatchObject({ debit: "10.00", credit: "0.00" });
     expect(branchTwo.available && branchTwo.totals).toMatchObject({ debit: "0.00", credit: "10.00" });
+  });
+
+  it("يبذر دليل النظام المحاسبي الموحد العراقي ويربط الحسابات التشغيلية بنسبة 100% ويجتاز بوابة الجاهزية", async () => {
+    await seedFoundation();
+    let seeded: Awaited<ReturnType<typeof seedIraqiUnifiedProfile>> | null = null;
+    await withTx(async (tx) => {
+      seeded = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+    });
+
+    expect(seeded).toBeDefined();
+    expect(seeded!.accountsImported).toBeGreaterThanOrEqual(50);
+    expect(seeded!.mappedAccounts).toBe(6);
+
+    await withTx(async (tx) => {
+      await approveStatutoryProfile(
+        tx,
+        {
+          profileId: seeded!.profileId,
+          accountantName: "مراقب الحسابات المعتمد",
+          approvalReference: "محضر المصادقة النظامي 1/2026",
+        },
+        ACTOR_ID,
+      );
+    });
+
+    const readiness = await getStatutoryActivationReadiness();
+    expect(readiness.ok).toBe(true);
+    expect(readiness.unmappedAccounts).toHaveLength(0);
+    expect(readiness.unresolvedJournalRoles).toHaveLength(0);
+    expect(readiness.activeProfile?.profileKey).toBe(IRAQI_UNIFIED_PROFILE_KEY);
+  });
+
+  it("يحافظ على تعديلات المحاسب في مسودة الدليل العراقي عند إعادة البذر", async () => {
+    await seedFoundation();
+    let firstSeed: Awaited<ReturnType<typeof seedIraqiUnifiedProfile>> | null = null;
+    await withTx(async (tx) => {
+      firstSeed = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+    });
+
+    const [customizedAccount] = await db()
+      .select({ id: s.statutoryAccounts.id })
+      .from(s.statutoryAccounts)
+      .where(
+        sql`${s.statutoryAccounts.profileId} = ${firstSeed!.profileId} AND ${s.statutoryAccounts.code} = '181'`,
+      )
+      .limit(1);
+    expect(customizedAccount).toBeDefined();
+    await db()
+      .update(s.statutoryAccounts)
+      .set({ name: "نقدية الصندوق — مراجعة المحاسب" })
+      .where(eq(s.statutoryAccounts.id, customizedAccount.id));
+
+    let rerun: Awaited<ReturnType<typeof seedIraqiUnifiedProfile>> | null = null;
+    await withTx(async (tx) => {
+      rerun = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+    });
+
+    const [afterRerun] = await db()
+      .select({ id: s.statutoryAccounts.id, name: s.statutoryAccounts.name })
+      .from(s.statutoryAccounts)
+      .where(eq(s.statutoryAccounts.id, customizedAccount.id))
+      .limit(1);
+    expect(rerun).toMatchObject({ profileId: firstSeed!.profileId, status: "DRAFT" });
+    expect(afterRerun).toEqual({
+      id: customizedAccount.id,
+      name: "نقدية الصندوق — مراجعة المحاسب",
+    });
+  });
+
+  it("يعامل الإصدار العراقي المتقاعد كسجل ثابت عند إعادة البذر", async () => {
+    await seedFoundation();
+    let firstSeed: Awaited<ReturnType<typeof seedIraqiUnifiedProfile>> | null = null;
+    await withTx(async (tx) => {
+      firstSeed = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+      await approveStatutoryProfile(
+        tx,
+        {
+          profileId: firstSeed.profileId,
+          accountantName: "مراقب الحسابات المعتمد",
+          approvalReference: "محضر اعتماد الإصدار العراقي الأول",
+        },
+        ACTOR_ID,
+      );
+    });
+    await approveCompleteProfile(2, "2026-09-01");
+
+    const accountSnapshot = () => db()
+      .select({
+        id: s.statutoryAccounts.id,
+        code: s.statutoryAccounts.code,
+        name: s.statutoryAccounts.name,
+      })
+      .from(s.statutoryAccounts)
+      .where(eq(s.statutoryAccounts.profileId, firstSeed!.profileId));
+    const mappingSnapshot = () => db()
+      .select({
+        id: s.statutoryAccountMappings.id,
+        internalAccountId: s.statutoryAccountMappings.internalAccountId,
+        statutoryAccountId: s.statutoryAccountMappings.statutoryAccountId,
+      })
+      .from(s.statutoryAccountMappings)
+      .where(eq(s.statutoryAccountMappings.profileId, firstSeed!.profileId));
+    const beforeAccounts = await accountSnapshot();
+    const beforeMappings = await mappingSnapshot();
+
+    let rerun: Awaited<ReturnType<typeof seedIraqiUnifiedProfile>> | null = null;
+    await withTx(async (tx) => {
+      rerun = await seedIraqiUnifiedProfile(tx, ACTOR_ID);
+    });
+
+    expect(rerun).toMatchObject({ profileId: firstSeed!.profileId, status: "RETIRED" });
+    expect(await accountSnapshot()).toEqual(beforeAccounts);
+    expect(await mappingSnapshot()).toEqual(beforeMappings);
+  });
+
+  it("يعفي سند OTHER التاريخي فقط عند ربطه فعلياً بسجل توريد توصيل", async () => {
+    await seedFoundation();
+    await db().insert(s.deliveryParties).values({
+      id: 1,
+      name: "شركة التوصيل الاختبارية",
+      partyType: "COMPANY",
+      branchId: 1,
+    });
+    await db().insert(s.receipts).values([
+      {
+        id: 201,
+        branchId: 1,
+        direction: "IN",
+        amount: "100.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        referenceNumber: "DR-1-20260916-1",
+        partyType: "OTHER",
+        counterpartyName: "مرجع يدوي مضلل",
+        createdBy: ACTOR_ID,
+      },
+      {
+        id: 202,
+        branchId: 1,
+        direction: "IN",
+        amount: "200.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        referenceNumber: "DR-1-20260916-2",
+        partyType: "OTHER",
+        counterpartyName: "توريد توصيل حقيقي",
+        createdBy: ACTOR_ID,
+      },
+      {
+        id: 203,
+        branchId: 1,
+        direction: "OUT",
+        amount: "20.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        referenceNumber: "DR-1-20260916-2",
+        partyType: "OTHER",
+        counterpartyName: "أجرة توصيل حقيقية",
+        createdBy: ACTOR_ID,
+      },
+    ]);
+    await db().insert(s.deliveryRemittances).values({
+      id: 1,
+      remittanceNumber: "DR-1-20260916-2",
+      branchId: 1,
+      partyId: 1,
+      collectedTotal: "200.00",
+      feesTotal: "20.00",
+      netRemitted: "180.00",
+      receiptInId: 202,
+      receiptOutId: 203,
+      status: "BALANCED",
+      receivedBy: ACTOR_ID,
+    });
+
+    const gate = await canActivate({ now: new Date("2026-09-16T12:00:00.000Z") });
+    const categoryBlocker = gate.blockers.find(
+      (item) => item.key === "VOUCHER_CATEGORY_MAPPING",
+    );
+    expect(gate.voucherCategoryMappingIssueCount).toBe(1);
+    expect(categoryBlocker?.detail).toContain("#201");
+    expect(categoryBlocker?.detail).not.toContain("#202");
+    expect(categoryBlocker?.detail).not.toContain("#203");
   });
 });

@@ -10,6 +10,7 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { notify } from "@/lib/notify";
 import { markPosTabsStockStale } from "@/lib/posStockRefresh";
 import { createTab, type PaymentMethod, type POSTab } from "./posShared";
+import { emptyDeliveryDraft } from "./deliveryMode";
 
 export interface UsePOSTabsDraftParams {
   shiftId: number | null | undefined;
@@ -59,6 +60,9 @@ export function usePOSTabsDraft({
         paymentRef: "",
         externalPayment: null,
         dueDate: t.dueDate ?? "",
+        // مسوّداتٌ محفوظة قبل إضافة بوليصة الشركة لا تحمل الحقول الجديدة؛ نطبّعها كي
+        // تبقى المدخلات controlled ويُستكمل partyType من قائمة الجهات عند تحميلها.
+        delivery: t.delivery ? { ...emptyDeliveryDraft(), ...t.delivery } : null,
       }))));
       if (hadLegacyDigital) notify.warn("أُزيلت كروت قديمة غير مكتملة من المسودة", "أعد إضافتها مع رقم العملية قبل البيع.");
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);

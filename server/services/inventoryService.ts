@@ -1,14 +1,14 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { branchStock, inventoryMovements, openingModeSettings, productUnits, productVariants, products } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import { variantDisplayName } from "@shared/variantDisplay";
 import type { Tx } from "../db";
-import type { DecimalInput } from "./money";
+import { money, round2, type DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
-import { lockInventoryVariants } from "./inventory/stockLock";
+import { ensureBranchStockRows, lockInventoryVariants } from "./inventory/stockLock";
 import { assertPeriodOpen } from "./periodLockService";
 
 export { ensureBranchStockRows } from "./inventory/stockLock";
@@ -138,12 +138,18 @@ export interface ApplyMovementArgs {
   notes?: string;
   createdBy?: number;
   /**
-   * يسمح للرصيد بالنزول تحت الصفر لحركة الخصم (OUT/TRANSFER_OUT) — **للمواد الاستهلاكية فقط**
-   * (ورق/حبر في نقطة بيع الطباعة): الخدمة لا تُرفض حين يُظهر النظام نفاد المادة، لكن الاستهلاك
-   * يُسجَّل كاملاً (حركة + رصيد سالب = إشارة صادقة لإعادة التزويد/الجرد). لا تستعمله لبضاعة إعادة البيع.
+   * يسمح للرصيد بالنزول تحت الصفر لحركة الخصم (OUT/TRANSFER_OUT) لواقعةٍ حدثت فعلاً، مثل
+   * إعادة تشغيل بيع طباعة التُقط أوفلاين: يُسجَّل الاستهلاك كاملاً (حركة + رصيد سالب = إشارة
+   * صادقة لإعادة التزويد/الجرد). لا تستعمله للبيع الحي أو لبضاعة إعادة البيع.
    * الافتراضي false ⇒ السلوك التاريخي (حظر البيع الزائد) محفوظ تماماً لكل المستدعين الحاليين.
    */
   allowNegative?: boolean;
+  /**
+   * هل تُحترم سياسة المنتج الدائمة `allowBackorder` عند الخصم؟ الافتراضي true.
+   * تضبطها مسارات الاستهلاك التي يجب أن تبقى صارمةً مهما كانت سياسة بيع المنتج نفسه؛
+   * ليست قناةً للسماح بالسالب، بل تعطيلٌ صريح لذلك الإعفاء فقط.
+   */
+  respectProductBackorder?: boolean;
   /**
    * «وضع الافتتاح» (ش٢، ١٩/٧): يسمح بالنزول تحت الصفر **فقط إذا كان الصنف غير مُفتتَح**
    * (branchStock.openedAt IS NULL) — يُفحص تحت قفل FOR UPDATE نفسه فلا سباق مع اعتماد جرد
@@ -176,6 +182,30 @@ export interface ApplyMovementResult {
   /** رُفع حين سمحت قناة allowNegative (أوفلاين/مواد خدمات) بنزول الرصيد تحت أرضية السالب (‑cap) —
    *  للكشف/التنبيه دون رفض (لا يُسقَط بيعٌ حصل فعلاً). المسار الحيّ يُرفض بدل رفع العلَم. */
   floorBreached?: boolean;
+}
+
+export interface ApplyValuedInboundMovementArgs {
+  variantId: number;
+  branchId: number;
+  baseQuantity: number;
+  /**
+   * القيمة التاريخية الكاملة للكمية العائدة، لا تكلفة اليوم ولا حاصل قسمةٍ معاد التقريب.
+   * تمرير القيمة الكاملة يحفظ بقايا السنت الموزعة على السطر الأصلي عند إعادة مزج WAVG.
+   */
+  historicalValue: DecimalInput;
+  movementType?: "IN" | "RETURN";
+  referenceType?: string;
+  referenceId?: number;
+  notes?: string;
+  createdBy?: number;
+}
+
+export interface ApplyValuedInboundMovementResult extends ApplyMovementResult {
+  previousCost: string;
+  newCost: string;
+  historicalValue: string;
+  /** إجمالي الرصيد العالمي المقفَل قبل الإدخال؛ قد يكون سالباً لصنف «يُباع بالطلب». */
+  previousGlobalQuantity: string;
 }
 
 /** أرضية السالب = openingModeSettings.maxNegativeQtyPerLine (صفّ singleton id=1)، والافتراض ١٠٠
@@ -264,7 +294,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
 
   // حارس الخصم المركزي: كل قناة (POS/API/dispatch/transfer) ترى الحجز الرسمي وتخصيصات
   // الطلبات الإلكترونية تحت الأقفال نفسها. dispatch يستثني طلبه وحده، فلا يخصم حصة B
-  // عند شحن A. allowNegative=true محجوز لوقائع خرجت فعلاً (offline/material consumption)
+  // عند شحن A. allowNegative=true محجوز لوقائع خرجت فعلاً (مثل استهلاك replay الأوفلاين)
   // ويجب تسجيلها ولو كشفت عجزاً؛ المسارات الحيّة لا تتجاوز هذا الحارس.
   const lockedAvailability = DEDUCTING.has(a.movementType)
       ? (await loadVariantAvailability(tx, a.branchId, [a.variantId], {
@@ -295,7 +325,8 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   // المخزون (الغالبية العظمى) لا يدفع أيّ استعلامٍ إضافيّ — وتُقرأ مرّةً واحدة لا مرّةً لكلّ حارس.
   let backorderCache: boolean | null = null;
   const isBackorder = async (): Promise<boolean> => {
-    if (a.allowNegative || unopenedAllowed) return false; // مسموحٌ سلفاً — لا حاجة للقراءة.
+    if (a.allowNegative || unopenedAllowed || a.respectProductBackorder === false) return false;
+    // مسموحٌ سلفاً أو هذا المسار يفرض مخزوناً متاحاً فعلياً — لا حاجة للقراءة.
     if (backorderCache == null) backorderCache = await isBackorderVariant(tx, a.variantId);
     return backorderCache;
   };
@@ -436,6 +467,145 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     .where(and(eq(branchStock.variantId, a.variantId), eq(branchStock.branchId, a.branchId)));
 
   return { movementId, newQuantity, floorBreached };
+}
+
+/**
+ * إدخالٌ مخزنيّ ذو قيمة تاريخية مع إعادة مزج WAVG ذرّياً.
+ *
+ * `applyMovement` هو مصدر حقيقة **الكمية والحركة**، لكنه لا يغيّر التكلفة لأن معظم الحركات
+ * (بيع/تحويل/مرتجع شراء) لا تضيف وعاء تكلفة جديداً. أمّا رجوع خامةٍ سبق إخراجها إلى WIP،
+ * فيعيد كميةً وقيمةً معاً؛ زيادة الكمية وحدها تُضخّم قيمة المخزون بسعر اليوم وتترك فرق WIP
+ * بلا مقابل داخل الأصل.
+ *
+ * ترتيب الأقفال حاكم ومشترك مع الشراء والإنتاج:
+ *   1) mutex المتغيّر (`productVariants`)،
+ *   2) ضمان صفّ الفرع الهدف،
+ *   3) **كل** أرصدة المتغيّر تصاعدياً بالفرع (WAVG عالمي)،
+ *   4) الحركة ثم تحديث `costPrice` داخل المعاملة نفسها.
+ *
+ * تُجمع الكمية من الصفوف التي أعادها `SELECT ... FOR UPDATE` نفسه. لا يلي القفلَ `SUM`
+ * متّسقٌ عادياً؛ ففي MySQL REPEATABLE READ قد يقرأ ذلك الـSUM لقطةً أقدم من الصفوف المقفلة.
+ */
+export async function applyValuedInboundMovement(
+  tx: Tx,
+  a: ApplyValuedInboundMovementArgs,
+): Promise<ApplyValuedInboundMovementResult> {
+  if (!Number.isInteger(a.baseQuantity) || a.baseQuantity <= 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إدخال المخزون بقيمته التاريخية",
+        why: `الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً، والمُرسَل ${a.baseQuantity}`,
+        doThis: "صحّح الكمية في المستند الأصلي ثمّ أعِد محاولة العكس",
+      }),
+    });
+  }
+  const historicalValue = round2(money(a.historicalValue));
+  if (historicalValue.isNegative()) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إدخال المخزون بقيمته التاريخية",
+        why: `قيمة الكمية العائدة لا يجوز أن تكون سالبة، والمُرسَل ${historicalValue.toFixed(2)}`,
+        doThis: "راجع لقطة تكلفة المستند الأصلي واستعمل قيمتها الموجبة عند الإرجاع",
+      }),
+    });
+  }
+
+  await lockInventoryVariants(tx, [a.variantId]);
+  if (await isServiceVariant(tx, a.variantId)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: `تعذّر إرجاع «${await describeVariantForMessage(tx, a.variantId)}» إلى المخزون بقيمة`,
+        why: "الصنف مصنّف الآن خدمةً بلا مخزون، بينما المستند التاريخي يطلب إعادة كمية وقيمة إلى الرفّ",
+        doThis: "صحّح تصنيف الصنف المخزني أولاً، ثمّ أعد تنفيذ الإلغاء كي لا تُسجَّل قيمة بلا كمية",
+      }),
+    });
+  }
+  if (await isBundleVariant(tx, a.variantId)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: `تعذّر إرجاع «${await describeVariantForMessage(tx, a.variantId)}» إلى المخزون بقيمة`,
+        why: "الصنف بكج بلا رصيد ذاتي؛ القيمة والكمية تخصّ مكوّناته لا رأس البكج",
+        doThis: "أوقف الإلغاء وراجع المستند الأصلي ومكوّنات البكج؛ يجب عكس المكوّنات التي خرجت فعلاً",
+      }),
+    });
+  }
+
+  await ensureBranchStockRows(tx, [a.variantId], a.branchId);
+  const lockedStockRows = await tx
+    .select({
+      branchId: branchStock.branchId,
+      quantity: branchStock.quantity,
+    })
+    .from(branchStock)
+    .where(eq(branchStock.variantId, a.variantId))
+    .orderBy(asc(branchStock.branchId))
+    .for("update");
+  const previousGlobalQuantity = lockedStockRows.reduce(
+    (sum, row) => sum.plus(row.quantity ?? 0),
+    new Decimal(0),
+  );
+
+  // Current read تحت mutex الصنف؛ `.for("update")` يمنع لقطة RR قديمة لو كانت هذه أول قراءة
+  // متّسقة في المعاملة، ويجعل الكمية والتكلفة من اللحظة المقفلة ذاتها.
+  const variant = (
+    await tx
+      .select({ costPrice: productVariants.costPrice })
+      .from(productVariants)
+      .where(eq(productVariants.id, a.variantId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!variant) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر إدخال المخزون بقيمته التاريخية",
+        why: `متغيّر المنتج رقم ${a.variantId} لم يعد موجوداً`,
+        doThis: "راجع المستند الأصلي وسجل المنتج قبل إعادة المحاولة",
+      }),
+    });
+  }
+
+  const previousCost = round2(money(variant.costPrice ?? "0"));
+  // سياسة WAVG الحالية تعامل الرصيد العالمي السالب كالتزام توريد لا كقيمة أصل سالبة؛
+  // لذلك لا يشارك السالب في البسط أو المقام، تماماً كما في استلام الشراء والإنتاج.
+  const carryingQuantity = Decimal.max(previousGlobalQuantity, 0);
+  const denominator = carryingQuantity.plus(a.baseQuantity);
+  const newCost = denominator.lte(0)
+    ? round2(historicalValue.div(a.baseQuantity))
+    : round2(
+        carryingQuantity
+          .times(previousCost)
+          .plus(historicalValue)
+          .div(denominator),
+      );
+
+  const movement = await applyMovement(tx, {
+    variantId: a.variantId,
+    branchId: a.branchId,
+    baseQuantity: a.baseQuantity,
+    movementType: a.movementType ?? "IN",
+    referenceType: a.referenceType,
+    referenceId: a.referenceId,
+    notes: a.notes,
+    createdBy: a.createdBy,
+  });
+  await tx
+    .update(productVariants)
+    .set({ costPrice: newCost.toFixed(2) })
+    .where(eq(productVariants.id, a.variantId));
+
+  return {
+    ...movement,
+    previousCost: previousCost.toFixed(2),
+    newCost: newCost.toFixed(2),
+    historicalValue: historicalValue.toFixed(2),
+    previousGlobalQuantity: previousGlobalQuantity.toString(),
+  };
 }
 
 export interface ConvertResult {

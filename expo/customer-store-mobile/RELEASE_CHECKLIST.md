@@ -29,6 +29,20 @@
 
 قبل الإرسال، يلزم إعداد Android App Bundle، صفحة المتجر، لقطات الشاشة، البريد الإلكتروني للدعم، رابط سياسة الخصوصية، واستمارة Data safety المتوافقة مع ما يجمعه التطبيق فعلاً. لا تضف بيانات أو أذونات لا تستخدمها النسخة المنشورة.
 
+يجب أن يمر فحص إعداد معماريات Android قبل البناء:
+
+```bash
+pnpm check:android-release
+```
+
+يفحص EAS ملف AAB الناتج تلقائياً في مرحلة `eas-build-on-success`. ولإعادة فحص حزمة منزّلة يدوياً:
+
+```bash
+pnpm check:android-release --aab /path/to/application.aab
+```
+
+يجب أن تحتوي الحزمة مكتبات React Native المطلوبة لكل من `armeabi-v7a` و`arm64-v8a` و`x86` و`x86_64`. لا تُعد تقييد `buildArchs` لتسريع البناء؛ Google Play يفصل المكتبات حسب ABI عند تسليم التطبيق للجهاز.
+
 المصدر الرسمي: [Google Play Console: إنشاء وإعداد تطبيق](https://support.google.com/googleplay/android-developer/answer/9859152?hl=en) و[Data safety](https://support.google.com/googleplay/android-developer/answer/10787469?hl=en).
 
 ## Apple App Store

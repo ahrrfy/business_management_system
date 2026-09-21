@@ -102,7 +102,7 @@ export const tasksRouter = router({
       if (!elevated && Number(ctx.user.branchId) !== input.branchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إنشاء مهمة لفرع آخر" });
       }
-      const res = await createTask(input, { userId: ctx.user.id, branchId: input.branchId, role: ctx.user.role });
+      const res = await createTask(input, { userId: ctx.user.id, branchId: input.branchId, role: ctx.user.role, name: ctx.user.name });
       await logAudit(ctx, {
         action: "task.create",
         entityType: "task",
@@ -113,7 +113,7 @@ export const tasksRouter = router({
     }),
 
   claim: tasksWriteProcedure.input(z.object({ taskId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
-    const res = await claimTask(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+    const res = await claimTask(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name });
     await logAudit(ctx, { action: "task.claim", entityType: "task", entityId: input.taskId });
     return res;
   }),
@@ -121,13 +121,13 @@ export const tasksRouter = router({
   setWaiting: tasksWriteProcedure
     .input(z.object({ taskId: z.number().int().positive(), note: z.string().max(2000).nullish() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await setWaiting(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role }, input.note ?? null);
+      const res = await setWaiting(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name }, input.note ?? null);
       await logAudit(ctx, { action: "task.setWaiting", entityType: "task", entityId: input.taskId });
       return res;
     }),
 
   resume: tasksWriteProcedure.input(z.object({ taskId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
-    const res = await resumeTask(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+    const res = await resumeTask(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name });
     await logAudit(ctx, { action: "task.resume", entityType: "task", entityId: input.taskId });
     return res;
   }),
@@ -137,7 +137,7 @@ export const tasksRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await resolveTask(
         input.taskId,
-        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name },
         input.resolutionNote ?? null,
       );
       await logAudit(ctx, { action: "task.resolve", entityType: "task", entityId: input.taskId });
@@ -147,7 +147,7 @@ export const tasksRouter = router({
   addComment: tasksWriteProcedure
     .input(z.object({ taskId: z.number().int().positive(), note: z.string().min(1).max(4000) }))
     .mutation(async ({ input, ctx }) => {
-      const res = await addComment(input.taskId, input.note, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await addComment(input.taskId, input.note, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name });
       await logAudit(ctx, { action: "task.comment", entityType: "task", entityId: input.taskId });
       return res;
     }),
@@ -156,7 +156,7 @@ export const tasksRouter = router({
   assign: tasksManagerProcedure
     .input(z.object({ taskId: z.number().int().positive(), assignedTo: z.number().int().positive().nullable() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await assignTask(input.taskId, input.assignedTo, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await assignTask(input.taskId, input.assignedTo, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name });
       await logAudit(ctx, { action: "task.assign", entityType: "task", entityId: input.taskId, newValue: { assignedTo: input.assignedTo } });
       return res;
     }),
@@ -164,7 +164,7 @@ export const tasksRouter = router({
   reopen: tasksManagerProcedure
     .input(z.object({ taskId: z.number().int().positive(), note: z.string().max(2000).nullish() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await reopenTask(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role }, input.note ?? null);
+      const res = await reopenTask(input.taskId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name }, input.note ?? null);
       await logAudit(ctx, { action: "task.reopen", entityType: "task", entityId: input.taskId });
       return res;
     }),
@@ -172,7 +172,7 @@ export const tasksRouter = router({
   cancel: tasksManagerProcedure
     .input(z.object({ taskId: z.number().int().positive(), note: z.string().min(1).max(2000) }))
     .mutation(async ({ input, ctx }) => {
-      const res = await cancelTask(input.taskId, input.note, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const res = await cancelTask(input.taskId, input.note, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role, name: ctx.user.name });
       await logAudit(ctx, { action: "task.cancel", entityType: "task", entityId: input.taskId, newValue: { note: input.note } });
       return res;
     }),

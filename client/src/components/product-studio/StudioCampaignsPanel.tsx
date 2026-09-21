@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
-import { Megaphone, PlayCircle, PauseCircle, CheckCircle2, XCircle, ChevronRight } from "lucide-react";
+import { Megaphone, PlayCircle, PauseCircle, CheckCircle2, XCircle, ChevronRight, Sparkles } from "lucide-react";
 import { STUDIO_CAMPAIGN_STATUS_AR, STUDIO_CAMPAIGN_STATUS_VARIANT, STUDIO_CAMPAIGN_EDITABLE, type StudioCampaignStatus } from "@shared/studioCampaignStatus";
 import { defaultStudioScope, STUDIO_EMPTY_HINTS, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
 
@@ -73,12 +73,36 @@ export function StudioCampaignsPanel({
     ? campaigns.data?.find((c) => Number(c.id) === selectedCampaignId) 
     : null;
 
+  const createCampaignBacklog = trpc.productStudio.createCampaignBacklog.useMutation({
+    onSuccess: async (data) => {
+      notify.ok(`تم توليد ${data.createdCount} مهمّة في طابور الحملة (${data.remaining} متبقّية)`);
+      if (!offline) {
+        await Promise.all([
+          utils.productStudio.campaigns.invalidate(),
+          utils.productStudio.tasks.invalidate(),
+          utils.productStudio.dashboard.invalidate(),
+        ]);
+      }
+    },
+    onError: (error: any) => notify.err(error),
+  });
+
   const createCampaign = trpc.productStudio.createCampaign.useMutation({
-    onSuccess: async () => {
-      notify.ok("تم إنشاء الحملة وإضافتها إلى الطابور");
+    onSuccess: async (data) => {
+      notify.ok("تم إنشاء الحملة بنجاح");
       setCampaignName("");
       setCampaignProductIds([]);
       setCampaignCategoryIds([]);
+      if (data.status === "ACTIVE") {
+        try {
+          const backlog = await createCampaignBacklog.mutateAsync({ campaignId: Number(data.campaignId) });
+          if (backlog.createdCount > 0) {
+            notify.ok(`تم توليد ${backlog.createdCount} مهمة في طابور الحملة`);
+          }
+        } catch (e: any) {
+          notify.err(e);
+        }
+      }
       if (!offline) {
         await Promise.all([
           utils.productStudio.campaigns.invalidate(),
@@ -93,6 +117,14 @@ export function StudioCampaignsPanel({
   const transitionCampaign = trpc.productStudio.transitionCampaign.useMutation({
     onSuccess: async (data, variables) => {
       notify.ok(`تغيّرت حالة الحملة إلى ${STUDIO_CAMPAIGN_STATUS_AR[variables.status as StudioCampaignStatus] ?? variables.status}`);
+      if (variables.status === "ACTIVE") {
+        try {
+          const backlog = await createCampaignBacklog.mutateAsync({ campaignId: Number(variables.campaignId) });
+          if (backlog.createdCount > 0) {
+            notify.ok(`تم توليد ${backlog.createdCount} مهمة جديدة في الطابور`);
+          }
+        } catch {}
+      }
       if (!offline) {
         await Promise.all([
           utils.productStudio.campaigns.invalidate(),
@@ -347,6 +379,17 @@ export function StudioCampaignsPanel({
                   onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
                 >
                   <CheckCircle2 aria-hidden className="size-4" /> إكمال الحملة
+                </Button>
+              )}
+              {selectedCampaign.status === "ACTIVE" && (
+                <Button
+                  variant="outline" className="min-h-11"
+                  disabled={offline || createCampaignBacklog.isPending}
+                  onClick={() => createCampaignBacklog.mutate({ campaignId: Number(selectedCampaign.id) })}
+                  title="مسح نطاق الحملة وتوليد مهام المنتجات الناقصة التي لم تدخل الطابور بعد"
+                >
+                  <Sparkles aria-hidden className="size-4" />
+                  {createCampaignBacklog.isPending ? "جارٍ التوليد…" : "توليد / تحديث طابور الحملة"}
                 </Button>
               )}
               {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE" || selectedCampaign.status === "PAUSED") && (

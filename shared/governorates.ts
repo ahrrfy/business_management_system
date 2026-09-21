@@ -14,6 +14,7 @@ export interface Governorate {
 }
 
 export const GOVERNORATES: Governorate[] = [
+  { id: "baghdad_amiriya", name: "بغداد - العامرية", deliveryFee: 2000 },
   { id: "baghdad", name: "بغداد", deliveryFee: 5000 },
   { id: "basra", name: "البصرة", deliveryFee: 8000 },
   { id: "nineveh", name: "نينوى (الموصل)", deliveryFee: 8000 },
@@ -44,3 +45,18 @@ export function governorateById(id: string): Governorate | undefined {
 export function deliveryFeeFor(id: string): number {
   return governorateById(id)?.deliveryFee ?? 0;
 }
+
+/** هل المحافظة تابعة لبغداد (بغداد المركز أو العامرية أو أي نطاق بغدادي)؟ */
+export function isBaghdadGovernorate(id: string | null | undefined): boolean {
+  if (!id) return false;
+  const trimmed = id.trim().toLowerCase();
+  return (
+    trimmed === "baghdad" ||
+    trimmed === "baghdad_amiriya" ||
+    trimmed.startsWith("baghdad_") ||
+    trimmed.startsWith("baghdad-") ||
+    trimmed === "بغداد" ||
+    trimmed.startsWith("بغداد")
+  );
+}
+

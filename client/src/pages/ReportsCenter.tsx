@@ -4,6 +4,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { formatIqd } from "@/lib/money";
@@ -229,6 +230,7 @@ export default function ReportsCenter() {
   const me = trpc.auth.me.useQuery();
   const metrics = trpc.reports.dashboardMetrics.useQuery(undefined, { staleTime: 60_000 });
   const [q, setQ] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [favs, setFavs] = useState<Set<string>>(() => loadFavs());
 
   const role = me.data?.role;
@@ -250,14 +252,15 @@ export default function ReportsCenter() {
   const match = (it: ReportItem) =>
     !needle || it.title.includes(needle) || it.desc.includes(needle);
 
-  // الأقسام المرئية بعد الأدوار + البحث
+  // الأقسام المرئية بعد الأدوار + البحث + التبويب المحدد
   const visibleSections = useMemo(
     () =>
-      SECTIONS.map((s) => ({
-        ...s,
-        items: s.items.filter((it) => (!it.ownerOnly || isOwner) && canSeeGate(resolveGate(it.gate, s.key), role, permsOverride) && match(it)),
-      })).filter((s) => s.items.length > 0),
-    [needle, role, permsOverride, isOwner],
+      SECTIONS.filter((s) => selectedCategory === "all" || s.key === selectedCategory)
+        .map((s) => ({
+          ...s,
+          items: s.items.filter((it) => (!it.ownerOnly || isOwner) && canSeeGate(resolveGate(it.gate, s.key), role, permsOverride) && match(it)),
+        })).filter((s) => s.items.length > 0),
+    [needle, role, permsOverride, isOwner, selectedCategory],
   );
 
   // المفضّلة (الجاهزة فقط ومرئية)
@@ -284,6 +287,36 @@ export default function ReportsCenter() {
           />
         }
       />
+
+      {/* تصنيفات وتبويب التقارير السريعة */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b pb-3">
+        <Button
+          type="button"
+          size="sm"
+          variant={selectedCategory === "all" ? "default" : "outline"}
+          className="h-8 text-xs font-medium"
+          onClick={() => setSelectedCategory("all")}
+        >
+          كل الأقسام
+        </Button>
+        {SECTIONS.map((s) => {
+          const count = s.items.filter((it) => (!it.ownerOnly || isOwner) && canSeeGate(resolveGate(it.gate, s.key), role, permsOverride)).length;
+          if (count === 0) return null;
+          return (
+            <Button
+              key={s.key}
+              type="button"
+              size="sm"
+              variant={selectedCategory === s.key ? "default" : "outline"}
+              className="h-8 text-xs font-medium gap-1"
+              onClick={() => setSelectedCategory(s.key)}
+            >
+              {s.label}
+              <span className="opacity-70 text-[10px] tabular-nums">({count})</span>
+            </Button>
+          );
+        })}
+      </div>
 
       {/* مؤشّرات حيّة */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">

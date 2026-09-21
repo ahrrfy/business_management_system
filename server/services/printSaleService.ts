@@ -9,20 +9,19 @@
  * (revenue صافٍ، cost = كلفة المواد)، تقريب نقدي IQD + قيد ADJUST، PAYMENT_IN + إيصال + ذمم AR،
  * idempotency عبر invoices.sourceId، قفل الوردية/العميل، وفحص حدّ الائتمان.
  *
- * سلامة المخزون: النواتج المخزنية تُباع بحركة OUT صارمة، أمّا مواد البنود بلا مخزون فتُستهلك
- * عبر applyMovement مع allowNegative كي يبقى استهلاكها مُتعقَّباً بالكامل.
+ * سلامة المخزون: النواتج المخزنية ومواد البنود بلا مخزون تُباع بحركات OUT صارمة؛ نقص أي مادة
+ * يرفض المعاملة كاملةً بدلاً من إنشاء رصيد سالب.
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   customers,
+  invoiceItemServiceMaterials,
   invoiceItems,
   invoices,
   productVariants,
   products,
-  productionRecipeLines,
-  productionRecipes,
   receipts,
   shifts,
 } from "../../drizzle/schema";
@@ -36,6 +35,7 @@ import {
 } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { lockInventoryVariants } from "./inventory/stockLock";
+import { assertStockedOwnedMaterials } from "./inventory/materialEligibility";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "./accounting/postingEngine";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
@@ -59,9 +59,26 @@ import {
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { appErrorMessage } from "@shared/errors";
+import {
+  discoverServiceRecipeDefinitions,
+  exactRecipeMaterialQuantity,
+  SERVICE_RECIPE_CONSUMPTION_NOTE,
+  serviceRecipeDefinitionsFingerprint,
+} from "./serviceRecipeConsumption";
 
 /** علامة عرض ومسار بيع لبنود الطباعة، سواء كانت بلا مخزون أم نواتج مخزنية. */
 export const PRINT_SERVICE_TYPE = "PRINT_SERVICE";
+
+/** رمز خادمي لا يمكن صياغته من حمولة tRPC؛ يفتح السالب لوقائع الطباعة الملتقطة أوفلاين فقط. */
+export const OFFLINE_PRINT_REPLAY_CAPABILITY = Symbol("OFFLINE_PRINT_REPLAY_CAPABILITY");
+
+function printServiceCatalogError(why: string): string {
+  return appErrorMessage({
+    what: "تعذّر حفظ بيع خدمات الطباعة",
+    why,
+    doThis: "حدّث الخدمات والوصفات ثم أعد إنشاء الفاتورة",
+  });
+}
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
 
@@ -155,7 +172,19 @@ interface MaterialConsumption {
   unitCost: Decimal; // كلفة الوحدة الأساس (snapshot)
 }
 
-export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
+interface ServiceMaterialSnapshot {
+  materialVariantId: number;
+  baseQuantity: number;
+  unitCost: string;
+  lineCost: string;
+}
+
+export async function createPrintSaleInTx(
+  tx: Tx,
+  input: CreatePrintSaleInput,
+  actor: Actor,
+  capability?: typeof OFFLINE_PRINT_REPLAY_CAPABILITY,
+): Promise<CreatePrintSaleResult> {
     // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود التوصيل (COD) لا معلومةٌ مستقلّة؛ إدراجُه في بصمة
     // idempotency يكسر تكرارَ بيع طباعةٍ التزم قبل نشر م١ (بصمتُه بلا paymentMode) بـCONFLICT بدل replay.
     // نستبعده من البصمة وحدها — نظير `createSaleInTx`.
@@ -290,70 +319,216 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
-    // ٤. تحقّق أنّ كل سطر بندُ طباعة، وحمّل نوعه المخزني وكلفة متوسطه المرجّح.
+    // ٤. ثبّت تصنيف المنتج قبل المتغيّر: القراءة الأولى لا تتخذ قراراً، بل تكشف آباء الأسطر
+    //    كي تُقفل صفوف products أولاً. بعدها فقط يُبنى نوع السطر من الصفوف المقفلة، ثم يُقفل
+    //    اتحاد المتغيّرات والمواد ويُعاد فحص حالة المتغيّر. هذا يمنع تبديل النوع/التفعيل بين
+    //    التصنيف والخصم، ويحافظ على ترتيب products → variants المتفق عليه بين الكتّاب.
     const lineVarIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
-    const rawVarRows = await tx
+    const preparedLineRows = await tx
       .select({
         id: productVariants.id,
-        isActive: productVariants.isActive,
+        productId: productVariants.productId,
+        productType: products.productType,
+        isService: products.isService,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, lineVarIds));
+    const preparedProductIdByVariant = new Map(
+      preparedLineRows.map((row) => [Number(row.id), Number(row.productId)]),
+    );
+    function throwMissingPrintService(variantId: number | string): never {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: printServiceCatalogError(`الخدمة ${variantId} غير موجودة`),
+      });
+    }
+    if (preparedProductIdByVariant.size !== lineVarIds.length) {
+      const missing = lineVarIds.find((variantId) => !preparedProductIdByVariant.has(variantId));
+      throwMissingPrintService(missing ?? "");
+    }
+
+    const discoveredNonStockVariantIds = preparedLineRows
+      .filter((row) => row.isService === true)
+      .map((row) => Number(row.id));
+    let serviceRecipes = await discoverServiceRecipeDefinitions(
+      tx,
+      discoveredNonStockVariantIds,
+    );
+    const materialVarIds = Array.from(
+      new Set(
+        Array.from(serviceRecipes.values()).flatMap((recipe) =>
+          recipe.lines.map((line) => line.inputVariantId),
+        ),
+      ),
+    ).sort((a, b) => a - b);
+    const fullScopeVariantIds = Array.from(
+      new Set([...lineVarIds, ...materialVarIds]),
+    ).sort((a, b) => a - b);
+    const scopeRefs = await tx
+      .select({ id: productVariants.id, productId: productVariants.productId })
+      .from(productVariants)
+      .where(inArray(productVariants.id, fullScopeVariantIds))
+      .orderBy(productVariants.id);
+    if (scopeRefs.length !== fullScopeVariantIds.length) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت نطاق مواد خدمات الطباعة",
+          why: "مادة وصفة تغيّرت أو حُذفت أثناء تجهيز البيع",
+          doThis: "حدّث شاشة الطباعة وأعد المحاولة",
+        }),
+      });
+    }
+
+    const lineProductIds = Array.from(
+      new Set(scopeRefs.map((row) => Number(row.productId))),
+    )
+      .sort((a, b) => a - b);
+    const lockedProducts = await tx
+      .select({
+        id: products.id,
+        isActive: products.isActive,
         productType: products.productType,
         productName: products.name,
         invoiceLabel: products.invoiceLabel,
         shortTitle: products.shortTitle,
         isService: products.isService,
       })
-      .from(productVariants)
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(inArray(productVariants.id, lineVarIds));
-    const varRows = rawVarRows.map((v) => ({ ...v, costPrice: "0" }));
-    const varMap = new Map(varRows.map((v) => [Number(v.id), v]));
+      .from(products)
+      .where(inArray(products.id, lineProductIds))
+      .orderBy(products.id)
+      .for("update");
+    const lockedProductById = new Map(lockedProducts.map((product) => [Number(product.id), product]));
+    if (lockedProductById.size !== lineProductIds.length) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت منتجات خدمات الطباعة",
+          why: "أحد المنتجات غير موجود أو حُذف أثناء تجهيز البيع",
+          doThis: "حدّث شاشة الطباعة واختر الخدمة مجدداً",
+        }),
+      });
+    }
+
+    function throwDisabledPrintService(variantId: number): never {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: printServiceCatalogError(`الخدمة ${variantId} معطّلة`),
+      });
+    }
+    function throwNonPrintService(): never {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: printServiceCatalogError("هذه الشاشة تبيع خدمات الطباعة فقط"),
+      });
+    }
+    // فحص المنتج المقفول قبل تحميل وصفته يحافظ على رسالة القناة الصحيحة للصنف غير الصالح.
     for (const l of input.lines) {
-      const v = varMap.get(l.variantId);
-      if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `الخدمة ${l.variantId} غير موجودة` });
-      if (v.isActive === false) throw new TRPCError({ code: "BAD_REQUEST", message: `الخدمة ${l.variantId} معطّلة` });
-      if (v.productType !== PRINT_SERVICE_TYPE) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "هذه الشاشة تبيع خدمات الطباعة فقط" });
+      const product = lockedProductById.get(preparedProductIdByVariant.get(l.variantId)!);
+      if (!product) throwMissingPrintService(l.variantId);
+      if (product.isActive !== true) {
+        throwDisabledPrintService(l.variantId);
+      }
+      if (product.productType !== PRINT_SERVICE_TYPE) {
+        throwNonPrintService();
+      }
+      const wasService = discoveredNonStockVariantIds.includes(l.variantId);
+      if ((product.isService === true) !== wasService) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: `تغيّر تصنيف خدمة الطباعة #${l.variantId} أثناء تجهيز البيع`,
+            why: "تحول الصنف بين مخزني وخدمي بعد اكتشاف نطاق المواد",
+            doThis: "حدّث شاشة الطباعة وأعد العملية",
+          }),
+        });
       }
     }
 
     // ٥. الوصفة عند البيع تخص البنود بلا مخزون فقط. وصفة الناتج المخزني ينفذها أمر الإنتاج.
-    const nonStockVariantIds = varRows.filter((v) => v.isService === true).map((v) => Number(v.id));
-    const recipeHeads = nonStockVariantIds.length
-      ? await tx
-          .select({ id: productionRecipes.id, outputVariantId: productionRecipes.outputVariantId })
-          .from(productionRecipes)
-          .where(and(inArray(productionRecipes.outputVariantId, nonStockVariantIds), eq(productionRecipes.isActive, true)))
-          .orderBy(desc(productionRecipes.id)) // اختيار حتمي: الأحدث يفوز (لا اعتماد على ترتيب القاعدة)
-      : [];
-    const recipeByOutput = new Map<number, number>(); // outputVariantId → recipeId (الأحدث = الأول بعد desc)
-    for (const r of recipeHeads) if (!recipeByOutput.has(Number(r.outputVariantId))) recipeByOutput.set(Number(r.outputVariantId), Number(r.id));
-    const recipeIds = Array.from(new Set(recipeByOutput.values()));
-    const recLines = recipeIds.length
-      ? await tx
-          .select({
-            recipeId: productionRecipeLines.recipeId,
-            inputVariantId: productionRecipeLines.inputVariantId,
-            qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
-          })
-          .from(productionRecipeLines)
-          .where(inArray(productionRecipeLines.recipeId, recipeIds))
-      : [];
-    const linesByRecipe = new Map<number, Array<{ inputVariantId: number; qtyPerOutputBase: string }>>();
-    for (const rl of recLines) {
-      const rid = Number(rl.recipeId);
-      if (!linesByRecipe.has(rid)) linesByRecipe.set(rid, []);
-      linesByRecipe.get(rid)!.push({ inputVariantId: Number(rl.inputVariantId), qtyPerOutputBase: String(rl.qtyPerOutputBase) });
+    const nonStockVariantIds = discoveredNonStockVariantIds;
+    await lockInventoryVariants(tx, fullScopeVariantIds);
+    const currentServiceRecipes = await discoverServiceRecipeDefinitions(
+      tx,
+      nonStockVariantIds,
+    );
+    if (
+      serviceRecipeDefinitionsFingerprint(serviceRecipes) !==
+      serviceRecipeDefinitionsFingerprint(currentServiceRecipes)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: printServiceCatalogError("تغيّرت وصفة مواد خدمة الطباعة أثناء حفظ الفاتورة"),
+      });
     }
-    // كلفة المواد المُستهلَكة (snapshot من costPrice).
-    const materialVarIds = Array.from(new Set(recLines.map((rl) => Number(rl.inputVariantId))));
-    await lockInventoryVariants(tx, lineVarIds.concat(materialVarIds));
-    const lockedLineCosts = await tx
-      .select({ id: productVariants.id, costPrice: productVariants.costPrice })
+    serviceRecipes = currentServiceRecipes;
+    await assertStockedOwnedMaterials(
+      tx,
+      materialVarIds,
+      "مكوّن وصفة خدمة الطباعة",
+    );
+    const lockedLineRows = await tx
+      .select({
+        id: productVariants.id,
+        productId: productVariants.productId,
+        isActive: productVariants.isActive,
+        costPrice: productVariants.costPrice,
+      })
       .from(productVariants)
-      .where(inArray(productVariants.id, lineVarIds));
-    for (const row of lockedLineCosts) {
-      const current = varMap.get(Number(row.id));
-      if (current) current.costPrice = String(row.costPrice ?? "0");
+      .where(inArray(productVariants.id, lineVarIds))
+      .orderBy(productVariants.id)
+      .for("update");
+    if (lockedLineRows.length !== lineVarIds.length) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت متغيّرات خدمات الطباعة",
+          why: "أحد المتغيّرات لم يعد موجوداً أثناء تجهيز البيع",
+          doThis: "حدّث شاشة الطباعة وراجع الخدمات ثم أعد المحاولة",
+        }),
+      });
+    }
+    const varRows = lockedLineRows.map((row) => {
+      const id = Number(row.id);
+      const productId = Number(row.productId);
+      if (preparedProductIdByVariant.get(id) !== productId) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تثبيت خدمة الطباعة",
+            why: "تغيّر ارتباط المتغيّر بمنتجه أثناء تجهيز البيع",
+            doThis: "حدّث شاشة الطباعة واختر الخدمة مجدداً ثم أعد المحاولة",
+          }),
+        });
+      }
+      const product = lockedProductById.get(productId);
+      if (!product) {
+        throwMissingPrintService(id);
+      }
+      return {
+        id,
+        isActive: row.isActive,
+        productIsActive: product.isActive,
+        productType: product.productType,
+        productName: product.productName,
+        invoiceLabel: product.invoiceLabel,
+        shortTitle: product.shortTitle,
+        isService: product.isService,
+        costPrice: String(row.costPrice ?? "0"),
+      };
+    });
+    const varMap = new Map(varRows.map((variant) => [variant.id, variant]));
+    for (const l of input.lines) {
+      const variant = varMap.get(l.variantId);
+      if (!variant) throwMissingPrintService(l.variantId);
+      // NULL في قواعد قديمة لا يُعد تفعيلًا: لا فشلَ مفتوحاً بعد انتظار الأقفال.
+      if (variant.isActive !== true || variant.productIsActive !== true) {
+        throwDisabledPrintService(l.variantId);
+      }
+      if (variant.productType !== PRINT_SERVICE_TYPE) {
+        throwNonPrintService();
+      }
     }
     const matCostRows = materialVarIds.length
       ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(inArray(productVariants.id, materialVarIds))
@@ -369,6 +544,9 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       quantity: string;
       total: string;
       unitCost: string; // لقطة كلفة الوحدة الأساس وقت البيع
+      lineCost: string; // الكلفة الدقيقة الكاملة؛ لا يُعاد اشتقاقها من unitCost المدوّر
+      isService: boolean;
+      serviceMaterials: ServiceMaterialSnapshot[];
       invoiceName: string;
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
@@ -395,26 +573,58 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       }
 
       let unitCost = round2(money(variant.costPrice));
+      let lineCost = round2(unitCost.times(baseQuantity));
+      let serviceMaterials: ServiceMaterialSnapshot[] = [];
       if (isStocked) {
         stockedAgg.set(l.variantId, (stockedAgg.get(l.variantId) ?? 0) + baseQuantity);
       } else {
-        // للبند بلا مخزون: وسّع وصفته واحسب كلفة مواده الفعلية.
-        let lineCost = new Decimal(0);
-        const recipeId = recipeByOutput.get(l.variantId);
-        if (recipeId != null) {
-          for (const rl of linesByRecipe.get(recipeId) ?? []) {
-            // الاستهلاك = qtyPerOutputBase × كمية الخدمة الأساس، ويُدوَّر لوحدة مخزون صحيحة.
-            const consumed = Math.max(0, Math.round(money(rl.qtyPerOutputBase).times(baseQuantity).toNumber()));
-            if (consumed <= 0) continue;
+        // للبند بلا مخزون: وسّع وصفته مرةً واحدة واحفظ الكلفة والمواد كلقطة السطر الحاكمة.
+        let exactLineCost = new Decimal(0);
+        const materialByVariant = new Map<number, {
+          baseQuantity: number;
+          unitCost: string;
+          lineCost: Decimal;
+        }>();
+        const recipe = serviceRecipes.get(l.variantId);
+        if (recipe) {
+          for (const rl of recipe.lines) {
+            const consumed = exactRecipeMaterialQuantity(
+              rl.qtyPerOutputBase,
+              baseQuantity,
+              `مادة الوصفة #${rl.inputVariantId}`,
+            );
             const materialUnitCost = round2(matCostMap.get(rl.inputVariantId) ?? new Decimal(0));
-            lineCost = lineCost.plus(round2(materialUnitCost.times(consumed)));
-            const agg = materialAgg.get(rl.inputVariantId) ?? { baseQuantity: 0, unitCost: materialUnitCost };
-            agg.baseQuantity += consumed;
-            materialAgg.set(rl.inputVariantId, agg);
+            const materialLineCost = round2(materialUnitCost.times(consumed));
+            exactLineCost = exactLineCost.plus(materialLineCost);
+            const current = materialByVariant.get(rl.inputVariantId) ?? {
+              baseQuantity: 0,
+              unitCost: materialUnitCost.toFixed(2),
+              lineCost: money(0),
+            };
+            current.baseQuantity += consumed;
+            current.lineCost = current.lineCost.plus(materialLineCost);
+            materialByVariant.set(rl.inputVariantId, current);
           }
         }
-        lineCost = round2(lineCost);
+        lineCost = round2(exactLineCost);
         unitCost = baseQuantity > 0 ? round2(lineCost.div(baseQuantity)) : new Decimal(0);
+        serviceMaterials = Array.from(materialByVariant.entries())
+          .sort((a, b) => a[0] - b[0])
+          .map(([materialVariantId, snapshot]) => ({
+            materialVariantId,
+            baseQuantity: snapshot.baseQuantity,
+            unitCost: snapshot.unitCost,
+            lineCost: round2(snapshot.lineCost).toFixed(2),
+          }));
+        // الخصم الإجمالي مشتق من اللقطات نفسها التي ستُحفظ للعكس، لا من وصفة حيّة ثانية.
+        for (const snapshot of serviceMaterials) {
+          const agg = materialAgg.get(snapshot.materialVariantId) ?? {
+            baseQuantity: 0,
+            unitCost: money(snapshot.unitCost),
+          };
+          agg.baseQuantity += snapshot.baseQuantity;
+          materialAgg.set(snapshot.materialVariantId, agg);
+        }
       }
       computed.push({
         variantId: l.variantId,
@@ -424,14 +634,16 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         quantity: lineRes.quantity,
         total: lineRes.total,
         unitCost: unitCost.toFixed(2),
+        lineCost: lineCost.toFixed(2),
+        isService: !isStocked,
+        serviceMaterials,
         invoiceName: titleForChannel({ name: variant.productName, invoiceLabel: variant.invoiceLabel, shortTitle: variant.shortTitle }, "invoice"),
       });
     }
 
-    // ٧. الإجماليات + COGS. costTotal = Σ(unitCost × baseQuantity) (نفس تعريف saleService بالضبط)
-    //    ⇒ تقارير الكلفة/الربح تعيد إنتاج costTotal والدفتر من invoiceItems.unitCost بلا انحراف سنتيّ.
+    // ٧. الإجماليات + COGS. lineCost هو المصدر الحاكم؛ unitCost مدوّر للعرض وقد لا يعيد إنتاجه.
     const totals = computeInvoiceTotals({ lineTotals: computed.map((c) => c.total) });
-    const costTotal = money(computeInvoiceCost(computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))));
+    const costTotal = money(computeInvoiceCost(computed));
 
     // ٧.b SALES-01/02 (قناة الطباعة) — بوّابة البيع تحت تكلفة المواد. كاشير الطباعة يضبط سعر
     //     الخدمة يدوياً ⇒ نَمنع سعراً/خصماً يَنزل بالخدمة/الفاتورة تحت كلفة موادها بلا موافقة مدير.
@@ -618,20 +830,30 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     }
 
     // ١٠. أصناف الفاتورة بلقطة كلفتها وقت البيع.
-    if (computed.length > 0) {
-      await tx.insert(invoiceItems).values(
-        computed.map((c) => ({
-          invoiceId,
-          variantId: c.variantId,
-          productUnitId: c.productUnitId,
-          quantity: c.quantity,
-          baseQuantity: c.baseQuantity,
-          unitPrice: c.unitPrice,
-          unitCost: c.unitCost,
-          total: c.total,
-          itemNameSnapshot: c.invoiceName,
-        })),
-      );
+    for (const c of computed) {
+      const itemInsRes = await tx.insert(invoiceItems).values({
+        invoiceId,
+        variantId: c.variantId,
+        productUnitId: c.productUnitId,
+        quantity: c.quantity,
+        baseQuantity: c.baseQuantity,
+        unitPrice: c.unitPrice,
+        unitCost: c.unitCost,
+        lineCost: c.lineCost,
+        serviceMaterialsSnapshotted: c.isService,
+        total: c.total,
+        itemNameSnapshot: c.invoiceName,
+      });
+      const invoiceItemId = extractInsertId(itemInsRes);
+      for (const material of c.serviceMaterials) {
+        await tx.insert(invoiceItemServiceMaterials).values({
+          invoiceItemId,
+          materialVariantId: material.materialVariantId,
+          baseQuantity: material.baseQuantity,
+          unitCost: material.unitCost,
+          lineCost: material.lineCost,
+        });
+      }
     }
 
     // النواتج المخزنية: خصم الناتج نفسه. لا تُنفّذ الوصفة هنا؛ الوصفة تخص أمر الإنتاج فقط.
@@ -648,8 +870,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       });
     }
 
-    // ١١. خصم مواد البنود بلا مخزون — حركة OUT واحدة لكل مادة، بترتيب variantId حتمي،
-    //     مع allowNegative (لا تُرفَض الخدمة عند نفاد المادة؛ الاستهلاك يبقى مُتعقَّباً).
+    // ١١. خصم مواد البنود بلا مخزون — حركة OUT صارمة واحدة لكل مادة وبترتيب variantId حتمي.
+    //     أي نقص يرمي فتُرجَع الفاتورة وبنودها وحركاتها كلها مع المعاملة.
     const materials: MaterialConsumption[] = Array.from(materialAgg.entries())
       .map(([variantId, m]) => ({ variantId, baseQuantity: m.baseQuantity, unitCost: m.unitCost }))
       .sort((a, b) => a.variantId - b.variantId);
@@ -663,7 +885,11 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         referenceType: "PRINT_SALE",
         referenceId: invoiceId,
         createdBy: actor.userId,
-        allowNegative: true,
+        notes: SERVICE_RECIPE_CONSUMPTION_NOTE,
+        // مادة الخدمة الحيّة ليست «بيعاً بالطلب» حتى لو حمل منتجها ذلك الوسم؛ يلزم رصيد فعلي.
+        respectProductBackorder: false,
+        // الواقعة الملتقطة أوفلاين حدثت فعلاً، فيُسجَّل عجزها بدلاً من إسقاطها عند الإعادة.
+        allowNegative: capability === OFFLINE_PRINT_REPLAY_CAPABILITY,
       });
     }
 
@@ -765,6 +991,10 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
 }
 
 /** Public wrapper for callers that need a standalone atomic print sale. */
-export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
-  return withTx((tx) => createPrintSaleInTx(tx, input, actor));
+export async function createPrintSale(
+  input: CreatePrintSaleInput,
+  actor: Actor,
+  capability?: typeof OFFLINE_PRINT_REPLAY_CAPABILITY,
+): Promise<CreatePrintSaleResult> {
+  return withTx((tx) => createPrintSaleInTx(tx, input, actor, capability));
 }

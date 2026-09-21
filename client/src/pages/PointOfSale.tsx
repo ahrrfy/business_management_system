@@ -1,7 +1,13 @@
-import { Suspense, useEffect, useMemo } from "react";
+import { Suspense, useCallback, useEffect, useMemo } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { CalendarClock, ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
+import {
+  buildPosModeUrl,
+  isEmbeddedReservationsWorkspace,
+  isPosRouteAccessDenied,
+  readPosMode,
+} from "@/lib/posRoute";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -74,19 +80,17 @@ const MODES: {
   },
 ];
 
-function readMode(searchString: string): Mode {
-  const m = new URLSearchParams(searchString).get("mode");
-  if (m === "PRINT_SERVICES" || m === "RECEPTION" || m === "RETAIL") return m;
-  return "RETAIL";
-}
-
 export default function PointOfSale() {
   const [, navigate] = useLocation();
   // P1 fix (٢٤/٦/٢٦): useSearch تُعيد query string مُتفاعلاً (يَتغيّر مع كل تَنقّل بـquery
   // مُختلف). useLocation وَحدها تُعيد pathname فقط ⇒ التَبديل بَين الأوضاع لم يكن يُعيد
   // تَقييم activeMode، فيَبقى RETAIL مَركَّباً والـtabs «تَعمل بَصرياً» بلا تَأثير.
   const search = useSearch();
-  const activeMode = useMemo(() => readMode(search), [search]);
+  const requestedMode = useMemo(() => readPosMode(search), [search]);
+  // قيمة mode المجهولة لا تُفتح كتجزئة بصمت: نعرض حالةً آمنة لحظياً ثم يعيد effect أدناه
+  // توجيهها إلى أول محطة مسموحة مع استبدال سجلّ التاريخ.
+  const invalidMode = requestedMode == null;
+  const activeMode: Mode = requestedMode ?? "RETAIL";
   const reservationsWorkspace = useMemo(
     () => new URLSearchParams(search).get("workspace") === "reservations",
     [search],
@@ -112,20 +116,36 @@ export default function PointOfSale() {
     "READ",
     RESERVATION_READ_ROLES,
   );
-  const accessDenied = !meLoading && (
-    reservationsWorkspace
-      ? !canReadReservations
-      : activeModeMeta != null && !canSeeMode(activeModeMeta.v, myRole, myPerms)
+  const canSeeActiveMode =
+    activeModeMeta != null && canSeeMode(activeModeMeta.v, myRole, myPerms);
+  const canSeeReception = canSeeMode("RECEPTION", myRole, myPerms);
+  const embeddedReservations = isEmbeddedReservationsWorkspace(
+    reservationsWorkspace,
+    canSeeReception,
   );
+  const accessDenied = !meLoading && isPosRouteAccessDenied({
+    invalidMode,
+    reservationsWorkspace,
+    canReadReservations,
+    canSeeReception,
+    canSeeActiveMode,
+  });
 
-  function setMode(next: Mode) {
-    if (next === activeMode) return;
+  const setMode = useCallback((next: Mode) => {
+    // داخل workspace الحجوزات، ضغط محطة RECEPTION نفسها انتقالٌ حقيقي لأنه يُخرج من workspace.
+    if (next === activeMode && !reservationsWorkspace) return;
     if (meLoading) return; // لا تَبديل قَبل اِكتمال الدور.
     const meta = MODES.find((m) => m.v === next);
     if (!meta || !canSeeMode(meta.v, myRole, myPerms)) return;
-    const url = next === "RETAIL" ? "/pos" : `/pos?mode=${next}`;
+    const url = buildPosModeUrl(
+      {
+        search,
+        hash: typeof window === "undefined" ? "" : window.location.hash,
+      },
+      next,
+    );
     navigate(url, { replace: true });
-  }
+  }, [activeMode, meLoading, myPerms, myRole, navigate, reservationsWorkspace, search]);
 
   // اختصارات الـtab (Ctrl+1/2/3) — تَحترم حارس الدور وحالة التَحميل.
   useEffect(() => {
@@ -144,8 +164,7 @@ export default function PointOfSale() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMode, myRole, myPerms, meLoading]);
+  }, [meLoading, myRole, myPerms, setMode]);
 
   // إن كان الوَضع الحالي مَمنوعاً (وصولٌ مُباشر بـURL لقسمٍ لا يملكه، أو هبوط دورٍ لحظيّ) ⇒ أعِد
   // توجيهه تِلقائياً لأوّل قسمٍ مسموحٍ له (لا لـRETAIL المُثبَّت — كاشير الطباعة لا يراه بعد الفصل).
@@ -153,8 +172,17 @@ export default function PointOfSale() {
   useEffect(() => {
     if (meLoading || !accessDenied || visibleModes.length === 0) return;
     const first = visibleModes[0];
-    navigate(first.v === "RETAIL" ? "/pos" : `/pos?mode=${first.v}`, { replace: true });
-  }, [meLoading, accessDenied, visibleModes, navigate]);
+    navigate(
+      buildPosModeUrl(
+        {
+          search,
+          hash: typeof window === "undefined" ? "" : window.location.hash,
+        },
+        first.v,
+      ),
+      { replace: true },
+    );
+  }, [meLoading, accessDenied, visibleModes, navigate, search]);
 
   return (
     <div className="pos-workspace flex h-dvh flex-col overflow-hidden bg-background" dir="rtl" data-pos-mode={activeMode}>
@@ -254,7 +282,7 @@ export default function PointOfSale() {
               </div>
             }
           >
-            {reservationsWorkspace && !canSeeMode("RECEPTION", myRole, myPerms) ? (
+            {embeddedReservations ? (
               <ReservationsWorkspace />
             ) : (
               <>
