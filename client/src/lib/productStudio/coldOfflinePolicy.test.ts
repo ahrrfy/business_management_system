@@ -32,6 +32,7 @@ describe("cold offline product studio policy", () => {
 
   it("denies a direct cold Studio URL until PIN, local user, and local role all match", () => {
     const profile = {
+      companyId: 17,
       userId: 7,
       name: "موظف الصور",
       role: "print_operator",
@@ -42,30 +43,44 @@ describe("cold offline product studio policy", () => {
       coldOfflineStudioActor({
         pinVerified: false,
         profile,
-        draftIdentityUserId: 7,
+        draftIdentity: { companyId: 17, userId: 7 },
       }),
     ).toBeNull();
     expect(
       coldOfflineStudioActor({
         pinVerified: true,
         profile,
-        draftIdentityUserId: 8,
+        draftIdentity: { companyId: 17, userId: 8 },
       }),
     ).toBeNull();
     expect(
       coldOfflineStudioActor({
         pinVerified: true,
         profile: { ...profile, role: "cashier" },
-        draftIdentityUserId: 7,
+        draftIdentity: { companyId: 17, userId: 7 },
       }),
     ).toBeNull();
     expect(
       coldOfflineStudioActor({
         pinVerified: true,
         profile,
-        draftIdentityUserId: 7,
+        draftIdentity: { companyId: 17, userId: 7 },
       }),
-    ).toEqual({ userId: 7, role: "print_operator" });
+    ).toEqual({ companyId: 17, userId: 7, role: "print_operator" });
+    expect(
+      coldOfflineStudioActor({
+        pinVerified: true,
+        profile,
+        draftIdentity: { companyId: 18, userId: 7 },
+      }),
+    ).toBeNull();
+    expect(
+      coldOfflineStudioActor({
+        pinVerified: true,
+        profile: { ...profile, companyId: undefined },
+        draftIdentity: { companyId: 17, userId: 7 },
+      }),
+    ).toBeNull();
   });
 
   it("provisions the existing device profile from an online Studio/login identity without a PIN", () => {
@@ -76,9 +91,11 @@ describe("cold offline product studio policy", () => {
         email: "studio@example.test",
         role: "print_operator",
         branchId: 1,
+        companyId: 17,
       }),
     ).toEqual({
       id: 7,
+      companyId: 17,
       name: "موظف الصور",
       role: "print_operator",
       branchId: 1,

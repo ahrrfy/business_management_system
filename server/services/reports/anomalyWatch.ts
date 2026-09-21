@@ -339,23 +339,23 @@ export async function getAnomalyWatch(opts: {
   };
 
   // ── D1أ: بيع دون الكلفة — تجميع لكل كاشير ──
-  // السطر دون الكلفة: total (صافي السطر بعد كل الخصومات) < baseQuantity × unitCost، والكلفة معروفة (> 0)
+  // السطر دون الكلفة: total (صافي السطر بعد كل الخصومات) < lineCost المجمّد، والكلفة معروفة (> 0)
   // كي لا تُعلَّم الخدمات/الهدايا مجهولة الكلفة. CANCELLED مستبعدة (لا وجود لها من التطبيق أصلاً).
   const belowCostCashiersP = safe(
     db.execute(sql`
       SELECT i.createdBy AS userId, u.name AS userName,
         COUNT(*) AS lineCount,
-        CAST(COALESCE(SUM(ii.baseQuantity * ii.unitCost - ii.total), 0) AS CHAR) AS lossValue
+        CAST(COALESCE(SUM(ii.lineCost - ii.total), 0) AS CHAR) AS lossValue
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
       LEFT JOIN users u ON u.id = i.createdBy
       WHERE i.invoiceStatus <> 'CANCELLED'
         AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
-        AND ii.unitCost > 0
-        AND ii.total < ii.baseQuantity * ii.unitCost
+        AND ii.lineCost > 0
+        AND ii.total < ii.lineCost
         ${branchInv}
       GROUP BY i.createdBy, u.name
-      ORDER BY SUM(ii.baseQuantity * ii.unitCost - ii.total) DESC
+      ORDER BY SUM(ii.lineCost - ii.total) DESC
     `),
     null,
   );
@@ -368,8 +368,8 @@ export async function getAnomalyWatch(opts: {
         u.name AS userName, p.name AS productName,
         CAST(ii.quantity AS CHAR) AS quantity,
         CAST(ii.total AS CHAR) AS lineTotal,
-        CAST(ii.baseQuantity * ii.unitCost AS CHAR) AS lineCost,
-        CAST(ii.baseQuantity * ii.unitCost - ii.total AS CHAR) AS lossValue
+        CAST(ii.lineCost AS CHAR) AS lineCost,
+        CAST(ii.lineCost - ii.total AS CHAR) AS lossValue
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
       JOIN productVariants v ON v.id = ii.variantId
@@ -377,10 +377,10 @@ export async function getAnomalyWatch(opts: {
       LEFT JOIN users u ON u.id = i.createdBy
       WHERE i.invoiceStatus <> 'CANCELLED'
         AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
-        AND ii.unitCost > 0
-        AND ii.total < ii.baseQuantity * ii.unitCost
+        AND ii.lineCost > 0
+        AND ii.total < ii.lineCost
         ${branchInv}
-      ORDER BY (ii.baseQuantity * ii.unitCost - ii.total) DESC
+      ORDER BY (ii.lineCost - ii.total) DESC
       LIMIT ${WORST_LINES_LIMIT}
     `),
     null,

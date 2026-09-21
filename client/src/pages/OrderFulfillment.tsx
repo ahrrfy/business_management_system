@@ -523,7 +523,11 @@ export default function OrderFulfillment() {
           order={dispatchTarget}
           pending={dispatchM.isPending}
           onCancel={() => !dispatchM.isPending && setDispatchTarget(null)}
-          onConfirm={(partyId) => dispatchM.mutate({ id: dispatchTarget.id, partyId })}
+          onConfirm={({ partyId, externalTrackingRef }) => dispatchM.mutate({
+            id: dispatchTarget.id,
+            partyId,
+            externalTrackingRef: externalTrackingRef || undefined,
+          })}
         />
       )}
 
@@ -642,13 +646,15 @@ function DispatchModal({
   order: OrderRow;
   pending: boolean;
   onCancel: () => void;
-  onConfirm: (partyId: number) => void;
+  onConfirm: (input: { partyId: number; externalTrackingRef?: string }) => void;
 }) {
   const [partyId, setPartyId] = useState<number | null>(null);
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const partiesQ = trpc.storeAdmin.orders.parties.useQuery();
-  // فقط الجهات المرتبطة بحساب مندوب (userId) — كي يستطيع المندوب تأكيد التسليم والتحصيل من «توصيلاتي».
-  // جهةٌ بلا حساب (شركة خارجية) لا مسار لها لإنهاء الطلب داخل النظام ⇒ يبقى عالقاً (مراجعة عدائية ١٢/٧).
-  const parties = (partiesQ.data ?? []).filter((p) => p.userId != null);
+  // الشركات الخارجية بلا حساب أصبحت تُغلق بكشف الشركة الممسوح؛ لذلك تظهر هنا مع المناديب،
+  // ويُفرض عليها رقم البوليصة أدناه بدل حجبها وإبقاء الطلب بلا مسار إرسال.
+  const parties = partiesQ.data ?? [];
+  const selectedParty = parties.find((p) => p.id === partyId);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -687,7 +693,7 @@ function DispatchModal({
           </div>
         ) : parties.length === 0 ? (
           <div className="rounded-lg bg-muted p-4 text-center text-sm text-muted-foreground">
-            لا يوجد مندوبٌ نشطٌ مرتبطٌ بحساب دخول. أنشئ حساب «مندوب توصيل» في المستخدمين، ثم اربطه بجهة توصيل من إدارة التوصيل ليظهر هنا (فيستطيع تأكيد التسليم عبر «توصيلاتي»).
+            لا توجد جهة توصيل نشطة. أضف مندوباً أو شركةً من إدارة التوصيل ثم أعد المحاولة.
           </div>
         ) : (
           <div className="max-h-64 space-y-2 overflow-y-auto">
@@ -703,7 +709,10 @@ function DispatchModal({
                   name="dispatch-party"
                   className="size-4 accent-teal-600"
                   checked={partyId === p.id}
-                  onChange={() => setPartyId(p.id)}
+                  onChange={() => {
+                    setPartyId(p.id);
+                    setExternalTrackingRef("");
+                  }}
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 text-sm font-bold">
@@ -722,6 +731,23 @@ function DispatchModal({
           </div>
         )}
 
+        {selectedParty?.partyType === "COMPANY" && (
+          <div className="mt-3 space-y-1">
+            <label htmlFor="store-dispatch-tracking" className="text-xs font-bold">
+              رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
+            </label>
+            <Input
+              id="store-dispatch-tracking"
+              value={externalTrackingRef}
+              onChange={(event) => setExternalTrackingRef(event.target.value)}
+              placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم"
+              maxLength={100}
+              dir="ltr"
+              className="font-mono"
+            />
+          </div>
+        )}
+
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             onClick={onCancel}
@@ -731,8 +757,11 @@ function DispatchModal({
             إلغاء
           </button>
           <button
-            onClick={() => partyId != null && onConfirm(partyId)}
-            disabled={pending || partyId == null || parties.length === 0}
+            onClick={() => partyId != null && onConfirm({
+              partyId,
+              externalTrackingRef: externalTrackingRef.trim() || undefined,
+            })}
+            disabled={pending || partyId == null || parties.length === 0 || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
           >
             {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}

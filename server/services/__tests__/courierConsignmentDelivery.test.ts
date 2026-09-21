@@ -86,6 +86,9 @@ async function seedBase(): Promise<{ partyA: number; partyB: number }> {
   await d.insert(s.customers).values({ id: 1, name: "عميل التوصيل", phone: "+9647700000000" });
   await d.insert(s.products).values({ id: 1, name: "كتاب مطبوع" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "BK-1", costPrice: "0.00" });
+  await d.insert(s.productUnits).values({
+    id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true,
+  });
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
   const { id: partyA } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "جهة أ", userId: 3, branchId: 1 }, MANAGER);
   const { id: partyB } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "جهة ب", userId: 4, branchId: 1 }, MANAGER);
@@ -280,7 +283,12 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     await addDeliveryPartyMember({ partyId: company.id, userId: 7, memberRole: "DRIVER" }, MANAGER);
 
     const woId = await readyReception();
-    const disp = await dispatchToDelivery({ workOrderId: woId, partyId: company.id, deliveryFee: "0" }, CASHIER);
+    const disp = await dispatchToDelivery({
+      workOrderId: woId,
+      partyId: company.id,
+      deliveryFee: "0",
+      externalTrackingRef: "COMPANY-QUEUE-0441446",
+    }, CASHIER);
     expect((await consignment(disp.consignmentId)).assignedUserId).toBeNull();
     expect((await listMyDeliveries(6)).toDeliver.some((r) => r.id === disp.consignmentId)).toBe(true);
     expect((await listMyDeliveries(7)).toDeliver.some((r) => r.id === disp.consignmentId)).toBe(true);

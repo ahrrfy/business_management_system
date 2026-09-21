@@ -33,7 +33,7 @@ const Login = lazy(() => import("@/pages/Login"));
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, RECEPTION_STATION_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
@@ -59,6 +59,7 @@ const CardAccount = lazy(() => import("@/pages/CardAccount"));
 const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const MyWork = lazy(() => import("@/pages/MyWork"));
+const ReceptionOperationsHub = lazy(() => import("@/pages/ReceptionOperationsHub"));
 const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
 const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
 const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
@@ -78,6 +79,7 @@ const AdminHub = lazy(() => import("@/pages/AdminHub"));
 const AuditLogs = lazy(() => import("@/pages/AuditLogs"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const MobileDesignPreview = lazy(() => import("@/pages/MobileDesignPreview"));
+const PrintStudio = lazy(() => import("@/pages/PrintStudio"));
 const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
 const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
 const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
@@ -359,6 +361,8 @@ export default function App() {
       <Route path="/login" component={Login} />
       {/* معاينة تصميم الهاتف/اللوحي: واجهة تجريبية ثابتة بلا بيانات تشغيلية. */}
       <Route path="/mobile-design-preview" component={MobileDesignPreview} />
+      {/* استوديو المطبوعات والهوية البصرية: معاينة ومراجعة المطبوعات الحرارية وبوالص الشحن محلياً */}
+      <Route path="/print-studio" component={PrintStudio} />
       {/* نقطة البيع الموحَّدة — Shell واحد لـ٣ أوضاع (تجزئة/خدمات طباعة/استقبال أوامر شغل) */}
       <Route path="/pos">
         <Protected>
@@ -498,11 +502,14 @@ export default function App() {
       {/* ش٦ — «مطلوب منّي الآن» على مسارٍ مسمّى. الوجهات القديمة نُقلت إلى مسارات الويب الفعلية،
           والوجهة الفاسدة تسقط إلى مسار غير معرّف حتى يبقى خلل الربط مرئيًا. */}
       <Route path="/my-work"><Shell><MyWork /></Shell></Route>
-      <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
-      <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
-      {/* شاشة التسليم المباشر والإسناد للمندوب — تعمل بالباركود */}
-      <Route path="/reception/workflow"><Shell><ReceptionWorkflowPage /></Shell></Route>
-      <Route path="/reception/handover"><Shell><ReceptionHandoverPage /></Shell></Route>
+      {/* محطة إنشاء الطلب تبقى في POS على /reception؛ ما بعد التثبيت يجتمع هنا في مركز خفيف. */}
+      <Route path="/reception/operations"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionOperationsHub /></RequireRole></Shell></Route>
+      {/* الروابط التاريخية تبقى صالحة وتحفظ section/invoice وأي سياق وارد. */}
+        {/* استعادة الشاشات المستقلة لمحطة الاستقبال بناءً على طلب المستخدم */}
+        <Route path="/reception/orders"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionOrdersPage /></RequireRole></Shell></Route>
+        <Route path="/reception/invoices"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionInvoicesPage /></RequireRole></Shell></Route>
+        <Route path="/reception/workflow"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionWorkflowPage /></RequireRole></Shell></Route>
+        <Route path="/reception/handover"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionHandoverPage /></RequireRole></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>

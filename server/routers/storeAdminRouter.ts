@@ -205,10 +205,18 @@ const ordersRouter = router({
   /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل، مع إبقاء حدّ
    *  ائتمان العميل نافذاً ومنع الموافقة الذاتية من مُنفّذ الإرسال. */
   dispatch: storeManagerProcedure
-    .input(z.object({ id: z.number().int().positive(), partyId: z.number().int().positive() }))
+    .input(z.object({
+      id: z.number().int().positive(),
+      partyId: z.number().int().positive(),
+      externalTrackingRef: z.string().trim().max(100).nullish(),
+    }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
-      const args = { onlineOrderId: input.id, partyId: input.partyId };
+      const args = {
+        onlineOrderId: input.id,
+        partyId: input.partyId,
+        externalTrackingRef: input.externalTrackingRef ?? null,
+      };
       let res;
       try {
         res = await dispatchOnlineOrder(args, actor);
@@ -221,7 +229,7 @@ const ordersRouter = router({
         action: "store.order.dispatch",
         entityType: "onlineOrder",
         entityId: input.id,
-        newValue: { invoiceId: res.invoiceId, partyId: input.partyId, total: res.total },
+        newValue: { invoiceId: res.invoiceId, partyId: input.partyId, total: res.total, externalTrackingRef: input.externalTrackingRef ?? null },
       });
       return res;
     }),

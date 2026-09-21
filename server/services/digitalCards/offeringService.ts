@@ -22,6 +22,15 @@ import { extractInsertId } from "../../lib/insertId";
 import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { appErrorMessage } from "../../../shared/errors";
+
+function offeringBindingError(why: string): string {
+  return appErrorMessage({
+    what: "تعذّر حفظ العرض الرقمي",
+    why,
+    doThis: "راجع المنتج ومتغيّره ووحدته والفروع النشطة، ثم أعد الحفظ",
+  });
+}
 
 /* ────────── Enum validation ────────── */
 const OFFERING_TYPES = ["TELECOM_CARD", "GLOBAL_CARD", "EDUCATIONAL_SUBSCRIPTION", "OTHER"] as const;
@@ -32,6 +41,74 @@ function assertEnum<T extends string>(val: string, allowed: readonly T[], label:
     throw new TRPCError({ code: "BAD_REQUEST", message: `${label} غير صالح: ${val}` });
   }
   return val as T;
+}
+
+/** العرض الرقمي لا يكون صالحاً إلا إذا بقيت سلسلة الكتالوج كلها فعّالة ومتطابقة. */
+async function assertDigitalCatalogLink(
+  tx: Tx,
+  link: { productId: number; variantId: number; productUnitId: number },
+): Promise<void> {
+  const [row] = await tx
+    .select({
+      productId: products.id,
+      productType: products.productType,
+      productActive: products.isActive,
+      isService: products.isService,
+      isBundle: products.isBundle,
+      isConsignment: products.isConsignment,
+      variantId: productVariants.id,
+      variantProductId: productVariants.productId,
+      variantActive: productVariants.isActive,
+      unitId: productUnits.id,
+      unitVariantId: productUnits.variantId,
+      unitActive: productUnits.isActive,
+      isBaseUnit: productUnits.isBaseUnit,
+    })
+    .from(products)
+    .innerJoin(
+      productVariants,
+      and(
+        eq(productVariants.id, link.variantId),
+        eq(productVariants.productId, products.id),
+      ),
+    )
+    .innerJoin(
+      productUnits,
+      and(
+        eq(productUnits.id, link.productUnitId),
+        eq(productUnits.variantId, productVariants.id),
+      ),
+    )
+    .where(eq(products.id, link.productId))
+    .limit(1);
+  if (!row) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: offeringBindingError("ربط المنتج والمتغيّر ووحدة العرض الرقمي غير متطابق"),
+    });
+  }
+  if (
+    row.productType !== "DIGITAL_CARD" ||
+    row.isService !== true ||
+    row.isBundle === true ||
+    row.isConsignment === true
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: offeringBindingError("العرض الرقمي يجب أن يرتبط بمنتج خدمي من نوع DIGITAL_CARD فقط"),
+    });
+  }
+  if (
+    row.productActive !== true ||
+    row.variantActive !== true ||
+    row.unitActive !== true ||
+    row.isBaseUnit !== true
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: offeringBindingError("منتج العرض الرقمي أو متغيّره أو وحدة أساسه معطّل"),
+    });
+  }
 }
 
 /* ────────── Types ────────── */
@@ -203,7 +280,7 @@ export async function createOffering(
   if (!provider) {
     throw new TRPCError({ code: "NOT_FOUND", message: "المزوّد غير موجود" });
   }
-  if (!provider.isActive) {
+  if (provider.isActive !== true) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "المزوّد معطَّل" });
   }
 
@@ -217,7 +294,9 @@ export async function createOffering(
     const [prod] = await tx
       .select({
         id: products.id,
+        isActive: products.isActive,
         isService: products.isService,
+        isBundle: products.isBundle,
         productType: products.productType,
         isConsignment: products.isConsignment,
         consignorId: products.consignorId,
@@ -228,8 +307,15 @@ export async function createOffering(
     if (!prod) {
       throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
     }
-    if (!prod.isService) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يجب أن يكون خدمياً (isService)" });
+    if (
+      prod.productType !== "DIGITAL_CARD" ||
+      prod.isService !== true ||
+      prod.isBundle === true
+    ) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: offeringBindingError("المنتج ليس بطاقة رقمية خدمية من نوع DIGITAL_CARD") });
+    }
+    if (prod.isActive !== true) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: offeringBindingError("منتج البطاقة الرقمية معطّل") });
     }
     if (prod.isConsignment || prod.consignorId != null) {
       throw new TRPCError({
@@ -241,9 +327,15 @@ export async function createOffering(
 
     // Get the first variant
     const [variant] = await tx
-      .select({ id: productVariants.id })
+      .select({ id: productVariants.id, isActive: productVariants.isActive })
       .from(productVariants)
-      .where(eq(productVariants.productId, productId))
+      .where(
+        and(
+          eq(productVariants.productId, productId),
+          eq(productVariants.isActive, true),
+        ),
+      )
+      .orderBy(productVariants.id)
       .limit(1);
     if (!variant) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج بلا متغيّرات" });
@@ -252,14 +344,20 @@ export async function createOffering(
 
     // Get the base unit
     const [unit] = await tx
-      .select({ id: productUnits.id })
+      .select({ id: productUnits.id, isActive: productUnits.isActive })
       .from(productUnits)
-      .where(and(eq(productUnits.variantId, variantId), eq(productUnits.isBaseUnit, true)))
+      .where(and(
+        eq(productUnits.variantId, variantId),
+        eq(productUnits.isBaseUnit, true),
+        eq(productUnits.isActive, true),
+      ))
+      .orderBy(productUnits.id)
       .limit(1);
     if (!unit) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج بلا وحدة أساس" });
     }
     productUnitId = unit.id;
+    await assertDigitalCatalogLink(tx, { productId, variantId, productUnitId });
   } else {
     // Auto-create product
     const created = await autoCreateProduct(tx, name, input.categoryId, actor);
@@ -324,12 +422,15 @@ async function insertOfferingBranches(
   for (const b of branchInputs) {
     // Verify branch exists
     const [branch] = await tx
-      .select({ id: branches.id })
+      .select({ id: branches.id, isActive: branches.isActive })
       .from(branches)
       .where(eq(branches.id, b.branchId))
       .limit(1);
     if (!branch) {
       throw new TRPCError({ code: "NOT_FOUND", message: `الفرع ${b.branchId} غير موجود` });
+    }
+    if (branch.isActive !== true) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: offeringBindingError(`الفرع ${b.branchId} معطّل`) });
     }
 
     if (providerSettlementMode === "PREPAID" && b.walletId == null) {
@@ -373,7 +474,7 @@ async function insertOfferingBranches(
           message: `المحفظة ${b.walletId} لا تتبع المزوّد المحدد`,
         });
       }
-      if (!wallet.isActive) {
+      if (wallet.isActive !== true) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `المحفظة ${b.walletId} معطّلة؛ فعّلها أو اختر محفظة أخرى`,
@@ -404,6 +505,9 @@ export async function updateOffering(
       id: digitalOfferings.id,
       providerId: digitalOfferings.providerId,
       productId: digitalOfferings.productId,
+      variantId: digitalOfferings.variantId,
+      productUnitId: digitalOfferings.productUnitId,
+      isActive: digitalOfferings.isActive,
       offeringType: digitalOfferings.offeringType,
       requiresStudentData: digitalOfferings.requiresStudentData,
       subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
@@ -413,6 +517,45 @@ export async function updateOffering(
     .limit(1);
   if (!existing) {
     throw new TRPCError({ code: "NOT_FOUND", message: "العرض غير موجود" });
+  }
+
+  const effectiveActive = input.isActive ?? existing.isActive;
+  if (effectiveActive === true) {
+    if (input.branches !== undefined && input.branches.length === 0) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: offeringBindingError("لا يمكن تفعيل عرض رقمي بلا فرع فعال"),
+      });
+    }
+    await assertDigitalCatalogLink(tx, {
+      productId: Number(existing.productId),
+      variantId: Number(existing.variantId),
+      productUnitId: Number(existing.productUnitId),
+    });
+    if (input.branches === undefined) {
+      const assignments = await tx
+        .select({
+          branchId: digitalOfferingBranches.branchId,
+          branchActive: digitalOfferingBranches.isActive,
+          catalogBranchActive: branches.isActive,
+        })
+        .from(digitalOfferingBranches)
+        .innerJoin(branches, eq(digitalOfferingBranches.branchId, branches.id))
+        .where(eq(digitalOfferingBranches.offeringId, input.id));
+      if (
+        !assignments.length ||
+        assignments.some(
+          (assignment) =>
+            assignment.branchActive !== true ||
+            assignment.catalogBranchActive !== true,
+        )
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: offeringBindingError("لا يمكن إبقاء العرض الرقمي فعالاً بلا فرع فعال"),
+        });
+      }
+    }
   }
 
   if (input.name !== undefined) {

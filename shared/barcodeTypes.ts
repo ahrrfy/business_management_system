@@ -26,6 +26,7 @@ export type DocType = "INV" | "WO" | "PO" | "QUO" | "CUST";
 export type ScanResult =
   | { type: "invoice";       number: string }
   | { type: "workOrder";     number: string }
+  | { type: "consignment";   number: string }
   | { type: "purchaseOrder"; number: string }
   | { type: "quotation";     number: string }
   | { type: "customer";      id: number }

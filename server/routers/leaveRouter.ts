@@ -185,7 +185,7 @@ export const leaveRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       // البتّ + إشعارُ الموظّف مسارٌ خدميّ واحد يشاركه صندوق القرارات (Codex على #1004).
-      const lv = await svc.decideLeaveAndNotify(input.id, input.decision, { userId: ctx.user.id, scopedBranchId: ctx.scopedBranchId });
+      const lv = await svc.decideLeaveAndNotify(input.id, input.decision, { userId: ctx.user.id, scopedBranchId: ctx.scopedBranchId, name: ctx.user.name });
       await logAudit(ctx, {
         action: "leave.decide",
         entityType: "leaveRequest",

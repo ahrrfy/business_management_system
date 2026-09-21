@@ -628,7 +628,14 @@ export async function loadPromotionPerformance(
   END`;
   const netSalesExpr = sql`${invoiceItems.total} * (${remainingSaleRatio})`;
   const discountExpr = sql`${invoiceItems.promotionDiscount} * (${remainingSaleRatio})`;
-  const costExpr = sql`${invoiceItems.unitCost} * GREATEST(${invoiceItems.baseQuantity} - ${invoiceItems.returnedRestockedBaseQuantity}, 0)`;
+  const costExpr = sql`CASE
+    WHEN ${invoiceItems.baseQuantity} <= 0 THEN ${invoiceItems.lineCost}
+    WHEN ${invoiceItems.returnedRestockedBaseQuantity} >= ${invoiceItems.baseQuantity} THEN 0
+    ELSE ${invoiceItems.lineCost} - ROUND(
+      ${invoiceItems.lineCost} * ${invoiceItems.returnedRestockedBaseQuantity} / ${invoiceItems.baseQuantity},
+      2
+    )
+  END`;
 
   const raw = await tx
     .select({

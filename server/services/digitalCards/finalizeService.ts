@@ -29,12 +29,14 @@ import {
   invoiceItems,
   productUnits,
   products,
+  users,
 } from "../../../drizzle/schema";
 import { DIGITAL_BASKET_REFERENCE_LABEL, digitalOfferingDescription, digitalSaleReferenceLabel } from "../../../shared/digitalSale";
 import { appErrorMessage } from "../../../shared/errors";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { createApproval } from "../creditApprovalService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, sumMoney, toDbMoney } from "../money";
 import { DIGITAL_SALE_CAPABILITY } from "../sale/create";
@@ -43,12 +45,23 @@ import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { assertExternalPaymentReplay, createConfirmedPosSaleInTx } from "../posExternalPayment";
 import { checkoutSnapshotToSaleLines } from "./mixedCartService";
+import {
+  consumeIntentInventory,
+  intentInventoryExemptions,
+} from "./inventoryReservationService";
+import {
+  assertInvoiceFullPayment,
+  assertInvoiceSourceEnvelope,
+  computeInvoiceIntentTotal,
+  parseInvoiceSourcePayload,
+  type InvoiceSourcePayload,
+} from "./intentSchemas";
 
 export interface FinalizeInput {
   intentId: number;
   /** مفتاح idempotency للفاتورة — إعادةُ نفسه تُعيد الفاتورة نفسها بلا أثرٍ ثانٍ. */
   clientRequestId: string;
-  /** المبلغ المقبوض فعلاً؛ يجب أن يساوي إجمالي النيّة (لا بيع رقميّ جزئيّ). */
+  /** المبلغ المقبوض فعلاً؛ يساوي الإجمالي للنقد/البطاقة وصفر للآجل الكامل. */
   paymentAmount: string;
   paymentMethod: PaymentMethod | "CREDIT";
   externalPaymentAttemptId?: number | null;
@@ -111,7 +124,12 @@ async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, 
   }
 }
 
-export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Promise<FinalizeResult> {
+export async function finalize(
+  tx: Tx,
+  input: FinalizeInput,
+  actor: Actor,
+  authorizationActor: Actor = actor,
+): Promise<FinalizeResult> {
   /* ١. قفل النيّة وبنودها. */
   const [intent] = await tx
     .select()
@@ -122,11 +140,11 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
 
   // العزل والملكية يسبقان replay: لا تكشف فاتورة/طباعة نيّةٍ لمستخدم أو فرع آخر.
   // المشرف (المالك/الأدمن/المدير) يرى نيّات نطاقه؛ عزل مدير الفرع (قرار المالك ١٢/٨): الفرع للمالك/الأدمن فقط.
-  const supervisor = actor.role === "admin" || actor.role === "manager";
+  const supervisor = authorizationActor.role === "admin" || authorizationActor.role === "manager";
   if (!supervisor && Number(intent.createdBy) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة لمستخدم آخر" });
   }
-  if (actor.role !== "admin" && Number(intent.branchId) !== Number(actor.branchId)) {
+  if (authorizationActor.role !== "admin" && Number(intent.branchId) !== Number(authorizationActor.branchId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه النيّة تخصّ فرعاً آخر" });
   }
   if (input.paymentMethod !== intent.paymentMethod) {
@@ -136,12 +154,23 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     });
   }
   const checkout = intent.checkoutSnapshot ?? null;
+  const invoicePayload: InvoiceSourcePayload | null =
+    checkout?.sourceType === "INVOICE"
+      ? parseInvoiceSourcePayload(checkout.sourcePayload)
+      : null;
   const boundCustomerId = checkout ? checkout.customerId : input.customerId ?? null;
   if (checkout && (input.customerId ?? null) !== boundCustomerId) {
     throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
       what: "تعذّر تثبيت السلة المختلطة",
       why: "العميل تغيّر بعد إعداد الكروت",
       doThis: "استعد النيّة المحفوظة بعميلها الأصلي؛ لا تُعِد إصدار الكروت",
+    }) });
+  }
+  if (input.paymentMethod === "CREDIT" && !money(input.paymentAmount).eq(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذّر تثبيت فاتورة الكروت الآجلة",
+      why: "طلب التثبيت يحمل مبلغاً مقبوضاً مع أن كامل الإجمالي ذمّة",
+      doThis: "أعد التثبيت بمقبوض صفر، أو غيّر شروط الدفع إلى نقد أو بطاقة قبل إصدار الكروت",
     }) });
   }
   if (input.paymentMethod !== "CREDIT" && !money(input.paymentAmount).eq(money(intent.expectedTotal))) {
@@ -153,6 +182,29 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   }
   const boundExternalAttemptId = intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId);
   const boundExternalDeviceId = intent.externalPaymentDeviceId ?? null;
+  if (invoicePayload) {
+    assertInvoiceSourceEnvelope(invoicePayload, {
+      branchId: Number(intent.branchId),
+      shiftId: Number(intent.shiftId),
+      customerId: checkout?.customerId ?? null,
+      priceTier: checkout?.priceTier ?? null,
+      clientRequestId: intent.clientRequestId,
+    });
+    if (input.paymentMethod !== "CREDIT") {
+      assertInvoiceFullPayment(invoicePayload, {
+        paymentMethod: input.paymentMethod,
+        paymentAmount: intent.expectedTotal,
+        externalPaymentAttemptId: boundExternalAttemptId,
+        externalPaymentDeviceId: boundExternalDeviceId,
+      });
+    } else if (invoicePayload.payment != null) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+        what: "تعذّر تثبيت الفاتورة الآجلة",
+        why: "الحمولة تحمل قبضاً نقدياً أو خارجياً مع أن كامل الإجمالي ذمّة",
+        doThis: "أزل بيانات القبض وثبّت الفاتورة بمقبوض صفر، أو أنشئ عملية دفع جديدة قبل إصدار الكروت",
+      }) });
+    }
+  }
   if (input.paymentMethod === "CARD") {
     if (input.externalPaymentAttemptId != null && input.externalPaymentAttemptId !== boundExternalAttemptId) {
       throw new TRPCError({ code: "CONFLICT", message: "محاولة دفع البطاقة لا تطابق النيّة الرقمية" });
@@ -166,7 +218,11 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       });
     }
   } else if (input.externalPaymentAttemptId != null) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذّر تثبيت فاتورة الكروت",
+      why: "الدفع النقدي أو الآجل مرتبط بمحاولة دفع خارجية لا تخص طريقة الدفع المختارة",
+      doThis: "ألغِ محاولة الدفع الخارجية ثم أعد التثبيت بالطريقة المختارة",
+    }) });
   }
 
   /* ٢. إعادة الفاتورة القائمة إن كانت مُثبَّتة (idempotency). */
@@ -218,6 +274,18 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       message: `لا تُثبَّت نيّة حالتها ${intent.status} — يجب أن تنجح كل الكروت أوّلاً`,
     });
   }
+  if (checkout?.sourceType === "RECEPTION") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "نيّة استقبال رقمية قديمة لا تحمل عقداً آمناً للتثبيت — عالجها من طابور المراجعة ولا تنشئ فاتورة آلية",
+    });
+  }
+  const inventoryExemptions = await intentInventoryExemptions(
+    tx,
+    input.intentId,
+    checkout,
+  );
 
   const items = await tx
     .select()
@@ -233,8 +301,8 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     throw new TRPCError({ code: "CONFLICT", message: `${notSuccess.length} كرت لم ينجح تنفيذه — لا تُنشأ فاتورة` });
   }
 
-  const expectedTotal = sumMoney(items.map((i) => i.sellPriceSnapshot)).plus(money(checkout?.expectedSubtotal ?? "0"));
-  if (!money(intent.expectedTotal).eq(expectedTotal)) {
+  let expectedTotal = sumMoney(items.map((i) => i.sellPriceSnapshot)).plus(money(checkout?.expectedSubtotal ?? "0"));
+  if (!invoicePayload && !money(intent.expectedTotal).eq(expectedTotal)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({ what: "تعذّر تثبيت إجمالي السلة", why: "إجمالي النيّة لا يطابق لقطات بنودها", doThis: "أوقف التثبيت وراجِع العملية مع مسؤول النظام دون إعادة إصدار الكروت" }),
@@ -279,6 +347,35 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       faceValue: row.faceValue,
       subscriptionDurationDays: row.subscriptionDurationDays,
     });
+  }
+
+  let invoicePricing: ReturnType<typeof computeInvoiceIntentTotal> | null = null;
+  if (invoicePayload) {
+    invoicePricing = computeInvoiceIntentTotal({
+      regularSubtotal: checkout?.expectedSubtotal ?? "0",
+      sourcePayload: invoicePayload,
+      digitalLines: items.map((item) => {
+        const offering = meta.get(Number(item.offeringId))!;
+        return {
+          lineKey: item.lineKey,
+          variantId: offering.variantId,
+          productUnitId: offering.productUnitId,
+          sellPrice: item.sellPriceSnapshot,
+        };
+      }),
+    });
+    expectedTotal = money(invoicePricing.total);
+    if (!money(intent.expectedTotal).eq(expectedTotal)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت إجمالي فاتورة الكروت",
+          why: "خصومات أو بنود الفاتورة الدائمة لا تطابق إجمالي النيّة المحفوظ",
+          doThis:
+            "أوقف التثبيت وراجع العملية من طابور الكروت دون إعادة إصدار أو قبض",
+        }),
+      });
+    }
   }
 
   /* ٥. قفل المحافظ وحجوزاتها بترتيب walletId والتحقّق أنها ACTIVE وكافية. */
@@ -355,102 +452,82 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   /* ٦. نواة البيع داخل المعاملة نفسها — بيانات الطالب لقطة بيع فقط، بلا عقد أو ملف تشغيلي. */
   let sale: any;
   const invoiceItemByIntentItem = new Map<string, number>();
-
-  if (checkout?.sourceType === "RECEPTION") {
-    const { checkoutReceptionInTx } = await import("../receptionCheckoutService");
-    const payload = checkout.sourcePayload as any;
-
-    const digitalLines = items.map((it) => {
-      const m = meta.get(Number(it.offeringId))!;
-      return {
-        variantId: m.variantId,
-        productUnitId: m.productUnitId,
-        quantity: "1",
-        unitPriceOverride: it.sellPriceSnapshot,
-        unitCostOverride: it.providerShareSnapshot,
-        internalLineToken: String(it.id),
-      };
-    });
-
-    if (payload.regularSale) {
-      payload.regularSale.lines.push(...digitalLines);
-      const digitalAmount = digitalLines.reduce((acc, l) => acc + Number(l.unitPriceOverride), 0);
-      payload.regularSale.amount = String(Number(payload.regularSale.amount ?? 0) + digitalAmount);
-    } else {
-      payload.regularSale = {
-        amount: String(digitalLines.reduce((acc, l) => acc + Number(l.unitPriceOverride), 0)),
-        lines: digitalLines,
-      };
-    }
-
-    payload.paidAmount = input.paymentAmount;
-    payload.paymentMethod = input.paymentMethod;
-    payload.externalPaymentAttemptId = boundExternalAttemptId;
-    payload.externalPaymentDeviceId = boundExternalDeviceId;
-    payload.clientRequestId = `DIGITAL_INTENT:${input.intentId}`;
-
-    // Pass actor directly since checkoutReceptionInTx internally handles capability checking
-    const result = await checkoutReceptionInTx(tx, payload, actor);
-    sale = result.regularSale;
-    const createdLines = sale?.createdLineItems ?? [];
-    for (const line of createdLines) {
-      if (line.lineToken) {
-        invoiceItemByIntentItem.set(line.lineToken, line.invoiceItemId);
-      }
-    }
-  } else {
-    const salePayload = {
-      branchId: Number(intent.branchId),
-      shiftId: Number(intent.shiftId),
-      customerId: checkout?.customerId ?? null,
-      contactName: null,
-      contactPhone: null,
-      couponCode: null,
-      priceTier: checkout?.priceTier ?? null,
-      priceOverrideApproved: supervisor,
-      sourceType: checkout?.sourceType === "INVOICE" ? "ORDER" : "POS",
-      clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
-      payment: {
-        amount: input.paymentAmount,
-        method: input.paymentMethod,
-        externalPaymentAttemptId: boundExternalAttemptId,
-        externalPaymentIntentId: input.intentId,
-      },
-      requireExternalPaymentAttempt: input.paymentMethod !== "CASH",
-      deviceId: boundExternalDeviceId,
-      lines: [...checkoutSnapshotToSaleLines(checkout), ...items.map((it) => {
+  const salePayload = {
+    branchId: Number(intent.branchId),
+    shiftId: Number(intent.shiftId),
+    customerId: checkout?.customerId ?? null,
+    contactName: null,
+    contactPhone: null,
+    couponCode: null,
+    priceTier: checkout?.priceTier ?? null,
+    priceOverrideApproved: checkout?.priceOverrideApproved === true,
+    // شاشة الفاتورة المتقدمة تبقى قناة بيع تجزئة؛ ORDER كانت تصنّفها خطأً كاستقبال.
+    sourceType: "POS",
+    clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
+    creditApproved: checkout?.creditApprovalId != null,
+    creditApprovalId: checkout?.creditApprovalId ?? undefined,
+    payment: input.paymentMethod === "CREDIT" ? undefined : {
+      amount: input.paymentAmount,
+      method: input.paymentMethod,
+      externalPaymentAttemptId: boundExternalAttemptId,
+      externalPaymentIntentId: input.intentId,
+    },
+    requireExternalPaymentAttempt: input.paymentMethod === "CARD",
+    formalReservationExemptions: inventoryExemptions,
+    deviceId: boundExternalDeviceId,
+    invoiceDiscount: invoicePayload?.invoiceDiscount,
+    deliveryFee: invoicePayload?.deliveryFee,
+    deliveryFree: invoicePayload?.deliveryFree,
+    deliveryWaivedAmount: invoicePayload?.deliveryWaivedAmount,
+    taxRatePercent: invoicePayload?.taxRatePercent,
+    dueDate: invoicePayload?.dueDate ?? checkout?.dueDate ?? null,
+    notes: invoicePayload?.notes ?? checkout?.notes ?? null,
+    lines: [
+      ...checkoutSnapshotToSaleLines(checkout),
+      ...items.map((it) => {
         const m = meta.get(Number(it.offeringId))!;
+        const source = invoicePricing?.digitalSourceLines.get(it.lineKey);
         return {
           variantId: m.variantId,
           productUnitId: m.productUnitId,
           quantity: "1",
           unitPriceOverride: it.sellPriceSnapshot,
+          discountPercent: source?.discountPercent,
+          discountAmount: source?.discountAmount,
+          isGift: source?.isGift === true,
           unitCostOverride: it.providerShareSnapshot,
           internalLineToken: String(it.id),
         };
-      })],
-    };
+      }),
+    ],
+  };
 
-    sale = await createConfirmedPosSaleInTx(tx, salePayload as any, actor, DIGITAL_SALE_CAPABILITY);
-    if (checkout?.sourceType === "POS" || !checkout?.sourceType) {
-      if (!money(sale.total).eq(expectedTotal)) {
-        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
-          what: "تراجعت الفاتورة بالكامل",
-          why: "إجمالي الفاتورة المحسوب لا يطابق إجمالي النيّة المحفوظة",
-          doThis: "راجِع العملية دون إعادة إصدار الكروت أو قبض المبلغ ثانيةً",
-        }) });
-      }
-    }
-    for (const line of sale.createdLineItems ?? []) {
-      if (line.lineToken) {
-        invoiceItemByIntentItem.set(line.lineToken, line.invoiceItemId);
-      }
+  sale = await createConfirmedPosSaleInTx(
+    tx,
+    salePayload as any,
+    actor,
+    DIGITAL_SALE_CAPABILITY,
+  );
+  if (!money(sale.total).eq(expectedTotal)) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تراجعت الفاتورة بالكامل",
+      why: "إجمالي الفاتورة المحسوب لا يطابق إجمالي النيّة المحفوظة",
+      doThis: "راجِع العملية دون إعادة إصدار الكروت أو قبض المبلغ ثانيةً",
+    }) });
+  }
+  for (const line of sale.createdLineItems ?? []) {
+    if (line.lineToken) {
+      invoiceItemByIntentItem.set(line.lineToken, line.invoiceItemId);
     }
   }
 
   if (invoiceItemByIntentItem.size !== items.length) {
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "عدد بنود الفاتورة لا يطابق بنود النيّة" });
   }
+
+  // حركات الفاتورة استعملت إعفاء النية نفسها. لا نُنقص reservationStock قبل نجاحها؛
+  // الاستهلاك هنا في المعاملة ذاتها، وأي فشل لاحق يعيد الفاتورة والحجز معاً.
+  await consumeIntentInventory(tx, input.intentId);
 
   /* ٩. استهلاك الحجوزات: خصم PREPAID، أو رفع ذمّة المزوّد للآجل. */
   const walletTxByWallet = new Map<number, number>();
@@ -570,8 +647,25 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
 
     // Freeze the human description on the invoice row so later catalog edits cannot
     // change the card value/type/duration printed on this sale's receipt.
-    const [invoiceLine] = await tx.select({ name: invoiceItems.itemNameSnapshot }).from(invoiceItems)
+    const [invoiceLine] = await tx.select({
+      name: invoiceItems.itemNameSnapshot,
+      total: invoiceItems.total,
+      lineCost: invoiceItems.lineCost,
+    }).from(invoiceItems)
       .where(eq(invoiceItems.id, invoiceItemId)).limit(1);
+    if (!invoiceLine) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "تعذّر قراءة لقطة بند الكرت بعد إنشاء الفاتورة",
+      });
+    }
+    if (!money(invoiceLine.lineCost).eq(money(it.providerShareSnapshot))) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message:
+          "تكلفة بند الكرت في الفاتورة لا تطابق حصة المزوّد الموثقة — تراجعت المعاملة",
+      });
+    }
     const description = digitalOfferingDescription(m);
     // Product name (<=255) plus the bounded descriptor fits the 512-char snapshot;
     // never shorten the course/card identity to make room for display metadata.
@@ -587,9 +681,13 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       providerId: m.providerId,
       priceVersionId: Number(it.priceVersionId),
       settlementModeSnapshot: m.settlementMode as "PREPAID" | "POSTPAID",
-      sellPriceSnapshot: it.sellPriceSnapshot,
+      // مبلغ البيع/الاسترداد هو صافي سطر الفاتورة فعلاً (بعد خصم السطر أو الهدية)، لا سعر
+      // القائمة في النيّة. حصة المزوّد تبقى مستقلة، والربح التحليلي = الصافي − الحصة.
+      sellPriceSnapshot: invoiceLine.total,
       providerShareSnapshot: it.providerShareSnapshot,
-      profitSnapshot: it.marginSnapshot,
+      profitSnapshot: toDbMoney(
+        money(invoiceLine.total).minus(money(it.providerShareSnapshot)),
+      ),
       providerReference: it.providerReference,
       fulfillmentStatus: "ISSUED",
       studentCustomerId: null,
@@ -612,6 +710,11 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     invoiceId: sale.invoiceId,
     total: toDbMoney(expectedTotal),
     items: items.length,
+    priceApprovedBeforeIssuance: checkout?.priceOverrideApproved === true,
+    priceApprovedBy: checkout?.priceApprovedBy ?? null,
+    // true مع غياب اعتماد مدير يعني أن WAVG/مرجع السعر تغيّر بعد prepare؛ نُكمل الكرت
+    // الصادر تحت قدرة النيّة الموثقة ونترك أثراً واضحاً بدلاً من خلق بيع ضائع.
+    commitPricingGateTriggered: sale.priceOverride === true,
   });
 
   /* ١١. بيانات الطباعة من الخادم (§١٢.٣). */
@@ -633,9 +736,12 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
  * القيم المالية وطريقة الدفع تُقرأ من النيّة؛ لا يختار المدير أرقاماً جديدة أثناء الإنقاذ.
  */
 export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor): Promise<FinalizeResult> {
+  const recoveryManager = actor;
   const [intent] = await tx
     .select({
       clientRequestId: digitalSaleIntents.clientRequestId,
+      branchId: digitalSaleIntents.branchId,
+      createdBy: digitalSaleIntents.createdBy,
       expectedTotal: digitalSaleIntents.expectedTotal,
       paymentMethod: digitalSaleIntents.paymentMethod,
       externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
@@ -646,21 +752,93 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
     .where(eq(digitalSaleIntents.id, intentId))
     .limit(1);
   if (!intent) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
-  if (intent.paymentMethod !== "CASH" && intent.paymentMethod !== "CARD") {
+  if (intent.paymentMethod !== "CASH" && intent.paymentMethod !== "CARD" && intent.paymentMethod !== "CREDIT") {
     throw new TRPCError({ code: "CONFLICT", message: "طريقة دفع النيّة غير قابلة للاسترداد" });
+  }
+  if (intent.paymentMethod === "CREDIT") {
+    if (actor.role !== "admin" && actor.role !== "manager") {
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+        what: "تعذّر استرداد نيّة البيع الآجل",
+        why: "الكرت صدر من المزوّد وإنشاء الذمّة بعد ذلك يحتاج قراراً مديرياً",
+        doThis: "اطلب من مدير الفرع فتح طابور المراجعة واعتماد إكمال النيّة",
+      }) });
+    }
+    const checkoutSnapshot = intent.checkoutSnapshot;
+    if (checkoutSnapshot == null || checkoutSnapshot.customerId == null) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر إكمال نيّة البيع الآجل",
+        why: "لقطة النيّة لا تحتوي عميلاً مسجّلاً تُحمَّل عليه الذمّة",
+        doThis: "لا تُصدر أو تقبض مرة ثانية؛ راجع النيّة مع مسؤول النظام لتصحيح بيانات العميل",
+      }) });
+    }
+    const customerId = checkoutSnapshot.customerId;
+    if (Number(intent.createdBy) === Number(actor.userId)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد استرداد نيّة البيع الآجل",
+          why: "منشئ النيّة لا يستطيع اعتماد تجاوز الائتمان لنفس العملية",
+          doThis: "اطلب من مدير آخر في الفرع اعتماد إكمال النيّة",
+        }),
+      });
+    }
+    const [saleCreator] = await tx
+      .select({ role: users.role, isOwner: users.isOwner })
+      .from(users)
+      .where(eq(users.id, Number(intent.createdBy)))
+      .limit(1);
+    if (!saleCreator) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر إكمال نيّة البيع الآجل",
+        why: "حساب منفّذ النيّة الأصلية غير موجود فلا يمكن إسناد الفاتورة إليه",
+        doThis: "لا تُصدر أو تقبض مرة ثانية؛ راجع مسؤول النظام لاستعادة حساب المنفّذ ثم أعد الإكمال",
+      }) });
+    }
+    // الاعتماد الأول قد ينتهي أثناء نافذة إصدار المزوّد، وقد يتغيّر رصيد العميل بعد الإعداد.
+    // قرار الاسترداد المديري ينشئ تفويضاً جديداً ضيقاً بالمبلغ والعميل ويُستهلك فوراً داخل
+    // المعاملة نفسها؛ لا تبقى نافذة تجاوز عامة ولا تُترك الكروت الصادرة بلا فاتورة.
+    const approval = await createApproval(tx, {
+      customerId,
+      branchId: Number(intent.branchId),
+      maxAmount: intent.expectedTotal,
+      approvedBy: actor.userId,
+      ttlMinutes: 5,
+      notes: "manager-approved digital credit recovery after provider issuance",
+    });
+    const recoveredSnapshot = { ...checkoutSnapshot, creditApprovalId: approval.id };
+    await tx
+      .update(digitalSaleIntents)
+      .set({ checkoutSnapshot: recoveredSnapshot })
+      .where(eq(digitalSaleIntents.id, intentId));
+    intent.checkoutSnapshot = recoveredSnapshot;
+    await auditLog(tx, actor, "digitalCards.intent.credit_recovery_approved", intentId, {
+      customerId,
+      amount: intent.expectedTotal,
+      approvalId: approval.id,
+      originalOperatorId: intent.createdBy,
+    });
+    // المدير يصدر قرار التجاوز، ومنشئ النيّة الأصلي يظل منفّذ البيع محاسبياً؛ وبذلك
+    // يُحفظ فصل المهام ولا تُنسب الفاتورة إلى المدير الذي أنقذ العملية.
+    actor = {
+      userId: Number(intent.createdBy),
+      branchId: Number(intent.branchId),
+      role: saleCreator.role,
+      isOwner: saleCreator.isOwner,
+    };
   }
   return finalize(
     tx,
     {
       intentId,
       clientRequestId: intent.clientRequestId,
-      paymentAmount: intent.expectedTotal,
+      paymentAmount: intent.paymentMethod === "CREDIT" ? "0" : intent.expectedTotal,
       paymentMethod: intent.paymentMethod,
       externalPaymentAttemptId: intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId),
       deviceId: intent.externalPaymentDeviceId,
       customerId: intent.checkoutSnapshot?.customerId ?? null,
     },
     actor,
+    recoveryManager,
   );
 }
 

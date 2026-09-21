@@ -5,6 +5,7 @@
 // جديد في authz-inventory. (workordersReadProcedure مرفوضة هنا عمداً — V9: بوّابة خريطةٍ بلا
 // قائمة أدوار تفتح الطابور لـwarehouse/user/auditor.)
 import { WORK_ORDER_CHANNELS } from "@shared/receptionChannel";
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -19,14 +20,16 @@ import {
   listDrafts,
   listReceptionInvoices,
   promoteDraft,
+  resolvePromotedDraft,
   refundDeposit,
   syncDraft,
 } from "../services/reception";
 import { verifyManagerApproval } from "./saleRouter";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
+import { retryOnDup } from "../lib/retryDup";
 import { router, workordersCashierProcedure, workordersExecProcedure,
 } from "../trpc";
-import { logAudit } from "../services/auditService";
+import { auditMetadataFromContext, logAudit } from "../services/auditService";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
 
@@ -317,6 +320,7 @@ export const receptionRouter = router({
     .input(z.object({
       branchId: z.number().int().positive().nullish(),
       shiftId: z.number().int().positive().nullish(),
+      clientRequestId: z.string().min(8).max(64),
       header: draftHeaderSchema,
       lines: z.array(draftLineSchema).max(100),
     }),
@@ -327,17 +331,23 @@ export const receptionRouter = router({
         });
       assertDraftImages(input.lines);
       const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };
-      const res = await promoteDraft({ branchId, shiftId: input.shiftId, header: input.header, lines: input.lines,
+      const res = await retryOnDup(() => promoteDraft({ branchId, shiftId: input.shiftId, clientRequestId: input.clientRequestId, header: input.header, lines: input.lines,
         }, actor as never,
-      );
-      await logAudit(ctx, {
-        action: "reception.draftPromote",
-        entityType: "receptionDraft",
-        entityId: res.draftId,
-        newValue: { draftNumber: res.draftNumber, lines: input.lines.length, total: res.total,
-        },
-      });
+        auditMetadataFromContext(ctx),
+      ));
       return res;
+    }),
+
+  draftResolvePromotion: workordersExecProcedure
+    .input(z.object({ branchId: z.number().int().positive().nullish(), shiftId: z.number().int().positive().nullish(), clientRequestId: z.string().min(8).max(64), header: draftHeaderSchema, lines: z.array(draftLineSchema).max(100) }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+        what: "تعذّر حسم محاولة حفظ الطلب",
+        why: "لا يوجد فرع مسند لهذا المستخدم",
+        doThis: "اختر فرعاً مسموحاً أو اطلب من المدير إسناد فرع ثم أعد المحاولة",
+      }) });
+      return resolvePromotedDraft({ branchId, shiftId: input.shiftId, clientRequestId: input.clientRequestId, header: input.header, lines: input.lines }, { userId: ctx.user.id, branchId, role: ctx.user.role } as never);
     }),
 
   draftGet: workordersExecProcedure
@@ -414,6 +424,7 @@ export const receptionRouter = router({
         recipientName: z.string().trim().max(255).nullish(),
         recipientPhone: z.string().trim().max(32).nullish(),
         address: z.string().trim().max(500).nullish(),
+        externalTrackingRef: z.string().trim().max(100).nullish(),
       }).nullish(),
       // ملاحظة ١.٨: الكوبون **مرفوض** على مسار التثبيت في v1 — يُطبَّق داخل createSaleInTx
       // فينسف expectedTotal وأرضية moneyLocked. الحقل موجود ليُرفض برسالةٍ صريحة لا صمتاً.

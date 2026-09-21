@@ -28,6 +28,7 @@ export const deliveryLegacyRepairRouter = router({
         confirmation: z.string().min(1).max(255),
         note: z.string().trim().min(5, "دوّن سبب القرار أو مصدره").max(500),
         partyId: nullablePositiveId,
+        externalTrackingRef: z.string().trim().max(100).nullish(),
         deliveryFee: z.string().regex(/^\d+(?:\.\d{1,2})?$/).nullish(),
         gatewayUserId: nullablePositiveId,
         deliveredAt: z.string().datetime({ offset: true }).nullish(),

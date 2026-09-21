@@ -21,6 +21,7 @@ import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/in
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { buildQuotationLinePayload } from "@/lib/quotationPayload";
 
 import {
   InvoiceHeader,
@@ -36,6 +37,7 @@ import {
   INVOICE_TYPES,
   type InvoiceActionKind,
 } from "@/components/invoice";
+import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution";
 import { canSeeCost } from "@shared/permissions";
 
 const INVOICE_TYPE = "QUOTATION" as const;
@@ -69,6 +71,7 @@ export default function QuotationNew() {
     undefined,
     () => createInitialState(INVOICE_TYPE, defaultBranchId)
   );
+  const pricingIntentEpochRef = useRef(createPricingIntentEpoch());
 
   const taxDefaultsAppliedRef = useRef(false);
   const editHydratedRef = useRef(false);
@@ -108,6 +111,8 @@ export default function QuotationNew() {
           conversionFactor: item.conversionFactor ?? "1",
           stockBase: 0,
           price: item.unitPrice,
+          referencePrice: item.referenceUnitPrice,
+          priceSource: item.priceSource,
           costBase: item.costBase ?? "0",
           discount: item.discountAmount ?? "0",
           discountType: "amount",
@@ -157,6 +162,10 @@ export default function QuotationNew() {
           conversionFactor: item.conversionFactor ?? "1",
           stockBase: 0,
           price: item.suggestedUnitPrice ?? "0",
+          // لا يوجد exact-tier ⇒ صفرٌ مرئي فقط، لا override تلقائي. إن لم يعدّله الموظف
+          // يرفض الخادم الحفظ لغياب سعر الفئة؛ وإذا عدّله يصبح الفرق تجاوزاً صريحاً.
+          referencePrice: item.suggestedUnitPrice ?? "0",
+          priceSource: item.suggestedPriceSource ?? "TIER",
           costBase: "0",
           discount: "0",
           discountType: "amount",
@@ -272,14 +281,7 @@ export default function QuotationNew() {
       clientRequestId,
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       taxRatePercent: state.taxEnabled ? D(state.taxRatePercent || "0").toFixed(2) : undefined,
-      lines: state.items.map((l) => ({
-        variantId: l.variantId,
-        productUnitId: l.productUnitId,
-        quantity: D(l.qty).toString(),
-        unitPriceOverride: D(l.price).toFixed(2),
-        discountPercent: l.discountType === "percent" ? D(l.discount || "0").toFixed(2) : undefined,
-        discountAmount: l.discountType === "amount" ? D(l.discount || "0").toFixed(2) : undefined,
-      })),
+      lines: state.items.map(buildQuotationLinePayload),
     };
   }
 
@@ -533,7 +535,12 @@ export default function QuotationNew() {
       )}
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط + «صالح حتى» يظهر تلقائياً للنوع QUOTATION) */}
-      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
+      <InvoiceHeader
+        state={state}
+        dispatch={dispatch}
+        invoiceType={INVOICE_TYPE}
+        pricingIntentEpoch={pricingIntentEpochRef.current}
+      />
 
       {/* تنبيه ناعم لبنود بسعر صفر/سالب */}
       {hasZeroPriceLine && (
@@ -551,6 +558,8 @@ export default function QuotationNew() {
             dispatch={dispatch}
             branchId={state.branchId}
             tier={state.tier}
+            customerId={state.entityId}
+            pricingIntentEpoch={pricingIntentEpochRef.current}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
             onOpenBulkPicker={() => setBulkOpen(true)}
@@ -564,6 +573,7 @@ export default function QuotationNew() {
             invoiceType={INVOICE_TYPE}
             branchId={state.branchId}
             tier={state.tier}
+            customerId={state.entityId}
           />
         </div>
 

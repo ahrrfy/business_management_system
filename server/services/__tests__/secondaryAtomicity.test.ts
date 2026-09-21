@@ -136,7 +136,7 @@ describe("workOrder.deliver — clientRequestId يَمنع تسليم مزدوج
     const d = db();
     await d.insert(s.products).values({ id: 1, name: "ورق" });
     await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "P1", costPrice: "5.00" });
-    await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: 1 });
+    await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: 1, isBaseUnit: true });
     await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
     await d.insert(s.workOrders).values({
       id: 1,
@@ -145,6 +145,9 @@ describe("workOrder.deliver — clientRequestId يَمنع تسليم مزدوج
       title: "اختبار",
       status: "READY",
       baseVariantId: 1,
+      baseProductUnitId: 1,
+      baseBaseQuantity: 1,
+      baseConsumesInventory: true,
       quantity: 1,
       salePrice: "100.00",
       laborCost: "0.00",

@@ -9,14 +9,11 @@ import { digitalOfferingDescription, normalizeDigitalSaleReference } from "@shar
 import { CreditCard, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { StudentDetailsDialog, type StudentSnapshot } from "./StudentDetailsDialog";
+import type { DigitalBasketCapture as CapturedDigitalBasket } from "./digitalBasket";
 
 export type PosCard = RouterOutputs["digitalCards"]["pos"]["listCards"][number];
 export type ConfirmedCard = RouterOutputs["digitalCards"]["pos"]["confirmCard"];
-export type DigitalBasketCapture = {
-  providerBasketKey: string;
-  providerReference: string;
-  lines: { card: ConfirmedCard; student?: StudentSnapshot }[];
-};
+export type DigitalBasketCapture = CapturedDigitalBasket<ConfirmedCard>;
 type DraftLine = { key: string; card: PosCard; quantity: number; student?: StudentSnapshot };
 const C = {
   bg: "var(--pos-bg)", card: "var(--pos-card)", border: "var(--pos-border)",

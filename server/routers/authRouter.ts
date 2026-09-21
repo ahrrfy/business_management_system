@@ -181,7 +181,9 @@ export const authRouter = router({
     // البوّابة الخادمية تماماً — بما فيه مفتاح الإيقاف TWO_FACTOR_ENFORCEMENT=off (وإلا بقيت الواجهة
     // حاجبةً رغم إيقاف الإنفاذ) وحارس isCryptoReady (لا إلزام بلا مفتاح تشفير).
     const mustEnroll2FA = twoFactorEnrollmentRequired(safe);
-    return { ...safe, mustEnroll2FA, mustEnrollTwoFactor: mustEnroll2FA };
+    // معرّف الشركة من AsyncLocalStorage الخادميّ، لا من localStorage/حقل دخول قابل للتلاعب.
+    // `null` يعني نشر شركة واحدة، ويستعمله العميل لعزل أي حالة تشغيلية في المتصفح.
+    return { ...safe, role: safe.isOwner ? "admin" : safe.role, companyId: getCurrentCompanyId(), mustEnroll2FA, mustEnrollTwoFactor: mustEnroll2FA };
   }),
 
   /** هل الخادم في وضع تعدّد الشركات؟ تستعملها شاشة الدخول لإظهار/إخفاء حقل "رمز الشركة"
@@ -500,7 +502,7 @@ export const authRouter = router({
           name: user.name,
           email: user.email,
           username: user.username,
-          role: user.role,
+          role: user.isOwner ? "admin" : user.role,
           isOwner: user.isOwner === true,
           mustChangePassword: user.mustChangePassword ?? false,
           mustEnroll2FA: twoFactorEnrollmentRequired(user),
@@ -698,7 +700,7 @@ export const authRouter = router({
           name: user.name,
           email: user.email,
           username: user.username,
-          role: user.role,
+          role: user.isOwner ? "admin" : user.role,
           isOwner: user.isOwner === true,
           mustChangePassword: user.mustChangePassword ?? false,
           mustEnroll2FA: twoFactorEnrollmentRequired(user),
