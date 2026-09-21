@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-09-21T20:53:33.596Z",
+  "timestamp": "2026-09-21T22:04:12.241Z",
   "scope": {
     "totalFiles": 3484,
-    "totalLines": 883800,
+    "totalLines": 883815,
     "byModule": {
       "accounting_treasury": {
         "name": "المحاسبة المالية والخزينة والأستاذ العام",
@@ -157,7 +157,7 @@
       "platform_admin_security": {
         "name": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
         "files": 129,
-        "lines": 22787,
+        "lines": 22802,
         "tables": 22,
         "services": 26,
         "routers": 0,
