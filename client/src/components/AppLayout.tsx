@@ -3,7 +3,11 @@ import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
 import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
-import { QuranSidebarCard } from "@/components/quran/QuranSidebarCard";
+const QuranSidebarCard = lazy(() =>
+  import("@/components/quran/QuranSidebarCard").then((module) => ({
+    default: module.QuranSidebarCard,
+  })),
+);
 import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { PushNotificationPrompt } from "@/components/notifications/PushNotificationPrompt";
 import { Button } from "@/components/ui/button";
@@ -300,7 +304,9 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
         )}
 
         {/* إذاعة القرآن الكريم — بطاقة بارزة في القائمة الجانبية */}
-        <QuranSidebarCard />
+        <Suspense fallback={null}>
+          <QuranSidebarCard />
+        </Suspense>
 
         <Suspense fallback={<nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="جار تحميل التنقل" />}>
           <HybridSidebarNav
