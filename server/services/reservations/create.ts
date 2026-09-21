@@ -92,14 +92,16 @@ export async function createReservation(input: CreateReservationInput, actor: Ac
     });
     const reservationId = extractInsertId(insRes);
 
-    for (const ln of converted) {
-      await tx.insert(reservationLines).values({
-        reservationId,
-        variantId: ln.variantId,
-        productUnitId: ln.productUnitId,
-        baseQuantity: ln.baseQuantity,
-        quotedUnitPrice: ln.quotedUnitPrice ?? null,
-      });
+    if (converted.length > 0) {
+      await tx.insert(reservationLines).values(
+        converted.map((ln) => ({
+          reservationId,
+          variantId: ln.variantId,
+          productUnitId: ln.productUnitId,
+          baseQuantity: ln.baseQuantity,
+          quotedUnitPrice: ln.quotedUnitPrice ?? null,
+        })),
+      );
     }
     await tx.insert(reservationEvents).values({
       reservationId,

@@ -773,14 +773,16 @@ export async function createWorkOrderInTx(
   const imgs = normalizeDesignContentImages(
     (input.designImages ?? []).filter((i) => i.url?.trim()).slice(0, 10),
   );
-  for (let i = 0; i < imgs.length; i++) {
-    await tx.insert(workOrderImages).values({
-      workOrderId,
-      url: imgs[i].url,
-      caption: imgs[i].caption,
-      sortOrder: imgs[i].sortOrder,
-      revision: 1,
-    } as any);
+  if (imgs.length > 0) {
+    await tx.insert(workOrderImages).values(
+      imgs.map((img) => ({
+        workOrderId,
+        url: img.url,
+        caption: img.caption,
+        sortOrder: img.sortOrder,
+        revision: 1,
+      } as any)),
+    );
   }
 
   // رأس نسخة مستقلّ عن الصور: حتى الطلب النصّي أو ذو صفر صور له مستندٌ مبصوم قابل للاعتماد.

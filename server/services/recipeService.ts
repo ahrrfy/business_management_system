@@ -850,17 +850,19 @@ export async function createRecipeInTx(
       createdBy: actor.userId,
     });
     const recipeId = extractInsertId(insRes);
-    await tx.insert(productionRecipeLines).values(
-      input.lines.map((line) => ({
-        recipeId,
-        inputVariantId: line.inputVariantId,
-        inputProductUnitId: line.inputProductUnitId ?? null,
-        qtyPerOutputBase: money(line.qtyPerOutputBase)
-          .toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
-          .toFixed(4),
-        notes: line.notes?.trim() || null,
-      })),
-    );
+    if (input.lines.length > 0) {
+      await tx.insert(productionRecipeLines).values(
+        input.lines.map((line) => ({
+          recipeId,
+          inputVariantId: line.inputVariantId,
+          inputProductUnitId: line.inputProductUnitId ?? null,
+          qtyPerOutputBase: money(line.qtyPerOutputBase)
+            .toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
+            .toFixed(4),
+          notes: line.notes?.trim() || null,
+        })),
+      );
+    }
     return { recipeId, isActive: active };
   } catch (error) {
     rethrowRecipeWriteError(error);
@@ -934,17 +936,19 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
       await tx
         .delete(productionRecipeLines)
         .where(eq(productionRecipeLines.recipeId, id));
-      await tx.insert(productionRecipeLines).values(
-        input.lines.map((line) => ({
-          recipeId: id,
-          inputVariantId: line.inputVariantId,
-          inputProductUnitId: line.inputProductUnitId ?? null,
-          qtyPerOutputBase: money(line.qtyPerOutputBase)
-            .toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
-            .toFixed(4),
-          notes: line.notes?.trim() || null,
-        })),
-      );
+      if (input.lines.length > 0) {
+        await tx.insert(productionRecipeLines).values(
+          input.lines.map((line) => ({
+            recipeId: id,
+            inputVariantId: line.inputVariantId,
+            inputProductUnitId: line.inputProductUnitId ?? null,
+            qtyPerOutputBase: money(line.qtyPerOutputBase)
+              .toDecimalPlaces(4, Decimal.ROUND_HALF_UP)
+              .toFixed(4),
+            notes: line.notes?.trim() || null,
+          })),
+        );
+      }
       return { recipeId: id };
     } catch (error) {
       rethrowRecipeWriteError(error);

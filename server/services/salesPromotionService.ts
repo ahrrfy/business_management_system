@@ -132,13 +132,15 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
   const promotionId = extractInsertId(res);
 
   const targets = input.targets ?? [];
-  for (const t of targets) {
-    await tx.insert(promotionTargets).values({
-      promotionId,
-      categoryId: t.categoryId ?? null,
-      productId: t.productId ?? null,
-      variantId: t.variantId ?? null,
-    });
+  if (targets.length > 0) {
+    await tx.insert(promotionTargets).values(
+      targets.map((t) => ({
+        promotionId,
+        categoryId: t.categoryId ?? null,
+        productId: t.productId ?? null,
+        variantId: t.variantId ?? null,
+      })),
+    );
   }
   return promotionId;
 }

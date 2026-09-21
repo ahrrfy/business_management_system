@@ -1717,16 +1717,18 @@ async function createOnlineOrderAttempt(
     const reservationExpiresAt = new Date(Number(persistedExpiry));
 
     // ⑤ بنود الطلب (لقطة السعر الخادمي).
-    for (const it of items) {
-      await tx.insert(onlineOrderItems).values({
-        onlineOrderId: orderId,
-        variantId: it.variantId,
-        productUnitId: it.productUnitId,
-        quantity: toDbQty(it.quantity),
-        baseQuantity: it.baseQuantity,
-        unitPrice: it.unitPrice,
-        total: it.lineTotal,
-      });
+    if (items.length > 0) {
+      await tx.insert(onlineOrderItems).values(
+        items.map((it) => ({
+          onlineOrderId: orderId,
+          variantId: it.variantId,
+          productUnitId: it.productUnitId,
+          quantity: toDbQty(it.quantity),
+          baseQuantity: it.baseQuantity,
+          unitPrice: it.unitPrice,
+          total: it.lineTotal,
+        })),
+      );
     }
     if (selectedCoupon) {
       await reserveCouponForOnlineOrder(tx, selectedCoupon, {

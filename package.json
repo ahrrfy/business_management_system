@@ -23,6 +23,8 @@
     "audit:filters": "node scripts/audit-list-filters.mjs",
     "audit:actions": "node scripts/audit-row-actions.mjs",
     "audit:bundle": "node scripts/audit-build-budgets.mjs",
+    "audit:erpm": "node scripts/erpm-deep-audit.mjs --json docs/erpm-audit-raw.json --output docs/ERPM-MASTER-FORENSIC-AUDIT-2026-09-21.md",
+    "audit:erpm:quick": "node scripts/erpm-forensic-inspect.mjs --selftest && node scripts/erpm-forensic-inspect.mjs",
     "check:authz": "node scripts/authz-inventory.mjs --check",
     "check:authz:diff": "node scripts/authz-guard-diff.mjs",
     "check:mobile-release": "node scripts/verify-android-release-workflow-gate.mjs --selftest && node scripts/verify-mobile-release-env.mjs",
