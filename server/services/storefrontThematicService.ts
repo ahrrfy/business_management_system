@@ -35,6 +35,7 @@ export interface ThematicCollectionCard {
   filterType: ThematicFilterType;
   filterValue: string;
   itemCount: number;
+  productIds?: number[];
   sampleProductNames?: string[];
   score?: number;
 }
@@ -56,12 +57,51 @@ interface ThematicArchetype {
   iconName: ThematicCollectionCard["iconName"];
   defaultFilterType: ThematicFilterType;
   defaultFilterValue: string;
-  categoryKeywords: string[];
-  titleKeywords: string[];
-  weight: number;
+  baseWeight: number;
+  minRelevanceThreshold: number;
+  positiveKeywords: Array<{ word: string; weight: number }>;
+  negativeKeywords: string[];
+  preferredCategories: string[];
+  requireSaleOrBundle?: boolean;
 }
 
 const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
+  {
+    id: "calligraphy",
+    tag: "مختارات النخبة",
+    title: "أناقة الحرف وهواة الحبر العربي",
+    description: "أقلام حبر سائل ألمانية، دفاتر مخطوطات، ومحابر كلاسيكية صُممت لعشاق التفاصيل والخط الأصيل.",
+    ctaPrefix: "تصفح أدوات الخط",
+    bgGradient: "from-amber-950/80 via-slate-900 to-slate-950",
+    borderColor: "border-amber-500/30 hover:border-amber-500/60",
+    iconName: "PenTool",
+    defaultFilterType: "category",
+    defaultFilterValue: "2",
+    baseWeight: 28,
+    minRelevanceThreshold: 20,
+    positiveKeywords: [
+      { word: "روترينغ", weight: 45 },
+      { word: "رابيدوغراف", weight: 45 },
+      { word: "تحبير", weight: 40 },
+      { word: "حبر", weight: 30 },
+      { word: "خط", weight: 35 },
+      { word: "باركر", weight: 30 },
+      { word: "كاليجرافي", weight: 40 },
+      { word: "مخطوط", weight: 40 },
+      { word: "محبرة", weight: 40 },
+      { word: "ريشة", weight: 35 },
+      { word: "قلم توقيع", weight: 30 },
+      { word: "جيل", weight: 20 },
+      { word: "سيغنو", weight: 25 },
+      { word: "يوني بول", weight: 20 },
+      { word: "مفكرة جلدية", weight: 20 },
+    ],
+    negativeKeywords: [
+      "مدرسي", "طالب", "تظليل", "فسفوري", "هايلايت", "ممحاة", "براية", "مقلمة",
+      "حقيبة ظهر", "صلصال", "تلوين اطفال", "خرامة", "كباسة", "حامل كمبيوتر", "درع زجاجي"
+    ],
+    preferredCategories: ["أقلام وأدوات كتابة"],
+  },
   {
     id: "executive",
     tag: "إصدار الإهداء الفاخر",
@@ -72,10 +112,29 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     borderColor: "border-emerald-500/30 hover:border-emerald-500/60",
     iconName: "Briefcase",
     defaultFilterType: "category",
-    defaultFilterValue: "6", // بكجات وهدايا راقية
-    categoryKeywords: ["بكجات وهدايا راقية", "تجهيزات ومستلزمات مكتبية"],
-    titleKeywords: ["فاخر", "ملكي", "حامل", "ألمنيوم", "باركر", "هدية", "طقم", "صندوق هدايا"],
-    weight: 20,
+    defaultFilterValue: "6",
+    baseWeight: 26,
+    minRelevanceThreshold: 20,
+    positiveKeywords: [
+      { word: "ملكي", weight: 40 },
+      { word: "فاخر", weight: 35 },
+      { word: "صندوق هدايا", weight: 40 },
+      { word: "حامل كمبيوتر", weight: 35 },
+      { word: "ألمنيوم", weight: 30 },
+      { word: "طقم منظم مكتب", weight: 40 },
+      { word: "منظم مكتب معدني", weight: 40 },
+      { word: "درع زجاجي", weight: 30 },
+      { word: "باركر", weight: 25 },
+      { word: "مفكرة جلدية", weight: 25 },
+      { word: "تخطيط مهام", weight: 20 },
+      { word: "كباسة مكتبية معدنية", weight: 20 },
+      { word: "خرامة أوراق معدنية", weight: 20 },
+    ],
+    negativeKeywords: [
+      "مدرسي", "طالب", "روضة", "اطفال", "حقيبة ظهر", "مقلمة", "تلوين", "رسم مائي",
+      "كانسون", "علبة هندسة", "دفتر ٤٠"
+    ],
+    preferredCategories: ["تجهيزات ومستلزمات مكتبية", "بكجات وهدايا راقية"],
   },
   {
     id: "academic",
@@ -87,25 +146,28 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     borderColor: "border-blue-500/30 hover:border-blue-500/60",
     iconName: "GraduationCap",
     defaultFilterType: "category",
-    defaultFilterValue: "3", // دفاتر ومذكرات
-    categoryKeywords: ["دفاتر ومذكرات", "حقائب ومقالم مدرسية"],
-    titleKeywords: ["دفتر", "سلك", "جامعي", "مدرسي", "تظليل", "حقيبة", "مقلمة", "طالب", "هندسة"],
-    weight: 25,
-  },
-  {
-    id: "calligraphy",
-    tag: "مختارات النخبة",
-    title: "أناقة الحرف وهواة الحبر العربي",
-    description: "أقلام حبر سائل ألمانية، دفاتر مخطوطات، ومحابر كلاسيكية صُممت لعشاق التفاصيل والخط الأصيل.",
-    ctaPrefix: "تصفح أدوات الخط",
-    bgGradient: "from-amber-950/80 via-slate-900 to-slate-950",
-    borderColor: "border-amber-500/30 hover:border-amber-500/60",
-    iconName: "PenTool",
-    defaultFilterType: "category",
-    defaultFilterValue: "2", // أقلام وأدوات كتابة
-    categoryKeywords: ["أقلام وأدوات كتابة", "قرطاسية"],
-    titleKeywords: ["حبر", "روترينغ", "باركر", "جيل", "رسم", "خط", "كراس", "مفكرة", "قلم"],
-    weight: 18,
+    defaultFilterValue: "3",
+    baseWeight: 30,
+    minRelevanceThreshold: 20,
+    positiveKeywords: [
+      { word: "جامعي", weight: 40 },
+      { word: "مدرسي", weight: 35 },
+      { word: "طالب", weight: 40 },
+      { word: "دفاتر سلك", weight: 40 },
+      { word: "دفتر سلك", weight: 40 },
+      { word: "دفتر", weight: 20 },
+      { word: "تظليل", weight: 40 },
+      { word: "باستيل", weight: 20 },
+      { word: "ستيدلر", weight: 20 },
+      { word: "حقيبة ظهر", weight: 40 },
+      { word: "مقلمة", weight: 40 },
+      { word: "علبة هندسة", weight: 40 },
+      { word: "قلم رصاص ميكانيكي", weight: 25 },
+    ],
+    negativeKeywords: [
+      "ملكي فاخر", "صندوق هدايا مكتبي", "درع زجاجي", "حامل كمبيوتر"
+    ],
+    preferredCategories: ["دفاتر ومذكرات", "حقائب ومقالم مدرسية"],
   },
   {
     id: "deals",
@@ -118,9 +180,19 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     iconName: "Tag",
     defaultFilterType: "deal",
     defaultFilterValue: "deals",
-    categoryKeywords: ["بكجات وهدايا راقية"],
-    titleKeywords: ["بكج", "عرض", "طقم", "باك", "مجموعة"],
-    weight: 30,
+    baseWeight: 35,
+    minRelevanceThreshold: 15,
+    requireSaleOrBundle: true,
+    positiveKeywords: [
+      { word: "بكج", weight: 45 },
+      { word: "باك", weight: 40 },
+      { word: "طقم", weight: 30 },
+      { word: "مجموعة", weight: 30 },
+      { word: "عرض", weight: 30 },
+      { word: "توفير", weight: 35 },
+    ],
+    negativeKeywords: [],
+    preferredCategories: ["بكجات وهدايا راقية"],
   },
   {
     id: "productivity",
@@ -132,10 +204,24 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     borderColor: "border-teal-500/30 hover:border-teal-500/60",
     iconName: "LayoutGrid",
     defaultFilterType: "category",
-    defaultFilterValue: "4", // تجهيزات ومستلزمات مكتبية
-    categoryKeywords: ["تجهيزات ومستلزمات مكتبية"],
-    titleKeywords: ["منظم", "كباسة", "خرامة", "تخطيط", "نوتبوك", "حامل", "شبكي"],
-    weight: 15,
+    defaultFilterValue: "4",
+    baseWeight: 22,
+    minRelevanceThreshold: 20,
+    positiveKeywords: [
+      { word: "منظم مكتب", weight: 40 },
+      { word: "شبكي", weight: 40 },
+      { word: "كباسة", weight: 40 },
+      { word: "خرامة", weight: 40 },
+      { word: "تخطيط مهام", weight: 40 },
+      { word: "حامل كمبيوتر", weight: 35 },
+      { word: "نوتبوك", weight: 20 },
+      { word: "مكتبي", weight: 20 },
+      { word: "معدني", weight: 20 },
+    ],
+    negativeKeywords: [
+      "مدرسي", "حقيبة ظهر", "مقلمة", "تلوين", "كانسون", "رسم مائي", "علبة هندسة", "درع زجاجي"
+    ],
+    preferredCategories: ["تجهيزات ومستلزمات مكتبية"],
   },
   {
     id: "creative",
@@ -148,14 +234,92 @@ const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     iconName: "Palette",
     defaultFilterType: "keyword",
     defaultFilterValue: "رسم",
-    categoryKeywords: ["دفاتر ومذكرات", "أقلام وأدوات كتابة"],
-    titleKeywords: ["رسم", "كانسون", "مائي", "باستيل", "تلوين", "فني"],
-    weight: 12,
+    baseWeight: 20,
+    minRelevanceThreshold: 20,
+    positiveKeywords: [
+      { word: "رسم", weight: 45 },
+      { word: "كانسون", weight: 45 },
+      { word: "مائي", weight: 40 },
+      { word: "فني", weight: 35 },
+      { word: "باستيل", weight: 35 },
+      { word: "تحبير هندسي", weight: 40 },
+      { word: "روترينغ", weight: 35 },
+      { word: "تلوين", weight: 25 },
+      { word: "ستيدلر", weight: 20 },
+      { word: "قلم رصاص ميكانيكي", weight: 25 },
+      { word: "كراس", weight: 25 },
+    ],
+    negativeKeywords: [
+      "كباسة", "خرامة", "حامل كمبيوتر", "درع زجاجي", "صندوق هدايا مكتبي", "حقيبة ظهر مدرسية"
+    ],
+    preferredCategories: ["دفاتر ومذكرات", "أقلام وأدوات كتابة"],
   },
 ];
 
 const THEMATIC_CACHE_TTL_MS = 5 * 60 * 1000; // 5 دقائق
 const thematicCache = createTtlCache<string, ThematicCollectionCard[]>({ ttlMs: THEMATIC_CACHE_TTL_MS, maxEntries: 20 });
+
+function calculateProductRelevance(
+  item: {
+    productName: string;
+    description?: string | null;
+    category?: string | null;
+    salePrice?: string | null;
+    price?: string | null;
+    isBundle?: boolean;
+    imageUrl?: string | null;
+  },
+  arch: ThematicArchetype
+): number {
+  const normName = normalizeArabicSearch(item.productName || "");
+  const normDesc = normalizeArabicSearch(item.description || "");
+  const normCat = normalizeArabicSearch(item.category || "");
+  const fullText = `${normName} ${normDesc}`;
+
+  // 1. فحص الاستبعادات الصارمة أولاً
+  for (const neg of arch.negativeKeywords) {
+    const normNeg = normalizeArabicSearch(neg);
+    if (fullText.includes(normNeg)) {
+      return -100;
+    }
+  }
+
+  // 2. شرط العروض والبكجات الحقيقية
+  if (arch.requireSaleOrBundle) {
+    const hasDiscount = item.salePrice != null && Number(item.salePrice) < Number(item.price);
+    const isBundle = item.isBundle === true || normName.includes("بكج") || normName.includes("عرض") || normName.includes("طقم") || normName.includes("باك");
+    if (!hasDiscount && !isBundle) {
+      return -100;
+    }
+  }
+
+  let score = 0;
+
+  // 3. الكلمات المفتاحية الإيجابية الموزونة
+  for (const pos of arch.positiveKeywords) {
+    const normPos = normalizeArabicSearch(pos.word);
+    if (fullText.includes(normPos)) {
+      score += pos.weight;
+    }
+  }
+
+  // 4. الفئات الداعمة المفضلة
+  for (const cat of arch.preferredCategories) {
+    if (normCat.includes(normalizeArabicSearch(cat))) {
+      score += 15;
+    }
+  }
+
+  // 5. نقاط تفضيلية للعروض ووجود الصورة
+  if (item.salePrice != null && Number(item.salePrice) < Number(item.price)) {
+    score += 10;
+  }
+  if (item.imageUrl) {
+    score += 5;
+  }
+
+  return score;
+}
 
 /** قراءة الإعدادات الحالية من قاعدة البيانات */
 export async function getThematicCollectionsConfig(): Promise<ThematicCollectionsConfig> {
@@ -209,7 +373,7 @@ export async function updateThematicCollectionsConfig(
   }, { gate: "NONE" });
 }
 
-/** الخوارزمية الذكية: فحص الكتالوج وتوليد أفضل ٣ تشكيلات متوفرة */
+/** الخوارزمية الذكية: فحص الكتالوج وتوليد أفضل ٣ تشكيلات متوفرة برصيد حقيقي ومعرفات دقيقة */
 export async function computeAlgorithmicThematicCollections(
   branchId?: number | null
 ): Promise<ThematicCollectionCard[]> {
@@ -233,28 +397,26 @@ export async function computeAlgorithmicThematicCollections(
     const evaluatedArchetypes: ThematicCollectionCard[] = [];
 
     for (const arch of THEMATIC_ARCHETYPES) {
-      const matchedItems = allItems.filter((item) => {
-        // مطابقة الفئة أو الكلمات المفتاحية بتطبيع عربي دقيق وموحد
-        const normName = normalizeArabicSearch(item.productName);
-        const normDesc = normalizeArabicSearch(item.description ?? "");
-        const normCat = normalizeArabicSearch(item.category ?? "");
+      // احتساب الصلة الحبيبية الدقيقة لكل منتج
+      const matchedWithScores = allItems
+        .map((item) => ({
+          item,
+          relevance: calculateProductRelevance(item, arch),
+        }))
+        .filter((entry) => entry.relevance >= arch.minRelevanceThreshold && entry.item.inStock);
 
-        const matchesCat = arch.categoryKeywords.some((ck) =>
-          normCat.includes(normalizeArabicSearch(ck))
-        );
-        const matchesKeyword = arch.titleKeywords.some((tk) => {
-          const normTk = normalizeArabicSearch(tk);
-          return normName.includes(normTk) || normDesc.includes(normTk);
-        });
-
-        return matchesCat || matchesKeyword;
+      // ترتيب المنتجات داخل التشكيلة تنازلياً حسب درجة الصلة الدلالية وجودة العرض
+      matchedWithScores.sort((a, b) => {
+        if (b.relevance !== a.relevance) return b.relevance - a.relevance;
+        const aSale = a.item.salePrice != null ? 1 : 0;
+        const bSale = b.item.salePrice != null ? 1 : 0;
+        return bSale - aSale;
       });
 
-      // المنتجات المتوفرة حالياً فقط
-      const inStockItems = matchedItems.filter((i) => i.inStock);
+      const inStockItems = matchedWithScores.map((e) => e.item);
       const inStockCount = inStockItems.length;
 
-      // استبعاد النمط إذا لم يكن هناك أي منتج متوفر
+      // قاعدة استبعاد التشكيلات الصفرية (Zero-Empty Policy)
       if (inStockCount === 0) {
         continue;
       }
@@ -263,18 +425,12 @@ export async function computeAlgorithmicThematicCollections(
         (i) => i.salePrice != null && Number(i.salePrice) < Number(i.price)
       ).length;
 
-      // حساب النقاط بحد تشبع للمخزون لمنع طغيان الأصناف الفردية مع وزن إضافي للعروض وهامش الربحية
+      // حساب النقاط بحد تشبع للمخزون مع وزن نوعي ومكافأة للعروض
       const saturationCount = Math.min(inStockCount, 12);
-      const score = saturationCount * 12 + Math.min(inStockCount, 30) * 3 + onSaleCount * 18 + arch.weight;
-
-      // تحديد الفلتر الأنسب
-      let filterType: ThematicFilterType = arch.defaultFilterType;
-      let filterValue: string = arch.defaultFilterValue;
-
-      if (arch.id === "deals" && onSaleCount > 0) {
-        filterType = "deal";
-        filterValue = "deals";
-      }
+      const avgRelevance = Math.round(
+        matchedWithScores.reduce((sum, e) => sum + e.relevance, 0) / inStockCount
+      );
+      const score = saturationCount * 10 + Math.min(inStockCount, 30) * 2 + onSaleCount * 15 + avgRelevance + arch.baseWeight;
 
       // صياغة نص الإجراء المتضمن لعدد المنتجات
       const cta = `${arch.ctaPrefix} (${inStockCount})`;
@@ -288,9 +444,10 @@ export async function computeAlgorithmicThematicCollections(
         bgGradient: arch.bgGradient,
         borderColor: arch.borderColor,
         iconName: arch.iconName,
-        filterType,
-        filterValue,
+        filterType: arch.defaultFilterType,
+        filterValue: arch.defaultFilterValue,
         itemCount: inStockCount,
+        productIds: inStockItems.map((i) => i.productId),
         sampleProductNames: inStockItems.slice(0, 3).map((i) => i.productName),
         score,
       });
@@ -312,7 +469,7 @@ export async function getStorefrontThematicCollections(
     // تصفية أي بطاقات مخصصة ليس بها رصيد حقيقي لحماية قاعدة صفر تشكيلات فارغة
     const validCards = config.customCards.filter((c) => (c.itemCount ?? 0) > 0);
     if (validCards.length > 0) {
-      return validCards;
+      return validCards.map((c) => ({ ...c, productIds: c.productIds ?? [] }));
     }
   }
 

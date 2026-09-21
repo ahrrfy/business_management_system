@@ -707,6 +707,7 @@ const thematicCollectionsRouter = router({
         filterType: z.enum(["category", "keyword", "deal"]),
         filterValue: z.string(),
         itemCount: z.number().int().min(0),
+        productIds: z.array(z.number().int().positive()).optional(),
       })).max(10).optional(),
     }))
     .mutation(async ({ input, ctx }) => {

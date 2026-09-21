@@ -15,10 +15,13 @@ import { trpc } from "@/lib/trpc";
 export type ThematicFilterType = "category" | "keyword" | "deal";
 
 export interface ThematicSelectEvent {
+  id: string;
+  title: string;
+  tag: string;
+  itemCount: number;
+  productIds: number[];
   filterType: ThematicFilterType;
   filterValue: string;
-  title: string;
-  itemCount: number;
 }
 
 export interface StorefrontThematicGridProps {
@@ -77,10 +80,13 @@ export function StorefrontThematicGrid({
   function handleCardClick(col: (typeof collections)[number]) {
     if (onSelectCollection) {
       onSelectCollection({
+        id: col.id,
+        title: col.title,
+        tag: col.tag,
+        itemCount: col.itemCount,
+        productIds: col.productIds ?? [],
         filterType: col.filterType,
         filterValue: col.filterValue,
-        title: col.title,
-        itemCount: col.itemCount,
       });
     } else if (onSelectKeyword) {
       onSelectKeyword(col.filterValue);

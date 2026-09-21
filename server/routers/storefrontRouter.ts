@@ -164,6 +164,7 @@ export const storefrontRouter = router({
     .input(
       z.object({
         categoryId: z.number().int().positive().nullish(),
+        productIds: z.array(z.number().int().positive()).max(200).nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
         // معرّف آخر منتج في الصفحة السابقة؛ يضيفه useInfiniteQuery فقط بعد الصفحة الأولى.
@@ -175,6 +176,7 @@ export const storefrontRouter = router({
     .query(({ input }) =>
       storefrontCatalog({
         categoryId: input.categoryId ?? null,
+        productIds: input.productIds ?? null,
         search: input.search,
         limit: input.limit,
         cursor: input.cursor ?? null,
