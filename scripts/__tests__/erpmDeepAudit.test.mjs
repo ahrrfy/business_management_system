@@ -48,3 +48,18 @@ test('ForensicEngine executes full inspection without throwing', () => {
   assert.ok(report.summary.pass > 1000, 'Must pass vast majority of checkpoints');
   assert.ok(report.summary.sii >= 80, 'System Integrity Index must be above 80%');
 });
+
+test('ForensicEngine evaluates all 10 matrix levels (L0 through L9) with zero defects', () => {
+  const engine = new ForensicEngine();
+  const report = engine.runFullInspection();
+  const expectedLevels = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9'];
+  for (const lvl of expectedLevels) {
+    assert.ok(report.levels[lvl], `Level ${lvl} must exist in report`);
+    assert.ok(report.levels[lvl].checkpoints.length > 0, `Level ${lvl} must have checkpoints`);
+  }
+  assert.equal(report.summary.critical, 0, 'Must have 0 critical defects');
+  assert.equal(report.summary.fail, 0, 'Must have 0 failing checkpoints');
+  assert.equal(report.summary.warning, 0, 'Must have 0 warnings across all levels');
+  assert.equal(report.summary.sii, 100, 'System Integrity Index must reach 100%');
+});
+

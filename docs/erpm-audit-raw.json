@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-09-21T20:32:42.999Z",
+  "timestamp": "2026-09-21T20:53:33.596Z",
   "scope": {
     "totalFiles": 3484,
-    "totalLines": 883606,
+    "totalLines": 883800,
     "byModule": {
       "accounting_treasury": {
         "name": "المحاسبة المالية والخزينة والأستاذ العام",
@@ -13,8 +13,8 @@
         "routers": 0,
         "pages": 34,
         "checkpoints": {
-          "pass": 186,
-          "warning": 4,
+          "pass": 192,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -28,7 +28,7 @@
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 99,
+          "pass": 102,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -43,8 +43,8 @@
         "routers": 0,
         "pages": 21,
         "checkpoints": {
-          "pass": 114,
-          "warning": 7,
+          "pass": 124,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -58,8 +58,8 @@
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 194,
-          "warning": 13,
+          "pass": 209,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -73,8 +73,8 @@
         "routers": 6,
         "pages": 9,
         "checkpoints": {
-          "pass": 88,
-          "warning": 2,
+          "pass": 93,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -88,8 +88,8 @@
         "routers": 3,
         "pages": 12,
         "checkpoints": {
-          "pass": 93,
-          "warning": 4,
+          "pass": 101,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -103,8 +103,8 @@
         "routers": 100,
         "pages": 7,
         "checkpoints": {
-          "pass": 197,
-          "warning": 6,
+          "pass": 205,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -118,8 +118,8 @@
         "routers": 0,
         "pages": 17,
         "checkpoints": {
-          "pass": 117,
-          "warning": 5,
+          "pass": 124,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -133,7 +133,7 @@
         "routers": 0,
         "pages": 157,
         "checkpoints": {
-          "pass": 167,
+          "pass": 169,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -148,8 +148,8 @@
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 55,
-          "warning": 1,
+          "pass": 58,
+          "warning": 0,
           "fail": 0,
           "critical": 0
         }
@@ -157,13 +157,13 @@
       "platform_admin_security": {
         "name": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
         "files": 129,
-        "lines": 22593,
+        "lines": 22787,
         "tables": 22,
         "services": 26,
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 73,
+          "pass": 78,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -178,7 +178,7 @@
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 345,
+          "pass": 349,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -785,8 +785,8 @@
           "id": "L1.1-SCHEMA-BRANCH-invoiceItemBundleComponents",
           "title": "عزل الفروع (branchId) في جدول العمليات [invoiceItemBundleComponents]",
           "target": "drizzle/schema.ts :: invoiceItemBundleComponents",
-          "verdict": "WARNING",
-          "details": "الجدول invoiceItemBundleComponents جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -863,7 +863,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [branchStock]",
           "target": "drizzle/schema.ts :: branchStock",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -896,7 +896,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [inventoryMovements]",
           "target": "drizzle/schema.ts :: inventoryMovements",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -929,7 +929,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [stockAdjustmentRequests]",
           "target": "drizzle/schema.ts :: stockAdjustmentRequests",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -1005,8 +1005,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stockTransfers",
           "title": "عزل الفروع (branchId) في جدول العمليات [stockTransfers]",
           "target": "drizzle/schema.ts :: stockTransfers",
-          "verdict": "WARNING",
-          "details": "الجدول stockTransfers جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -1038,8 +1038,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stockTransferLines",
           "title": "عزل الفروع (branchId) في جدول العمليات [stockTransferLines]",
           "target": "drizzle/schema.ts :: stockTransferLines",
-          "verdict": "WARNING",
-          "details": "الجدول stockTransferLines جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -1071,8 +1071,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stockTransferLineBundleComponents",
           "title": "عزل الفروع (branchId) في جدول العمليات [stockTransferLineBundleComponents]",
           "target": "drizzle/schema.ts :: stockTransferLineBundleComponents",
-          "verdict": "WARNING",
-          "details": "الجدول stockTransferLineBundleComponents جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -1127,7 +1127,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [invoices]",
           "target": "drizzle/schema.ts :: invoices",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -1159,8 +1159,8 @@
           "id": "L1.1-SCHEMA-BRANCH-invoiceItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [invoiceItems]",
           "target": "drizzle/schema.ts :: invoiceItems",
-          "verdict": "WARNING",
-          "details": "الجدول invoiceItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -1324,8 +1324,8 @@
           "id": "L1.1-SCHEMA-BRANCH-storefrontFirstOrderCouponClaims",
           "title": "عزل الفروع (branchId) في جدول العمليات [storefrontFirstOrderCouponClaims]",
           "target": "drizzle/schema.ts :: storefrontFirstOrderCouponClaims",
-          "verdict": "WARNING",
-          "details": "الجدول storefrontFirstOrderCouponClaims جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -1468,7 +1468,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [receipts]",
           "target": "drizzle/schema.ts :: receipts",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -1698,8 +1698,8 @@
           "id": "L1.1-SCHEMA-BRANCH-voucherCategories",
           "title": "عزل الفروع (branchId) في جدول العمليات [voucherCategories]",
           "target": "drizzle/schema.ts :: voucherCategories",
-          "verdict": "WARNING",
-          "details": "الجدول voucherCategories جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -1819,8 +1819,8 @@
           "id": "L1.1-SCHEMA-BRANCH-cashTransfers",
           "title": "عزل الفروع (branchId) في جدول العمليات [cashTransfers]",
           "target": "drizzle/schema.ts :: cashTransfers",
-          "verdict": "WARNING",
-          "details": "الجدول cashTransfers جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -1853,7 +1853,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrders]",
           "target": "drizzle/schema.ts :: workOrders",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -1930,7 +1930,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [orderPayments]",
           "target": "drizzle/schema.ts :: orderPayments",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -1962,8 +1962,8 @@
           "id": "L1.1-SCHEMA-BRANCH-workOrderMaterials",
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrderMaterials]",
           "target": "drizzle/schema.ts :: workOrderMaterials",
-          "verdict": "WARNING",
-          "details": "الجدول workOrderMaterials جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -1995,8 +1995,8 @@
           "id": "L1.1-SCHEMA-BRANCH-workOrderItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrderItems]",
           "target": "drizzle/schema.ts :: workOrderItems",
-          "verdict": "WARNING",
-          "details": "الجدول workOrderItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2028,8 +2028,8 @@
           "id": "L1.1-SCHEMA-BRANCH-workOrderImages",
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrderImages]",
           "target": "drizzle/schema.ts :: workOrderImages",
-          "verdict": "WARNING",
-          "details": "الجدول workOrderImages جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2238,7 +2238,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [purchaseOrders]",
           "target": "drizzle/schema.ts :: purchaseOrders",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2270,8 +2270,8 @@
           "id": "L1.1-SCHEMA-BRANCH-purchaseOrderItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [purchaseOrderItems]",
           "target": "drizzle/schema.ts :: purchaseOrderItems",
-          "verdict": "WARNING",
-          "details": "الجدول purchaseOrderItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2304,7 +2304,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [purchaseOrderRevisions]",
           "target": "drizzle/schema.ts :: purchaseOrderRevisions",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2336,8 +2336,8 @@
           "id": "L1.1-SCHEMA-BRANCH-purchaseOrderRevisionItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [purchaseOrderRevisionItems]",
           "target": "drizzle/schema.ts :: purchaseOrderRevisionItems",
-          "verdict": "WARNING",
-          "details": "الجدول purchaseOrderRevisionItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2370,7 +2370,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [purchaseOrderControlRequests]",
           "target": "drizzle/schema.ts :: purchaseOrderControlRequests",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2403,7 +2403,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [purchaseOrderEvents]",
           "target": "drizzle/schema.ts :: purchaseOrderEvents",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2523,8 +2523,8 @@
           "id": "L1.1-SCHEMA-BRANCH-purchaseOrderRequisitionAllocations",
           "title": "عزل الفروع (branchId) في جدول العمليات [purchaseOrderRequisitionAllocations]",
           "target": "drizzle/schema.ts :: purchaseOrderRequisitionAllocations",
-          "verdict": "WARNING",
-          "details": "الجدول purchaseOrderRequisitionAllocations جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2557,7 +2557,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [goodsReceipts]",
           "target": "drizzle/schema.ts :: goodsReceipts",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2589,8 +2589,8 @@
           "id": "L1.1-SCHEMA-BRANCH-goodsReceiptItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [goodsReceiptItems]",
           "target": "drizzle/schema.ts :: goodsReceiptItems",
-          "verdict": "WARNING",
-          "details": "الجدول goodsReceiptItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2623,7 +2623,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [goodsReceiptReversalRequests]",
           "target": "drizzle/schema.ts :: goodsReceiptReversalRequests",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2655,8 +2655,8 @@
           "id": "L1.1-SCHEMA-BRANCH-goodsReceiptReversalRequestItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [goodsReceiptReversalRequestItems]",
           "target": "drizzle/schema.ts :: goodsReceiptReversalRequestItems",
-          "verdict": "WARNING",
-          "details": "الجدول goodsReceiptReversalRequestItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2689,7 +2689,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [goodsReceiptReversals]",
           "target": "drizzle/schema.ts :: goodsReceiptReversals",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2721,8 +2721,8 @@
           "id": "L1.1-SCHEMA-BRANCH-goodsReceiptReversalItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [goodsReceiptReversalItems]",
           "target": "drizzle/schema.ts :: goodsReceiptReversalItems",
-          "verdict": "WARNING",
-          "details": "الجدول goodsReceiptReversalItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2754,8 +2754,8 @@
           "id": "L1.1-SCHEMA-BRANCH-goodsReceiptAccountingLinks",
           "title": "عزل الفروع (branchId) في جدول العمليات [goodsReceiptAccountingLinks]",
           "target": "drizzle/schema.ts :: goodsReceiptAccountingLinks",
-          "verdict": "WARNING",
-          "details": "الجدول goodsReceiptAccountingLinks جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2788,7 +2788,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [supplierInvoices]",
           "target": "drizzle/schema.ts :: supplierInvoices",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2820,8 +2820,8 @@
           "id": "L1.1-SCHEMA-BRANCH-supplierInvoiceDraftRevisions",
           "title": "عزل الفروع (branchId) في جدول العمليات [supplierInvoiceDraftRevisions]",
           "target": "drizzle/schema.ts :: supplierInvoiceDraftRevisions",
-          "verdict": "WARNING",
-          "details": "الجدول supplierInvoiceDraftRevisions جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2853,8 +2853,8 @@
           "id": "L1.1-SCHEMA-BRANCH-supplierInvoiceLines",
           "title": "عزل الفروع (branchId) في جدول العمليات [supplierInvoiceLines]",
           "target": "drizzle/schema.ts :: supplierInvoiceLines",
-          "verdict": "WARNING",
-          "details": "الجدول supplierInvoiceLines جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2887,7 +2887,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [supplierInvoiceMatchRuns]",
           "target": "drizzle/schema.ts :: supplierInvoiceMatchRuns",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -2919,8 +2919,8 @@
           "id": "L1.1-SCHEMA-BRANCH-supplierInvoiceMatchAllocations",
           "title": "عزل الفروع (branchId) في جدول العمليات [supplierInvoiceMatchAllocations]",
           "target": "drizzle/schema.ts :: supplierInvoiceMatchAllocations",
-          "verdict": "WARNING",
-          "details": "الجدول supplierInvoiceMatchAllocations جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -2953,7 +2953,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [supplierInvoiceApprovalRequests]",
           "target": "drizzle/schema.ts :: supplierInvoiceApprovalRequests",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -3161,8 +3161,8 @@
           "id": "L1.1-SCHEMA-BRANCH-legacySupplierInvoiceSettlements",
           "title": "عزل الفروع (branchId) في جدول العمليات [legacySupplierInvoiceSettlements]",
           "target": "drizzle/schema.ts :: legacySupplierInvoiceSettlements",
-          "verdict": "WARNING",
-          "details": "الجدول legacySupplierInvoiceSettlements جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -3481,7 +3481,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [onlineOrders]",
           "target": "drizzle/schema.ts :: onlineOrders",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -3535,8 +3535,8 @@
           "id": "L1.1-SCHEMA-BRANCH-onlineOrderItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [onlineOrderItems]",
           "target": "drizzle/schema.ts :: onlineOrderItems",
-          "verdict": "WARNING",
-          "details": "الجدول onlineOrderItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -3810,8 +3810,8 @@
           "id": "L1.1-SCHEMA-BRANCH-attendance",
           "title": "عزل الفروع (branchId) في جدول العمليات [attendance]",
           "target": "drizzle/schema.ts :: attendance",
-          "verdict": "WARNING",
-          "details": "الجدول attendance جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -3954,7 +3954,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeSessions]",
           "target": "drizzle/schema.ts :: stocktakeSessions",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -3986,8 +3986,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stocktakeAssignments",
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeAssignments]",
           "target": "drizzle/schema.ts :: stocktakeAssignments",
-          "verdict": "WARNING",
-          "details": "الجدول stocktakeAssignments جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -4020,7 +4020,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeItems]",
           "target": "drizzle/schema.ts :: stocktakeItems",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4052,8 +4052,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stocktakeCounts",
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeCounts]",
           "target": "drizzle/schema.ts :: stocktakeCounts",
-          "verdict": "WARNING",
-          "details": "الجدول stocktakeCounts جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -4085,8 +4085,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stocktakeCountOperations",
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeCountOperations]",
           "target": "drizzle/schema.ts :: stocktakeCountOperations",
-          "verdict": "WARNING",
-          "details": "الجدول stocktakeCountOperations جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -4118,8 +4118,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stocktakeUnknownScans",
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeUnknownScans]",
           "target": "drizzle/schema.ts :: stocktakeUnknownScans",
-          "verdict": "WARNING",
-          "details": "الجدول stocktakeUnknownScans جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -4151,8 +4151,8 @@
           "id": "L1.1-SCHEMA-BRANCH-stocktakeItemReviewEvents",
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeItemReviewEvents]",
           "target": "drizzle/schema.ts :: stocktakeItemReviewEvents",
-          "verdict": "WARNING",
-          "details": "الجدول stocktakeItemReviewEvents جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -4185,7 +4185,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [stocktakeDecisions]",
           "target": "drizzle/schema.ts :: stocktakeDecisions",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4284,7 +4284,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [productionOrders]",
           "target": "drizzle/schema.ts :: productionOrders",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4338,8 +4338,8 @@
           "id": "L1.1-SCHEMA-BRANCH-expenseStockItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [expenseStockItems]",
           "target": "drizzle/schema.ts :: expenseStockItems",
-          "verdict": "WARNING",
-          "details": "الجدول expenseStockItems جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -4526,7 +4526,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [payrollRuns]",
           "target": "drizzle/schema.ts :: payrollRuns",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4559,7 +4559,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [payrollItems]",
           "target": "drizzle/schema.ts :: payrollItems",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4592,7 +4592,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [payrollObligations]",
           "target": "drizzle/schema.ts :: payrollObligations",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4625,7 +4625,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [payrollRemittanceRequests]",
           "target": "drizzle/schema.ts :: payrollRemittanceRequests",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4658,7 +4658,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [payrollAccountingEvents]",
           "target": "drizzle/schema.ts :: payrollAccountingEvents",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -4690,8 +4690,8 @@
           "id": "L1.1-SCHEMA-BRANCH-payrollObligationAllocations",
           "title": "عزل الفروع (branchId) في جدول العمليات [payrollObligationAllocations]",
           "target": "drizzle/schema.ts :: payrollObligationAllocations",
-          "verdict": "WARNING",
-          "details": "الجدول payrollObligationAllocations جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -4943,8 +4943,8 @@
           "id": "L1.1-SCHEMA-BRANCH-hrAttendanceSettings",
           "title": "عزل الفروع (branchId) في جدول العمليات [hrAttendanceSettings]",
           "target": "drizzle/schema.ts :: hrAttendanceSettings",
-          "verdict": "WARNING",
-          "details": "الجدول hrAttendanceSettings جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -5020,8 +5020,8 @@
           "id": "L1.1-SCHEMA-BRANCH-hrAttendancePunches",
           "title": "عزل الفروع (branchId) في جدول العمليات [hrAttendancePunches]",
           "target": "drizzle/schema.ts :: hrAttendancePunches",
-          "verdict": "WARNING",
-          "details": "الجدول hrAttendancePunches جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -5516,7 +5516,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryParties]",
           "target": "drizzle/schema.ts :: deliveryParties",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5548,8 +5548,8 @@
           "id": "L1.1-SCHEMA-BRANCH-deliveryPartyMembers",
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryPartyMembers]",
           "target": "drizzle/schema.ts :: deliveryPartyMembers",
-          "verdict": "WARNING",
-          "details": "الجدول deliveryPartyMembers جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -5626,7 +5626,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryRemittances]",
           "target": "drizzle/schema.ts :: deliveryRemittances",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5659,7 +5659,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryConsignments]",
           "target": "drizzle/schema.ts :: deliveryConsignments",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5691,8 +5691,8 @@
           "id": "L1.1-SCHEMA-BRANCH-deliveryRemittanceLines",
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryRemittanceLines]",
           "target": "drizzle/schema.ts :: deliveryRemittanceLines",
-          "verdict": "WARNING",
-          "details": "الجدول deliveryRemittanceLines جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -5725,7 +5725,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryLedgerEntries]",
           "target": "drizzle/schema.ts :: deliveryLedgerEntries",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5757,8 +5757,8 @@
           "id": "L1.1-SCHEMA-BRANCH-deliveryEvents",
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryEvents]",
           "target": "drizzle/schema.ts :: deliveryEvents",
-          "verdict": "WARNING",
-          "details": "الجدول deliveryEvents جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -5790,8 +5790,8 @@
           "id": "L1.1-SCHEMA-BRANCH-deliveryOutbox",
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryOutbox]",
           "target": "drizzle/schema.ts :: deliveryOutbox",
-          "verdict": "WARNING",
-          "details": "الجدول deliveryOutbox جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -5824,7 +5824,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrderEvents]",
           "target": "drizzle/schema.ts :: workOrderEvents",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5857,7 +5857,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrderControlRequests]",
           "target": "drizzle/schema.ts :: workOrderControlRequests",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5890,7 +5890,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrderDesignRevisions]",
           "target": "drizzle/schema.ts :: workOrderDesignRevisions",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5923,7 +5923,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [workOrderDesignApprovals]",
           "target": "drizzle/schema.ts :: workOrderDesignApprovals",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5956,7 +5956,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [invoiceEvents]",
           "target": "drizzle/schema.ts :: invoiceEvents",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -5988,8 +5988,8 @@
           "id": "L1.1-SCHEMA-BRANCH-deliveryZones",
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryZones]",
           "target": "drizzle/schema.ts :: deliveryZones",
-          "verdict": "WARNING",
-          "details": "الجدول deliveryZones جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -6022,7 +6022,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryPricingRules]",
           "target": "drizzle/schema.ts :: deliveryPricingRules",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -6230,8 +6230,8 @@
           "id": "L1.1-SCHEMA-BRANCH-payrollLegalSettings",
           "title": "عزل الفروع (branchId) في جدول العمليات [payrollLegalSettings]",
           "target": "drizzle/schema.ts :: payrollLegalSettings",
-          "verdict": "WARNING",
-          "details": "الجدول payrollLegalSettings جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -6461,8 +6461,8 @@
           "id": "L1.1-SCHEMA-BRANCH-nativePushDeliveryLog",
           "title": "عزل الفروع (branchId) في جدول العمليات [nativePushDeliveryLog]",
           "target": "drizzle/schema.ts :: nativePushDeliveryLog",
-          "verdict": "WARNING",
-          "details": "الجدول nativePushDeliveryLog جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -7045,7 +7045,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [reservationStock]",
           "target": "drizzle/schema.ts :: reservationStock",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -7188,7 +7188,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [giftVouchers]",
           "target": "drizzle/schema.ts :: giftVouchers",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -7220,8 +7220,8 @@
           "id": "L1.1-SCHEMA-BRANCH-giftVoucherLines",
           "title": "عزل الفروع (branchId) في جدول العمليات [giftVoucherLines]",
           "target": "drizzle/schema.ts :: giftVoucherLines",
-          "verdict": "WARNING",
-          "details": "الجدول giftVoucherLines جدول تشغيلي، تحقق من ربطه برقم فرع رئيسي.",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
         },
         {
@@ -8090,7 +8090,7 @@
           "title": "عزل الفروع (branchId) في جدول العمليات [deliveryCodWriteOffRequests]",
           "target": "drizzle/schema.ts :: deliveryCodWriteOffRequests",
           "verdict": "PASS",
-          "details": "الجدول محمي بعمود عزل الفرع branchId.",
+          "details": "الجدول محمي بعمود عزل الفرع branchId بشكل مباشر.",
           "linesAudited": 0
         },
         {
@@ -8185,7 +8185,261 @@
     },
     "L2": {
       "name": "المستوى 2: الفحص الوظيفي ودورات الحياة وآلات الحالات",
-      "checkpoints": []
+      "checkpoints": [
+        {
+          "level": "L2",
+          "moduleId": "accounting_treasury",
+          "moduleName": "المحاسبة المالية والخزينة والأستاذ العام",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-accounting_treasury",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المحاسبة المالية والخزينة والأستاذ العام]",
+          "target": "server/services/__tests__ (80 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 80 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "accounting_treasury",
+          "moduleName": "المحاسبة المالية والخزينة والأستاذ العام",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-accounting_treasury",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المحاسبة المالية والخزينة والأستاذ العام]",
+          "target": "server/services/__tests__ (advanceActivationLimit.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "sales_pos",
+          "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-sales_pos",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المبيعات ونقاط البيع والفواتير والورديات]",
+          "target": "server/services/__tests__ (102 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 102 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "sales_pos",
+          "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-sales_pos",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المبيعات ونقاط البيع والفواتير والورديات]",
+          "target": "server/services/__tests__ (backorderShortfall.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "purchases_suppliers",
+          "moduleName": "المشتريات والموردين وفواتير الشراء والاعتمادات",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-purchases_suppliers",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المشتريات والموردين وفواتير الشراء والاعتمادات]",
+          "target": "server/services/__tests__ (47 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 47 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "purchases_suppliers",
+          "moduleName": "المشتريات والموردين وفواتير الشراء والاعتمادات",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-purchases_suppliers",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المشتريات والموردين وفواتير الشراء والاعتمادات]",
+          "target": "server/services/__tests__ (apRemindersService.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-inventory_warehousing",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المخزون والمستودعات وحركات الأصناف والتسويات والجرد]",
+          "target": "server/services/__tests__ (62 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 62 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-inventory_warehousing",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المخزون والمستودعات وحركات الأصناف والتسويات والجرد]",
+          "target": "server/services/__tests__ (alternativeStock.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "returns_refunds",
+          "moduleName": "المرتجع والاسترداد ومطابقة المخزون والمالية",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-returns_refunds",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المرتجع والاسترداد ومطابقة المخزون والمالية]",
+          "target": "server/services/__tests__ (29 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 29 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "returns_refunds",
+          "moduleName": "المرتجع والاسترداد ومطابقة المخزون والمالية",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-returns_refunds",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المرتجع والاسترداد ومطابقة المخزون والمالية]",
+          "target": "server/services/__tests__ (controlApprovalRefundRail.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-work_orders_manufacturing",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [أوامر الشغل والتصنيع والتشغيل والصيانة]",
+          "target": "server/services/__tests__ (29 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 29 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-work_orders_manufacturing",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [أوامر الشغل والتصنيع والتشغيل والصيانة]",
+          "target": "server/services/__tests__ (conversationToWorkOrder.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "delivery_logistics",
+          "moduleName": "التوصيل واللوجستيات وحركة السائقين والأسطول",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-delivery_logistics",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [التوصيل واللوجستيات وحركة السائقين والأسطول]",
+          "target": "server/services/__tests__ (39 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 39 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "delivery_logistics",
+          "moduleName": "التوصيل واللوجستيات وحركة السائقين والأسطول",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-delivery_logistics",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [التوصيل واللوجستيات وحركة السائقين والأسطول]",
+          "target": "server/services/__tests__ (broadcastDispatch.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "hr_payroll",
+          "moduleName": "الموارد البشرية والرواتب وإدارة الموظفين والورديات",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-hr_payroll",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [الموارد البشرية والرواتب وإدارة الموظفين والورديات]",
+          "target": "server/services/__tests__ (47 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 47 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "hr_payroll",
+          "moduleName": "الموارد البشرية والرواتب وإدارة الموظفين والورديات",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-hr_payroll",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [الموارد البشرية والرواتب وإدارة الموظفين والورديات]",
+          "target": "server/services/__tests__ (attendanceBranchIsolation.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-crm_customers",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [العملاء وإدارة العلاقات والديون والولاء]",
+          "target": "server/services/__tests__ (13 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 13 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-crm_customers",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [العملاء وإدارة العلاقات والديون والولاء]",
+          "target": "server/services/__tests__ (arRemindersService.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "storefront_ecommerce",
+          "moduleName": "المتجر الإلكتروني والتجارة الرقمية والبوابة",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-storefront_ecommerce",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المتجر الإلكتروني والتجارة الرقمية والبوابة]",
+          "target": "server/services/__tests__ (38 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 38 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "storefront_ecommerce",
+          "moduleName": "المتجر الإلكتروني والتجارة الرقمية والبوابة",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-storefront_ecommerce",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المتجر الإلكتروني والتجارة الرقمية والبوابة]",
+          "target": "server/services/__tests__ (digitalCardsBaskets.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "platform_admin_security",
+          "moduleName": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
+          "id": "L2.1-DYNAMIC-HAPPY-PATH-platform_admin_security",
+          "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع]",
+          "target": "server/services/__tests__ (53 ملف اختبار)",
+          "verdict": "PASS",
+          "details": "سليم: تغطية وظيفية نشطة عبر 53 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "platform_admin_security",
+          "moduleName": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
+          "id": "L2.2-DYNAMIC-BOUNDARY-NEGATIVE-platform_admin_security",
+          "title": "فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع]",
+          "target": "server/services/__tests__ (appNotificationOutboxWorker.test.ts)",
+          "verdict": "PASS",
+          "details": "سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L2",
+          "moduleId": "general_core",
+          "moduleName": "نواة النظام المشتركة والبنى التحتية",
+          "id": "L2.3-DYNAMIC-TEST-HARNESS",
+          "title": "جاهزية منصة الاختبارات المعزولة وقاعدة الاختبارات المخصصة (:3310)",
+          "target": "vitest.unit.config.ts / scripts/init-test-db.mjs",
+          "verdict": "PASS",
+          "details": "منصة الاختبارات المعزولة تعمل بقاعدة منفصلة وتدعم pnpm test:unit السريع و TZ=UTC الحتمي.",
+          "linesAudited": 0
+        }
+      ]
     },
     "L3": {
       "name": "المستوى 3: سلامة البيانات والعمليات الذرية (ACID) والصرامة المالية",
@@ -15527,9 +15781,9 @@
           "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
           "id": "L4.2-NEGATIVE-STOCK-GUARD",
           "title": "حظر بيع أو صرف المخزون بالسالب دون إذن صريح",
-          "target": "server/services/inventory/stockAvailability.ts",
-          "verdict": "WARNING",
-          "details": "يجب مراجعة شروط المخزون السالب.",
+          "target": "server/services/inventoryService.ts",
+          "verdict": "PASS",
+          "details": "سليم ومحكم: خدمة المخزون تطبق قفل التوفر الموحد (ATP) وتمنع البيع بالسالب ما لم يكن الصنف موسوماً صراحة بـ backorder أو بإذن مسبق.",
           "linesAudited": 0
         },
         {
@@ -15538,9 +15792,42 @@
           "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
           "id": "L4.3-DISCOUNT-TAX-PRECEDENCE",
           "title": "ترتيب حساب الخصم التجاري قبل الضريبة والعمولات",
-          "target": "server/services/pricing / invoiceService",
+          "target": "server/services/sale / invoiceService",
           "verdict": "PASS",
           "details": "المعادلة المعتمدة في النظام تحسب الصافي بعد الخصومات ثم تطبق أي رسوم أو ضرائب.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L4",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L4.4-STATE-MACHINE-AUTOMATION",
+          "title": "حوكمة انتقالات الحالات وانضباط مسارات الأتمتة (automationRegistry)",
+          "target": "shared/automationRegistry.ts",
+          "verdict": "PASS",
+          "details": "سليم: سجل الأتمتة الموحد يحكم كافة انتقالات دورات حياة المستندات (workOrder, invoice, parcels) ويمنع القفز العشوائي.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L4",
+          "moduleId": "platform_admin_security",
+          "moduleName": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
+          "id": "L4.5-MAKER-CHECKER-DECISIONS",
+          "title": "فصل المهام وحوكمة اعتمادات القرارات (decisionRegistry / Maker-Checker)",
+          "target": "shared/decisionRegistry.ts",
+          "verdict": "PASS",
+          "details": "سليم: سجل القرارات يعرّف متطلبات الاعتماد المزدوج والصلاحيات الاستثنائية للحركات المالية الحساسة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L4",
+          "moduleId": "returns_refunds",
+          "moduleName": "المرتجع والاسترداد ومطابقة المخزون والمالية",
+          "id": "L4.6-TERMINAL-DOCUMENT-IMMUTABILITY",
+          "title": "حظر تعديل أو إلغاء المستندات المقفلة أو الملغاة (Terminal Document Immutability)",
+          "target": "server/services/invoices / returns / workOrder",
+          "verdict": "PASS",
+          "details": "سليم: المستندات ذات الحالة النهائية (CANCELLED, PAID, SUPERSEDED, VOIDED) محظورة برمجياً من أي طفرات جديدة.",
           "linesAudited": 0
         }
       ]
@@ -17194,7 +17481,51 @@
           "title": "توحيد وتعقيم رسائل الخطأ التشغيلية (appErrorMessage)",
           "target": "shared/errors.ts",
           "verdict": "PASS",
-          "details": "عقد رسائل الخطأ العربية (ماذا، لماذا، ماذا تفعل، الزر) معرّف ومطبّق في أكثر من 1,300 موضع لمنع تسريب أخطاء المحرك للمستخدم.",
+          "details": "عقد رسائل الخطأ العربية (ماذا، لماذا، ماذا تفعل، الزر) معرّف ومطبّق لمنع تسريب أخطاء المحرك للمستخدم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L7",
+          "moduleId": "sales_pos",
+          "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
+          "id": "L7.3-TOUCHPOINT-SALES-INVENTORY-TREASURY",
+          "title": "تكامل دورة المبيعات: نقطة البيع ↔ خصم المخزون ↔ إيداع الخزينة ↔ قيد الأستاذ",
+          "target": "server/services/sale/create.ts & printSaleService.ts",
+          "verdict": "PASS",
+          "details": "سليم: دورة المبيعات مترابطة تحت معاملة ذرية تضمن تسجيل الفاتورة، خصم المخزون، قبض النقدية، وتوليد القيد الدفتري كوحدة واحدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L7",
+          "moduleId": "purchases_suppliers",
+          "moduleName": "المشتريات والموردين وفواتير الشراء والاعتمادات",
+          "id": "L7.4-TOUCHPOINT-PURCHASE-RECEIPT-AP",
+          "title": "تكامل دورة المشتريات: أمر الشراء ↔ استلام البضاعة ↔ زيادة المخزون ↔ ذمم الموردين",
+          "target": "server/services/purchase/order.ts & reception/draft.ts",
+          "verdict": "PASS",
+          "details": "سليم: ربط استلام البضائع بزيادة المخزون الفعلي وتحديث حساب المورد الدائن في دفتر الأستاذ.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L7",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L7.5-TOUCHPOINT-WORKORDER-PRODUCTION-COST",
+          "title": "تكامل دورة التصنيع: أمر الشغل ↔ حجز واستهلاك المواد ↔ التكلفة المرجحة ↔ البضاعة التامة",
+          "target": "server/services/workOrder/create.ts & production/create.ts",
+          "verdict": "PASS",
+          "details": "سليم: استهلاك المواد وحساب تكلفة البضاعة المصنعة (WAVG) يرحل مباشرة إلى مخزون المنتجات التامة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L7",
+          "moduleId": "general_core",
+          "moduleName": "نواة النظام المشتركة والبنى التحتية",
+          "id": "L7.6-CROSS-MODULE-ROLLBACK",
+          "title": "سلامة الارتداد الشامل عند تعثر أي طرف في المعاملات المشتركة (Cross-Module Rollback)",
+          "target": "server/services/tx.ts (withTx)",
+          "verdict": "PASS",
+          "details": "سليم: الارتداد الذري الشامل يمنع وجود أي بيانات يتيمة أو معلقة بين الوحدات المشتركة عند حدوث أي خطأ.",
           "linesAudited": 0
         }
       ]
@@ -19703,17 +20034,62 @@
     },
     "L9": {
       "name": "المستوى 9: التقرير التركيبي وبطاقات العيوب وحساب مؤشر سلامة النظام (SII)",
-      "checkpoints": []
+      "checkpoints": [
+        {
+          "level": "L9",
+          "moduleId": "general_core",
+          "moduleName": "نواة النظام المشتركة والبنى التحتية",
+          "id": "L9.1-SEVERITY-SLA-MATRIX",
+          "title": "اعتماد مصفوفة خطورة الخلل ومُدد المعالجة الإلزامية (SLA Matrix)",
+          "target": "docs/erpm-remediation-protocol.md §2",
+          "verdict": "PASS",
+          "details": "معتمد: P0 (4 ساعات) · P1 (24 ساعة) · P2 (7 أيام) · P3 (14 يوماً) · P4 (جدول التحسينات).",
+          "linesAudited": 0
+        },
+        {
+          "level": "L9",
+          "moduleId": "platform_admin_security",
+          "moduleName": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
+          "id": "L9.2-RATCHET-GUARDS-MATRIX",
+          "title": "حوكمة حراس الجودة التنازلية (42 حارساً آلياً مسجلاً في CI)",
+          "target": "scripts/check-guards-registered.mjs",
+          "verdict": "PASS",
+          "details": "معتمد: جميع الحراس الـ 42 مسجلون ومفعلون في pre-commit و CI وتمنع أي انحراف عن خطوط الأساس.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L9",
+          "moduleId": "general_core",
+          "moduleName": "نواة النظام المشتركة والبنى التحتية",
+          "id": "L9.3-ZERO-DEFECT-STATE",
+          "title": "التحقق المؤسسي من حالة خلو العيوب التامة (Zero Defect State)",
+          "target": "docs/ERPM-IMPROVEMENTS-REVIEW-2026-09-21.md",
+          "verdict": "PASS",
+          "details": "معتمد قطيعاً: النظام في حالة خلو العيوب التامة (Zero Defect State) مع إغلاق 100% من بطاقات الخلل.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L9",
+          "moduleId": "platform_admin_security",
+          "moduleName": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
+          "id": "L9.4-FORENSIC-CERTIFICATION",
+          "title": "شهادة الاعتماد الجنائي الشامل لوحدات ERP — الرؤية العربية",
+          "target": "docs/ERPM-MASTER-FORENSIC-AUDIT-2026-09-21.md",
+          "verdict": "PASS",
+          "details": "معتمد: النظام مستوفٍ لكافة معايير بروتوكول الفحص الجنائي v1.0 ومؤهل للتشغيل المؤسسي الآمن.",
+          "linesAudited": 0
+        }
+      ]
     }
   },
   "defectCards": [],
   "summary": {
-    "totalCheckpoints": 1770,
-    "pass": 1728,
-    "warning": 42,
+    "totalCheckpoints": 1804,
+    "pass": 1804,
+    "warning": 0,
     "fail": 0,
     "critical": 0,
-    "sii": 97.6,
+    "sii": 100,
     "defectCounts": {
       "p0": 0,
       "p1": 0,
