@@ -1,6 +1,8 @@
 // الميزانية العمومية المبسّطة (لقطة) — أصول / خصوم / حقوق ملكية (مشتقّة).
 // عرض + Excel + طباعة A4. ⚠️ مبسّطة: المقبوضات مصنفة حسب وسيلة الدفع، الأصول بالتكلفة، حقوق الملكية مشتقّة.
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
+import { FileCheck2 } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -213,6 +215,18 @@ export default function BalanceSheet() {
         </div>
       }
     >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
+        <div className="flex items-center gap-2">
+          <FileCheck2 className="size-4 text-primary" aria-hidden />
+          <span>تتوفر الميزانية العمومية الرسمية وميزان المراجعة وفق النظام المحاسبي الموحد العراقي.</span>
+        </div>
+        <Link href="/statutory-accounting">
+          <span className="font-semibold text-primary underline underline-offset-4 hover:opacity-80">
+            الانتقال إلى الدليل والقوائم النظامية
+          </span>
+        </Link>
+      </div>
+
       {q.isLoading || q.isError || !p || !sections ? (
         <Card><CardContent className="p-0">{q.isLoading ? <LoadingState /> : q.isError ? <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} /> : <div className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</div>}</CardContent></Card>
       ) : (

@@ -69,7 +69,14 @@ async function saleWithDelivery(reqId: string) {
   const r = await createSale({
     branchId: 1, sourceType: "POS", customerId: CUSTOMER,
     lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
-    delivery: { partyId: PARTY, fee: "0", feeCollection: "COURIER", recipientPhone: "07701234567", address: "بغداد" },
+    delivery: {
+      partyId: PARTY,
+      fee: "0",
+      feeCollection: "COURIER",
+      recipientPhone: "07701234567",
+      address: "بغداد",
+      externalTrackingRef: `TEST-${reqId}`,
+    },
     clientRequestId: reqId,
   }, CASHIER);
   return { invoiceId: r.invoiceId, consignmentId: r.consignmentId! };

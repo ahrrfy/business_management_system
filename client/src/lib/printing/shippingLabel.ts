@@ -14,7 +14,8 @@ import { governorateById } from "@shared/governorates";
 import { fmtDate as formatDate } from "../date";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg } from "./qr";
-import { CAIRO_FONT, CO, esc, fmt } from "./brand";
+import { CAIRO_FONT, CO, esc, fmt, logoUrl } from "./brand";
+import { formatArabicMoneyWords } from "./tafqit";
 import {
   DEFAULT_SHIPPING_LABEL_SIZE,
   getSavedShippingLabelSize,
@@ -29,16 +30,23 @@ export interface ShippingLabelItem {
 
 export interface ShippingLabelData {
   orderNumber: string;
-  /** قيمة آلية نوعية؛ رقم العرض وحده قد يُفسَّر كمنتج عند المسح. */
+  /** القيمة المرمَّزة بالباركود (إن غابت: orderNumber). */
   barcodeValue?: string | null;
   customerName: string | null;
   customerPhone: string | null;
   governorate: string | null;
   addressText: string | null;
-  latitude?: string | number | null;
-  longitude?: string | number | null;
+  latitude?: string | null;
+  longitude?: string | null;
+  notes?: string | null;
   /** مبلغ التحصيل عند الاستلام (COD) — إجمالي الطلب. */
   total: string;
+  /** إجمالي سعر المنتجات/الخدمات قبل رسوم التوصيل. */
+  subtotal?: string | null;
+  /** رسوم التوصيل (يُضاف للـCOD عند تحصيله من المستلم). */
+  shippingFee?: string | null;
+  /** المبلغ المدفوع مسبقاً (عربون/دفعة أولى). */
+  paidAmount?: string | null;
   /** الفاتورة المدفوعة بالكامل تُوسَم مدفوعة ولا تطلب من المندوب تحصيل صفرٍ «نقداً». */
   paymentState?: "COD" | "PREPAID";
   deliveryPartyName?: string | null;
@@ -48,6 +56,22 @@ export interface ShippingLabelData {
   items: ShippingLabelItem[];
   /** رابط عام موقّع للملصق؛ عند المسح يفتح ملخص الطلب بدلاً من نص باركود غير مفيد. */
   qrUrl?: string | null;
+  isReprint?: boolean;
+}
+
+export function resolveShippingLabelQrTarget(
+  o: Pick<ShippingLabelData, "orderNumber" | "qrUrl" | "latitude" | "longitude">,
+  origin = typeof window !== "undefined" ? window.location.origin : "",
+): string | null {
+  if (o.latitude && o.longitude) {
+    return `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`;
+  }
+  if (o.qrUrl?.trim()) return o.qrUrl.trim();
+  // توليد رابط تلقائي من رقم الطلب — يضمن دائماً وجود QR قابل للمسح
+  if (o.orderNumber && origin) {
+    return `${origin}/verify?ref=${encodeURIComponent(o.orderNumber)}`;
+  }
+  return null;
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
@@ -59,8 +83,6 @@ export async function shippingLabelHtml(
   o: ShippingLabelData,
   size: ShippingLabelSize = DEFAULT_SHIPPING_LABEL_SIZE,
 ): Promise<string> {
-  // اللوحة المرجعية بعرض 100مم؛ نُحجّمها موحَّداً لعرض الملصق، والارتفاع الداخلي = h/s
-  // بحيث يملأ الملصق كاملاً بعد التحجيم (المرونة الرأسية في شريط الباركود).
   const w = size.widthMm;
   const h = size.heightMm;
   const s = w / 100;
@@ -68,119 +90,411 @@ export async function shippingLabelHtml(
   const govName = o.governorate ? governorateById(o.governorate)?.name ?? o.governorate : "";
   let barcode = "";
   try {
-    barcode = code128Svg(o.barcodeValue || o.orderNumber, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
+    barcode = code128Svg(o.barcodeValue || o.orderNumber, { moduleWidth: 2, height: 45, showText: false, fitToBox: true }).svg;
   } catch {
     barcode = "";
   }
   let qr = "";
   const hasMap = Boolean(o.latitude && o.longitude);
   try {
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const mapUrl = hasMap
-      ? `https://maps.google.com/?q=${encodeURIComponent(`${o.latitude},${o.longitude}`)}`
-      : null;
-    const targetPayload = mapUrl || o.qrUrl || (origin ? `${origin}/verify?payload=${encodeURIComponent(o.orderNumber)}` : o.orderNumber);
-    qr = await qrCodeSvg(targetPayload, { margin: 1 });
+    const targetPayload = resolveShippingLabelQrTarget(o);
+    if (targetPayload) qr = await qrCodeSvg(targetPayload, { margin: 1 });
   } catch {
     qr = "";
   }
-  const itemCount = o.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-  const contents = o.items
-    .map((it) => `${it.productName}${it.unitName ? ` (${it.unitName})` : ""} ×${fmt(it.quantity)}`)
-    .join(" · ");
 
-  const addressLine = [govName, o.addressText].filter(Boolean).join(" — ");
+  const itemCount = o.items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+  const isPrepaid = o.paymentState === "PREPAID";
+  const logo = logoUrl();
+  const isCompact = h <= 60;
+  const isLandscape = !isCompact && w > h;
+
+  // إعداد قائمة الأصناف بحدود جدول صارمة وعدد مضبوط لمنع الفيضان خارج الملصق نهائياً (صفحة واحدة فقط)
+  const MAX_PORTRAIT_ITEMS = 2;
+  const displayItems = o.items.slice(0, MAX_PORTRAIT_ITEMS);
+  const remainingCount = o.items.length - MAX_PORTRAIT_ITEMS;
+
+  const itemsRows = displayItems.map((it) => `
+    <tr>
+      <td style="border:1px solid #000;text-align:center;font-weight:900;font-size:7.5pt;padding:0.3mm 0.5mm;width:10%;">[ &nbsp; ]</td>
+      <td style="border:1px solid #000;font-weight:800;padding:0.3mm 0.6mm;font-size:7pt;line-height:1.15;">${esc(it.productName)}${it.unitName ? ` (${esc(it.unitName)})` : ""}</td>
+      <td style="border:1px solid #000;text-align:center;font-weight:900;padding:0.3mm 0.5mm;font-size:7.5pt;direction:ltr;width:18%;font-variant-numeric:tabular-nums;">×${fmt(it.quantity)}</td>
+    </tr>
+  `).join("") + (remainingCount > 0 ? `
+    <tr>
+      <td style="border:1px solid #000;text-align:center;font-weight:900;font-size:7pt;padding:0.25mm;">[ &nbsp; ]</td>
+      <td style="border:1px solid #000;font-weight:800;padding:0.25mm 0.6mm;font-size:6.5pt;" colspan="2">+ ${remainingCount} صنف إضافي في الفاتورة المرفقة</td>
+    </tr>
+  ` : "");
+
+  const sharedCss = `
+    @page{size:${w}mm ${h}mm;margin:0mm !important}
+    html,body{
+      width:${w}mm;
+      height:${h}mm;
+      max-width:${w}mm;
+      max-height:${h}mm;
+      margin:0 !important;
+      padding:0 !important;
+      overflow:hidden !important;
+      background:#fff;
+      color:#000;
+      direction:rtl;
+      page-break-after:avoid !important;
+      page-break-inside:avoid !important;
+      break-after:avoid !important;
+      break-inside:avoid !important;
+    }
+    *{box-sizing:border-box;margin:0;padding:0;font-family:'Cairo',sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .lbl-container{
+      width:${w}mm;
+      height:${h}mm;
+      max-width:${w}mm;
+      max-height:${h}mm;
+      box-sizing:border-box;
+      padding:1mm 1.2mm;
+      display:flex;
+      flex-direction:column;
+      justify-content:flex-start;
+      gap:0;
+      overflow:hidden !important;
+      background:#fff;
+      color:#000;
+      direction:rtl;
+      page-break-after:avoid !important;
+      page-break-inside:avoid !important;
+      break-after:avoid !important;
+      break-inside:avoid !important;
+    }
+    table.grid{width:100%;border-collapse:collapse;border:1.5px solid #000;margin:0;color:#000;background:#fff;page-break-inside:avoid !important;break-inside:avoid !important}
+    table.grid th,table.grid td{border:1px solid #000;padding:0.5mm 0.8mm;vertical-align:middle;page-break-inside:avoid !important;break-inside:avoid !important}
+    .mono-logo{width:7.5mm;height:7.5mm;object-fit:contain;filter:grayscale(100%) contrast(1000%)}
+    .bc-svg svg{width:100%;height:7mm;max-height:7.5mm;display:block}
+    .qr-svg svg{width:100%;height:100%;display:block}
+
+    @media print{
+      @page{size:${w}mm ${h}mm;margin:0mm !important}
+      html,body{
+        width:${w}mm !important;
+        height:${h}mm !important;
+        max-width:${w}mm !important;
+        max-height:${h}mm !important;
+        margin:0 !important;
+        padding:0 !important;
+        overflow:hidden !important;
+        page-break-after:avoid !important;
+        page-break-inside:avoid !important;
+        break-after:avoid !important;
+        break-inside:avoid !important;
+      }
+      .lbl-container{
+        width:${w}mm !important;
+        height:${h}mm !important;
+        max-height:${h}mm !important;
+        padding:1mm !important;
+        overflow:hidden !important;
+        page-break-after:avoid !important;
+        page-break-inside:avoid !important;
+        break-after:avoid !important;
+        break-inside:avoid !important;
+      }
+      *{page-break-inside:avoid !important;break-inside:avoid !important}
+    }
+  `;
+
+  // 1. تخطيط بوليصة الشحن الطولية القياسية (80×120 أو 100×150)
+  const portraitHtml = `
+    <!-- 1. ترويسة المُرسِل ومدينة الوجهة -->
+    <table class="grid" style="border-bottom:2px solid #000;">
+      <tr>
+        <td style="width:58%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;">
+          <div style="display:flex;align-items:center;gap:1mm;">
+            <img src="${logo}" class="mono-logo" alt="" onerror="this.style.display='none'">
+            <div>
+              <div style="font-weight:900;font-size:8.5pt;line-height:1.1;">${esc(CO.short)}</div>
+              <div style="font-weight:700;font-size:6pt;line-height:1.15;">${esc(CO.address)}</div>
+              <div style="font-weight:900;font-size:6.8pt;direction:ltr;text-align:right;">${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div>
+            </div>
+          </div>
+        </td>
+        <td style="width:42%;text-align:center;background:#000;color:#fff;padding:0.6mm 0.8mm;">
+          <div style="font-size:6pt;font-weight:800;line-height:1;">وجهة الشحنة</div>
+          <div style="font-size:13.5pt;font-weight:900;line-height:1.15;letter-spacing:0.5px;">${esc(govName || "بغداد")}</div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- 2. بيانات المستلِم -->
+    <table class="grid" style="border-top:none;border-bottom:2px solid #000;">
+      <tr>
+        <td style="padding:0.8mm 1mm;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="background:#000;color:#fff;font-weight:900;font-size:6.5pt;padding:0.2mm 1.2mm;">المستلِم</span>
+            <span style="font-weight:900;font-size:7pt;font-variant-numeric:tabular-nums;">رقم الطلب: #${esc(o.orderNumber)}</span>
+          </div>
+          <div style="font-size:11pt;font-weight:900;line-height:1.2;margin-top:0.3mm;word-break:break-word;">
+            ${esc(o.customerName ?? "عميل")}
+          </div>
+          ${o.customerPhone ? `
+            <div style="font-size:14pt;font-weight:900;line-height:1.15;letter-spacing:0.5px;font-variant-numeric:tabular-nums;direction:ltr;text-align:right;margin:0.2mm 0;">
+              ${esc(o.customerPhone)}
+            </div>
+          ` : ""}
+          <div style="font-size:7.2pt;font-weight:800;line-height:1.2;max-height:2.8em;overflow:hidden;">
+            <b>العنوان:</b> ${esc(o.addressText || "—")}
+          </div>
+          ${o.notes ? `
+            <div style="font-size:6.8pt;font-weight:900;border:1px solid #000;padding:0.3mm 0.6mm;margin-top:0.3mm;max-height:2.5em;overflow:hidden;">
+              <b>ملاحظة المندوب:</b> ${esc(o.notes)}
+            </div>
+          ` : ""}
+        </td>
+      </tr>
+    </table>
+
+    <!-- 3. صندوق التحصيل المالي COD مع التفقيط -->
+    <table class="grid" style="border-top:none;border-bottom:2px solid #000;">
+      <tr>
+        <td style="width:58%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
+          <div style="font-size:7.5pt;font-weight:900;">${isPrepaid ? "شحنة مدفوعة مسبقاً (PREPAID)" : "الدفع عند الاستلام (COD)"}</div>
+          <div style="font-size:6pt;font-weight:800;margin-top:0.2mm;">${isPrepaid ? "لا يُحصَّل أي مبلغ نقدي من المستلم" : "تحصيل نقدي إلزامي قبل تسليم الطرد"}</div>
+          ${!isPrepaid ? `<div style="font-size:6.2pt;font-weight:900;margin-top:0.3mm;border-top:1px dashed #000;padding-top:0.2mm;">${formatArabicMoneyWords(o.total)}</div>` : ""}
+        </td>
+        <td style="width:42%;text-align:center;padding:0.6mm 0.8mm;vertical-align:middle;">
+          <div style="font-size:6pt;font-weight:800;">المبلغ المطلوب</div>
+          <div style="font-size:15pt;font-weight:900;direction:ltr;font-variant-numeric:tabular-nums;line-height:1;">
+            ${isPrepaid ? "0" : fmt(o.total)} <span style="font-size:8pt;font-weight:900;">د.ع</span>
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- 4. جدول فحص الأصناف والتجهيز (Pick & Pack) -->
+    <table class="grid" style="border-top:none;border-bottom:2px solid #000;">
+      <thead>
+        <tr style="background:#000;color:#fff;font-size:6pt;">
+          <th style="width:10%;border:1px solid #000;padding:0.3mm;text-align:center;">فحص</th>
+          <th style="border:1px solid #000;padding:0.3mm 0.6mm;text-align:right;">محتويات الطرد (${itemCount} قطعة)</th>
+          <th style="width:18%;border:1px solid #000;padding:0.3mm;text-align:center;">الكمية</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${itemsRows || `<tr><td colspan="3" style="text-align:center;font-size:6.8pt;padding:0.5mm;">—</td></tr>`}
+      </tbody>
+    </table>
+
+    <!-- 5. باركود التتبع عالي الدقة -->
+    <table class="grid" style="border-top:none;border-bottom:2px solid #000;">
+      <tr>
+        <td style="padding:0.6mm 0.8mm;text-align:center;">
+          ${barcode ? `<div class="bc-svg">${barcode}</div>` : ""}
+          <div style="font-size:8.5pt;font-weight:900;letter-spacing:1px;font-variant-numeric:tabular-nums;margin-top:0.2mm;">
+            ${esc(o.orderNumber)}${o.isReprint ? " [ إعادة طباعة ]" : ""}
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- 6. كود QR للملاحة، بيانات الشحن، وتوقيع الاستلام -->
+    <table class="grid" style="border-top:none;">
+      <tr>
+        <td style="width:16mm;border-left:1.5px solid #000;padding:0.5mm;text-align:center;vertical-align:middle;">
+          ${qr ? `<div class="qr-svg" style="width:13mm;height:13mm;margin:0 auto;">${qr}</div>` : ""}
+          <div style="font-size:5pt;font-weight:900;margin-top:0.2mm;">${hasMap ? "خرائط Google" : "تتبع الشحنة"}</div>
+        </td>
+        <td style="border-left:1.5px solid #000;padding:0.5mm 0.8mm;vertical-align:top;font-size:6.2pt;line-height:1.2;">
+          <div><b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
+          <div><b>شركة الشحن:</b> ${esc(o.deliveryPartyName || "توصيل داخلي")}</div>
+          ${o.externalTrackingRef ? `<div><b>المرجع:</b> <span dir="ltr" style="font-weight:900;font-family:monospace">${esc(o.externalTrackingRef)}</span></div>` : ""}
+          ${hasMap ? `<div style="font-size:5.8pt;font-weight:800;margin-top:0.2mm;">إحداثيات: <span dir="ltr">${esc(String(o.latitude).slice(0, 8))},${esc(String(o.longitude).slice(0, 8))}</span></div>` : ""}
+        </td>
+        <td style="width:18mm;padding:0.5mm;text-align:center;vertical-align:top;font-size:5.8pt;">
+          <div style="font-weight:900;margin-bottom:3.5mm;">توقيع المستلِم</div>
+          <div style="border-top:1px solid #000;padding-top:0.2mm;font-weight:800;">الاستلام والتاريخ</div>
+        </td>
+      </tr>
+    </table>
+  `;
+
+  // 2. تخطيط بوليصة الشحن العرضية (120×80) بتنظيم شبكي مزدوج
+  const landscapeHtml = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.2mm;height:100%;">
+      <!-- العمود الأيمن: الترويسة، المستلم، والتحصيل المالي -->
+      <div style="display:flex;flex-direction:column;justify-content:space-between;">
+        <table class="grid" style="border-bottom:2px solid #000;">
+          <tr>
+            <td style="width:58%;border-left:1.5px solid #000;padding:0.8mm;">
+              <div style="display:flex;align-items:center;gap:1mm;">
+                <img src="${logo}" class="mono-logo" alt="" onerror="this.style.display='none'">
+                <div>
+                  <div style="font-weight:900;font-size:8.5pt;line-height:1.1;">${esc(CO.short)}</div>
+                  <div style="font-weight:700;font-size:6pt;line-height:1.15;">${esc(CO.address)}</div>
+                </div>
+              </div>
+            </td>
+            <td style="width:42%;text-align:center;background:#000;color:#fff;padding:0.8mm;">
+              <div style="font-size:6pt;font-weight:800;">وجهة الشحنة</div>
+              <div style="font-size:12pt;font-weight:900;line-height:1.1;">${esc(govName || "بغداد")}</div>
+            </td>
+          </tr>
+        </table>
+
+        <table class="grid" style="border-top:none;border-bottom:2px solid #000;margin-top:0.8mm;">
+          <tr>
+            <td style="padding:1mm;vertical-align:top;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="background:#000;color:#fff;font-weight:900;font-size:6.5pt;padding:0.2mm 1.2mm;">المستلِم</span>
+                <span style="font-weight:900;font-size:7pt;">#${esc(o.orderNumber)}</span>
+              </div>
+              <div style="font-size:11pt;font-weight:900;line-height:1.15;margin-top:0.3mm;">
+                ${esc(o.customerName ?? "عميل")}
+              </div>
+              ${o.customerPhone ? `
+                <div style="font-size:13pt;font-weight:900;letter-spacing:0.5px;font-variant-numeric:tabular-nums;direction:ltr;text-align:right;margin:0.3mm 0;">
+                  ${esc(o.customerPhone)}
+                </div>
+              ` : ""}
+              <div style="font-size:7.5pt;font-weight:800;line-height:1.2;">
+                <b>العنوان:</b> ${esc(o.addressText || "—")}
+              </div>
+              ${o.notes ? `
+                <div style="font-size:6.8pt;font-weight:900;border:1px solid #000;padding:0.4mm 0.8mm;margin-top:0.3mm;">
+                  <b>الملاحظة:</b> ${esc(o.notes)}
+                </div>
+              ` : ""}
+            </td>
+          </tr>
+        </table>
+
+        <table class="grid" style="border-top:none;margin-top:0.8mm;">
+          <tr>
+            <td style="width:55%;border-left:1.5px solid #000;padding:0.8mm;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
+              <div style="font-size:7.5pt;font-weight:900;">${isPrepaid ? "مدفوع مسبقاً (PREPAID)" : "الدفع عند الاستلام (COD)"}</div>
+              <div style="font-size:6pt;font-weight:800;">${isPrepaid ? "لا يُحصَّل أي مبلغ" : "تحصيل نقدي إلزامي"}</div>
+              ${!isPrepaid ? `<div style="font-size:6.5pt;font-weight:900;margin-top:0.3mm;border-top:1px dashed #000;">${formatArabicMoneyWords(o.total)}</div>` : ""}
+            </td>
+            <td style="width:45%;text-align:center;padding:0.8mm;vertical-align:middle;">
+              <div style="font-size:6.5pt;font-weight:800;">المبلغ المطلوب</div>
+              <div style="font-size:15pt;font-weight:900;direction:ltr;font-variant-numeric:tabular-nums;line-height:1;">
+                ${isPrepaid ? "0" : fmt(o.total)} <span style="font-size:8pt;">د.ع</span>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- العمود الأيسر: جدول الأصناف، الباركود، والكيو آر مع التوقيع -->
+      <div style="display:flex;flex-direction:column;justify-content:space-between;">
+        <table class="grid" style="border-bottom:2px solid #000;">
+          <thead>
+            <tr style="background:#000;color:#fff;font-size:6.5pt;">
+              <th style="width:10%;border:1px solid #000;padding:0.4mm;text-align:center;">فحص</th>
+              <th style="border:1px solid #000;padding:0.4mm 0.8mm;text-align:right;">الأصناف (${itemCount} قطعة)</th>
+              <th style="width:18%;border:1px solid #000;padding:0.4mm;text-align:center;">الكمية</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsRows || `<tr><td colspan="3" style="text-align:center;font-size:7pt;padding:0.6mm;">—</td></tr>`}
+          </tbody>
+        </table>
+
+        <table class="grid" style="border-top:none;border-bottom:2px solid #000;margin-top:0.8mm;">
+          <tr>
+            <td style="padding:0.6mm 0.8mm;text-align:center;">
+              ${barcode ? `<div class="bc-svg">${barcode}</div>` : ""}
+              <div style="font-size:8.5pt;font-weight:900;letter-spacing:1px;font-variant-numeric:tabular-nums;">
+                ${esc(o.orderNumber)}${o.isReprint ? " [ إعادة طباعة ]" : ""}
+              </div>
+            </td>
+          </tr>
+        </table>
+
+        <table class="grid" style="border-top:none;margin-top:0.8mm;">
+          <tr>
+            <td style="width:17mm;border-left:1.5px solid #000;padding:0.6mm;text-align:center;vertical-align:middle;">
+              ${qr ? `<div class="qr-svg" style="width:14mm;height:14mm;margin:0 auto;">${qr}</div>` : ""}
+              <div style="font-size:5.5pt;font-weight:900;">${hasMap ? "خرائط Google" : "تتبع الشحنة"}</div>
+            </td>
+            <td style="border-left:1.5px solid #000;padding:0.8mm;vertical-align:top;font-size:6.5pt;line-height:1.25;">
+              <div><b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
+              <div><b>الشحن:</b> ${esc(o.deliveryPartyName || "توصيل")}</div>
+              ${o.externalTrackingRef ? `<div><b>المرجع:</b> <span dir="ltr" style="font-weight:900;">${esc(o.externalTrackingRef)}</span></div>` : ""}
+            </td>
+            <td style="width:18mm;padding:0.6mm;text-align:center;vertical-align:top;font-size:6pt;">
+              <div style="font-weight:900;margin-bottom:3.5mm;">استلام الزبون</div>
+              <div style="border-top:1px solid #000;padding-top:0.2mm;font-weight:800;">التوقيع</div>
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // 3. تخطيط ملصق الطرود الصغير المدمج (80×50)
+  const compactHtml = `
+    <!-- الترويسة والمحافظة -->
+    <table class="grid" style="border-bottom:1.5px solid #000;">
+      <tr>
+        <td style="width:62%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;">
+          <div style="display:flex;align-items:center;gap:1mm;">
+            <img src="${logo}" class="mono-logo" alt="" style="width:6.5mm;height:6.5mm;" onerror="this.style.display='none'">
+            <div>
+              <div style="font-weight:900;font-size:8pt;line-height:1;">${esc(CO.short)}</div>
+              <div style="font-weight:700;font-size:5.8pt;line-height:1.1;">${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div>
+            </div>
+          </div>
+        </td>
+        <td style="width:38%;text-align:center;background:#000;color:#fff;padding:0.6mm;">
+          <div style="font-size:5.5pt;font-weight:800;line-height:1;">وجهة الشحنة</div>
+          <div style="font-size:11pt;font-weight:900;line-height:1.1;">${esc(govName || "بغداد")}</div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- المستلم والهاتف والعنوان -->
+    <table class="grid" style="border-top:none;border-bottom:1.5px solid #000;">
+      <tr>
+        <td style="padding:0.8mm;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:900;font-size:9.5pt;">${esc(o.customerName ?? "عميل")}</span>
+            <span style="font-weight:900;font-size:11pt;direction:ltr;font-variant-numeric:tabular-nums;">${esc(o.customerPhone || "")}</span>
+          </div>
+          <div style="font-size:6.8pt;font-weight:800;line-height:1.15;margin-top:0.2mm;">
+            <b>العنوان:</b> ${esc(o.addressText || "—")}
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- المبلغ والباركود والكيو آر في شبكة ثلاثية -->
+    <table class="grid" style="border-top:none;">
+      <tr>
+        <td style="width:36%;border-left:1.5px solid #000;padding:0.6mm 0.8mm;text-align:center;vertical-align:middle;background:${isPrepaid ? "#000" : "#fff"};color:${isPrepaid ? "#fff" : "#000"};">
+          <div style="font-size:5.8pt;font-weight:800;">${isPrepaid ? "مدفوع مسبقاً" : "المطلوب عند الاستلام"}</div>
+          <div style="font-size:12.5pt;font-weight:900;direction:ltr;font-variant-numeric:tabular-nums;line-height:1;">
+            ${isPrepaid ? "0" : fmt(o.total)} <span style="font-size:7pt;">د.ع</span>
+          </div>
+          ${!isPrepaid ? `<div style="font-size:5.2pt;font-weight:900;margin-top:0.2mm;">${formatArabicMoneyWords(o.total)}</div>` : ""}
+        </td>
+        <td style="border-left:1.5px solid #000;padding:0.4mm 0.6mm;text-align:center;vertical-align:middle;">
+          ${barcode ? `<div class="bc-svg" style="height:6.5mm;">${barcode}</div>` : ""}
+          <div style="font-size:6.8pt;font-weight:900;letter-spacing:0.5px;">#${esc(o.orderNumber)}</div>
+        </td>
+        <td style="width:13mm;padding:0.4mm;text-align:center;vertical-align:middle;">
+          ${qr ? `<div class="qr-svg" style="width:11mm;height:11mm;margin:0 auto;">${qr}</div>` : ""}
+        </td>
+      </tr>
+    </table>
+  `;
+
+  const selectedBody = isCompact ? compactHtml : isLandscape ? landscapeHtml : portraitHtml;
 
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملصق شحن ${esc(o.orderNumber)} (${w}×${h}مم)</title>
 ${CAIRO_FONT}
-<style>
-  html,body{margin:0;padding:0;background:#fff;color:#000}
-  @page{size:${w}mm ${h}mm;margin:0}
-  *{box-sizing:border-box;margin:0;padding:0;font-family:'Cairo',sans-serif}
-  /* صفحة الملصق الفعلية: إطارٌ بقياس الطلب يحوي اللوحة المرجعية 100مم مُحجَّمة بمعامل ${s} */
-  .pg{position:relative;width:${w}mm;height:${h}mm;overflow:hidden;background:#fff}
-  .lb{position:absolute;top:0;right:0;transform:scale(${s});transform-origin:top right;
-    width:100mm;height:${innerH}mm;padding:3mm;display:flex;flex-direction:column;color:#000;background:#fff;direction:rtl}
-  .row{display:flex;align-items:center;justify-content:space-between;gap:2mm}
-  /* ترويسة المُرسِل */
-  .from{display:flex;align-items:flex-start;justify-content:space-between;gap:2mm;padding-bottom:1.5mm;border-bottom:2px solid #000}
-  .from-co{font-weight:900;font-size:12.5pt;line-height:1.1}
-  .from-sub{font-weight:700;font-size:8.5pt;line-height:1.3}
-  .from-r{text-align:left;font-weight:900;font-size:9pt;line-height:1.35;white-space:nowrap}
-  /* المستلِم */
-  .to{padding:2mm 0;border-bottom:2px solid #000}
-  .to-tag{display:inline-block;background:#000;color:#fff;font-weight:900;font-size:8pt;padding:0.4mm 2mm;border-radius:1mm;margin-bottom:1mm}
-  .to-name{font-weight:900;font-size:17pt;line-height:1.1;word-break:break-word}
-  .to-phone{font-weight:900;font-size:16pt;line-height:1.15;letter-spacing:0.5px;font-variant-numeric:tabular-nums;direction:ltr;text-align:right}
-  .to-gov{font-weight:900;font-size:12.5pt;margin-top:0.5mm}
-  .to-addr{font-weight:700;font-size:11pt;line-height:1.3;margin-top:0.5mm;
-    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
-  /* صندوق COD */
-  .cod{margin:2mm 0;border:3px solid #000;border-radius:1.5mm;padding:1.5mm 2mm;display:flex;align-items:center;justify-content:space-between;gap:2mm}
-  .cod-l{font-weight:900;font-size:9.5pt;line-height:1.15}
-  .cod-l small{display:block;font-weight:700;font-size:7pt}
-  .cod-v{font-weight:900;font-size:26pt;line-height:1;white-space:nowrap;font-variant-numeric:tabular-nums;direction:ltr}
-  .cod-v u{text-decoration:none;font-size:12pt;font-weight:800;margin-inline-start:1mm}
-  /* الأصناف هي مرجع التجهيز؛ أعلى من الباركود الذي يظل مرجعاً ثانوياً صغيراً. */
-  .items{margin:0 0 1.5mm;padding:1.2mm 1.5mm;background:#f3f3f3;border:1px solid #000;border-radius:1mm;font-size:8.5pt;line-height:1.35}
-  .items b{font-weight:900}.items-list{font-weight:700;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
-  /* الباركود: مرجع بصري احتياطي، لا يستهلك الملصق على حساب الاسم والعنوان والأصناف. */
-  .bc{flex:0 0 17mm;display:flex;flex-direction:column;align-items:stretch;justify-content:center;min-height:0;gap:0.4mm}
-  .bc-svg{height:12mm;display:flex;align-items:center;justify-content:center}
-  .bc-svg svg{width:100%;height:100%;display:block}
-  .bc-no{text-align:center;font-weight:900;font-size:14pt;letter-spacing:1px;font-variant-numeric:tabular-nums}
-  /* التذييل: QR + بيانات + المحتويات */
-  .ft{display:flex;align-items:stretch;gap:2mm;padding-top:1.5mm;border-top:2px solid #000}
-  .ft-qr{width:16mm;height:16mm;flex:0 0 auto}
-  .ft-qr svg{width:100%;height:100%;display:block}
-  .ft-info{flex:1 1 auto;min-width:0;font-size:8.5pt;line-height:1.35}
-  .ft-info b{font-weight:900}
-  .ft-c{margin-top:0.6mm;font-weight:700;font-size:7.5pt;line-height:1.2}
-</style></head>
+<style>${sharedCss}</style></head>
 <body>
-  <div class="pg">
-  <div class="lb">
-    <div class="from">
-      <div>
-        <div class="from-co">${esc(CO.short)}</div>
-        <div class="from-sub">${esc(CO.address)}</div>
-      </div>
-      <div class="from-r">المُرسِل<br>${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div>
-    </div>
-
-    <div class="to">
-      <span class="to-tag">المستلِم</span>
-      <div class="row" style="align-items:flex-start">
-        <div class="to-name" style="flex:1 1 auto">${esc(o.customerName ?? "عميل")}</div>
-        ${o.customerPhone ? `<div class="to-phone">${esc(o.customerPhone)}</div>` : ""}
-      </div>
-      ${govName ? `<div class="to-gov">${esc(govName)}</div>` : ""}
-      ${o.addressText ? `<div class="to-addr">${esc(o.addressText)}</div>` : ""}
-      ${hasMap ? `<div class="to-coords" style="font-size:7.5pt;font-weight:bold;color:#0e806a;margin-top:1mm">موقع الخريطة مثبت: ${esc(String(o.latitude))}, ${esc(String(o.longitude))}</div>` : ""}
-    </div>
-
-    <div class="cod">
-      <div class="cod-l">${o.paymentState === "PREPAID" ? "مدفوع مسبقاً" : "الدفع عند الاستلام"}<small>${o.paymentState === "PREPAID" ? "لا يُحصَّل مبلغ عند التسليم" : "COD — تُحصَّل نقداً"}</small></div>
-      <div class="cod-v">${o.paymentState === "PREPAID" ? "مدفوع" : `${esc(fmt(o.total))}<u>د.ع</u>`}</div>
-    </div>
-
-    <div class="items"><b>أصناف التجهيز (${itemCount}):</b> <span class="items-list">${esc(contents || "—")}</span></div>
-
-    <div class="bc">
-      ${barcode ? `<div class="bc-svg">${barcode}</div>` : ""}
-      <div class="bc-no">${esc(o.orderNumber)}</div>
-    </div>
-
-    <div class="ft">
-      ${qr ? `<div class="ft-qr">${qr}</div>` : ""}
-      <div class="ft-info">
-        <div><b>الطلب:</b> ${esc(o.orderNumber)} &nbsp; <b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
-        ${o.deliveryPartyName ? `<div><b>المندوب:</b> ${esc(o.deliveryPartyName)}</div>` : ""}
-        ${o.externalTrackingRef ? `<div><b>مرجع الشركة:</b> <span dir="ltr" style="font-family:monospace;font-weight:bold">${esc(o.externalTrackingRef)}</span></div>` : ""}
-        <div class="ft-c" style="${hasMap ? "font-weight:900;color:#0e806a" : ""}">${hasMap ? "موقع الزبون على الخريطة (امسح للملاحة)" : "امسح QR لفتح معلومات الطلب"}</div>
-      </div>
-    </div>
-  </div>
+  <div class="lbl-container">
+    ${selectedBody}
   </div>
   <script>
     window.addEventListener('load', function () {

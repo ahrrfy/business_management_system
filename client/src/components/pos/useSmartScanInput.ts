@@ -8,6 +8,7 @@
 
 import { useCallback, useMemo, useRef } from "react";
 import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode } from "@/lib/barcodeScanTiming";
+import { playAudioFeedback } from "@/lib/audioFeedback";
 
 /** أدنى طولٍ لاعتبار الومضة باركوداً في الكاشير (رموز المنتجات ≥٤؛ الأقصر يبقى بحثاً بشرياً). */
 const POS_SCAN_MIN_LENGTH = 4;
@@ -39,7 +40,10 @@ export function useSmartScanInput(
       const decision = resolveScanSettle(detector.flush(), prefixRef.current, minLength);
       prefixRef.current = "";
       setValue(decision.fieldValue);
-      if (decision.scan) void onBarcode(decision.scan);
+      if (decision.scan) {
+        playAudioFeedback("scan");
+        void onBarcode(decision.scan);
+      }
     },
     [onBarcode, detector, minLength],
   );
@@ -60,6 +64,7 @@ export function useSmartScanInput(
           detector.reset();
           prefixRef.current = "";
           setValue("");
+          playAudioFeedback("scan");
           void onBarcode(recovered);
         }
         return;

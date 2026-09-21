@@ -48,45 +48,76 @@ describe("session query-cache isolation", () => {
     expect(queryClient.getQueryData(shiftKey)).toEqual({ id: 701, userId: 11 });
   });
 
-  it("preserves Studio drafts when the same employee logs in again", async () => {
+  it("preserves Studio drafts only when company and user are unchanged", async () => {
     const queryClient = new QueryClient();
     let purgeCount = 0;
+    let receptionPurgeCount = 0;
 
-    await resetSessionForLogin(queryClient, 7, {
-      loadStudioIdentity: async () => ({ userId: 7 }),
+    await resetSessionForLogin(queryClient, { companyId: 4, userId: 7 }, {
+      loadStudioIdentity: async () => ({ companyId: 4, userId: 7, savedAt: 1 }),
       purgeStudioDrafts: async () => {
         purgeCount += 1;
       },
+      purgeReceptionSnapshots: () => { receptionPurgeCount += 1; },
     });
 
     expect(purgeCount).toBe(0);
+    expect(receptionPurgeCount).toBe(1);
   });
 
-  it("purges Studio drafts when a different employee takes over the session", async () => {
+  it("purges Studio drafts when the company changes even for the same numeric user", async () => {
     const queryClient = new QueryClient();
     let purgeCount = 0;
 
-    await resetSessionForLogin(queryClient, 8, {
-      loadStudioIdentity: async () => ({ userId: 7 }),
+    await resetSessionForLogin(queryClient, { companyId: 8, userId: 7 }, {
+      loadStudioIdentity: async () => ({ companyId: 4, userId: 7, savedAt: 1 }),
       purgeStudioDrafts: async () => {
         purgeCount += 1;
       },
+      purgeReceptionSnapshots: () => undefined,
     });
 
     expect(purgeCount).toBe(1);
+  });
+
+  it("purges Studio drafts for a different user or an unreadable legacy identity", async () => {
+    for (const previous of [{ companyId: 4, userId: 7, savedAt: 1 }, null]) {
+      const queryClient = new QueryClient(); let purgeCount = 0;
+      await resetSessionForLogin(queryClient, { companyId: 4, userId: 8 }, {
+        loadStudioIdentity: async () => previous,
+        purgeStudioDrafts: async () => { purgeCount += 1; },
+        purgeReceptionSnapshots: () => undefined,
+      });
+      expect(purgeCount).toBe(1);
+    }
   });
 
   it("purges Studio drafts on explicit logout", async () => {
     const queryClient = new QueryClient();
     let purgeCount = 0;
+    let receptionPurgeCount = 0;
 
     await resetSessionForLogout(queryClient, {
-      loadStudioIdentity: async () => ({ userId: 7 }),
+      loadStudioIdentity: async () => ({ companyId: 4, userId: 7, savedAt: 1 }),
       purgeStudioDrafts: async () => {
         purgeCount += 1;
       },
+      purgeReceptionSnapshots: () => { receptionPurgeCount += 1; },
     });
 
     expect(purgeCount).toBe(1);
+    expect(receptionPurgeCount).toBe(1);
+  });
+
+  it("does not block a session boundary when browser storage throws synchronously", async () => {
+    const queryClient = new QueryClient();
+    const dependencies = {
+      loadStudioIdentity: async () => ({ companyId: 4, userId: 7, savedAt: 1 }),
+      purgeStudioDrafts: async () => undefined,
+      purgeReceptionSnapshots: () => { throw new DOMException("blocked", "SecurityError"); },
+    };
+
+    await expect(resetSessionForLogin(queryClient, { companyId: 4, userId: 7 }, dependencies)).resolves.toBeUndefined();
+    await expect(resetSessionForLogout(queryClient, dependencies)).resolves.toBeUndefined();
   });
 });

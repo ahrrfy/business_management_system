@@ -17,6 +17,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { type ShiftData, fmt, type PosColors as C } from "./posShared";
 import { useModalFocus } from "./useModalFocus";
+import { ShiftCashReconciliationMini } from "./ShiftCashReconciliationMini";
 
 export interface ShiftCloseDialogProps {
   C: C;
@@ -128,10 +129,10 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
     <div onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgb(0 0 0/.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
       <div onClick={(e) => e.stopPropagation()} ref={modalRef} role="dialog" aria-modal="true" aria-label="إغلاق الوردية"
-        style={{ background: C.card, borderRadius: 18, padding: "26px 30px", width: 440, boxShadow: "0 24px 64px rgb(0 0 0/.32)", animation: "popIn .2s ease", maxHeight: "90vh", overflowY: "auto" }}>
+        style={{ background: C.card, borderRadius: 18, padding: "24px 26px", width: "min(490px, 96vw)", boxShadow: "0 24px 64px rgb(0 0 0/.32)", animation: "popIn .2s ease", maxHeight: "90vh", overflowY: "auto" }}>
 
         <div style={{ fontWeight: 900, fontSize: 19, marginBottom: 4, color: C.fg }}>إغلاق الوردية #{shift?.id}</div>
-        <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 18 }}>
+        <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 14 }}>
           {fmtDate(new Date())}
         </div>
 
@@ -139,30 +140,36 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
           <div style={{ padding: "24px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل التقرير…</div>
         ) : (
           <>
-            {([
-              ["عدد الفواتير",     `${report?.invoiceCount ?? 0} فاتورة`],
-              ["إجمالي المبيعات",  `${fmt(Number(report?.salesTotal ?? 0))} د.ع`],
-              ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`],
-              ...(outboxQueued.count > 0
-                ? [["مبيعات غير مُزامنة (نقدها بالدرج)", `${outboxQueued.count} فاتورة · ${fmt(outboxQueued.total)} د.ع`] as [string, string]]
-                : []),
-              ...(report != null && showExpected
-                ? [["النقد المتوقع بالصندوق", `${fmt(expectedD?.toNumber() ?? 0)} د.ع`] as [string, string]]
-                : []),
-            ] as [string, string][]).map(([l, v]) => (
-              <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
-                <span style={{ color: C.mutedFg }}>{l}</span>
-                <span style={{ fontWeight: 700, color: C.fg }}>{v}</span>
-              </div>
-            ))}
+            {/* ملخص الفواتير للمعلومة فقط */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, padding: "8px 12px", background: "color-mix(in oklch, var(--muted) 35%, transparent)", borderRadius: 10, marginBottom: 6 }}>
+              <span style={{ color: C.mutedFg }}>ملخص فواتير البيع</span>
+              <span style={{ fontWeight: 700, color: C.fg }}>
+                {report?.invoiceCount ?? 0} فاتورة · {fmt(Number(report?.salesTotal ?? 0))} د.ع
+              </span>
+            </div>
 
-            {/* Payment breakdown — كل طريقة بلقب عربيّ + شارة ملوّنة، ليَفهَم الكاشير أنّ مبيعات
-                البطاقة/التحويل/المحفظة لا تدخل نقد الدرج المتوقّع (الخادم يحسبه CASH+DRAWER فقط).
-                هذا يزيل حَيرة «لماذا الفرق؟» — الفرق ليس عجزاً، البطاقة لا تُقاس بعدّ النقد. */}
-            {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && (
-              <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>
+            {outboxQueued.count > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "7px 10px", background: C.amberSoft, borderRadius: 8, marginBottom: 8, color: C.fg }}>
+                <span>مبيعات غير مُزامنة (نقدها بالدرج)</span>
+                <span style={{ fontWeight: 700 }}>{outboxQueued.count} فاتورة · {fmt(outboxQueued.total)} د.ع</span>
+              </div>
             )}
-            {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
+
+            {/* تفصيل وبيان نقد الوردية ومصادر النقد المتوقع */}
+            <ShiftCashReconciliationMini
+              cashReconciliation={report?.cashReconciliation}
+              invoiceCount={report?.invoiceCount ?? 0}
+              salesTotal={report?.salesTotal ?? "0"}
+              openingBalance={openingBal}
+              expectedCash={expectedD?.toNumber() ?? 0}
+              showExpected={showExpected}
+            />
+
+            {/* Payment breakdown — طرق الدفع غير النقدية لتوضيح أنها لا تدخل نقد الدرج */}
+            {(report?.payments ?? []).filter((p) => Number(p.total) > 0 && p.method !== "CASH").length > 0 && (
+              <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>طرق دفع غير نقدية بالوردية:</div>
+            )}
+            {(report?.payments ?? []).filter((p) => Number(p.total) > 0 && p.method !== "CASH").map((p) => (
               <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "5px 0", borderBottom: `1px dashed ${C.border}` }}>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                   <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(p.method)}`}>

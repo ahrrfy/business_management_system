@@ -509,1725 +509,1723 @@ export async function approveVoucherTx(
   receiptId: number,
   actor: Actor,
 ): Promise<ApproveVoucherResult> {
-    const [preview] = await tx
-      .select()
-      .from(receipts)
-      .where(eq(receipts.id, receiptId))
-      .limit(1);
-    if (!preview || preview.voucherNumber == null) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
-    }
-    const [approverPreview] = await tx
-      .select()
-      .from(users)
-      .where(eq(users.id, actor.userId))
-      .limit(1);
-    if (!approverPreview?.isActive || !approverPreview.isOwner) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "اعتماد السندات محصور بحساب مالك نشط",
-      });
-    }
-    const previewApproverActor: Actor = {
-      userId: actor.userId,
-      branchId: Number(approverPreview.branchId ?? actor.branchId),
-      role: approverPreview.role,
-      isOwner: true,
-    };
-    const cashOutPreview =
-      preview.direction === "OUT" && preview.paymentMethod === "CASH";
-    const cashInPreview =
-      preview.direction === "IN" && preview.paymentMethod === "CASH";
-    const systemRequestPreview = parseSystemPaymentRequest(
-      preview.internalNote,
-    );
-    if (
-      (isSystemPaymentReference(preview.referenceNumber) ||
-        hasSystemPaymentRequestEnvelope(preview.internalNote)) &&
-      (!systemRequestPreview ||
-        !isCanonicalSystemPaymentRequest(
-          systemRequestPreview,
-          preview.referenceNumber,
-        ))
-    ) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "مرجع نظامي بلا payload موثوق — أوقف الاعتماد وراجع التدقيق",
-      });
-    }
-    let cancellationOriginalPreview: typeof preview | null = null;
-    let cancellationAttemptIdsPreview: number[] = [];
-    if (systemRequestPreview?.kind === "VOUCHER_CANCELLATION") {
-      [cancellationOriginalPreview] = await tx
-        .select()
-        .from(receipts)
-        .where(eq(receipts.id, systemRequestPreview.originalReceiptId))
-        .limit(1);
-      if (!cancellationOriginalPreview) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "سند القبض الأصلي لطلب الإلغاء مفقود",
-        });
-      }
-      if (!preview.referenceNumber) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "طلب إلغاء السند لا يحمل مرجع سلسلة canonical",
-        });
-      }
-      cancellationAttemptIdsPreview = (
-        await tx
-          .select({ id: receipts.id })
-          .from(receipts)
-          .where(eq(receipts.referenceNumber, preview.referenceNumber))
-          .orderBy(asc(receipts.id))
-      ).map((row) => Number(row.id));
-      if (!cancellationAttemptIdsPreview.includes(receiptId)) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "محاولة الإلغاء الحالية مفقودة من سلسلة الطلبات",
-        });
-      }
-    }
-    let preResolvedCashIn: {
-      shiftId: number | null;
-      cashBucket: "DRAWER" | "TREASURY";
-    } | null = null;
-    let externalTreasuryApproval: ExternalTreasuryDisbursementApproval | null =
-      null;
-    let prelockedExchangeHouse: typeof exchangeHouses.$inferSelect | null =
-      null;
-    let prelockedDigitalWallet: typeof digitalWallets.$inferSelect | null =
-      null;
-    if (cashInPreview && cancellationOriginalPreview) {
-      const cancellationBucket = cancellationOriginalPreview.cashBucket as
-        | "DRAWER"
-        | "TREASURY"
-        | null;
-      if (
-        cancellationOriginalPreview.paymentMethod !== "CASH" ||
-        cancellationBucket == null
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "طلب إلغاء الصرف النقدي لا يطابق مصدر النقد الأصلي",
-        });
-      }
-      preResolvedCashIn = {
-        shiftId:
-          cancellationOriginalPreview.shiftId != null
-            ? Number(cancellationOriginalPreview.shiftId)
-            : null,
-        cashBucket: cancellationBucket,
-      };
-    }
-    if (cashOutPreview) {
-      const cancellationBucket = cancellationOriginalPreview?.cashBucket as
-        | "DRAWER"
-        | "TREASURY"
-        | null
-        | undefined;
-      if (cancellationOriginalPreview && cancellationBucket == null) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "طلب إلغاء قبض نقدي بلا مصدر نقد أصلي",
-        });
-      }
-      const source: CashAccountRef = cancellationOriginalPreview
-        ? {
-            branchId: Number(cancellationOriginalPreview.branchId),
-            cashBucket: cancellationBucket as "DRAWER" | "TREASURY",
-            shiftId:
-              cancellationOriginalPreview.shiftId != null
-                ? Number(cancellationOriginalPreview.shiftId)
-                : null,
-          }
-        : {
-            branchId: Number(preview.branchId),
-            cashBucket: "TREASURY" as const,
-            shiftId: null,
-          };
-      if (source.cashBucket === "TREASURY") {
-        // إعادة اقتناء أصل قد تعكس CASH في فرع المصدر ثم تصرف من فرع الهدف.
-        // كلا الحسابين يجب أن يُقفلا قبل asset/receipt وبترتيب هوية ثابت؛ قفل الهدف
-        // وحده يصنع دورة target→source مقابل cash transfer source→target.
-        const disbursementBranchIds = [source.branchId];
-        externalTreasuryApproval = await authorizeExternalTreasuryDisbursement(
-          tx,
-          {
-            actor,
-            makerUserIds: [
-              preview.createdBy,
-              cancellationOriginalPreview?.createdBy,
-            ],
-            branchIds: disbursementBranchIds,
-            operation: cancellationOriginalPreview
-              ? "اعتماد إلغاء سند قبض نقدي"
-              : "اعتماد سند الصرف النقدي",
-          },
-        );
-        if (systemRequestPreview?.kind === "EXCHANGE_IQD_DEPOSIT") {
-          [prelockedExchangeHouse] = await tx
-            .select()
-            .from(exchangeHouses)
-            .where(eq(exchangeHouses.id, systemRequestPreview.exchangeHouseId))
-            .for("update")
-            .limit(1);
-          if (!prelockedExchangeHouse) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: "الصيرفة المرتبطة بطلب الإيداع مفقودة",
-            });
-          }
-        }
-        if (systemRequestPreview?.kind === "DIGITAL_WALLET_CASH_DEPOSIT") {
-          [prelockedDigitalWallet] = await tx
-            .select()
-            .from(digitalWallets)
-            .where(eq(digitalWallets.id, systemRequestPreview.walletId))
-            .for("update")
-            .limit(1);
-          if (!prelockedDigitalWallet) {
-            throw new TRPCError({
-              code: "CONFLICT",
-              message: "المحفظة المرتبطة بطلب الإيداع مفقودة",
-            });
-          }
-        }
-      } else {
-        await lockCashSourceForUpdate(tx, source);
-      }
-    } else if (cashInPreview) {
-      preResolvedCashIn =
-        preResolvedCashIn ??
-        (await shiftIdForCashTx(
-          tx,
-          previewApproverActor,
-          Number(preview.branchId),
-          "اعتماد سند قبض نقدي",
-        ));
-      await lockCashSourceForUpdate(tx, {
-        branchId: Number(preview.branchId),
-        cashBucket: preResolvedCashIn.cashBucket,
-        shiftId: preResolvedCashIn.shiftId,
-      });
-    }
-    // قفل مشاركة يكفي لتثبيت isActive/isOwner حتى نهاية المعاملة، ويبقى متوافقاً
-    // مع FK createdBy في كتّاب النقد الآخرين. الترتيب الحاكم للنقد: source → user SHARE → receipt.
-    const [approver] = await tx
-      .select()
-      .from(users)
-      .where(eq(users.id, actor.userId))
-      .for("share")
-      .limit(1);
-    if (!approver?.isActive || !approver.isOwner) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "اعتماد السندات محصور بحساب مالك نشط",
-      });
-    }
-    if (
-      approver.role !== approverPreview.role ||
-      Number(approver.branchId ?? actor.branchId) !==
-        Number(approverPreview.branchId ?? actor.branchId)
-    ) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "تغيّرت صلاحيات المالك أثناء الاعتماد — أعد المحاولة",
-      });
-    }
-    const receiptIdsToLock = Array.from(
-      new Set(
-        systemRequestPreview?.kind === "VOUCHER_CANCELLATION"
-          ? [
-              systemRequestPreview.originalReceiptId,
-              ...cancellationAttemptIdsPreview,
-            ]
-          : [receiptId],
-      ),
-    ).sort((left, right) => left - right);
-    const lockedReceiptRows = await tx
-      .select()
-      .from(receipts)
-      .where(inArray(receipts.id, receiptIdsToLock))
-      .orderBy(asc(receipts.id))
-      .for("update");
-    const r = lockedReceiptRows.find((row) => Number(row.id) === receiptId);
-    if (!r || r.voucherNumber == null) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
-    }
-    if (systemRequestPreview?.kind === "VOUCHER_CANCELLATION") {
-      const lockedIds = lockedReceiptRows.map((row) => Number(row.id));
-      const currentAttemptIds = (
-        await tx
-          .select({ id: receipts.id })
-          .from(receipts)
-          .where(eq(receipts.referenceNumber, String(preview.referenceNumber)))
-          .orderBy(asc(receipts.id))
-      ).map((row) => Number(row.id));
-      if (
-        lockedIds.length !== receiptIdsToLock.length ||
-        JSON.stringify(currentAttemptIds) !==
-          JSON.stringify(cancellationAttemptIdsPreview)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message:
-            "تغيّرت سلسلة محاولات إلغاء السند أثناء الاعتماد؛ أعد المحاولة على أحدث حالة",
-        });
-      }
-    }
-    if (
-      (cashOutPreview || cashInPreview) &&
-      (r.direction !== preview.direction ||
-        r.paymentMethod !== "CASH" ||
-        Number(r.branchId) !== Number(preview.branchId))
-    ) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "تغيّر مصدر السند النقدي أثناء الاعتماد — أعد المحاولة",
-      });
-    }
-    // بالفعل لا بالإجراء: إجراءٌ واحد (`approveVoucher`) يحمل ثلاثةَ تصنيفاتٍ متمايزة —
-    // `OUT` خروجُ مال · `IN` مع إلغاءِ سندٍ أو استردادِ تصحيحِ استحقاق محوُ أثرٍ منشور ·
-    // و`IN` العاديّ لا مالَ يخرج ولا أثرَ يُمحى ⇒ `null` **وضابطُه مُستبقًى بقرار المالك**
-    // (٢/٩/٢٦) لأنّه البوّابةُ الوحيدة على نقدٍ مجهول المصدر يدخل الخزينة. التفصيل ودليلُه
-    // في `shared/approvalTriggers.ts`.
-    //
-    // ⭐ **قرار المالك (٣/٩/٢٦) يُنفَّذ هنا مباشرةً — لا عبر علَم `ownerOnlyApproval`:** ذلك
-    // العلَم مُقفَلٌ عمداً (`rolloutFlags.ts`) حتى تكتمل ثلاثةُ أشياء لا صلة لواحدٍ منها بهذا
-    // الفعل (سجلّ solo-execution · مستدعي `planApproval` · مساري تسوية مخزون/تكلفة). فصلُ
-    // المهام «غير صانع الطلب» على سندٍ يُخرج مالاً أو يمحو أثراً منشوراً أُلغي **بلا انتظار
-    // العلَم**، بنفس تصنيف `voucherApprovalTrigger`/`voucherApprovalRetainsLegacy` أعلاه
-    // حرفياً — فحين يكتمل العلَم يصير هذا الشرط زائداً بلا أثر (النتيجتان متطابقتان دائماً).
-    // والمُستبقى بقرار ٢/٩ (سند قبضٍ عاديّ) لم يمسّه قرار ٣/٩ ويبقى كما هو.
-    //
-    // التصنيفُ يُشتقّ من `systemRequestPreview` لا من `systemRequest` كي يبقى الفحصُ في
-    // موضعه الأصليّ بلا إعادة ترتيب؛ وتطابُقُهما مفروضٌ في السطور التالية مباشرةً، وأيُّ
-    // اختلافٍ يرمي `CONFLICT` فيتراجع كلُّ شيء — فلا مسارَ يمرّ بتصنيفٍ منحرف.
-    assertApprover({
-      actor: await resolveApprovalActor(tx, actor),
-      trigger: voucherApprovalTrigger(r.direction, systemRequestPreview?.kind ?? null),
-      retainLegacy: voucherApprovalRetainsLegacy(r.direction, systemRequestPreview?.kind ?? null),
-      subject: `سند ${r.voucherNumber}`,
-      legacy: () => {
-        if (
-          voucherApprovalRetainsLegacy(r.direction, systemRequestPreview?.kind ?? null) &&
-          r.createdBy != null &&
-          Number(r.createdBy) === actor.userId
-        ) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
-          });
-        }
-      },
+  const [preview] = await tx
+    .select()
+    .from(receipts)
+    .where(eq(receipts.id, receiptId))
+    .limit(1);
+  if (!preview || preview.voucherNumber == null) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+  }
+  const [approverPreview] = await tx
+    .select()
+    .from(users)
+    .where(eq(users.id, actor.userId))
+    .limit(1);
+  if (!approverPreview?.isActive || !approverPreview.isOwner) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "اعتماد السندات محصور بحساب مالك نشط",
     });
-    const systemRequest = parseSystemPaymentRequest(r.internalNote);
+  }
+  const previewApproverActor: Actor = {
+    userId: actor.userId,
+    branchId: Number(approverPreview.branchId ?? actor.branchId),
+    role: approverPreview.role,
+    isOwner: true,
+  };
+  const cashOutPreview =
+    preview.direction === "OUT" && preview.paymentMethod === "CASH";
+  const cashInPreview =
+    preview.direction === "IN" && preview.paymentMethod === "CASH";
+  const systemRequestPreview = parseSystemPaymentRequest(preview.internalNote);
+  if (
+    (isSystemPaymentReference(preview.referenceNumber) ||
+      hasSystemPaymentRequestEnvelope(preview.internalNote)) &&
+    (!systemRequestPreview ||
+      !isCanonicalSystemPaymentRequest(
+        systemRequestPreview,
+        preview.referenceNumber,
+      ))
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "مرجع نظامي بلا payload موثوق — أوقف الاعتماد وراجع التدقيق",
+    });
+  }
+  let cancellationOriginalPreview: typeof preview | null = null;
+  let cancellationAttemptIdsPreview: number[] = [];
+  if (systemRequestPreview?.kind === "VOUCHER_CANCELLATION") {
+    [cancellationOriginalPreview] = await tx
+      .select()
+      .from(receipts)
+      .where(eq(receipts.id, systemRequestPreview.originalReceiptId))
+      .limit(1);
+    if (!cancellationOriginalPreview) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "سند القبض الأصلي لطلب الإلغاء مفقود",
+      });
+    }
+    if (!preview.referenceNumber) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "طلب إلغاء السند لا يحمل مرجع سلسلة canonical",
+      });
+    }
+    cancellationAttemptIdsPreview = (
+      await tx
+        .select({ id: receipts.id })
+        .from(receipts)
+        .where(eq(receipts.referenceNumber, preview.referenceNumber))
+        .orderBy(asc(receipts.id))
+    ).map((row) => Number(row.id));
+    if (!cancellationAttemptIdsPreview.includes(receiptId)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "محاولة الإلغاء الحالية مفقودة من سلسلة الطلبات",
+      });
+    }
+  }
+  let preResolvedCashIn: {
+    shiftId: number | null;
+    cashBucket: "DRAWER" | "TREASURY";
+  } | null = null;
+  let externalTreasuryApproval: ExternalTreasuryDisbursementApproval | null =
+    null;
+  let prelockedExchangeHouse: typeof exchangeHouses.$inferSelect | null = null;
+  let prelockedDigitalWallet: typeof digitalWallets.$inferSelect | null = null;
+  if (cashInPreview && cancellationOriginalPreview) {
+    const cancellationBucket = cancellationOriginalPreview.cashBucket as
+      | "DRAWER"
+      | "TREASURY"
+      | null;
     if (
-      JSON.stringify(systemRequest) !== JSON.stringify(systemRequestPreview)
+      cancellationOriginalPreview.paymentMethod !== "CASH" ||
+      cancellationBucket == null
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر ارتباط الطلب النظامي أثناء الاعتماد — أعد المحاولة",
+        message: "طلب إلغاء الصرف النقدي لا يطابق مصدر النقد الأصلي",
       });
     }
-    if (r.approvalStatus === "APPROVED") {
-      if (!r.signatureHash)
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "السند معتمد بلا بصمة سلامة — راجع التدقيق",
-        });
-      return {
-        receiptId,
-        voucherNumber: String(r.voucherNumber),
-        approvalStatus: "APPROVED" as const,
-        signatureHash: String(r.signatureHash),
-        replayed: true,
-      };
-    }
-    if (r.approvalStatus === "REJECTED") {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "السند مرفوض — لا يمكن اعتماده",
-      });
-    }
-    if (r.status === "REVERSED") {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "السند ملغى — لا يمكن اعتماده",
-      });
-    }
-    if (r.approvalStatus !== "PENDING_APPROVAL" || r.status !== "PENDING") {
+    preResolvedCashIn = {
+      shiftId:
+        cancellationOriginalPreview.shiftId != null
+          ? Number(cancellationOriginalPreview.shiftId)
+          : null,
+      cashBucket: cancellationBucket,
+    };
+  }
+  if (cashOutPreview) {
+    const cancellationBucket = cancellationOriginalPreview?.cashBucket as
+      | "DRAWER"
+      | "TREASURY"
+      | null
+      | undefined;
+    if (cancellationOriginalPreview && cancellationBucket == null) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "السند ليس طلباً معلّقاً صالحاً للاعتماد",
+        message: "طلب إلغاء قبض نقدي بلا مصدر نقد أصلي",
       });
     }
-    let cancellationOriginal: typeof r | null = null;
-    let cancellationSourceRequest: SystemPaymentRequest | null = null;
-    let cancellationPurchaseOrder: typeof purchaseOrders.$inferSelect | null =
-      null;
-    if (systemRequest?.kind === "VOUCHER_CANCELLATION") {
-      cancellationOriginal =
-        lockedReceiptRows.find(
-          (row) => Number(row.id) === systemRequest.originalReceiptId,
-        ) ?? null;
-      if (
-        !cancellationOriginal ||
-        (cancellationOriginal.direction !== "IN" &&
-          cancellationOriginal.direction !== "OUT") ||
-        r.direction !==
-          (cancellationOriginal.direction === "IN" ? "OUT" : "IN") ||
-        cancellationOriginal.direction !== systemRequest.originalDirection ||
-        cancellationOriginal.paymentMethod !== r.paymentMethod ||
-        cancellationOriginal.paymentMethod !==
-          systemRequest.originalPaymentMethod ||
-        cancellationOriginal.approvalStatus !== "APPROVED" ||
-        cancellationOriginal.status !== "COMPLETED" ||
-        cancellationOriginal.voucherNumber == null ||
-        (cancellationOriginal.paymentMethod === "CASH" &&
-          cancellationOriginal.cashBucket == null) ||
-        Number(cancellationOriginal.branchId) !== Number(r.branchId) ||
-        money(cancellationOriginal.amount).toFixed(2) !==
-          money(r.amount).toFixed(2) ||
-        (cancellationOriginal.partyType ?? null) !== (r.partyType ?? null) ||
-        Number(cancellationOriginal.partyId ?? 0) !== Number(r.partyId ?? 0) ||
-        (r.counterpartyName?.trim() || null) !==
-          (cancellationOriginal.partyType === "OTHER"
-            ? cancellationOriginal.counterpartyName?.trim() ||
-              `إلغاء سند ${cancellationOriginal.voucherNumber}`
-            : null) ||
-        Number(cancellationOriginal.createdBy ?? 0) !==
-          Number(systemRequest.originalCreatorId ?? 0) ||
-        (cancellationOriginal.referenceNumber?.trim() || null) !==
-          systemRequest.originalReferenceNumber ||
-        (cancellationOriginal.checkNumber?.trim() || null) !==
-          systemRequest.originalCheckNumber ||
-        (cancellationOriginal.cardLastFour?.trim() || null) !==
-          systemRequest.originalCardLastFour ||
-        Number(cancellationOriginal.voucherCategoryId ?? 0) !==
-          Number(systemRequest.originalCategoryId ?? 0) ||
-        Number(r.voucherCategoryId ?? 0) !==
-          Number(cancellationOriginal.voucherCategoryId ?? 0) ||
-        (r.checkNumber?.trim() || null) !==
-          (cancellationOriginal.checkNumber?.trim() || null) ||
-        (r.cardLastFour?.trim() || null) !==
-          (cancellationOriginal.cardLastFour?.trim() || null)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "سند القبض الأصلي تغيّر أو لم يعد صالحاً للإلغاء",
-        });
-      }
-      // إلغاءُ السند مُبوَّبٌ في الحالتين معاً فلا يبلغه استبقاءٌ (`voucherApprovalRetainsLegacy`
-      // تُعيد `false` دائماً هنا): عكسُ سندِ قبضٍ يُنتج إيصالاً `OUT` (خروجُ مال)، وعكسُ سندِ
-      // صرفٍ يُنتج `IN` على مستندٍ منشور (محوُ أثر). ⭐ قرار المالك (٣/٩/٢٦، الشرح أعلى الدالّة):
-      // فصلُ المهام الثاني — منشئُ **القبض الأصليّ** لا يعتمد إلغاءه — أُلغي هنا مباشرةً بلا
-      // انتظار علَم `ownerOnlyApproval`.
-      assertApprover({
-        actor: await resolveApprovalActor(tx, actor),
-        trigger: voucherApprovalTrigger(r.direction, systemRequest.kind),
-        retainLegacy: voucherApprovalRetainsLegacy(r.direction, systemRequest.kind),
-        subject: `إلغاء سند ${cancellationOriginal.voucherNumber}`,
-        legacy: () => {
-          if (
-            voucherApprovalRetainsLegacy(r.direction, systemRequest.kind) &&
-            cancellationOriginal!.createdBy != null &&
-            Number(cancellationOriginal!.createdBy) === actor.userId
-          ) {
-            throw new TRPCError({
-              code: "FORBIDDEN",
-              message: "لا يجوز لمن أنشأ القبض اعتماد إلغائه — يلزم مالك آخر",
-            });
-          }
-        },
-      });
-      cancellationSourceRequest = parseSystemPaymentRequest(
-        cancellationOriginal.internalNote,
-      );
-      if (
-        (isSystemPaymentReference(cancellationOriginal.referenceNumber) ||
-          hasSystemPaymentRequestEnvelope(cancellationOriginal.internalNote)) &&
-        (!cancellationSourceRequest ||
-          !isCanonicalSystemPaymentRequest(
-            cancellationSourceRequest,
-            cancellationOriginal.referenceNumber,
-          ))
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message:
-            "مرجع السند الأصلي نظامي بلا payload موثوق — أوقف الإلغاء وراجع التدقيق",
-        });
-      }
-      const materializedEntries = await tx
-        .select({
-          id: accountingEntries.id,
-          entryType: accountingEntries.entryType,
-          amount: accountingEntries.amount,
-          customerId: accountingEntries.customerId,
-          supplierId: accountingEntries.supplierId,
-          purchaseOrderId: accountingEntries.purchaseOrderId,
-        })
-        .from(accountingEntries)
-        .where(eq(accountingEntries.receiptId, Number(cancellationOriginal.id)))
-        .for("update")
-        .limit(
-          cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD" ? 4 : 2,
-        );
-      const materialized = materializedEntries[0];
-      if (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD") {
-        await assertPurchaseUsdSettlementMaterializedTx(
-          tx,
-          cancellationOriginal,
-          cancellationSourceRequest,
-        );
-      } else if (
-        materializedEntries.length !== 1 ||
-        !materialized ||
-        materialized.entryType !==
-          (cancellationOriginal.direction === "IN"
-            ? "PAYMENT_IN"
-            : "PAYMENT_OUT") ||
-        !money(materialized.amount).eq(money(cancellationOriginal.amount)) ||
-        Number(materialized.customerId ?? 0) !==
-          (cancellationOriginal.partyType === "CUSTOMER"
-            ? Number(cancellationOriginal.partyId ?? 0)
-            : 0) ||
-        Number(materialized.supplierId ?? 0) !==
-          (cancellationOriginal.partyType === "SUPPLIER"
-            ? Number(cancellationOriginal.partyId ?? 0)
-            : 0)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message:
-            "تعذر إثبات القيد المالي المنفذ لسند القبض الأصلي؛ أوقف الإلغاء وراجع التدقيق",
-        });
-      }
-      if (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER") {
-        cancellationPurchaseOrder =
-          (
-            await tx
-              .select()
-              .from(purchaseOrders)
-              .where(
-                eq(
-                  purchaseOrders.id,
-                  cancellationSourceRequest.purchaseOrderId,
-                ),
-              )
-              .for("update")
-              .limit(1)
-          )[0] ?? null;
-        if (
-          !cancellationPurchaseOrder ||
-          cancellationOriginal.direction !== "OUT" ||
-          cancellationOriginal.partyType !== "SUPPLIER" ||
-          cancellationOriginal.partyId == null ||
-          Number(cancellationPurchaseOrder.branchId) !==
-            Number(cancellationOriginal.branchId) ||
-          Number(cancellationPurchaseOrder.supplierId) !==
-            Number(cancellationOriginal.partyId) ||
-          !/^[0-9a-f]{16}$/i.test(cancellationSourceRequest.requestToken) ||
-          cancellationOriginal.referenceNumber !==
-            `PO-PAY-${cancellationPurchaseOrder.poNumber}-${cancellationSourceRequest.requestToken}` ||
-          typeof cancellationSourceRequest.expectedAmount !== "string" ||
-          !money(cancellationSourceRequest.expectedAmount).eq(
-            money(cancellationOriginal.amount),
-          ) ||
-          typeof cancellationSourceRequest.sourceTotal !== "string" ||
-          !money(cancellationPurchaseOrder.total).eq(
-            money(cancellationSourceRequest.sourceTotal),
-          ) ||
-          Number(materialized.purchaseOrderId ?? 0) !==
-            Number(cancellationPurchaseOrder.id) ||
-          money(cancellationPurchaseOrder.paidAmount).lt(
-            money(cancellationOriginal.amount),
-          )
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message:
-              "رابط دفعة أمر الشراء أو تخصيصها تغيّر؛ أوقف الإلغاء وراجع التدقيق",
-          });
+    const source: CashAccountRef = cancellationOriginalPreview
+      ? {
+          branchId: Number(cancellationOriginalPreview.branchId),
+          cashBucket: cancellationBucket as "DRAWER" | "TREASURY",
+          shiftId:
+            cancellationOriginalPreview.shiftId != null
+              ? Number(cancellationOriginalPreview.shiftId)
+              : null,
         }
-      }
-      const cancellationAttempts = await tx
-        .select({
-          id: receipts.id,
-          status: receipts.status,
-          approvalStatus: receipts.approvalStatus,
-          referenceNumber: receipts.referenceNumber,
-          internalNote: receipts.internalNote,
-        })
-        .from(receipts)
-        .where(
-          eq(
-            receipts.referenceNumber,
-            `CANCEL-VCH-${systemRequest.originalReceiptId}`,
-          ),
-        )
-        .orderBy(asc(receipts.id))
-        .for("update");
-      const currentAttemptIndex = cancellationAttempts.findIndex(
-        (attempt) => Number(attempt.id) === receiptId,
-      );
-      const attemptChainValid = cancellationAttempts.every((attempt, index) => {
-        const request = parseSystemPaymentRequest(attempt.internalNote);
-        const prior = index === 0 ? null : cancellationAttempts[index - 1];
-        return (
-          request?.kind === "VOUCHER_CANCELLATION" &&
-          isCanonicalSystemPaymentRequest(request, attempt.referenceNumber) &&
-          request.originalReceiptId === systemRequest.originalReceiptId &&
-          request.attempt === index + 1 &&
-          request.priorCancellationReceiptId ===
-            (prior == null ? null : Number(prior.id)) &&
-          (prior == null ||
-            prior.status === "FAILED" ||
-            prior.status === "REVERSED" ||
-            prior.approvalStatus === "REJECTED")
-        );
-      });
-      if (
-        !attemptChainValid ||
-        currentAttemptIndex !== cancellationAttempts.length - 1 ||
-        systemRequest.attempt !== currentAttemptIndex + 1
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message:
-            "تسلسل محاولات إلغاء السند غير موثق أو أن الطلب ليس أحدث محاولة",
-        });
-      }
-      if (
-        cancellationSourceRequest &&
-        cancellationSourceRequest.kind !== "EMPLOYEE_ADVANCE" &&
-        cancellationSourceRequest.kind !== "PURCHASE_SUPPLIER" &&
-        cancellationSourceRequest.kind !== "PURCHASE_SUPPLIER_USD"
-      ) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "العملية النظامية تُعكس من وحدتها المصدرية فقط",
-        });
-      }
-    }
-    const amount = money(r.amount);
-    const direction = r.direction as "IN" | "OUT";
-    const branchId = Number(r.branchId);
-    const partyType = r.partyType as PartyType | null;
-    const isDeliveryParty =
-      r.partyType === "OTHER" &&
-      r.partyId != null &&
-      typeof r.internalNote === "string" &&
-      r.internalNote.startsWith("DELIVERY_PARTY:");
-    const effectivePartyType: PartyType | null = isDeliveryParty
-      ? "DELIVERY_PARTY"
-      : partyType;
-    const partyId = r.partyId != null ? Number(r.partyId) : null;
-    const paymentMethod = r.paymentMethod as PaymentMethod;
-    const postingReferenceNumber =
-      cancellationOriginal?.referenceNumber ?? r.referenceNumber;
-    const isEmployeeAdvance =
-      systemRequest?.kind === "EMPLOYEE_ADVANCE" ||
-      cancellationSourceRequest?.kind === "EMPLOYEE_ADVANCE";
-    let lockedEmployeeAdvanceCancellation: LockedEmployeeAdvanceCancellation | null =
-      null;
-    if (isEmployeeAdvance) {
-      const advanceRequest =
-        systemRequest?.kind === "EMPLOYEE_ADVANCE"
-          ? systemRequest
-          : cancellationSourceRequest?.kind === "EMPLOYEE_ADVANCE"
-            ? cancellationSourceRequest
-            : null;
-      const advanceReceipt = cancellationOriginal ?? r;
-      if (!advanceRequest) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "بيانات المصدر النظامي لسلفة الموظف مفقودة",
-        });
-      }
-      await assertEmployeeAdvanceVoucherRequestTx(
+      : {
+          branchId: Number(preview.branchId),
+          cashBucket: "TREASURY" as const,
+          shiftId: null,
+        };
+    if (source.cashBucket === "TREASURY") {
+      // إعادة اقتناء أصل قد تعكس CASH في فرع المصدر ثم تصرف من فرع الهدف.
+      // كلا الحسابين يجب أن يُقفلا قبل asset/receipt وبترتيب هوية ثابت؛ قفل الهدف
+      // وحده يصنع دورة target→source مقابل cash transfer source→target.
+      const disbursementBranchIds = [source.branchId];
+      externalTreasuryApproval = await authorizeExternalTreasuryDisbursement(
         tx,
         {
-          id: Number(advanceReceipt.id),
-          branchId:
-            advanceReceipt.branchId != null
-              ? Number(advanceReceipt.branchId)
-              : null,
-          direction: String(advanceReceipt.direction),
-          amount: String(advanceReceipt.amount),
-          paymentMethod: String(advanceReceipt.paymentMethod),
-          partyType: advanceReceipt.partyType,
-          referenceNumber: advanceReceipt.referenceNumber,
-          createdBy:
-            advanceReceipt.createdBy != null
-              ? Number(advanceReceipt.createdBy)
-              : null,
+          actor,
+          makerUserIds: [
+            preview.createdBy,
+            cancellationOriginalPreview?.createdBy,
+          ],
+          branchIds: disbursementBranchIds,
+          operation: cancellationOriginalPreview
+            ? "اعتماد إلغاء سند قبض نقدي"
+            : "اعتماد سند الصرف النقدي",
         },
-        advanceRequest,
-        { requireMaterialized: cancellationOriginal != null },
       );
-      if (
-        cancellationOriginal &&
-        cancellationSourceRequest?.kind === "EMPLOYEE_ADVANCE"
-      ) {
-        lockedEmployeeAdvanceCancellation =
-          await lockUntouchedEmployeeAdvanceForCancellationTx(tx, {
-            originalReceiptId: Number(cancellationOriginal.id),
-            employeeId: cancellationSourceRequest.employeeId,
-            branchId: cancellationSourceRequest.branchId,
-            expectedAmount: cancellationSourceRequest.expectedAmount,
-          });
-      }
-    }
-    let categoryPostingRole: VoucherCategoryPostingRole | null = null;
-    let categoryReversalOfDirection: "IN" | "OUT" | null = null;
-    if (effectivePartyType === "OTHER" && !isEmployeeAdvance) {
-      if (cancellationOriginal) {
-        if (cancellationOriginal.voucherCategoryId == null) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "سند القبض الأصلي بلا فئة محاسبية؛ عيّن تصنيفاً تاريخياً معتمداً قبل اعتماد الإلغاء",
-          });
-        }
-        const category = await loadVoucherCategoryForPosting(
-          tx,
-          Number(cancellationOriginal.voucherCategoryId),
-          cancellationOriginal.direction as "IN" | "OUT",
-          { allowInactive: true, lock: true },
-        );
-        categoryPostingRole = category.postingRole;
-        categoryReversalOfDirection = cancellationOriginal.direction as
-          | "IN"
-          | "OUT";
-      } else if (!systemRequest) {
-        if (r.voucherCategoryId == null) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "سند OTHER بلا فئة محاسبية؛ عيّن فئة وحساباً مقابلاً معتمدين قبل الاعتماد",
-          });
-        }
-        const category = await loadVoucherCategoryForPosting(
-          tx,
-          Number(r.voucherCategoryId),
-          direction,
-          { allowInactive: true, lock: true },
-        );
-        categoryPostingRole = category.postingRole;
-      }
-    }
-    let systemAsset: typeof fixedAssets.$inferSelect | null = null;
-    let systemExchangeTxn: typeof exchangeTransactions.$inferSelect | null =
-      null;
-    let systemWalletTxn: typeof digitalWalletTransactions.$inferSelect | null =
-      null;
-    let systemAccrualObligation: Awaited<
-      ReturnType<typeof assertAccrualRequestBindingTx>
-    > | null = null;
-
-    if (isAccrualSettlementSystemRequest(systemRequest)) {
-      systemAccrualObligation = await assertAccrualSettlementReceiptBindingTx(
-        tx,
-        r,
-        systemRequest,
-        "PAYMENT_PENDING",
-      );
-      if (systemRequest.kind !== "ASSET_SUPPLIER_SETTLEMENT") {
-        const recognition = await lockAccrualRecognitionTx(
-          tx,
-          systemRequest.obligationId,
-        );
-        if (
-          Number(recognition.obligation.id) !==
-            Number(systemAccrualObligation.id) ||
-          recognition.obligation.sourceHash !==
-            systemAccrualObligation.sourceHash
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "قيد الاعتراف لا يطابق التزام طلب التسوية",
-          });
-        }
-      }
-    }
-
-    if (systemRequest?.kind === "VOUCHER_CANCELLATION") {
-      if (
-        r.referenceNumber !== `CANCEL-VCH-${systemRequest.originalReceiptId}`
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "مرجع طلب إلغاء القبض غير متطابق",
-        });
-      }
-    } else if (systemRequest?.kind === "TERMINATION_SETTLEMENT") {
-      const canonicalReference = terminationSettlementReference(systemRequest);
-      const parsedReference = parseTerminationSettlementReference(
-        r.referenceNumber,
-      );
-      const evidence =
-        systemRequest.paymentEvidenceReference === null
-          ? null
-          : typeof systemRequest.paymentEvidenceReference === "string"
-            ? systemRequest.paymentEvidenceReference.trim() || null
-            : undefined;
-      if (
-        !Number.isSafeInteger(systemRequest.terminationId) ||
-        systemRequest.terminationId <= 0 ||
-        !Number.isSafeInteger(systemRequest.employeeId) ||
-        systemRequest.employeeId <= 0 ||
-        typeof systemRequest.expectedAmount !== "string" ||
-        !Number.isSafeInteger(systemRequest.attempt) ||
-        systemRequest.attempt <= 0 ||
-        (systemRequest.originReturnEventId !== null &&
-          (!Number.isSafeInteger(systemRequest.originReturnEventId) ||
-            systemRequest.originReturnEventId <= 0)) ||
-        !Number.isSafeInteger(systemRequest.obligationId) ||
-        systemRequest.obligationId <= 0 ||
-        typeof systemRequest.settlementSnapshotHash !== "string" ||
-        !/^[a-f0-9]{64}$/.test(systemRequest.settlementSnapshotHash) ||
-        evidence === undefined ||
-        canonicalReference == null ||
-        parsedReference == null ||
-        r.referenceNumber !== canonicalReference ||
-        parsedReference.terminationId !== systemRequest.terminationId ||
-        parsedReference.attempt !== systemRequest.attempt ||
-        parsedReference.originReturnEventId !==
-          systemRequest.originReturnEventId
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "ارتباط طلب تسوية نهاية الخدمة غير صالح",
-        });
-      }
-      const [termination] = await tx
-        .select()
-        .from(employeeTerminations)
-        .where(eq(employeeTerminations.id, systemRequest.terminationId))
-        .for("update")
-        .limit(1);
-      const [employee] = await tx
-        .select({
-          id: employees.id,
-          branchId: employees.branchId,
-          employmentStatus: employees.employmentStatus,
-        })
-        .from(employees)
-        .where(eq(employees.id, systemRequest.employeeId))
-        .for("update")
-        .limit(1);
-      if (
-        !termination ||
-        termination.status !== "completed" ||
-        Number(termination.employeeId) !== systemRequest.employeeId ||
-        !employee ||
-        Number(employee.id) !== systemRequest.employeeId ||
-        Number(employee.branchId) !== branchId ||
-        employee.employmentStatus !== "terminated" ||
-        termination.settlementPaymentMethod !== paymentMethod ||
-        (termination.settlementPaymentReference?.trim() || null) !== evidence ||
-        termination.settlementSnapshotHash !==
-          systemRequest.settlementSnapshotHash ||
-        !money(termination.settlement).eq(amount) ||
-        !money(systemRequest.expectedAmount).eq(amount) ||
-        (paymentMethod === "CASH" && evidence !== null) ||
-        (paymentMethod !== "CASH" && evidence === null) ||
-        (paymentMethod === "CARD" &&
-          (!/^\d{4}$/.test(evidence ?? "") ||
-            (r.cardLastFour?.trim() || null) !== evidence)) ||
-        (paymentMethod !== "CARD" && r.cardLastFour != null) ||
-        r.checkNumber != null
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message:
-            "تغيّر سجل إنهاء الخدمة أو مبلغ تسويته — أوقف الصرف وراجع الموارد البشرية",
-        });
-      }
-    } else if (
-      systemRequest?.kind === "ASSET_ACQUISITION" ||
-      systemRequest?.kind === "ASSET_MAINTENANCE"
-    ) {
-      const assetId = systemRequest.assetId;
-      [systemAsset] = await tx
-        .select()
-        .from(fixedAssets)
-        .where(eq(fixedAssets.id, assetId))
-        .for("update")
-        .limit(1);
-      if (
-        !systemAsset ||
-        systemAsset.status === "disposed" ||
-        systemAsset.status === "retired"
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "الأصل المرتبط بطلب الدفع تغيّر أو لم يعد صالحاً",
-        });
-      }
-      if (systemRequest.kind === "ASSET_ACQUISITION") {
-        if (
-          Number(systemAsset.branchId) !== branchId ||
-          systemAsset.supplierId != null ||
-          systemAsset.isActive !== true ||
-          r.referenceNumber !== `ASSET-ACQ-${assetId}` ||
-          !money(systemAsset.purchaseValue).eq(amount)
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "طلب اقتناء الأصل لا يطابق الأصل الحالي",
-          });
-        }
-      } else {
-        if (
-          Number(systemAsset.branchId) !== branchId ||
-          systemAsset.isActive === false
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "الأصل غير نافذ أو انتقل من فرع طلب الصيانة",
-          });
-        }
-        const [maintenance] = await tx
+      if (systemRequestPreview?.kind === "EXCHANGE_IQD_DEPOSIT") {
+        [prelockedExchangeHouse] = await tx
           .select()
-          .from(assetMaintenance)
-          .where(eq(assetMaintenance.id, systemRequest.maintenanceId))
+          .from(exchangeHouses)
+          .where(eq(exchangeHouses.id, systemRequestPreview.exchangeHouseId))
           .for("update")
           .limit(1);
-        if (
-          !maintenance ||
-          Number(maintenance.assetId) !== assetId ||
-          r.referenceNumber !== `ASSET-MAINT-${systemRequest.maintenanceId}` ||
-          !money(maintenance.cost).eq(amount)
-        ) {
+        if (!prelockedExchangeHouse) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "طلب دفع الصيانة لا يطابق سجل الصيانة",
+            message: "الصيرفة المرتبطة بطلب الإيداع مفقودة",
           });
         }
       }
-    } else if (systemRequest?.kind === "EXCHANGE_IQD_DEPOSIT") {
-      [systemExchangeTxn] = await tx
-        .select()
-        .from(exchangeTransactions)
-        .where(eq(exchangeTransactions.id, systemRequest.transactionId))
-        .for("update")
-        .limit(1);
-      if (
-        !prelockedExchangeHouse ||
-        !systemExchangeTxn ||
-        Number(prelockedExchangeHouse.id) !== systemRequest.exchangeHouseId ||
-        Number(systemExchangeTxn.exchangeHouseId) !==
-          systemRequest.exchangeHouseId ||
-        Number(systemExchangeTxn.branchId) !== branchId ||
-        systemExchangeTxn.type !== "DEPOSIT" ||
-        systemExchangeTxn.currency !== "IQD" ||
-        systemExchangeTxn.status !== "PENDING_APPROVAL" ||
-        Number(systemExchangeTxn.receiptId) !== receiptId ||
-        Number(systemExchangeTxn.createdBy ?? 0) !== Number(r.createdBy ?? 0) ||
-        r.referenceNumber !==
-          `EXCHANGE-IQD-DEP-${systemRequest.transactionId}` ||
-        typeof systemRequest.expectedAmount !== "string" ||
-        !money(systemRequest.expectedAmount).eq(amount) ||
-        !money(systemExchangeTxn.iqdAmount).eq(amount)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "طلب إيداع الصيرفة تغيّر أو لم يعد صالحاً",
-        });
+      if (systemRequestPreview?.kind === "DIGITAL_WALLET_CASH_DEPOSIT") {
+        [prelockedDigitalWallet] = await tx
+          .select()
+          .from(digitalWallets)
+          .where(eq(digitalWallets.id, systemRequestPreview.walletId))
+          .for("update")
+          .limit(1);
+        if (!prelockedDigitalWallet) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "المحفظة المرتبطة بطلب الإيداع مفقودة",
+          });
+        }
       }
-    } else if (systemRequest?.kind === "DIGITAL_WALLET_CASH_DEPOSIT") {
-      [systemWalletTxn] = await tx
-        .select()
-        .from(digitalWalletTransactions)
-        .where(eq(digitalWalletTransactions.id, systemRequest.transactionId))
-        .for("update")
-        .limit(1);
-      if (
-        !prelockedDigitalWallet ||
-        !systemWalletTxn ||
-        Number(prelockedDigitalWallet.id) !== systemRequest.walletId ||
-        Number(prelockedDigitalWallet.branchId) !== branchId ||
-        prelockedDigitalWallet.isActive !== true ||
-        Number(systemWalletTxn.walletId) !== systemRequest.walletId ||
-        Number(systemWalletTxn.branchId) !== branchId ||
-        systemWalletTxn.type !== "DEPOSIT" ||
-        systemWalletTxn.direction !== "IN" ||
-        systemWalletTxn.status !== "PENDING_APPROVAL" ||
-        Number(systemWalletTxn.receiptId) !== receiptId ||
-        Number(systemWalletTxn.createdBy) !== Number(r.createdBy ?? 0) ||
-        r.referenceNumber !==
-          `DIGITAL-WALLET-DEP-${systemRequest.transactionId}` ||
-        typeof systemRequest.expectedAmount !== "string" ||
-        !money(systemRequest.expectedAmount).eq(amount) ||
-        !money(systemWalletTxn.amount).eq(amount)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "طلب إيداع المحفظة تغيّر أو لم يعد صالحاً",
-        });
-      }
-    }
-
-    // سند الصرف العادي يُموَّل من الخزينة دائماً. طلب إلغاء قبضٍ مادي هو الاستثناء
-    // التعويضي المحصور: يعكس دلو/وردية القبض الأصلية كي يتصافر الحساب نفسه.
-    let shiftId: number | null;
-    let cashBucket: "DRAWER" | "TREASURY" | null = null;
-    const approverActor: Actor = {
-      userId: actor.userId,
-      branchId: Number(approver.branchId ?? actor.branchId),
-      role: approver.role,
-      isOwner: true,
-    };
-    if (paymentMethod === "CASH" && direction === "OUT") {
-      if (cancellationOriginal) {
-        shiftId =
-          cancellationOriginal.shiftId != null
-            ? Number(cancellationOriginal.shiftId)
-            : null;
-        cashBucket = cancellationOriginal.cashBucket as "DRAWER" | "TREASURY";
-      } else {
-        shiftId = null;
-        cashBucket = "TREASURY";
-      }
-    } else if (paymentMethod === "CASH") {
-      const g =
-        preResolvedCashIn ??
-        (await shiftIdForCashTx(
-          tx,
-          approverActor,
-          branchId,
-          "اعتماد سند قبض نقدي",
-        ));
-      shiftId = g.shiftId;
-      cashBucket = g.cashBucket;
     } else {
-      shiftId = await openShiftIdTx(tx, approverActor.userId, branchId);
+      await lockCashSourceForUpdate(tx, source);
     }
-
-    let systemPurchaseOrder: typeof purchaseOrders.$inferSelect | null = null;
-    if (
-      systemRequest?.kind === "PURCHASE_SUPPLIER" ||
-      systemRequest?.kind === "PURCHASE_SHIPPING"
-    ) {
-      systemPurchaseOrder =
-        (
-          await tx
-            .select()
-            .from(purchaseOrders)
-            .where(eq(purchaseOrders.id, systemRequest.purchaseOrderId))
-            .for("update")
-            .limit(1)
-        )[0] ?? null;
-      if (
-        !systemPurchaseOrder ||
-        Number(systemPurchaseOrder.branchId) !== branchId
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "أمر الشراء المرتبط بطلب الدفع مفقود أو من فرع آخر",
-        });
-      }
-      const expectedReference =
-        systemRequest.kind === "PURCHASE_SUPPLIER"
-          ? `PO-PAY-${systemPurchaseOrder.poNumber}-${systemRequest.requestToken}`
-          : `SHIP-${systemPurchaseOrder.poNumber}-${systemRequest.requestToken}`;
-      if (!/^[0-9a-f]{16}$/i.test(systemRequest.requestToken)) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "رمز مصدر طلب دفع أمر الشراء غير صالح",
-        });
-      }
-      if (r.referenceNumber !== expectedReference) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "مرجع طلب دفع أمر الشراء غير متطابق",
-        });
-      }
-      if (
-        typeof systemRequest.expectedAmount !== "string" ||
-        !money(systemRequest.expectedAmount).eq(amount)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "مبلغ طلب دفع أمر الشراء لا يطابق مصدره",
-        });
-      }
-      if (
-        systemRequest.kind === "PURCHASE_SUPPLIER" &&
-        (effectivePartyType !== "SUPPLIER" ||
-          partyId == null ||
-          Number(systemPurchaseOrder.supplierId) !== partyId ||
-          typeof systemRequest.sourceTotal !== "string" ||
-          !money(systemPurchaseOrder.total).eq(
-            money(systemRequest.sourceTotal),
-          ) ||
-          (systemRequest.liabilityAccount === "CASH_CLEARING" &&
-            systemPurchaseOrder.settlementType !== "CASH"))
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "مورد طلب الدفع لا يطابق أمر الشراء",
-        });
-      }
-      if (systemRequest.kind === "PURCHASE_SUPPLIER") {
-        const expectedCashClearing =
-          systemPurchaseOrder.settlementType === "CASH" &&
-          (await purchaseCashSettlementUsesClearingTx(
-            tx,
-            Number(systemPurchaseOrder.id),
-          ));
-        if (
-          (systemRequest.liabilityAccount === "CASH_CLEARING") !==
-          expectedCashClearing
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message:
-              "حساب تسوية طلب دفع أمر الشراء لا يطابق قيده المثبت",
-          });
-        }
-      }
-      if (
-        systemRequest.kind === "PURCHASE_SHIPPING" &&
-        (typeof systemRequest.sourceShippingTotal !== "string" ||
-          !money(systemPurchaseOrder.shippingCost)
-            .plus(money(systemPurchaseOrder.customsCost))
-            .eq(money(systemRequest.sourceShippingTotal)))
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "تكلفة الشحن المرتبطة بطلب الدفع تغيّرت",
-        });
-      }
-      if (systemRequest.kind === "PURCHASE_SHIPPING") {
-        const declaredPaymentReference =
-          systemRequest.paymentReference?.trim() || null;
-        const actualPaymentReference =
-          paymentMethod === "CARD"
-            ? r.cardLastFour?.trim() || null
-            : paymentMethod === "TRANSFER" || paymentMethod === "CHECK"
-              ? r.checkNumber?.trim() || null
-              : null;
-        const referenceRequired =
-          paymentMethod === "CARD" ||
-          paymentMethod === "TRANSFER" ||
-          paymentMethod === "CHECK";
-        if (
-          (referenceRequired &&
-            (!declaredPaymentReference ||
-              actualPaymentReference !== declaredPaymentReference)) ||
-          (!referenceRequired && declaredPaymentReference != null) ||
-          (paymentMethod === "CARD" &&
-            !/^\d{4}$/.test(declaredPaymentReference ?? "")) ||
-          (paymentMethod !== "CARD" && r.cardLastFour != null) ||
-          (paymentMethod !== "TRANSFER" &&
-            paymentMethod !== "CHECK" &&
-            r.checkNumber != null)
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message:
-              "مرجع أداة دفع الشحن لا يطابق الطلب الأصلي؛ أوقف الاعتماد وراجع طريقة الدفع",
-          });
-        }
-      }
-      if (
-        systemRequest.kind === "PURCHASE_SUPPLIER" &&
-        money(systemPurchaseOrder.paidAmount)
-          .plus(amount)
-          .gt(money(systemPurchaseOrder.total))
-      ) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "دفعة المورد المعلّقة تتجاوز المتبقي على أمر الشراء",
-        });
-      }
-      if (systemRequest.kind === "PURCHASE_SUPPLIER") {
-        const payableBalance = await purchaseOrderPayableBalanceTx(
-          tx,
-          Number(systemPurchaseOrder.id),
-        );
-        if (amount.gt(payableBalance)) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `الرصيد الدفتري المستحق على أمر الشراء (${payableBalance.toFixed(2)}) أقل من طلب الدفع — راجع المرتجعات والمدفوعات اللاحقة`,
-          });
-        }
-      }
-    }
-
-    const purchaseCashClearing =
-      (systemRequest?.kind === "PURCHASE_SUPPLIER" &&
-        systemRequest.liabilityAccount === "CASH_CLEARING") ||
-      (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER" &&
-        cancellationSourceRequest.liabilityAccount === "CASH_CLEARING");
-
-    // كل دفعة مورد تعيد فحص AP الحالي تحت القفل؛ مرتجع أو دفعة أخرى بين الطلب
-    // والاعتماد قد تخفض المستحق لأي مورد، لا المودِع فقط.
-    if (
-      effectivePartyType === "SUPPLIER" &&
-      partyId != null &&
-      direction === "OUT" &&
-      systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
-      !purchaseCashClearing
-    ) {
-      const [sup] = await tx
-        .select({ kind: suppliers.supplierKind, bal: suppliers.currentBalance })
-        .from(suppliers)
-        .where(eq(suppliers.id, partyId))
-        .for("update")
-        .limit(1);
-      if (!sup) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "المورد المرتبط بسند الصرف مفقود",
-        });
-      }
-      if (money(sup.bal ?? "0").lt(amount)) {
-        const label =
-          sup.kind === "CONSIGNOR" ? "مستحقّ المودِع" : "الرصيد المستحق للمورد";
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `${label} (${money(sup.bal ?? "0").toFixed(2)}) أقلّ من مبلغ الصرف — أعد الطلب بعد مراجعة الكشف`,
-        });
-      }
-    }
-
-    if (direction === "OUT" && paymentMethod === "CASH" && cashBucket != null) {
-      if (cashBucket === "TREASURY") {
-        if (!externalTreasuryApproval) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "إثبات اعتماد مالك الصرف الخارجي مفقود",
-          });
-        }
-        await assertApprovedTreasuryOutAvailable(
-          tx,
-          {
-            branchId,
-            amount,
-            operation: cancellationOriginal
-              ? "اعتماد إلغاء سند قبض نقدي"
-              : "اعتماد سند الصرف النقدي",
-          },
-          externalTreasuryApproval,
-        );
-      } else {
-        await assertCashOutAvailable(tx, {
-          branchId,
-          cashBucket,
-          shiftId,
-          amount,
-          operation: "اعتماد إلغاء سند قبض من درج الوردية",
-        });
-      }
-    } else if (direction === "OUT") {
-      assertNonPhysicalOutReceipt({
-        classification: "NON_CASH_METHOD",
-        paymentMethod,
-        cashBucket,
-        operation: "اعتماد سند صرف غير نقدي",
-      });
-    }
-
-    const isAccrualCorrectionRefundMovement = systemRequest?.kind === "ACCRUAL_CORRECTION_REFUND";
-    const specializedAssetMovement =
-      systemRequest?.kind === "EXCHANGE_IQD_DEPOSIT" ||
-      systemRequest?.kind === "DIGITAL_WALLET_CASH_DEPOSIT" ||
-      systemRequest?.kind === "TERMINATION_SETTLEMENT" ||
-      isAccrualCorrectionRefundMovement ||
-      systemRequest?.kind === "PURCHASE_SUPPLIER_USD" ||
-      cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD";
-    const terminationSettlementPlan =
-      systemRequest?.kind === "TERMINATION_SETTLEMENT"
-        ? {
-            terminationId: systemRequest.terminationId,
-            employeeId: systemRequest.employeeId,
-            attempt: systemRequest.attempt,
-            originReturnEventId: systemRequest.originReturnEventId,
-            settlementSnapshotHash: systemRequest.settlementSnapshotHash,
-            obligationId: systemRequest.obligationId,
-            paymentMethod: terminationVoucherPaymentMethod(
-              direction,
-              paymentMethod,
-            ),
-          }
-        : null;
-    const standardPosting = specializedAssetMovement
-      ? null
-      : approvedVoucherPostingPlan({
-          direction,
-          paymentMethod,
-          cashBucket,
-          partyType: effectivePartyType,
-          amount,
-          referenceNumber: postingReferenceNumber,
-          systemKind:
-            cancellationSourceRequest?.kind ?? systemRequest?.kind ?? null,
-          categoryPostingRole,
-          categoryReversalOfDirection,
-          originalDirectionForCancellation:
-            cancellationOriginal?.direction === "IN" ||
-            cancellationOriginal?.direction === "OUT"
-              ? cancellationOriginal.direction
-              : null,
-          purchaseCashClearing,
-        });
-    if (!specializedAssetMovement && !standardPosting) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message:
-          "تعذر تحديد الحساب المقابل للسند قبل الاعتماد؛ عيّن تصنيفاً محاسبياً موثوقاً ثم أعد المحاولة.",
-      });
-    }
-
-    const approvedAt = new Date();
-    const voucherDate = terminationSettlementPlan
-      ? baghdadToday(approvedAt)
-      : r.voucherDate
-        ? toDateStr(new Date(r.voucherDate))
-        : toDateStr(approvedAt);
-
-    await tx
-      .update(receipts)
-      .set({
-        status: "COMPLETED",
-        approvalStatus: "APPROVED",
-        approvedBy: actor.userId,
-        approvedAt,
-        shiftId,
-        cashBucket,
-        ...(terminationSettlementPlan
-          ? { voucherDate: new Date(`${voucherDate}T00:00:00.000Z`) }
-          : {}),
-        ...(cancellationOriginal
-          ? { voucherCategoryId: cancellationOriginal.voucherCategoryId }
-          : {}),
-      })
-      .where(eq(receipts.id, receiptId));
-
-    if (terminationSettlementPlan) {
-      await settleTerminationVoucherTx(tx, {
-        terminationId: terminationSettlementPlan.terminationId,
-        employeeId: terminationSettlementPlan.employeeId,
-        branchId,
-        receiptId,
-        amount,
-        paymentMethod: terminationSettlementPlan.paymentMethod,
-        actorUserId: actor.userId,
-        occurredAt: approvedAt,
-        attempt: terminationSettlementPlan.attempt,
-        originReturnEventId: terminationSettlementPlan.originReturnEventId,
-        settlementSnapshotHash:
-          terminationSettlementPlan.settlementSnapshotHash,
-        expectedObligationId: terminationSettlementPlan.obligationId,
-      });
-    }
-
-    if (systemRequest?.kind === "ACCRUAL_CORRECTION_REFUND") {
-      const [approvedReceipt] = await tx
-        .select()
-        .from(receipts)
-        .where(eq(receipts.id, receiptId))
-        .limit(1);
-      if (!approvedReceipt) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "سند قبض استرداد التصحيح مفقود بعد الاعتماد",
-        });
-      }
-      await settleAccrualCorrectionRefundTx(tx, {
-        receipt: approvedReceipt,
-        request: systemRequest,
-        approver: approverActor,
-        occurredAt: approvedAt,
-      });
-    }
-
-    if (systemRequest?.kind === "PURCHASE_SUPPLIER_USD") {
-      await materializePurchaseUsdSettlementTx(tx, {
-        receipt: r,
-        request: systemRequest,
-        approverUserId: actor.userId,
-      });
-    }
-
-    if (
-      cancellationOriginal &&
-      cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD"
-    ) {
-      await reversePurchaseUsdSettlementTx(tx, {
-        originalReceipt: cancellationOriginal,
-        cancellationReceipt: r,
-        request: cancellationSourceRequest,
-        approverUserId: actor.userId,
-      });
-    }
-
-    if (lockedEmployeeAdvanceCancellation) {
-      await cancelLockedEmployeeAdvanceTx(
+  } else if (cashInPreview) {
+    preResolvedCashIn =
+      preResolvedCashIn ??
+      (await shiftIdForCashTx(
         tx,
-        lockedEmployeeAdvanceCancellation,
-      );
-    }
-
-    if (cancellationOriginal) {
-      await tx
-        .update(receipts)
-        .set({ status: "REVERSED" })
-        .where(eq(receipts.id, Number(cancellationOriginal.id)));
-    }
-
-    if (systemRequest?.kind === "ASSET_ACQUISITION" && systemAsset) {
-      await tx
-        .update(fixedAssets)
-        .set({ isActive: true })
-        .where(eq(fixedAssets.id, systemRequest.assetId));
-    }
-
-    if (
-      systemRequest?.kind === "EXCHANGE_IQD_DEPOSIT" &&
-      systemExchangeTxn &&
-      prelockedExchangeHouse
-    ) {
-      const nextIqd = money(prelockedExchangeHouse.balanceIqd).plus(amount);
-      await tx
-        .update(exchangeHouses)
-        .set({ balanceIqd: toDbMoney(nextIqd) })
-        .where(eq(exchangeHouses.id, systemRequest.exchangeHouseId));
-      await tx
-        .update(exchangeTransactions)
-        .set({
-          status: "ACTIVE",
-          balanceIqdAfter: toDbMoney(nextIqd),
-          balanceUsdAfter: toDbMoney(money(prelockedExchangeHouse.balanceUsd)),
-        })
-        .where(eq(exchangeTransactions.id, systemRequest.transactionId));
-      const exchangeDepositComponents = signedSourceComponents(
-        "EXCHANGE_WALLET_IQD",
-        "TREASURY_CASH",
-        amount,
-      );
-      await postEntry(tx, {
-        entryType: "EXCHANGE_DEPOSIT",
-        branchId,
-        exchangeHouseId: systemRequest.exchangeHouseId,
-        receiptId,
-        amount,
-        revenue: money(0),
-        cost: money(0),
-        profit: money(0),
-        postingIntent: createPostingIntent(
-          "EXCHANGE_DEPOSIT_IQD",
-          "EXCHANGE_DEPOSIT",
-          signedPostingLines("EXCHANGE_WALLET_IQD", "TREASURY_CASH", amount),
-          exchangeDepositComponents,
-        ),
-        postingSourceComponents: exchangeDepositComponents,
-        dedupeKey: `EXDEP:${systemExchangeTxn.txnNumber}`,
-        notes: systemExchangeTxn.notes ?? undefined,
-        createdBy: actor.userId,
-      });
-      await postExchangeControlReclassification(tx, {
-        exchangeHouseId: systemRequest.exchangeHouseId,
-        currency: "IQD",
-        beforeSignedIqd: prelockedExchangeHouse.balanceIqd,
-        afterSignedIqd: nextIqd,
-        sourceKey: systemExchangeTxn.txnNumber,
-        notes: `إعادة تصنيف رصيد بيت الصرافة بعد اعتماد إيداع ${systemExchangeTxn.txnNumber}`,
-        createdBy: actor.userId,
-      });
-    }
-
-    if (
-      systemRequest?.kind === "DIGITAL_WALLET_CASH_DEPOSIT" &&
-      systemWalletTxn &&
-      prelockedDigitalWallet
-    ) {
-      const next = money(prelockedDigitalWallet.currentBalance).plus(amount);
-      await tx
-        .update(digitalWallets)
-        .set({ currentBalance: toDbMoney(next) })
-        .where(eq(digitalWallets.id, systemRequest.walletId));
-      await tx
-        .update(digitalWalletTransactions)
-        .set({
-          status: "ACTIVE",
-          balanceAfter: toDbMoney(next),
-          approvedBy: actor.userId,
-          approvedAt: new Date(),
-        })
-        .where(eq(digitalWalletTransactions.id, systemRequest.transactionId));
-      const digitalDepositComponents = signedSourceComponents(
-        "DIGITAL_WALLET",
-        "TREASURY_CASH",
-        amount,
-      );
-      await postEntry(tx, {
-        entryType: "DIGITAL_WALLET_DEPOSIT",
-        branchId,
-        receiptId,
-        digitalWalletId: systemRequest.walletId,
-        amount,
-        revenue: money(0),
-        cost: money(0),
-        profit: money(0),
-        postingIntent: createPostingIntent(
-          "DIGITAL_WALLET_DEPOSIT_ASSET",
-          "DIGITAL_WALLET_DEPOSIT",
-          signedPostingLines("DIGITAL_WALLET", "TREASURY_CASH", amount),
-          digitalDepositComponents,
-        ),
-        postingSourceComponents: digitalDepositComponents,
-        dedupeKey: `DIGITAL:WDEP:${systemRequest.transactionId}`,
-        notes: "إيداع رصيد محفظة كروت بعد اعتماد المالك",
-        createdBy: actor.userId,
-      });
-    }
-
-    // الأثر المالي:
-    if (standardPosting) {
-      const settlesRecognizedAccrual =
-        systemRequest?.kind === "PURCHASE_SHIPPING" ||
-        systemRequest?.kind === "ASSET_MAINTENANCE" ||
-        systemRequest?.kind === "ASSET_ACQUISITION";
-      await postEntry(tx, {
-        entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT",
-        branchId,
-        receiptId,
-        customerId: effectivePartyType === "CUSTOMER" ? partyId : null,
-        supplierId: effectivePartyType === "SUPPLIER" ? partyId : null,
-        deliveryPartyId:
-          effectivePartyType === "DELIVERY_PARTY" && partyId != null
-            ? partyId
-            : null,
-        purchaseOrderId: systemPurchaseOrder
-          ? Number(systemPurchaseOrder.id)
-          : cancellationPurchaseOrder
-            ? Number(cancellationPurchaseOrder.id)
-            : null,
-        purchaseLiabilityAccount:
-          systemRequest?.kind === "PURCHASE_SUPPLIER" ||
-          cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER"
-            ? purchaseCashClearing
-              ? "CASH_CLEARING"
-              : "AP"
-            : null,
-        amount,
-        paymentMethod,
-        postingIntent: standardPosting.intent,
-        postingSourceComponents: standardPosting.sourceComponents,
-        dedupeKey:
-          systemRequest?.kind === "ASSET_ACQUISITION"
-            ? `ASSET_ACQ:${systemRequest.assetId}`
-            : undefined,
-        notes: cancellationOriginal
-          ? `إلغاء سند ${cancellationOriginal.voucherNumber}`
-          : systemRequest?.kind === "ASSET_ACQUISITION"
-            ? `اقتناء أصل نقدي ${systemAsset?.code ?? systemRequest.assetId}`
-            : undefined,
-        // الاعتراف يعود لتاريخ الاستلام/الصيانة/الحيازة، أمّا التسوية النقدية
-        // فهي واقعة مستقلة في تاريخ اعتمادها الفعلي ولا تُرحّل إلى شهر الطلب.
-        entryDate: settlesRecognizedAccrual
-          ? new Date()
-          : new Date(
-              r.voucherDate ? toDateStr(new Date(r.voucherDate)) : toDateStr(),
-            ),
-      });
-    }
-    if (
-      systemAccrualObligation &&
-      isAccrualSettlementSystemRequest(systemRequest)
-    ) {
-      const settlementEntries = await tx
-        .select({
-          id: accountingEntries.id,
-          entryType: accountingEntries.entryType,
-          branchId: accountingEntries.branchId,
-          amount: accountingEntries.amount,
-        })
-        .from(accountingEntries)
-        .where(eq(accountingEntries.receiptId, receiptId))
-        .for("update")
-        .limit(2);
-      const settlementEntry = settlementEntries[0];
-      if (
-        settlementEntries.length !== 1 ||
-        !settlementEntry ||
-        settlementEntry.entryType !== "PAYMENT_OUT" ||
-        Number(settlementEntry.branchId) !== branchId ||
-        !money(settlementEntry.amount).eq(amount)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "قيد تسوية الاستحقاق غير وحيد أو لا يطابق السند المعتمد",
-        });
-      }
-      await transitionAccrualObligationTx(tx, {
-        obligationId: Number(systemAccrualObligation.id),
-        expectedStatus: "PAYMENT_PENDING",
-        nextStatus: "PAID",
-        eventType: "PAYMENT_SETTLED",
-        actorId: Number(r.createdBy),
-        reviewerId: actor.userId,
-        receiptId,
-        accountingEntryId: Number(settlementEntry.id),
-        evidenceReference: systemRequest.sourceEvidenceReference,
-        dedupeKey: `ACCRUAL:PAYMENT_SETTLED:${systemAccrualObligation.id}:${receiptId}`,
-      });
-    }
-    // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
-    // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
-    // يعمل للحالتين، وtoDateStr = toISOString.slice(0,10) مطابق لدلالة assertPeriodOpen.
-    if (effectivePartyType === "CUSTOMER" && partyId) {
-      // تخصيص السند لفاتورته عند **الاعتماد** لا الطلب (الأثر المالي كلّه هنا). حالةُ الفاتورة
-      // تُعاد فحصها داخل allocateVoucherToInvoiceTx تحت القفل: بين الطلب والاعتماد قد تُلغى
-      // الفاتورة أو تُصحَّح فيصير تخصيص المال لها نسبةً لمستندٍ ميت.
-      //
-      // ⚠️ **يسبق تعديل رصيد العميل** — مرآةُ `voucher/create.ts` حرفياً (٣١/٨/٢٦): التخصيص
-      // يقفل صفّ الفاتورة والتعديلُ يقفل صفّ العميل ضمنياً، فالترتيب القانونيّ «فاتورة ← عميل»
-      // كما في sale/payment وdelivery/dispatch وreturnService. **الإنشاء والاعتماد يجب أن
-      // يتحرّكا معاً**: تقويمُ أحدهما وحده يصنع ABBA بينهما — محاسبٌ يعتمد سنداً معلَّقاً على
-      // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
-      // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
-      if (r.invoiceId != null) {
-        await allocateVoucherToInvoiceTx(tx, {
-          invoiceId: Number(r.invoiceId),
-          amount,
-          direction,
-          paymentMethod,
-        });
-      }
-      await adjustCustomerBalance(
-        tx,
-        partyId,
-        direction === "IN" ? amount.neg() : amount,
-      );
-      // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
-      // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
-      // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
-      // شرطٌ صريح: القبضُ (IN) على العميل ليس ردّاً.
-      if (
-        direction === "OUT" &&
-        r.invoiceId != null &&
-        typeof r.internalNote === "string" &&
-        r.internalNote.startsWith("SALE_CUSTOMER_REFUND:")
-      ) {
-        await closeDeferredSaleRefundEffectsTx(
-          tx,
-          { invoiceId: Number(r.invoiceId), receiptId, amount, reason: `اعتماد سند صرف استرداد ${r.voucherNumber}` },
-          actor,
-        );
-      }
-      // تسوية تلقائية لفواتير العميل المفتوحة بنظام FIFO إذا لم يكن السند مخصصاً لفاتورة معينة
-      if (direction === "IN" && r.invoiceId == null) {
-        await autoSettleCustomerAccountTx(tx, partyId, actor);
-      }
-    } else if (
-      effectivePartyType === "SUPPLIER" &&
-      partyId &&
-      systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
-      cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
-      !purchaseCashClearing
-    ) {
-      await adjustSupplierBalance(
-        tx,
-        partyId,
-        direction === "OUT" ? amount.neg() : amount,
-      );
-      // تسوية تلقائية لأوامر شراء المورد المفتوحة بنظام FIFO عند سداد عام للمورد
-      if (direction === "OUT" && systemRequest?.kind !== "PURCHASE_SUPPLIER") {
-        await autoSettleSupplierAccountTx(tx, partyId, actor);
-      }
-    } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
-      await adjustDeliveryBalance(
-        tx,
-        partyId,
-        direction === "IN" ? amount.neg() : amount,
-      );
-      if (direction === "IN") {
-        await appendDeliveryLedgerEntry(tx, {
-          eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
-          partyId,
-          branchId,
-          entryType: "COD_REMITTED",
-          amount: toDbMoney(amount),
-          notes: r.description,
-          actorUserId: actor.userId,
-          occurredAt: approvedAt,
-        });
-      }
-    }
-    if (systemRequest?.kind === "PURCHASE_SUPPLIER" && systemPurchaseOrder) {
-      await tx
-        .update(purchaseOrders)
-        .set({
-          paidAmount: toDbMoney(
-            money(systemPurchaseOrder.paidAmount).plus(amount),
-          ),
-        })
-        .where(eq(purchaseOrders.id, Number(systemPurchaseOrder.id)));
-    } else if (
-      cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER" &&
-      cancellationPurchaseOrder
-    ) {
-      await tx
-        .update(purchaseOrders)
-        .set({
-          paidAmount: toDbMoney(
-            money(cancellationPurchaseOrder.paidAmount).minus(amount),
-          ),
-        })
-        .where(eq(purchaseOrders.id, Number(cancellationPurchaseOrder.id)));
-    }
-
-    if (systemRequest?.kind === "EMPLOYEE_ADVANCE") {
-      await activateAdvanceForApprovedVoucherTx(
-        tx,
-        {
-          id: receiptId,
-          branchId: r.branchId != null ? Number(r.branchId) : null,
-          direction,
-          amount: String(r.amount),
-          paymentMethod,
-          partyType: r.partyType,
-          referenceNumber: r.referenceNumber,
-          createdBy: r.createdBy != null ? Number(r.createdBy) : null,
-        },
-        systemRequest,
-      );
-    }
-
-    // البَصمة بعد إكمال كل التَغييرات.
-    const hash = computeSignature({
-      id: receiptId,
-      amount: toDbMoney(amount),
-      partyType: partyType ?? "OTHER",
-      partyId,
-      paymentMethod,
-      voucherDate: String(voucherDate).slice(0, 10),
-      voucherNumber: String(r.voucherNumber),
-      createdBy: r.createdBy != null ? Number(r.createdBy) : 0,
-      approvedBy: actor.userId,
-      branchId,
+        previewApproverActor,
+        Number(preview.branchId),
+        "اعتماد سند قبض نقدي",
+      ));
+    await lockCashSourceForUpdate(tx, {
+      branchId: Number(preview.branchId),
+      cashBucket: preResolvedCashIn.cashBucket,
+      shiftId: preResolvedCashIn.shiftId,
     });
-    await tx
-      .update(receipts)
-      .set({ signatureHash: hash })
-      .where(eq(receipts.id, receiptId));
-
+  }
+  // قفل مشاركة يكفي لتثبيت isActive/isOwner حتى نهاية المعاملة، ويبقى متوافقاً
+  // مع FK createdBy في كتّاب النقد الآخرين. الترتيب الحاكم للنقد: source → user SHARE → receipt.
+  const [approver] = await tx
+    .select()
+    .from(users)
+    .where(eq(users.id, actor.userId))
+    .for("share")
+    .limit(1);
+  if (!approver?.isActive || !approver.isOwner) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "اعتماد السندات محصور بحساب مالك نشط",
+    });
+  }
+  if (
+    approver.role !== approverPreview.role ||
+    Number(approver.branchId ?? actor.branchId) !==
+      Number(approverPreview.branchId ?? actor.branchId)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تغيّرت صلاحيات المالك أثناء الاعتماد — أعد المحاولة",
+    });
+  }
+  const receiptIdsToLock = Array.from(
+    new Set(
+      systemRequestPreview?.kind === "VOUCHER_CANCELLATION"
+        ? [
+            systemRequestPreview.originalReceiptId,
+            ...cancellationAttemptIdsPreview,
+          ]
+        : [receiptId],
+    ),
+  ).sort((left, right) => left - right);
+  const lockedReceiptRows = await tx
+    .select()
+    .from(receipts)
+    .where(inArray(receipts.id, receiptIdsToLock))
+    .orderBy(asc(receipts.id))
+    .for("update");
+  const r = lockedReceiptRows.find((row) => Number(row.id) === receiptId);
+  if (!r || r.voucherNumber == null) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+  }
+  if (systemRequestPreview?.kind === "VOUCHER_CANCELLATION") {
+    const lockedIds = lockedReceiptRows.map((row) => Number(row.id));
+    const currentAttemptIds = (
+      await tx
+        .select({ id: receipts.id })
+        .from(receipts)
+        .where(eq(receipts.referenceNumber, String(preview.referenceNumber)))
+        .orderBy(asc(receipts.id))
+    ).map((row) => Number(row.id));
+    if (
+      lockedIds.length !== receiptIdsToLock.length ||
+      JSON.stringify(currentAttemptIds) !==
+        JSON.stringify(cancellationAttemptIdsPreview)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "تغيّرت سلسلة محاولات إلغاء السند أثناء الاعتماد؛ أعد المحاولة على أحدث حالة",
+      });
+    }
+  }
+  if (
+    (cashOutPreview || cashInPreview) &&
+    (r.direction !== preview.direction ||
+      r.paymentMethod !== "CASH" ||
+      Number(r.branchId) !== Number(preview.branchId))
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تغيّر مصدر السند النقدي أثناء الاعتماد — أعد المحاولة",
+    });
+  }
+  // بالفعل لا بالإجراء: إجراءٌ واحد (`approveVoucher`) يحمل ثلاثةَ تصنيفاتٍ متمايزة —
+  // `OUT` خروجُ مال · `IN` مع إلغاءِ سندٍ أو استردادِ تصحيحِ استحقاق محوُ أثرٍ منشور ·
+  // و`IN` العاديّ لا مالَ يخرج ولا أثرَ يُمحى ⇒ `null` **وضابطُه مُستبقًى بقرار المالك**
+  // (٢/٩/٢٦) لأنّه البوّابةُ الوحيدة على نقدٍ مجهول المصدر يدخل الخزينة. التفصيل ودليلُه
+  // في `shared/approvalTriggers.ts`.
+  //
+  // ⭐ **قرار المالك (٣/٩/٢٦) يُنفَّذ هنا مباشرةً — لا عبر علَم `ownerOnlyApproval`:** ذلك
+  // العلَم مُقفَلٌ عمداً (`rolloutFlags.ts`) حتى تكتمل ثلاثةُ أشياء لا صلة لواحدٍ منها بهذا
+  // الفعل (سجلّ solo-execution · مستدعي `planApproval` · مساري تسوية مخزون/تكلفة). فصلُ
+  // المهام «غير صانع الطلب» على سندٍ يُخرج مالاً أو يمحو أثراً منشوراً أُلغي **بلا انتظار
+  // العلَم**، بنفس تصنيف `voucherApprovalTrigger`/`voucherApprovalRetainsLegacy` أعلاه
+  // حرفياً — فحين يكتمل العلَم يصير هذا الشرط زائداً بلا أثر (النتيجتان متطابقتان دائماً).
+  // والمُستبقى بقرار ٢/٩ (سند قبضٍ عاديّ) لم يمسّه قرار ٣/٩ ويبقى كما هو.
+  //
+  // التصنيفُ يُشتقّ من `systemRequestPreview` لا من `systemRequest` كي يبقى الفحصُ في
+  // موضعه الأصليّ بلا إعادة ترتيب؛ وتطابُقُهما مفروضٌ في السطور التالية مباشرةً، وأيُّ
+  // اختلافٍ يرمي `CONFLICT` فيتراجع كلُّ شيء — فلا مسارَ يمرّ بتصنيفٍ منحرف.
+  assertApprover({
+    actor: await resolveApprovalActor(tx, actor),
+    trigger: voucherApprovalTrigger(
+      r.direction,
+      systemRequestPreview?.kind ?? null,
+    ),
+    retainLegacy: voucherApprovalRetainsLegacy(
+      r.direction,
+      systemRequestPreview?.kind ?? null,
+    ),
+    subject: `سند ${r.voucherNumber}`,
+    legacy: () => {
+      if (
+        voucherApprovalRetainsLegacy(
+          r.direction,
+          systemRequestPreview?.kind ?? null,
+        ) &&
+        r.createdBy != null &&
+        Number(r.createdBy) === actor.userId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
+        });
+      }
+    },
+  });
+  const systemRequest = parseSystemPaymentRequest(r.internalNote);
+  if (JSON.stringify(systemRequest) !== JSON.stringify(systemRequestPreview)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تغيّر ارتباط الطلب النظامي أثناء الاعتماد — أعد المحاولة",
+    });
+  }
+  if (r.approvalStatus === "APPROVED") {
+    if (!r.signatureHash)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "السند معتمد بلا بصمة سلامة — راجع التدقيق",
+      });
     return {
       receiptId,
       voucherNumber: String(r.voucherNumber),
       approvalStatus: "APPROVED" as const,
-      signatureHash: hash,
-      replayed: false,
+      signatureHash: String(r.signatureHash),
+      replayed: true,
     };
+  }
+  if (r.approvalStatus === "REJECTED") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "السند مرفوض — لا يمكن اعتماده",
+    });
+  }
+  if (r.status === "REVERSED") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "السند ملغى — لا يمكن اعتماده",
+    });
+  }
+  if (r.approvalStatus !== "PENDING_APPROVAL" || r.status !== "PENDING") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "السند ليس طلباً معلّقاً صالحاً للاعتماد",
+    });
+  }
+  let cancellationOriginal: typeof r | null = null;
+  let cancellationSourceRequest: SystemPaymentRequest | null = null;
+  let cancellationPurchaseOrder: typeof purchaseOrders.$inferSelect | null =
+    null;
+  if (systemRequest?.kind === "VOUCHER_CANCELLATION") {
+    cancellationOriginal =
+      lockedReceiptRows.find(
+        (row) => Number(row.id) === systemRequest.originalReceiptId,
+      ) ?? null;
+    if (
+      !cancellationOriginal ||
+      (cancellationOriginal.direction !== "IN" &&
+        cancellationOriginal.direction !== "OUT") ||
+      r.direction !==
+        (cancellationOriginal.direction === "IN" ? "OUT" : "IN") ||
+      cancellationOriginal.direction !== systemRequest.originalDirection ||
+      cancellationOriginal.paymentMethod !== r.paymentMethod ||
+      cancellationOriginal.paymentMethod !==
+        systemRequest.originalPaymentMethod ||
+      cancellationOriginal.approvalStatus !== "APPROVED" ||
+      cancellationOriginal.status !== "COMPLETED" ||
+      cancellationOriginal.voucherNumber == null ||
+      (cancellationOriginal.paymentMethod === "CASH" &&
+        cancellationOriginal.cashBucket == null) ||
+      Number(cancellationOriginal.branchId) !== Number(r.branchId) ||
+      money(cancellationOriginal.amount).toFixed(2) !==
+        money(r.amount).toFixed(2) ||
+      (cancellationOriginal.partyType ?? null) !== (r.partyType ?? null) ||
+      Number(cancellationOriginal.partyId ?? 0) !== Number(r.partyId ?? 0) ||
+      (r.counterpartyName?.trim() || null) !==
+        (cancellationOriginal.partyType === "OTHER"
+          ? cancellationOriginal.counterpartyName?.trim() ||
+            `إلغاء سند ${cancellationOriginal.voucherNumber}`
+          : null) ||
+      Number(cancellationOriginal.createdBy ?? 0) !==
+        Number(systemRequest.originalCreatorId ?? 0) ||
+      (cancellationOriginal.referenceNumber?.trim() || null) !==
+        systemRequest.originalReferenceNumber ||
+      (cancellationOriginal.checkNumber?.trim() || null) !==
+        systemRequest.originalCheckNumber ||
+      (cancellationOriginal.cardLastFour?.trim() || null) !==
+        systemRequest.originalCardLastFour ||
+      Number(cancellationOriginal.voucherCategoryId ?? 0) !==
+        Number(systemRequest.originalCategoryId ?? 0) ||
+      Number(r.voucherCategoryId ?? 0) !==
+        Number(cancellationOriginal.voucherCategoryId ?? 0) ||
+      (r.checkNumber?.trim() || null) !==
+        (cancellationOriginal.checkNumber?.trim() || null) ||
+      (r.cardLastFour?.trim() || null) !==
+        (cancellationOriginal.cardLastFour?.trim() || null)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "سند القبض الأصلي تغيّر أو لم يعد صالحاً للإلغاء",
+      });
+    }
+    // إلغاءُ السند مُبوَّبٌ في الحالتين معاً فلا يبلغه استبقاءٌ (`voucherApprovalRetainsLegacy`
+    // تُعيد `false` دائماً هنا): عكسُ سندِ قبضٍ يُنتج إيصالاً `OUT` (خروجُ مال)، وعكسُ سندِ
+    // صرفٍ يُنتج `IN` على مستندٍ منشور (محوُ أثر). ⭐ قرار المالك (٣/٩/٢٦، الشرح أعلى الدالّة):
+    // فصلُ المهام الثاني — منشئُ **القبض الأصليّ** لا يعتمد إلغاءه — أُلغي هنا مباشرةً بلا
+    // انتظار علَم `ownerOnlyApproval`.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: voucherApprovalTrigger(r.direction, systemRequest.kind),
+      retainLegacy: voucherApprovalRetainsLegacy(
+        r.direction,
+        systemRequest.kind,
+      ),
+      subject: `إلغاء سند ${cancellationOriginal.voucherNumber}`,
+      legacy: () => {
+        if (
+          voucherApprovalRetainsLegacy(r.direction, systemRequest.kind) &&
+          cancellationOriginal!.createdBy != null &&
+          Number(cancellationOriginal!.createdBy) === actor.userId
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا يجوز لمن أنشأ القبض اعتماد إلغائه — يلزم مالك آخر",
+          });
+        }
+      },
+    });
+    cancellationSourceRequest = parseSystemPaymentRequest(
+      cancellationOriginal.internalNote,
+    );
+    if (
+      (isSystemPaymentReference(cancellationOriginal.referenceNumber) ||
+        hasSystemPaymentRequestEnvelope(cancellationOriginal.internalNote)) &&
+      (!cancellationSourceRequest ||
+        !isCanonicalSystemPaymentRequest(
+          cancellationSourceRequest,
+          cancellationOriginal.referenceNumber,
+        ))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "مرجع السند الأصلي نظامي بلا payload موثوق — أوقف الإلغاء وراجع التدقيق",
+      });
+    }
+    const materializedEntries = await tx
+      .select({
+        id: accountingEntries.id,
+        entryType: accountingEntries.entryType,
+        amount: accountingEntries.amount,
+        customerId: accountingEntries.customerId,
+        supplierId: accountingEntries.supplierId,
+        purchaseOrderId: accountingEntries.purchaseOrderId,
+      })
+      .from(accountingEntries)
+      .where(eq(accountingEntries.receiptId, Number(cancellationOriginal.id)))
+      .for("update")
+      .limit(
+        cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD" ? 4 : 2,
+      );
+    const materialized = materializedEntries[0];
+    if (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD") {
+      await assertPurchaseUsdSettlementMaterializedTx(
+        tx,
+        cancellationOriginal,
+        cancellationSourceRequest,
+      );
+    } else if (
+      materializedEntries.length !== 1 ||
+      !materialized ||
+      materialized.entryType !==
+        (cancellationOriginal.direction === "IN"
+          ? "PAYMENT_IN"
+          : "PAYMENT_OUT") ||
+      !money(materialized.amount).eq(money(cancellationOriginal.amount)) ||
+      Number(materialized.customerId ?? 0) !==
+        (cancellationOriginal.partyType === "CUSTOMER"
+          ? Number(cancellationOriginal.partyId ?? 0)
+          : 0) ||
+      Number(materialized.supplierId ?? 0) !==
+        (cancellationOriginal.partyType === "SUPPLIER"
+          ? Number(cancellationOriginal.partyId ?? 0)
+          : 0)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "تعذر إثبات القيد المالي المنفذ لسند القبض الأصلي؛ أوقف الإلغاء وراجع التدقيق",
+      });
+    }
+    if (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER") {
+      cancellationPurchaseOrder =
+        (
+          await tx
+            .select()
+            .from(purchaseOrders)
+            .where(
+              eq(purchaseOrders.id, cancellationSourceRequest.purchaseOrderId),
+            )
+            .for("update")
+            .limit(1)
+        )[0] ?? null;
+      if (
+        !cancellationPurchaseOrder ||
+        cancellationOriginal.direction !== "OUT" ||
+        cancellationOriginal.partyType !== "SUPPLIER" ||
+        cancellationOriginal.partyId == null ||
+        Number(cancellationPurchaseOrder.branchId) !==
+          Number(cancellationOriginal.branchId) ||
+        Number(cancellationPurchaseOrder.supplierId) !==
+          Number(cancellationOriginal.partyId) ||
+        !/^[0-9a-f]{16}$/i.test(cancellationSourceRequest.requestToken) ||
+        cancellationOriginal.referenceNumber !==
+          `PO-PAY-${cancellationPurchaseOrder.poNumber}-${cancellationSourceRequest.requestToken}` ||
+        typeof cancellationSourceRequest.expectedAmount !== "string" ||
+        !money(cancellationSourceRequest.expectedAmount).eq(
+          money(cancellationOriginal.amount),
+        ) ||
+        typeof cancellationSourceRequest.sourceTotal !== "string" ||
+        !money(cancellationPurchaseOrder.total).eq(
+          money(cancellationSourceRequest.sourceTotal),
+        ) ||
+        Number(materialized.purchaseOrderId ?? 0) !==
+          Number(cancellationPurchaseOrder.id) ||
+        money(cancellationPurchaseOrder.paidAmount).lt(
+          money(cancellationOriginal.amount),
+        )
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "رابط دفعة أمر الشراء أو تخصيصها تغيّر؛ أوقف الإلغاء وراجع التدقيق",
+        });
+      }
+    }
+    const cancellationAttempts = await tx
+      .select({
+        id: receipts.id,
+        status: receipts.status,
+        approvalStatus: receipts.approvalStatus,
+        referenceNumber: receipts.referenceNumber,
+        internalNote: receipts.internalNote,
+      })
+      .from(receipts)
+      .where(
+        eq(
+          receipts.referenceNumber,
+          `CANCEL-VCH-${systemRequest.originalReceiptId}`,
+        ),
+      )
+      .orderBy(asc(receipts.id))
+      .for("update");
+    const currentAttemptIndex = cancellationAttempts.findIndex(
+      (attempt) => Number(attempt.id) === receiptId,
+    );
+    const attemptChainValid = cancellationAttempts.every((attempt, index) => {
+      const request = parseSystemPaymentRequest(attempt.internalNote);
+      const prior = index === 0 ? null : cancellationAttempts[index - 1];
+      return (
+        request?.kind === "VOUCHER_CANCELLATION" &&
+        isCanonicalSystemPaymentRequest(request, attempt.referenceNumber) &&
+        request.originalReceiptId === systemRequest.originalReceiptId &&
+        request.attempt === index + 1 &&
+        request.priorCancellationReceiptId ===
+          (prior == null ? null : Number(prior.id)) &&
+        (prior == null ||
+          prior.status === "FAILED" ||
+          prior.status === "REVERSED" ||
+          prior.approvalStatus === "REJECTED")
+      );
+    });
+    if (
+      !attemptChainValid ||
+      currentAttemptIndex !== cancellationAttempts.length - 1 ||
+      systemRequest.attempt !== currentAttemptIndex + 1
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "تسلسل محاولات إلغاء السند غير موثق أو أن الطلب ليس أحدث محاولة",
+      });
+    }
+    if (
+      cancellationSourceRequest &&
+      cancellationSourceRequest.kind !== "EMPLOYEE_ADVANCE" &&
+      cancellationSourceRequest.kind !== "PURCHASE_SUPPLIER" &&
+      cancellationSourceRequest.kind !== "PURCHASE_SUPPLIER_USD"
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "العملية النظامية تُعكس من وحدتها المصدرية فقط",
+      });
+    }
+  }
+  const amount = money(r.amount);
+  const direction = r.direction as "IN" | "OUT";
+  const branchId = Number(r.branchId);
+  const partyType = r.partyType as PartyType | null;
+  const isDeliveryParty =
+    r.partyType === "OTHER" &&
+    r.partyId != null &&
+    typeof r.internalNote === "string" &&
+    r.internalNote.startsWith("DELIVERY_PARTY:");
+  const effectivePartyType: PartyType | null = isDeliveryParty
+    ? "DELIVERY_PARTY"
+    : partyType;
+  const partyId = r.partyId != null ? Number(r.partyId) : null;
+  const paymentMethod = r.paymentMethod as PaymentMethod;
+  const postingReferenceNumber =
+    cancellationOriginal?.referenceNumber ?? r.referenceNumber;
+  const isEmployeeAdvance =
+    systemRequest?.kind === "EMPLOYEE_ADVANCE" ||
+    cancellationSourceRequest?.kind === "EMPLOYEE_ADVANCE";
+  let lockedEmployeeAdvanceCancellation: LockedEmployeeAdvanceCancellation | null =
+    null;
+  if (isEmployeeAdvance) {
+    const advanceRequest =
+      systemRequest?.kind === "EMPLOYEE_ADVANCE"
+        ? systemRequest
+        : cancellationSourceRequest?.kind === "EMPLOYEE_ADVANCE"
+          ? cancellationSourceRequest
+          : null;
+    const advanceReceipt = cancellationOriginal ?? r;
+    if (!advanceRequest) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "بيانات المصدر النظامي لسلفة الموظف مفقودة",
+      });
+    }
+    await assertEmployeeAdvanceVoucherRequestTx(
+      tx,
+      {
+        id: Number(advanceReceipt.id),
+        branchId:
+          advanceReceipt.branchId != null
+            ? Number(advanceReceipt.branchId)
+            : null,
+        direction: String(advanceReceipt.direction),
+        amount: String(advanceReceipt.amount),
+        paymentMethod: String(advanceReceipt.paymentMethod),
+        partyType: advanceReceipt.partyType,
+        referenceNumber: advanceReceipt.referenceNumber,
+        createdBy:
+          advanceReceipt.createdBy != null
+            ? Number(advanceReceipt.createdBy)
+            : null,
+      },
+      advanceRequest,
+      { requireMaterialized: cancellationOriginal != null },
+    );
+    if (
+      cancellationOriginal &&
+      cancellationSourceRequest?.kind === "EMPLOYEE_ADVANCE"
+    ) {
+      lockedEmployeeAdvanceCancellation =
+        await lockUntouchedEmployeeAdvanceForCancellationTx(tx, {
+          originalReceiptId: Number(cancellationOriginal.id),
+          employeeId: cancellationSourceRequest.employeeId,
+          branchId: cancellationSourceRequest.branchId,
+          expectedAmount: cancellationSourceRequest.expectedAmount,
+        });
+    }
+  }
+  let categoryPostingRole: VoucherCategoryPostingRole | null = null;
+  let categoryReversalOfDirection: "IN" | "OUT" | null = null;
+  if (effectivePartyType === "OTHER" && !isEmployeeAdvance) {
+    if (cancellationOriginal) {
+      if (cancellationOriginal.voucherCategoryId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "سند القبض الأصلي بلا فئة محاسبية؛ عيّن تصنيفاً تاريخياً معتمداً قبل اعتماد الإلغاء",
+        });
+      }
+      const category = await loadVoucherCategoryForPosting(
+        tx,
+        Number(cancellationOriginal.voucherCategoryId),
+        cancellationOriginal.direction as "IN" | "OUT",
+        { allowInactive: true, lock: true },
+      );
+      categoryPostingRole = category.postingRole;
+      categoryReversalOfDirection = cancellationOriginal.direction as
+        | "IN"
+        | "OUT";
+    } else if (!systemRequest) {
+      if (r.voucherCategoryId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "سند OTHER بلا فئة محاسبية؛ عيّن فئة وحساباً مقابلاً معتمدين قبل الاعتماد",
+        });
+      }
+      const category = await loadVoucherCategoryForPosting(
+        tx,
+        Number(r.voucherCategoryId),
+        direction,
+        { allowInactive: true, lock: true },
+      );
+      categoryPostingRole = category.postingRole;
+    }
+  }
+  let systemAsset: typeof fixedAssets.$inferSelect | null = null;
+  let systemExchangeTxn: typeof exchangeTransactions.$inferSelect | null = null;
+  let systemWalletTxn: typeof digitalWalletTransactions.$inferSelect | null =
+    null;
+  let systemAccrualObligation: Awaited<
+    ReturnType<typeof assertAccrualRequestBindingTx>
+  > | null = null;
+
+  if (isAccrualSettlementSystemRequest(systemRequest)) {
+    systemAccrualObligation = await assertAccrualSettlementReceiptBindingTx(
+      tx,
+      r,
+      systemRequest,
+      "PAYMENT_PENDING",
+    );
+    if (systemRequest.kind !== "ASSET_SUPPLIER_SETTLEMENT") {
+      const recognition = await lockAccrualRecognitionTx(
+        tx,
+        systemRequest.obligationId,
+      );
+      if (
+        Number(recognition.obligation.id) !==
+          Number(systemAccrualObligation.id) ||
+        recognition.obligation.sourceHash !== systemAccrualObligation.sourceHash
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "قيد الاعتراف لا يطابق التزام طلب التسوية",
+        });
+      }
+    }
+  }
+
+  if (systemRequest?.kind === "VOUCHER_CANCELLATION") {
+    if (r.referenceNumber !== `CANCEL-VCH-${systemRequest.originalReceiptId}`) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مرجع طلب إلغاء القبض غير متطابق",
+      });
+    }
+  } else if (systemRequest?.kind === "TERMINATION_SETTLEMENT") {
+    const canonicalReference = terminationSettlementReference(systemRequest);
+    const parsedReference = parseTerminationSettlementReference(
+      r.referenceNumber,
+    );
+    const evidence =
+      systemRequest.paymentEvidenceReference === null
+        ? null
+        : typeof systemRequest.paymentEvidenceReference === "string"
+          ? systemRequest.paymentEvidenceReference.trim() || null
+          : undefined;
+    if (
+      !Number.isSafeInteger(systemRequest.terminationId) ||
+      systemRequest.terminationId <= 0 ||
+      !Number.isSafeInteger(systemRequest.employeeId) ||
+      systemRequest.employeeId <= 0 ||
+      typeof systemRequest.expectedAmount !== "string" ||
+      !Number.isSafeInteger(systemRequest.attempt) ||
+      systemRequest.attempt <= 0 ||
+      (systemRequest.originReturnEventId !== null &&
+        (!Number.isSafeInteger(systemRequest.originReturnEventId) ||
+          systemRequest.originReturnEventId <= 0)) ||
+      !Number.isSafeInteger(systemRequest.obligationId) ||
+      systemRequest.obligationId <= 0 ||
+      typeof systemRequest.settlementSnapshotHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(systemRequest.settlementSnapshotHash) ||
+      evidence === undefined ||
+      canonicalReference == null ||
+      parsedReference == null ||
+      r.referenceNumber !== canonicalReference ||
+      parsedReference.terminationId !== systemRequest.terminationId ||
+      parsedReference.attempt !== systemRequest.attempt ||
+      parsedReference.originReturnEventId !== systemRequest.originReturnEventId
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "ارتباط طلب تسوية نهاية الخدمة غير صالح",
+      });
+    }
+    const [termination] = await tx
+      .select()
+      .from(employeeTerminations)
+      .where(eq(employeeTerminations.id, systemRequest.terminationId))
+      .for("update")
+      .limit(1);
+    const [employee] = await tx
+      .select({
+        id: employees.id,
+        branchId: employees.branchId,
+        employmentStatus: employees.employmentStatus,
+      })
+      .from(employees)
+      .where(eq(employees.id, systemRequest.employeeId))
+      .for("update")
+      .limit(1);
+    if (
+      !termination ||
+      termination.status !== "completed" ||
+      Number(termination.employeeId) !== systemRequest.employeeId ||
+      !employee ||
+      Number(employee.id) !== systemRequest.employeeId ||
+      Number(employee.branchId) !== branchId ||
+      employee.employmentStatus !== "terminated" ||
+      termination.settlementPaymentMethod !== paymentMethod ||
+      (termination.settlementPaymentReference?.trim() || null) !== evidence ||
+      termination.settlementSnapshotHash !==
+        systemRequest.settlementSnapshotHash ||
+      !money(termination.settlement).eq(amount) ||
+      !money(systemRequest.expectedAmount).eq(amount) ||
+      (paymentMethod === "CASH" && evidence !== null) ||
+      (paymentMethod !== "CASH" && evidence === null) ||
+      (paymentMethod === "CARD" &&
+        (!/^\d{4}$/.test(evidence ?? "") ||
+          (r.cardLastFour?.trim() || null) !== evidence)) ||
+      (paymentMethod !== "CARD" && r.cardLastFour != null) ||
+      r.checkNumber != null
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "تغيّر سجل إنهاء الخدمة أو مبلغ تسويته — أوقف الصرف وراجع الموارد البشرية",
+      });
+    }
+  } else if (
+    systemRequest?.kind === "ASSET_ACQUISITION" ||
+    systemRequest?.kind === "ASSET_MAINTENANCE"
+  ) {
+    const assetId = systemRequest.assetId;
+    [systemAsset] = await tx
+      .select()
+      .from(fixedAssets)
+      .where(eq(fixedAssets.id, assetId))
+      .for("update")
+      .limit(1);
+    if (
+      !systemAsset ||
+      systemAsset.status === "disposed" ||
+      systemAsset.status === "retired"
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "الأصل المرتبط بطلب الدفع تغيّر أو لم يعد صالحاً",
+      });
+    }
+    if (systemRequest.kind === "ASSET_ACQUISITION") {
+      if (
+        Number(systemAsset.branchId) !== branchId ||
+        systemAsset.supplierId != null ||
+        systemAsset.isActive !== true ||
+        r.referenceNumber !== `ASSET-ACQ-${assetId}` ||
+        !money(systemAsset.purchaseValue).eq(amount)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "طلب اقتناء الأصل لا يطابق الأصل الحالي",
+        });
+      }
+    } else {
+      if (
+        Number(systemAsset.branchId) !== branchId ||
+        systemAsset.isActive === false
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "الأصل غير نافذ أو انتقل من فرع طلب الصيانة",
+        });
+      }
+      const [maintenance] = await tx
+        .select()
+        .from(assetMaintenance)
+        .where(eq(assetMaintenance.id, systemRequest.maintenanceId))
+        .for("update")
+        .limit(1);
+      if (
+        !maintenance ||
+        Number(maintenance.assetId) !== assetId ||
+        r.referenceNumber !== `ASSET-MAINT-${systemRequest.maintenanceId}` ||
+        !money(maintenance.cost).eq(amount)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "طلب دفع الصيانة لا يطابق سجل الصيانة",
+        });
+      }
+    }
+  } else if (systemRequest?.kind === "EXCHANGE_IQD_DEPOSIT") {
+    [systemExchangeTxn] = await tx
+      .select()
+      .from(exchangeTransactions)
+      .where(eq(exchangeTransactions.id, systemRequest.transactionId))
+      .for("update")
+      .limit(1);
+    if (
+      !prelockedExchangeHouse ||
+      !systemExchangeTxn ||
+      Number(prelockedExchangeHouse.id) !== systemRequest.exchangeHouseId ||
+      Number(systemExchangeTxn.exchangeHouseId) !==
+        systemRequest.exchangeHouseId ||
+      Number(systemExchangeTxn.branchId) !== branchId ||
+      systemExchangeTxn.type !== "DEPOSIT" ||
+      systemExchangeTxn.currency !== "IQD" ||
+      systemExchangeTxn.status !== "PENDING_APPROVAL" ||
+      Number(systemExchangeTxn.receiptId) !== receiptId ||
+      Number(systemExchangeTxn.createdBy ?? 0) !== Number(r.createdBy ?? 0) ||
+      r.referenceNumber !== `EXCHANGE-IQD-DEP-${systemRequest.transactionId}` ||
+      typeof systemRequest.expectedAmount !== "string" ||
+      !money(systemRequest.expectedAmount).eq(amount) ||
+      !money(systemExchangeTxn.iqdAmount).eq(amount)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "طلب إيداع الصيرفة تغيّر أو لم يعد صالحاً",
+      });
+    }
+  } else if (systemRequest?.kind === "DIGITAL_WALLET_CASH_DEPOSIT") {
+    [systemWalletTxn] = await tx
+      .select()
+      .from(digitalWalletTransactions)
+      .where(eq(digitalWalletTransactions.id, systemRequest.transactionId))
+      .for("update")
+      .limit(1);
+    if (
+      !prelockedDigitalWallet ||
+      !systemWalletTxn ||
+      Number(prelockedDigitalWallet.id) !== systemRequest.walletId ||
+      Number(prelockedDigitalWallet.branchId) !== branchId ||
+      prelockedDigitalWallet.isActive !== true ||
+      Number(systemWalletTxn.walletId) !== systemRequest.walletId ||
+      Number(systemWalletTxn.branchId) !== branchId ||
+      systemWalletTxn.type !== "DEPOSIT" ||
+      systemWalletTxn.direction !== "IN" ||
+      systemWalletTxn.status !== "PENDING_APPROVAL" ||
+      Number(systemWalletTxn.receiptId) !== receiptId ||
+      Number(systemWalletTxn.createdBy) !== Number(r.createdBy ?? 0) ||
+      r.referenceNumber !==
+        `DIGITAL-WALLET-DEP-${systemRequest.transactionId}` ||
+      typeof systemRequest.expectedAmount !== "string" ||
+      !money(systemRequest.expectedAmount).eq(amount) ||
+      !money(systemWalletTxn.amount).eq(amount)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "طلب إيداع المحفظة تغيّر أو لم يعد صالحاً",
+      });
+    }
+  }
+
+  // سند الصرف العادي يُموَّل من الخزينة دائماً. طلب إلغاء قبضٍ مادي هو الاستثناء
+  // التعويضي المحصور: يعكس دلو/وردية القبض الأصلية كي يتصافر الحساب نفسه.
+  let shiftId: number | null;
+  let cashBucket: "DRAWER" | "TREASURY" | null = null;
+  const approverActor: Actor = {
+    userId: actor.userId,
+    branchId: Number(approver.branchId ?? actor.branchId),
+    role: approver.role,
+    isOwner: true,
+  };
+  if (paymentMethod === "CASH" && direction === "OUT") {
+    if (cancellationOriginal) {
+      shiftId =
+        cancellationOriginal.shiftId != null
+          ? Number(cancellationOriginal.shiftId)
+          : null;
+      cashBucket = cancellationOriginal.cashBucket as "DRAWER" | "TREASURY";
+    } else {
+      shiftId = null;
+      cashBucket = "TREASURY";
+    }
+  } else if (paymentMethod === "CASH") {
+    const g =
+      preResolvedCashIn ??
+      (await shiftIdForCashTx(
+        tx,
+        approverActor,
+        branchId,
+        "اعتماد سند قبض نقدي",
+      ));
+    shiftId = g.shiftId;
+    cashBucket = g.cashBucket;
+  } else {
+    shiftId = await openShiftIdTx(tx, approverActor.userId, branchId);
+  }
+
+  let systemPurchaseOrder: typeof purchaseOrders.$inferSelect | null = null;
+  if (
+    systemRequest?.kind === "PURCHASE_SUPPLIER" ||
+    systemRequest?.kind === "PURCHASE_SHIPPING"
+  ) {
+    systemPurchaseOrder =
+      (
+        await tx
+          .select()
+          .from(purchaseOrders)
+          .where(eq(purchaseOrders.id, systemRequest.purchaseOrderId))
+          .for("update")
+          .limit(1)
+      )[0] ?? null;
+    if (
+      !systemPurchaseOrder ||
+      Number(systemPurchaseOrder.branchId) !== branchId
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "أمر الشراء المرتبط بطلب الدفع مفقود أو من فرع آخر",
+      });
+    }
+    const expectedReference =
+      systemRequest.kind === "PURCHASE_SUPPLIER"
+        ? `PO-PAY-${systemPurchaseOrder.poNumber}-${systemRequest.requestToken}`
+        : `SHIP-${systemPurchaseOrder.poNumber}-${systemRequest.requestToken}`;
+    if (!/^[0-9a-f]{16}$/i.test(systemRequest.requestToken)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "رمز مصدر طلب دفع أمر الشراء غير صالح",
+      });
+    }
+    if (r.referenceNumber !== expectedReference) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مرجع طلب دفع أمر الشراء غير متطابق",
+      });
+    }
+    if (
+      typeof systemRequest.expectedAmount !== "string" ||
+      !money(systemRequest.expectedAmount).eq(amount)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مبلغ طلب دفع أمر الشراء لا يطابق مصدره",
+      });
+    }
+    if (
+      systemRequest.kind === "PURCHASE_SUPPLIER" &&
+      (effectivePartyType !== "SUPPLIER" ||
+        partyId == null ||
+        Number(systemPurchaseOrder.supplierId) !== partyId ||
+        typeof systemRequest.sourceTotal !== "string" ||
+        !money(systemPurchaseOrder.total).eq(
+          money(systemRequest.sourceTotal),
+        ) ||
+        (systemRequest.liabilityAccount === "CASH_CLEARING" &&
+          systemPurchaseOrder.settlementType !== "CASH"))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مورد طلب الدفع لا يطابق أمر الشراء",
+      });
+    }
+    if (systemRequest.kind === "PURCHASE_SUPPLIER") {
+      const expectedCashClearing =
+        systemPurchaseOrder.settlementType === "CASH" &&
+        (await purchaseCashSettlementUsesClearingTx(
+          tx,
+          Number(systemPurchaseOrder.id),
+        ));
+      if (
+        (systemRequest.liabilityAccount === "CASH_CLEARING") !==
+        expectedCashClearing
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "حساب تسوية طلب دفع أمر الشراء لا يطابق قيده المثبت",
+        });
+      }
+    }
+    if (
+      systemRequest.kind === "PURCHASE_SHIPPING" &&
+      (typeof systemRequest.sourceShippingTotal !== "string" ||
+        !money(systemPurchaseOrder.shippingCost)
+          .plus(money(systemPurchaseOrder.customsCost))
+          .eq(money(systemRequest.sourceShippingTotal)))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تكلفة الشحن المرتبطة بطلب الدفع تغيّرت",
+      });
+    }
+    if (systemRequest.kind === "PURCHASE_SHIPPING") {
+      const declaredPaymentReference =
+        systemRequest.paymentReference?.trim() || null;
+      const actualPaymentReference =
+        paymentMethod === "CARD"
+          ? r.cardLastFour?.trim() || null
+          : paymentMethod === "TRANSFER" || paymentMethod === "CHECK"
+            ? r.checkNumber?.trim() || null
+            : null;
+      const referenceRequired =
+        paymentMethod === "CARD" ||
+        paymentMethod === "TRANSFER" ||
+        paymentMethod === "CHECK";
+      if (
+        (referenceRequired &&
+          (!declaredPaymentReference ||
+            actualPaymentReference !== declaredPaymentReference)) ||
+        (!referenceRequired && declaredPaymentReference != null) ||
+        (paymentMethod === "CARD" &&
+          !/^\d{4}$/.test(declaredPaymentReference ?? "")) ||
+        (paymentMethod !== "CARD" && r.cardLastFour != null) ||
+        (paymentMethod !== "TRANSFER" &&
+          paymentMethod !== "CHECK" &&
+          r.checkNumber != null)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "مرجع أداة دفع الشحن لا يطابق الطلب الأصلي؛ أوقف الاعتماد وراجع طريقة الدفع",
+        });
+      }
+    }
+    if (
+      systemRequest.kind === "PURCHASE_SUPPLIER" &&
+      money(systemPurchaseOrder.paidAmount)
+        .plus(amount)
+        .gt(money(systemPurchaseOrder.total))
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "دفعة المورد المعلّقة تتجاوز المتبقي على أمر الشراء",
+      });
+    }
+    if (systemRequest.kind === "PURCHASE_SUPPLIER") {
+      const payableBalance = await purchaseOrderPayableBalanceTx(
+        tx,
+        Number(systemPurchaseOrder.id),
+      );
+      if (amount.gt(payableBalance)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `الرصيد الدفتري المستحق على أمر الشراء (${payableBalance.toFixed(2)}) أقل من طلب الدفع — راجع المرتجعات والمدفوعات اللاحقة`,
+        });
+      }
+    }
+  }
+
+  const purchaseCashClearing =
+    (systemRequest?.kind === "PURCHASE_SUPPLIER" &&
+      systemRequest.liabilityAccount === "CASH_CLEARING") ||
+    (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER" &&
+      cancellationSourceRequest.liabilityAccount === "CASH_CLEARING");
+
+  // كل دفعة مورد تعيد فحص AP الحالي تحت القفل؛ مرتجع أو دفعة أخرى بين الطلب
+  // والاعتماد قد تخفض المستحق لأي مورد، لا المودِع فقط.
+  if (
+    effectivePartyType === "SUPPLIER" &&
+    partyId != null &&
+    direction === "OUT" &&
+    systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+    !purchaseCashClearing
+  ) {
+    const [sup] = await tx
+      .select({ kind: suppliers.supplierKind, bal: suppliers.currentBalance })
+      .from(suppliers)
+      .where(eq(suppliers.id, partyId))
+      .for("update")
+      .limit(1);
+    if (!sup) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "المورد المرتبط بسند الصرف مفقود",
+      });
+    }
+    if (money(sup.bal ?? "0").lt(amount)) {
+      const label =
+        sup.kind === "CONSIGNOR" ? "مستحقّ المودِع" : "الرصيد المستحق للمورد";
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `${label} (${money(sup.bal ?? "0").toFixed(2)}) أقلّ من مبلغ الصرف — أعد الطلب بعد مراجعة الكشف`,
+      });
+    }
+  }
+
+  if (direction === "OUT" && paymentMethod === "CASH" && cashBucket != null) {
+    if (cashBucket === "TREASURY") {
+      if (!externalTreasuryApproval) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "إثبات اعتماد مالك الصرف الخارجي مفقود",
+        });
+      }
+      await assertApprovedTreasuryOutAvailable(
+        tx,
+        {
+          branchId,
+          amount,
+          operation: cancellationOriginal
+            ? "اعتماد إلغاء سند قبض نقدي"
+            : "اعتماد سند الصرف النقدي",
+        },
+        externalTreasuryApproval,
+      );
+    } else {
+      await assertCashOutAvailable(tx, {
+        branchId,
+        cashBucket,
+        shiftId,
+        amount,
+        operation: "اعتماد إلغاء سند قبض من درج الوردية",
+      });
+    }
+  } else if (direction === "OUT") {
+    assertNonPhysicalOutReceipt({
+      classification: "NON_CASH_METHOD",
+      paymentMethod,
+      cashBucket,
+      operation: "اعتماد سند صرف غير نقدي",
+    });
+  }
+
+  const isAccrualCorrectionRefundMovement =
+    systemRequest?.kind === "ACCRUAL_CORRECTION_REFUND";
+  const specializedAssetMovement =
+    systemRequest?.kind === "EXCHANGE_IQD_DEPOSIT" ||
+    systemRequest?.kind === "DIGITAL_WALLET_CASH_DEPOSIT" ||
+    systemRequest?.kind === "TERMINATION_SETTLEMENT" ||
+    isAccrualCorrectionRefundMovement ||
+    systemRequest?.kind === "PURCHASE_SUPPLIER_USD" ||
+    cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD";
+  const terminationSettlementPlan =
+    systemRequest?.kind === "TERMINATION_SETTLEMENT"
+      ? {
+          terminationId: systemRequest.terminationId,
+          employeeId: systemRequest.employeeId,
+          attempt: systemRequest.attempt,
+          originReturnEventId: systemRequest.originReturnEventId,
+          settlementSnapshotHash: systemRequest.settlementSnapshotHash,
+          obligationId: systemRequest.obligationId,
+          paymentMethod: terminationVoucherPaymentMethod(
+            direction,
+            paymentMethod,
+          ),
+        }
+      : null;
+  const standardPosting = specializedAssetMovement
+    ? null
+    : approvedVoucherPostingPlan({
+        direction,
+        paymentMethod,
+        cashBucket,
+        partyType: effectivePartyType,
+        amount,
+        referenceNumber: postingReferenceNumber,
+        systemKind:
+          cancellationSourceRequest?.kind ?? systemRequest?.kind ?? null,
+        categoryPostingRole,
+        categoryReversalOfDirection,
+        originalDirectionForCancellation:
+          cancellationOriginal?.direction === "IN" ||
+          cancellationOriginal?.direction === "OUT"
+            ? cancellationOriginal.direction
+            : null,
+        purchaseCashClearing,
+      });
+  if (!specializedAssetMovement && !standardPosting) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "تعذر تحديد الحساب المقابل للسند قبل الاعتماد؛ عيّن تصنيفاً محاسبياً موثوقاً ثم أعد المحاولة.",
+    });
+  }
+
+  const approvedAt = new Date();
+  const voucherDate = terminationSettlementPlan
+    ? baghdadToday(approvedAt)
+    : r.voucherDate
+      ? toDateStr(new Date(r.voucherDate))
+      : toDateStr(approvedAt);
+
+  await tx
+    .update(receipts)
+    .set({
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      approvedBy: actor.userId,
+      approvedAt,
+      shiftId,
+      cashBucket,
+      ...(terminationSettlementPlan
+        ? { voucherDate: new Date(`${voucherDate}T00:00:00.000Z`) }
+        : {}),
+      ...(cancellationOriginal
+        ? { voucherCategoryId: cancellationOriginal.voucherCategoryId }
+        : {}),
+    })
+    .where(eq(receipts.id, receiptId));
+
+  if (terminationSettlementPlan) {
+    await settleTerminationVoucherTx(tx, {
+      terminationId: terminationSettlementPlan.terminationId,
+      employeeId: terminationSettlementPlan.employeeId,
+      branchId,
+      receiptId,
+      amount,
+      paymentMethod: terminationSettlementPlan.paymentMethod,
+      actorUserId: actor.userId,
+      occurredAt: approvedAt,
+      attempt: terminationSettlementPlan.attempt,
+      originReturnEventId: terminationSettlementPlan.originReturnEventId,
+      settlementSnapshotHash: terminationSettlementPlan.settlementSnapshotHash,
+      expectedObligationId: terminationSettlementPlan.obligationId,
+    });
+  }
+
+  if (systemRequest?.kind === "ACCRUAL_CORRECTION_REFUND") {
+    const [approvedReceipt] = await tx
+      .select()
+      .from(receipts)
+      .where(eq(receipts.id, receiptId))
+      .limit(1);
+    if (!approvedReceipt) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "سند قبض استرداد التصحيح مفقود بعد الاعتماد",
+      });
+    }
+    await settleAccrualCorrectionRefundTx(tx, {
+      receipt: approvedReceipt,
+      request: systemRequest,
+      approver: approverActor,
+      occurredAt: approvedAt,
+    });
+  }
+
+  if (systemRequest?.kind === "PURCHASE_SUPPLIER_USD") {
+    await materializePurchaseUsdSettlementTx(tx, {
+      receipt: r,
+      request: systemRequest,
+      approverUserId: actor.userId,
+    });
+  }
+
+  if (
+    cancellationOriginal &&
+    cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD"
+  ) {
+    await reversePurchaseUsdSettlementTx(tx, {
+      originalReceipt: cancellationOriginal,
+      cancellationReceipt: r,
+      request: cancellationSourceRequest,
+      approverUserId: actor.userId,
+    });
+  }
+
+  if (lockedEmployeeAdvanceCancellation) {
+    await cancelLockedEmployeeAdvanceTx(tx, lockedEmployeeAdvanceCancellation);
+  }
+
+  if (cancellationOriginal) {
+    await tx
+      .update(receipts)
+      .set({ status: "REVERSED" })
+      .where(eq(receipts.id, Number(cancellationOriginal.id)));
+  }
+
+  if (systemRequest?.kind === "ASSET_ACQUISITION" && systemAsset) {
+    await tx
+      .update(fixedAssets)
+      .set({ isActive: true })
+      .where(eq(fixedAssets.id, systemRequest.assetId));
+  }
+
+  if (
+    systemRequest?.kind === "EXCHANGE_IQD_DEPOSIT" &&
+    systemExchangeTxn &&
+    prelockedExchangeHouse
+  ) {
+    const nextIqd = money(prelockedExchangeHouse.balanceIqd).plus(amount);
+    await tx
+      .update(exchangeHouses)
+      .set({ balanceIqd: toDbMoney(nextIqd) })
+      .where(eq(exchangeHouses.id, systemRequest.exchangeHouseId));
+    await tx
+      .update(exchangeTransactions)
+      .set({
+        status: "ACTIVE",
+        balanceIqdAfter: toDbMoney(nextIqd),
+        balanceUsdAfter: toDbMoney(money(prelockedExchangeHouse.balanceUsd)),
+      })
+      .where(eq(exchangeTransactions.id, systemRequest.transactionId));
+    const exchangeDepositComponents = signedSourceComponents(
+      "EXCHANGE_WALLET_IQD",
+      "TREASURY_CASH",
+      amount,
+    );
+    await postEntry(tx, {
+      entryType: "EXCHANGE_DEPOSIT",
+      branchId,
+      exchangeHouseId: systemRequest.exchangeHouseId,
+      receiptId,
+      amount,
+      revenue: money(0),
+      cost: money(0),
+      profit: money(0),
+      postingIntent: createPostingIntent(
+        "EXCHANGE_DEPOSIT_IQD",
+        "EXCHANGE_DEPOSIT",
+        signedPostingLines("EXCHANGE_WALLET_IQD", "TREASURY_CASH", amount),
+        exchangeDepositComponents,
+      ),
+      postingSourceComponents: exchangeDepositComponents,
+      dedupeKey: `EXDEP:${systemExchangeTxn.txnNumber}`,
+      notes: systemExchangeTxn.notes ?? undefined,
+      createdBy: actor.userId,
+    });
+    await postExchangeControlReclassification(tx, {
+      exchangeHouseId: systemRequest.exchangeHouseId,
+      currency: "IQD",
+      beforeSignedIqd: prelockedExchangeHouse.balanceIqd,
+      afterSignedIqd: nextIqd,
+      sourceKey: systemExchangeTxn.txnNumber,
+      notes: `إعادة تصنيف رصيد بيت الصرافة بعد اعتماد إيداع ${systemExchangeTxn.txnNumber}`,
+      createdBy: actor.userId,
+    });
+  }
+
+  if (
+    systemRequest?.kind === "DIGITAL_WALLET_CASH_DEPOSIT" &&
+    systemWalletTxn &&
+    prelockedDigitalWallet
+  ) {
+    const next = money(prelockedDigitalWallet.currentBalance).plus(amount);
+    await tx
+      .update(digitalWallets)
+      .set({ currentBalance: toDbMoney(next) })
+      .where(eq(digitalWallets.id, systemRequest.walletId));
+    await tx
+      .update(digitalWalletTransactions)
+      .set({
+        status: "ACTIVE",
+        balanceAfter: toDbMoney(next),
+        approvedBy: actor.userId,
+        approvedAt: new Date(),
+      })
+      .where(eq(digitalWalletTransactions.id, systemRequest.transactionId));
+    const digitalDepositComponents = signedSourceComponents(
+      "DIGITAL_WALLET",
+      "TREASURY_CASH",
+      amount,
+    );
+    await postEntry(tx, {
+      entryType: "DIGITAL_WALLET_DEPOSIT",
+      branchId,
+      receiptId,
+      digitalWalletId: systemRequest.walletId,
+      amount,
+      revenue: money(0),
+      cost: money(0),
+      profit: money(0),
+      postingIntent: createPostingIntent(
+        "DIGITAL_WALLET_DEPOSIT_ASSET",
+        "DIGITAL_WALLET_DEPOSIT",
+        signedPostingLines("DIGITAL_WALLET", "TREASURY_CASH", amount),
+        digitalDepositComponents,
+      ),
+      postingSourceComponents: digitalDepositComponents,
+      dedupeKey: `DIGITAL:WDEP:${systemRequest.transactionId}`,
+      notes: "إيداع رصيد محفظة كروت بعد اعتماد المالك",
+      createdBy: actor.userId,
+    });
+  }
+
+  // الأثر المالي:
+  if (standardPosting) {
+    const settlesRecognizedAccrual =
+      systemRequest?.kind === "PURCHASE_SHIPPING" ||
+      systemRequest?.kind === "ASSET_MAINTENANCE" ||
+      systemRequest?.kind === "ASSET_ACQUISITION";
+    await postEntry(tx, {
+      entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT",
+      branchId,
+      receiptId,
+      customerId: effectivePartyType === "CUSTOMER" ? partyId : null,
+      supplierId: effectivePartyType === "SUPPLIER" ? partyId : null,
+      deliveryPartyId:
+        effectivePartyType === "DELIVERY_PARTY" && partyId != null
+          ? partyId
+          : null,
+      purchaseOrderId: systemPurchaseOrder
+        ? Number(systemPurchaseOrder.id)
+        : cancellationPurchaseOrder
+          ? Number(cancellationPurchaseOrder.id)
+          : null,
+      purchaseLiabilityAccount:
+        systemRequest?.kind === "PURCHASE_SUPPLIER" ||
+        cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER"
+          ? purchaseCashClearing
+            ? "CASH_CLEARING"
+            : "AP"
+          : null,
+      amount,
+      paymentMethod,
+      postingIntent: standardPosting.intent,
+      postingSourceComponents: standardPosting.sourceComponents,
+      dedupeKey:
+        systemRequest?.kind === "ASSET_ACQUISITION"
+          ? `ASSET_ACQ:${systemRequest.assetId}`
+          : undefined,
+      notes: cancellationOriginal
+        ? `إلغاء سند ${cancellationOriginal.voucherNumber}`
+        : systemRequest?.kind === "ASSET_ACQUISITION"
+          ? `اقتناء أصل نقدي ${systemAsset?.code ?? systemRequest.assetId}`
+          : undefined,
+      // الاعتراف يعود لتاريخ الاستلام/الصيانة/الحيازة، أمّا التسوية النقدية
+      // فهي واقعة مستقلة في تاريخ اعتمادها الفعلي ولا تُرحّل إلى شهر الطلب.
+      entryDate: settlesRecognizedAccrual
+        ? new Date()
+        : new Date(
+            r.voucherDate ? toDateStr(new Date(r.voucherDate)) : toDateStr(),
+          ),
+    });
+  }
+  if (
+    systemAccrualObligation &&
+    isAccrualSettlementSystemRequest(systemRequest)
+  ) {
+    const settlementEntries = await tx
+      .select({
+        id: accountingEntries.id,
+        entryType: accountingEntries.entryType,
+        branchId: accountingEntries.branchId,
+        amount: accountingEntries.amount,
+      })
+      .from(accountingEntries)
+      .where(eq(accountingEntries.receiptId, receiptId))
+      .for("update")
+      .limit(2);
+    const settlementEntry = settlementEntries[0];
+    if (
+      settlementEntries.length !== 1 ||
+      !settlementEntry ||
+      settlementEntry.entryType !== "PAYMENT_OUT" ||
+      Number(settlementEntry.branchId) !== branchId ||
+      !money(settlementEntry.amount).eq(amount)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "قيد تسوية الاستحقاق غير وحيد أو لا يطابق السند المعتمد",
+      });
+    }
+    await transitionAccrualObligationTx(tx, {
+      obligationId: Number(systemAccrualObligation.id),
+      expectedStatus: "PAYMENT_PENDING",
+      nextStatus: "PAID",
+      eventType: "PAYMENT_SETTLED",
+      actorId: Number(r.createdBy),
+      reviewerId: actor.userId,
+      receiptId,
+      accountingEntryId: Number(settlementEntry.id),
+      evidenceReference: systemRequest.sourceEvidenceReference,
+      dedupeKey: `ACCRUAL:PAYMENT_SETTLED:${systemAccrualObligation.id}:${receiptId}`,
+    });
+  }
+  // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
+  // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
+  // يعمل للحالتين، وtoDateStr = toISOString.slice(0,10) مطابق لدلالة assertPeriodOpen.
+  if (effectivePartyType === "CUSTOMER" && partyId) {
+    // تخصيص السند لفاتورته عند **الاعتماد** لا الطلب (الأثر المالي كلّه هنا). حالةُ الفاتورة
+    // تُعاد فحصها داخل allocateVoucherToInvoiceTx تحت القفل: بين الطلب والاعتماد قد تُلغى
+    // الفاتورة أو تُصحَّح فيصير تخصيص المال لها نسبةً لمستندٍ ميت.
+    //
+    // ⚠️ **يسبق تعديل رصيد العميل** — مرآةُ `voucher/create.ts` حرفياً (٣١/٨/٢٦): التخصيص
+    // يقفل صفّ الفاتورة والتعديلُ يقفل صفّ العميل ضمنياً، فالترتيب القانونيّ «فاتورة ← عميل»
+    // كما في sale/payment وdelivery/dispatch وreturnService. **الإنشاء والاعتماد يجب أن
+    // يتحرّكا معاً**: تقويمُ أحدهما وحده يصنع ABBA بينهما — محاسبٌ يعتمد سنداً معلَّقاً على
+    // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
+    // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
+    if (r.invoiceId != null) {
+      await allocateVoucherToInvoiceTx(tx, {
+        invoiceId: Number(r.invoiceId),
+        amount,
+        direction,
+        paymentMethod,
+      });
+    }
+    await adjustCustomerBalance(
+      tx,
+      partyId,
+      direction === "IN" ? amount.neg() : amount,
+    );
+    // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
+    // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
+    // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
+    // شرطٌ صريح: القبضُ (IN) على العميل ليس ردّاً.
+    if (
+      direction === "OUT" &&
+      r.invoiceId != null &&
+      typeof r.internalNote === "string" &&
+      r.internalNote.startsWith("SALE_CUSTOMER_REFUND:")
+    ) {
+      await closeDeferredSaleRefundEffectsTx(
+        tx,
+        {
+          invoiceId: Number(r.invoiceId),
+          receiptId,
+          amount,
+          reason: `اعتماد سند صرف استرداد ${r.voucherNumber}`,
+        },
+        actor,
+      );
+    }
+    // تسوية تلقائية لفواتير العميل المفتوحة بنظام FIFO إذا لم يكن السند مخصصاً لفاتورة معينة
+    if (direction === "IN" && r.invoiceId == null) {
+      await autoSettleCustomerAccountTx(tx, partyId, actor);
+    }
+  } else if (
+    effectivePartyType === "SUPPLIER" &&
+    partyId &&
+    systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+    cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+    !purchaseCashClearing
+  ) {
+    await adjustSupplierBalance(
+      tx,
+      partyId,
+      direction === "OUT" ? amount.neg() : amount,
+    );
+    // تسوية تلقائية لأوامر شراء المورد المفتوحة بنظام FIFO عند سداد عام للمورد
+    if (direction === "OUT" && systemRequest?.kind !== "PURCHASE_SUPPLIER") {
+      await autoSettleSupplierAccountTx(tx, partyId, actor);
+    }
+  } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
+    await adjustDeliveryBalance(
+      tx,
+      partyId,
+      direction === "IN" ? amount.neg() : amount,
+    );
+    if (direction === "IN") {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
+        partyId,
+        branchId,
+        entryType: "COD_REMITTED",
+        amount: toDbMoney(amount),
+        notes: r.description,
+        actorUserId: actor.userId,
+        occurredAt: approvedAt,
+      });
+    }
+  }
+  if (systemRequest?.kind === "PURCHASE_SUPPLIER" && systemPurchaseOrder) {
+    await tx
+      .update(purchaseOrders)
+      .set({
+        paidAmount: toDbMoney(
+          money(systemPurchaseOrder.paidAmount).plus(amount),
+        ),
+      })
+      .where(eq(purchaseOrders.id, Number(systemPurchaseOrder.id)));
+  } else if (
+    cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER" &&
+    cancellationPurchaseOrder
+  ) {
+    await tx
+      .update(purchaseOrders)
+      .set({
+        paidAmount: toDbMoney(
+          money(cancellationPurchaseOrder.paidAmount).minus(amount),
+        ),
+      })
+      .where(eq(purchaseOrders.id, Number(cancellationPurchaseOrder.id)));
+  }
+
+  if (systemRequest?.kind === "EMPLOYEE_ADVANCE") {
+    await activateAdvanceForApprovedVoucherTx(
+      tx,
+      {
+        id: receiptId,
+        branchId: r.branchId != null ? Number(r.branchId) : null,
+        direction,
+        amount: String(r.amount),
+        paymentMethod,
+        partyType: r.partyType,
+        referenceNumber: r.referenceNumber,
+        createdBy: r.createdBy != null ? Number(r.createdBy) : null,
+      },
+      systemRequest,
+    );
+  }
+
+  // البَصمة بعد إكمال كل التَغييرات.
+  const hash = computeSignature({
+    id: receiptId,
+    amount: toDbMoney(amount),
+    partyType: partyType ?? "OTHER",
+    partyId,
+    paymentMethod,
+    voucherDate: String(voucherDate).slice(0, 10),
+    voucherNumber: String(r.voucherNumber),
+    createdBy: r.createdBy != null ? Number(r.createdBy) : 0,
+    approvedBy: actor.userId,
+    branchId,
+  });
+  await tx
+    .update(receipts)
+    .set({ signatureHash: hash })
+    .where(eq(receipts.id, receiptId));
+
+  return {
+    receiptId,
+    voucherNumber: String(r.voucherNumber),
+    approvalStatus: "APPROVED" as const,
+    signatureHash: hash,
+    replayed: false,
+  };
 }
 
 export interface RejectVoucherResult {

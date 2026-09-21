@@ -871,7 +871,8 @@ export async function createVoucherTx(
         message: appErrorMessage({
           what: "تعذّر إصدار سند لجهة التوصيل",
           why: "جهة التوصيل تتبع فرعاً آخر يختلف عن فرع السند",
-          doThis: "اختر جهة توصيل تابعة لنفس فرع السند أو اختر الفرع المطابق للجهة",
+          doThis:
+            "اختر جهة توصيل تابعة لنفس فرع السند أو اختر الفرع المطابق للجهة",
         }),
       });
     }
@@ -986,7 +987,7 @@ export async function createVoucherTx(
   const effectiveCounterpartyName =
     input.partyType === "DELIVERY_PARTY"
       ? (dpRow?.name ?? input.counterpartyName?.trim() ?? null)
-      : (input.counterpartyName?.trim() || null);
+      : input.counterpartyName?.trim() || null;
   const effectiveInternalNote =
     input.partyType === "DELIVERY_PARTY"
       ? normalizedInternalNote
@@ -1113,7 +1114,8 @@ export async function createVoucherTx(
     const hash = computeSignature({
       id: receiptId,
       amount: toDbMoney(amount),
-      partyType: input.partyType === "DELIVERY_PARTY" ? "OTHER" : input.partyType,
+      partyType:
+        input.partyType === "DELIVERY_PARTY" ? "OTHER" : input.partyType,
       partyId: input.partyType === "OTHER" ? null : (input.partyId ?? null),
       paymentMethod: input.paymentMethod,
       voucherDate,
@@ -1145,7 +1147,10 @@ export async function createVoucherTx(
     await logAuditTx(
       tx,
       {
-        user: { id: resolvedActor.userId, branchId: resolvedActor.branchId ?? null } as never,
+        user: {
+          id: resolvedActor.userId,
+          branchId: resolvedActor.branchId ?? null,
+        } as never,
         req: undefined as never,
       },
       {
@@ -1184,7 +1189,10 @@ export async function finalizeOwnerSystemVoucherTx(
   await logAuditTx(
     tx,
     {
-      user: { id: resolvedActor.userId, branchId: resolvedActor.branchId ?? null } as never,
+      user: {
+        id: resolvedActor.userId,
+        branchId: resolvedActor.branchId ?? null,
+      } as never,
       req: undefined as never,
     },
     {
@@ -1209,14 +1217,21 @@ export async function createSystemPaymentRequestTx(
   actor: Actor,
   request: SystemPaymentRequest,
 ): Promise<VoucherResult> {
-  const result = await createVoucherTx(tx, { ...input, voucherType: "PAYMENT" }, actor, {
-    systemRequest: request,
-  });
+  const result = await createVoucherTx(
+    tx,
+    { ...input, voucherType: "PAYMENT" },
+    actor,
+    {
+      systemRequest: request,
+    },
+  );
   // ن-٢-هـ (Codex ٢٩/٨): إشعارُ المُعتمِدين مركزيّاً هنا — كلّ مسارٍ يُنشئ سنداً
   // PENDING_APPROVAL يُخطر تلقائياً بلا حاجةِ كلِّ مُستدعٍ لتذكّر الوصلة. الهوك يفرغ
   // بعد commit — لا يفرغ على rollback (راجع `tx.ts.drainPostCommitHooks`).
   if (result.approvalStatus === "PENDING_APPROVAL") {
-    enqueuePostCommit(tx, () => notifyApprovalPendingByReceipt(result.receiptId));
+    enqueuePostCommit(tx, () =>
+      notifyApprovalPendingByReceipt(result.receiptId),
+    );
   }
   return result;
 }
@@ -1251,13 +1266,20 @@ export async function createSystemReceiptRequestTx(
       message: "مرفق دليل استرداد المبلغ إلزامي",
     });
   }
-  const result = await createVoucherTx(tx, { ...input, voucherType: "RECEIPT" }, actor, {
-    systemRequest: request,
-    deferOwnerAutoApproval: options?.deferOwnerAutoApproval,
-  });
+  const result = await createVoucherTx(
+    tx,
+    { ...input, voucherType: "RECEIPT" },
+    actor,
+    {
+      systemRequest: request,
+      deferOwnerAutoApproval: options?.deferOwnerAutoApproval,
+    },
+  );
   // ن-٢-هـ (Codex ٢٩/٨): إشعار مركزيّ لطلب استرداد تصحيح الاستحقاق أيضاً.
   if (result.approvalStatus === "PENDING_APPROVAL") {
-    enqueuePostCommit(tx, () => notifyApprovalPendingByReceipt(result.receiptId));
+    enqueuePostCommit(tx, () =>
+      notifyApprovalPendingByReceipt(result.receiptId),
+    );
   }
   return result;
 }
@@ -1277,9 +1299,11 @@ export async function createVoucher(
       // ن-٢-هـ (Codex ٢٩/٨): مسارُ الراوتر (`vouchers.create`) يمرّ هنا — إشعارٌ
       // مركزيٌّ يُغني عن حاجةِ الراوتر لاستدعاءِ notifier يدوياً.
       if (result.approvalStatus === "PENDING_APPROVAL") {
-        enqueuePostCommit(tx, () => notifyApprovalPendingByReceipt(result.receiptId));
+        enqueuePostCommit(tx, () =>
+          notifyApprovalPendingByReceipt(result.receiptId),
+        );
       }
       return result;
-    })
+    }),
   );
 }

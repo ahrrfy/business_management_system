@@ -1,7 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { playAnnouncementChime, playReadyBeep } from "../notifyBeep";
+import { setAudioFeedbackEnabled } from "../audioFeedback";
 
 describe("notifyBeep audio synthesizer contracts", () => {
+  beforeEach(() => {
+    setAudioFeedbackEnabled(true, null);
+  });
+
   it("does not throw when AudioContext is undefined", () => {
     expect(() => playAnnouncementChime("NORMAL")).not.toThrow();
     expect(() => playAnnouncementChime("IMPORTANT")).not.toThrow();
@@ -69,6 +74,21 @@ describe("notifyBeep audio synthesizer contracts", () => {
 
       playAnnouncementChime("NORMAL");
       expect(mockCtx.createOscillator).toHaveBeenCalledTimes(1);
+    } finally {
+      (globalThis as unknown as { AudioContext?: unknown }).AudioContext = originalAudioContext;
+    }
+  });
+
+  it("يحترم كتم أصوات الواجهة قبل إنشاء سياق صوتي قديم", () => {
+    const originalAudioContext = (globalThis as unknown as { AudioContext?: unknown }).AudioContext;
+    const audioContext = vi.fn();
+    (globalThis as unknown as { AudioContext?: unknown }).AudioContext = audioContext;
+
+    try {
+      setAudioFeedbackEnabled(false, null);
+      playReadyBeep();
+      playAnnouncementChime("CRITICAL");
+      expect(audioContext).not.toHaveBeenCalled();
     } finally {
       (globalThis as unknown as { AudioContext?: unknown }).AudioContext = originalAudioContext;
     }

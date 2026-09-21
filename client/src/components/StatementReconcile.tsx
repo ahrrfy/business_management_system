@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildReconciliationMessage } from "@/lib/whatsapp";
 import { fmt } from "@/lib/money";
-import { toast } from "sonner";
+import { notify } from "@/lib/notify";
 
 interface Props {
   entityName: string;
@@ -30,9 +30,9 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(msg);
-      toast.success("نُسخ نص رسالة المطابقة");
+      notify.ok("نُسخ نص رسالة المطابقة");
     } catch {
-      toast.error("تعذّر النسخ — انسخ الرسالة يدوياً من واتساب");
+      notify.err("تعذّر النسخ — انسخ الرسالة يدوياً من واتساب");
     }
   };
 

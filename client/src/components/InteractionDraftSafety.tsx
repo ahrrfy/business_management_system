@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { notify } from "@/lib/notify";
+import { playAudioFeedback } from "@/lib/audioFeedback";
 import {
   beginInteractionScope,
   discardInteractionDraft,
@@ -34,6 +36,7 @@ export function InteractionDraftSafety() {
     beginInteractionScope(path);
     if (promptedPath.current === path || !hasRecoverableInteractionDraft()) return;
     promptedPath.current = path;
+    playAudioFeedback("notification");
     const id = toast("توجد إدخالات غير محفوظة من الجلسة السابقة", {
       duration: Infinity,
       action: {
@@ -41,8 +44,8 @@ export function InteractionDraftSafety() {
         onClick: () => {
           // ننتظر اكتمال تركيب الصفحة الحالية؛ صفحات React المضبوطة تحتاج أحداث input.
           window.setTimeout(() => {
-            if (restoreInteractionDraft()) toast.success("تمت استعادة الإدخالات غير المحفوظة");
-            else toast.error("تعذّرت مطابقة المسودة مع النموذج الحالي");
+            if (restoreInteractionDraft()) notify.ok("تمت استعادة الإدخالات غير المحفوظة");
+            else notify.err("تعذّرت مطابقة المسودة مع النموذج الحالي");
           }, 0);
         },
       },

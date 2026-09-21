@@ -5,7 +5,7 @@ import {
   AI_PROVIDER_ERROR_CATEGORIES,
   type AiProviderErrorCategory,
 } from "@shared/productContentAi";
-import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, canUseDigitalCardsSellingStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import {
   capabilityModuleDecision,
   capabilityShadowEnabled,
@@ -926,17 +926,17 @@ export const commissionsReadProcedure = protectedProcedure.use(requireModule("co
 //     (قالبه READ لا يضعه في القائمة، ولا يعبُر إلا بمنح **صريح** — قرار أدمن واعٍ).
 // الكتابة (إنشاء/تعديل مزوّد أو محفظة أو بطاقة، ونشر السعر) مديرية حصراً — §١١ من وثيقة التصميم.
 /**
- * Digital-card selling is a RETAIL-POS operation. A print/reception cashier
- * may share the cashier base template (including digital_cards=READ), but must
- * not be able to invoke the retail sale endpoints directly.
+ * Digital-card selling is available from the two selling stations: retail and
+ * reception. The print-services station remains outside this gate, while the
+ * independent digital_cards module gate below still applies.
  */
-const requireDigitalCardsRetailStation = t.middleware(async ({ ctx, next }) => {
+const requireDigitalCardsSellingStation = t.middleware(async ({ ctx, next }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
   const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
     | Record<string, AccessLevel>
     | null
     | undefined;
-  if (!canUseStation("RETAIL", ctx.user.role, override)) {
+  if (!canUseDigitalCardsSellingStation(ctx.user.role, override)) {
     throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
   }
   return next({ ctx: { ...ctx, user: ctx.user } });
@@ -944,7 +944,7 @@ const requireDigitalCardsRetailStation = t.middleware(async ({ ctx, next }) => {
 
 export const digitalCardsPosProcedure = branchScopedProcedure
   .use(requireModule("digital_cards", "READ"))
-  .use(requireDigitalCardsRetailStation);
+  .use(requireDigitalCardsSellingStation);
 export const digitalCardsAdminReadProcedure = branchScopedProcedure.use(
   requireModuleGate(["manager", "accountant", "auditor"], "digital_cards", "READ")
 );

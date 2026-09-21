@@ -181,6 +181,20 @@ export const customerRouter = router({
       return result;
     }),
 
+  /** حسم ضيّق لهوية عميل الاستقبال المختار بالباركود/المحادثة حين لا يوجد هاتف صالح. */
+  receptionResolveById: customersReceptionCreateProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const customer = await getCustomer(input.customerId);
+      if (!customer) return { status: "NOT_FOUND" as const };
+      if (customer.isActive === false) return { status: "INACTIVE" as const };
+      return {
+        status: "RESOLVED" as const,
+        customerId: Number(customer.id),
+        defaultPriceTier: customer.defaultPriceTier,
+      };
+    }),
+
   // (١٢/٨، اصلاح عاجل بطلب المالك): استُبدلت customersCashierProcedure بـcustomersReceptionCreateProcedure
   // كي يُقبل من يملك crm=FULL **أو** workorders=FULL (كاشير الاستقبال بدور مخصّص حُدَّت فيه crm يدوياً).
   // بقيّة عمليات CRM (notes/update/delete) تبقى محكومة ببوّاباتها الأضيق — التغيير محصور بإنشاء العميل

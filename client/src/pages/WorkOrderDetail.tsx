@@ -38,7 +38,7 @@ import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDia
 import { WorkOrderDeliverySection } from "@/components/delivery/WorkOrderDeliverySection";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
-import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
+import { deriveWorkOrderCopyRemaining, formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -465,6 +465,27 @@ export default function WorkOrderDetail() {
   // الرصيد المستحق = سعر البيع − العربون المقبوض، عبر decimal.js (لا Number() على المال، §٥) —
   // يُستعمَل في رسالة واتساب/ملصق الشحن/بطاقة الدفعة عند التسليم بدل تكرار Math.max(0, Number(a)-Number(b)).
   const remainingDue = positiveDiff(data.salePrice, data.deposit ?? 0);
+  const copyRemainingDue = deriveWorkOrderCopyRemaining({
+    status: data.status,
+    invoiceId: data.invoiceId,
+    salePrice: data.salePrice,
+    deposit: data.deposit,
+    invoiceTotal: data.invoiceTotal,
+    invoicePaidAmount: data.invoicePaidAmount,
+    invoiceReturnedTotal: data.invoiceReturnedTotal,
+  });
+  const workOrderCopyPayload = {
+    number: data.orderNumber,
+    date: data.createdAt,
+    customer: data.customerName,
+    description: data.customizationText,
+    status: workOrderStatusLabel(data.status),
+    items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
+    total: data.salePrice,
+    deposit: data.deposit,
+    remaining: copyRemainingDue,
+    deliveryDate: data.dueDate,
+  };
   const durableRefundNotice = cancellationRefundStatus.data
     ? durableRefundStatusNotice(cancellationRefundStatus.data.status, fmt(cancellationRefundStatus.data.amount))
     : null;
@@ -520,26 +541,8 @@ export default function WorkOrderDetail() {
         actions={<>
           <CopyAsMenu
             label="نَسخ التَفاصيل"
-            plain={formatWorkOrderAsWhatsApp({
-              number: data.orderNumber,
-              date: data.createdAt,
-              customer: data.customerName,
-              description: data.customizationText,
-              status: workOrderStatusLabel(data.status),
-              items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
-              total: data.salePrice,
-              deliveryDate: data.dueDate,
-            })}
-            whatsapp={formatWorkOrderAsWhatsApp({
-              number: data.orderNumber,
-              date: data.createdAt,
-              customer: data.customerName,
-              description: data.customizationText,
-              status: workOrderStatusLabel(data.status),
-              items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
-              total: data.salePrice,
-              deliveryDate: data.dueDate,
-            })}
+            plain={formatWorkOrderAsWhatsApp(workOrderCopyPayload)}
+            whatsapp={formatWorkOrderAsWhatsApp(workOrderCopyPayload)}
           />
           <Button
             variant="outline"

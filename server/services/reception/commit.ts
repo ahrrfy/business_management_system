@@ -230,6 +230,7 @@ function materialize(
     const factor = l.productUnitId != null ? (meta.factorByUnit.get(Number(l.productUnitId)) ?? 1) : 1;
     return {
       baseVariantId: variantId,
+      baseProductUnitId: l.productUnitId != null ? Number(l.productUnitId) : null,
       title: l.title ?? "خدمة / أمر شغل",
       customizationText: l.customizationText ?? null,
       quantity: qtyInt,
