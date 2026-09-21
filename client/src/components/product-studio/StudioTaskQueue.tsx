@@ -25,8 +25,15 @@ function persistStudioScope(scope: Scope): void {
 }
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
-const BULK_ASSIGN_MAX = 20;
+const BULK_ASSIGN_MAX = 100;
 const CANCELLABLE_STATUSES = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
+
+function toDatetimeLocalString(value: Date | string | number | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return "";
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
 
 const CameraScanner = lazy(() => import("@/components/scan/CameraScanner").then((module) => ({ default: module.CameraScanner })));
 
@@ -91,8 +98,10 @@ export function StudioTaskQueue({
       campaignId: selectedCampaignId ?? undefined,
       assigneeId: assigneeFilter === "ALL" ? undefined : Number(assigneeFilter),
       search: debouncedTaskSearch.trim() || undefined,
-      priority: taskPriorityFilter === "ALL" ? undefined : (taskPriorityFilter as any),
-      overdue: overdue || undefined,
+      priority: taskPriorityFilter === "ALL" ? undefined : [taskPriorityFilter as any],
+      overdue: (overdue || savedView === "OVERDUE") ? true : undefined,
+      unassigned: savedView === "UNASSIGNED" ? true : undefined,
+      statuses: savedView === "PENDING_REVIEW" ? ["PENDING_REVIEW"] : undefined,
       hideClosedCampaigns,
     },
     {
@@ -359,7 +368,7 @@ export function StudioTaskQueue({
                               bulkReassign.mutate({ taskIds: queuedSelected, newAssigneeId: Number(bulkAssigneeId) });
                             }}
                           >
-                            <UserCheck aria-hidden className="size-4" /> إسناد {queuedTaskIds.filter((id) => selectedTaskIds.has(id)).length} من الطابور
+                            <UserCheck aria-hidden className="size-4" /> إسناد {Math.min(queuedTaskIds.filter((id) => selectedTaskIds.has(id)).length, BULK_ASSIGN_MAX)} من الطابور
                           </Button>
                         </div>
                       )}
@@ -429,7 +438,7 @@ export function StudioTaskQueue({
                           onChange={() => toggleTaskSelection(Number(task.id))}
                         />
                       )}
-                      <button type="button" onClick={() => { setSelectedId(Number(task.id)); setSelectedPriority(task.priority); setSelectedDueAt(task.dueAt ? new Date(task.dueAt).toISOString().slice(0, 16) : ""); }} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
+                      <button type="button" onClick={() => { setSelectedId(Number(task.id)); setSelectedPriority(task.priority); setSelectedDueAt(toDatetimeLocalString(task.dueAt)); }} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
                         <div className="flex items-start justify-between gap-2">
                           <span className="text-sm font-medium">
                             {task.productName}
@@ -489,8 +498,24 @@ export function StudioTaskQueue({
                             </AppSelect>
                           </div>
                           <Button
-                            type="button" className="min-h-11 self-end" disabled={offline || assign.isPending || !inlineAssigneeId}
-                            onClick={() => assign.mutate({ productId: Number(selected.productId), assigneeId: Number(inlineAssigneeId), priority: selectedPriority, dueAt: selectedDueAt ? new Date(selectedDueAt) : null })}
+                            type="button" className="min-h-11 self-end" disabled={offline || reassign.isPending || !inlineAssigneeId}
+                            onClick={async () => {
+                              try {
+                                await reassign.mutateAsync({
+                                  taskId: Number(selected.id),
+                                  expectedRevision: selected.revision,
+                                  newAssigneeId: Number(inlineAssigneeId),
+                                });
+                                if (selectedDueAt || selectedPriority !== selected.priority) {
+                                  await updateSchedule.mutateAsync({
+                                    taskId: Number(selected.id),
+                                    expectedRevision: selected.revision + 1,
+                                    priority: selectedPriority,
+                                    dueAt: selectedDueAt ? new Date(selectedDueAt) : null,
+                                  });
+                                }
+                              } catch {}
+                            }}
                           >
                             <UserCheck aria-hidden className="size-4" /> إسناد
                           </Button>
