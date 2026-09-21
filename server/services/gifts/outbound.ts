@@ -308,17 +308,19 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
     const giftVoucherId = extractInsertId(insHead);
     if (input.clientRequestId) await recordIdempotencyKey(tx, "gifts.outbound", input.clientRequestId, giftVoucherId);
 
-    for (const c of perLine) {
-      await tx.insert(giftVoucherLines).values({
-        giftVoucherId,
-        variantId: c.variantId,
-        productUnitId: c.productUnitId,
-        quantity: c.quantity,
-        baseQuantity: c.baseQuantity,
-        unitCostSnapshot: c.unitCostSnapshot,
-        lineCost: c.lineCost,
-        refSalePrice: c.refSalePrice,
-      });
+    if (perLine.length > 0) {
+      await tx.insert(giftVoucherLines).values(
+        perLine.map((c) => ({
+          giftVoucherId,
+          variantId: c.variantId,
+          productUnitId: c.productUnitId,
+          quantity: c.quantity,
+          baseQuantity: c.baseQuantity,
+          unitCostSnapshot: c.unitCostSnapshot,
+          lineCost: c.lineCost,
+          refSalePrice: c.refSalePrice,
+        })),
+      );
     }
 
     // أثرٌ فوريّ فقط للمُنجَز (auto-post). المعلَّق: صفر أثر حتى الاعتماد.

@@ -618,18 +618,20 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     }
 
     // ١٠. أصناف الفاتورة بلقطة كلفتها وقت البيع.
-    for (const c of computed) {
-      await tx.insert(invoiceItems).values({
-        invoiceId,
-        variantId: c.variantId,
-        productUnitId: c.productUnitId,
-        quantity: c.quantity,
-        baseQuantity: c.baseQuantity,
-        unitPrice: c.unitPrice,
-        unitCost: c.unitCost,
-        total: c.total,
-        itemNameSnapshot: c.invoiceName,
-      });
+    if (computed.length > 0) {
+      await tx.insert(invoiceItems).values(
+        computed.map((c) => ({
+          invoiceId,
+          variantId: c.variantId,
+          productUnitId: c.productUnitId,
+          quantity: c.quantity,
+          baseQuantity: c.baseQuantity,
+          unitPrice: c.unitPrice,
+          unitCost: c.unitCost,
+          total: c.total,
+          itemNameSnapshot: c.invoiceName,
+        })),
+      );
     }
 
     // النواتج المخزنية: خصم الناتج نفسه. لا تُنفّذ الوصفة هنا؛ الوصفة تخص أمر الإنتاج فقط.

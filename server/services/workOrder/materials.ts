@@ -259,15 +259,17 @@ export async function setWorkOrderMaterialsInTx(
     // لقطة التكلفة تُحفظ للأصناف المستهلَكة فقط؛ ما لم يبدأ بعدُ يبقى "0" ويأخذ لقطته عند البدء
     // (`startWorkOrder` يكتبها) — فلا نُثبّت تكلفةً لمادةٍ لم تُستهلَك.
     await tx.delete(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, input.workOrderId));
-    for (const vid of desiredIds) {
-      await tx.insert(workOrderMaterials).values({
-        workOrderId: input.workOrderId,
-        variantId: vid,
-        baseQuantity: desiredQty.get(vid)!,
-        unitCost: consumed
-          ? (snapshotCost.get(vid) ?? costMap.get(vid) ?? new Decimal(0)).toFixed(2)
-          : "0",
-      });
+    if (desiredIds.length > 0) {
+      await tx.insert(workOrderMaterials).values(
+        desiredIds.map((vid) => ({
+          workOrderId: input.workOrderId,
+          variantId: vid,
+          baseQuantity: desiredQty.get(vid)!,
+          unitCost: consumed
+            ? (snapshotCost.get(vid) ?? costMap.get(vid) ?? new Decimal(0)).toFixed(2)
+            : "0",
+        })),
+      );
     }
 
     const newMaterialsCost = consumed

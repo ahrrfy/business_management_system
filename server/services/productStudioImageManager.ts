@@ -201,12 +201,18 @@ export async function reorderProductImages(
       .from(productImages)
       .where(and(eq(productImages.productId, input.productId), inArray(productImages.id, ids)));
     const belongingSet = new Set(belonging.map((r) => Number(r.id)));
-    let position = 0;
-    for (const id of ids) {
-      if (!belongingSet.has(id)) continue;
-      await tx.update(productImages).set({ sortOrder: position }).where(eq(productImages.id, id));
-      position++;
+    const validIds = ids.filter((id) => belongingSet.has(id));
+    if (validIds.length > 0) {
+      const cases = sql.join(
+        validIds.map((id, i) => sql`WHEN ${productImages.id} = ${id} THEN ${i}`),
+        sql` `,
+      );
+      await tx
+        .update(productImages)
+        .set({ sortOrder: sql`CASE ${cases} ELSE ${productImages.sortOrder} END` })
+        .where(inArray(productImages.id, validIds));
     }
+    const position = validIds.length;
     await tx.insert(auditLogs).values({
       userId: actor.userId,
       branchId: actor.branchId,

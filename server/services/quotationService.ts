@@ -261,18 +261,20 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
     });
     const quotationId = extractInsertId(insRes);
 
-    for (const c of computed) {
-      await tx.insert(quotationItems).values({
-        quotationId,
-        variantId: c.variantId,
-        productUnitId: c.productUnitId,
-        quantity: c.quantity,
-        baseQuantity: c.baseQuantity,
-        unitPrice: c.unitPrice,
-        catalogUnitPrice: c.catalogUnitPrice,
-        discountAmount: c.discountAmount,
-        total: c.total,
-      });
+    if (computed.length > 0) {
+      await tx.insert(quotationItems).values(
+        computed.map((c) => ({
+          quotationId,
+          variantId: c.variantId,
+          productUnitId: c.productUnitId,
+          quantity: c.quantity,
+          baseQuantity: c.baseQuantity,
+          unitPrice: c.unitPrice,
+          catalogUnitPrice: c.catalogUnitPrice,
+          discountAmount: c.discountAmount,
+          total: c.total,
+        })),
+      );
     }
     if (sourceRequest) {
       await tx

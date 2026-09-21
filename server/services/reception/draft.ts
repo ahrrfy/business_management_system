@@ -153,8 +153,10 @@ export async function promoteDraft(
       createdBy: actor.userId,
     });
     const draftId = extractInsertId(res);
-    for (let i = 0; i < input.lines.length; i += 1) {
-      await tx.insert(receptionDraftLines).values(lineRowValues(draftId, input.lines[i], i));
+    if (input.lines.length > 0) {
+      await tx.insert(receptionDraftLines).values(
+        input.lines.map((line, i) => lineRowValues(draftId, line, i)),
+      );
     }
     return { draftId, draftNumber, version: 0, total: totals.total.toFixed(2) };
   });
@@ -249,8 +251,10 @@ export async function syncDraft(
     }
 
     await tx.delete(receptionDraftLines).where(eq(receptionDraftLines.draftId, input.draftId));
-    for (let i = 0; i < input.lines.length; i += 1) {
-      await tx.insert(receptionDraftLines).values(lineRowValues(input.draftId, input.lines[i], i));
+    if (input.lines.length > 0) {
+      await tx.insert(receptionDraftLines).values(
+        input.lines.map((line, i) => lineRowValues(input.draftId, line, i)),
+      );
     }
     const nextVersion = Number(row.version) + 1;
     await tx

@@ -206,14 +206,16 @@ export async function createRecipe(input: CreateRecipeInput, actor: Actor) {
       createdBy: actor.userId,
     });
     const recipeId = extractInsertId(insRes);
-    for (const l of input.lines) {
-      await tx.insert(productionRecipeLines).values({
-        recipeId,
-        inputVariantId: l.inputVariantId,
-        inputProductUnitId: l.inputProductUnitId ?? null,
-        qtyPerOutputBase: money(l.qtyPerOutputBase).toFixed(4),
-        notes: l.notes?.trim() || null,
-      });
+    if (input.lines.length > 0) {
+      await tx.insert(productionRecipeLines).values(
+        input.lines.map((l) => ({
+          recipeId,
+          inputVariantId: l.inputVariantId,
+          inputProductUnitId: l.inputProductUnitId ?? null,
+          qtyPerOutputBase: money(l.qtyPerOutputBase).toFixed(4),
+          notes: l.notes?.trim() || null,
+        })),
+      );
     }
     return { recipeId };
   });
@@ -243,14 +245,16 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
       })
       .where(eq(productionRecipes.id, id));
     await tx.delete(productionRecipeLines).where(eq(productionRecipeLines.recipeId, id));
-    for (const l of input.lines) {
-      await tx.insert(productionRecipeLines).values({
-        recipeId: id,
-        inputVariantId: l.inputVariantId,
-        inputProductUnitId: l.inputProductUnitId ?? null,
-        qtyPerOutputBase: money(l.qtyPerOutputBase).toFixed(4),
-        notes: l.notes?.trim() || null,
-      });
+    if (input.lines.length > 0) {
+      await tx.insert(productionRecipeLines).values(
+        input.lines.map((l) => ({
+          recipeId: id,
+          inputVariantId: l.inputVariantId,
+          inputProductUnitId: l.inputProductUnitId ?? null,
+          qtyPerOutputBase: money(l.qtyPerOutputBase).toFixed(4),
+          notes: l.notes?.trim() || null,
+        })),
+      );
     }
     return { recipeId: id };
   });

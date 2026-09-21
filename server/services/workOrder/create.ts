@@ -449,33 +449,38 @@ export async function createWorkOrderInTx(
     });
   }
 
-  for (const m of input.materials ?? []) {
-    await tx.insert(workOrderMaterials).values({
-      workOrderId,
-      variantId: m.variantId,
-      baseQuantity: m.baseQuantity,
-      unitCost: "0", // snapshot on consumption
-    });
-  }
-
   // السلامة المخزنية/المحاسبية (٢١/٦/٢٦): أُزيل إدراج `workOrderItems` (أصناف البيع المصغّرة).
   // كان طلب الخدمة يُخزّنها بلا خصم مخزون (start يستهلك المواد فقط) وبلا تكلفة (COGS) في الفاتورة
   // ⇒ مخزونٌ مُبالَغ فيه وربحٌ مُبالَغ فيه. القرار (أ): الأصناف الجاهزة تُباع بفاتورة بيع مستقلّة
   // عبر saleRouter (خصم مخزون + COGS + قيد SALE)، وطلب الخدمة يحمل خدمة التخصيص فقط. الجدول
   // workOrderItems يبقى في المخطّط (بلا كاتب) تفادياً لهجرة، وقد يُستعمل مستقبلاً لمنطق صحيح.
 
+  const materials = input.materials ?? [];
+  if (materials.length > 0) {
+    await tx.insert(workOrderMaterials).values(
+      materials.map((m) => ({
+        workOrderId,
+        variantId: m.variantId,
+        baseQuantity: m.baseQuantity,
+        unitCost: "0", // snapshot on consumption
+      })),
+    );
+  }
+
   // v3-add-screens(100%): صور نموذج العمل في جدولها الصحيح.
   const imgs = normalizeDesignContentImages(
     (input.designImages ?? []).filter((i) => i.url?.trim()).slice(0, 10),
   );
-  for (let i = 0; i < imgs.length; i++) {
-    await tx.insert(workOrderImages).values({
-      workOrderId,
-      url: imgs[i].url,
-      caption: imgs[i].caption,
-      sortOrder: imgs[i].sortOrder,
-      revision: 1,
-    } as any);
+  if (imgs.length > 0) {
+    await tx.insert(workOrderImages).values(
+      imgs.map((img) => ({
+        workOrderId,
+        url: img.url,
+        caption: img.caption,
+        sortOrder: img.sortOrder,
+        revision: 1,
+      } as any)),
+    );
   }
 
   // رأس نسخة مستقلّ عن الصور: حتى الطلب النصّي أو ذو صفر صور له مستندٌ مبصوم قابل للاعتماد.

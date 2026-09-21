@@ -264,15 +264,17 @@ export async function replaceBundleComponents(
   await tx
     .delete(bundleComponents)
     .where(eq(bundleComponents.bundleVariantId, bundleVariantId));
-  for (const v of validated) {
-    await tx.insert(bundleComponents).values({
-      bundleVariantId,
-      componentVariantId: v.componentVariantId,
-      componentBaseQuantity: v.componentBaseQuantity,
-      componentUnitId: v.componentUnitId,
-      sortOrder: v.sortOrder,
-      notes: v.notes,
-    });
+  if (validated.length > 0) {
+    await tx.insert(bundleComponents).values(
+      validated.map((v) => ({
+        bundleVariantId,
+        componentVariantId: v.componentVariantId,
+        componentBaseQuantity: v.componentBaseQuantity,
+        componentUnitId: v.componentUnitId,
+        sortOrder: v.sortOrder,
+        notes: v.notes,
+      })),
+    );
   }
   return validated;
 }
