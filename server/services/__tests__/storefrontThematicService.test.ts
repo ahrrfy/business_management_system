@@ -122,6 +122,29 @@ describe("storefrontThematicService — محرك المطابقة الرمزية
       const scoreStudent = calculateProductRelevance(studentBundle, dealsArch);
       expect(scoreStudent).toBeGreaterThanOrEqual(dealsArch.minRelevanceThreshold);
     });
+
+    it("تستبعد بكجات وبخاخات تلوين الأطفال من كرت البكجات ومن كرت الفنون (-100)", () => {
+      const kidsPanter = {
+        productName: "بكج تلوين اطفال Panter KIDSPUW112",
+        category: "مستلزمات وادوات الرسم والفن",
+        unitName: "قطعة",
+        price: "10000",
+      };
+      expect(isQualifiedBundle(kidsPanter)).toBe(false);
+      expect(calculateProductRelevance(kidsPanter, dealsArch)).toBe(-100);
+      const creativeArch = THEMATIC_ARCHETYPES.find((a) => a.id === "creative")!;
+      expect(calculateProductRelevance(kidsPanter, creativeArch)).toBe(-100);
+
+      const kidsSpray = {
+        productName: "بخ تلوين اطفال PANTER PUW110",
+        category: "مستلزمات وادوات الرسم والفن",
+        unitName: "قطعة",
+        price: "10000",
+      };
+      expect(isQualifiedBundle(kidsSpray)).toBe(false);
+      expect(calculateProductRelevance(kidsSpray, dealsArch)).toBe(-100);
+      expect(calculateProductRelevance(kidsSpray, creativeArch)).toBe(-100);
+    });
   });
 
   describe("٣. معالجة خلل أحبار الطابعات والأختام في كرت الخط والحبر العربي (Calligraphy)", () => {
