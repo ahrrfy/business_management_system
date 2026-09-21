@@ -8442,6 +8442,14 @@ export const storeSettings = mysqlTable(
       precision: 15,
       scale: 2,
     }),
+    // عتبة التوصيل المجاني لباقي المحافظات: إن بلغ المجموع الفرعي هذا الحدّ ⇒ أجرة توصيل صفر. null/0 = معطّل.
+    freeShippingThresholdGovernorates: decimal(
+      "freeShippingThresholdGovernorates",
+      {
+        precision: 15,
+        scale: 2,
+      },
+    ),
     updatedBy: int("updatedBy").references(() => users.id),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

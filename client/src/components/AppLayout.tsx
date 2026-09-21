@@ -1,13 +1,9 @@
+import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
 import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
-const QuranSidebarCard = lazy(() =>
-  import("@/components/quran/QuranSidebarCard").then((module) => ({
-    default: module.QuranSidebarCard,
-  })),
-);
 import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { PushNotificationPrompt } from "@/components/notifications/PushNotificationPrompt";
 import { Button } from "@/components/ui/button";
@@ -34,14 +30,6 @@ import {
   Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check,
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
-import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
-
-const HybridSidebarNav = lazy(() =>
-  import("@/components/navigation/HybridSidebarNav").then((module) => ({
-    default: module.HybridSidebarNav,
-  })),
-);
-
 import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
@@ -57,6 +45,18 @@ import {
   toggleFavorite,
   type NavWorkspace,
 } from "@/lib/navWorkspace";
+
+const QuranSidebarCard = lazy(() =>
+  import("@/components/quran/QuranSidebarCard").then((module) => ({
+    default: module.QuranSidebarCard,
+  })),
+);
+
+const HybridSidebarNav = lazy(() =>
+  import("@/components/navigation/HybridSidebarNav").then((module) => ({
+    default: module.HybridSidebarNav,
+  })),
+);
 
 /**
  * ربط الطابعة الحرارية — متاحٌ من الشريط العلوي في كل شاشة (لا الكاشير فقط)، كي تُربط مرّةً

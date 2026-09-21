@@ -45,3 +45,18 @@ export function governorateById(id: string): Governorate | undefined {
 export function deliveryFeeFor(id: string): number {
   return governorateById(id)?.deliveryFee ?? 0;
 }
+
+/** هل المحافظة تابعة لبغداد (بغداد المركز أو العامرية أو أي نطاق بغدادي)؟ */
+export function isBaghdadGovernorate(id: string | null | undefined): boolean {
+  if (!id) return false;
+  const trimmed = id.trim().toLowerCase();
+  return (
+    trimmed === "baghdad" ||
+    trimmed === "baghdad_amiriya" ||
+    trimmed.startsWith("baghdad_") ||
+    trimmed.startsWith("baghdad-") ||
+    trimmed === "بغداد" ||
+    trimmed.startsWith("بغداد")
+  );
+}
+

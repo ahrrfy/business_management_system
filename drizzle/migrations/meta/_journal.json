@@ -2325,6 +2325,13 @@
 			"when": 1788148822000,
 			"tag": "0364_seed_baghdad_amiriya_zone",
 			"breakpoints": true
+		},
+		{
+			"idx": 365,
+			"version": "5",
+			"when": 1788148823000,
+			"tag": "0365_store_settings_free_shipping_governorates",
+			"breakpoints": true
 		}
 	]
 }

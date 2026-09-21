@@ -317,6 +317,7 @@ const settingsRouter = router({
         announcement: z.string().max(500).nullish(),
         whatsappNumber: z.string().max(20).nullish(),
         freeShippingThreshold: z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة غير صحيحة").nullish(),
+        freeShippingThresholdGovernorates: z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة غير صحيحة").nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {

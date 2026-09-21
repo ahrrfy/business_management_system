@@ -504,7 +504,10 @@ export async function updateOnlineOrder(
     // Fetch store settings for freeShippingThreshold
     const storeSettings = (
       await tx
-        .select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
+        .select({
+          freeShippingThreshold: storeSettingsTable.freeShippingThreshold,
+          freeShippingThresholdGovernorates: storeSettingsTable.freeShippingThresholdGovernorates,
+        })
         .from(storeSettingsTable)
         .where(eq(storeSettingsTable.id, 1))
         .limit(1)
@@ -684,6 +687,7 @@ export async function updateOnlineOrder(
         targetGovernorate,
         storeSettings?.freeShippingThreshold,
         retailSubtotal.toFixed(2),
+        storeSettings?.freeShippingThresholdGovernorates,
       );
 
       // Deduct coupon discount if order had one
@@ -745,6 +749,7 @@ export async function updateOnlineOrder(
         targetGovernorate,
         storeSettings?.freeShippingThreshold,
         String(order.subtotal),
+        storeSettings?.freeShippingThresholdGovernorates,
       );
 
       // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.

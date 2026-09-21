@@ -104,24 +104,35 @@ export default function StorePromotionsManager() {
   const promosQ = trpc.storeAdmin.promotions.list.useQuery({ includeInactive });
   const promotionsList = useMemo(() => promosQ.data ?? [], [promosQ.data]);
 
-  // إعدادات المتجر (عتبة التوصيل المجاني)
+  // إعدادات المتجر (عتبات التوصيل المجاني الإقليمية)
   const settingsQ = trpc.storeAdmin.settings.get.useQuery();
-  const [thresholdInput, setThresholdInput] = useState<string | null>(null);
+  const [thresholdBaghdadInput, setThresholdBaghdadInput] = useState<string | null>(null);
+  const [thresholdGovInput, setThresholdGovInput] = useState<string | null>(null);
 
-  // تحديث عتبة التوصيل المجاني
+  // تحديث عتبات التوصيل المجاني
   const updateSettingsM = trpc.storeAdmin.settings.update.useMutation({
     onSuccess: () => {
-      notify.ok("تم حفظ عتبة التوصيل المجاني بنجاح");
-      setThresholdInput(null);
+      notify.ok("تم حفظ عتبات التوصيل المجاني بنجاح");
+      setThresholdBaghdadInput(null);
+      setThresholdGovInput(null);
       void utils.storeAdmin.settings.get.invalidate();
     },
     onError: (err) => notify.err(err),
   });
 
-  const currentThreshold = settingsQ.data?.freeShippingThreshold
+  const currentThresholdBaghdad = settingsQ.data?.freeShippingThreshold
     ? String(Number(settingsQ.data.freeShippingThreshold))
     : null;
-  const activeThresholdValue = thresholdInput !== null ? thresholdInput : (currentThreshold ?? "");
+  const currentThresholdGov = settingsQ.data?.freeShippingThresholdGovernorates
+    ? String(Number(settingsQ.data.freeShippingThresholdGovernorates))
+    : null;
+
+  const activeThresholdBaghdad =
+    thresholdBaghdadInput !== null ? thresholdBaghdadInput : (currentThresholdBaghdad ?? "");
+  const activeThresholdGov =
+    thresholdGovInput !== null ? thresholdGovInput : (currentThresholdGov ?? "");
+  const hasThresholdChanges =
+    thresholdBaghdadInput !== null || thresholdGovInput !== null;
 
   // عمليات العروض
   const createM = trpc.storeAdmin.promotions.create.useMutation({
@@ -571,65 +582,101 @@ export default function StorePromotionsManager() {
                 <Truck aria-hidden className="size-5" />
               </span>
               <div>
-                <CardTitle className="text-base font-bold">عتبة التوصيل المجاني للطلبات الإلكترونية</CardTitle>
+                <CardTitle className="text-base font-bold">عتبات التوصيل المجاني للطلبات الإلكترونية</CardTitle>
                 <p className="text-xs text-muted-foreground">
-                  عند بلوغ مجموع قيمة سلة العميل هذا الحد، يُعفى الطلب تلقائياً من رسوم التوصيل لجميع المحافظات والمناطق.
+                  تحكم كامل ومستقل في حد الفاتورة الذي يعفي الطلب من أجور الشحن داخل بغداد ولكافة المحافظات.
                 </p>
               </div>
             </div>
-            <div>
-              {currentThreshold ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {currentThresholdBaghdad ? (
                 <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] text-xs font-semibold">
                   <CheckCircle2 aria-hidden className="mr-1 size-3.5" />
-                  مفعّل: فوق {formatIqd(Number(currentThreshold))}
+                  بغداد: فوق {formatIqd(Number(currentThresholdBaghdad))}
                 </Badge>
               ) : (
                 <Badge variant="outline" className="border-border text-muted-foreground text-xs">
-                  معطّل (رسوم التوصيل تُطبّق دائماً)
+                  بغداد: معطّل
+                </Badge>
+              )}
+              {currentThresholdGov ? (
+                <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] text-xs font-semibold">
+                  <CheckCircle2 aria-hidden className="mr-1 size-3.5" />
+                  المحافظات: فوق {formatIqd(Number(currentThresholdGov))}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="border-border text-muted-foreground text-xs">
+                  المحافظات: معطّل
                 </Badge>
               )}
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1 max-w-sm">
-              <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                حد الفاتورة بالدينار العراقي (اتركه فارغاً لتعطيل التوصيل المجاني):
-              </label>
-              <MoneyInput
-                value={activeThresholdValue}
-                onChange={(val) => setThresholdInput(val)}
-                decimals={0}
-                placeholder="مثال: 50,000"
-                ariaLabel="حد الشحن المجاني بالدينار"
-              />
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                  عتبة الشحن المجاني (داخل بغداد):
+                </label>
+                <MoneyInput
+                  value={activeThresholdBaghdad}
+                  onChange={(val) => setThresholdBaghdadInput(val)}
+                  decimals={0}
+                  placeholder="مثال: 35,000 (فارغ للتعطيل)"
+                  ariaLabel="حد الشحن المجاني داخل بغداد"
+                />
+                <span className="mt-1 block text-[11px] text-muted-foreground">
+                  يشمل بغداد المركز والعامرية وكافة أحياء العاصمة.
+                </span>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                  عتبة الشحن المجاني (كافة المحافظات):
+                </label>
+                <MoneyInput
+                  value={activeThresholdGov}
+                  onChange={(val) => setThresholdGovInput(val)}
+                  decimals={0}
+                  placeholder="مثال: 60,000 (فارغ للتعطيل)"
+                  ariaLabel="حد الشحن المجاني لكافة المحافظات"
+                />
+                <span className="mt-1 block text-[11px] text-muted-foreground">
+                  يطبق على باقي المحافظات (البصرة، نينوى، أربيل، كركوك...).
+                </span>
+              </div>
             </div>
-            <Button
-              onClick={() =>
-                updateSettingsM.mutate({
-                  freeShippingThreshold: activeThresholdValue ? String(Number(activeThresholdValue)) : null,
-                })
-              }
-              disabled={updateSettingsM.isPending}
-              className="gap-1.5"
-            >
-              {updateSettingsM.isPending ? (
-                <Loader2 aria-hidden className="size-4 animate-spin" />
-              ) : (
-                <Save aria-hidden className="size-4" />
-              )}
-              حفظ عتبة التوصيل المجاني
-            </Button>
-            {thresholdInput !== null && (
+            <div className="flex items-center gap-2 pt-1">
               <Button
-                variant="ghost"
-                onClick={() => setThresholdInput(null)}
-                className="text-xs text-muted-foreground"
+                onClick={() =>
+                  updateSettingsM.mutate({
+                    freeShippingThreshold: activeThresholdBaghdad ? String(Number(activeThresholdBaghdad)) : null,
+                    freeShippingThresholdGovernorates: activeThresholdGov ? String(Number(activeThresholdGov)) : null,
+                  })
+                }
+                disabled={updateSettingsM.isPending}
+                className="gap-1.5"
               >
-                إلغاء التغيير
+                {updateSettingsM.isPending ? (
+                  <Loader2 aria-hidden className="size-4 animate-spin" />
+                ) : (
+                  <Save aria-hidden className="size-4" />
+                )}
+                حفظ عتبات التوصيل المجاني
               </Button>
-            )}
+              {hasThresholdChanges && (
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setThresholdBaghdadInput(null);
+                    setThresholdGovInput(null);
+                  }}
+                  className="text-xs text-muted-foreground"
+                >
+                  إلغاء التغيير
+                </Button>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>

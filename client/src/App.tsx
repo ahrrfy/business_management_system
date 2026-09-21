@@ -29,7 +29,6 @@ import {
 } from "@/lib/offline/pinLock";
 import { isColdOfflineStudioRoute } from "@/lib/productStudio/coldOfflinePolicy";
 import { trpc } from "@/lib/trpc";
-const Login = lazy(() => import("@/pages/Login"));
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
@@ -37,6 +36,7 @@ import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, RECEPTION_STATION_GATE, WOR
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
+const Login = lazy(() => import("@/pages/Login"));
 const QuranStationDrawer = lazy(() =>
   import("@/components/quran/QuranStationDrawer").then((m) => ({ default: m.QuranStationDrawer })),
 );

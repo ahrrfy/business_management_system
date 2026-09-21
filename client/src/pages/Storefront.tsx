@@ -2509,7 +2509,7 @@ function StorefrontContent() {
             وخصمُ الكوبون وزرُّ الإضافة وشارةُ العرض وبطاقاتُ الأقسام وأخضرُ واتساب. */}
         {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-neg)]">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
-        <StorefrontMilestoneBar cartSubtotal={cartSubtotal} className="mb-6" />
+        <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
         {!search && categoryId == null && !showWishlist && (
           <>
@@ -2760,7 +2760,7 @@ function StorefrontContent() {
       {cartCount > 0 && panel == null && (
         <div className="fixed inset-x-3 bottom-4 z-30 mx-auto max-w-lg sm:bottom-6 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2">
           <div className="store-dynamic-dock flex flex-col gap-2 rounded-2xl border border-white/20 bg-slate-950/95 p-2.5 sm:p-3 text-white shadow-2xl backdrop-blur-xl ring-1 ring-black/40">
-            <StorefrontMilestoneBar cartSubtotal={cartSubtotal} compact />
+            <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} compact />
             <div className="flex items-center justify-between gap-3">
               <button type="button" onClick={() => setPanel("cart")} className="flex min-w-0 items-center gap-2.5 text-right focus:outline-none">
                 <div className="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/15 bg-white/10">
