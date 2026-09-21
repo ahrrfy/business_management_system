@@ -95,7 +95,12 @@ function isHighPrioritySql() {
 }
 
 function missingBarcodesSql() {
-  const scope = sql`from ${productUnits} join ${productVariants} on ${productUnits.variantId} = ${productVariants.id} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1 and (${productUnits.barcode} is null or ${productUnits.barcode} = '')`;
+  const scope = sql`from ${productUnits} join ${productVariants} on ${productUnits.variantId} = ${productVariants.id}
+    where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1
+    and (${productUnits.barcode} is null or ${productUnits.barcode} = '')
+    and not exists (
+      select 1 from ${productUnitBarcodes} pub where pub.productUnitId = ${productUnits.id} and pub.barcode != ''
+    )`;
   return sql<number>`(select exists(select 1 ${scope}))`;
 }
 
@@ -132,18 +137,18 @@ function healthCaseSql() {
     case
       when (${approved}) = 0 then (
         case 
-          when (${isHighPriority}) = 1 then 'HIGH_VALUE_NO_IMAGE'
-          when ${products.isConsignment} = 1 then 'CONSIGNMENT_NO_IMAGE'
           when ${products.isBundle} = 1 then 'BUNDLE_NO_IMAGE'
+          when ${products.isConsignment} = 1 then 'CONSIGNMENT_NO_IMAGE'
+          when (${isHighPriority}) = 1 then 'HIGH_VALUE_NO_IMAGE'
           else 'NO_IMAGES'
         end
       )
       when (${corruptedImages}) = 1 then 'CORRUPTED_OR_UNPROCESSED_IMAGE'
       when (${missingBarcodes}) = 1 then 'HAS_IMAGE_NO_BARCODE'
       when (${redundantVariants}) = 1 then 'REDUNDANT_VARIANT_IMAGE'
-      when (${approved}) = 1 then 'SINGLE_IMAGE'
       when (${activeVariants}) > 0 and (${variantsMissing}) > 0 and (${parentImages}) > 0 then 'PARENT_ONLY_HAS_VARIANTS'
       when (${activeVariants}) > 0 and (${variantsMissing}) > 0 then 'VARIANTS_INCOMPLETE'
+      when (${approved}) = 1 then 'SINGLE_IMAGE'
       else 'HEALTHY'
     end
   )`;
@@ -247,9 +252,9 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
     conditions.push(
       sql`(${products.name} like ${like} or ${products.searchNorm} like ${like} or exists (
         select 1 from ${productVariants} pv
-        left join ${productUnits} pu on pu.variant_id = pv.id
-        left join ${productUnitBarcodes} pub on pub.unit_id = pu.id
-        where pv.product_id = ${products.id}
+        left join ${productUnits} pu on pu.variantId = pv.id
+        left join ${productUnitBarcodes} pub on pub.productUnitId = pu.id
+        where pv.productId = ${products.id}
         and (pv.sku = ${rawSearch} or pu.barcode = ${rawSearch} or pub.barcode = ${rawSearch})
       ))`,
     );
@@ -297,10 +302,6 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
     })
     .from(products)
     .where(and(...conditions, cursor != null ? sql`${products.id} > ${cursor}` : undefined))
-    // نطاقُ الترشيح الداخليّ يبقى بمعرّف المنتج (يتحدّد بالـcursor)، والفرز الحقيقيّ
-    // يقع على الخارجيّ بعد الترشيح بالحالة. `limit + 1` هنا كافٍ لأنّ التقطيع خارجيّ.
-    .orderBy(asc(products.id))
-    .limit(limit + 1)
     .as("d");
   const sort: DiscoverySort = input.sort ?? "MISSING_MOST";
   // نستهلك `inner.variantsMissing` كعمودٍ مسمّى على alias `d` — درizzle helpers (asc/desc)
@@ -317,7 +318,8 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
     .select()
     .from(inner)
     .where(inArray(inner.health, stateFilter))
-    .orderBy(...orderBy);
+    .orderBy(...orderBy)
+    .limit(limit + 1);
 
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
