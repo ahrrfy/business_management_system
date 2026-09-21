@@ -2551,7 +2551,7 @@ function StorefrontContent() {
                   id: c.id,
                   title: c.title,
                   tag: c.tag,
-                  productIds: c.productIds,
+                  productIds: c.productIds ?? [],
                 });
                 scrollToResults();
               }}

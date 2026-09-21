@@ -389,6 +389,8 @@ export default defineConfig({
       "client/src/lib/screenWakeLock.test.ts",
       // سيو المتجر وبيانات Schema.org وFAQPage للذكاء الاصطناعي (منطق نقي بلا قاعدة)
       "server/services/__tests__/storefrontSeoMeta.test.ts",
+      // محرك المطابقة الرمزية والتراكيب الذكية للتشكيلات التحريرية بالمتجر (منطق نقي بلا قاعدة)
+      "server/services/__tests__/storefrontThematicService.test.ts",
     ],
   },
 });
