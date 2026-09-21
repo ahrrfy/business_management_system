@@ -25,7 +25,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { selectClsFull } from "@/lib/ui/formStyles";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
-import { Info } from "lucide-react";
+import { Info, AlertCircle, RefreshCw } from "lucide-react";
+import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
 
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
@@ -75,6 +76,8 @@ interface LedgerRow {
   filterGroup: LedgerFilterGroup;
   openHref?: string;
   paymentStatus?: "PAID" | "PARTIAL" | "UNPAID";
+  poId?: number;
+  receiptId?: number;
 }
 
 const FILTER_GROUP_LABEL: Record<"all" | LedgerFilterGroup, string> = {
@@ -101,85 +104,172 @@ function sumMoneyCol(values: (string | null | undefined)[]): ReturnType<typeof D
   return values.reduce((acc, v) => (v ? acc.plus(D(v)) : acc), D(0));
 }
 
-/** أعمدة دفتر الحركات الموحَّد — عمودا مدين/دائن + رصيدٌ جارٍ بارز، مطابقةً للنمط العالميّ. */
-const ledgerColumns: ColumnDef<LedgerRow, unknown>[] = [
-  { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, cell: ({ row }) => <span className="text-xs">{row.original.date}</span> },
-  {
-    id: "ref",
-    header: "المستند",
-    accessorFn: (r) => r.ref,
-    meta: { kind: "code" },
-    cell: ({ row }) => (row.original.ref === "—" ? <span className="text-xs text-muted-foreground">—</span> : <CopyInline value={row.original.ref} />),
-  },
-  {
-    id: "description",
-    header: "البيان",
-    accessorFn: (r) => r.description,
-    meta: { width: "wide" },
-    cell: ({ row }) => (
-      <div>
-        <div className="text-xs">{row.original.description}</div>
-        {row.original.descriptionSub && <div className="text-[10px] text-muted-foreground">{row.original.descriptionSub}</div>}
-      </div>
-    ),
-  },
-  {
-    id: "actor",
-    header: "المنفّذ",
-    accessorFn: (r) => r.actor,
-    meta: { kind: "actor" },
-    cell: ({ row }) => <span className="text-xs">{row.original.actor}</span>,
-  },
-  {
-    id: "debit",
-    header: "مدين (دفع)",
-    accessorFn: (r) => (r.debit == null ? "" : fmt(r.debit)),
-    meta: { kind: "money" },
-    cell: ({ row }) => (row.original.debit == null ? <span className="text-muted-foreground">—</span> : <span className="text-money-positive">{fmt(row.original.debit)}</span>),
-    footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.debit)).toFixed(2)),
-  },
-  {
-    id: "credit",
-    header: "دائن (مشتريات)",
-    accessorFn: (r) => (r.credit == null ? "" : fmt(r.credit)),
-    meta: { kind: "money" },
-    cell: ({ row }) => (row.original.credit == null ? <span className="text-muted-foreground">—</span> : fmt(row.original.credit)),
-    footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.credit)).toFixed(2)),
-  },
-  {
-    id: "balance",
-    header: "الرصيد الجاري",
-    accessorFn: (r) => fmt(r.balance),
-    meta: { kind: "money" },
-    cell: ({ row }) => <span className="font-bold">{fmt(row.original.balance)}</span>,
-  },
-  {
-    id: "paymentStatus",
-    header: "الحالة",
-    accessorFn: (r) => (r.paymentStatus ? PAYMENT_STATUS_LABEL[r.paymentStatus] : "—"),
-    meta: { kind: "status" },
-    cell: ({ row }) =>
-      row.original.paymentStatus ? (
-        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PAYMENT_STATUS_CLS[row.original.paymentStatus]}`}>
-          {PAYMENT_STATUS_LABEL[row.original.paymentStatus]}
-        </span>
-      ) : (
-        <span className="text-xs text-muted-foreground">—</span>
+/** أعمدة دفتر الحركات الموحَّد — عمودا مدين/دائن + رصيدٌ جارٍ بارز، مع إمكانية النقر للتدقيق التفصيلي. */
+function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): ColumnDef<LedgerRow, unknown>[] {
+  return [
+    { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, cell: ({ row }) => <span className="text-xs">{row.original.date}</span> },
+    {
+      id: "ref",
+      header: "المستند",
+      accessorFn: (r) => r.ref,
+      meta: { kind: "code" },
+      cell: ({ row }) => {
+        const r = row.original;
+        if (r.ref === "—") return <span className="text-xs text-muted-foreground">—</span>;
+        return (
+          <div className="flex items-center gap-1.5">
+            <CopyInline value={r.ref} />
+            {(r.poId || r.receiptId) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (r.poId) onDrilldown({ type: "PURCHASE_ORDER", poId: r.poId });
+                  else if (r.receiptId) onDrilldown({ type: "VOUCHER", receiptId: r.receiptId });
+                }}
+                className="text-[11px] text-primary hover:underline cursor-pointer"
+                title="عرض المستند الأصلي"
+              >
+                عرض
+              </button>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: "description",
+      header: "البيان",
+      accessorFn: (r) => r.description,
+      meta: { width: "wide" },
+      cell: ({ row }) => (
+        <div>
+          <div className="text-xs">{row.original.description}</div>
+          {row.original.descriptionSub && <div className="text-[10px] text-muted-foreground">{row.original.descriptionSub}</div>}
+        </div>
       ),
-  },
-  {
-    id: "open",
-    header: "فتح",
-    enableSorting: false,
-    meta: { kind: "actions" },
-    cell: ({ row }) =>
-      row.original.openHref ? (
-        <Link href={row.original.openHref}>
-          <Button variant="outline" size="sm">فتح</Button>
-        </Link>
-      ) : null,
-  },
-];
+    },
+    {
+      id: "actor",
+      header: "المنفّذ",
+      accessorFn: (r) => r.actor,
+      meta: { kind: "actor" },
+      cell: ({ row }) => <span className="text-xs">{row.original.actor}</span>,
+    },
+    {
+      id: "debit",
+      header: "مدين (دفع)",
+      accessorFn: (r) => (r.debit == null ? "" : fmt(r.debit)),
+      meta: { kind: "money" },
+      cell: ({ row }) => {
+        const r = row.original;
+        if (r.debit == null) return <span className="text-muted-foreground">—</span>;
+        return (
+          <button
+            type="button"
+            onClick={() => {
+              if (r.receiptId) {
+                onDrilldown({ type: "VOUCHER", receiptId: r.receiptId });
+              } else {
+                onDrilldown({
+                  type: "GENERIC",
+                  title: r.description,
+                  subtitle: r.descriptionSub,
+                  amount: r.debit ?? "0",
+                  date: r.date,
+                  direction: "DEBIT",
+                  details: {
+                    "المرجع": r.ref,
+                    "المنفذ": r.actor,
+                    "البيان": r.description,
+                    "التفاصيل": r.descriptionSub,
+                  },
+                });
+              }
+            }}
+            className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-right block w-full"
+            title="انقر لعرض تفاصيل السند/الحركة"
+          >
+            {fmt(r.debit)}
+          </button>
+        );
+      },
+      footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.debit)).toFixed(2)),
+    },
+    {
+      id: "credit",
+      header: "دائن (مشتريات)",
+      accessorFn: (r) => (r.credit == null ? "" : fmt(r.credit)),
+      meta: { kind: "money" },
+      cell: ({ row }) => {
+        const r = row.original;
+        if (r.credit == null) return <span className="text-muted-foreground">—</span>;
+        return (
+          <button
+            type="button"
+            onClick={() => {
+              if (r.poId) {
+                onDrilldown({ type: "PURCHASE_ORDER", poId: r.poId });
+              } else {
+                onDrilldown({
+                  type: "GENERIC",
+                  title: r.description,
+                  subtitle: r.descriptionSub,
+                  amount: r.credit ?? "0",
+                  date: r.date,
+                  direction: "CREDIT",
+                  details: {
+                    "المرجع": r.ref,
+                    "المنفذ": r.actor,
+                    "البيان": r.description,
+                    "التفاصيل": r.descriptionSub,
+                  },
+                });
+              }
+            }}
+            className="font-semibold hover:underline cursor-pointer transition-colors text-right block w-full"
+            title="انقر لعرض تفاصيل أمر الشراء/الحركة"
+          >
+            {fmt(r.credit)}
+          </button>
+        );
+      },
+      footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.credit)).toFixed(2)),
+    },
+    {
+      id: "balance",
+      header: "الرصيد الجاري",
+      accessorFn: (r) => fmt(r.balance),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-bold">{fmt(row.original.balance)}</span>,
+    },
+    {
+      id: "paymentStatus",
+      header: "الحالة",
+      accessorFn: (r) => (r.paymentStatus ? PAYMENT_STATUS_LABEL[r.paymentStatus] : "—"),
+      meta: { kind: "status" },
+      cell: ({ row }) =>
+        row.original.paymentStatus ? (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PAYMENT_STATUS_CLS[row.original.paymentStatus]}`}>
+            {PAYMENT_STATUS_LABEL[row.original.paymentStatus]}
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        ),
+    },
+    {
+      id: "open",
+      header: "فتح",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) =>
+        row.original.openHref ? (
+          <Link href={row.original.openHref}>
+            <Button variant="outline" size="sm">فتح</Button>
+          </Link>
+        ) : null,
+    },
+  ];
+}
 
 export default function SupplierStatement() {
   // الـURL مصدر الحقيقة لهوية المورد ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
@@ -196,12 +286,46 @@ export default function SupplierStatement() {
   const [from, setFrom] = useState("");
   const [ledgerFilter, setLedgerFilter] = useState<"all" | LedgerFilterGroup>("all");
   const [to, setTo] = useState("");
+  const [drilldownTarget, setDrilldownTarget] = useState<DrilldownTarget | null>(null);
+
+  const utils = trpc.useUtils();
+  const autoSettleM = trpc.suppliers.autoSettle.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        "تمت تسوية الحساب بنجاح",
+        `سُوّي ${res.settledOrdersCount} أمر شراء مفتوح بمبلغ ${fmt(res.totalSettledAmount)} د.ع.`,
+      );
+      void utils.reports.supplierStatement.invalidate();
+      void utils.reports.apAging.invalidate();
+    },
+    onError: (err) => notify.err(err.message),
+  });
+
+  const ledgerColumns = useMemo(
+    () => getLedgerColumns((target) => setDrilldownTarget(target)),
+    [],
+  );
 
   const stmt = trpc.reports.supplierStatement.useQuery(
     { supplierId: supplierId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!supplierId }
   );
   const printAudit = usePrintAudit();
+
+  const openOrdersCount = useMemo(() => {
+    return (stmt.data?.purchaseOrders ?? []).filter((p) => {
+      const remaining = D(p.total).minus(D(p.paidAmount));
+      return p.status !== "CANCELLED" && remaining.gt(0);
+    }).length;
+  }, [stmt.data?.purchaseOrders]);
+
+  const hasUnsettledMismatch = useMemo(() => {
+    if (!stmt.data) return false;
+    const unallocated = D(stmt.data.summary.unallocatedPayments);
+    const bal = D(stmt.data.summary.currentBalance);
+    const unpaid = D(stmt.data.summary.unpaid);
+    return openOrdersCount > 0 && (unallocated.gt(0) || bal.lte(0) || unpaid.gt(bal));
+  }, [stmt.data, openOrdersCount]);
 
   // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُشارَك بين الطباعة والتصدير **والعرض الحيّ**
   // في الجدول الموحَّد أدناه (لم يعد مقصوراً على الطباعة/التصدير كما كان).
@@ -225,6 +349,7 @@ export default function SupplierStatement() {
         filterGroup: "buy" as const,
         openHref: `/purchases/${p.id}`,
         paymentStatus,
+        poId: Number(p.id),
       };
     });
     // F7 (تدقيق ٢/٧): إشارة الأثر على AP لكل نوع قيد (مطابقة reconcileSupplierBalances):
@@ -277,6 +402,8 @@ export default function SupplierStatement() {
         debit: signed.isNegative() ? signed.neg().toFixed(2) : (null as string | null),
         credit: signed.isPositive() ? signed.toFixed(2) : (null as string | null),
         filterGroup,
+        poId: p.purchaseOrderId ? Number(p.purchaseOrderId) : undefined,
+        receiptId: p.receiptId ? Number(p.receiptId) : undefined,
       };
     });
     // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
@@ -537,14 +664,29 @@ export default function SupplierStatement() {
 
               {/* بند تسوية صريح لفجوة تخصيص الدفعات — بدل أن يبقى الفرق بين مجموع «المتبقّي»
                   لكل فاتورة و«الرصيد المستحق» أعلاه صامتاً وغير مفسَّر (شكوى المالك الأصلية). */}
-              {D(stmt.data.summary.unallocatedPayments).gt(0) && (
-                <div className="flex items-start gap-2 rounded-md border bg-[var(--sem-warn-bg)]/60 px-3 py-2 text-xs">
-                  <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-warn)]" />
-                  <div>
-                    <span className="font-semibold">دفعاتٌ على الحساب غير مخصَّصة لفاتورةٍ بعينها: </span>
-                    <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)}</span>
-                    <span> — هذا يُفسِّر الفرق بين مجموع «المتبقّي» لكل فاتورةٍ في دفتر الحركات أدناه وبين «الرصيد المستحق» أعلاه. ابحث عن «دفعة على الحساب» في الجدول.</span>
+              {(hasUnsettledMismatch || D(stmt.data.summary.unallocatedPayments).gt(0)) && (
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]/60 p-3 text-xs">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-warn)]" />
+                    <div className="space-y-1">
+                      <span className="font-semibold text-[var(--sem-warn)]">
+                        تنبيه مطابقة الذمم — دفعات غير مخصصة أو فواتير مفتوحة:{" "}
+                      </span>
+                      <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)} د.ع</span>
+                      <p className="text-muted-foreground leading-relaxed">
+                        يوجد رصيد مسدد أو غير مخصص مع وجود أوامر شراء مفتوحة ({openOrdersCount} أمر). يمكنك إجراء تسوية تلقائية بنظام (FIFO) لربط الدفعات بالأوامر وتصفية أعمار الذمم الدائنة تلقائياً.
+                      </p>
+                    </div>
                   </div>
+                  <Button
+                    size="sm"
+                    className="shrink-0 gap-1.5"
+                    disabled={autoSettleM.isPending}
+                    onClick={() => autoSettleM.mutate({ supplierId })}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${autoSettleM.isPending ? "animate-spin" : ""}`} />
+                    تسوية الأوامر تلقائياً (FIFO)
+                  </Button>
                 </div>
               )}
             </CardContent>
@@ -593,6 +735,12 @@ export default function SupplierStatement() {
           </Card>
         </>
       )}
+
+      <AccountLedgerDrilldownDialog
+        target={drilldownTarget}
+        open={!!drilldownTarget}
+        onOpenChange={(open) => !open && setDrilldownTarget(null)}
+      />
     </div>
   );
 }

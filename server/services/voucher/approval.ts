@@ -52,6 +52,10 @@ import {
 import { computeSignature } from "./helpers";
 import type { PartyType, PaymentMethod } from "./types";
 import {
+  autoSettleCustomerAccountTx,
+  autoSettleSupplierAccountTx,
+} from "../reconciliation/autoSettlementService";
+import {
   createSystemPaymentRequestTx,
   isCanonicalSystemPaymentRequest,
   hasSystemPaymentRequestEnvelope,
@@ -2120,6 +2124,10 @@ export async function approveVoucherTx(
           actor,
         );
       }
+      // تسوية تلقائية لفواتير العميل المفتوحة بنظام FIFO إذا لم يكن السند مخصصاً لفاتورة معينة
+      if (direction === "IN" && r.invoiceId == null) {
+        await autoSettleCustomerAccountTx(tx, partyId, actor);
+      }
     } else if (
       effectivePartyType === "SUPPLIER" &&
       partyId &&
@@ -2132,6 +2140,10 @@ export async function approveVoucherTx(
         partyId,
         direction === "OUT" ? amount.neg() : amount,
       );
+      // تسوية تلقائية لأوامر شراء المورد المفتوحة بنظام FIFO عند سداد عام للمورد
+      if (direction === "OUT" && systemRequest?.kind !== "PURCHASE_SUPPLIER") {
+        await autoSettleSupplierAccountTx(tx, partyId, actor);
+      }
     } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
       await adjustDeliveryBalance(
         tx,

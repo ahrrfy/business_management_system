@@ -89,6 +89,9 @@ export interface DayCloseTotals {
   counted: string;   // Σ المعدود (الورديات المغلقة فقط)
   drift: string;     // Σ الفرق (الورديات المغلقة فقط)
   retainedInDrawer: string;
+  closedExpected: string;
+  openRunningExpected: string;
+  physicalDrawerCash: string;
 }
 
 export interface DayCloseReconciliationResult {
@@ -144,7 +147,7 @@ export async function getDayCloseReconciliation(opts: {
     opening: "0.00", salesCash: "0.00", collectionsCash: "0.00", otherIn: "0.00", cashIn: "0.00",
     returnsCash: "0.00", expensesCash: "0.00", otherOut: "0.00", operatingOut: "0.00",
     handoversCash: "0.00", cashDrops: "0.00", expected: "0.00", counted: "0.00", drift: "0.00",
-    retainedInDrawer: "0.00",
+    retainedInDrawer: "0.00", closedExpected: "0.00", openRunningExpected: "0.00", physicalDrawerCash: "0.00",
   };
   const base: DayCloseReconciliationResult = {
     date: opts.date,
@@ -301,6 +304,7 @@ export async function getDayCloseReconciliation(opts: {
   let tOpening = money(0), tSales = money(0), tColl = money(0), tOtherIn = money(0), tCashIn = money(0);
   let tReturns = money(0), tExpenses = money(0), tOtherOut = money(0), tOpOut = money(0);
   let tHandovers = money(0), tCashDrops = money(0), tExpected = money(0), tCounted = money(0), tDrift = money(0), tRetained = money(0);
+  let tClosedExpected = money(0), tOpenRunningExpected = money(0);
   let openCount = 0, closedCount = 0, balancedCount = 0, driftCount = 0, overCount = 0, shortCount = 0;
 
   const lines: DayCloseShiftLine[] = visibleShiftRows.map((sh) => {
@@ -331,6 +335,7 @@ export async function getDayCloseReconciliation(opts: {
 
     if (isClosed) {
       closedCount++;
+      tClosedExpected = tClosedExpected.plus(expected);
       if (drift!.isZero()) balancedCount++;
       else {
         driftCount++;
@@ -339,6 +344,7 @@ export async function getDayCloseReconciliation(opts: {
       }
     } else {
       openCount++;
+      tOpenRunningExpected = tOpenRunningExpected.plus(expected);
     }
 
     // تجميع.
@@ -474,6 +480,9 @@ export async function getDayCloseReconciliation(opts: {
       counted: toDbMoney(tCounted),
       drift: toDbMoney(tDrift),
       retainedInDrawer: toDbMoney(tRetained),
+      closedExpected: toDbMoney(tClosedExpected),
+      openRunningExpected: toDbMoney(tOpenRunningExpected),
+      physicalDrawerCash: toDbMoney(tCounted.plus(tOpenRunningExpected)),
     },
     balancedCount,
     driftCount,

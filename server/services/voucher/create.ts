@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { eq } from "drizzle-orm";
 import {
   customers,
@@ -1082,6 +1083,10 @@ export async function createVoucherTx(
         input.partyId,
         direction === "IN" ? amount.neg() : amount,
       );
+      // تسوية تلقائية لفواتير العميل المفتوحة بنظام FIFO إذا لم يُحدَّد invoiceId (السند قبضٌ حتماً هنا داخل !needsApproval)
+      if (input.invoiceId == null) {
+        await autoSettleCustomerAccountTx(tx, input.partyId, actor);
+      }
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
