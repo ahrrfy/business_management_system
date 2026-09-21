@@ -15,12 +15,13 @@ import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
-import { Info, X } from "lucide-react";
+import { Info, X, RefreshCw } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
+import { notify } from "@/lib/notify";
 
 type Row = RouterOutputs["reports"]["arAging"][number];
 
@@ -63,6 +64,17 @@ export default function ARAging() {
     branchId: canCrossBranches && f.branch ? Number(f.branch) : undefined,
   });
   const sel = useRowSelection<number>();
+  const utils = trpc.useUtils();
+  const autoSettleAllM = trpc.customers.autoSettleAllZero.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        "تمت المطابقة الشاملة بنجاح",
+        `سُوّي ${res.settledAccountsCount} حساب عميل بمجموع ${res.totalSettledInvoices} فاتورة مفتوحة بمبلغ ${fmt(res.totalSettledAmount)} د.ع.`,
+      );
+      void utils.reports.arAging.invalidate();
+    },
+    onError: (err) => notify.err(err.message),
+  });
 
   useEffect(() => {
     sel.clear();
@@ -319,6 +331,17 @@ export default function ARAging() {
                 unpaidTotal: D(totals.unpaidTotal).toNumber(), currentBalance: D(totals.currentBalance).toNumber(),
               },
             })}>طباعة PDF</Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={autoSettleAllM.isPending}
+              onClick={() => autoSettleAllM.mutate()}
+              title="تسوية تلقائية لكافة فواتير العملاء الذين رصيدهم صفر أو دائن"
+              className="gap-1.5"
+            >
+              <RefreshCw className={`size-3.5 ${autoSettleAllM.isPending ? "animate-spin" : ""}`} />
+              تسوية الحسابات المسددة
+            </Button>
             <Link href="/customers-statement"><Button variant="outline">كشف حساب عميل</Button></Link>
           </>
         }
