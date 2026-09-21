@@ -24,6 +24,8 @@ import { maskCustomerSensitive } from "../lib/redact";
 import { positiveMoneyString } from "../lib/schemas";
 import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, customersReceptionCreateProcedure, managerProcedure, router, userHasCrmWriteAccess } from "../trpc";
 import { getCustomerOperations } from "../services/customerOperationsService";
+import { withTx } from "../services/tx";
+import { autoSettleCustomerAccountTx, autoSettleZeroBalanceAccountsTx } from "../services/reconciliation/autoSettlementService";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
@@ -387,5 +389,31 @@ export const customerRouter = router({
       const res = await removeContractPrice(input.id);
       await logAudit(ctx, { action: "customer.contractPrice.remove", entityType: "customerContractPrice", entityId: input.id });
       return res;
+    }),
+
+  /** تسوية فواتير عميل تلقائياً بنظام FIFO مع أي رصيد دائن أو سداد غير مخصص. */
+  autoSettle: customersManagerProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return withTx((tx) => autoSettleCustomerAccountTx(tx, input.customerId, actor));
+    }),
+
+  /** تسوية شاملة للعملاء ذوي الرصيد الصفري الذين لديهم فواتير معلقة مفتوحة. */
+  autoSettleAllZero: customersManagerProcedure
+    .input(z.object({ limit: z.number().int().positive().max(200).default(50) }).optional())
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return withTx((tx) => autoSettleZeroBalanceAccountsTx(tx, actor, input?.limit ?? 50));
     }),
 });
