@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import { employees, payrollItems } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { createAppNotification } from "../services/appNotificationService";
+import { actorSuffix } from "@shared/notificationActorLabel";
 import * as adv from "../services/advances";
 import * as svc from "../services/payrollService";
 import * as legal from "../services/payrollLegalService";
@@ -53,7 +54,7 @@ function scopedPayrollBranch(user: {
   return branchId;
 }
 
-async function notifyPayrollUsers(runId: number, periodValue: string, stage: "approved" | "paid") {
+async function notifyPayrollUsers(runId: number, periodValue: string, stage: "approved" | "paid", actorName?: string | null) {
   const recipients = await requireDb()
     .select({ employeeId: payrollItems.employeeId, userId: employees.userId })
     .from(payrollItems)
@@ -64,7 +65,7 @@ async function notifyPayrollUsers(runId: number, periodValue: string, stage: "ap
       userId: Number(row.userId),
       kind: "PAYROLL_READY",
       title: stage === "paid" ? "تم صرف الراتب" : "كشف الراتب جاهز",
-      body: `الفترة ${periodValue}`,
+      body: `الفترة ${periodValue}${actorSuffix(actorName)}`,
       route: "/hr?tab=payroll",
       eventKey: `payroll:${runId}:${row.employeeId}:${stage}`,
       entityType: "payrollRun",
@@ -186,7 +187,7 @@ export const payrollRouter = router({
         isOwner: !!ctx.user.isOwner,
       });
       if (!run.replayed) await logAudit(ctx, { action: "payroll.approve", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, approvedBy: ctx.user.id } });
-      if (!run.replayed && run?.period) await notifyPayrollUsers(input.id, run.period, "approved");
+      if (!run.replayed && run?.period) await notifyPayrollUsers(input.id, run.period, "approved", ctx.user.name);
       return run;
     }),
 
@@ -209,7 +210,7 @@ export const payrollRouter = router({
         referenceNumber: input.referenceNumber,
       });
       if (!run.replayed) await logAudit(ctx, { action: "payroll.pay", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, totalNet: run?.totalNet } });
-      if (!run.replayed && run?.period) await notifyPayrollUsers(input.id, run.period, "paid");
+      if (!run.replayed && run?.period) await notifyPayrollUsers(input.id, run.period, "paid", ctx.user.name);
       return run;
     }),
 

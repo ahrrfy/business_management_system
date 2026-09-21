@@ -1,6 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryPartyMembers, users } from "../../../drizzle/schema";
+import { actorSuffix } from "@shared/notificationActorLabel";
 import { getDb } from "../../db";
 import { logger } from "../../logger";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
@@ -114,6 +115,7 @@ async function processRow(id: number): Promise<void> {
       topic: deliveryOutbox.topic,
       consignmentId: deliveryEvents.consignmentId,
       eventType: deliveryEvents.eventType,
+      actorUserId: deliveryEvents.actorUserId,
       partyId: deliveryConsignments.partyId,
       branchId: deliveryConsignments.branchId,
       assignedUserId: deliveryConsignments.assignedUserId,
@@ -123,6 +125,13 @@ async function processRow(id: number): Promise<void> {
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryEvents.consignmentId))
       .where(and(eq(deliveryOutbox.id, id), isNull(deliveryOutbox.processedAt))).limit(1))[0];
     if (!row) return;
+    // جلب اسم الفاعل من جدول المستخدمين — العامل الخلفي ليس لديه ctx.user.
+    let actorName: string | null = null;
+    if (row.actorUserId != null) {
+      const [actor] = await db.select({ name: users.name }).from(users)
+        .where(eq(users.id, row.actorUserId)).limit(1);
+      actorName = (actor?.name as string | null) ?? null;
+    }
     const plan = await recipientsFor({
       topic: row.topic,
       eventType: row.eventType,
@@ -139,7 +148,7 @@ async function processRow(id: number): Promise<void> {
         userId,
         kind: row.topic === "delivery.failed" || isStale ? "APPROVAL_REQUIRED" : "TASK_ASSIGNED",
         title,
-        body: `${row.consignmentNumber} — ${row.eventType}`,
+        body: `${row.consignmentNumber} — ${row.eventType}${actorSuffix(actorName)}`,
         route: plan.route,
         eventKey: `delivery-outbox:${row.eventId}:user:${userId}`,
         entityType: "deliveryConsignment",
