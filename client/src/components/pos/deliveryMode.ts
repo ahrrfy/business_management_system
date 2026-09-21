@@ -17,8 +17,12 @@ export interface DeliveryDraft {
   governorate: string;
   address: string;
   partyId: number | null;
+  /** نوع الجهة المختارة؛ يحدّد وجوب رقم بوليصة شركة التوصيل. */
+  partyType: "INDIVIDUAL" | "COMPANY" | null;
   /** اسم الجهة المختارة — للإيصال والتوست (يُملأ مع `partyId`). */
   partyName: string;
+  /** رقم البوليصة الخارجي كنصّ كي تبقى الأصفار البادئة كما مسحها القارئ. */
+  externalTrackingRef: string;
   /** نصّ مالٍ (MoneyInput) — يُطبَّع عند البناء. */
   fee: string;
   /** هل حرّر الكاشير الأجرة بيده؟ الأجرةُ المشتقّة تلقائياً (افتراضُ الجهة أو تقديرُ المحافظة) تتبع
@@ -40,19 +44,22 @@ export interface DeliveryPayload {
   recipientPhone?: string;
   address?: string;
   governorate?: string;
+  externalTrackingRef?: string;
 }
 
 export interface DeliveryPartyOption {
   id: number;
   name: string;
+  partyType: "INDIVIDUAL" | "COMPANY";
   defaultFee: string;
 }
 
-export type DeliveryDraftIssue = "NO_PARTY" | "NO_ADDRESS" | "COUNTER_FEE_REQUIRED" | "BAD_FEE";
+export type DeliveryDraftIssue = "NO_PARTY" | "NO_ADDRESS" | "NO_COMPANY_TRACKING" | "COUNTER_FEE_REQUIRED" | "BAD_FEE";
 
 export const DELIVERY_ISSUE_AR: Readonly<Record<DeliveryDraftIssue, string>> = Object.freeze({
   NO_PARTY: "اختر جهة التوصيل",
   NO_ADDRESS: "اكتب عنوان التوصيل — المندوب لا يصل بلا عنوان",
+  NO_COMPANY_TRACKING: "امسح باركود بوليصة شركة التوصيل أو اكتب رقمها",
   COUNTER_FEE_REQUIRED: "«مقبوضة في الاستقبال» تتطلّب مبلغ أجرةٍ أكبر من صفر",
   BAD_FEE: "أجرة التوصيل ليست مبلغاً صالحاً",
 });
@@ -81,7 +88,20 @@ export const OFFLINE_DELIVERY_BLOCK = Object.freeze({
 });
 
 export function emptyDeliveryDraft(): DeliveryDraft {
-  return { governorate: "", address: "", partyId: null, partyName: "", fee: "", feeManual: false, feeCollection: "COURIER", recipientName: "", recipientPhone: "", customerPhone: "" };
+  return {
+    governorate: "",
+    address: "",
+    partyId: null,
+    partyType: null,
+    partyName: "",
+    externalTrackingRef: "",
+    fee: "",
+    feeManual: false,
+    feeCollection: "COURIER",
+    recipientName: "",
+    recipientPhone: "",
+    customerPhone: "",
+  };
 }
 
 const MONEY_RE = /^\d+(\.\d{1,2})?$/;
@@ -100,6 +120,7 @@ export function validateDeliveryDraft(d: DeliveryDraft): DeliveryDraftIssue[] {
   const issues: DeliveryDraftIssue[] = [];
   if (d.partyId == null || d.partyId <= 0) issues.push("NO_PARTY");
   if (!d.address.trim()) issues.push("NO_ADDRESS");
+  if (d.partyType === "COMPANY" && !d.externalTrackingRef.trim()) issues.push("NO_COMPANY_TRACKING");
   const fee = normalizeFee(d.fee);
   if (fee == null) issues.push("BAD_FEE");
   else if (d.feeCollection === "COUNTER" && Number(fee) <= 0) issues.push("COUNTER_FEE_REQUIRED");
@@ -118,6 +139,9 @@ export function buildDeliveryPayload(d: DeliveryDraft): DeliveryPayload | null {
     ...(d.recipientPhone.trim() ? { recipientPhone: d.recipientPhone.trim() } : {}),
     address: d.address.trim(),
     ...(d.governorate ? { governorate: d.governorate } : {}),
+    ...(d.partyType === "COMPANY" && d.externalTrackingRef.trim()
+      ? { externalTrackingRef: d.externalTrackingRef.trim() }
+      : {}),
   };
 }
 
@@ -176,9 +200,19 @@ export function saleReceiptAmounts(args: {
  * لا تُطمَس. قبل تدقيق Codex P1 كانت أوّلُ جهةٍ تُثبّت الأجرة فيبقى مبلغُ الجهة السابقة عند تبديلها.
  */
 export function applyPartySelection(d: DeliveryDraft, party: DeliveryPartyOption | null): DeliveryDraft {
-  if (!party) return { ...d, partyId: null, partyName: "" };
+  if (!party) {
+    return { ...d, partyId: null, partyType: null, partyName: "", externalTrackingRef: "" };
+  }
   const fee = d.feeManual ? d.fee : party.defaultFee ?? "0";
-  return { ...d, partyId: party.id, partyName: party.name, fee };
+  const keepTrackingRef = d.partyId === party.id && party.partyType === "COMPANY";
+  return {
+    ...d,
+    partyId: party.id,
+    partyType: party.partyType,
+    partyName: party.name,
+    externalTrackingRef: keepTrackingRef ? d.externalTrackingRef : "",
+    fee,
+  };
 }
 
 /**

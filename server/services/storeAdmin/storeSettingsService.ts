@@ -22,6 +22,8 @@ export interface StoreSettingsValue {
   whatsappNumber: string | null;
   /** عتبة التوصيل المجاني (د.ع نصّاً)؛ null/"0" = معطّل. */
   freeShippingThreshold: string | null;
+  /** عتبة التوصيل المجاني لباقي المحافظات (د.ع نصّاً)؛ null/"0" = معطّل. */
+  freeShippingThresholdGovernorates: string | null;
 }
 
 export interface PublicStoreSettingsValue extends StoreSettingsValue {
@@ -40,6 +42,7 @@ const DEFAULTS: StoreSettingsValue = {
   announcement: null,
   whatsappNumber: null,
   freeShippingThreshold: null,
+  freeShippingThresholdGovernorates: null,
 };
 
 async function hasReadyCatalog(
@@ -133,6 +136,7 @@ export async function getStoreSettings(): Promise<StoreSettingsValue> {
       announcement: row.announcement ?? null,
       whatsappNumber: row.whatsappNumber ?? null,
       freeShippingThreshold: row.freeShippingThreshold ?? null,
+      freeShippingThresholdGovernorates: row.freeShippingThresholdGovernorates ?? null,
     };
   });
 }
@@ -146,6 +150,7 @@ export async function updateStoreSettings(
       | "announcement"
       | "whatsappNumber"
       | "freeShippingThreshold"
+      | "freeShippingThresholdGovernorates"
     >
   >,
   userId: number,
@@ -208,6 +213,10 @@ export async function updateStoreSettings(
         input.freeShippingThreshold !== undefined
           ? input.freeShippingThreshold || null
           : (existing?.freeShippingThreshold ?? null),
+      freeShippingThresholdGovernorates:
+        input.freeShippingThresholdGovernorates !== undefined
+          ? input.freeShippingThresholdGovernorates || null
+          : (existing?.freeShippingThresholdGovernorates ?? null),
     };
     if (next.isOpen && next.fulfillmentBranchId == null) {
       throw new TRPCError({

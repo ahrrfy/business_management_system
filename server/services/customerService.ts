@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { and, asc, desc, eq, inArray, like, ne, notInArray, or, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
 import {
   accountingEntries,
@@ -13,6 +14,8 @@ import {
   customerNotes,
   customers,
   deliveryConsignments,
+  digitalSaleIntentItems,
+  digitalSaleIntents,
   installmentPlans,
   invoices,
   onlineOrders,
@@ -533,6 +536,43 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
   return withTx(async (tx) => {
     const c = (await tx.select().from(customers).where(eq(customers.id, customerId)).for("update").limit(1))[0];
     if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+
+    // لقطة السلة تحمل customerId داخل JSON (لا FK)، وعميل الطالب قد يظهر على بند النيّة.
+    // prepareCheckoutSnapshot يقفل صف العميل نفسه؛ لذا يمنع هذا الفحص سباق "قرأ العميل ثم
+    // حُذف قبل إدراج النيّة" في الاتجاهين، لا يكتفي بمعالجة الصفوف الموجودة سلفاً.
+    const [activeDigitalIntent] = await tx
+      .select({ id: digitalSaleIntents.id })
+      .from(digitalSaleIntents)
+      .leftJoin(
+        digitalSaleIntentItems,
+        eq(digitalSaleIntentItems.intentId, digitalSaleIntents.id),
+      )
+      .where(
+        and(
+          notInArray(digitalSaleIntents.status, [
+            "FINALIZED",
+            "CANCELLED",
+            "EXPIRED",
+            "WRITTEN_OFF",
+          ]),
+          or(
+            sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${digitalSaleIntents.checkoutSnapshot}, '$.customerId')) AS UNSIGNED) = ${customerId}`,
+            eq(digitalSaleIntentItems.studentCustomerId, customerId),
+          ),
+        ),
+      )
+      .limit(1);
+    if (activeDigitalIntent) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر حذف العميل",
+          why: `نيّة بيع رقمية رقم ${Number(activeDigitalIntent.id)} ما زالت مرتبطة به ونشطة`,
+          doThis:
+            "أكمل النيّة الرقمية أو ألغها/عالجها أولاً، ثم أعد حذف العميل",
+        }),
+      });
+    }
 
     // حارس النشاط: أيّ صفٍّ في هذه الجداول = حركةٌ حقيقية ⇒ لا حذف (عطِّل بدلاً منه).
     const checks: [any, any, string][] = [

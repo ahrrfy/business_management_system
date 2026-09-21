@@ -6,7 +6,7 @@
 //    نطاق التاريخ قابل للفهرسة (sargable): invoiceDate >= from 00:00 AND < nextDay(to) 00:00 (S2 ٢٩/٦).
 //    أسماء الأعمدة بأسماء DB: invoices.status ⇒ العمود invoiceStatus.
 //
-// تعريف الربح للسطر = الإجمالي − (الكمية الأساس بعد طرح المُعاد للمخزون) × تكلفة الوحدة،
+// تعريف الربح للسطر = الإجمالي − المتبقّي من lineCost المجمّد بعد طرح حصة المُعاد للمخزون،
 //   حيث المطروح = returnedRestockedBaseQuantity (المُعاد للرفّ فقط) ⇒ التالف تبقى تكلفته خسارةً
 //   مطابِقةً لدفتر P&L (لا تُحيَّد تكلفة المرتجع التالف).
 import { sql } from "drizzle-orm";
@@ -126,7 +126,7 @@ export async function getSalesRegister(opts: {
     ${qCond}
   `;
 
-  // الربح للسطر: ii.total − (ii.baseQuantity − ii.returnedRestockedBaseQuantity) × ii.unitCost
+  // الربح للسطر: الإيراد المتبقي − (lineCost − الحصة التراكمية المُعادة، مقربة مرة واحدة).
   // (التكلفة تطرح المُعاد للمخزون فقط؛ التالف يبقى خسارةً مطابِقةً للدفتر).
   const rows = rowsOf(
     await db.execute(sql`
@@ -148,7 +148,11 @@ export async function getSalesRegister(opts: {
           ELSE ii.total END AS CHAR) AS total,
         CAST((CASE WHEN ii.baseQuantity > 0
           THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END) - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost AS CHAR) AS profit
+          ELSE ii.total END) - (CASE
+            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
+            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
+          END) AS CHAR) AS profit
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
       JOIN productVariants pv ON pv.id = ii.variantId
@@ -170,10 +174,18 @@ export async function getSalesRegister(opts: {
         CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
           THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
           ELSE ii.total END), 0) AS CHAR) AS revenue,
-        CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
+        CAST(COALESCE(SUM(CASE
+          WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+          WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
+          ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
+        END), 0) AS CHAR) AS cost,
         CAST(COALESCE(SUM((CASE WHEN ii.baseQuantity > 0
           THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END) - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
+          ELSE ii.total END) - (CASE
+            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
+            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
+          END)), 0) AS CHAR) AS profit,
         CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
           THEN ii.quantity * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
           ELSE ii.quantity END), 0) AS CHAR) AS qty
@@ -323,7 +335,11 @@ export async function getSalesByDimension(opts: {
             ELSE ii.total END), 0) AS CHAR) AS netSales,
           CAST(0 AS CHAR) AS paid,
           CAST(0 AS CHAR) AS unpaid,
-          CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost
+          CAST(COALESCE(SUM(CASE
+            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
+            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
+          END), 0) AS CHAR) AS cost
         FROM invoiceItems ii
         JOIN invoices i ON i.id = ii.invoiceId
         JOIN productVariants pv ON pv.id = ii.variantId
@@ -361,7 +377,11 @@ export async function getSalesByDimension(opts: {
       FROM invoices i
       LEFT JOIN (
         SELECT ii.invoiceId,
-          SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost) AS cost
+          SUM(CASE
+            WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+            WHEN ii.returnedRestockedBaseQuantity >= ii.baseQuantity THEN 0
+            ELSE ii.lineCost - ROUND(ii.lineCost * ii.returnedRestockedBaseQuantity / ii.baseQuantity, 2)
+          END) AS cost
         FROM invoiceItems ii
         GROUP BY ii.invoiceId
       ) ic ON ic.invoiceId = i.id

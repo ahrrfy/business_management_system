@@ -552,7 +552,8 @@ export const saleRouter = router({
         shiftId: z.number().int().positive().optional(),
         customerId: z.number().int().positive().optional(),
         priceTier: tier.optional(),
-        sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).default("POS"),
+        // المصدر سلطة خادمية؛ يبقى POS في عقد العميل للتوافق فقط، ولا تُقبل قنوات داخلية هنا.
+        sourceType: z.literal("POS").default("POS"),
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: z.string().optional(),
         taxRatePercent: z.string().optional(),
@@ -575,6 +576,7 @@ export const saleRouter = router({
           recipientPhone: z.string().trim().max(32).nullish(),
           address: z.string().trim().max(500).nullish(),
           governorate: z.string().trim().max(40).nullish(),
+          externalTrackingRef: z.string().trim().max(100).nullish(),
         }).nullish(),
         // أجرة التوصيل المقبوضة الآن أمانةً للمندوب (COUNTER) — نقداً في الدرج حتماً، وتساوي `delivery.fee`.
         deliveryFeeHeld: positiveMoneyString.nullish(),
@@ -654,6 +656,8 @@ export const saleRouter = router({
       const effectiveInput = {
         ...saleInput,
         branchId: effectiveBranchId,
+        // دفاعٌ ثانٍ بعد الـspread: لا يصبح مصدر الفاتورة قابلاً للحقن إن اتّسع المخطط لاحقاً.
+        sourceType: "POS" as const,
         creditApproved: approvedBy != null,
         managerOverrideByUserId: approvedBy ?? undefined,
         priceOverrideApproved: priceOverrideApprovedBy != null,

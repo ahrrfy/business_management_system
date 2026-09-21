@@ -37,6 +37,8 @@ import {
 } from "./onlineOrderService";
 import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
+import { resolveContractPrices } from "./contractPriceService";
+import { resolveEffectivePriceReference } from "./pricing";
 
 export type StorefrontQuoteRequestType =
   | "BULK"
@@ -548,6 +550,8 @@ async function acceptLockedOfficialQuotation(
       baseQuantity: quotationItems.baseQuantity,
       unitPrice: quotationItems.unitPrice,
       catalogUnitPrice: quotationItems.catalogUnitPrice,
+      referenceUnitPrice: quotationItems.referenceUnitPrice,
+      priceSource: quotationItems.priceSource,
     })
     .from(quotationItems)
     .where(eq(quotationItems.quotationId, Number(quote.id)))
@@ -589,6 +593,12 @@ async function acceptLockedOfficialQuotation(
   const catalogByUnit = new Map(
     currentCatalogLines.map((line) => [Number(line.productUnitId), line]),
   );
+  const contractPrices = await resolveContractPrices(
+    tx,
+    Number(quote.customerId),
+    unitIds,
+    { forUpdate: true },
+  );
 
   const reasons = new Set<"EXPIRED" | "PRICE_CHANGED" | "UNAVAILABLE">();
   const stockRequirements = new Map<number, number>();
@@ -607,12 +617,20 @@ async function acceptLockedOfficialQuotation(
       reasons.add("UNAVAILABLE");
       continue;
     }
-    if (
-      catalog.currentUnitPrice == null ||
-      !money(catalog.currentUnitPrice).eq(
-        money(line.catalogUnitPrice ?? line.unitPrice),
-      )
-    ) {
+    const currentReference = resolveEffectivePriceReference({
+      catalogUnitPrice: catalog.currentUnitPrice,
+      contractUnitPrice: contractPrices.get(Number(line.productUnitId)),
+    });
+    // legacy وحده (`priceSource=NULL`) ملتبس ويفشل بأمان. أمّا MANUAL بلا مرجع فحالة
+    // صالحة: يبقى مقبولاً ما دام المرجع الآلي ما زال غائباً، ويعاد للمراجعة إن ظهر لاحقاً.
+    const referenceChanged = line.priceSource == null
+      ? true
+      : line.referenceUnitPrice == null
+        ? line.priceSource !== "MANUAL" || currentReference.unitPrice != null
+        : currentReference.unitPrice == null ||
+          (line.priceSource !== "MANUAL" && line.priceSource !== currentReference.priceSource) ||
+          !currentReference.unitPrice.eq(money(line.referenceUnitPrice));
+    if (referenceChanged) {
       reasons.add("PRICE_CHANGED");
     }
     const baseQuantity = Number(line.baseQuantity);

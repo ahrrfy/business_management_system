@@ -1,9 +1,35 @@
-# PWA and Native Notifications Sound
+# صوت واهتزاز إشعارات PWA وAndroid — 2026-09-15
 
-## Context
-We updated the push notifications so they behave like native apps, including sound and vibration.
+## النتيجة النهائية
 
-## Changes
-- **Web PWA**: Added sound (notification.wav) and ibrate options, and most importantly set enotify: true in client/public/push-handler.js to ensure browsers actively alert users for every new notification.
-- **Android Native App**: Removed setOnlyAlertOnce(true) and added setDefaults(NotificationCompat.DEFAULT_ALL) in ndroid-native/app/src/main/java/online/alarabiya/superapp/core/notifications/NativeNotificationRenderer.kt so Android system plays the default notification ringtone.
-- **Config**: Added .wav file to Vite PWA precache.
+- **Web PWA:** يمرّر `push-handler.js` إلى نظام التشغيل `silent: false` ونمط الاهتزاز
+  `[150, 80, 150, 80, 250]`، وينشئ `tag` دائماً مع `renotify: true`. لذلك يصدر تنبيه جديد
+  حتى عند استبدال إشعار سابق من النوع نفسه.
+- **Android الأصلي:** يستعمل `NativeNotificationRenderer` إعدادات النظام الافتراضية للصوت والاهتزاز
+  عبر `NotificationCompat.DEFAULT_ALL`، مع إبقاء `setOnlyAlertOnce(true)` لمنع تكرار الصوت عند
+  إعادة تسليم الحمولة نفسها. جميع القنوات المستخدمة عالية الأهمية وتسمح بالاهتزاز.
+- **قناة FCM الاحتياطية:** يشير `AndroidManifest.xml` إلى `system_updates_v2`، وهي قناة منشأة فعلياً،
+  بدلاً من المعرّف اليتيم السابق `business_updates`.
+
+## السبب الجذري وما أزيل
+
+- Web Push لا يدعم ملف صوت مخصّصاً بصورة معيارية؛ لذلك لا يوجد `notification.wav` ولا إدخال وهمي
+  له في precache. الصوت الصحيح هو صوت الإشعار الافتراضي الذي يختاره نظام التشغيل.
+- كان `renotify` يتعطل عندما تصل حمولة بلا `kind` أو `tag` رغم أن المعالج يولّد `tag` احتياطياً؛
+  أصبح ثابتاً على `true` لأن شرط وجود `tag` متحقق دائماً.
+- كان Manifest يعلن قناة افتراضية غير منشأة، ما يسمح لـFCM بالهبوط إلى قناة احتياطية غير محكومة
+  إذا استُخدم مسار العرض التلقائي. أصبح المعرّف مطابقاً لقناة النظام الفعلية.
+
+## الحماية من الرجوع
+
+يحرس `shared/notificationAlertContract.test.ts` العقود التالية:
+
+1. صوت PWA غير صامت، والاهتزاز و`tag/renotify` حاضرة، ولا يُقبل حقل أو ملف صوت مخصّص.
+2. منشئ Android يطلب `DEFAULT_ALL` مرة واحدة ويبقي `setOnlyAlertOnce(true)` بلا كتم.
+3. كل قناة يستخدمها العارض منشأة بأهمية عالية، ومعرّف قناة FCM الافتراضية موجود ضمن القنوات المعلنة.
+
+## حد المنصة
+
+لا يستطيع التطبيق تجاوز الوضع الصامت، أو إذن الإشعارات المرفوض، أو قناة عطّل المستخدم صوتها، أو
+قيود المتصفح/نظام التشغيل. الضمان هنا أن التطبيق يطلب الصوت والاهتزاز بصورة صحيحة ومتسقة؛ القرار
+النهائي يبقى لإعدادات الجهاز احتراماً لتفضيلات المستخدم.

@@ -155,7 +155,7 @@ describe("توسعة وضع الافتتاح — بدء أمر الشغل بال
     await db().insert(s.branchStock).values({ variantId: 3, branchId: 1, quantity: 5 });
     await seedWorkOrder([{ variantId: 3, baseQuantity: 2 }]);
     const err = await expectStart(1);
-    expect(err?.code).toBe("BAD_REQUEST");
+    expect(err?.code).toBe("PRECONDITION_FAILED");
     expect(err?.message).toMatch(/الأمانة/);
     expect(await stockOf(3)).toBe(5);
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);

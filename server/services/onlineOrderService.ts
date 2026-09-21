@@ -35,7 +35,7 @@ import {
   storeSettings as storeSettingsTable,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
-import { deliveryFeeFor, governorateById } from "@shared/governorates";
+import { deliveryFeeFor, governorateById, isBaghdadGovernorate } from "@shared/governorates";
 import { previewDeliveryQuote } from "./delivery/pricingRules";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -600,7 +600,7 @@ export async function lockOrCreateOnlineCustomer(
   }
 }
 
-interface PricedOnlineOrderLine {
+export interface PricedOnlineOrderLine {
   productId: number;
   categoryId: number | null;
   variantId: number;
@@ -622,7 +622,7 @@ export type StorefrontPricingBenefitType =
   | "OFFER"
   | "COUPON";
 
-interface StorefrontPricingBenefit {
+export interface StorefrontPricingBenefit {
   type: StorefrontPricingBenefitType;
   label: string | null;
   discount: string;
@@ -630,7 +630,7 @@ interface StorefrontPricingBenefit {
   couponSuperseded: boolean;
 }
 
-interface PricedOnlineOrderLines {
+export interface PricedOnlineOrderLines {
   items: PricedOnlineOrderLine[];
   benefit: StorefrontPricingBenefit;
   /**
@@ -690,7 +690,7 @@ export interface OnlineOrderQuoteResult {
 }
 
 /** محرك التسعير الوحيد للـquote وللتثبيت؛ lineAmount يستعمل كمية السلة الفعلية. */
-async function priceOnlineOrderLines(
+export async function priceOnlineOrderLines(
   tx: Tx,
   branchId: number,
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
@@ -1032,7 +1032,7 @@ async function priceOnlineOrderLines(
  *   ② الافتراض الثابت من `governorates.ts` (السلوك السابق — يبقى للتوافق ولمناطق بلا زون)
  * البذرة (H4، هجرة 0290) تنقل كلّ المحافظات الثمانية عشرة إلى المسار ①.
  */
-async function resolveDeliveryFee(
+export async function resolveDeliveryFee(
   tx: Tx,
   governorate: string,
 ): Promise<import("decimal.js").default> {
@@ -1050,12 +1050,13 @@ async function resolveDeliveryFee(
   return round2(deliveryFeeFor(governorate));
 }
 
-async function totalOnlineOrderQuote(
+export async function totalOnlineOrderQuote(
   tx: Tx,
   items: Array<{ lineTotal: string }>,
   governorate: string,
   freeShippingThreshold: string | null | undefined,
   deliveryEligibilitySubtotal?: string,
+  freeShippingThresholdGovernorates?: string | null | undefined,
 ): Promise<
   Pick<
     OnlineOrderQuoteResult,
@@ -1074,8 +1075,13 @@ async function totalOnlineOrderQuote(
     : round2(money(deliveryEligibilitySubtotal));
   const actualDeliveryFee = await resolveDeliveryFee(tx, governorate);
   let customerDeliveryFee = actualDeliveryFee;
-  const configuredThreshold = freeShippingThreshold
-    ? money(freeShippingThreshold)
+
+  const isBaghdad = isBaghdadGovernorate(governorate);
+  const applicableThresholdStr = isBaghdad
+    ? freeShippingThreshold
+    : (freeShippingThresholdGovernorates ?? freeShippingThreshold);
+  const configuredThreshold = applicableThresholdStr
+    ? money(applicableThresholdStr)
     : null;
   const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
   const deliveryFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
@@ -1117,6 +1123,7 @@ export async function quoteOnlineOrder(
         await tx
           .select({
             freeShippingThreshold: storeSettingsTable.freeShippingThreshold,
+            freeShippingThresholdGovernorates: storeSettingsTable.freeShippingThresholdGovernorates,
           })
           .from(storeSettingsTable)
           .where(eq(storeSettingsTable.id, 1))
@@ -1168,6 +1175,7 @@ export async function quoteOnlineOrder(
         input.governorate,
         settings?.freeShippingThreshold,
         retailSubtotal.toFixed(2),
+        settings?.freeShippingThresholdGovernorates,
       );
       return {
         couponCode:
@@ -1349,6 +1357,7 @@ async function createOnlineOrderAttempt(
       await tx
         .select({
           freeShippingThreshold: storeSettingsTable.freeShippingThreshold,
+          freeShippingThresholdGovernorates: storeSettingsTable.freeShippingThresholdGovernorates,
         })
         .from(storeSettingsTable)
         .where(eq(storeSettingsTable.id, 1))
@@ -1547,6 +1556,7 @@ async function createOnlineOrderAttempt(
       input.governorate,
       storeSettings?.freeShippingThreshold,
       retailSubtotal.toFixed(2),
+      storeSettings?.freeShippingThresholdGovernorates,
     );
     const subtotal = money(quoteTotals.subtotal);
     const deliveryFee = money(quoteTotals.deliveryFee);

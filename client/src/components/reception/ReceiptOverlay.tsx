@@ -1,4 +1,4 @@
-import { Check, Printer, Truck, FileText, Wrench } from "lucide-react";
+import { Check, Printer, Truck, FileText, Wrench, Package } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/CopyButton";
@@ -13,12 +13,14 @@ export function ReceiptOverlay({
   deliveryDeparture,
   onCloseDeliveryDeparture,
   onReprint,
+  onReprintLabel,
   onClose,
 }: {
   lastSale: LastSaleSummary;
   deliveryDeparture?: DeliveryDepartureData | null;
   onCloseDeliveryDeparture?: () => void;
   onReprint: () => void;
+  onReprintLabel?: () => void;
   onClose: () => void;
 }) {
   const isCredit = Boolean(lastSale.creditStr && Number(lastSale.creditStr) > 0);
@@ -203,15 +205,26 @@ export function ReceiptOverlay({
           />
         </motion.div>
 
-        {/* أزرار الإجراءات الفورية أسفل الفاتورة */}
-        <div className="mt-4 flex w-full gap-2 z-10">
+        {/* أزرار الإجراءات السريعة بعد الإغلاق */}
+        <div className="mt-4 flex w-full gap-2 z-10 flex-wrap">
           <Button
             variant="outline"
             className="flex-1 bg-slate-800 border-slate-700 text-white hover:bg-slate-700 hover:text-white"
             onClick={onReprint}
           >
-            <Printer aria-hidden className="size-4 me-1" /> إعادة طباعة (F9)
+            <Printer aria-hidden className="size-4 me-1" /> طباعة إيصال (F9)
           </Button>
+          
+          {onReprintLabel && (
+            <Button
+              variant="outline"
+              className="flex-1 bg-slate-800 border-slate-700 text-white hover:bg-slate-700 hover:text-white"
+              onClick={onReprintLabel}
+            >
+              <Package aria-hidden className="size-4 me-1" /> طباعة ليبل
+            </Button>
+          )}
+
           <Button className="flex-1" onClick={onClose}>
             طلب جديد (Esc)
           </Button>

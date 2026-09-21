@@ -189,6 +189,9 @@ export const voucherRouter = router({
           input.receiptId,
           "APPROVED",
           ctx.user.id,
+          undefined,
+          undefined,
+          ctx.user.name,
         );
       }
       return res;
@@ -219,6 +222,8 @@ export const voucherRouter = router({
         "REJECTED",
         ctx.user.id,
         input.reason,
+        undefined,
+        ctx.user.name,
       );
       return res;
     }),

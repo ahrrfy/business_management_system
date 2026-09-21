@@ -2,6 +2,7 @@ import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg, qrCodeDataUrl } from "./qr";
 import type { BarcodeSet } from "@shared/barcodeTypes";
+import { CAIRO_FONT, CO, logoUrl } from "./brand";
 
 /** بندٌ مركّب لإيصال 80مم: الاسم مستقل عن سطر الكمية/السعر والإجمالي. */
 export interface PrintItemBlock {
@@ -24,6 +25,8 @@ export interface PrintDoc {
   footer?: string;
   /** مجموعة باركود/QR اختيارية — تُضمَّن في نهاية الإيصال */
   barcodeSet?: BarcodeSet;
+  /** تضمين ترويسة الهوية المؤسسية الكاملة للمكتبة العربية (شعار + اسم الشركة + الفروع) */
+  includeBrandHeader?: boolean;
 }
 
 const esc = (s: unknown): string =>
@@ -140,36 +143,113 @@ function drawImage(
  * async: تحتاج لتوليد QR SVG قبل بناء HTML.
  */
 export async function docToHtml(doc: PrintDoc): Promise<string> {
-  const meta = doc.meta.map((m) => `<p class="muted">${htmlLines(m)}</p>`).join("");
+  const brandHeaderHtml = doc.includeBrandHeader
+    ? `<header style="text-align:center;padding:2px 0 6px;border-bottom:2px solid #000;margin-bottom:6px">
+        <img src="${logoUrl()}" style="width:44px;height:44px;object-fit:contain;margin-bottom:2px;filter:grayscale(100%) contrast(1000%)" alt="" onerror="this.style.display='none'">
+        <div style="font-size:17px;font-weight:900;line-height:1.15;color:#000">${esc(CO.short)}</div>
+        <div style="font-size:12px;font-weight:800;color:#000;margin-top:1px">${esc(CO.subtitle)}</div>
+        <div style="font-size:9.5px;font-weight:800;color:#000;margin-top:2px;line-height:1.3">${esc(CO.name)}<br>${esc(CO.address)}</div>
+      </header>`
+    : "";
+
+  const titleBlock = `<div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:4px 0;text-align:center;margin:4px 0 6px">
+    <h2 style="margin:0;font-size:16px;font-weight:900;letter-spacing:0.5px">${esc(doc.title)}</h2>
+    ${doc.subtitle ? `<div style="font-size:11px;font-weight:800;margin-top:2px;color:#000">${htmlLines(doc.subtitle)}</div>` : ""}
+  </div>`;
+
+  const meta = doc.meta.length
+    ? `<table class="receipt-grid" style="margin:4px 0">
+        <tbody>
+          ${doc.meta
+            .map((m) => {
+              const colonIdx = m.indexOf(":");
+              if (colonIdx !== -1) {
+                const label = m.slice(0, colonIdx).trim();
+                const val = m.slice(colonIdx + 1).trim();
+                const isPhone = label.includes("هاتف") || /^[0-9+\s-]+$/.test(val);
+                return `<tr>
+                  <td style="width:36%;font-weight:900;padding:2px 3px;border:1px solid #000">${esc(label)}</td>
+                  <td style="font-weight:900;padding:2px 3px;border:1px solid #000;text-align:${isPhone ? "left" : "right"};direction:${isPhone ? "ltr" : "rtl"};unicode-bidi:isolate">${htmlLines(val)}</td>
+                </tr>`;
+              }
+              return `<tr><td colspan="2" style="font-weight:900;padding:2px 3px;border:1px solid #000">${htmlLines(m)}</td></tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>`
+    : "";
+
   let table = "";
-  let itemBlocks = "";
   if (doc.itemBlocks?.length) {
-    const firstHeading = doc.columns?.[0] ?? "البند";
+    const firstHeading = doc.columns?.[0] ?? "البند والوصف";
     const totalHeading = doc.columns?.at(-1) ?? "الإجمالي";
-    itemBlocks = `<section class="items" aria-label="${esc(firstHeading)}">
-      <div class="item-head"><span>${esc(firstHeading)}</span><span>${esc(totalHeading)}</span></div>
-      ${doc.itemBlocks.map((item) => `<div class="item-block">
-        <div class="item-name">${esc(item.name)}</div>
-        <div class="item-values"><span class="item-qty-price">${esc(item.quantityPrice)}</span><span class="item-total">${esc(item.total)}</span></div>
-      </div>`).join("")}
-    </section>`;
+    table = `<table class="receipt-grid">
+      <thead>
+        <tr>
+          <th style="text-align:right;width:70%">${esc(firstHeading)}</th>
+          <th style="text-align:left;width:30%">${esc(totalHeading)}</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${doc.itemBlocks.map((item) => `<tr>
+          <td style="border:1px solid #000;padding:3px 2px">
+            <div style="font-weight:900;font-size:12px;line-height:1.25">${esc(item.name)}</div>
+            <div style="font-weight:800;font-size:10.5px;margin-top:1px">${esc(item.quantityPrice)}</div>
+          </td>
+          <td style="border:1px solid #000;padding:3px 2px;text-align:left;direction:ltr;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap;vertical-align:middle;font-size:12px">
+            ${esc(item.total)}
+          </td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
   } else if (doc.columns && doc.rows) {
-    const head = `<tr>${doc.columns.map((c, i) => `<th style="text-align:${i === 0 ? "right" : "left"}">${esc(c)}</th>`).join("")}</tr>`;
+    const isThreeCol = doc.columns.length === 3;
+    const colStyles = isThreeCol
+      ? [
+          'style="text-align:right;width:52%;padding:3px 2px;border:1px solid #000"',
+          'style="text-align:center;width:18%;white-space:nowrap;padding:3px 2px;font-variant-numeric:tabular-nums;border:1px solid #000"',
+          'style="text-align:left;width:30%;white-space:nowrap;direction:ltr;padding:3px 2px;font-variant-numeric:tabular-nums;border:1px solid #000"',
+        ]
+      : doc.columns.length === 2
+        ? [
+            'style="text-align:right;width:65%;padding:3px 2px;border:1px solid #000"',
+            'style="text-align:left;width:35%;white-space:nowrap;direction:ltr;padding:3px 2px;font-variant-numeric:tabular-nums;border:1px solid #000"',
+          ]
+        : doc.columns.map((_, i) => (i === 0 ? 'style="text-align:right;border:1px solid #000"' : 'style="text-align:left;border:1px solid #000"'));
+
+    const head = `<tr>${doc.columns.map((c, i) => `<th ${colStyles[i] || 'style="text-align:left;border:1px solid #000"'}>${esc(c)}</th>`).join("")}</tr>`;
     const body = doc.rows
-      .map((r) => `<tr>${r.map((c, i) => `<td style="text-align:${i === 0 ? "right" : "left"}">${esc(c)}</td>`).join("")}</tr>`)
+      .map((r) => `<tr>${r.map((c, i) => `<td ${colStyles[i] || 'style="text-align:left;border:1px solid #000"'}>${esc(c)}</td>`).join("")}</tr>`)
       .join("");
-    table = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    table = `<table class="receipt-grid"><thead>${head}</thead><tbody>${body}</tbody></table>`;
   }
-  const totals = (doc.totals ?? [])
-    .map((t) => `<div class="tot"><span>${esc(t.label)}</span><span>${esc(t.value)}</span></div>`)
-    .join("");
+
+  const totals = doc.totals?.length
+    ? `<table class="receipt-grid" style="margin:4px 0">
+        <tbody>
+          ${doc.totals.map((t, idx, arr) => {
+            const isLast = idx === arr.length - 1;
+            const isTafqit = t.label.includes("كتابة") || t.label.includes("فقط") || t.label.includes("تفقيط");
+            if (isTafqit) {
+              return `<tr>
+                <td colspan="2" style="text-align:center;font-weight:900;font-size:10.5px;padding:3px;border:1px solid #000">${esc(t.value)}</td>
+              </tr>`;
+            }
+            return `<tr style="${isLast ? "background:#000;color:#fff;font-weight:900" : ""}">
+              <td style="width:55%;padding:3px;font-weight:900;border:1px solid #000">${esc(t.label)}</td>
+              <td style="width:45%;text-align:left;direction:ltr;font-variant-numeric:tabular-nums;font-weight:900;padding:3px;white-space:nowrap;border:1px solid #000;font-size:${isLast ? "13.5px" : "11.5px"}">${esc(t.value)}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>`
+    : "";
 
   // قسم الباركود — QR + Code128 + نص العرض
   let barcodeSection = "";
   if (doc.barcodeSet) {
     const [qrSvg, bc128Result] = await Promise.all([
-      qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 140, margin: 1 }),
-      Promise.resolve(code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 2, height: 48, showText: true })),
+      qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 100, margin: 1 }),
+      Promise.resolve(code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 1.5, height: 38, showText: true })),
     ]);
     const labelHtml = doc.barcodeSet.displayLabel
       .split("\n")
@@ -183,23 +263,31 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
   }
 
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(doc.title)}</title>
-<style>@page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{font-family:"Cairo",sans-serif,monospace;width:74mm;max-width:74mm;margin:0 auto;font-size:14px;color:#000;line-height:1.6;overflow-wrap:anywhere}
-h2{text-align:center;margin:3px 0;font-size:19px;font-weight:900}.muted{text-align:center;margin:0;color:#000;font-size:13px;font-weight:700;white-space:normal}
-table{width:100%;border-collapse:collapse;margin-top:8px}th{border-bottom:2.5px solid #000;font-size:13.5px;font-weight:900;padding:4px 0}td{padding:4px 0;font-size:13px;font-weight:700}
-.items{margin-top:8px}.item-head,.item-values{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.item-head{border-bottom:2.5px solid #000;padding:4px 0;font-size:13.5px;font-weight:900}.item-block{padding:5px 0;border-bottom:1px dashed #000;break-inside:avoid}.item-name{font-size:13.5px;font-weight:900;line-height:1.45;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}.item-values{margin-top:2px;font-size:13px;font-weight:800;line-height:1.45}.item-qty-price{min-width:0;text-align:right}.item-total{flex:none;text-align:left;font-weight:900;direction:ltr}
-.tot{display:flex;justify-content:space-between;border-top:1px dashed #000;padding-top:4px;font-weight:800;font-size:14px}
-.tot:last-child{font-size:17px;font-weight:900;border-top:2.5px solid #000;padding-top:6px;margin-top:4px}
-.foot{text-align:center;margin-top:10px;font-size:13px;font-weight:700;white-space:normal;overflow-wrap:anywhere}
-.bc-wrap{text-align:center;margin-top:10px;border-top:1px dashed #000;padding-top:8px}
+${CAIRO_FONT}
+<style>
+@page{size:80mm auto;margin:2mm}
+*,*::before,*::after{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:'Cairo',sans-serif;width:72mm;max-width:72mm;margin:0 auto;font-size:11.5px;color:#000;line-height:1.4;direction:rtl;word-break:normal;overflow-wrap:normal;background:#fff}
+table.receipt-grid{width:100%;border-collapse:collapse;border:1.5px solid #000;margin:3px 0;table-layout:fixed}
+table.receipt-grid th{border:1px solid #000;font-size:11.5px;font-weight:900;padding:3px 2px;background:#000;color:#fff}
+table.receipt-grid td{padding:3px 2px;font-size:11px;font-weight:800;vertical-align:top;border:1px solid #000}
+.foot{text-align:center;margin-top:6px;font-size:10.5px;font-weight:800;line-height:1.4;color:#000}
+.bc-wrap{text-align:center;margin-top:6px;border-top:1.5px solid #000;padding-top:5px}
 .bc-wrap svg{display:block;margin:0 auto}
-.bc-qr svg{width:140px;height:140px}
-.bc-lbl{font-size:10px;margin:4px 0;color:#333;line-height:1.4}
-.bc-128{margin-top:6px}
-.bc-128 svg{max-width:100%;height:auto}
+.bc-qr svg{width:95px;height:95px}
+.bc-lbl{font-size:9.5px;font-weight:800;margin:2px 0;color:#000;line-height:1.3}
+.bc-128{margin-top:3px}
+.bc-128 svg{max-width:100%;max-height:40px}
 </style></head>
 <body onload="window.print();setTimeout(()=>window.close(),300)">
-<h2>${esc(doc.title)}</h2>${doc.subtitle ? `<p class="muted">${htmlLines(doc.subtitle)}</p>` : ""}${meta}${itemBlocks}${table}${totals}
-${doc.footer ? `<p class="foot">${htmlLines(doc.footer)}</p>` : ""}${barcodeSection}</body></html>`;
+${brandHeaderHtml}
+${titleBlock}
+${meta}
+${table}
+${totals}
+${doc.footer ? `<p class="foot">${htmlLines(doc.footer)}</p>` : ""}
+${barcodeSection}
+</body></html>`;
 }
 
 // -------------------------------------------------------------------

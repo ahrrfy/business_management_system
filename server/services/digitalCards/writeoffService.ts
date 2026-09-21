@@ -36,6 +36,7 @@ import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { resolveApprovalActor } from "../approval/ownerGate";
+import { releaseIntentInventory } from "./inventoryReservationService";
 
 async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, details: unknown): Promise<void> {
   try {
@@ -352,6 +353,9 @@ export async function approveWriteoff(
       [debitLine("LOSSES", loss), creditLine("INVENTORY", loss)],
     ),
   });
+
+  // الشطب يثبت خسارة الكروت الصادرة فقط؛ البضاعة العادية لم تُفوتر ولم تُسلّم، فتتحرر.
+  await releaseIntentInventory(tx, input.intentId);
 
   await tx
     .update(digitalSaleIntents)

@@ -228,7 +228,7 @@ export default function WorkOrders() {
       } else {
         notify.warn(
           "لا توجد طلبات مؤهلة للتصريف",
-          "طلبات التوصيل تتطلب جهة توصيل نشطة، وطلبات الاستلام المباشر تتطلب دفع كامل المبلغ مقدماً.",
+          "التصريف التلقائي للتوصيل يتطلب مندوباً فردياً نشطاً؛ شركة التوصيل تُسنَد من شاشة التوصيل بعد مسح البوليصة. والاستلام المباشر يتطلب دفع كامل المبلغ مقدماً.",
         );
       }
       invalidateAll();
@@ -245,9 +245,9 @@ export default function WorkOrders() {
       {
         onSuccess: (res) => {
           if (res.dispatchedCount > 0) {
-            notify.ok("تم الإرسال للتوصيل", `تم إسناد الطلب ${order.orderNumber} لشركة التوصيل.`);
+            notify.ok("تم الإرسال للتوصيل", `تم إسناد الطلب ${order.orderNumber} لمندوب التوصيل.`);
           } else {
-            notify.warn("تعذّر الإرسال للتوصيل", "تأكد من وجود جهة توصيل نشطة للفرع.");
+            notify.warn("تعذّر الإرسال للتوصيل", "تأكد من وجود مندوب فردي نشط للفرع، أو أرسله لشركة من شاشة التوصيل بعد مسح البوليصة.");
           }
         },
       },
@@ -826,7 +826,7 @@ export default function WorkOrders() {
                             onClick={() => autoClearReady.mutate({ branchId: activeBranchId })}
                             disabled={autoClearReady.isPending}
                             className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-md bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] active:scale-95 transition-all shadow-xs cursor-pointer disabled:opacity-50"
-                            title="تصريف تلقائي لكافة الطلبات الجاهزة (إرسال للتوصيل أو تسليم مباشر للمدفوع)"
+                            title="تصريف تلقائي للمدفوع ومندوب التوصيل الفردي؛ الشركة تتطلب مسح البوليصة من شاشة التوصيل"
                           >
                             <Zap aria-hidden className="size-3" />
                             <span>تصريف تلقائي ({fmtInt(list.length)})</span>

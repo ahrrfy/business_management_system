@@ -10,10 +10,18 @@
  * وإن ظهرت في القائمة (تُعرض للسياق فقط، بعلامة «عامّ» وبلا زرّ تعطيل).
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { promotionTargets, promotions } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
-import { createPromotion, deactivatePromotion, type CreatePromotionInput } from "../salesPromotionService";
+import {
+  createPromotion,
+  deactivatePromotion,
+  reactivatePromotion,
+  updatePromotion,
+  type CreatePromotionInput,
+  type UpdatePromotionInput,
+} from "../salesPromotionService";
 
 const RETAIL = "RETAIL" as const;
 
@@ -43,6 +51,7 @@ export interface StorePromotionRow {
   /** مملوكٌ للمتجر (فرع المتجر ∧ RETAIL) ⇒ قابلٌ للتعطيل من هنا. غيرُه = «عامّ» للعرض فقط. */
   storeOwned: boolean;
   targetCount: number;
+  targets: Array<{ targetType: "CATEGORY" | "PRODUCT"; targetId: number }>;
 }
 
 /** العروض ذات الصلة بالمتجر: فرع المتجر (أو عامّ NULL) وفئة RETAIL (أو كل الفئات NULL). */
@@ -67,18 +76,38 @@ export async function listStorePromotions(input: {
 
   const ids = rows.map((r) => Number(r.id));
   const tgts = ids.length
-    ? await db.select({ promotionId: promotionTargets.promotionId }).from(promotionTargets).where(inArray(promotionTargets.promotionId, ids))
+    ? await db
+        .select({
+          promotionId: promotionTargets.promotionId,
+          categoryId: promotionTargets.categoryId,
+          productId: promotionTargets.productId,
+        })
+        .from(promotionTargets)
+        .where(inArray(promotionTargets.promotionId, ids))
     : [];
-  const countByPromo = new Map<number, number>();
+  const targetsByPromo = new Map<number, Array<{ targetType: "CATEGORY" | "PRODUCT"; targetId: number }>>();
   for (const t of tgts) {
     const pid = Number(t.promotionId);
-    countByPromo.set(pid, (countByPromo.get(pid) ?? 0) + 1);
+    const list = targetsByPromo.get(pid) ?? [];
+    if (t.categoryId != null) {
+      list.push({
+        targetType: "CATEGORY",
+        targetId: Number(t.categoryId),
+      });
+    } else if (t.productId != null) {
+      list.push({
+        targetType: "PRODUCT",
+        targetId: Number(t.productId),
+      });
+    }
+    targetsByPromo.set(pid, list);
   }
 
   return rows.map((r) => {
     const from = toYmd(r.effectiveFrom);
     const to = r.effectiveTo == null ? null : toYmd(r.effectiveTo);
     const isActive = !!r.isActive;
+    const promoTargets = targetsByPromo.get(Number(r.id)) ?? [];
     return {
       id: Number(r.id),
       name: r.name,
@@ -96,7 +125,8 @@ export async function listStorePromotions(input: {
       // 0073: الملكية بعلامة القناة الصريحة (isStoreManaged) لا بـbranch+tier — لأن عرض كاشير
       // RETAIL@فرع-المتجر يتطابق مع عرض المتجر في هذين، فيتعذّر التمييز بهما (مراجعة عدائية ١٣/٧).
       storeOwned: !!r.isStoreManaged,
-      targetCount: countByPromo.get(Number(r.id)) ?? 0,
+      targetCount: promoTargets.length,
+      targets: promoTargets,
     };
   });
 }
@@ -121,10 +151,131 @@ export async function deactivateStorePromotion(tx: Tx, promotionId: number, expe
       .for("update")
       .limit(1)
   )[0];
-  if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "العرض غير موجود" });
-  if (!p.isStoreManaged) throw new TRPCError({ code: "FORBIDDEN", message: "هذا العرض ليس من عروض المتجر — يُدار من الإدارة" });
+  if (!p) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذر تعطيل العرض",
+        why: `العرض الترويجي رقم ${promotionId} غير موجود في النظام`,
+        doThis: "تحقق من صحة معرف العرض أو قم بتحديث قائمة العروض",
+      }),
+    });
+  }
+  if (!p.isStoreManaged) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "صلاحية غير كافية لتعطيل العرض",
+        why: "هذا العرض ليس من عروض المتجر الإلكتروني ويُدار مركزياً من إدارة المبيعات",
+        doThis: "تواصل مع الإدارة العامة أو مدير المبيعات لإيقاف العرض من شاشة العروض العامة",
+      }),
+    });
+  }
   if (p.branchId == null || Number(p.branchId) !== Number(expectedBranchId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "عرض المتجر يخصّ فرع تنفيذ آخر" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "صلاحية فرع غير متطابقة",
+        why: `العرض مسند إلى الفرع رقم ${p.branchId ?? 0} بينما فرع المتجر الحالي هو ${expectedBranchId}`,
+        doThis: "تأكد من اختيار الفرع الصحيح أو عدّل العرض من الفرع المالك له",
+      }),
+    });
   }
   await deactivatePromotion(tx, promotionId);
 }
+
+/** إعادة تفعيل عرضٍ متجريّ — يرفض ما ليس عرضَ متجرٍ (isStoreManaged). */
+export async function reactivateStorePromotion(tx: Tx, promotionId: number, expectedBranchId: number): Promise<void> {
+  const p = (
+    await tx
+      .select({ id: promotions.id, branchId: promotions.branchId, isStoreManaged: promotions.isStoreManaged })
+      .from(promotions)
+      .where(eq(promotions.id, promotionId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!p) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذر تفعيل العرض",
+        why: `العرض الترويجي رقم ${promotionId} غير موجود في النظام`,
+        doThis: "تحقق من صحة معرف العرض أو قم بتحديث قائمة العروض",
+      }),
+    });
+  }
+  if (!p.isStoreManaged) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "صلاحية غير كافية لتفعيل العرض",
+        why: "هذا العرض ليس من عروض المتجر الإلكتروني ويُدار مركزياً من إدارة المبيعات",
+        doThis: "تواصل مع الإدارة العامة أو مدير المبيعات لتفعيل العرض من شاشة العروض العامة",
+      }),
+    });
+  }
+  if (p.branchId == null || Number(p.branchId) !== Number(expectedBranchId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "صلاحية فرع غير متطابقة",
+        why: `العرض مسند إلى الفرع رقم ${p.branchId ?? 0} بينما فرع المتجر الحالي هو ${expectedBranchId}`,
+        doThis: "تأكد من اختيار الفرع الصحيح أو قم بتفعيل العرض من الفرع المالك له",
+      }),
+    });
+  }
+  await reactivatePromotion(tx, promotionId);
+}
+
+/** تعديل عرضٍ متجريّ: يفرض RETAIL + فرع المتجر + isStoreManaged ويمنع تعديل عروض الكاشير/الإدارة عبر القناة. */
+export async function updateStorePromotion(
+  tx: Tx,
+  input: Omit<UpdatePromotionInput, "customerTier" | "branchId" | "isStoreManaged">,
+  actorUserId: number,
+  expectedBranchId: number,
+): Promise<number> {
+  const p = (
+    await tx
+      .select({ id: promotions.id, branchId: promotions.branchId, isStoreManaged: promotions.isStoreManaged })
+      .from(promotions)
+      .where(eq(promotions.id, input.id))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!p) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذر تعديل العرض",
+        why: `العرض الترويجي رقم ${input.id} غير موجود في النظام`,
+        doThis: "تحقق من صحة معرف العرض أو قم بتحديث قائمة العروض",
+      }),
+    });
+  }
+  if (!p.isStoreManaged) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "صلاحية غير كافية لتعديل العرض",
+        why: "هذا العرض ليس من عروض المتجر الإلكتروني ويُدار مركزياً من إدارة المبيعات",
+        doThis: "تواصل مع الإدارة العامة أو مدير المبيعات لتعديل العرض من شاشة العروض العامة",
+      }),
+    });
+  }
+  if (p.branchId == null || Number(p.branchId) !== Number(expectedBranchId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "صلاحية فرع غير متطابقة",
+        why: `العرض مسند إلى الفرع رقم ${p.branchId ?? 0} بينما فرع المتجر الحالي هو ${expectedBranchId}`,
+        doThis: "تأكد من اختيار الفرع الصحيح أو قم بتعديل العرض من الفرع المالك له",
+      }),
+    });
+  }
+  return updatePromotion(
+    tx,
+    { ...input, customerTier: RETAIL, branchId: expectedBranchId, isStoreManaged: true },
+    actorUserId,
+  );
+}
+

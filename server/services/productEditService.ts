@@ -10,7 +10,8 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
-import { branchStock, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
+import { branchStock, bundleComponents, invoiceItems, inventoryMovements, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
@@ -425,6 +426,80 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     const wasConsignor = p.consignorId != null ? Number(p.consignorId) : null;
     const consignmentChanged = wantConsign !== undefined && !!wantConsign !== wasConsign;
     const consignorChanged = wantConsignor !== undefined && (wantConsignor ?? null) !== wasConsignor;
+    const serviceChanged = input.isService !== undefined && !!input.isService !== !!p.isService;
+    // هذه هي القيمة التي سيكتبها UPDATE أدناه فعلاً: إظهار شبكة الطباعة يفرض نوعها التشغيلي.
+    const effectiveShowInPrintPos = input.showInPrintPos ?? !!p.showInPrintPos;
+    // productType اختياري (PATCH): غيابه لا يمسح النوع التاريخي إلى NULL.
+    const requestedProductType = input.productType === undefined ? (p.productType ?? null) : input.productType?.trim() || null;
+    const effectiveProductType = effectiveShowInPrintPos ? "PRINT_SERVICE" : requestedProductType;
+    const productTypeChanged = effectiveProductType !== (p.productType ?? null);
+
+    // مكوّن البكج هو عقدٌ مخزني: تغيير المنتج لاحقاً إلى خدمة/أمانة يجعل بيع البكج
+    // يخصم no-op أو أصلاً غير مملوك. امنع تغيير المعنى عند المصدر بدلاً من ترك كل بكج
+    // مرتبط يتعطل وقت البيع. فك الارتباط من تعريفات البكجات أولاً ثم غيّر التصنيف.
+    const willBeService = input.isService ?? !!p.isService;
+    const willBeConsignment =
+      wantConsign !== undefined ? !!wantConsign : !!p.isConsignment;
+    if (
+      (serviceChanged && willBeService) ||
+      (consignmentChanged && willBeConsignment)
+    ) {
+      const [bundleReference] = await tx
+        .select({
+          bundleVariantId: bundleComponents.bundleVariantId,
+          componentVariantId: bundleComponents.componentVariantId,
+        })
+        .from(bundleComponents)
+        .innerJoin(
+          productVariants,
+          eq(bundleComponents.componentVariantId, productVariants.id),
+        )
+        .where(eq(productVariants.productId, input.productId))
+        .limit(1);
+      if (bundleReference) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "لا يمكن تغيير تصنيف منتج مستخدم كمكوّن بكج",
+            why: `المتغيّر #${Number(bundleReference.componentVariantId)} مرتبط بالبكج #${Number(bundleReference.bundleVariantId)} كمادة مخزنية مملوكة`,
+            doThis: "أزل المنتج من جميع تعريفات البكجات أولاً، ثم أعد تغيير التصنيف",
+          }),
+        });
+      }
+    }
+
+    // تصنيفُ السطر التاريخي يُستدلّ اليوم من المنتج الحيّ عند البيع والمرتجع والإلغاء. لذلك تغيير
+    // معناه بعد بيعه (نوع المسار، مخزني↔خدمة، مملوك↔أمانة، أو تبديل المودِع) يجعل نفس invoiceItem
+    // يُعالج بقواعد مختلفة عن قواعد إنشائه. لا يكفي تصفير الرصيد: التاريخ المالي نفسه باقٍ. المنتج
+    // الجديد هو حدّ النسخة الصحيح، والقديم يبقى مرجعاً ثابتاً للمستندات السابقة.
+    if (productTypeChanged || serviceChanged || consignmentChanged || consignorChanged) {
+      const [historicalLine] = await tx
+        .select({ id: invoiceItems.id })
+        .from(invoiceItems)
+        .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+        .where(eq(productVariants.productId, input.productId))
+        .limit(1);
+      let historicalMovement: { id: number } | undefined;
+      if (!historicalLine) {
+        [historicalMovement] = await tx
+          .select({ id: inventoryMovements.id })
+          .from(inventoryMovements)
+          .innerJoin(productVariants, eq(inventoryMovements.variantId, productVariants.id))
+          .where(eq(productVariants.productId, input.productId))
+          .limit(1);
+      }
+      if (historicalLine || historicalMovement) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "لا يمكن تغيير التصنيف المالي لمنتج له تاريخ تشغيلي",
+            why: "تغيير نوع المنتج أو الخدمة أو الأمانة أو المودِع سيجعل حركات المخزون أو المبيعات والمرتجعات والإلغاءات القديمة تُفسَّر بقواعد غير التي أُنشئت بها",
+            doThis: "أنشئ منتجاً جديداً بالتصنيف المطلوب، ثم عطّل المنتج القديم للمبيعات الجديدة",
+          }),
+        });
+      }
+    }
+
     if (consignmentChanged || consignorChanged) {
       const stockRows = await tx
         .select({ qty: branchStock.quantity })
@@ -463,13 +538,11 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     // «يُباع بالطلب» (0318): CHECK القاعدة يمنع التركيبة المحرَّمة، لكنّه يرتدّ برسالة SQL خامّة
     // لا يفهمها المستعمل. الحارس هنا يقولها بلغته وبسببها قبل أن تصل المعاملة للقاعدة.
     if (input.allowBackorder === true) {
-      const willBeService = input.isService ?? !!p.isService;
-      const willBeConsign = wantConsign !== undefined ? !!wantConsign : !!p.isConsignment;
       if (willBeService)
         throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على الخدمة — الخدمة بلا رصيد أصلاً فهي تُباع دائماً بلا فحص مخزون" });
       if (p.isBundle)
         throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على البكج — رصيده رصيد مكوّناته، فعِّله على المكوّن الناقص" });
-      if (willBeConsign)
+      if (willBeConsignment)
         throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» ممنوع على بضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع" });
     }
 
@@ -502,10 +575,6 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     // — تجربةٌ منكسرة يعِد فيها التبديلُ بمخرَجٍ عاجزٍ عنه. نُزامِن ذرّياً في نفس UPDATE:
     // عند تفعيل التبديل، نضمن `productType='PRINT_SERVICE'` (لا نغيّر عند التعطيل — قد يبقى نوعاً
     // مشروعاً وقد يعنيه المدير لاحقاً).
-    const effectiveShowInPrintPos = input.showInPrintPos ?? !!p.showInPrintPos;
-    const requestedProductType = input.productType?.trim() || null;
-    const effectiveProductType = effectiveShowInPrintPos ? "PRINT_SERVICE" : requestedProductType;
-
     await lockVariantsForUpdate(tx, existingVariantIds);
     // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
     await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
