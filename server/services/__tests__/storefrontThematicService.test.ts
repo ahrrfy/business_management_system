@@ -224,6 +224,26 @@ describe("storefrontThematicService — محرك المطابقة الرمزية
       expect(calculateProductRelevance(correctionFluid, calligraphyArch)).toBe(-100);
     });
 
+    it("تستبعد فورياً (-100) مضارب الريشة الرياضية وفرش الرسم من كرت الخط العربي", () => {
+      const badminton1 = {
+        productName: "سيت 2 مضرب ريشة في جنطة ALFA AI\\177",
+        category: "تجهيزات الالعاب",
+      };
+      expect(calculateProductRelevance(badminton1, calligraphyArch)).toBe(-100);
+
+      const badminton2 = {
+        productName: "مضرب ريشة HUANYU",
+        category: "تجهيزات الالعاب",
+      };
+      expect(calculateProductRelevance(badminton2, calligraphyArch)).toBe(-100);
+
+      const artBrushes = {
+        productName: "سيت 7 فرش رسم ريشة للمحترفين Keepp smiling aALFA 149A\\D",
+        category: "مستلزمات وادوات الرسم والفن",
+      };
+      expect(calculateProductRelevance(artBrushes, calligraphyArch)).toBe(-100);
+    });
+
     it("تمرر وتمنح درجات امتياز لأدوات الخط وأقلام ومحابر الحبر الفاخرة", () => {
       const parkerInkwell = {
         productName: "سيت باركر مع محبرة",
