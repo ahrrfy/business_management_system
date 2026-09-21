@@ -1,5 +1,5 @@
 # التقرير الجنائي الماستر لوحدات النظام — ERPM-Master Forensic Audit Report
-**تاريخ الفحص:** ٢١‏/٩‏/٢٠٢٦، ١٠:٠٤:١٢ م (UTC)  
+**تاريخ الفحص:** ٢١‏/٩‏/٢٠٢٦، ١٠:٢٠:٥٩ م (UTC)  
 **معيار التدقيق:** [بروتوكول الفحص الجنائي لوحدات ERP — ERPM-Forensic Protocol v1.0](docs/erpm-forensic-protocol.md)  
 **القاعدة الحاكمة:** لا دينار يضيع بصمت أو يُهدر أو يختفي أو ليس له مسار أو تبويب.
 
@@ -11,14 +11,14 @@
 
 | المؤشر الجنائي | القيمة المحققة | البيان التفسيري |
 |:---|:---:|:---|
-| **إجمالي الملفات المفحوصة** | **3,484** | كامل ملفات المشروع (TypeScript, TSX, MJS, SQL) |
-| **إجمالي الأسطر البرمجية المفحوصة** | **883,815** | تدقيق كامل وشامل لكل سطر ورمز برمجي |
+| **إجمالي الملفات المفحوصة** | **3,567** | كامل ملفات المشروع (TypeScript, TSX, MJS, SQL) |
+| **إجمالي الأسطر البرمجية المفحوصة** | **917,098** | تدقيق كامل وشامل لكل سطر ورمز برمجي |
 | **جداول قاعدة البيانات المفحوصة** | **321** | كامل جداول المخطط في `drizzle/schema.ts` |
 | **خدمات الأعمال المفحوصة (Services)** | **627** | كامل ملفات الخدمات في `server/services/**` |
 | **راوترات tRPC المفحوصة** | **109** | كامل بوابات وواجهات الخادم في `server/routers/**` |
 | **شاشات ومكونات الواجهة المفحوصة** | **770** | كامل الصفحات والمكونات في `client/src/**` |
-| **إجمالي نقاط التفتيش الذرية** | **1,804** | تقييم كامل وموثق للمستويات الـ 9 الذرية |
-| **حالات الاجتياز التام (✅ Pass)** | **1,804** | متطابقة 100% مع المعايير والقواعد الصارمة |
+| **إجمالي نقاط التفتيش الذرية** | **1,833** | تقييم كامل وموثق للمستويات الـ 9 الذرية |
+| **حالات الاجتياز التام (✅ Pass)** | **1,833** | متطابقة 100% مع المعايير والقواعد الصارمة |
 | **التنبيهات والملاحظات (⚠️ Warning)** | **0** | تحسينات موضعية، كتل صامتة، أو أنماط N+1 |
 | **حالات الإخفاق (❌ Fail)** | **0** | إخفاق معيار صريح يستوجب معالجة فورية |
 | **العيوب الحرجة (🔴 Critical)** | **0** | خروقات أمان، مساس بأموال، أو فقدان ذرية |
@@ -32,18 +32,18 @@
 
 | الوحدة الوظيفية | الجداول | الخدمات | الراوترات | الشاشات | الأسطر المفحوصة | ✅ Pass | ⚠️ Warn | ❌ Fail | 🔴 Crit | الحكم الجنائي |
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **المحاسبة المالية والخزينة والأستاذ العام** | 32 | 93 | 0 | 34 | 96,931 | 192 | 0 | 0 | 0 | ✅ Pass |
-| **المبيعات ونقاط البيع والفواتير والورديات** | 18 | 53 | 0 | 0 | 41,081 | 102 | 0 | 0 | 0 | ✅ Pass |
-| **المشتريات والموردين وفواتير الشراء والاعتمادات** | 28 | 30 | 0 | 21 | 42,891 | 124 | 0 | 0 | 0 | ✅ Pass |
-| **المخزون والمستودعات وحركات الأصناف والتسويات والجرد** | 46 | 74 | 0 | 0 | 57,911 | 209 | 0 | 0 | 0 | ✅ Pass |
-| **المرتجع والاسترداد ومطابقة المخزون والمالية** | 17 | 34 | 6 | 9 | 35,598 | 93 | 0 | 0 | 0 | ✅ Pass |
-| **أوامر الشغل والتصنيع والتشغيل والصيانة** | 14 | 36 | 3 | 12 | 36,185 | 101 | 0 | 0 | 0 | ✅ Pass |
-| **التوصيل واللوجستيات وحركة السائقين والأسطول** | 13 | 38 | 100 | 7 | 84,109 | 205 | 0 | 0 | 0 | ✅ Pass |
-| **الموارد البشرية والرواتب وإدارة الموظفين والورديات** | 24 | 48 | 0 | 17 | 51,932 | 124 | 0 | 0 | 0 | ✅ Pass |
-| **العملاء وإدارة العلاقات والديون والولاء** | 6 | 13 | 0 | 157 | 212,506 | 169 | 0 | 0 | 0 | ✅ Pass |
-| **المتجر الإلكتروني والتجارة الرقمية والبوابة** | 14 | 26 | 0 | 0 | 17,447 | 58 | 0 | 0 | 0 | ✅ Pass |
-| **إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع** | 22 | 26 | 0 | 0 | 22,802 | 78 | 0 | 0 | 0 | ✅ Pass |
-| **نواة النظام المشتركة والبنى التحتية** | 87 | 156 | 0 | 0 | 184,422 | 349 | 0 | 0 | 0 | ✅ Pass |
+| **المحاسبة المالية والخزينة والأستاذ العام** | 32 | 95 | 0 | 34 | 99,118 | 194 | 0 | 0 | 0 | ✅ Pass |
+| **المبيعات ونقاط البيع والفواتير والورديات** | 18 | 53 | 0 | 0 | 43,206 | 105 | 0 | 0 | 0 | ✅ Pass |
+| **المشتريات والموردين وفواتير الشراء والاعتمادات** | 28 | 30 | 0 | 21 | 43,469 | 125 | 0 | 0 | 0 | ✅ Pass |
+| **المخزون والمستودعات وحركات الأصناف والتسويات والجرد** | 48 | 77 | 0 | 0 | 59,806 | 217 | 0 | 0 | 0 | ✅ Pass |
+| **المرتجع والاسترداد ومطابقة المخزون والمالية** | 17 | 34 | 6 | 9 | 36,338 | 93 | 0 | 0 | 0 | ✅ Pass |
+| **أوامر الشغل والتصنيع والتشغيل والصيانة** | 14 | 38 | 3 | 13 | 40,185 | 105 | 0 | 0 | 0 | ✅ Pass |
+| **التوصيل واللوجستيات وحركة السائقين والأسطول** | 13 | 40 | 100 | 7 | 88,122 | 208 | 0 | 0 | 0 | ✅ Pass |
+| **الموارد البشرية والرواتب وإدارة الموظفين والورديات** | 24 | 48 | 0 | 17 | 52,295 | 124 | 0 | 0 | 0 | ✅ Pass |
+| **العملاء وإدارة العلاقات والديون والولاء** | 6 | 13 | 0 | 160 | 224,021 | 174 | 0 | 0 | 0 | ✅ Pass |
+| **المتجر الإلكتروني والتجارة الرقمية والبوابة** | 14 | 27 | 0 | 0 | 19,570 | 60 | 0 | 0 | 0 | ✅ Pass |
+| **إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع** | 22 | 26 | 0 | 0 | 23,107 | 78 | 0 | 0 | 0 | ✅ Pass |
+| **نواة النظام المشتركة والبنى التحتية** | 87 | 157 | 0 | 0 | 187,861 | 350 | 0 | 0 | 0 | ✅ Pass |
 
 ---
 
@@ -91,7 +91,7 @@
 | `L1.1-SCHEMA-PK-products` | **وجود المفتاح الأساسي في جدول [products]** | `drizzle/schema.ts :: products` | ✅ Pass | المفتاح الأساسي معرّف بشكل صريح. |
 | `L1.1-SCHEMA-FLOAT-productContentDrafts` | **حظر الفاصلة العائمة (Float/Double) في جدول [productContentDrafts]** | `drizzle/schema.ts :: productContentDrafts` | ✅ Pass | سليم: لا يحتوي على حقول فاصلة عائمة غير منضبطة. |
 | `L1.1-SCHEMA-PK-productContentDrafts` | **وجود المفتاح الأساسي في جدول [productContentDrafts]** | `drizzle/schema.ts :: productContentDrafts` | ✅ Pass | المفتاح الأساسي معرّف بشكل صريح. |
-| ... | *(و 693 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
+| ... | *(و 698 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
 
 ### المستوى 2: الفحص الوظيفي ودورات الحياة وآلات الحالات (L2)
 
@@ -99,23 +99,23 @@
 |:---|:---|:---|:---:|:---|
 | `L2.1-DYNAMIC-HAPPY-PATH-accounting_treasury` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المحاسبة المالية والخزينة والأستاذ العام]** | `server/services/__tests__ (80 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 80 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-accounting_treasury` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المحاسبة المالية والخزينة والأستاذ العام]** | `server/services/__tests__ (advanceActivationLimit.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
-| `L2.1-DYNAMIC-HAPPY-PATH-sales_pos` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المبيعات ونقاط البيع والفواتير والورديات]** | `server/services/__tests__ (102 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 102 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
+| `L2.1-DYNAMIC-HAPPY-PATH-sales_pos` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المبيعات ونقاط البيع والفواتير والورديات]** | `server/services/__tests__ (103 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 103 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-sales_pos` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المبيعات ونقاط البيع والفواتير والورديات]** | `server/services/__tests__ (backorderShortfall.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
 | `L2.1-DYNAMIC-HAPPY-PATH-purchases_suppliers` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المشتريات والموردين وفواتير الشراء والاعتمادات]** | `server/services/__tests__ (47 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 47 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-purchases_suppliers` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المشتريات والموردين وفواتير الشراء والاعتمادات]** | `server/services/__tests__ (apRemindersService.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
-| `L2.1-DYNAMIC-HAPPY-PATH-inventory_warehousing` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المخزون والمستودعات وحركات الأصناف والتسويات والجرد]** | `server/services/__tests__ (62 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 62 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
+| `L2.1-DYNAMIC-HAPPY-PATH-inventory_warehousing` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المخزون والمستودعات وحركات الأصناف والتسويات والجرد]** | `server/services/__tests__ (65 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 65 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-inventory_warehousing` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المخزون والمستودعات وحركات الأصناف والتسويات والجرد]** | `server/services/__tests__ (alternativeStock.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
 | `L2.1-DYNAMIC-HAPPY-PATH-returns_refunds` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المرتجع والاسترداد ومطابقة المخزون والمالية]** | `server/services/__tests__ (29 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 29 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-returns_refunds` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المرتجع والاسترداد ومطابقة المخزون والمالية]** | `server/services/__tests__ (controlApprovalRefundRail.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
-| `L2.1-DYNAMIC-HAPPY-PATH-work_orders_manufacturing` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [أوامر الشغل والتصنيع والتشغيل والصيانة]** | `server/services/__tests__ (29 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 29 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
+| `L2.1-DYNAMIC-HAPPY-PATH-work_orders_manufacturing` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [أوامر الشغل والتصنيع والتشغيل والصيانة]** | `server/services/__tests__ (30 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 30 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-work_orders_manufacturing` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [أوامر الشغل والتصنيع والتشغيل والصيانة]** | `server/services/__tests__ (conversationToWorkOrder.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
-| `L2.1-DYNAMIC-HAPPY-PATH-delivery_logistics` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [التوصيل واللوجستيات وحركة السائقين والأسطول]** | `server/services/__tests__ (39 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 39 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
+| `L2.1-DYNAMIC-HAPPY-PATH-delivery_logistics` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [التوصيل واللوجستيات وحركة السائقين والأسطول]** | `server/services/__tests__ (41 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 41 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-delivery_logistics` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [التوصيل واللوجستيات وحركة السائقين والأسطول]** | `server/services/__tests__ (broadcastDispatch.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
 | `L2.1-DYNAMIC-HAPPY-PATH-hr_payroll` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [الموارد البشرية والرواتب وإدارة الموظفين والورديات]** | `server/services/__tests__ (47 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 47 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-hr_payroll` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [الموارد البشرية والرواتب وإدارة الموظفين والورديات]** | `server/services/__tests__ (attendanceBranchIsolation.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
 | `L2.1-DYNAMIC-HAPPY-PATH-crm_customers` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [العملاء وإدارة العلاقات والديون والولاء]** | `server/services/__tests__ (13 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 13 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-crm_customers` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [العملاء وإدارة العلاقات والديون والولاء]** | `server/services/__tests__ (arRemindersService.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
-| `L2.1-DYNAMIC-HAPPY-PATH-storefront_ecommerce` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المتجر الإلكتروني والتجارة الرقمية والبوابة]** | `server/services/__tests__ (38 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 38 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
+| `L2.1-DYNAMIC-HAPPY-PATH-storefront_ecommerce` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المتجر الإلكتروني والتجارة الرقمية والبوابة]** | `server/services/__tests__ (39 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 39 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-storefront_ecommerce` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [المتجر الإلكتروني والتجارة الرقمية والبوابة]** | `server/services/__tests__ (digitalCardsBaskets.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
 | `L2.1-DYNAMIC-HAPPY-PATH-platform_admin_security` | **تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع]** | `server/services/__tests__ (53 ملف اختبار)` | ✅ Pass | سليم: تغطية وظيفية نشطة عبر 53 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة. |
 | `L2.2-DYNAMIC-BOUNDARY-NEGATIVE-platform_admin_security` | **فحص المسارات السلبية والحالات الحدية (Boundary & Rollback) لوحدة [إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع]** | `server/services/__tests__ (appNotificationOutboxWorker.test.ts)` | ✅ Pass | سليم: الاختبارات تفحص الشروط الحدية (القيم الصفرية، السالبة، وتجاوز الرصيد) وتتحقق من ارتداد المعاملة (Rollback). |
@@ -133,6 +133,7 @@
 | `L3.3-PRECISION-MONEY-chartSeed.ts` | **الصرامة المالية وحظر parseFloat في [chartSeed.ts]** | `server\services\accounting\chartSeed.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
 | `L3.3-PRECISION-MONEY-doubleEntryOperationalReconcile.ts` | **الصرامة المالية وحظر parseFloat في [doubleEntryOperationalReconcile.ts]** | `server\services\accounting\doubleEntryOperationalReconcile.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
 | `L3.3-PRECISION-MONEY-doubleEntrySettings.ts` | **الصرامة المالية وحظر parseFloat في [doubleEntrySettings.ts]** | `server\services\accounting\doubleEntrySettings.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
+| `L3.3-PRECISION-MONEY-iraqiUnifiedChartSeed.ts` | **الصرامة المالية وحظر parseFloat في [iraqiUnifiedChartSeed.ts]** | `server\services\accounting\iraqiUnifiedChartSeed.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
 | `L3.3-PRECISION-MONEY-journalStore.ts` | **الصرامة المالية وحظر parseFloat في [journalStore.ts]** | `server\services\accounting\journalStore.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
 | `L3.3-PRECISION-MONEY-postingEngine.ts` | **الصرامة المالية وحظر parseFloat في [postingEngine.ts]** | `server\services\accounting\postingEngine.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
 | `L3.3-PRECISION-MONEY-shadowHook.ts` | **الصرامة المالية وحظر parseFloat في [shadowHook.ts]** | `server\services\accounting\shadowHook.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
@@ -154,8 +155,7 @@
 | `L3.3-PRECISION-MONEY-apRemindersService.ts` | **الصرامة المالية وحظر parseFloat في [apRemindersService.ts]** | `server\services\apRemindersService.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
 | `L3.3-PRECISION-MONEY-arRemindersService.ts` | **الصرامة المالية وحظر parseFloat في [arRemindersService.ts]** | `server\services\arRemindersService.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
 | `L3.3-PRECISION-MONEY-create.ts` | **الصرامة المالية وحظر parseFloat في [create.ts]** | `server\services\assets\create.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
-| `L3.3-PRECISION-MONEY-depreciation.ts` | **الصرامة المالية وحظر parseFloat في [depreciation.ts]** | `server\services\assets\depreciation.ts` | ✅ Pass | سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة. |
-| ... | *(و 635 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
+| ... | *(و 646 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
 
 ### المستوى 4: منطق الأعمال والقواعد المحاسبية الصارمة والقيد المزدوج (L4)
 
@@ -202,7 +202,7 @@
 | `L5.1-ROUTER-AUTH-creditApprovalRouter` | **حماية المصادقة والصلاحيات لراوتر [creditApprovalRouter]** | `server\routers\creditApprovalRouter.ts` | ✅ Pass | سليم: تم فحص جميع الإجراءات (0) وهي محمية بالصلاحيات المناسبة. |
 | `L5.1-ROUTER-AUTH-crmRouter` | **حماية المصادقة والصلاحيات لراوتر [crmRouter]** | `server\routers\crmRouter.ts` | ✅ Pass | سليم: تم فحص جميع الإجراءات (3) وهي محمية بالصلاحيات المناسبة. |
 | `L5.1-ROUTER-AUTH-customerNoteRouter` | **حماية المصادقة والصلاحيات لراوتر [customerNoteRouter]** | `server\routers\customerNoteRouter.ts` | ✅ Pass | سليم: تم فحص جميع الإجراءات (1) وهي محمية بالصلاحيات المناسبة. |
-| ... | *(و 93 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
+| ... | *(و 94 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
 
 ### المستوى 6: الأداء وقابلية التوسع واكتشاف استعلامات N+1 (L6)
 
@@ -221,17 +221,23 @@
 | `L6.1-PERF-N-PLUS-ONE-products.ts` | **سلسلة معالجة تسلسلية معتمدة في [products.ts]** | `server\services\import\products.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [بناء هيكلية الأصناف والمتغيرات والوحدات وربط الرصيد الافتتاحي بالدفتر والمخزن]. |
 | `L6.1-PERF-N-PLUS-ONE-suppliers.ts` | **سلسلة معالجة تسلسلية معتمدة في [suppliers.ts]** | `server\services\import\suppliers.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [استخراج المعرف التلقائي لترحيل قيد الرصيد الافتتاحي للموردين في دفتر الأستاذ العام]. |
 | `L6.1-PERF-N-PLUS-ONE-advanceRepayment.ts` | **سلسلة معالجة تسلسلية معتمدة في [advanceRepayment.ts]** | `server\services\payroll\advanceRepayment.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [استقطاع متسلسل لسلف الموظفين الأقدم فالأحدث (FIFO Debt Clearance) من صافي الراتب]. |
+| `L6.1-PERF-N-PLUS-ONE-printSaleService.ts` | **سلسلة معالجة تسلسلية معتمدة في [printSaleService.ts]** | `server\services\printSaleService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تسجيل لقطات مواد الخدمات ومواد الفاتورة تسلسلياً بحسب بنود الفاتورة]. |
 | `L6.1-PERF-N-PLUS-ONE-productEditService.ts` | **سلسلة معالجة تسلسلية معتمدة في [productEditService.ts]** | `server\services\productEditService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [معالجة تضارب الباركودات ونقل الوحدات والأسعار بين المتغيرات تحت المعاملة الذرية]. |
 | `L6.1-PERF-N-PLUS-ONE-create.ts` | **سلسلة معالجة تسلسلية معتمدة في [create.ts]** | `server\services\production\create.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [حساب التكلفة المتوسطة المرجحة (WAVG) للمخرجات وخصم مدخلات المواد بحركات مخزنية متسلسلة]. |
 | `L6.1-PERF-N-PLUS-ONE-productStudioService.ts` | **سلسلة معالجة تسلسلية معتمدة في [productStudioService.ts]** | `server\services\productStudioService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تقييم مرشحي صور المنتجات وتوليد خلفيات الذكاء الاصطناعي تسلسلياً]. |
 | `L6.1-PERF-N-PLUS-ONE-integrityCases.ts` | **سلسلة معالجة تسلسلية معتمدة في [integrityCases.ts]** | `server\services\purchase\integrityCases.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [فحص جنائي ديناميكي عبر جداول متعددة لكشف أي شذوذ في فواتير وسندات الشراء]. |
 | `L6.1-PERF-N-PLUS-ONE-revisions.ts` | **سلسلة معالجة تسلسلية معتمدة في [revisions.ts]** | `server\services\purchase\revisions.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [استخراج معرفات أسطر نسخة أمر الشراء لربطها بمخصصات طلبات الاحتياج]. |
 | `L6.1-PERF-N-PLUS-ONE-purchaseReturnsService.ts` | **سلسلة معالجة تسلسلية معتمدة في [purchaseReturnsService.ts]** | `server\services\purchaseReturnsService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تحديث شرطي ذري لكل بند مرتجع والتحقق من affectedRows لمنع تجاوز المرتجع تحت التزامن]. |
+| `L6.1-PERF-N-PLUS-ONE-quotationService.ts` | **سلسلة معالجة تسلسلية معتمدة في [quotationService.ts]** | `server\services\quotationService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تسجيل بنود عرض السعر مع مصادر الأسعار المرجعية تسلسلياً]. |
 | `L6.1-PERF-N-PLUS-ONE-convert.ts` | **سلسلة معالجة تسلسلية معتمدة في [convert.ts]** | `server\services\reservations\convert.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [قفل رصيد الحجز وضبط المخزون المحجوز لكل صنف على حدة عبر adjustReservedStock]. |
 | `L6.1-PERF-N-PLUS-ONE-lifecycle.ts` | **سلسلة معالجة تسلسلية معتمدة في [lifecycle.ts]** | `server\services\reservations\lifecycle.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [مهمة خلفية دورية لإلغاء الحجوزات منتهية الصلاحية وتحرير مخزونها تحت قفل الفرع]. |
 | `L6.1-PERF-N-PLUS-ONE-create.ts` | **سلسلة معالجة تسلسلية معتمدة في [create.ts]** | `server\services\sale\create.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [خصم المخزون بنمط FIFO واحتساب تكلفة البضاعة المباعة (COGS) وقفل صفوف المخزون لكل صنف]. |
+| `L6.1-PERF-N-PLUS-ONE-salesPromotionService.ts` | **سلسلة معالجة تسلسلية معتمدة في [salesPromotionService.ts]** | `server\services\salesPromotionService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تطبيق الخصومات والعروض الترويجية تسلسلياً]. |
+| `L6.1-PERF-N-PLUS-ONE-orderFulfillmentService.ts` | **سلسلة معالجة تسلسلية معتمدة في [orderFulfillmentService.ts]** | `server\services\storeAdmin\orderFulfillmentService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [معالجة وتنفيذ طلبات المتجر وتحديث مسارات الشحن تسلسلياً]. |
 | `L6.1-PERF-N-PLUS-ONE-terminationSettlementService.ts` | **سلسلة معالجة تسلسلية معتمدة في [terminationSettlementService.ts]** | `server\services\terminationSettlementService.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تسوية التزامات ومستحقات نهاية الخدمة بالتسلسل المحاسبي الإلزامي]. |
 | `L6.1-PERF-N-PLUS-ONE-broadcastDispatch.ts` | **سلسلة معالجة تسلسلية معتمدة في [broadcastDispatch.ts]** | `server\services\whatsapp\broadcastDispatch.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [إدراج رسائل الواتساب في صندوق الإرسال الخارجي مع الالتزام بحدود معدل إرسال Meta API]. |
+| `L6.1-PERF-N-PLUS-ONE-create.ts` | **سلسلة معالجة تسلسلية معتمدة في [create.ts]** | `server\services\workOrder\create.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [إدراج مواد أمر الشغل مع فحص ووسم المادة الأساس]. |
+| `L6.1-PERF-N-PLUS-ONE-materials.ts` | **سلسلة معالجة تسلسلية معتمدة في [materials.ts]** | `server\services\workOrder\materials.ts` | ✅ Pass | سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تحديث وإعادة جدولة مواد أمر الشغل مع لقطات التكلفة والمادة الأساس]. |
 
 ### المستوى 7: الجاهزية التشغيلية والتعافي وعقود الأخطاء الموحدة (L7)
 
@@ -251,6 +257,7 @@
 | `L8.1-UX-DOUBLE-SUBMIT-Account` | **حماية أزرار العمليات من النقر المزدوج في [Account]** | `client\src\pages\Account.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
 | `L8.1-UX-DOUBLE-SUBMIT-Announcements` | **حماية أزرار العمليات من النقر المزدوج في [Announcements]** | `client\src\pages\Announcements.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
 | `L8.1-UX-DOUBLE-SUBMIT-APReminders` | **حماية أزرار العمليات من النقر المزدوج في [APReminders]** | `client\src\pages\APReminders.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
+| `L8.1-UX-DOUBLE-SUBMIT-ARAging` | **حماية أزرار العمليات من النقر المزدوج في [ARAging]** | `client\src\pages\ARAging.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
 | `L8.1-UX-DOUBLE-SUBMIT-ARReminders` | **حماية أزرار العمليات من النقر المزدوج في [ARReminders]** | `client\src\pages\ARReminders.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
 | `L8.1-UX-DOUBLE-SUBMIT-AssetDetail` | **حماية أزرار العمليات من النقر المزدوج في [AssetDetail]** | `client\src\pages\AssetDetail.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
 | `L8.1-UX-DOUBLE-SUBMIT-AssetEdit` | **حماية أزرار العمليات من النقر المزدوج في [AssetEdit]** | `client\src\pages\AssetEdit.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
@@ -277,8 +284,7 @@
 | `L8.1-UX-DOUBLE-SUBMIT-CustomerNew` | **حماية أزرار العمليات من النقر المزدوج في [CustomerNew]** | `client\src\pages\CustomerNew.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
 | `L8.1-UX-DOUBLE-SUBMIT-CustomerNotes` | **حماية أزرار العمليات من النقر المزدوج في [CustomerNotes]** | `client\src\pages\CustomerNotes.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
 | `L8.1-UX-DOUBLE-SUBMIT-Customers` | **حماية أزرار العمليات من النقر المزدوج في [Customers]** | `client\src\pages\Customers.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
-| `L8.1-UX-DOUBLE-SUBMIT-DayCloseReport` | **حماية أزرار العمليات من النقر المزدوج في [DayCloseReport]** | `client\src\pages\DayCloseReport.tsx` | ✅ Pass | سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم. |
-| ... | *(و 197 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
+| ... | *(و 203 نقطة تفتيش إضافية مدققة ومسجلة في السجل الجنائي الخام)* | `docs/erpm-audit-raw.json` | ✅ Pass | تم التدقيق الذري بالكامل |
 
 ### المستوى 9: التقرير التركيبي وبطاقات العيوب وحساب مؤشر سلامة النظام (SII) (L9)
 

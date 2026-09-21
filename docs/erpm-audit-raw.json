@@ -1,19 +1,19 @@
 {
-  "timestamp": "2026-09-21T22:04:12.241Z",
+  "timestamp": "2026-09-21T22:20:59.007Z",
   "scope": {
-    "totalFiles": 3484,
-    "totalLines": 883815,
+    "totalFiles": 3567,
+    "totalLines": 917098,
     "byModule": {
       "accounting_treasury": {
         "name": "المحاسبة المالية والخزينة والأستاذ العام",
-        "files": 334,
-        "lines": 96931,
+        "files": 340,
+        "lines": 99118,
         "tables": 32,
-        "services": 93,
+        "services": 95,
         "routers": 0,
         "pages": 34,
         "checkpoints": {
-          "pass": 192,
+          "pass": 194,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -21,14 +21,14 @@
       },
       "sales_pos": {
         "name": "المبيعات ونقاط البيع والفواتير والورديات",
-        "files": 170,
-        "lines": 41081,
+        "files": 172,
+        "lines": 43206,
         "tables": 18,
         "services": 53,
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 102,
+          "pass": 105,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -36,14 +36,14 @@
       },
       "purchases_suppliers": {
         "name": "المشتريات والموردين وفواتير الشراء والاعتمادات",
-        "files": 128,
-        "lines": 42891,
+        "files": 129,
+        "lines": 43469,
         "tables": 28,
         "services": 30,
         "routers": 0,
         "pages": 21,
         "checkpoints": {
-          "pass": 124,
+          "pass": 125,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -51,14 +51,14 @@
       },
       "inventory_warehousing": {
         "name": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
-        "files": 189,
-        "lines": 57911,
-        "tables": 46,
-        "services": 74,
+        "files": 194,
+        "lines": 59806,
+        "tables": 48,
+        "services": 77,
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 209,
+          "pass": 217,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -67,7 +67,7 @@
       "returns_refunds": {
         "name": "المرتجع والاسترداد ومطابقة المخزون والمالية",
         "files": 123,
-        "lines": 35598,
+        "lines": 36338,
         "tables": 17,
         "services": 34,
         "routers": 6,
@@ -81,14 +81,14 @@
       },
       "work_orders_manufacturing": {
         "name": "أوامر الشغل والتصنيع والتشغيل والصيانة",
-        "files": 149,
-        "lines": 36185,
+        "files": 157,
+        "lines": 40185,
         "tables": 14,
-        "services": 36,
+        "services": 38,
         "routers": 3,
-        "pages": 12,
+        "pages": 13,
         "checkpoints": {
-          "pass": 101,
+          "pass": 105,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -96,14 +96,14 @@
       },
       "delivery_logistics": {
         "name": "التوصيل واللوجستيات وحركة السائقين والأسطول",
-        "files": 337,
-        "lines": 84109,
+        "files": 358,
+        "lines": 88122,
         "tables": 13,
-        "services": 38,
+        "services": 40,
         "routers": 100,
         "pages": 7,
         "checkpoints": {
-          "pass": 205,
+          "pass": 208,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -111,8 +111,8 @@
       },
       "hr_payroll": {
         "name": "الموارد البشرية والرواتب وإدارة الموظفين والورديات",
-        "files": 193,
-        "lines": 51932,
+        "files": 194,
+        "lines": 52295,
         "tables": 24,
         "services": 48,
         "routers": 0,
@@ -126,14 +126,14 @@
       },
       "crm_customers": {
         "name": "العملاء وإدارة العلاقات والديون والولاء",
-        "files": 908,
-        "lines": 212506,
+        "files": 936,
+        "lines": 224021,
         "tables": 6,
         "services": 13,
         "routers": 0,
-        "pages": 157,
+        "pages": 160,
         "checkpoints": {
-          "pass": 169,
+          "pass": 174,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -141,14 +141,14 @@
       },
       "storefront_ecommerce": {
         "name": "المتجر الإلكتروني والتجارة الرقمية والبوابة",
-        "files": 109,
-        "lines": 17447,
+        "files": 112,
+        "lines": 19570,
         "tables": 14,
-        "services": 26,
+        "services": 27,
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 58,
+          "pass": 60,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -156,8 +156,8 @@
       },
       "platform_admin_security": {
         "name": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
-        "files": 129,
-        "lines": 22802,
+        "files": 131,
+        "lines": 23107,
         "tables": 22,
         "services": 26,
         "routers": 0,
@@ -171,14 +171,14 @@
       },
       "general_core": {
         "name": "نواة النظام المشتركة والبنى التحتية",
-        "files": 715,
-        "lines": 184422,
+        "files": 721,
+        "lines": 187861,
         "tables": 87,
-        "services": 156,
+        "services": 157,
         "routers": 0,
         "pages": 0,
         "checkpoints": {
-          "pass": 349,
+          "pass": 350,
           "warning": 0,
           "fail": 0,
           "critical": 0
@@ -1159,6 +1159,39 @@
           "id": "L1.1-SCHEMA-BRANCH-invoiceItems",
           "title": "عزل الفروع (branchId) في جدول العمليات [invoiceItems]",
           "target": "drizzle/schema.ts :: invoiceItems",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L1",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L1.1-SCHEMA-FLOAT-invoiceItemServiceMaterials",
+          "title": "حظر الفاصلة العائمة (Float/Double) في جدول [invoiceItemServiceMaterials]",
+          "target": "drizzle/schema.ts :: invoiceItemServiceMaterials",
+          "verdict": "PASS",
+          "details": "سليم: لا يحتوي على حقول فاصلة عائمة غير منضبطة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L1",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L1.1-SCHEMA-PK-invoiceItemServiceMaterials",
+          "title": "وجود المفتاح الأساسي في جدول [invoiceItemServiceMaterials]",
+          "target": "drizzle/schema.ts :: invoiceItemServiceMaterials",
+          "verdict": "PASS",
+          "details": "المفتاح الأساسي معرّف بشكل صريح.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L1",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L1.1-SCHEMA-BRANCH-invoiceItemServiceMaterials",
+          "title": "عزل الفروع (branchId) في جدول العمليات [invoiceItemServiceMaterials]",
+          "target": "drizzle/schema.ts :: invoiceItemServiceMaterials",
           "verdict": "PASS",
           "details": "سليم ومعتمد: يرث عزل الفرع تلقائياً من الترويسة الرئيسية عبر المفتاح الأجنبي، أو يمثل إعداداً شاملاً للمؤسسة.",
           "linesAudited": 0
@@ -7492,6 +7525,28 @@
           "level": "L1",
           "moduleId": "inventory_warehousing",
           "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L1.1-SCHEMA-FLOAT-digitalIntentInventoryReservations",
+          "title": "حظر الفاصلة العائمة (Float/Double) في جدول [digitalIntentInventoryReservations]",
+          "target": "drizzle/schema.ts :: digitalIntentInventoryReservations",
+          "verdict": "PASS",
+          "details": "سليم: لا يحتوي على حقول فاصلة عائمة غير منضبطة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L1",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L1.1-SCHEMA-PK-digitalIntentInventoryReservations",
+          "title": "وجود المفتاح الأساسي في جدول [digitalIntentInventoryReservations]",
+          "target": "drizzle/schema.ts :: digitalIntentInventoryReservations",
+          "verdict": "PASS",
+          "details": "المفتاح الأساسي معرّف بشكل صريح.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L1",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
           "id": "L1.1-SCHEMA-FLOAT-digitalSaleIntentItems",
           "title": "حظر الفاصلة العائمة (Float/Double) في جدول [digitalSaleIntentItems]",
           "target": "drizzle/schema.ts :: digitalSaleIntentItems",
@@ -8214,9 +8269,9 @@
           "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
           "id": "L2.1-DYNAMIC-HAPPY-PATH-sales_pos",
           "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المبيعات ونقاط البيع والفواتير والورديات]",
-          "target": "server/services/__tests__ (102 ملف اختبار)",
+          "target": "server/services/__tests__ (103 ملف اختبار)",
           "verdict": "PASS",
-          "details": "سليم: تغطية وظيفية نشطة عبر 102 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "details": "سليم: تغطية وظيفية نشطة عبر 103 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
           "linesAudited": 0
         },
         {
@@ -8258,9 +8313,9 @@
           "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
           "id": "L2.1-DYNAMIC-HAPPY-PATH-inventory_warehousing",
           "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المخزون والمستودعات وحركات الأصناف والتسويات والجرد]",
-          "target": "server/services/__tests__ (62 ملف اختبار)",
+          "target": "server/services/__tests__ (65 ملف اختبار)",
           "verdict": "PASS",
-          "details": "سليم: تغطية وظيفية نشطة عبر 62 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "details": "سليم: تغطية وظيفية نشطة عبر 65 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
           "linesAudited": 0
         },
         {
@@ -8302,9 +8357,9 @@
           "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
           "id": "L2.1-DYNAMIC-HAPPY-PATH-work_orders_manufacturing",
           "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [أوامر الشغل والتصنيع والتشغيل والصيانة]",
-          "target": "server/services/__tests__ (29 ملف اختبار)",
+          "target": "server/services/__tests__ (30 ملف اختبار)",
           "verdict": "PASS",
-          "details": "سليم: تغطية وظيفية نشطة عبر 29 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "details": "سليم: تغطية وظيفية نشطة عبر 30 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
           "linesAudited": 0
         },
         {
@@ -8324,9 +8379,9 @@
           "moduleName": "التوصيل واللوجستيات وحركة السائقين والأسطول",
           "id": "L2.1-DYNAMIC-HAPPY-PATH-delivery_logistics",
           "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [التوصيل واللوجستيات وحركة السائقين والأسطول]",
-          "target": "server/services/__tests__ (39 ملف اختبار)",
+          "target": "server/services/__tests__ (41 ملف اختبار)",
           "verdict": "PASS",
-          "details": "سليم: تغطية وظيفية نشطة عبر 39 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "details": "سليم: تغطية وظيفية نشطة عبر 41 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
           "linesAudited": 0
         },
         {
@@ -8390,9 +8445,9 @@
           "moduleName": "المتجر الإلكتروني والتجارة الرقمية والبوابة",
           "id": "L2.1-DYNAMIC-HAPPY-PATH-storefront_ecommerce",
           "title": "تغطية مسارات الاختبار الوظيفية السعيدة (Happy Path) لوحدة [المتجر الإلكتروني والتجارة الرقمية والبوابة]",
-          "target": "server/services/__tests__ (38 ملف اختبار)",
+          "target": "server/services/__tests__ (39 ملف اختبار)",
           "verdict": "PASS",
-          "details": "سليم: تغطية وظيفية نشطة عبر 38 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
+          "details": "سليم: تغطية وظيفية نشطة عبر 39 ملف اختبار تحاكي مسارات العمل وتؤكد استقرار الاستجابة.",
           "linesAudited": 0
         },
         {
@@ -8528,6 +8583,17 @@
           "id": "L3.3-PRECISION-MONEY-doubleEntrySettings.ts",
           "title": "الصرامة المالية وحظر parseFloat في [doubleEntrySettings.ts]",
           "target": "server\\services\\accounting\\doubleEntrySettings.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "accounting_treasury",
+          "moduleName": "المحاسبة المالية والخزينة والأستاذ العام",
+          "id": "L3.3-PRECISION-MONEY-iraqiUnifiedChartSeed.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [iraqiUnifiedChartSeed.ts]",
+          "target": "server\\services\\accounting\\iraqiUnifiedChartSeed.ts",
           "verdict": "PASS",
           "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
           "linesAudited": 0
@@ -10085,6 +10151,17 @@
         },
         {
           "level": "L3",
+          "moduleId": "delivery_logistics",
+          "moduleName": "التوصيل واللوجستيات وحركة السائقين والأسطول",
+          "id": "L3.3-PRECISION-MONEY-barcodeLookupPolicy.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [barcodeLookupPolicy.ts]",
+          "target": "server\\services\\delivery\\barcodeLookupPolicy.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
           "moduleId": "returns_refunds",
           "moduleName": "المرتجع والاسترداد ومطابقة المخزون والمالية",
           "id": "L3.3-PRECISION-MONEY-barcodeReturnService.ts",
@@ -10417,6 +10494,17 @@
           "level": "L3",
           "moduleId": "delivery_logistics",
           "moduleName": "التوصيل واللوجستيات وحركة السائقين والأسطول",
+          "id": "L3.3-PRECISION-MONEY-trackingRefPolicy.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [trackingRefPolicy.ts]",
+          "target": "server\\services\\delivery\\trackingRefPolicy.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "delivery_logistics",
+          "moduleName": "التوصيل واللوجستيات وحركة السائقين والأسطول",
           "id": "L3.3-PRECISION-MONEY-types.ts",
           "title": "الصرامة المالية وحظر parseFloat في [types.ts]",
           "target": "server\\services\\delivery\\types.ts",
@@ -10516,9 +10604,42 @@
           "level": "L3",
           "moduleId": "general_core",
           "moduleName": "نواة النظام المشتركة والبنى التحتية",
+          "id": "L3.3-PRECISION-MONEY-intentSchemas.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [intentSchemas.ts]",
+          "target": "server\\services\\digitalCards\\intentSchemas.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "general_core",
+          "moduleName": "نواة النظام المشتركة والبنى التحتية",
           "id": "L3.3-PRECISION-MONEY-intentService.ts",
           "title": "الصرامة المالية وحظر parseFloat في [intentService.ts]",
           "target": "server\\services\\digitalCards\\intentService.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L3.3-PRECISION-MONEY-inventoryBindingGuard.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [inventoryBindingGuard.ts]",
+          "target": "server\\services\\digitalCards\\inventoryBindingGuard.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L3.3-PRECISION-MONEY-inventoryReservationService.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [inventoryReservationService.ts]",
+          "target": "server\\services\\digitalCards\\inventoryReservationService.ts",
           "verdict": "PASS",
           "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
           "linesAudited": 0
@@ -11608,6 +11729,17 @@
           "id": "L3.3-PRECISION-MONEY-costRevaluationRequest.ts",
           "title": "الصرامة المالية وحظر parseFloat في [costRevaluationRequest.ts]",
           "target": "server\\services\\inventory\\costRevaluationRequest.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "inventory_warehousing",
+          "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
+          "id": "L3.3-PRECISION-MONEY-materialEligibility.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [materialEligibility.ts]",
+          "target": "server\\services\\inventory\\materialEligibility.ts",
           "verdict": "PASS",
           "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
           "linesAudited": 0
@@ -13132,6 +13264,17 @@
         },
         {
           "level": "L3",
+          "moduleId": "accounting_treasury",
+          "moduleName": "المحاسبة المالية والخزينة والأستاذ العام",
+          "id": "L3.3-PRECISION-MONEY-autoSettlementService.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [autoSettlementService.ts]",
+          "target": "server\\services\\reconciliation\\autoSettlementService.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
           "moduleId": "general_core",
           "moduleName": "نواة النظام المشتركة والبنى التحتية",
           "id": "L3.3-PRECISION-MONEY-recruitmentService.ts",
@@ -14177,6 +14320,17 @@
         },
         {
           "level": "L3",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L3.3-PRECISION-MONEY-serviceRecipeConsumption.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [serviceRecipeConsumption.ts]",
+          "target": "server\\services\\serviceRecipeConsumption.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
           "moduleId": "platform_admin_security",
           "moduleName": "إدارة النظام والأمان والنسخ الاحتياطي وتعدد الفروع",
           "id": "L3.3-PRECISION-MONEY-sessionContextService.ts",
@@ -14798,6 +14952,17 @@
           "id": "L3.3-PRECISION-MONEY-storefrontSitemapService.ts",
           "title": "الصرامة المالية وحظر parseFloat في [storefrontSitemapService.ts]",
           "target": "server\\services\\storefrontSitemapService.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "storefront_ecommerce",
+          "moduleName": "المتجر الإلكتروني والتجارة الرقمية والبوابة",
+          "id": "L3.3-PRECISION-MONEY-storefrontThematicService.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [storefrontThematicService.ts]",
+          "target": "server\\services\\storefrontThematicService.ts",
           "verdict": "PASS",
           "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
           "linesAudited": 0
@@ -15502,6 +15667,17 @@
           "id": "L3.3-PRECISION-MONEY-approval.ts",
           "title": "الصرامة المالية وحظر parseFloat في [approval.ts]",
           "target": "server\\services\\workOrder\\approval.ts",
+          "verdict": "PASS",
+          "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L3",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L3.3-PRECISION-MONEY-baseInventorySnapshot.ts",
+          "title": "الصرامة المالية وحظر parseFloat في [baseInventorySnapshot.ts]",
+          "target": "server\\services\\workOrder\\baseInventorySnapshot.ts",
           "verdict": "PASS",
           "details": "سليم: الحسابات المالية تلتزم بدقة decimal.js ودوال التحويل المعتمدة.",
           "linesAudited": 0
@@ -16712,7 +16888,7 @@
           "title": "حماية المصادقة والصلاحيات لراوتر [productionRouter]",
           "target": "server\\routers\\productionRouter.ts",
           "verdict": "PASS",
-          "details": "سليم: تم فحص جميع الإجراءات (1) وهي محمية بالصلاحيات المناسبة.",
+          "details": "سليم: تم فحص جميع الإجراءات (2) وهي محمية بالصلاحيات المناسبة.",
           "linesAudited": 0
         },
         {
@@ -16976,7 +17152,18 @@
           "title": "حماية المصادقة والصلاحيات لراوتر [statutoryAccountingRouter]",
           "target": "server\\routers\\statutoryAccountingRouter.ts",
           "verdict": "PASS",
-          "details": "سليم: تم فحص جميع الإجراءات (5) وهي محمية بالصلاحيات المناسبة.",
+          "details": "سليم: تم فحص جميع الإجراءات (6) وهي محمية بالصلاحيات المناسبة.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L5",
+          "moduleId": "delivery_logistics",
+          "moduleName": "التوصيل واللوجستيات وحركة السائقين والأسطول",
+          "id": "L5.2-INPUT-VALIDATION-statutoryAccountingRouter.seedIraqiUnified",
+          "title": "مخطط التحقق Zod Input في [seedIraqiUnified]",
+          "target": "server\\routers\\statutoryAccountingRouter.ts :: seedIraqiUnified",
+          "verdict": "PASS",
+          "details": "سليم: إجراء طفرة صفري المدخلات (Void Mutation) مخصص لعملية لا تتطلب معطيات من العميل.",
           "linesAudited": 0
         },
         {
@@ -16998,7 +17185,7 @@
           "title": "حماية المصادقة والصلاحيات لراوتر [storeAdminRouter]",
           "target": "server\\routers\\storeAdminRouter.ts",
           "verdict": "PASS",
-          "details": "سليم: تم فحص جميع الإجراءات (9) وهي محمية بالصلاحيات المناسبة.",
+          "details": "سليم: تم فحص جميع الإجراءات (11) وهي محمية بالصلاحيات المناسبة.",
           "linesAudited": 0
         },
         {
@@ -17009,7 +17196,7 @@
           "title": "حماية المصادقة والصلاحيات لراوتر [storefrontRouter]",
           "target": "server\\routers\\storefrontRouter.ts",
           "verdict": "PASS",
-          "details": "سليم: تم فحص جميع الإجراءات (5) وهي محمية بالصلاحيات المناسبة.",
+          "details": "سليم: تم فحص جميع الإجراءات (6) وهي محمية بالصلاحيات المناسبة.",
           "linesAudited": 0
         },
         {
@@ -17338,6 +17525,17 @@
         },
         {
           "level": "L6",
+          "moduleId": "sales_pos",
+          "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
+          "id": "L6.1-PERF-N-PLUS-ONE-printSaleService.ts",
+          "title": "سلسلة معالجة تسلسلية معتمدة في [printSaleService.ts]",
+          "target": "server\\services\\printSaleService.ts",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تسجيل لقطات مواد الخدمات ومواد الفاتورة تسلسلياً بحسب بنود الفاتورة].",
+          "linesAudited": 0
+        },
+        {
+          "level": "L6",
           "moduleId": "inventory_warehousing",
           "moduleName": "المخزون والمستودعات وحركات الأصناف والتسويات والجرد",
           "id": "L6.1-PERF-N-PLUS-ONE-productEditService.ts",
@@ -17404,6 +17602,17 @@
         },
         {
           "level": "L6",
+          "moduleId": "sales_pos",
+          "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
+          "id": "L6.1-PERF-N-PLUS-ONE-quotationService.ts",
+          "title": "سلسلة معالجة تسلسلية معتمدة في [quotationService.ts]",
+          "target": "server\\services\\quotationService.ts",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تسجيل بنود عرض السعر مع مصادر الأسعار المرجعية تسلسلياً].",
+          "linesAudited": 0
+        },
+        {
+          "level": "L6",
           "moduleId": "general_core",
           "moduleName": "نواة النظام المشتركة والبنى التحتية",
           "id": "L6.1-PERF-N-PLUS-ONE-convert.ts",
@@ -17437,6 +17646,28 @@
         },
         {
           "level": "L6",
+          "moduleId": "sales_pos",
+          "moduleName": "المبيعات ونقاط البيع والفواتير والورديات",
+          "id": "L6.1-PERF-N-PLUS-ONE-salesPromotionService.ts",
+          "title": "سلسلة معالجة تسلسلية معتمدة في [salesPromotionService.ts]",
+          "target": "server\\services\\salesPromotionService.ts",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تطبيق الخصومات والعروض الترويجية تسلسلياً].",
+          "linesAudited": 0
+        },
+        {
+          "level": "L6",
+          "moduleId": "storefront_ecommerce",
+          "moduleName": "المتجر الإلكتروني والتجارة الرقمية والبوابة",
+          "id": "L6.1-PERF-N-PLUS-ONE-orderFulfillmentService.ts",
+          "title": "سلسلة معالجة تسلسلية معتمدة في [orderFulfillmentService.ts]",
+          "target": "server\\services\\storeAdmin\\orderFulfillmentService.ts",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [معالجة وتنفيذ طلبات المتجر وتحديث مسارات الشحن تسلسلياً].",
+          "linesAudited": 0
+        },
+        {
+          "level": "L6",
           "moduleId": "general_core",
           "moduleName": "نواة النظام المشتركة والبنى التحتية",
           "id": "L6.1-PERF-N-PLUS-ONE-terminationSettlementService.ts",
@@ -17455,6 +17686,28 @@
           "target": "server\\services\\whatsapp\\broadcastDispatch.ts",
           "verdict": "PASS",
           "details": "سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [إدراج رسائل الواتساب في صندوق الإرسال الخارجي مع الالتزام بحدود معدل إرسال Meta API].",
+          "linesAudited": 0
+        },
+        {
+          "level": "L6",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L6.1-PERF-N-PLUS-ONE-create.ts",
+          "title": "سلسلة معالجة تسلسلية معتمدة في [create.ts]",
+          "target": "server\\services\\workOrder\\create.ts",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [إدراج مواد أمر الشغل مع فحص ووسم المادة الأساس].",
+          "linesAudited": 0
+        },
+        {
+          "level": "L6",
+          "moduleId": "work_orders_manufacturing",
+          "moduleName": "أوامر الشغل والتصنيع والتشغيل والصيانة",
+          "id": "L6.1-PERF-N-PLUS-ONE-materials.ts",
+          "title": "سلسلة معالجة تسلسلية معتمدة في [materials.ts]",
+          "target": "server\\services\\workOrder\\materials.ts",
+          "verdict": "PASS",
+          "details": "سليم ومعتمد جنائياً: سلسلة معالجة تسلسلية معتمدة محاسبياً وجنائياً (Certified Sequential Chain) — [تحديث وإعادة جدولة مواد أمر الشغل مع لقطات التكلفة والمادة الأساس].",
           "linesAudited": 0
         }
       ]
@@ -17562,6 +17815,17 @@
           "id": "L8.1-UX-DOUBLE-SUBMIT-APReminders",
           "title": "حماية أزرار العمليات من النقر المزدوج في [APReminders]",
           "target": "client\\src\\pages\\APReminders.tsx",
+          "verdict": "PASS",
+          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L8",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L8.1-UX-DOUBLE-SUBMIT-ARAging",
+          "title": "حماية أزرار العمليات من النقر المزدوج في [ARAging]",
+          "target": "client\\src\\pages\\ARAging.tsx",
           "verdict": "PASS",
           "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
           "linesAudited": 0
@@ -17848,6 +18112,17 @@
           "id": "L8.1-UX-DOUBLE-SUBMIT-Customers",
           "title": "حماية أزرار العمليات من النقر المزدوج في [Customers]",
           "target": "client\\src\\pages\\Customers.tsx",
+          "verdict": "PASS",
+          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L8",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L8.1-UX-DOUBLE-SUBMIT-CustomerStatement",
+          "title": "حماية أزرار العمليات من النقر المزدوج في [CustomerStatement]",
+          "target": "client\\src\\pages\\CustomerStatement.tsx",
           "verdict": "PASS",
           "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
           "linesAudited": 0
@@ -18846,6 +19121,17 @@
           "level": "L8",
           "moduleId": "crm_customers",
           "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L8.1-UX-DOUBLE-SUBMIT-StorePromotionsManager",
+          "title": "حماية أزرار العمليات من النقر المزدوج في [StorePromotionsManager]",
+          "target": "client\\src\\pages\\store\\StorePromotionsManager.tsx",
+          "verdict": "PASS",
+          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L8",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
           "id": "L8.1-UX-DOUBLE-SUBMIT-StorePushCampaignManager",
           "title": "حماية أزرار العمليات من النقر المزدوج في [StorePushCampaignManager]",
           "target": "client\\src\\pages\\store\\StorePushCampaignManager.tsx",
@@ -18860,6 +19146,17 @@
           "id": "L8.1-UX-DOUBLE-SUBMIT-StoreSettingsPanel",
           "title": "حماية أزرار العمليات من النقر المزدوج في [StoreSettingsPanel]",
           "target": "client\\src\\pages\\store\\StoreSettingsPanel.tsx",
+          "verdict": "PASS",
+          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L8",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L8.1-UX-DOUBLE-SUBMIT-StoreThematicCollectionsPanel",
+          "title": "حماية أزرار العمليات من النقر المزدوج في [StoreThematicCollectionsPanel]",
+          "target": "client\\src\\pages\\store\\StoreThematicCollectionsPanel.tsx",
           "verdict": "PASS",
           "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
           "linesAudited": 0
@@ -18937,6 +19234,17 @@
           "id": "L8.1-UX-DOUBLE-SUBMIT-Suppliers",
           "title": "حماية أزرار العمليات من النقر المزدوج في [Suppliers]",
           "target": "client\\src\\pages\\Suppliers.tsx",
+          "verdict": "PASS",
+          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L8",
+          "moduleId": "purchases_suppliers",
+          "moduleName": "المشتريات والموردين وفواتير الشراء والاعتمادات",
+          "id": "L8.1-UX-DOUBLE-SUBMIT-SupplierStatement",
+          "title": "حماية أزرار العمليات من النقر المزدوج في [SupplierStatement]",
+          "target": "client\\src\\pages\\SupplierStatement.tsx",
           "verdict": "PASS",
           "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
           "linesAudited": 0
@@ -19135,17 +19443,6 @@
           "id": "L8.1-UX-DOUBLE-SUBMIT-AnnouncementDetailModal",
           "title": "حماية أزرار العمليات من النقر المزدوج في [AnnouncementDetailModal]",
           "target": "client\\src\\components\\announcements\\AnnouncementDetailModal.tsx",
-          "verdict": "PASS",
-          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
-          "linesAudited": 0
-        },
-        {
-          "level": "L8",
-          "moduleId": "crm_customers",
-          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
-          "id": "L8.1-UX-DOUBLE-SUBMIT-AppLayout",
-          "title": "حماية أزرار العمليات من النقر المزدوج في [AppLayout]",
-          "target": "client\\src\\components\\AppLayout.tsx",
           "verdict": "PASS",
           "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
           "linesAudited": 0
@@ -19704,6 +20001,17 @@
           "level": "L8",
           "moduleId": "crm_customers",
           "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L8.1-UX-DOUBLE-SUBMIT-StudioImageDiscoveryPanel",
+          "title": "حماية أزرار العمليات من النقر المزدوج في [StudioImageDiscoveryPanel]",
+          "target": "client\\src\\components\\product-studio\\StudioImageDiscoveryPanel.tsx",
+          "verdict": "PASS",
+          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L8",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
           "id": "L8.1-UX-DOUBLE-SUBMIT-StudioManualTaskCreator",
           "title": "حماية أزرار العمليات من النقر المزدوج في [StudioManualTaskCreator]",
           "target": "client\\src\\components\\product-studio\\StudioManualTaskCreator.tsx",
@@ -19922,6 +20230,17 @@
         },
         {
           "level": "L8",
+          "moduleId": "crm_customers",
+          "moduleName": "العملاء وإدارة العلاقات والديون والولاء",
+          "id": "L8.1-UX-DOUBLE-SUBMIT-EditOnlineOrderDialog",
+          "title": "حماية أزرار العمليات من النقر المزدوج في [EditOnlineOrderDialog]",
+          "target": "client\\src\\components\\store\\EditOnlineOrderDialog.tsx",
+          "verdict": "PASS",
+          "details": "سليم: زر العملية محمي بتعطيل أثناء انتظار استجابة الخادم.",
+          "linesAudited": 0
+        },
+        {
+          "level": "L8",
           "moduleId": "accounting_treasury",
           "moduleName": "المحاسبة المالية والخزينة والأستاذ العام",
           "id": "L8.1-UX-DOUBLE-SUBMIT-CashVarianceResolutionPanel",
@@ -20084,8 +20403,8 @@
   },
   "defectCards": [],
   "summary": {
-    "totalCheckpoints": 1804,
-    "pass": 1804,
+    "totalCheckpoints": 1833,
+    "pass": 1833,
     "warning": 0,
     "fail": 0,
     "critical": 0,

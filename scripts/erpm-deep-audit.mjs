@@ -751,7 +751,8 @@ export class ForensicEngine {
         'backfill',
         'mobilerevokeexpopush',
         'markallnotificationsread',
-        'backupnow'
+        'backupnow',
+        'seediraqiunified'
       ];
 
       while ((uMatch = unvalidatedMutationRegex.exec(content)) !== null) {
@@ -826,7 +827,13 @@ export class ForensicEngine {
         'server/services/reservations/lifecycle.ts': 'مهمة خلفية دورية لإلغاء الحجوزات منتهية الصلاحية وتحرير مخزونها تحت قفل الفرع',
         'server/services/sale/create.ts': 'خصم المخزون بنمط FIFO واحتساب تكلفة البضاعة المباعة (COGS) وقفل صفوف المخزون لكل صنف',
         'server/services/terminationSettlementService.ts': 'تسوية التزامات ومستحقات نهاية الخدمة بالتسلسل المحاسبي الإلزامي',
-        'server/services/whatsapp/broadcastDispatch.ts': 'إدراج رسائل الواتساب في صندوق الإرسال الخارجي مع الالتزام بحدود معدل إرسال Meta API'
+        'server/services/whatsapp/broadcastDispatch.ts': 'إدراج رسائل الواتساب في صندوق الإرسال الخارجي مع الالتزام بحدود معدل إرسال Meta API',
+        'server/services/printSaleService.ts': 'تسجيل لقطات مواد الخدمات ومواد الفاتورة تسلسلياً بحسب بنود الفاتورة',
+        'server/services/quotationService.ts': 'تسجيل بنود عرض السعر مع مصادر الأسعار المرجعية تسلسلياً',
+        'server/services/salesPromotionService.ts': 'تطبيق الخصومات والعروض الترويجية تسلسلياً',
+        'server/services/storeAdmin/orderFulfillmentService.ts': 'معالجة وتنفيذ طلبات المتجر وتحديث مسارات الشحن تسلسلياً',
+        'server/services/workOrder/create.ts': 'إدراج مواد أمر الشغل مع فحص ووسم المادة الأساس',
+        'server/services/workOrder/materials.ts': 'تحديث وإعادة جدولة مواد أمر الشغل مع لقطات التكلفة والمادة الأساس'
       };
 
       if (loopAwaitMatch) {
