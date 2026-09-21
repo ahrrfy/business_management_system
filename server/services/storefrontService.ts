@@ -854,7 +854,10 @@ export async function storefrontCatalog(opts: {
   // IN_STOCK هو السلوك الافتراضي المتوافق. ALL يعيد كل المنشور ويترك inStock=false للنافد.
   const conds: SQL<unknown>[] = [storefrontPublishableCondition()];
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
-  if (opts.productIds != null && opts.productIds.length > 0) {
+  if (opts.productIds != null) {
+    if (opts.productIds.length === 0) {
+      return { items: [], hasMore: false, nextCursor: null };
+    }
     conds.push(inArray(products.id, opts.productIds));
   }
   const s = String(opts.search ?? "").trim();

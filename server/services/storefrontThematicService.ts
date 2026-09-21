@@ -16,7 +16,7 @@
 import { eq } from "drizzle-orm";
 import { storeSettings } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { resolveStorefrontBranchId, storefrontCatalog } from "./storefrontService";
+import { resolveStorefrontBranchId, storefrontCatalog, type StorefrontProduct } from "./storefrontService";
 import { createTtlCache } from "../lib/ttlCache";
 import { withTx } from "./tx";
 import { normalizeArabicSearch } from "../../shared/storefrontSearchNormalize";
@@ -59,6 +59,8 @@ export interface ThematicArchetype {
   defaultFilterValue: string;
   baseWeight: number;
   minRelevanceThreshold: number;
+  categoryIds?: number[];
+  searchQueries?: string[];
   positiveKeywords: Array<{ word: string; weight: number }>;
   negativeKeywords: string[];
   negativeCategories?: string[];
@@ -77,9 +79,11 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     borderColor: "border-amber-500/30 hover:border-amber-500/60",
     iconName: "PenTool",
     defaultFilterType: "category",
-    defaultFilterValue: "2",
+    defaultFilterValue: "91",
     baseWeight: 28,
-    minRelevanceThreshold: 40,
+    minRelevanceThreshold: 25,
+    categoryIds: [91, 75],
+    searchQueries: ["ريشة", "حبر", "باركر", "روترينغ", "تحبير", "schneider", "محبرة"],
     positiveKeywords: [
       { word: "حبر خط", weight: 50 },
       { word: "حبر عربي", weight: 50 },
@@ -106,6 +110,7 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       { word: "قلم توقيع", weight: 25 },
       { word: "سيغنو", weight: 20 },
       { word: "يوني بول", weight: 20 },
+      { word: "schneider", weight: 20 },
     ],
     negativeKeywords: [
       "طابعة", "طابعات", "طابعه", "ايبسون", "ابسون", "epson", "كانون", "canon", "اتش بي", "hp", "براذر", "brother",
@@ -123,7 +128,7 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       "مستهلكات الطباعة",
       "استنساخ وطباعة",
     ],
-    preferredCategories: ["أقلام وأدوات كتابة", "اقلام الحبر"],
+    preferredCategories: ["اقلام الحبر", "اقلام سوفت", "اقلام جل", "اقلام الرصاص", "التجهيزات الهندسية"],
   },
   {
     id: "executive",
@@ -135,9 +140,11 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     borderColor: "border-emerald-500/30 hover:border-emerald-500/60",
     iconName: "Briefcase",
     defaultFilterType: "category",
-    defaultFilterValue: "6",
+    defaultFilterValue: "4",
     baseWeight: 26,
-    minRelevanceThreshold: 30,
+    minRelevanceThreshold: 25,
+    categoryIds: [4, 85, 34, 33, 44],
+    searchQueries: ["منظم مكتب", "مكتب", "صندوق هدايا", "فاخر", "حامل كمبيوتر", "مفكرة جلدية", "باركر"],
     positiveKeywords: [
       { word: "طقم منظم مكتب", weight: 45 },
       { word: "منظم مكتب معدني", weight: 45 },
@@ -157,7 +164,7 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       "مدرسي", "طالب", "روضة", "اطفال", "أطفال", "حقيبة ظهر", "مقلمة", "تلوين", "رسم مائي",
       "كانسون", "علبة هندسة", "دفتر 40", "دفتر ٤٠", "باكيت", "لعبة", "العاب", "ألعاب"
     ],
-    preferredCategories: ["تجهيزات ومستلزمات مكتبية", "بكجات وهدايا راقية"],
+    preferredCategories: ["تجهيزات مكتبية", "رفوف ومنظمات مكتبية", "المفكرات والاجندة", "الدروع واللوحات التعريفية", "الحقائب الدبلوماسية وحقائب الحاسوب"],
   },
   {
     id: "academic",
@@ -169,9 +176,11 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     borderColor: "border-blue-500/30 hover:border-blue-500/60",
     iconName: "GraduationCap",
     defaultFilterType: "category",
-    defaultFilterValue: "3",
+    defaultFilterValue: "21",
     baseWeight: 30,
-    minRelevanceThreshold: 30,
+    minRelevanceThreshold: 25,
+    categoryIds: [21, 1, 36, 76, 28],
+    searchQueries: ["دفتر سلك", "دفاتر سلك", "علبة هندسة", "هايلايت", "حقيبة"],
     positiveKeywords: [
       { word: "دفاتر سلك", weight: 45 },
       { word: "دفتر سلك", weight: 45 },
@@ -193,7 +202,7 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       "اطفال", "أطفال", "روضة", "صلصال", "العاب", "لعبة", "اونو",
       "طابعة", "حبر طابعة", "ستمبة", "ختم"
     ],
-    preferredCategories: ["دفاتر ومذكرات", "حقائب ومقالم مدرسية"],
+    preferredCategories: ["الدفاتر المدرسية", "تجهيزات قرطاسية (مدرسي جامعي )", "حقائب مدرسية", "اقلام التأشير (هايلايت)", "التجهيزات الهندسية"],
   },
   {
     id: "deals",
@@ -207,8 +216,10 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "deal",
     defaultFilterValue: "deals",
     baseWeight: 35,
-    minRelevanceThreshold: 35,
+    minRelevanceThreshold: 30,
     requireSaleOrBundle: true,
+    categoryIds: [27, 21, 57, 47, 43],
+    searchQueries: ["بكج", "سيت", "باقة", "طقم"],
     positiveKeywords: [
       { word: "بكج", weight: 45 },
       { word: "باقة", weight: 45 },
@@ -234,7 +245,7 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       "تجهيزات الالعاب",
       "العاب الذكاء",
     ],
-    preferredCategories: ["بكجات وهدايا راقية"],
+    preferredCategories: ["تجهيزات الهدايا والمناسبات", "الدفاتر المدرسية", "كتب الخامس الاعدادي", "كتب الاول الابتدائي", "الهاندميد"],
   },
   {
     id: "productivity",
@@ -248,7 +259,9 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     defaultFilterType: "category",
     defaultFilterValue: "4",
     baseWeight: 22,
-    minRelevanceThreshold: 30,
+    minRelevanceThreshold: 25,
+    categoryIds: [4, 85, 96, 80],
+    searchQueries: ["منظم مكتب", "كباسة", "خرامة", "تخطيط مهام", "شبكي"],
     positiveKeywords: [
       { word: "طقم منظم مكتب", weight: 45 },
       { word: "منظم مكتب", weight: 40 },
@@ -267,7 +280,7 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       "مدرسي", "حقيبة ظهر", "مقلمة", "تلوين", "كانسون", "رسم مائي", "علبة هندسة", "درع زجاجي",
       "العاب", "لعبة", "اطفال", "أطفال", "صلصال", "طابعة", "حبر طابعة"
     ],
-    preferredCategories: ["تجهيزات ومستلزمات مكتبية"],
+    preferredCategories: ["تجهيزات مكتبية", "رفوف ومنظمات مكتبية", "الكابسات والكلبس", "كليب بورد(ماسكة ورق)"],
   },
   {
     id: "creative",
@@ -278,18 +291,34 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
     bgGradient: "from-rose-950/80 via-slate-900 to-slate-950",
     borderColor: "border-rose-500/30 hover:border-rose-500/60",
     iconName: "Palette",
-    defaultFilterType: "keyword",
-    defaultFilterValue: "رسم",
+    defaultFilterType: "category",
+    defaultFilterValue: "29",
     baseWeight: 20,
-    minRelevanceThreshold: 30,
+    minRelevanceThreshold: 25,
+    categoryIds: [29],
+    searchQueries: ["فرشاة", "فرش", "اكرلك", "مائي", "زيتي", "كانسون", "باستيل"],
     positiveKeywords: [
       { word: "تحبير هندسي", weight: 45 },
       { word: "رسم مائي", weight: 45 },
       { word: "كراس رسم", weight: 45 },
       { word: "كانسون", weight: 45 },
+      { word: "فرشاة رسم", weight: 45 },
+      { word: "فرش رسم", weight: 45 },
+      { word: "الوان اكرلك", weight: 45 },
+      { word: "الوان اكريليك", weight: 45 },
+      { word: "الوان زيتية", weight: 45 },
+      { word: "الوان مائية", weight: 45 },
+      { word: "لوحة رسم", weight: 45 },
+      { word: "اكرلك", weight: 40 },
+      { word: "اكريليك", weight: 40 },
+      { word: "زيتي", weight: 40 },
+      { word: "فرشاة", weight: 40 },
+      { word: "فرش", weight: 40 },
       { word: "رسم", weight: 40 },
       { word: "مائي", weight: 40 },
+      { word: "كانفاس", weight: 40 },
       { word: "باستيل", weight: 35 },
+      { word: "مدعكة", weight: 35 },
       { word: "فني", weight: 35 },
       { word: "روترينغ", weight: 35 },
       { word: "تلوين", weight: 25 },
@@ -304,7 +333,7 @@ export const THEMATIC_ARCHETYPES: readonly ThematicArchetype[] = [
       "كباسة", "خرامة", "حامل كمبيوتر", "درع زجاجي", "صندوق هدايا مكتبي", "حقيبة ظهر مدرسية",
       "طابعة", "حبر طابعة", "ستمبة", "ختم", "أختام"
     ],
-    preferredCategories: ["دفاتر ومذكرات", "أقلام وأدوات كتابة", "مستلزمات وادوات الرسم والفن"],
+    preferredCategories: ["مستلزمات وادوات الرسم والفن"],
   },
 ];
 
@@ -587,14 +616,69 @@ export async function computeAlgorithmicThematicCollections(
   const cacheKey = `thematic_branch_${resolvedBranchId}`;
 
   return thematicCache.get(cacheKey, async () => {
-    // جلب كافة المنتجات المنشورة في الكتالوج
-    const catalogPage = await storefrontCatalog({
-      branchId: resolvedBranchId,
-      limit: 120,
-      availability: "ALL",
-    });
+    // جمع المرشحين الذكي عبر الفئات المستهدفة والكلمات المفتاحية الموجهة
+    const candidateMap = new Map<number, StorefrontProduct>();
 
-    const allItems = catalogPage.items;
+    // استعلام الفئات المستهدفة والكلمات الدالة للأنماط بالتوازي المنظم
+    const queries: Array<Promise<{ items: StorefrontProduct[] }>> = [];
+
+    // ١. استعلام الفئات المستهدفة لكل الأنماط
+    const allCategoryIds = Array.from(
+      new Set(THEMATIC_ARCHETYPES.flatMap((a) => a.categoryIds ?? []))
+    );
+    for (const catId of allCategoryIds) {
+      queries.push(
+        storefrontCatalog({
+          branchId: resolvedBranchId,
+          categoryId: catId,
+          limit: 80,
+          availability: "IN_STOCK",
+        })
+      );
+    }
+
+    // ٢. استعلام الكلمات الدالة الموجهة
+    const allSearchQueries = Array.from(
+      new Set(THEMATIC_ARCHETYPES.flatMap((a) => a.searchQueries ?? []))
+    );
+    for (const q of allSearchQueries) {
+      queries.push(
+        storefrontCatalog({
+          branchId: resolvedBranchId,
+          search: q,
+          limit: 30,
+          availability: "IN_STOCK",
+        })
+      );
+    }
+
+    // ٣. استعلام البكجات والحزم الخاصة
+    queries.push(
+      storefrontCatalog({
+        branchId: resolvedBranchId,
+        search: "بكج",
+        limit: 50,
+        availability: "IN_STOCK",
+      }),
+      storefrontCatalog({
+        branchId: resolvedBranchId,
+        search: "سيت",
+        limit: 50,
+        availability: "IN_STOCK",
+      })
+    );
+
+    // تنفيذ الاستعلامات بالتوازي وتجميع المرشحين في خريطة فريدة
+    const pages = await Promise.all(queries);
+    for (const page of pages) {
+      for (const item of page.items) {
+        if (item.inStock) {
+          candidateMap.set(item.productId, item);
+        }
+      }
+    }
+
+    const allItems = Array.from(candidateMap.values());
     if (allItems.length === 0) {
       return [];
     }

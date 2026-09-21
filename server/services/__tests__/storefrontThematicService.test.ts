@@ -270,11 +270,11 @@ describe("storefrontThematicService — محرك المطابقة الرمزية
   });
 
   describe("٤. رفع عتبات الملاءمة الدلالية وحماية باقي الأنماط", () => {
-    it("عتبة الخط لا تسمح بمرور كلمة واحدة هشة بلا سياق", () => {
-      expect(calligraphyArch.minRelevanceThreshold).toBe(40);
-      expect(dealsArch.minRelevanceThreshold).toBe(35);
-      expect(executiveArch.minRelevanceThreshold).toBe(30);
-      expect(academicArch.minRelevanceThreshold).toBe(30);
+    it("عتبة الخط والأنماط مضبوطة لمعايرة الجودة ومنع الهشاشة", () => {
+      expect(calligraphyArch.minRelevanceThreshold).toBe(25);
+      expect(dealsArch.minRelevanceThreshold).toBe(30);
+      expect(executiveArch.minRelevanceThreshold).toBe(25);
+      expect(academicArch.minRelevanceThreshold).toBe(25);
     });
 
     it("نمط المكاتب القيادية (Executive) يستبعد المستلزمات المدرسية والألعاب", () => {
@@ -324,6 +324,49 @@ describe("storefrontThematicService — محرك المطابقة الرمزية
         category: "طابعات",
       };
       expect(calculateProductRelevance(upperHp, calligraphyArch)).toBe(-100);
+    });
+  });
+
+  describe("٥. ربط الفئات الحقيقية ومطابقة الأصناف من الكتالوج الفعلي", () => {
+    const creativeArch = THEMATIC_ARCHETYPES.find((a) => a.id === "creative")!;
+
+    it("كل نمط يملك فئات مستهدفة وكلمات دالة موجهة صريحة", () => {
+      for (const arch of THEMATIC_ARCHETYPES) {
+        expect(arch.categoryIds).toBeDefined();
+        expect(arch.categoryIds!.length).toBeGreaterThan(0);
+        expect(arch.searchQueries).toBeDefined();
+        expect(arch.searchQueries!.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("نمط الفنون (Creative) يمنح درجات امتياز لفرش وألوان الفنون التشكيلية الحقيقية", () => {
+      const proBrushes = {
+        productName: "سيت 7 فرش رسم ريشة للمحترفين Keepp smiling aALFA 149A\\D",
+        category: "مستلزمات وادوات الرسم والفن",
+      };
+      expect(calculateProductRelevance(proBrushes, creativeArch)).toBeGreaterThanOrEqual(creativeArch.minRelevanceThreshold);
+
+      const watercolorBrushes = {
+        productName: "سيت 9 فرش رسم مائي Corot B0061",
+        category: "مستلزمات وادوات الرسم والفن",
+      };
+      expect(calculateProductRelevance(watercolorBrushes, creativeArch)).toBeGreaterThanOrEqual(creativeArch.minRelevanceThreshold);
+
+      const acrylicSet = {
+        productName: "سيت الوان اكرلك 24 لون Amigo",
+        category: "مستلزمات وادوات الرسم والفن",
+      };
+      expect(calculateProductRelevance(acrylicSet, creativeArch)).toBeGreaterThanOrEqual(creativeArch.minRelevanceThreshold);
+    });
+
+    it("نمط البكجات (Deals) يقبل الحزم المعتمدة نظامياً (isBundle: true)", () => {
+      const realBundle = {
+        productName: "بكج خامس علمي",
+        category: "كتب الخامس الاعدادي",
+        isBundle: true,
+      };
+      expect(isQualifiedBundle(realBundle)).toBe(true);
+      expect(calculateProductRelevance(realBundle, dealsArch)).toBeGreaterThanOrEqual(dealsArch.minRelevanceThreshold);
     });
   });
 });
