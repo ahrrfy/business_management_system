@@ -29,7 +29,7 @@ import {
 } from "@/lib/offline/pinLock";
 import { isColdOfflineStudioRoute } from "@/lib/productStudio/coldOfflinePolicy";
 import { trpc } from "@/lib/trpc";
-import Login from "@/pages/Login";
+const Login = lazy(() => import("@/pages/Login"));
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";

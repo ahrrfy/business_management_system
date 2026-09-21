@@ -600,7 +600,7 @@ export async function lockOrCreateOnlineCustomer(
   }
 }
 
-interface PricedOnlineOrderLine {
+export interface PricedOnlineOrderLine {
   productId: number;
   categoryId: number | null;
   variantId: number;
@@ -622,7 +622,7 @@ export type StorefrontPricingBenefitType =
   | "OFFER"
   | "COUPON";
 
-interface StorefrontPricingBenefit {
+export interface StorefrontPricingBenefit {
   type: StorefrontPricingBenefitType;
   label: string | null;
   discount: string;
@@ -630,7 +630,7 @@ interface StorefrontPricingBenefit {
   couponSuperseded: boolean;
 }
 
-interface PricedOnlineOrderLines {
+export interface PricedOnlineOrderLines {
   items: PricedOnlineOrderLine[];
   benefit: StorefrontPricingBenefit;
   /**
@@ -690,7 +690,7 @@ export interface OnlineOrderQuoteResult {
 }
 
 /** محرك التسعير الوحيد للـquote وللتثبيت؛ lineAmount يستعمل كمية السلة الفعلية. */
-async function priceOnlineOrderLines(
+export async function priceOnlineOrderLines(
   tx: Tx,
   branchId: number,
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
@@ -1032,7 +1032,7 @@ async function priceOnlineOrderLines(
  *   ② الافتراض الثابت من `governorates.ts` (السلوك السابق — يبقى للتوافق ولمناطق بلا زون)
  * البذرة (H4، هجرة 0290) تنقل كلّ المحافظات الثمانية عشرة إلى المسار ①.
  */
-async function resolveDeliveryFee(
+export async function resolveDeliveryFee(
   tx: Tx,
   governorate: string,
 ): Promise<import("decimal.js").default> {
@@ -1050,7 +1050,7 @@ async function resolveDeliveryFee(
   return round2(deliveryFeeFor(governorate));
 }
 
-async function totalOnlineOrderQuote(
+export async function totalOnlineOrderQuote(
   tx: Tx,
   items: Array<{ lineTotal: string }>,
   governorate: string,

@@ -14,6 +14,7 @@ export interface Governorate {
 }
 
 export const GOVERNORATES: Governorate[] = [
+  { id: "baghdad_amiriya", name: "بغداد - العامرية", deliveryFee: 2000 },
   { id: "baghdad", name: "بغداد", deliveryFee: 5000 },
   { id: "basra", name: "البصرة", deliveryFee: 8000 },
   { id: "nineveh", name: "نينوى (الموصل)", deliveryFee: 8000 },

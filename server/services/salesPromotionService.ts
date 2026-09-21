@@ -12,6 +12,7 @@
 //   - Contract-price wins: الاستدعاء من pos.ts يمرّر hasContractPrice ⇒ نعود null فوراً.
 //   - manager scoping للراوتر (في promotionsRouter): يفرض branchId من ctx للـnon-admin.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import {
   and,
@@ -144,6 +145,123 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
 
 export async function deactivatePromotion(tx: Tx, promotionId: number) {
   await tx.update(promotions).set({ isActive: false }).where(eq(promotions.id, promotionId));
+}
+
+export async function reactivatePromotion(tx: Tx, promotionId: number) {
+  await tx.update(promotions).set({ isActive: true }).where(eq(promotions.id, promotionId));
+}
+
+export interface UpdatePromotionInput {
+  id: number;
+  name?: string;
+  description?: string | null;
+  type?: SalesPromotionType;
+  discountPercent?: string;
+  discountAmount?: string;
+  scope?: SalesPromotionScope;
+  effectiveFrom?: string;
+  effectiveTo?: string | null;
+  customerTier?: PriceTier | null;
+  branchId?: number | null;
+  minLineAmount?: string;
+  priority?: number;
+  targets?: PromotionTargetInput[];
+  isStoreManaged?: boolean;
+}
+
+export async function updatePromotion(
+  tx: Tx,
+  input: UpdatePromotionInput,
+  _actorUserId: number
+): Promise<number> {
+  const existing = (
+    await tx
+      .select()
+      .from(promotions)
+      .where(eq(promotions.id, input.id))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!existing) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "العرض الترويجي غير موجود",
+        why: `لم يتم العثور على العرض برقم ${input.id}`,
+        doThis: "تأكد من رقم العرض الترويجي أو اختر عرضاً آخر من القائمة",
+      }),
+    });
+  }
+
+  const mergedType = input.type ?? (existing.type as SalesPromotionType);
+  const mergedScope = input.scope ?? (existing.scope as SalesPromotionScope);
+  const mergedFrom = input.effectiveFrom ?? (existing.effectiveFrom instanceof Date ? existing.effectiveFrom.toISOString().slice(0, 10) : String(existing.effectiveFrom).slice(0, 10));
+  const mergedTo = input.effectiveTo !== undefined ? input.effectiveTo : (existing.effectiveTo ? (existing.effectiveTo instanceof Date ? existing.effectiveTo.toISOString().slice(0, 10) : String(existing.effectiveTo).slice(0, 10)) : null);
+  const mergedPercent = input.discountPercent !== undefined ? input.discountPercent : String(existing.discountPercent ?? "0");
+  const mergedAmount = input.discountAmount !== undefined ? input.discountAmount : String(existing.discountAmount ?? "0");
+
+  assertShape({
+    name: input.name ?? existing.name,
+    type: mergedType,
+    scope: mergedScope,
+    effectiveFrom: mergedFrom,
+    effectiveTo: mergedTo,
+    discountPercent: mergedPercent,
+    discountAmount: mergedAmount,
+  });
+
+  assertDates({
+    name: input.name ?? existing.name,
+    type: mergedType,
+    scope: mergedScope,
+    effectiveFrom: mergedFrom,
+    effectiveTo: mergedTo,
+  });
+
+  if (input.targets !== undefined || input.scope !== undefined) {
+    assertTargets({
+      name: input.name ?? existing.name,
+      type: mergedType,
+      scope: mergedScope,
+      effectiveFrom: mergedFrom,
+      targets: input.targets,
+    });
+  }
+
+  const patch: Record<string, unknown> = {};
+  if (input.name !== undefined) patch.name = input.name;
+  if (input.description !== undefined) patch.description = input.description;
+  if (input.type !== undefined) patch.type = input.type;
+  if (input.discountPercent !== undefined) patch.discountPercent = input.discountPercent ? toDbMoney(input.discountPercent) : "0.00";
+  if (input.discountAmount !== undefined) patch.discountAmount = input.discountAmount ? toDbMoney(input.discountAmount) : "0.00";
+  if (input.scope !== undefined) patch.scope = input.scope;
+  if (input.effectiveFrom !== undefined) patch.effectiveFrom = new Date(input.effectiveFrom);
+  if (input.effectiveTo !== undefined) patch.effectiveTo = input.effectiveTo ? new Date(input.effectiveTo) : null;
+  if (input.customerTier !== undefined) patch.customerTier = input.customerTier;
+  if (input.branchId !== undefined) patch.branchId = input.branchId;
+  if (input.minLineAmount !== undefined) patch.minLineAmount = input.minLineAmount ? toDbMoney(input.minLineAmount) : "0.00";
+  if (input.priority !== undefined) patch.priority = input.priority;
+  if (input.isStoreManaged !== undefined) patch.isStoreManaged = input.isStoreManaged;
+
+  if (Object.keys(patch).length > 0) {
+    await tx.update(promotions).set(patch).where(eq(promotions.id, input.id));
+  }
+
+  if (input.targets !== undefined || (input.scope === "ALL" && existing.scope !== "ALL")) {
+    await tx.delete(promotionTargets).where(eq(promotionTargets.promotionId, input.id));
+    if (mergedScope !== "ALL" && input.targets) {
+      for (const t of input.targets) {
+        await tx.insert(promotionTargets).values({
+          promotionId: input.id,
+          categoryId: t.categoryId ?? null,
+          productId: t.productId ?? null,
+          variantId: t.variantId ?? null,
+        });
+      }
+    }
+  }
+
+  return input.id;
 }
 
 export interface ResolvedPromotion {

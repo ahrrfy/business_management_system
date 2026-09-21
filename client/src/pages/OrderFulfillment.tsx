@@ -6,8 +6,11 @@
  * حقيقية + يُخصم المخزون + قيد دفتر عبر orders.dispatch) ← تُسلَّم. عزل الفرع خادمياً.
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Pencil, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+const EditOnlineOrderDialog = lazy(() =>
+  import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
+);
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -73,6 +76,7 @@ export default function OrderFulfillment() {
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
+  const [editOrderId, setEditOrderId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   const me = trpc.auth.me.useQuery();
@@ -244,6 +248,17 @@ export default function OrderFulfillment() {
                 disabled: isBusy || dispatchM.isPending,
                 disabledReason: "هناك عملية جارية على الطلب",
                 onSelect: () => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName }),
+              },
+              {
+                key: "edit",
+                kind: "edit",
+                label: "تعديل الطلب",
+                icon: Pencil,
+                hidden: st !== "PENDING" && st !== "CONFIRMED" && st !== "PROCESSING",
+                gate: { module: "store", level: "FULL" },
+                disabled: isBusy,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => setEditOrderId(o.id),
               },
               {
                 key: "advance",
@@ -520,6 +535,14 @@ export default function OrderFulfillment() {
           onConfirm={(reason) => setStatusM.mutate({ id: cancelTarget.id, status: "CANCELLED", cancelReason: reason || undefined })}
         />
       )}
+
+      <Suspense fallback={null}>
+        <EditOnlineOrderDialog
+          orderId={editOrderId}
+          open={editOrderId != null}
+          onOpenChange={(open) => !open && setEditOrderId(null)}
+        />
+      </Suspense>
     </div>
   );
 }

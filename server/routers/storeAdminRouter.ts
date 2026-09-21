@@ -14,10 +14,12 @@ import {
   listOnlineOrders,
   onlineOrderStatusCounts,
   setOnlineOrderStatus,
+  updateOnlineOrder,
 } from "../services/storeAdmin/orderFulfillmentService";
 import { dispatchOnlineOrder } from "../services/storeAdmin/dispatchOnlineOrder";
 import { listDeliveryParties } from "../services/deliveryService";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { GOVERNORATE_IDS } from "@shared/governorates";
 import {
   createBanner,
   deleteBanner,
@@ -47,6 +49,8 @@ import {
   createStorePromotion,
   deactivateStorePromotion,
   listStorePromotions,
+  reactivateStorePromotion,
+  updateStorePromotion,
 } from "../services/storeAdmin/storePromotionService";
 import { getStoreAnalytics } from "../services/storeAdmin/storeAnalyticsService";
 import { getStoreCustomers } from "../services/storeAdmin/storeCustomerService";
@@ -139,6 +143,58 @@ const ordersRouter = router({
         entityId: input.id,
         oldValue: { status: res.from },
         newValue: { status: res.to, ...(input.status === "CANCELLED" && input.cancelReason ? { cancelReason: input.cancelReason } : {}) },
+      });
+      return res;
+    }),
+
+  /** تعديل بيانات وبنود الطلب (قبل الإرسال) — مع إعادة الحساب وفحص ATP المانع للضياع الصامت */
+  update: storeFulfillProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        customerName: z.string().trim().min(1).max(255).nullish(),
+        customerPhone: z.string().trim().min(5).max(30).nullish(),
+        shippingAddress: z.string().trim().max(1000).nullish(),
+        governorate: z.enum(GOVERNORATE_IDS).nullish(),
+        latitude: z.string().nullish(),
+        longitude: z.string().nullish(),
+        notes: z.string().trim().max(500).nullish(),
+        items: z.array(
+          z.object({
+            productUnitId: z.number().int().positive(),
+            quantity: z.number().int().positive(),
+          })
+        ).min(1).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const scopedBranchId = actorScopedBranch(ctx.user);
+      const res = await updateOnlineOrder(
+        {
+          id: input.id,
+          scopedBranchId,
+          customerName: input.customerName,
+          customerPhone: input.customerPhone,
+          shippingAddress: input.shippingAddress,
+          governorate: input.governorate,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          notes: input.notes,
+          items: input.items,
+        },
+        ctx.user.id
+      );
+      await logAudit(ctx, {
+        action: "store.order.update",
+        entityType: "onlineOrder",
+        entityId: input.id,
+        newValue: {
+          total: res.total,
+          subtotal: res.subtotal,
+          deliveryFee: res.deliveryFee,
+          governorate: input.governorate,
+          itemCount: input.items?.length,
+        },
       });
       return res;
     }),
@@ -433,6 +489,46 @@ const promotionsRouter = router({
       await withTx((tx) => deactivateStorePromotion(tx, input.promotionId, branchId));
       await logAudit(ctx, { action: "store.promotion.deactivate", entityType: "promotion", entityId: input.promotionId });
       return { ok: true };
+    }),
+  reactivate: storeGlobalAdminProcedure
+    .input(z.object({ promotionId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = await resolveStorefrontBranchId(undefined);
+      await withTx((tx) => reactivateStorePromotion(tx, input.promotionId, branchId));
+      await logAudit(ctx, { action: "store.promotion.reactivate", entityType: "promotion", entityId: input.promotionId });
+      return { ok: true };
+    }),
+  update: storeGlobalAdminProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        name: z.string().min(1).max(255).optional(),
+        description: z.string().max(2000).nullish(),
+        type: z.enum(["PERCENT", "AMOUNT"]).optional(),
+        discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة غير صالحة").optional(),
+        discountAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+        scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]).optional(),
+        effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
+        effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").nullish(),
+        minLineAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+        priority: z.number().int().min(0).max(999).optional(),
+        targets: z.array(z.object({
+          categoryId: z.number().int().positive().nullish(),
+          productId: z.number().int().positive().nullish(),
+          variantId: z.number().int().positive().nullish(),
+        })).max(500).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const branchId = await resolveStorefrontBranchId(undefined);
+      await withTx((tx) => updateStorePromotion(tx, input, ctx.user.id, branchId));
+      await logAudit(ctx, {
+        action: "store.promotion.update",
+        entityType: "promotion",
+        entityId: input.id,
+        newValue: { name: input.name, type: input.type, scope: input.scope },
+      });
+      return { ok: true, promotionId: input.id };
     }),
 });
 

@@ -12,6 +12,7 @@ const StoreCategories = lazy(() => import("@/pages/store/StoreCategories"));
 const StoreCatalog = lazy(() => import("@/pages/store/StoreCatalog"));
 const StoreAnalytics = lazy(() => import("@/pages/store/StoreAnalytics"));
 const BannerManager = lazy(() => import("@/pages/store/BannerManager"));
+const StorePromotionsManager = lazy(() => import("@/pages/store/StorePromotionsManager"));
 const StoreSettingsPanel = lazy(() => import("@/pages/store/StoreSettingsPanel"));
 const LoyaltyManager = lazy(() => import("@/pages/store/LoyaltyManager"));
 const StorePushCampaignManager = lazy(() => import("@/pages/store/StorePushCampaignManager"));
@@ -23,6 +24,7 @@ const TABS: HubTab[] = [
   { value: "orders", label: "الطلبات", Component: OrderFulfillment },
   { value: "categories", label: "الفئات", gate: { adminOnly: true }, Component: StoreCategories },
   { value: "catalog", label: "الكتالوج والعرض", gate: { managerOnly: true }, Component: StoreCatalog },
+  { value: "promotions", label: "العروض والتوصيل المجاني", gate: { managerOnly: true }, Component: StorePromotionsManager },
   { value: "analytics", label: "التحليلات", gate: { managerOnly: true }, Component: StoreAnalytics },
   { value: "banners", label: "البنرات", gate: { adminOnly: true }, Component: BannerManager },
   { value: "loyalty", label: "الولاء", gate: { adminOnly: true }, Component: LoyaltyManager },
