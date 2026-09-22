@@ -349,7 +349,16 @@ export async function getDraft(draftId: number, actor: Actor & { role?: string }
 }
 
 export async function listDrafts(
-  input: { branchId: number; mine?: boolean; status?: "OPEN" | "COMMITTED" | "CANCELLED" | "EXPIRED"; q?: string; cursor?: number; limit?: number },
+  input: {
+    branchId: number;
+    mine?: boolean;
+    status?: "OPEN" | "COMMITTED" | "CANCELLED" | "EXPIRED";
+    fundedOnly?: boolean;
+    staleOnly?: boolean;
+    q?: string;
+    cursor?: number;
+    limit?: number;
+  },
   actor: Actor & { role?: string },
 ) {
   const db = getDb();
@@ -357,6 +366,12 @@ export async function listDrafts(
   const baseConds: SQL[] = [eq(receptionDrafts.branchId, input.branchId)];
   if (input.mine) baseConds.push(eq(receptionDrafts.createdBy, actor.userId));
   baseConds.push(eq(receptionDrafts.status, input.status ?? "OPEN"));
+  if (input.fundedOnly) {
+    baseConds.push(eq(receptionDrafts.moneyLocked, true));
+  }
+  if (input.staleOnly) {
+    baseConds.push(sql`${receptionDrafts.createdAt} < DATE_SUB(NOW(), INTERVAL 24 HOUR)`);
+  }
   const q = input.q?.trim();
   if (q) {
     const pat = `%${escLike(q)}%`;
