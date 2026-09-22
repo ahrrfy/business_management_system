@@ -228,29 +228,14 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 bg-muted/50 px-3 py-1.5 rounded-lg border">
             <Eye className="size-4 text-muted-foreground" />
-            <Label htmlFor="preview-toggle" className="text-xs font-semibold cursor-pointer">
-              معاينة قبل الإسناد
-            </Label>
-            <Switch
-              id="preview-toggle"
-              checked={previewMode}
-              onCheckedChange={(checked) => {
-                setPreviewMode(checked);
-                setPreviewOrder(null);
-              }}
-            />
+            <Label htmlFor="preview-toggle" className="text-xs font-semibold cursor-pointer">معاينة قبل الإسناد</Label>
+            <Switch id="preview-toggle" checked={previewMode} onCheckedChange={(c) => { setPreviewMode(c); setPreviewOrder(null); }} />
           </div>
 
           <div className="flex items-center gap-2 bg-muted/50 px-3 py-1.5 rounded-lg border">
             <Printer className="size-4 text-muted-foreground" />
-            <Label htmlFor="instant-print-toggle" className="text-xs font-semibold cursor-pointer">
-              طباعة صامتة فورية
-            </Label>
-            <Switch
-              id="instant-print-toggle"
-              checked={instantPrint}
-              onCheckedChange={setInstantPrint}
-            />
+            <Label htmlFor="instant-print-toggle" className="text-xs font-semibold cursor-pointer">طباعة صامتة فورية</Label>
+            <Switch id="instant-print-toggle" checked={instantPrint} onCheckedChange={setInstantPrint} />
           </div>
         </div>
       </div>
@@ -276,18 +261,14 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
               {individualCouriers.length > 0 && (
                 <optgroup label="── المناديب الداخليين (سائقون بعُهدة نقدية) ──">
                   {individualCouriers.map((p) => (
-                    <option key={p.id} value={String(p.id)}>
-                      {p.name} (مندوب) {p.phone ? `— ${p.phone}` : ""}
-                    </option>
+                    <option key={p.id} value={String(p.id)}>{p.name} (مندوب) {p.phone ? `— ${p.phone}` : ""}</option>
                   ))}
                 </optgroup>
               )}
               {companyCouriers.length > 0 && (
                 <optgroup label="── شركات ومكاتب التوصيل (مطابقة كشوفات) ──">
                   {companyCouriers.map((p) => (
-                    <option key={p.id} value={String(p.id)}>
-                      {p.name} (شركة) {p.phone ? `— ${p.phone}` : ""}
-                    </option>
+                    <option key={p.id} value={String(p.id)}>{p.name} (شركة) {p.phone ? `— ${p.phone}` : ""}</option>
                   ))}
                 </optgroup>
               )}
@@ -356,14 +337,10 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
             onRecipientNameChange={setRecipientName}
             recipientPhone={recipientPhone}
             onRecipientPhoneChange={setRecipientPhone}
-            dispatchFee={customFee}
-            onDispatchFeeChange={setCustomFee}
-            deliveryAddress={deliveryAddress}
-            onDeliveryAddressChange={setDeliveryAddress}
-            deliveryNotes={deliveryNotes}
-            onDeliveryNotesChange={setDeliveryNotes}
-            externalTrackingRef={externalTrackingRef}
-            onExternalTrackingRefChange={setExternalTrackingRef}
+            dispatchFee={customFee} onDispatchFeeChange={setCustomFee}
+            deliveryAddress={deliveryAddress} onDeliveryAddressChange={setDeliveryAddress}
+            deliveryNotes={deliveryNotes} onDeliveryNotesChange={setDeliveryNotes}
+            externalTrackingRef={externalTrackingRef} onExternalTrackingRefChange={setExternalTrackingRef}
             onConfirmDispatch={() => {
               void executeDispatch({
                 cleanBarcode: previewOrder.orderNumber,
@@ -375,11 +352,7 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
                 notes: deliveryNotes.trim() || undefined,
               });
             }}
-            onCancel={() => {
-              setPreviewOrder(null);
-              setBarcode("");
-              focusInput();
-            }}
+            onCancel={() => { setPreviewOrder(null); setBarcode(""); focusInput(); }}
             onCancelAssignment={setCancellingConsignment}
             isPending={dispatchMutation.isPending}
           />
