@@ -23,7 +23,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { parseScan } from "@/lib/scanRouter";
 import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing/printDeliveryDispatchSlip";
 import { printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
@@ -205,9 +205,7 @@ export default function DeliveryWorkflowPage() {
     { enabled: dispatchEnabled || returnEnabled || collectEnabled || editEnabled },
   );
 
-  const dispatchBarcodeHook = useBarcodeInput((code) => void lookupWorkOrder(code, "dispatch"));
-  const returnBarcodeHook = useBarcodeInput((code) => void lookupWorkOrder(code, "return"));
-  const editBarcodeHook = useBarcodeInput((code) => void lookupInvoiceForEdit(code));
+
 
   useEffect(() => {
     if (dispatchEnabled) dispatchRef.current?.focus();
@@ -558,14 +556,19 @@ export default function DeliveryWorkflowPage() {
                 <p className="mt-2 text-base font-extrabold text-primary">امسح باركود الطلب للإسناد</p>
                 <p className="mt-1 text-sm text-muted-foreground">أو أدخل رقم الطلب يدوياً</p>
                 <div className="mt-4 flex gap-2">
-                  <Input ref={dispatchRef} value={dispatchBarcodeInput}
-                    onChange={(e) => setDispatchBarcodeInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      dispatchBarcodeHook.handleKeyDown(e, setDispatchBarcodeInput);
-                      if (!e.defaultPrevented && e.key === "Enter" && dispatchBarcodeInput.trim())
-                        void lookupWorkOrder(dispatchBarcodeInput.trim(), "dispatch");
+                  <UnifiedSearchInput
+                    ref={dispatchRef}
+                    value={dispatchBarcodeInput}
+                    onChange={setDispatchBarcodeInput}
+                    onScan={(code: string) => void lookupWorkOrder(code, "dispatch")}
+                    onSubmit={(val: string) => {
+                      if (val.trim()) void lookupWorkOrder(val.trim(), "dispatch");
                     }}
-                    placeholder="رقم الطلب (Enter)" className="flex-1 text-center font-bold" dir="ltr" />
+                    placeholder="رقم الطلب (Enter)"
+                    className="flex-1 text-center font-bold"
+                    dir="ltr"
+                    barcode={true}
+                  />
                   <Button variant="outline" onClick={() => void lookupWorkOrder(dispatchBarcodeInput.trim(), "dispatch")} disabled={!dispatchBarcodeInput.trim()}>بحث</Button>
                 </div>
               </div>
@@ -616,19 +619,18 @@ export default function DeliveryWorkflowPage() {
                 <p className="mt-2 text-base font-extrabold text-primary">امسح باركود الفاتورة للتعديل</p>
                 <p className="mt-1 text-sm text-muted-foreground">أو أدخل رقم الفاتورة يدوياً</p>
                 <div className="mt-4 flex gap-2">
-                  <Input
+                  <UnifiedSearchInput
                     ref={editRef}
                     value={editBarcodeInput}
-                    onChange={(event) => setEditBarcodeInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      editBarcodeHook.handleKeyDown(event, setEditBarcodeInput);
-                      if (!event.defaultPrevented && event.key === "Enter" && editBarcodeInput.trim()) {
-                        void lookupInvoiceForEdit(editBarcodeInput.trim());
-                      }
+                    onChange={setEditBarcodeInput}
+                    onScan={(code: string) => void lookupInvoiceForEdit(code)}
+                    onSubmit={(val: string) => {
+                      if (val.trim()) void lookupInvoiceForEdit(val.trim());
                     }}
                     placeholder="رقم الفاتورة (Enter)"
                     className="flex-1 text-center font-bold"
                     dir="ltr"
+                    barcode={true}
                   />
                   <Button variant="outline" onClick={() => void lookupInvoiceForEdit(editBarcodeInput.trim())} disabled={!editBarcodeInput.trim()}>
                     بحث
@@ -727,14 +729,19 @@ export default function DeliveryWorkflowPage() {
                 <ScanLine aria-hidden className="mx-auto size-10 text-destructive/60" />
                 <p className="mt-2 text-base font-extrabold text-destructive">امسح باركود الطلب أو الفاتورة</p>
                 <div className="mt-4 flex gap-2">
-                  <Input ref={returnRef} value={returnBarcodeInput}
-                    onChange={(e) => setReturnBarcodeInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      returnBarcodeHook.handleKeyDown(e, setReturnBarcodeInput);
-                      if (!e.defaultPrevented && e.key === "Enter" && returnBarcodeInput.trim())
-                        void lookupWorkOrder(returnBarcodeInput.trim(), "return");
+                  <UnifiedSearchInput
+                    ref={returnRef}
+                    value={returnBarcodeInput}
+                    onChange={setReturnBarcodeInput}
+                    onScan={(code: string) => void lookupWorkOrder(code, "return")}
+                    onSubmit={(val: string) => {
+                      if (val.trim()) void lookupWorkOrder(val.trim(), "return");
                     }}
-                    placeholder="رقم الطلب أو الفاتورة (Enter)" className="flex-1 text-center font-bold" dir="ltr" />
+                    placeholder="رقم الطلب أو الفاتورة (Enter)"
+                    className="flex-1 text-center font-bold"
+                    dir="ltr"
+                    barcode={true}
+                  />
                   <Button variant="outline" onClick={() => void lookupWorkOrder(returnBarcodeInput.trim(), "return")} disabled={!returnBarcodeInput.trim()}>بحث</Button>
                 </div>
               </div>

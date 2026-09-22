@@ -1,3 +1,4 @@
+import * as React from "react";
 import { ScanLine } from "lucide-react";
 import { cn } from "@/lib/utils";
 

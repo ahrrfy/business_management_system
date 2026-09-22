@@ -196,6 +196,13 @@ describe("ScanBurstDetector — المسافة: قارئٌ سريع تُلتقَ
     const { accepted } = det.flush();
     expect(accepted).toBe(false); // كتابةٌ بشرية تُستعاد نصّاً، لا تُصدَر باركوداً
   });
+
+  it("مسافةٌ بسرعةٍ إنسانية سريعة (80مي) تُمرَّر وتكسر المرشّح بلا ابتلاع المسافة", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const actions = feedSequence(det, [letter("A"), SP, letter("B")], [80, 80]);
+    expect(actions).toEqual(["pass", "pass", "pass"]);
+    expect(det.isActive).toBe(false);
+  });
 });
 
 describe("resolveScanSettle — صون البادئة والكتابة البشرية (ملاحظتا مراجعة #1107)", () => {

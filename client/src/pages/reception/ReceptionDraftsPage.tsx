@@ -28,6 +28,7 @@ import StationPageHeader from "@/components/StationPageHeader";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtAr } from "@/lib/money";
@@ -146,16 +147,15 @@ export default function ReceptionDraftsPage() {
 
             {/* حقل البحث وزر التحديث */}
             <div className="flex items-center gap-2">
-              <div className="relative">
-                <Search className="absolute right-2.5 top-2.5 size-3.5 text-muted-foreground" />
-                <Input
-                  type="text"
-                  placeholder="بحث برقم الطلب، اسم العميل، الهاتف..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="h-9 w-64 pr-8 text-xs"
-                />
-              </div>
+              <UnifiedSearchInput
+                value={searchQuery}
+                onChange={setSearchQuery}
+                placeholder="بحث برقم الطلب، اسم العميل، الهاتف، أو امسح الباركود..."
+                debounceMs={200}
+                barcode={true}
+                size="compact"
+                className="w-72"
+              />
 
               <Button
                 variant="outline"

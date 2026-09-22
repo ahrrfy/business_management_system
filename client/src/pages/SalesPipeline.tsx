@@ -39,6 +39,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 
@@ -376,18 +377,15 @@ export default function SalesPipeline() {
               الفرص
             </Button>
           </div>
-          <div className="relative min-w-56 flex-1 sm:max-w-sm">
-            <Search
-              aria-hidden
-              className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              value={q}
-              onChange={(event) => setQ(event.target.value)}
-              placeholder="بحث بالاسم أو الرقم…"
-              className="pr-8"
-            />
-          </div>
+          <UnifiedSearchInput
+            value={q}
+            onChange={setQ}
+            placeholder="بحث بالاسم أو الرقم… (F2)"
+            barcode={false}
+            debounceMs={250}
+            size="default"
+            className="min-w-56 flex-1 sm:max-w-sm"
+          />
           {section === "LEADS" ? (
             <AppSelect
               value={leadStatus}
