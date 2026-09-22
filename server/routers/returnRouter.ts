@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -12,6 +12,7 @@ import {
   accountingEntries,
   branchStock,
   customers,
+  invoiceItemBundleComponents,
   invoiceItems,
   invoices,
   productPrices,
@@ -25,6 +26,8 @@ import {
   users,
   workOrders,
 } from "../../drizzle/schema";
+import { isDeadInvoice } from "@shared/predicates/isDeadInvoice";
+import { classifyVariants, getBundleDefinitions } from "../services/bundleService";
 import { canCrossBranches } from "../lib/branchAuthority";
 import {
   adjustCustomerBalance,
@@ -1069,6 +1072,131 @@ export const returnRouter = router({
     }),
 
   /**
+   * فحص فاتورة المبيعات للمرتجع الفوري الذكي
+   * يجلب بيانات الفاتورة والسقف المالي الأقصى للاسترداد وبنود الفاتورة مع المتبقي لكل بند
+   */
+  inspectInvoiceForReturn: salesCashierProcedure
+    .input(z.object({ invoiceNumber: z.string().trim().min(1) }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return null;
+
+      const actorBranchId =
+        ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
+      const isAdmin = ctx.user.role === "admin";
+
+      const [inv] = await db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          status: invoices.status,
+          branchId: invoices.branchId,
+          customerId: invoices.customerId,
+          customerName: customers.name,
+          customerPhone: customers.phone,
+          subtotal: invoices.subtotal,
+          discountAmount: invoices.discountAmount,
+          taxAmount: invoices.taxAmount,
+          total: invoices.total,
+          paidAmount: invoices.paidAmount,
+          returnedTotal: invoices.returnedTotal,
+          paymentMethod: invoices.paymentMethod,
+          createdAt: invoices.createdAt,
+        })
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .where(
+          and(
+            eq(invoices.invoiceNumber, input.invoiceNumber.trim()),
+            isAdmin || actorBranchId == null
+              ? undefined
+              : eq(invoices.branchId, actorBranchId),
+          ),
+        )
+        .limit(1);
+
+      if (!inv) return null;
+
+      const isDead = isDeadInvoice(inv.status);
+      const remainingInvoiceTotal = Decimal.max(
+        0,
+        money(inv.total).minus(money(inv.returnedTotal ?? "0")),
+      );
+      const paidDec = money(inv.paidAmount ?? "0");
+      const maxRefundable = Decimal.min(remainingInvoiceTotal, paidDec);
+
+      const itemRows = await db
+        .select({
+          invoiceItemId: invoiceItems.id,
+          variantId: invoiceItems.variantId,
+          productUnitId: invoiceItems.productUnitId,
+          productName: products.name,
+          isBundle: products.isBundle,
+          isService: products.isService,
+          variantName: productVariants.variantName,
+          sku: productVariants.sku,
+          barcode: productUnits.barcode,
+          unitName: productUnits.unitName,
+          conversionFactor: productUnits.conversionFactor,
+          baseQuantity: invoiceItems.baseQuantity,
+          returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+          unitPrice: invoiceItems.unitPrice,
+          total: invoiceItems.total,
+        })
+        .from(invoiceItems)
+        .innerJoin(
+          productVariants,
+          eq(invoiceItems.variantId, productVariants.id),
+        )
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
+        .where(eq(invoiceItems.invoiceId, inv.id));
+
+      const items = itemRows.map((r) => {
+        const remainingQuantity = Math.max(
+          0,
+          (r.baseQuantity ?? 0) - (r.returnedBaseQuantity ?? 0),
+        );
+        return {
+          invoiceItemId: Number(r.invoiceItemId),
+          variantId: Number(r.variantId),
+          productUnitId: r.productUnitId ? Number(r.productUnitId) : undefined,
+          productName: r.productName,
+          isBundle: r.isBundle === true,
+          isService: r.isService === true,
+          barcode: r.barcode ?? null,
+          sku: r.sku ?? null,
+          unitName: r.unitName ?? (r.isBundle ? "بكج" : "قطعة"),
+          conversionFactor: Number(r.conversionFactor ?? 1) || 1,
+          baseQuantity: Number(r.baseQuantity),
+          returnedBaseQuantity: Number(r.returnedBaseQuantity ?? 0),
+          remainingQuantity,
+          unitPrice: String(r.unitPrice),
+          total: String(r.total),
+        };
+      });
+
+      return {
+        id: Number(inv.id),
+        invoiceNumber: inv.invoiceNumber,
+        status: inv.status,
+        isDead,
+        branchId: Number(inv.branchId),
+        customerId: inv.customerId != null ? Number(inv.customerId) : null,
+        customerName: inv.customerName ?? "عميل نقدي",
+        customerPhone: inv.customerPhone ?? null,
+        total: String(inv.total),
+        paidAmount: String(inv.paidAmount ?? "0"),
+        returnedTotal: String(inv.returnedTotal ?? "0"),
+        remainingInvoiceTotal: remainingInvoiceTotal.toFixed(2),
+        maxRefundable: maxRefundable.toFixed(2),
+        paymentMethod: inv.paymentMethod,
+        createdAt: inv.createdAt,
+        items,
+      };
+    }),
+
+  /**
    * التحري والتقصي الجنائي للفواتير المفقودة بعدسات متعددة:
    * باركود الصنف / آخر ٤ أرقام من البطاقة / هاتف العميل / الوردية والتاريخ
    */
@@ -1564,6 +1692,7 @@ export const returnRouter = router({
             z.object({
               variantId: z.number().int().positive(),
               productUnitId: z.number().int().positive().optional(),
+              invoiceItemId: z.number().int().positive().optional(),
               productName: z.string().min(1),
               barcode: z.string().nullish(),
               quantity: z.number().int().positive(),
@@ -1626,8 +1755,9 @@ export const returnRouter = router({
             });
           }
 
-          // ٠) التحقق من الفاتورة الأصلية إن أدخلت
+          // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
+          let invoiceItemRows: Array<typeof invoiceItems.$inferSelect> = [];
           if (input.invoiceNumber?.trim()) {
             const [found] = await tx
               .select()
@@ -1638,9 +1768,100 @@ export const returnRouter = router({
                   eq(invoices.branchId, actorBranchId),
                 ),
               )
+              .for("update")
               .limit(1);
-            if (found) {
-              matchedInvoice = found;
+
+            if (!found) {
+              throw new TRPCError({
+                code: "NOT_FOUND",
+                message: appErrorMessage({
+                  what: "تعذر العثور على الفاتورة المحددة في هذا الفرع",
+                  why: `لا توجد فاتورة بالرقم «${input.invoiceNumber.trim()}» مسجلة ضمن الفرع الحالي`,
+                  doThis:
+                    "تأكد من رقم الفاتورة أو الفرع المسند لحسابك، أو نفذ المرتجع بدون رقم فاتورة كمرتجع عابر",
+                }),
+              });
+            }
+
+            if (isDeadInvoice(found.status)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "لا يمكن تنفيذ مرتجع على هذه الفاتورة",
+                  why: `حالة الفاتورة الحالية هي (${found.status})، وهي فاتورة ملغاة أو مستبدلة أو مرجعة بالكامل مسبقاً`,
+                  doThis: "تحقق من سجل الفاتورة الأصلي لتفادي تكرار المرتجع",
+                }),
+              });
+            }
+
+            matchedInvoice = found;
+
+            // الحارس المالي الصارم لمنع تضخيم المرتجع فوق قيمة الفاتورة:
+            // 1) الحد الأقصى لقيمة المرتجع لا يمكن أن يتجاوز (إجمالي الفاتورة - المرتجع سابقاً)
+            const remainingInvoiceTotal = Decimal.max(
+              0,
+              money(matchedInvoice.total).minus(
+                money(matchedInvoice.returnedTotal ?? "0"),
+              ),
+            );
+            if (returnTotalDec.gt(remainingInvoiceTotal)) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "مبلغ المرتجع يتجاوز القيمة المتبقية للفاتورة",
+                  why: `مبلغ المرتجع المطلوب (${returnTotalDec.toFixed(2)} د.ع) أكبر من المتبقي غير المرتجع للفاتورة (${remainingInvoiceTotal.toFixed(2)} د.ع من أصل إجمالي ${money(matchedInvoice.total).toFixed(2)} د.ع)`,
+                  doThis:
+                    "عدّل مبالغ وأصناف السلة لتكون ضمن حدود المتبقي الفعلي للفاتورة",
+                }),
+              });
+            }
+
+            // 2) الاسترداد النقدي أو بالبطاقة لا يمكن أن يتجاوز المسدد فعلياً
+            if (
+              input.settlement.method === "CASH" ||
+              input.settlement.method === "CARD"
+            ) {
+              const paidDec = money(matchedInvoice.paidAmount ?? "0");
+              if (returnTotalDec.gt(paidDec)) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "مبلغ الاسترداد يتجاوز المدفوع الفعلي للفاتورة",
+                    why: `المبلغ المطلوب استرداده (${returnTotalDec.toFixed(2)} د.ع) أكبر من إجمالي المسدد فعلياً على الفاتورة (${paidDec.toFixed(2)} د.ع)`,
+                    doThis:
+                      "لا يمكن صرف نقد أو بطاقة بمبلغ يفوق ما قبضه المحل من الزبون؛ خفّض مبلغ الاسترداد أو استخدم رصيد متجر إن كان العميل مسجلاً",
+                  }),
+                });
+              }
+            }
+
+            // 3) التحقق من بنود الفاتورة وكمياتها
+            invoiceItemRows = await tx
+              .select()
+              .from(invoiceItems)
+              .where(eq(invoiceItems.invoiceId, matchedInvoice.id))
+              .for("update");
+
+            for (const itm of input.items) {
+              const targetItem = itm.invoiceItemId
+                ? invoiceItemRows.find((ii) => ii.id === itm.invoiceItemId)
+                : invoiceItemRows.find((ii) => ii.variantId === itm.variantId);
+
+              if (targetItem) {
+                const remainingQty =
+                  (targetItem.baseQuantity ?? 0) -
+                  (targetItem.returnedBaseQuantity ?? 0);
+                if (itm.quantity > remainingQty) {
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message: appErrorMessage({
+                      what: `كمية الصنف «${itm.productName}» تتجاوز المتبقي في الفاتورة`,
+                      why: `الكمية المطلوب إرجاعها (${itm.quantity}) أكبر من الكمية المتبقية غير المرتجعة (${remainingQty}) من أصل (${targetItem.baseQuantity}) تم بيعها`,
+                      doThis: `قلل الكمية المرتجعة لهذا الصنف إلى ${remainingQty} أو أقل`,
+                    }),
+                  });
+                }
+              }
             }
           }
 
@@ -1653,21 +1874,135 @@ export const returnRouter = router({
             ? (input.customer?.customerId ?? null)
             : null;
 
-          // ١) تنفيذ حركة المخزون لكل بند
-          for (const itm of input.items) {
-            if (input.disposition === "RESTOCK") {
-              // إعادة للرف/المخزون
-              await applyMovement(tx, {
-                variantId: itm.variantId,
-                branchId: actorBranchId,
-                baseQuantity: itm.quantity,
-                movementType: "RETURN",
-                referenceType: "SALES_RETURN",
-                notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
-                createdBy: ctx.user.id,
-              });
+          // ١) تنفيذ حركة المخزون لكل بند مع التوسيع الذري للبكجات وتفادي الخدمات
+          const allVariantIds = Array.from(
+            new Set(input.items.map((i) => i.variantId)),
+          );
+          const kindByVariant = await classifyVariants(tx, allVariantIds);
+
+          const bundleVariantIds = allVariantIds.filter(
+            (id) => kindByVariant.get(id) === "BUNDLE",
+          );
+          const bundleDefs =
+            bundleVariantIds.length > 0
+              ? await getBundleDefinitions(tx, bundleVariantIds)
+              : new Map();
+
+          const snapshotByItem = new Map<
+            number,
+            Array<{ componentVariantId: number; componentBaseQuantity: number }>
+          >();
+          if (matchedInvoice && bundleVariantIds.length > 0) {
+            const bdlItemIds = invoiceItemRows
+              .filter(
+                (ii) => kindByVariant.get(Number(ii.variantId)) === "BUNDLE",
+              )
+              .map((ii) => Number(ii.id));
+
+            if (bdlItemIds.length > 0) {
+              const snapRows = await tx
+                .select({
+                  invoiceItemId: invoiceItemBundleComponents.invoiceItemId,
+                  componentVariantId:
+                    invoiceItemBundleComponents.componentVariantId,
+                  componentBaseQuantity:
+                    invoiceItemBundleComponents.componentBaseQuantity,
+                })
+                .from(invoiceItemBundleComponents)
+                .where(
+                  inArray(
+                    invoiceItemBundleComponents.invoiceItemId,
+                    bdlItemIds,
+                  ),
+                );
+
+              for (const r of snapRows) {
+                const iid = Number(r.invoiceItemId);
+                const list = snapshotByItem.get(iid) ?? [];
+                list.push({
+                  componentVariantId: Number(r.componentVariantId),
+                  componentBaseQuantity: Number(r.componentBaseQuantity),
+                });
+                snapshotByItem.set(iid, list);
+              }
             }
-            // إذا كان تالفاً (DAMAGED) لا يُعاد إلى مخزون الرف الصالح للبيع، ويُكتفى بتوثيقه محاسبياً ورقابياً
+          }
+
+          for (const itm of input.items) {
+            const kind = kindByVariant.get(itm.variantId) ?? "STOCKED";
+
+            if (kind === "SERVICE") {
+              // الخدمات لا مخزون لها إطلاقاً — لا نطبق أي حركة مخزون
+              continue;
+            }
+
+            if (kind === "BUNDLE") {
+              // بكج مركب: نحدد مكوناته
+              let components: Array<{
+                componentVariantId: number;
+                componentBaseQuantity: number;
+              }> = [];
+
+              if (itm.invoiceItemId && snapshotByItem.has(itm.invoiceItemId)) {
+                components = snapshotByItem.get(itm.invoiceItemId)!;
+              } else if (matchedInvoice) {
+                const matchingInvItem = invoiceItemRows.find(
+                  (ii) => ii.variantId === itm.variantId,
+                );
+                if (matchingInvItem && snapshotByItem.has(matchingInvItem.id)) {
+                  components = snapshotByItem.get(matchingInvItem.id)!;
+                }
+              }
+
+              // ملاذ آمن: إن لم توجد لقطة تاريخية، نستعمل وصفة البكج الحالية
+              if (!components.length) {
+                const def = bundleDefs.get(itm.variantId) ?? [];
+                components = def.map((d: any) => ({
+                  componentVariantId: Number(d.componentVariantId),
+                  componentBaseQuantity: Number(d.componentBaseQuantity),
+                }));
+              }
+
+              if (!components.length && input.disposition === "RESTOCK") {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: `تعذر إرجاع البكج «${itm.productName}» إلى المخزون`,
+                    why: "البكج ليس له أي مكونات أو وصفة مسجلة في النظام",
+                    doThis: "راجع وصفة البكج من صفحة تعديل المنتج أو اختر مسار تالف",
+                  }),
+                });
+              }
+
+              // عند الإرجاع للرف، نرجع كل مكوّن بحسب كميته
+              if (input.disposition === "RESTOCK") {
+                for (const comp of components) {
+                  const compBaseQty = comp.componentBaseQuantity * itm.quantity;
+                  await applyMovement(tx, {
+                    variantId: comp.componentVariantId,
+                    branchId: actorBranchId,
+                    baseQuantity: compBaseQty,
+                    movementType: "RETURN",
+                    referenceType: "SALES_RETURN",
+                    notes: `إرجاع مكوّن بكج للرف [${returnNumber}] — مكوّن من «${itm.productName}» (${customerName})`,
+                    createdBy: ctx.user.id,
+                  });
+                }
+              }
+            } else {
+              // صنف مخزني عادي STOCKED
+              if (input.disposition === "RESTOCK") {
+                await applyMovement(tx, {
+                  variantId: itm.variantId,
+                  branchId: actorBranchId,
+                  baseQuantity: itm.quantity,
+                  movementType: "RETURN",
+                  referenceType: "SALES_RETURN",
+                  notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                  createdBy: ctx.user.id,
+                });
+              }
+            }
           }
 
           // ٢) معالجة التسوية المالية وحركة الصندوق/الدرج/البطاقة/رصيد المتجر
@@ -1876,8 +2211,31 @@ export const returnRouter = router({
             postingSourceComponents: salesReturnSource,
           });
 
-          // ٤) تحديث بيانات الفاتورة الأصلية إن وُجدت
+          // ٤) تحديث بيانات الفاتورة الأصلية وبنودها إن وُجدت
           if (matchedInvoice) {
+            for (const itm of input.items) {
+              const targetItem = itm.invoiceItemId
+                ? invoiceItemRows.find((ii) => ii.id === itm.invoiceItemId)
+                : invoiceItemRows.find((ii) => ii.variantId === itm.variantId);
+
+              if (targetItem) {
+                await tx
+                  .update(invoiceItems)
+                  .set({
+                    returnedBaseQuantity:
+                      (targetItem.returnedBaseQuantity ?? 0) + itm.quantity,
+                    ...(input.disposition === "RESTOCK"
+                      ? {
+                          returnedRestockedBaseQuantity:
+                            (targetItem.returnedRestockedBaseQuantity ?? 0) +
+                            itm.quantity,
+                        }
+                      : {}),
+                  })
+                  .where(eq(invoiceItems.id, targetItem.id));
+              }
+            }
+
             const newReturnedTotal = money(
               matchedInvoice.returnedTotal ?? "0",
             ).plus(returnTotalDec);

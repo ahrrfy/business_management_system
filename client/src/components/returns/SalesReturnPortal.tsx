@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   Coins,
   CreditCard,
+  FileCheck,
   Minus,
   Plus,
   Receipt,
@@ -49,10 +50,14 @@ export interface SalesCartItem {
   id: string;
   variantId: number;
   productUnitId?: number;
+  invoiceItemId?: number;
+  isBundle?: boolean;
   productName: string;
   barcode?: string | null;
   quantity: number;
+  maxAllowedQuantity?: number;
   unitPrice: string;
+  originalUnitPrice?: string;
   unit?: string;
   conversionFactor?: number;
 }
@@ -119,6 +124,12 @@ export function SalesReturnPortal({
 
   const salesBarcodeRef = useRef<HTMLInputElement>(null);
 
+  type InspectedInvoice = NonNullable<
+    Awaited<ReturnType<typeof utils.returns.inspectInvoiceForReturn.fetch>>
+  >;
+  const [inspectedInvoice, setInspectedInvoice] =
+    useState<InspectedInvoice | null>(null);
+
   const salesTotal = useMemo(() => {
     return salesCart.reduce(
       (sum, item) => sum + item.quantity * Number(item.unitPrice || 0),
@@ -141,6 +152,11 @@ export function SalesReturnPortal({
     );
   }, [selectedDrawer, salesTotal]);
 
+  const isOverInvoiceLimit = useMemo(() => {
+    if (!inspectedInvoice) return false;
+    return salesTotal > Number(inspectedInvoice.maxRefundable || 0);
+  }, [inspectedInvoice, salesTotal]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "F2") return;
@@ -158,14 +174,40 @@ export function SalesReturnPortal({
   const handleAddProductFromSearch = (line: InvoiceLine) => {
     const variantId = line.variantId;
     const factor = Math.max(1, Number(line.conversionFactor) || 1);
-    const priceStr = String(line.price || "0");
+
+    const matchedInvItem = inspectedInvoice?.items.find(
+      (it) => it.variantId === variantId,
+    );
+
+    if (inspectedInvoice && !matchedInvItem) {
+      notify.warn(
+        `تنبيه: الصنف «${line.name}» غير مسجل ضمن بنود الفاتورة #${inspectedInvoice.invoiceNumber}`,
+      );
+    }
+
+    const priceStr = matchedInvItem
+      ? matchedInvItem.unitPrice
+      : String(line.price || "0");
+    const maxQty = matchedInvItem
+      ? matchedInvItem.remainingQuantity
+      : undefined;
 
     setSalesCart((prev) => {
-      const existingIdx = prev.findIndex((i) => i.variantId === variantId);
+      const existingIdx = prev.findIndex((i) =>
+        matchedInvItem
+          ? i.invoiceItemId === matchedInvItem.invoiceItemId
+          : i.variantId === variantId,
+      );
       if (existingIdx >= 0) {
         const target = prev[existingIdx];
         const updated = [...prev];
-        const newQty = target.quantity + (line.qty || 1);
+        let newQty = target.quantity + (line.qty || 1);
+        if (maxQty != null && newQty > maxQty) {
+          notify.warn(
+            `الكمية المطلوبة تتجاوز المتبقي في الفاتورة (${maxQty})`,
+          );
+          newQty = maxQty;
+        }
         const [moved] = updated.splice(existingIdx, 1);
         const itemToPlace = { ...moved, quantity: newQty };
         setLastAddedId(itemToPlace.id);
@@ -173,15 +215,22 @@ export function SalesReturnPortal({
       }
       const newId = `${variantId}-${Date.now()}`;
       setLastAddedId(newId);
+      const initialQty = Math.min(line.qty || 1, maxQty ?? (line.qty || 1));
       return [
         {
           id: newId,
           variantId,
           productUnitId: line.productUnitId,
+          invoiceItemId: matchedInvItem?.invoiceItemId,
+          isBundle: matchedInvItem?.isBundle,
           productName: line.name,
           barcode: line.barcode ?? null,
-          quantity: line.qty || 1,
+          quantity: initialQty,
+          maxAllowedQuantity: maxQty,
           unitPrice: priceStr,
+          originalUnitPrice: matchedInvItem
+            ? matchedInvItem.unitPrice
+            : undefined,
           unit: line.unit || "قطعة",
           conversionFactor: factor,
         },
@@ -206,17 +255,39 @@ export function SalesReturnPortal({
         return;
       }
       const variantId = res.variantId;
-      const priceStr = String(
-        res.retailPrice || res.lowestHistoricalPrice || "0",
+      const matchedInvItem = inspectedInvoice?.items.find(
+        (it) => it.variantId === variantId,
       );
 
+      if (inspectedInvoice && !matchedInvItem) {
+        notify.warn(
+          `تنبيه: الصنف «${res.productName}» غير مسجل ضمن بنود الفاتورة #${inspectedInvoice.invoiceNumber}`,
+        );
+      }
+
+      const priceStr = matchedInvItem
+        ? matchedInvItem.unitPrice
+        : String(res.retailPrice || res.lowestHistoricalPrice || "0");
+      const maxQty = matchedInvItem?.remainingQuantity;
+
       setSalesCart((prev) => {
-        const existingIdx = prev.findIndex((i) => i.variantId === variantId);
+        const existingIdx = prev.findIndex((i) =>
+          matchedInvItem
+            ? i.invoiceItemId === matchedInvItem.invoiceItemId
+            : i.variantId === variantId,
+        );
         if (existingIdx >= 0) {
           const target = prev[existingIdx];
           const updated = [...prev];
+          let newQty = target.quantity + 1;
+          if (maxQty != null && newQty > maxQty) {
+            notify.warn(
+              `الكمية المطلوبة تتجاوز المتبقي في الفاتورة (${maxQty})`,
+            );
+            newQty = maxQty;
+          }
           const [moved] = updated.splice(existingIdx, 1);
-          const itemToPlace = { ...moved, quantity: target.quantity + 1 };
+          const itemToPlace = { ...moved, quantity: newQty };
           setLastAddedId(itemToPlace.id);
           return [itemToPlace, ...updated];
         }
@@ -227,10 +298,16 @@ export function SalesReturnPortal({
             id: newId,
             variantId,
             productUnitId: res.productUnitId,
+            invoiceItemId: matchedInvItem?.invoiceItemId,
+            isBundle: matchedInvItem?.isBundle,
             productName: res.productName,
             barcode: res.barcode ?? raw,
             quantity: 1,
+            maxAllowedQuantity: maxQty,
             unitPrice: priceStr,
+            originalUnitPrice: matchedInvItem
+              ? matchedInvItem.unitPrice
+              : undefined,
           },
           ...prev,
         ];
@@ -252,43 +329,85 @@ export function SalesReturnPortal({
     if (!raw) return;
     setInvoiceLookupLoading(true);
     try {
-      // ١) تجربة المسح الكوني الذكي لمعرفة ما إذا كان الرمز فاتورة أو مستنداً
+      // ١) فحص مباشر عبر إجراء حوكمة المرتجعات inspectInvoiceForReturn
+      try {
+        const inv = await utils.returns.inspectInvoiceForReturn.fetch({
+          invoiceNumber: raw,
+        });
+        if (inv) {
+          setInspectedInvoice(inv);
+          setSalesCustomerName(inv.customerName ?? "عميل نقدي");
+          if (inv.customerId) setSalesCustomerId(inv.customerId);
+          if (inv.customerPhone) setSalesCustomerPhone(inv.customerPhone);
+          setSalesInvoiceNo(inv.invoiceNumber);
+          if (inv.isDead) {
+            notify.warn(
+              `الفاتورة #${inv.invoiceNumber} مغلقة أو ملغاة أو مرجعة بالكامل ولا تقبل مرتجعات`,
+            );
+          } else {
+            notify.ok(
+              `تم جلب الفاتورة #${inv.invoiceNumber} وسقف استردادها (${fmt(inv.maxRefundable)} د.ع)`,
+            );
+          }
+          return;
+        }
+      } catch {
+        // المتابعة للبحث البديل
+      }
+
+      // ٢) تجربة المسح الكوني الذكي لمعرفة ما إذا كان الرمز باركود فاتورة
       try {
         const scanRes = await utils.returns.universalScan.fetch({
           barcode: raw,
         });
         if (scanRes.recognized && scanRes.kind === "INVOICE" && scanRes.id) {
-          const inv = await utils.sales.get.fetch({ invoiceId: scanRes.id });
-          if (inv) {
-            setSalesCustomerName(inv.customerName ?? "عميل نقدي");
-            if (inv.customerId) setSalesCustomerId(inv.customerId);
-            setSalesInvoiceNo(inv.invoiceNumber);
-            notify.ok(`تم التعرف على الفاتورة #${inv.invoiceNumber}`);
-            return;
+          const invData = await utils.sales.get.fetch({ invoiceId: scanRes.id });
+          if (invData?.invoiceNumber) {
+            const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
+              invoiceNumber: invData.invoiceNumber,
+            });
+            if (inspected) {
+              setInspectedInvoice(inspected);
+              setSalesCustomerName(inspected.customerName ?? "عميل نقدي");
+              if (inspected.customerId) setSalesCustomerId(inspected.customerId);
+              if (inspected.customerPhone)
+                setSalesCustomerPhone(inspected.customerPhone);
+              setSalesInvoiceNo(inspected.invoiceNumber);
+              notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
+              return;
+            }
           }
         }
       } catch {
         // تجاهل والمتابعة
       }
 
-      // ٢) استخراج الرقم إن وُجد والبحث المباشر
+      // ٣) استخراج الرقم والبحث المباشر
       const invId = parseInt(raw.replace(/\D/g, ""), 10);
       if (invId) {
         try {
-          const inv = await utils.sales.get.fetch({ invoiceId: invId });
-          if (inv) {
-            setSalesCustomerName(inv.customerName ?? "عميل نقدي");
-            if (inv.customerId) setSalesCustomerId(inv.customerId);
-            setSalesInvoiceNo(inv.invoiceNumber);
-            notify.ok(`تم التعرف على الفاتورة #${inv.invoiceNumber}`);
-            return;
+          const invData = await utils.sales.get.fetch({ invoiceId: invId });
+          if (invData?.invoiceNumber) {
+            const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
+              invoiceNumber: invData.invoiceNumber,
+            });
+            if (inspected) {
+              setInspectedInvoice(inspected);
+              setSalesCustomerName(inspected.customerName ?? "عميل نقدي");
+              if (inspected.customerId) setSalesCustomerId(inspected.customerId);
+              if (inspected.customerPhone)
+                setSalesCustomerPhone(inspected.customerPhone);
+              setSalesInvoiceNo(inspected.invoiceNumber);
+              notify.ok(`تم التعرف على الفاتورة #${inspected.invoiceNumber}`);
+              return;
+            }
           }
         } catch {
           // المتابعة للتقصي الذكي
         }
       }
 
-      // ٣) التحري الذكي (forensic trace) بواسطة رقم الهاتف أو باركود الفاتورة
+      // ٤) التحري الذكي (forensic trace) بواسطة رقم الهاتف أو باركود الصنف
       try {
         const trace = await utils.returns.forensicTrace.fetch({
           query: raw,
@@ -300,25 +419,144 @@ export function SalesReturnPortal({
         });
         if (trace?.results && trace.results.length > 0) {
           const first = trace.results[0];
-          setSalesCustomerName(first.customerName ?? "عميل نقدي");
-          setSalesInvoiceNo(first.invoiceNumber);
-          notify.ok(
-            `تم العثور على الفاتورة #${first.invoiceNumber} عبر التحري الذكي`,
-          );
-          return;
+          const inspected = await utils.returns.inspectInvoiceForReturn.fetch({
+            invoiceNumber: first.invoiceNumber,
+          });
+          if (inspected) {
+            setInspectedInvoice(inspected);
+            setSalesCustomerName(inspected.customerName ?? "عميل نقدي");
+            if (inspected.customerId) setSalesCustomerId(inspected.customerId);
+            if (inspected.customerPhone)
+              setSalesCustomerPhone(inspected.customerPhone);
+            setSalesInvoiceNo(inspected.invoiceNumber);
+            notify.ok(
+              `تم العثور على الفاتورة #${inspected.invoiceNumber} عبر التحري الذكي`,
+            );
+            return;
+          }
         }
       } catch {
         // المتابعة
       }
 
+      setInspectedInvoice(null);
       notify.warn(
-        "لم يُعثر على فاتورة بهذا الرقم — يمكنك المتابعة بدون فاتورة",
+        "لم يُعثر على فاتورة بهذا الرقم — يمكنك المتابعة بدون فاتورة كمرتجع عابر",
       );
     } catch {
+      setInspectedInvoice(null);
       notify.warn("تعذر جلب الفاتورة — يمكنك المتابعة بدونها");
     } finally {
       setInvoiceLookupLoading(false);
     }
+  };
+
+  const handleAddInspectedItemToCart = (
+    item: NonNullable<typeof inspectedInvoice>["items"][number],
+  ) => {
+    if (item.remainingQuantity <= 0) {
+      notify.warn(`الصنف «${item.productName}» تم إرجاع كامل كميته مسبقاً`);
+      return;
+    }
+
+    setSalesCart((prev) => {
+      const existingIdx = prev.findIndex(
+        (i) =>
+          i.invoiceItemId === item.invoiceItemId ||
+          (!i.invoiceItemId && i.variantId === item.variantId),
+      );
+      if (existingIdx >= 0) {
+        const target = prev[existingIdx];
+        if (target.quantity >= item.remainingQuantity) {
+          notify.warn(
+            `الكمية في السلة وصلت للحد الأقصى المتاح (${item.remainingQuantity})`,
+          );
+          return prev;
+        }
+        const updated = [...prev];
+        const newQty = Math.min(item.remainingQuantity, target.quantity + 1);
+        const [moved] = updated.splice(existingIdx, 1);
+        const itemToPlace = { ...moved, quantity: newQty };
+        setLastAddedId(itemToPlace.id);
+        return [itemToPlace, ...updated];
+      }
+
+      const newId = `${item.variantId}-${Date.now()}`;
+      setLastAddedId(newId);
+      return [
+        {
+          id: newId,
+          variantId: item.variantId,
+          productUnitId: item.productUnitId,
+          invoiceItemId: item.invoiceItemId,
+          isBundle: item.isBundle,
+          productName: item.productName,
+          barcode: item.barcode,
+          quantity: 1,
+          maxAllowedQuantity: item.remainingQuantity,
+          unitPrice: item.unitPrice,
+          originalUnitPrice: item.unitPrice,
+          unit: item.unitName,
+          conversionFactor: item.conversionFactor,
+        },
+        ...prev,
+      ];
+    });
+
+    notify.ok(`أُضيف للسلة: ${item.productName}`);
+  };
+
+  const handleAddAllRemainingItems = () => {
+    if (!inspectedInvoice || inspectedInvoice.items.length === 0) return;
+    const availableItems = inspectedInvoice.items.filter(
+      (i) => i.remainingQuantity > 0,
+    );
+    if (availableItems.length === 0) {
+      notify.warn("لا توجد بنود متبقية قابلة للإرجاع في هذه الفاتورة");
+      return;
+    }
+
+    setSalesCart((prev) => {
+      let nextCart = [...prev];
+      for (const item of availableItems) {
+        const existingIdx = nextCart.findIndex(
+          (i) =>
+            i.invoiceItemId === item.invoiceItemId ||
+            (!i.invoiceItemId && i.variantId === item.variantId),
+        );
+        if (existingIdx >= 0) {
+          nextCart[existingIdx] = {
+            ...nextCart[existingIdx],
+            quantity: item.remainingQuantity,
+            maxAllowedQuantity: item.remainingQuantity,
+            unitPrice: item.unitPrice,
+            originalUnitPrice: item.unitPrice,
+          };
+        } else {
+          const newId = `${item.variantId}-${Date.now()}-${Math.random()}`;
+          nextCart.push({
+            id: newId,
+            variantId: item.variantId,
+            productUnitId: item.productUnitId,
+            invoiceItemId: item.invoiceItemId,
+            isBundle: item.isBundle,
+            productName: item.productName,
+            barcode: item.barcode,
+            quantity: item.remainingQuantity,
+            maxAllowedQuantity: item.remainingQuantity,
+            unitPrice: item.unitPrice,
+            originalUnitPrice: item.unitPrice,
+            unit: item.unitName,
+            conversionFactor: item.conversionFactor,
+          });
+        }
+      }
+      return nextCart;
+    });
+
+    notify.ok(
+      `تمت إضافة ${availableItems.length} بند بكامل الكميات المتبقية للسلة`,
+    );
   };
 
   useEffect(() => {
@@ -338,6 +576,21 @@ export function SalesReturnPortal({
     if (salesTotal <= 0) {
       notify.warn("مبلغ الإرجاع غير صالح");
       return;
+    }
+
+    if (inspectedInvoice) {
+      if (inspectedInvoice.isDead) {
+        notify.warn(
+          "لا يمكن تنفيذ مرتجع على هذه الفاتورة لأنها مغلقة أو ملغاة أو مرجعة بالكامل مسبقاً",
+        );
+        return;
+      }
+      if (isOverInvoiceLimit) {
+        notify.warn(
+          `إجمالي مبلغ المرتجع (${fmt(String(salesTotal))} د.ع) يتجاوز سقف الاسترداد المتبقي للفاتورة (${fmt(inspectedInvoice.maxRefundable)} د.ع)`,
+        );
+        return;
+      }
     }
 
     if (salesRefundMethod === "CASH") {
@@ -411,6 +664,8 @@ export function SalesReturnPortal({
           const baseUnitPrice = (totalLineAmount / baseQty).toFixed(2);
           return {
             variantId: i.variantId,
+            productUnitId: i.productUnitId,
+            invoiceItemId: i.invoiceItemId,
             productName: i.productName,
             barcode: i.barcode,
             quantity: baseQty,
@@ -449,6 +704,7 @@ export function SalesReturnPortal({
 
       setSalesCart([]);
       setSalesInvoiceNo("");
+      setInspectedInvoice(null);
       setSalesCustomerName("");
       setSalesCustomerPhone("");
       setSalesCustomerId(null);
@@ -622,6 +878,203 @@ export function SalesReturnPortal({
           </CardContent>
         </Card>
 
+        {/* كارت تفاصيل الفاتورة المفحوصة وسقف الاسترداد وبنودها الأصلية */}
+        {inspectedInvoice && (
+          <Card
+            className={cn(
+              "shadow-xs border-2 transition-all",
+              inspectedInvoice.isDead
+                ? "border-destructive/40 bg-destructive/5"
+                : "border-emerald-500/40 bg-emerald-50/20 dark:bg-emerald-950/10",
+            )}
+          >
+            <CardHeader className="p-3 pb-2 flex flex-row items-center justify-between gap-2 border-b">
+              <div className="flex items-center gap-2 flex-wrap">
+                <FileCheck className="size-4 text-emerald-600" />
+                <span className="font-bold text-sm">
+                  فاتورة المبيعات #{inspectedInvoice.invoiceNumber}
+                </span>
+                <Badge
+                  variant={inspectedInvoice.isDead ? "destructive" : "outline"}
+                  className="text-[10px] font-normal"
+                >
+                  {inspectedInvoice.status}
+                </Badge>
+                {inspectedInvoice.customerName && (
+                  <span className="text-xs text-muted-foreground font-medium">
+                    العميل: {inspectedInvoice.customerName}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {inspectedInvoice.items.some(
+                  (i) => i.remainingQuantity > 0,
+                ) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAddAllRemainingItems}
+                    className="h-7 text-xs px-2.5 bg-background text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-50"
+                  >
+                    <Plus className="size-3 ml-1" />
+                    إرجاع كافة البنود المتبقية
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setInspectedInvoice(null);
+                    setSalesInvoiceNo("");
+                  }}
+                  className="h-7 text-xs text-muted-foreground hover:text-destructive px-2"
+                >
+                  إلغاء الفحص
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-3 space-y-3">
+              {/* المؤشرات المالية للفاتورة */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                <div className="p-2 rounded-lg bg-background border shadow-2xs">
+                  <div className="text-[10px] text-muted-foreground">
+                    إجمالي الفاتورة
+                  </div>
+                  <div className="font-bold font-mono text-foreground mt-0.5">
+                    {fmt(inspectedInvoice.total)} د.ع
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-background border shadow-2xs">
+                  <div className="text-[10px] text-muted-foreground">
+                    المدفوع نقداً/بطاقة
+                  </div>
+                  <div className="font-bold font-mono text-emerald-700 dark:text-emerald-400 mt-0.5">
+                    {fmt(inspectedInvoice.paidAmount)} د.ع
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-background border shadow-2xs">
+                  <div className="text-[10px] text-muted-foreground">
+                    المرتجع سابقاً
+                  </div>
+                  <div className="font-bold font-mono text-muted-foreground mt-0.5">
+                    {fmt(inspectedInvoice.returnedTotal)} د.ع
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 shadow-2xs">
+                  <div className="text-[10px] text-emerald-800 dark:text-emerald-300 font-bold">
+                    سقف الاسترداد المتاح
+                  </div>
+                  <div className="font-black font-mono text-emerald-700 dark:text-emerald-400 mt-0.5">
+                    {fmt(inspectedInvoice.maxRefundable)} د.ع
+                  </div>
+                </div>
+              </div>
+
+              {/* جدول بنود الفاتورة الأصلية ومتاح الإرجاع */}
+              {inspectedInvoice.items.length > 0 && (
+                <div className="border rounded-lg overflow-hidden shadow-2xs bg-background">
+                  <div className="max-h-48 overflow-y-auto">
+                    <table className="w-full text-xs text-right">
+                      <thead className="sticky top-0 bg-muted/95 backdrop-blur z-10 text-muted-foreground font-semibold border-b">
+                        <tr>
+                          <th className="p-2">الصنف</th>
+                          <th className="p-2 text-center">الكمية المباعة</th>
+                          <th className="p-2 text-center">المسترجع</th>
+                          <th className="p-2 text-center">المتبقي</th>
+                          <th className="p-2">سعر الوحدة</th>
+                          <th className="p-2 text-center w-28">إجراء</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {inspectedInvoice.items.map((it) => {
+                          const cartItem = salesCart.find(
+                            (c) =>
+                              c.invoiceItemId === it.invoiceItemId ||
+                              (!c.invoiceItemId &&
+                                c.variantId === it.variantId),
+                          );
+                          const inCartQty = cartItem?.quantity || 0;
+                          return (
+                            <tr
+                              key={it.invoiceItemId}
+                              className="hover:bg-muted/30"
+                            >
+                              <td className="p-2 font-medium">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span>{it.productName}</span>
+                                  {it.isBundle && (
+                                    <Badge
+                                      variant="secondary"
+                                      className="text-[9px] px-1 py-0 bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border-blue-300"
+                                    >
+                                      بكج مركب
+                                    </Badge>
+                                  )}
+                                  {it.isService && (
+                                    <Badge
+                                      variant="secondary"
+                                      className="text-[9px] px-1 py-0 bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300 border-purple-300"
+                                    >
+                                      خدمة
+                                    </Badge>
+                                  )}
+                                </div>
+                                {it.barcode && (
+                                  <span className="font-mono text-[10px] text-muted-foreground">
+                                    {it.barcode}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-2 text-center font-mono">
+                                {it.baseQuantity}
+                              </td>
+                              <td className="p-2 text-center font-mono text-muted-foreground">
+                                {it.returnedBaseQuantity}
+                              </td>
+                              <td className="p-2 text-center font-mono font-bold text-foreground">
+                                {it.remainingQuantity}
+                              </td>
+                              <td className="p-2 font-mono">
+                                {fmt(it.unitPrice)} د.ع
+                              </td>
+                              <td className="p-2 text-center">
+                                {it.remainingQuantity <= 0 ? (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    مرتجع بالكامل
+                                  </span>
+                                ) : (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      handleAddInspectedItemToCart(it)
+                                    }
+                                    className="h-6 text-[11px] px-2 gap-1 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 hover:bg-emerald-50"
+                                  >
+                                    <Plus className="size-2.5" />
+                                    <span>
+                                      {inCartQty > 0
+                                        ? `في السلة (${inCartQty})`
+                                        : "إضافة"}
+                                    </span>
+                                  </Button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* بطاقة مسح الباركود والبحث الموحد وسلة الأصناف */}
         <Card className="shadow-xs">
           <CardHeader className="p-3 pb-2 space-y-2.5">
@@ -708,6 +1161,14 @@ export function SalesReturnPortal({
                             <td className="p-2.5">
                               <div className="font-bold text-foreground flex items-center gap-1.5 flex-wrap">
                                 <span>{item.productName}</span>
+                                {item.isBundle && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-[9px] px-1 py-0 bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border-blue-300"
+                                  >
+                                    بكج
+                                  </Badge>
+                                )}
                                 {item.unit &&
                                   item.conversionFactor &&
                                   item.conversionFactor > 1 && (
@@ -716,11 +1177,18 @@ export function SalesReturnPortal({
                                     </span>
                                   )}
                               </div>
-                              {item.barcode && (
-                                <span className="font-mono text-[10px] text-muted-foreground">
-                                  {item.barcode}
-                                </span>
-                              )}
+                              <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                                {item.barcode && (
+                                  <span className="font-mono text-[10px] text-muted-foreground">
+                                    {item.barcode}
+                                  </span>
+                                )}
+                                {item.maxAllowedQuantity != null && (
+                                  <span className="text-[10px] text-muted-foreground font-mono">
+                                    (المتبقي بالفاتورة: {item.maxAllowedQuantity})
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="p-2.5">
                               <div className="flex items-center justify-center gap-1.5">
@@ -748,12 +1216,22 @@ export function SalesReturnPortal({
                                 <Input
                                   type="number"
                                   min={1}
+                                  max={item.maxAllowedQuantity}
                                   value={item.quantity}
                                   onChange={(e) => {
-                                    const q = Math.max(
+                                    let q = Math.max(
                                       1,
                                       parseInt(e.target.value, 10) || 1,
                                     );
+                                    if (
+                                      item.maxAllowedQuantity != null &&
+                                      q > item.maxAllowedQuantity
+                                    ) {
+                                      q = item.maxAllowedQuantity;
+                                      notify.warn(
+                                        `الحد الأقصى المتاح للإرجاع من الفاتورة هو ${item.maxAllowedQuantity}`,
+                                      );
+                                    }
                                     setSalesCart((prev) =>
                                       prev.map((it, i) =>
                                         i === idx ? { ...it, quantity: q } : it,
@@ -765,6 +1243,15 @@ export function SalesReturnPortal({
                                 <button
                                   type="button"
                                   onClick={() => {
+                                    if (
+                                      item.maxAllowedQuantity != null &&
+                                      item.quantity >= item.maxAllowedQuantity
+                                    ) {
+                                      notify.warn(
+                                        `لا يمكن تجاوز الكمية المتبقية في الفاتورة (${item.maxAllowedQuantity})`,
+                                      );
+                                      return;
+                                    }
                                     setSalesCart((prev) =>
                                       prev.map((it, i) =>
                                         i === idx
@@ -773,7 +1260,11 @@ export function SalesReturnPortal({
                                       ),
                                     );
                                   }}
-                                  className="size-7 rounded border flex items-center justify-center hover:bg-muted text-muted-foreground"
+                                  disabled={
+                                    item.maxAllowedQuantity != null &&
+                                    item.quantity >= item.maxAllowedQuantity
+                                  }
+                                  className="size-7 rounded border flex items-center justify-center hover:bg-muted text-muted-foreground disabled:opacity-40"
                                 >
                                   <Plus className="size-3" />
                                 </button>
@@ -783,6 +1274,15 @@ export function SalesReturnPortal({
                               <MoneyInput
                                 value={item.unitPrice}
                                 onChange={(p) => {
+                                  if (
+                                    item.originalUnitPrice &&
+                                    Number(p) > Number(item.originalUnitPrice)
+                                  ) {
+                                    notify.warn(
+                                      `لا يمكن رفع سعر الإرجاع عن سعر البيع في الفاتورة (${fmt(item.originalUnitPrice)} د.ع)`,
+                                    );
+                                    p = item.originalUnitPrice;
+                                  }
                                   setSalesCart((prev) =>
                                     prev.map((it, i) =>
                                       i === idx ? { ...it, unitPrice: p } : it,
@@ -792,6 +1292,11 @@ export function SalesReturnPortal({
                                 className="h-7 text-xs font-mono"
                                 ariaLabel="سعر الوحدة"
                               />
+                              {item.originalUnitPrice && (
+                                <div className="text-[9px] text-muted-foreground font-mono mt-0.5">
+                                  سعر الفاتورة: {fmt(item.originalUnitPrice)}
+                                </div>
+                              )}
                             </td>
                             <td className="p-2.5 text-left font-mono font-bold">
                               {fmt(String(subtotal))}
@@ -1069,6 +1574,55 @@ export function SalesReturnPortal({
               </div>
             </div>
 
+            {/* سقف الاسترداد المالي للفاتورة إن وجدت */}
+            {inspectedInvoice && (
+              <div
+                className={cn(
+                  "p-3 rounded-xl border text-xs space-y-1.5",
+                  isOverInvoiceLimit || inspectedInvoice.isDead
+                    ? "bg-destructive/10 border-destructive/40 text-destructive"
+                    : "bg-emerald-500/10 border-emerald-500/30 text-emerald-950 dark:text-emerald-200",
+                )}
+              >
+                <div className="flex items-center justify-between font-bold">
+                  <span className="flex items-center gap-1.5">
+                    <FileCheck className="size-3.5 text-emerald-600" />
+                    سقف استرداد الفاتورة #{inspectedInvoice.invoiceNumber}
+                  </span>
+                  <span className="font-mono font-black text-sm">
+                    {fmt(inspectedInvoice.maxRefundable)} د.ع
+                  </span>
+                </div>
+                {inspectedInvoice.isDead ? (
+                  <div className="text-[11px] font-medium flex items-center gap-1 text-destructive">
+                    <AlertCircle className="size-3.5 shrink-0" />
+                    <span>
+                      الفاتورة مغلقة أو مسترجعة بالكامل ({inspectedInvoice.status}) ولا تقبل مرتجعات
+                    </span>
+                  </div>
+                ) : isOverInvoiceLimit ? (
+                  <div className="text-[11px] font-medium flex items-center gap-1 text-destructive">
+                    <AlertCircle className="size-3.5 shrink-0" />
+                    <span>
+                      تجاوز السقف بمقدار (
+                      {fmt(
+                        String(
+                          salesTotal -
+                            Number(inspectedInvoice.maxRefundable || 0),
+                        ),
+                      )}{" "}
+                      د.ع) — يرجى تصحيح السلة
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-muted-foreground flex items-center justify-between">
+                    <span>المدفوع: {fmt(inspectedInvoice.paidAmount)} د.ع</span>
+                    <span>المرتجع: {fmt(inspectedInvoice.returnedTotal)} د.ع</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* زر التنفيذ النهائي */}
             <Button
               type="button"
@@ -1076,9 +1630,11 @@ export function SalesReturnPortal({
               disabled={
                 salesReturnMutation.isPending ||
                 salesCart.length === 0 ||
-                salesTotal <= 0
+                salesTotal <= 0 ||
+                (inspectedInvoice != null &&
+                  (inspectedInvoice.isDead || isOverInvoiceLimit))
               }
-              className="w-full h-12 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-sm cursor-pointer"
+              className="w-full h-12 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-sm cursor-pointer disabled:opacity-50"
             >
               <Receipt className="size-5" />
               <span>
