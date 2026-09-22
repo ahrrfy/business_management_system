@@ -37,6 +37,7 @@ import {
   BarcodeSearchCue,
   barcodeSearchInputClass,
 } from "@/components/scan/BarcodeSearchCue";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -213,7 +214,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   // البحث خادميّ (q + balanceState=OUTSTANDING أي المتبقّي > 0 وغير الملغاة/المرتجعة) — كان «آخر ٥٠»
   // فقط فلا تُوجَد فاتورة أقدم وهي مستحقّة.
   const [invoiceQ, setInvoiceQ] = useState("");
-  const invoiceBarcodeInput = useBarcodeInput((code) => setInvoiceQ(code));
   const debouncedInvoiceQ = useDebouncedValue(invoiceQ.trim(), 250);
   const customerInvoices = trpc.sales.list.useQuery(
     {
@@ -942,19 +942,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 {customerId != null && (
                   <div className="space-y-1">
                     <Label>ربط بفاتورة (اختياري)</Label>
-                    <div className="relative">
-                      <Input
-                        type="search"
-                        value={invoiceQ}
-                        onChange={(e) => setInvoiceQ(e.target.value)}
-                        onKeyDown={(e) =>
-                          invoiceBarcodeInput.handleKeyDown(e, setInvoiceQ)
-                        }
-                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر 50 فقط)"
-                        className={barcodeSearchInputClass}
-                      />
-                      <BarcodeSearchCue />
-                    </div>
+                    <UnifiedSearchInput
+                      value={invoiceQ}
+                      onChange={setInvoiceQ}
+                      placeholder="ابحث برقم الفاتورة أو امسح الباركود… (F2)"
+                      barcode={true}
+                      debounceMs={200}
+                      size="default"
+                    />
                     <AppSelect
                       value={invoiceId != null ? String(invoiceId) : "0"}
                       onValueChange={(v) => {

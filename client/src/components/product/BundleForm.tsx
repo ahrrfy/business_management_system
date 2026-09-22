@@ -15,8 +15,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, genEan13 } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 /**
  * BundleForm — إنشاء «بكج (باندل)»: منتج مركّب من عدّة منتجات بسيطة يُباع كوحدة بباركود وسعر مستقل.
@@ -170,21 +169,11 @@ export default function BundleForm() {
       setBusy(false);
     }
   }
-  const barcodeInput = useBarcodeInput((code) => { void lookupByBarcode(code); });
-
-  /** Enter على الحقل الذكيّ:
+  /** مسح أو إدخال (Enter) على الحقل الذكيّ:
    *  - يجرّب أولاً هوية الباركود الحرفية؛ باركود المورد قد يكون Code39/128 أبجديّاً أو يحوي مسافات.
-   *  - عند NOT_FOUND فقط يرجع إلى نتيجة بحث الاسم/SKU المستقرّة.
-   *  ⚠️ حواجز: (١) IME العربي/الجوال قد يُطلق Enter كـcommit — نتجاهله. (٢) نتائج البحث القديمة
-   *  المُخبَّأة (TanStack Query cache) قد تبقى بعد تقصير النصّ تحت العتبة — نلزم `hasQuery||hasCategory`
-   *  ليكون الاستعلام مفعَّلاً فعلاً، مع مطابقة `pickerDeb === v`. */
-  async function handleSmartKey(e: ReactKeyboardEvent<HTMLInputElement>) {
-    barcodeInput.handleKeyDown(e, setPicker);
-    if (e.defaultPrevented) return;
-    if (e.key !== "Enter") return;
-    if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return;
-    e.preventDefault();
-    const v = picker.trim();
+   *  - عند NOT_FOUND فقط يرجع إلى نتيجة بحث الاسم/SKU المستقرّة. */
+  async function handleSmartSubmit(val?: string) {
+    const v = (val ?? picker).trim();
     if (!v) return;
     const barcodeResult = await lookupByBarcode(v, { quietNotFound: true });
     if (barcodeResult !== "NOT_FOUND") return;
@@ -389,25 +378,22 @@ export default function BundleForm() {
           <div className="rounded-md border bg-muted/20 p-3 space-y-2">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
-                <Search aria-hidden className="absolute end-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
-                <Input
+                <UnifiedSearchInput
                   ref={pickerInputRef}
                   value={picker}
-                  onChange={(e) => setPicker(e.target.value)}
-                  onKeyDown={handleSmartKey}
+                  onChange={setPicker}
+                  onSubmit={handleSmartSubmit}
+                  onScan={(code: string) => { void lookupByBarcode(code); }}
                   placeholder="ابحث بالباركود أو باسم المنتج…"
-                  // اتجاه ثابت (rtl) لا «auto»: يمنع تأرجُح محاذاة النصّ بين باركود (أرقام) واسم عربيّ،
-                  // وبنصٍّ قصير خالص العربية لا يتراكب مع أيقونة البحث. (الأرقام تبقى مقروءة LTR ضمن RTL.)
-                  dir="rtl"
+                  barcode={true}
+                  debounceMs={200}
                   className={cn(
-                    "pl-9",
-                    barcodeSearchInputClass,
+                    "w-full",
                     flash === "ok" && "border-[var(--sem-pos)] ring-1 ring-[var(--sem-pos)]",
                     flash === "err" && "border-[var(--sem-neg)] ring-1 ring-[var(--sem-neg)]",
                   )}
                   aria-label="بحث ذكيّ للمكوّن (باركود أو نصّ)"
                 />
-                <BarcodeSearchCue />
               </div>
               <select
                 className="h-9 w-full min-w-[130px] rounded-md border border-input bg-transparent px-3 py-1 text-sm sm:w-auto"
@@ -636,13 +622,10 @@ export default function BundleForm() {
           </DialogHeader>
           <div className="space-y-2">
             <div className="grid grid-cols-1 sm:grid-cols-[1fr_180px] gap-2">
-              <Input
+              <UnifiedSearchInput
                 value={bulkPicker}
-                onChange={(e) => setBulkPicker(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter") return;
-                  if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return;
-                  e.preventDefault();
+                onChange={setBulkPicker}
+                onSubmit={() => {
                   const items = bulkSearchQ.data?.items ?? [];
                   const first = items.find((r) =>
                     !components.some((c) => c.componentVariantId === r.variantId) &&
@@ -662,9 +645,9 @@ export default function BundleForm() {
                   }
                 }}
                 placeholder="اكتب حرفَين أو أكثر للبحث…"
-                dir="rtl"
                 aria-label="بحث في الحوار"
                 autoFocus
+                debounceMs={200}
               />
               <select
                 className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm"

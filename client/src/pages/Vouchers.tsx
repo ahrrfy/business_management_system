@@ -7,6 +7,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CopyInline } from "@/components/CopyButton";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { VoucherRejectDialog } from "@/components/vouchers/VoucherRejectDialog";
 import { VoucherSummaryCards } from "@/components/vouchers/VoucherSummaryCards";
@@ -709,12 +710,14 @@ export default function Vouchers() {
             />
           </FilterField>
           <FilterField label="بحث (رقم/وصف/اسم مُستفيد)" className="md:col-span-3 lg:col-span-5">
-            <Input
-              type="search"
-              autoFocus
+            <UnifiedSearchInput
               value={f.q}
-              onChange={(e) => applyFilter({ q: e.target.value })}
-              placeholder="رقم السند، الوصف، المستفيد، المرجع أو رقم الفاتورة…"
+              onChange={(val) => applyFilter({ q: val })}
+              placeholder="رقم السند، الوصف، المستفيد، المرجع، الفاتورة أو امسح الباركود… (F2)"
+              debounceMs={250}
+              barcode={true}
+              size="default"
+              autoFocus
             />
           </FilterField>
         </CardContent>

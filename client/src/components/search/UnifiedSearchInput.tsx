@@ -49,6 +49,7 @@ export interface UnifiedSearchInputProps {
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onFocus?: (e: React.FocusEvent<HTMLInputElement>) => void;
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
+  dir?: "rtl" | "ltr" | "auto";
 }
 
 export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSearchInputProps>(
@@ -73,6 +74,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
       onKeyDown: externalOnKeyDown,
       onFocus,
       onBlur,
+      dir,
     },
     forwardedRef,
   ) {
@@ -208,6 +210,7 @@ export const UnifiedSearchInput = React.forwardRef<HTMLInputElement, UnifiedSear
           ref={internalRef}
           id={id}
           type="text"
+          dir={dir}
           value={localValue}
           disabled={disabled}
           autoFocus={autoFocus}

@@ -20,8 +20,7 @@ import {
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState, getServerClockOffsetMs } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
@@ -360,10 +359,7 @@ export default function MyStocktakeWorkspace() {
     },
     [items, openItem, st, code, utils],
   );
-  const barcodeInput = useBarcodeInput((code) => {
-    setQuery("");
-    onBarcode(code, "SCAN_HID");
-  }, { minLength: scanRequired ? 2 : 3 });
+
   // قارئ HID: يُعطَّل أثناء فتح البطاقة أو الكاميرا كي لا يتضاعف الالتقاط.
   useBarcodeScanner((raw) => onBarcode(raw, "SCAN_HID"), {
     enabled: Boolean(st) && selected == null && !cameraOpen,
@@ -843,25 +839,21 @@ export default function MyStocktakeWorkspace() {
             </div>
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
               <div className="relative w-full min-w-0 flex-1 sm:w-80 sm:flex-none">
-                <Search
-                  className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground"
-                  aria-hidden
-                />
-                <Input
+                <UnifiedSearchInput
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    barcodeInput.handleKeyDown(e, setQuery);
-                    if (e.defaultPrevented) return;
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      tryOpenByQuery();
-                    }
+                  onChange={setQuery}
+                  onScan={(code: string) => {
+                    setQuery("");
+                    onBarcode(code, "SCAN_HID");
+                  }}
+                  onSubmit={() => {
+                    tryOpenByQuery();
                   }}
                   placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
-                  className={cn("h-11 pl-9", barcodeSearchInputClass)}
+                  barcode={true}
+                  size="lg"
+                  className="w-full h-11"
                 />
-                <BarcodeSearchCue />
               </div>
               <Button
                 type="button"
