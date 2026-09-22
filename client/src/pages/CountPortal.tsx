@@ -22,7 +22,7 @@ import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState, getServerClockOffsetMs } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
@@ -477,10 +477,12 @@ export default function CountPortal() {
     },
     [items, openCard, canCount, code, utils, tallyMode, openVariantId],
   );
+
   const barcodeInput = useBarcodeInput((code) => {
     setQ("");
     handleBarcode(code, "SCAN_HID");
   }, { minLength: scanRequired ? 2 : 3 });
+
 
   useBarcodeScanner((raw) => handleBarcode(raw, "SCAN_HID"), {
     // في وضع التجميع يبقى القارئ حيّاً والبطاقة مفتوحة (كل مسحة +١)؛ وإلا يُعطَّل أثناء الفتح.
@@ -962,22 +964,23 @@ export default function CountPortal() {
       {/* بحث + مسح */}
       <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row">
         <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
-          <input
+          <UnifiedSearchInput
             ref={searchRef}
             value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => {
-              barcodeInput.handleKeyDown(e, setQ);
-              if (e.defaultPrevented) return;
-              if (e.key === "Enter") {
-                e.preventDefault();
-                tryOpenByQuery();
-              }
+            onChange={setQ}
+            onKeyDown={(e) => barcodeInput.handleKeyDown(e, setQ)}
+            onScan={(code: string) => {
+              setQ("");
+              handleBarcode(code, "SCAN_HID");
+            }}
+            onSubmit={() => {
+              tryOpenByQuery();
             }}
             placeholder="بحث بالاسم أو SKU أو رقم الباركود…"
-            className={cn("h-11 w-full min-w-0 rounded-xl px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30", barcodeSearchInputClass)}
+            barcode={true}
+            size="lg"
+            className="w-full"
           />
-          <BarcodeSearchCue />
         </div>
         <button
           type="button"

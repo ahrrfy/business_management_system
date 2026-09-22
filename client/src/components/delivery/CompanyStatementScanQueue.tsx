@@ -1,7 +1,7 @@
 import React, { useCallback, useId, useMemo, useRef, useState } from "react";
 import { CircleX, ScanBarcode } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -71,21 +71,23 @@ export function CompanyStatementScanQueue({
         طابور كشف الشركة بالباركود
       </label>
       <div className="flex gap-2">
-        <Input
+        <UnifiedSearchInput
           id={scannerInputId}
           ref={inputRef}
           value={barcode}
-          onChange={(event) => setBarcode(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              scan();
-            }
+          onChange={setBarcode}
+          onScan={(code) => {
+            setBarcode(code);
+            scan();
           }}
+          onSubmit={() => scan()}
           disabled={disabled}
           placeholder={disabled ? "أدخل رقم الكشف أولاً" : "امسح باركود البوليصة المطبوع في كشف الشركة (Enter)"}
           dir="ltr"
-          className="h-11 flex-1 text-center font-mono text-base font-bold"
+          barcode={true}
+          size="default"
+          className="h-11 flex-1"
+          inputClassName="text-center font-mono text-base font-bold"
         />
         <Button type="button" onClick={scan} disabled={disabled || !barcode.trim()} className="h-11">
           مسح وإضافة

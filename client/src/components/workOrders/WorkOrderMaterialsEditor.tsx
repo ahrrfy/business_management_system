@@ -14,17 +14,17 @@
  */
 import { Plus, Trash2, TriangleAlert } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { newClientRequestId } from "@/lib/countQueue";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 
 export interface EditableMaterial {
   variantId: number;
@@ -135,6 +135,7 @@ export function WorkOrderMaterialsEditor({
       notify.err(error);
     }
   }
+
   const barcodeInput = useBarcodeInput((code) => {
     void resolveBarcodeOrSettledSearch(code, false);
   });
@@ -203,26 +204,18 @@ export function WorkOrderMaterialsEditor({
         {/* البحث بنفس نمط شاشة الإنشاء — مسح باركود أو اسم/SKU. */}
         <div className="space-y-1">
           <Label htmlFor="wom-search">أضِف مادة (باركود أو اسم/SKU)</Label>
-          <div className="relative">
-            <Input
-              id="wom-search"
-              ref={searchRef}
-              value={search}
-              dir="auto"
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                barcodeInput.handleKeyDown(e, setSearch);
-                if (e.defaultPrevented) return;
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void resolveBarcodeOrSettledSearch(search, true);
-                }
-              }}
-              placeholder="امسح الباركود (Enter للإضافة) أو ابحث بالاسم/الـSKU"
-              className={barcodeSearchInputClass}
-            />
-            <BarcodeSearchCue />
-          </div>
+          <UnifiedSearchInput
+            id="wom-search"
+            ref={searchRef}
+            value={search}
+            onChange={setSearch}
+            onKeyDown={(e) => barcodeInput.handleKeyDown(e, setSearch)}
+            onScan={(code) => void resolveBarcodeOrSettledSearch(code, false)}
+            onSubmit={(val) => void resolveBarcodeOrSettledSearch(val, true)}
+            placeholder="امسح الباركود (Enter للإضافة) أو ابحث بالاسم/الـSKU"
+            debounceMs={180}
+            barcode={true}
+          />
           {search.trim().length >= 2 && (
             <div className="max-h-56 overflow-auto rounded-md border">
               {(posList.data ?? []).length === 0 && !posList.isFetching && (

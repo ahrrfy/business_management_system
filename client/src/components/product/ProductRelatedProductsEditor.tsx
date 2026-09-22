@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { Check, GripVertical, Plus, Search, Trash2 } from "lucide-react";
@@ -62,10 +63,15 @@ export function ProductRelatedProductsEditor({ productId }: { productId: number 
         <p className="text-xs text-muted-foreground">اربط المنتجات المكملة يدوياً. سيعرض المتجر المتاح منها فقط، ولن يغيّر السعر أو المخزون تلقائياً.</p>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="relative">
-          <Search className="pointer-events-none absolute start-3 top-2.5 size-4 text-muted-foreground" aria-hidden />
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} className="ps-9" placeholder="ابحث باسم المنتج أو SKU لإضافته…" aria-label="بحث عن منتج مكمل" />
-        </div>
+        <UnifiedSearchInput
+          value={query}
+          onChange={setQuery}
+          placeholder="ابحث باسم المنتج أو SKU أو امسح الباركود… (F2)"
+          aria-label="بحث عن منتج مكمل"
+          debounceMs={200}
+          barcode={true}
+          size="default"
+        />
         {query.trim() && (
           <div className="max-h-48 overflow-y-auto rounded-md border bg-card">
             {searchQ.isLoading ? <p className="p-3 text-xs text-muted-foreground">جارٍ البحث…</p> : results.length ? results.map((item) => (

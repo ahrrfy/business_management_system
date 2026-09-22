@@ -16,15 +16,8 @@
  * ⚠️ الحشو: `barcodeSearchInputClass` يحجز يمين الحقل للشارة بـ`!`، فلا تُضِف `px-*` فوقه.
  */
 import * as React from "react";
-import { Search, X } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import {
-  BarcodeSearchCue,
-  barcodeSearchInputClass,
-} from "@/components/scan/BarcodeSearchCue";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { FILTER_LABELS } from "@shared/uiContracts";
-import { cn } from "@/lib/utils";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 export type SearchFieldProps = {
   value: string;
@@ -61,67 +54,19 @@ export function SearchField({
   disabled,
   ...aria
 }: SearchFieldProps) {
-  const handleScan = React.useCallback(
-    (code: string) => {
-      if (onScan) onScan(code);
-      else onChange(code);
-    },
-    [onScan, onChange],
-  );
-
-  // موحَّدٌ مع خطّاف الكاشير `useSmartScanInput` عبر `useBarcodeInput` (١٥/٩، بلاغ المالك): سلوكُ البحث
-  // بالاسم والمسح نفسُه في كلّ الشاشات — الكتابة العربية بالمسافة تُقبَل والمسح يُحلّ.
-  const barcodeInput = useBarcodeInput(handleScan, { enabled: barcode });
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (barcode) barcodeInput.handleKeyDown(event, onChange);
-    // الماسح يبتلع Enter الخاصّ به؛ ما يصل هنا هو Enter بشريّ.
-    if (event.key === "Enter" && !event.defaultPrevented && onSubmit) {
-      event.preventDefault();
-      onSubmit(value);
-    }
-  };
-
   return (
-    <div className={cn("relative", className)}>
-      {/*
-        تنبيه — تقسيم الجانبين في RTL: `BarcodeSearchCue` مثبَّتة فيزيائياً على `right` وهو
-        **جانب البداية** في RTL، و`barcodeSearchInputClass` يحجز `pr-[5.75rem]!` لها.
-        ⇒ حين يعمل الباركود تُسقَط عدسة البحث (الشارة نفسها تُعرّف غرض الحقل) ويبقى
-        جانب النهاية لزرّ المسح وحده. وضعُ العدسة عند البداية هنا يركبها فوق الشارة.
-      */}
-      {!barcode && (
-        <Search
-          aria-hidden
-          className="pointer-events-none absolute start-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-        />
-      )}
-      <Input
-        id={id}
-        type="search"
-        value={value}
-        disabled={disabled}
-        autoFocus={autoFocus}
-        autoComplete="off"
-        enterKeyHint="search"
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder ?? (barcode ? FILTER_LABELS.barcodeHint : FILTER_LABELS.search)}
-        className={cn(barcode ? barcodeSearchInputClass : "ps-8", value && "pe-8")}
-        {...aria}
-      />
-      {barcode && <BarcodeSearchCue />}
-      {/* زرّ المسح يظهر عند وجود قيمة فقط (§Forms disabled-states) — جانب النهاية دائماً. */}
-      {value && !disabled && (
-        <button
-          type="button"
-          onClick={() => onChange("")}
-          aria-label={`${FILTER_LABELS.reset} — ${FILTER_LABELS.search}`}
-          className="absolute end-2 top-1/2 -translate-y-1/2 rounded-sm p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <X aria-hidden className="size-3.5" />
-        </button>
-      )}
-    </div>
+    <UnifiedSearchInput
+      id={id}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder ?? (barcode ? FILTER_LABELS.barcodeHint : FILTER_LABELS.search)}
+      barcode={barcode}
+      onScan={onScan}
+      onSubmit={onSubmit}
+      autoFocus={autoFocus}
+      disabled={disabled}
+      className={className}
+      {...aria}
+    />
   );
 }

@@ -4,6 +4,7 @@
 import { BalanceBadge, balanceOptionText } from "@/components/BalanceBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useRef, useState } from "react";
@@ -95,13 +96,18 @@ export default function SupplierPicker({ supplierId, onSupplierChange, label = "
         </div>
       ) : (
         <div className="relative">
-          <Input
+          <UnifiedSearchInput
             value={q}
-            onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+            onChange={(val) => {
+              setQ(val);
+              setOpen(true);
+            }}
             onFocus={() => setOpen(true)}
-            placeholder="ابحث عن مورّد (اسم/هاتف)"
-            aria-autocomplete="list"
-            aria-expanded={open}
+            placeholder="ابحث عن مورّد (اسم/هاتف)… (F2)"
+            debounceMs={200}
+            barcode={false}
+            size="default"
+            aria-label="بحث عن مورد"
           />
           {open && searchEnabled && (
             <div className="absolute z-20 top-full mt-1 right-0 w-full rounded-md border bg-popover shadow-md max-h-72 overflow-auto">

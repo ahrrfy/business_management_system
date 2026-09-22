@@ -1,6 +1,7 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { D } from "@/lib/money";
@@ -149,17 +150,19 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
       ) : (
         // الحالة: بلا اختيار ⇒ بحث خادمي. الإقلاع بلا أيّ جَلب (حتى يُكتب حَرفان).
         <div className="relative flex gap-2">
-          <Input
+          <UnifiedSearchInput
             className="flex-1"
             value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
+            onChange={(val) => {
+              setQ(val);
               setOpen(true);
             }}
             onFocus={() => setOpen(true)}
-            placeholder="عميل نقدي — أو ابحث (اسم/هاتف) للبيع الآجل"
-            aria-autocomplete="list"
-            aria-expanded={open}
+            placeholder="عميل نقدي — أو ابحث (اسم/هاتف) للبيع الآجل… (F2)"
+            debounceMs={200}
+            barcode={false}
+            size="default"
+            aria-label="بحث عن عميل"
           />
           <Button type="button" variant="outline" size="sm" onClick={() => setShowNew((v) => !v)}>
             {showNew ? "إلغاء" : "+"}

@@ -35,11 +35,9 @@ import { TableSkeleton, EmptyState } from "@/components/PageState";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
-import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import {
   OperationActionCell,
@@ -395,7 +393,6 @@ export function DataTable<T, K = string>({
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
   const [compact, setCompact] = useState(initialView.compact === true);
   const [lastIndex, setLastIndex] = useState<number | null>(null);
-  const barcodeInput = useBarcodeInput((code) => (serverSearch ? serverSearch.onChange(code) : setGlobalFilter(code)), { enabled: barcodeSearch });
 
   useEffect(() => {
     writeTableView(storageKey, { columnVisibility, compact });
@@ -619,21 +616,18 @@ export function DataTable<T, K = string>({
       {(showSearch || toolbar) && (
         <WorkspaceBar variant="filters" label="بحث وأدوات الجدول" className="justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {showSearch && (
-            <div className={cn("relative min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}>
-              <Input
-                autoFocus={autoFocusSearch}
-                className={cn(barcodeSearch && barcodeSearchInputClass)}
-                placeholder={searchPlaceholder}
-                value={serverSearch ? serverSearch.value : globalFilter}
-                onChange={(e) => {
-                  const value = barcodeSearch ? normalizeKnownSystemBarcode(e.target.value) : e.target.value;
-                  serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
-                }}
-                onKeyDown={(e) => barcodeInput.handleKeyDown(e, serverSearch ? serverSearch.onChange : setGlobalFilter)}
-                aria-label={searchPlaceholder}
-              />
-              {barcodeSearch && <BarcodeSearchCue />}
-            </div>
+            <UnifiedSearchInput
+              autoFocus={autoFocusSearch}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              value={serverSearch ? serverSearch.value : globalFilter}
+              onChange={(value) => {
+                serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
+              }}
+              barcode={Boolean(barcodeSearch)}
+              size="compact"
+              className={cn("min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}
+            />
           )}
           {toolbar && <div className="flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">{toolbar}</div>}
         </WorkspaceBar>

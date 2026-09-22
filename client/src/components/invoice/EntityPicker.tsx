@@ -13,8 +13,7 @@ import { useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fmtNum } from "./totals";
@@ -51,10 +50,8 @@ export function EntityPicker({ type, selectedId, onSelect, id, disabled = false,
   const [q, setQ] = useState("");
 
   // البحث خادميّ (يطال كل السجلّات لا أوّل ٥٠٠) ولا يُطلَق إلا والقائمة مفتوحة ⇒ لا تحميل
-  // عند الإقلاع. debounce ليكتب المستخدم بلا طلبٍ لكل حرف. الاسم يُطابَق مطبَّعاً عربياً
-  // خادمياً (searchNorm) ⇒ «احمد» يجد «أحمد» — وهو ما لم تكن الفلترة المحلّية تفعله.
-  const dq = useDebouncedValue(q.trim(), 250);
-  const searchInput = { q: dq || undefined, limit: SEARCH_LIMIT };
+  // عند الإقلاع. UnifiedSearchInput يوفّر debounce تلقائياً ليمنع تكرار الطلبات مع كل حرف.
+  const searchInput = { q: q.trim() || undefined, limit: SEARCH_LIMIT };
   const customersQ = trpc.customers.search.useQuery(searchInput, { enabled: isSale && open, staleTime: 30_000 });
   const suppliersQ = trpc.suppliers.search.useQuery(searchInput, { enabled: !isSale && open, staleTime: 30_000 });
 
@@ -130,12 +127,15 @@ export function EntityPicker({ type, selectedId, onSelect, id, disabled = false,
         className="z-[80] w-[var(--radix-popover-trigger-width)] overflow-hidden rounded-xl p-0 shadow-xl"
       >
           <div className="p-2">
-            <Input
+            <UnifiedSearchInput
               autoFocus
               value={q}
-              onChange={(e) => setQ(e.target.value)}
+              onChange={setQ}
               placeholder={`ابحث عن ${entityLabel}...`}
-              className="h-9 bg-muted"
+              size="compact"
+              barcode={false}
+              debounceMs={250}
+              className="w-full"
             />
           </div>
           <div className="max-h-52 overflow-y-auto">
