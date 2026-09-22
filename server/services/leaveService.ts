@@ -23,6 +23,7 @@ import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { assertPeriodOpen } from "./periodLockService";
+import { actorSuffix } from "@shared/notificationActorLabel";
 import { createAppNotification } from "./appNotificationService";
 import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
 import { withIdempotency } from "./idempotency";
@@ -368,7 +369,7 @@ export async function decideLeave(
 export async function decideLeaveAndNotify(
   id: number,
   decision: "approved" | "rejected",
-  actor: { userId: number; scopedBranchId?: number | null; isOwner?: boolean },
+  actor: { userId: number; scopedBranchId?: number | null; isOwner?: boolean; name?: string | null },
 ) {
   const lv = await decideLeave(id, decision, actor);
   if (lv?.employeeId) {
@@ -382,7 +383,7 @@ export async function decideLeaveAndNotify(
         userId: Number(employee.userId),
         kind: "LEAVE_STATUS",
         title: decision === "approved" ? "تمت الموافقة على الإجازة" : "تم تحديث طلب الإجازة",
-        body: `${lv.leaveType} · ${lv.fromDate} — ${lv.toDate}`,
+        body: `${lv.leaveType} · ${lv.fromDate} — ${lv.toDate}${actorSuffix(actor.name)}`,
         route: "/hr?tab=leaves",
         eventKey: `leave:${id}:${decision}`,
         entityType: "leaveRequest",

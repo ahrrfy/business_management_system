@@ -16,7 +16,7 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 const TABLES = [
   "accountingEntries", "expenseStockItems", "expenses", "receipts",
   "productionLines", "productionOrders", "productionRecipeLines", "productionRecipes",
-  "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
+  "inventoryMovements", "onlineOrderItems", "onlineOrders", "reservationStock", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "branches", "users", "idempotencyKeys",
 ];
 
@@ -146,6 +146,23 @@ describe("الإنتاج: الذرّية والقيد المحاسبي", () => {
     expect(moves).toHaveLength(0);
   });
 
+  it("وسم المادة «تُباع بالطلب» لا يسمح للإنتاج بإنزالها سالبة", async () => {
+    await db()
+      .update(s.products)
+      .set({ allowBackorder: true })
+      .where(eq(s.products.id, 1));
+
+    await expect(createProduction({
+      branchId: 1,
+      inputs: [{ variantId: 1, baseQuantity: 100001 }],
+      outputs: [{ variantId: 2, baseQuantity: 1 }],
+    }, actor)).rejects.toThrow(/المخزون غير كافٍ/);
+
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
+
   it("الإنتاج لا يكتب أي قيد محاسبي (تحويل أصل↔أصل)", async () => {
     await createProduction({
       branchId: 1,
@@ -230,11 +247,70 @@ describe("الإنتاج: idempotency وحارس التحويل الذاتي", (
     expect(await stock(1)).toBe(100000);
   });
 
-  it("يرفض تحويل خدمة إلى إنتاج مخزني غير قابل للعكس", async () => {
-    await db().insert(s.products).values({ id: 6, name: "خدمة طباعة", isService: true });
-    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "PRINT-SVC", costPrice: "0.00" });
-    await expect(createProduction({ branchId: 1, inputs: [{ variantId: 1, baseQuantity: 100 }], outputs: [{ variantId: 6, baseQuantity: 10 }] }, actor)).rejects.toThrow();
+  it.each([
+    { name: "خدمة", flags: { isService: true }, error: /خدمة/ },
+    { name: "بكج", flags: { isBundle: true }, error: /بكج/ },
+    { name: "بضاعة أمانة", flags: { isConsignment: true }, error: /أمانة/ },
+  ])("يرفض مخرجاً غير مخزني مملوك في الإدخال اليدوي: $name", async ({ name, flags, error }) => {
+    await db().insert(s.products).values({ id: 6, name, ...flags });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "NON-STOCK", costPrice: "0.00" });
+    await expect(createProduction({ branchId: 1, inputs: [{ variantId: 1, baseQuantity: 100 }], outputs: [{ variantId: 6, baseQuantity: 10 }] }, actor)).rejects.toThrow(error);
     expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
+
+  it("يرفض استعمال بضاعة أمانة مدخلاً يستهلكه الإنتاج", async () => {
+    await db().insert(s.products).values({ id: 6, name: "ورق أمانة", isConsignment: true });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "CONSIGN-IN", costPrice: "1.00" });
+
+    await expect(createProduction({
+      branchId: 1,
+      inputs: [{ variantId: 6, baseQuantity: 10 }],
+      outputs: [{ variantId: 2, baseQuantity: 1 }],
+    }, actor)).rejects.toThrow(/أمانة/);
+
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+  });
+
+  it("يرفض مدخلاً عُطّل بعد اختياره قبل أي خصم", async () => {
+    await db().update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 1));
+
+    await expect(createProduction({
+      branchId: 1,
+      inputs: [{ variantId: 1, baseQuantity: 10 }],
+      outputs: [{ variantId: 2, baseQuantity: 1 }],
+    }, actor)).rejects.toThrow(/معطّل/);
+
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
+
+  it.each([
+    { label: "المنتج false", productActive: false, variantActive: true },
+    { label: "المنتج NULL", productActive: null, variantActive: true },
+    { label: "المتغير false", productActive: true, variantActive: false },
+    { label: "المتغير NULL", productActive: true, variantActive: null },
+  ])("يعيد التحقق تحت القفل ويرفض المخرج غير النشط: $label", async ({ productActive, variantActive }) => {
+    await db().insert(s.products).values({ id: 6, name: "مخرج غير نشط", isActive: productActive });
+    await db().insert(s.productVariants).values({
+      id: 6,
+      productId: 6,
+      sku: "INACTIVE-OUT",
+      costPrice: "0.00",
+      isActive: variantActive,
+    });
+
+    await expect(createProduction({
+      branchId: 1,
+      inputs: [{ variantId: 1, baseQuantity: 10 }],
+      outputs: [{ variantId: 6, baseQuantity: 1 }],
+    }, actor)).rejects.toThrow(/معطّل/);
+
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
     expect(await stock(1)).toBe(100000);
   });
 
@@ -243,7 +319,7 @@ describe("الإنتاج: idempotency وحارس التحويل الذاتي", (
       name: "كروت شخصية 500 نسخة",
       isService: false,
       printService: true,
-      recipe: [{ inputVariantId: 1, qtyPerOutputBase: "10" }],
+      recipe: [{ inputVariantId: 1, qtyPerOutputBase: "0.1234" }],
       variants: [{
         sku: "CARD-500",
         costPrice: "0",
@@ -256,11 +332,13 @@ describe("الإنتاج: idempotency وحارس التحويل الذاتي", (
 
     const [variant] = await db().select().from(s.productVariants).where(eq(s.productVariants.productId, created.productId));
     const [recipe] = await db().select().from(s.productionRecipes).where(eq(s.productionRecipes.outputVariantId, variant.id));
-    await createProduction({ branchId: 1, run: { recipeId: Number(recipe.id), batchQty: 5 } }, actor);
+    const [recipeLine] = await db().select().from(s.productionRecipeLines).where(eq(s.productionRecipeLines.recipeId, recipe.id));
+    expect(recipeLine.qtyPerOutputBase).toBe("0.1234");
+    await createProduction({ branchId: 1, run: { recipeId: Number(recipe.id), batchQty: 5000 } }, actor);
 
-    expect(await stock(Number(variant.id))).toBe(5);
-    expect(await stock(1)).toBe(100000 - 50);
-    expect(await cost(Number(variant.id))).toBe("10.00");
+    expect(await stock(Number(variant.id))).toBe(5000);
+    expect(await stock(1)).toBe(100000 - 617);
+    expect(await cost(Number(variant.id))).toBe("0.12");
   });
 });
 
@@ -473,5 +551,101 @@ describe("الإنتاج: runPreview = الترحيل بالضبط", () => {
     const g: any = await getRecipe(rec.recipeId);
     expect(g.wasteStdPct).toBe("0.08");
     expect(g.lines[0].units.length).toBeGreaterThan(0);
+  });
+
+  it("المعاينة تعرض ATP بعد الحجز وتعلن النقص ولو كان on-hand كافياً", async () => {
+    const rec = await createRecipe({
+      name: "معاينة ATP",
+      outputVariantId: 2,
+      outputProductUnitId: 3,
+      lines: [{ inputVariantId: 1, qtyPerOutputBase: "30" }],
+    }, actor);
+    await db().insert(s.reservationStock).values({
+      variantId: 1,
+      branchId: 1,
+      reservedBase: 99950,
+    });
+
+    const preview = await runPreview({
+      recipeId: rec.recipeId,
+      batchQty: 2,
+      branchId: 1,
+    });
+
+    expect(preview.inputs[0].consumed).toBe(60);
+    expect(preview.inputs[0].available).toBe(50);
+    expect(preview.inputs[0].short).toBe(true);
+    expect(preview.anyShort).toBe(true);
+  });
+
+  it.each([
+    { productId: 6, recipeId: 106, name: "خدمة قص", flags: { isService: true }, error: /خدمة/ },
+    { productId: 7, recipeId: 107, name: "بكج قرطاسية", flags: { isBundle: true }, error: /بكج/ },
+    { productId: 8, recipeId: 108, name: "ناتج أمانة", flags: { isConsignment: true }, error: /أمانة/ },
+  ])("يرفض المعاينة والترحيل لوصفة غير مخزنية: $name", async ({ productId, recipeId, name, flags, error }) => {
+    await db().insert(s.products).values({ id: productId, name, ...flags });
+    await db().insert(s.productVariants).values({ id: productId, productId, sku: `NON-STOCK-${productId}`, costPrice: "0.00" });
+    await db().insert(s.productUnits).values({ id: productId, variantId: productId, unitName: "وحدة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productionRecipes).values({
+      id: recipeId,
+      name: `وصفة ${name}`,
+      outputVariantId: productId,
+      outputProductUnitId: productId,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: true,
+    });
+    await db().insert(s.productionRecipeLines).values({ recipeId, inputVariantId: 1, qtyPerOutputBase: "1" });
+
+    await expect(runPreview({ recipeId, batchQty: 10, branchId: 1 })).rejects.toThrow(error);
+    await expect(createProduction({ branchId: 1, run: { recipeId, batchQty: 10 } }, actor)).rejects.toThrow(error);
+
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
+
+  it("يعيد التحقق من نشاط ناتج الوصفة عند الترحيل لا عند تعريفها فقط", async () => {
+    const rec = await createRecipe({
+      name: "وصفة ناتج سيُعطّل",
+      outputVariantId: 2,
+      outputProductUnitId: 3,
+      lines: [{ inputVariantId: 1, qtyPerOutputBase: "2" }],
+    }, actor);
+    await db().update(s.products).set({ isActive: false }).where(eq(s.products.id, 2));
+
+    await expect(createProduction({
+      branchId: 1,
+      run: { recipeId: rec.recipeId, batchQty: 10 },
+    }, actor)).rejects.toThrow(/معطّل/);
+
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
+  });
+
+  it("يرفض ترحيل وصفة تاريخية صار ناتجها بضاعة أمانة", async () => {
+    await db().insert(s.products).values({ id: 6, name: "ناتج أمانة", isConsignment: true });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "CONSIGN-OUT", costPrice: "0.00" });
+    await db().insert(s.productUnits).values({ id: 6, variantId: 6, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productionRecipes).values({
+      id: 106,
+      name: "وصفة أمانة تاريخية",
+      outputVariantId: 6,
+      outputProductUnitId: 6,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: true,
+    });
+    await db().insert(s.productionRecipeLines).values({ recipeId: 106, inputVariantId: 1, qtyPerOutputBase: "1" });
+
+    await expect(createProduction({
+      branchId: 1,
+      run: { recipeId: 106, batchQty: 10 },
+    }, actor)).rejects.toThrow(/أمانة/);
+
+    expect(await db().select().from(s.productionOrders)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await stock(1)).toBe(100000);
   });
 });

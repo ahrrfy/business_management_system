@@ -4,7 +4,10 @@ import {
   coldOfflineStudioActor,
   isColdOfflineStudioRoute,
 } from "@/lib/productStudio/coldOfflinePolicy";
-import { loadStudioDraftIdentity } from "@/lib/productStudio/studioDrafts";
+import {
+  loadStudioDraftIdentity,
+  type StudioDraftIdentity,
+} from "@/lib/productStudio/studioDrafts";
 import {
   getOfflineProfile,
   isOfflineUnlocked,
@@ -63,8 +66,8 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
   const [fails, setFails] = useState(0);
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [draftIdentityUserId, setDraftIdentityUserId] = useState<
-    number | null | undefined
+  const [draftIdentity, setDraftIdentity] = useState<
+    StudioDraftIdentity | null | undefined
   >(undefined);
 
   useEffect(() => {
@@ -73,24 +76,23 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
 
   useEffect(() => {
     if (!isColdOfflineStudioRoute(loc)) {
-      setDraftIdentityUserId(null);
+      setDraftIdentity(null);
       return;
     }
     void loadStudioDraftIdentity()
-      .then((identity) => setDraftIdentityUserId(identity?.userId ?? null))
-      .catch(() => setDraftIdentityUserId(null));
+      .then((identity) => setDraftIdentity(identity))
+      .catch(() => setDraftIdentity(null));
   }, [loc]);
 
   const studioActor = coldOfflineStudioActor({
     pinVerified: unlocked,
     profile: profile ?? null,
-    draftIdentityUserId:
-      draftIdentityUserId === undefined ? null : draftIdentityUserId,
+    draftIdentity: draftIdentity === undefined ? null : draftIdentity,
   });
 
   if (unlocked) {
     if (isColdOfflineStudioRoute(loc)) {
-      if (profile === undefined || draftIdentityUserId === undefined) {
+      if (profile === undefined || draftIdentity === undefined) {
         return <div className="min-h-screen flex items-center justify-center text-muted-foreground">جارٍ التحقق من ملف الجهاز…</div>;
       }
       if (studioActor) return <>{children}</>;

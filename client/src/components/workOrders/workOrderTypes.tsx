@@ -154,13 +154,18 @@ export function printWoShippingLabel(o: {
   title: string;
   createdAt: Date | string | null;
 }) {
+  const balanceDue = Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0));
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
   const data: ShippingLabelData = {
     orderNumber: o.orderNumber,
     customerName: o.customerName,
     customerPhone: o.customerPhone,
     governorate: null,
     addressText: o.deliveryAddress ?? null,
-    total: String(Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0))),
+    total: String(balanceDue),
+    subtotal: String(Number(o.salePrice)),
+    paidAmount: Number(o.deposit ?? 0) > 0 ? String(o.deposit) : null,
+    qrUrl: o.orderNumber && origin ? `${origin}/verify?ref=${encodeURIComponent(o.orderNumber)}` : null,
     createdAt: o.createdAt,
     items: [{ productName: o.title, unitName: "", quantity: String(o.quantity) }],
   };

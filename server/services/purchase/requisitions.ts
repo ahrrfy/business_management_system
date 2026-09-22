@@ -235,9 +235,9 @@ async function insertRequisitionItemsTx(
   requisitionId: number,
   items: PurchaseRequisitionItemDraft[],
 ) {
-  for (let index = 0; index < items.length; index += 1) {
-    const item = items[index];
-    await tx.insert(purchaseRequisitionItems).values({
+  if (items.length === 0) return;
+  await tx.insert(purchaseRequisitionItems).values(
+    items.map((item, index) => ({
       requisitionId,
       lineNo: index + 1,
       variantId: item.variantId,
@@ -249,8 +249,8 @@ async function insertRequisitionItemsTx(
       estimatedUnitPrice: item.estimatedUnitPrice ?? null,
       preferredSupplierId: item.preferredSupplierId ?? null,
       justification: item.justification.trim(),
-    });
-  }
+    })),
+  );
 }
 
 export async function createPurchaseRequisition(

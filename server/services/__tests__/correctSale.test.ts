@@ -28,6 +28,8 @@ const TABLES = [
   "externalPaymentAttempts",
   "salesControlRequests",
   "auditLogs", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
+  "productionRecipeLines", "productionRecipes",
+  "invoiceItemServiceMaterials",
   "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits",
   "productVariants", "products", "shifts", "customers", "branches", "users",
 ];
@@ -99,6 +101,28 @@ async function cashSale(qty: number) {
     }, admin,
   );
 }
+async function seedServiceRecipe() {
+  await db().insert(s.products).values({
+    id: 2, name: "خدمة طباعة بوصفة", productType: "PRINT_SERVICE", isService: true,
+  });
+  await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "SVC-RECIPE", costPrice: "0.00" });
+  await db().insert(s.productUnits).values({
+    id: 2, variantId: 2, unitName: "خدمة", conversionFactor: "1", isBaseUnit: true,
+  });
+  await db().insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "2000.00" });
+  await db().insert(s.productionRecipes).values({
+    id: 1,
+    name: "وصفة خدمة التصحيح",
+    outputVariantId: 2,
+    outputProductUnitId: 2,
+    isActive: true,
+  });
+  await db().insert(s.productionRecipeLines).values({
+    recipeId: 1,
+    inputVariantId: 1,
+    qtyPerOutputBase: "2.0000",
+  });
+}
 function makeCtx(user: unknown) {
   return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user,
   } as any;
@@ -159,6 +183,61 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     expect(Number(corrected.paidAmount)).toBeCloseTo(1000, 2);
     expect(corrected.shiftId).toBe(1);
     expect(corrected.paymentMethod).toBe("CASH");
+  });
+
+  it("تصحيح خدمة بوصفة يعكس استهلاكها وCOGS داخلياً ثم يستهلك المصحّح مرةً واحدة", async () => {
+    await seed({ withCustomer: true });
+    await seedServiceRecipe();
+    const sale = await createSale({
+      branchId: 1,
+      customerId: 1,
+      sourceType: "ORDER",
+      lines: [{ variantId: 2, productUnitId: 2, quantity: "2" }],
+    }, admin);
+    expect(await getStock(1, 1)).toBe(6); // 10 − (2 مادة × 2 خدمة)
+    // تغيّر WAVG بعد البيع: العكس يجب أن يعيد قيمة اللقطة القديمة، لا أن يضيف الأربع بسعر اليوم.
+    await db().update(s.productVariants).set({ costPrice: "900.00" })
+      .where(eq(s.productVariants.id, 1));
+    // غيّر الوصفة بعد البيع: العكس يجب أن يعتمد حركة الأصل (4)، لا وصفة اليوم (2).
+    await db().update(s.productionRecipeLines).set({ qtyPerOutputBase: "1.0000" })
+      .where(eq(s.productionRecipeLines.recipeId, 1));
+
+    const corrected = await correctSale({
+      originalInvoiceId: sale.invoiceId,
+      customerId: 1,
+      lines: [{ variantId: 2, productUnitId: 2, quantity: "1" }],
+    }, admin);
+
+    // العكس الداخلي أعاد الأربع الأصلية، وإعادة الإصدار بالوصفة الجديدة استهلكت واحدة فقط.
+    expect(await getStock(1, 1)).toBe(9);
+    const originalItem = (await db().select().from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    expect(originalItem.returnedRestockedBaseQuantity).toBe(0); // الخدمة نفسها لم تعد للرف
+
+    const originalEntries = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
+    const returnEntry = originalEntries.find((entry) => entry.entryType === "RETURN");
+    expect(returnEntry?.cost).toBe("-2400.00");
+    expect(originalEntries.reduce((sum, entry) => sum + Number(entry.cost), 0)).toBeCloseTo(0, 2);
+    const replacementEntries = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, corrected.correctedInvoiceId));
+    expect(replacementEntries.reduce((sum, entry) => sum + Number(entry.cost), 0)).toBeCloseTo(780, 2);
+    expect((await db().select({ cost: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 1)))[0].cost).toBe("780.00");
+
+    const originalMaterialMoves = await db().select().from(s.inventoryMovements)
+      .where(and(
+        eq(s.inventoryMovements.referenceType, "INVOICE"),
+        eq(s.inventoryMovements.referenceId, sale.invoiceId),
+      ));
+    expect(originalMaterialMoves.filter((move) => move.movementType === "OUT").map((move) => move.quantity)).toEqual([4]);
+    const correctionReturns = await db().select().from(s.inventoryMovements)
+      .where(and(
+        eq(s.inventoryMovements.referenceType, "RETURN"),
+        eq(s.inventoryMovements.referenceId, sale.invoiceId),
+        eq(s.inventoryMovements.movementType, "RETURN"),
+      ));
+    expect(correctionReturns.map((move) => move.quantity)).toEqual([4]);
   });
 
   it("الفرق الزائد لعميلٍ مسجَّل يصير رصيداً دائناً بلا مسّ الدرج (الافتراضي)", async () => {

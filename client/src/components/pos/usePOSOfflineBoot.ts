@@ -5,6 +5,7 @@ import { isOfflineSaleEnabled, subscribeOutbox } from "@/lib/offline/outbox";
 
 export interface POSOfflineUser {
   id: number;
+  companyId?: number | null;
   name?: string | null;
   role?: string | null;
   branchId?: number | null;
@@ -46,6 +47,7 @@ export function usePOSOfflineBoot(user: POSOfflineUser | null | undefined) {
     if (user) {
       void saveOfflineProfile({
         id: user.id,
+        companyId: user.companyId ?? null,
         name: user.name ?? "",
         role: user.role ?? "",
         branchId: user.branchId ?? null,

@@ -113,6 +113,7 @@
     "storefrontRouter.product@server/routers/storefrontRouter.ts",
     "storefrontRouter.related@server/routers/storefrontRouter.ts",
     "storefrontRouter.settings@server/routers/storefrontRouter.ts",
+    "storefrontRouter.thematicCollections@server/routers/storefrontRouter.ts",
     "storefrontRouter.trackBanner@server/routers/storefrontRouter.ts",
     "storefrontRouter.trackConversion@server/routers/storefrontRouter.ts",
     "supplierRouter.delete@server/routers/supplierRouter.ts",

@@ -5,8 +5,6 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
   customers,
-  products,
-  productVariants,
   users,
   workOrderMaterials,
   workOrders,
@@ -17,7 +15,7 @@ import { hasModuleAccess } from "@shared/permissions";
 import { logAuditTx } from "../auditService";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { applyMovement } from "../inventoryService";
-import { lockInventoryVariants } from "../inventory/stockLock";
+import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { postEntry } from "../ledgerService";
 import {
   createPostingIntent,
@@ -139,7 +137,11 @@ export async function startWorkOrder(
     const variantIds = Array.from(
       new Set(mats.map((m) => Number(m.variantId))),
     ).sort((a, b) => a - b);
-    await lockInventoryVariants(tx, variantIds);
+    const materialInfo = await assertStockedOwnedMaterials(
+      tx,
+      variantIds,
+      "مادة أمر الشغل",
+    );
     if (variantIds.length > 0) {
       await tx
         .insert(branchStock)
@@ -165,34 +167,9 @@ export async function startWorkOrder(
         .orderBy(asc(branchStock.variantId))
         .for("update");
     }
-    const infoRows =
-      variantIds.length > 0
-        ? await tx
-            .select({
-              id: productVariants.id,
-              costPrice: productVariants.costPrice,
-              isConsignment: products.isConsignment,
-            })
-            .from(productVariants)
-            .innerJoin(products, eq(productVariants.productId, products.id))
-            .where(inArray(productVariants.id, variantIds))
-            .orderBy(asc(productVariants.id))
-            .for("update")
-        : [];
-    if (infoRows.length !== variantIds.length) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: "إحدى مواد أمر الشغل غير موجودة",
-      });
-    }
-    if (infoRows.some((v) => v.isConsignment)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message:
-          "بضاعة الأمانة لا تُستهلك كمادة في أمر شغل — استبدلها بمادة مملوكة للمكتبة",
-      });
-    }
-    const costMap = new Map(infoRows.map((v) => [Number(v.id), v.costPrice]));
+    const costMap = new Map(
+      Array.from(materialInfo, ([id, material]) => [id, material.costPrice]),
+    );
 
     // وضع الافتتاح (قرار المالك ١٠/٨): أثناء النافذة الفعّالة يُسمح باستهلاك مواد صنفٍ **غير مُفتتَح**
     // بالسالب حتى يُجرَد افتتاحياً — وإلا توقّف كاشير التنفيذ إذ لا مواد مجرودة بعد. الحُرّاس الصنفية
@@ -236,6 +213,9 @@ export async function startWorkOrder(
           referenceType: "WORK_ORDER",
           referenceId: workOrderId,
           createdBy: actor.userId,
+          // وسم البيع بالطلب لا يسمح لأمر الشغل باستهلاك مادة خام غير متاحة.
+          // الاستثناء الوحيد هنا هو نافذة الافتتاح الصريحة أدناه.
+          respectProductBackorder: false,
           // Codex P2: وسم الحركة عند السماح بالسالب في وضع الافتتاح (مرآة مسار البيع) — أثرٌ دائم
           // يُبيّن أن الحركة المخزنية السالبة صُرّح بها بالنافذة المؤقّتة حتى بعد إغلاقها.
           notes: allowNegativeUnopened
@@ -270,7 +250,11 @@ export async function startWorkOrder(
         entryType: "ADJUST",
         dedupeKey: `WO-WIP-CONSUME:${workOrderId}`,
         branchId: Number(wo.branchId),
-        cost: materialsCost,
+        // تحويل أصلٍ إلى أصل (مخزون → إنتاج تحت التشغيل)، لا COGS ولا خسارة.
+        // تُحفظ قيمة التحويل في amount وتظهر تفاصيل الطرفين في postingIntent.
+        revenue: money(0),
+        cost: money(0),
+        profit: money(0),
         amount: materialsCost,
         notes: `تحويل مواد أمر الشغل ${wo.orderNumber} إلى إنتاج تحت التشغيل`,
         postingIntent: createPostingIntent(

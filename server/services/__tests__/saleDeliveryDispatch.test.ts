@@ -74,6 +74,7 @@ async function seed() {
   ]);
   await d.insert(s.deliveryParties).values([
     { id: 1, name: "مندوب", partyType: "INDIVIDUAL", branchId: 1, currentBalance: "0.00", isActive: true, defaultFee: "1500.00" },
+    { id: 2, name: "شركة توصيل", partyType: "COMPANY", branchId: 1, currentBalance: "0.00", isActive: true, defaultFee: "1500.00" },
   ]);
   await d.insert(s.products).values([
     { id: 1, name: "دفتر" },
@@ -131,6 +132,57 @@ beforeEach(async () => {
 });
 
 describe("sales.create + delivery — الإسناد في معاملة البيع نفسها", () => {
+  it.each(["ONLINE", "ORDER", "WORKORDER"] as const)(
+    "يرفض حقن sourceType=%s في sales.create قبل أي كتابة مالية",
+    async (sourceType) => {
+      await expect(
+        caller().sales.create({
+          branchId: 1,
+          customerId: NEW_CUSTOMER,
+          sourceType,
+          lines: [LINE],
+          delivery: DELIVERY,
+          clientRequestId: `source-type-injection-${sourceType}`,
+        } as never),
+      ).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        cause: {
+          issues: expect.arrayContaining([
+            expect.objectContaining({ path: ["sourceType"] }),
+          ]),
+        },
+      });
+
+      expect(await invoiceCount()).toBe(0);
+      expect(await consignmentCount()).toBe(0);
+      expect(await db().select().from(s.invoiceItems)).toHaveLength(0);
+      expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+      expect(await db().select().from(s.receipts)).toHaveLength(0);
+    },
+  );
+
+  it("شركة التوصيل تُلزِم البوليصة وتحفظ أصفارها البادئة في نفس معاملة البيع", async () => {
+    await expect(caller().sales.create({
+      branchId: 1,
+      customerId: NEW_CUSTOMER,
+      lines: [LINE],
+      delivery: { ...DELIVERY, partyId: 2 },
+      clientRequestId: "pos-company-missing-ref",
+    })).rejects.toThrow(/بوليصة الشركة مطلوب/);
+    expect(await invoiceCount()).toBe(0);
+
+    const res = await caller().sales.create({
+      branchId: 1,
+      customerId: NEW_CUSTOMER,
+      lines: [LINE],
+      delivery: { ...DELIVERY, partyId: 2, externalTrackingRef: "00441446" },
+      clientRequestId: "pos-company-with-ref",
+    });
+    const cn = await consignmentByInvoice(res.invoiceId);
+    expect(cn.externalTrackingRef).toBe("00441446");
+  });
+
   it("⭐ عميلٌ جديد بحدّ «0» + بيعٌ بتوصيل ⇒ ينجح: فاتورة COD غير مدفوعة + إرسالية ASSIGNED + COD_ASSIGNED", async () => {
     const res = await caller().sales.create({
       branchId: 1, customerId: NEW_CUSTOMER, lines: [LINE],
@@ -141,6 +193,7 @@ describe("sales.create + delivery — الإسناد في معاملة البي�
     expect(res.consignmentNumber).toEqual(expect.any(String));
 
     const inv = await invoiceOf(res.invoiceId);
+    expect(inv.sourceType).toBe("POS");
     expect(inv.total).toBe("2000.00");
     expect(inv.paidAmount).toBe("0.00");
     expect(inv.status).toBe("PENDING");
@@ -297,6 +350,24 @@ describe("الجذر: الاستقبال يمرّر COD فتعبر فاتورة�
     const cn = await consignmentByInvoice(invoiceId);
     expect(cn.codAmount).toBe("1000.00");
     expect(cn.parcelStatus).toBe("ASSIGNED");
+  });
+
+  it("الاستقبال يمرّر بوليصة الشركة كما مُسحت ويحفظ الصفر البادئ", async () => {
+    const shiftId = await openReception();
+    const r = await checkoutReception({
+      branchId: 1, shiftId, customerId: NEW_CUSTOMER, paidAmount: "0", clientRequestId: "rc-company-ref",
+      regularSale: { lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }], amount: "1000.00" },
+      delivery: {
+        partyId: 2,
+        fee: "1500",
+        feeCollection: "COURIER",
+        recipientPhone: "07701234567",
+        address: "بغداد",
+        externalTrackingRef: "00441712",
+      },
+    }, CASHIER);
+    const cn = await consignmentByInvoice(r.regularSale!.invoiceId);
+    expect(cn.externalTrackingRef).toBe("00441712");
   });
 
   it("⭐ قناة الطباعة من الاستقبال لعميلٍ بحدّ «0» + توصيل ⇒ ينجح وتُختَم COD (كانت تفحص الحدّ محلّياً بلا فرع COD)", async () => {

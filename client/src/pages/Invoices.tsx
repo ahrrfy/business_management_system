@@ -345,6 +345,10 @@ export default function Invoices() {
     setPage(0);
   }, [filterInput]);
 
+  useEffect(() => {
+    sel.clear();
+  }, [filterInput, page, sel.clear]);
+
   const rows = trpc.sales.list.useQuery({
     ...filterInput,
     limit: PAGE_SIZE,

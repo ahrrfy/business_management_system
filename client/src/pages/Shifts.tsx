@@ -394,7 +394,7 @@ export default function Shifts() {
         openingFloat: sh.openingBalance,
         cashIn: cashIn.toFixed(2),
         cashOut: cashOut.toFixed(2),
-        expectedCash: sh.expectedCash ?? sh.openingBalance,
+        expectedCash: rep.expectedCash,
         countedCash: sh.countedCash,
         variance: sh.variance,
       });

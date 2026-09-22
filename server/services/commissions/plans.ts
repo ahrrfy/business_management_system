@@ -198,14 +198,16 @@ export async function createPlan(input: CreatePlanInput, actor: Actor): Promise<
       createdBy: actor.userId,
     });
     const planId = extractInsertId(res);
-    for (let i = 0; i < tiers.length; i++) {
-      await tx.insert(commissionPlanTiers).values({
-        planId,
-        sort: i,
-        threshold: toDbMoney(tiers[i].threshold),
-        ratePct: toDbRatePct(tiers[i].ratePct),
-        fixedBonus: toDbMoney(tiers[i].fixedBonus),
-      });
+    if (tiers.length > 0) {
+      await tx.insert(commissionPlanTiers).values(
+        tiers.map((t, i) => ({
+          planId,
+          sort: i,
+          threshold: toDbMoney(t.threshold),
+          ratePct: toDbRatePct(t.ratePct),
+          fixedBonus: toDbMoney(t.fixedBonus),
+        })),
+      );
     }
     return { planId };
   });
@@ -226,14 +228,16 @@ export async function updatePlan(input: UpdatePlanInput, actor: Actor): Promise<
     // استبدال الشرائح كاملاً: أسطر التشغيلات المعتمدة لقطات مستقلة (ratePct/fixedBonus/tierIndex
     // منسوخة فيها) ⇒ تعديل الشرائح آمن تاريخياً؛ المسودّات تُعاد بحسابها الجديد عند recompute.
     await tx.delete(commissionPlanTiers).where(eq(commissionPlanTiers.planId, input.planId));
-    for (let i = 0; i < tiers.length; i++) {
-      await tx.insert(commissionPlanTiers).values({
-        planId: input.planId,
-        sort: i,
-        threshold: toDbMoney(tiers[i].threshold),
-        ratePct: toDbRatePct(tiers[i].ratePct),
-        fixedBonus: toDbMoney(tiers[i].fixedBonus),
-      });
+    if (tiers.length > 0) {
+      await tx.insert(commissionPlanTiers).values(
+        tiers.map((t, i) => ({
+          planId: input.planId,
+          sort: i,
+          threshold: toDbMoney(t.threshold),
+          ratePct: toDbRatePct(t.ratePct),
+          fixedBonus: toDbMoney(t.fixedBonus),
+        })),
+      );
     }
     await tx
       .update(commissionPlans)

@@ -12,6 +12,7 @@ const result = spawnSync(
     encoding: "utf8",
     env: {
       ...process.env,
+      COMPOSE_PROJECT_NAME: process.env.COMPOSE_PROJECT_NAME || "bms",
       DB_ROOT_PW: "compose-config-check-root-password",
       DB_APP_PW: "compose-config-check-app-password",
     },

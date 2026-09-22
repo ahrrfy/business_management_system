@@ -19,6 +19,7 @@ export {
   getDraft,
   listDrafts,
   promoteDraft,
+  resolvePromotedDraft,
   sweepExpiredDrafts,
   syncDraft,
   type DraftHeaderInput,

@@ -64,7 +64,7 @@ export const productStudioRouter = router({
   discoverImageGaps: productStudioManagerProcedure
     .input(
       z.object({
-        states: z.array(z.enum(IMAGE_HEALTH_STATES)).max(6).optional(),
+        states: z.array(z.enum(IMAGE_HEALTH_STATES)).max(15).optional(),
         categoryIds: z.array(z.number().int().positive()).max(200).optional(),
         isBundle: z.boolean().optional(),
         search: z.string().trim().max(80).optional(),

@@ -12,7 +12,13 @@ import { getDb } from "../../../db";
 import { extractInsertId } from "../../../lib/insertId";
 import { withTx } from "../../tx";
 import { resolvePromotionForLine } from "../../salesPromotionService";
-import { createStorePromotion, deactivateStorePromotion, listStorePromotions } from "../storePromotionService";
+import {
+  createStorePromotion,
+  deactivateStorePromotion,
+  reactivateStorePromotion,
+  updateStorePromotion,
+  listStorePromotions,
+} from "../storePromotionService";
 import { truncateTables } from "../../__tests__/__testUtils__";
 
 const STORE = 1; // فرع المتجر
@@ -158,5 +164,52 @@ describe("عزل القناة — عرض المتجر أونلاين فقط (ل�
     const pos = await resolve(1, false);
     expect(pos).not.toBeNull();
     expect(pos!.discountForUnit).toBe("100.00"); // ١٠٪ من ١٠٠٠ — الكاشير يطبّقه
+  });
+});
+
+describe("reactivateStorePromotion — إعادة تفعيل عرض المتجر مع حماية القناة", () => {
+  it("يُعيد تفعيل عرض متجر معطّل بنجاح", async () => {
+    const id = await seedPromo({ name: "متجريّ معطّل", branchId: STORE, customerTier: "RETAIL", isStoreManaged: true, isActive: false });
+    await withTx((tx) => reactivateStorePromotion(tx, id, STORE));
+    const p = (await db().select().from(s.promotions).where(eq(s.promotions.id, id)))[0];
+    expect(p.isActive).toBe(true);
+  });
+
+  it("يرفض تفعيل عرض ليس للمتجر (كاشير/عام) ⇒ FORBIDDEN", async () => {
+    const id = await seedPromo({ name: "عرض كاشير", branchId: STORE, customerTier: "RETAIL", isStoreManaged: false, isActive: false });
+    await expect(withTx((tx) => reactivateStorePromotion(tx, id, STORE))).rejects.toThrow(/ليس من عروض المتجر/);
+  });
+
+  it("يرفض تفعيل عرض يخصّ فرعاً آخر ⇒ FORBIDDEN", async () => {
+    const id = await seedPromo({ name: "متجر فرع آخر", branchId: OTHER, customerTier: "RETAIL", isStoreManaged: true, isActive: false });
+    await expect(withTx((tx) => reactivateStorePromotion(tx, id, STORE))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});
+
+describe("updateStorePromotion — تعديل عرض المتجر مع حماية القناة", () => {
+  it("يُحدّث بيانات عرض المتجر ويحافظ على علامة isStoreManaged و RETAIL", async () => {
+    const id = await seedPromo({ name: "عرض قديم", branchId: STORE, customerTier: "RETAIL", isStoreManaged: true, discountPercent: "10" });
+    await withTx((tx) => updateStorePromotion(tx, {
+      id,
+      name: "عرض محدّث",
+      discountPercent: "25",
+      priority: 5,
+    }, 1, STORE));
+    const p = (await db().select().from(s.promotions).where(eq(s.promotions.id, id)))[0];
+    expect(p.name).toBe("عرض محدّث");
+    expect(String(p.discountPercent)).toBe("25.00");
+    expect(p.priority).toBe(5);
+    expect(p.isStoreManaged).toBe(true);
+    expect(p.customerTier).toBe("RETAIL");
+  });
+
+  it("يرفض تعديل عرض ليس من عروض المتجر ⇒ FORBIDDEN", async () => {
+    const id = await seedPromo({ name: "عرض كاشير", branchId: STORE, customerTier: "RETAIL", isStoreManaged: false });
+    await expect(withTx((tx) => updateStorePromotion(tx, { id, name: "محاولة اختراق" }, 1, STORE))).rejects.toThrow(/ليس من عروض المتجر/);
+  });
+
+  it("يرفض تعديل عرض يخص فرعاً آخر ⇒ FORBIDDEN", async () => {
+    const id = await seedPromo({ name: "متجر فرع آخر", branchId: OTHER, customerTier: "RETAIL", isStoreManaged: true });
+    await expect(withTx((tx) => updateStorePromotion(tx, { id, name: "تعديل غير مصرح" }, 1, STORE))).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });

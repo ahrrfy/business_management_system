@@ -164,6 +164,7 @@ describe("ش٦ — طوابير أوامر الشغل في تنبيهات الإ
       baseQuantity: 1,
       unitPrice: "5000.00",
       unitCost: "10000.00",
+      lineCost: "10000.00",
       total: "5000.00",
     } as never);
 
@@ -201,6 +202,7 @@ describe("ش٦ — طوابير أوامر الشغل في تنبيهات الإ
       baseQuantity: 1,
       unitPrice: "4000.00",
       unitCost: "10000.00",
+      lineCost: "10000.00",
       total: "4000.00",
     } as never);
 

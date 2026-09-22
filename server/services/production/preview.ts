@@ -1,7 +1,7 @@
 // معاينة «التشغيل بوصفة» حيّةً (بلا أي حركة) — نفس صيغة الحساب وWAVG التي يطبّقها createProduction.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   branchStock,
   productUnits,
@@ -11,6 +11,8 @@ import {
   productionRecipes,
 } from "../../../drizzle/schema";
 import { batchMultipleNote, requiredBatchMultiple } from "../../../shared/batchDivisibility";
+import { appErrorMessage } from "../../../shared/errors";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { money, round2 } from "../money";
 import { withTx } from "../tx";
 import { computeRunCosts } from "./calc";
@@ -36,6 +38,9 @@ export async function runPreview(args: {
           outputVariantId: productionRecipes.outputVariantId,
           outputProductUnitId: productionRecipes.outputProductUnitId,
           outputName: products.name,
+          outputIsService: products.isService,
+          outputIsBundle: products.isBundle,
+          outputIsConsignment: products.isConsignment,
           outputSku: productVariants.sku,
           outputUnitName: productUnits.unitName,
           outputUnitVariantId: productUnits.variantId,
@@ -54,6 +59,36 @@ export async function runPreview(args: {
         .limit(1)
     )[0];
     if (!head) throw new TRPCError({ code: "NOT_FOUND", message: "الوصفة غير موجودة" });
+    if (head.outputIsService) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن تشغيل وصفة خدمة كإنتاج مخزني",
+          why: "ناتج الوصفة منتج خدمي لا يُخزَّن — تُستهلك مكوّناته تلقائياً لحظة بيع الخدمة",
+          doThis: "استعمل وصفة الخدمة من فاتورة البيع، أو اختر وصفةً ناتجها صنف مخزني",
+        }),
+      });
+    }
+    if (head.outputIsBundle) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن تشغيل وصفة بكج كأمر إنتاج",
+          why: "البكج تجميعٌ يُوسَّع إلى مكوّناته عند البيع ولا يُخزَّن كناتج تصنيع مستقل",
+          doThis: "استعمل البكج من فاتورة البيع، أو اختر وصفةً ناتجها صنف مخزني",
+        }),
+      });
+    }
+    if (head.outputIsConsignment) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن تشغيل وصفة بضاعة أمانة كأمر إنتاج",
+          why: "ناتج الأمانة أصل غير مملوك للمنشأة ولا يدخل تصنيع المخزون أو WAVG المملوك",
+          doThis: "اختر وصفةً ناتجها صنف مخزني مملوك للمنشأة",
+        }),
+      });
+    }
     if (!head.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة معطّلة" });
     if (Number(head.outputUnitVariantId) !== Number(head.outputVariantId) || !head.outputUnitIsBase || !head.outputUnitIsActive) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة ناتج الوصفة غير صالحة للإنتاج؛ يجب أن تكون الوحدة الأساسية النشطة للصنف الناتج" });
@@ -87,11 +122,17 @@ export async function runPreview(args: {
     // المتاح بالفرع (للأشرطة وحارس النقص اللّيّن في الواجهة).
     const availMap = new Map<number, number>();
     if (args.branchId) {
-      const stockRows = await tx
-        .select({ variantId: branchStock.variantId, qty: branchStock.quantity })
-        .from(branchStock)
-        .where(and(inArray(branchStock.variantId, inVarIds), eq(branchStock.branchId, args.branchId)));
-      for (const s of stockRows) availMap.set(Number(s.variantId), Number(s.qty));
+      const availability = await loadVariantAvailability(
+        tx,
+        args.branchId,
+        inVarIds,
+      );
+      for (const variantId of inVarIds) {
+        availMap.set(
+          variantId,
+          availability.get(variantId)?.availableBase ?? 0,
+        );
+      }
     }
 
     // الحساب النقي (نفس منطق الترحيل).
@@ -111,6 +152,17 @@ export async function runPreview(args: {
     const batchMultiple = requiredBatchMultiple(coefficients);
     const multipleNote = batchMultipleNote(batchMultiple);
 
+    const consumedByVariant = new Map<number, number>();
+    for (const line of recLines as any[]) {
+      const variantId = Number(line.inputVariantId);
+      const consumed = new Decimal(line.qtyPerOutputBase).times(calc.started);
+      if (consumed.isInteger()) {
+        consumedByVariant.set(
+          variantId,
+          (consumedByVariant.get(variantId) ?? 0) + consumed.toNumber(),
+        );
+      }
+    }
     const inputs = recLines.map((l: any) => {
       const perOut = new Decimal(l.qtyPerOutputBase);
       const consumedDec = perOut.times(calc.started);
@@ -127,7 +179,10 @@ export async function runPreview(args: {
         perOutputBase: perOut.toString(),
         consumed,
         available,
-        short: available != null && consumed > available,
+        short:
+          available != null &&
+          (consumedByVariant.get(Number(l.inputVariantId)) ?? consumed) >
+            available,
         unitCost: unitCost.toFixed(2),
         lineCost: round2(unitCost.times(consumed)).toFixed(2),
       };

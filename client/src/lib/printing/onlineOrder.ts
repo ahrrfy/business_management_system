@@ -1,6 +1,7 @@
 import { printDoc } from "./print";
-import { CAIRO_FONT, CO, esc, fmt, openPrintWindow } from "./brand";
+import { CAIRO_FONT, CO, esc, fmt, openPrintWindow, logoUrl } from "./brand";
 import { fmtDateTime } from "../date";
+import { formatArabicMoneyWords } from "./tafqit";
 
 export interface OnlineOrderPrintData {
   orderNumber: string;
@@ -18,6 +19,10 @@ export interface OnlineOrderPrintData {
   total: string;
   createdAt: Date | string;
   items: { productName: string; variantLabel: string; imageUrl: string | null; unitName: string; quantity: string; unitPrice: string; total: string }[];
+  notes?: string | null;
+  isReprint?: boolean;
+  reprintedAt?: Date | string;
+  reprintedBy?: string;
 }
 
 const absoluteImage = (src: string | null): string | null => {
@@ -26,42 +31,59 @@ const absoluteImage = (src: string | null): string | null => {
   return typeof window === "undefined" ? src : `${window.location.origin}${src.startsWith("/") ? src : `/${src}`}`;
 };
 
-/** إيصال حراري موجز للطلب، مناسب للمراجعة السريعة أو إرفاقه بالطرد. */
-export async function printOnlineOrderThermal(d: OnlineOrderPrintData): Promise<void> {
+export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
   const mapPayload = d.latitude && d.longitude
     ? `https://maps.google.com/?q=${encodeURIComponent(`${d.latitude},${d.longitude}`)}`
     : null;
-  await printDoc({
-    kind: "receipt",
-    title: "طلب المتجر",
-    subtitle: d.orderNumber,
+
+  const address = [d.governorate, d.addressText].filter(Boolean).join(" — ");
+
+  return {
+    kind: "receipt" as const,
+    includeBrandHeader: true,
+    title: d.isReprint ? "طلب متجر (إعادة طباعة)" : "طلب متجر إلكتروني",
+    subtitle: `رقم الطلب: #${d.orderNumber} · التاريخ: ${fmtDateTime(d.createdAt)}`,
     meta: [
-      `الزبون: ${d.customerName ?? "—"}`,
+      `الزبون: ${d.customerName ?? "عميل"}`,
       d.customerPhone ? `الهاتف: ${d.customerPhone}` : "",
-      d.addressText ? `العنوان: ${d.addressText}` : (d.governorate ? `المحافظة: ${d.governorate}` : ""),
-      d.latitude && d.longitude ? `الموقع: مثبت على الخريطة` : "",
+      address ? `العنوان: ${address}` : "",
+      d.notes ? `ملاحظات: ${d.notes}` : "",
+      d.latitude && d.longitude ? `الموقع: مثبت على الخريطة (امسح QR للملاحة)` : "",
+      d.isReprint ? `نسخة معاد طباعتها${d.reprintedBy ? ` بواسطة: ${d.reprintedBy}` : ""}${d.reprintedAt ? ` في: ${fmtDateTime(d.reprintedAt)}` : ""}` : "",
     ].filter(Boolean),
-    columns: ["المنتج", "الكمية", "المبلغ"],
+    columns: ["المنتج والمواصفات", "الكمية", "المبلغ"],
     rows: d.items.map((item) => [
       `${item.productName}${item.variantLabel ? ` — ${item.variantLabel}` : ""}${item.unitName ? ` (${item.unitName})` : ""}`,
       `×${fmt(item.quantity)}`,
-      fmt(item.total),
+      `${fmt(item.total)} د.ع`,
     ]),
     totals: [
-      { label: "السلع", value: `${fmt(d.subtotal)} د.ع` },
+      { label: "مجموع السلع", value: `${fmt(d.subtotal)} د.ع` },
       {
-        label: "التوصيل",
+        label: "أجرة التوصيل",
         value: d.deliveryFree
           ? (Number(d.deliveryWaivedAmount ?? 0) > 0
             ? `مجاناً (وفرت ${fmt(d.deliveryWaivedAmount)} د.ع)`
             : "مجاناً")
           : `${fmt(d.deliveryFee)} د.ع`,
       },
-      { label: "المطلوب عند الاستلام", value: `${fmt(d.total)} د.ع` },
+      { label: "المطلوب عند الاستلام (COD)", value: `${fmt(d.total)} د.ع` },
+      { label: "المبلغ كتابةً", value: formatArabicMoneyWords(d.total) },
     ],
-    footer: mapPayload ? "طلب متجر — امسح QR لموقع التوصيل" : "طلب متجر — الدفع عند الاستلام",
-    barcodeSet: { barcode128: d.orderNumber, qrPayload: mapPayload || d.orderNumber, displayLabel: d.orderNumber },
-  });
+    footer: mapPayload
+      ? "امسح رمز QR لموقع التوصيل المباشر على الخريطة · شكراً لتعاملكم مع مكتبة العربية"
+      : "طلب متجر — الدفع نقداً عند الاستلام · شكراً لتعاملكم مع مكتبة العربية",
+    barcodeSet: {
+      barcode128: d.orderNumber,
+      qrPayload: mapPayload || d.orderNumber,
+      displayLabel: `${d.orderNumber}\n${CO.short} — ${CO.phones[1]?.n ?? ""}`,
+    },
+  };
+}
+
+/** إيصال حراري موجز للطلب، مناسب للمراجعة السريعة أو إرفاقه بالطرد. */
+export async function printOnlineOrderThermal(d: OnlineOrderPrintData): Promise<void> {
+  await printDoc(buildOnlineOrderThermalDoc(d));
 }
 
 /** ورقة تجهيز A4: الصورة والخصائص والكمية بجانب كل صنف لتقليل خطأ الالتقاط. */

@@ -13,6 +13,8 @@ import {
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type Tx } from "../../db";
 import { withTx } from "../tx";
+import { resolveContractPrices } from "../contractPriceService";
+import { resolveEffectivePriceReference } from "../pricing";
 
 export type StorefrontQuoteRequestStatus =
   | "PENDING"
@@ -219,12 +221,13 @@ export async function getStorefrontQuoteRequestForOfficialQuotation(input: {
         .where(inArray(productPrices.productUnitId, unitIds))
     : [];
   const priceTier = request.customerPriceTier ?? "RETAIL";
+  const contractPrices = request.customerId && unitIds.length
+    ? await resolveContractPrices(db, Number(request.customerId), unitIds)
+    : new Map<number, string>();
   const priceByUnit = new Map<number, string>();
-  const retailPriceByUnit = new Map<number, string>();
   for (const price of prices) {
     const unitId = Number(price.productUnitId);
     if (price.priceTier === priceTier) priceByUnit.set(unitId, price.price);
-    if (price.priceTier === "RETAIL") retailPriceByUnit.set(unitId, price.price);
   }
   return {
     id: Number(request.id),
@@ -240,6 +243,12 @@ export async function getStorefrontQuoteRequestForOfficialQuotation(input: {
     customerPriceTier: priceTier,
     items: items.map((item) => {
       const productUnitId = item.productUnitId ? Number(item.productUnitId) : null;
+      const suggested = productUnitId
+        ? resolveEffectivePriceReference({
+            catalogUnitPrice: priceByUnit.get(productUnitId),
+            contractUnitPrice: contractPrices.get(productUnitId),
+          })
+        : { unitPrice: null, priceSource: null };
       const isCurrentCatalogLine = Boolean(
         productUnitId && item.currentVariantId && item.productId && item.unitActive && item.variantActive && item.productActive,
       );
@@ -256,9 +265,8 @@ export async function getStorefrontQuoteRequestForOfficialQuotation(input: {
         currentVariantName: isCurrentCatalogLine ? item.currentVariantName : null,
         currentUnitName: isCurrentCatalogLine ? item.currentUnitName : null,
         conversionFactor: isCurrentCatalogLine ? item.conversionFactor : null,
-        suggestedUnitPrice: productUnitId
-          ? priceByUnit.get(productUnitId) ?? retailPriceByUnit.get(productUnitId) ?? null
-          : null,
+        suggestedUnitPrice: suggested.unitPrice?.toFixed(2) ?? null,
+        suggestedPriceSource: suggested.priceSource,
       };
     }),
   };

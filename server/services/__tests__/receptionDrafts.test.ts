@@ -21,11 +21,13 @@ import {
   cancelDraft,
   listDrafts,
   promoteDraft,
+  resolvePromotedDraft,
   sweepExpiredDrafts,
   syncDraft,
 } from "../reception";
 
 const TABLES = [
+  "auditLogs",
   "receptionDraftLines", "receptionDrafts",
   "idempotencyKeys", "accountingEntries", "receipts",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
@@ -96,6 +98,50 @@ describe("ش٢ — مسوّدة المحطة", () => {
     expect(b.draftNumber.endsWith("00002")).toBe(true);
   });
 
+  it("P1: إعادة ترقيةٍ فُقد ردّها تعيد المسوّدة نفسها وترفض استعمال المفتاح بحمولة مختلفة", async () => {
+    const input = { branchId: 1, clientRequestId: "550e8400-e29b-41d4-a716-446655440000", header: { customerId: 1 }, lines: [LINES[0]] };
+    const first = await promoteDraft(input, CASHIER);
+    const replay = await promoteDraft(input, CASHIER);
+
+    expect(replay).toMatchObject({ draftId: first.draftId, draftNumber: first.draftNumber, version: first.version, total: first.total, idempotentReplay: true });
+    expect(await db().select().from(s.receptionDrafts)).toHaveLength(1);
+    expect(await db().select().from(s.receptionDraftLines)).toHaveLength(1);
+    const audits = await db().select().from(s.auditLogs).where(eq(s.auditLogs.entityId, String(first.draftId)));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ action: "reception.draftPromote", entityType: "receptionDraft", userId: CASHIER.userId, branchId: CASHIER.branchId });
+    expect((audits[0].operation as { version?: string })?.version).toBe("operation.v2");
+    await expect(resolvePromotedDraft({ ...input, shiftId: null }, CASHIER)).resolves.toMatchObject({ draftId: first.draftId, idempotentReplay: true, payloadMatches: true });
+    await expect(resolvePromotedDraft({ ...input, shiftId: null, lines: [{ ...LINES[0], quantity: "3" }] }, CASHIER)).resolves.toMatchObject({ draftId: first.draftId, payloadMatches: false });
+    await expect(resolvePromotedDraft({ ...input, shiftId: null, clientRequestId: "unknown-promote-request" }, CASHIER)).resolves.toBeNull();
+    await expect(promoteDraft({ ...input, lines: [{ ...LINES[0], quantity: "3" }] }, CASHIER)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await db().select().from(s.receptionDrafts)).toHaveLength(1);
+    expect(await db().select().from(s.receptionDraftLines)).toHaveLength(1);
+  });
+
+  it("P1: طلبا ترقية متزامنان بالمفتاح نفسه يعيدان مسوّدة واحدة", async () => {
+    const user = (await db().select().from(s.users).where(eq(s.users.id, 2)).limit(1))[0];
+    const caller = appRouter.createCaller({ req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as never);
+    const input = { clientRequestId: "parallel-promote-550e8400", header: { customerId: 1 }, lines: [LINES[0]] };
+    const [first, second] = await Promise.all([caller.reception.draftPromote(input), caller.reception.draftPromote(input)]);
+    expect(new Set([first.draftId, second.draftId]).size).toBe(1);
+    expect([first.idempotentReplay, second.idempotentReplay].sort()).toEqual([false, true]);
+    expect(await db().select().from(s.receptionDrafts)).toHaveLength(1);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(1);
+    expect(await db().select().from(s.auditLogs).where(eq(s.auditLogs.action, "reception.draftPromote"))).toHaveLength(1);
+  });
+
+  it("P1: فشل التدقيق الإلزامي يرجع المسودة والمفتاح ثم تسمح الإعادة السليمة", async () => {
+    const input = { branchId: 1, clientRequestId: "audit-rollback-promote-1", header: { customerId: 1 }, lines: [LINES[0]] };
+    await expect(promoteDraft(input, CASHIER, { ipAddress: "x".repeat(46) })).rejects.toBeTruthy();
+    expect(await db().select().from(s.receptionDrafts)).toHaveLength(0);
+    expect(await db().select().from(s.receptionDraftLines)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+    expect(await db().select().from(s.auditLogs)).toHaveLength(0);
+    await expect(promoteDraft(input, CASHIER, { ipAddress: "127.0.0.1" })).resolves.toMatchObject({ idempotentReplay: false });
+    expect(await db().select().from(s.receptionDrafts)).toHaveLength(1);
+    expect(await db().select().from(s.auditLogs)).toHaveLength(1);
+  });
+
   it("S1: الإجماليات تُعاد حسابها خادمياً — تزوير العميل يُتجاهَل", async () => {
     const p = await promoteDraft({ branchId: 1, header: {}, lines: [LINES[0]] }, CASHIER);
     // العميل يدّعي خصماً/إجمالياً مزوّراً عبر discountAmount فقط — الحساب من الأسطر.
@@ -150,10 +196,12 @@ describe("ش٢ — مسوّدة المحطة", () => {
     const userRow = async (id: number) => (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
 
     const po = appRouter.createCaller({ req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: await userRow(8) } as never);
-    const ok = await po.reception.draftPromote({ header: {}, lines: [LINES[2]] });
+    const ok = await po.reception.draftPromote({ clientRequestId: "promote-print-operator-1", header: {}, lines: [LINES[2]] });
     expect(ok.draftNumber).toMatch(/^DRF-1-/);
+    await expect(po.customers.receptionResolveById({ customerId: 1 })).resolves.toEqual({ status: "RESOLVED", customerId: 1, defaultPriceTier: "RETAIL" });
 
     const gen = appRouter.createCaller({ req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: await userRow(9) } as never);
-    await expect(gen.reception.draftPromote({ header: {}, lines: [LINES[2]] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(gen.reception.draftPromote({ clientRequestId: "promote-general-user-1", header: {}, lines: [LINES[2]] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(gen.customers.receptionResolveById({ customerId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });

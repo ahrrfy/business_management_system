@@ -29,7 +29,7 @@ import {
   onlineOrders,
   workOrders,
 } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import {
   adjustCustomerBalance,
@@ -700,6 +700,7 @@ export async function confirmConsignmentDelivery(
     shortfallReason?: string;
   },
   actor: { userId: number },
+  existingTx?: Tx,
 ): Promise<ConfirmConsignmentResult> {
   const membership = input.statementWitness
     ? await resolveStatementWitnessAuthority(input.statementWitness.partyId)
@@ -730,7 +731,7 @@ export async function confirmConsignmentDelivery(
   const clientRequestId =
     input.clientRequestId ?? `confirm-consignment-${input.consignmentId}`;
   const payloadHash = idempotencyHash({ consignmentId: input.consignmentId });
-  return withTx(async (tx) => {
+  const run = async (tx: Tx): Promise<ConfirmConsignmentResult> => {
     const replay = await checkIdempotency(
       tx,
       "courier.confirmConsignment",
@@ -1184,7 +1185,8 @@ export async function confirmConsignmentDelivery(
       consignmentNumber: cn.consignmentNumber,
       deliveredAt,
     };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }
 
 export async function transitionConsignmentParcel(
@@ -1519,8 +1521,8 @@ export async function failCourierDelivery(
 
 export interface SupplementaryCollectionInput {
   consignmentId: number;
-  /** المُحصَّل الجديد من الكشف المتمِّم (يشمل ما سبق تحصيله + الجديد — يُقاس دلتا). */
-  newCollectedTotal: string;
+  /** المبلغ الإضافي الذي حصّله هذا الكشف وحده — لا الإجماليّ التراكميّ للإرسالية. */
+  additionalCollectedAmount: string;
   statementNumber: string;
   clientRequestId: string;
 }
@@ -1528,7 +1530,7 @@ export interface SupplementaryCollectionInput {
 export interface SupplementaryCollectionResult {
   consignmentId: number;
   delta: string;
-  /** لم يقع أي تحصيل جديد (المُعلَن ≤ ما سبق تحصيله) — عملية no-op idempotent. */
+  /** لم يقع أي تحصيل جديد (إعادة طلبٍ أو مبلغٌ صفريّ) — عملية no-op idempotent. */
   noChange?: boolean;
   alreadyDelivered: true;
 }
@@ -1539,6 +1541,9 @@ export interface SupplementaryCollectionResult {
  * `alreadyDelivered` بلا مساسٍ ماليّ. هذه الدالّة تسدّ الثغرة: تُدوّن **دلتا** التحصيل
  * (COD_COLLECTED مضاف + قيد PAYMENT_IN بمفتاحٍ فريد للكشف + تسديد الفاتورة بالدلتا + خصم
  * ذمّة العميل). ⚠️ لا تُغيّر `parcelStatus`/`custodyRecognizedAt` (ثابتان منذ التسليم الأصليّ).
+ * وهي مرحلةٌ أولى داخل `recordCompanyStatement`: لا تغيّر `collectedAmount` بنفسها؛ يجب أن
+ * تتبعها `recordDeliveryRemittanceInTx` على المعاملة نفسها كي تضيف الدلتا إلى الإرسالية وتبرئ
+ * عهدة الجهة ذرّياً. المستدعي الحالي الوحيد يمرّر تلك المعاملة المشتركة.
  *
  * الأمان: عزل الفرع مقيَّس داخل المعاملة (نمط `confirmConsignmentDelivery`)، والقفلُ يتّبع
  * الترتيبَ نفسه (جهة ← إرسالية ← فاتورة) لمنع الجمود، وidempotency بمفتاحين: `clientRequestId`
@@ -1547,6 +1552,7 @@ export interface SupplementaryCollectionResult {
 export async function recordSupplementaryStatementCollection(
   input: SupplementaryCollectionInput,
   actor: { userId: number },
+  existingTx?: Tx,
 ): Promise<SupplementaryCollectionResult> {
   const clientRequestId = input.clientRequestId;
   if (!clientRequestId || clientRequestId.length < 8) {
@@ -1557,11 +1563,37 @@ export async function recordSupplementaryStatementCollection(
     }) });
   }
   const payloadHash = idempotencyHash(input);
-  return withTx(async (tx) => {
+  const run = async (tx: Tx): Promise<SupplementaryCollectionResult> => {
     const replay = await checkIdempotency(tx, "courier.supplementaryCollection", clientRequestId, payloadHash);
     if (replay != null) {
       return { consignmentId: replay, delta: "0.00", noChange: true, alreadyDelivered: true };
     }
+    const preview = (
+      await tx
+        .select({ partyId: deliveryConsignments.partyId })
+        .from(deliveryConsignments)
+        .where(eq(deliveryConsignments.id, Number(input.consignmentId)))
+        .limit(1)
+    )[0];
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+      what: "تعذّر تسجيل التحصيل المتمِّم",
+      why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ`,
+      doThis: `راجع رقم الطرد في كشف الشركة ${input.statementNumber} وأعِد إدخاله من صفحة الإرساليات`,
+    }) });
+    // ترتيب الأقفال الموحّد: الجهة أولاً، ثم الإرسالية، ثم الفاتورة.
+    const party = (
+      await tx
+        .select({ id: deliveryParties.id })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, Number(preview.partyId)))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+      what: "تعذّر تسجيل التحصيل المتمِّم",
+      why: `جهة التوصيل رقم ${Number(preview.partyId)} لم تعد موجودةً في السجلّ، ولا تُرفَع عهدةٌ لجهةٍ محذوفة`,
+      doThis: "أبلِغ المدير برقم الإرسالية ليُعيد إنشاء الجهة أو يُصحّح إسناد الطرد قبل تسجيل الكشف",
+    }) });
     const cn = (
       await tx
         .select()
@@ -1575,6 +1607,16 @@ export async function recordSupplementaryStatementCollection(
       why: `لا إرساليةَ بالرقم ${input.consignmentId} في السجلّ`,
       doThis: `راجع رقم الطرد في كشف الشركة ${input.statementNumber} وأعِد إدخاله من صفحة الإرساليات`,
     }) });
+    if (Number(cn.partyId) !== Number(party.id)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+          why: "تغيّرت جهة التوصيل المرتبطة بالإرسالية أثناء تسجيل الكشف",
+          doThis: "حدّث شاشة الكشف ثم أعد مسح بوليصة الإرسالية على الشركة الحالية",
+        }),
+      });
+    }
     if (cn.parcelStatus !== "DELIVERED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -1586,38 +1628,34 @@ export async function recordSupplementaryStatementCollection(
       });
     }
     assertNotReturnDeclared(cn, "collect");
-    const newTotal = round2(money(input.newCollectedTotal));
+    const delta = round2(money(input.additionalCollectedAmount));
     const currentCollected = round2(money(cn.collectedAmount ?? "0"));
     const codAmount = round2(money(cn.codAmount));
+    if (delta.lt(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
+          why: `مبلغ الكشف ${input.statementNumber} الإضافي سالب (${delta.toFixed(2)})، والتحصيل السابق لا يُلغى بكشفٍ لاحق`,
+          doThis: "صحّح مبلغ سطر الكشف إلى ما قبضته الشركة في هذا الكشف فقط، أو استخدم مسار التصحيح المالي الموثّق",
+        }),
+      });
+    }
+    if (delta.isZero()) {
+      await recordIdempotencyKey(tx, "courier.supplementaryCollection", clientRequestId, Number(cn.id), payloadHash);
+      return { consignmentId: Number(cn.id), delta: "0.00", noChange: true, alreadyDelivered: true };
+    }
+    const newTotal = round2(currentCollected.plus(delta));
     if (newTotal.gt(codAmount)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
-          why: `الكشف ${input.statementNumber} يعلن مُحصَّلاً إجمالياً ${newTotal.toFixed(2)} وهو أكثر من مبلغ التحصيل الأصليّ على الطرد (${codAmount.toFixed(2)}) بفارق ${newTotal.minus(codAmount).toFixed(2)}`,
-          doThis: `أدخِل المُحصَّل الإجماليّ على هذا الطرد وحده (بحدّ ${codAmount.toFixed(2)})، وراجع مع الشركة أيَّ طردٍ آخر يخصّه الفارق`,
+          why: `الكشف ${input.statementNumber} يضيف ${delta.toFixed(2)} إلى ${currentCollected.toFixed(2)} محصّلةً سلفاً، فيصبح الإجمالي ${newTotal.toFixed(2)} وهو أكثر من COD (${codAmount.toFixed(2)}) بفارق ${newTotal.minus(codAmount).toFixed(2)}`,
+          doThis: `أدخِل ما قبضته الشركة في هذا الكشف فقط، وبحدّ ${Decimal.max(codAmount.minus(currentCollected), 0).toFixed(2)} المتبقّي على الطرد`,
         }),
       });
     }
-    const delta = round2(newTotal.minus(currentCollected));
-    if (delta.lte(0)) {
-      await recordIdempotencyKey(tx, "courier.supplementaryCollection", clientRequestId, Number(cn.id), payloadHash);
-      return { consignmentId: Number(cn.id), delta: "0.00", noChange: true, alreadyDelivered: true };
-    }
-    // القفل على الجهة (نمط confirmConsignmentDelivery — جهة ← إرسالية ← فاتورة).
-    const party = (
-      await tx
-        .select({ id: deliveryParties.id })
-        .from(deliveryParties)
-        .where(eq(deliveryParties.id, Number(cn.partyId)))
-        .for("update")
-        .limit(1)
-    )[0];
-    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
-      what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
-      why: `جهة التوصيل رقم ${Number(cn.partyId)} لم تعد موجودةً في السجلّ، ولا تُرفَع عهدةٌ لجهةٍ محذوفة`,
-      doThis: "أبلِغ المدير برقم الإرسالية ليُعيد إنشاء الجهة أو يُصحّح إسناد الطرد قبل تسجيل الكشف",
-    }) });
     // الفاتورة — للتسديد بالدلتا.
     const inv = (
       await tx
@@ -1640,7 +1678,7 @@ export async function recordSupplementaryStatementCollection(
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: `تعذّر تسجيل التحصيل المتمِّم على الإرسالية ${cn.consignmentNumber}`,
-          why: `الجديد في الكشف ${input.statementNumber} هو ${delta.toFixed(2)} (${newTotal.toFixed(2)} معلَناً ناقصاً ${currentCollected.toFixed(2)} مسجَّلاً سلفاً)، وهو يتجاوز متبقّي الفاتورة ${invoiceRemaining.toFixed(2)} بفارق ${delta.minus(invoiceRemaining).toFixed(2)}`,
+          why: `المبلغ الإضافي في الكشف ${input.statementNumber} هو ${delta.toFixed(2)}، وهو يتجاوز متبقّي الفاتورة ${invoiceRemaining.toFixed(2)} بفارق ${delta.minus(invoiceRemaining).toFixed(2)}`,
           doThis: `سجّل ${invoiceRemaining.toFixed(2)} على هذه الفاتورة، وراجع مع الشركة أيَّ فاتورةٍ أخرى يخصّها الفارق قبل قيده`,
         }),
       });
@@ -1689,10 +1727,8 @@ export async function recordSupplementaryStatementCollection(
     if (inv.customerId != null) {
       await adjustCustomerBalance(tx, Number(inv.customerId), delta.neg());
     }
-    await tx
-      .update(deliveryConsignments)
-      .set({ collectedAmount: toDbMoney(newTotal) })
-      .where(eq(deliveryConsignments.id, Number(cn.id)));
+    // لا نحدّث `collectedAmount` هنا: آلةُ التوريد التالية في **المعاملة نفسها** تضيف الدلتا
+    // وتختم الحالة. تحديثُه هنا كان يجعلها ترى المتبقّي صفراً فترفض توريد الكشف المتمِّم.
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${cn.id}:COD_COLLECTED_SUPP:${input.statementNumber}`,
       consignmentId: Number(cn.id),
@@ -1701,12 +1737,13 @@ export async function recordSupplementaryStatementCollection(
       payload: {
         source: "COMPANY_STATEMENT",
         statementNumber: input.statementNumber,
-        delta: delta.toFixed(2),
+        additionalCollectedAmount: delta.toFixed(2),
         newCollectedTotal: newTotal.toFixed(2),
       },
     });
     await recordIdempotencyKey(tx, "courier.supplementaryCollection", clientRequestId, Number(cn.id), payloadHash);
     return { consignmentId: Number(cn.id), delta: delta.toFixed(2), alreadyDelivered: true };
-  });
+  };
+  return existingTx ? run(existingTx) : withTx(run);
 }
 
