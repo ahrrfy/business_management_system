@@ -38,10 +38,10 @@ export async function cancelDeliveryAssignment(
       code: "BAD_REQUEST",
       message: "سبب إلغاء الإسناد أطول من الحد المسموح",
     });
-  if (actor.role !== "manager" && actor.role !== "admin") {
+  if (actor.role !== "manager" && actor.role !== "admin" && actor.role !== "cashier") {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "إلغاء إسناد التوصيل صلاحية مدير",
+      message: "إلغاء إسناد التوصيل صلاحية كاشير أو مدير",
     });
   }
 
@@ -57,7 +57,7 @@ export async function cancelDeliveryAssignment(
     if (actor.role !== "admin" && scopedBranch == null) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "لا فرع مُسنَد لهذا المدير",
+        message: "لا فرع مُسنَد لهذا الموظف",
       });
     }
     const owned = (
