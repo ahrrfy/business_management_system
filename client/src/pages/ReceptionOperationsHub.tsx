@@ -21,12 +21,16 @@ const ReceptionWorkflowPage = lazy(
 const ReceptionHandoverPage = lazy(
   () => import("@/pages/reception/ReceptionHandoverPage"),
 );
+const ReceptionDraftsPage = lazy(
+  () => import("@/pages/reception/ReceptionDraftsPage"),
+);
 
 const COMPONENTS: Record<ReceptionOperationsTabValue, ComponentType> = {
   orders: ReceptionOrdersPage,
   invoices: ReceptionInvoicesPage,
   workflow: ReceptionWorkflowPage,
   handover: ReceptionHandoverPage,
+  drafts: ReceptionDraftsPage,
 };
 
 const TABS: HubTab[] = RECEPTION_OPERATION_TAB_DEFINITIONS.map((tab) => ({

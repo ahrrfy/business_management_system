@@ -363,6 +363,8 @@ export const receptionRouter = router({
       branchId: z.number().int().positive().nullish(),
       mine: z.boolean().optional(),
       status: z.enum(["OPEN", "COMMITTED", "CANCELLED", "EXPIRED"]).optional(),
+      fundedOnly: z.boolean().optional(),
+      staleOnly: z.boolean().optional(),
       q: z.string().trim().max(80).optional(),
       cursor: z.number().int().positive().optional(),
       limit: z.number().int().min(1).max(50).optional(),

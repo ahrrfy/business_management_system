@@ -10,7 +10,8 @@ export type ReceptionOperationsTabValue =
   | "orders"
   | "invoices"
   | "workflow"
-  | "handover";
+  | "handover"
+  | "drafts";
 
 export type ReceptionOperationsTabDefinition = {
   value: ReceptionOperationsTabValue;
@@ -94,6 +95,11 @@ export const RECEPTION_OPERATION_TAB_DEFINITIONS = [
     value: "handover",
     label: "التسليم المباشر",
     gate: RECEPTION_HANDOVER_GATE,
+  },
+  {
+    value: "drafts",
+    label: "الطلبات المحفوظة",
+    gate: RECEPTION_STATION_GATE,
   },
 ] satisfies readonly ReceptionOperationsTabDefinition[];
 

@@ -72,7 +72,7 @@ const visibleFor = (
 describe("ReceptionOperationsHub", () => {
   it("يثبت ترتيب التبويبات وعقد الرابط الافتراضي", () => {
     expect(RECEPTION_OPERATION_TAB_DEFINITIONS.map((tab) => tab.value)).toEqual(
-      ["orders", "invoices", "workflow", "handover"],
+      ["orders", "invoices", "workflow", "handover", "drafts"],
     );
     expect(RECEPTION_OPERATION_TAB_DEFINITIONS[0]?.value).toBe("orders");
   });
@@ -95,16 +95,18 @@ describe("ReceptionOperationsHub", () => {
       "invoices",
       "workflow",
       "handover",
+      "drafts",
     ]);
-    expect(visibleFor("cashier")).toEqual(["orders", "invoices", "handover"]);
-    expect(visibleFor("print_operator")).toEqual(["orders"]);
+    expect(visibleFor("cashier")).toEqual(["orders", "invoices", "handover", "drafts"]);
+    expect(visibleFor("print_operator")).toEqual(["orders", "drafts"]);
     expect(visibleFor("accountant")).toEqual([]);
-    expect(visibleFor("cashier", { treasury: "NONE" })).toEqual(["orders"]);
+    expect(visibleFor("cashier", { treasury: "NONE" })).toEqual(["orders", "drafts"]);
     expect(visibleFor("cashier", { store: "READ" })).toEqual([
       "orders",
       "handover",
+      "drafts",
     ]);
-    expect(visibleFor("cashier", { products: "NONE" })).toEqual(["orders"]);
+    expect(visibleFor("cashier", { products: "NONE" })).toEqual(["orders", "drafts"]);
     expect(
       visibleReceptionOperationTabs({
         hasBranch: false,
@@ -114,12 +116,13 @@ describe("ReceptionOperationsHub", () => {
     ).toEqual([]);
   });
 
-  it("يحمل الصفحات الأربع كسولاً ولا يستورد أياً منها استيراداً eager", () => {
+  it("يحمل الصفحات الخمس كسولاً ولا يستورد أياً منها استيراداً eager", () => {
     const pageModules = [
       "ReceptionOrdersPage",
       "ReceptionInvoicesPage",
       "ReceptionWorkflowPage",
       "ReceptionHandoverPage",
+      "ReceptionDraftsPage",
     ];
 
     for (const page of pageModules) {
@@ -130,7 +133,7 @@ describe("ReceptionOperationsHub", () => {
       );
     }
     expect(source).not.toMatch(
-      /^import\s+.+\s+from\s+["']@\/pages\/reception\/Reception(?:Orders|Invoices|Workflow|Handover)Page["'];?$/m,
+      /^import\s+.+\s+from\s+["']@\/pages\/reception\/Reception(?:Orders|Invoices|Workflow|Handover|Drafts)Page["'];?$/m,
     );
     expect(source).toContain("const me = trpc.auth.me.useQuery()");
     expect(source).toContain("if (me.data.branchId == null)");
