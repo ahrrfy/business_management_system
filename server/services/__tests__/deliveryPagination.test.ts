@@ -41,7 +41,7 @@ function db() {
 async function seed(consignmentCount: number) {
   await db().insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await db().insert(s.users).values({ id: 1, openId: "u-admin", name: "أدمن", role: "admin", loginMethod: "local", branchId: 1 });
-  await db().insert(s.deliveryParties).values({ id: 1, name: "شركة توصيل", partyKind: "COMPANY", branchId: 1 });
+  await db().insert(s.deliveryParties).values({ id: 1, name: "شركة توصيل", partyType: "COMPANY", branchId: 1 });
   // فواتير وهمية للـFK — الاختبار يقيس الترقيم لا سلامة الفاتورة
   for (let i = 1; i <= consignmentCount; i++) {
     await db().insert(s.invoices).values({
@@ -123,7 +123,7 @@ describe("listOpenConsignments — ترقيم keyset", () => {
     // صفوف مؤهَّلة (parcelStatus=DELIVERED + moneyStatus=UNSETTLED)
     await db().insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
     await db().insert(s.users).values({ id: 1, openId: "u", name: "u", role: "admin", loginMethod: "local", branchId: 1 });
-    await db().insert(s.deliveryParties).values({ id: 1, name: "شركة", partyKind: "COMPANY", branchId: 1 });
+    await db().insert(s.deliveryParties).values({ id: 1, name: "شركة", partyType: "COMPANY", branchId: 1 });
     for (let i = 1; i <= 5; i++) {
       await db().insert(s.invoices).values({
         id: i, invoiceNumber: `INV-${i}`, branchId: 1,
@@ -153,6 +153,63 @@ describe("listOpenConsignments — ترقيم keyset", () => {
     expect(page.rows).toHaveLength(2);
     expect(page.hasMore).toBe(true);
     expect(page.nextCursor).not.toBeNull();
+  });
+
+  it("company statement candidates preserve leading-zero tracking refs and exclude INDIVIDUAL rows", async () => {
+    await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+    await db().insert(s.users).values({ id: 1, openId: "u", name: "u", role: "admin", loginMethod: "local", branchId: 1 });
+    await db().insert(s.deliveryParties).values([
+      { id: 1, name: "شركة", partyType: "COMPANY", branchId: 1 },
+      { id: 2, name: "مندوب", partyType: "INDIVIDUAL", branchId: 1 },
+    ]);
+
+    const parcelStatuses = ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const;
+    const trackingRefs = ["000041", "001230", "000009"] as const;
+    for (const partyId of [1, 2]) {
+      for (const [index, parcelStatus] of parcelStatuses.entries()) {
+        const id = (partyId - 1) * parcelStatuses.length + index + 1;
+        await db().insert(s.invoices).values({
+          id,
+          invoiceNumber: `INV-${id}`,
+          branchId: 1,
+          subtotal: "500.00",
+          total: "500.00",
+          paidAmount: "0.00",
+          returnedTotal: "0.00",
+          createdBy: 1,
+        });
+        await db().insert(s.deliveryConsignments).values({
+          id,
+          consignmentNumber: `CN-${id}`,
+          partyId,
+          branchId: 1,
+          invoiceId: id,
+          sourceType: "INVOICE",
+          sourceId: id,
+          status: "DISPATCHED",
+          parcelStatus,
+          moneyStatus: "UNSETTLED",
+          codAmount: "500.00",
+          collectedAmount: "0.00",
+          counterSettledAmount: "0.00",
+          deliveryFee: "0.00",
+          feeCollection: "COURIER",
+          externalTrackingRef: trackingRefs[index],
+          dispatchedAt: new Date(2026, 0, id),
+          dispatchedBy: 1,
+        });
+      }
+    }
+
+    const companyPage = await listOpenConsignments(1, 1);
+    expect(companyPage.rows.map(({ parcelStatus, externalTrackingRef }) => ({ parcelStatus, externalTrackingRef }))).toEqual([
+      { parcelStatus: "ACCEPTED", externalTrackingRef: "000041" },
+      { parcelStatus: "PICKED_UP", externalTrackingRef: "001230" },
+      { parcelStatus: "OUT_FOR_DELIVERY", externalTrackingRef: "000009" },
+    ]);
+
+    const individualPage = await listOpenConsignments(2, 1);
+    expect(individualPage.rows).toEqual([]);
   });
 });
 

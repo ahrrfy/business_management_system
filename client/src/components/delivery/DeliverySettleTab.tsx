@@ -12,6 +12,9 @@ import { DeliveryObligationsCard } from "@/components/delivery/DeliveryObligatio
 import { DeliveryRemittanceHistoryCard } from "@/components/delivery/DeliveryRemittanceHistoryCard";
 import { DeliverySettleSummaryCard } from "@/components/delivery/DeliverySettleSummaryCard";
 import { DeliveryConsignmentsTable } from "@/components/delivery/DeliveryConsignmentsTable";
+import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
+import type { CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
+import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -69,28 +72,41 @@ export function DeliverySettleTab() {
 
   const remittances = trpc.delivery.remittances.useQuery({ partyId: Number(partyId), limit: 20 }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "NONE"; collected: string }>>({});
+  const [statementQueueIds, setStatementQueueIds] = useState<number[]>([]);
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
   const [countedCash, setCountedCash] = useState(0);
   const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
-
-  useEffect(() => {
-    const p = new URLSearchParams(settleSearch).get("party");
-    if (p && p !== partyId) {
-      setPartyId(p);
-      setRows({});
-      setRemitReqId(crypto.randomUUID());
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settleSearch]);
-
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [statementNumber, setStatementNumber] = useState("");
   const [statementDate, setStatementDate] = useState("");
   const [statementDeductions, setStatementDeductions] = useState(0);
   const [statementNotes, setStatementNotes] = useState("");
 
+  const switchParty = (nextPartyId: string) => {
+    const reset = companyStatementPartyTransition(partyId, nextPartyId, 0);
+    if (!reset) return;
+
+    setPartyId(reset.partyId);
+    setRows(reset.selections);
+    setStatementQueueIds(reset.queueIds);
+    setCountedBreakdown(reset.countedBreakdown);
+    setCountedCash(reset.countedCash);
+    setStatementNumber(reset.statementNumber);
+    setStatementDate(reset.statementDate);
+    setStatementDeductions(reset.statementDeductions);
+    setStatementNotes(reset.statementNotes);
+    setRemitReqId(crypto.randomUUID());
+  };
+
+  useEffect(() => {
+    const p = new URLSearchParams(settleSearch).get("party");
+    if (p) switchParty(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settleSearch]);
+
   const resetAfterSettle = () => {
     setRows({});
+    setStatementQueueIds([]);
     setCountedBreakdown({});
     setCountedCash(0);
     setStatementNumber("");
@@ -156,7 +172,7 @@ export function DeliverySettleTab() {
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
     && remainingOf(c) > 0;
 
-  const statementMode = statementNumber.trim().length > 0;
+  const statementMode = partyRow?.partyType === "COMPANY" || statementNumber.trim().length > 0;
   const isStatementConfirmable = (c: OpenConsignment) => c.status === "DISPATCHED"
     && c.parcelStatus !== "CANCELLED" && c.parcelStatus !== "RETURNED"
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL" || c.moneyStatus === "NOT_APPLICABLE");
@@ -187,6 +203,10 @@ export function DeliverySettleTab() {
   }, [list, rows, statementMode, statementDeductions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
+    if (partyRow?.partyType === "COMPANY" && statementNumber.trim().length < 2) {
+      notify.err("رقم كشف شركة التوصيل مطلوب", "أدخل رقم الكشف ثم امسح باركود كل بوليصة وردت فيه.");
+      return;
+    }
     const lines = list
       .filter((c) => isSettleable(c) && get(c).outcome === "COLLECTED")
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
@@ -243,7 +263,7 @@ export function DeliverySettleTab() {
         obligations={obligations}
         staleParties={staleParties}
         partyId={partyId}
-        onSelectParty={(p) => { setPartyId(p); setRows({}); setRemitReqId(crypto.randomUUID()); }}
+        onSelectParty={switchParty}
       />
 
       {/* ─── تسوية الجهة المختارة ─── */}
@@ -254,7 +274,7 @@ export function DeliverySettleTab() {
             id="delivery-settle-party"
             className="w-auto min-w-64 max-w-md"
             value={partyId}
-            onValueChange={(value) => { setPartyId(value); setRows({}); setRemitReqId(crypto.randomUUID()); }}
+            onValueChange={switchParty}
           >
             <option value="">— اختر —</option>
             {(obligations.data ?? []).map((p) => (
@@ -301,6 +321,11 @@ export function DeliverySettleTab() {
             statementMode={statementMode}
             canReturn={canReturn}
             onOutcomeToggle={(id, current, remaining) => {
+              if (statementMode) {
+                setStatementQueueIds((ids) => current === "COLLECTED"
+                  ? ids.filter((queuedId) => queuedId !== id)
+                  : ids.includes(id) ? ids : [...ids, id]);
+              }
               setRows((r) => ({
                 ...r,
                 [id]: {
@@ -317,13 +342,35 @@ export function DeliverySettleTab() {
           />
 
           <CompanyStatementBox
-            statementNumber={statementNumber} onStatementNumberChange={(v) => { setStatementNumber(v); setRows({}); }}
+            required={partyRow?.partyType === "COMPANY"}
+            statementNumber={statementNumber} onStatementNumberChange={(v) => { setStatementNumber(v); setRows({}); setStatementQueueIds([]); }}
             statementDate={statementDate} onStatementDateChange={setStatementDate}
             deductions={statementDeductions} onDeductionsChange={setStatementDeductions}
             notes={statementNotes} onNotesChange={setStatementNotes}
-            onSelectAll={selectAll} onClearSelection={() => setRows({})}
+            onSelectAll={() => { selectAll(); setStatementQueueIds(list.filter((c) => isSettleable(c)).map((c) => c.id)); }}
+            onClearSelection={() => { setRows({}); setStatementQueueIds([]); }}
             lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: String(remainingOf(c)), selected: get(c).outcome === "COLLECTED", collected: get(c).collected }))}
           />
+
+          {partyRow?.partyType === "COMPANY" && (
+            <CompanyStatementScanQueue
+              candidates={list.filter((candidate) => isSettleable(candidate)) as CompanyStatementQueueCandidate[]}
+              queuedIds={statementQueueIds}
+              collectedById={Object.fromEntries(Object.entries(rows).map(([id, row]) => [Number(id), row.collected]))}
+              disabled={statementNumber.trim().length < 2 || listStillLoading}
+              onQueue={(candidate, collected) => {
+                setStatementQueueIds((ids) => ids.includes(candidate.id) ? ids : [...ids, candidate.id]);
+                setRows((current) => ({ ...current, [candidate.id]: { outcome: "COLLECTED", collected } }));
+              }}
+              onRemove={(consignmentId) => {
+                setStatementQueueIds((ids) => ids.filter((id) => id !== consignmentId));
+                setRows((current) => ({ ...current, [consignmentId]: { outcome: "NONE", collected: "0" } }));
+              }}
+              onCollectedChange={(consignmentId, collected) => {
+                setRows((current) => ({ ...current, [consignmentId]: { outcome: "COLLECTED", collected } }));
+              }}
+            />
+          )}
 
           <DeliverySettleSummaryCard
             totals={totals}

@@ -66,6 +66,9 @@ async function seed() {
   await d.insert(s.customers).values([{ id: 1, name: "عميل التوصيل", phone: "+9647700000000" }]);
   await d.insert(s.products).values([{ id: 1, name: "كتاب مطبوع" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "BK-1", costPrice: "0.00" }]);
+  await d.insert(s.productUnits).values({
+    id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true,
+  });
   await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 100 }]);
   // جهتان: فرد مربوط بحساب (البوّابة تعمل عليه) + شركة بيانات بلا حساب — جوهرُ الحملة:
   // إرسالياتها تُنشَأ بلا assignedUserId ولا أحدَ يملك بوّابةً يُقدّمها منها.
@@ -103,9 +106,13 @@ async function readyWorkOrder(): Promise<number> {
   return woId;
 }
 
-async function dispatchCn(partyId: number): Promise<number> {
+async function dispatchCn(partyId: number, externalTrackingRef?: string): Promise<number> {
   const woId = await readyWorkOrder();
-  const disp = await dispatchToDelivery({ workOrderId: woId, partyId }, CASHIER);
+  const disp = await dispatchToDelivery({
+    workOrderId: woId,
+    partyId,
+    ...(externalTrackingRef ? { externalTrackingRef } : {}),
+  }, CASHIER);
   return disp.consignmentId;
 }
 
@@ -194,7 +201,7 @@ describe("delivery staff transitions — قناة الموظف المستندي�
   it("لا يدهس سائقاً مُسنَداً — ويملأ الشاغر فقط (إرسالية شركة بلا حساب)", async () => {
     const { partyInd, partyCo } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
-    const vacant = await dispatchCn(partyCo); // شركة بلا حساب ⇒ assignedUserId=NULL
+    const vacant = await dispatchCn(partyCo, "STAFF-COMPANY-0001"); // شركة بلا حساب ⇒ assignedUserId=NULL
     const owned = await dispatchCn(partyInd); // فرد ⇒ أُسند تلقائياً للمستخدم 3
     expect((await cnRow(vacant)).assignedUserId).toBeNull();
     expect((await cnRow(owned)).assignedUserId).toBe(3);

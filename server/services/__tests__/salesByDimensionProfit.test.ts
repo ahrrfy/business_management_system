@@ -95,6 +95,7 @@ async function seedInvoice(opts: {
       returnedRestockedBaseQuantity: it.restockedReturn ?? 0,
       unitPrice: it.unitPrice,
       unitCost: it.unitCost,
+      lineCost: (it.qty * Number(it.unitCost)).toFixed(2),
       total: (it.qty * Number(it.unitPrice)).toFixed(2),
     });
   }

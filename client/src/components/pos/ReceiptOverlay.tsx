@@ -2,7 +2,7 @@
 // استُخرجت من client/src/pages/POS.tsx بلا تغيير سلوكيّ مع تحسين تجربة المستخدم والحركة المتزامنة.
 
 import { useState, useEffect } from "react";
-import { Printer, Check, Vault, Truck } from "lucide-react";
+import { Printer, Check, Vault, Truck, Package } from "lucide-react";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { CopyButton } from "@/components/CopyButton";
@@ -46,9 +46,10 @@ export interface ReceiptOverlayProps {
   receipt: GenericReceipt | Receipt;
   onDismiss: () => void;
   onPrint: () => void;
+  onPrintLabel?: () => void;
 }
 
-export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps) {
+export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }: ReceiptOverlayProps) {
   const modalRef = useModalFocus<HTMLDivElement>();
   const [drawerKicked, setDrawerKicked] = useState(true);
   const [qrSrc, setQrSrc] = useState<string | null>(null);
@@ -373,8 +374,8 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
             onToggle={() => setDrawerKicked((prev) => !prev)}
           />
 
-          {/* أزرار الإجراءات الفورية أسفل الفاتورة */}
-          <div style={{ width: "100%", marginTop: 12, display: "flex", gap: 8, zIndex: 10 }}>
+          {/* شريط الإجراءات أسفل الفاتورة */}
+          <div style={{ width: "100%", marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8, zIndex: 10 }}>
             <button
               onClick={handlePrintAndDrawer}
               style={{
@@ -385,8 +386,23 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
               }}
             >
               <Printer size={16} aria-hidden />
-              <span>طباعة وفتح الدرج</span>
+              <span>طباعة إيصال حراري</span>
             </button>
+
+            {onPrintLabel && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onPrintLabel(); }}
+                style={{
+                  flex: 1.2, height: 44, background: "#1e293b", border: "1.5px solid #475569",
+                  borderRadius: 8, fontFamily: "inherit", fontSize: 13, fontWeight: 800,
+                  cursor: "pointer", color: "#ffffff", display: "flex", alignItems: "center",
+                  justifyContent: "center", gap: 6, boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                }}
+              >
+                <Package size={16} aria-hidden />
+                <span>طباعة ليبل</span>
+              </button>
+            )}
 
             <button
               onClick={handleOpenDrawer}

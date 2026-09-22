@@ -223,6 +223,18 @@ const EXTRA_MIGRATIONS = [
   // ٦/٩/٢٦: قرار المالك عامٌّ في كل الوحدات؛ تُسقط بقية قيود maker-checker التي لا تستطيع
   // CHECK أحادية الجدول استثناء المالك النشط منها. التحقق من صفة المالك يبقى في الخدمة.
   "drizzle/migrations/0336_owner_global_selfapproval_constraints.sql",
+  // ١٧/٩/٢٦: db:push لا يرى activeSlot لأنه عمود GENERATED خارج schema.ts في هذه الشريحة.
+  // المرآة تنظّف ازدواج الإرث ثم تفرض وصفةً فعّالة واحدة لكل outputVariantId بنيوياً.
+  "drizzle/migrations/0359_recipe_inventory_integrity.sql",
+  // ١٧/٩/٢٦: lineCost يحفظ كلفة السطر بلا انجراف تقريب، وجدول اللقطة يربط مواد الخدمة
+  // ببند الفاتورة للعكس/التصحيح من أثر ثابت لا من recipe أو notes حيّين.
+  "drizzle/migrations/0360_service_line_cost_snapshot.sql",
+  // ١٧/٩/٢٦: حجز مخزون/تعريف السلة الرقمية بين prepare وfinalize يمنع إصدار كرت
+  // ثم فشل الفاتورة بسبب بيع المادة أو تغيير الوصفة أثناء الاتصال بالمزوّد.
+  "drizzle/migrations/0362_digital_intent_inventory_reservation.sql",
+  // ١٧/٩/٢٦: يثبت وحدة/كمية الصنف الأساس لأمر الشغل ويميز سطر استهلاكه الإلزامي؛
+  // يمنع التسليم بوحدة حالية مختلفة أو بيع صنف مادي لم يُخصم عند بدء التنفيذ.
+  "drizzle/migrations/0363_work_order_base_inventory_snapshot.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

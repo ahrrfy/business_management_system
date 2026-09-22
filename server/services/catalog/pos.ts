@@ -413,11 +413,12 @@ export async function listByUnitIds(
   productUnitIds: number[],
   branchId: number,
   tier: PriceTier,
+  customerId?: number | null,
 ): Promise<PosRow[]> {
   const db = getDb();
   if (!db || !productUnitIds.length) return [];
   const rows = await baseSelect(db, branchId, tier).where(and(activeOnly, inArray(productUnits.id, productUnitIds)));
-  const priced = await applyContractPrices(db, normalize(rows, branchId), null);
+  const priced = await applyContractPrices(db, normalize(rows, branchId), customerId);
   const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   return applyPromotions(withAvail, branchId, tier);
 }

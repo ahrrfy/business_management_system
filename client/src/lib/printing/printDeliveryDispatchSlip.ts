@@ -26,6 +26,8 @@ export interface DispatchSlipData {
   title?: string | null;
   notes?: string | null;
   dispatchedAt?: Date | string;
+  /** رابط عام حقيقي وموقّع يفتح معلومات المستند/الطلب. */
+  qrUrl?: string | null;
 }
 
 export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
@@ -59,10 +61,6 @@ export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
     { label: "المطلوب تحصيله عند الاستلام", value: `${fmt(totalToCollectFromCustomer)} د.ع` },
   ];
 
-  const qrPayload = d.consignmentNumber
-    ? `https://alarabiya.online/track/${encodeURIComponent(d.consignmentNumber)}`
-    : `ORD:${d.orderNumber}`;
-
   return {
     kind: "receipt",
     title: "بوليصة إسناد وتوصيل",
@@ -72,7 +70,7 @@ export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
     footer: "توقيع واستلام المندوب: ____________  توقيع الزبون: ____________\nيرجى التأكد من محتويات الطرد ومطابقة المبلغ قبل الاستلام",
     barcodeSet: {
       barcode128: d.consignmentNumber,
-      qrPayload,
+      qrPayload: d.qrUrl ?? d.consignmentNumber,
       displayLabel: `إرسالية: ${d.consignmentNumber}\nالطلب #${d.orderNumber} · المستلم: ${d.recipientName || "—"}`,
     },
   };

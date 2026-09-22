@@ -16,6 +16,7 @@
  */
 import { useEffect, useRef } from "react";
 import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
+import { playAudioFeedback } from "@/lib/audioFeedback";
 
 const INPUT_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
@@ -25,11 +26,12 @@ export function useBarcodeScanner(
     enabled = true,
     minLength = 2,
     thresholdMs = 120,
+    soundEnabled = true,
     // يتنحّى الماسح عن الحقول المركَّز فيها (INPUT/TEXTAREA/SELECT) فيتركها لماسحها المحلّيّ
     // (مثل ProductSearchBar عبر useBarcodeInput). يستعمله الماسح العالميّ للوحة الأوامر كي لا
     // يخطف المسح داخل شاشات السلة (مرتجعات/تحويلات/هدايا...) — يعيد سلوك ما قبل #1070.
     ignoreInputFields = false,
-  }: { enabled?: boolean; minLength?: number; thresholdMs?: number; ignoreInputFields?: boolean } = {},
+  }: { enabled?: boolean; minLength?: number; thresholdMs?: number; soundEnabled?: boolean; ignoreInputFields?: boolean } = {},
 ): void {
   // مرجعٌ مستقرّ لـonScan: يمنع إعادةَ بناء الكاشف وتسجيلِ المستمع كلّما تغيّرت هويّة onScan
   // (المستدعي بدالّةٍ سطريّة مثل BarcodeLabels) — فلا يُعاد ضبطُ الكاشف وسط المسح فيُبتَر الباركود.
@@ -76,6 +78,7 @@ export function useBarcodeScanner(
       if (accepted && code.length >= minLength) {
         // أزال startBurst مرشّح المسح من الحقل؛ أبقِ النصّ اليدوي السابق كما هو.
         clearField();
+        if (soundEnabled) playAudioFeedback("scan");
         onScanRef.current(code);
       } else {
         // كتابةٌ بشرية قصيرة صُنّفت سريعاً بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع.
@@ -156,5 +159,5 @@ export function useBarcodeScanner(
       document.removeEventListener("focusin", onFocusChange);
       clearTimeout(timer);
     };
-  }, [enabled, minLength, thresholdMs, ignoreInputFields]);
+  }, [enabled, minLength, thresholdMs, soundEnabled, ignoreInputFields]);
 }

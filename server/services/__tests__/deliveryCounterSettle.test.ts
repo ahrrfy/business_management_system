@@ -81,7 +81,12 @@ async function dispatchedCreditInvoice(shiftId: number, reqId: string) {
     paymentMethod: "CASH", paidAmount: "0",
     clientRequestId: reqId,
     regularSale: { lines: [LINE20], amount: "20000.00" },
-    delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    delivery: {
+      partyId: 1,
+      fee: "0",
+      feeCollection: "COURIER",
+      externalTrackingRef: `TEST-${reqId}`,
+    },
   }, CASHIER);
   const invoiceId = r.regularSale!.invoiceId;
   const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];

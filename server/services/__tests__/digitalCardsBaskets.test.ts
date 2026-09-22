@@ -79,7 +79,7 @@ describe("digital provider transaction baskets", () => {
     const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId!));
     expect(wallet.currentBalance).toBe("100000.00");
     expect(wallet.reservedBalance).toBe("29000.00");
-    expect((await intentService.getIntent(db(), operation.intentId))!.items[1].providerBasketKey).toBe("basket-one");
+    expect((await intentService.getIntent(db(), operation.intentId, cashier))!.items[1].providerBasketKey).toBe("basket-one");
   });
 
   it("retains the legacy rejection for repeated refs without an explicit basket", async () => {
@@ -137,7 +137,7 @@ describe("digital provider transaction baskets", () => {
       await intentService.claimExecution(tx, { intentId: operation.intentId, intentItemId: Number(operation.items[1].id), claimToken: "changed-group-ref" }, cashier);
       await intentService.markExecution(tx, { intentId: operation.intentId, intentItemId: Number(operation.items[1].id), claimToken: "changed-group-ref", status: "SUCCESS", providerReference: "REPLACED" }, cashier);
     })).rejects.toThrow(/تغيّر/);
-    expect((await intentService.getIntent(db(), operation.intentId))!.items.every((item) => item.fulfillmentStatus === "PENDING")).toBe(true);
+    expect((await intentService.getIntent(db(), operation.intentId, cashier))!.items.every((item) => item.fulfillmentStatus === "PENDING")).toBe(true);
   });
 
   it("releases an entirely unissued basket reference on cancellation", async () => {

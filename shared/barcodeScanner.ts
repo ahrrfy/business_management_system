@@ -46,11 +46,14 @@ const AIM_CODE_IDENTIFIER = /^\][A-Za-z][A-Za-z0-9]/;
 export function normalizeBarcodeScannerInput(raw: string): string {
   if (!raw) return "";
   const cleaned = raw.replace(INVISIBLE_FORMAT_MARKS, "").trim();
-  const translateLayout = HAS_ARABIC_LAYOUT_OUTPUT.test(cleaned);
+  // جرّد AIM المرسل حرفياً قبل كشف التخطيط: الأرقام العربية/الفارسية تقع ضمن مجال Unicode
+  // العربي، فلا ينبغي أن تجعل `]C1` نفسها تتحوّل إلى `DC1` قبل أن نستطيع التعرّف عليها.
+  const scannerPayload = cleaned.replace(AIM_CODE_IDENTIFIER, "").trim();
+  const translateLayout = HAS_ARABIC_LAYOUT_OUTPUT.test(scannerPayload);
   let normalized = "";
-  for (let index = 0; index < cleaned.length;) {
+  for (let index = 0; index < scannerPayload.length;) {
     const multi = translateLayout
-      ? MULTI_CHAR_KEYS.find((token) => cleaned.startsWith(token, index))
+      ? MULTI_CHAR_KEYS.find((token) => scannerPayload.startsWith(token, index))
       : undefined;
     if (multi) {
       normalized += ARABIC_101_TO_ASCII[multi];
@@ -58,7 +61,7 @@ export function normalizeBarcodeScannerInput(raw: string): string {
       continue;
     }
 
-    const char = cleaned[index];
+    const char = scannerPayload[index];
     normalized += latinDigit(char) ?? (translateLayout ? ARABIC_101_TO_ASCII[char] : undefined) ?? char;
     index += 1;
   }

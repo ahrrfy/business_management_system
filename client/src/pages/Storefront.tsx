@@ -81,6 +81,8 @@ import { StorefrontCuratedRows, CuratedRow, type RowProduct } from "@/components
 import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { StorefrontThematicGrid } from "@/components/storefront/StorefrontThematicGrid";
+import { StorefrontActiveThematicBanner } from "@/components/storefront/StorefrontActiveThematicBanner";
+import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColorSwatches";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
@@ -873,32 +875,6 @@ export function BundleMedia({
   );
 }
 
-/** «تسوّق حسب القسم» — بطاقات فئات بصرية تقود التصفّح (نمط تجاريّ عالميّ). */
-function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[]; onPick: (id: number) => void }) {
-  if (cats.length === 0) return null;
-  return (
-    <section className="mb-6">
-      <h3 className="mb-2.5 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">
-        <LayoutGrid aria-hidden className="size-4 text-emerald-600" /> تسوّق حسب القسم
-      </h3>
-      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 lg:gap-2.5">
-        {cats.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => onPick(c.id)}
-            className="group flex min-h-[92px] flex-col items-center gap-1.5 rounded-xl bg-white p-2.5 text-center ring-1 ring-slate-100 transition motion-safe:hover:-translate-y-0.5 hover:ring-emerald-300 dark:bg-slate-900 dark:ring-slate-800 dark:hover:ring-emerald-500/40"
-          >
-            <span className="flex size-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 transition group-hover:bg-emerald-600 group-hover:text-white dark:bg-emerald-500/10 dark:text-emerald-400">
-              <Store aria-hidden className="size-6" />
-            </span>
-            <span className="line-clamp-2 text-[11px] font-bold leading-tight text-slate-700 dark:text-slate-200">{c.name}</span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function CategoryChipStrip({
   cats,
   selectedId,
@@ -995,34 +971,6 @@ function CategoryChipStrip({
   );
 }
 
-/**
- * سواتش ألوان المنتج (اسم + لون حقيقي «#RRGGBB» + توفّر) — صفّ نقاط صغيرة على البطاقة/التفاصيل.
- * تُعرَض ألوان المنتج **كاملةً** بما فيها النافدة، لكنّ النافد يظهر **باهتاً بلا تشبّع** مع وسم «نافد»
- * في التلميح/قارئ الشاشة — فيرى الزبون نطاق الألوان كاملاً دون أن يُضلَّل عن توفّرها.
- */
-function ColorSwatches({ colors, max = 6, size = 12 }: { colors?: { name: string; hex: string; inStock: boolean }[]; max?: number; size?: number }) {
-  if (!colors || colors.length === 0) return null;
-  const shown = colors.slice(0, max);
-  const extra = colors.length - shown.length;
-  return (
-    <div className="flex items-center gap-1" title={`ألوان المنتج: ${colors.map((c) => (c.inStock ? c.name : `${c.name} (نافد)`)).join("، ")}`}>
-      {shown.map((c) => {
-        const label = c.inStock ? c.name : `${c.name} — نافد`;
-        return (
-          <span
-            key={`${c.hex}-${c.name}`}
-            role="img"
-            className={`inline-block shrink-0 rounded-full ring-1 ring-black/20 dark:ring-white/25${c.inStock ? "" : " opacity-30 grayscale"}`}
-            style={{ width: size, height: size, background: c.hex }}
-            title={label}
-            aria-label={label}
-          />
-        );
-      })}
-      {extra > 0 && <span className="text-[9px] font-bold text-slate-400">+{extra}</span>}
-    </div>
-  );
-}
 
 type StorefrontUnitForCartAction = {
   productUnitId: number;
@@ -1281,6 +1229,7 @@ function StorefrontContent() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchSuggestionIndex, setSearchSuggestionIndex] = useState(0);
   const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [selectedThematic, setSelectedThematic] = useState<{ id: string; title: string; tag: string; productIds: number[] } | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
   const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
@@ -1441,6 +1390,7 @@ function StorefrontContent() {
   // «تحميل المزيد»، فتصل كل المنتجات المنشورة بلا سقف 120 صامت ولا تكرار بطاقات.
   const catalogInput = {
     categoryId,
+    productIds: selectedThematic ? selectedThematic.productIds : undefined,
     search: search || undefined,
     limit: 48,
     availability,
@@ -1829,6 +1779,7 @@ function StorefrontContent() {
   );
   const filteredItems = useMemo(() => {
     const filtered = items.filter((p) => {
+      if (selectedThematic && !selectedThematic.productIds.includes(p.productId)) return false;
       if (showWishlist && !wishlistIds.has(p.productId)) return false;
       if (availability === "IN_STOCK" && !p.inStock) return false;
       if (brand && p.brand !== brand) return false;
@@ -1841,8 +1792,8 @@ function StorefrontContent() {
       const bPrice = Number(b.salePrice ?? b.price ?? 0);
       return sort === "PRICE_ASC" ? aPrice - bPrice : bPrice - aPrice;
     });
-  }, [availability, brand, items, priceFilter, showWishlist, sort, wishlistIds]);
-  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist;
+  }, [availability, brand, items, priceFilter, selectedThematic, showWishlist, sort, wishlistIds]);
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematic != null;
   // اقتراحات البحث: مُصفَّرة من `filteredItems` (Codex #4) — لا يظهر اقتراحٌ ينتفي فور اختياره.
   const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(filteredItems, rawSearch), [filteredItems, rawSearch]);
   useEffect(() => { setSearchSuggestionIndex(0); }, [rawSearch]);
@@ -1862,6 +1813,7 @@ function StorefrontContent() {
     window.setTimeout(() => document.getElementById("store-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
   function selectCategory(id: number | null) {
+    setSelectedThematic(null);
     setCategoryId(id);
     scrollToResults();
   }
@@ -1875,6 +1827,7 @@ function StorefrontContent() {
     setRawSearch("");
     setSearch("");
     setCategoryId(null);
+    setSelectedThematic(null);
     clearRefinements();
   }
   function pulseHeart(target: string) {
@@ -2354,7 +2307,7 @@ function StorefrontContent() {
       <StorefrontStickyFilter
         categories={cats.map((c: any) => ({ categoryId: c.id ?? c.categoryId, name: c.name }))}
         selectedCategoryId={categoryId}
-        onSelectCategory={(id) => { setCategoryId(id); scrollToResults(); }}
+        onSelectCategory={(id) => { setSelectedThematic(null); setCategoryId(id); scrollToResults(); }}
         availability={availability}
         onToggleAvailability={() => { setAvailability((v) => v === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }}
         sort={sort}
@@ -2509,7 +2462,7 @@ function StorefrontContent() {
             وخصمُ الكوبون وزرُّ الإضافة وشارةُ العرض وبطاقاتُ الأقسام وأخضرُ واتساب. */}
         {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-neg)]">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
-        <StorefrontMilestoneBar cartSubtotal={cartSubtotal} className="mb-6" />
+        <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
         {!search && categoryId == null && !showWishlist && (
           <>
@@ -2589,21 +2542,58 @@ function StorefrontContent() {
                 onUpdateQuantity={handleProductQuantityDelta}
               />
             </div>
-            <StorefrontThematicGrid onSelectKeyword={(kw) => { setSearch(kw); scrollToResults(); }} />
+            <StorefrontThematicGrid
+              onSelectCollection={(c) => {
+                setRawSearch("");
+                setSearch("");
+                setCategoryId(null);
+                setSelectedThematic({
+                  id: c.id,
+                  title: c.title,
+                  tag: c.tag,
+                  productIds: c.productIds ?? [],
+                });
+                scrollToResults();
+              }}
+              onSelectKeyword={(kw) => {
+                setSelectedThematic(null);
+                setSearch(kw);
+                scrollToResults();
+              }}
+            />
           </>
         )}
 
         <section id="store-results" className="mt-12 scroll-mt-36 rounded-3xl bg-white p-5 shadow-xs ring-1 ring-slate-200/70 sm:p-7 dark:bg-slate-900 dark:ring-slate-800">
           <div className="mb-5 flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end sm:justify-between dark:border-slate-800">
             <div>
-              <p className="text-xs font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">كتالوج المتجر</p>
-              <h2 className="mt-1 text-2xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100">{showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}</h2>
-              <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">{search ? `نتائج البحث عن «${search}»` : activeCatName ? `منتجات فئة «${activeCatName}»` : "تصفح المجموعة الكاملة بالأسعار والمخزون المباشر"}</p>
+              <p className="text-xs font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">
+                {selectedThematic ? "تشكيلة منتقاة ذكياً" : "كتالوج المتجر"}
+              </p>
+              <h2 className="mt-1 text-2xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100">
+                {selectedThematic ? `تشكيلة «${selectedThematic.title}»` : showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}
+              </h2>
+              <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">
+                {selectedThematic
+                  ? `مختارات منتقاة (${selectedThematic.tag}) تضم ${filteredItems.length} صنفاً متطابقاً وجاهزاً للطلب`
+                  : search
+                  ? `نتائج البحث عن «${search}»`
+                  : activeCatName
+                  ? `منتجات فئة «${activeCatName}»`
+                  : "تصفح المجموعة الكاملة بالأسعار والمخزون المباشر"}
+              </p>
             </div>
             <span role="status" aria-live="polite" aria-atomic="true" className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700 dark:bg-slate-800 dark:text-slate-300">
               {filteredItems.length} منتج
             </span>
           </div>
+          {selectedThematic && (
+            <StorefrontActiveThematicBanner
+              thematic={selectedThematic}
+              matchingCount={filteredItems.length}
+              onClear={() => setSelectedThematic(null)}
+            />
+          )}
           <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-3 lg:flex-row lg:items-center lg:justify-between dark:border-slate-800 dark:bg-slate-900/50">
             <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <button
@@ -2760,7 +2750,7 @@ function StorefrontContent() {
       {cartCount > 0 && panel == null && (
         <div className="fixed inset-x-3 bottom-4 z-30 mx-auto max-w-lg sm:bottom-6 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2">
           <div className="store-dynamic-dock flex flex-col gap-2 rounded-2xl border border-white/20 bg-slate-950/95 p-2.5 sm:p-3 text-white shadow-2xl backdrop-blur-xl ring-1 ring-black/40">
-            <StorefrontMilestoneBar cartSubtotal={cartSubtotal} compact />
+            <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} compact />
             <div className="flex items-center justify-between gap-3">
               <button type="button" onClick={() => setPanel("cart")} className="flex min-w-0 items-center gap-2.5 text-right focus:outline-none">
                 <div className="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/15 bg-white/10">
@@ -2915,7 +2905,7 @@ function StorefrontContent() {
                     {detailQ.data.colors && detailQ.data.colors.length > 0 && (
                       <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
                         <span>ألوان المنتج:</span>
-                        <ColorSwatches colors={detailQ.data.colors} max={12} size={16} />
+                        <StorefrontColorSwatches colors={detailQ.data.colors} max={12} size={16} />
                       </div>
                     )}
                     {detailQ.data.isCustomizable ? (

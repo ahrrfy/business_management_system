@@ -186,6 +186,7 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
       workOrderId,
       partyId: partyRes.id,
       clientRequestId: `req-dispatch-${randomUUID()}`,
+      externalTrackingRef: `ASSIGN-${workOrderId}`,
     }, MANAGER);
 
     // الآن أمر الشغل مرتبط بإرسالية وفاتورة

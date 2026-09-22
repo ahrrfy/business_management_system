@@ -4,7 +4,7 @@ import { and, desc, eq, isNull, like, notLike, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
-import { applyMovement } from "../inventoryService";
+import { applyValuedInboundMovement } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
@@ -415,25 +415,39 @@ export async function cancelWorkOrderInTx(
           .filter((material) => (decisions.get(Number(material.id))?.returnBase ?? Number(material.baseQuantity)) > 0)
           .map((material) => Number(material.variantId)),
       );
+      const returnedByVariant = new Map<number, { quantity: number; value: Decimal }>();
       for (const m of mats) {
         const consumed = Number(m.baseQuantity);
         const d = decisions.get(Number(m.id)) ?? { returnBase: consumed, wasteBase: 0 };
         if (d.returnBase > 0) {
-          await applyMovement(tx, {
-            variantId: Number(m.variantId),
-            branchId: Number(wo.branchId),
-            baseQuantity: d.returnBase,
-            movementType: "IN",
-            referenceType: "WORK_ORDER_CANCEL",
-            referenceId: workOrderId,
-            createdBy: actor.userId,
-          });
+          const variantId = Number(m.variantId);
+          const lineValue = round2(money(m.unitCost ?? "0").times(d.returnBase));
+          const previous = returnedByVariant.get(variantId) ?? {
+            quantity: 0,
+            value: money(0),
+          };
+          previous.quantity += d.returnBase;
+          previous.value = previous.value.plus(lineValue);
+          returnedByVariant.set(variantId, previous);
         }
         // التكلفةُ بلقطة `unitCost` المختومة عند البدء — لا بتكلفةِ اليوم: الرجوعُ يعيد
         // للمخزون ما خرج منه بقيمته وقتَها، وإلّا حرّك حقوقاً بفرق تقييمٍ لا سببَ له.
         returnedCost = returnedCost.plus(round2(money(m.unitCost ?? "0").times(d.returnBase)));
       }
       returnedCost = round2(returnedCost);
+      // حركةٌ واحدة وWAVG واحد لكل متغيّر: تكرار المادة في أكثر من سطر لا يراكم تقريباً
+      // وسيطاً، والقيمة المضافة للمخزون تساوي بالضبط ما سيخرج من WIP في القيد أدناه.
+      for (const [variantId, returned] of Array.from(returnedByVariant.entries()).sort((a, b) => a[0] - b[0])) {
+        await applyValuedInboundMovement(tx, {
+          variantId,
+          branchId: Number(wo.branchId),
+          baseQuantity: returned.quantity,
+          historicalValue: returned.value,
+          referenceType: "WORK_ORDER_CANCEL",
+          referenceId: workOrderId,
+          createdBy: actor.userId,
+        });
+      }
 
       const materialsCost = round2(money(wo.materialsCost ?? "0"));
       // الهدرُ **باقٍ** لا حاصلَ ضربٍ ثانٍ: `مُهدَر = إجمالي − راجع` ⇒ لا دينارَ يسقط بين
