@@ -1,7 +1,7 @@
 // شيخوخة الذمم الدائنة (AP) + كشف حساب مورد.
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
+import { accountingEntries, exchangeHouses, exchangeTransactions, goodsReceipts, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { StatementPeriod } from "./shared";
@@ -158,10 +158,22 @@ export interface SupplierStatementPayment {
   createdByName: string | null;
 }
 
+export interface SupplierStatementUnbilledReceipt {
+  goodsReceiptId: number;
+  receiptNumber: string;
+  purchaseOrderId: number | null;
+  poNumber: string | null;
+  receivedAt: Date | null;
+  totalAmount: string;
+  notes: string | null;
+}
+
 export interface SupplierStatementResult {
   supplier: Pick<typeof suppliers.$inferSelect, "id" | "name" | "phone" | "city" | "paymentTerms" | "currentBalance" | "currentBalanceUsd">;
   purchaseOrders: SupplierStatementPO[];
   payments: SupplierStatementPayment[];
+  /** أذونات استلام مخزني أُثبتت في المخزون مقابل GRNI لكن لم تُفوتر بعد إلى ذمة المورد AP. */
+  unbilledReceipts?: SupplierStatementUnbilledReceipt[];
   summary: {
     totalPurchases: string;
     totalPaid: string;
@@ -445,8 +457,49 @@ export async function getSupplierStatement(
     money(0),
   );
 
+  // أذونات الاستلام المخزني المرحّلة ذات الأصل NATIVE غير المفوترة بعد (إفصاح رقابي للمحاسب)
+  const unbilledReceiptRows = await db
+    .select({
+      goodsReceiptId: goodsReceipts.id,
+      receiptNumber: goodsReceipts.receiptNumber,
+      purchaseOrderId: goodsReceipts.purchaseOrderId,
+      poNumber: purchaseOrders.poNumber,
+      receivedAt: goodsReceipts.receivedAt,
+      totalAmount: goodsReceipts.totalAmount,
+      notes: goodsReceipts.notes,
+    })
+    .from(goodsReceipts)
+    .leftJoin(purchaseOrders, eq(purchaseOrders.id, goodsReceipts.purchaseOrderId))
+    .where(
+      and(
+        eq(goodsReceipts.supplierId, supplierId),
+        eq(goodsReceipts.status, "POSTED"),
+        eq(goodsReceipts.origin, "NATIVE"),
+        branchId ? eq(goodsReceipts.branchId, branchId) : undefined,
+        sql`NOT EXISTS (
+          SELECT 1
+          FROM goodsReceiptItems gri
+          INNER JOIN supplierInvoiceMatchAllocations sima ON sima.goodsReceiptItemId = gri.id
+          INNER JOIN supplierInvoiceMatchRuns simr ON simr.id = sima.matchRunId
+          INNER JOIN supplierInvoices si ON si.id = simr.supplierInvoiceId
+          WHERE gri.goodsReceiptId = ${goodsReceipts.id}
+            AND si.status = 'POSTED'
+            AND si.postingEntryId IS NOT NULL
+        )`,
+      ),
+    );
+
   return {
     supplier: s,
+    unbilledReceipts: unbilledReceiptRows.map((r) => ({
+      goodsReceiptId: Number(r.goodsReceiptId),
+      receiptNumber: r.receiptNumber,
+      purchaseOrderId: r.purchaseOrderId ? Number(r.purchaseOrderId) : null,
+      poNumber: r.poNumber ?? null,
+      receivedAt: r.receivedAt,
+      totalAmount: String(r.totalAmount ?? "0.00"),
+      notes: r.notes ?? null,
+    })),
     purchaseOrders: posWithTotals.map((p) => ({
       id: Number(p.id),
       poNumber: p.poNumber,

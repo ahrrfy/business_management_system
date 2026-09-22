@@ -12,6 +12,7 @@ import {
   invoices,
   journalEntries,
   journalLines,
+  goodsReceipts,
   onlineOrders,
   openingModeSettings,
   receipts,
@@ -671,6 +672,52 @@ export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
     }
   }
   return issues;
+}
+
+/**
+ * التحقّق من أذونات الاستلام المخزني غير المفوترة (GRNI Invariant).
+ * كل إذن استلام POSTED يثبت زيادة المخزون مقابل وسيط الاستلام GRNI.
+ * يجب ألا يبقى أي إذن استلام أصيل (NATIVE) أو آجل (CREDIT) معلقاً بلا فاتورة مورد مرحلة ومطابقة،
+ * وإلا وُجد التزام معلق في GRNI غير منعكس في ذمة المورد (AP).
+ */
+export async function reconcileUnbilledGoodsReceipts(): Promise<ReconcileResult[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const unbilled = await db
+    .select({
+      id: goodsReceipts.id,
+      receiptNumber: goodsReceipts.receiptNumber,
+      supplierId: goodsReceipts.supplierId,
+      purchaseOrderId: goodsReceipts.purchaseOrderId,
+      totalAmount: goodsReceipts.totalAmount,
+    })
+    .from(goodsReceipts)
+    .where(
+      and(
+        eq(goodsReceipts.status, "POSTED"),
+        eq(goodsReceipts.origin, "NATIVE"),
+        sql`NOT EXISTS (
+          SELECT 1
+          FROM goodsReceiptItems gri
+          INNER JOIN supplierInvoiceMatchAllocations sima ON sima.goodsReceiptItemId = gri.id
+          INNER JOIN supplierInvoiceMatchRuns simr ON simr.id = sima.matchRunId
+          INNER JOIN supplierInvoices si ON si.id = simr.supplierInvoiceId
+          WHERE gri.goodsReceiptId = ${goodsReceipts.id}
+            AND si.status = 'POSTED'
+            AND si.postingEntryId IS NOT NULL
+        )`,
+      ),
+    );
+
+  return unbilled.map((row) => ({
+    entity: "goodsReceipt",
+    id: Number(row.id),
+    expected: "0.00",
+    actual: String(row.totalAmount ?? "0.00"),
+    drift: String(row.totalAmount ?? "0.00"),
+    note: `إذن استلام مخزني غير مفوتر (${row.receiptNumber}) لأمر شراء ${row.purchaseOrderId ?? "—"} مقابل GRNI`,
+  }));
 }
 
 /**

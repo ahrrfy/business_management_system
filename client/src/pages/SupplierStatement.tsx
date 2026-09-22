@@ -547,6 +547,18 @@ export default function SupplierStatement() {
                   </div>
                 </div>
               )}
+
+              {Boolean(stmt.data.unbilledReceipts?.length) && (
+                <div className="flex items-start gap-2 rounded-md border bg-[var(--sem-info-bg)]/60 px-3 py-2 text-xs">
+                  <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-info)]" />
+                  <div>
+                    <span className="font-semibold">بضاعة مستلمة مخزنياً بانتظار فاتورة المورد (GRNI): </span>
+                    <span>
+                      توجد {stmt.data.unbilledReceipts?.length} أذونات استلام مخزني بانتظار ترحيل فاتورة المورد واعتمادها في الذمم الدائنة.
+                    </span>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
