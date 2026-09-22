@@ -24,6 +24,8 @@ describe("normalizeKnownSystemBarcode", () => {
 
   it("لا يحول البحث العربي اليدوي", () => {
     expect(normalizeKnownSystemBarcode("قلم ازرق")).toBe("قلم ازرق");
+    expect(normalizeKnownSystemBarcode("قلم ازرق ")).toBe("قلم ازرق ");
+    expect(normalizeKnownSystemBarcode("عمار السلامي ")).toBe("عمار السلامي ");
   });
 });
 
