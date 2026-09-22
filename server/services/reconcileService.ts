@@ -561,6 +561,7 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
         sql`${accountingEntries.invoiceId} IS NULL`,
         inArray(accountingEntries.entryType, ["PAYMENT_IN", "PAYMENT_OUT"]),
         entryNotHoldReceiptCond(accountingEntries.receiptId),
+        sql`(${accountingEntries.notes} IS NULL OR (${accountingEntries.notes} NOT LIKE '[DRAFT_DEPOSIT:%' AND ${accountingEntries.notes} NOT LIKE '[WO_DEPOSIT:%'))`,
       )
     )
     .groupBy(accountingEntries.customerId);

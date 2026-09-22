@@ -23,9 +23,8 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
-import { selectClsFull } from "@/lib/ui/formStyles";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
-import { Info } from "lucide-react";
+import { ExternalLink, Info } from "lucide-react";
 
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
@@ -549,13 +548,64 @@ export default function SupplierStatement() {
               )}
 
               {Boolean(stmt.data.unbilledReceipts?.length) && (
-                <div className="flex items-start gap-2 rounded-md border bg-[var(--sem-info-bg)]/60 px-3 py-2 text-xs">
-                  <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-info)]" />
-                  <div>
-                    <span className="font-semibold">بضاعة مستلمة مخزنياً بانتظار فاتورة المورد (GRNI): </span>
-                    <span>
-                      توجد {stmt.data.unbilledReceipts?.length} أذونات استلام مخزني بانتظار ترحيل فاتورة المورد واعتمادها في الذمم الدائنة.
-                    </span>
+                <div className="rounded-md border border-border/60 bg-[var(--sem-info-bg)]/60 p-3 text-xs space-y-2.5">
+                  <div className="flex items-start gap-2">
+                    <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-info)]" />
+                    <div>
+                      <span className="font-semibold">بضاعة مستلمة مخزنياً بانتظار فاتورة المورد (GRNI): </span>
+                      <span>
+                        توجد {stmt.data.unbilledReceipts?.length} أذونات استلام مخزني غير مفوترة بإجمالي{" "}
+                        <span className="tabular-nums font-semibold" dir="ltr">
+                          {fmt(
+                            stmt.data.unbilledReceipts
+                              ?.reduce(
+                                (sum, r) => sum.plus(D(r.totalAmount || "0")),
+                                D(0),
+                              )
+                              .toFixed(2) ?? "0.00",
+                          )}
+                        </span>
+                        {" "}دينار عراقي لم تُرحل إلى ذمم الموردين بعد.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="divide-y divide-border/40 rounded border border-border/40 bg-background/50">
+                    {stmt.data.unbilledReceipts?.map((r) => (
+                      <div
+                        key={r.goodsReceiptId}
+                        className="flex flex-wrap items-center justify-between gap-2 p-2.5"
+                      >
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-foreground">{r.receiptNumber}</span>
+                            {r.receivedAt && (
+                              <span className="text-muted-foreground">{fmtDate(r.receivedAt)}</span>
+                            )}
+                            {r.poNumber && (
+                              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                أمر شراء: {r.poNumber}
+                              </span>
+                            )}
+                          </div>
+                          {r.notes && (
+                            <p className="text-[11px] text-muted-foreground">{r.notes}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="tabular-nums font-semibold text-foreground" dir="ltr">
+                            {fmt(r.totalAmount)}
+                          </span>
+                          {r.purchaseOrderId && (
+                            <Link href={`/purchases/${r.purchaseOrderId}`}>
+                              <Button variant="outline" size="sm" className="h-7 text-xs gap-1">
+                                عرض أمر الشراء والمطابقة
+                                <ExternalLink aria-hidden className="size-3" />
+                              </Button>
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
