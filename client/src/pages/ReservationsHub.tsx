@@ -996,7 +996,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>حجز جديد</DialogTitle>
           <DialogDescription>احجز منتجات لعميل بمدّة انتهاء. الهاتف إلزاميّ لاستدعاء الحجز عند الحضور.</DialogDescription>

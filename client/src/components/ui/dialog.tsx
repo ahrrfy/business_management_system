@@ -133,7 +133,7 @@ function DialogContent({
            transition={{ type: "spring", damping: 20, stiffness: 300 }}
            data-slot="dialog-content"
            className={cn(
-             "bg-background fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto rounded-[var(--ui-radius-dialog)] border p-6 shadow-[var(--ui-shadow-dialog)] duration-200 sm:max-w-lg",
+             "bg-background fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] sm:w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto rounded-[var(--ui-radius-dialog)] border p-6 shadow-[var(--ui-shadow-dialog)] duration-200 sm:max-w-lg",
              className
            )}
          >

@@ -229,19 +229,22 @@ export default function GeneralLedger() {
       {
         accessorKey: "debit",
         header: "مدين",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.debit} />,
       },
       {
         accessorKey: "credit",
         header: "دائن",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.credit} />,
       },
       {
         id: "balance",
         header: "الرصيد الجاري",
         accessorFn: (row) => row.runningBalance,
+        meta: { kind: "money" },
         cell: ({ row }) => (
-          <div className="text-left tabular-nums" dir="ltr">
+          <div className="tabular-nums" dir="ltr">
             <span className="font-semibold">
               {fmtAr(row.original.runningBalance)}
             </span>

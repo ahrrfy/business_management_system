@@ -974,7 +974,7 @@ export default function MyStocktakeWorkspace() {
           }
         }}
       >
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-right">تسجيل الكمية المعدودة</DialogTitle>
           </DialogHeader>

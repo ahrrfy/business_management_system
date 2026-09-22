@@ -96,24 +96,52 @@ const STATUS_CLS: Record<string, string> = {
 const METHODS = paymentMethodTermOptions(INBOUND_ENABLED_PAYMENT_METHODS);
 type QuotationPayMethod = InboundEnabledPaymentMethod;
 /** حقل وصفي: عنوان صغير + قيمة. */
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  children,
+  truncate = false,
+}: {
+  label: string;
+  children: ReactNode;
+  truncate?: boolean;
+}) {
   return (
     <div className="space-y-0.5 min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="font-medium truncate">{children}</div>
+      <div className={cn("font-medium", truncate ? "truncate" : "break-words")}>{children}</div>
     </div>
   );
 }
 
-/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، بلا اقتطاع). */
-function SummaryRow({ label, value, strong,
-}: { label: string; value: string; strong?: boolean;
+/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، محمي ضد الاقتطاع). */
+function SummaryRow({
+  label,
+  value,
+  strong,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className={cn("text-muted-foreground", strong && "font-semibold text-foreground",
-        )}>{label}</span>
-      <span dir="ltr" className={cn("tabular-nums", strong ? "text-lg font-bold" : "text-sm")}>{fmt(value)}</span>
+    <div className="flex items-center justify-between gap-3 min-w-0 py-0.5">
+      <span
+        className={cn(
+          "text-muted-foreground shrink-0",
+          strong && "font-semibold text-foreground",
+        )}
+      >
+        {label}
+      </span>
+      <span
+        dir="ltr"
+        className={cn(
+          "tabular-nums shrink-0 whitespace-nowrap text-end",
+          strong ? "text-base sm:text-lg font-bold" : "text-sm font-medium",
+        )}
+      >
+        {fmt(value)}
+      </span>
     </div>
   );
 }
@@ -279,7 +307,7 @@ export default function QuotationDetail() {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4 max-w-6xl">
       {new URLSearchParams(search).get("print") === "1" && (
         <AutoPrintOnce onPrint={printQuote} />
       )}
@@ -299,8 +327,8 @@ export default function QuotationDetail() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-5 md:grid-cols-3">
-            <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
+          <div className="grid gap-6 lg:grid-cols-12">
+            <div className="lg:col-span-7 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="العميل">{data.customerName ?? "—"}</Field>
               <Field label="فئة السعر">{TIER[data.priceTier] ?? data.priceTier}</Field>
               <Field label="التاريخ">{fmtDate(data.quoteDate)}</Field>
@@ -312,7 +340,7 @@ export default function QuotationDetail() {
               )}
             </div>
 
-            <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
+            <div className="lg:col-span-5 min-w-[280px] rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="المجموع" value={data.subtotal} />
               {D(data.discountAmount ?? "0").gt(0) && (
                 <SummaryRow label="الخصم" value={data.discountAmount} />

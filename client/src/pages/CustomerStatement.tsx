@@ -91,7 +91,7 @@ function stmtMoneyCol<T>(
           <button
             type="button"
             onClick={() => onClick(row.original)}
-            className={`${cls ?? ""} hover:underline cursor-pointer text-start`}
+            className={`${cls ?? ""} hover:underline cursor-pointer text-end block w-full`}
           >
             {val}
           </button>

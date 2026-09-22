@@ -144,7 +144,7 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>تعديل طلب الخدمة{d ? ` — ${d.orderNumber}` : ""}</DialogTitle>
           <DialogDescription>

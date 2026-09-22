@@ -611,9 +611,9 @@ export default function ExpenseNew() {
               return (
                 <div
                   key={l.key}
-                  className="grid grid-cols-12 gap-2 items-center border rounded-md p-2"
+                  className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center border rounded-md p-2"
                 >
-                  <div className="col-span-4">
+                  <div className="col-span-1 sm:col-span-4">
                     <div className="font-medium text-sm">{l.productName}</div>
                     <div
                       className="text-xs text-muted-foreground font-mono"
@@ -622,7 +622,7 @@ export default function ExpenseNew() {
                       {l.sku}
                     </div>
                   </div>
-                  <div className="col-span-3">
+                  <div className="col-span-1 sm:col-span-3">
                     <AppSelect
                       className="h-9"
                       value={String(l.productUnitId)}
@@ -655,7 +655,7 @@ export default function ExpenseNew() {
                       ))}
                     </AppSelect>
                   </div>
-                  <div className="col-span-2">
+                  <div className="col-span-1 sm:col-span-2">
                     <Input
                       dir="ltr"
                       value={l.qty}
@@ -669,12 +669,12 @@ export default function ExpenseNew() {
                     />
                   </div>
                   <div
-                    className="col-span-2 text-left text-sm tabular-nums"
+                    className="col-span-1 sm:col-span-2 text-start sm:text-left text-sm tabular-nums"
                     dir="ltr"
                   >
                     {fmt(round2(D(l.costPriceBase).times(base)).toString())}
                   </div>
-                  <div className="col-span-1 text-left">
+                  <div className="col-span-1 sm:col-span-1 text-end sm:text-left">
                     <button
                       type="button"
                       className="text-destructive text-sm"
@@ -686,12 +686,12 @@ export default function ExpenseNew() {
                     </button>
                   </div>
                   {!valid && (
-                    <div className="col-span-12 text-xs text-destructive">
-                      الكمية يجب أن تُنتج عدداً صحيحاً موجباً.
+                    <div className="col-span-1 sm:col-span-12 text-xs text-destructive">
+                      الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.
                     </div>
                   )}
                   {over && (
-                    <div className="col-span-12 text-xs text-stock-low">
+                    <div className="col-span-1 sm:col-span-12 text-xs text-[var(--stock-low)]">
                       المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط —
                       سيُرفض إن لم يكفِ.
                     </div>

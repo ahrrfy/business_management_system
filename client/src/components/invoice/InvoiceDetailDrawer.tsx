@@ -137,7 +137,7 @@ export function InvoiceDetailDrawer({
             </Card>
 
             {/* الأرقام المالية السريعة */}
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="rounded-lg border bg-card p-2 text-center">
                 <div className="text-xs text-muted-foreground">الإجمالي</div>
                 <div className="font-bold text-sm tabular-nums">{fmt(inv.total)} د.ع</div>

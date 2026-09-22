@@ -610,20 +610,14 @@ export default function Invoices() {
       {
         accessorKey: "total",
         header: "الإجمالي",
-        cell: (c) => (
-          <span className="tabular-nums" dir="ltr">
-            {fmt(c.getValue() as string)}
-          </span>
-        ),
+        meta: { kind: "money" },
+        cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
       },
       {
         accessorKey: "paidAmount",
         header: "المدفوع",
-        cell: (c) => (
-          <span className="tabular-nums" dir="ltr">
-            {fmt(c.getValue() as string)}
-          </span>
-        ),
+        meta: { kind: "money" },
+        cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
       },
       {
         accessorKey: "paymentMethod",

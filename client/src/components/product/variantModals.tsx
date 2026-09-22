@@ -65,7 +65,7 @@ export function ImportModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>استيراد / لصق من Excel</DialogTitle>
           <DialogDescription>
@@ -218,7 +218,7 @@ export function LabelPrintModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>طباعة الملصقات بالجملة</DialogTitle>
           <DialogDescription>

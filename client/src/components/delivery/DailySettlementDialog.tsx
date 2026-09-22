@@ -112,7 +112,7 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg" dir="rtl">
+      <DialogContent className="sm:max-w-lg" dir="rtl">
         <DialogHeader>
           <DialogTitle className="inline-flex items-center gap-2"><Scale aria-hidden className="size-5" /> سوِّ اليوم — {party?.name}</DialogTitle>
           <DialogDescription>

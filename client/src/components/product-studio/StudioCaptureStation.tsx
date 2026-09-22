@@ -269,7 +269,7 @@ export function StudioCaptureStation({
       {/* نافذة معاينة وتكبير الصورة السابقة */}
       {previewModalImg && (
         <Dialog open onOpenChange={(open) => { if (!open) setPreviewModalImg(null); }}>
-          <DialogContent className="max-w-md sm:max-w-lg">
+          <DialogContent className="sm:max-w-md sm:max-w-lg">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-base">
                 <ImageIcon aria-hidden className="size-4 text-primary" />

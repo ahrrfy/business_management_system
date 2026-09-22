@@ -881,7 +881,7 @@ export default function StocktakeReport() {
         </p>
 
         {/* تواقيع */}
-        <div className="mt-10 grid grid-cols-3 gap-8 text-center text-sm">
+        <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-6 sm:gap-8 text-center text-sm">
           {[
             [
               "عدّ وأعدّ",

@@ -185,7 +185,7 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
                 });
               }
             }}
-            className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-right block w-full"
+            className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
             title="انقر لعرض تفاصيل السند/الحركة"
           >
             {fmt(r.debit)}
@@ -225,7 +225,7 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
                 });
               }
             }}
-            className="font-semibold hover:underline cursor-pointer transition-colors text-right block w-full"
+            className="font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
             title="انقر لعرض تفاصيل أمر الشراء/الحركة"
           >
             {fmt(r.credit)}
@@ -893,18 +893,20 @@ function AgingCard({ aging, scoped }: { aging: { d0_30: string; d31_60: string; 
             ]
           : <div className="w-full bg-border" />}
       </div>
-      <div className="grid grid-cols-5 gap-x-1 text-[10px]">
-        {AGING_BUCKETS.map((b, i) => (
-          <div key={b.key} className="text-center">
-            {/* bidi: "0–30" بلا مرساةٍ عربية تُعاد كتابتُها بصرياً "30-0" داخل حاويةٍ RTL بلا
-                عزلٍ صريح — dir="ltr" هنا إلزاميٌّ لا تجميليّ (أمسكته جولةٌ بصرية فعلية). */}
-            <div className={`font-semibold tabular-nums ${b.textCls}`} dir="ltr">{b.label}</div>
-            <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(values[i].toFixed(0))}</div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[340px] grid grid-cols-5 gap-x-1 text-[10px]">
+          {AGING_BUCKETS.map((b, i) => (
+            <div key={b.key} className="text-center min-w-0">
+              {/* bidi: "0–30" بلا مرساةٍ عربية تُعاد كتابتُها بصرياً "30-0" داخل حاويةٍ RTL بلا
+                  عزلٍ صريح — dir="ltr" هنا إلزاميٌّ لا تجميليّ (أمسكته جولةٌ بصرية فعلية). */}
+              <div className={`font-semibold tabular-nums ${b.textCls}`} dir="ltr">{b.label}</div>
+              <div className="tabular-nums text-muted-foreground whitespace-nowrap shrink-0" dir="ltr">{fmt(values[i].toFixed(0))}</div>
+            </div>
+          ))}
+          <div className="text-center min-w-0">
+            <div className="font-semibold tabular-nums text-[var(--sem-info)]">غير مصنَّف</div>
+            <div className="tabular-nums text-muted-foreground whitespace-nowrap shrink-0" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
           </div>
-        ))}
-        <div className="text-center">
-          <div className="font-semibold tabular-nums text-[var(--sem-info)]">غير مصنَّف</div>
-          <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
         </div>
       </div>
     </div>

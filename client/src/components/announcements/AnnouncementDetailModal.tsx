@@ -83,7 +83,7 @@ export function AnnouncementDetailModal({ announcement, open, onOpenChange }: Pr
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent dir="rtl" className="max-w-md sm:max-w-lg p-0 overflow-hidden bg-card">
+      <DialogContent dir="rtl" className="sm:max-w-md sm:max-w-lg p-0 overflow-hidden bg-card">
         <DialogHeader className="p-4 sm:p-5 border-b bg-muted/30">
           <div className="flex items-center justify-between gap-2 mb-2">
             <Badge className={priorityConfig.badgeClass}>

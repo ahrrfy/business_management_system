@@ -2350,7 +2350,7 @@ export default function Reception() {
                 </button>
               )}
             </div>
-            <div className="grid grid-cols-5 gap-1">
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-1">
               {receptionChannelOptions(WORK_ORDER_CHANNELS).map(({ value, label }) => (
                 <button
                   key={value}
