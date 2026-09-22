@@ -26,6 +26,8 @@ export interface OrderDeliveryValue {
   recipientName: string;
   recipientPhone: string;
   address: string;
+  /** رقم بوليصة الشركة كنصّ؛ لا يُحوَّل إلى رقم كي تبقى الأصفار البادئة. */
+  externalTrackingRef: string;
 }
 
 export default function OrderDeliveryDialog({
@@ -51,6 +53,8 @@ export default function OrderDeliveryDialog({
   const [name, setName] = useState(initial?.recipientName ?? defaultRecipientName ?? "");
   const [phone, setPhone] = useState(initial?.recipientPhone ?? defaultRecipientPhone ?? "");
   const [address, setAddress] = useState(initial?.address ?? "");
+  const [externalTrackingRef, setExternalTrackingRef] = useState(initial?.externalTrackingRef ?? "");
+  const selectedParty = parties.find((party) => String(party.id) === partyId);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
@@ -68,6 +72,7 @@ export default function OrderDeliveryDialog({
           <AppSelect
             value={partyId}
             onValueChange={(v) => {
+              if (v !== partyId) setExternalTrackingRef("");
               setPartyId(v);
               const p = parties.find((x) => String(x.id) === v);
               if (p && !fee) setFee(p.defaultFee ?? "0");
@@ -81,6 +86,24 @@ export default function OrderDeliveryDialog({
             ))}
           </AppSelect>
         </div>
+
+        {selectedParty?.partyType === "COMPANY" && (
+          <div className="space-y-1">
+            <Label className="text-[11px]" htmlFor="reception-delivery-external-tracking-ref">
+              رقم بوليصة شركة التوصيل (إلزامي)
+            </Label>
+            <Input
+              id="reception-delivery-external-tracking-ref"
+              value={externalTrackingRef}
+              onChange={(e) => setExternalTrackingRef(e.target.value)}
+              placeholder="امسح باركود البوليصة أو اكتب الرقم"
+              autoComplete="off"
+              maxLength={100}
+              dir="ltr"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
@@ -132,10 +155,14 @@ export default function OrderDeliveryDialog({
           <Button variant="outline" className="flex-1" onClick={onClose}>رجوع</Button>
           <Button
             className="flex-1"
-            disabled={!partyId}
+            disabled={!partyId || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             onClick={() => {
               const p = parties.find((x) => String(x.id) === partyId);
               if (!p) { notify.err("اختر جهة التوصيل"); return; }
+              if (p.partyType === "COMPANY" && !externalTrackingRef.trim()) {
+                notify.err("امسح باركود بوليصة شركة التوصيل أو اكتب رقمها");
+                return;
+              }
               if (feeCollection === "COUNTER" && !D(fee || 0).gt(0)) {
                 notify.err("«مقبوضة في الاستقبال» تتطلّب مبلغ أجرةٍ أكبر من صفر");
                 return;
@@ -148,6 +175,7 @@ export default function OrderDeliveryDialog({
                 recipientName: name.trim(),
                 recipientPhone: phone.trim(),
                 address: address.trim(),
+                externalTrackingRef: p.partyType === "COMPANY" ? externalTrackingRef.trim() : "",
               });
               onClose();
             }}

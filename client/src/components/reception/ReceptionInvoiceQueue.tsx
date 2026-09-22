@@ -456,6 +456,7 @@ export function ReceptionInvoiceQueue({
               recipientPhone: args.recipientPhone,
               deliveryAddress: args.deliveryAddress,
               assignedUserId: args.assignedUserId,
+              externalTrackingRef: args.externalTrackingRef,
               // معرّفٌ ثابتٌ للمحاولة: إعادةُ الإرسال بالإقرار هي **نفس** العملية لا ثانيةً،
               // فلو نجحت الأولى على الشبكة ثمّ أُعيدت لم تُنشئ إرساليةً مكرّرة.
               clientRequestId: `dispinv-${dispatchTarget.id}-${Date.now()}`,
@@ -889,6 +890,7 @@ function InvoiceDispatchDialog({
     recipientPhone?: string;
     deliveryAddress?: string;
     assignedUserId?: number;
+    externalTrackingRef?: string;
   }) => void;
 }) {
   const [partyId, setPartyId] = useState("");
@@ -901,6 +903,7 @@ function InvoiceDispatchDialog({
   );
   const [address, setAddress] = useState(row.deliveryAddress ?? "");
   const [assignedUserId, setAssignedUserId] = useState("");
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const remaining = useMemo(
     () => round2(D(row.total).minus(D(row.paidAmount ?? 0)).minus(D(row.returnedTotal ?? 0)),
       ).toNumber(),
@@ -920,6 +923,7 @@ function InvoiceDispatchDialog({
             onValueChange={(v) => {
               setPartyId(v);
               setAssignedUserId("");
+              setExternalTrackingRef("");
               const p = parties.find((x) => String(x.id) === v);
               if (p) setFee(p.defaultFee ?? "0");
             }}
@@ -942,6 +946,23 @@ function InvoiceDispatchDialog({
                 <option key={driver.userId} value={driver.userId}>{driver.name}</option>
               ))}
             </AppSelect>
+          </div>
+        )}
+
+        {party?.partyType === "COMPANY" && (
+          <div className="space-y-1">
+            <Label htmlFor="reception-invoice-tracking" className="text-[11px]">
+              رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="reception-invoice-tracking"
+              value={externalTrackingRef}
+              onChange={(event) => setExternalTrackingRef(event.target.value)}
+              placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم"
+              maxLength={100}
+              className="h-8 font-mono text-xs"
+              dir="ltr"
+            />
           </div>
         )}
 
@@ -1007,7 +1028,7 @@ function InvoiceDispatchDialog({
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
           <Button
             className="flex-1"
-            disabled={!partyId || pending}
+            disabled={!partyId || pending || (party?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             onClick={() => {
               if (!party) {
                 notify.err("اختر جهة التوصيل");
@@ -1021,6 +1042,7 @@ function InvoiceDispatchDialog({
                 recipientPhone: phone.trim() || undefined,
                 deliveryAddress: address.trim() || undefined,
                 assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
+                externalTrackingRef: externalTrackingRef.trim() || undefined,
               });
             }}
           >

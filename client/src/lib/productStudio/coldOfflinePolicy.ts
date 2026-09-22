@@ -1,3 +1,9 @@
+import {
+  isValidStudioTenantScope,
+  sameStudioTenantScope,
+  type StudioTenantScope,
+} from "@/lib/productStudio/studioTenantScope";
+
 /** المسار الوحيد الذي يمكن فتحه عند إقلاع بارد بلا جلسة شبكة: استعادة مسودة Studio مشفرة. */
 export const COLD_OFFLINE_STUDIO_PATH = "/catalog/image-studio";
 const STUDIO_LOCAL_ROLES = new Set([
@@ -18,20 +24,30 @@ export function isColdOfflineStudioRoute(location: string): boolean {
 export function coldOfflineStudioActor({
   pinVerified,
   profile,
-  draftIdentityUserId,
+  draftIdentity,
 }: {
   pinVerified: boolean;
-  profile: { userId: number; role: string; hasPin: boolean } | null;
-  draftIdentityUserId: number | null;
-}): { userId: number; role: string } | null {
+  profile: {
+    companyId: number | null | undefined;
+    userId: number;
+    role: string;
+    hasPin: boolean;
+  } | null;
+  draftIdentity: StudioTenantScope | null;
+}): (StudioTenantScope & { role: string }) | null {
   if (
     !pinVerified ||
     !profile?.hasPin ||
-    profile.userId !== draftIdentityUserId ||
+    !isValidStudioTenantScope(profile) ||
+    !sameStudioTenantScope(profile, draftIdentity) ||
     !STUDIO_LOCAL_ROLES.has(profile.role)
   )
     return null;
-  return { userId: profile.userId, role: profile.role };
+  return {
+    companyId: profile.companyId,
+    userId: profile.userId,
+    role: profile.role,
+  };
 }
 
 /** يكتب الحقلـات العامة لملف PIN فقط؛ PIN لا ينشأ ولا ينتقل من الجلسة. */
@@ -41,9 +57,11 @@ export function studioOfflineProfileInput(user: {
   email?: string | null;
   role: string | null | undefined;
   branchId: number | null | undefined;
+  companyId: number | null | undefined;
 }) {
   return {
     id: Number(user.id),
+    companyId: user.companyId ?? null,
     name: user.name?.trim() || user.email?.trim() || "",
     role: user.role ?? "",
     branchId: user.branchId ?? null,
@@ -60,7 +78,11 @@ export function shouldSkipColdStudioAuth({
   location: string;
   offline: boolean;
   pinVerified: boolean;
-  localProfile: { userId: number; role: string } | null;
+  localProfile: {
+    companyId?: number | null;
+    userId: number;
+    role: string;
+  } | null;
 }): boolean {
   return (
     isColdOfflineStudioRoute(location) &&

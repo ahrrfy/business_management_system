@@ -12,6 +12,7 @@ import {
   printShiftOpen, printReceipt, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
   getServerBridgeStatus, serverPrintTest,
 } from "@/lib/printing/print";
+import { printShippingLabel } from "@/lib/printing/shippingLabel";
 import { isCustomPriceSku } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -1151,8 +1152,25 @@ export default function PrintPOS() {
           }}
           onPrint={() => {
             void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
-              if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
-            }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }));
+              if (!printed.ok) setMessage({ kind: "err", text: "تم الإصدار ولكن فشلت الطباعة الحرارية." });
+            }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "فشلت الطباعة" }));
+          }}
+          onPrintLabel={() => {
+            const origin = typeof window !== "undefined" ? window.location.origin : "";
+            const orderRef = receipt.invoiceNumber || receipt.num || "";
+            const deliveryFee = receipt.delivery?.fee ? String(receipt.delivery.fee) : null;
+            void printShippingLabel({
+              orderNumber: orderRef,
+              customerName: receipt.customerName || tab.contactName || null,
+              customerPhone: tab.contactPhone || null,
+              governorate: receipt.delivery && "governorate" in receipt.delivery ? String((receipt.delivery as any).governorate) : null,
+              addressText: receipt.delivery?.address ?? null,
+              total: String(receipt.total),
+              subtotal: receipt.subtotal != null ? String(receipt.subtotal) : String(receipt.total),
+              shippingFee: deliveryFee && Number(deliveryFee) > 0 ? deliveryFee : null,
+              qrUrl: orderRef && origin ? `${origin}/verify?ref=${encodeURIComponent(orderRef)}` : null,
+              items: receipt.lines.map(line => ({ productName: line.name, unitName: line.unit, quantity: String(line.qty) })),
+            }).then(r => { if (!r.ok) setMessage({ kind: "err", text: "فشل طباعة الليبل" }); });
           }}
         />
       )}

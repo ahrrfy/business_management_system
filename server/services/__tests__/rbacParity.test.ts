@@ -14,6 +14,7 @@ import {
   ALL_ROLES,
   ROLE_TEMPLATES,
   SECTION_CASHIER_ROLES,
+  canUseDigitalCardsSellingStation,
   canUseStation,
   diffFromTemplate,
   moduleAccessAllowed,
@@ -133,17 +134,18 @@ describe("تكافؤ RBAC — المسار «خارج القائمة» (المن
 });
 
 describe("RBAC — digital-card POS station guard", () => {
-  it("allows a retail cashier and rejects print/reception cashiers", () => {
+  it("allows retail and reception selling stations while rejecting print-only station", () => {
     const section = (key: string) => SECTION_CASHIER_ROLES.find((role) => role.key === key)!;
     const retail = diffFromTemplate("cashier", section("retail_cashier").permissions);
     const print = diffFromTemplate("cashier", section("print_cashier").permissions);
     const reception = diffFromTemplate("cashier", section("reception_clerk").permissions);
 
-    // This is the exact RETAIL predicate used by digitalCardsPosProcedure,
-    // following its digital_cards=READ module check.
-    expect(canUseStation("RETAIL", "cashier", retail)).toBe(true);
-    expect(canUseStation("RETAIL", "cashier", print)).toBe(false);
-    expect(canUseStation("RETAIL", "cashier", reception)).toBe(false);
+    // This is the exact station predicate used by digitalCardsPosProcedure,
+    // after its independent digital_cards=READ module check.
+    expect(canUseDigitalCardsSellingStation("cashier", retail)).toBe(true);
+    expect(canUseDigitalCardsSellingStation("cashier", print)).toBe(false);
+    expect(canUseDigitalCardsSellingStation("cashier", reception)).toBe(true);
+    expect(canUseDigitalCardsSellingStation("print_operator")).toBe(true);
   });
 });
 

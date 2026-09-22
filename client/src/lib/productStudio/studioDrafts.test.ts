@@ -55,8 +55,8 @@ async function makeHarness(now = 1_000) {
       persistence,
       now: () => clock,
       // محاكاة فهرس HMAC: ثابت عبر إعادة التحميل ولا يحتوي userId/taskId كنص صريح.
-      idFor: async (userId, taskId) =>
-        `opaque-${(userId * 65_537 + taskId).toString(16)}`,
+      idFor: async (scope, taskId) =>
+        `opaque-${((scope.companyId ?? 0) * 1_000_003 + scope.userId * 65_537 + taskId).toString(16)}`,
       encrypt: (value) => encryptJsonWithKey(value, key),
       decrypt: (envelope) => decryptJsonWithKey(envelope, key),
     });
@@ -81,6 +81,8 @@ async function makeHarness(now = 1_000) {
     });
   return {
     persistence,
+    identityRows,
+    encrypt: (value: unknown) => encryptJsonWithKey(value, key),
     create,
     store: create(),
     createIdentity,
@@ -91,6 +93,7 @@ async function makeHarness(now = 1_000) {
 }
 
 const input = {
+  companyId: 17,
   userId: 7,
   taskId: 41,
   revision: "2026-08-19T10:00:00.000Z",
@@ -125,30 +128,93 @@ describe("encrypted studio drafts", () => {
     expect(JSON.stringify(row)).not.toContain(input.imageDataUrl);
     expect(JSON.stringify(row)).not.toContain(input.originalDataUrl);
     expect(JSON.stringify(row)).not.toContain(input.processingReceipt);
-    expect(await store.load(7, 41)).toMatchObject(input);
+    expect(await store.load(input, 41)).toMatchObject(input);
   });
 
   it("never restores another authenticated employee's draft", async () => {
     const { store } = await makeHarness();
     await store.save(input);
-    expect(await store.load(8, 41)).toBeNull();
-    expect(await store.load(7, 41)).toMatchObject({ userId: 7, taskId: 41 });
+    expect(await store.load({ companyId: 17, userId: 8 }, 41)).toBeNull();
+    expect(await store.load(input, 41)).toMatchObject({
+      companyId: 17,
+      userId: 7,
+      taskId: 41,
+    });
+  });
+
+  it("isolates identical user and task ids across tenant databases", async () => {
+    const { persistence, store } = await makeHarness();
+    const companyA = {
+      ...input,
+      companyId: 101,
+      proposedDescription: "مسودة الشركة أ",
+    };
+    const companyB = {
+      ...input,
+      companyId: 202,
+      proposedDescription: "مسودة الشركة ب",
+    };
+
+    await store.save(companyA);
+    await store.save(companyB);
+
+    expect(persistence.rows.size).toBe(2);
+    expect(await store.load(companyA, input.taskId)).toMatchObject({
+      companyId: 101,
+      proposedDescription: "مسودة الشركة أ",
+    });
+    expect(await store.load(companyB, input.taskId)).toMatchObject({
+      companyId: 202,
+      proposedDescription: "مسودة الشركة ب",
+    });
+    expect(await store.listForOwner(companyA)).toHaveLength(1);
+    expect(await store.listForOwner(companyB)).toHaveLength(1);
+
+    await store.save({
+      ...companyA,
+      proposedDescription: "كتابة متأخرة من تبويب الشركة أ",
+    });
+    expect(await store.load(companyB, input.taskId)).toMatchObject({
+      proposedDescription: "مسودة الشركة ب",
+    });
+  });
+
+  it("rejects legacy tenant-less draft and identity records", async () => {
+    const { persistence, identityRows, createIdentity, encrypt, store } =
+      await makeHarness();
+    const legacyDraft = { ...input } as Partial<typeof input>;
+    delete legacyDraft.companyId;
+    persistence.rows.set("legacy-draft", {
+      id: "legacy-draft",
+      envelope: await encrypt(legacyDraft),
+    });
+    identityRows.set("studio-identity", {
+      id: "studio-identity",
+      envelope: await encrypt({ userId: input.userId, savedAt: 1_000 }),
+    });
+
+    expect(await store.listForOwner(input)).toEqual([]);
+    expect(persistence.rows.size).toBe(0);
+    expect(await createIdentity().load()).toBeNull();
+    expect(identityRows.size).toBe(0);
   });
 
   it("purges a draft after its 24-hour lifetime", async () => {
     const { store } = await makeHarness();
     await store.save(input);
     expect(
-      await store.load(7, 41, 1_000 + 24 * 60 * 60 * 1_000 - 1),
+      await store.load(input, 41, 1_000 + 24 * 60 * 60 * 1_000 - 1),
     ).not.toBeNull();
-    expect(await store.load(7, 41, 1_000 + 24 * 60 * 60 * 1_000)).toBeNull();
+    expect(
+      await store.load(input, 41, 1_000 + 24 * 60 * 60 * 1_000),
+    ).toBeNull();
   });
 
   it("purges the local draft after a successful submission", async () => {
     const { store } = await makeHarness();
     await store.save(input);
-    await store.purge(input.userId, input.taskId);
-    expect(await store.load(input.userId, input.taskId)).toBeNull();
+    await store.purge(input, input.taskId);
+    expect(await store.load(input, input.taskId)).toBeNull();
   });
 
   it("purges all local studio drafts at a logout or session boundary", async () => {
@@ -156,8 +222,10 @@ describe("encrypted studio drafts", () => {
     await store.save(input);
     await store.save({ ...input, userId: 8, taskId: 42 });
     await store.purgeAll();
-    expect(await store.load(7, 41)).toBeNull();
-    expect(await store.load(8, 42)).toBeNull();
+    expect(await store.load(input, 41)).toBeNull();
+    expect(
+      await store.load({ companyId: 17, userId: 8 }, 42),
+    ).toBeNull();
   });
 
   it("retains a conflicting draft after reconnect instead of resuming it", async () => {
@@ -166,6 +234,7 @@ describe("encrypted studio drafts", () => {
     expect(
       (
         await store.reconcileAndClaimResume({
+          companyId: input.companyId,
           userId: input.userId,
           taskId: input.taskId,
           taskFound: true,
@@ -174,13 +243,14 @@ describe("encrypted studio drafts", () => {
         })
       ).kind,
     ).toBe("CONFLICT");
-    expect(await store.load(input.userId, input.taskId)).toMatchObject(input);
+    expect(await store.load(input, input.taskId)).toMatchObject(input);
   });
 
   it("holds a reload-safe resume lease only until its retry window expires", async () => {
     const { advance, create, store } = await makeHarness();
     await store.save(input);
     const context = {
+      companyId: input.companyId,
       userId: input.userId,
       taskId: input.taskId,
       taskFound: true,
@@ -204,6 +274,7 @@ describe("encrypted studio drafts", () => {
     await store.save(input);
     advance(STUDIO_DRAFT_RESUME_LEASE_MS + 1);
     const context = {
+      companyId: input.companyId,
       userId: input.userId,
       taskId: input.taskId,
       taskFound: true,
@@ -226,6 +297,7 @@ describe("encrypted studio drafts", () => {
     const { create, store } = await makeHarness();
     await store.save(input);
     const context = {
+      companyId: input.companyId,
       userId: input.userId,
       taskId: input.taskId,
       taskFound: true,
@@ -244,6 +316,7 @@ describe("encrypted studio drafts", () => {
     const { create, store } = await makeHarness();
     await store.save(input);
     const context = {
+      companyId: input.companyId,
       userId: input.userId,
       taskId: input.taskId,
       taskFound: true,
@@ -262,6 +335,7 @@ describe("encrypted studio drafts", () => {
     const { create, store } = await makeHarness();
     await store.save(input);
     const result = await create().reconcileAndClaimResume({
+      companyId: input.companyId,
       userId: input.userId,
       taskId: input.taskId,
       taskFound: true,
@@ -277,6 +351,7 @@ describe("encrypted studio drafts", () => {
     advance(60_001);
     const otherTab = create();
     const context = {
+      companyId: input.companyId,
       userId: input.userId,
       taskId: input.taskId,
       taskFound: true,
@@ -287,7 +362,7 @@ describe("encrypted studio drafts", () => {
     await otherTab.save({ ...input, proposedDescription: "تعديل التبويب المالك" });
 
     await expect(store.save({ ...input, proposedDescription: "كتابة قديمة" })).rejects.toThrow("تبويب آخر");
-    expect(await otherTab.load(input.userId, input.taskId)).toMatchObject({
+    expect(await otherTab.load(input, input.taskId)).toMatchObject({
       proposedDescription: "تعديل التبويب المالك",
     });
   });
@@ -295,17 +370,20 @@ describe("encrypted studio drafts", () => {
   it("discovers and restores an offline draft without an in-memory task query", async () => {
     const { create, store } = await makeHarness();
     await store.save(input);
-    expect(await create().listForUser(input.userId)).toMatchObject([input]);
+    expect(await create().listForOwner(input)).toMatchObject([input]);
   });
 
   it("restores cold offline ownership and the effective task snapshot without an auth query", async () => {
     const { create, createIdentity, store } = await makeHarness();
     await store.save(input);
-    await createIdentity().save(input.userId);
+    await createIdentity().save(input);
 
     const coldIdentity = await createIdentity().load();
-    expect(coldIdentity).toMatchObject({ userId: input.userId });
-    expect(await create().listForUser(coldIdentity!.userId)).toMatchObject([
+    expect(coldIdentity).toMatchObject({
+      companyId: input.companyId,
+      userId: input.userId,
+    });
+    expect(await create().listForOwner(coldIdentity!)).toMatchObject([
       {
         taskSnapshot: input.taskSnapshot,
         originalDataUrl: input.originalDataUrl,
@@ -320,6 +398,7 @@ describe("encrypted studio drafts", () => {
     expect(
       (
         await store.reconcileAndClaimResume({
+          companyId: input.companyId,
           userId: input.userId,
           taskId: input.taskId,
           taskFound: false,
@@ -328,6 +407,6 @@ describe("encrypted studio drafts", () => {
         })
       ).kind,
     ).toBe("CONFLICT");
-    expect(await store.load(input.userId, input.taskId)).toMatchObject(input);
+    expect(await store.load(input, input.taskId)).toMatchObject(input);
   });
 });

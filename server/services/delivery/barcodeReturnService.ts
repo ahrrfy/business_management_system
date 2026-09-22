@@ -6,7 +6,7 @@
  * ليتم استلام المرتجع وعكس المبيعات والمخزون وتحرير عهدة المندوب فورياً.
  */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -15,8 +15,11 @@ import {
   workOrders,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { normalizeKnownSystemBarcode } from "@shared/barcodeScanner";
 import { appErrorMessage } from "@shared/errors";
+import {
+  prepareDeliveryBarcodeLookup,
+  resolveUniqueDeliveryBarcodeTarget,
+} from "./barcodeLookupPolicy";
 import { returnConsignment } from "./returns";
 import type { DeliveryTxActor } from "./types";
 
@@ -56,9 +59,66 @@ export async function returnByBarcode(
       }),
     });
   }
-  const cleanCode = normalizeKnownSystemBarcode(rawCode);
-  const scopedBranch = actor.role === "admin" ? null : (actor.branchId ?? null);
-  const isNumeric = /^\d+$/.test(cleanCode);
+  const lookup = prepareDeliveryBarcodeLookup(rawCode);
+  const { code: cleanCode, systemCode, trackingCode, namespace, numericId } = lookup;
+  const scopedBranch = actor.role === "admin"
+    ? null
+    : (actor.branchId == null ? -1 : Number(actor.branchId));
+
+  const candidateCondition = namespace === "CONSIGNMENT"
+    ? eq(deliveryConsignments.consignmentNumber, systemCode)
+    : namespace === "INVOICE"
+      ? eq(invoices.invoiceNumber, systemCode)
+      : namespace === "WORK_ORDER"
+        ? eq(workOrders.orderNumber, systemCode)
+        : namespace === "ONLINE_ORDER"
+          ? eq(onlineOrders.orderNumber, systemCode)
+          : namespace === "NUMERIC"
+            ? or(
+                numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
+                eq(deliveryConsignments.consignmentNumber, cleanCode),
+                trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
+                eq(invoices.invoiceNumber, cleanCode),
+                eq(invoices.invoiceNumber, `INV-${cleanCode}`),
+                numericId != null ? eq(workOrders.id, numericId) : sql`0=1`,
+                eq(workOrders.orderNumber, cleanCode),
+                eq(workOrders.orderNumber, `WO-${cleanCode}`),
+                numericId != null ? eq(onlineOrders.id, numericId) : sql`0=1`,
+                eq(onlineOrders.orderNumber, cleanCode),
+                eq(onlineOrders.orderNumber, `ORD-${cleanCode}`),
+              )
+            : or(
+                eq(deliveryConsignments.consignmentNumber, systemCode),
+                trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                eq(invoices.invoiceNumber, cleanCode),
+                eq(workOrders.orderNumber, cleanCode),
+                eq(onlineOrders.orderNumber, cleanCode),
+              );
+
+  const candidateRows = await db
+    .select({ id: deliveryConsignments.id })
+    .from(deliveryConsignments)
+    .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+    .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
+    .leftJoin(onlineOrders, or(
+      and(
+        eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
+        eq(deliveryConsignments.sourceId, onlineOrders.id),
+      ),
+      eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId),
+    ))
+    .where(and(
+      candidateCondition,
+      scopedBranch != null ? eq(deliveryConsignments.branchId, scopedBranch) : sql`1=1`,
+    ))
+    .groupBy(deliveryConsignments.id)
+    .limit(2);
+
+  const selectedTarget = resolveUniqueDeliveryBarcodeTarget(
+    cleanCode,
+    candidateRows.map((row) => ({ kind: "CONSIGNMENT" as const, id: Number(row.id) })),
+  );
 
   const [matchedCn] = await db
     .select({
@@ -79,23 +139,12 @@ export async function returnByBarcode(
     })
     .from(deliveryConsignments)
     .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
-    .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
-    .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
-    .leftJoin(onlineOrders, eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId))
-    .where(
-      and(
-        or(
-          eq(deliveryConsignments.consignmentNumber, cleanCode),
-          eq(deliveryConsignments.externalTrackingRef, cleanCode),
-          eq(invoices.invoiceNumber, cleanCode),
-          eq(workOrders.orderNumber, cleanCode),
-          eq(onlineOrders.orderNumber, cleanCode),
-          isNumeric ? eq(deliveryConsignments.id, Number(cleanCode)) : sql`0=1`,
-        ),
-        scopedBranch != null ? eq(deliveryConsignments.branchId, scopedBranch) : sql`1=1`,
-      ),
-    )
-    .orderBy(desc(deliveryConsignments.id))
+    .where(and(
+      selectedTarget?.kind === "CONSIGNMENT"
+        ? eq(deliveryConsignments.id, selectedTarget.id)
+        : sql`0=1`,
+      scopedBranch != null ? eq(deliveryConsignments.branchId, scopedBranch) : sql`1=1`,
+    ))
     .limit(1);
 
   if (!matchedCn) {

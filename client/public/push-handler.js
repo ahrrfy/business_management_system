@@ -42,9 +42,10 @@ self.addEventListener("push", (event) => {
     // نمط اهتزاز ملموس يعطي الهاتف إحساس التنبيه الأصلي
     vibrate: [150, 80, 150, 80, 250],
     silent: false,
-    // tag موحّد حسب نوع الإشعار أو فريد؛ يمنع التراكم المزعج
+    // tag موحّد حسب نوع الإشعار أو فريد؛ يمنع التراكم المزعج.
+    // يوجد tag دائماً، لذلك renotify=true صالح ويضمن تنبيه النظام عند استبدال إشعار من النوع نفسه.
     tag: payload?.tag || payload?.kind || `notif_${Date.now()}`,
-    renotify: Boolean(payload?.tag || payload?.kind),
+    renotify: true,
     data: {
       url,
       kind: payload?.kind || "SYSTEM",

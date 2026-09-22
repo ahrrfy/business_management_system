@@ -50,6 +50,8 @@ type RepairDialogState = {
   description: string;
   expectedConfirmation: string;
   partyId?: string;
+  partyType?: "INDIVIDUAL" | "COMPANY";
+  externalTrackingRef?: string;
   deliveryFee?: string;
   gatewayUserId?: string;
   deliveredAt?: string;
@@ -157,6 +159,7 @@ export default function LegacyDataRepair() {
       confirmation: dialog.confirmation,
       note: dialog.note,
       partyId: dialog.partyId ? Number(dialog.partyId) : null,
+      externalTrackingRef: dialog.externalTrackingRef?.trim() || null,
       deliveryFee: dialog.deliveryFee === undefined ? null : dialog.deliveryFee,
       gatewayUserId: dialog.gatewayUserId ? Number(dialog.gatewayUserId) : null,
       deliveredAt,
@@ -220,6 +223,7 @@ export default function LegacyDataRepair() {
             title: "إنشاء الإرسالية المفقودة",
             description: "اختر الجهة والأجرة صراحةً. ستنشأ الإرسالية DISPATCHED بلا ختم تسليم.",
             expectedConfirmation: row.original.orderNumber,
+            externalTrackingRef: "",
             deliveryFee: String(row.original.deliveryCost ?? "0"),
           }),
         }]} />
@@ -286,6 +290,9 @@ export default function LegacyDataRepair() {
               title: "إعادة فتح الإرسالية",
               description: "يُعاد الصف إلى DISPATCHED ليظهر في العمل الميداني؛ لا يُسجل إثبات تسليم.",
               expectedConfirmation: row.original.consignmentNumber,
+              partyId: String(row.original.partyId),
+              partyType: row.original.partyType,
+              externalTrackingRef: row.original.externalTrackingRef ?? "",
             }),
           }] : []),
         ]} />
@@ -588,6 +595,8 @@ function RepairDialog({
   const patch = (value: Partial<RepairDialogState>) => state && onChange({ ...state, ...value });
   const confirmationMatches = Boolean(state && state.confirmation.trim() === state.expectedConfirmation.trim());
   const needsParty = state?.action === "CREATE_MISSING_CONSIGNMENT";
+  const needsTrackingRef = (state?.action === "CREATE_MISSING_CONSIGNMENT" || state?.action === "REOPEN_PREPAID_CONSIGNMENT")
+    && state.partyType === "COMPANY";
   const needsGateway = state?.action === "LINK_GATEWAY_ACCOUNT";
   const needsProof = state?.action === "RECORD_PREPAID_DELIVERY_PROOF";
   const needsFeeDecision = needsProof && D(state?.proofDeliveryFee ?? "0").gt(0);
@@ -597,6 +606,7 @@ function RepairDialog({
     && state.note.trim().length >= 5
     && confirmationMatches
     && (!needsParty || (state.partyId && state.deliveryFee !== ""))
+    && (!needsTrackingRef || Boolean(state.externalTrackingRef?.trim()))
     && (!needsGateway || state.gatewayUserId)
     && (!needsProof || (state.deliveredAt && state.evidenceRef?.trim()))
     && (!needsFeeDecision || state.feeSettlementAction)
@@ -618,15 +628,41 @@ function RepairDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="legacy-party">جهة التوصيل المختارة</Label>
-                    <AppSelect id="legacy-party" value={state.partyId ?? ""} onValueChange={(next) => patch({ partyId: next })} className="h-10 border-input px-3 text-sm">
+                    <AppSelect
+                      id="legacy-party"
+                      value={state.partyId ?? ""}
+                      onValueChange={(next) => {
+                        const selected = report?.options.parties.find((party) => String(party.id) === next);
+                        patch({ partyId: next, partyType: selected?.partyType, externalTrackingRef: "" });
+                      }}
+                      className="h-10 border-input px-3 text-sm"
+                    >
                       <option value="">اختر الجهة…</option>
-                      {(report?.options.parties ?? []).map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
+                      {(report?.options.parties ?? []).map((party) => (
+                        <option key={party.id} value={party.id}>{party.name}{party.partyType === "COMPANY" ? " — شركة" : " — مندوب فرد"}</option>
+                      ))}
                     </AppSelect>
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="legacy-fee">أجرة التوصيل المثبتة</Label>
                     <MoneyInput id="legacy-fee" value={state.deliveryFee ?? ""} onChange={(deliveryFee) => patch({ deliveryFee })} ariaLabel="أجرة التوصيل المثبتة" />
                   </div>
+                </div>
+              )}
+
+              {needsTrackingRef && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="legacy-external-tracking">رقم تتبّع / بوليصة شركة التوصيل *</Label>
+                  <Input
+                    id="legacy-external-tracking"
+                    dir="ltr"
+                    maxLength={100}
+                    autoComplete="off"
+                    placeholder="امسح الباركود أو أدخل الرقم المطبوع"
+                    value={state.externalTrackingRef ?? ""}
+                    onChange={(event) => patch({ externalTrackingRef: event.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">يُحفظ كنص كما هو، بما في ذلك الأصفار البادئة، ويجب ألا يتكرر داخل الشركة.</p>
                 </div>
               )}
 

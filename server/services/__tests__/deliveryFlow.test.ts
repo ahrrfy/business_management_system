@@ -69,6 +69,9 @@ async function seed() {
   await d.insert(s.customers).values([{ id: 1, name: "عميل التوصيل", phone: "+9647700000000" }]);
   await d.insert(s.products).values([{ id: 1, name: "كتاب مطبوع" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "BK-1", costPrice: "0.00" }]);
+  await d.insert(s.productUnits).values({
+    id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true,
+  });
   await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 100 }]);
   const { id: partyId } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "مندوب", defaultFee: "1500", userId: 3, branchId: 1 }, MANAGER);
   return { partyId };

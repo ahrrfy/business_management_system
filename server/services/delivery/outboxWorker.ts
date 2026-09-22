@@ -1,6 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryPartyMembers, users } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryParties, deliveryPartyMembers, users } from "../../../drizzle/schema";
+import { formatDeliveryNotificationText } from "@shared/deliveryNotificationLabels";
 import { getDb } from "../../db";
 import { logger } from "../../logger";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
@@ -114,15 +115,27 @@ async function processRow(id: number): Promise<void> {
       topic: deliveryOutbox.topic,
       consignmentId: deliveryEvents.consignmentId,
       eventType: deliveryEvents.eventType,
+      actorUserId: deliveryEvents.actorUserId,
+      eventPayload: deliveryEvents.payload,
       partyId: deliveryConsignments.partyId,
+      partyName: deliveryParties.name,
       branchId: deliveryConsignments.branchId,
       assignedUserId: deliveryConsignments.assignedUserId,
       consignmentNumber: deliveryConsignments.consignmentNumber,
+      recipientName: deliveryConsignments.recipientName,
     }).from(deliveryOutbox)
       .innerJoin(deliveryEvents, eq(deliveryEvents.id, deliveryOutbox.eventId))
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryEvents.consignmentId))
+      .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
       .where(and(eq(deliveryOutbox.id, id), isNull(deliveryOutbox.processedAt))).limit(1))[0];
     if (!row) return;
+    // جلب اسم الفاعل من جدول المستخدمين — العامل الخلفي ليس لديه ctx.user.
+    let actorName: string | null = null;
+    if (row.actorUserId != null) {
+      const [actor] = await db.select({ name: users.name }).from(users)
+        .where(eq(users.id, row.actorUserId)).limit(1);
+      actorName = (actor?.name as string | null) ?? null;
+    }
     const plan = await recipientsFor({
       topic: row.topic,
       eventType: row.eventType,
@@ -131,15 +144,21 @@ async function processRow(id: number): Promise<void> {
       branchId: Number(row.branchId),
     });
     const isStale = row.eventType === STALE_ESCALATED_EVENT;
-    const title = isStale
-      ? "طرد توصيل جامد يحتاج متابعة"
-      : row.topic === "delivery.failed" ? "تعذر توصيل طرد" : row.topic === "delivery.delivered" ? "تم تسليم طرد" : "تحديث طرد توصيل";
+    const notice = formatDeliveryNotificationText({
+      eventType: row.eventType,
+      topic: row.topic,
+      consignmentNumber: row.consignmentNumber,
+      recipientName: row.recipientName,
+      partyName: row.partyName,
+      payload: (row.eventPayload ?? null) as Record<string, unknown> | null,
+      actorName,
+    });
     for (const userId of plan.userIds) {
       await createAppNotification({
         userId,
         kind: row.topic === "delivery.failed" || isStale ? "APPROVAL_REQUIRED" : "TASK_ASSIGNED",
-        title,
-        body: `${row.consignmentNumber} — ${row.eventType}`,
+        title: notice.title,
+        body: notice.body,
         route: plan.route,
         eventKey: `delivery-outbox:${row.eventId}:user:${userId}`,
         entityType: "deliveryConsignment",

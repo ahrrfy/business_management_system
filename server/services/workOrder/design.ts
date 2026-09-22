@@ -107,14 +107,16 @@ export async function setWorkOrderDesign(
       }
 
       const nextRevision = Number(current.revision) + 1;
-      for (const image of images) {
-        await tx.insert(workOrderImages).values({
-          workOrderId: Number(wo.id),
-          url: image.url,
-          caption: image.caption,
-          sortOrder: image.sortOrder,
-          revision: nextRevision,
-        });
+      if (images.length > 0) {
+        await tx.insert(workOrderImages).values(
+          images.map((image) => ({
+            workOrderId: Number(wo.id),
+            url: image.url,
+            caption: image.caption,
+            sortOrder: image.sortOrder,
+            revision: nextRevision,
+          })),
+        );
       }
       const revision = await createWorkOrderDesignRevisionTx(tx, {
         workOrderId: Number(wo.id),

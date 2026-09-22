@@ -66,7 +66,7 @@ describe("audited public UX contracts", () => {
 
   it("keeps full favorites controls keyboard-focusable and explains their disabled state", () => {
     const source = readFileSync(
-      new URL("../../components/AppLayout.tsx", import.meta.url),
+      new URL("../../components/navigation/HybridSidebarNav.tsx", import.meta.url),
       "utf8",
     );
 
@@ -74,7 +74,7 @@ describe("audited public UX contracts", () => {
       "aria-disabled={!favorite && favoritesFull ? true : undefined}",
     );
     expect(source).toContain(
-      "? `لا يمكن إضافة ${m.label} إلى المفضلة؛ بلغت الحد الأقصى`",
+      "? `لا يمكن إضافة ${module.label} إلى المفضلة؛ بلغت الحد الأقصى`",
     );
     expect(source).not.toContain("disabled={!favorite && favoritesFull}");
   });
@@ -99,14 +99,14 @@ describe("audited public UX contracts", () => {
 
     expect(dashboard).toContain('aria-label="نطاق فرع الشاشة الرئيسية"');
     expect(morningBrief).toContain(
-      "enabled: elevated && branchScope !== undefined",
+      "enabled: canViewBrief && branchScope !== undefined",
     );
     expect(morningBrief).not.toContain("branches.data?.[0]?.id");
     expect(morningBrief).toContain(
-      "href={`/reports/ar-reminders?branch=${branchScope}`}",
+      "`/reports/ar-reminders?branch=${branchScope}`",
     );
     expect(morningBrief).toContain(
-      "href={`/work-orders?branch=${branchScope}`}",
+      "href={`${workOrdersHref}?branch=${branchScope}`}",
     );
     expect(reminders).toContain(
       "requestedBranchId ?? accountBranchId ?? branches.data?.[0]?.id",

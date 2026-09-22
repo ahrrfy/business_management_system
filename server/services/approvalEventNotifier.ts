@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { receipts, users } from "../../drizzle/schema";
 import { voucherApprovalRetainsLegacy } from "@shared/approvalTriggers";
+import { actorSuffix } from "@shared/notificationActorLabel";
 import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
 import { parseSystemPaymentRequest } from "./voucher/create";
@@ -188,6 +189,7 @@ export async function notifyApprovalDecisionByReceipt(
   actorUserId: number,
   reason?: string | null,
   occurredAt: Date = new Date(),
+  actorName?: string | null,
 ): Promise<void> {
   try {
     const projection = await loadReceiptProjection(receiptId);
@@ -203,7 +205,7 @@ export async function notifyApprovalDecisionByReceipt(
       decision === "REJECTED" && reason
         ? ` — السبب: ${reason.trim().slice(0, 200)}`
         : "";
-    const body = `سند ${kindLabel} بمبلغ ${formatAmountIqd(projection.amount)} ${statusLabel}${reasonPart}.`;
+    const body = `سند ${kindLabel} بمبلغ ${formatAmountIqd(projection.amount)} ${statusLabel}${reasonPart}${actorSuffix(actorName)}.`;
     void occurredAt;
     await createAppNotification({
       userId: projection.createdBy,

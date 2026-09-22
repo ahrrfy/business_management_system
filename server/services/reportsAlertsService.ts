@@ -21,6 +21,7 @@ import {
   reconcileSupplierBalances,
   reconcileInventory,
   reconcileLedgerProfit,
+  reconcileUnbilledGoodsReceipts,
 } from "./reconcileService";
 import { getAnomalyWatch } from "./reports/anomalyWatch";
 import { getAPAging } from "./reports/apAging";
@@ -351,7 +352,13 @@ async function computeManagementAlerts(opts: {
   const reconP = opts.isAdmin
     ? safe(
         "reconciliation",
-        Promise.all([reconcileCustomerBalances(), reconcileSupplierBalances(), reconcileInventory(), reconcileLedgerProfit()]),
+        Promise.all([
+          reconcileCustomerBalances(),
+          reconcileSupplierBalances(),
+          reconcileInventory(),
+          reconcileLedgerProfit(),
+          reconcileUnbilledGoodsReceipts(),
+        ]),
         null,
       )
     : Promise.resolve(null);
@@ -569,8 +576,13 @@ async function computeManagementAlerts(opts: {
 
   // (ح) انحراف reconcile — admin فقط.
   if (reconRes) {
-    const [cust, supp, inv, ledg] = reconRes;
-    const driftCount = (cust?.length ?? 0) + (supp?.length ?? 0) + (inv?.length ?? 0) + (ledg?.length ?? 0);
+    const [cust, supp, inv, ledg, unbilled] = reconRes;
+    const driftCount =
+      (cust?.length ?? 0) +
+      (supp?.length ?? 0) +
+      (inv?.length ?? 0) +
+      (ledg?.length ?? 0) +
+      (unbilled?.length ?? 0);
     if (driftCount > 0) {
       alerts.push({ key: "reconcile-drift", severity: "info", title: "انحراف في الأرصدة/المخزون/الدفتر (تدقيق التوافق)", count: driftCount, amount: null, href: "/reconcile", actionLabel: "تدقيق التوافق" });
     }

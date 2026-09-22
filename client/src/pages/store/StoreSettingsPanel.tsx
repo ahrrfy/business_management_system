@@ -20,6 +20,7 @@ export default function StoreSettingsPanel() {
     announcement: "",
     whatsappNumber: "",
     freeShippingThreshold: "",
+    freeShippingThresholdGovernorates: "",
   });
 
   useEffect(() => {
@@ -29,6 +30,7 @@ export default function StoreSettingsPanel() {
       announcement: q.data.announcement ?? "",
       whatsappNumber: q.data.whatsappNumber ?? "",
       freeShippingThreshold: q.data.freeShippingThreshold ? String(Number(q.data.freeShippingThreshold)) : "",
+      freeShippingThresholdGovernorates: q.data.freeShippingThresholdGovernorates ? String(Number(q.data.freeShippingThresholdGovernorates)) : "",
     });
   }, [q.data]);
 
@@ -105,13 +107,21 @@ export default function StoreSettingsPanel() {
         <IntlPhoneInput value={form.whatsappNumber} onChange={(whatsappNumber) => setForm({ ...form, whatsappNumber })} ariaLabel="رقم واتساب المتجر" />
       </label>
 
-      <label className="block text-sm">
-        <span className="mb-1 flex items-center gap-1.5 font-medium text-muted-foreground"><Truck aria-hidden className="size-4" /> عتبة التوصيل المجاني بالدينار (اختياري)</span>
-        <MoneyInput value={form.freeShippingThreshold} onChange={(freeShippingThreshold) => setForm({ ...form, freeShippingThreshold })} decimals={0} placeholder="مثال: 50,000 (اتركه فارغاً للتعطيل)" ariaLabel="حد الشحن المجاني" />
-        <span className="mt-1 block text-xs text-muted-foreground">إن بلغ طلب الزبون هذا المبلغ ⇒ توصيل مجاني (يرفع متوسط قيمة الطلب).</span>
-      </label>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <label className="block text-sm">
+          <span className="mb-1 flex items-center gap-1.5 font-medium text-muted-foreground"><Truck aria-hidden className="size-4" /> عتبة الشحن المجاني (داخل بغداد)</span>
+          <MoneyInput value={form.freeShippingThreshold} onChange={(freeShippingThreshold) => setForm({ ...form, freeShippingThreshold })} decimals={0} placeholder="مثال: 35,000 (فارغ للتعطيل)" ariaLabel="عتبة الشحن المجاني داخل بغداد" />
+          <span className="mt-1 block text-xs text-muted-foreground">توصيل مجاني لطلبات بغداد والعامرية عند بلوغ هذا الحد.</span>
+        </label>
 
-      <button onClick={() => m.mutate({ fulfillmentBranchId: form.fulfillmentBranchId, isOpen: form.isOpen, announcement: form.announcement || null, whatsappNumber: form.whatsappNumber || null, freeShippingThreshold: form.freeShippingThreshold ? String(Number(form.freeShippingThreshold)) : null })} disabled={m.isPending} className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
+        <label className="block text-sm">
+          <span className="mb-1 flex items-center gap-1.5 font-medium text-muted-foreground"><Truck aria-hidden className="size-4" /> عتبة الشحن المجاني (باقي المحافظات)</span>
+          <MoneyInput value={form.freeShippingThresholdGovernorates} onChange={(freeShippingThresholdGovernorates) => setForm({ ...form, freeShippingThresholdGovernorates })} decimals={0} placeholder="مثال: 60,000 (فارغ للتعطيل)" ariaLabel="عتبة الشحن المجاني لباقي المحافظات" />
+          <span className="mt-1 block text-xs text-muted-foreground">توصيل مجاني لطلبات المحافظات الأخرى عند بلوغ هذا الحد.</span>
+        </label>
+      </div>
+
+      <button onClick={() => m.mutate({ fulfillmentBranchId: form.fulfillmentBranchId, isOpen: form.isOpen, announcement: form.announcement || null, whatsappNumber: form.whatsappNumber || null, freeShippingThreshold: form.freeShippingThreshold ? String(Number(form.freeShippingThreshold)) : null, freeShippingThresholdGovernorates: form.freeShippingThresholdGovernorates ? String(Number(form.freeShippingThresholdGovernorates)) : null })} disabled={m.isPending} className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
         {m.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />} حفظ الإعدادات
       </button>
     </div>

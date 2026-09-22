@@ -417,8 +417,6 @@ export function buildOnlineOrderFollowupMessage(d: OnlineOrderFollowupData): str
 export interface PrintPricingMessageData {
   /** "صغير المقاس (٤ألف×٦ …) · ملوّن · وجهان · ١٠٠ نسخة × ٢ صفحة" أو "عريض ١×٢ م × ٣ قطعة (٦ م²)". */
   jobDescription: string;
-  lines: Array<{ label: string; detail?: string | null; amount: string | number }>;
-  totalCost: string | number;
   suggestedPrice: string | number;
   unitPrice: string | number;
 }
@@ -429,9 +427,7 @@ export interface PrintPricingMessageData {
  */
 export function buildPrintPricingMessage(d: PrintPricingMessageData): string {
   const L: string[] = [`*تسعير طباعة رقمية*`, COMPANY_NAME, `التاريخ: ${today()}`, "", d.jobDescription, ""];
-  for (const l of d.lines) L.push(`  • ${l.label}${l.detail ? ` (${l.detail})` : ""}: ${fmtMoney(l.amount)} د.ع.`);
-  L.push("", `إجمالي الكلفة: ${fmtMoney(d.totalCost)} د.ع.`);
-  L.push(`*السعر المقترح: ${fmtMoney(d.suggestedPrice)} د.ع.*`);
+  L.push(`*السعر الإجمالي المقترح: ${fmtMoney(d.suggestedPrice)} د.ع.*`);
   L.push(`سعر الوحدة الواحدة: ${fmtMoney(d.unitPrice)} د.ع.`);
   L.push("", "هذا تقديرٌ أوّليّ — للتأكيد والحجز تواصلوا معنا.", COMPANY_NAME);
   return L.join("\n");
