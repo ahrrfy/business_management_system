@@ -198,7 +198,7 @@ export class R2ImageStore implements ImageStore {
     this.client = dependencies.client ?? dependencies.clientFactory?.(clientConfig) ??
       (new S3Client(clientConfig) as unknown as S3Executor);
     this.sign = dependencies.signedUrl ?? ((client, command, options) =>
-      getSignedUrl(client as S3Client, command, options));
+      getSignedUrl(client as unknown as S3Client, command, options));
     this.resilience = dependencies.resilience ?? new R2ResilienceController(
       dependencies.resilienceConfig ?? readR2ResilienceConfig(),
       { onEvent: dependencies.onResilienceEvent },
