@@ -44,8 +44,6 @@ import { DeliverySettleTab } from "@/components/delivery/DeliverySettleTab";
 import { CollectConsignmentDialog } from "@/components/delivery/CollectConsignmentDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { StaffConfirmDialog, FailReasonDialog, DeclareReturnDialog, ManualProofDialog } from "@/components/delivery/TransitActionDialogs";
-import { BarcodeDispatchStream } from "@/components/delivery/BarcodeDispatchStream";
-import { BarcodeReturnStream } from "@/components/delivery/BarcodeReturnStream";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -407,14 +405,21 @@ function DispatchTab() {
   return (
     <div className="space-y-4">
       {canDispatch && (
-        <BarcodeDispatchStream
-          onDispatchSuccess={() => {
-            void ready.refetch();
-            void utils.delivery.readyForDispatch.invalidate();
-            void utils.delivery.inTransit.invalidate();
-            void utils.delivery.openConsignments.invalidate();
-          }}
-        />
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3.5 sm:px-4">
+          <div className="flex items-center gap-2.5">
+            <ScanBarcode className="size-5 text-primary shrink-0" aria-hidden />
+            <div>
+              <p className="text-sm font-bold text-foreground">مسار الإسناد والتحصيل السريع بالباركود</p>
+              <p className="text-xs text-muted-foreground">امسح باركود الفواتير (INV)، أوامر الشغل (WO)، أو طلبات المتجر (ORD) في واجهة موحدة.</p>
+            </div>
+          </div>
+          <Button variant="default" size="sm" asChild className="gap-1.5 font-bold">
+            <Link href="/delivery?tab=workflow">
+              <ScanBarcode className="size-4" aria-hidden />
+              سير العمل بالباركود
+            </Link>
+          </Button>
+        </div>
       )}
       <div className="rounded-xl border bg-card">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
@@ -989,13 +994,6 @@ function InTransitTab() {
 
   return (
     <div className="space-y-4">
-      {canFulfil && (
-        <BarcodeReturnStream
-          onReturnSuccess={() => {
-            invalidateAll();
-          }}
-        />
-      )}
       {/* ─── الشريط العلوي: عدّادات صادقة + تعرّض مضاعف + بحث + إجراءات جماعية ─── */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex h-10 items-center gap-1 rounded-lg border bg-muted/40 p-1" role="tablist" aria-label="حالة الطرد">
