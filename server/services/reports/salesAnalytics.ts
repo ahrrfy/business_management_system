@@ -18,11 +18,23 @@ import { money, toDbMoney } from "../money";
 const netBaseQuantitySql = sql`GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0)`;
 const netLineRevenueSql = sql`CASE WHEN ii.baseQuantity > 0
   THEN ii.total * ${netBaseQuantitySql} / ii.baseQuantity ELSE ii.total END`;
+
+// صمام أمان ذاتي (Self-Healing Line Cost):
+// إن كان lineCost مشوهاً أو متضخماً بأكثر من 1.5 ضعف حاصل ضرب (unitCost * baseQuantity)
+// بينما unitCost معرف وbaseQuantity > 0، أو كان lineCost صفراً بينما unitCost موجب،
+// يعتمد الاستعلام تلقائياً على التكلفة الرياضية الصريحة ROUND(unitCost * baseQuantity, 2).
+const effectiveLineCostSql = sql`CASE
+  WHEN ii.unitCost > 0 AND ii.baseQuantity > 0 AND (
+    ii.lineCost <= 0 OR ii.lineCost > (ii.unitCost * ii.baseQuantity * 1.5)
+  ) THEN ROUND(ii.unitCost * ii.baseQuantity, 2)
+  ELSE COALESCE(ii.lineCost, 0)
+END`;
+
 const netLineCostSql = sql`CASE
-  WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+  WHEN ii.baseQuantity <= 0 THEN ${effectiveLineCostSql}
   WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
-  ELSE ii.lineCost - ROUND(
-    ii.lineCost * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
+  ELSE ${effectiveLineCostSql} - ROUND(
+    ${effectiveLineCostSql} * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
     2
   )
 END`;
@@ -51,7 +63,11 @@ export interface TopProductRow {
  * الترتيب: revenue أو qty.
  */
 export async function getTopProducts(
-  opts: SalesAnalyticsFilters & { limit?: number; by?: "revenue" | "qty" } = {}
+  opts: SalesAnalyticsFilters & {
+    limit?: number;
+    by?: "revenue" | "qty" | "profit" | "margin";
+    orderDir?: "asc" | "desc";
+  } = {}
 ): Promise<TopProductRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -60,9 +76,19 @@ export async function getTopProducts(
   const limit = Math.max(1, Math.min(2000, opts.limit ?? 20));
   // ملاحظة: نرتّب على التعبير الرقمي مباشرة لا على الاسم المستعار — لأن
   // العمود في SELECT مُحوَّل CAST AS CHAR ⇒ الترتيب عليه يصبح أبجدياً («50»>«240»).
-  const orderCol = opts.by === "qty"
-    ? sql`SUM(${netBaseQuantitySql}) DESC`
-    : sql`SUM(${netLineRevenueSql}) DESC`;
+  const isAsc = opts.orderDir === "asc";
+  let orderSql = isAsc ? sql`SUM(${netLineRevenueSql}) ASC` : sql`SUM(${netLineRevenueSql}) DESC`;
+  if (opts.by === "qty") {
+    orderSql = isAsc ? sql`SUM(${netBaseQuantitySql}) ASC` : sql`SUM(${netBaseQuantitySql}) DESC`;
+  } else if (opts.by === "profit") {
+    orderSql = isAsc
+      ? sql`(SUM(${netLineRevenueSql}) - SUM(${netLineCostSql})) ASC`
+      : sql`(SUM(${netLineRevenueSql}) - SUM(${netLineCostSql})) DESC`;
+  } else if (opts.by === "margin") {
+    orderSql = isAsc
+      ? sql`CASE WHEN SUM(${netLineRevenueSql}) > 0 THEN (SUM(${netLineRevenueSql}) - SUM(${netLineCostSql})) / SUM(${netLineRevenueSql}) ELSE -999999 END ASC`
+      : sql`CASE WHEN SUM(${netLineRevenueSql}) > 0 THEN (SUM(${netLineRevenueSql}) - SUM(${netLineCostSql})) / SUM(${netLineRevenueSql}) ELSE -999999 END DESC`;
+  }
   const fromFilter = opts.from ? sql`AND i.invoiceDate >= ${opts.from + " 00:00:00"}` : sql``;
   const toFilter = opts.to ? sql`AND i.invoiceDate <= ${opts.to + " 23:59:59"}` : sql``;
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
@@ -96,7 +122,7 @@ export async function getTopProducts(
     -- المرتجع الكامل التالف: qty/revenue = 0 لكن COGS باقٍ، فيجب أن يظهر كخسارة.
     -- المرتجع الكامل المعاد للمخزون صفر الأثر اقتصادياً، فلا يزاحم المبيعات في ترتيب «الأكثر».
     HAVING SUM(${netBaseQuantitySql}) > 0 OR SUM(${netLineCostSql}) > 0
-    ORDER BY ${orderCol}
+    ORDER BY ${orderSql}
     LIMIT ${limit}
   `);
   const data = (rows as any)[0] ?? rows;

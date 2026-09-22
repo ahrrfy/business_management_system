@@ -64,6 +64,7 @@ const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrders
 const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
 const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
 const ReceptionHandoverPage = lazy(() => import("@/pages/reception/ReceptionHandoverPage"));
+const ReceptionDraftsPage = lazy(() => import("@/pages/reception/ReceptionDraftsPage"));
 
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 
@@ -510,6 +511,7 @@ export default function App() {
         <Route path="/reception/invoices"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionInvoicesPage /></RequireRole></Shell></Route>
         <Route path="/reception/workflow"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionWorkflowPage /></RequireRole></Shell></Route>
         <Route path="/reception/handover"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionHandoverPage /></RequireRole></Shell></Route>
+        <Route path="/reception/drafts"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionDraftsPage /></RequireRole></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>
