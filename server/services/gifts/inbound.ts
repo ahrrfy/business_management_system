@@ -151,17 +151,19 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
     }
 
     // أسطر السند (لقطة تكلفة صفر — الوارد المجّاني بلا تكلفة).
-    for (const c of converted) {
-      await tx.insert(giftVoucherLines).values({
-        giftVoucherId,
-        variantId: c.variantId,
-        productUnitId: c.productUnitId,
-        quantity: c.quantity,
-        baseQuantity: c.baseQuantity,
-        unitCostSnapshot: "0",
-        lineCost: "0",
-        refSalePrice: c.refSalePrice,
-      });
+    if (converted.length > 0) {
+      await tx.insert(giftVoucherLines).values(
+        converted.map((c) => ({
+          giftVoucherId,
+          variantId: c.variantId,
+          productUnitId: c.productUnitId,
+          quantity: c.quantity,
+          baseQuantity: c.baseQuantity,
+          unitCostSnapshot: "0",
+          lineCost: "0",
+          refSalePrice: c.refSalePrice,
+        })),
+      );
     }
 
     return { giftVoucherId, giftNumber };

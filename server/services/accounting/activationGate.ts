@@ -5,6 +5,7 @@ import {
   accrualCorrectionRequests,
   accrualObligationEvents,
   accrualObligations,
+  deliveryRemittances,
   doubleEntrySettings,
   employeeAdvances,
   employees,
@@ -385,6 +386,7 @@ export async function canActivate(options?: {
     categoryAccountRows,
     unclassifiedOtherRows,
     allReceiptRows,
+    deliveryRemittanceRows,
   ] = executor
     ? await Promise.all([
         executor
@@ -427,6 +429,7 @@ export async function canActivate(options?: {
             and(
               eq(receipts.partyType, "OTHER"),
               isNull(receipts.voucherCategoryId),
+              isNull(receipts.invoiceId),
             ),
           ),
         executor
@@ -451,8 +454,14 @@ export async function canActivate(options?: {
             createdBy: receipts.createdBy,
           })
           .from(receipts),
+        executor
+          .select({
+            receiptInId: deliveryRemittances.receiptInId,
+            receiptOutId: deliveryRemittances.receiptOutId,
+          })
+          .from(deliveryRemittances),
       ])
-    : [[], [], [], [], []];
+    : [[], [], [], [], [], []];
   const usedCategoryIds = new Set(
     usedCategoryRows
       .map((row) => row.categoryId)
@@ -469,6 +478,13 @@ export async function canActivate(options?: {
     usedCategoryIds,
     activeAccountRoles,
   );
+  const deliveryRemittanceReceiptIds = new Set(
+    deliveryRemittanceRows.flatMap((row) =>
+      [row.receiptInId, row.receiptOutId]
+        .filter((id): id is number => id != null)
+        .map(Number),
+    ),
+  );
   const systemPaymentRows = allReceiptRows.filter(
     (row) =>
       hasSystemPaymentRequestEnvelope(row.internalNote) ||
@@ -477,7 +493,11 @@ export async function canActivate(options?: {
   const systemPaymentReceiptIds = systemPaymentRows.map((row) => Number(row.id));
   const systemPaymentReceiptIdSet = new Set(systemPaymentReceiptIds);
   const manualUnclassifiedOtherReceiptIds = unclassifiedOtherRows
-    .filter((row) => !systemPaymentReceiptIdSet.has(Number(row.id)))
+    .filter(
+      (row) =>
+        !systemPaymentReceiptIdSet.has(Number(row.id)) &&
+        !deliveryRemittanceReceiptIds.has(Number(row.id)),
+    )
     .map((row) => Number(row.id));
   const canonicalAdvanceRequests = systemPaymentRows
     .map((row) => ({ row, request: parseSystemPaymentRequest(row.internalNote) }))

@@ -4,6 +4,7 @@ import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
 const DeliveryHub = lazy(() => import("@/pages/DeliveryHub"));
+const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
 const DeliveryParties = lazy(() => import("@/pages/DeliveryParties"));
 const DeliveryPricingZones = lazy(() => import("@/pages/DeliveryPricingZones"));
 const CommissionComparisonReport = lazy(() => import("@/pages/CommissionComparisonReport"));
@@ -14,6 +15,7 @@ const DELIVERY_ROLES = { roles: ["admin", "manager", "accountant", "cashier", "a
 
 const TABS: HubTab[] = [
   { value: "dispatch", label: "إدارة التوصيل", gate: { roles: [...DELIVERY_ROLES.roles] }, Component: DeliveryHub },
+  { value: "workflow", label: "سير العمل بالباركود (إسناد وتحصيل)", gate: { roles: [...DELIVERY_ROLES.roles] }, Component: ReceptionWorkflowPage },
   { value: "parties", label: "جهات التوصيل", gate: { roles: [...DELIVERY_ROLES.roles] }, Component: DeliveryParties },
   // Slice I (٢٩/٨/٢٦): إدارة مناطق التسعير — للمدير فقط (deliveryManagerProcedure على الخادم).
   { value: "pricing", label: "مناطق التسعير", gate: { roles: ["admin", "manager"] }, Component: DeliveryPricingZones },

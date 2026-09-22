@@ -113,10 +113,16 @@ export async function setCategoryStoreVisibility(input: { id: number; showInStor
 
 /** ترتيب عرض الأقسام في المتجر — يُسنِد sortOrder=الفهرس لكل معرّف بالترتيب المُمرَّر، ذرّياً. */
 export async function reorderCategories(input: { orderedIds: number[] }, _actor: Actor) {
+  if (input.orderedIds.length === 0) return { count: 0 };
   const res = await withTx(async (tx) => {
-    for (let i = 0; i < input.orderedIds.length; i++) {
-      await tx.update(categories).set({ sortOrder: i }).where(eq(categories.id, input.orderedIds[i]));
-    }
+    const cases = sql.join(
+      input.orderedIds.map((id, i) => sql`WHEN ${categories.id} = ${id} THEN ${i}`),
+      sql` `,
+    );
+    await tx
+      .update(categories)
+      .set({ sortOrder: sql`CASE ${cases} ELSE ${categories.sortOrder} END` })
+      .where(inArray(categories.id, input.orderedIds));
     return { count: input.orderedIds.length };
   });
   invalidateCategoriesAdminCache();

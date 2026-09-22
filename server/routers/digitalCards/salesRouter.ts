@@ -6,6 +6,7 @@ import { z } from "zod";
 import { nonNegMoneyString } from "../../lib/schemas";
 import { finalizeService, intentService, reviewResolutionService, writeoffService } from "../../services/digitalCards";
 import { withTx } from "../../services/tx";
+import { VERIFIED_DIGITAL_PRICE_APPROVAL } from "../../services/digitalCards/mixedCartService";
 import {
   digitalCardsAdminReadProcedure,
   digitalCardsManagerProcedure,
@@ -13,6 +14,7 @@ import {
   router,
 } from "../../trpc";
 import { actorOf, requireDb, scopedBranchOf } from "./shared";
+import { verifyManagerApproval } from "../saleRouter";
 
 const studentSnapshotSchema = z.object({
   studentName: z.string().min(1).max(200),
@@ -37,8 +39,14 @@ export const salesRouter = router({
         cartFingerprint: z.string().min(1).max(64),
         customerId: z.number().int().positive().nullish(),
         priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        notes: z.string().max(5000).nullish(),
         sourceType: z.enum(["POS", "INVOICE", "RECEPTION"]).default("POS"),
-        sourcePayload: z.any().optional(),
+        sourcePayload: z.unknown().optional(),
+        managerApproval: z
+          .object({ email: z.string().min(1), password: z.string().min(1) })
+          .strict()
+          .optional(),
         regularLines: z.array(z.object({
           lineKey: z.string().min(1).max(64),
           variantId: z.number().int().positive(),
@@ -78,7 +86,25 @@ export const salesRouter = router({
       if (scoped != null && input.branchId !== scoped) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا صلاحية على فرع آخر" });
       }
-      return withTx((tx) => intentService.prepare(tx, input, actorOf(ctx)));
+      const { managerApproval, ...request } = input;
+      const approvedBy = managerApproval
+        ? await verifyManagerApproval(managerApproval, ctx, input.branchId)
+        : null;
+      const actor = actorOf(ctx);
+      const elevated = actor.role === "admin";
+      return withTx((tx) =>
+        intentService.prepare(
+          tx,
+          {
+            ...request,
+            ...(approvedBy != null
+              ? { priceApprovalCapability: VERIFIED_DIGITAL_PRICE_APPROVAL }
+              : {}),
+            priceApprovedBy: approvedBy ?? (elevated ? actor.userId : null),
+          },
+          actor,
+        ),
+      );
     }),
 
   claimExecution: digitalCardsPosProcedure
@@ -110,12 +136,8 @@ export const salesRouter = router({
   getIntent: digitalCardsPosProcedure
     .input(z.object({ intentId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
-      const res = await intentService.getIntent(requireDb(), input.intentId);
+      const res = await intentService.getIntent(requireDb(), input.intentId, actorOf(ctx));
       if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "النيّة غير موجودة" });
-      const scoped = scopedBranchOf(ctx);
-      if (scoped != null && Number(res.intent.branchId) !== scoped) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "النيّة تخصّ فرعاً آخر" });
-      }
       return res;
     }),
 

@@ -42,7 +42,7 @@ type TaskEventType =
   | "LINK"
   | "SYSTEM"
   | "CSAT";
-type TaskActor = Actor & { role?: string };
+type TaskActor = Actor & { role?: string; name?: string | null };
 /** A company owner can be elevated without a fixed branch.  The mobile path
  * must derive that branch from its locked, already-assigned task; it must
  * never silently substitute a default branch. */
@@ -134,6 +134,7 @@ async function claimTaskInTx(tx: Tx, taskId: number, actor: TaskActor): Promise<
     eventId: statusEventId,
     action: { type: "CLAIMED" },
     actorUserId: actor.userId,
+    actorName: actor.name,
   });
   return { taskId, status: "IN_PROGRESS", assignedTo: actor.userId, notificationOccurrenceId };
 }
@@ -332,6 +333,7 @@ export async function assignTask(
         previousAssignedTo: positiveTaskUserId(task.assignedTo),
       },
       actorUserId: actor.userId,
+      actorName: actor.name,
     });
     return { taskId, assignedTo, notificationOccurrenceId };
   });
@@ -373,6 +375,7 @@ export async function setWaiting(
       eventId,
       action: { type: "WAITING" },
       actorUserId: actor.userId,
+      actorName: actor.name,
     });
     return { taskId, status: "WAITING_CUSTOMER" as const, notificationOccurrenceId };
   });
@@ -416,6 +419,7 @@ export async function resumeTask(taskId: number, actor: TaskActor) {
       eventId,
       action: { type: "RESUMED" },
       actorUserId: actor.userId,
+      actorName: actor.name,
     });
     return { taskId, status: "IN_PROGRESS" as const, waitingAccumMs, notificationOccurrenceId };
   });
@@ -477,6 +481,7 @@ async function resolveTaskInTx(
     eventId,
     action: { type: "RESOLVED" },
     actorUserId: actor.userId,
+    actorName: actor.name,
   });
   return {
     taskId,
@@ -670,6 +675,7 @@ export async function reopenTask(
       eventId,
       action: { type: "REOPENED" },
       actorUserId: actor.userId,
+      actorName: actor.name,
     });
     return { taskId, status: "IN_PROGRESS" as const, notificationOccurrenceId };
   });
@@ -716,6 +722,7 @@ export async function cancelTask(
       eventId,
       action: { type: "CANCELLED" },
       actorUserId: actor.userId,
+      actorName: actor.name,
     });
     return { taskId, status: "CANCELLED" as const, notificationOccurrenceId };
   });
@@ -751,6 +758,7 @@ export async function addComment(
       eventId,
       action: { type: "COMMENTED" },
       actorUserId: actor.userId,
+      actorName: actor.name,
     });
     return { taskId, ok: true as const, notificationOccurrenceId };
   });

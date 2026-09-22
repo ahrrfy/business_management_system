@@ -112,6 +112,10 @@ describe("أداة معالجة بيانات التوصيل القديمة", () 
       ["شركة خارجية", 1],
     ]);
     expect(report.invoicesMissingCustomer.map((row) => [row.invoiceNumber, row.outstandingAmount])).toEqual([["INV-OLD-5", "100.00"]]);
+    expect(report.options.parties.find((party) => party.id === 2)).toMatchObject({
+      name: "شركة خارجية",
+      partyType: "COMPANY",
+    });
     expect(await db().select().from(s.auditLogs)).toEqual(beforeAudit);
   });
 
@@ -155,6 +159,52 @@ describe("أداة معالجة بيانات التوصيل القديمة", () 
     expect((await db().select().from(s.deliveryEvents)).map((event) => event.eventType)).toEqual(["ASSIGNED"]);
     const audit = (await db().select().from(s.auditLogs)).filter((row) => row.action === "delivery.legacy.createConsignment");
     expect(audit).toHaveLength(1);
+  });
+
+  it("إصلاح الإرسالية المفقودة للشركة يلزم رقم البوليصة ويحفظ أصفاره البادئة", async () => {
+    const caller = adminCaller();
+    const baseInput = {
+      action: "CREATE_MISSING_CONSIGNMENT" as const,
+      targetId: 1,
+      confirmation: "WO-OLD-1",
+      note: "اختيرت الشركة من كشف التسليم الورقي",
+      partyId: 2,
+      deliveryFee: "10.00",
+    };
+    await expect(caller.deliveryLegacyRepair.repair(baseInput)).rejects.toThrow(/رقم تتبّع\/بوليصة الشركة مطلوب/);
+    expect((await db().select().from(s.deliveryConsignments)).filter((row) => Number(row.workOrderId) === 1)).toHaveLength(0);
+
+    const created = await caller.deliveryLegacyRepair.repair({ ...baseInput, externalTrackingRef: " 00441442 " });
+    const row = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, Number(created.consignmentId))))[0];
+    expect(row).toMatchObject({ partyId: 2, externalTrackingRef: "00441442" });
+    expect((await db().select().from(s.auditLogs)).find((item) => item.action === "delivery.legacy.createConsignment")?.newValue).toMatchObject({ externalTrackingRef: "00441442" });
+  });
+
+  it("إعادة فتح إرسالية شركة ترفض البوليصة المفقودة أو المكررة ثم تحفظ الفريدة ذرياً", async () => {
+    const caller = adminCaller();
+    await db().update(s.deliveryConsignments).set({ partyId: 2 }).where(eq(s.deliveryConsignments.id, 2));
+    await db().update(s.deliveryConsignments).set({ externalTrackingRef: "00441446" }).where(eq(s.deliveryConsignments.id, 4));
+    const baseInput = {
+      action: "REOPEN_PREPAID_CONSIGNMENT" as const,
+      targetId: 2,
+      confirmation: "CN-OLD-2",
+      note: "إعادة فتح مثبتة من كشف شركة التوصيل",
+    };
+    await expect(caller.deliveryLegacyRepair.repair(baseInput)).rejects.toThrow(/رقم تتبّع\/بوليصة الشركة مطلوب/);
+    await expect(caller.deliveryLegacyRepair.repair({ ...baseInput, externalTrackingRef: "00441446" })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 2)))[0]).toMatchObject({
+      status: "DELIVERED",
+      parcelStatus: "DELIVERED",
+      externalTrackingRef: null,
+    });
+
+    await caller.deliveryLegacyRepair.repair({ ...baseInput, externalTrackingRef: " 00441447 " });
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 2)))[0]).toMatchObject({
+      status: "DISPATCHED",
+      parcelStatus: "ASSIGNED",
+      externalTrackingRef: "00441447",
+    });
+    expect((await db().select().from(s.auditLogs)).find((item) => item.action === "delivery.legacy.prepaidReopened")?.newValue).toMatchObject({ externalTrackingRef: "00441447" });
   });
 
   it("COD=0 المغلقة لا تقبل ختم تسليم بلا وقت ومرجع صريحين، ثم تحفظ الإثبات المدخل", async () => {

@@ -14,10 +14,12 @@ import {
   listOnlineOrders,
   onlineOrderStatusCounts,
   setOnlineOrderStatus,
+  updateOnlineOrder,
 } from "../services/storeAdmin/orderFulfillmentService";
 import { dispatchOnlineOrder } from "../services/storeAdmin/dispatchOnlineOrder";
 import { listDeliveryParties } from "../services/deliveryService";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { GOVERNORATE_IDS } from "@shared/governorates";
 import {
   createBanner,
   deleteBanner,
@@ -47,7 +49,14 @@ import {
   createStorePromotion,
   deactivateStorePromotion,
   listStorePromotions,
+  reactivateStorePromotion,
+  updateStorePromotion,
 } from "../services/storeAdmin/storePromotionService";
+import {
+  computeAlgorithmicThematicCollections,
+  getThematicCollectionsConfig,
+  updateThematicCollectionsConfig,
+} from "../services/storefrontThematicService";
 import { getStoreAnalytics } from "../services/storeAdmin/storeAnalyticsService";
 import { getStoreCustomers } from "../services/storeAdmin/storeCustomerService";
 import { resolveStorefrontBranchId } from "../services/storefrontService";
@@ -143,16 +152,76 @@ const ordersRouter = router({
       return res;
     }),
 
+  /** تعديل بيانات وبنود الطلب (قبل الإرسال) — مع إعادة الحساب وفحص ATP المانع للضياع الصامت */
+  update: storeFulfillProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        customerName: z.string().trim().min(1).max(255).nullish(),
+        customerPhone: z.string().trim().min(5).max(30).nullish(),
+        shippingAddress: z.string().trim().max(1000).nullish(),
+        governorate: z.enum(GOVERNORATE_IDS).nullish(),
+        latitude: z.string().nullish(),
+        longitude: z.string().nullish(),
+        notes: z.string().trim().max(500).nullish(),
+        items: z.array(
+          z.object({
+            productUnitId: z.number().int().positive(),
+            quantity: z.number().int().positive(),
+          })
+        ).min(1).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const scopedBranchId = actorScopedBranch(ctx.user);
+      const res = await updateOnlineOrder(
+        {
+          id: input.id,
+          scopedBranchId,
+          customerName: input.customerName,
+          customerPhone: input.customerPhone,
+          shippingAddress: input.shippingAddress,
+          governorate: input.governorate,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          notes: input.notes,
+          items: input.items,
+        },
+        ctx.user.id
+      );
+      await logAudit(ctx, {
+        action: "store.order.update",
+        entityType: "onlineOrder",
+        entityId: input.id,
+        newValue: {
+          total: res.total,
+          subtotal: res.subtotal,
+          deliveryFee: res.deliveryFee,
+          governorate: input.governorate,
+          itemCount: input.items?.length,
+        },
+      });
+      return res;
+    }),
+
   /** جهات التوصيل النشطة (لمنتقي الإسناد عند الإرسال). */
   parties: storeReadProcedure.query(({ ctx }) => listDeliveryParties({ branchId: ctx.scopedBranchId, activeOnly: true })),
 
   /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل، مع إبقاء حدّ
    *  ائتمان العميل نافذاً ومنع الموافقة الذاتية من مُنفّذ الإرسال. */
   dispatch: storeManagerProcedure
-    .input(z.object({ id: z.number().int().positive(), partyId: z.number().int().positive() }))
+    .input(z.object({
+      id: z.number().int().positive(),
+      partyId: z.number().int().positive(),
+      externalTrackingRef: z.string().trim().max(100).nullish(),
+    }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
-      const args = { onlineOrderId: input.id, partyId: input.partyId };
+      const args = {
+        onlineOrderId: input.id,
+        partyId: input.partyId,
+        externalTrackingRef: input.externalTrackingRef ?? null,
+      };
       let res;
       try {
         res = await dispatchOnlineOrder(args, actor);
@@ -165,7 +234,7 @@ const ordersRouter = router({
         action: "store.order.dispatch",
         entityType: "onlineOrder",
         entityId: input.id,
-        newValue: { invoiceId: res.invoiceId, partyId: input.partyId, total: res.total },
+        newValue: { invoiceId: res.invoiceId, partyId: input.partyId, total: res.total, externalTrackingRef: input.externalTrackingRef ?? null },
       });
       return res;
     }),
@@ -253,6 +322,7 @@ const settingsRouter = router({
         announcement: z.string().max(500).nullish(),
         whatsappNumber: z.string().max(20).nullish(),
         freeShippingThreshold: z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة غير صحيحة").nullish(),
+        freeShippingThresholdGovernorates: z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة غير صحيحة").nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -434,6 +504,46 @@ const promotionsRouter = router({
       await logAudit(ctx, { action: "store.promotion.deactivate", entityType: "promotion", entityId: input.promotionId });
       return { ok: true };
     }),
+  reactivate: storeGlobalAdminProcedure
+    .input(z.object({ promotionId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = await resolveStorefrontBranchId(undefined);
+      await withTx((tx) => reactivateStorePromotion(tx, input.promotionId, branchId));
+      await logAudit(ctx, { action: "store.promotion.reactivate", entityType: "promotion", entityId: input.promotionId });
+      return { ok: true };
+    }),
+  update: storeGlobalAdminProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        name: z.string().min(1).max(255).optional(),
+        description: z.string().max(2000).nullish(),
+        type: z.enum(["PERCENT", "AMOUNT"]).optional(),
+        discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة غير صالحة").optional(),
+        discountAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+        scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]).optional(),
+        effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").optional(),
+        effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").nullish(),
+        minLineAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+        priority: z.number().int().min(0).max(999).optional(),
+        targets: z.array(z.object({
+          categoryId: z.number().int().positive().nullish(),
+          productId: z.number().int().positive().nullish(),
+          variantId: z.number().int().positive().nullish(),
+        })).max(500).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const branchId = await resolveStorefrontBranchId(undefined);
+      await withTx((tx) => updateStorePromotion(tx, input, ctx.user.id, branchId));
+      await logAudit(ctx, {
+        action: "store.promotion.update",
+        entityType: "promotion",
+        entityId: input.id,
+        newValue: { name: input.name, type: input.type, scope: input.scope },
+      });
+      return { ok: true, promotionId: input.id };
+    }),
 });
 
 /** تحليلات المتجر (لوحة hPanel) — أداء الطلبات الإلكترونية على مدى فترة (بلا تكلفة/ربح — §٦). */
@@ -572,6 +682,46 @@ const quoteRequestsRouter = router({
     }),
 });
 
+/** التشكيلات التحريرية الذكية: محرك خوارزمي مؤتمت + خيار التحرير المخصص للمدير. */
+const thematicCollectionsRouter = router({
+  get: storeReadProcedure.query(async ({ ctx }) => {
+    const config = await getThematicCollectionsConfig();
+    const algorithmicCards = await computeAlgorithmicThematicCollections(ctx.scopedBranchId);
+    return { config, algorithmicCards };
+  }),
+  preview: storeReadProcedure.query(async ({ ctx }) => {
+    return computeAlgorithmicThematicCollections(ctx.scopedBranchId);
+  }),
+  update: storeManagerProcedure
+    .input(z.object({
+      mode: z.enum(["AUTO", "CUSTOM"]),
+      customCards: z.array(z.object({
+        id: z.string(),
+        tag: z.string().trim().min(1).max(50),
+        title: z.string().trim().min(1).max(100),
+        description: z.string().trim().min(1).max(300),
+        cta: z.string().trim().min(1).max(50),
+        bgGradient: z.string(),
+        borderColor: z.string(),
+        iconName: z.enum(["Briefcase", "GraduationCap", "PenTool", "Tag", "LayoutGrid", "Palette", "BookOpen", "Sparkles"]),
+        filterType: z.enum(["category", "keyword", "deal"]),
+        filterValue: z.string(),
+        itemCount: z.number().int().min(0),
+        productIds: z.array(z.number().int().positive()).optional(),
+      })).max(10).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateThematicCollectionsConfig(input, ctx.user.id);
+      await logAudit(ctx, {
+        action: "store.thematic_collections.update",
+        entityType: "storeSettings",
+        entityId: 1,
+        newValue: { mode: input.mode, count: input.customCards?.length ?? 0 },
+      });
+      return res;
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
@@ -585,4 +735,5 @@ export const storeAdminRouter = router({
   notifications: notificationsRouter,
   reviews: reviewsRouter,
   quoteRequests: quoteRequestsRouter,
+  thematicCollections: thematicCollectionsRouter,
 });

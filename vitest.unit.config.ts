@@ -13,6 +13,9 @@ export default defineConfig({
     environment: "node",
     include: [
       "client/src/lib/moneyInput.test.ts",
+      "client/src/lib/audioFeedback.test.ts",
+      "client/src/lib/__tests__/notifyBeep.test.ts",
+      "client/src/lib/notify.test.ts",
       "client/src/lib/applicantCvDownload.test.ts",
       "shared/expenseLabels.test.ts",
       "shared/digitalSale.test.ts",
@@ -22,6 +25,7 @@ export default defineConfig({
       "client/src/lib/printing/couponCard.test.ts",
       "client/src/lib/printing/barcode.test.ts",
       "client/src/lib/printing/invoiceReceipt.test.ts",
+      "shared/notificationAlertContract.test.ts",
       "client/src/lib/printing/invoiceCorrectionPrint.test.ts",
       "client/src/lib/printing/receiptRaster.test.ts",
       "client/src/lib/printing/shiftRaster.test.ts",
@@ -34,6 +38,12 @@ export default defineConfig({
       "client/src/lib/printing/labelSize.test.ts",
       "client/src/lib/commissions/example.test.ts",
       "client/src/lib/navVisibility.test.ts",
+      "client/src/lib/workspaceProfiles.test.ts",
+      "client/src/lib/cashierWorkspace.test.ts",
+      "client/src/lib/posRoute.test.ts",
+      "client/src/lib/receptionOperationsHub.test.ts",
+      "client/src/lib/sidebarNavigation.test.ts",
+      "client/src/lib/__tests__/whatsapp.test.ts",
       "client/src/lib/salesCorrectionComparison.test.ts",
       "client/src/lib/navWorkspace.test.ts",
       "client/src/lib/payrollAccrual.test.ts",
@@ -73,6 +83,7 @@ export default defineConfig({
       "client/src/pages/YearEnd.test.ts",
       "client/src/lib/assetAccrualStatus.test.ts",
       "client/src/pages/__tests__/auditedUxContracts.test.ts",
+      "client/src/pages/__tests__/myWorkTabs.test.ts",
       "client/src/pages/__tests__/operationalPermissionParity.test.ts",
       "client/src/pages/__tests__/assetEditFinancialLock.test.ts",
       "client/src/pages/__tests__/assetAccrualUi.test.ts",
@@ -167,6 +178,8 @@ export default defineConfig({
       "client/src/pages/__tests__/TaskDetailDesignApproval.test.tsx",
       "client/src/components/workorder/ReverseDeliveryRequestDialog.test.tsx",
       "client/src/components/pos/DigitalFulfillmentDialog.test.tsx",
+      "client/src/components/pos/digitalBasket.test.ts",
+      "client/src/components/invoice/__tests__/reducer.test.ts",
       // م١-عميل PR-B (٥/٩/٢٦) — آلتا حالة وضع «توصيل» و«العميل بالهاتف» (منطقٌ نقيٌّ بلا قاعدة).
       "client/src/components/pos/deliveryMode.test.ts",
       "client/src/components/customer/customerByPhoneMachine.test.ts",
@@ -357,6 +370,12 @@ export default defineConfig({
       "client/src/pages/__tests__/salesReturnLegacyApproval.test.tsx",
       // تطبيع ومعالجة مدخلات وقراءات باركود الشحنات والطلبات والفواتير
       "shared/barcodeScanner.test.ts",
+      // كشف شركة التوصيل: إلزام رقم البوليصة + طابور المطابقة بالباركود مع حفظ الأصفار البادئة.
+      "server/services/delivery/trackingRefPolicy.test.ts",
+      "server/services/delivery/barcodeLookupPolicy.test.ts",
+      "client/src/components/delivery/companyStatementQueue.test.ts",
+      "client/src/components/delivery/statementDraft.test.ts",
+      "client/src/components/delivery/CompanyStatementScanQueue.test.tsx",
       // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب
       "shared/barcodeKeyDecode.test.ts",
       "client/src/lib/barcodeScanTiming.test.ts",
@@ -370,6 +389,8 @@ export default defineConfig({
       "client/src/lib/screenWakeLock.test.ts",
       // سيو المتجر وبيانات Schema.org وFAQPage للذكاء الاصطناعي (منطق نقي بلا قاعدة)
       "server/services/__tests__/storefrontSeoMeta.test.ts",
+      // محرك المطابقة الرمزية والتراكيب الذكية للتشكيلات التحريرية بالمتجر (منطق نقي بلا قاعدة)
+      "server/services/__tests__/storefrontThematicService.test.ts",
     ],
   },
 });

@@ -22,8 +22,8 @@ import { GOVERNORATES } from "@shared/governorates";
 import { D } from "@/lib/money";
 
 const parties = [
-  { id: 3, name: "مندوب الكرادة", defaultFee: "4000.00" },
-  { id: 9, name: "شركة النقل السريع", defaultFee: "7500.00" },
+  { id: 3, name: "مندوب الكرادة", partyType: "INDIVIDUAL" as const, defaultFee: "4000.00" },
+  { id: 9, name: "شركة النقل السريع", partyType: "COMPANY" as const, defaultFee: "7500.00" },
 ];
 
 const filled = (over: Partial<DeliveryDraft> = {}): DeliveryDraft => ({
@@ -31,6 +31,7 @@ const filled = (over: Partial<DeliveryDraft> = {}): DeliveryDraft => ({
   governorate: "baghdad",
   address: "الكرادة — شارع ٦٢",
   partyId: 3,
+  partyType: "INDIVIDUAL",
   partyName: "مندوب الكرادة",
   fee: "4000",
   recipientName: "سارة",
@@ -92,6 +93,24 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
     expect(validateDeliveryDraft(filled({ feeCollection: "SHOP", fee: "" }))).toEqual([]);
   });
 
+  it("شركة التوصيل تتطلّب رقم بوليصة وتحمله كنصّ مع الأصفار البادئة", () => {
+    const companyDraft = filled({
+      partyId: 9,
+      partyType: "COMPANY",
+      partyName: "شركة النقل السريع",
+      externalTrackingRef: "",
+    });
+    expect(validateDeliveryDraft(companyDraft)).toEqual(["NO_COMPANY_TRACKING"]);
+    expect(buildDeliveryPayload(companyDraft)).toBeNull();
+
+    const withTracking = { ...companyDraft, externalTrackingRef: " 00441442 " };
+    expect(validateDeliveryDraft(withTracking)).toEqual([]);
+    expect(buildDeliveryPayload(withTracking)).toMatchObject({
+      partyId: 9,
+      externalTrackingRef: "00441442",
+    });
+  });
+
   it("تطبيع الأجرة: فارغ ⇒ 0.00، منزلتان، ورفض غير الرقميّ والسالب", () => {
     expect(normalizeFee("")).toBe("0.00");
     expect(normalizeFee("4000")).toBe("4000.00");
@@ -103,20 +122,27 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
   it("اختيار الجهة: الأجرة التلقائيّة تتبع الجهة الجديدة، واليدويّة (feeManual) لا تُطمَس", () => {
     const first = applyPartySelection(emptyDeliveryDraft(), parties[0]);
     expect(first.partyId).toBe(3);
+    expect(first.partyType).toBe("INDIVIDUAL");
     expect(first.partyName).toBe("مندوب الكرادة");
     expect(first.fee).toBe("4000.00");
     // أجرةٌ تلقائيّة (feeManual=false) تُستبدَل بافتراض الجهة الجديدة عند التبديل — لا تعلَق على القديمة.
     const swapped = applyPartySelection(first, parties[1]);
     expect(swapped.partyId).toBe(9);
+    expect(swapped.partyType).toBe("COMPANY");
+    expect(swapped.externalTrackingRef).toBe("");
     expect(swapped.fee).toBe("7500.00");
     // أجرةٌ كتبها الكاشير بيده (feeManual=true) لا تُطمَس عند تبديل الجهة.
     const kept = applyPartySelection(filled({ fee: "2500", feeManual: true }), parties[1]);
     expect(kept.partyId).toBe(9);
     expect(kept.partyName).toBe("شركة النقل السريع");
     expect(kept.fee).toBe("2500");
-    const cleared = applyPartySelection(filled(), null);
+    const sameCompany = applyPartySelection({ ...swapped, externalTrackingRef: "00441442" }, parties[1]);
+    expect(sameCompany.externalTrackingRef).toBe("00441442");
+    const cleared = applyPartySelection({ ...filled(), externalTrackingRef: "00441442" }, null);
     expect(cleared.partyId).toBeNull();
+    expect(cleared.partyType).toBeNull();
     expect(cleared.partyName).toBe("");
+    expect(cleared.externalTrackingRef).toBe("");
   });
 
   it("اختيار المحافظة يقترح الجهة تلقائياً (المستخدم يعدّل لا يبتدئ) ويقدّر الأجرة عند غياب الاقتراح", () => {

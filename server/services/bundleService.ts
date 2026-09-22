@@ -19,7 +19,7 @@
 //   B6  الحدّ الأدنى: كل بكج يجب أن يحوي مكوّناً واحداً على الأقلّ (لا معنى لبكج فارغ).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   bundleComponents,
   productVariants,
@@ -29,6 +29,16 @@ import type { DB, Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
 import { assertNoActiveOnlineOrderBundleChange } from "./catalog/variantAvailability";
+import { assertNoActiveDigitalInventoryBinding } from "./digitalCards/inventoryBindingGuard";
+import { appErrorMessage } from "@shared/errors";
+
+function bundleChangeError(why: string): string {
+  return appErrorMessage({
+    what: "تعذّر حفظ تعريف البكج",
+    why,
+    doThis: "حدّث الصفحة، راجع المنتج ومكوّناته النشطة، ثم أعد الحفظ",
+  });
+}
 
 /** القراءات المشتركة تعمل على الاتصال العام أو داخل معاملة — نفس المنطق، مصدرٌ واحد. */
 type BundleQueryDb = DB | Tx;
@@ -61,6 +71,141 @@ export interface ValidatedComponent extends Required<
   sortOrder: number;
   notes: string | null;
   costPrice: string; // WAVG الحيّ للمكوّن — يُخزَّن هنا لتفادي قراءة ثانية عند حساب التكلفة اللحظية.
+}
+
+interface LockedBundleVariant {
+  id: number;
+  productId: number;
+  variantActive: boolean | null;
+  productActive: boolean | null;
+  productIsBundle: boolean | null;
+  productIsService: boolean | null;
+  productIsConsignment: boolean | null;
+  costPrice: string;
+  productName: string;
+  variantSku: string;
+}
+
+/**
+ * قفل نطاق تعريف البكج بترتيب عالمي واحد: products ثم productVariants، وكلاهما تصاعدي.
+ * القراءة الأولى لا تحكم الأهلية؛ تستخرج الربط فقط، ثم نعيد مطابقته من current reads المقفلة.
+ */
+async function lockBundleVariantScope(
+  tx: Tx,
+  variantIds: readonly number[],
+): Promise<Map<number, LockedBundleVariant>> {
+  const ids = Array.from(new Set(variantIds.map(Number))).sort((a, b) => a - b);
+  if (!ids.length) return new Map();
+
+  const refs = await tx
+    .select({ id: productVariants.id, productId: productVariants.productId })
+    .from(productVariants)
+    .where(inArray(productVariants.id, ids))
+    .orderBy(asc(productVariants.id));
+  const refByVariant = new Map(
+    refs.map((row) => [Number(row.id), Number(row.productId)]),
+  );
+  const missing = ids.filter((id) => !refByVariant.has(id));
+  if (missing.length) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: bundleChangeError(`متغيّرات البكج غير موجودة: ${missing.map((id) => `#${id}`).join("، ")}`),
+    });
+  }
+
+  const productIds = Array.from(new Set(refByVariant.values())).sort(
+    (a, b) => a - b,
+  );
+  const lockedProducts = await tx
+    .select({
+      id: products.id,
+      name: products.name,
+      isActive: products.isActive,
+      isBundle: products.isBundle,
+      isService: products.isService,
+      isConsignment: products.isConsignment,
+    })
+    .from(products)
+    .where(inArray(products.id, productIds))
+    .orderBy(asc(products.id))
+    .for("update");
+  const productById = new Map(
+    lockedProducts.map((product) => [Number(product.id), product]),
+  );
+
+  const lockedVariants = await tx
+    .select({
+      id: productVariants.id,
+      productId: productVariants.productId,
+      isActive: productVariants.isActive,
+      costPrice: productVariants.costPrice,
+      sku: productVariants.sku,
+    })
+    .from(productVariants)
+    .where(inArray(productVariants.id, ids))
+    .orderBy(asc(productVariants.id))
+    .for("update");
+
+  const out = new Map<number, LockedBundleVariant>();
+  for (const variant of lockedVariants) {
+    const id = Number(variant.id);
+    const productId = Number(variant.productId);
+    if (refByVariant.get(id) !== productId) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: bundleChangeError("تغيّر ربط أحد متغيّرات البكج أثناء الحفظ"),
+      });
+    }
+    const product = productById.get(productId);
+    if (!product) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: bundleChangeError("تغيّر منتج أحد متغيّرات البكج أثناء الحفظ"),
+      });
+    }
+    out.set(id, {
+      id,
+      productId,
+      variantActive: variant.isActive,
+      productActive: product.isActive,
+      productIsBundle: product.isBundle,
+      productIsService: product.isService,
+      productIsConsignment: product.isConsignment,
+      costPrice: String(variant.costPrice ?? "0"),
+      productName: product.name,
+      variantSku: variant.sku,
+    });
+  }
+  if (out.size !== ids.length) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: bundleChangeError("تغيّر نطاق متغيّرات البكج أثناء الحفظ"),
+    });
+  }
+  return out;
+}
+
+/** بصمة حتمية لتعريف البكج؛ تُستخدم لإغلاق نافذة تغيّر الوصفة بين الاكتشاف والقفل. */
+export function bundleDefinitionsFingerprint(
+  definitions: Map<number, BundleComponentRow[]>,
+): string {
+  return JSON.stringify(
+    Array.from(definitions.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([bundleVariantId, rows]) => [
+        bundleVariantId,
+        [...rows]
+          .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
+          .map((row) => ({
+            id: row.id,
+            componentVariantId: row.componentVariantId,
+            componentBaseQuantity: row.componentBaseQuantity,
+            componentUnitId: row.componentUnitId,
+            sortOrder: row.sortOrder,
+            notes: row.notes,
+          })),
+      ]),
+  );
 }
 
 /** يميّز نوع المتغيّر لحظة البيع — يُستعمَل في مسار البيع كي يفرّق التعامل. */
@@ -106,6 +251,7 @@ export async function validateBundleComponents(
   tx: Tx,
   bundleVariantId: number,
   raw: BundleComponentInput[],
+  lockedScope?: Map<number, LockedBundleVariant>,
 ): Promise<ValidatedComponent[]> {
   if (!raw.length) {
     // B6: بكج بلا مكوّنات = خطأ منطقي (لا يمكن بيعه ولا تحسب تكلفته). نمنعه عند الإنشاء والتعديل.
@@ -150,24 +296,8 @@ export async function validateBundleComponents(
   }
 
   const componentIds = Array.from(seen);
-  const rows = await tx
-    .select({
-      variantId: productVariants.id,
-      variantActive: productVariants.isActive,
-      productActive: products.isActive,
-      productIsBundle: products.isBundle,
-      productIsService: products.isService,
-      productIsConsignment: products.isConsignment,
-      costPrice: productVariants.costPrice,
-      productName: products.name,
-      variantSku: productVariants.sku,
-    })
-    .from(productVariants)
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(inArray(productVariants.id, componentIds));
-
-  const byId = new Map<number, (typeof rows)[number]>();
-  for (const r of rows) byId.set(Number(r.variantId), r);
+  const byId =
+    lockedScope ?? (await lockBundleVariantScope(tx, componentIds));
 
   const validated: ValidatedComponent[] = [];
   for (const c of raw) {
@@ -179,7 +309,7 @@ export async function validateBundleComponents(
       });
     }
     // B2:
-    if (r.variantActive === false || r.productActive === false) {
+    if (r.variantActive !== true || r.productActive !== true) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `المكوّن «${r.productName} — ${r.variantSku}» معطّل — فعّله أو استبدله`,
@@ -231,48 +361,77 @@ export async function replaceBundleComponents(
   bundleVariantId: number,
   raw: BundleComponentInput[],
 ): Promise<ValidatedComponent[]> {
+  // اكتشافٌ بلا حكم، ثم قفل اتحاد القديم والجديد كاملاً بترتيب الكتالوج الحاكم.
+  // تضمين القديم مهم: بيعٌ بدأ بالوصفة القديمة يجب أن يسبق التعديل أو يراه كاملاً، لا نصفين.
+  const discovered = await getBundleDefinitions(tx, [bundleVariantId]);
+  const discoveredRows = discovered.get(bundleVariantId) ?? [];
+  const scope = await lockBundleVariantScope(tx, [
+    bundleVariantId,
+    ...discoveredRows.map((row) => row.componentVariantId),
+    ...raw.map((row) => row.componentVariantId),
+  ]);
+  await assertNoActiveDigitalInventoryBinding(
+    tx,
+    Array.from(scope.keys()),
+    "تعديل تعريف البكج أثناء إصدار سلة رقمية",
+  );
+  const current = await getBundleDefinitions(tx, [bundleVariantId]);
+  if (
+    bundleDefinitionsFingerprint(discovered) !==
+    bundleDefinitionsFingerprint(current)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: bundleChangeError("تغيّر تعريف البكج أثناء الحفظ"),
+    });
+  }
+
   // احترازي: تأكيد أن bundleVariantId ينتمي لمنتج isBundle=true — يمنع الكتابة على متغيّر عادي بالخطأ.
-  const parent = await tx
-    .select({
-      isBundle: products.isBundle,
-      variantActive: productVariants.isActive,
-    })
-    .from(productVariants)
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(eq(productVariants.id, bundleVariantId))
-    .for("update")
-    .limit(1);
-  if (!parent[0]) {
+  const parent = scope.get(Number(bundleVariantId));
+  if (!parent) {
     throw new TRPCError({
       code: "NOT_FOUND",
       message: "متغيّر البكج غير موجود",
     });
   }
-  if (!parent[0].isBundle) {
+  if (!parent.productIsBundle) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "هذا المتغيّر لا ينتمي لمنتج بكج",
+    });
+  }
+  if (parent.productActive !== true || parent.variantActive !== true) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: bundleChangeError("المنتج أو متغيّر البكج معطّل"),
     });
   }
   // نفس mutex الذي يقفله createOnlineOrder قبل قراءة الوصفة. إمّا أن تلتزم الوصفة
   // أولاً فيقرأها الطلب كاملة، أو يلتزم الطلب أولاً فتُرفض إعادة الكتابة حتى حسمه.
   await assertNoActiveOnlineOrderBundleChange(tx, bundleVariantId);
 
-  const validated = await validateBundleComponents(tx, bundleVariantId, raw);
+  const validated = await validateBundleComponents(
+    tx,
+    bundleVariantId,
+    raw,
+    scope,
+  );
 
   // حذف ثم إدراج — أبسط وأسلم من مطابقة الأسطر (الوصفة صغيرة عادةً — ≤٢٠ صفّاً).
   await tx
     .delete(bundleComponents)
     .where(eq(bundleComponents.bundleVariantId, bundleVariantId));
-  for (const v of validated) {
-    await tx.insert(bundleComponents).values({
-      bundleVariantId,
-      componentVariantId: v.componentVariantId,
-      componentBaseQuantity: v.componentBaseQuantity,
-      componentUnitId: v.componentUnitId,
-      sortOrder: v.sortOrder,
-      notes: v.notes,
-    });
+  if (validated.length > 0) {
+    await tx.insert(bundleComponents).values(
+      validated.map((v) => ({
+        bundleVariantId,
+        componentVariantId: v.componentVariantId,
+        componentBaseQuantity: v.componentBaseQuantity,
+        componentUnitId: v.componentUnitId,
+        sortOrder: v.sortOrder,
+        notes: v.notes,
+      })),
+    );
   }
   return validated;
 }
@@ -284,14 +443,23 @@ export async function replaceBundleComponents(
 export async function getBundleDefinitions(
   tx: BundleQueryDb,
   bundleVariantIds: number[],
+  options: { lock?: boolean } = {},
 ): Promise<Map<number, BundleComponentRow[]>> {
   const map = new Map<number, BundleComponentRow[]>();
   if (!bundleVariantIds.length) return map;
   const ids = Array.from(new Set(bundleVariantIds));
-  const rows = await tx
+  const rowsQuery = tx
     .select()
     .from(bundleComponents)
-    .where(inArray(bundleComponents.bundleVariantId, ids));
+    .where(inArray(bundleComponents.bundleVariantId, ids))
+    .orderBy(
+      asc(bundleComponents.bundleVariantId),
+      asc(bundleComponents.sortOrder),
+      asc(bundleComponents.id),
+    );
+  const rows = options.lock === true
+    ? await rowsQuery.for("update")
+    : await rowsQuery;
   for (const r of rows) {
     const bid = Number(r.bundleVariantId);
     const list = map.get(bid) ?? [];
@@ -309,7 +477,7 @@ export async function getBundleDefinitions(
   }
   // ترتيب داخل كل مجموعة بحسب sortOrder (استقرار العرض).
   Array.from(map.values()).forEach((list: BundleComponentRow[]) =>
-    list.sort((a, b) => a.sortOrder - b.sortOrder),
+    list.sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id),
   );
   return map;
 }

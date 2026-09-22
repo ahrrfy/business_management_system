@@ -208,7 +208,9 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   print_operator: {
-    digital_cards: "NONE",
+    // READ: فنّي المطبعة يشغّل محطة الاستقبال فعلياً؛ شبكة البيع لا تُخرج تكلفةً أو هامشاً
+    // أو رصيد محفظة، بينما شاشات الإدارة تبقى خلف بوابة المدير المستقلة.
+    digital_cards: "READ",
     reservations: "NONE",
     gifts: "NONE",
     // crm=FULL (٨/٨، مراجعة Codex P1): فنّي المطبعة يشغّل محطة الاستقبال فعلياً، وطلبات القنوات
@@ -500,6 +502,17 @@ export function canUseStation(
   if (!role) return false;
   const g = POS_STATION_GATES[station];
   return moduleAccessAllowed(role, override ?? null, g.module, "FULL", g.allowedRoles);
+}
+
+/**
+ * البطاقات الرقمية منتج بيع، لذا تُتاح في محطتي التجزئة والاستقبال فقط.
+ * صلاحية وحدة digital_cards نفسها تُفحَص منفصلةً في الخادم؛ هذه الدالة لا تفتح محطة الطباعة.
+ */
+export function canUseDigitalCardsSellingStation(
+  role: string | undefined,
+  override?: PermissionMap | null,
+): boolean {
+  return canUseStation("RETAIL", role, override) || canUseStation("RECEPTION", role, override);
 }
 
 /** الأقسام التي يفتحها الحساب فعلاً (بالترتيب الثابت تجزئة→طباعة→استقبال). */

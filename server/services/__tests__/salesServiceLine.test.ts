@@ -1,7 +1,7 @@
 /**
  * salesServiceLine — createSale يقبل الخدمة كسطر فاتورة (بيع متقدّم) ويطبّق نفس ذرّية
- * printSaleService: unitCost يُحسب من الوصفة، خصم المواد بحركة OUT، allowNegative دائماً
- * لمواد الخدمة، السلة المختلطة (سلعة+خدمة) تنجح بمعاملة واحدة، وقيد SALE يعكس COGS الكامل.
+ * printSaleService: unitCost يُحسب من الوصفة، خصم المواد بحركة OUT صارم، السلة المختلطة
+ * (سلعة+خدمة) تنجح بمعاملة واحدة، وقيد SALE يعكس COGS الكامل.
  * الغرض: تغطية معمارية «الخدمات في الفاتورة المتقدّمة» — شريحة ١٢/٨/٢٦.
  */
 import { eq, sql } from "drizzle-orm";
@@ -188,20 +188,42 @@ describe("createSale — خدمة كسطر فاتورة متقدّمة", () => {
     expect(returned.cost).toBe("-1000.00");
     expect(returned.profit).toBe("-1750.00");
     expect(returned.notes).toContain("خدمة غير معادة=165.00");
+    const serviceItem = items.find((item) => Number(item.variantId) === 10)!;
+    const [serviceAfter] = await db().select({
+      returnedBaseQuantity: s.invoiceItems.returnedBaseQuantity,
+      returnedRestockedBaseQuantity: s.invoiceItems.returnedRestockedBaseQuantity,
+    }).from(s.invoiceItems).where(eq(s.invoiceItems.id, Number(serviceItem.id)));
+    expect(serviceAfter.returnedBaseQuantity).toBe(3);
+    expect(serviceAfter.returnedRestockedBaseQuantity).toBe(0);
   });
 
-  it("مواد الخدمة تُخصَم حتى بنفاد المخزون (allowNegative دائماً لموادّ الوصفة)", async () => {
-    // نُصفّر مخزون الحبر — الخدمة يجب أن تنجح مع رصيد سالب موسوم.
+  it("يرفض بيع الخدمة ذرياً عند نقص مادة واحدة ولا يترك فاتورة أو حركة أو خصماً جزئياً", async () => {
+    // نُصفّر مخزون الحبر؛ حتى مع توفر الورق يجب أن ترتد المعاملة كلها.
     await db().update(s.branchStock).set({ quantity: 0 })
       .where(sql`${s.branchStock.variantId} = 2 AND ${s.branchStock.branchId} = 1`);
-    const r = await createSale({
+    await expect(createSale({
       branchId: 1, shiftId: 1,
       lines: [{ variantId: 10, productUnitId: 10, quantity: "3" }],
       payment: { amount: "750", method: "CASH" },
-    }, actor);
-    expect(r.status).toBe("PAID");
-    expect(await stock(2)).toBe(-3); // سالب موسوم = علامة تزويد
-    expect(await stock(1)).toBe(97);
+    }, actor)).rejects.toThrow(/المخزون|الرصيد|متاح/i);
+    expect(await stock(2)).toBe(0);
+    expect(await stock(1)).toBe(100);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
+
+  it("يرفض الخدمة ذات تاريخ وصفة بلا وصفة فعالة بدل بيعها بكلفة صفر", async () => {
+    await db().update(s.productionRecipes).set({ isActive: false }).where(eq(s.productionRecipes.id, 1));
+    await expect(createSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow(/وصفة.*معطلة|فعّل.*وصفة/i);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await stock(1)).toBe(100);
+    expect(await stock(2)).toBe(100);
   });
 
   it("خدمة بلا وصفة ⇒ COGS=0 ولا حركة مخزون (رمزية بحتة، سعرها صافي ربح)", async () => {

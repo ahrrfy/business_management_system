@@ -95,6 +95,8 @@ export async function materializeInvoiceEffects(tx: Tx, run: ReversalRun): Promi
         kind: ctx.kindByVariant.get(Number(item.variantId)) ?? "STOCKED",
         isGift: !!item.isGift,
         unitCost: String(item.unitCost),
+        lineCost: String(item.lineCost),
+        serviceMaterialsSnapshotted: !!item.serviceMaterialsSnapshotted,
       },
     });
   }

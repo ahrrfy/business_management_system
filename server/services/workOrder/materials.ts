@@ -20,25 +20,23 @@
  *   · `DELIVERED`/`CANCELLED`: مرفوض (الفاتورة صدرت أو الأمر أُغلق).
  *
  * ثوابت مستنسَخة من `startWorkOrder` عمداً (لا تُبسَّط):
- *   · ترتيب القفل: `productVariants` ثمّ `branchStock`، تصاعدياً بـvariantId — منع deadlock مع
+ *   · ترتيب القفل: `products` ثمّ `productVariants` ثمّ `branchStock`، تصاعدياً — منع deadlock مع
  *     الشراء/WAVG والبيع.
  *   · تجميع الكمية لكل صنف قبل الحركة (صفّان لنفس الصنف = حركةٌ واحدة).
  *   · بضاعة الأمانة مرفوضة مادةً (حصّة المودِع لا تُستهلك في إنتاجنا).
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
-  branchStock,
-  products,
-  productVariants,
   workOrderMaterials,
   workOrders,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { createPostingIntent, signedPostingLines } from "../accounting/postingEngine";
-import { applyMovement } from "../inventoryService";
-import { lockInventoryVariants } from "../inventory/stockLock";
+import { applyMovement, applyValuedInboundMovement } from "../inventoryService";
+import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
@@ -127,7 +125,13 @@ export async function setWorkOrderMaterialsInTx(
     }
 
     const currentRows = await tx
-      .select({ id: workOrderMaterials.id, variantId: workOrderMaterials.variantId, baseQuantity: workOrderMaterials.baseQuantity, unitCost: workOrderMaterials.unitCost })
+      .select({
+        id: workOrderMaterials.id,
+        variantId: workOrderMaterials.variantId,
+        baseQuantity: workOrderMaterials.baseQuantity,
+        isBaseMaterial: workOrderMaterials.isBaseMaterial,
+        unitCost: workOrderMaterials.unitCost,
+      })
       .from(workOrderMaterials)
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
 
@@ -156,6 +160,81 @@ export async function setWorkOrderMaterialsInTx(
     }
     const hasDelta = added.length > 0 || removed.length > 0 || changed.length > 0;
 
+    // 0363 — الصنف الأساس المادي ليس سطراً اختيارياً في وصفة الأمر: هو البضاعة التي ستظهر
+    // على فاتورة التسليم. حذفُه من المواد مع إبقائه في رأس الأمر كان يفوتر منتجاً بلا خصم مخزون.
+    // اللقطة الثلاثية تميّز الخدمة من المادي؛ NULL على أمر تاريخي يعني أن الحقيقة غير موثوقة،
+    // لذلك يفشل التحرير مغلقاً بدلاً من تخمين تصنيف اليوم أو أول وحدة حالية.
+    const baseVariantId = wo.baseVariantId == null ? null : Number(wo.baseVariantId);
+    const baseBaseQuantity = wo.baseBaseQuantity == null ? null : Number(wo.baseBaseQuantity);
+    const markedBaseRows = currentRows.filter((row) => row.isBaseMaterial === true);
+    if (baseVariantId != null && wo.baseConsumesInventory == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر تعديل مواد أمر الشغل ${wo.orderNumber}`,
+          why: "الأمر تاريخي ويحمل صنفاً أساسياً بلا لقطة موثوقة لوحدته وكمّيته وهل يستهلك مخزوناً؛ وتحرير مواده قد يحذف بضاعةً ستُفوتر بلا خصم",
+          doThis: "أنشئ أمراً جديداً من الصنف والوحدة الصحيحين، أو نفّذ تصحيحاً إدارياً موثّقاً للأمر التاريخي قبل تعديل مواده",
+        }),
+      });
+    }
+    if (wo.baseConsumesInventory === true) {
+      const marked = markedBaseRows[0];
+      if (
+        baseVariantId == null ||
+        !Number.isInteger(baseBaseQuantity) ||
+        Number(baseBaseQuantity) <= 0 ||
+        markedBaseRows.length !== 1 ||
+        Number(marked?.variantId ?? 0) !== baseVariantId ||
+        Number(marked?.baseQuantity ?? 0) < Number(baseBaseQuantity)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: `تعذّر تعديل مواد أمر الشغل ${wo.orderNumber}`,
+            why: "سطر الصنف الأساس المادي لا يطابق لقطة الإنشاء: يجب أن يوجد سطر حاكم واحد للصنف نفسه وبكمية لا تقل عن الحصة الأساسية",
+            doThis: "أوقف التعديل واطلب من المدير تصحيح سلامة الأمر أولاً؛ لا تحذف السطر ولا تستبدله يدوياً",
+          }),
+        });
+      }
+      const desiredBaseQuantity = desiredQty.get(baseVariantId) ?? 0;
+      if (desiredBaseQuantity < Number(baseBaseQuantity)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر حذف أو تخفيض الصنف الأساس من أمر الشغل ${wo.orderNumber}`,
+            why: `الكمية الأساسية الملزمة ${baseBaseQuantity} وحدة أساس، والقائمة المعدّلة تُبقي ${desiredBaseQuantity} فقط؛ وهذا يفوتر الصنف الأساس من دون إخراجه كاملاً من المخزون`,
+            doThis: `أبقِ الصنف رقم ${baseVariantId} بكمية لا تقل عن ${baseBaseQuantity}، وعدّل المواد الإضافية وحدها؛ ولتغيير الصنف الأساس أنشئ أمراً جديداً موثّق الوحدة`,
+          }),
+        });
+      }
+    } else if (markedBaseRows.length > 0) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `تعذّر تعديل مواد أمر الشغل ${wo.orderNumber}`,
+          why: "الأمر مصنّف خدمةً بلا استهلاك للصنف الأساس، لكنه يحمل سطر مادة موسوماً كأساس مادي؛ الحالتان متناقضتان",
+          doThis: "أوقف التعديل واطلب تصحيح الأمر قبل المتابعة كي لا يُخصم مخزون خدمة أو تُفوتر بضاعة بلا حركة",
+        }),
+      });
+    }
+
+    // التحرير يثبت أهلية كل مادة ستبقى بلا نقصان، حتى لو كان الطلب idempotent. أمّا مادةٌ
+    // تُخفّض بعد الاستهلاك (جزئياً أو كلياً) فلا نمنع عكسها إن عُطّلت؛ نقفلها للحركة ونسمح
+    // بالخمول فقط، ثم نتحقق أدناه أنها ما زالت مخزنية مملوكة كي يكون عكس الحركة وWIP حقيقياً.
+    const desiredIds = Array.from(desiredQty.keys()).sort((a, b) => a - b);
+    const reducedIds = consumed
+      ? touchedIds.filter(
+          (variantId) =>
+            (desiredQty.get(variantId) ?? 0) < (currentQty.get(variantId) ?? 0),
+        )
+      : [];
+    const materialInfo = await assertStockedOwnedMaterials(
+      tx,
+      consumed ? touchedIds : desiredIds,
+      "مادة أمر الشغل",
+      { allowInactiveVariantIds: reducedIds },
+    );
+
     // ✅ idempotency طبيعيّة: نفس القائمة مرّتين ⇒ فرقٌ صفر ⇒ خروجٌ نظيف بلا حركةٍ ولا قيد.
     if (!hasDelta) {
       return {
@@ -166,45 +245,12 @@ export async function setWorkOrderMaterialsInTx(
       };
     }
 
-    // الأصناف المطلوبة يجب أن تكون موجودةً وغير أمانة — الفحص على القائمة المطلوبة كلّها
-    // (لا المضافة وحدها) كي لا يمرّ صنفٌ صار أمانةً بعد إضافته سابقاً.
-    const desiredIds = Array.from(desiredQty.keys()).sort((a, b) => a - b);
-    const costMap = new Map<number, Decimal>();
-    if (desiredIds.length) {
-      await lockInventoryVariants(tx, consumed ? touchedIds : desiredIds);
-      // ترتيب القفل الحاكم مع الشراء/WAVG والبيع: productVariants ثمّ branchStock، تصاعدياً.
-      // نضمن وجود صفّ الرصيد أولاً لأنّ FOR UPDATE لا يقفل صفاً مفقوداً.
-      if (consumed) {
-        const lockIds = touchedIds;
-        await tx
-          .insert(branchStock)
-          .values(lockIds.map((variantId) => ({ variantId, branchId: Number(wo.branchId), quantity: 0 })))
-          .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
-        await tx
-          .select({ id: branchStock.id })
-          .from(branchStock)
-          .where(and(eq(branchStock.branchId, Number(wo.branchId)), inArray(branchStock.variantId, lockIds)))
-          .orderBy(asc(branchStock.variantId))
-          .for("update");
-      }
-      const infoRows = await tx
-        .select({ id: productVariants.id, costPrice: productVariants.costPrice, isConsignment: products.isConsignment })
-        .from(productVariants)
-        .innerJoin(products, eq(productVariants.productId, products.id))
-        .where(inArray(productVariants.id, desiredIds))
-        .orderBy(asc(productVariants.id));
-      if (infoRows.length !== desiredIds.length) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "إحدى المواد المطلوبة غير موجودة" });
-      }
-      if (infoRows.some((v) => v.isConsignment)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "بضاعة الأمانة لا تُستهلك كمادة في أمر شغل — استبدلها بمادة مملوكة للمكتبة",
-        });
-      }
-      for (const v of infoRows) costMap.set(Number(v.id), round2(money(v.costPrice ?? "0")));
-    }
-
+    const costMap = new Map<number, Decimal>(
+      Array.from(materialInfo, ([id, material]) => [
+        id,
+        round2(money(material.costPrice)),
+      ]),
+    );
     // ── الأثر المخزنيّ/الدفتريّ — فقط بعد بدء التنفيذ ──
     let costDelta = new Decimal(0);
     if (consumed) {
@@ -216,18 +262,36 @@ export async function setWorkOrderMaterialsInTx(
         // تكلفة الوحدة: لقطة الاستهلاك للأصناف القائمة (لا تتغيّر بتغيّر WAVG)، والتكلفة
         // الحيّة للصنف المضاف حديثاً (هي لحظة استهلاكه الفعلية).
         const unitCost = snapshotCost.get(vid) ?? costMap.get(vid) ?? new Decimal(0);
-        costDelta = costDelta.plus(round2(unitCost.times(delta)));
-        await applyMovement(tx, {
-          variantId: vid,
-          branchId: Number(wo.branchId),
-          baseQuantity: Math.abs(delta),
-          // زيادة ⇒ استهلاكٌ إضافيّ من الرفّ؛ نقص ⇒ مادةٌ لم تُستعمَل تعود للرفّ.
-          movementType: delta > 0 ? "OUT" : "IN",
-          referenceType: "WORK_ORDER",
-          referenceId: input.workOrderId,
-          createdBy: actor.userId,
-          notes: `تعديل بنود أمر الشغل ${wo.orderNumber}`,
-        });
+        const lineCostDelta = round2(unitCost.times(delta));
+        costDelta = costDelta.plus(lineCostDelta);
+        if (delta > 0) {
+          await applyMovement(tx, {
+            variantId: vid,
+            branchId: Number(wo.branchId),
+            baseQuantity: delta,
+            movementType: "OUT",
+            referenceType: "WORK_ORDER",
+            referenceId: input.workOrderId,
+            createdBy: actor.userId,
+            // allowBackorder يخص البيع؛ زيادة مواد أمر بدأ يجب أن تحترم الرصيد
+            // والحجوزات دائماً.
+            respectProductBackorder: false,
+            notes: `تعديل بنود أمر الشغل ${wo.orderNumber}`,
+          });
+        } else {
+          // المادة المخفَّضة تعود بالقيمة التي خرجت بها عند البدء، لا بتكلفة اليوم.
+          // الحركة والقيمة وWAVG تُحدَّث تحت mutex الصنف وكل أرصدته في primitive واحدة.
+          await applyValuedInboundMovement(tx, {
+            variantId: vid,
+            branchId: Number(wo.branchId),
+            baseQuantity: -delta,
+            historicalValue: lineCostDelta.abs(),
+            referenceType: "WORK_ORDER",
+            referenceId: input.workOrderId,
+            createdBy: actor.userId,
+            notes: `تعديل بنود أمر الشغل ${wo.orderNumber}`,
+          });
+        }
       }
       costDelta = round2(costDelta);
       if (!costDelta.isZero()) {
@@ -264,6 +328,7 @@ export async function setWorkOrderMaterialsInTx(
         workOrderId: input.workOrderId,
         variantId: vid,
         baseQuantity: desiredQty.get(vid)!,
+        isBaseMaterial: wo.baseConsumesInventory === true && vid === baseVariantId,
         unitCost: consumed
           ? (snapshotCost.get(vid) ?? costMap.get(vid) ?? new Decimal(0)).toFixed(2)
           : "0",

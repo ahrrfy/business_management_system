@@ -70,3 +70,46 @@ describe("pinLock — اشتقاق PIN بـPBKDF2 ومقارنة ثابتة ال
     expect(constantTimeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 2]))).toBe(true);
   });
 });
+
+describe("pinLock — عزل مالك PIN بين الشركات", () => {
+  const base = {
+    key: "profile" as const,
+    userId: 7,
+    name: "مصور",
+    role: "print_operator",
+    branchId: 1,
+    pinSalt: new Uint8Array([1]),
+    pinHash: new Uint8Array([2]),
+    savedAt: "2026-09-17T00:00:00.000Z",
+  };
+
+  it("preserves PIN only for the same company and user", () => {
+    expect(
+      __testables.shouldPreserveOfflinePin(
+        { ...base, companyId: 11 },
+        { companyId: 11, userId: 7 },
+      ),
+    ).toBe(true);
+    expect(
+      __testables.shouldPreserveOfflinePin(
+        { ...base, companyId: 11 },
+        { companyId: 12, userId: 7 },
+      ),
+    ).toBe(false);
+    expect(
+      __testables.shouldPreserveOfflinePin(
+        { ...base, companyId: 11 },
+        { companyId: 11, userId: 8 },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not trust a legacy profile without a tenant scope", () => {
+    expect(
+      __testables.shouldPreserveOfflinePin(base, {
+        companyId: null,
+        userId: 7,
+      }),
+    ).toBe(false);
+  });
+});
