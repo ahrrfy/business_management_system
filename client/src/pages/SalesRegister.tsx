@@ -5,19 +5,17 @@ import { ActorCell } from "@/components/data-table/ActorCell";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
-import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type Row = RouterOutputs["reports"]["salesRegister"]["rows"][number];
 
@@ -76,13 +74,12 @@ export default function SalesRegister() {
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
 
-  const dq = useDebouncedValue(query, 250);
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.salesRegister.useQuery({
     from: period.from,
     to: period.to,
     branchId: branchId ? Number(branchId) : undefined,
-    q: dq.trim() || undefined,
+    q: query.trim() || undefined,
     limit: PAGE,
     offset: page * PAGE,
   });
@@ -112,7 +109,7 @@ export default function SalesRegister() {
       from: period.from,
       to: period.to,
       branchId: branchId ? Number(branchId) : undefined,
-      q: dq.trim() || undefined,
+      q: query.trim() || undefined,
     };
   }
 
@@ -222,15 +219,18 @@ export default function SalesRegister() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث</label>
-            <div className="relative">
-              <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input
-                value={query}
-                onChange={(e) => { setQuery(e.target.value); setPage(0); }}
-                placeholder="رقم الفاتورة أو العميل أو المنتج…"
-                className="h-9 w-56 pr-8"
-              />
-            </div>
+            <UnifiedSearchInput
+              value={query}
+              onChange={(val) => {
+                setQuery(val);
+                setPage(0);
+              }}
+              placeholder="رقم الفاتورة أو العميل أو المنتج…"
+              size="compact"
+              barcode={false}
+              debounceMs={250}
+              className="w-56"
+            />
           </div>
         </div>
       }
@@ -244,7 +244,7 @@ export default function SalesRegister() {
             columns={columns}
             data={rows}
             searchable={false}
-            externalFiltersActive={dq.trim() !== ""}
+            externalFiltersActive={query.trim() !== ""}
             loading={q.isLoading}
             errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
             emptyText="لا مبيعات في هذا النطاق."

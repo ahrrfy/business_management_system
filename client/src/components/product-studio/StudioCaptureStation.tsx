@@ -1,11 +1,9 @@
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { ArrowDown, Camera, CheckCircle2, Eye, Image as ImageIcon, Info, Loader2, ScanLine, Sparkles, ZoomIn } from "lucide-react";
@@ -100,10 +98,6 @@ export function StudioCaptureStation({
     claim.mutate({ barcode: value });
   };
 
-  const barcodeInput = useBarcodeInput((scanned) => submitCode(scanned), {
-    enabled: !offline && !claim.isPending,
-    minLength: 2,
-  });
 
   useEffect(() => {
     if (!active) inputRef.current?.focus();
@@ -131,31 +125,22 @@ export function StudioCaptureStation({
             <Label htmlFor="studio-capture-barcode" className="flex items-center gap-2 font-medium">
               <ScanLine aria-hidden className="size-4 text-primary" /> امسح باركود المنتج لبدء التصوير
             </Label>
-            <div className="relative">
-              <Input
-                id="studio-capture-barcode"
-                ref={inputRef}
-                className={barcodeSearchInputClass}
-                value={code}
-                inputMode="text"
-                autoComplete="off"
-                disabled={offline || claim.isPending}
-                placeholder="وجّه الماسح أو اكتب الباركود ثم Enter"
-                onChange={(event) => {
-                  setCode(event.target.value);
-                  setScanError("");
-                  setLinkAllowed(false);
-                }}
-                onKeyDown={(event) => {
-                  barcodeInput.handleKeyDown(event, setCode);
-                  if (shouldSubmitManualBarcode(event.key, event.defaultPrevented)) {
-                    event.preventDefault();
-                    submitCode(code);
-                  }
-                }}
-              />
-              <BarcodeSearchCue />
-            </div>
+            <UnifiedSearchInput
+              id="studio-capture-barcode"
+              ref={inputRef}
+              value={code}
+              onChange={(val) => {
+                setCode(val);
+                setScanError("");
+                setLinkAllowed(false);
+              }}
+              onScan={(scanned) => submitCode(scanned)}
+              onSubmit={() => submitCode(code)}
+              disabled={offline || claim.isPending}
+              placeholder="وجّه الماسح أو اكتب الباركود ثم Enter"
+              barcode={true}
+              className="w-full"
+            />
             {scanError && (
               <StudioUnknownBarcodeResolver
                 barcode={code}
