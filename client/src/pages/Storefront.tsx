@@ -3457,7 +3457,7 @@ function StorefrontContent() {
                 </div>
                 <div className="flex justify-between border-t border-slate-100 pt-2 text-sm dark:border-slate-800">
                   <span className="text-slate-500">أجرة التوصيل</span>
-                  <span className="tabular-nums text-slate-700 dark:text-slate-200" dir="ltr">{money(trackResult.deliveryFee)} د.ع</span>
+                  <span className={trackResult.deliveryFree ? "font-bold text-[var(--sem-pos)]" : "tabular-nums text-slate-700 dark:text-slate-200"} dir="ltr">{trackResult.deliveryFree ? `مجاني${Number(trackResult.deliveryWaivedAmount ?? 0) > 0 ? ` (وفرت ${money(trackResult.deliveryWaivedAmount)} د.ع)` : ""}` : `${money(trackResult.deliveryFee)} د.ع`}</span>
                 </div>
                 <div className="flex justify-between text-base font-extrabold">
                   <span className="text-slate-900 dark:text-white">الإجمالي</span>
