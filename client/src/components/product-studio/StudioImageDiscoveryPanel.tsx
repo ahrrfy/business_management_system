@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ArrowUpDown, CheckCircle2, ImageOff, Info, Layers, Package, Search, Sparkles, TrendingDown, UserCheck } from "lucide-react";
@@ -347,10 +348,15 @@ export function StudioImageDiscoveryPanel({
         <div className="grid gap-3 md:grid-cols-4">
           <div className="space-y-1.5 md:col-span-2">
             <Label htmlFor="discovery-search">بحث باسم المنتج</Label>
-            <div className="relative">
-              <Search aria-hidden className="pointer-events-none absolute end-2 top-3 size-4 text-muted-foreground" />
-              <Input id="discovery-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="اكتب جزءاً من الاسم" />
-            </div>
+            <UnifiedSearchInput
+              id="discovery-search"
+              value={search}
+              onChange={setSearch}
+              placeholder="اكتب جزءاً من الاسم أو SKU أو امسح الباركود… (F2)"
+              debounceMs={250}
+              barcode={true}
+              size="default"
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="discovery-bundle">تصفية</Label>

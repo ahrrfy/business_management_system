@@ -4,6 +4,7 @@ import { AlertCircle, Plus, Printer, ShoppingCart, Users, X, Search } from "luci
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { NumberInput } from "@/components/form/NumberInput";
 import { Switch } from "@/components/ui/switch";
@@ -73,23 +74,19 @@ function MaterialPicker({
 
   return (
     <div ref={ref} className="relative md:col-span-7">
-      <div className="relative">
-        <span aria-hidden className="pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 text-muted-foreground">
-          <Search aria-hidden className="size-3.5" />
-        </span>
-        <Input
-          value={open ? q : label}
-          onFocus={() => setOpen(true)}
-          onChange={(e) => {
-            setQ(e.target.value);
-            setOpen(true);
-          }}
-          placeholder={value ? "" : "ابحث عن مادة خام (ورق/حبر/…)"}
-          className="h-8 pe-8 text-sm"
-          dir="auto"
-          aria-label="بحث عن مادة خام"
-        />
-      </div>
+      <UnifiedSearchInput
+        value={open ? q : label}
+        onFocus={() => setOpen(true)}
+        onChange={(val) => {
+          setQ(val);
+          setOpen(true);
+        }}
+        placeholder={value ? "" : "ابحث عن مادة خام (ورق/حبر/…)"}
+        aria-label="بحث عن مادة خام"
+        size="compact"
+        debounceMs={180}
+        barcode={false}
+      />
       {open && (
         <div className="absolute z-20 mt-1 w-full min-w-[260px] max-h-64 overflow-auto rounded-md border bg-popover shadow-md">
           {res.isFetching && (
