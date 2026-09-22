@@ -29,6 +29,8 @@ import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing
 import { printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { storefrontUrl } from "@/lib/siteHosts";
 import { ReceptionCollectSection } from "@/components/reception/ReceptionCollectSection";
+import { DispatchPreviewCard } from "@/components/delivery/DispatchPreviewCard";
+import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { fmtDateTime } from "@/lib/date";
@@ -83,6 +85,7 @@ export default function DeliveryWorkflowPage() {
   const [returnBarcodeInput, setReturnBarcodeInput] = useState("");
   const [returnType, setReturnType] = useState<"FULL" | "PARTIAL">("FULL");
   const [returnReason, setReturnReason] = useState("");
+  const [cancellingConsignment, setCancellingConsignment] = useState<{ id: number; number: string } | null>(null);
   const dispatchRef = useRef<HTMLInputElement>(null);
   const editRef = useRef<HTMLInputElement>(null);
   const returnRef = useRef<HTMLInputElement>(null);
@@ -376,11 +379,16 @@ export default function DeliveryWorkflowPage() {
     }
     const isOnline = returnScanned.kind === "onlineOrder";
     const docLabel = isOnline ? "طلب متجر" : returnScanned.kind === "invoice" ? "فاتورة" : "أمر شغل";
+    const needsCash = D(returnScanned.deposit ?? "0").gt(0);
+    if (needsCash && !shift) {
+      notify.err("يلزم فتح وردية نقدية نشطة أولاً لرد العربون / المبالغ المالية من الدرج");
+      return;
+    }
     const ok = await confirm({
       variant: "warning", title: `إلغاء / استرجاع ${docLabel}`,
       description: `#${returnScanned.orderNumber} — ${returnScanned.customerName ?? ""}\n` +
         (returnScanned.activeConsignment ? `الإرسالية الحالية: ${returnScanned.activeConsignment.consignmentNumber}\nسيتم تسجيل مرتجع الإرسالية وعكس بيعها ومخزونها ذرياً.` :
-        (D(returnScanned.deposit ?? "0").gt(0) ? `سيُردّ عربون ${fmt(returnScanned.deposit!)} د.ع من الدرج` : "لا عربون — إلغاء مباشر")),
+        (needsCash ? `سيُردّ عربون ${fmt(returnScanned.deposit!)} د.ع من الدرج` : "لا عربون — إلغاء مباشر")),
       confirmText: "تأكيد الإلغاء / الاسترجاع",
     });
     if (!ok) return;
@@ -399,6 +407,20 @@ export default function DeliveryWorkflowPage() {
           status: "CANCELLED",
           cancelReason: returnReason.trim(),
         });
+      }
+      return;
+    }
+
+    if (returnScanned.kind === "invoice") {
+      if (returnScanned.activeConsignment) {
+        returnBarcodeMut.mutate({
+          barcode: returnScanned.orderNumber,
+          returnReason: returnReason.trim(),
+          refundShiftId: shift?.id,
+          clientRequestId: crypto.randomUUID(),
+        });
+      } else {
+        notify.info("مرتجع بنود الفاتورة يتم عبر منتقي البنود وقنوات الاسترداد في نموذج المرتجع أدناه");
       }
       return;
     }
@@ -539,120 +561,29 @@ export default function DeliveryWorkflowPage() {
             )}
 
             {dispatchScanned && (
-              <Card className="overflow-hidden gap-0 py-0 shadow-sm">
-                <div className="flex items-start justify-between border-b bg-muted/30 p-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Package aria-hidden className="size-5 text-primary" />
-                      <span className="text-lg font-extrabold">#{dispatchScanned.orderNumber}</span>
-                      <Badge variant="outline" className="border-green-500 text-green-600">جاهز</Badge>
-                    </div>
-                    {dispatchScanned.title && <p className="mt-1 text-sm text-muted-foreground">{dispatchScanned.title}</p>}
-                  </div>
-                  <Button variant="ghost" size="sm" onClick={() => { setDispatchScanned(null); setDispatchBarcodeInput(""); }}>مسح طلب آخر</Button>
-                </div>
-                <div className="space-y-3 p-4">
-                  {dispatchScanned.activeConsignment && (
-                    <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3.5 space-y-1">
-                      <div className="flex items-center gap-2 text-destructive font-extrabold text-sm">
-                        <AlertTriangle className="size-4 shrink-0" />
-                        <span>الطلب مسند مسبقاً لجهة أخرى ولا يمكن تكرار إسناده!</span>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        جهة التوصيل الحالية: <strong className="text-foreground">{dispatchScanned.activeConsignment.partyName ?? "غير محدد"}</strong> · إرسالية: <strong className="font-mono text-foreground">{dispatchScanned.activeConsignment.consignmentNumber}</strong> · حالة الطرد: <strong className="text-foreground">{dispatchScanned.activeConsignment.parcelStatus}</strong>
-                      </p>
-                      <p className="text-xs text-destructive font-bold">
-                        يجب إلغاء الإرسالية السابقة أو استرجاعها أولاً لعزل الذمم ومنع التداخل المالي.
-                      </p>
-                    </div>
-                  )}
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="flex items-center gap-2 rounded-xl border bg-background p-3">
-                      <User aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                      <div>
-                        <p className="text-xs text-muted-foreground">العميل</p>
-                        <p className="font-bold">{dispatchScanned.customerName ?? "—"}</p>
-                        {dispatchScanned.customerPhone && <p className="text-xs text-muted-foreground" dir="ltr">{dispatchScanned.customerPhone}</p>}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 rounded-xl border bg-background p-3">
-                      <BadgeDollarSign aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                      <div>
-                        <p className="text-xs text-muted-foreground">القيمة</p>
-                        <p className="font-bold">{fmt(dispatchScanned.salePrice)} د.ع</p>
-                        {D(dispatchScanned.deposit ?? "0").gt(0) && (
-                          <p className="text-xs text-green-600">عربون {fmt(dispatchScanned.deposit!)} · متبقٍّ {fmt(round2(D(dispatchScanned.salePrice).minus(D(dispatchScanned.deposit!))).toFixed(2))} على المندوب</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-3">
-                    <p className="text-xs font-extrabold text-primary">بيانات الإسناد والتوصيل</p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-xs font-bold">هاتف المستلم</label>
-                        <IntlPhoneInput value={recipientPhone} onChange={setRecipientPhone} placeholder="770 123 4567" className="h-10" />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-bold">أجرة التوصيل (د.ع)</label>
-                        <MoneyInput value={dispatchFee} onChange={setDispatchFee} placeholder="0" className="h-10" ariaLabel="أجرة التوصيل" />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="mb-1 flex items-center gap-1 text-xs font-bold">
-                        <Truck aria-hidden className="size-3.5 text-muted-foreground" />
-                        عنوان التوصيل
-                      </label>
-                      <Input
-                        value={deliveryAddress}
-                        onChange={(e) => setDeliveryAddress(e.target.value)}
-                        placeholder="المحافظة - المدينة - الحي - أقرب نقطة دالة..."
-                        className="h-10 bg-background"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 flex items-center gap-1 text-xs font-bold">
-                        <FileText aria-hidden className="size-3.5 text-muted-foreground" />
-                        ملاحظات التوصيل
-                      </label>
-                      <Input
-                        value={deliveryNotes}
-                        onChange={(e) => setDeliveryNotes(e.target.value)}
-                        placeholder="أي تعليمات للمندوب أو وقت التسليم المفضل..."
-                        className="h-10 bg-background"
-                      />
-                    </div>
-                    {selectedPartyInfo?.partyType === "COMPANY" && (
-                      <div>
-                        <label className="mb-1 flex items-center gap-1 text-xs font-bold">
-                          <Package aria-hidden className="size-3.5 text-muted-foreground" />
-                          رقم تتبّع / بوليصة الشركة الخارجية <span className="text-destructive">*</span>
-                        </label>
-                        <Input
-                          value={externalTrackingRef}
-                          onChange={(e) => setExternalTrackingRef(e.target.value)}
-                          placeholder="امسح باركود البوليصة أو أدخل الرقم..."
-                          className="h-10 bg-background font-mono text-xs"
-                          dir="ltr"
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    className="w-full py-6 text-base font-extrabold"
-                    onClick={() => void handleDispatch()}
-                    disabled={dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending || !!dispatchScanned.activeConsignment || (selectedPartyInfo?.partyType === "COMPANY" && !externalTrackingRef.trim())}
-                  >
-                    {dispatchScanned.activeConsignment
-                      ? "مسند مسبقاً للإرسالية " + dispatchScanned.activeConsignment.consignmentNumber
-                      : (dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending)
-                        ? "جارٍ الإسناد…"
-                        : D(dispatchFee || "0").gt(0)
-                          ? "أسند للمندوب · أجرة " + fmt(dispatchFee) + " د.ع"
-                          : "أسند للمندوب"}
-                  </Button>
-                </div>
-              </Card>
+              <DispatchPreviewCard
+                order={dispatchScanned}
+                isCompanyParty={selectedPartyInfo?.partyType === "COMPANY"}
+                recipientPhone={recipientPhone}
+                onRecipientPhoneChange={setRecipientPhone}
+                recipientName={recipientName}
+                onRecipientNameChange={setRecipientName}
+                dispatchFee={dispatchFee}
+                onDispatchFeeChange={setDispatchFee}
+                deliveryAddress={deliveryAddress}
+                onDeliveryAddressChange={setDeliveryAddress}
+                deliveryNotes={deliveryNotes}
+                onDeliveryNotesChange={setDeliveryNotes}
+                externalTrackingRef={externalTrackingRef}
+                onExternalTrackingRefChange={setExternalTrackingRef}
+                onConfirmDispatch={() => void handleDispatch()}
+                onCancel={() => {
+                  setDispatchScanned(null);
+                  setDispatchBarcodeInput("");
+                }}
+                onCancelAssignment={setCancellingConsignment}
+                isPending={dispatchMut.isPending || dispatchInvoiceMut.isPending || dispatchBarcodeMut.isPending}
+              />
             )}
           </div>
         )}
@@ -943,6 +874,20 @@ export default function DeliveryWorkflowPage() {
           </div>
         )}
       </div>
+
+      <CancelDeliveryAssignmentDialog
+        consignment={cancellingConsignment}
+        open={Boolean(cancellingConsignment)}
+        onOpenChange={(open) => {
+          if (!open) setCancellingConsignment(null);
+        }}
+        onCompleted={() => {
+          setCancellingConsignment(null);
+          setDispatchScanned(null);
+          void utils.delivery.invalidate();
+          void utils.workOrders.invalidate();
+        }}
+      />
     </div>
   );
 }

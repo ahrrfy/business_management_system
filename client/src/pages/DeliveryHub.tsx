@@ -11,6 +11,7 @@ import {
   Phone,
   Printer,
   RotateCcw,
+  ScanBarcode,
   Send,
   ShieldCheck,
   Truck,
@@ -132,6 +133,12 @@ export default function DeliveryHub() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <ShippingLabelSizeSelect />
+            <Button variant="outline" asChild className="gap-1.5 font-bold border-primary/40 bg-primary/5 text-primary hover:bg-primary/10">
+              <Link href="/delivery?tab=workflow">
+                <ScanBarcode className="size-4" aria-hidden />
+                سير العمل بالباركود (إسناد وتحصيل)
+              </Link>
+            </Button>
             <Button variant="outline" asChild>
               <Link href="/delivery?tab=parties">جهات التوصيل وذممها</Link>
             </Button>

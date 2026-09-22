@@ -32,6 +32,7 @@ const TABLES = [
 
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 const SALES = { userId: 2, branchId: 1, role: "sales_rep" };
+const CASHIER = { userId: 6, branchId: 1, role: "cashier" };
 
 function db() {
   const d = getDb();
@@ -98,6 +99,15 @@ async function seed() {
       role: "manager",
       loginMethod: "local",
       branchId: 2,
+    },
+    {
+      id: 6,
+      openId: "cashier-1",
+      name: "كاشير ١",
+      email: "cashier1@test.local",
+      role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
     },
   ]);
   await d
@@ -437,7 +447,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
     expect(events).toHaveLength(1);
   });
 
-  it("يفرض المدير ونطاق الفرع حتى عند استدعاء الخدمة مباشرة", async () => {
+  it("يفرض الكاشير أو المدير ونطاق الفرع حتى عند استدعاء الخدمة مباشرة", async () => {
     await seedInvoice();
     const created = await dispatch();
     const input = {
@@ -455,6 +465,19 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
         role: "manager",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // الكاشير في نفس الفرع مصرّح له بالإلغاء التشغيلي لطرد لم يخرج
+    await seedInvoice(104);
+    const createdForCashier = await dispatch(104, 1, "dispatch-cashier-104");
+    const cancelledByCashier = await cancelDeliveryAssignment(
+      {
+        consignmentId: createdForCashier.consignmentId,
+        reason: "إلغاء بواسطة كاشير",
+        clientRequestId: "cancel-cashier-auth-104",
+      },
+      CASHIER,
+    );
+    expect(cancelledByCashier.consignmentId).toBe(createdForCashier.consignmentId);
   });
 });
 
@@ -575,6 +598,27 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
         invoiceId: 103,
         partyId: 1,
         clientRequestId: "router-denied-dispatch-103",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("بوابة الراوتر تسمح للكاشير بإلغاء الإسناد وتحترم السحب الصريح", async () => {
+    await seedInvoice(105);
+    const dispatched = await dispatch(105, 1, "dispatch-router-105");
+    const cancelled = await caller("cashier", null).delivery.cancelAssignment({
+      consignmentId: dispatched.consignmentId,
+      reason: "إلغاء كاشير عبر الراوتر",
+      clientRequestId: "router-cashier-cancel-105",
+    });
+    expect(cancelled.consignmentId).toBe(dispatched.consignmentId);
+
+    await seedInvoice(106);
+    const dispatched2 = await dispatch(106, 1, "dispatch-router-106");
+    await expect(
+      caller("cashier", { store: "NONE" }).delivery.cancelAssignment({
+        consignmentId: dispatched2.consignmentId,
+        reason: "محاولة كاشير مسحوبة صلاحيته",
+        clientRequestId: "router-denied-cashier-cancel-106",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
