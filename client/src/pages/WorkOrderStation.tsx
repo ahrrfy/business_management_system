@@ -21,6 +21,8 @@ import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { paymentMethodCompact } from "@shared/terms";
+import { printWoThermalFromCard, printWoShippingLabel } from "@/components/workOrders/workOrderTypes";
+import { Package, Printer } from "lucide-react";
 
 /**
  * محطة فني التنفيذ — `/work-orders/station` (دور print_operator + الكاشير/المدير).
@@ -524,6 +526,17 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
               ))}
             </CardContent>
           </Card>
+
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <Button variant="outline" onClick={() => printWoThermalFromCard(d as unknown as WO)}>
+              <Printer aria-hidden className="me-1 size-4" />
+              طباعة حرارية
+            </Button>
+            <Button variant="outline" onClick={() => printWoShippingLabel(d)}>
+              <Package aria-hidden className="me-1 size-4" />
+              طباعة ليبل
+            </Button>
+          </div>
 
           {/* زر الإجراء المتدرّج */}
           {canOperateWorkOrders && d.status === "RECEIVED" && (

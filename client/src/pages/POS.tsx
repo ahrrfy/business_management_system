@@ -428,12 +428,10 @@ export default function POS() {
       notify.errBig("لا بيع رقميّ دون اتصال", "الكروت تحتاج الخادم للتحقّق من السعر والتنفيذ.");
       return;
     }
-    if (activeTab.method !== "CASH" && activeTab.method !== "CARD") {
-      notify.err("البيع الرقميّ نقداً أو ببطاقة فقط");
-      return;
-    }
-    if (activeTab.method === "CARD" && !externalPaymentConfirmed) {
-      notify.err("أكّد دفع البطاقة الخارجي قبل بدء إصدار الكروت.");
+    if (activeTab.method !== "CASH") {
+      notify.err(
+        "البيع الرقمي نقديّ حالياً؛ الدفع بالبطاقة موقوف حتى يكتمل ربط النية والحجز قبل القبض الخارجي.",
+      );
       return;
     }
     if (activeTab.payInput.trim() && paidD.lt(total)) {
@@ -450,10 +448,6 @@ export default function POS() {
       branchId,
       shiftId: shift.id,
       paymentMethod: activeTab.method,
-      ...(activeTab.method === "CARD" ? {
-        externalPaymentAttemptId: activeTab.externalPayment!.attemptId!,
-        externalPaymentDeviceId: activeTab.externalPayment?.deviceId,
-      } : {}),
       cartFingerprint: digitalCartFingerprint(),
       customerId: activeTab.customerId,
       priceTier: effectiveTier,
@@ -739,6 +733,12 @@ export default function POS() {
 
   async function confirmCurrentExternalPayment() {
     if (!shift || !cart.length || activeTab.method === "CASH") return;
+    if (cartHasDigital) {
+      notify.err(
+        "لم يبدأ النظام أي قبض خارجي: افصل الكروت الرقمية أو حوّل السلة إلى النقد حتى يكتمل الربط الذري الآمن.",
+      );
+      return;
+    }
     const tabId = activeTab.id;
     const reference = (activeTab.paymentRef ?? "").trim();
     if (!reference) {
@@ -1185,6 +1185,7 @@ export default function POS() {
   // فيستحيل إتمام الآجل الجزئي باللمس/الفأرة (F4 وحده كان يتجاوزه، وهو غائب على اللوحي).
   const canPay =
     cart.length > 0 &&
+    !(cartHasDigital && activeTab.method !== "CASH") &&
     (activeTab.payInput === "" || paid >= total || (!cartHasDigital && isCredit && activeTab.customerId != null)) &&
     externalPaymentConfirmed &&
     // م١ PR-B: وضع التوصيل يشترط طرداً مكتملاً (جهة + عنوان) وعميلاً مربوطاً بالهاتف واتصالاً حيّاً.

@@ -1,10 +1,10 @@
 // إلغاء مستند إنتاج: يعكس المخرجات (OUT) ثم المدخلات (IN)، ويفك مساهمة دفعة الإنتاج من WAVG.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { asc, eq, inArray, sql } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { branchStock, productVariants, productionLines, productionOrders } from "../../../drizzle/schema";
-import { applyMovement } from "../inventoryService";
-import { lockInventoryVariants } from "../inventory/stockLock";
+import { applyMovement, applyValuedInboundMovement } from "../inventoryService";
+import { ensureBranchStockRows, lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
 import {
   createPostingIntent,
@@ -26,7 +26,26 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
     const lines = await tx.select().from(productionLines).where(eq(productionLines.productionOrderId, productionOrderId));
     const outs = lines.filter((l: any) => l.direction === "OUTPUT").sort((a: any, b: any) => Number(a.variantId) - Number(b.variantId));
     const ins = lines.filter((l: any) => l.direction === "INPUT").sort((a: any, b: any) => Number(a.variantId) - Number(b.variantId));
-    await lockInventoryVariants(tx, outs.concat(ins).map((line: any) => Number(line.variantId)));
+    const allVariantIds = await lockInventoryVariants(
+      tx,
+      outs.concat(ins).map((line: any) => Number(line.variantId)),
+    );
+    // نقفل **كل** أرصدة الأصناف مرةً واحدة وبالترتيب الحاكم. هذا يخدم غرضين معاً:
+    //  1) يمنع عكس ترتيب الأقفال حين تكون بعض المدخلات أصغر معرّفاً من المخرجات؛
+    //  2) يجعل كمية WAVG أدناه مشتقةً من Current Read المقفلة نفسها، لا من SUM بلقطة RR قديمة.
+    await ensureBranchStockRows(tx, allVariantIds, Number(po.branchId));
+    const lockedStockRows = allVariantIds.length
+      ? await tx
+          .select({
+            variantId: branchStock.variantId,
+            branchId: branchStock.branchId,
+            quantity: branchStock.quantity,
+          })
+          .from(branchStock)
+          .where(inArray(branchStock.variantId, allVariantIds))
+          .orderBy(asc(branchStock.variantId), asc(branchStock.branchId))
+          .for("update")
+      : [];
 
     // اجمع مساهمة كل مخرَج في وعاء WAVG. الصيغة العكسية:
     // oldValue = currentQty*currentCost - producedAllocatedCost؛ oldCost = oldValue/(currentQty-producedQty).
@@ -36,26 +55,24 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
       const variantId = Number(l.variantId);
       const prev = byVariant.get(variantId) ?? { qty: 0, value: new Decimal(0) };
       prev.qty += Number(l.baseQuantity);
-      prev.value = prev.value.plus(money(l.allocatedCost ?? l.lineCost ?? "0"));
+      // `produceOutputs` مزج WAVG فعلياً بـ(costPerBase المقرب × الكمية)، لا بـallocatedCost
+      // الكامل. عند حصّة 100 على 3 وحدات يدخل الوعاء 33.33×3=99.99؛ طرح 100 عند الإلغاء
+      // يترك 0.01 مفقوداً ويُفسد رجوع التكلفة. نعكس هنا **القيمة التي دخلت WAVG فعلاً**.
+      prev.value = prev.value.plus(
+        round2(money(l.unitCost ?? "0").times(Number(l.baseQuantity))),
+      );
       byVariant.set(variantId, prev);
     }
     const outVariantIds = Array.from(byVariant.keys()).sort((a, b) => a - b);
-    if (outVariantIds.length) {
-      await tx
-        .select({ id: branchStock.id })
-        .from(branchStock)
-        .where(inArray(branchStock.variantId, outVariantIds))
-        .orderBy(asc(branchStock.variantId))
-        .for("update");
+    const qtyMap = new Map<number, Decimal>();
+    for (const row of lockedStockRows) {
+      const variantId = Number(row.variantId);
+      if (!byVariant.has(variantId)) continue;
+      qtyMap.set(
+        variantId,
+        (qtyMap.get(variantId) ?? new Decimal(0)).plus(row.quantity ?? 0),
+      );
     }
-    const qtyRows = outVariantIds.length
-      ? await tx
-          .select({ variantId: branchStock.variantId, qty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })
-          .from(branchStock)
-          .where(inArray(branchStock.variantId, outVariantIds))
-          .groupBy(branchStock.variantId)
-      : [];
-    const qtyMap = new Map(qtyRows.map((row) => [Number(row.variantId), money(row.qty)]));
     const costRows = outVariantIds.length
       ? await tx
           .select({ id: productVariants.id, costPrice: productVariants.costPrice })
@@ -93,6 +110,9 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
         branchId: Number(po.branchId),
         baseQuantity: l.baseQuantity,
         movementType: "OUT",
+        // إلغاء إنتاج ليس بيعاً بالطلب: إن لم يكن المخرَج موجوداً فعلياً في فرع الإنتاج
+        // فالإلغاء يتوقف، حتى لو كان المنتج نفسه موسوماً allowBackorder للبيع.
+        respectProductBackorder: false,
         referenceType: "PRODUCTION_CANCEL",
         referenceId: productionOrderId,
         createdBy: actor.userId,
@@ -101,13 +121,22 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
     for (const [variantId, restoredCost] of Array.from(restoredCosts.entries())) {
       await tx.update(productVariants).set({ costPrice: restoredCost.toFixed(2) }).where(eq(productVariants.id, variantId));
     }
-    // استرجع المدخلات.
+    // استرجع المدخلات **بقيمتها التاريخية**. التجميع لكل صنف يمنع تقريب WAVG مراراً لو حمل
+    // المستند أكثر من سطر للمتغيّر نفسه، و`lineCost` يحفظ بقايا السنت الأصلية للسطر.
+    const returnedInputs = new Map<number, { qty: number; value: Decimal }>();
     for (const l of ins) {
-      await applyMovement(tx, {
-        variantId: Number(l.variantId),
+      const variantId = Number(l.variantId);
+      const previous = returnedInputs.get(variantId) ?? { qty: 0, value: new Decimal(0) };
+      previous.qty += Number(l.baseQuantity);
+      previous.value = previous.value.plus(money(l.lineCost ?? "0"));
+      returnedInputs.set(variantId, previous);
+    }
+    for (const [variantId, returned] of Array.from(returnedInputs.entries()).sort((a, b) => a[0] - b[0])) {
+      await applyValuedInboundMovement(tx, {
+        variantId,
         branchId: Number(po.branchId),
-        baseQuantity: l.baseQuantity,
-        movementType: "IN",
+        baseQuantity: returned.qty,
+        historicalValue: returned.value,
         referenceType: "PRODUCTION_CANCEL",
         referenceId: productionOrderId,
         createdBy: actor.userId,

@@ -152,7 +152,6 @@ const config = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["arm64-v8a", "armeabi-v7a"],
           minSdkVersion: 26,
         },
         ios: {

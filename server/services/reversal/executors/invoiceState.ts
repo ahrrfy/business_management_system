@@ -33,10 +33,14 @@ export interface ReversedLine {
   kind: VariantKind;
   isGift: boolean;
   unitCost: Decimal;
+  /** كلفة الجزء المعكوس من لقطة lineCost، لا unitCost المدوّر × الكمية. */
+  lineCost: Decimal;
   /** الكمّية المعكوسة الآن (وحدة الأساس). */
   quantity: number;
   /** عادت للرفّ فعلاً؟ (تالفٌ أو خدمةٌ ⇒ لا). */
   restocked: boolean;
+  /** للخدمة فقط: هل عادت مواد اللقطة فعلياً؟ */
+  serviceMaterialsRestored: boolean;
 }
 
 export interface InventoryRunState {

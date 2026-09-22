@@ -466,8 +466,10 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     });
     const purchaseOrderId = extractInsertId(insRes);
 
-    for (const r of rows) {
-      await tx.insert(purchaseOrderItems).values({ purchaseOrderId, ...r });
+    if (rows.length > 0) {
+      await tx.insert(purchaseOrderItems).values(
+        rows.map((r) => ({ purchaseOrderId, ...r })),
+      );
     }
     const revision = await createPurchaseOrderRevisionTx(tx, {
       purchaseOrderId,
@@ -648,8 +650,10 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     }).where(eq(purchaseOrders.id, input.purchaseOrderId));
 
     await tx.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
-    for (const r of rows) {
-      await tx.insert(purchaseOrderItems).values({ purchaseOrderId: input.purchaseOrderId, ...r });
+    if (rows.length > 0) {
+      await tx.insert(purchaseOrderItems).values(
+        rows.map((r) => ({ purchaseOrderId: input.purchaseOrderId, ...r })),
+      );
     }
 
     // أهليّة الجرد الافتتاحيّ تتبع البنود لا الأمر: صنفٌ حُذف من الأمر يعود مؤهَّلاً للعدّ، وصنفٌ

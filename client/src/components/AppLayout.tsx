@@ -1,9 +1,9 @@
+import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
 import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
-import { QuranSidebarCard } from "@/components/quran/QuranSidebarCard";
 import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { PushNotificationPrompt } from "@/components/notifications/PushNotificationPrompt";
 import { Button } from "@/components/ui/button";
@@ -27,18 +27,15 @@ import {
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  Menu, Search, Home, Printer, UserCircle2, ChevronLeft, LogOut, Check,
-  ClipboardCheck, History, Star,
+  Menu, Search, Printer, UserCircle2, ChevronLeft, LogOut, Check,
 } from "lucide-react";
-import { Link, useLocation } from "wouter";
-import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
-
+import { Link, useLocation, useSearch } from "wouter";
 import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
 import { APPLICATION_MODULES as NAV_LINKS } from "@/lib/moduleRegistry";
+import { resolveWorkspaceProfile } from "@/lib/workspaceProfiles";
 import {
-  NAV_FAVORITES_LIMIT,
   loadNavWorkspace,
   navWorkspaceStorageKey,
   readLastCompanyCode,
@@ -48,6 +45,18 @@ import {
   toggleFavorite,
   type NavWorkspace,
 } from "@/lib/navWorkspace";
+
+const QuranSidebarCard = lazy(() =>
+  import("@/components/quran/QuranSidebarCard").then((module) => ({
+    default: module.QuranSidebarCard,
+  })),
+);
+
+const HybridSidebarNav = lazy(() =>
+  import("@/components/navigation/HybridSidebarNav").then((module) => ({
+    default: module.HybridSidebarNav,
+  })),
+);
 
 /**
  * ربط الطابعة الحرارية — متاحٌ من الشريط العلوي في كل شاشة (لا الكاشير فقط)، كي تُربط مرّةً
@@ -79,27 +88,9 @@ function PrinterStatusButton({
   );
 }
 
-// تَنقّل الشريط الجانبي — مُسطَّح بالكامل (الموجة ٢، يونيو ٢٠٢٦): كل وَحدة = مَدخل واحد يَفتح
-// شاشة الوحدة، وتبويباتها الثانوية أعلى الشاشة (أزرار). لا مَجموعات قابلة للطيّ، لا تَمرير مُملّ.
-//  - لوحة التحكم تَبقى رابطاً مُستقلّاً أعلى القائمة.
-//  - نقطة البيع وقارئ الأسعار أدواتٌ ملء‑شاشة (روابط مُباشرة).
-//  - بقية الوَحدات صَفحات hub بتبويبات ?tab= (المبيعات/المشتريات/المطبعة/الأصول/الموارد/الإقفال/الإدارة...).
-//  - القيود: managerOnly (الأصول/الموارد/الصيرفة/الإقفال/الإدارة) و roles (التوصيل)؛ والتبويبات
-//    الحسّاسة داخل كل hub مُقيَّدة إضافةً (admin‑فقط للتكاملات/الأدوار/إقفال الفترات...).
-//
-// ⚙️ ترتيب القائمة = بحسب الاستعمال اليومي والأهمية (الأكثر استخداماً أولاً) لنشاط مطبعة+قرطاسية:
-//   ‏(أ) تشغيل يومي دائم على المنضدة: نقطة البيع ← قارئ الأسعار ← المطبعة والإنتاج ← العملاء ← المبيعات.
-//   ‏(ب) يومي مالي/تشغيلي: الخزينة ← التوصيل ← المخزون.
-//   ‏(ج) دوري (أسبوعي/عند الحاجة): المشتريات ← الموردون ← التقارير.
-//   ‏(د) متخصّص/نادر: الصيرفة ← الأصول ← الموارد ← الإقفال ← الإدارة والإعدادات (في الأسفل دائماً).
-// نشِط = المسار يطابق الوَحدة أو يقع تحتها (تبويب ?tab أو شاشة تفصيل ‎/x/…). الحارس ‎+"/" يَمنع
-// التقاط بادئة خاطئة (‎/inventory لا يَلتقط ‎/inventory-movements).
-function isModuleActive(loc: string, href: string): boolean {
-  return loc === href || loc.startsWith(href + "/");
-}
-
 function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const [loc, setLocation] = useLocation();
+  const search = useSearch();
 
   useEffect(() => {
     if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
@@ -235,13 +226,18 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const CASHIER_NAV = CASHIER_NAV_PATHS;
   // `coldStudio` (من main): شلٌّ كاملٌ للتنقّل في وضع الاستوديو البارد — يبقى **قبل** كلّ
   // فرعٍ آخر، فالإضافةُ أعلاه لا تفتح مدخلاً في وضعٍ صُمّم ليكون بلا مداخل.
-  const visibleNav = coldStudio
+  const visibleNav = coldStudio || !me.data
     ? []
     : isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
     : isCashier
       ? NAV_LINKS.filter((m) => CASHIER_NAV.includes(m.href) && canSeeGate(m, role, permsOverride))
       : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
+  const workspaceProfile = resolveWorkspaceProfile({
+    role: role ?? null,
+    permissionsOverride: permsOverride,
+  });
+  const primaryNav = workspaceProfile.primaryNav;
   const hasMyStocktake = (myStocktakes.data?.length ?? 0) > 0;
   const allowedNavPaths = visibleNav.map((item) => item.href);
   const allowedNavPathsKey = allowedNavPaths.join("|");
@@ -272,17 +268,6 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
     });
   }
 
-  const navByPath = new Map(visibleNav.map((item) => [item.href, item] as const));
-  const favoriteLinks = navWorkspace.favorites.flatMap((path) => {
-    const item = navByPath.get(path);
-    return item ? [item] : [];
-  });
-  const favoritePaths = new Set(navWorkspace.favorites);
-  const recentLinks = navWorkspace.recent.flatMap((path) => {
-    const item = navByPath.get(path);
-    return item && !favoritePaths.has(path) ? [item] : [];
-  }).slice(0, 3);
-  const favoritesFull = navWorkspace.favorites.length >= NAV_FAVORITES_LIMIT;
   const displayName =
     me.data?.name ?? me.data?.email ?? coldProfile?.name ?? "—";
   const displayRole = me.data?.role ?? coldProfile?.role;
@@ -319,152 +304,24 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
         )}
 
         {/* إذاعة القرآن الكريم — بطاقة بارزة في القائمة الجانبية */}
-        <QuranSidebarCard />
+        <Suspense fallback={null}>
+          <QuranSidebarCard />
+        </Suspense>
 
-        <nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="التنقّل الرئيسي">
-          {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب والكاشير: مساحتاهما مركّزتان) */}
-          {!isCourier && !isCashier && (
-            <>
-              <Link
-                href="/"
-                aria-current={loc === "/" ? "page" : undefined}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-2 min-h-[40px] text-sm transition",
-                  loc === "/" ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
-                )}
-              >
-                <Home className="size-4 shrink-0" aria-hidden />
-                <span className="truncate">لوحة التحكم</span>
-              </Link>
-              <div className="my-1 mx-2 sb-divider" />
-            </>
-          )}
-
-          {hasMyStocktake && (
-            <>
-              <Link
-                href="/my-stocktake"
-                aria-current={loc === "/my-stocktake" || loc.startsWith("/my-stocktake/") ? "page" : undefined}
-                className={cn(
-                  "flex items-center gap-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
-                  loc === "/my-stocktake" || loc.startsWith("/my-stocktake/") ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
-                )}
-              >
-                <ClipboardCheck className="size-4 shrink-0" aria-hidden />
-                <span className="truncate">جردي</span>
-              </Link>
-              <div className="my-1 mx-2 sb-divider" />
-            </>
-          )}
-
-          {(favoriteLinks.length > 0 || recentLinks.length > 0) && (
-            <section aria-label="اختصارات التنقّل" className="mb-1">
-              <div className="px-3 pb-1 pt-0.5 text-[11px] font-medium sb-sub">اختصاراتي</div>
-              {favoriteLinks.map((item) => {
-                const active = isModuleActive(loc, item.href);
-                return (
-                  <Link
-                    key={`favorite:${item.href}`}
-                    href={item.href}
-                    title={`مفضلة: ${item.label}`}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex min-h-[36px] items-center gap-2 px-3 py-1.5 text-sm transition",
-                      active ? "sb-active font-semibold" : "sb-item mx-2 rounded-md",
-                    )}
-                  >
-                    <Star className="size-3.5 shrink-0 fill-current" aria-hidden />
-                    <span className="truncate">{item.label}</span>
-                  </Link>
-                );
-              })}
-              {recentLinks.map((item) => {
-                const active = isModuleActive(loc, item.href);
-                return (
-                  <Link
-                    key={`recent:${item.href}`}
-                    href={item.href}
-                    title={`حديثاً: ${item.label}`}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex min-h-[36px] items-center gap-2 px-3 py-1.5 text-sm transition",
-                      active ? "sb-active font-semibold" : "sb-item mx-2 rounded-md",
-                    )}
-                  >
-                    <History className="size-3.5 shrink-0" aria-hidden />
-                    <span className="truncate">{item.label}</span>
-                  </Link>
-                );
-              })}
-              <div className="my-1 mx-2 sb-divider" />
-            </section>
-          )}
-
-          {/* الوَحدات — قائمة مُسطّحة، مَدخل واحد لكل وحدة */}
-          {visibleNav.map((m) => {
-            const active = isModuleActive(loc, m.href);
-            const favorite = favoritePaths.has(m.href);
-            const Icon = m.icon;
-            // شارة العدّ (٢٩/٨): الجاهز لأمر الشغل → /work-orders، الجاهز للإرسال → /delivery.
-            const badge = m.href === "/work-orders" ? workOrderReadyCount
-              : m.href === "/delivery" ? deliveryReadyCount
-              : 0;
-            // Codex P2 (٢٩/٨): الأرقام لاتينيّة دائماً (قاعدة i18n)؛ التجاوز يعرض «99+» لا «+٩٩».
-            const badgeLabel = badge > 99 ? "99+" : String(badge);
-            return (
-              <div key={m.href} className="group relative">
-                <Link
-                  href={m.href}
-                  title={m.label}
-                  aria-current={active ? "page" : undefined}
-                  className={cn(
-                    "flex items-center gap-2 mb-0.5 px-3 pe-11 py-2 min-h-[40px] text-sm transition",
-                    active ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
-                  )}
-                >
-                  <Icon className="size-4 shrink-0" aria-hidden />
-                  <span className="truncate">{m.label}</span>
-                  {badge > 0 && (
-                    <span
-                      aria-label={m.href === "/delivery"
-                        ? `${badge} إرسالية جاهزة`
-                        : `${badge} أمر جاهز`}
-                      title={m.href === "/delivery"
-                        ? `${badge} إرسالية جاهزة للتوصيل`
-                        : `${badge} أمر شغل جاهز للتسليم`}
-                      className="ms-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-[var(--sem-warn)] px-1.5 py-0.5 text-[10px] font-black text-background tabular-nums"
-                    >
-                      {badgeLabel}
-                    </span>
-                  )}
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => handleFavorite(m.href)}
-                  aria-disabled={!favorite && favoritesFull ? true : undefined}
-                  aria-pressed={favorite}
-                  aria-label={favorite
-                    ? `إزالة ${m.label} من المفضلة`
-                    : favoritesFull
-                      ? `لا يمكن إضافة ${m.label} إلى المفضلة؛ بلغت الحد الأقصى`
-                      : `إضافة ${m.label} إلى المفضلة`}
-                  title={favorite
-                    ? "إزالة من المفضلة"
-                    : favoritesFull
-                      ? `بلغت الحد (${NAV_FAVORITES_LIMIT})`
-                      : "إضافة إلى المفضلة"}
-                  className={cn(
-                    "absolute left-1.5 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    favorite ? "text-primary" : "opacity-55 hover:bg-accent hover:opacity-100",
-                    !favorite && favoritesFull && "cursor-not-allowed opacity-30 hover:bg-transparent hover:opacity-30",
-                  )}
-                >
-                  <Star className={cn("size-3.5", favorite && "fill-current")} aria-hidden />
-                </button>
-              </div>
-            );
-          })}
-        </nav>
+        <Suspense fallback={<nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="جار تحميل التنقل" />}>
+          <HybridSidebarNav
+            currentPath={loc}
+            currentSearch={search}
+            showDashboard={!isCourier && !isCashier}
+            hasMyStocktake={hasMyStocktake}
+            primaryNav={primaryNav}
+            visibleModules={visibleNav}
+            workspace={navWorkspace}
+            onToggleFavorite={handleFavorite}
+            workOrderReadyCount={workOrderReadyCount}
+            deliveryReadyCount={deliveryReadyCount}
+          />
+        </Suspense>
 
         {/* معلومات المستخدم والخروج — كارت واضح النقر (مدخل «حسابي») + زرّ الخروج.
             كان الرابط سابقاً نصّاً خافتاً بلا أيقونة ⇒ المالك لم يجد كيف يفتح /account (٦/٧).

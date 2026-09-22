@@ -11,7 +11,11 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { loadStudioDraft, purgeStudioDraft, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForUser, loadStudioDraftIdentity, saveStudioDraftIdentity, type StudioDraft } from "@/lib/productStudio/studioDrafts";
+import { loadStudioDraft, purgeStudioDraft, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForOwner, loadStudioDraftIdentity, saveStudioDraftIdentity, type StudioDraft, type StudioDraftIdentity } from "@/lib/productStudio/studioDrafts";
+import {
+  sameStudioTenantScope,
+  type StudioTenantScope,
+} from "@/lib/productStudio/studioTenantScope";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
 import { AlertTriangle, ShieldCheck, Image, Megaphone, Loader2, ChevronRight } from "lucide-react";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
@@ -43,7 +47,7 @@ export default function StudioPhotographerWorkspace({
   const [offlineSelectedDraft, setOfflineSelectedDraft] = useState<StudioDraft | null>(null);
   const [draftConflict, setDraftConflict] = useState(false);
   const [draftReady, setDraftReady] = useState(false);
-  const [coldIdentityUserId, setColdIdentityUserId] = useState<number | null>(null);
+  const [coldIdentity, setColdIdentity] = useState<StudioDraftIdentity | null>(null);
   const [resumeRetry, setResumeRetry] = useState(0);
 
   const [setupPin, setSetupPin] = useState("");
@@ -113,7 +117,18 @@ export default function StudioPhotographerWorkspace({
     isOwner: me.data?.isOwner === true,
   };
   const onlineUserId = workflowUser.userId > 0 ? workflowUser.userId : null;
-  const authenticatedUserId = onlineUserId ?? coldIdentityUserId;
+  const onlineOwner = useMemo<StudioTenantScope | null>(
+    () =>
+      onlineUserId == null
+        ? null
+        : {
+            companyId: me.data?.companyId ?? null,
+            userId: onlineUserId,
+          },
+    [me.data?.companyId, onlineUserId],
+  );
+  const authenticatedOwner = onlineOwner ?? coldIdentity;
+  const authenticatedUserId = authenticatedOwner?.userId ?? null;
   const editable = selected ? (offline && offlineSelectedDraft != null ? true : selected.status === "ASSIGNED" || selected.status === "IN_PROGRESS" || selected.status === "REJECTED") : false;
 
   const submit = trpc.productStudio.submitCandidate.useMutation({
@@ -143,17 +158,18 @@ export default function StudioPhotographerWorkspace({
   });
 
   useEffect(() => {
-    if (!offline && onlineUserId) {
-      setColdIdentityUserId(onlineUserId);
-      void saveStudioDraftIdentity(onlineUserId).catch(() => undefined);
+    if (!offline && onlineOwner) {
+      void saveStudioDraftIdentity(onlineOwner)
+        .then(setColdIdentity)
+        .catch(() => undefined);
       return;
     }
-    if (offline && !onlineUserId) {
+    if (offline && !onlineOwner) {
       void loadStudioDraftIdentity()
-        .then((identity) => setColdIdentityUserId(identity?.userId ?? null))
-        .catch(() => setColdIdentityUserId(null));
+        .then(setColdIdentity)
+        .catch(() => setColdIdentity(null));
     }
-  }, [offline, onlineUserId]);
+  }, [offline, onlineOwner]);
 
   useEffect(() => {
     if (offline || !me.data?.id) return;
@@ -175,8 +191,8 @@ export default function StudioPhotographerWorkspace({
   }
 
   async function discardConflictingDraft() {
-    if (!selected || !authenticatedUserId) return;
-    await purgeStudioDraft(authenticatedUserId, Number(selected.id));
+    if (!selected || !authenticatedOwner) return;
+    await purgeStudioDraft(authenticatedOwner, Number(selected.id));
     setImages([]);
     setOriginalDataUrl("");
     setProcessingReceipt(null);
@@ -187,18 +203,18 @@ export default function StudioPhotographerWorkspace({
   }
 
   useEffect(() => {
-    if (!offline || !authenticatedUserId) return;
+    if (!offline || !authenticatedOwner) return;
     let cancelled = false;
-    void listStudioDraftsForUser(authenticatedUserId)
+    void listStudioDraftsForOwner(authenticatedOwner)
       .then((drafts) => {
         if (!cancelled) setOfflineDrafts(drafts);
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [authenticatedUserId, offline]);
+  }, [authenticatedOwner, offline]);
 
   useEffect(() => {
-    if (!selectedId || !authenticatedUserId) return;
+    if (!selectedId || !authenticatedOwner) return;
     const taskId = Number(selected?.id ?? selectedId);
     let cancelled = false;
     let retryTimer: number | undefined;
@@ -209,7 +225,7 @@ export default function StudioPhotographerWorkspace({
     void (async () => {
       try {
         if (offline) {
-          const draft = await loadStudioDraft(authenticatedUserId, taskId);
+          const draft = await loadStudioDraft(authenticatedOwner, taskId);
           if (draft && !cancelled) applyLocalDraft(draft);
           return;
         }
@@ -221,7 +237,7 @@ export default function StudioPhotographerWorkspace({
         const task = refreshed.data?.items.find((item) => Number(item.id) === taskId);
         if (cancelled) return;
         const result = await reconcileStudioDraftAfterReconnect({
-          userId: authenticatedUserId,
+          ...authenticatedOwner,
           taskId,
           taskFound: Boolean(task),
           revision: task ? String(task.revision) : null,
@@ -246,13 +262,13 @@ export default function StudioPhotographerWorkspace({
       if (retryTimer) window.clearTimeout(retryTimer);
       window.clearTimeout(safetyTimer);
     };
-  }, [authenticatedUserId, offline, selectedId, selected?.revision, resumeRetry]);
+  }, [authenticatedOwner, offline, selectedId, selected?.revision, resumeRetry]);
 
   useEffect(() => {
-    if (!selected || !authenticatedUserId || !editable || !draftReady || draftConflict) return;
+    if (!selected || !authenticatedOwner || !editable || !draftReady || draftConflict) return;
     const timer = window.setTimeout(() => {
       void saveStudioDraft({
-        userId: authenticatedUserId,
+        ...authenticatedOwner,
         taskId: Number(selected.id),
         revision: String(selected.revision),
         proposedName: selected.proposedName ?? selected.productName,
@@ -274,7 +290,7 @@ export default function StudioPhotographerWorkspace({
       }).catch(() => undefined);
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [authenticatedUserId, draftConflict, draftReady, editable, images, originalDataUrl, processingReceipt, selected, studioMode]);
+  }, [authenticatedOwner, draftConflict, draftReady, editable, images, originalDataUrl, processingReceipt, selected, studioMode]);
 
   const applyStudioClaim = (claimed: ClaimedStudioProduct) => {
     setCaptured(claimed);
@@ -327,7 +343,8 @@ export default function StudioPhotographerWorkspace({
         mode: studioMode,
         processingReceipt,
       });
-      if (authenticatedUserId) await purgeStudioDraft(authenticatedUserId, Number(selected.id));
+      if (authenticatedOwner)
+        await purgeStudioDraft(authenticatedOwner, Number(selected.id));
     } catch (error) {
       notify.err(error);
     } finally {
@@ -392,7 +409,7 @@ export default function StudioPhotographerWorkspace({
         </Card>
       )}
 
-      {!offline && onlineUserId != null && offlineProfile?.userId === onlineUserId && !offlineProfile.hasPin && !pinSetupDismissed && (
+      {!offline && onlineOwner != null && offlineProfile?.companyId !== undefined && sameStudioTenantScope({ companyId: offlineProfile.companyId, userId: offlineProfile.userId }, onlineOwner) && !offlineProfile.hasPin && !pinSetupDismissed && (
         <div className="rounded-md border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-start gap-2 text-sm">
@@ -544,7 +561,7 @@ export default function StudioPhotographerWorkspace({
                     key={selected.id}
                     ref={imageBatch}
                     taskId={Number(selected.id)}
-                    userId={authenticatedUserId}
+                    owner={authenticatedOwner}
                     productName={selected.productName}
                     primaryImages={images}
                     onPrimaryImage={(image) => {

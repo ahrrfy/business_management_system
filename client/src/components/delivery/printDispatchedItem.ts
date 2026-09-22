@@ -19,6 +19,7 @@ export function printDispatchedItem(item: DispatchedItemHistory, labelWin?: Wind
     customerPhone: item.recipientPhone ?? null,
     deliveryAddress: item.deliveryAddress ?? null,
     deliveryCost: item.deliveryFee,
+    qrUrl: item.qrUrl ?? null,
   };
 
   try {

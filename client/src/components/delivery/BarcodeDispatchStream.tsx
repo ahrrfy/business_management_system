@@ -6,6 +6,7 @@ import { playReadyBeep } from "@/lib/notifyBeep";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDispatchedItem } from "./printDispatchedItem";
+import { storefrontUrl } from "@/lib/siteHosts";
 import {
   ScanBarcode,
   Truck,
@@ -86,6 +87,13 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
       focusInput();
       return;
     }
+    if (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim()) {
+      const message = "رقم بوليصة شركة التوصيل مطلوب قبل إسناد الطلب";
+      setLastError(message);
+      notify.err(message);
+      focusInput();
+      return;
+    }
 
     const labelWin = instantPrint ? preopenShippingLabelWindow() : null;
 
@@ -104,13 +112,20 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
 
       playReadyBeep();
 
+      const qrUrl = res.labelToken
+        ? `${storefrontUrl()}?order=${encodeURIComponent(res.sourceNumber)}&token=${encodeURIComponent(res.labelToken)}`
+        : res.qrPayload
+          ? `${window.location.origin}/verify?payload=${encodeURIComponent(res.qrPayload)}`
+          : null;
+
       const historyItem: DispatchedItemHistory = {
         consignmentId: res.consignmentId, consignmentNumber: res.consignmentNumber,
         sourceType: res.sourceType, sourceId: res.sourceId, sourceNumber: res.sourceNumber,
         invoiceNumber: res.invoiceNumber, codAmount: res.codAmount, deliveryFee: res.deliveryFee,
         recipientName: res.recipientName, recipientPhone: res.recipientPhone,
         deliveryAddress: res.deliveryAddress, partyName: res.partyName || selectedParty?.name || "المندوب",
-        dispatchedAt: new Date(), externalTrackingRef: payload.extRef || undefined,
+        dispatchedAt: new Date(), externalTrackingRef: payload.extRef || externalTrackingRef.trim() || undefined,
+        qrUrl,
       };
 
       if (instantPrint) {
@@ -252,6 +267,7 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
               value={selectedPartyId ? String(selectedPartyId) : ""}
               onValueChange={(v) => {
                 setSelectedPartyId(v ? Number(v) : null);
+                setExternalTrackingRef("");
                 focusInput();
               }}
               className="w-full h-10 text-sm font-bold"
@@ -305,13 +321,14 @@ export function BarcodeDispatchStream({ onDispatchSuccess, defaultPartyId }: Pro
             </div>
           </div>
 
-          {/* رقم التتبع الخارجي (اختياري) */}
+          {/* رقم التتبع الخارجي — إلزامي للشركات لأنه مفتاح مطابقة كشف التحصيل. */}
           <div className="sm:col-span-3 space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              مرجع خارجي للشركة (اختياري)
+            <label className="text-xs font-bold text-foreground">
+              رقم بوليصة الشركة
+              {selectedParty?.partyType === "COMPANY" && <span className="ms-1 text-destructive">*</span>}
             </label>
             <Input
-              placeholder="رقم تتبع الشركة..."
+              placeholder={selectedParty?.partyType === "COMPANY" ? "امسح باركود بوليصة الشركة..." : "مرجع خارجي إن وُجد..."}
               value={externalTrackingRef}
               onChange={(e) => setExternalTrackingRef(e.target.value)}
               disabled={dispatchMutation.isPending || isLoadingLookup}

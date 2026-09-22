@@ -9,6 +9,7 @@
 //  I22 — التدقيق يحمل قبل/بعد ولا يحمل designImages/printSpec أبداً.
 //  ق٤  — الفارغة تنقضي بعد ٢٤ ساعة (تتجدّد بكل نشاط)؛ المموّلة لا تُطوى أبداً.
 import type { WorkOrderChannel } from "@shared/receptionChannel";
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -26,6 +27,8 @@ import { money, round2, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { heldNetOfDraft } from "../deposits";
+import { checkIdempotency, findIdempotentRefId, idempotencyHash, withIdempotency } from "../idempotency";
+import { logAuditTx, type AuditMetadata } from "../auditService";
 
 export interface DraftLineInput {
   lineKind: "GOODS" | "PRINT" | "CUSTOM";
@@ -125,38 +128,69 @@ function auditLineSummary(lines: Array<{ title: string | null; unitPrice: string
 }
 
 export async function promoteDraft(
-  input: { branchId: number; shiftId?: number | null; header: DraftHeaderInput; lines: DraftLineInput[] },
+  input: { branchId: number; shiftId?: number | null; clientRequestId?: string; header: DraftHeaderInput; lines: DraftLineInput[] },
+  actor: Actor & { role?: string },
+  auditMetadata: AuditMetadata = {},
+) {
+  return withTx(async (tx) => {
+    const idempotent = await withIdempotency(tx, {
+      operation: "reception.promoteDraft",
+      clientRequestId: input.clientRequestId,
+      payload: { branchId: input.branchId, shiftId: input.shiftId ?? null, header: input.header, lines: input.lines },
+    }, async () => {
+      const draftNumber = await nextDraftNumber(tx, input.branchId);
+      const totals = computeTotals(input.lines);
+      const res = await tx.insert(receptionDrafts).values({
+        draftNumber, branchId: input.branchId, createdByShiftId: input.shiftId ?? null, commitRequestId: crypto.randomUUID(),
+        customerId: input.header.customerId ?? null, contactName: input.header.contactName?.trim() || null,
+        contactPhone: input.header.contactPhone?.trim() || null, priceTier: input.header.priceTier ?? "RETAIL",
+        channel: input.header.channel ?? null, channelHandle: input.header.channelHandle?.trim() || null,
+        conversationId: input.header.conversationId ?? null, notes: input.header.notes ?? null,
+        dueDate: input.header.dueDate ? new Date(input.header.dueDate) : null,
+        subtotal: toDbMoney(totals.subtotal), discountTotal: toDbMoney(totals.discountTotal),
+        total: toDbMoney(totals.total), expiresAt: new Date(Date.now() + DRAFT_TTL_MS), createdBy: actor.userId,
+      });
+      const draftId = extractInsertId(res);
+      for (let i = 0; i < input.lines.length; i += 1) await tx.insert(receptionDraftLines).values(lineRowValues(draftId, input.lines[i], i));
+      await logAuditTx(tx, { ...auditMetadata, userId: actor.userId, branchId: input.branchId }, {
+        action: "reception.draftPromote",
+        entityType: "receptionDraft",
+        entityId: draftId,
+        newValue: { draftNumber, lines: input.lines.length, total: totals.total.toFixed(2) },
+      });
+      return { refId: draftId, result: { draftId, draftNumber, version: 0, total: totals.total.toFixed(2) } };
+    });
+    if (idempotent.result) return { ...idempotent.result, idempotentReplay: false };
+    const replay = (await tx.select({ draftNumber: receptionDrafts.draftNumber, branchId: receptionDrafts.branchId, version: receptionDrafts.version, total: receptionDrafts.total })
+      .from(receptionDrafts).where(eq(receptionDrafts.id, idempotent.refId)).limit(1))[0];
+    if (!replay) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر استعادة المسوّدة المحفوظة" });
+    assertDraftBranch(replay, actor);
+    return { draftId: idempotent.refId, draftNumber: replay.draftNumber, version: Number(replay.version), total: String(replay.total), idempotentReplay: true };
+  });
+}
+
+/** يحسم محاولة ترقية فقد العميل ردّها من مفتاحها فقط، بلا إعادة بناء حمولة قد تغيّرت بعد hydration. */
+export async function resolvePromotedDraft(
+  input: { branchId: number; shiftId?: number | null; clientRequestId: string; header: DraftHeaderInput; lines: DraftLineInput[] },
   actor: Actor & { role?: string },
 ) {
   return withTx(async (tx) => {
-    const draftNumber = await nextDraftNumber(tx, input.branchId);
-    const totals = computeTotals(input.lines);
-    const commitRequestId = crypto.randomUUID();
-    const res = await tx.insert(receptionDrafts).values({
-      draftNumber,
-      branchId: input.branchId,
-      createdByShiftId: input.shiftId ?? null,
-      commitRequestId,
-      customerId: input.header.customerId ?? null,
-      contactName: input.header.contactName?.trim() || null,
-      contactPhone: input.header.contactPhone?.trim() || null,
-      priceTier: input.header.priceTier ?? "RETAIL",
-      channel: input.header.channel ?? null,
-      channelHandle: input.header.channelHandle?.trim() || null,
-      conversationId: input.header.conversationId ?? null,
-      notes: input.header.notes ?? null,
-      dueDate: input.header.dueDate ? new Date(input.header.dueDate) : null,
-      subtotal: toDbMoney(totals.subtotal),
-      discountTotal: toDbMoney(totals.discountTotal),
-      total: toDbMoney(totals.total),
-      expiresAt: new Date(Date.now() + DRAFT_TTL_MS),
-      createdBy: actor.userId,
-    });
-    const draftId = extractInsertId(res);
-    for (let i = 0; i < input.lines.length; i += 1) {
-      await tx.insert(receptionDraftLines).values(lineRowValues(draftId, input.lines[i], i));
-    }
-    return { draftId, draftNumber, version: 0, total: totals.total.toFixed(2) };
+    const draftId = await findIdempotentRefId(tx, "reception.promoteDraft", input.clientRequestId);
+    if (draftId == null) return null;
+    const hash = idempotencyHash({ branchId: input.branchId, shiftId: input.shiftId ?? null, header: input.header, lines: input.lines });
+    let payloadMatches = true;
+    try { await checkIdempotency(tx, "reception.promoteDraft", input.clientRequestId, hash); }
+    catch (error) { if ((error as { code?: string })?.code !== "CONFLICT") throw error; payloadMatches = false; }
+    const row = (await tx.select({ draftNumber: receptionDrafts.draftNumber, branchId: receptionDrafts.branchId, version: receptionDrafts.version, total: receptionDrafts.total })
+      .from(receptionDrafts).where(eq(receptionDrafts.id, draftId)).limit(1))[0];
+    if (!row) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر استعادة المسوّدة المحفوظة" });
+    if (Number(row.branchId) !== input.branchId) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({
+      what: "تعذّر حسم محاولة حفظ الطلب",
+      why: "المحاولة المحفوظة تخص فرعاً آخر",
+      doThis: "ارجع إلى الفرع الأصلي لإكمال الطلب أو ابدأ طلباً جديداً في هذا الفرع",
+    }) });
+    assertDraftBranch(row, actor);
+    return { draftId, draftNumber: row.draftNumber, version: Number(row.version), total: String(row.total), idempotentReplay: true as const, payloadMatches };
   });
 }
 
@@ -249,8 +283,10 @@ export async function syncDraft(
     }
 
     await tx.delete(receptionDraftLines).where(eq(receptionDraftLines.draftId, input.draftId));
-    for (let i = 0; i < input.lines.length; i += 1) {
-      await tx.insert(receptionDraftLines).values(lineRowValues(input.draftId, input.lines[i], i));
+    if (input.lines.length > 0) {
+      await tx.insert(receptionDraftLines).values(
+        input.lines.map((line, i) => lineRowValues(input.draftId, line, i)),
+      );
     }
     const nextVersion = Number(row.version) + 1;
     await tx

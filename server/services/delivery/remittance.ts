@@ -85,6 +85,16 @@ export interface RemittanceInput {
     /** استقطاعات الشركة من الحصيلة (أجور توصيل حسمتها قبل التوريد) — إفصاحٌ على المستند. */
     deductionsTotal?: string | null;
     notes?: string | null;
+    /**
+     * بصمةُ أسطر المصدر كما وردت في كشف الشركة. لا تُخزَّن على سند التوريد؛ وجودها هنا
+     * يجعل إعادةَ `clientRequestId` بكشفٍ مختلف (ولو تطابقت مبالغ التوريد النهائية) تعارضاً
+     * بدلاً من replay كاذب.
+     */
+    statementLines?: Array<{
+      consignmentId: number;
+      collectedAmount: string;
+      shortfallReason?: string | null;
+    }>;
   } | null;
   /**
    * م١ (PR-2) — **عجزُ التوريد**: النقدُ المعدود أقلُّ من صافي التوريد المتوقَّع. يُقبل فقط بسببٍ
@@ -148,6 +158,185 @@ export function allocateProportionally(target: Decimal, weights: Decimal[]): Dec
   return floors.map((c) => c.div(100));
 }
 
+export interface DeliveryRemittanceCashSourceLock {
+  shiftId: number | null;
+  cashBucket: "DRAWER" | "TREASURY";
+}
+
+function deliveryRemittancePayloadHashes(input: RemittanceInput): {
+  payloadHash: string;
+  legacyCompanyPayloadHash: string | null;
+} {
+  const canonicalLines = input.lines
+    .map((line) => ({
+      consignmentId: Number(line.consignmentId),
+      collectedAmount: toDbMoney(round2(money(line.collectedAmount))),
+    }))
+    .sort((a, b) => a.consignmentId - b.consignmentId);
+  const companyStatement = input.companyStatement
+    ? {
+        idempotencyVersion: 2,
+        statementNumber: input.companyStatement.statementNumber.trim(),
+        statementDate: input.companyStatement.statementDate?.trim() || null,
+        attachmentUrl: input.companyStatement.attachmentUrl?.trim() || null,
+        deductionsTotal: toDbMoney(round2(money(input.companyStatement.deductionsTotal ?? "0"))),
+        notes: input.companyStatement.notes?.trim() || null,
+        statementLines: input.companyStatement.statementLines
+          ? input.companyStatement.statementLines
+              .map((line) => ({
+                consignmentId: Number(line.consignmentId),
+                collectedAmount: toDbMoney(round2(money(line.collectedAmount))),
+                shortfallReason: line.shortfallReason?.trim() || null,
+              }))
+              .sort((a, b) => a.consignmentId - b.consignmentId)
+          : null,
+      }
+    : null;
+  // عقدُ التوريد العادي يبقى مطابقاً حرفياً لبصمة HEAD السابقة؛ لا نضيف إليه حقولاً جديدة.
+  const remittancePayload = {
+    branchId: Number(input.branchId),
+    partyId: Number(input.partyId),
+    shiftType: input.shiftType ?? "RECEPTION",
+    lines: canonicalLines,
+    countedCash: toDbMoney(round2(money(input.countedCash))),
+    // م١ (PR-2): سببُ العجز جزءٌ من هويّة التوريد — إعادةٌ بسببٍ مختلف تعارضٌ لا replay.
+    shortfallReason: input.shortfall?.reason ?? null,
+    // ش-ISOLATION: الوردية المستلِمة جزءٌ من هويّة التوريد — إعادةٌ بوردية مختلفة تعارضٌ لا replay.
+    targetShiftId: input.targetShiftId ?? null,
+  };
+  return {
+    payloadHash: idempotencyHash(
+      companyStatement
+        ? { ...remittancePayload, companyStatement }
+        : remittancePayload,
+    ),
+    // عاملٌ أقدم قد يكون ختم كشفاً ببصمة التوريد العامّة التي أغفلت بيانات الكشف. نستعملها
+    // للتعرّف على الصف القديم فقط ثم نفشل مغلقاً؛ لا نعدّه replay قابلاً للإثبات.
+    legacyCompanyPayloadHash: companyStatement
+      ? idempotencyHash(remittancePayload)
+      : null,
+  };
+}
+
+/**
+ * يفحص replay التقنيّ بلا كتابة. القراءة الأولى snapshot عاديّة، أمّا إعادةُ الفحص بعد أقفال
+ * المصدر/الجهة فتطلب `forUpdate` كي تكون current read وترى التزامَ الطلب المتزامن الفائز.
+ * اختلافُ البصمة يُترجمه `checkIdempotency` إلى تعارض؛ والتطابق يعيد السند السابق كما هو.
+ */
+export async function findDeliveryRemittanceReplayInTx(
+  tx: Tx,
+  input: RemittanceInput,
+  options?: { forUpdate?: boolean },
+) {
+  if (!input.clientRequestId) return null;
+  const { payloadHash, legacyCompanyPayloadHash } = deliveryRemittancePayloadHashes(input);
+  let existingId: number | null;
+  try {
+    existingId = await checkIdempotency(
+      tx,
+      "delivery.remit",
+      input.clientRequestId,
+      payloadHash,
+      {
+        ...options,
+        // صفُ كشفٍ بلا بصمة كاملة لا يثبت تطابق metadata/أسطر الإثبات، فيُرفض مغلقاً.
+        requireStoredHash: input.companyStatement != null,
+      },
+    );
+  } catch (error) {
+    if (
+      legacyCompanyPayloadHash == null
+      || !(error instanceof TRPCError)
+      || error.code !== "CONFLICT"
+    ) {
+      throw error;
+    }
+    const legacyId = await checkIdempotency(
+      tx,
+      "delivery.remit",
+      input.clientRequestId,
+      legacyCompanyPayloadHash,
+      { ...options, requireStoredHash: true },
+    );
+    if (legacyId != null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إعادة طلب كشف شركة قديم تلقائياً",
+          why: "معرّف الطلب مرتبط بسند توريد قديم لا تتضمن بصمته بيانات الكشف والأسطر كاملة",
+          doThis: "افتح سند التوريد السابق وتحقق منه، ثم استخدم معرّف طلب جديد فقط إذا كان المطلوب كشفاً مختلفاً",
+        }),
+      });
+    }
+    throw error;
+  }
+  if (existingId == null) return null;
+  const remittanceQuery = tx
+    .select()
+    .from(deliveryRemittances)
+    .where(eq(deliveryRemittances.id, existingId));
+  // مثل مفتاح idempotency: بعد انتظار الأقفال نحتاج current read لا snapshot ما قبل الانتظار.
+  const remittanceRows = options?.forUpdate
+    ? await remittanceQuery.for("update").limit(1)
+    : await remittanceQuery.limit(1);
+  const rm = remittanceRows[0];
+  const replayTotal = round2(
+    input.lines.reduce(
+      (sum, line) => sum.plus(money(line.collectedAmount)),
+      new Decimal(0),
+    ),
+  );
+  if (
+    !rm ||
+    Number(rm.branchId) !== Number(input.branchId) ||
+    Number(rm.partyId) !== Number(input.partyId) ||
+    !money(rm.collectedTotal).eq(replayTotal)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تعارض idempotency: المفتاح مستعمل لتوريد مختلف",
+    });
+  }
+  return {
+    remittanceId: existingId,
+    remittanceNumber: rm.remittanceNumber,
+    collectedTotal: String(rm.collectedTotal),
+    feesTotal: String(rm.feesTotal),
+    // Slice H: يُعاد في مسار replay كي يظل شكلُ العائد متطابقاً (ULV: نفس المفاتيح).
+    courierCommissionAmount: rm.courierCommissionAmount != null ? String(rm.courierCommissionAmount) : null,
+    netRemitted: String(rm.netRemitted),
+    shortfallTotal: String(rm.shortfallTotal),
+    status: rm.status,
+    idempotentReplay: true as const,
+  };
+}
+
+/** قفلُ مصدر النقد وفق الترتيب العالمي: درج/خزينة ← جهة ← إرسالية ← فاتورة. */
+export async function lockDeliveryRemittanceCashSourceInTx(
+  tx: Tx,
+  input: RemittanceInput,
+  actor: DeliveryTxActor,
+): Promise<DeliveryRemittanceCashSourceLock> {
+  const cashSource = await shiftIdForCashTx(
+    tx,
+    {
+      userId: actor.userId,
+      branchId: actor.branchId ?? undefined,
+      role: actor.role,
+    },
+    input.branchId,
+    "توريد مندوب",
+    input.shiftType ?? "RECEPTION",
+    input.targetShiftId,
+  );
+  await lockCashSourceForUpdate(tx, {
+    branchId: input.branchId,
+    cashBucket: cashSource.cashBucket,
+    shiftId: cashSource.shiftId,
+  });
+  return cashSource;
+}
+
 /**
  * م١ (PR-2): الجسم داخل معاملةٍ قائمة — تستدعيه التسويةُ اليوميّة (`dailySettlement.ts`) في
  * معاملتها (نمط `dispatchInvoiceInTx`)؛ `withTx = db.transaction(fn)` غير قابلةٍ لإعادة الدخول.
@@ -156,72 +345,11 @@ export async function recordDeliveryRemittanceInTx(
   tx: Tx,
   input: RemittanceInput,
   actor: DeliveryTxActor,
+  prelockedCashSource?: DeliveryRemittanceCashSourceLock,
 ) {
-    const canonicalLines = input.lines
-      .map((line) => ({
-        consignmentId: Number(line.consignmentId),
-        collectedAmount: toDbMoney(round2(money(line.collectedAmount))),
-      }))
-      .sort((a, b) => a.consignmentId - b.consignmentId);
-    const payloadHash = idempotencyHash({
-      branchId: Number(input.branchId),
-      partyId: Number(input.partyId),
-      shiftType: input.shiftType ?? "RECEPTION",
-      lines: canonicalLines,
-      countedCash: toDbMoney(round2(money(input.countedCash))),
-      // م١ (PR-2): سببُ العجز جزءٌ من هويّة التوريد — إعادةٌ بسببٍ مختلف تعارضٌ لا replay.
-      shortfallReason: input.shortfall?.reason ?? null,
-      // ش-ISOLATION: الوردية المستلِمة جزءٌ من هويّة التوريد — إعادةٌ بوردية مختلفة تعارضٌ لا replay.
-      targetShiftId: input.targetShiftId ?? null,
-    });
-    const replayResult = async () => {
-      if (!input.clientRequestId) return null;
-      const existingId = await checkIdempotency(
-        tx,
-        "delivery.remit",
-        input.clientRequestId,
-        payloadHash,
-      );
-      if (existingId == null) return null;
-      const rm = (
-        await tx
-          .select()
-          .from(deliveryRemittances)
-          .where(eq(deliveryRemittances.id, existingId))
-          .limit(1)
-      )[0];
-      const replayTotal = round2(
-        input.lines.reduce(
-          (sum, line) => sum.plus(money(line.collectedAmount)),
-          new Decimal(0),
-        ),
-      );
-      if (
-        !rm ||
-        Number(rm.branchId) !== Number(input.branchId) ||
-        Number(rm.partyId) !== Number(input.partyId) ||
-        !money(rm.collectedTotal).eq(replayTotal)
-      ) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "تعارض idempotency: المفتاح مستعمل لتوريد مختلف",
-        });
-      }
-      return {
-        remittanceId: existingId,
-        remittanceNumber: rm.remittanceNumber,
-        collectedTotal: String(rm.collectedTotal),
-        feesTotal: String(rm.feesTotal),
-        // Slice H: يُعاد في مسار replay كي يظل شكلُ العائد متطابقاً (ULV: نفس المفاتيح).
-        courierCommissionAmount: rm.courierCommissionAmount != null ? String(rm.courierCommissionAmount) : null,
-        netRemitted: String(rm.netRemitted),
-        shortfallTotal: String(rm.shortfallTotal),
-        status: rm.status,
-        idempotentReplay: true as const,
-      };
-    };
+    const { payloadHash } = deliveryRemittancePayloadHashes(input);
     if (input.clientRequestId) {
-      const replay = await replayResult();
+      const replay = await findDeliveryRemittanceReplayInTx(tx, input);
       if (replay) return replay;
     }
     if (!input.lines.length)
@@ -241,23 +369,8 @@ export async function recordDeliveryRemittanceInTx(
 
     // CASH IN participates in the same mutex graph as CASH OUT: source→party→consignment→invoice.
     // Locking party/documents first and the drawer only before receipt insert inverted delivery returns.
-    const { shiftId, cashBucket } = await shiftIdForCashTx(
-      tx,
-      {
-        userId: actor.userId,
-        branchId: actor.branchId ?? undefined,
-        role: actor.role,
-      },
-      input.branchId,
-      "توريد مندوب",
-      input.shiftType ?? "RECEPTION",
-      input.targetShiftId,  // ش-ISOLATION: الدرج الصريح من الواجهة (إن وُجد)
-    );
-    await lockCashSourceForUpdate(tx, {
-      branchId: input.branchId,
-      cashBucket,
-      shiftId,
-    });
+    const { shiftId, cashBucket } = prelockedCashSource
+      ?? await lockDeliveryRemittanceCashSourceInTx(tx, input, actor);
 
     const party = (
       await tx
@@ -272,7 +385,7 @@ export async function recordDeliveryRemittanceInTx(
         code: "NOT_FOUND",
         message: "جهة التوصيل غير موجودة",
       });
-    const replayAfterLock = await replayResult();
+    const replayAfterLock = await findDeliveryRemittanceReplayInTx(tx, input, { forUpdate: true });
     if (replayAfterLock) return replayAfterLock;
     if (
       party.branchId != null &&

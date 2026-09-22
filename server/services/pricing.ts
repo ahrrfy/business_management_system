@@ -6,6 +6,24 @@ import type { Tx } from "../db";
 import { money } from "./money";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+export type AutomaticPriceSource = "TIER" | "CONTRACT";
+
+/**
+ * مرجع السعر الآلي الواحد لكل مسارات البيع: عقد العميل النشط أولاً، ثم صف الفئة
+ * المطلوب حرفياً. لا يوجد سقوط ضمني إلى RETAIL؛ غياب الاثنين يعني أن التسعير غير مكتمل.
+ */
+export function resolveEffectivePriceReference(input: {
+  catalogUnitPrice: Decimal | string | null | undefined;
+  contractUnitPrice?: Decimal | string | null;
+}): { unitPrice: Decimal | null; priceSource: AutomaticPriceSource | null } {
+  if (input.contractUnitPrice != null) {
+    return { unitPrice: money(input.contractUnitPrice), priceSource: "CONTRACT" };
+  }
+  if (input.catalogUnitPrice != null) {
+    return { unitPrice: money(input.catalogUnitPrice), priceSource: "TIER" };
+  }
+  return { unitPrice: null, priceSource: null };
+}
 
 /** Effective tier: explicit override → customer default → RETAIL. */
 export const resolveTier = (o: {

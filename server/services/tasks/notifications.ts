@@ -1,5 +1,6 @@
 import type { Tx } from "../../db";
 import { logger } from "../../logger";
+import { actorSuffix } from "@shared/notificationActorLabel";
 import {
   enqueueAppNotificationOutbox,
   reconcileAppNotificationOutbox,
@@ -53,6 +54,7 @@ export function buildTaskNotificationIntents(input: {
   eventId: number;
   action: TaskNotificationAction;
   actorUserId: number;
+  actorName?: string | null;
 }): AppNotificationOutboxIntent[] {
   const taskId = Number(input.task.id);
   const creatorId = positiveUserId(input.task.createdBy);
@@ -114,7 +116,7 @@ export function buildTaskNotificationIntents(input: {
       kind: "TASK_ASSIGNED",
       family: recipient.family,
       title: recipient.title,
-      body: `${input.task.taskNumber} · ${input.task.title}`,
+      body: `${input.task.taskNumber} · ${input.task.title}${actorSuffix(input.actorName)}`,
       route: `/tasks?task=${taskId}`,
       eventKey: `task:${taskId}:event:${input.eventId}:${input.action.type}:${recipient.userId}`,
       entityType: "task",

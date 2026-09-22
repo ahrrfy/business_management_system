@@ -1,5 +1,6 @@
 // ميزان مراجعة رسمي من journalEntries/journalLines — افتتاح، حركة، وختام لكل حساب قابل للترحيل.
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
@@ -55,15 +56,21 @@ function LedgerModeNotice({ report }: { report: Report }) {
   }
   if (report.mode === "OFF") {
     return (
-      <div className="flex items-start gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-foreground">
-        <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-        <div>
-          <p className="font-semibold">الدفتر المزدوج متوقف.</p>
-          <p className="text-xs opacity-80">
-            لن تظهر عمليات جديدة هنا ما دام الوضع OFF؛ لا تعتمد هذا التقرير
-            كميزانٍ حي.
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-foreground">
+        <div className="flex items-start gap-2">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <p className="font-semibold">الدفتر المزدوج متوقف.</p>
+            <p className="text-xs opacity-80">
+              لن تظهر عمليات جديدة هنا ما دام الوضع OFF؛ قم بتهيئة الدليل المحاسبي وتفعيل وضع الظل SHADOW.
+            </p>
+          </div>
         </div>
+        <Link href="/statutory-accounting">
+          <span className="font-medium text-primary underline underline-offset-4 hover:opacity-80">
+            إعداد النظام المحاسبي الموحد
+          </span>
+        </Link>
       </div>
     );
   }

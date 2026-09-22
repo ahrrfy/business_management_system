@@ -13,6 +13,11 @@ import { Button } from "@/components/ui/button";
 import { WhatsAppIcon } from "@/components/WhatsAppShare";
 import { fmt } from "@/lib/money";
 import {
+  AUDIO_FEEDBACK_CHANGE_EVENT,
+  isAudioFeedbackEnabled,
+  setAudioFeedbackEnabled,
+} from "@/lib/audioFeedback";
+import {
   openWhatsApp,
   buildCustomerDispatchMessage,
   buildCourierAssignmentMessage,
@@ -44,6 +49,7 @@ export interface DeliveryDepartureOverlayProps {
  * تشغيل نغمة صوتية رقمية خفيفة عبر Web Audio API (صفر بايت — بلا ملفات خارجية).
  */
 function playDepartureChime() {
+  if (!isAudioFeedbackEnabled()) return;
   try {
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
@@ -92,7 +98,7 @@ export function DeliveryDepartureOverlay({
   data,
   durationMs = 6000,
 }: DeliveryDepartureOverlayProps) {
-  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [soundEnabled, setSoundEnabled] = useState(() => isAudioFeedbackEnabled());
   const [progress, setProgress] = useState(100);
   const [isPaused, setIsPaused] = useState(false);
   const startTimeRef = useRef<number>(0);
@@ -102,6 +108,16 @@ export function DeliveryDepartureOverlay({
   const prefersReducedMotion =
     typeof window !== "undefined" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  useEffect(() => {
+    const syncSoundPreference = () => setSoundEnabled(isAudioFeedbackEnabled());
+    window.addEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, syncSoundPreference);
+    window.addEventListener("storage", syncSoundPreference);
+    return () => {
+      window.removeEventListener(AUDIO_FEEDBACK_CHANGE_EVENT, syncSoundPreference);
+      window.removeEventListener("storage", syncSoundPreference);
+    };
+  }, []);
 
   // تشغيل الصوت عند الفتح
   useEffect(() => {
@@ -213,7 +229,8 @@ export function DeliveryDepartureOverlay({
           <div className="absolute top-3 left-3 z-30 flex items-center gap-1">
             <button
               type="button"
-              onClick={() => setSoundEnabled(!soundEnabled)}
+              data-audio-feedback="none"
+              onClick={() => setAudioFeedbackEnabled(!soundEnabled)}
               className="p-1.5 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
               title={soundEnabled ? "كتم الصوت" : "تشغيل الصوت"}
               aria-label={soundEnabled ? "كتم الصوت" : "تشغيل الصوت"}

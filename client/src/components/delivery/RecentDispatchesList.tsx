@@ -19,6 +19,7 @@ export interface DispatchedItemHistory {
   partyName: string;
   dispatchedAt: Date;
   externalTrackingRef?: string | null;
+  qrUrl?: string | null;
 }
 
 interface Props {

@@ -371,7 +371,8 @@ async function seedAnalyticsInvoice(opts: {
     invoiceId: opts.id, variantId, quantity: String(opts.quantity), baseQuantity: opts.quantity,
     returnedBaseQuantity: opts.returnedQuantity,
     returnedRestockedBaseQuantity: opts.returnedRestockedQuantity,
-    unitPrice: unitPrice.toFixed(2), unitCost: unitCost.toFixed(2), total: total.toFixed(2),
+    unitPrice: unitPrice.toFixed(2), unitCost: unitCost.toFixed(2),
+    lineCost: (opts.quantity * unitCost).toFixed(2), total: total.toFixed(2),
   });
 }
 

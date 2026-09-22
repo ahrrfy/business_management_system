@@ -2,6 +2,7 @@
 // البنية مماثلة لـreceiptRaster.ts (نفس W=576، نفس الخطوط، نفس أسلوب الرسم).
 // التصميم: رأس شركة → باركود رقم الأمر → معلومات العمل → الإجمالي → ملاحظة → تذييل.
 import { workOrderStatusLabel } from "@shared/workOrderStatus";
+import { docBarcode } from "@shared/documentNumber";
 import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
@@ -130,7 +131,8 @@ export async function workOrderToCanvas(
 
   // ──── ٢) باركود رقم الأمر ────
   try {
-    const bc = code128Svg(d.orderNumber, { moduleWidth: 2, height: 70, showText: false });
+    const machineBarcode = docBarcode("WO", d.orderNumber);
+    const bc = code128Svg(machineBarcode, { moduleWidth: 2, height: 70, showText: false });
     const img = await loadImage(svgToDataUrl(bc.svg));
     if (img) {
       y += 14;
@@ -138,7 +140,7 @@ export async function workOrderToCanvas(
       ctx.drawImage(img, (W - bw) / 2, y, bw, bc.heightPx);
       y += bc.heightPx + 24;
       ctx.font = "600 17px Cairo, monospace"; ctx.textAlign = "center";
-      ctx.fillText(d.orderNumber, W / 2, y);
+      ctx.fillText(machineBarcode, W / 2, y);
     }
   } catch { /* بلا باركود */ }
 

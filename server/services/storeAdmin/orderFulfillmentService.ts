@@ -7,8 +7,10 @@
  * عزل الفرع: القراءة/الكتابة مقيّدة بـscopedBranchId لغير المرتفعين (admin/manager يعبُران).
  */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import {
+  bundleComponents,
   customers,
   deliveryParties,
   invoices,
@@ -18,9 +20,10 @@ import {
   productVariants,
   productImages,
   products,
+  storeSettings as storeSettingsTable,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { money } from "../money";
+import { money, round2 } from "../money";
 import { withTx } from "../tx";
 import { decodeDataUrl, productImageUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
@@ -30,6 +33,17 @@ import {
   releaseCouponReservationForOnlineOrder,
 } from "../couponService";
 import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
+import {
+  lockProductUnitsForOnlineAllocation,
+  loadVariantAvailability,
+} from "../catalog/variantAvailability";
+import {
+  priceOnlineOrderLines,
+  totalOnlineOrderQuote,
+} from "../onlineOrderService";
+import { normalizeIraqPhoneE164 } from "../../lib/phone";
+import { orderStatusLabel } from "@shared/onlineOrderStatus";
+import { governorateById } from "@shared/governorates";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -158,6 +172,10 @@ export async function onlineOrderStatusCounts(scopedBranchId: number | null): Pr
 }
 
 export interface OnlineOrderDetailItem {
+  id?: number;
+  productId?: number;
+  variantId?: number;
+  productUnitId?: number | null;
   productName: string;
   variantLabel: string;
   imageUrl: string | null;
@@ -215,6 +233,10 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
   }
   const items = await db
     .select({
+      id: onlineOrderItems.id,
+      productId: products.id,
+      variantId: productVariants.id,
+      productUnitId: onlineOrderItems.productUnitId,
       productName: products.name,
       variantName: productVariants.variantName,
       color: productVariants.color,
@@ -255,6 +277,10 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     itemCount: items.length,
     createdAt: order.createdAt,
     items: items.map((i) => ({
+      id: Number(i.id),
+      productId: Number(i.productId),
+      variantId: Number(i.variantId),
+      productUnitId: i.productUnitId != null ? Number(i.productUnitId) : null,
       productName: i.productName,
       variantLabel: Array.from(new Set([i.variantName, i.color, i.size].map((v) => v?.trim()).filter(Boolean))).join(" — "),
       imageUrl: i.imageUrl && (!/^data:/i.test(i.imageUrl) || (i.imageId != null && decodeDataUrl(i.imageUrl)))
@@ -363,3 +389,395 @@ export async function setOnlineOrderStatus(
     return { id: input.id, from, to: input.status };
   });
 }
+
+export interface UpdateOnlineOrderInput {
+  id: number;
+  scopedBranchId: number | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  shippingAddress?: string | null;
+  governorate?: string | null;
+  latitude?: string | null;
+  longitude?: string | null;
+  notes?: string | null;
+  items?: Array<{
+    productUnitId: number;
+    quantity: number;
+  }>;
+}
+
+/** تعديل طلب المتجر (قبل الإرسال الفعلي) — تحديث العميل/العنوان/المحافظة والبنود ذرّياً مع فحص ATP */
+export async function updateOnlineOrder(
+  input: UpdateOnlineOrderInput,
+  _actorUserId: number,
+): Promise<{ id: number; total: string; subtotal: string; deliveryFee: string }> {
+  return withTx(async (tx) => {
+    // 1. Lock the order row
+    const order = (
+      await tx
+        .select()
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.id))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!order) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "الطلب غير موجود",
+          why: `لم يتم العثور على طلب إلكتروني برقم #${input.id}`,
+          doThis: "تأكد من رقم الطلب أو قم بتحديث قائمة الطلبات",
+        }),
+      });
+    }
+
+    // 2. Branch access check
+    if (input.scopedBranchId != null && Number(order.branchId) !== input.scopedBranchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "الطلب يخص فرعاً آخر",
+          why: `هذا الطلب مسجل على الفرع رقم ${order.branchId} وحسابك مقيّد بالفرع ${input.scopedBranchId}`,
+          doThis: "حوّل الجلسة إلى الفرع الصحيح أو اطلب من مدير الفرع المعني تعديل الطلب",
+        }),
+      });
+    }
+
+    // 3. Status check: Only PENDING, CONFIRMED, PROCESSING can be edited
+    const editableStatuses: OnlineOrderStatus[] = ["PENDING", "CONFIRMED", "PROCESSING"];
+    if (!editableStatuses.includes(order.status as OnlineOrderStatus)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن تعديل الطلب في حالته الحالية",
+          why: `حالة الطلب الحالية هي «${orderStatusLabel(order.status as OnlineOrderStatus)}»`,
+          doThis: "التعديل متاح فقط للطلبات غير المرسلة (وارد، مثبَّت، قيد التجهيز)",
+        }),
+      });
+    }
+
+    if (order.invoiceId != null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن تعديل الطلب بعد إصدار الفاتورة",
+          why: `الطلب مرتبط بالفعل بالفاتورة رقم #${order.invoiceId}`,
+          doThis: "لتعديل بنود مبيعات مفوترة، استخدم شاشة تعديل أو مرتجع الفواتير",
+        }),
+      });
+    }
+
+    // 4. Update customer details if provided and linked
+    if (order.customerId != null && (input.customerName != null || input.customerPhone != null)) {
+      const custPatch: Record<string, unknown> = {};
+      if (input.customerName != null && input.customerName.trim()) {
+        custPatch.name = input.customerName.trim();
+      }
+      if (input.customerPhone != null && input.customerPhone.trim()) {
+        custPatch.phone = normalizeIraqPhoneE164(input.customerPhone.trim());
+      }
+      if (Object.keys(custPatch).length > 0) {
+        await tx.update(customers).set(custPatch).where(eq(customers.id, Number(order.customerId)));
+      }
+    }
+
+    // 5. Governorate & address & coordinates
+    const targetGovernorate = input.governorate?.trim() || order.governorate || "baghdad";
+    if (targetGovernorate && !governorateById(targetGovernorate)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "المحافظة أو المنطقة المحددة غير مدعومة",
+          why: `الرمز أو الاسم المحدد (${targetGovernorate}) ليس من ضمن المحافظات والمناطق المعتمدة في النظام`,
+          doThis: "اختر محافظة أو منطقة صالحة من القائمة المعتمدة",
+        }),
+      });
+    }
+    let targetAddress = input.shippingAddress !== undefined ? (input.shippingAddress?.trim() || null) : order.shippingAddress;
+    if (input.notes && input.notes.trim()) {
+      targetAddress = targetAddress ? `${targetAddress}\nملاحظة: ${input.notes.trim()}` : `ملاحظة: ${input.notes.trim()}`;
+    }
+    const targetLat = input.latitude !== undefined ? input.latitude : order.latitude;
+    const targetLng = input.longitude !== undefined ? input.longitude : order.longitude;
+
+    // Fetch store settings for freeShippingThreshold
+    const storeSettings = (
+      await tx
+        .select({
+          freeShippingThreshold: storeSettingsTable.freeShippingThreshold,
+          freeShippingThresholdGovernorates: storeSettingsTable.freeShippingThresholdGovernorates,
+        })
+        .from(storeSettingsTable)
+        .where(eq(storeSettingsTable.id, 1))
+        .limit(1)
+    )[0];
+
+    // 6. Handle items update if items array provided
+    if (input.items !== undefined) {
+      if (order.couponCode != null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لا يمكن تعديل بنود طلب يحمل كوبون خصم",
+            why: `الطلب يحتوي على كوبون مفعّل (${order.couponCode})، وتعديل البنود يخل بشروط وقيمة الخصم المالي للكوبون`,
+            doThis: "يمكنك تعديل بيانات العميل والعنوان فقط، أو إلغاء الطلب وإنشاء طلب جديد لتعديل الأصناف",
+          }),
+        });
+      }
+      if (!Array.isArray(input.items) || input.items.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "قائمة أصناف الطلب فارغة",
+            why: "تم إرسال قائمة أصناف فارغة للطلب",
+            doThis: "أضف صنفاً واحداً على الأقل إلى الطلب قبل الحفظ",
+          }),
+        });
+      }
+
+      // Normalize items
+      const lines = input.items.map((it) => ({
+        productUnitId: Number(it.productUnitId),
+        quantity: Math.floor(Number(it.quantity)),
+      }));
+
+      for (const line of lines) {
+        if (!Number.isSafeInteger(line.productUnitId) || line.productUnitId <= 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "وحدة الصنف غير صحيحة",
+              why: `رقم وحدة الصنف ${line.productUnitId} غير صالح`,
+              doThis: "اختر وحدة صحيحة من قائمة المنتجات المتاحة",
+            }),
+          });
+        }
+        if (!Number.isSafeInteger(line.quantity) || line.quantity <= 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "كمية الصنف غير صحيحة",
+              why: `الكمية المدخلة (${line.quantity}) ليست عدداً صحيحاً موجباً`,
+              doThis: "أدخل كمية صحيحة أكبر من صفر لكل صنف في الطلب",
+            }),
+          });
+        }
+      }
+
+      // Unit locks in ascending order
+      const unitIds = Array.from(new Set(lines.map((l) => l.productUnitId))).sort((a, b) => a - b);
+      await lockProductUnitsForOnlineAllocation(tx, unitIds);
+
+      // Price lines using official online order engine
+      const pricing = await priceOnlineOrderLines(
+        tx,
+        Number(order.branchId),
+        lines,
+        { lock: true }
+      );
+
+      // Bundle recipe resolution
+      const bundleIds = Array.from(
+        new Set(pricing.items.filter((item) => item.isBundle).map((item) => item.variantId)),
+      );
+      if (bundleIds.length) {
+        await tx
+          .select({ id: productVariants.id })
+          .from(productVariants)
+          .where(inArray(productVariants.id, bundleIds))
+          .orderBy(asc(productVariants.id))
+          .for("update");
+      }
+      const recipes = bundleIds.length
+        ? await tx
+            .select({
+              bundleVariantId: bundleComponents.bundleVariantId,
+              componentVariantId: bundleComponents.componentVariantId,
+              componentBaseQuantity: bundleComponents.componentBaseQuantity,
+            })
+            .from(bundleComponents)
+            .where(inArray(bundleComponents.bundleVariantId, bundleIds))
+        : [];
+      const recipeByBundle = new Map<number, Array<{ componentVariantId: number; componentBaseQuantity: number }>>();
+      for (const row of recipes) {
+        const bId = Number(row.bundleVariantId);
+        const cur = recipeByBundle.get(bId) ?? [];
+        cur.push({
+          componentVariantId: Number(row.componentVariantId),
+          componentBaseQuantity: Number(row.componentBaseQuantity),
+        });
+        recipeByBundle.set(bId, cur);
+      }
+
+      const stockRequirements = new Map<number, number>();
+      for (const item of pricing.items) {
+        if (!item.isBundle) {
+          stockRequirements.set(
+            item.variantId,
+            (stockRequirements.get(item.variantId) ?? 0) + item.baseQuantity,
+          );
+          continue;
+        }
+        const components = recipeByBundle.get(item.variantId) ?? [];
+        if (!components.length) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "مكونات العرض غير مكتملة",
+              why: `العرض «${item.productName}» لا يحتوي على مكونات مفعلة في شجرة الوصفة`,
+              doThis: "تحقق من إعداد وصفة العرض أو احذف العرض من الطلب مؤقتاً",
+            }),
+          });
+        }
+        for (const component of components) {
+          const required = item.baseQuantity * component.componentBaseQuantity;
+          stockRequirements.set(
+            component.componentVariantId,
+            (stockRequirements.get(component.componentVariantId) ?? 0) + required,
+          );
+        }
+      }
+
+      // Check stock availability excluding THIS online order's old allocation
+      const stockAvailability = await loadVariantAvailability(
+        tx,
+        Number(order.branchId),
+        Array.from(stockRequirements.keys()).sort((a, b) => a - b),
+        { lock: true, excludeOnlineOrderId: order.id },
+      );
+
+      for (const [variantId, requiredBase] of Array.from(stockRequirements.entries())) {
+        const available = stockAvailability.get(variantId);
+        if (available?.isService) continue;
+        if (!available) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "الصنف غير متوفر في فرع التنفيذ",
+              why: `الصنف #${variantId} غير معرّف أو غير متاح في الفرع #${order.branchId}`,
+              doThis: "استبدل الصنف بصنف بديل أو حوّل الطلب إلى فرع آخر يتوفر فيه المخزون",
+            }),
+          });
+        }
+        if (requiredBase > available.availableBase) {
+          const item = pricing.items.find((i) => i.variantId === variantId);
+          const name = item?.productName ?? `الصنف #${variantId}`;
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "الكمية المطلوبة تتجاوز المخزون المتوفر للبيع",
+              why: `المطلوب (${requiredBase}) من «${name}» بينما الرصيد الحر المتاح في الفرع هو (${available.availableBase})`,
+              doThis: "قلل الكمية المطلوبة لتناسب المتوفر أو قم بتسوية/تحويل مخزون إضافي إلى الفرع",
+            }),
+          });
+        }
+      }
+
+      const retailSubtotal = round2(
+        pricing.items.reduce(
+          (sum, item) => sum.plus(money(item.retailUnitPrice).times(item.quantity)),
+          money(0),
+        ),
+      );
+
+      const quoteTotals = await totalOnlineOrderQuote(
+        tx,
+        pricing.items,
+        targetGovernorate,
+        storeSettings?.freeShippingThreshold,
+        retailSubtotal.toFixed(2),
+        storeSettings?.freeShippingThresholdGovernorates,
+      );
+
+      // Deduct coupon discount if order had one
+      const currentCouponDiscount = money(order.couponDiscount ?? "0");
+      let grandTotal = money(quoteTotals.total);
+      if (currentCouponDiscount.gt(0)) {
+        grandTotal = grandTotal.minus(currentCouponDiscount);
+        if (grandTotal.lt(0)) grandTotal = money(0);
+      }
+
+      // Atomic replace of order items
+      await tx.delete(onlineOrderItems).where(eq(onlineOrderItems.onlineOrderId, order.id));
+      for (const item of pricing.items) {
+        await tx.insert(onlineOrderItems).values({
+          onlineOrderId: order.id,
+          variantId: item.variantId,
+          productUnitId: item.productUnitId,
+          quantity: String(item.quantity),
+          baseQuantity: item.baseQuantity,
+          unitPrice: String(item.unitPrice),
+          total: String(item.lineTotal),
+        });
+      }
+
+      await tx
+        .update(onlineOrders)
+        .set({
+          subtotal: quoteTotals.subtotal,
+          shippingCost: quoteTotals.deliveryFee,
+          deliveryFree: quoteTotals.deliveryFree,
+          deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
+          total: grandTotal.toFixed(2),
+          governorate: targetGovernorate,
+          shippingAddress: targetAddress,
+          latitude: targetLat,
+          longitude: targetLng,
+          updatedAt: new Date(),
+        })
+        .where(eq(onlineOrders.id, order.id));
+
+      return {
+        id: order.id,
+        total: grandTotal.toFixed(2),
+        subtotal: quoteTotals.subtotal,
+        deliveryFee: quoteTotals.deliveryFee,
+      };
+    } else {
+      // Items were not modified, but address/governorate may have changed
+      const existingItems = await tx
+        .select({
+          lineTotal: onlineOrderItems.total,
+        })
+        .from(onlineOrderItems)
+        .where(eq(onlineOrderItems.onlineOrderId, order.id));
+
+      const quoteTotals = await totalOnlineOrderQuote(
+        tx,
+        existingItems,
+        targetGovernorate,
+        storeSettings?.freeShippingThreshold,
+        String(order.subtotal),
+        storeSettings?.freeShippingThresholdGovernorates,
+      );
+
+      // quoteTotals.total is subtotal (sum of existing item line totals, which already reflect any coupon discount) + deliveryFee.
+      // Do NOT subtract couponDiscount again to prevent double coupon deduction.
+      const grandTotal = money(quoteTotals.total);
+
+      await tx
+        .update(onlineOrders)
+        .set({
+          shippingCost: quoteTotals.deliveryFee,
+          deliveryFree: quoteTotals.deliveryFree,
+          deliveryWaivedAmount: quoteTotals.deliveryWaivedAmount,
+          total: grandTotal.toFixed(2),
+          governorate: targetGovernorate,
+          shippingAddress: targetAddress,
+          latitude: targetLat,
+          longitude: targetLng,
+          updatedAt: new Date(),
+        })
+        .where(eq(onlineOrders.id, order.id));
+
+      return {
+        id: order.id,
+        total: grandTotal.toFixed(2),
+        subtotal: String(order.subtotal),
+        deliveryFee: quoteTotals.deliveryFee,
+      };
+    }
+  });
+}
+

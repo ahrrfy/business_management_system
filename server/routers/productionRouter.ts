@@ -25,6 +25,7 @@ import {
   deleteRecipe,
   getRecipe,
   listRecipes,
+  listRunnableRecipes,
   recipePreview,
   setRecipeActive,
   updateRecipe,
@@ -54,6 +55,7 @@ const recipeInput = z.object({
   laborPerOutputBase: z.string().nullish(),
   wasteStdPct: z.string().nullish(),
   notes: z.string().nullish(),
+  isActive: z.boolean().optional(),
   lines: z.array(recipeLineInput).min(1),
 });
 
@@ -315,6 +317,9 @@ export const productionRouter = router({
       .input(z.object({ activeOnly: z.boolean().optional() }).optional())
       .query(({ input }) => listRecipes({ activeOnly: input?.activeOnly })),
 
+    /** وصفات الإنتاج المخزني الجاهزة للتشغيل فقط؛ وصفات الخدمة تبقى في القائمة الإدارية. */
+    listRunnable: inventoryManagerProcedure.query(() => listRunnableRecipes()),
+
     get: inventoryManagerProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getRecipe(input.id)),
 
     create: inventoryManagerProcedure.input(recipeInput).mutation(async ({ input, ctx }) => {
@@ -357,6 +362,12 @@ export const productionRouter = router({
     /** معاينة وصفة لكمية ناتج ⇒ أسطر جاهزة للنموذج (بلا حركة مخزون). */
     preview: inventoryManagerProcedure
       .input(z.object({ recipeId: z.number().int().positive(), outputQuantity: z.string(), branchId: z.number().int().positive().nullish() }))
-      .query(({ input }) => recipePreview({ recipeId: input.recipeId, outputQuantity: input.outputQuantity, branchId: input.branchId ?? null })),
+      .query(({ input, ctx }) => {
+        const elevated = ctx.user.role === "admin";
+        const branchId = elevated
+          ? Number(input.branchId ?? ctx.user.branchId ?? 0) || null
+          : Number(ctx.user.branchId ?? 0) || null;
+        return recipePreview({ recipeId: input.recipeId, outputQuantity: input.outputQuantity, branchId });
+      }),
   }),
 });

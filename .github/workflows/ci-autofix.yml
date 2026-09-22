@@ -41,17 +41,17 @@ jobs:
       BASE_REF: ${{ github.event.pull_request.base.ref || github.event.inputs.base_ref || 'main' }}
     steps:
       - name: Checkout the requested same-repository branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.PR_HEAD_SHA }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           fetch-depth: 0
           persist-credentials: true
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: pnpm

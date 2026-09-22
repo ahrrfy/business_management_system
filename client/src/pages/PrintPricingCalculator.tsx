@@ -133,7 +133,7 @@ export default function PrintPricingCalculator() {
   });
   const result = estimate.data;
 
-  // مخرج عملي: نسخ تفصيل الحساب كنصّ — مخرج قابل للّصق (عرض سعر شفهي/رسالة عميل/ملاحظة) بدل
+  // مخرج عملي: نصّ بيع للعميل بلا تفاصيل الكلفة الداخلية — صالح للنسخ أو الإرسال عبر واتساب بدل
   // نتيجة معزولة تختفي بمغادرة الشاشة. (إنشاء عرض سعر مباشر يلزم دعم تعبئة مسبقة في
   // QuotationNew.tsx — خارج ملكية هذه المهمة، انظر notes.)
   // وصف الطلب سطراً واحداً — يُستعمل في نصّ النسخ ورسالة واتساب معاً (مصدر حقيقة واحد).
@@ -151,9 +151,7 @@ export default function PrintPricingCalculator() {
   const copyText = useMemo(() => {
     if (!result || !debounced) return "";
     const lines: string[] = ["تسعير طباعة رقمية", jobDescription, ""];
-    for (const l of result.lines) lines.push(`${l.label}${l.detail ? ` — ${l.detail}` : ""}: ${formatIqd(l.amount)}`);
-    lines.push(`إجمالي الكلفة: ${formatIqd(result.totalCost)}`);
-    lines.push(`السعر المقترح: ${formatIqd(result.suggestedPrice)}`);
+    lines.push(`السعر الإجمالي المقترح: ${formatIqd(result.suggestedPrice)}`);
     lines.push(`سعر الوحدة الواحدة: ${formatIqd(result.unitPrice)}`);
     return lines.join("\n");
   }, [result, debounced, jobDescription]);
@@ -164,8 +162,6 @@ export default function PrintPricingCalculator() {
       null,
       buildPrintPricingMessage({
         jobDescription,
-        lines: result.lines,
-        totalCost: result.totalCost,
         suggestedPrice: result.suggestedPrice,
         unitPrice: result.unitPrice,
       }),
@@ -347,7 +343,7 @@ export default function PrintPricingCalculator() {
                     <Button type="button" size="sm" variant="outline" onClick={shareViaWhatsApp} className="gap-1.5">
                       <MessageCircle aria-hidden className="size-4" /> إرسال عبر واتساب
                     </Button>
-                    <CopyAsMenu plain={copyText} label="نسخ التفصيل" size="sm" variant="outline" />
+                    <CopyAsMenu plain={copyText} label="نسخ السعر" size="sm" variant="outline" />
                   </div>
                 )}
               </CardTitle>

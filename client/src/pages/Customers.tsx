@@ -223,6 +223,9 @@ export default function Customers() {
   // التحديد المُتعدِّد + النسخ الجماعي — TSV للصق في Excel، وملخّص واتساب لقائمة العملاء.
   const sel = useRowSelection<number>();
   const { copy } = useClipboard({ successMessage: null });
+  useEffect(() => {
+    sel.clear();
+  }, [operationsInput, sel.clear]);
   // «تحديد كل المرئي» صار من مسؤولية DataTable (عمود الاختيار في ترويسته).
   const selectedRows = useMemo(
     () => rows.filter((r) => sel.isSelected(Number(r.id))),

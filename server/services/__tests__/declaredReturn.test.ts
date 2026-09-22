@@ -65,7 +65,7 @@ beforeEach(async () => {
     { id: 1, name: "عميل", phone: "+9647701234567", currentBalance: "0.00", creditLimit: null },
   ]);
   await d.insert(s.deliveryParties).values([
-    { id: 1, name: "شركة التوصيل السريع", partyKind: "COMPANY", currentBalance: "0.00", isActive: true },
+    { id: 1, name: "شركة التوصيل السريع", partyType: "COMPANY", currentBalance: "0.00", isActive: true },
   ]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "NB-1", costPrice: "500.00" }]);
@@ -96,7 +96,12 @@ async function dispatchedOrder(reqId: string, salePrice: string) {
   } as never, CASHIER as never);
   const woId = (r as { workOrders: { workOrderId: number }[] }).workOrders[0].workOrderId;
   await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
-  const d = await dispatchToDelivery({ workOrderId: woId, partyId: 1, clientRequestId: `d-${reqId}` }, CASHIER as never);
+  const d = await dispatchToDelivery({
+    workOrderId: woId,
+    partyId: 1,
+    clientRequestId: `d-${reqId}`,
+    externalTrackingRef: `RET-${reqId}`,
+  }, CASHIER as never);
   return { workOrderId: woId, consignmentId: d.consignmentId, invoiceId: d.invoiceId };
 }
 
