@@ -34,6 +34,8 @@ export interface BarcodeDispatchInput {
   partialDispatchConfirmed?: boolean;
   deliveryAddress?: string | null;
   notes?: string | null;
+  recipientName?: string | null;
+  recipientPhone?: string | null;
 }
 
 export interface BarcodeDispatchResult {
@@ -278,8 +280,8 @@ export async function dispatchByBarcode(
         workOrderId: Number(workOrder.id),
         partyId: input.partyId,
         deliveryFee: input.deliveryFee ?? workOrder.deliveryCost,
-        recipientName: workOrder.customerName ?? undefined,
-        recipientPhone: workOrder.deliveryPhone ?? workOrder.customerPhone ?? undefined,
+        recipientName: input.recipientName ?? workOrder.customerName ?? undefined,
+        recipientPhone: input.recipientPhone ?? workOrder.deliveryPhone ?? workOrder.customerPhone ?? undefined,
         deliveryAddress: input.deliveryAddress ?? workOrder.deliveryAddress ?? undefined,
         notes: input.notes ?? undefined,
         assignedUserId: input.assignedUserId,
@@ -393,8 +395,8 @@ export async function dispatchByBarcode(
         invoiceId: Number(invoice.id),
         partyId: input.partyId,
         deliveryFee: input.deliveryFee ?? invoice.deliveryFee,
-        recipientName: invoice.contactName ?? undefined,
-        recipientPhone: invoice.contactPhone ?? undefined,
+        recipientName: input.recipientName ?? invoice.contactName ?? undefined,
+        recipientPhone: input.recipientPhone ?? invoice.contactPhone ?? undefined,
         deliveryAddress: input.deliveryAddress ?? invoice.customerAddress ?? undefined,
         notes: input.notes ?? invoice.invoiceNotes ?? undefined,
         assignedUserId: input.assignedUserId,

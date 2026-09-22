@@ -206,7 +206,7 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  reassignConsignment: deliveryManagerProcedure
+  reassignConsignment: deliveryCashierProcedure
     .input(z.object({
       partyId: z.number().int().positive(),
       consignmentId: z.number().int().positive(),
@@ -220,7 +220,7 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  cancelAssignment: deliveryManagerProcedure
+  cancelAssignment: deliveryCashierProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
       reason: z.string().trim().min(3).max(500),
@@ -598,6 +598,8 @@ export const deliveryRouter = router({
         partialDispatchConfirmed: z.boolean().optional(),
         deliveryAddress: z.string().max(1000).nullish(),
         notes: z.string().max(1000).nullish(),
+        recipientName: z.string().max(255).nullish(),
+        recipientPhone: z.string().max(50).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -614,6 +616,8 @@ export const deliveryRouter = router({
             partialDispatchConfirmed: input.partialDispatchConfirmed,
             deliveryAddress: input.deliveryAddress,
             notes: input.notes,
+            recipientName: input.recipientName,
+            recipientPhone: input.recipientPhone,
           },
           actorOf(ctx),
         ),

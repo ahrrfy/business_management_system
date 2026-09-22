@@ -1125,38 +1125,43 @@ export const workOrderRouter = router({
       const rawCode = resolvedRaw;
       const stripped = rawCode.replace(/^WO-/i, "").replace(/^INV-/i, "").replace(/^ORD-/i, "");
       const isNumeric = /^\d+$/.test(rawCode);
-      const [row] = await db
-        .select({
-          id: workOrders.id,
-          orderNumber: workOrders.orderNumber,
-          title: workOrders.title,
-          status: workOrders.status,
-          salePrice: workOrders.salePrice,
-          deposit: workOrders.deposit,
-          customerId: workOrders.customerId,
-          customerName: customers.name,
-          customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
-          deliveryAddress: workOrders.deliveryAddress,
-          deliveryPhone: workOrders.deliveryPhone,
-          deliveryCost: workOrders.deliveryCost,
-          deliveryFeeCollection: workOrders.deliveryFeeCollection,
-          branchId: workOrders.branchId,
-          version: workOrders.version,
-          notes: workOrders.customizationText,
-        })
-        .from(workOrders)
-        .leftJoin(customers, eq(workOrders.customerId, customers.id))
-        .where(
-          or(
-            eq(workOrders.orderNumber, rawCode),
-            eq(workOrders.orderNumber, `WO-${stripped}`),
-            eq(workOrders.orderNumber, stripped),
-            like(workOrders.orderNumber, `%${stripped}%`),
-            isNumeric ? eq(workOrders.id, Number(rawCode)) : sql`0=1`,
-          ),
-        )
-        .limit(1);
-      if (row) {
+      const isExplicitInvoice = /^INV-/i.test(rawCode);
+      const isExplicitWorkOrder = /^WO-/i.test(rawCode);
+      const isExplicitOnlineOrder = /^ORD-/i.test(rawCode);
+
+      const findWorkOrder = async () => {
+        const [row] = await db
+          .select({
+            id: workOrders.id,
+            orderNumber: workOrders.orderNumber,
+            title: workOrders.title,
+            status: workOrders.status,
+            salePrice: workOrders.salePrice,
+            deposit: workOrders.deposit,
+            customerId: workOrders.customerId,
+            customerName: customers.name,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
+            deliveryAddress: workOrders.deliveryAddress,
+            deliveryPhone: workOrders.deliveryPhone,
+            deliveryCost: workOrders.deliveryCost,
+            deliveryFeeCollection: workOrders.deliveryFeeCollection,
+            branchId: workOrders.branchId,
+            version: workOrders.version,
+            notes: workOrders.customizationText,
+          })
+          .from(workOrders)
+          .leftJoin(customers, eq(workOrders.customerId, customers.id))
+          .where(
+            or(
+              eq(workOrders.orderNumber, rawCode),
+              !isExplicitInvoice && !isExplicitOnlineOrder ? eq(workOrders.orderNumber, `WO-${stripped}`) : sql`0=1`,
+              !isExplicitInvoice && !isExplicitOnlineOrder ? eq(workOrders.orderNumber, stripped) : sql`0=1`,
+              !isExplicitInvoice && !isExplicitOnlineOrder && stripped.length >= 3 ? like(workOrders.orderNumber, `%${stripped}%`) : sql`0=1`,
+              isNumeric && !isExplicitInvoice && !isExplicitOnlineOrder ? eq(workOrders.id, Number(rawCode)) : sql`0=1`,
+            ),
+          )
+          .limit(1);
+        if (!row) return null;
         const [activeCn] = await db
           .select({
             id: deliveryConsignments.id,
@@ -1197,39 +1202,40 @@ export const workOrderRouter = router({
               }
             : null,
         };
-      }
+      };
 
-      const [inv] = await db
-        .select({
-          id: invoices.id,
-          orderNumber: invoices.invoiceNumber,
-          title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
-          status: invoices.status,
-          salePrice: invoices.total,
-          deposit: invoices.paidAmount,
-          customerId: invoices.customerId,
-          customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
-          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${customers.whatsapp}, ${invoices.contactPhone})`,
-          deliveryAddress: customers.address,
-          deliveryPhone: sql<string | null>`COALESCE(${invoices.contactPhone}, ${customers.phone}, ${customers.whatsapp})`,
-          deliveryCost: sql<string | null>`COALESCE(${invoices.deliveryFee}, '0.00')`,
-          deliveryFeeCollection: sql<string | null>`'COURIER'`,
-          branchId: invoices.branchId,
-          notes: invoices.notes,
-        })
-        .from(invoices)
-        .leftJoin(customers, eq(invoices.customerId, customers.id))
-        .where(
-          or(
-            eq(invoices.invoiceNumber, rawCode),
-            eq(invoices.invoiceNumber, `INV-${stripped}`),
-            eq(invoices.invoiceNumber, stripped),
-            like(invoices.invoiceNumber, `%${stripped}%`),
-            isNumeric ? eq(invoices.id, Number(rawCode)) : sql`0=1`,
+      const findInvoice = async () => {
+        const [inv] = await db
+          .select({
+            id: invoices.id,
+            orderNumber: invoices.invoiceNumber,
+            title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
+            status: invoices.status,
+            salePrice: invoices.total,
+            deposit: invoices.paidAmount,
+            customerId: invoices.customerId,
+            customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
+            customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${customers.whatsapp}, ${invoices.contactPhone})`,
+            deliveryAddress: customers.address,
+            deliveryPhone: sql<string | null>`COALESCE(${invoices.contactPhone}, ${customers.phone}, ${customers.whatsapp})`,
+            deliveryCost: sql<string | null>`COALESCE(${invoices.deliveryFee}, '0.00')`,
+            deliveryFeeCollection: sql<string | null>`'COURIER'`,
+            branchId: invoices.branchId,
+            notes: invoices.notes,
+          })
+          .from(invoices)
+          .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .where(
+            or(
+              eq(invoices.invoiceNumber, rawCode),
+              !isExplicitWorkOrder && !isExplicitOnlineOrder ? eq(invoices.invoiceNumber, `INV-${stripped}`) : sql`0=1`,
+              !isExplicitWorkOrder && !isExplicitOnlineOrder ? eq(invoices.invoiceNumber, stripped) : sql`0=1`,
+              !isExplicitWorkOrder && !isExplicitOnlineOrder && stripped.length >= 3 ? like(invoices.invoiceNumber, `%${stripped}%`) : sql`0=1`,
+              isNumeric && !isExplicitWorkOrder && !isExplicitOnlineOrder ? eq(invoices.id, Number(rawCode)) : sql`0=1`,
+            )
           )
-        )
-        .limit(1);
-      if (inv) {
+          .limit(1);
+        if (!inv) return null;
         const [activeCn] = await db
           .select({
             id: deliveryConsignments.id,
@@ -1271,41 +1277,42 @@ export const workOrderRouter = router({
               }
             : null,
         };
-      }
+      };
 
-      const [ord] = await db
-        .select({
-          id: onlineOrders.id,
-          orderNumber: onlineOrders.orderNumber,
-          title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
-          status: onlineOrders.status,
-          salePrice: onlineOrders.total,
-          deposit: sql<string>`'0.00'`,
-          customerId: onlineOrders.customerId,
-          customerName: customers.name,
-          customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-          deliveryAddress: sql<string | null>`COALESCE(NULLIF(${onlineOrders.shippingAddress}, ''), ${customers.address})`,
-          deliveryPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-          deliveryCost: onlineOrders.shippingCost,
-          deliveryFeeCollection: sql<string | null>`'COURIER'`,
-          branchId: onlineOrders.branchId,
-          notes: onlineOrders.cancelReason,
-          invoiceId: onlineOrders.invoiceId,
-        })
-        .from(onlineOrders)
-        .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
-        .where(
-          or(
-            eq(onlineOrders.orderNumber, rawCode),
-            eq(onlineOrders.orderNumber, `ORD-${stripped}`),
-            eq(onlineOrders.orderNumber, stripped),
-            like(onlineOrders.orderNumber, `%${stripped}%`),
-            isNumeric ? eq(onlineOrders.id, Number(rawCode)) : sql`0=1`,
-          ),
-        )
-        .limit(1);
+      const findOnlineOrder = async () => {
+        const [ord] = await db
+          .select({
+            id: onlineOrders.id,
+            orderNumber: onlineOrders.orderNumber,
+            title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
+            status: onlineOrders.status,
+            salePrice: onlineOrders.total,
+            deposit: sql<string>`'0.00'`,
+            customerId: onlineOrders.customerId,
+            customerName: customers.name,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+            deliveryAddress: sql<string | null>`COALESCE(NULLIF(${onlineOrders.shippingAddress}, ''), ${customers.address})`,
+            deliveryPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+            deliveryCost: onlineOrders.shippingCost,
+            deliveryFeeCollection: sql<string | null>`'COURIER'`,
+            branchId: onlineOrders.branchId,
+            notes: onlineOrders.cancelReason,
+            invoiceId: onlineOrders.invoiceId,
+          })
+          .from(onlineOrders)
+          .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+          .where(
+            or(
+              eq(onlineOrders.orderNumber, rawCode),
+              !isExplicitWorkOrder && !isExplicitInvoice ? eq(onlineOrders.orderNumber, `ORD-${stripped}`) : sql`0=1`,
+              !isExplicitWorkOrder && !isExplicitInvoice ? eq(onlineOrders.orderNumber, stripped) : sql`0=1`,
+              !isExplicitWorkOrder && !isExplicitInvoice && stripped.length >= 3 ? like(onlineOrders.orderNumber, `%${stripped}%`) : sql`0=1`,
+              isNumeric && !isExplicitWorkOrder && !isExplicitInvoice ? eq(onlineOrders.id, Number(rawCode)) : sql`0=1`,
+            ),
+          )
+          .limit(1);
 
-      if (ord) {
+        if (!ord) return null;
         const [activeCn] = await db
           .select({
             id: deliveryConsignments.id,
@@ -1353,7 +1360,24 @@ export const workOrderRouter = router({
               }
             : null,
         };
+      };
+
+      if (isExplicitInvoice) {
+        const inv = await findInvoice();
+        if (inv) return inv;
+      } else if (isExplicitOnlineOrder) {
+        const ord = await findOnlineOrder();
+        if (ord) return ord;
+      } else if (isExplicitWorkOrder) {
+        const wo = await findWorkOrder();
+        if (wo) return wo;
       }
+
+      const wo = await findWorkOrder();
+      if (wo) return wo;
+      const inv = await findInvoice();
+      if (inv) return inv;
+      return findOnlineOrder();
 
       return null;
     }),
