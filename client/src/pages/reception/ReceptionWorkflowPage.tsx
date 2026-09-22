@@ -3,7 +3,7 @@
  * أربعة أقسام: الإسناد، التحصيل والذمم، تعديل الفاتورة، الإلغاء والمرتجع
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useLocation, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 
 import type { RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FilePenLine, FileText, Info, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
@@ -61,7 +61,8 @@ interface ScannedOrder {
 
 export default function DeliveryWorkflowPage() {
   const pageSearch = useSearch();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
+  const isDeliveryModule = location.startsWith("/delivery");
   const [activeSection, setActiveSection] = useState<Section>(() => {
     const requested = new URLSearchParams(pageSearch).get("section");
     return requested === "collect" || requested === "edit" || requested === "return"
@@ -438,16 +439,26 @@ export default function DeliveryWorkflowPage() {
     <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
       <div className="shrink-0 border-b bg-card px-4 py-3">
         <PageHeader
-          title="التوصيل والإسناد"
+          title={isDeliveryModule ? "سير العمل بالباركود (إسناد وتحصيل)" : "التوصيل والإسناد"}
+          description={isDeliveryModule ? "إسناد الطرود للمناديب والشركات، تحصيل الذمم، تعديل الفواتير، واستلام المرتجعات بالماسح الضوئي." : undefined}
           icon={<Truck aria-hidden className="size-5 text-primary" />}
-          backHref="/pos?mode=RECEPTION"
-          backLabel="الاستقبال"
+          backHref={isDeliveryModule ? undefined : "/pos?mode=RECEPTION"}
+          backLabel={isDeliveryModule ? undefined : "الاستقبال"}
           actions={
-            shift ? (
-              <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">وردية #{shift.id}</span>
-            ) : (
-              <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">لا وردية</span>
-            )
+            <div className="flex items-center gap-2">
+              {shift ? (
+                <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">وردية #{shift.id}</span>
+              ) : (
+                <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">لا وردية</span>
+              )}
+              {isDeliveryModule && (
+                <Button variant="outline" size="sm" asChild className="gap-1.5 font-bold text-xs">
+                  <Link href="/delivery?tab=dispatch">
+                    لوحة وجداول التوصيل
+                  </Link>
+                </Button>
+              )}
+            </div>
           }
         />
       </div>
