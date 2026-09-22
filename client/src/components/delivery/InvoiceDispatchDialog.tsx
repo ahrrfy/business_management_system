@@ -143,7 +143,7 @@ export function InvoiceDispatchDialog({
 
   return (
     <Dialog open={open} onOpenChange={resetFromInvoice}>
-      <DialogContent dir="rtl" className="max-w-lg">
+      <DialogContent dir="rtl" className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Truck aria-hidden className="size-4" /> إسناد الفاتورة{" "}

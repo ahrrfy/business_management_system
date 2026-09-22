@@ -288,7 +288,7 @@ export function WaveHistory({
           open={detailsWaveId != null}
           onOpenChange={(open) => !open && setDetailsWaveId(null)}
         >
-          <DialogContent className="max-w-4xl">
+          <DialogContent className="sm:max-w-4xl">
             <DialogHeader>
               <DialogTitle>
                 تفاصيل موجة التسعير{detailWave ? ` — ${detailWave.name}` : ""}

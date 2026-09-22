@@ -377,7 +377,7 @@ export default function BackorderShortfall() {
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>مسوّدة أمر شراء</DialogTitle>
             <DialogDescription>

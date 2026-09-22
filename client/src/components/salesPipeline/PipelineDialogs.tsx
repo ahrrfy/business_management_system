@@ -106,7 +106,7 @@ export function LeadFormDialog({
     (initial ? reason.trim().length >= 3 : true);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
             {initial ? "تعديل العميل المحتمل" : "عميل محتمل جديد"}
@@ -353,7 +353,7 @@ export function OpportunityFormDialog({
     (!needsReason || reason.trim().length >= 3);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
             {mode === "CONVERT"

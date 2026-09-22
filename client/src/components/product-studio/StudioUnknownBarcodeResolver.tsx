@@ -159,7 +159,7 @@ export function StudioUnknownBarcodeResolver({ barcode, error, linkAllowed, acti
       )}
 
       <Dialog open={open} onOpenChange={(next) => { if (next) setOpen(true); else resetDialog(); }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>ربط باركود مورد بمنتج</DialogTitle>
             <DialogDescription>

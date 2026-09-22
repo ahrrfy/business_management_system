@@ -290,7 +290,7 @@ export default function CatalogAnomalies() {
 
       {/* بطاقات الملخّص */}
       {listQ.data && (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">حاجز</div><div className="text-2xl font-bold text-[var(--sem-neg)] tabular-nums">{listQ.data.counts.blocker}</div></CardContent></Card>
           <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">تحذير</div><div className="text-2xl font-bold text-[var(--sem-warn)] tabular-nums">{listQ.data.counts.warning}</div></CardContent></Card>
           <Card><CardContent className="p-3"><div className="text-xs text-muted-foreground">إخبار</div><div className="text-2xl font-bold text-[var(--sem-info)] tabular-nums">{listQ.data.counts.info}</div></CardContent></Card>

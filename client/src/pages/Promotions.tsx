@@ -898,7 +898,7 @@ export default function Promotions() {
 
       {/* ===== نافذة الترقية ===== */}
       <Dialog open={promoOpen} onOpenChange={(o) => { setPromoOpen(o); if (!o) resetPromo(); }}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>ترقية / تغيير أجر</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
@@ -971,7 +971,7 @@ export default function Promotions() {
 
       {/* ===== نافذة إنهاء الخدمة ===== */}
       <Dialog open={termOpen} onOpenChange={(o) => { setTermOpen(o); if (!o) resetTerm(); }}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>إنهاء خدمة موظف</DialogTitle></DialogHeader>
           <div className="rounded-md p-3 mb-1 text-xs flex items-start gap-2 bg-destructive/10 text-destructive">
             <UserMinus className="size-4 mt-0.5 shrink-0" />
@@ -1143,7 +1143,7 @@ export default function Promotions() {
 
       {/* عكس الصرف مستقل عن عكس الاستحقاق: يُعاد المال أولاً ثم يُتاح عكس القيد. */}
       <Dialog open={reverseTarget !== null} onOpenChange={(open) => { if (!open) { setReverseTarget(null); setReverseReason(""); } }}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{reverseTarget?.mode === "payment"
               ? "عكس صرف تسوية نهاية الخدمة"

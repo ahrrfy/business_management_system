@@ -563,7 +563,7 @@ export default function ReorderAlerts() {
       )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>مسوّدة أمر شراء — {fmtInt(selectedRows.length)} صنف</DialogTitle>
             <DialogDescription>
@@ -804,7 +804,7 @@ function BranchOverridesPanel(props: {
       )}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>أضف override جديد لفرعٍ بعينه</DialogTitle>
             <DialogDescription>

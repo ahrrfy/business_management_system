@@ -214,7 +214,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         }
       }}
     >
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[85vh] sm:max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b p-5">
           <DialogTitle className="flex items-center gap-2 text-lg font-extrabold">
             <Package aria-hidden className="size-5" /> إضافة متعددة

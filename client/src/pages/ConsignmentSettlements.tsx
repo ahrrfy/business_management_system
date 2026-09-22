@@ -337,7 +337,7 @@ export default function ConsignmentSettlements() {
       </Card>
 
       <Dialog open={stmtConsignor != null} onOpenChange={(o) => !o && setStmtConsignor(null)}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>كشف تسوية مودِع{statement.data ? ` — ${statement.data.consignorName}` : ""}</DialogTitle>
           </DialogHeader>

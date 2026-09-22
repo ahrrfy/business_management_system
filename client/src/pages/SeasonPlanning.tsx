@@ -309,7 +309,7 @@ export default function SeasonPlanning() {
       </Card>
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>إضافة منتج لخطة موسم المدارس</DialogTitle>
             <DialogDescription>

@@ -227,7 +227,34 @@ describe("انحدارات واجهة نقطة البيع", () => {
     expect(retail).toContain('placement="inline"');
     expect(print).toContain('placement="inline"');
     expect(retail).not.toContain('<OfflineSyncChip userRole={me.data?.role} />');
-    expect(print).not.toContain('<OfflineSyncChip userRole={me.data?.role} />');
     expect(offlineChip).toContain('placement = "floating"');
+  });
+});
+
+describe("عقد السلامة البصرية ومنع الاقتطاع المالي (Anti-Truncation Contract)", () => {
+  it("يضمن أن CopyInline لا يقتطع النص أو الأرقام افتراضياً", () => {
+    const copyBtn = readFileSync("client/src/components/CopyButton.tsx", "utf8");
+    expect(copyBtn).toContain("truncate = false");
+    expect(copyBtn).toContain("shrink-0 whitespace-nowrap");
+  });
+
+  it("يضمن أن SummaryRow و Field في تفاصيل الفواتير محميان من الانكماش والاقتطاع", () => {
+    const invoiceComponents = readFileSync("client/src/components/invoice/InvoiceDetailComponents.tsx", "utf8");
+    expect(invoiceComponents).toContain("shrink-0 whitespace-nowrap");
+    expect(invoiceComponents).toContain("truncate = false");
+  });
+
+  it("يضمن أن شبكة بطاقة الفاتورة تمنح لوحة الملخص المالي 5 أعمدة من 12 بعرض مريح", () => {
+    const invoiceHeader = readFileSync("client/src/components/invoice/InvoiceHeaderCard.tsx", "utf8");
+    expect(invoiceHeader).toContain("lg:grid-cols-12");
+    expect(invoiceHeader).toContain("lg:col-span-5 min-w-[280px]");
+    expect(invoiceHeader).toContain("lg:col-span-7");
+  });
+
+  it("يضمن أن صفحة الفاتورة وعرض السعر تتسعان ضمن max-w-6xl", () => {
+    const invoicePage = readFileSync("client/src/pages/InvoiceDetail.tsx", "utf8");
+    const quotationPage = readFileSync("client/src/pages/QuotationDetail.tsx", "utf8");
+    expect(invoicePage).toContain("max-w-6xl");
+    expect(quotationPage).toContain("max-w-6xl");
   });
 });

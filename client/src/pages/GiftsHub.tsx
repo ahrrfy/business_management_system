@@ -589,7 +589,7 @@ export default function GiftsHub() {
           />
 
           <Dialog open={approvingId != null} onOpenChange={(open) => !open && setApprovingId(null)}>
-            <DialogContent className="max-w-lg">
+            <DialogContent className="sm:max-w-lg">
               <DialogHeader>
                 <DialogTitle>مراجعة السند قبل الاعتماد</DialogTitle>
                 <DialogDescription>

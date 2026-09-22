@@ -49,7 +49,7 @@ export function DangerConfirmDialog(props: {
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!pending) onOpenChange(o); }}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="text-destructive flex items-center gap-2"><AlertTriangle aria-hidden className="size-4" /> {title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
