@@ -22,7 +22,7 @@ async function main() {
 
     // 1. Verify and lock invoice item 29899
     const [items] = await conn.query(
-      "SELECT id, invoiceId, variantId, quantity, baseQuantity, unitPrice, unitCost, total FROM invoiceItems WHERE id = 29899 FOR UPDATE",
+      "SELECT id, invoiceId, variantId, quantity, baseQuantity, unitPrice, unitCost, lineCost, total FROM invoiceItems WHERE id = 29899 FOR UPDATE",
     );
     if (!items.length) {
       throw new Error("Invoice item 29899 not found!");
@@ -68,12 +68,13 @@ async function main() {
 
     // Compute verified new totals
     const newUnitCost = "230.00";
+    const newLineCost = "230000.00";
     const newInvoiceCostTotal = "248878.90";
     const newProfit = "132121.10"; // 381,000.00 - 248,878.90
 
     console.log("\n--- PLANNED SURGICAL UPDATES ---");
     console.log(
-      `1. invoiceItems #29899: unitCost: '${item.unitCost}' -> '${newUnitCost}'`,
+      `1. invoiceItems #29899: unitCost: '${item.unitCost}' -> '${newUnitCost}', lineCost: '${item.lineCost}' -> '${newLineCost}'`,
     );
     console.log(
       `2. invoices #7391: costTotal: '${invoice.costTotal}' -> '${newInvoiceCostTotal}'`,
@@ -86,9 +87,10 @@ async function main() {
     );
 
     // Perform updates
-    await conn.query("UPDATE invoiceItems SET unitCost = ? WHERE id = 29899", [
-      newUnitCost,
-    ]);
+    await conn.query(
+      "UPDATE invoiceItems SET unitCost = ?, lineCost = ? WHERE id = 29899",
+      [newUnitCost, newLineCost],
+    );
     await conn.query("UPDATE invoices SET costTotal = ? WHERE id = 7391", [
       newInvoiceCostTotal,
     ]);

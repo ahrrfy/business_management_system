@@ -18,11 +18,23 @@ import { money, toDbMoney } from "../money";
 const netBaseQuantitySql = sql`GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0)`;
 const netLineRevenueSql = sql`CASE WHEN ii.baseQuantity > 0
   THEN ii.total * ${netBaseQuantitySql} / ii.baseQuantity ELSE ii.total END`;
+
+// صمام أمان ذاتي (Self-Healing Line Cost):
+// إن كان lineCost مشوهاً أو متضخماً بأكثر من 1.5 ضعف حاصل ضرب (unitCost * baseQuantity)
+// بينما unitCost معرف وbaseQuantity > 0، أو كان lineCost صفراً بينما unitCost موجب،
+// يعتمد الاستعلام تلقائياً على التكلفة الرياضية الصريحة ROUND(unitCost * baseQuantity, 2).
+const effectiveLineCostSql = sql`CASE
+  WHEN ii.unitCost > 0 AND ii.baseQuantity > 0 AND (
+    ii.lineCost <= 0 OR ii.lineCost > (ii.unitCost * ii.baseQuantity * 1.5)
+  ) THEN ROUND(ii.unitCost * ii.baseQuantity, 2)
+  ELSE COALESCE(ii.lineCost, 0)
+END`;
+
 const netLineCostSql = sql`CASE
-  WHEN ii.baseQuantity <= 0 THEN ii.lineCost
+  WHEN ii.baseQuantity <= 0 THEN ${effectiveLineCostSql}
   WHEN COALESCE(ii.returnedRestockedBaseQuantity, 0) >= ii.baseQuantity THEN 0
-  ELSE ii.lineCost - ROUND(
-    ii.lineCost * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
+  ELSE ${effectiveLineCostSql} - ROUND(
+    ${effectiveLineCostSql} * COALESCE(ii.returnedRestockedBaseQuantity, 0) / ii.baseQuantity,
     2
   )
 END`;
