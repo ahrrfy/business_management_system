@@ -926,6 +926,23 @@ export async function createSaleInTx(
     //     مجّانيّ عمداً وتكلفته خارج هذا الوعاء، فإقحامه هنا يجعل كلّ فاتورةٍ فيها هديةٌ «تحت
     //     التكلفة» زوراً. حوكمتُه بوّابةُ عتبة الهدايا أدناه لا هذه.
     const belowCost = isInvoiceBelowCost(paidLines, totals.subtotal, totals.discountAmount, costTotal);
+    // حارس شذوذ التكلفة الكارثي (كشف إدخال تكلفة الوجبة ككلفة للقطعة):
+    // إذا كان السطر غير مهدى، وتجاوزت التكلفة المحتسبة للسطر إيراده بأكثر من ٥ أضعاف
+    // وكان فارق الخسارة على السطر يتجاوز ٥٠٠,٠٠٠ د.ع ⇒ رفض قاطع لحماية الدفتر المالي من الأخطاء الكارثية.
+    for (const l of paidLines) {
+      const lineCost = money(l.unitCost).times(l.baseQuantity);
+      const lineTotal = money(l.total);
+      if (lineCost.gt(lineTotal.times(5)) && lineCost.minus(lineTotal).gt(500_000)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر إتمام البيع بسبب شذوذ في تكلفة البند «${l.invoiceName ?? l.variantId}»`,
+            why: `التكلفة المحتسبة للسطر (${lineCost.toFixed(2)} د.ع) تفوق سعر البيع (${lineTotal.toFixed(2)} د.ع) بأكثر من ٥ أضعاف وبفارق خسارة يتجاوز ٥٠٠ ألف دينار`,
+            doThis: "تحقّق من كلفة الوحدة في بطاقة الصنف أو قسّم تكلفة الوجبة على عدد القطع قبل حفظ الفاتورة لمنع تشويه الدفتر المالي",
+          }),
+        });
+      }
+    }
     // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
     // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
     // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
