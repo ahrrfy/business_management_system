@@ -136,6 +136,12 @@ export function StudioCaptureStation({
               }}
               onScan={(scanned) => submitCode(scanned)}
               onSubmit={() => submitCode(code)}
+              onKeyDown={(event) => {
+                if (shouldSubmitManualBarcode(event.key, event.defaultPrevented)) {
+                  event.preventDefault();
+                  submitCode(code);
+                }
+              }}
               disabled={offline || claim.isPending}
               placeholder="وجّه الماسح أو اكتب الباركود ثم Enter"
               barcode={true}

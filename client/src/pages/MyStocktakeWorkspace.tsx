@@ -20,6 +20,7 @@ import {
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState, getServerClockOffsetMs } from "@/hooks/usePulsedCountState";
@@ -359,6 +360,11 @@ export default function MyStocktakeWorkspace() {
     },
     [items, openItem, st, code, utils],
   );
+
+  const barcodeInput = useBarcodeInput((code) => {
+    setQuery("");
+    onBarcode(code, "SCAN_HID");
+  }, { minLength: scanRequired ? 2 : 3 });
 
   // قارئ HID: يُعطَّل أثناء فتح البطاقة أو الكاميرا كي لا يتضاعف الالتقاط.
   useBarcodeScanner((raw) => onBarcode(raw, "SCAN_HID"), {
@@ -842,6 +848,7 @@ export default function MyStocktakeWorkspace() {
                 <UnifiedSearchInput
                   value={query}
                   onChange={setQuery}
+                  onKeyDown={(e) => barcodeInput.handleKeyDown(e, setQuery)}
                   onScan={(code: string) => {
                     setQuery("");
                     onBarcode(code, "SCAN_HID");
