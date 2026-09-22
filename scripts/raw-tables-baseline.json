@@ -7,17 +7,13 @@
   "client/src/pages/ConsignmentNotes.tsx": 1,
   "client/src/pages/ConsignmentSettlements.tsx": 1,
   "client/src/pages/ContractPrices.tsx": 1,
-  "client/src/pages/DeliveryHub.tsx": 1,
   "client/src/pages/digitalCards/DigitalPricing.tsx": 1,
   "client/src/pages/Expenses.tsx": 1,
   "client/src/pages/GiftsHub.tsx": 1,
-  "client/src/pages/HrDevices.tsx": 1,
   "client/src/pages/PrintPricingCalculator.tsx": 1,
-  "client/src/pages/ProductImageStudio.tsx": 1,
   "client/src/pages/SeasonPlanning.tsx": 1,
   "client/src/pages/StocktakeCountSheets.tsx": 1,
   "client/src/pages/StocktakeReview.tsx": 1,
   "client/src/pages/TransfersLog.tsx": 1,
-  "client/src/pages/VoucherCategories.tsx": 1,
-  "client/src/pages/WorkOrderNew.tsx": 2
+  "client/src/pages/VoucherCategories.tsx": 1
 }
