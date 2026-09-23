@@ -14,7 +14,7 @@
  *    عبر resolvePromotionForLine (نقطة العرض = نقطة الفرض).
  */
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import {
   branchStock,
@@ -108,8 +108,26 @@ export async function lookupShelfPrice(
     return { found: false, reason: "NOT_FOUND" };
   }
 
-  // ١. تحديد الفرع التشغيلي المعني بالاستعلام
-  const branchId = await resolveStorefrontBranchId(branchIdInput);
+  // ١. تحديد الفرع التشغيلي المعني بالاستعلام بمرونة وأمان ضد الأخطاء
+  let branchId: number | null = null;
+  if (branchIdInput != null) {
+    try {
+      branchId = await resolveStorefrontBranchId(branchIdInput);
+    } catch {
+      // الفرع الممرر غير موجود أو غير نشط — نتراجع لفرع المتجر الافتراضي أو استعلام عام
+      try {
+        branchId = await resolveStorefrontBranchId();
+      } catch {
+        branchId = null;
+      }
+    }
+  } else {
+    try {
+      branchId = await resolveStorefrontBranchId();
+    } catch {
+      branchId = null;
+    }
+  }
 
   // ٢. مطابقة الباركود الأساسي والبدائل مع التطبيع الآمن
   const resolution = await resolveBarcodeOwnerResult(db, code, { allowNormalizedFallback: true });
@@ -157,7 +175,7 @@ export async function lookupShelfPrice(
       branchStock,
       and(
         eq(branchStock.variantId, productVariants.id),
-        eq(branchStock.branchId, branchId),
+        branchId != null ? eq(branchStock.branchId, branchId) : sql`1=0`,
       ),
     )
     .leftJoin(
@@ -195,7 +213,7 @@ export async function lookupShelfPrice(
   let discountPercent: string | null = null;
   let promotionName: string | null = null;
 
-  if (effectivePrice) {
+  if (effectivePrice && branchId != null) {
     try {
       const todayYmd = todayYmdBaghdad();
       const promo = await resolvePromotionForLine(db as any, {
@@ -267,10 +285,12 @@ export async function lookupShelfPrice(
 
   // ٧. جلب حتى 6 منتجات مقترحة للشراء المكمل
   let relatedProducts: StorefrontProduct[] = [];
-  try {
-    relatedProducts = await storefrontRelated(owner.productId, branchId, 6);
-  } catch {
-    relatedProducts = [];
+  if (branchId != null) {
+    try {
+      relatedProducts = await storefrontRelated(owner.productId, branchId, 6);
+    } catch {
+      relatedProducts = [];
+    }
   }
 
   // ٨. النتيجة المحصنة أمنياً: لا تكلفة، لا مخزون تفصيلي، لا موردين، لا أسعار جملة

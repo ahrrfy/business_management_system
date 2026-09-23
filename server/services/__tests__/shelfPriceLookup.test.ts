@@ -19,8 +19,11 @@ describe("shelfPriceService — خدمة استعلام أسعار الرفوف"
     const result = await lookupShelfPrice("   ", 1);
     expect(result).toEqual({ found: false, reason: "NOT_FOUND" });
 
-    const nonExistent = await lookupShelfPrice("NON_EXISTENT_BARCODE_99999", 1);
-    expect(nonExistent).toEqual({ found: false, reason: "NOT_FOUND" });
+    const nonExistentWithBranch = await lookupShelfPrice("NON_EXISTENT_BARCODE_99999", 1);
+    expect(nonExistentWithBranch).toEqual({ found: false, reason: "NOT_FOUND" });
+
+    const nonExistentWithoutBranch = await lookupShelfPrice("NON_EXISTENT_BARCODE_99999");
+    expect(nonExistentWithoutBranch).toEqual({ found: false, reason: "NOT_FOUND" });
   });
 
   it("يضمن العزل المالي الصارم وعدم وجود أي حقول تكلفة أو أسعار جملة في عقد النتيجة", () => {
