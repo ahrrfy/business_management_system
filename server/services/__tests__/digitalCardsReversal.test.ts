@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -26,7 +26,8 @@ const ownerUser = { userId: 4, branchId: 1, role: "admin", isOwner: true };
 const DATE = "2026-07-29";
 
 const TABLES = [
-  "digitalSubscriptionContracts", "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalWalletReservations", "digitalSaleIntents",
+  "digitalSubscriptionContracts", "digitalSaleDetails", "digitalSaleExecutionClaims", "digitalSaleIntentItems", "digitalIntentInventoryReservations", "digitalWalletReservations", "digitalSaleIntents",
+  "creditApprovals",
   "digitalWalletTransactions", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
@@ -44,6 +45,13 @@ async function seedBase() {
     { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
     { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await db().insert(s.customers).values({
+    id: 1,
+    name: "عميل آجل",
+    defaultPriceTier: "RETAIL",
+    creditLimit: null,
+    currentBalance: "0",
+  });
   await db().insert(s.receipts).values({
     branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
     cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
@@ -93,11 +101,43 @@ async function publish(providerId: number, lines: { offeringId: number; provider
 }
 
 let seq = 0;
-async function sell(offerings: { offeringId: number; priced: { pv: number; price: string } }[]) {
+async function sell(
+  offerings: { offeringId: number; priced: { pv: number; price: string } }[],
+  options: { paymentMethod?: "CASH" | "CREDIT"; customerId?: number } = {},
+) {
   const id = ++seq;
+  const paymentMethod = options.paymentMethod ?? "CASH";
+  const clientRequestId = `p-${id}-${Math.random().toString(36).slice(2, 9)}`;
+  const invoiceLines = paymentMethod === "CREDIT"
+    ? await Promise.all(offerings.map(async (offering, index) => {
+        const [row] = await db()
+          .select({ variantId: s.digitalOfferings.variantId, productUnitId: s.digitalOfferings.productUnitId })
+          .from(s.digitalOfferings)
+          .where(eq(s.digitalOfferings.id, offering.offeringId));
+        if (!row?.variantId || !row.productUnitId) throw new Error("digital offering catalog binding missing");
+        return {
+          variantId: Number(row.variantId),
+          productUnitId: Number(row.productUnitId),
+          quantity: "1",
+          unitPriceOverride: offering.priced.price,
+          internalLineToken: `lk-${id}-${index}`,
+        };
+      }))
+    : undefined;
   const r = await withTx((tx) => intentService.prepare(tx, {
-    clientRequestId: `p-${id}-${Math.random().toString(36).slice(2, 9)}`, branchId: 1, shiftId: 1,
-    paymentMethod: "CASH", cartFingerprint: `fp${id}`,
+    clientRequestId, branchId: 1, shiftId: 1,
+    paymentMethod, cartFingerprint: `fp${id}`,
+    customerId: options.customerId,
+    priceTier: paymentMethod === "CREDIT" ? "RETAIL" : undefined,
+    sourceType: paymentMethod === "CREDIT" ? "INVOICE" : "POS",
+    sourcePayload: invoiceLines == null ? undefined : {
+      branchId: 1,
+      shiftId: 1,
+      customerId: options.customerId,
+      priceTier: "RETAIL",
+      clientRequestId,
+      lines: invoiceLines,
+    },
     lines: offerings.map((o, i) => ({
       lineKey: `lk-${id}-${i}`, offeringId: o.offeringId, priceVersionId: o.priced.pv, expectedSellPrice: o.priced.price,
       providerReference: `REF-REV-${id}-${i}`,
@@ -116,7 +156,9 @@ async function sell(offerings: { offeringId: number; priced: { pv: number; price
   const total = offerings.reduce((a, o) => a + Number(o.priced.price), 0);
   return withTx((tx) => finalizeService.finalize(tx, {
     intentId: r.intentId, clientRequestId: `f-${id}-${Math.random().toString(36).slice(2, 9)}`,
-    paymentAmount: total.toFixed(2), paymentMethod: "CASH",
+    paymentAmount: paymentMethod === "CREDIT" ? "0.00" : total.toFixed(2),
+    paymentMethod,
+    customerId: options.customerId,
   }, actor));
 }
 
@@ -125,12 +167,24 @@ async function detailIds(invoiceId: number) {
   return rows.map((r) => r.id);
 }
 
+async function invoiceHeader(invoiceId: number) {
+  const [row] = await db()
+    .select({
+      total: s.invoices.total,
+      paidAmount: s.invoices.paidAmount,
+      returnedTotal: s.invoices.returnedTotal,
+      status: s.invoices.status,
+    })
+    .from(s.invoices)
+    .where(eq(s.invoices.id, invoiceId));
+  return row;
+}
+
 beforeEach(async () => {
   await truncateTables(TABLES);
   await seedBase();
   seq = 0;
 });
-
 describe("ش١٢ — حظر المرتجع العام", () => {
   it("المرتجع العادي يرفض بند الكرت الرقميّ ويوجّه لمسار العكس", async () => {
     const { providerId } = await mkProvider("آسياسيل", "PREPAID");
@@ -218,6 +272,14 @@ describe("ش١٢ — معيار الخروج: صافي صفريّ عند الع�
     expect(res.outcome).toBe("REVERSED");
     expect(res.refunded).toBe("14250.00");
 
+    // رأس الفاتورة يعكس خروج النقد أيضاً؛ لا تبقى الفاتورة PAID بعد ردّ كامل.
+    expect(await invoiceHeader(sale.invoiceId)).toEqual({
+      total: "14250.00",
+      paidAmount: "0.00",
+      returnedTotal: "14250.00",
+      status: "RETURNED",
+    });
+
     // ✦ صافي الدفتر صفر في الثلاثة.
     const net = await reversalService.netForInvoice(db(), sale.invoiceId);
     expect(Number(net.revenue)).toBe(0);
@@ -243,6 +305,42 @@ describe("ش١٢ — معيار الخروج: صافي صفريّ عند الع�
     expect(d[0].fulfillmentStatus).toBe("REVERSED");
     const out = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId));
     expect(out.some((r) => r.direction === "OUT" && r.amount === "14250.00")).toBe(true);
+  });
+
+  it("فاتورة الكرت الآجلة تُخفض الذمّة بلا صرف نقد لم يُقبض", async () => {
+    const { providerId } = await mkProvider("مزوّد آجل للعميل", "PREPAID");
+    const walletId = await mkWallet(providerId, "1000000");
+    const offeringId = await mkOffering(providerId, "كرت آجل للعميل", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const sale = await sell(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1 },
+    );
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance)
+      .toBe("14250.00");
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+
+    const ids = await detailIds(sale.invoiceId);
+    const res = await withTx((tx) => reversalService.approveReversal(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+      reason: "المزوّد ألغى الكرت الآجل",
+    }, mgr));
+
+    expect(res.refunded).toBe("0.00");
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId))).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.entryType, "PAYMENT_OUT"),
+      eq(s.accountingEntries.invoiceId, sale.invoiceId),
+    ))).toHaveLength(0);
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("0.00");
+    const [invoice] = await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId));
+    expect(invoice).toMatchObject({ paidAmount: "0.00", returnedTotal: "14250.00", status: "RETURNED" });
+    expect(await reversalService.netForInvoice(db(), sale.invoiceId)).toEqual({
+      revenue: "0.00",
+      cost: "0.00",
+      profit: "0.00",
+    });
   });
 
   it("الآجل: الدفتر يعود صفراً وذمّة المزوّد تعود لما كانت", async () => {
@@ -297,6 +395,58 @@ describe("ش١٢ — معيار الخروج: صافي صفريّ عند الع�
     const after = await reversalService.reversibleDetails(db(), sale.invoiceId);
     expect(after.filter((d) => d.fulfillmentStatus === "REVERSED")).toHaveLength(1);
     expect(after.filter((d) => d.fulfillmentStatus === "ISSUED")).toHaveLength(1);
+    expect(await invoiceHeader(sale.invoiceId)).toEqual({
+      total: "19250.00",
+      paidAmount: "5000.00",
+      returnedTotal: "14250.00",
+      status: "PAID",
+    });
+  });
+
+  it("فاتورة مختلطة: عكس البطاقة وحدها يُبقي قيمة السطر العادي مدفوعة ولا يوسم الفاتورة مرتجعة بالكامل", async () => {
+    const { providerId } = await mkProvider("آسياسيل", "PREPAID");
+    const walletId = await mkWallet(providerId, "1000000");
+    const offeringId = await mkOffering(providerId, "كارت", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const sale = await sell([{ offeringId, priced: priced.get(offeringId)! }]);
+
+    // نضيف سطر خدمة عادي إلى نفس الفاتورة لعزل سلوك رأس الفاتورة المختلطة عن منشئ الفاتورة.
+    const [digitalItem] = await db().select().from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    await db().insert(s.invoiceItems).values({
+      invoiceId: sale.invoiceId,
+      variantId: Number(digitalItem.variantId),
+      productUnitId: digitalItem.productUnitId == null ? null : Number(digitalItem.productUnitId),
+      quantity: "1.000",
+      baseQuantity: 1,
+      unitPrice: "3000.00",
+      unitCost: "0.00",
+      lineCost: "0.00",
+      serviceMaterialsSnapshotted: true,
+      discountPercent: "0.00",
+      discountAmount: "0.00",
+      total: "3000.00",
+      itemNameSnapshot: "خدمة عادية ضمن فاتورة مختلطة",
+    });
+    await db().update(s.invoices).set({
+      subtotal: "17250.00",
+      total: "17250.00",
+      paidAmount: "17250.00",
+      status: "PAID",
+    }).where(eq(s.invoices.id, sale.invoiceId));
+
+    await withTx(async (tx) => reversalService.approveReversal(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: await detailIds(sale.invoiceId),
+      reason: "المزوّد ألغى البطاقة فقط",
+    }, mgr));
+
+    expect(await invoiceHeader(sale.invoiceId)).toEqual({
+      total: "17250.00",
+      paidAmount: "3000.00",
+      returnedTotal: "14250.00",
+      status: "PAID",
+    });
   });
 });
 
@@ -338,6 +488,44 @@ describe("ش١٢ — ردّ الخسارة", () => {
 
     const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
     expect(d[0].fulfillmentStatus).toBe("LOSS_REFUND");
+    expect(await invoiceHeader(sale.invoiceId)).toEqual({
+      total: "14250.00",
+      paidAmount: "0.00",
+      returnedTotal: "14250.00",
+      status: "RETURNED",
+    });
+  });
+
+  it("ردّ خسارة لفاتورة آجلة يزيل الذمّة بلا صرف نقد ويُبقي حصة المزوّد خسارة", async () => {
+    const { providerId } = await mkProvider("مزوّد خسارة آجلة", "PREPAID");
+    const walletId = await mkWallet(providerId, "1000000");
+    const offeringId = await mkOffering(providerId, "كرت خسارة آجل", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const sale = await sell(
+      [{ offeringId, priced: priced.get(offeringId)! }],
+      { paymentMethod: "CREDIT", customerId: 1 },
+    );
+    const ids = await detailIds(sale.invoiceId);
+    await withTx((tx) => reversalService.requestLossRefund(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+      reason: "تعذر استرداد الكرت ولم يُسلّم للعميل",
+    }, mgr));
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+
+    const res = await withTx((tx) => reversalService.lossRefund(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+    }, mgr2));
+
+    expect(res).toMatchObject({ refunded: "0.00", loss: "13400.00" });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId))).toHaveLength(0);
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("0.00");
+    expect(await reversalService.netForInvoice(db(), sale.invoiceId)).toEqual({
+      revenue: "0.00",
+      cost: "13400.00",
+      profit: "-13400.00",
+    });
   });
 });
 
@@ -361,10 +549,39 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
   it("لا عكس مرّتين لنفس البند", async () => {
     const { sale, ids } = await issued();
     await withTx((tx) => reversalService.approveReversal(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "أول" }, mgr));
+    const headerAfterFirst = await invoiceHeader(sale.invoiceId);
     await expect(withTx((tx) => reversalService.approveReversal(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "ثانٍ" }, mgr)))
       .rejects.toThrow(/عولِج مسبقاً/);
     await expect(withTx((tx) => reversalService.requestLossRefund(tx, { invoiceId: sale.invoiceId, detailIds: ids, reason: "ثالث" }, mgr)))
       .rejects.toThrow(/عولِج مسبقاً/);
+    expect(await invoiceHeader(sale.invoiceId)).toEqual(headerAfterFirst);
+  });
+
+  it("يفشل مغلقاً قبل أي أثر إذا تجاوز الرد المقبوض الفعلي", async () => {
+    const { sale, walletId, ids } = await issued();
+    await db().update(s.invoices).set({ paidAmount: "1000.00", status: "PARTIALLY_PAID" })
+      .where(eq(s.invoices.id, sale.invoiceId));
+    const headerBefore = await invoiceHeader(sale.invoiceId);
+    const [walletBefore] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    const receiptsBefore = (await db().select().from(s.receipts)
+      .where(eq(s.receipts.invoiceId, sale.invoiceId))).length;
+    const entriesBefore = (await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, sale.invoiceId))).length;
+
+    await expect(withTx((tx) => reversalService.approveReversal(tx, {
+      invoiceId: sale.invoiceId,
+      detailIds: ids,
+      reason: "محاولة رد أكبر من المقبوض",
+    }, mgr))).rejects.toThrow(/يتجاوز المقبوض الفعلي/);
+
+    expect(await invoiceHeader(sale.invoiceId)).toEqual(headerBefore);
+    const [walletAfter] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    expect(walletAfter.currentBalance).toBe(walletBefore.currentBalance);
+    expect((await db().select().from(s.receipts)
+      .where(eq(s.receipts.invoiceId, sale.invoiceId))).length).toBe(receiptsBefore);
+    expect((await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, sale.invoiceId))).length).toBe(entriesBefore);
+    expect((await reversalService.reversibleDetails(db(), sale.invoiceId))[0].fulfillmentStatus).toBe("ISSUED");
   });
 
   it("السبب إلزاميّ", async () => {
@@ -376,6 +593,7 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
   it("فشلٌ بعد العكس يُرجِع كل شيء (ذرّية)", async () => {
     const { sale, walletId, ids } = await issued();
     const [wBefore] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    const headerBefore = await invoiceHeader(sale.invoiceId);
     const entriesBefore = (await db().select().from(s.accountingEntries)).length;
 
     await expect(withTx(async (tx) => {
@@ -386,6 +604,7 @@ describe("ش١٢ — الحوكمة والذرّية", () => {
     const [wAfter] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
     expect(wAfter.currentBalance).toBe(wBefore.currentBalance);
     expect((await db().select().from(s.accountingEntries)).length).toBe(entriesBefore);
+    expect(await invoiceHeader(sale.invoiceId)).toEqual(headerBefore);
     const d = await reversalService.reversibleDetails(db(), sale.invoiceId);
     expect(d[0].fulfillmentStatus).toBe("ISSUED");
   });

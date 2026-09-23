@@ -450,7 +450,7 @@ export default function KioskDevices() {
 
       {/* حوار تعديل بيانات الجهاز */}
       <Dialog open={!!editingDevice} onOpenChange={(open) => { if (!open) setEditingDevice(null); }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>تعديل بيانات الجهاز</DialogTitle>
             <DialogDescription>تعديل اسم الجهاز أو الفرع التابع له دون إبطال رمزه أو انقطاع اتصاله.</DialogDescription>

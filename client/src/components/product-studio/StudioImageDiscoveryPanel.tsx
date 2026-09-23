@@ -17,9 +17,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { ArrowUpDown, CheckCircle2, ImageOff, Info, Layers, Package, Search, Sparkles, TrendingDown } from "lucide-react";
+import { ArrowUpDown, CheckCircle2, ImageOff, Info, Layers, Package, Search, Sparkles, TrendingDown, UserCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type Health = RouterOutputs["productStudio"]["discoverImageGaps"]["items"][number]["state"];
@@ -133,6 +134,7 @@ export function StudioImageDiscoveryPanel({
 }) {
   // فلاتر مُحمَّلةٌ من التخزين المحلّي مرّةً واحدةً عند التركيب (`useState(loader)` يُحسَب مرّة).
   // بدون هذا كان المدير يُعيد ضبط الفلاتر كل زيارة، ما يُضيّع الوقت على مسحٍ يوميّ للحالة نفسها.
+  const utils = trpc.useUtils();
   const initialFilters = useMemo(() => loadPersistedFilters(), []);
   const [selectedStates, setSelectedStates] = useState<Health[]>(initialFilters.states);
   const [search, setSearch] = useState(initialFilters.search);
@@ -141,6 +143,10 @@ export function StudioImageDiscoveryPanel({
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   // شرحُ بطاقة KPI الموسَّع — بطاقةٌ واحدةٌ في كلّ وقت تكفي وتمنع تراكمَ شروحٍ داخل الشبكة.
   const [expandedHint, setExpandedHint] = useState<Health | null>(null);
+  // نمط التحديد: عزل فرديّ (افتراضي وسريع) أو تحديد متعدّد
+  const [multiSelectMode, setMultiSelectMode] = useState<boolean>(false);
+  const [bulkAssigneeId, setBulkAssigneeId] = useState<string>("");
+
   // أثرُ الحفظ: يُطلَق كلّما تغيّر أيٌّ من الفلاتر. `selectedIds` **لا يُحفَظ** — التحديد
   // مرتبطٌ بالجلسة الحاليّة، وإعادةُ فتح المتصفح لاحقاً لا تعني نفس نيّة العمل.
   useEffect(() => {
@@ -149,6 +155,38 @@ export function StudioImageDiscoveryPanel({
 
   const counts = trpc.productStudio.imageHealthCounts.useQuery(undefined, { staleTime: 60_000 });
   const topCategories = trpc.productStudio.topGapCategories.useQuery({ limit: 8 }, { staleTime: 120_000 });
+  const assignees = trpc.productStudio.assignees.useQuery(undefined, { staleTime: 120_000 });
+
+  const bulkAssignMutation = trpc.productStudio.bulkAssign.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(`تم إسناد ${res.createdCount} منتج بنجاح`);
+      setSelectedIds(new Set());
+      setBulkAssigneeId("");
+      await Promise.all([
+        utils.productStudio.imageHealthCounts.invalidate(),
+        utils.productStudio.discoverImageGaps.invalidate(),
+        utils.productStudio.tasks.invalidate(),
+      ]);
+    },
+    onError: (err) => {
+      notify.err(err);
+    },
+  });
+
+  const handleCardClick = (state: Health) => {
+    if (multiSelectMode) {
+      setSelectedStates((cur) => (cur.includes(state) ? cur.filter((s) => s !== state) : [...cur, state]));
+    } else {
+      // عزلٌ فرديّ ذكي: إن كانت البطاقة هي الوحيدة المختارة، نقرةٌ ثانية تُعيد الفجوات الشائعة الافتراضية
+      setSelectedStates((cur) => {
+        if (cur.length === 1 && cur[0] === state) {
+          return DEFAULT_FILTERS.states;
+        }
+        return [state];
+      });
+    }
+  };
+
   // الفرز يُرسَل إلى الخادم كي يُطبَّق قبل التقطيع (Codex P2): الفرز على الواجهة كان
   // يمسّ ١٠٠ صفٍّ فقط، فيُقصّ الأولويّ إن كان معرّفه فوق النطاق.
   const gaps = trpc.productStudio.discoverImageGaps.useQuery(
@@ -198,26 +236,52 @@ export function StudioImageDiscoveryPanel({
               <span>
                 <strong>{counts.data.total}</strong> منتج نشط · <strong>{counts.data.healthyPercent}%</strong> سليم
               </span>
-              <span className="text-xs text-muted-foreground">
-                اضغط بطاقةً لتصفية الجدول بحالتها
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant={multiSelectMode ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => setMultiSelectMode((v) => !v)}
+                  title="التبديل بين العزل الفردي والنقر المتعدد"
+                >
+                  {multiSelectMode ? "نمط: تحديد متعدّد" : "نمط: عزل فرديّ (سريع)"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setSelectedStates(DEFAULT_FILTERS.states)}
+                  title="استعادة الفجوات الشائعة"
+                >
+                  عرض الفجوات الشائعة
+                </Button>
+              </div>
             </div>
           </div>
         )}
 
-        {/* عدّادات KPI — نقرةٌ على البطاقة تُبدّل الفلتر، والـInfo زرٌّ مستقلّ داخل البطاقة
-            يفتح/يُغلق شرحاً منظوراً (Codex P2 — الاعتماد على `title` وحده يعطّل الشرح على
-            اللمس). الشرحُ داخل نفس البطاقة كي لا يُبعِد البصر. e.stopPropagation ضروريّ
-            كي لا يوسّع أو يوسّع الفلتر بالخطأ عند طلب الشرح. */}
+        {/* عدّادات KPI — نقرةٌ على البطاقة تعزل الحالة (أو تبدّلها في نمط التحديد المتعدد) */}
         <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
           {kpiCards.map((k) => {
             const active = selectedStates.includes(k.state);
+            const isSoleActive = selectedStates.length === 1 && selectedStates[0] === k.state;
             const expanded = expandedHint === k.state;
             return (
-              <div key={k.state} className={`rounded-md border p-2 transition-colors ${active ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}>
+              <div
+                key={k.state}
+                className={`relative rounded-md border p-2 transition-all ${
+                  isSoleActive
+                    ? "border-primary bg-primary/10 ring-2 ring-primary shadow-sm"
+                    : active
+                    ? "border-primary/70 bg-primary/5 ring-1 ring-primary/40"
+                    : "hover:bg-muted/50 border-border"
+                }`}
+              >
                 <button
                   type="button"
-                  onClick={() => setSelectedStates((cur) => (active ? cur.filter((s) => s !== k.state) : [...cur, k.state]))}
+                  onClick={() => handleCardClick(k.state)}
                   className="block w-full min-h-11 text-start"
                   aria-pressed={active}
                 >
@@ -235,7 +299,12 @@ export function StudioImageDiscoveryPanel({
                       <Info aria-hidden className="size-3 opacity-70" />
                     </span>
                   </div>
-                  <div className="mt-0.5 text-base font-bold">{k.value}</div>
+                  <div className="mt-0.5 flex items-baseline justify-between gap-1">
+                    <span className="text-base font-bold">{k.value}</span>
+                    {isSoleActive && (
+                      <Badge variant="default" className="h-4 px-1 text-[9px]">معزول</Badge>
+                    )}
+                  </div>
                 </button>
                 {expanded && (
                   <p className="mt-1.5 rounded bg-muted/40 p-1.5 text-[10.5px] leading-snug text-muted-foreground">
@@ -279,10 +348,15 @@ export function StudioImageDiscoveryPanel({
         <div className="grid gap-3 md:grid-cols-4">
           <div className="space-y-1.5 md:col-span-2">
             <Label htmlFor="discovery-search">بحث باسم المنتج</Label>
-            <div className="relative">
-              <Search aria-hidden className="pointer-events-none absolute end-2 top-3 size-4 text-muted-foreground" />
-              <Input id="discovery-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="اكتب جزءاً من الاسم" />
-            </div>
+            <UnifiedSearchInput
+              id="discovery-search"
+              value={search}
+              onChange={setSearch}
+              placeholder="اكتب جزءاً من الاسم أو SKU أو امسح الباركود… (F2)"
+              debounceMs={250}
+              barcode={true}
+              size="default"
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="discovery-bundle">تصفية</Label>
@@ -318,23 +392,66 @@ export function StudioImageDiscoveryPanel({
 
         {/* شريط الإجراءات — يظهر عند التحديد */}
         {selectedIds.size > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-primary/5 p-3">
-            <span className="text-sm">
-              <strong>{selectedIds.size}</strong> منتج مُحدَّد
-            </span>
-            <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-primary/5 p-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">
+                <strong>{selectedIds.size}</strong> منتج مُحدَّد
+              </span>
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="min-h-11"
+                className="h-8 px-2 text-xs"
                 onClick={() => setSelectedIds(new Set())}
               >
                 إلغاء التحديد
               </Button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {/* إسنادٌ مباشر وسريع لمصوّر بلا حاجة لإنشاء حملة */}
+              <div className="flex items-center gap-1.5">
+                <div className="min-w-44">
+                  <AppSelect
+                    id="discovery-bulk-assignee"
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs"
+                    value={bulkAssigneeId}
+                    onValueChange={setBulkAssigneeId}
+                    disabled={bulkAssignMutation.isPending}
+                  >
+                    <option value="">اختر موظفاً للإسناد المباشر…</option>
+                    {(assignees.data ?? []).map((u: any) => (
+                      <option key={u.id} value={String(u.id)}>
+                        {u.name}
+                      </option>
+                    ))}
+                  </AppSelect>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="min-h-9"
+                  disabled={!bulkAssigneeId || bulkAssignMutation.isPending}
+                  onClick={() => {
+                    const ids = Array.from(selectedIds).slice(0, 100);
+                    bulkAssignMutation.mutate({
+                      productIds: ids,
+                      assigneeId: Number(bulkAssigneeId),
+                    });
+                  }}
+                >
+                  <UserCheck aria-hidden className="size-3.5" />
+                  {bulkAssignMutation.isPending ? "جارٍ الإسناد…" : "إسناد مباشر"}
+                </Button>
+              </div>
+
+              <div className="h-6 w-px bg-border" />
+
               <Button
                 type="button"
-                className="min-h-11"
+                variant="secondary"
+                size="sm"
+                className="min-h-9"
                 onClick={() => {
                   const ids = Array.from(selectedIds);
                   if (ids.length === 0) {
@@ -344,7 +461,7 @@ export function StudioImageDiscoveryPanel({
                   onCreateCampaignFromProducts(ids);
                 }}
               >
-                <Sparkles aria-hidden className="size-4" /> أنشئ حملة تصوير من المحدَّد
+                <Sparkles aria-hidden className="size-3.5" /> أنشئ حملة تصوير من المحدَّد
               </Button>
             </div>
           </div>

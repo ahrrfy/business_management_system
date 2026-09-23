@@ -33,7 +33,7 @@ function consignorShares(ctx: InvoiceContext, run: ReversalRun): Map<number, { p
   for (const line of readInventoryState(run).lines) {
     const cId = ctx.consignByVariant.get(line.variantId);
     if (cId == null) continue;
-    const share = round2(line.unitCost.times(line.quantity));
+    const share = round2(line.lineCost);
     const split = byConsignor.get(cId) ?? { paid: new Decimal(0), gift: new Decimal(0) };
     if (line.isGift) split.gift = split.gift.plus(share);
     else split.paid = split.paid.plus(share);
@@ -124,13 +124,17 @@ function reversedCosts(ctx: InvoiceContext, run: ReversalRun) {
   let serviceRestockedCost = new Decimal(0);
   let serviceRestockedGiftCost = new Decimal(0);
   for (const line of state.lines) {
-    const lineCost = round2(line.unitCost.times(line.quantity));
+    const lineCost = round2(line.lineCost);
     if (line.isGift) {
       restockedGiftCost = restockedGiftCost.plus(lineCost);
-      if (line.kind === "SERVICE") serviceRestockedGiftCost = serviceRestockedGiftCost.plus(lineCost);
+      if (line.kind === "SERVICE" && !line.serviceMaterialsRestored) {
+        serviceRestockedGiftCost = serviceRestockedGiftCost.plus(lineCost);
+      }
     } else {
       restockedCost = restockedCost.plus(lineCost);
-      if (line.kind === "SERVICE") serviceRestockedCost = serviceRestockedCost.plus(lineCost);
+      if (line.kind === "SERVICE" && !line.serviceMaterialsRestored) {
+        serviceRestockedCost = serviceRestockedCost.plus(lineCost);
+      }
     }
   }
   const shares = consignorShares(ctx, run);
@@ -228,9 +232,10 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
     if (!sectorDelta.isZero() && balancingRole) {
       returnRevenueByRole.set(balancingRole, round2((returnRevenueByRole.get(balancingRole) ?? money(0)).plus(sectorDelta)));
     }
+    const ownedRestockedCost = costs.ownedRestockedCost;
     const returnProfile: PostingProfile = inv.sourceType === "WORKORDER"
       ? "RETURN_SALE_FLEX"
-      : returnClasses.size > 1
+      : returnClasses.size > 1 || (returnClasses.has("SERVICE") && ownedRestockedCost.gt(0))
         ? "RETURN_SALE_MIXED"
         : returnClasses.has("DIGITAL")
           ? "RETURN_SALE_DIGITAL"
@@ -239,7 +244,6 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
             : returnClasses.has("CONSIGNMENT")
               ? "RETURN_SALE_CONSIGNMENT"
               : "RETURN_SALE_INVENTORY";
-    const ownedRestockedCost = costs.ownedRestockedCost;
     const returnPostingLines = [
       ...Array.from(returnRevenueByRole.entries())
         .filter(([, amount]) => !amount.isZero())

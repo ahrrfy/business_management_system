@@ -61,6 +61,8 @@ export interface OfflineKeyRow {
  *  حراسة واجهة عند الإقلاع دون اتصال، لا تشفيرَ هوية (يُصارَح المالك). */
 export interface OfflineProfileRow {
   key: "profile";
+  /** غياب الحقل يعني سجلاً قديماً غير موثوقٍ به لعزل الشركات. */
+  companyId?: number | null;
   userId: number;
   name: string;
   role: string;

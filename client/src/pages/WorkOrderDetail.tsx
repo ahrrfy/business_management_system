@@ -38,7 +38,7 @@ import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDia
 import { WorkOrderDeliverySection } from "@/components/delivery/WorkOrderDeliverySection";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
-import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
+import { deriveWorkOrderCopyRemaining, formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -77,22 +77,53 @@ type PendingCancelAttempt =
   | { kind: "DIRECT"; input: CancelInput }
   | { kind: "CONTROL_REQUEST"; input: CancelControlInput };
 
-/** حقل وصفي: عنوان صغير + قيمة. */
-function Field({ label, children }: { label: string; children: ReactNode }) {
+/** حقل وصفي: عنوان صغير + قيمة (محمي ضد الاقتطاع غير المقصود). */
+function Field({
+  label,
+  children,
+  truncate = false,
+}: {
+  label: string;
+  children: ReactNode;
+  truncate?: boolean;
+}) {
   return (
     <div className="space-y-0.5 min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="font-medium truncate">{children}</div>
+      <div className={cn("font-medium", truncate ? "truncate" : "break-words")}>{children}</div>
     </div>
   );
 }
 
-/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، بلا اقتطاع). */
-function SummaryRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، محمي ضد الاقتطاع). */
+function SummaryRow({
+  label,
+  value,
+  strong,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
+}) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className={cn("text-muted-foreground", strong && "font-semibold text-foreground")}>{label}</span>
-      <span dir="ltr" className={cn("tabular-nums", strong ? "text-lg font-bold" : "text-sm")}>{fmtAr(value)}</span>
+    <div className="flex items-center justify-between gap-3 min-w-0 py-0.5">
+      <span
+        className={cn(
+          "text-muted-foreground shrink-0",
+          strong && "font-semibold text-foreground",
+        )}
+      >
+        {label}
+      </span>
+      <span
+        dir="ltr"
+        className={cn(
+          "tabular-nums shrink-0 whitespace-nowrap text-end",
+          strong ? "text-base sm:text-lg font-bold" : "text-sm font-medium",
+        )}
+      >
+        {fmtAr(value)}
+      </span>
     </div>
   );
 }
@@ -465,6 +496,27 @@ export default function WorkOrderDetail() {
   // الرصيد المستحق = سعر البيع − العربون المقبوض، عبر decimal.js (لا Number() على المال، §٥) —
   // يُستعمَل في رسالة واتساب/ملصق الشحن/بطاقة الدفعة عند التسليم بدل تكرار Math.max(0, Number(a)-Number(b)).
   const remainingDue = positiveDiff(data.salePrice, data.deposit ?? 0);
+  const copyRemainingDue = deriveWorkOrderCopyRemaining({
+    status: data.status,
+    invoiceId: data.invoiceId,
+    salePrice: data.salePrice,
+    deposit: data.deposit,
+    invoiceTotal: data.invoiceTotal,
+    invoicePaidAmount: data.invoicePaidAmount,
+    invoiceReturnedTotal: data.invoiceReturnedTotal,
+  });
+  const workOrderCopyPayload = {
+    number: data.orderNumber,
+    date: data.createdAt,
+    customer: data.customerName,
+    description: data.customizationText,
+    status: workOrderStatusLabel(data.status),
+    items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
+    total: data.salePrice,
+    deposit: data.deposit,
+    remaining: copyRemainingDue,
+    deliveryDate: data.dueDate,
+  };
   const durableRefundNotice = cancellationRefundStatus.data
     ? durableRefundStatusNotice(cancellationRefundStatus.data.status, fmt(cancellationRefundStatus.data.amount))
     : null;
@@ -520,26 +572,8 @@ export default function WorkOrderDetail() {
         actions={<>
           <CopyAsMenu
             label="نَسخ التَفاصيل"
-            plain={formatWorkOrderAsWhatsApp({
-              number: data.orderNumber,
-              date: data.createdAt,
-              customer: data.customerName,
-              description: data.customizationText,
-              status: workOrderStatusLabel(data.status),
-              items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
-              total: data.salePrice,
-              deliveryDate: data.dueDate,
-            })}
-            whatsapp={formatWorkOrderAsWhatsApp({
-              number: data.orderNumber,
-              date: data.createdAt,
-              customer: data.customerName,
-              description: data.customizationText,
-              status: workOrderStatusLabel(data.status),
-              items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
-              total: data.salePrice,
-              deliveryDate: data.dueDate,
-            })}
+            plain={formatWorkOrderAsWhatsApp(workOrderCopyPayload)}
+            whatsapp={formatWorkOrderAsWhatsApp(workOrderCopyPayload)}
           />
           <Button
             variant="outline"
@@ -685,10 +719,10 @@ export default function WorkOrderDetail() {
         <CardContent className="space-y-4">
           {/* مسارُ الطلب أوّلاً: أين نحن وما التالي ولِمَ توقّفنا — قبل أيّ تفصيل. */}
           <WorkOrderFlowStepper steps={flowSteps} />
-          <div className="grid gap-5 md:grid-cols-3">
+          <div className="grid gap-6 lg:grid-cols-12">
             {/* سياق الأمر — كان فقيراً (رقم/عميل/كمية/استحقاق فقط) رغم أنّ الخادم يُعيد القناة
              *  والأولوية والمنفّذ وتاريخ الإنشاء والتوصيل بلا استهلاك في الشاشة. */}
-            <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
+            <div className="lg:col-span-7 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="رقم الأمر"><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="الكمية">{data.quantity}</Field>
@@ -755,7 +789,7 @@ export default function WorkOrderDetail() {
               {data.hasDelivery && <Field label="عنوان التوصيل">{data.deliveryAddress ?? "—"}</Field>}
             </div>
 
-            <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
+            <div className="lg:col-span-5 min-w-[280px] rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
               {/*
                 تنبيه: `SummaryRow` **يُنسّق بنفسه** (`fmtAr` ⇒ `D(value)`)، فتمريرُ نصٍّ منسَّقٍ سلفاً

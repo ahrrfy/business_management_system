@@ -23,8 +23,7 @@ import { takeLabelQueueSeed } from "@/lib/labelQueueSeed";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -506,26 +505,15 @@ export default function BarcodeLabels() {
     }
     return false;
   }
-  const barcodeInput = useBarcodeInput((code) => {
-    setSearch(code);
-    void tryResolveBarcode(code);
-  });
-  function onSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    barcodeInput.handleKeyDown(e, setSearch);
-    if (e.defaultPrevented) return;
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const data = results.data;
-      // النتائج مطابقة للنص المستقر ⇒ نتيجة وحيدة = إضافة مباشرة بأمان.
-      if (term === search.trim() && data && data.length === 1 && !results.isFetching) {
-        addRow(data[0]);
-        return;
-      }
-      const code = search.trim();
-      if (code) void tryResolveBarcode(code);
-    } else if (e.key === "Escape") {
-      setSearch("");
+  function handleSearchSubmit() {
+    const data = results.data;
+    // النتائج مطابقة للنص المستقر ⇒ نتيجة وحيدة = إضافة مباشرة بأمان.
+    if (term === search.trim() && data && data.length === 1 && !results.isFetching) {
+      addRow(data[0]);
+      return;
     }
+    const code = search.trim();
+    if (code) void tryResolveBarcode(code);
   }
   // الماسح يضرب على document حين لا يكون الحقل مركَّزاً ⇒ نمرّر الكود للحقل ثم نحلّه.
   useBarcodeScanner((raw) => {
@@ -859,17 +847,25 @@ export default function BarcodeLabels() {
         <CardHeader><CardTitle className="text-base">قائمة الطباعة ({totalLabels} ملصق)</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="relative">
-            <Input
+            <UnifiedSearchInput
               ref={searchRef}
               value={search}
-              onChange={(e) => { setSearch(e.target.value); setSearchLimit(SEARCH_PAGE); }}
-              onKeyDown={onSearchKeyDown}
-              placeholder={branchId == null ? "اختر الفرع أولاً…" : "ابحث بالاسم/SKU أو امسح الباركود — Enter يحلّ الباركود حرفياً"}
+              onChange={(val) => {
+                setSearch(val);
+                setSearchLimit(SEARCH_PAGE);
+              }}
+              onScan={(code) => {
+                setSearch(code);
+                void tryResolveBarcode(code);
+              }}
+              onSubmit={handleSearchSubmit}
+              placeholder={branchId == null ? "اختر الفرع أولاً…" : "ابحث بالاسم/SKU أو امسح الباركود… (F2)"}
               disabled={branchId == null}
               autoFocus
-              className={barcodeSearchInputClass}
+              debounceMs={180}
+              barcode={true}
+              size="default"
             />
-            <BarcodeSearchCue />
             {search.trim() && (
               <div
                 className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-72 overflow-auto"

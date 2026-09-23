@@ -6,6 +6,7 @@
 //   await notify.promise(p, { loading: "جارٍ…", success: "تم", error: "فشل" });
 import { toast } from "sonner";
 import { TRPCClientError } from "@trpc/client";
+import { playAudioFeedback } from "@/lib/audioFeedback";
 
 /** يستخرج رسالة عربية مفهومة من أي خطأ (tRPC / Error / نص). */
 export function errMsg(e: unknown): string {
@@ -34,6 +35,7 @@ export const notify = {
     description?: string,
     action?: { label: string; onClick: () => void },
   ) {
+    playAudioFeedback("success");
     return toast.success(message, {
       description,
       duration: action ? 8000 : 3000,
@@ -42,6 +44,7 @@ export const notify = {
   },
   /** خطأ — مدّة أطول (٦ث) ويقبل أي شكل خطأ. */
   err(error: unknown, description?: string) {
+    playAudioFeedback("error");
     return toast.error(errMsg(error), { description, duration: 6000 });
   },
   /**
@@ -50,6 +53,7 @@ export const notify = {
    * notify-err-big في index.css يُكبّر العنوان والوصف والأيقونة معاً.
    */
   errBig(error: unknown, description?: string) {
+    playAudioFeedback("error");
     return toast.error(errMsg(error), {
       description,
       duration: 8000,
@@ -59,10 +63,12 @@ export const notify = {
   },
   /** معلومة محايدة. */
   info(message: string, description?: string) {
+    playAudioFeedback("notification");
     return toast(message, { description, duration: 4000 });
   },
   /** تحذير. */
   warn(message: string, description?: string) {
+    playAudioFeedback("warning");
     return toast.warning(message, { description, duration: 5000 });
   },
   /** يربط دورة حياة وعد (loading → success/error) بتنبيه واحد. */
@@ -70,6 +76,10 @@ export const notify = {
     promise: Promise<T>,
     msgs: { loading: string; success: string | ((data: T) => string); error?: string | ((e: unknown) => string) }
   ) {
+    void promise.then(
+      () => playAudioFeedback("success"),
+      () => playAudioFeedback("error"),
+    );
     return toast.promise(promise, {
       loading: msgs.loading,
       success: msgs.success,

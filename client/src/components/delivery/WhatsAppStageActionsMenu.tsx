@@ -308,7 +308,7 @@ export function WhatsAppStageActionsMenu({
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto" dir="rtl">
+        <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto" dir="rtl">
           <DialogHeader>
             <div className="flex items-center gap-2">
               <div className="rounded-full bg-[var(--brand-whatsapp)]/10 p-2 text-[var(--brand-whatsapp)]">

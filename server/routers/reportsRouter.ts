@@ -685,7 +685,8 @@ export const reportsRouter = router({
           branchId: z.number().int().positive().optional(),
           // رُفع من ١٠٠ (تدقيق التقارير): الكتالوج قد يتجاوز عدد المنتجات المُباعة السقف القديم صامتاً.
           limit: z.number().int().positive().max(2000).default(20),
-          by: z.enum(["revenue", "qty"]).default("revenue"),
+          by: z.enum(["revenue", "qty", "profit", "margin"]).default("revenue"),
+          orderDir: z.enum(["asc", "desc"]).default("desc"),
         })
         .optional(),
     )

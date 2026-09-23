@@ -680,7 +680,7 @@ export default function InvoiceDetail() {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4 max-w-6xl">
       {new URLSearchParams(search).get("print") === "1" && (
         <AutoPrintOnce onPrint={() => void printApprovedA4()} />
       )}
@@ -1112,7 +1112,7 @@ export default function InvoiceDetail() {
 
       {/* حوار الإلغاء (قرار مالك ١٢/٨): جهة صرفٍ إلزاميّة + سبب اختياريّ + تأكيد كتابيٌّ لرقم الفاتورة. */}
       <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
               <FileWarning aria-hidden className="size-5" />

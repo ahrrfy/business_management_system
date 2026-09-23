@@ -6,8 +6,11 @@
  * حقيقية + يُخصم المخزون + قيد دفتر عبر orders.dispatch) ← تُسلَّم. عزل الفرع خادمياً.
  * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Check, ClipboardList, FileText, Loader2, MapPin, Package, Pencil, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
+const EditOnlineOrderDialog = lazy(() =>
+  import("@/components/store/EditOnlineOrderDialog").then((m) => ({ default: m.EditOnlineOrderDialog }))
+);
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -50,7 +53,7 @@ const FILTERS: { value: OnlineOrderStatus | null; label: string }[] = [
   { value: "DELIVERED", label: "سُلّم" },
 ];
 
-function money(v: string | number | null): string {
+function money(v: string | number | null | undefined): string {
   return v == null || v === "" ? "0" : fmtInt(v);
 }
 
@@ -59,7 +62,14 @@ function normalizeOrderStatus(status: string): OnlineOrderStatus {
   return (ONLINE_ORDER_STATUSES as readonly string[]).includes(status) ? (status as OnlineOrderStatus) : "PENDING";
 }
 
-type OrderRow = { id: number; orderNumber: string; total: string; customerName: string | null };
+type OrderRow = {
+  id: number;
+  orderNumber: string;
+  total: string;
+  customerName: string | null;
+  deliveryFree?: boolean;
+  deliveryWaivedAmount?: string;
+};
 type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
 
 // حجم صفحة الطلبات — نفس الافتراضي التاريخي (كان سقفاً صامتاً)، الآن صفحة أولى من ترقيم حقيقي.
@@ -73,6 +83,7 @@ export default function OrderFulfillment() {
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
   const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
+  const [editOrderId, setEditOrderId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   const me = trpc.auth.me.useQuery();
@@ -152,9 +163,31 @@ export default function OrderFulfillment() {
       },
     },
     { id: "itemCount", header: "أصناف", accessorFn: (o) => o.itemCount, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.itemCount },
-    // نصُّ العرض للنسخ، والفرز على القيمة الخامّ: الفرز النصّيّ على «1,234 د.ع» يقرأه أصغر
-    // من «999 د.ع» فيقلب ترتيب مبالغ التحصيل عند الباب.
-    { id: "total", header: "الإجمالي (COD)", accessorFn: (o) => `${money(o.total)} د.ع`, meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.total ?? 0).cmp(D(b.original.total ?? 0)), cell: ({ row }) => <span className="font-bold">{money(row.original.total)} د.ع</span> },
+    {
+      id: "total",
+      header: "الإجمالي (COD)",
+      accessorFn: (o) => `${money(o.total)} د.ع`,
+      meta: { kind: "money" },
+      sortDescFirst: true,
+      sortingFn: (a, b) => D(a.original.total ?? 0).cmp(D(b.original.total ?? 0)),
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <span className="font-bold">{money(o.total)} د.ع</span>
+            {o.deliveryFree && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]"
+                title={`توصيل مجاني — المتجر يتحمل ${money(o.deliveryWaivedAmount)} د.ع`}
+              >
+                <Truck aria-hidden className="size-3" />
+                توصيل مجاني
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
     {
       id: "status",
       header: "الحالة",
@@ -243,7 +276,25 @@ export default function OrderFulfillment() {
                 gate: { roles: ["manager"], module: "store", level: "FULL" },
                 disabled: isBusy || dispatchM.isPending,
                 disabledReason: "هناك عملية جارية على الطلب",
-                onSelect: () => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName }),
+                onSelect: () => setDispatchTarget({
+                  id: o.id,
+                  orderNumber: o.orderNumber,
+                  total: o.total,
+                  customerName: o.customerName,
+                  deliveryFree: o.deliveryFree,
+                  deliveryWaivedAmount: o.deliveryWaivedAmount,
+                }),
+              },
+              {
+                key: "edit",
+                kind: "edit",
+                label: "تعديل الطلب",
+                icon: Pencil,
+                hidden: st !== "PENDING" && st !== "CONFIRMED" && st !== "PROCESSING",
+                gate: { module: "store", level: "FULL" },
+                disabled: isBusy,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => setEditOrderId(o.id),
               },
               {
                 key: "advance",
@@ -508,7 +559,11 @@ export default function OrderFulfillment() {
           order={dispatchTarget}
           pending={dispatchM.isPending}
           onCancel={() => !dispatchM.isPending && setDispatchTarget(null)}
-          onConfirm={(partyId) => dispatchM.mutate({ id: dispatchTarget.id, partyId })}
+          onConfirm={({ partyId, externalTrackingRef }) => dispatchM.mutate({
+            id: dispatchTarget.id,
+            partyId,
+            externalTrackingRef: externalTrackingRef || undefined,
+          })}
         />
       )}
 
@@ -520,6 +575,14 @@ export default function OrderFulfillment() {
           onConfirm={(reason) => setStatusM.mutate({ id: cancelTarget.id, status: "CANCELLED", cancelReason: reason || undefined })}
         />
       )}
+
+      <Suspense fallback={null}>
+        <EditOnlineOrderDialog
+          orderId={editOrderId}
+          open={editOrderId != null}
+          onOpenChange={(open) => !open && setEditOrderId(null)}
+        />
+      </Suspense>
     </div>
   );
 }
@@ -619,13 +682,15 @@ function DispatchModal({
   order: OrderRow;
   pending: boolean;
   onCancel: () => void;
-  onConfirm: (partyId: number) => void;
+  onConfirm: (input: { partyId: number; externalTrackingRef?: string }) => void;
 }) {
   const [partyId, setPartyId] = useState<number | null>(null);
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const partiesQ = trpc.storeAdmin.orders.parties.useQuery();
-  // فقط الجهات المرتبطة بحساب مندوب (userId) — كي يستطيع المندوب تأكيد التسليم والتحصيل من «توصيلاتي».
-  // جهةٌ بلا حساب (شركة خارجية) لا مسار لها لإنهاء الطلب داخل النظام ⇒ يبقى عالقاً (مراجعة عدائية ١٢/٧).
-  const parties = (partiesQ.data ?? []).filter((p) => p.userId != null);
+  // الشركات الخارجية بلا حساب أصبحت تُغلق بكشف الشركة الممسوح؛ لذلك تظهر هنا مع المناديب،
+  // ويُفرض عليها رقم البوليصة أدناه بدل حجبها وإبقاء الطلب بلا مسار إرسال.
+  const parties = partiesQ.data ?? [];
+  const selectedParty = parties.find((p) => p.id === partyId);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -648,15 +713,28 @@ function DispatchModal({
           <Truck aria-hidden className="size-5 text-teal-600" />
           إرسال الطلب <span dir="ltr" className="tracking-wider">{order.orderNumber}</span>
         </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          {/* ١٠/٨ تمرير كامل: order.total (بضاعة+شحن) = ما يُحصّله المندوب عند الباب، لا «قيمة
-              الفاتورة/الذمّة» — الفاتورة وذمّة العميل تُنشآن بقيمة البضاعة فقط، وأجرة التوصيل
-              يقبضها المندوب من الزبون ويحتفظ بها (خارج الفاتورة). لا تُلصِق الرقم بـ«فاتورة». */}
-          يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> عند التسليم (COD) من{" "}
-          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"}: قيمة البضاعة
-          تُنشأ فاتورةً على ذمّته ويورّدها للمكتبة، وأجرة التوصيل يحتفظ بها المندوب. يُخصم المخزون ثم يُسند
-          الطلب للمندوب المُختار.
-        </p>
+        {order.deliveryFree ? (
+          <div className="mb-3 space-y-1 rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] p-3 text-xs leading-relaxed text-foreground">
+            <div className="flex items-center gap-1.5 font-bold text-[var(--sem-pos)]">
+              <Truck aria-hidden className="size-4 shrink-0" />
+              <span>توصيل مجاني — تتحمل المكتبة أجرته ({money(order.deliveryWaivedAmount)} د.ع)</span>
+            </div>
+            <p className="text-muted-foreground">
+              يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> فقط عند التسليم (COD) من{" "}
+              {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"} (قيمة البضاعة كاملةً). لا يدفع الزبون أي أجرة توصيل؛ وتُستحق أجرة التوصيل للمندوب على عاتق المكتبة وتُسوّى دفترياً.
+            </p>
+          </div>
+        ) : (
+          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+            {/* ١٠/٨ تمرير كامل: order.total (بضاعة+شحن) = ما يُحصّله المندوب عند الباب، لا «قيمة
+                الفاتورة/الذمّة» — الفاتورة وذمّة العميل تُنشآن بقيمة البضاعة فقط، وأجرة التوصيل
+                يقبضها المندوب من الزبون ويحتفظ بها (خارج الفاتورة). لا تُلصِق الرقم بـ«فاتورة». */}
+            يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> عند التسليم (COD) من{" "}
+            {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"}: قيمة البضاعة
+            تُنشأ فاتورةً على ذمّته ويورّدها للمكتبة، وأجرة التوصيل يحتفظ بها المندوب. يُخصم المخزون ثم يُسند
+            الطلب للمندوب المُختار.
+          </p>
+        )}
 
         {partiesQ.isLoading ? (
           <div className="py-8 text-center text-muted-foreground">
@@ -664,7 +742,7 @@ function DispatchModal({
           </div>
         ) : parties.length === 0 ? (
           <div className="rounded-lg bg-muted p-4 text-center text-sm text-muted-foreground">
-            لا يوجد مندوبٌ نشطٌ مرتبطٌ بحساب دخول. أنشئ حساب «مندوب توصيل» في المستخدمين، ثم اربطه بجهة توصيل من إدارة التوصيل ليظهر هنا (فيستطيع تأكيد التسليم عبر «توصيلاتي»).
+            لا توجد جهة توصيل نشطة. أضف مندوباً أو شركةً من إدارة التوصيل ثم أعد المحاولة.
           </div>
         ) : (
           <div className="max-h-64 space-y-2 overflow-y-auto">
@@ -680,7 +758,10 @@ function DispatchModal({
                   name="dispatch-party"
                   className="size-4 accent-teal-600"
                   checked={partyId === p.id}
-                  onChange={() => setPartyId(p.id)}
+                  onChange={() => {
+                    setPartyId(p.id);
+                    setExternalTrackingRef("");
+                  }}
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 text-sm font-bold">
@@ -699,6 +780,23 @@ function DispatchModal({
           </div>
         )}
 
+        {selectedParty?.partyType === "COMPANY" && (
+          <div className="mt-3 space-y-1">
+            <label htmlFor="store-dispatch-tracking" className="text-xs font-bold">
+              رقم تتبّع / بوليصة الشركة <span className="text-destructive">*</span>
+            </label>
+            <Input
+              id="store-dispatch-tracking"
+              value={externalTrackingRef}
+              onChange={(event) => setExternalTrackingRef(event.target.value)}
+              placeholder="امسح باركود بوليصة الشركة أو أدخل الرقم"
+              maxLength={100}
+              dir="ltr"
+              className="font-mono"
+            />
+          </div>
+        )}
+
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             onClick={onCancel}
@@ -708,8 +806,11 @@ function DispatchModal({
             إلغاء
           </button>
           <button
-            onClick={() => partyId != null && onConfirm(partyId)}
-            disabled={pending || partyId == null || parties.length === 0}
+            onClick={() => partyId != null && onConfirm({
+              partyId,
+              externalTrackingRef: externalTrackingRef.trim() || undefined,
+            })}
+            disabled={pending || partyId == null || parties.length === 0 || (selectedParty?.partyType === "COMPANY" && !externalTrackingRef.trim())}
             className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
           >
             {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}

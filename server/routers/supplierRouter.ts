@@ -13,6 +13,8 @@ import {
 } from "../services/supplierService";
 import { managerProcedure, protectedProcedure, router, suppliersManagerProcedure, suppliersReadProcedure } from "../trpc";
 import { getSupplierSummary } from "../services/supplierOperationsService";
+import { withTx } from "../services/tx";
+import { autoSettleSupplierAccountTx } from "../services/reconciliation/autoSettlementService";
 
 /**
  * الموردون — شريحة كاملة.
@@ -212,5 +214,18 @@ export const supplierRouter = router({
         oldValue: before ? { name: before.name, currentBalance: before.currentBalance, openingBalance: before.openingBalance } : null,
       });
       return res;
+    }),
+
+  /** تسوية أوامر شراء مورد تلقائياً بنظام FIFO مع أي رصيد دائن أو سداد غير مخصص. */
+  autoSettle: suppliersManagerProcedure
+    .input(z.object({ supplierId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return withTx((tx) => autoSettleSupplierAccountTx(tx, input.supplierId, actor));
     }),
 });

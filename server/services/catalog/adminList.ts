@@ -10,6 +10,7 @@ import { type Actor, withTx } from "../tx";
 import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
 import { loadBundleUnitCosts } from "../bundleService";
 import { loadVariantAvailability, type BundleCapacity } from "./variantAvailability";
+import { assertNoActiveDigitalInventoryBinding } from "../digitalCards/inventoryBindingGuard";
 
 /**
  * صفّ شاشة إدارة المنتجات: حبيبة (متغيّر × وحدة) لكن عبر LEFT JOIN —
@@ -359,6 +360,21 @@ export async function setProductActive(productId: number, isActive: boolean, _ac
   return withTx(async (tx) => {
     const p = (await tx.select().from(products).where(eq(products.id, productId)).for("update").limit(1))[0];
     if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+    if (!isActive && p.isActive !== false) {
+      // نفس ترتيب أقفال حجز السلة الرقمية: product ثم variants بترتيب المعرّف. إن سبقنا
+      // الحجز سيراه الحارس؛ وإن سبقناه نحن فسيرى الحاجز المنتج معطّلاً بعد انتظار القفل.
+      const variants = await tx
+        .select({ id: productVariants.id })
+        .from(productVariants)
+        .where(eq(productVariants.productId, productId))
+        .orderBy(asc(productVariants.id))
+        .for("update");
+      await assertNoActiveDigitalInventoryBinding(
+        tx,
+        variants.map((variant) => Number(variant.id)),
+        "تعطيل المنتج أثناء إصدار سلة رقمية",
+      );
+    }
     await tx.update(products).set({ isActive }).where(eq(products.id, productId));
     return { productId, isActive };
   });

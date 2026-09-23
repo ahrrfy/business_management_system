@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -104,6 +104,76 @@ describe("حواجز سلامة المخزون والتكلفة", () => {
     await cancelProduction(made.productionOrderId, { userId: 1, branchId: 1, role: "admin" });
     expect((await db().select({ c: s.productVariants.costPrice }).from(s.productVariants).where(eq(s.productVariants.id, 2)))[0].c)
       .toBe("10.00");
+  });
+
+  it("إلغاء الإنتاج يعكس قيمة WAVG المرسملة فعلياً دون ضياع سنت القسمة", async () => {
+    const made = await createProduction({
+      branchId: 1,
+      inputs: [{ variantId: 1, baseQuantity: 10 }], // كلفة 100.00
+      outputs: [{ variantId: 2, baseQuantity: 3 }], // 33.33 × 3 = 99.99 داخل WAVG
+    }, { userId: 1, branchId: 1 });
+    expect((await db().select({ c: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 2)))[0].c).toBe("15.38");
+
+    await cancelProduction(made.productionOrderId, { userId: 1, branchId: 1, role: "admin" });
+
+    // طرح allocatedCost=100 كان يعيدها 9.99؛ الصحيح عكس 99.99 التي دخلت WAVG فعلاً.
+    expect((await db().select({ c: s.productVariants.costPrice }).from(s.productVariants)
+      .where(eq(s.productVariants.id, 2)))[0].c).toBe("10.00");
+  });
+
+  it("إلغاء الإنتاج يعيد المدخلات بقيمتها التاريخية ويمزج WAVG اللاحق", async () => {
+    const made = await createProduction({
+      branchId: 1,
+      inputs: [{ variantId: 1, baseQuantity: 10 }],
+      outputs: [{ variantId: 2, baseQuantity: 10 }],
+    }, { userId: 1, branchId: 1 });
+
+    // بعد الاستهلاك: 90 @ 10.00. نمثّل استلاماً لاحقاً 10 @ 30.00 بصورة حالته النهائية:
+    // 100 وحدة بقيمة متوسطة 12.00. الإلغاء يجب أن يعيد 10 @ 10.00 التاريخية، فيصبح
+    // WAVG = (100×12 + 10×10) / 110 = 11.82، لا أن يبقى 12.00.
+    await db().update(s.branchStock).set({ quantity: 100 }).where(and(
+      eq(s.branchStock.variantId, 1),
+      eq(s.branchStock.branchId, 1),
+    ));
+    await db().update(s.productVariants).set({ costPrice: "12.00" }).where(eq(s.productVariants.id, 1));
+
+    await cancelProduction(made.productionOrderId, { userId: 1, branchId: 1, role: "admin" });
+
+    const material = (await db().select({ cost: s.productVariants.costPrice })
+      .from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
+    const stock = (await db().select({ quantity: s.branchStock.quantity })
+      .from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
+    expect(stock.quantity).toBe(110);
+    expect(material.cost).toBe("11.82");
+  });
+
+  it("إلغاء مخرج الإنتاج يرفض السالب حتى لو كان المنتج يُباع بالطلب", async () => {
+    const made = await createProduction({
+      branchId: 1,
+      inputs: [{ variantId: 1, baseQuantity: 5 }],
+      outputs: [{ variantId: 2, baseQuantity: 10 }],
+    }, { userId: 1, branchId: 1 });
+    await db().update(s.products).set({ allowBackorder: true }).where(eq(s.products.id, 2));
+    // الإجمالي العالمي ما زال 20، فيمر فحص فك WAVG؛ لكن فرع الإنتاج لا يحمل إلا 5 من
+    // المخرَج المطلوب سحبه (10). لو احترم الإلغاء allowBackorder لهبط الفرع إلى -5 كذباً.
+    await db().update(s.branchStock).set({ quantity: 5 }).where(and(
+      eq(s.branchStock.variantId, 2),
+      eq(s.branchStock.branchId, 1),
+    ));
+    await db().insert(s.branchStock).values({ variantId: 2, branchId: 2, quantity: 15 });
+
+    await expect(cancelProduction(
+      made.productionOrderId,
+      { userId: 1, branchId: 1, role: "admin" },
+    )).rejects.toThrow(/المخزون غير كافٍ/);
+
+    expect((await db().select({ quantity: s.branchStock.quantity }).from(s.branchStock).where(and(
+      eq(s.branchStock.variantId, 2),
+      eq(s.branchStock.branchId, 1),
+    )))[0].quantity).toBe(5);
+    expect((await db().select({ status: s.productionOrders.status }).from(s.productionOrders)
+      .where(eq(s.productionOrders.id, made.productionOrderId)))[0].status).toBe("CONFIRMED");
   });
 
   it("يرفض اعتماد تسوية إذا تغيّرت WAVG بعد الطلب", async () => {

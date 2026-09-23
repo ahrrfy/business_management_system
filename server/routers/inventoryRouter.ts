@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import type { ProductBarcodeMatch } from "@shared/productScan";
 import { appErrorMessage } from "@shared/errors";
+import { actorSuffix } from "@shared/notificationActorLabel";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { nonNegMoneyString } from "../lib/schemas";
@@ -437,7 +438,7 @@ export const inventoryRouter = router({
           kind: "APPROVAL_REQUIRED",
           family: "APPROVAL",
           title: "تسوية مخزون بانتظار قرار",
-          body: `طلب #${res.requestId} · الفرع ${branchId}`,
+          body: `طلب #${res.requestId} · الفرع ${branchId}${actorSuffix(ctx.user.name)}`,
           route: "/inventory?tab=stocktakes",
           eventKey: `stock-adjustment:${res.requestId}:approval:${user.id}`,
           entityType: "stockAdjustmentRequest",
@@ -464,7 +465,7 @@ export const inventoryRouter = router({
           kind: "APPROVAL_REQUIRED",
           family: "EMPLOYEE",
           title: "تم اعتماد تسوية المخزون",
-          body: `الطلب #${input.id}`,
+          body: `الطلب #${input.id}${actorSuffix(ctx.user.name)}`,
           route: "/inventory",
           eventKey: `stock-adjustment:${input.id}:approved`,
           entityType: "stockAdjustmentRequest",
@@ -490,7 +491,7 @@ export const inventoryRouter = router({
           kind: "APPROVAL_REQUIRED",
           family: "EMPLOYEE",
           title: "تم تحديث طلب تسوية المخزون",
-          body: `الطلب #${input.id}`,
+          body: `الطلب #${input.id}${actorSuffix(ctx.user.name)}`,
           route: "/inventory",
           eventKey: `stock-adjustment:${input.id}:rejected`,
           entityType: "stockAdjustmentRequest",
@@ -551,7 +552,7 @@ export const inventoryRouter = router({
           kind: "APPROVAL_REQUIRED",
           family: "APPROVAL",
           title: "إعادة تقييم تكلفة بانتظار قرار",
-          body: `طلب #${res.requestId} · ${res.oldCost} ← ${res.newCost} · أثر ${res.expectedValueDelta}`,
+          body: `طلب #${res.requestId} · ${res.oldCost} ← ${res.newCost} · أثر ${res.expectedValueDelta}${actorSuffix(ctx.user.name)}`,
           route: "/inventory",
           eventKey: `cost-revaluation:${res.requestId}:approval:${user.id}`,
           entityType: "costRevaluationRequest",

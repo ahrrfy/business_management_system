@@ -4,7 +4,7 @@
  * Ported from `_design-bundle/project/invoice-bulk-picker.jsx#BulkProductPicker`,
  * grouping by category is replaced with a simple flat list (no category endpoint yet).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Package, Search } from "lucide-react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
@@ -16,13 +16,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
-import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
+import type { Currency, InvoiceLine, InvoiceType, PriceSource, PriceTier } from "./types";
 
 export interface BulkPickerProps {
   open: boolean;
@@ -31,6 +31,7 @@ export interface BulkPickerProps {
   invoiceType: InvoiceType;
   branchId: number;
   tier: PriceTier;
+  customerId?: number | null;
   /**
    * Codex #980 (٤/٩/٢٦): عملةُ أمر الشراء وسعرُ تثبيته لتقدير سعر وحدة الصفّ بالدولار
    * (الفرع الدولاريّ يقسم على `agreedRate`). تُمرَّر من `PurchaseNew`/`PurchaseEdit`.
@@ -39,7 +40,7 @@ export interface BulkPickerProps {
   purchaseAgreedRate?: string;
 }
 
-export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: BulkPickerProps) {
+export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier, customerId, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: BulkPickerProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -54,8 +55,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   const [limit, setLimit] = useState(PAGE);
 
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: searchQ.trim(), limit, includeAllServices: isAdvancedSale },
-    { enabled: open && !isPurchase, placeholderData: keepPreviousData }
+    { branchId, tier, query: searchQ.trim(), limit, includeAllServices: isAdvancedSale, customerId },
+    { enabled: open && !isPurchase }
   );
   const purQ = trpc.catalog.forPurchase.useQuery(
     { branchId, query: searchQ.trim(), limit },
@@ -80,6 +81,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     /** «يُباع بالطلب» (0318): يقبله الخادم قبل التوريد ⇒ لا يُوسَم نافداً. */
     allowBackorder: boolean;
     price: string;
+    priceSource?: PriceSource;
     costBase: string;
   };
 
@@ -125,12 +127,20 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       isBundle: r.isBundle === true,
       allowBackorder: r.allowBackorder === true,
       price: r.price ?? "0",
+      priceSource: r.isContractPrice ? "CONTRACT" : "TIER",
       // التكلفة من الخادم للمخوَّل برؤيتها (مدير/أدمن)، وnull لغيره (كاشير) — الحجب في الراوتر.
       costBase: r.costPriceBase ?? "0",
     }));
   }, [isPurchase, posQ.data, purQ.data, purchaseCurrency, purchaseAgreedRate]);
 
+  const salePricingPending = open && !isPurchase && posQ.isFetching;
+  useEffect(() => {
+    // اختيارٌ من سياق عميل/فئة سابق لا يجوز أن يبقى قابلاً للتأكيد بعد التبديل.
+    setSelected(new Set());
+  }, [branchId, tier, customerId, invoiceType]);
+
   const toggle = (id: number) => {
+    if (salePricingPending) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -139,10 +149,13 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     });
   };
 
-  const selectAll = () => setSelected(new Set(rows.map((r) => r.productUnitId)));
+  const selectAll = () => {
+    if (!salePricingPending) setSelected(new Set(rows.map((r) => r.productUnitId)));
+  };
   const clearAll = () => setSelected(new Set());
 
   const handleConfirm = () => {
+    if (salePricingPending) return;
     const lines: InvoiceLine[] = rows
       .filter((r) => selected.has(r.productUnitId))
       .map((r) => ({
@@ -163,6 +176,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         isBundle: r.isBundle,
         allowBackorder: r.allowBackorder,
         price: r.price || "0",
+        referencePrice: r.price || "0",
+        priceSource: r.priceSource,
         costBase: r.costBase || "0",
         discount: "0",
         discountType: "percent",
@@ -175,8 +190,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     onClose();
   };
 
-  // التحميل الأوّليّ فقط (isLoading = لا بيانات بعد) يُظهر شاشة «جارٍ التحميل»؛ أمّا جلب
-  // الدفعات الإضافية (isFetching مع إبقاء البيانات السابقة) فيُظهر مؤشّراً سفلياً ولا يُخفي القائمة.
+  // التحميل الأوّليّ يُظهر شاشة «جارٍ التحميل». أثناء أي جلب تسعير بيع يبقى التأكيد معطّلاً
+  // حتى لا تُثبَّت نتيجة من سياق سابق؛ جانب الشراء وحده يُبقي البيانات السابقة.
   const fetching = (isPurchase ? purQ.isFetching : posQ.isFetching) && open;
   const initialLoading = (isPurchase ? purQ.isLoading : posQ.isLoading) && open;
   // بلغنا الحدّ الحاليّ ⇒ قد توجد نتائج أكثر تُحمَّل بمزيد من التمرير.
@@ -199,7 +214,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         }
       }}
     >
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[85vh] sm:max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b p-5">
           <DialogTitle className="flex items-center gap-2 text-lg font-extrabold">
             <Package aria-hidden className="size-5" /> إضافة متعددة
@@ -210,18 +225,19 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         </DialogHeader>
 
         <div className="flex shrink-0 items-center gap-2 border-b px-5 py-2.5">
-          <div className="relative flex-1">
-            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-              <Search aria-hidden className="size-4" />
-            </span>
-            <Input
-              value={searchQ}
-              onChange={(e) => { setSearchQ(e.target.value); setLimit(PAGE); }}
-              placeholder="فلتر بالاسم أو SKU..."
-              className="h-9 pe-9"
-            />
-          </div>
-          <Button type="button" size="sm" variant="outline" onClick={selectAll}>
+          <UnifiedSearchInput
+            value={searchQ}
+            onChange={(val) => {
+              setSearchQ(val);
+              setLimit(PAGE);
+            }}
+            placeholder="فلتر بالاسم أو SKU أو امسح الباركود..."
+            className="flex-1"
+            size="default"
+            debounceMs={200}
+            barcode={true}
+          />
+          <Button type="button" size="sm" variant="outline" disabled={salePricingPending} onClick={selectAll}>
             تحديد الكل
           </Button>
           <Button type="button" size="sm" variant="outline" onClick={clearAll}>
@@ -244,13 +260,16 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                 <div
                   key={p.productUnitId}
                   onClick={() => toggle(p.productUnitId)}
+                  aria-disabled={salePricingPending}
                   className={cn(
                     "flex cursor-pointer items-center gap-3 rounded-lg border-b px-3 py-2 transition",
+                    salePricingPending && "cursor-not-allowed opacity-60",
                     isSelected ? "bg-primary/10" : "hover:bg-muted/60"
                   )}
                 >
                   <Checkbox
                     checked={isSelected}
+                    disabled={salePricingPending}
                     onCheckedChange={() => toggle(p.productUnitId)}
                     // العلّة (١٤/٧): الصفّ كلّه onClick=toggle والمربّع onCheckedChange=toggle ⇒ النقر
                     // على المربّع نفسه كان يبدّل مرّتين (يبطل نفسه) فلا يُحدَّد شيء. نوقف الانتشار
@@ -325,7 +344,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
             <Button type="button" variant="outline" onClick={onClose}>
               إلغاء
             </Button>
-            <Button type="button" disabled={selected.size === 0} onClick={handleConfirm}>
+            <Button type="button" disabled={selected.size === 0 || salePricingPending} onClick={handleConfirm}>
               <Check aria-hidden className="size-4" /> إضافة {selected.size > 0 ? `(${selected.size})` : ""} للسلة
             </Button>
           </div>

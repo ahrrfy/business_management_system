@@ -343,7 +343,7 @@ export function PurchaseDetailDrawer({
 
                 {/* الأرقام المالية السريعة */}
                 {!costHidden ? (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <div className="rounded-lg border bg-card p-2 text-center">
                       <div className="text-xs text-muted-foreground">الإجمالي</div>
                       <div className="font-bold text-sm tabular-nums">

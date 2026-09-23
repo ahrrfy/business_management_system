@@ -101,10 +101,15 @@ export default function MyDeliveries() {
   async function doConfirm(row: DeliveryRow) {
     // التسليم يحوّل COD المحصّل إلى عهدة الجهة حتى توريده للمتجر.
     if (row.kind === "consignment") {
+      const isFree = row.deliveryFree || row.feeCollection === "SHOP";
+      const feeAmount = row.consignmentDeliveryFee ?? row.deliveryWaivedAmount;
+      const desc = isFree
+        ? `أكّد تسليم الإرسالية ${row.orderNumber} للزبون. (توصيل مجاني: لا تُحصّل أي أجرة توصيل من الزبون، المطلوب فقط قيمة البضاعة ${money(row.codDue)} د.ع — وأجرتك ${Number(feeAmount) > 0 ? `بمبلغ ${money(feeAmount)} د.ع ` : ""}مستحقة لك على المتجر وتُسوّى في حسابك).`
+        : `أكّد تسليم الإرسالية ${row.orderNumber} للزبون وتحصيل مبلغها ${money(row.codDue)} د.ع${Number(row.courierFee) > 0 ? ` (+ أجرتك ${money(row.courierFee)} د.ع تقبضها من الزبون)` : ""}. سيُسجَّل المبلغ في عهدة جهة التوصيل حتى توريده للمتجر.`;
       const ok = await confirm({
         variant: "info",
         title: "تأكيد التسليم",
-        description: `أكّد تسليم الإرسالية ${row.orderNumber} للزبون وتحصيل مبلغها. سيُسجَّل المبلغ في عهدة جهة التوصيل حتى توريده للمتجر.`,
+        description: desc,
         confirmText: "تم التسليم",
       });
       if (!ok) return;
@@ -115,11 +120,14 @@ export default function MyDeliveries() {
     // طلب متجر: تأكيد + تحصيل COD يرفع عهدتك.
     const due = Number(row.codDue);
     const fee = Number(row.courierFee ?? 0);
+    const isOnlineFree = row.deliveryFree === true;
     const ok = await confirm({
       variant: due > 0 ? "warning" : "info",
       title: "تأكيد التسليم والتحصيل",
       description:
-        due > 0
+        isOnlineFree
+          ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً فقط (توصيل مجاني: لا تقبض أي أجرة من الزبون، وأجرتك مستحقة على المتجر).`
+          : due > 0
           ? `أكّد استلام العميل للطلب ${row.orderNumber} وتحصيلك ${money(row.codDue)} د.ع نقداً${fee > 0 ? ` (+ أجرتك ${money(row.courierFee)} د.ع تقبضها من الزبون وتبقى لك)` : ""}. سيُضاف مبلغ التوريد إلى ما بذمّتك حتى تُورّده للمتجر.`
           : `أكّد استلام العميل للطلب ${row.orderNumber} (مدفوع مسبقاً — لا تحصيل).`,
       confirmText: "تم التسليم",
@@ -400,10 +408,18 @@ function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { r
         <div className="shrink-0 text-left">
           <div className="text-[11px] text-muted-foreground">المطلوب تحصيله</div>
           <div className="text-lg font-extrabold tabular-nums text-teal-700 dark:text-teal-400" dir="ltr">{money(row.codDue)} د.ع</div>
-          {/* ١٠/٨ (تمرير كامل): أجرة المندوب تُقبض من الزبون فوق المبلغ وتبقى له — لا تُورَّد. */}
-          {Number(row.courierFee) > 0 && (
+          {/* توصيل مجاني: الزبون لا يدفع أجرة — الأجرة مستحقة للمندوب على المتجر */}
+          {row.deliveryFree || row.feeCollection === "SHOP" ? (
+            <div
+              className="mt-1 inline-flex items-center gap-1 rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]"
+              title="الزبون لا يدفع أجرة توصيل — الأجرة مستحقة لك على المتجر وتُسوّى في حسابك"
+            >
+              <Truck aria-hidden className="size-3 shrink-0" />
+              توصيل مجاني (الأجرة على المتجر: {money(row.consignmentDeliveryFee ?? row.deliveryWaivedAmount)} د.ع)
+            </div>
+          ) : Number(row.courierFee) > 0 ? (
             <div className="text-[11px] font-bold text-muted-foreground" dir="rtl">+ أجرتك: <span dir="ltr" className="tabular-nums">{money(row.courierFee)}</span> (تبقى لك)</div>
-          )}
+          ) : null}
         </div>
       </div>
 

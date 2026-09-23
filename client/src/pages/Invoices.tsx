@@ -345,6 +345,10 @@ export default function Invoices() {
     setPage(0);
   }, [filterInput]);
 
+  useEffect(() => {
+    sel.clear();
+  }, [filterInput, page, sel.clear]);
+
   const rows = trpc.sales.list.useQuery({
     ...filterInput,
     limit: PAGE_SIZE,
@@ -606,20 +610,14 @@ export default function Invoices() {
       {
         accessorKey: "total",
         header: "الإجمالي",
-        cell: (c) => (
-          <span className="tabular-nums" dir="ltr">
-            {fmt(c.getValue() as string)}
-          </span>
-        ),
+        meta: { kind: "money" },
+        cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
       },
       {
         accessorKey: "paidAmount",
         header: "المدفوع",
-        cell: (c) => (
-          <span className="tabular-nums" dir="ltr">
-            {fmt(c.getValue() as string)}
-          </span>
-        ),
+        meta: { kind: "money" },
+        cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
       },
       {
         accessorKey: "paymentMethod",

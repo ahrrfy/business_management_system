@@ -9,6 +9,7 @@ import {
 import { DISPLAY_SCALES, isDisplayScale } from "@/lib/displayScale";
 import { APPLICATION_MODULES } from "@/lib/moduleRegistry";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
+import { resolveWorkspaceProfile } from "@/lib/workspaceProfiles";
 
 describe("سجل وحدات التطبيق", () => {
   it("لا يكرر المعرّفات أو المسارات", () => {
@@ -33,12 +34,106 @@ describe("سجل وحدات التطبيق", () => {
     }
   });
 
-  it("يغذّي القائمة والرئيسية من السجل نفسه", () => {
+  it("يغذّي القائمة والبطاقات من سجل الوحدات، ويُبقي الإجراءات اليومية من ملف العمل", () => {
     const layout = readFileSync("client/src/components/AppLayout.tsx", "utf8");
     const dashboard = readFileSync("client/src/pages/Dashboard.tsx", "utf8");
     expect(layout).toContain("APPLICATION_MODULES as NAV_LINKS");
+    expect(dashboard).toContain("resolveWorkspaceProfile({");
+    expect(dashboard).toContain("profile.primaryNav");
+    expect(dashboard).toContain("href={item.href}");
     expect(dashboard).toContain("APPLICATION_MODULES.filter");
-    expect(dashboard).toContain("withRegisteredGate");
+    expect(dashboard).toContain("canSeeGate(module, role, permissionsOverride)");
+    expect(dashboard).toContain('aria-label="وحدات النظام"');
+    expect(dashboard).toContain("<SystemModulesPanel");
+    expect(dashboard).not.toContain("const CORE_MODULES");
+    expect(dashboard).not.toContain("const ACTIONS");
+    expect(dashboard).toContain("me.isLoading");
+    expect(dashboard).toContain("me.isError || !me.data");
+    expect(dashboard).toContain("<LoadingState");
+    expect(dashboard).toContain("<ErrorState");
+    expect(dashboard).not.toContain("if (!me.data) return null");
+  });
+
+  it("يثبّت محطة الكاشير وبوابات مؤشرات الرئيسية من الملف المحلول", () => {
+    const dashboard = readFileSync("client/src/pages/Dashboard.tsx", "utf8");
+    const cashierHome = readFileSync(
+      "client/src/components/dashboard/CashierHome.tsx",
+      "utf8",
+    );
+    const resolveAt = dashboard.indexOf("const profile = resolveWorkspaceProfile({");
+    const cashierAt = dashboard.indexOf('me.data.role === "cashier" && cashierStation');
+
+    expect(resolveAt).toBeGreaterThan(-1);
+    expect(cashierAt).toBeGreaterThan(resolveAt);
+    expect(dashboard).toContain('profile.defaultAction?.access.kind === "STATION"');
+    expect(dashboard).toContain("station={cashierStation}");
+    expect(dashboard).toContain("defaultAction={profile.defaultAction}");
+    expect(dashboard).toContain("primaryNav={profile.primaryNav}");
+    expect(cashierHome).toContain('const isReception = station === "RECEPTION";');
+    expect(cashierHome).not.toContain('const isReception = can("workorders", "FULL");');
+    expect(cashierHome).toContain("shiftType: station");
+    expect(cashierHome).toContain('station === "RETAIL" ? "/pos" : defaultAction.href');
+    expect(cashierHome).toContain("cashierProfileActions(");
+    expect(cashierHome).toContain("visibleReceptionOperationTabs({");
+    expect(cashierHome).toContain("if (branchId == null)");
+    expect(cashierHome).toContain("لا يوجد فرع مسند لهذا الحساب");
+    expect(cashierHome).toContain("isReception && branchId != null");
+    expect(cashierHome).not.toContain('can("sales")');
+
+    const cashierCases = [
+      {
+        permissionsOverride: { sales: "FULL", pos: "NONE", workorders: "NONE" } as const,
+        station: "RETAIL",
+        href: "/pos?mode=RETAIL",
+      },
+      {
+        permissionsOverride: { sales: "NONE", pos: "FULL", workorders: "NONE" } as const,
+        station: "PRINT_SERVICES",
+        href: "/pos?mode=PRINT_SERVICES",
+      },
+      {
+        permissionsOverride: { sales: "NONE", pos: "NONE", workorders: "FULL" } as const,
+        station: "RECEPTION",
+        href: "/pos?mode=RECEPTION",
+      },
+    ];
+    for (const expected of cashierCases) {
+      const profile = resolveWorkspaceProfile({
+        role: "cashier",
+        permissionsOverride: expected.permissionsOverride,
+      });
+      expect(profile.defaultAction).toMatchObject({
+        href: expected.href,
+        access: { kind: "STATION", station: expected.station },
+      });
+    }
+    const multiCashier = resolveWorkspaceProfile({ role: "cashier" });
+    expect(multiCashier.id).toBe("cashier_multi");
+    expect(multiCashier.defaultAction?.access).toEqual({
+      kind: "STATION",
+      station: "RETAIL",
+    });
+    const stationlessCashier = resolveWorkspaceProfile({
+      role: "cashier",
+      permissionsOverride: { sales: "NONE", pos: "NONE", workorders: "NONE" },
+    });
+    expect(stationlessCashier.stations).toEqual([]);
+    expect(stationlessCashier.defaultAction?.access.kind).not.toBe("STATION");
+
+    expect(dashboard).toContain('hasModuleAccess(role, override, "treasury", "READ")');
+    expect(dashboard).toContain("enabled: canViewTreasury && branchScope !== undefined");
+    expect(dashboard).toContain('hasModuleAccess(role, override, "inventory", "READ")');
+    expect(dashboard).toContain('profileActionHref(primaryNav, "inventory")');
+    expect(dashboard).toContain('hasModuleAccess(role, override, "workorders", "READ")');
+    expect(dashboard).toContain("const canViewBrief = canViewWorkOrders || canViewReceivableBrief;");
+    expect(dashboard).toContain("enabled: canViewBrief && branchScope !== undefined");
+    expect(dashboard).toContain("if (!canViewBrief) return null;");
+    expect(dashboard).toContain("canViewWorkOrders ? brief.overdueWorkOrders : 0");
+    expect(dashboard).toContain('profileActionHref(primaryNav, "my_tasks")');
+    expect(dashboard).toContain('canSeeTasks && (role === "admin" || branchScope !== undefined)');
+    expect(dashboard).not.toContain('href: "/inventory"');
+    expect(dashboard).not.toContain('href={`/work-orders?branch=${branchScope}`}');
+    expect(dashboard).not.toContain('href="/tasks?tab=mine"');
   });
 });
 
@@ -132,7 +227,34 @@ describe("انحدارات واجهة نقطة البيع", () => {
     expect(retail).toContain('placement="inline"');
     expect(print).toContain('placement="inline"');
     expect(retail).not.toContain('<OfflineSyncChip userRole={me.data?.role} />');
-    expect(print).not.toContain('<OfflineSyncChip userRole={me.data?.role} />');
     expect(offlineChip).toContain('placement = "floating"');
+  });
+});
+
+describe("عقد السلامة البصرية ومنع الاقتطاع المالي (Anti-Truncation Contract)", () => {
+  it("يضمن أن CopyInline لا يقتطع النص أو الأرقام افتراضياً", () => {
+    const copyBtn = readFileSync("client/src/components/CopyButton.tsx", "utf8");
+    expect(copyBtn).toContain("truncate = false");
+    expect(copyBtn).toContain("shrink-0 whitespace-nowrap");
+  });
+
+  it("يضمن أن SummaryRow و Field في تفاصيل الفواتير محميان من الانكماش والاقتطاع", () => {
+    const invoiceComponents = readFileSync("client/src/components/invoice/InvoiceDetailComponents.tsx", "utf8");
+    expect(invoiceComponents).toContain("shrink-0 whitespace-nowrap");
+    expect(invoiceComponents).toContain("truncate = false");
+  });
+
+  it("يضمن أن شبكة بطاقة الفاتورة تمنح لوحة الملخص المالي 5 أعمدة من 12 بعرض مريح", () => {
+    const invoiceHeader = readFileSync("client/src/components/invoice/InvoiceHeaderCard.tsx", "utf8");
+    expect(invoiceHeader).toContain("lg:grid-cols-12");
+    expect(invoiceHeader).toContain("lg:col-span-5 min-w-[280px]");
+    expect(invoiceHeader).toContain("lg:col-span-7");
+  });
+
+  it("يضمن أن صفحة الفاتورة وعرض السعر تتسعان ضمن max-w-6xl", () => {
+    const invoicePage = readFileSync("client/src/pages/InvoiceDetail.tsx", "utf8");
+    const quotationPage = readFileSync("client/src/pages/QuotationDetail.tsx", "utf8");
+    expect(invoicePage).toContain("max-w-6xl");
+    expect(quotationPage).toContain("max-w-6xl");
   });
 });

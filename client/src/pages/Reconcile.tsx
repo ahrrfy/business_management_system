@@ -158,6 +158,8 @@ export default function Reconcile() {
       // Tier-3 #5 (٢٧/٨): محور أيتام journalLines — نفس السبب: لو نُسي هنا لصار WARN
       // الليلة صامتاً عن المدير.
       (data.journalOrphans?.length ?? 0) +
+      // أذونات الاستلام غير المفوترة (GRNI): بضاعة مستلمة مخزنياً دون فاتورة مورد مرحلة في AP
+      (data.unbilledGoodsReceipts?.length ?? 0) +
       doubleEntryIssues
     : 0;
   const loading = me.isLoading || (isAdmin && recon.isLoading);
@@ -542,6 +544,20 @@ export default function Reconcile() {
             desc="أسطرٌ في journalLines بلا accountId — خرقُ عقد الكاتب بعد أن أصبح الحقل يُملأ تلقائياً من الرأس."
             idLabel="رقم السطر"
             rows={data.journalOrphans ?? []}
+          />
+
+          {/*
+            أذونات استلام مخزني غير مفوترة مقابل وسيط GRNI (دليل التحقيق: docs/grni-three-way-matching-playbook.md).
+            الحالة الطبيعية «صفر»: كل إذن استلام NATIVE POSTED يجب أن يقابله فاتورة مورد مرحلة ومطابقة في AP.
+          */}
+          <DriftSection
+            title="أذونات استلام غير مفوترة (GRNI)"
+            desc="أذونات استلام مخزني مرحّلة (POSTED) لم تُربط بفاتورة مورد مرحّلة ومطابقة — وسيط GRNI معلّق بلا ترحيل AP."
+            idLabel="رقم إذن الاستلام"
+            money
+            rows={data.unbilledGoodsReceipts ?? []}
+            link={(id) => `/purchases?search=${id}`}
+            linkLabel="أوامر الشراء"
           />
         </>
       )}

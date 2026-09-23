@@ -27,7 +27,7 @@
  */
 import * as React from "react";
 
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { SaveBar } from "./SaveBar";
@@ -104,6 +104,9 @@ export function RecordForm({
       try {
         const result = await handler();
         next = deriveSaveOutcome({ result, savedMessage });
+        if (next.status === "SAVED") {
+          bypassUnsavedGuard();
+        }
       } catch (error) {
         next = deriveSaveOutcome({ error });
       }

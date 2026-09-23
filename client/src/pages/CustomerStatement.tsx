@@ -21,13 +21,14 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { Search, X as XIcon } from "lucide-react";
+import { Search, X as XIcon, CheckCircle2, AlertCircle, RefreshCw, Layers } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
 import { paymentMethodCompact, isUnifiedPaymentMethod } from "@shared/terms";
 import { notify } from "@/lib/notify";
+import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 
@@ -74,6 +75,7 @@ function stmtMoneyCol<T>(
   get: (r: T) => string | number,
   display?: (r: T) => string,
   cls?: string,
+  onClick?: (r: T) => void,
 ): ColumnDef<T, unknown> {
   return {
     id,
@@ -82,7 +84,21 @@ function stmtMoneyCol<T>(
     meta: { kind: "money" },
     sortDescFirst: true,
     sortingFn: (a, b) => D(get(a.original)).cmp(D(get(b.original))),
-    cell: ({ row }) => <span className={cls}>{display ? display(row.original) : fmt(get(row.original))}</span>,
+    cell: ({ row }) => {
+      const val = display ? display(row.original) : fmt(get(row.original));
+      if (onClick) {
+        return (
+          <button
+            type="button"
+            onClick={() => onClick(row.original)}
+            className={`${cls ?? ""} hover:underline cursor-pointer text-end block w-full`}
+          >
+            {val}
+          </button>
+        );
+      }
+      return <span className={cls}>{val}</span>;
+    },
   };
 }
 
@@ -130,142 +146,186 @@ const isDepositDue = (i: StmtInvoiceRow) =>
   D(i.paidAmount).gt(0) &&
   D(invoiceRemaining(i)).gt(0);
 
-const stmtInvoiceColumns: ColumnDef<StmtInvoiceRow, unknown>[] = [
-  {
-    id: "invoiceNumber",
-    header: "الفاتورة",
-    accessorFn: (i) => i.invoiceNumber,
-    meta: { kind: "code" },
-    cell: ({ row }) => <CopyInline value={row.original.invoiceNumber} />,
-  },
-  {
-    id: "invoiceDate",
-    header: "التاريخ",
-    accessorFn: (i) => fmtDate(i.invoiceDate),
-    meta: { kind: "date" },
-    cell: ({ row }) => fmtDate(row.original.invoiceDate),
-  },
-  {
-    id: "dueDate",
-    header: "الاستحقاق",
-    accessorFn: (i) => (i.dueDate ? String(i.dueDate).slice(0, 10) : "—"),
-    meta: { kind: "date" },
-    cell: ({ row }) => (row.original.dueDate ? String(row.original.dueDate).slice(0, 10) : "—"),
-  },
-  {
-    id: "sourceType",
-    header: "المصدر",
-    accessorFn: (i) => sourceTypeLabel(i.sourceType),
-    cell: ({ row }) => <span className="text-xs">{sourceTypeLabel(row.original.sourceType)}</span>,
-  },
-  stmtMoneyCol<StmtInvoiceRow>("total", "الإجمالي", (i) => i.total),
-  stmtMoneyCol<StmtInvoiceRow>("paidAmount", "المدفوع", (i) => i.paidAmount),
-  stmtMoneyCol<StmtInvoiceRow>(
-    "returnedTotal",
-    "مُرتجَع",
-    (i) => i.returnedTotal,
-    (i) => (D(i.returnedTotal).isZero() ? "—" : fmt(D(i.returnedTotal).toFixed(2))),
-  ),
-  stmtMoneyCol<StmtInvoiceRow>("remaining", "المتبقّي", invoiceRemaining, undefined, "font-semibold"),
-  {
-    id: "status",
-    header: "الحالة",
-    // القاموس الموحّد `invoiceStatusLabel` — لا تسميةً محلّية (shared/invoiceStatus).
-    accessorFn: (i) => invoiceStatusLabel(i.status),
-    meta: { kind: "status", wrap: true },
-    cell: ({ row }) => (
-      <>
-        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
-          {invoiceStatusLabel(row.original.status)}
-        </span>
-        {isDepositDue(row.original) && (
-          <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>
-        )}
-      </>
-    ),
-  },
-  {
-    id: "createdBy",
-    header: "المنفذ",
-    accessorFn: (i) => i.createdByName ?? (i.createdBy ? "مستخدم #" + i.createdBy : "غير موثق"),
-    meta: { kind: "actor" },
-    cell: ({ row }) => (
-      <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? "مستخدم #" + row.original.createdBy : "غير موثق")}</span>
-    ),
-  },
-  {
-    id: "open",
-    header: "فتح",
-    meta: { kind: "actions" },
-    enableSorting: false,
-    cell: ({ row }) => (
-      <Link href={`/invoices/${row.original.id}`}>
-        <Button variant="outline" size="sm">فتح</Button>
-      </Link>
-    ),
-  },
-];
-
-const stmtPaymentColumns: ColumnDef<StmtPaymentRow, unknown>[] = [
-  {
-    id: "createdAt",
-    header: "التاريخ",
-    accessorFn: (p) => fmtDateTime(p.createdAt),
-    meta: { kind: "datetime" },
-    cell: ({ row }) => fmtDateTime(row.original.createdAt),
-  },
-  {
-    id: "invoice",
-    header: "الفاتورة",
-    accessorFn: (p) => (p.isStandalone ? (p.voucherNumber ?? "سند مستقل") : String(p.invoiceId ?? "")),
-    meta: { kind: "code" },
-    cell: ({ row }) =>
-      row.original.isStandalone ? (
-        // سند مستقل (بلا فاتورة): كان غائباً عن الكشف فيبدو الرصيد منحرفاً بلا تفسير.
-        <span className="inline-flex items-center gap-1" title={row.original.description ?? undefined}>
-          <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">سند مستقل</span>
-          {row.original.voucherNumber && <CopyInline value={row.original.voucherNumber} />}
-        </span>
-      ) : (
-        <CopyInline value={row.original.invoiceId} />
+function getStmtInvoiceColumns(onDrilldown: (target: DrilldownTarget) => void): ColumnDef<StmtInvoiceRow, unknown>[] {
+  return [
+    {
+      id: "invoiceNumber",
+      header: "الفاتورة",
+      accessorFn: (i) => i.invoiceNumber,
+      meta: { kind: "code" },
+      cell: ({ row }) => (
+        <button
+          type="button"
+          onClick={() => onDrilldown({ type: "INVOICE", invoiceId: row.original.id })}
+          className="font-mono text-primary underline decoration-primary/40 hover:decoration-primary font-bold text-xs"
+          title="انقر لعرض تفاصيل وبنود الفاتورة"
+        >
+          {row.original.invoiceNumber}
+        </button>
       ),
-  },
-  {
-    id: "direction",
-    header: "الاتجاه",
-    accessorFn: (p) => (p.direction === "IN" ? "وارد" : "صادر/استرداد"),
-    meta: { kind: "status" },
-    cell: ({ row }) => (
-      <span className={`inline-block rounded px-2 py-0.5 text-xs ${row.original.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
-        {row.original.direction === "IN" ? "وارد" : "صادر/استرداد"}
-      </span>
+    },
+    {
+      id: "invoiceDate",
+      header: "التاريخ",
+      accessorFn: (i) => fmtDate(i.invoiceDate),
+      meta: { kind: "date" },
+      cell: ({ row }) => fmtDate(row.original.invoiceDate),
+    },
+    {
+      id: "dueDate",
+      header: "الاستحقاق",
+      accessorFn: (i) => (i.dueDate ? String(i.dueDate).slice(0, 10) : "—"),
+      meta: { kind: "date" },
+      cell: ({ row }) => (row.original.dueDate ? String(row.original.dueDate).slice(0, 10) : "—"),
+    },
+    {
+      id: "sourceType",
+      header: "المصدر",
+      accessorFn: (i) => sourceTypeLabel(i.sourceType),
+      cell: ({ row }) => <span className="text-xs">{sourceTypeLabel(row.original.sourceType)}</span>,
+    },
+    stmtMoneyCol<StmtInvoiceRow>(
+      "total",
+      "الإجمالي (مدين)",
+      (i) => i.total,
+      undefined,
+      "font-semibold",
+      (i) => onDrilldown({ type: "INVOICE", invoiceId: i.id }),
     ),
-  },
-  {
-    id: "paymentMethod",
-    header: "طريقة الدفع",
-    accessorFn: (p) => statementMethodLabel(p.paymentMethod),
-    cell: ({ row }) => <span className="text-xs">{statementMethodLabel(row.original.paymentMethod)}</span>,
-  },
-  stmtMoneyCol<StmtPaymentRow>("amount", "المبلغ", (p) => p.amount),
-  {
-    // حالة السند (receipts.status): COMPLETED/REVERSED — ليست حالة فاتورة فلا تصلح invoiceStatusLabel.
-    id: "status",
-    header: "الحالة",
-    accessorFn: (p) => RECEIPT_STATUS_LABEL[p.status] ?? p.status,
-    meta: { kind: "status" },
-    cell: ({ row }) => <span className="text-xs">{RECEIPT_STATUS_LABEL[row.original.status] ?? row.original.status}</span>,
-  },
-  {
-    id: "createdBy",
-    header: "المنفذ",
-    accessorFn: (p) => p.createdByName ?? (p.createdBy ? "مستخدم #" + p.createdBy : "غير موثق"),
-    meta: { kind: "actor" },
-    cell: ({ row }) => (
-      <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? "مستخدم #" + row.original.createdBy : "غير موثق")}</span>
+    stmtMoneyCol<StmtInvoiceRow>("paidAmount", "المدفوع", (i) => i.paidAmount),
+    stmtMoneyCol<StmtInvoiceRow>(
+      "returnedTotal",
+      "مُرتجَع",
+      (i) => i.returnedTotal,
+      (i) => (D(i.returnedTotal).isZero() ? "—" : fmt(D(i.returnedTotal).toFixed(2))),
     ),
-  },
-];
+    stmtMoneyCol<StmtInvoiceRow>("remaining", "المتبقّي", invoiceRemaining, undefined, "font-semibold"),
+    {
+      id: "status",
+      header: "الحالة",
+      // القاموس الموحّد `invoiceStatusLabel` — لا تسميةً محلّية (shared/invoiceStatus).
+      accessorFn: (i) => invoiceStatusLabel(i.status),
+      meta: { kind: "status", wrap: true },
+      cell: ({ row }) => (
+        <>
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
+            {invoiceStatusLabel(row.original.status)}
+          </span>
+          {isDepositDue(row.original) && (
+            <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>
+          )}
+        </>
+      ),
+    },
+    {
+      id: "createdBy",
+      header: "المنفذ",
+      accessorFn: (i) => i.createdByName ?? (i.createdBy ? "مستخدم #" + i.createdBy : "غير موثق"),
+      meta: { kind: "actor" },
+      cell: ({ row }) => (
+        <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? "مستخدم #" + row.original.createdBy : "غير موثق")}</span>
+      ),
+    },
+    {
+      id: "open",
+      header: "فتح",
+      meta: { kind: "actions" },
+      enableSorting: false,
+      cell: ({ row }) => (
+        <Link href={`/invoices/${row.original.id}`}>
+          <Button variant="outline" size="sm">فتح</Button>
+        </Link>
+      ),
+    },
+  ];
+}
+
+function getStmtPaymentColumns(onDrilldown: (target: DrilldownTarget) => void): ColumnDef<StmtPaymentRow, unknown>[] {
+  return [
+    {
+      id: "createdAt",
+      header: "التاريخ",
+      accessorFn: (p) => fmtDateTime(p.createdAt),
+      meta: { kind: "datetime" },
+      cell: ({ row }) => fmtDateTime(row.original.createdAt),
+    },
+    {
+      id: "invoice",
+      header: "المرجع / السند",
+      accessorFn: (p) => (p.isStandalone ? (p.voucherNumber ?? "سند مستقل") : String(p.invoiceId ?? "")),
+      meta: { kind: "code" },
+      cell: ({ row }) => {
+        const p = row.original;
+        if (p.isStandalone) {
+          return (
+            <button
+              type="button"
+              onClick={() => onDrilldown({ type: "VOUCHER", receiptId: p.id })}
+              className="inline-flex items-center gap-1 font-mono text-primary underline hover:decoration-primary text-xs"
+              title="انقر لعرض تفاصيل السند"
+            >
+              <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">سند مستقل</span>
+              {p.voucherNumber && <span>{p.voucherNumber}</span>}
+            </button>
+          );
+        }
+        return (
+          <button
+            type="button"
+            onClick={() => {
+              if (p.invoiceId) onDrilldown({ type: "INVOICE", invoiceId: p.invoiceId });
+              else onDrilldown({ type: "VOUCHER", receiptId: p.id });
+            }}
+            className="font-mono text-primary underline text-xs"
+          >
+            {p.invoiceId ? `#${p.invoiceId}` : `#${p.id}`}
+          </button>
+        );
+      },
+    },
+    {
+      id: "direction",
+      header: "الاتجاه",
+      accessorFn: (p) => (p.direction === "IN" ? "وارد" : "صادر/استرداد"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className={`inline-block rounded px-2 py-0.5 text-xs ${row.original.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
+          {row.original.direction === "IN" ? "وارد" : "صادر/استرداد"}
+        </span>
+      ),
+    },
+    {
+      id: "paymentMethod",
+      header: "طريقة الدفع",
+      accessorFn: (p) => statementMethodLabel(p.paymentMethod),
+      cell: ({ row }) => <span className="text-xs">{statementMethodLabel(row.original.paymentMethod)}</span>,
+    },
+    stmtMoneyCol<StmtPaymentRow>(
+      "amount",
+      "المبلغ (دائن)",
+      (p) => p.amount,
+      undefined,
+      "font-semibold text-money-positive",
+      (p) => onDrilldown({ type: "VOUCHER", receiptId: p.id }),
+    ),
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (p) => RECEIPT_STATUS_LABEL[p.status] ?? p.status,
+      meta: { kind: "status" },
+      cell: ({ row }) => <span className="text-xs">{RECEIPT_STATUS_LABEL[row.original.status] ?? row.original.status}</span>,
+    },
+    {
+      id: "createdBy",
+      header: "المنفذ",
+      accessorFn: (p) => p.createdByName ?? (p.createdBy ? "مستخدم #" + p.createdBy : "غير موثق"),
+      meta: { kind: "actor" },
+      cell: ({ row }) => (
+        <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? "مستخدم #" + row.original.createdBy : "غير موثق")}</span>
+      ),
+    },
+  ];
+}
 
 export default function CustomerStatement() {
   // الـURL مصدر الحقيقة لهوية العميل ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
@@ -305,7 +365,46 @@ export default function CustomerStatement() {
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!customerId }
   );
+  const utils = trpc.useUtils();
   const printAudit = usePrintAudit();
+  const [drilldownTarget, setDrilldownTarget] = useState<DrilldownTarget | null>(null);
+
+  const autoSettleM = trpc.customers.autoSettle.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        "تمت تسوية الحساب بنجاح",
+        `سُوّيت ${res.settledInvoicesCount} فاتورة مفتوحة بمبلغ ${fmt(res.totalSettledAmount)} د.ع.`,
+      );
+      void utils.reports.customerStatement.invalidate();
+      void utils.reports.arAging.invalidate();
+    },
+    onError: (err) => notify.err(err.message),
+  });
+
+  const stmtInvoiceColumns = useMemo(
+    () => getStmtInvoiceColumns((target) => setDrilldownTarget(target)),
+    [],
+  );
+  const stmtPaymentColumns = useMemo(
+    () => getStmtPaymentColumns((target) => setDrilldownTarget(target)),
+    [],
+  );
+
+  const openInvoicesCount = useMemo(() => {
+    return (stmt.data?.invoices ?? []).filter((i) => {
+      const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
+      const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
+      return active && remaining.gt(0);
+    }).length;
+  }, [stmt.data?.invoices]);
+
+  const hasUnsettledMismatch = useMemo(() => {
+    if (!stmt.data) return false;
+    const bal = D(stmt.data.summary.currentBalance);
+    const unpaid = D(stmt.data.summary.unpaid);
+    return openInvoicesCount > 0 && (bal.lte(0) || unpaid.gt(bal));
+  }, [stmt.data, openInvoicesCount]);
+
   const shownInvoices = useMemo(() => (stmt.data?.invoices ?? []).filter((i) => {
     const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
     const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
@@ -573,6 +672,34 @@ export default function CustomerStatement() {
             onPdf={printStatement}
           />
 
+          {hasUnsettledMismatch && (
+            <Card className="border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]/40 shadow-sm">
+              <CardContent className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 text-[var(--sem-warn)] mt-0.5 shrink-0" />
+                  <div className="space-y-1">
+                    <div className="font-semibold text-sm text-[var(--sem-warn)]">
+                      تنبيه مطابقة الذمم: يوجد رصيد مسدد/غير مخصص وفواتير مفتوحة
+                    </div>
+                    <div className="text-xs text-muted-foreground leading-relaxed">
+                      رصيد العميل الحالي ({fmt(stmt.data.summary.currentBalance)} د.ع) أقل من مجموع الفواتير المتبقية غير المسواة ({fmt(stmt.data.summary.unpaid)} د.ع).
+                      يمكنك إجراء تسوية تلقائية بنظام (FIFO) لربط الدفعات بالفواتير وتصفية أعمار الذمم تلقائياً.
+                    </div>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  disabled={autoSettleM.isPending}
+                  onClick={() => autoSettleM.mutate({ customerId })}
+                >
+                  <RefreshCw className={`h-4 w-4 ${autoSettleM.isPending ? "animate-spin" : ""}`} />
+                  تسوية الفواتير تلقائياً (FIFO)
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardContent className="p-0">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 p-3">
@@ -676,6 +803,12 @@ export default function CustomerStatement() {
           )}
         </>
       )}
+
+      <AccountLedgerDrilldownDialog
+        target={drilldownTarget}
+        open={!!drilldownTarget}
+        onOpenChange={(open) => !open && setDrilldownTarget(null)}
+      />
     </div>
   );
 }

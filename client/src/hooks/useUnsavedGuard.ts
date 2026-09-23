@@ -60,6 +60,22 @@ let originalReplaceState: History["replaceState"] | null = null;
  */
 let bypassPopstate = false;
 
+/**
+ * ⭐ علَم يُستهلَك مرّة واحدة لتجاوز حارس التعديلات غير المحفوظة في التنقّل البرمجيّ القادم فوراً.
+ * يُستدعى بعد نجاح حفظ النموذج (onSuccess) للسماح لـnavigate(...) بالانتقال النظيف بلا اعتراض كاذب.
+ */
+let bypassNextHistoryPush = false;
+
+/**
+ * يسمح لعملية التنقل القادمة فوراً (pushState/replaceState) بالمرور دون اعتراض من حارس التعديلات غير المحفوظة.
+ * يُستعمل حصراً عند إتمام حفظ المعاملة أو عند التأكيد المسبق الصريح للمغادرة.
+ */
+export function bypassUnsavedGuard(): void {
+  bypassNextHistoryPush = true;
+  dirty.clear();
+  uninstall();
+}
+
 function currentPath(): string {
   if (typeof window === "undefined") return "";
   return (
@@ -143,6 +159,7 @@ export async function resolveNavigationAfterPrompt(
 ): Promise<string | null> {
   const ok = await promptLeaveUnsaved();
   if (!ok) return null;
+  bypassUnsavedGuard();
   // سباقٌ إضافيّ: النموذج قد يعود dirty=false أثناء الحوار — نسمح بالانتقال بلا سؤال.
   return intent.toPath;
 }
@@ -224,6 +241,13 @@ function makeHistoryInterceptor(original: HistoryStateFn): HistoryStateFn {
     title: string,
     url?: string | URL | null,
   ): void {
+    if (bypassNextHistoryPush) {
+      bypassNextHistoryPush = false;
+      original.call(this, state, title, url);
+      const target = targetPathFromHistoryUrl(url);
+      if (target !== null) lastPath = target;
+      return;
+    }
     if (!anyDirty()) {
       original.call(this, state, title, url);
       return;
@@ -236,6 +260,7 @@ function makeHistoryInterceptor(original: HistoryStateFn): HistoryStateFn {
     }
     void promptLeaveUnsaved().then((ok) => {
       if (!ok) return;
+      bypassUnsavedGuard();
       // ⭐ المرجع الأصليّ ذاته (المحفوظ قبل الرَصع) بنفس الوسائط.
       original.call(window.history, state, title, url);
       lastPath = target;
@@ -343,6 +368,7 @@ function uninstall(): void {
   originalPushState = null;
   originalReplaceState = null;
   bypassPopstate = false;
+  bypassNextHistoryPush = false;
   document.removeEventListener("click", handleClickCapture, true);
   window.removeEventListener("popstate", handlePopState);
   window.removeEventListener("beforeunload", handleBeforeUnload);
@@ -408,6 +434,7 @@ export const __TEST_ONLY__ = {
     originalPushState = null;
     originalReplaceState = null;
     bypassPopstate = false;
+    bypassNextHistoryPush = false;
   },
   anyDirty,
   isInstalled: () => installed,

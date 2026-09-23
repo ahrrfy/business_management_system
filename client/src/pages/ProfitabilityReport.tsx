@@ -3,11 +3,16 @@
 // يكشف تآكل الهامش (بيع عالٍ بهامش منخفض) عبر شارة تحذير على الصفوف منخفضة الهامش.
 // يُركّب endpoints موجودة (topProducts/profitByCategory/salesByDimension المُرقّى). عرض + Excel + طباعة A4.
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, AlertCircle, ExternalLink } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
-import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
+import {
+  PeriodFilter,
+  DEFAULT_PERIOD,
+  type PeriodValue,
+} from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -16,7 +21,20 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtAr, formatIqd, fmtInt, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 
-type Dim = "product" | "category" | "customer" | "branch" | "cashier" | "paymentMethod";
+type Dim =
+  | "product"
+  | "category"
+  | "customer"
+  | "branch"
+  | "cashier"
+  | "paymentMethod";
+
+type ProductSortOption =
+  | "revenue_desc"
+  | "profit_desc"
+  | "loss_asc"
+  | "margin_asc"
+  | "qty_desc";
 
 const DIM_LABEL: Record<Dim, string> = {
   product: "المنتج",
@@ -31,6 +49,7 @@ const selectCls =
 
 /** صفّ موحّد بعد التطبيع من أي مصدر. */
 interface UniRow {
+  productId?: number;
   label: string;
   sub: string; // عمود سياق (كمية/عدد فواتير/أصناف)
   revenue: string;
@@ -48,23 +67,50 @@ const PRODUCT_LIMIT = 1500;
 
 export default function ProfitabilityReport() {
   const [dim, setDim] = useState<Dim>("product");
+  const [productSort, setProductSort] =
+    useState<ProductSortOption>("revenue_desc");
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
   const branchArg = branchId ? Number(branchId) : undefined;
   const range = { from: period.from, to: period.to, branchId: branchArg };
 
+  const { by, orderDir } = useMemo(() => {
+    switch (productSort) {
+      case "profit_desc":
+        return { by: "profit" as const, orderDir: "desc" as const };
+      case "loss_asc":
+        return { by: "profit" as const, orderDir: "asc" as const };
+      case "margin_asc":
+        return { by: "margin" as const, orderDir: "asc" as const };
+      case "qty_desc":
+        return { by: "qty" as const, orderDir: "desc" as const };
+      case "revenue_desc":
+      default:
+        return { by: "revenue" as const, orderDir: "desc" as const };
+    }
+  }, [productSort]);
+
   const branches = trpc.branches.list.useQuery();
 
   // كل مصدر يُفعَّل فقط حين يُختار بُعده (enabled) ⇒ استدعاء واحد فعّال.
   const products = trpc.reports.topProducts.useQuery(
-    { ...range, by: "revenue", limit: PRODUCT_LIMIT },
+    { ...range, by, orderDir, limit: PRODUCT_LIMIT },
     { enabled: dim === "product", staleTime: 60_000 },
   );
   // اقتطاع صامت سابقاً: النتائج تساوي الحدّ المطلوب بالضبط ⇒ قد تكون هناك منتجات أخرى لم تظهر.
-  const productsTruncated = dim === "product" && (products.data?.length ?? 0) === PRODUCT_LIMIT;
-  const categories = trpc.reports.profitByCategory.useQuery(range, { enabled: dim === "category", staleTime: 60_000 });
+  const productsTruncated =
+    dim === "product" && (products.data?.length ?? 0) === PRODUCT_LIMIT;
+  const categories = trpc.reports.profitByCategory.useQuery(range, {
+    enabled: dim === "category",
+    staleTime: 60_000,
+  });
   const byDim = trpc.reports.salesByDimension.useQuery(
-    { from: period.from, to: period.to, branchId: branchArg, dimension: (dim === "product" || dim === "category" ? "customer" : dim) },
+    {
+      from: period.from,
+      to: period.to,
+      branchId: branchArg,
+      dimension: dim === "product" || dim === "category" ? "customer" : dim,
+    },
     { enabled: dim !== "product" && dim !== "category", staleTime: 60_000 },
   );
 
@@ -91,91 +137,225 @@ export default function ProfitabilityReport() {
   // ⚠️ `accessorFn` يُرجع النصّ المعروض (للنسخ) ⇒ كل عمودٍ رقميّ يلزمه `sortingFn` صريحٌ
   // بـDecimal: الفرز الافتراضيّ نصّيّ فيقرأ «1,234» أصغر من «999» ويقلب ترتيب الربحية
   // (نفس علاج `moneyCol` في ARAging و`stmtMoneyCol` في CustomerStatement).
-  const profitColumns = useMemo<ColumnDef<UniRow, unknown>[]>(() => [
-    {
-      id: "label",
-      header: DIM_LABEL[dim],
-      accessorFn: (r) => r.label,
-      meta: { width: "wide", wrap: true },
-      cell: ({ row }) => {
-        const r = row.original;
-        const low = Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN;
-        return (
-          <span className="flex items-center gap-1.5 font-medium">
-            {r.label}
-            {low && (
-              <span className="inline-flex items-center gap-0.5 rounded-full badge-stock-low px-1.5 py-0.5 text-[10px]" title="هامش ضعيف — تآكل ربح">
-                <AlertTriangle className="size-3" aria-hidden /> هامش ضعيف
-              </span>
-            )}
+  const profitColumns = useMemo<ColumnDef<UniRow, unknown>[]>(
+    () => [
+      {
+        id: "label",
+        header: DIM_LABEL[dim],
+        accessorFn: (r) => r.label,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => {
+          const r = row.original;
+          const low = Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN;
+          const severeLoss =
+            Number(r.profit) < -500_000 ||
+            (Number(r.revenue) > 0 && Number(r.marginPct) < -30);
+          const content = (
+            <span className="flex items-center gap-1.5 font-medium">
+              {r.label}
+              {severeLoss ? (
+                <span
+                  className="inline-flex items-center gap-0.5 rounded-full bg-destructive/15 text-destructive px-1.5 py-0.5 text-[10px] font-bold"
+                  title="خسارة فادحة — تدقيق مطلوب"
+                >
+                  <AlertCircle className="size-3" aria-hidden /> خسارة فادحة
+                </span>
+              ) : low ? (
+                <span
+                  className="inline-flex items-center gap-0.5 rounded-full badge-stock-low px-1.5 py-0.5 text-[10px]"
+                  title="هامش ضعيف — تآكل ربح"
+                >
+                  <AlertTriangle className="size-3" aria-hidden /> هامش ضعيف
+                </span>
+              ) : null}
+            </span>
+          );
+
+          if (r.productId) {
+            return (
+              <Link
+                href={`/products/${r.productId}/edit`}
+                className="group inline-flex items-center gap-1.5 hover:text-primary transition-colors"
+                title="فتح بطاقة المنتج للتعديل والتدقيق"
+              >
+                {content}
+                <ExternalLink
+                  className="size-3 opacity-0 group-hover:opacity-60 transition-opacity"
+                  aria-hidden
+                />
+              </Link>
+            );
+          }
+          return content;
+        },
+      },
+      {
+        id: "sub",
+        header: subLabel,
+        accessorFn: (r) => r.sub,
+        meta: { kind: "number" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => D(a.original.sub || 0).cmp(D(b.original.sub || 0)),
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">{row.original.sub}</span>
+        ),
+      },
+      {
+        id: "revenue",
+        header: "الإيراد",
+        accessorFn: (r) => fmtAr(r.revenue),
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) =>
+          D(a.original.revenue || 0).cmp(D(b.original.revenue || 0)),
+        cell: ({ row }) => fmtAr(row.original.revenue),
+      },
+      {
+        id: "cost",
+        header: "التكلفة",
+        accessorFn: (r) => fmtAr(r.cost),
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) =>
+          D(a.original.cost || 0).cmp(D(b.original.cost || 0)),
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">
+            {fmtAr(row.original.cost)}
           </span>
-        );
+        ),
       },
-    },
-    { id: "sub", header: subLabel, accessorFn: (r) => r.sub, meta: { kind: "number" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.sub || 0).cmp(D(b.original.sub || 0)), cell: ({ row }) => <span className="text-muted-foreground">{row.original.sub}</span> },
-    { id: "revenue", header: "الإيراد", accessorFn: (r) => fmtAr(r.revenue), meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.revenue || 0).cmp(D(b.original.revenue || 0)), cell: ({ row }) => fmtAr(row.original.revenue) },
-    { id: "cost", header: "التكلفة", accessorFn: (r) => fmtAr(r.cost), meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.cost || 0).cmp(D(b.original.cost || 0)), cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.cost)}</span> },
-    {
-      id: "profit",
-      header: "الربح",
-      accessorFn: (r) => fmtAr(r.profit),
-      meta: { kind: "money" },
-      sortDescFirst: true,
-      sortingFn: (a, b) => D(a.original.profit || 0).cmp(D(b.original.profit || 0)),
-      cell: ({ row }) => <span className={Number(row.original.profit) < 0 ? "text-money-negative" : "text-money-positive"}>{fmtAr(row.original.profit)}</span>,
-    },
-    {
-      id: "marginPct",
-      header: "الهامش %",
-      accessorFn: (r) => `${fmtAr(r.marginPct)}%`,
-      meta: { kind: "number" },
-      sortDescFirst: true,
-      sortingFn: (a, b) => D(a.original.marginPct || 0).cmp(D(b.original.marginPct || 0)),
-      cell: ({ row }) => {
-        const r = row.original;
-        const low = Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN;
-        return <span className={low ? "text-stock-low" : undefined}>{fmtAr(r.marginPct)}%</span>;
+      {
+        id: "profit",
+        header: "الربح",
+        accessorFn: (r) => fmtAr(r.profit),
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) =>
+          D(a.original.profit || 0).cmp(D(b.original.profit || 0)),
+        cell: ({ row }) => (
+          <span
+            className={
+              Number(row.original.profit) < 0
+                ? "text-money-negative"
+                : "text-money-positive"
+            }
+          >
+            {fmtAr(row.original.profit)}
+          </span>
+        ),
       },
-    },
-  ], [dim, subLabel]);
+      {
+        id: "marginPct",
+        header: "الهامش %",
+        accessorFn: (r) => `${fmtAr(r.marginPct)}%`,
+        meta: { kind: "number" },
+        sortDescFirst: true,
+        sortingFn: (a, b) =>
+          D(a.original.marginPct || 0).cmp(D(b.original.marginPct || 0)),
+        cell: ({ row }) => {
+          const r = row.original;
+          const low = Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN;
+          return (
+            <span className={low ? "text-stock-low" : undefined}>
+              {fmtAr(r.marginPct)}%
+            </span>
+          );
+        },
+      },
+    ],
+    [dim, subLabel],
+  );
 
   const rows: UniRow[] = useMemo(() => {
     if (dim === "product") {
       return (products.data ?? []).map((r) => ({
-        label: r.productName, sub: fmtInt(r.qtySold), revenue: r.revenue, cost: r.cost, profit: r.profit, marginPct: r.marginPct,
+        productId: r.productId,
+        label: r.productName,
+        sub: fmtInt(r.qtySold),
+        revenue: r.revenue,
+        cost: r.cost,
+        profit: r.profit,
+        marginPct: r.marginPct,
       }));
     }
     if (dim === "category") {
       return (categories.data ?? []).map((r) => ({
-        label: r.categoryName, sub: fmtInt(r.itemsCount), revenue: r.revenue, cost: r.cost, profit: r.profit, marginPct: r.marginPct,
+        label: r.categoryName,
+        sub: fmtInt(r.itemsCount),
+        revenue: r.revenue,
+        cost: r.cost,
+        profit: r.profit,
+        marginPct: r.marginPct,
       }));
     }
     return (byDim.data?.rows ?? []).map((r) => ({
-      label: r.label, sub: fmtInt(r.invoices), revenue: r.revenue, cost: r.cost, profit: r.profit, marginPct: r.marginPct,
+      label: r.label,
+      sub: fmtInt(r.invoices),
+      revenue: r.revenue,
+      cost: r.cost,
+      profit: r.profit,
+      marginPct: r.marginPct,
     }));
   }, [dim, products.data, categories.data, byDim.data]);
 
   // إجماليات (من totals عند توفّرها، وإلا جمع الصفوف).
   const totals = useMemo(() => {
-    let rev = D(0), cost = D(0), profit = D(0);
-    for (const r of rows) { rev = rev.add(D(r.revenue)); cost = cost.add(D(r.cost)); profit = profit.add(D(r.profit)); }
-    const margin = rev.isZero() ? "0.00" : profit.div(rev).times(100).toDecimalPlaces(2).toString();
-    return { revenue: rev.toFixed(2), cost: cost.toFixed(2), profit: profit.toFixed(2), marginPct: margin };
+    let rev = D(0),
+      cost = D(0),
+      profit = D(0);
+    for (const r of rows) {
+      rev = rev.add(D(r.revenue));
+      cost = cost.add(D(r.cost));
+      profit = profit.add(D(r.profit));
+    }
+    const margin = rev.isZero()
+      ? "0.00"
+      : profit.div(rev).times(100).toDecimalPlaces(2).toString();
+    return {
+      revenue: rev.toFixed(2),
+      cost: cost.toFixed(2),
+      profit: profit.toFixed(2),
+      marginPct: margin,
+    };
   }, [rows]);
 
   // عدد صفوف تآكل الهامش (إيراد موجب وهامش < العتبة).
-  const erosionCount = rows.filter((r) => Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN).length;
+  const erosionCount = rows.filter(
+    (r) => Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN,
+  ).length;
+
+  // كشف البنود الشاذة / الخسائر الفادحة (خسارة تتجاوز 500,000 أو هامش سالب حاد).
+  const severeAnomalies = useMemo(() => {
+    return rows.filter(
+      (r) =>
+        Number(r.profit) < -500_000 ||
+        (Number(r.revenue) > 0 && Number(r.marginPct) < -30),
+    );
+  }, [rows]);
 
   const kpis: KpiItem[] = rows.length
     ? [
         { label: "الإيراد", value: formatIqd(totals.revenue), tone: "info" },
         { label: "التكلفة", value: formatIqd(totals.cost) },
-        { label: "صافي الربح", value: formatIqd(totals.profit), tone: Number(totals.profit) < 0 ? "negative" : "positive" },
-        { label: "الهامش", value: `${fmtAr(totals.marginPct)}%`, tone: "info", hint: erosionCount ? `${fmtAr(erosionCount)} بند بهامش ضعيف` : undefined },
+        {
+          label: "صافي الربح",
+          value: formatIqd(totals.profit),
+          tone: Number(totals.profit) < 0 ? "negative" : "positive",
+        },
+        {
+          label: "الهامش",
+          value: `${fmtAr(totals.marginPct)}%`,
+          tone: "info",
+          hint: erosionCount
+            ? `${fmtAr(erosionCount)} بند بهامش ضعيف`
+            : undefined,
+        },
       ]
     : [];
 
-  const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل";
+  const branchLabel = branchId
+    ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId))
+    : "الكل";
 
   function onExport() {
     exportRows(rows, {
@@ -188,12 +368,37 @@ export default function ProfitabilityReport() {
       columns: [
         { key: "label", header: DIM_LABEL[dim] },
         { key: "sub", header: subLabel },
-        { key: "revenue", header: "الإيراد", money: true, map: (r) => Number(r.revenue) },
-        { key: "cost", header: "التكلفة", money: true, map: (r) => Number(r.cost) },
-        { key: "profit", header: "الربح", money: true, map: (r) => Number(r.profit) },
-        { key: "marginPct", header: "الهامش %", map: (r) => Number(r.marginPct) },
+        {
+          key: "revenue",
+          header: "الإيراد",
+          money: true,
+          map: (r) => Number(r.revenue),
+        },
+        {
+          key: "cost",
+          header: "التكلفة",
+          money: true,
+          map: (r) => Number(r.cost),
+        },
+        {
+          key: "profit",
+          header: "الربح",
+          money: true,
+          map: (r) => Number(r.profit),
+        },
+        {
+          key: "marginPct",
+          header: "الهامش %",
+          map: (r) => Number(r.marginPct),
+        },
       ],
-      totalsRow: { label: "الإجمالي", revenue: Number(totals.revenue), cost: Number(totals.cost), profit: Number(totals.profit), marginPct: Number(totals.marginPct) },
+      totalsRow: {
+        label: "الإجمالي",
+        revenue: Number(totals.revenue),
+        cost: Number(totals.cost),
+        profit: Number(totals.profit),
+        marginPct: Number(totals.marginPct),
+      },
     });
   }
 
@@ -214,12 +419,22 @@ export default function ProfitabilityReport() {
         { key: "margin", label: "الهامش %", align: "left" },
       ],
       rows: rows.map((r) => ({
-        label: r.label, sub: r.sub, revenue: fmtAr(r.revenue), cost: fmtAr(r.cost), profit: fmtAr(r.profit), margin: `${fmtAr(r.marginPct)}%`,
+        label: r.label,
+        sub: r.sub,
+        revenue: fmtAr(r.revenue),
+        cost: fmtAr(r.cost),
+        profit: fmtAr(r.profit),
+        margin: `${fmtAr(r.marginPct)}%`,
       })),
       summary: [
         { label: "الإيراد", value: formatIqd(totals.revenue) },
         { label: "التكلفة", value: formatIqd(totals.cost) },
-        { label: "صافي الربح", value: formatIqd(totals.profit), large: true, bold: true },
+        {
+          label: "صافي الربح",
+          value: formatIqd(totals.profit),
+          large: true,
+          bold: true,
+        },
       ],
     });
   }
@@ -242,21 +457,82 @@ export default function ProfitabilityReport() {
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">البُعد</label>
-            <AppSelect className="h-9" value={dim} onValueChange={(next) => setDim(next as Dim)}>
-              {(Object.keys(DIM_LABEL) as Dim[]).map((d) => (<option key={d} value={d}>{DIM_LABEL[d]}</option>))}
+            <AppSelect
+              className="h-9"
+              value={dim}
+              onValueChange={(next) => setDim(next as Dim)}
+            >
+              {(Object.keys(DIM_LABEL) as Dim[]).map((d) => (
+                <option key={d} value={d}>
+                  {DIM_LABEL[d]}
+                </option>
+              ))}
             </AppSelect>
           </div>
+          {dim === "product" && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-muted-foreground">
+                الترتيب
+              </label>
+              <AppSelect
+                className="h-9"
+                value={productSort}
+                onValueChange={(next) =>
+                  setProductSort(next as ProductSortOption)
+                }
+              >
+                <option value="revenue_desc">الأعلى إيراداً</option>
+                <option value="profit_desc">الأعلى ربحاً</option>
+                <option value="loss_asc">الأكثر خسارة (تصاعدي)</option>
+                <option value="margin_asc">الأقل هامشاً %</option>
+                <option value="qty_desc">الأعلى كمية</option>
+              </AppSelect>
+            </div>
+          )}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(next) => setBranchId(next ? Number(next) : "")}
+            >
               <option value="">الكل</option>
-              {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
+              {branches.data?.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
             </AppSelect>
           </div>
           <PeriodFilter value={period} onChange={setPeriod} />
         </div>
       }
     >
+      {severeAnomalies.length > 0 && (
+        <div className="mb-4 flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-destructive dark:bg-destructive/15">
+          <AlertCircle className="size-5 shrink-0 mt-0.5" />
+          <div className="flex-1 text-xs leading-relaxed">
+            <div className="font-bold text-sm mb-1">
+              تنبيه تدقيق جنائي: اكتشاف {fmtAr(severeAnomalies.length)} بند
+              بخسائر فادحة أو تآكل حاد للهامش
+            </div>
+            <div>
+              توجد بنود تُسجّل تكلفة تفوق سعر البيع بمراحل أو خسارة تزيد عن
+              ٥٠٠,٠٠٠ د.ع. يُرجى مراجعة تكلفة الوحدة في شاشة المنتج وفواتير
+              البيع لمنع تشويه صافي الربح.
+            </div>
+            {dim === "product" && productSort !== "loss_asc" && (
+              <button
+                type="button"
+                onClick={() => setProductSort("loss_asc")}
+                className="mt-2 inline-flex items-center gap-1 font-bold underline underline-offset-2 hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                فرز الكتالوج لعرض البنود الأكثر خسارة أولاً ←
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <Card>
         <CardContent className="p-0">
           {/* فلاتر البُعد/الفرع/الفترة في `ReportShell` أعلاه — فأيّ فراغٍ هنا سببه نطاقُها. */}
@@ -266,7 +542,11 @@ export default function ProfitabilityReport() {
             searchPlaceholder={`بحث في ${DIM_LABEL[dim]}…`}
             externalFiltersActive
             loading={loading}
-            errorState={{ isError: error, message: "تعذّر تحميل التقرير.", onRetry: () => void refetchActive() }}
+            errorState={{
+              isError: error,
+              message: "تعذّر تحميل التقرير.",
+              onRetry: () => void refetchActive(),
+            }}
             emptyText="لا مبيعات في هذا النطاق."
             viewKey="profitability-report"
           />

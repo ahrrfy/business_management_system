@@ -330,7 +330,7 @@ export function CollectConsignmentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent dir="rtl" className="max-w-xl">
+      <DialogContent dir="rtl" className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl font-black">
             <Wallet aria-hidden className="size-6 text-emerald-600" />

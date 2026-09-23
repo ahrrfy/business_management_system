@@ -39,7 +39,7 @@ export interface CreateTaskInput {
 }
 
 /** actor.userId = null ⇒ إنشاء نظاميّ (autoCreate — لا فاعل بشريّ وراء الإنشاء). */
-export type CreateTaskActor = { userId: number | null; branchId: number; role?: string };
+export type CreateTaskActor = { userId: number | null; branchId: number; role?: string; name?: string | null };
 
 /**
  * ينشئ مهمة داخل withTx (أو داخل tx المُمرَّرة — نمط enqueueOutbox: `tx ? run(tx) : withTx(run)`،
@@ -151,6 +151,7 @@ export async function createTask(input: CreateTaskInput, actor: CreateTaskActor,
           previousAssignedTo: null,
         },
         actorUserId: actor.userId ?? 0,
+        actorName: actor.name,
       });
     }
 

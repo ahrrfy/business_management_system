@@ -22,6 +22,7 @@ import {
   adjustSupplierBalance,
   adjustSupplierBalanceUsd,
 } from "../ledgerService";
+import { logAuditTx } from "../auditService";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { withTx, type Actor } from "../tx";
@@ -831,6 +832,116 @@ export async function requestSupplierInvoiceApproval(
   return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
+/**
+ * عند اعتماد عكس فاتورة مورد مرحّلة، تنشأ تلقائياً مسوّدة بديلة نشطة (DRAFT)
+ * محتفظة بنفس البنود والكميات حتى لا تبقى أذونات الاستلام المخزني (GRN)
+ * المرتبطة بالطلب معلقة بلا فوترة (Stranded Unbilled Receipts) في حساب GRNI.
+ */
+async function spawnReplacementDraftInvoiceOnReversalTx(
+  tx: Tx,
+  invoice: typeof supplierInvoices.$inferSelect,
+  actor: Actor,
+  reason: string,
+  decidedAt: Date,
+): Promise<number | null> {
+  const lines = await tx
+    .select()
+    .from(supplierInvoiceLines)
+    .where(eq(supplierInvoiceLines.supplierInvoiceId, Number(invoice.id)))
+    .orderBy(asc(supplierInvoiceLines.lineNo));
+
+  const newInvoiceNumber = await nextInvoiceNumber(tx, Number(invoice.branchId));
+  const replacementRequestId = `rev_replace_${invoice.id}_${decidedAt.getTime()}`;
+  const baseExt = (invoice.externalInvoiceNumber?.trim() || invoice.invoiceNumber).slice(0, 140);
+  const initialExt = `${baseExt}-REV`;
+  const initialExtNorm = initialExt.trim().toUpperCase();
+
+  const [existingExt] = await tx
+    .select({ id: supplierInvoices.id })
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.supplierId, Number(invoice.supplierId)),
+        eq(supplierInvoices.externalNumberNorm, initialExtNorm),
+      ),
+    )
+    .limit(1);
+
+  const finalExt = existingExt
+    ? `${initialExt}-${decidedAt.getTime().toString().slice(-6)}`
+    : initialExt;
+  const finalExtNorm = finalExt.trim().toUpperCase();
+
+  const insertedDraft = await tx.insert(supplierInvoices).values({
+    invoiceNumber: newInvoiceNumber,
+    clientRequestId: replacementRequestId,
+    origin: "NATIVE",
+    liabilityClass: "NATIVE_AP",
+    paymentGate: "OPEN",
+    supplierId: Number(invoice.supplierId),
+    externalInvoiceNumber: finalExt,
+    externalNumberNorm: finalExtNorm,
+    branchId: Number(invoice.branchId),
+    status: "DRAFT",
+    version: 1,
+    draftState: "ACTIVE",
+    invoiceDate: invoice.invoiceDate,
+    dueDate: invoice.dueDate,
+    currency: invoice.currency,
+    agreedRate: invoice.agreedRate,
+    subtotal: invoice.subtotal,
+    taxAmount: invoice.taxAmount,
+    discountAmount: invoice.discountAmount,
+    totalAmount: invoice.totalAmount,
+    usdTotal: invoice.usdTotal,
+    payloadCanonical: invoice.payloadCanonical,
+    payloadHash: invoice.payloadHash,
+    evidenceType: invoice.evidenceType,
+    evidenceReference:
+      invoice.evidenceReference || `بديلة عن الفاتورة المعكوسة ${invoice.invoiceNumber}`,
+    createdBy: actor.userId,
+  });
+  const replacementInvoiceId = extractInsertId(insertedDraft);
+
+  if (lines.length > 0) {
+    await tx.insert(supplierInvoiceLines).values(
+      lines.map((l) => ({
+        supplierInvoiceId: replacementInvoiceId,
+        lineNo: l.lineNo,
+        purchaseOrderRevisionItemId: l.purchaseOrderRevisionItemId,
+        variantId: l.variantId,
+        description: l.description,
+        invoicedBaseQuantity: l.invoicedBaseQuantity,
+        unitPriceIqd: l.unitPriceIqd,
+        netAmount: l.netAmount,
+        taxAmount: l.taxAmount,
+        totalAmount: l.totalAmount,
+        usdUnitPrice: l.usdUnitPrice,
+        usdTotal: l.usdTotal,
+      })),
+    );
+  }
+
+  await logAuditTx(
+    tx,
+    { userId: actor.userId, branchId: actor.branchId ?? null },
+    {
+      action: "supplierInvoice.reversal.replacementDraftCreated",
+      entityType: "supplierInvoice",
+      entityId: replacementInvoiceId,
+      branchId: Number(invoice.branchId),
+      newValue: {
+        reversedInvoiceId: Number(invoice.id),
+        reversedInvoiceNumber: invoice.invoiceNumber,
+        newDraftInvoiceNumber: newInvoiceNumber,
+        reason,
+      },
+    },
+  );
+
+  return replacementInvoiceId;
+}
+
 export async function decideSupplierInvoiceApproval(
   input: DecideSupplierInvoiceApprovalInput,
   actor: Actor,
@@ -969,6 +1080,7 @@ export async function decideSupplierInvoiceApproval(
       },
     });
     let accountingEntryId: number;
+    let replacementDraftInvoiceId: number | null = null;
     if (request.kind === "POST_INVOICE") {
       if (invoice.status !== "MATCHED" || request.matchRunId == null)
         throw new TRPCError({
@@ -1177,6 +1289,16 @@ export async function decideSupplierInvoiceApproval(
           reversalReason: request.reason,
         })
         .where(eq(supplierInvoices.id, Number(invoice.id)));
+      if (invoice.origin === "NATIVE") {
+        replacementDraftInvoiceId =
+          await spawnReplacementDraftInvoiceOnReversalTx(
+            tx,
+            invoice,
+            actor,
+            request.reason,
+            decidedAt,
+          );
+      }
     }
     await tx
       .update(supplierInvoiceApprovalRequests)
@@ -1197,6 +1319,7 @@ export async function decideSupplierInvoiceApproval(
       accountingEntryId,
       status: "APPROVED" as const,
       idempotentReplay: false as const,
+      replacementDraftInvoiceId,
     };
   });
 }

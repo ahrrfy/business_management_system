@@ -15,10 +15,10 @@ import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { Check, Printer, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 
 /** حالات أمر الشغل النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter.ts (خادميّ، لا يُستورَد
@@ -88,8 +88,10 @@ export default function ProductionNew() {
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const [showHelp, setShowHelp] = useState(false);
 
-  const recipes = trpc.production.recipes.list.useQuery({ activeOnly: true });
+  const recipes = trpc.production.recipes.listRunnable.useQuery();
   const [recipeId, setRecipeId] = useState<number | "">("");
+  const [recipeSelectionError, setRecipeSelectionError] = useState("");
+  const appliedPreRecipe = useRef<number | null>(null);
   const [batch, setBatch] = useState("100");
   const [scrap, setScrap] = useState("0");
   const [labor, setLabor] = useState("0");
@@ -112,8 +114,24 @@ export default function ProductionNew() {
     return filtered.slice(0, 30);
   }, [openWOs.data, woQuery]);
 
-  // اضبط الوصفة من رابط ?recipe= مرّة واحدة.
-  useEffect(() => { if (preRecipe) { setRecipeId(preRecipe); setMode("recipe"); } }, [preRecipe]);
+  // رابط ?recipe= لا يتجاوز قائمة التشغيل الخادمية: وصفة الخدمة/البكج/المعطّلة لا تُزرع في النموذج.
+  useEffect(() => {
+    if (!preRecipe) {
+      appliedPreRecipe.current = null;
+      return;
+    }
+    if (!recipes.isSuccess || appliedPreRecipe.current === preRecipe) return;
+    appliedPreRecipe.current = preRecipe;
+    setMode("recipe");
+    const runnable = (recipes.data ?? []).some((r: any) => Number(r.id) === preRecipe);
+    if (runnable) {
+      setRecipeId(preRecipe);
+      setRecipeSelectionError("");
+      return;
+    }
+    setRecipeId("");
+    setRecipeSelectionError("هذه الوصفة غير متاحة للإنتاج المخزني. وصفة الخدمة تُستهلك عند البيع، أمّا وصفة الإنتاج ففعّلها وصحّح ناتجها أولاً.");
+  }, [preRecipe, recipes.data, recipes.isSuccess]);
 
   // عمالة الوصفة الافتراضية عند اختيارها (يعيد الضبط أيضاً متى وصلت قائمة الوصفات بعد التحديد من الرابط).
   const selectedRecipe = (recipes.data ?? []).find((r: any) => Number(r.id) === Number(recipeId)) as any;
@@ -125,7 +143,7 @@ export default function ProductionNew() {
   const dBatch = useDebouncedValue(batch, 300);
   const dScrap = useDebouncedValue(scrap, 300);
   const dLabor = useDebouncedValue(labor, 300);
-  const previewEnabled = mode === "recipe" && !!recipeId && Number(dBatch) > 0;
+  const previewEnabled = mode === "recipe" && !!selectedRecipe && Number(dBatch) > 0;
   const preview = trpc.production.runPreview.useQuery(
     { recipeId: Number(recipeId), batchQty: Math.trunc(Number(dBatch) || 0), scrapQty: Math.trunc(Number(dScrap) || 0), laborPerUnit: D(dLabor || "0").toFixed(2), branchId },
     { enabled: previewEnabled && branchId != null }
@@ -151,7 +169,7 @@ export default function ProductionNew() {
    */
   const capacity = trpc.production.recipeCapacity.useQuery(
     { recipeId: Number(recipeId), branchId: branchId ?? undefined },
-    { enabled: mode === "recipe" && !!recipeId && branchId != null },
+    { enabled: mode === "recipe" && !!selectedRecipe && branchId != null },
   );
   /*
    * **لا يُعلَن سقفٌ لوصفةٍ معطّلة.** `runPreview` ومسارُ الترحيل يرفضان المعطّلة صراحةً،
@@ -171,6 +189,7 @@ export default function ProductionNew() {
       utils.production.recipeCapacity.invalidate();
       utils.inventory.onHand.invalidate();
       utils.inventory.movementsRich.invalidate();
+      bypassUnsavedGuard();
       navigate(`/production/${r.productionOrderId}`);
     },
     onError: (e) => { setError(e.message); notify.err(e); },
@@ -192,8 +211,10 @@ export default function ProductionNew() {
   async function submitRecipe() {
     if (branchId == null) return setError("اختر الفرع أولاً.");
     if (!recipeId) return setError("اختر وصفة أولاً.");
+    if (!selectedRecipe) return setError("الوصفة المختارة لم تعد متاحة للإنتاج المخزني — اختر وصفة أخرى.");
     if (!(Number(batch) > 0)) return setError("أدخل عدد الدفعة (عدد موجب).");
     // Ctrl+S يتجاوز الزرّ المعطَّل ⇒ الرسالة هنا يجب أن تقول السبب الحقيقيّ لا «انتظر».
+    if (previewErrorMsg) return setError(previewErrorMsg);
     if (!pv) return setError(previewErrorMsg ?? "انتظر اكتمال المعاينة.");
     if (pv.anyShort) return setError("المخزون لا يكفي لأحد المدخلات — قلّل الدفعة أو جهّز المخزون.");
     setError("");
@@ -266,18 +287,18 @@ export default function ProductionNew() {
       const valid = lineValid(l);
       const over = kind === "in" && base.gt(l.stockBase);
       return (
-        <div key={l.key} className="grid grid-cols-12 gap-2 items-center border rounded-md p-2">
-          <div className="col-span-4"><div className="font-medium text-sm">{l.productName}</div><div className="text-xs text-muted-foreground font-mono" dir="ltr">{l.sku}</div></div>
-          <div className="col-span-3">
+        <div key={l.key} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center border rounded-md p-2">
+          <div className="col-span-1 sm:col-span-4"><div className="font-medium text-sm">{l.productName}</div><div className="text-xs text-muted-foreground font-mono" dir="ltr">{l.sku}</div></div>
+          <div className="col-span-1 sm:col-span-3">
             <AppSelect className="h-9" value={String(l.productUnitId ?? "")} onValueChange={(value) => { const u = l.units.find((x) => x.productUnitId === Number(value)); setLine(list, setList, l.key, { productUnitId: Number(value), conversionFactor: String(u?.conversionFactor ?? "1") }); }}>
               {l.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ` × ${u.conversionFactor}`}</option>)}
             </AppSelect>
           </div>
-          <div className="col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setLine(list, setList, l.key, { qty: e.target.value })} /></div>
-          <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-[var(--sem-info)]">{fmt(unitOutCost.toString())}/و</span>}</div>
-          <div className="col-span-1 text-left"><button type="button" className="text-destructive text-sm" onClick={() => setList(list.filter((x) => x.key !== l.key))}>حذف</button></div>
-          {!valid && <div className="col-span-12 text-xs text-destructive">الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.</div>}
-          {over && <div className="col-span-12 text-xs text-[var(--stock-low)]">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
+          <div className="col-span-1 sm:col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setLine(list, setList, l.key, { qty: e.target.value })} /></div>
+          <div className="col-span-1 sm:col-span-2 text-start sm:text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-[var(--sem-info)]">{fmt(unitOutCost.toString())}/و</span>}</div>
+          <div className="col-span-1 sm:col-span-1 text-end sm:text-left"><button type="button" className="text-destructive text-sm" onClick={() => setList(list.filter((x) => x.key !== l.key))}>حذف</button></div>
+          {!valid && <div className="col-span-1 sm:col-span-12 text-xs text-destructive">الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.</div>}
+          {over && <div className="col-span-1 sm:col-span-12 text-xs text-[var(--stock-low)]">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
         </div>
       );
     });
@@ -319,11 +340,15 @@ export default function ProductionNew() {
               <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label>الوصفة *</Label>
-                  <AppSelect className="h-9" value={recipeId === "" ? "" : String(recipeId)} onValueChange={(next) => setRecipeId(next ? Number(next) : "")}>
+                  <AppSelect className="h-9" value={recipeId === "" ? "" : String(recipeId)} onValueChange={(next) => {
+                    setRecipeId(next ? Number(next) : "");
+                    setRecipeSelectionError("");
+                  }}>
                     <option value="">— اختر وصفة —</option>
                     {(recipes.data ?? []).map((r: any) => <option key={r.id} value={Number(r.id)}>{r.name}</option>)}
                   </AppSelect>
-                  {(recipes.data ?? []).length === 0 && <p className="text-xs text-[var(--stock-low)]">لا وصفات مفعّلة. <Link href="/production-recipes" className="underline">أنشئ وصفة</Link> أولاً.</p>}
+                  {recipes.isSuccess && (recipes.data ?? []).length === 0 && <p className="text-xs text-[var(--stock-low)]">لا وصفات إنتاج مخزني مفعّلة. <Link href="/production-recipes" className="underline">أنشئ وصفة</Link> أولاً.</p>}
+                  {recipeSelectionError && <p className="text-xs text-destructive">{recipeSelectionError}</p>}
                 </div>
                 <InferredBranchField label="الفرع" value={branchId} onChange={setBranchId} disabled={create.isPending} />
               </CardContent>
@@ -331,7 +356,7 @@ export default function ProductionNew() {
 
             {needsBranchChoice ? (
               <Card><CardContent className="p-6 text-center text-sm text-destructive">اختر الفرع أعلاه أولاً لبدء التشغيل.</CardContent></Card>
-            ) : recipeId ? (
+            ) : selectedRecipe ? (
               <>
                 <Card>
                   <CardHeader>
@@ -483,10 +508,10 @@ export default function ProductionNew() {
                 {error && <p className="text-sm text-destructive">{error}</p>}
                 {!error && previewErrorMsg && <p className="text-sm text-destructive">{previewErrorMsg}</p>}
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={submitRecipe} disabled={create.isPending || needsBranchChoice || !pv || pv.anyShort || !(pv.good > 0)}>
+                  <Button onClick={submitRecipe} disabled={create.isPending || needsBranchChoice || !!previewErrorMsg || !pv || pv.anyShort || !(pv.good > 0)}>
                     {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : previewErrorMsg ? "تعذّر حساب الدفعة" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
                   </Button>
-                  <Button variant="outline" onClick={printOrder} disabled={!pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
+                  <Button variant="outline" onClick={printOrder} disabled={!!previewErrorMsg || !pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
                   <Link href="/production"><Button variant="ghost">إلغاء</Button></Link>
                 </div>
               </>

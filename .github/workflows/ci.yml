@@ -26,7 +26,7 @@ jobs:
     outputs:
       heavy: ${{ steps.classify.outputs.heavy }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: حارِس مبكر لإعداد Firebase ومفاتيح Google المتتبعة
@@ -106,11 +106,11 @@ jobs:
       TEST_CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
       TZ: UTC
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # نسخة pnpm تُقرَأ من `packageManager` في package.json (تُثبَّت Tier-1 #3، ٢٥/٨).
-      # تمرير `version:` يُنتج ERR_PNPM_BAD_PM_VERSION مع action-setup@v4 عند وجود المصدرَين معاً.
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      # تمرير `version:` يُنتج ERR_PNPM_BAD_PM_VERSION مع action-setup@v6 عند وجود المصدرَين معاً.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: pnpm
@@ -180,11 +180,11 @@ jobs:
       # fetch-depth: 0 — يلزم لحارس «تصادم ترقيم الهجرات مع origin/main» داخل check:migrations
       # (يقارن `_journal.json` بالجانب الآخر). بعمق ١ لا يوجد مرجع origin/main فيتخطّى الحارس
       # صامتاً — و«حارسٌ لا يُشغَّل آلياً ليس حارساً» (درس CI موثَّق في هذا الملف أدناه).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4 # نسخة pnpm من packageManager في package.json
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6 # نسخة pnpm من packageManager في package.json
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: pnpm
@@ -351,6 +351,15 @@ jobs:
       # حارس حوكمة الشاشات وترشيق النظام: يمنع الأيتام والاستيرادات الميتة والمكونات الموضوعة خطأً في pages/
       - name: حارِس حوكمة الشاشات وترشيق النظام
         run: pnpm check:screen-governance
+      # حارس السلامة البصرية ومنع الاقتطاع المالي: يمنع truncate على المبالغ والأرقام الحسابية
+      - name: حارِس السلامة البصرية ومنع الاقتطاع المالي
+        run: pnpm check:visual-clipping
+      # حارس التجاوب البصري وشاشات الهاتف واللوحيات: يمنع تدمير هوامش النوافذ وشبكات الأعمدة غير المتجاوبة
+      - name: حارِس التجاوب البصري وشاشات الهاتف واللوحيات
+        run: pnpm check:responsive-layout
+      # حارس سلامة وتعامد وشبكة الجداول: يمنع انكسار التعامد بين العناوين والصفوف ويحمي شبكة الجداول الأصولية
+      - name: حارِس سلامة وتعامد وشبكة الجداول
+        run: pnpm check:table-integrity
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة
@@ -366,7 +375,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: تأكيد نجاح الاختبارات والجودة والبناء
         env:
           HEAVY: ${{ needs.scope.outputs.heavy }}
@@ -383,10 +392,10 @@ jobs:
     # وظيفةٌ خفيفة (node فقط بلا قاعدة/تثبيت) — دقائق معدودة؛ ١٥ سقفٌ يمسك التعليق لا العمل.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
       - name: حارِس الصلاحيات (فرق قاعدة الدمج — raw-role/بلا بوّابة/admin-كتابة مستجدّ)

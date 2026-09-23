@@ -412,7 +412,7 @@ export default function TransfersLog() {
       </Card>
 
       <Dialog open={openId != null} onOpenChange={(o) => { if (!o) setOpenId(null); }}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 flex-wrap">
               <span>سند تحويل</span>

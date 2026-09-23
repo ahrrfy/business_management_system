@@ -51,6 +51,12 @@ export type CopyInlineProps = {
   mono?: boolean;
   className?: string;
   successMessage?: string | null;
+  /**
+   * هل يُسمح باقتطاع النص بـ ellipsis عند ضيق المساحة؟
+   * الافتراضي false (لا نقتطع الأرقام ولا المبالغ ولا المعرفات افتراضياً لتفادي كوارث 21,...).
+   * يُفعَّل صراحةً فقط للنصوص الطويلة في الجداول (عناوين، ملاحظات).
+   */
+  truncate?: boolean;
 };
 
 /** نسخ ضمن خلية: يعرض القيمة وأيقونة نسخ تظهر عند المرور/التركيز. */
@@ -60,6 +66,7 @@ export function CopyInline({
   mono = true,
   className,
   successMessage,
+  truncate = false,
 }: CopyInlineProps) {
   const { copied, copy } = useClipboard({ successMessage: successMessage ?? "تم النسخ" });
   const text = value == null ? "" : String(value);
@@ -71,12 +78,13 @@ export function CopyInline({
       aria-label={`نسخ ${text}`}
       className={cn(
         "group inline-flex max-w-full items-center gap-1 -mx-1 rounded px-1 text-start hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        !truncate && "shrink-0 whitespace-nowrap",
         mono && "font-mono text-xs",
         className,
       )}
       dir={mono ? "ltr" : undefined}
     >
-      <span className="truncate">{display ?? text}</span>
+      <span className={cn(truncate ? "truncate" : "whitespace-nowrap shrink-0")}>{display ?? text}</span>
       {copied ? (
         <Check className="size-3.5 shrink-0 text-[var(--sem-pos)]" />
       ) : (

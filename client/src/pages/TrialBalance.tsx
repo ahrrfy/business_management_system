@@ -1,5 +1,6 @@
 // ميزان مراجعة رسمي من journalEntries/journalLines — افتتاح، حركة، وختام لكل حساب قابل للترحيل.
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
@@ -55,15 +56,21 @@ function LedgerModeNotice({ report }: { report: Report }) {
   }
   if (report.mode === "OFF") {
     return (
-      <div className="flex items-start gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-foreground">
-        <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-        <div>
-          <p className="font-semibold">الدفتر المزدوج متوقف.</p>
-          <p className="text-xs opacity-80">
-            لن تظهر عمليات جديدة هنا ما دام الوضع OFF؛ لا تعتمد هذا التقرير
-            كميزانٍ حي.
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-foreground">
+        <div className="flex items-start gap-2">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <p className="font-semibold">الدفتر المزدوج متوقف.</p>
+            <p className="text-xs opacity-80">
+              لن تظهر عمليات جديدة هنا ما دام الوضع OFF؛ قم بتهيئة الدليل المحاسبي وتفعيل وضع الظل SHADOW.
+            </p>
+          </div>
         </div>
+        <Link href="/statutory-accounting">
+          <span className="font-medium text-primary underline underline-offset-4 hover:opacity-80">
+            إعداد النظام المحاسبي الموحد
+          </span>
+        </Link>
       </div>
     );
   }
@@ -136,31 +143,37 @@ export default function TrialBalance() {
       {
         accessorKey: "openingDebit",
         header: "افتتاح مدين",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.openingDebit} />,
       },
       {
         accessorKey: "openingCredit",
         header: "افتتاح دائن",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.openingCredit} />,
       },
       {
         accessorKey: "periodDebit",
         header: "حركة مدين",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.periodDebit} />,
       },
       {
         accessorKey: "periodCredit",
         header: "حركة دائن",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.periodCredit} />,
       },
       {
         accessorKey: "closingDebit",
         header: "ختام مدين",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.closingDebit} />,
       },
       {
         accessorKey: "closingCredit",
         header: "ختام دائن",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.closingCredit} />,
       },
     ],
@@ -386,7 +399,7 @@ export default function TrialBalance() {
 
 function Money({ value }: { value: string }) {
   return (
-    <span className="block text-left tabular-nums" dir="ltr">
+    <span className="block tabular-nums" dir="ltr">
       {moneyCell(value)}
     </span>
   );

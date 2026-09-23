@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useClipboard } from "@/hooks/useClipboard";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { confirm } from "@/lib/confirm";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
@@ -150,6 +151,11 @@ export default function Products() {
   const categoriesQ = trpc.catalog.categories.useQuery();
   const dq = useDebouncedValue(q, 200);
   const sel = useRowSelection<string>();
+  const { copy } = useClipboard({ successMessage: null });
+
+  useEffect(() => {
+    sel.clear();
+  }, [dq, includeInactive, categoryFilter, printPosFilter, page, branchId, sel.clear]);
 
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل الصنف) ثمّ نُبرز صفّه.
   const { seedQuery, rowProps } = useFocusHighlight();
@@ -233,11 +239,9 @@ export default function Products() {
         return row;
       }),
     );
-    try {
-      await navigator.clipboard.writeText(tsv);
+    const ok = await copy(tsv);
+    if (ok) {
       notify.ok(`نُسِخت ${picked.length} صفّاً إلى الحافظة (TSV)`);
-    } catch {
-      notify.err("تَعَذَّر النَسخ — استَعمِل زِرّ التَصدير");
     }
   }
 
@@ -778,7 +782,7 @@ export default function Products() {
 
       {/* توزيع مخزون البدائل لمنتجٍ واحد (من إجراء الصفّ). */}
       <Dialog open={breakdownProduct != null} onOpenChange={(o) => !o && setBreakdownProduct(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-right">توزيع مخزون البدائل</DialogTitle>
             <DialogDescription className="text-right">

@@ -440,7 +440,7 @@ export function NoReceiptReturnDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto" dir="rtl">
+      <DialogContent className="sm:max-w-3xl max-h-[92vh] overflow-y-auto" dir="rtl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base font-bold">
             <ShieldAlert className="size-5 text-amber-500" aria-hidden />

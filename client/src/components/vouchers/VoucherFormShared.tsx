@@ -30,13 +30,14 @@ import {
 } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import {
   BarcodeSearchCue,
   barcodeSearchInputClass,
 } from "@/components/scan/BarcodeSearchCue";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -213,7 +214,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   // البحث خادميّ (q + balanceState=OUTSTANDING أي المتبقّي > 0 وغير الملغاة/المرتجعة) — كان «آخر ٥٠»
   // فقط فلا تُوجَد فاتورة أقدم وهي مستحقّة.
   const [invoiceQ, setInvoiceQ] = useState("");
-  const invoiceBarcodeInput = useBarcodeInput((code) => setInvoiceQ(code));
   const debouncedInvoiceQ = useDebouncedValue(invoiceQ.trim(), 250);
   const customerInvoices = trpc.sales.list.useQuery(
     {
@@ -336,6 +336,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           "حُفظ الطلب بلا أثر مالي؛ تتاح الطباعة الرسمية بعد الاعتماد والتنفيذ.",
         );
       }
+      bypassUnsavedGuard();
       navigate("/vouchers");
     },
     onError: (e) => {
@@ -500,7 +501,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     };
   }
 
-  function submit(printAfter: "thermal" | "a4" | null = null) {
+  const partyDisplayName = useMemo(() => {
+    if (partyType === "CUSTOMER") return customerData.data?.name || "العميل";
+    if (partyType === "SUPPLIER") return supplierData.data?.name || "المورّد";
+    if (partyType === "DELIVERY_PARTY") return "شركة التوصيل";
+    return counterpartyName.trim() || "الطرف المحدد";
+  }, [partyType, customerData.data?.name, supplierData.data?.name, counterpartyName]);
+
+  async function submit(printAfter: "thermal" | "a4" | null = null) {
     setErr("");
     const v = validate();
     if (v) {
@@ -517,6 +525,29 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       );
       return;
     }
+
+    const formattedAmount = fmt(amount.trim());
+    const methodLabel = paymentMethodCompact(method);
+    const isOut = direction === "OUT";
+
+    const title = isOut ? "تأكيد سند الصرف" : "تأكيد سند القبض";
+    const description = isOut
+      ? `سيُسجَّل سند صرف بمبلغ ${formattedAmount} د.ع لصالح «${partyDisplayName}» بطريقة «${methodLabel}» ويُحال للاعتماد والتنفيذ المالي. هل تؤكد العملية؟`
+      : `سيُسجَّل سند قبض بمبلغ ${formattedAmount} د.ع من «${partyDisplayName}» بطريقة «${methodLabel}» وتُثبَّت الحركة المالية في الدفتر. هل تؤكد العملية؟`;
+    const confirmText = isOut ? "تأكيد الصرف" : "تأكيد القبض";
+
+    const ok = await confirm({
+      variant: isOut ? "warning" : "info",
+      title,
+      description,
+      confirmText,
+      cancelText: "تراجع",
+    });
+    if (!ok) {
+      if (isReceipt && printAfter === "a4") releaseReservedPrintWindow();
+      return;
+    }
+
     // حارس تجربة مستخدم فقط: سند الصرف المعلّق لا يطلب طباعة رسمية.
     setPendingPrintRef(isReceipt ? printAfter : null);
     create.mutate(buildPayload());
@@ -555,7 +586,10 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         confirmText: "مغادرة",
         cancelText: "بقاء",
       });
-      if (ok) navigate("/vouchers");
+      if (ok) {
+        bypassUnsavedGuard();
+        navigate("/vouchers");
+      }
     } finally {
       leaveBusyRef.current = false;
     }
@@ -942,19 +976,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 {customerId != null && (
                   <div className="space-y-1">
                     <Label>ربط بفاتورة (اختياري)</Label>
-                    <div className="relative">
-                      <Input
-                        type="search"
-                        value={invoiceQ}
-                        onChange={(e) => setInvoiceQ(e.target.value)}
-                        onKeyDown={(e) =>
-                          invoiceBarcodeInput.handleKeyDown(e, setInvoiceQ)
-                        }
-                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر 50 فقط)"
-                        className={barcodeSearchInputClass}
-                      />
-                      <BarcodeSearchCue />
-                    </div>
+                    <UnifiedSearchInput
+                      value={invoiceQ}
+                      onChange={setInvoiceQ}
+                      placeholder="ابحث برقم الفاتورة أو امسح الباركود… (F2)"
+                      barcode={true}
+                      debounceMs={200}
+                      size="default"
+                    />
                     <AppSelect
                       value={invoiceId != null ? String(invoiceId) : "0"}
                       onValueChange={(v) => {

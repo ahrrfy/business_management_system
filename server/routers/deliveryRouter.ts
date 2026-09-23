@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { type ShortfallReason, SHORTFALL_REASONS } from "@shared/shortfallReason";
-import { deliveryConsignments, deliveryOutbox } from "../../drizzle/schema";
+import { deliveryConsignments, deliveryOutbox, deliveryParties } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { deliveryAdminProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
@@ -60,6 +60,11 @@ import { withTx } from "../services/tx";
 import { rolloutMode } from "../config/rolloutFlags";
 import { dispatchByBarcode } from "../services/delivery/barcodeDispatchService";
 import { returnByBarcode } from "../services/delivery/barcodeReturnService";
+import {
+  assertExternalTrackingRefAvailable,
+  requireExternalTrackingRef,
+  rethrowExternalTrackingRefDuplicate,
+} from "../services/delivery/trackingRefPolicy";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -206,7 +211,7 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  reassignConsignment: deliveryManagerProcedure
+  reassignConsignment: deliveryCashierProcedure
     .input(z.object({
       partyId: z.number().int().positive(),
       consignmentId: z.number().int().positive(),
@@ -220,7 +225,7 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  cancelAssignment: deliveryManagerProcedure
+  cancelAssignment: deliveryCashierProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
       reason: z.string().trim().min(3).max(500),
@@ -529,7 +534,7 @@ export const deliveryRouter = router({
         assignedUserId: z.number().int().positive().nullish(),
         /** إقرارُ إخراج جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
-        /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+        /** رقم التتبع / المرجع الخارجي — إلزامي للشركات وتفرضه الخدمة خادمياً. */
         externalTrackingRef: z.string().trim().max(100).nullish(),
         /** ملاحظات التوصيل (اختياري). */
         notes: z.string().max(1000).nullish(),
@@ -598,6 +603,8 @@ export const deliveryRouter = router({
         partialDispatchConfirmed: z.boolean().optional(),
         deliveryAddress: z.string().max(1000).nullish(),
         notes: z.string().max(1000).nullish(),
+        recipientName: z.string().max(255).nullish(),
+        recipientPhone: z.string().max(50).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -614,6 +621,8 @@ export const deliveryRouter = router({
             partialDispatchConfirmed: input.partialDispatchConfirmed,
             deliveryAddress: input.deliveryAddress,
             notes: input.notes,
+            recipientName: input.recipientName,
+            recipientPhone: input.recipientPhone,
           },
           actorOf(ctx),
         ),
@@ -644,43 +653,141 @@ export const deliveryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-      const cn = await db.query.deliveryConsignments.findFirst({
-        where: eq(deliveryConsignments.id, input.consignmentId),
-        columns: { id: true, branchId: true, status: true, consignmentNumber: true, partyId: true },
+      const scopedBranchId = scopedBranchOf(ctx);
+      const result = await withTx(async (tx) => {
+        // نقرأ معرّف الجهة أولاً ثم نقفل الجهة قبل الإرسالية، وهو ترتيب الأقفال الموحّد
+        // في مسارات التوصيل. وبعد القفل نعيد التحقق من ثبات العلاقة قبل أي كتابة.
+        const preview = (
+          await tx
+            .select({ partyId: deliveryConsignments.partyId })
+            .from(deliveryConsignments)
+            .where(eq(deliveryConsignments.id, input.consignmentId))
+            .limit(1)
+        )[0];
+        if (!preview) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+              why: `الإرسالية رقم #${input.consignmentId} غير موجودة في النظام`,
+              doThis: "تحقق من رقم الإرسالية المطلوب تعديلها أو اختر إرسالية من القائمة",
+            }),
+          });
+        }
+
+        const party = (
+          await tx
+            .select({
+              id: deliveryParties.id,
+              partyType: deliveryParties.partyType,
+              branchId: deliveryParties.branchId,
+            })
+            .from(deliveryParties)
+            .where(eq(deliveryParties.id, Number(preview.partyId)))
+            .for("update")
+            .limit(1)
+        )[0];
+        if (!party) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+              why: `جهة التوصيل رقم ${Number(preview.partyId)} لم تعد موجودة في النظام`,
+              doThis: "حدّث الصفحة ثم راجع إسناد الإرسالية إلى جهة توصيل قائمة قبل تعديل البوليصة",
+            }),
+          });
+        }
+        if (
+          scopedBranchId != null &&
+          party.branchId != null &&
+          Number(party.branchId) !== scopedBranchId
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+              why: "جهة التوصيل مرتبطة بفرع آخر خارج نطاق حسابك",
+              doThis: "افتح الإرسالية بحساب الفرع الصحيح أو اطلب من مدير النظام تنفيذ التعديل",
+            }),
+          });
+        }
+
+        const cn = (
+          await tx
+            .select({
+              id: deliveryConsignments.id,
+              branchId: deliveryConsignments.branchId,
+              status: deliveryConsignments.status,
+              consignmentNumber: deliveryConsignments.consignmentNumber,
+              partyId: deliveryConsignments.partyId,
+            })
+            .from(deliveryConsignments)
+            .where(eq(deliveryConsignments.id, input.consignmentId))
+            .for("update")
+            .limit(1)
+        )[0];
+        if (!cn) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+              why: `الإرسالية رقم #${input.consignmentId} غير موجودة في النظام`,
+              doThis: "تحقق من رقم الإرسالية المطلوب تعديلها أو اختر إرسالية من القائمة",
+            }),
+          });
+        }
+        if (Number(cn.partyId) !== Number(party.id)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+              why: "تغيّرت جهة التوصيل المرتبطة بالإرسالية أثناء التعديل",
+              doThis: "حدّث الصفحة ثم أعد مسح باركود البوليصة على الجهة الحالية",
+            }),
+          });
+        }
+        if (scopedBranchId != null && Number(cn.branchId) !== scopedBranchId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+              why: "الإرسالية تخصّ فرعاً آخر غير الفرع المسموح لحسابك",
+              doThis: "افتح الإرسالية من حساب الفرع الصحيح أو اطلب من مدير النظام تنفيذ التعديل",
+            }),
+          });
+        }
+        // الرقم المرجعي metadata فقط: إصلاحه على صفّ ملغى/طرفي لا يعيد تنشيط الطرد ولا يمسّ
+        // حالته أو عُهدته. إبقاء هذا المسار متاحاً ضروري كي يمكن تنظيف التاريخ قبل تحويل الجهة
+        // من مندوب إلى شركة، مع بقاء التعديل ضمن نطاق الفرع وسجل التدقيق أدناه.
+        const externalTrackingRef = requireExternalTrackingRef(
+          party.partyType,
+          input.externalTrackingRef,
+        );
+        await assertExternalTrackingRefAvailable(
+          tx,
+          Number(party.id),
+          externalTrackingRef,
+          Number(cn.id),
+        );
+        try {
+          await tx
+            .update(deliveryConsignments)
+            .set({ externalTrackingRef })
+            .where(eq(deliveryConsignments.id, input.consignmentId));
+        } catch (error) {
+          rethrowExternalTrackingRefDuplicate(error, externalTrackingRef ?? "");
+        }
+
+        return { consignmentNumber: cn.consignmentNumber, externalTrackingRef };
       });
-      if (!cn) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: appErrorMessage({
-            what: "تعذّر تعديل الرقم المرجعي للإرسالية",
-            why: `الإرسالية رقم #${input.consignmentId} غير موجودة في النظام`,
-            doThis: "تحقق من رقم الإرسالية المطلوب تعديلها أو اختر إرسالية من القائمة",
-          }),
-        });
-      }
-      await assertPartyInScope(Number(cn.partyId), scopedBranchOf(ctx));
-      if (cn.status === "CANCELLED") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: appErrorMessage({
-            what: "تعذّر تعديل الرقم المرجعي للإرسالية",
-            why: "الإرسالية ملغاة في النظام ومسارها متوقف",
-            doThis: "لا يمكن تعديل بيانات إرسالية ملغاة؛ راجع مدير التوصيل إن كانت بحاجة لإعادة تفعيل",
-          }),
-        });
-      }
-      await db.update(deliveryConsignments)
-        .set({ externalTrackingRef: input.externalTrackingRef ?? null })
-        .where(eq(deliveryConsignments.id, input.consignmentId));
+
       await logAudit(ctx, {
         action: "delivery.updateTrackingRef",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { externalTrackingRef: input.externalTrackingRef },
+        newValue: { externalTrackingRef: result.externalTrackingRef },
       });
-      return { consignmentNumber: cn.consignmentNumber };
+      return { consignmentNumber: result.consignmentNumber };
     }),
 
   // تسجيل توريد (قبض الصافي) — يتطلّب وردية مفتوحة + store=FULL (النقد يدخل الدرج).

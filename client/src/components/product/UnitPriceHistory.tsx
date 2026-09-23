@@ -64,7 +64,7 @@ export function UnitPriceHistory({
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-5xl">
+        <DialogContent className="sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
               <History aria-hidden className="size-4" />

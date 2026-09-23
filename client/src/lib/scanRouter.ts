@@ -46,6 +46,7 @@ export function parseScan(raw: string): ScanResult {
   // (`INV-10023` ⇒ `10023`)، بينما الرقم التاريخيّ يبقى كاملاً لأنّه هو رقم عرضه.
   if (s.startsWith("INV-"))  return { type: "invoice",       number: stripDocPrefix(s) };
   if (s.startsWith("WO-"))   return { type: "workOrder",     number: stripDocPrefix(s) };
+  if (/^CNS?-/i.test(s))      return { type: "consignment",   number: s };
   if (s.startsWith("PO-"))   return { type: "purchaseOrder", number: stripDocPrefix(s) };
   if (s.startsWith("QUO-"))  return { type: "quotation",     number: stripDocPrefix(s) };
 

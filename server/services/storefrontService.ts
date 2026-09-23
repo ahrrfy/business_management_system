@@ -839,6 +839,7 @@ async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: nu
 export async function storefrontCatalog(opts: {
   branchId?: number;
   categoryId?: number | null;
+  productIds?: number[] | null;
   search?: string | null;
   limit?: number;
   /** آخر productId رآه الزائر في نفس المرشحات؛ null/undefined = الصفحة الأولى. */
@@ -853,6 +854,12 @@ export async function storefrontCatalog(opts: {
   // IN_STOCK هو السلوك الافتراضي المتوافق. ALL يعيد كل المنشور ويترك inStock=false للنافد.
   const conds: SQL<unknown>[] = [storefrontPublishableCondition()];
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
+  if (opts.productIds != null) {
+    if (opts.productIds.length === 0) {
+      return { items: [], hasMore: false, nextCursor: null };
+    }
+    conds.push(inArray(products.id, opts.productIds));
+  }
   const s = String(opts.search ?? "").trim();
   if (s) {
     // هوية الباركود تُحسم أولاً بالمساواة المفهرسة على الشكل الخام ومرشّحات UPC/EAN؛
@@ -925,10 +932,11 @@ export async function storefrontCatalog(opts: {
   // النصّ يُطبَّع بحالة الأحرف كي لا تصير «Pen»/«pen»/«PEN» ثلاثةَ مداخل لنتيجةٍ واحدة
   // (مطابقة MySQL غير حسّاسة للحالة أصلاً).
   const searchKey = s.toLowerCase();
+  const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
   const orderedIds = storefrontCacheDisabled()
     ? await loadOrderedIds()
-    : await (searchKey ? candidateSearchCache : candidateOrderCache).get(
-      `${companyScope()}:${branchId}:${opts.categoryId ?? ""}:${availabilityFilter}:${searchKey}`,
+    : await (searchKey || productIdsKey ? candidateSearchCache : candidateOrderCache).get(
+      `${companyScope()}:${branchId}:${opts.categoryId ?? ""}:${availabilityFilter}:${searchKey}:${productIdsKey}`,
         async () => Array.from(await loadOrderedIds()),
       );
   const cursor = opts.cursor ?? null;

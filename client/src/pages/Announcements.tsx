@@ -732,7 +732,7 @@ export default function Announcements() {
 
       {/* نافذة إنشاء إعلان جديد */}
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="max-w-lg" dir="rtl">
+        <DialogContent className="sm:max-w-lg" dir="rtl">
           <DialogHeader>
             <DialogTitle>نشر إعلان وتوجيه إداري جديد</DialogTitle>
             <DialogDescription>
@@ -894,7 +894,7 @@ export default function Announcements() {
           if (!open) setReadersModalId(null);
         }}
       >
-        <DialogContent className="max-w-md sm:max-w-lg" dir="rtl">
+        <DialogContent className="sm:max-w-md sm:max-w-lg" dir="rtl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Eye className="size-5 text-primary" aria-hidden />

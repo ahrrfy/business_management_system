@@ -843,7 +843,7 @@ export default function Inventory() {
 
       {/* P2-#3: معاينةُ مرفق الإثبات — يُقرأ data URL بشكلٍ مستقلٍّ عن قائمة الطلبات. */}
       <Dialog open={attachmentPreviewId != null} onOpenChange={(v) => !v && setAttachmentPreviewId(null)}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>مرفق إثبات — طلب #{attachmentPreviewId}</DialogTitle>
             <DialogDescription>

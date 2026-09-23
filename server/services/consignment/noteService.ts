@@ -340,7 +340,7 @@ export async function consignmentMarginsReport(input: { startDate: string; endDa
       s.id AS consignorId, s.name AS consignorName,
       CAST(COALESCE(SUM(ii.baseQuantity - ii.returnedBaseQuantity), 0) AS CHAR) AS soldQty,
       CAST(COALESCE(SUM(ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity), 0) AS CHAR) AS soldValue,
-      CAST(COALESCE(SUM(ii.unitCost * (ii.baseQuantity - ii.returnedBaseQuantity)), 0) AS CHAR) AS consignorShare
+      CAST(COALESCE(SUM(ii.lineCost - ROUND(ii.lineCost * ii.returnedBaseQuantity / ii.baseQuantity, 2)), 0) AS CHAR) AS consignorShare
     FROM invoiceItems ii
       JOIN invoices inv ON inv.id = ii.invoiceId
       JOIN productVariants pv ON pv.id = ii.variantId
@@ -429,7 +429,7 @@ export async function consignmentSettlementStatement(input: {
       p.id AS productId, pv.id AS variantId, p.name AS productName, pv.sku AS sku,
       CAST(COALESCE(SUM(ii.baseQuantity - ii.returnedBaseQuantity), 0) AS CHAR) AS soldQty,
       CAST(COALESCE(SUM(ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity), 0) AS CHAR) AS soldValue,
-      CAST(COALESCE(SUM(ii.unitCost * (ii.baseQuantity - ii.returnedBaseQuantity)), 0) AS CHAR) AS share
+      CAST(COALESCE(SUM(ii.lineCost - ROUND(ii.lineCost * ii.returnedBaseQuantity / ii.baseQuantity, 2)), 0) AS CHAR) AS share
     FROM invoiceItems ii
       JOIN invoices inv ON inv.id = ii.invoiceId
       JOIN productVariants pv ON pv.id = ii.variantId

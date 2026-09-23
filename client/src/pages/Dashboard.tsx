@@ -6,16 +6,17 @@ import { Link } from "wouter";
 import { useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
 import { APPLICATION_MODULES, type ApplicationModule } from "@/lib/moduleRegistry";
+import { canSeeGate } from "@/lib/navVisibility";
+import { resolveWorkspaceProfile, type WorkspaceNavItem } from "@/lib/workspaceProfiles";
 import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { Banknote, CalendarDays, MapPin, ReceiptText, RefreshCw, ShoppingCart } from "lucide-react";
+import { ArrowLeft, CalendarDays, MapPin, RefreshCw } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { motion } from "framer-motion";
 import { CashierHome } from "@/components/dashboard/CashierHome";
-import { DashboardShape } from "@/components/dashboard/DashboardShape";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { TodaySalesBreakdown } from "@/components/dashboard/TodaySalesBreakdown";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
@@ -33,170 +34,18 @@ const T = {
   statBg:      "var(--dash-stat-bg)",
   statBord:    "var(--dash-stat-bord)",
   alertBg:     "var(--dash-alert-bg)",
-  featuredBg:  "var(--dash-featured-bg)",
-  featuredBd:  "var(--dash-featured-bd)",
   metricsBg:   "var(--dash-metrics-bg)",
   metricsBord: "var(--dash-metrics-bord)",
 } as const;
 const useT = () => T;
 
-/* ═══════════ SECTIONS & MODULES ═══════════ */
-
-const SECTIONS = [
-  { id: 1, name: "المبيعات والتحصيل",  accent: "var(--sec1-ink)" },
-  { id: 2, name: "المخزون والمشتريات", accent: "var(--sec2-ink)" },
-  { id: 3, name: "المالية والحسابات",  accent: "var(--sec3-ink)" },
-  { id: 4, name: "التشغيل والقنوات",   accent: "var(--sec4-ink)" },
-  { id: 5, name: "الإدارة والنظام",    accent: "var(--sec5-ink)" },
-];
-
-type ModuleDef = RoleGate & {
-  id: string;
-  href: string;
-  name: string;
-  desc: string;
-  sec: number;
-  color: string;
-  featured?: boolean;
-  adminOnly?: boolean;
-  icon?: ApplicationModule["icon"];
-};
-
-const CORE_MODULES: ModuleDef[] = [
-  { id: "pos",           href: "/pos",                 name: "نقطة البيع",       desc: "مبيعات وورديات",    sec: 1, color: "var(--sec1-ink)",  featured: true },
-  { id: "crm",           href: "/crm",                 name: "CRM والعلاقات",      desc: "عملاء ومحادثات وعروض", sec: 1, color: "var(--sec1-ink)", module: "crm" },
-  { id: "sales",         href: "/invoices",            name: "المبيعات",          desc: "فواتير ومدفوعات",   sec: 1, color: "var(--sec1-ink)", module: "sales" },
-  { id: "quotations",    href: "/quotations",          name: "عروض الأسعار",      desc: "تسعير وعروض",       sec: 1, color: "var(--sec1-ink)", module: "crm" },
-  { id: "customers",     href: "/customers",           name: "العملاء",           desc: "إدارة العملاء",     sec: 1, color: "var(--sec1-ink)", module: "crm" },
-  { id: "returns",       href: "/returns",             name: "المرتجعات",         desc: "تسجيل المرتجعات",   sec: 1, color: "var(--sec1-ink)", module: "sales" },
-  { id: "products",      href: "/products",            name: "المنتجات",          desc: "منتجات وأسعار",      sec: 2, color: "var(--sec2-ink)", module: "products" },
-  { id: "purchases",     href: "/purchases",           name: "المشتريات",         desc: "أوامر وموردين",     sec: 2, color: "var(--sec2-ink)", module: "purchases" },
-  { id: "inventory",     href: "/inventory",           name: "المخزون والأرصدة",  desc: "أرصدة + تسوية",     sec: 2, color: "var(--sec2-ink)", module: "inventory" },
-  { id: "stocktakes",    href: "/stocktakes",          name: "الجرد المخزني",     desc: "جلسات وعدّ ومراجعة", sec: 2, color: "var(--sec2-ink)", module: "inventory" },
-  { id: "movements",     href: "/inventory-movements", name: "حركات المخزون",     desc: "وارد وصادر يدوي",   sec: 2, color: "var(--sec2-ink)", module: "inventory" },
-  { id: "transfers",     href: "/transfers",           name: "التحويلات",         desc: "نقل بين الفروع",    sec: 2, color: "var(--sec2-ink)", module: "inventory" },
-  { id: "barcode",       href: "/barcode-labels",      name: "الباركود",          desc: "طباعة الملصقات",    sec: 2, color: "var(--sec2-ink)", module: "inventory" },
-  { id: "suppliers",     href: "/suppliers",           name: "الموردون",          desc: "إدارة الموردين",    sec: 2, color: "var(--sec2-ink)", module: "suppliers" },
-  { id: "purchaseReturns", href: "/returns?tab=purchases",  name: "مرتجعات الشراء",    desc: "سجلّ المرتجعات",    sec: 2, color: "var(--sec2-ink)", module: "purchases" },
-  { id: "treasury",      href: "/treasury",            name: "الخزينة والمدفوعات", desc: "أرصدة وسندات وتحويلات", sec: 3, color: "var(--sec3-ink)", roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury", featured: true },
-  { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "var(--sec3-ink)", module: "expenses" },
-  { id: "vouchers",      href: "/vouchers",            name: "السندات",           desc: "قبض وصرف",          sec: 3, color: "var(--sec3-ink)", module: "treasury" },
-  { id: "shifts",        href: "/shifts",              name: "سجلّ الورديات",     desc: "إغلاقات وZ-report", sec: 3, color: "var(--sec3-ink)", module: "treasury" },
-  { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "var(--sec3-ink)", module: "collections" },
-  { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "var(--sec3-ink)", module: "suppliers" },
-  { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "var(--sec3-ink)", module: "collections" },
-  { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "var(--sec3-ink)", module: "suppliers" },
-  { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "var(--sec3-ink)", module: "reports" },
-  { id: "reports",       href: "/reports",             name: "التقارير والكشوفات", desc: "مالية وتشغيلية ورقابية", sec: 3, color: "var(--sec3-ink)", module: "reports" },
-  { id: "cardAccount",   href: "/card-account",        name: "حساب البطاقة والبنك", desc: "أرصدة وتسويات البطاقة", sec: 3, color: "var(--sec3-ink)", roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  { id: "exchange",      href: "/exchange",            name: "الصيرفة",           desc: "صرف وتسوية العملات", sec: 3, color: "var(--sec3-ink)", roles: ["admin", "manager", "accountant"], module: "treasury" },
-  { id: "workOrders",    href: "/work-orders",         name: "المطبعة والإنتاج",  desc: "أوامر الشغل والتخصيص", sec: 4, color: "var(--sec4-ink)", module: "workorders" },
-  { id: "tasks",         href: "/tasks",               name: "المهام والتذاكر",   desc: "إسناد ومتابعة وSLA", sec: 4, color: "var(--sec4-ink)", module: "tasks" },
-  { id: "delivery",      href: "/delivery",            name: "التوصيل",           desc: "طلبات وشركات وتحصيل COD", sec: 4, color: "var(--sec4-ink)", roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
-  { id: "store",         href: "/store-admin",         name: "طلبات المتجر",      desc: "طلبات وبنرات وإعدادات", sec: 4, color: "var(--sec4-ink)", roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
-  { id: "assets",        href: "/assets",              name: "الأصول الثابتة",    desc: "سجلّ وإهلاك وعهدة", sec: 5, color: "var(--sec5-ink)", managerOnly: true },
-  { id: "hr",            href: "/hr",                  name: "الموارد البشرية",   desc: "موظفون وحضور ورواتب", sec: 5, color: "var(--sec5-ink)", roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
-  { id: "closing",       href: "/closing",             name: "الإقفال والرقابة",  desc: "فترات واعتمادات وتوافق", sec: 5, color: "var(--sec5-ink)", managerOnly: true },
-  { id: "settings",      href: "/settings",            name: "الإدارة والإعدادات", desc: "فروع وأدوار وتكاملات", sec: 5, color: "var(--sec5-ink)", managerOnly: true },
-  { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "var(--sec5-ink)", adminOnly: true },
-  { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "var(--sec5-ink)", adminOnly: true },
-  { id: "reconcile",     href: "/reconcile",           name: "تدقيق التوافق",     desc: "كشف الانحراف",      sec: 5, color: "var(--sec5-ink)",  adminOnly: true },
-];
-
-const registeredById = new Map(APPLICATION_MODULES.map((module) => [module.id, module]));
-const coreModuleIds = new Set(CORE_MODULES.map((module) => module.id));
-const fromRegistry = (module: ApplicationModule): ModuleDef => ({
-  ...module,
-  name: module.label,
-  desc: module.description,
-  sec: module.section,
-  color: `var(--sec${module.section}-ink)`,
-});
-
-function withRegisteredGate(module: ModuleDef): ModuleDef {
-  const registered = registeredById.get(module.id);
-  if (!registered) return module;
-  return {
-    ...module,
-    roles: registered.roles,
-    module: registered.module,
-    level: registered.level,
-    managerOnly: registered.managerOnly,
-    adminOnly: registered.adminOnly,
-    anyOf: registered.anyOf,
-    icon: registered.icon,
-  };
-}
-
-/** بطاقات الرئيسية تُغذّى من سجلّ التنقّل؛ أي وحدة مستقبلية جديدة تظهر هنا تلقائياً. */
-const MODULES: ModuleDef[] = [
-  ...CORE_MODULES.map(withRegisteredGate),
-  ...APPLICATION_MODULES.filter((module) => !coreModuleIds.has(module.id)).map(fromRegistry),
-];
-
-/* ═══════════ QUICK ACTIONS ═══════════
-   شريط الإجراءات السريعة أسفل كل بطاقة — اختصار النقرات.
-   كل إجراء يشير إلى مسار حقيقي موجود في App.tsx فقط.
-   adminOnly: يظهر للمدير/الأدمن فقط.
-   لإضافة/تعديل إجراء: أضف سطراً هنا بمعرّف الوحدة (id) ومسار صحيح.
-═══════════════════════════════════════ */
-
-type Action = { ic: string; label: string; href: string; adminOnly?: boolean };
-
-const ACTIONS: Record<string, Action[]> = {
-  pos:           [{ ic: "plus",    label: "فاتورة", href: "/sales/new" }],
-  crm:           [{ ic: "plus",    label: "عميل", href: "/customers/new" }, { ic: "plus", label: "عرض", href: "/quotations/new" }, { ic: "rows", label: "الوارد", href: "/inbox" }],
-  sales:         [{ ic: "plus",    label: "بيع",    href: "/sales/new" },             { ic: "return",  label: "مرتجع",   href: "/returns?tab=sales" },    { ic: "doc",  label: "تقرير", href: "/sales-report" }],
-  quotations:    [{ ic: "plus",    label: "عرض",    href: "/quotations/new" },       { ic: "doc",     label: "فواتير",  href: "/invoices" }],
-  customers:     [{ ic: "plus",    label: "عميل",   href: "/customers/new" },        { ic: "doc",     label: "كشف",     href: "/customers-statement" },  { ic: "coin", label: "ذمم",   href: "/ar-aging" }],
-  returns:       [{ ic: "return",  label: "بيع",    href: "/returns?tab=sales" },    { ic: "return",  label: "شراء",    href: "/returns?tab=purchases" }, { ic: "doc",  label: "فواتير", href: "/invoices" }],
-  products:      [{ ic: "plus",    label: "منتج",    href: "/products/new" },         { ic: "barcode", label: "باركود",  href: "/barcode-labels" },       { ic: "rows", label: "أرصدة", href: "/inventory" }],
-  purchases:     [{ ic: "plus",    label: "أمر",    href: "/purchases/new" },        { ic: "return",  label: "إرجاع",   href: "/returns?tab=purchases" }, { ic: "coin", label: "ذمم",   href: "/ap-aging" }],
-  inventory:     [{ ic: "rows",    label: "حركة",   href: "/inventory-movements" },  { ic: "return",  label: "تحويل",   href: "/transfers" },            { ic: "plus", label: "منتج",   href: "/products/new" }],
-  stocktakes:    [{ ic: "plus",    label: "جرد", href: "/stocktakes/new" }, { ic: "rows", label: "أرصدة", href: "/inventory" }],
-  movements:     [{ ic: "rows",    label: "أرصدة",  href: "/inventory" },            { ic: "return",  label: "تحويل",   href: "/transfers" },            { ic: "barcode", label: "باركود", href: "/barcode-labels" }],
-  transfers:     [{ ic: "rows",    label: "أرصدة",  href: "/inventory" },            { ic: "rows",    label: "حركة",    href: "/inventory-movements" }],
-  barcode:       [{ ic: "plus",    label: "منتج",    href: "/products/new" },         { ic: "rows",    label: "منتجات",   href: "/products" }],
-  suppliers:     [{ ic: "plus",    label: "مورد",   href: "/suppliers/new" },        { ic: "doc",     label: "كشف",     href: "/suppliers-statement" },  { ic: "coin", label: "ذمم",   href: "/ap-aging" }],
-  purchaseReturns: [{ ic: "return", label: "إرجاع",  href: "/returns?tab=purchases" }, { ic: "rows",    label: "موردون",  href: "/suppliers" }],
-  expenses:      [{ ic: "plus",    label: "مصروف",  href: "/expenses/new" },         { ic: "coin",    label: "ذمم",     href: "/ap-aging" }],
-  vouchers:      [{ ic: "coin",    label: "قبض",    href: "/vouchers/receipt/new" }, { ic: "export",  label: "صرف",     href: "/vouchers/payment/new" }],
-  treasury:      [{ ic: "coin",    label: "قبض", href: "/vouchers/receipt/new" }, { ic: "export", label: "صرف", href: "/vouchers/payment/new" }, { ic: "return", label: "تحويل", href: "/treasury/transfers" }],
-  arAging:       [{ ic: "doc",     label: "كشف",    href: "/customers-statement" },  { ic: "rows",    label: "عملاء",   href: "/customers" },            { ic: "doc",  label: "تقرير", href: "/sales-report" }],
-  apAging:       [{ ic: "doc",     label: "كشف",    href: "/suppliers-statement" },  { ic: "rows",    label: "موردون",  href: "/suppliers" },            { ic: "plus", label: "مصروف", href: "/expenses/new" }],
-  custStatement: [{ ic: "coin",    label: "ذمم",    href: "/ar-aging" },             { ic: "rows",    label: "عملاء",   href: "/customers" }],
-  suppStatement: [{ ic: "coin",    label: "ذمم",    href: "/ap-aging" },             { ic: "rows",    label: "موردون",  href: "/suppliers" }],
-  salesReport:   [{ ic: "rows",    label: "فواتير", href: "/invoices" },             { ic: "coin",    label: "ذمم",     href: "/ar-aging" }],
-  reports:       [{ ic: "doc",     label: "مبيعات", href: "/reports/sales-hub" }, { ic: "coin", label: "ذمم", href: "/reports/aging-hub" }, { ic: "rows", label: "تنفيذي", href: "/reports" }],
-  cardAccount:   [{ ic: "doc",     label: "الخزينة", href: "/treasury" }],
-  exchange:      [{ ic: "doc",     label: "الخزينة", href: "/treasury" }],
-  workOrders:    [{ ic: "plus",    label: "استقبال", href: "/pos?mode=RECEPTION" }, { ic: "plus",    label: "عرض",     href: "/quotations/new" },       { ic: "rows", label: "خامات", href: "/inventory" }],
-  tasks:         [{ ic: "rows",    label: "مهامي", href: "/tasks?tab=mine" }, { ic: "rows", label: "المتأخرة", href: "/tasks?tab=list&overdue=1" }],
-  delivery:      [{ ic: "rows",    label: "الطلبات", href: "/delivery" }, { ic: "rows", label: "الشركات", href: "/delivery/parties" }],
-  store:         [{ ic: "rows",    label: "الطلبات", href: "/store-admin" }, { ic: "eye", label: "المتجر", href: "/store" }],
-  assets:        [{ ic: "plus",    label: "أصل", href: "/assets/new" }, { ic: "rows", label: "العهدة", href: "/assets/custody-report" }],
-  hr:            [{ ic: "plus",    label: "موظف", href: "/hr/employees/new" }, { ic: "rows", label: "الحضور", href: "/hr/attendance" }, { ic: "coin", label: "الرواتب", href: "/hr/payroll" }],
-  closing:       [{ ic: "shield",  label: "الفترات", href: "/period-lock" }, { ic: "eye", label: "التوافق", href: "/reconcile" }],
-  settings:      [{ ic: "shield",  label: "الأدوار", href: "/roles" }, { ic: "rows", label: "المستخدمون", href: "/users" }, { ic: "eye", label: "التدقيق", href: "/audit" }],
-  users:         [{ ic: "plus",    label: "مستخدم", href: "/users/new", adminOnly: true }, { ic: "eye", label: "تدقيق", href: "/audit", adminOnly: true }],
-  audit:         [{ ic: "shield",  label: "مستخدمون", href: "/users", adminOnly: true }],
-  reconcile:     [{ ic: "eye",     label: "تدقيق",   href: "/audit", adminOnly: true },   { ic: "coin", label: "ذمم", href: "/ar-aging", adminOnly: true }],
-};
-
-/* أيقونات الإجراءات — تستخدم currentColor لتتبع لون الزر (16×16). */
-const ActIco: Record<string, (sz?: number) => React.JSX.Element> = {
-  plus:   (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /><line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>),
-  search: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.3" stroke="currentColor" strokeWidth="1.7" /><line x1="10.4" y1="10.4" x2="14" y2="14" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>),
-  doc:    (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M3.5,2 H9 L12.5,5.5 V14 H3.5 Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M9,2 V5.5 H12.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><line x1="5.5" y1="8.5" x2="10.5" y2="8.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /><line x1="5.5" y1="11" x2="10.5" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>),
-  print:  (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M5,6 V2.5 H11 V6" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><rect x="2.5" y="6" width="11" height="5.5" rx="1.2" stroke="currentColor" strokeWidth="1.5" /><rect x="5" y="10" width="6" height="3.5" rx="0.6" stroke="currentColor" strokeWidth="1.5" fill="none" /></svg>),
-  return: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M6.5,4 L3,7.5 L6.5,11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M3,7.5 H10 C12.2,7.5 13.2,8.8 13.2,10.6 V12.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>),
-  barcode:(sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><line x1="4" y1="3.5" x2="4" y2="12.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><line x1="6.5" y1="3.5" x2="6.5" y2="12.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" /><line x1="8.5" y1="3.5" x2="8.5" y2="12.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><line x1="11" y1="3.5" x2="11" y2="12.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" /><line x1="12.8" y1="3.5" x2="12.8" y2="12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>),
-  rows:   (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><line x1="3.5" y1="4.5" x2="12.5" y2="4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><line x1="3.5" y1="8" x2="12.5" y2="8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><line x1="3.5" y1="11.5" x2="12.5" y2="11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>),
-  shield: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M8,2 L13,4 V8 C13,11 10.8,13 8,14 C5.2,13 3,11 3,8 V4 Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M5.8,8.2 L7.3,9.7 L10.2,6.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>),
-  eye:    (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M1.6,8 C3.6,4.4 12.4,4.4 14.4,8 C12.4,11.6 3.6,11.6 1.6,8 Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.5" /></svg>),
-  coin:   (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.6" stroke="currentColor" strokeWidth="1.6" /><path d="M8,4.6 V11.4 M6.3,6.2 H9 C9.9,6.2 9.9,8 9,8 H7 C6.1,8 6.1,9.8 7,9.8 H9.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>),
-  export: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M3,9.5 V12.5 H13 V9.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M8,3 V10 M5.4,5.6 L8,3 L10.6,5.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>),
-};
+const SYSTEM_SECTIONS = [
+  { id: 1, label: "المبيعات والتحصيل", accent: "var(--sec1-ink)" },
+  { id: 2, label: "المخزون والمشتريات", accent: "var(--sec2-ink)" },
+  { id: 3, label: "المالية والحسابات", accent: "var(--sec3-ink)" },
+  { id: 4, label: "التشغيل والقنوات", accent: "var(--sec4-ink)" },
+  { id: 5, label: "الإدارة والنظام", accent: "var(--sec5-ink)" },
+] as const;
 
 /* ═══════════ METRICS BAR ═══════════ */
 
@@ -221,8 +70,7 @@ const ShiftIco = ({ color }: { color: string }) => (
 );
 
 /* ═══════════ CONTEXT HEADER ═══════════
-   رأسٌ عمليّ للصفحة: مَن يعمل؟ في أي نطاق؟ وما أقصر المسارات اليومية؟
-   الأزرار تُفلتر بنفس canSeeGate المستعمل في بطاقات الوحدات، فلا نصنع طريقاً بصرياً إلى 403. */
+   رأسٌ عمليّ للصفحة: مَن يعمل؟ وفي أي نطاق؟ */
 
 function DashboardHeader({
   branchScope,
@@ -236,20 +84,11 @@ function DashboardHeader({
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role;
-  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   const branches = trpc.branches.list.useQuery(undefined, { enabled: Boolean(me.data) });
   const selectedBranch = branches.data?.find((branch) => branch.id === branchScope);
   const branchLabel = branchScope == null ? "كل الفروع" : (selectedBranch?.name ?? "الفرع المعيّن");
   const roleLabel = me.data?.isOwner ? "مالك النظام" : (me.data?.customRoleLabel ?? (role ? ROLE_LABEL[role] : undefined) ?? "مستخدم النظام");
   const dateLabel = new Intl.DateTimeFormat("ar-IQ", { weekday: "long", day: "numeric", month: "long", year: "numeric", numberingSystem: "latn" }).format(new Date());
-
-  const salesModule = MODULES.find((module) => module.id === "sales")!;
-  const treasuryModule = MODULES.find((module) => module.id === "treasury")!;
-  const quickActions = [
-    { href: "/pos", label: "نقطة البيع", icon: ShoppingCart, visible: true, primary: true },
-    { href: "/sales/new", label: "فاتورة جديدة", icon: ReceiptText, visible: canSeeGate(salesModule, role, override), primary: false },
-    { href: "/vouchers/receipt/new", label: "سند قبض", icon: Banknote, visible: canSeeGate(treasuryModule, role, override), primary: false },
-  ].filter((action) => action.visible);
 
   return (
     <header style={{ background: T.cardBg, borderBottom: `1px solid ${T.cardBord}`, padding: "22px 24px 18px" }}>
@@ -276,40 +115,228 @@ function DashboardHeader({
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {isAdmin && (
-            <div className="w-full sm:w-44">
-              <AppSelect
-                aria-label="نطاق فرع الشاشة الرئيسية"
-                className="h-[42px] bg-background text-xs font-bold"
-                value={branchScope == null ? "all" : String(branchScope)}
-                onValueChange={(value) => onBranchScopeChange(value === "all" ? undefined : Number(value))}
-              >
-                <option value="all">كل الفروع</option>
-                {(branches.data ?? []).map((branch) => (
-                  <option key={branch.id} value={String(branch.id)}>{branch.name}</option>
-                ))}
-              </AppSelect>
-            </div>
-          )}
-          <nav aria-label="إجراءات يومية سريعة" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {quickActions.map((action) => {
-              const Icon = action.icon;
-              return (
-                <Link key={action.href} href={action.href} style={{ minHeight: 42, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 13px", borderRadius: 9, border: `1px solid ${action.primary ? "var(--dash-pos-chip)" : T.cardBord}`, background: action.primary ? "var(--dash-pos-chip)" : T.statBg, color: action.primary ? "var(--dash-pos-glyph)" : T.text, fontSize: "0.75rem", fontWeight: 800, textDecoration: "none", boxShadow: action.primary ? "0 2px 6px oklch(0 0 0 / 0.10)" : "none" }}>
-                  <Icon aria-hidden size={16} />
-                  {action.label}
-                </Link>
-              );
-            })}
-          </nav>
-        </div>
+        {isAdmin && (
+          <div className="w-full sm:w-44">
+            <AppSelect
+              aria-label="نطاق فرع الشاشة الرئيسية"
+              className="h-[42px] bg-background text-xs font-bold"
+              value={branchScope == null ? "all" : String(branchScope)}
+              onValueChange={(value) => onBranchScopeChange(value === "all" ? undefined : Number(value))}
+            >
+              <option value="all">كل الفروع</option>
+              {(branches.data ?? []).map((branch) => (
+                <option key={branch.id} value={String(branch.id)}>{branch.name}</option>
+              ))}
+            </AppSelect>
+          </div>
+        )}
       </div>
     </header>
   );
 }
 
-function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
+function PrimaryActionsPanel({ items }: { items: readonly WorkspaceNavItem[] }) {
+  const T = useT();
+  if (items.length === 0) return null;
+
+  return (
+    <section
+      aria-label="الإجراءات الرئيسية"
+      style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 4px" }}
+    >
+      <div
+        style={{
+          padding: "14px",
+          border: `1px solid ${T.cardBord}`,
+          borderRadius: 10,
+          background: T.cardBg,
+        }}
+      >
+        <header style={{ marginBottom: 10 }}>
+          <h2 style={{ margin: 0, fontSize: "0.9375rem", fontWeight: 900, color: T.text }}>
+            الإجراءات الرئيسية
+          </h2>
+          <p style={{ margin: "3px 0 0", fontSize: "0.75rem", color: T.muted }}>
+            المسارات اليومية المتاحة حسب دورك وصلاحياتك.
+          </p>
+        </header>
+        <nav
+          aria-label="مسارات العمل الرئيسية"
+          style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8 }}
+        >
+          {items.map((item) => (
+            <Link
+              key={item.id}
+              href={item.href}
+              style={{
+                minHeight: 44,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                padding: "10px 12px",
+                border: `1px solid ${T.cardBord}`,
+                borderRadius: 8,
+                background: T.statBg,
+                color: T.text,
+                fontSize: "0.8125rem",
+                fontWeight: 800,
+                textDecoration: "none",
+              }}
+            >
+              <span>{item.label}</span>
+              <ArrowLeft aria-hidden size={16} style={{ flexShrink: 0, color: T.sub }} />
+            </Link>
+          ))}
+        </nav>
+      </div>
+    </section>
+  );
+}
+
+function ModuleCard({
+  module,
+  accent,
+}: {
+  module: ApplicationModule;
+  accent: string;
+}) {
+  const T = useT();
+  const Icon = module.icon;
+
+  return (
+    <article
+      style={{
+        minWidth: 0,
+        minHeight: 154,
+        border: `1px solid ${T.cardBord}`,
+        borderRadius: 10,
+        background: T.cardBg,
+        overflow: "hidden",
+      }}
+    >
+      <Link
+        href={module.href}
+        aria-label={`فتح ${module.label}`}
+        style={{
+          height: "100%",
+          minHeight: 154,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 14,
+          padding: "14px",
+          color: T.text,
+          textDecoration: "none",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 8,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: accent,
+            background: `color-mix(in oklch, ${accent} 12%, transparent)`,
+          }}
+        >
+          <Icon size={21} strokeWidth={1.8} />
+        </span>
+        <span style={{ display: "grid", gap: 3, minWidth: 0 }}>
+          <span style={{ fontSize: "0.875rem", fontWeight: 900, lineHeight: 1.35 }}>
+            {module.label}
+          </span>
+          <span style={{ fontSize: "0.75rem", color: T.sub, lineHeight: 1.5 }}>
+            {module.description}
+          </span>
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.75rem", fontWeight: 800, color: accent }}>
+          فتح الوحدة
+          <ArrowLeft aria-hidden size={15} />
+        </span>
+      </Link>
+    </article>
+  );
+}
+
+function SystemModulesPanel({
+  role,
+  permissionsOverride,
+}: {
+  role: RoleKey;
+  permissionsOverride: PermissionMap | null;
+}) {
+  const T = useT();
+  const isXNarrow = useMediaQuery("(max-width: 640px)");
+  const isNarrow = useMediaQuery("(max-width: 1023px)");
+  const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
+  const columns = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
+  const visibleModules = APPLICATION_MODULES.filter((module) =>
+    canSeeGate(module, role, permissionsOverride),
+  );
+
+  if (visibleModules.length === 0) return null;
+
+  return (
+    <section
+      aria-label="وحدات النظام"
+      style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 4px", display: "grid", gap: 18 }}
+    >
+      <header>
+        <h2 style={{ margin: 0, fontSize: "0.9375rem", fontWeight: 900, color: T.text }}>
+          وحدات النظام
+        </h2>
+        <p style={{ margin: "3px 0 0", fontSize: "0.75rem", color: T.muted }}>
+          اختر الوحدة المطلوبة، وتظهر لك الوحدات المتاحة حسب دورك وصلاحياتك.
+        </p>
+      </header>
+
+      {SYSTEM_SECTIONS.map((section) => {
+        const sectionModules = visibleModules.filter((module) => module.section === section.id);
+        if (sectionModules.length === 0) return null;
+
+        return (
+          <section key={section.id} aria-labelledby={`dashboard-section-${section.id}`} style={{ display: "grid", gap: 10 }}>
+            <header style={{ display: "flex", alignItems: "center", gap: 9 }}>
+              <span aria-hidden style={{ width: 3, height: 16, borderRadius: 2, background: section.accent }} />
+              <h3 id={`dashboard-section-${section.id}`} style={{ margin: 0, fontSize: "0.8125rem", fontWeight: 900, color: T.secLabel }}>
+                {section.label}
+              </h3>
+              <span style={{ color: T.muted, fontSize: "0.6875rem", fontWeight: 800 }}>
+                {fmtAr(sectionModules.length)} وحدات
+              </span>
+              <span aria-hidden style={{ flex: 1, height: 1, background: T.secLine }} />
+            </header>
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gap: 10 }}>
+              {sectionModules.map((module) => (
+                <ModuleCard key={module.id} module={module} accent={section.accent} />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+    </section>
+  );
+}
+
+function profileActionHref(
+  primaryNav: readonly WorkspaceNavItem[],
+  actionId: string,
+): string | undefined {
+  return primaryNav.find((item) => item.id === actionId)?.href;
+}
+
+function MetricsBar({
+  branchScope,
+  primaryNav,
+}: {
+  branchScope: number | undefined;
+  primaryNav: readonly WorkspaceNavItem[];
+}) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const isXNarrow = useMediaQuery("(max-width: 640px)");
@@ -317,6 +344,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
   const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
   const metricCols = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
   const role = me.data?.role ?? "";
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   // رؤية الأرقام المالية (ذمم متأخّرة/نبض المبيعات) — نفس بوّابة reportViewerProcedure/الخادم عبر
   // moduleAccessAllowed (لا قائمة أدوار حرفية ⇒ لا تباعُد). الخادم يُصفّر هذه الحقول لغير المخوّل؛
   // هنا نُخفي البطاقة كي لا تُعرَض «٠ ذمم متأخّرة» مضلِّلة لكاشير/مخزن (تدقيق تسريب dashboardMetrics).
@@ -324,23 +352,28 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
     !!role &&
     moduleAccessAllowed(
       role as RoleKey,
-      (me.data?.permissionsOverride ?? null) as PermissionMap | null,
+      override,
       "reports",
       "READ",
       ["manager", "accountant", "auditor"],
     );
+  const canViewTreasury = !!role && hasModuleAccess(role, override, "treasury", "READ");
+  const canViewInventory = !!role && hasModuleAccess(role, override, "inventory", "READ");
+  const canViewCollections = !!role && hasModuleAccess(role, override, "collections", "READ");
+  const canSeeStocktakes =
+    (role === "admin" || role === "manager" || role === "warehouse") &&
+    hasModuleAccess(role, override, "inventory", "FULL");
   const scopeReady = role === "admin" || branchScope !== undefined;
   const shift = trpc.shifts.current.useQuery(
     { branchId: branchScope ?? 0 },
-    { enabled: branchScope !== undefined },
+    { enabled: canViewTreasury && branchScope !== undefined },
   );
   // مقاييس لوحة التحكم: مخزون منخفض + ذمم متأخّرة (الخلفية تُطبّق عزل الفرع).
   const metrics = trpc.reports.dashboardMetrics.useQuery(
     { branchId: branchScope, includeTodaySales: true },
-    { enabled: Boolean(role) && scopeReady },
+    { enabled: (canViewReports || canViewInventory) && scopeReady },
   );
   // جلسات جرد بانتظار المراجعة — للأدوار المخوّلة فقط (الخادم warehouseProcedure).
-  const canSeeStocktakes = role === "admin" || role === "manager" || role === "warehouse";
   const stk = trpc.stocktakes.stats.useQuery(undefined, { enabled: canSeeStocktakes });
 
   const shiftLabel = shift.data ? "مفتوحة" : "لا وردية";
@@ -420,7 +453,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
       : []),
     // بطاقة نبض المبيعات: بلا معدّل ٧ أيام (لا مبيعات سابقة) = لا نص حشو — تُخفى كاملاً
     // (تدقيق الفجوات ٥/٧، بند ١٢) — نفس اصطلاح إخفاء بطاقة الجرد أدناه عبر spread شرطي.
-    ...(metrics.isLoading || pulseUnavailable || hasBaseline
+    ...(canViewReports && (metrics.isLoading || pulseUnavailable || hasBaseline)
       ? [
           {
             label: "مبيعات أمس مقابل المعدّل",
@@ -438,7 +471,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           },
         ]
       : []),
-    ...(branchScope !== undefined
+    ...(canViewTreasury && branchScope !== undefined
       ? [{
           label: "الوردية الحالية",
           value: shift.isLoading ? "—" : shift.isError ? "غير متاح" : shiftLabel,
@@ -452,19 +485,21 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           iBg: "var(--sem-info-bg)",
         }]
       : []),
-    {
-      label: "مخزون منخفض",
-      value: lowStockValue,
-      unit: metrics.isLoading ? ACTION_LABELS.refreshing : metricsUnavailable ? "حاول مجدداً" : "منتج",
-      copyText: metrics.isLoading || metricsUnavailable
-        ? ""
-        : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
-      ico: <WarnIco color="var(--sem-warn)" />,
-      iBg: "var(--sem-warn-bg)",
-      isAlert: true,
-      alertC: "var(--sem-warn)",
-      href: "/inventory",
-    },
+    ...(canViewInventory
+      ? [{
+          label: "مخزون منخفض",
+          value: lowStockValue,
+          unit: metrics.isLoading ? ACTION_LABELS.refreshing : metricsUnavailable ? "حاول مجدداً" : "منتج",
+          copyText: metrics.isLoading || metricsUnavailable
+            ? ""
+            : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
+          ico: <WarnIco color="var(--sem-warn)" />,
+          iBg: "var(--sem-warn-bg)",
+          isAlert: true,
+          alertC: "var(--sem-warn)",
+          href: profileActionHref(primaryNav, "inventory"),
+        }]
+      : []),
     // بطاقة الذمم المتأخّرة ماليّة ⇒ للمخوّلين برؤية التقارير فقط (الخادم يُصفّرها لغيرهم؛ نُخفيها
     // هنا كي لا يُعرَض صفرٌ مضلِّل لكاشير/مخزن). نفس بوّابة بطاقة «مبيعات أمس» أعلاه (تُخفى ذاتياً بالصفر).
     ...(canViewReports
@@ -482,7 +517,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
             iBg: "var(--sem-neg-bg)",
             isAlert: true,
             alertC: "var(--sem-neg)",
-            href: "/ar-aging",
+            href: canViewCollections ? profileActionHref(primaryNav, "ar") : undefined,
           },
         ]
       : []),
@@ -502,12 +537,16 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
             iBg: "var(--sem-info-bg)",
             isAlert: (stk.data?.review ?? 0) > 0,
             alertC: "var(--sem-info)",
-            href: "/stocktakes",
+            href: profileActionHref(primaryNav, "my_stocktakes"),
           },
         ]
       : []),
   ];
-  const hasRefreshIssue = metrics.isError || metrics.data?.health.status === "degraded" || (canSeeStocktakes && stk.isError);
+  const hasRefreshIssue =
+    ((canViewReports || canViewInventory) &&
+      (metrics.isError || metrics.data?.health.status === "degraded")) ||
+    (canViewTreasury && shift.isError) ||
+    (canSeeStocktakes && stk.isError);
 
   return (
     <section aria-label="مؤشرات اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "16px 24px 4px" }}>
@@ -518,7 +557,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
       {hasRefreshIssue && (
         <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10, padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
           <span>تعذّر تحديث بعض المؤشرات؛ القيم المتاحة ما زالت معروضة.</span>
-          <button type="button" onClick={() => { void metrics.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
+          <button type="button" onClick={() => { if (canViewReports || canViewInventory) void metrics.refetch(); if (canViewTreasury && branchScope !== undefined) void shift.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
             <RefreshCw aria-hidden size={13} />
             إعادة المحاولة
           </button>
@@ -568,240 +607,14 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           );
         })}
       </div>
-      <TodaySalesBreakdown branchScope={branchScope} canView={canViewReports} ready={scopeReady} />
+      <TodaySalesBreakdown branchScope={branchScope} canView={canViewReports} ready={canViewReports && scopeReady} />
     </section>
-  );
-}
-
-/* ═══════════ ACTION BUTTON (footer) ═══════════ */
-
-function ActionButton({ a, primary, color }: { a: Action; primary: boolean; color: string }) {
-  const T = useT();
-  // color = رمز حبر العائلة var(--secN-ink) ⇒ التظليل عبر color-mix (لا string.replace على المتغيّر).
-  const tint = (op: number) => `color-mix(in oklch, ${color} ${Math.round(op * 100)}%, transparent)`;
-  const base = primary ? color : T.sub;
-  return (
-    <Link
-      href={a.href}
-      style={{
-        flex: 1,
-        minWidth: 0,
-        display: "flex",
-        textDecoration: "none",
-        borderInlineStart: primary ? undefined : `1px solid ${T.cardBord}`,
-      }}
-    >
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 4,
-          fontSize: "0.75rem",
-          fontWeight: primary ? 700 : 600,
-          color: base,
-          padding: "0 4px",
-          transition: "background 0.15s, color 0.15s",
-        }}
-        onMouseEnter={(e) => {
-          const el = e.currentTarget as HTMLDivElement;
-          el.style.background = tint(primary ? 0.15 : 0.11);
-          el.style.color = color;
-        }}
-        onMouseLeave={(e) => {
-          const el = e.currentTarget as HTMLDivElement;
-          el.style.background = "transparent";
-          el.style.color = base;
-        }}
-      >
-        {ActIco[a.ic]?.(13)}
-        <span style={{ whiteSpace: "nowrap" }}>{a.label}</span>
-      </div>
-    </Link>
-  );
-}
-
-/* ═══════════ MODULE CARD ═══════════ */
-
-function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
-  const T = useT();
-  const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب شبكة إضافي.
-  const elevated = me.data?.role === "admin" || me.data?.role === "manager";
-  const acts = (ACTIONS[m.id] ?? []).filter((a) => !a.adminOnly || elevated);
-  const bord = m.featured ? T.featuredBd : T.cardBord;
-  // «صَفا»: بطاقة محايدة دافئة (بلا لمعان ولا ظلٍّ ملوّن صارخ) — الهوية في رقاقة الأيقونة وشريط القسم.
-  // ارتفاعٌ بظلٍّ محايد ناعم؛ عند التحويم يميل الحدّ نحو حبر العائلة (إشارة لطيفة).
-  const restShadow = "0 1px 2px oklch(0 0 0 / 0.05), 0 1px 3px oklch(0 0 0 / 0.03)";
-  const hoverShadow = "0 4px 16px oklch(0 0 0 / 0.08)";
-  const hoverBord = `color-mix(in oklch, ${m.color} 32%, ${T.cardBord})`;
-  const ModuleIcon = m.icon;
-
-  return (
-    <div
-      style={{
-        // minHeight + minWidth:0 (بِلا aspect-ratio) لِتَوحيد ارتِفاع الصَفّ ومَنع تَمَدُّد
-        // العَرض فَوق مَسار 1fr الضَيّق ⇒ تَراكُب (شَكوى المالك ١٢/٧).
-        minWidth: 0,
-        minHeight: 136,
-        borderRadius: 16,
-        overflow: "hidden",
-        display: "flex",
-        flexDirection: "column",
-        cursor: "pointer",
-        background: m.featured ? T.featuredBg : T.cardBg,
-        border: `${m.featured ? 2 : 1}px solid ${bord}`,
-        boxShadow: restShadow,
-        transition: "box-shadow 0.18s, transform 0.18s, border-color 0.18s",
-      }}
-      onMouseEnter={(e) => {
-        const el = e.currentTarget as HTMLDivElement;
-        el.style.boxShadow = hoverShadow;
-        el.style.transform = "translateY(-2px)";
-        if (!m.featured) el.style.borderColor = hoverBord;
-      }}
-      onMouseLeave={(e) => {
-        const el = e.currentTarget as HTMLDivElement;
-        el.style.boxShadow = restShadow;
-        el.style.transform = "none";
-        if (!m.featured) el.style.borderColor = T.cardBord as string;
-      }}
-    >
-      {/* المنطقة الرئيسية — رابط الوحدة */}
-      <Link
-        href={m.href}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 6,
-          padding: "10px 9px 7px",
-          textAlign: "center",
-          textDecoration: "none",
-        }}
-      >
-        {ModuleIcon ? (
-          <span
-            aria-hidden
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 12,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: m.color,
-              background: `color-mix(in oklch, ${m.color} 12%, transparent)`,
-            }}
-          >
-            <ModuleIcon size={24} strokeWidth={1.7} />
-          </span>
-        ) : <DashboardShape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={44} />}
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <div
-            style={{
-              fontSize: "0.8125rem",
-              fontWeight: 700,
-              lineHeight: 1.3,
-              color: T.text,
-              letterSpacing: "-0.01em",
-            }}
-          >
-            {m.name}
-          </div>
-          <div style={{ fontSize: "0.6875rem", color: T.sub, lineHeight: 1.4, fontWeight: 500 }}>
-            {m.desc}
-          </div>
-        </div>
-      </Link>
-
-      {/* شريط الإجراءات السريعة — حد أقصى 3 أزرار (خلفية محايدة، الإجراء الأساسي بحبر العائلة) */}
-      {acts.length > 0 && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "stretch",
-            height: 38,
-            flexShrink: 0,
-            borderTop: `1px solid ${T.cardBord}`,
-          }}
-        >
-          {acts.slice(0, 3).map((a, i) => (
-            <ActionButton key={a.href + i} a={a} primary={i === 0} color={m.color} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ═══════════ SECTION ROW ═══════════ */
-
-function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
-  const T = useT();
-  const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب إضافي.
-  const role = me.data?.role;
-  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  // عدد الأعمدة متجاوب — كَسر ذَكي يَحفَظ نِسبة البِطاقة قَريبة من المُربَّع:
-  //   ≤640px      ⇒ 2 (مَوبايل)
-  //   641-1023px  ⇒ 3 (لَوحي)
-  //   1024-1359px ⇒ 4 (تَكبير ١٥٠٪ على FHD = ١٢٨٠؛ يمنع البطاقات الضيقة)
-  //   ≥1360px     ⇒ 6 (ومنها ١٤٤٠ الشائعة؛ يمنع صف ٥+١ اليتيم في قسم المبيعات)
-  // نتعمّد إسقاط حالة ٥ أعمدة: معظم الأقسام تضم ٦/٩ وحدات، فتنتظم ٦ أو ٤ أفضل بصرياً.
-  // (تُستدعى الـhooks قبل أي عودة مبكرة — قاعدة Hooks.)
-  const isXNarrow = useMediaQuery("(max-width: 640px)");
-  const isNarrow = useMediaQuery("(max-width: 1023px)");
-  const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
-  const cols = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
-  // نفس بوابة الشريط الجانبي: الدور القالبي + المنح الفردي/الدور المخصّص + مستوى الوحدة.
-  // هكذا لا تظهر بطاقة تقود المستخدم إلى 403، وتظهر تلقائياً عند منحه الوحدة صراحةً.
-  const mods = MODULES.filter((m) => m.sec === sec.id && canSeeGate(m, role, override));
-  // قسم بلا بطاقات مرئية للدور الحالي ⇒ يُخفى كاملاً (لا رأس ولا فراغات).
-  if (mods.length === 0) return null;
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-        <div style={{ width: 3, height: 14, borderRadius: 2, background: sec.accent, flexShrink: 0 }} />
-        <span style={{ fontSize: "0.75rem", fontWeight: 800, color: T.secLabel, letterSpacing: "0.04em" }}>
-          {sec.name}
-        </span>
-        <span
-          style={{
-            minWidth: 22,
-            height: 20,
-            padding: "0 6px",
-            borderRadius: 10,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: T.statBg,
-            border: `1px solid ${T.statBord}`,
-            color: T.muted,
-            fontSize: "0.6875rem",
-            fontWeight: 800,
-          }}
-        >
-          {fmtAr(mods.length)}
-        </span>
-        <div style={{ flex: 1, height: 1, background: T.secLine, opacity: 0.35 }} />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: 12 }}>
-        {mods.map((m) => (
-          <ModuleCard key={m.id} m={m} />
-        ))}
-      </div>
-    </div>
   );
 }
 
 /* ═══════════ MORNING BRIEF ═══════════
    قسم «برنامج اليوم» فوق الوحدات: ٣ بطاقات فعل (تذكيرات AR + وعود اليوم + أوامر شغل متأخّرة).
-   يظهر للمدير/الأدمن فقط (بيانات إشرافية عبر الفرع)؛ كاشير/موظف ميداني لا يحتاجه.
+   يظهر فقط حين يتيح ملف العمل المحلول مدخل أوامر الشغل وتسمح الوحدة فعلياً بقراءته.
    عند «كل الأصفار» يختفي القسم كلياً (لا نُشتت الشاشة بلوحة فارغة). */
 
 function BriefCard({
@@ -869,20 +682,55 @@ function BriefCard({
   );
 }
 
-function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefined; isAdmin: boolean }) {
+function MorningBrief({
+  branchScope,
+  isAdmin,
+  primaryNav,
+}: {
+  branchScope: number | undefined;
+  isAdmin: boolean;
+  primaryNav: readonly WorkspaceNavItem[];
+}) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
-  const elevated = role === "admin" || role === "manager";
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const workOrdersHref = profileActionHref(primaryNav, "work_orders");
+  const canViewWorkOrders =
+    !!role &&
+    !!workOrdersHref &&
+    hasModuleAccess(role, override, "workorders", "READ");
+  const canViewReceivableBrief =
+    !!role &&
+    !!profileActionHref(primaryNav, "reports") &&
+    moduleAccessAllowed(
+      role,
+      override,
+      "reports",
+      "READ",
+      ["manager", "accountant", "auditor"],
+    ) &&
+    moduleAccessAllowed(
+      role,
+      override,
+      "collections",
+      "FULL",
+      ["manager", "accountant"],
+    );
+  const receivableHref = canViewReceivableBrief
+    ? `/reports/ar-reminders?branch=${branchScope}`
+    : undefined;
+  const canViewBrief = canViewWorkOrders || canViewReceivableBrief;
   // برنامج اليوم تنفيذيّ لا تجميعيّ: لا نختار أول فرع صامتاً للأدمن. المنتقي أعلى الشاشة هو
   // المصدر الواحد، والروابط تحمل الفرع نفسه إلى قائمة المتابعة.
   const metrics = trpc.reports.dashboardMetrics.useQuery(
     { branchId: branchScope, includeTodaySales: true },
-    { enabled: elevated && branchScope !== undefined },
+    { enabled: canViewBrief && branchScope !== undefined },
   );
 
-  // القسم للمدير/الأدمن حصراً — الموظّف الميداني لا يحتاج نظرة إشرافية.
-  if (!elevated) return null;
+  // الاستعلام المشترك يعمل إن وُجد نوع واحد على الأقل من البنود المسموحة؛ كل بطاقة أدناه
+  // تبقى محكومة ببوابتها المستقلة، فلا يحجب إطفاء أوامر الشغل تذكيرات الذمم والعكس.
+  if (!canViewBrief) return null;
   if (isAdmin && branchScope === undefined) {
     return (
       <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px" }}>
@@ -914,9 +762,13 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
     );
   }
   const brief = metrics.data.morningBrief;
-  const remindersDegraded = metrics.data.health.sourceErrors.includes("receivableReminders");
+  const remindersDegraded =
+    canViewReceivableBrief &&
+    metrics.data.health.sourceErrors.includes("receivableReminders");
   // promisedToday مجموعة جزئية من arRemindersDue؛ لا نعدّها مرّتين في إجمالي البنود.
-  const total = brief.arRemindersDue + brief.overdueWorkOrders;
+  const total =
+    (canViewReceivableBrief ? brief.arRemindersDue : 0) +
+    (canViewWorkOrders ? brief.overdueWorkOrders : 0);
   // كل الأصفار ⇒ لا حاجة لبانر «برنامج اليوم» — تنظيف بصريّ حين لا شيء يستحقّ الفعل.
   if (total === 0 && !remindersDegraded) return null;
 
@@ -958,9 +810,9 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
           gap: 10,
         }}
       >
-        {brief.promisedToday > 0 && (
+        {receivableHref && brief.promisedToday > 0 && (
           <BriefCard
-            href={`/reports/ar-reminders?branch=${branchScope}`}
+            href={receivableHref}
             label="عملاء موعودون اليوم"
             count={brief.promisedToday}
             sub="راجع الوعود المستحقّة قبل نهاية اليوم"
@@ -969,9 +821,9 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
             icon={<PromiseIco color="var(--sem-warn)" />}
           />
         )}
-        {brief.arRemindersDue > 0 && (
+        {receivableHref && brief.arRemindersDue > 0 && (
           <BriefCard
-            href={`/reports/ar-reminders?branch=${branchScope}`}
+            href={receivableHref}
             label="تذكيرات ذمم مستحقّة"
             count={brief.arRemindersDue}
             sub="افتح قائمة العملاء ثم أرسل أو سجّل قرار المتابعة"
@@ -980,9 +832,9 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
             icon={<ARIco color="var(--sem-info)" />}
           />
         )}
-        {brief.overdueWorkOrders > 0 && (
+        {canViewWorkOrders && brief.overdueWorkOrders > 0 && workOrdersHref && (
           <BriefCard
-            href={`/work-orders?branch=${branchScope}`}
+            href={`${workOrdersHref}?branch=${branchScope}`}
             label="أوامر شغل متأخّرة"
             count={brief.overdueWorkOrders}
             sub="تجاوزت التاريخ المتوقّع للتسليم"
@@ -1032,29 +884,38 @@ const TasksIco = ({ color }: { color: string }) => (
 /* ═══════════ المهام والتذاكر (نظام المهام الموحّد S2/T2.3) ═══════════
    بطاقتان: «مهامي المفتوحة» (شخصيّ — assignedTo=أنا، لا RESOLVED/CANCELLED) و«مهام متأخّرة»
    (تشغيليّ — نطاق فرع المستخدم نفسه المُستعمَل في MetricsBar/MorningBrief). يظهر لأي دور يملك
-   tasks≥READ (أوسع من MorningBrief المُقتصر على المدير/الأدمن — طابور شخصي يهمّ الكاشير/الفنّي
-   أيضاً)، ويختفي كلياً عند صفرَين (لا بانر فارغ).
+   tasks≥READ ويُبقي ملفُ عمله «مهامي» ضمن الإجراءات الرئيسية؛ ويختفي كلياً عند صفرَين.
    myOpenTasks يُحسب خادمياً بلا حدّ صفحات، والراوتر يمرّر هوية المستخدم المصادَق حصراً. */
-function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
+function TasksBrief({
+  branchScope,
+  primaryNav,
+}: {
+  branchScope: number | undefined;
+  primaryNav: readonly WorkspaceNavItem[];
+}) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const tasksHref = profileActionHref(primaryNav, "my_tasks");
 
   // بوّابة رؤية — مرآة hasModuleAccess (القالب فقط، بلا استثناء أدوار خارج القائمة) مطابقةً تماماً
   // لبوّابة الخادم tasksReadProcedure (requireModule("tasks","READ")، بلا قائمة أدوار صريحة هناك أيضاً).
-  const canSeeTasks = !!role && hasModuleAccess(role, override, "tasks", "READ");
+  const canSeeTasks =
+    !!role &&
+    !!tasksHref &&
+    hasModuleAccess(role, override, "tasks", "READ");
 
   // overdueTasks تشغيليّ — نفس مفتاح استعلام dashboardMetrics المُستهلَك أصلاً في MetricsBar/
   // MorningBrief (branchId مطابق) ⇒ react-query يُدَدِّب الطلب، لا شبكة إضافية.
   const metrics = trpc.reports.dashboardMetrics.useQuery(
     { branchId: branchScope, includeTodaySales: true },
-    { enabled: canSeeTasks },
+    { enabled: canSeeTasks && (role === "admin" || branchScope !== undefined) },
   );
   const overdueTasks = metrics.data?.morningBrief.overdueTasks ?? 0;
   const myOpenTasks = metrics.data?.morningBrief.myOpenTasks ?? 0;
 
-  if (!canSeeTasks) return null;
+  if (!canSeeTasks || !tasksHref) return null;
   if (metrics.isLoading) {
     return (
       <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", color: T.muted, fontSize: "0.75rem" }}>
@@ -1088,7 +949,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
         {myOpenTasks > 0 && (
           <BriefCard
-            href="/tasks?tab=mine"
+            href={tasksHref}
             label="مهامي المفتوحة"
             count={myOpenTasks}
             sub="مهام مُسنَدة إليك بانتظار المتابعة"
@@ -1099,7 +960,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
         )}
         {overdueTasks > 0 && (
           <BriefCard
-            href="/tasks?tab=list&overdue=1"
+            href={`${tasksHref.split("?")[0]}?tab=list&overdue=1`}
             label="مهام متأخّرة"
             count={overdueTasks}
             sub="تجاوزت الاستحقاق الفعلي — تحتاج متابعة"
@@ -1118,29 +979,63 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
 export default function Dashboard() {
   const me = trpc.auth.me.useQuery();
   const [adminBranchScope, setAdminBranchScope] = useState<number | undefined>(undefined);
-  // فئة الكاشير (القالبي + المخصّص المشتق «كاشير تجزئة/طباعة») ⇒ محطة عمل مركّزة لا شبكة الوحدات.
-  if (me.data?.role === "cashier") {
+  if (me.isLoading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: T.bg, margin: "-24px" }}>
+        <LoadingState message={ACTION_LABELS.verifyingPermissions} />
+      </div>
+    );
+  }
+  if (me.isError || !me.data) {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: T.bg, margin: "-24px" }}>
+        <ErrorState
+          message="تعذّر التحقّق من جلستك. تحقّق من الاتصال ثم أعد المحاولة."
+          onRetry={() => void me.refetch()}
+        />
+      </div>
+    );
+  }
+
+  const profile = resolveWorkspaceProfile({
+    role: me.data.role as RoleKey,
+    permissionsOverride: (me.data.permissionsOverride ?? null) as PermissionMap | null,
+  });
+  const cashierStation = profile.defaultAction?.access.kind === "STATION"
+    ? profile.defaultAction.access.station
+    : undefined;
+
+  // ملف العمل هو الذي يختار المحطة. كاشير بلا محطة فعلية يسقط إلى اللوحة العامة الآمنة
+  // بدلاً من افتراض محطة تجزئة أو استنتاج الاستقبال من صلاحية أخرى.
+  if (me.data.role === "cashier" && cashierStation && profile.defaultAction) {
     return (
       <CashierHome
-        tasksBrief={<TasksBrief branchScope={dashboardActionBranchId(me.data?.branchId)} />}
+        station={cashierStation}
+        defaultAction={profile.defaultAction}
+        primaryNav={profile.primaryNav}
+        tasksBrief={(
+          <TasksBrief
+            branchScope={dashboardActionBranchId(me.data.branchId)}
+            primaryNav={profile.primaryNav}
+          />
+        )}
       />
     );
   }
-  const isAdmin = me.data?.role === "admin";
-  const branchScope = isAdmin ? adminBranchScope : dashboardActionBranchId(me.data?.branchId);
+
+  const isAdmin = me.data.role === "admin";
+  const branchScope = isAdmin ? adminBranchScope : dashboardActionBranchId(me.data.branchId);
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }} style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
       <DashboardHeader branchScope={branchScope} isAdmin={isAdmin} onBranchScopeChange={setAdminBranchScope} />
-      <MetricsBar branchScope={branchScope} />
-      <MorningBrief branchScope={branchScope} isAdmin={isAdmin} />
-      <TasksBrief branchScope={branchScope} />
-      <div style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 32px", display: "flex", flexDirection: "column", gap: 20 }}>
-        <header>
-          <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 900, color: T.text }}>وحدات النظام</h2>
-          <p style={{ margin: "3px 0 0", fontSize: "0.75rem", color: T.muted }}>اختر الوحدة المطلوبة، أو استخدم الإجراءات المباشرة أسفل كل بطاقة.</p>
-        </header>
-        {SECTIONS.map((sec) => <SectionRow key={sec.id} sec={sec} />)}
-      </div>
+      <PrimaryActionsPanel items={profile.primaryNav} />
+      <SystemModulesPanel
+        role={me.data.role as RoleKey}
+        permissionsOverride={(me.data.permissionsOverride ?? null) as PermissionMap | null}
+      />
+      <MetricsBar branchScope={branchScope} primaryNav={profile.primaryNav} />
+      <MorningBrief branchScope={branchScope} isAdmin={isAdmin} primaryNav={profile.primaryNav} />
+      <TasksBrief branchScope={branchScope} primaryNav={profile.primaryNav} />
     </motion.div>
   );
 }

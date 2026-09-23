@@ -10,6 +10,7 @@ import { iqd } from "@/lib/assets/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ASSET_CATEGORIES, DEPRECIATION_METHODS, categoryDefaultLife } from "@shared/assets";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertCircle } from "lucide-react";
@@ -64,6 +65,7 @@ export default function AssetNew() {
           ? `ثُبّت الأصل ${a.code} وأُثبت التزام اقتنائه — الأصل نشط ويبدأ إهلاكه، أمّا خروج النقد فينتظر اعتماد مالكٍ آخر`
           : `أُضيف الأصل ${a?.code ?? ""}`,
       );
+      bypassUnsavedGuard();
       navigate(a?.id ? `/assets/${a.id}` : "/assets/register");
     },
     onError: (e) => { setError(e.message); notify.err(e); },

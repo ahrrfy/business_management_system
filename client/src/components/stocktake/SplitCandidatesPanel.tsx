@@ -188,7 +188,7 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
       )}
 
       <Dialog open={target != null} onOpenChange={(o) => !o && setTarget(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-right">فصل بديل مستقلّ</DialogTitle>
           </DialogHeader>

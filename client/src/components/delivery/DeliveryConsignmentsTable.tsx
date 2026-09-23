@@ -76,6 +76,7 @@ export function DeliveryConsignmentsTable({
           <tr>
             <th className="p-3 text-right">الإرسالية</th>
             <th className="p-3 text-right">الفاتورة</th>
+            <th className="p-3 text-right">بوليصة الشركة</th>
             <th className="p-3 text-right">العميل</th>
             <th className="p-3 text-end">العمر</th>
             <th className="p-3 text-left" title="مبلغُ COD المطلوب تحصيله من الزبون">المطلوب تحصيله</th>
@@ -106,6 +107,7 @@ export function DeliveryConsignmentsTable({
                     </Link>
                   ) : "—"}
                 </td>
+                <td className="p-3 font-mono text-xs" dir="ltr">{c.externalTrackingRef ?? "—"}</td>
                 <td className="p-3">{c.customerName ?? c.recipientName ?? "عميل نقدي"}</td>
                 <td className="p-3 text-end">
                   <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-black", DELIVERY_AGE_CLS[ageLevel])} dir="ltr">

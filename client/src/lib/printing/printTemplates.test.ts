@@ -39,7 +39,7 @@ describe("printShiftCloseBrowser — عقد الطباعة الحرارية", ()
     expect(html).toContain("unicode-bidi:isolate");
     expect(html).toContain('dir="ltr"');
     expect(html).toContain("min-height:27px");
-    expect(html).toContain("grid-template-columns:minmax(0,1fr) 34px 88px");
+    expect(html).toContain("border-collapse:collapse");
     expect(html).toContain("document.fonts.ready");
     expect(html).toContain("Promise.all");
     expect(html).not.toContain('body onload="window.print()');

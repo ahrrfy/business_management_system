@@ -248,7 +248,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) void requestClose(); }}>
-      <DialogContent dir="rtl" className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent dir="rtl" className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] text-primary-foreground">٣</span>
@@ -462,12 +462,12 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
             </label>
             {data.hasDelivery && (
               <div className="space-y-2 pt-1">
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <Input
                     value={data.deliveryAddress}
                     onChange={(e) => upd("deliveryAddress", e.target.value)}
                     placeholder="عنوان التوصيل"
-                    className="text-sm col-span-2"
+                    className="text-sm sm:col-span-2"
                   />
                   <MoneyInput
                     value={data.deliveryCost}

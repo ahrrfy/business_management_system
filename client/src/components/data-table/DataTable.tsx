@@ -35,11 +35,9 @@ import { TableSkeleton, EmptyState } from "@/components/PageState";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
-import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import {
   OperationActionCell,
@@ -51,8 +49,13 @@ import {
   operationTimeLabel,
   type OperationAttribution,
 } from "@/components/data-table/OperationAttribution";
-import { columnPresentationClass, columnUsesLtrIsolate, sortingFnForKind } from "@/components/data-table/columnContract";
-import { TABLE_TFOOT_CLS } from "@/components/data-table/tableStyles";
+import { columnPresentationClass, columnUsesLtrIsolate, resolveColumnPresentation, sortingFnForKind } from "@/components/data-table/columnContract";
+import {
+  TABLE_TFOOT_CLS,
+  TABLE_GRID_HEAD_BORDER_CLS,
+  TABLE_GRID_CELL_BORDER_CLS,
+  TABLE_GRID_FRAME_CLS,
+} from "@/components/data-table/tableStyles";
 
 /**
  * صنفُ الصفّ: الزخرفة الشريطية **تُكتَم** حين يقدّم `getRowClassName` خلفيةً خاصّة.
@@ -138,6 +141,12 @@ type DataTableProps<T, K = string> = {
   toolbar?: React.ReactNode; // أزرار إضافية (تصدير/إضافة) تظهر بجانب البحث
   /** ملخّص تشغيلي يُدمج في شريط الحالة السفلي (مجاميع/تنبيهات) بدل إنشاء شريط ثانٍ. */
   statusSummary?: React.ReactNode;
+  /**
+   * تفعيل شبكة الحدود العمودية والأفقية الكاملة (Full-Bordered / Orthogonal Grid Table)
+   * فواصل رأسية تفصل كافة الأعمدة لضمان هيبة ووضوح الجداول المالية والإدارية الأصولية.
+   * الافتراضي: true.
+   */
+  grid?: boolean;
   // === التَحديد المُتَعَدِّد (اختِياري) ===
   selection?: DataTableSelection<K>;
   getRowId?: (row: T) => K; // مُلزِم لو selection مُعَطاة
@@ -273,6 +282,36 @@ function TableShell({ bounded, maxHeightClass, children }: { bounded: boolean; m
   return <div className="rounded-md border overflow-x-auto">{children}</div>;
 }
 
+/** رسم محتوى ترويسة العمود مع أيقونة الفرز بما يضمن تعامداً هندسياً 100% مع الأرقام والنصوص تحته */
+function renderHeaderContent<T>(
+  h: import("@tanstack/react-table").Header<T, unknown>,
+) {
+  if (h.isPlaceholder) return null;
+  const presentation = resolveColumnPresentation(h.column);
+  const sortable = h.column.getCanSort();
+  const dir = h.column.getIsSorted();
+
+  const sortIcon = dir === "asc" ? (
+    <ChevronUp aria-hidden className="size-3.5 shrink-0 text-primary" />
+  ) : dir === "desc" ? (
+    <ChevronDown aria-hidden className="size-3.5 shrink-0 text-primary" />
+  ) : sortable ? (
+    <ArrowUpDown aria-hidden className="size-3.5 shrink-0 opacity-30 group-hover:opacity-70" />
+  ) : null;
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1",
+        presentation.align === "end" && "flex-row-reverse"
+      )}
+    >
+      <span>{flexRender(h.column.columnDef.header, h.getContext())}</span>
+      {sortIcon}
+    </span>
+  );
+}
+
 export function DataTable<T, K = string>({
   columns,
   data,
@@ -305,6 +344,7 @@ export function DataTable<T, K = string>({
   serverSearch,
   viewKey,
   serverSorting,
+  grid = true,
 }: DataTableProps<T, K>) {
   const effectiveColumns = useMemo<ColumnDef<T, unknown>[]>(() => {
     if (operation) {
@@ -395,7 +435,6 @@ export function DataTable<T, K = string>({
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
   const [compact, setCompact] = useState(initialView.compact === true);
   const [lastIndex, setLastIndex] = useState<number | null>(null);
-  const barcodeInput = useBarcodeInput((code) => (serverSearch ? serverSearch.onChange(code) : setGlobalFilter(code)), { enabled: barcodeSearch });
 
   useEffect(() => {
     writeTableView(storageKey, { columnVisibility, compact });
@@ -601,11 +640,20 @@ export function DataTable<T, K = string>({
     ? table.getFooterGroups().map((fg) => (
         <tr key={fg.id} className={TABLE_TFOOT_CLS}>
           {/* خليّة فارغة بإزاء عمود التحديد كي تبقى المحاذاة صحيحة. */}
-          {selectionEnabled && <td className="p-2 w-10" aria-hidden />}
+          {selectionEnabled && (
+            <td
+              className={cn("p-2 w-10 align-middle", grid && "border-e border-border/60")}
+              aria-hidden
+            />
+          )}
           {fg.headers.map((h) => (
             <td
               key={h.id}
-              className={`px-[var(--ui-table-cell-inline)] py-2.5 ${columnPresentationClass(h.column)}`}
+              className={cn(
+                "px-[var(--ui-table-cell-inline)] py-2.5 align-middle",
+                grid && "[&:not(:last-child)]:border-e [&:not(:last-child)]:border-border/60",
+                columnPresentationClass(h.column)
+              )}
             >
               {h.isPlaceholder ? null : flexRender(h.column.columnDef.footer, h.getContext())}
             </td>
@@ -619,21 +667,18 @@ export function DataTable<T, K = string>({
       {(showSearch || toolbar) && (
         <WorkspaceBar variant="filters" label="بحث وأدوات الجدول" className="justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {showSearch && (
-            <div className={cn("relative min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}>
-              <Input
-                autoFocus={autoFocusSearch}
-                className={cn(barcodeSearch && barcodeSearchInputClass)}
-                placeholder={searchPlaceholder}
-                value={serverSearch ? serverSearch.value : globalFilter}
-                onChange={(e) => {
-                  const value = barcodeSearch ? normalizeKnownSystemBarcode(e.target.value) : e.target.value;
-                  serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
-                }}
-                onKeyDown={(e) => barcodeInput.handleKeyDown(e, serverSearch ? serverSearch.onChange : setGlobalFilter)}
-                aria-label={searchPlaceholder}
-              />
-              {barcodeSearch && <BarcodeSearchCue />}
-            </div>
+            <UnifiedSearchInput
+              autoFocus={autoFocusSearch}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              value={serverSearch ? serverSearch.value : globalFilter}
+              onChange={(value) => {
+                serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
+              }}
+              barcode={Boolean(barcodeSearch)}
+              size="compact"
+              className={cn("min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}
+            />
           )}
           {toolbar && <div className="flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">{toolbar}</div>}
         </WorkspaceBar>
@@ -696,12 +741,12 @@ export function DataTable<T, K = string>({
           {/* الجدول الكامل للشاشات المتوسطة والأكبر (>=md) */}
           <div className="hidden md:block">
             <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
-              <table className="w-max min-w-full border-separate border-spacing-0 text-sm">
+              <table className={cn("w-max min-w-full border-separate border-spacing-0 text-sm", grid && TABLE_GRID_FRAME_CLS)}>
                 <thead className="bg-muted">
                   {table.getHeaderGroups().map((hg) => (
-                    <tr key={hg.id} className="text-right">
+                    <tr key={hg.id} className="text-start">
                       {selectionEnabled && (
-                        <th className="p-2 w-10 text-center">
+                        <th className={cn("p-2 w-10 text-center align-middle border-b border-border/80", grid && "border-e border-border/70")}>
                           <input
                             type="checkbox"
                             aria-label="تَحديد كل المَرئي"
@@ -720,7 +765,12 @@ export function DataTable<T, K = string>({
                         return (
                           <th
                             key={h.id}
-                            className={`border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground ${columnPresentationClass(h.column)} ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
+                            className={cn(
+                              "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
+                              grid && TABLE_GRID_HEAD_BORDER_CLS,
+                              columnPresentationClass(h.column),
+                              sortable && "cursor-pointer select-none hover:bg-muted/80 group"
+                            )}
                             aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
                             {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                             onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
@@ -735,18 +785,7 @@ export function DataTable<T, K = string>({
                                 : undefined
                             }
                           >
-                            {h.isPlaceholder ? null : (
-                              <span className="inline-flex items-center gap-1">
-                                {flexRender(h.column.columnDef.header, h.getContext())}
-                                {dir === "asc" ? (
-                                  <ChevronUp aria-hidden className="size-3.5" />
-                                ) : dir === "desc" ? (
-                                  <ChevronDown aria-hidden className="size-3.5" />
-                                ) : sortable ? (
-                                  <ArrowUpDown aria-hidden className="size-3.5 opacity-30" />
-                                ) : null}
-                              </span>
-                            )}
+                            {renderHeaderContent(h)}
                           </th>
                         );
                       })}
@@ -789,10 +828,16 @@ export function DataTable<T, K = string>({
                         }}
                       >
                         {selectionEnabled && (
-                          <td className="p-2 w-10 text-center cursor-pointer" onClick={(e) => {
-                            e.stopPropagation();
-                            handleRowToggle(rowIndex, e);
-                          }}>
+                          <td
+                            className={cn(
+                              "p-2 w-10 text-center align-middle cursor-pointer border-b border-border/55",
+                              grid && "border-e border-border/45"
+                            )}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRowToggle(rowIndex, e);
+                            }}
+                          >
                             <input
                               type="checkbox"
                               aria-label={getRowSelectionLabel?.(row.original) ?? "تَحديد الصَفّ"}
@@ -807,7 +852,14 @@ export function DataTable<T, K = string>({
                           const cellVal = cellPrimitive(cell.getValue());
                           const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
                           return (
-                            <td key={cell.id} className={`border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle ${columnPresentationClass(cell.column)}`}>
+                            <td
+                              key={cell.id}
+                              className={cn(
+                                "border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle",
+                                grid && TABLE_GRID_CELL_BORDER_CLS,
+                                columnPresentationClass(cell.column)
+                              )}
+                            >
                               <CopyContextMenu
                                 value={cellVal}
                                 rowHeaders={copyHeaders}
@@ -822,9 +874,9 @@ export function DataTable<T, K = string>({
                             </td>
                           );
                         })}
-                        </tr>
-                      );
-                    })}
+                      </tr>
+                    );
+                  })}
                   {!loading && visibleRows.length === 0 && (
                     <tr>
                       <td colSpan={effectiveColumns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">
@@ -840,12 +892,12 @@ export function DataTable<T, K = string>({
         </>
       ) : (
         <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
-          <table className="w-max min-w-full border-separate border-spacing-0 text-sm">
+          <table className={cn("w-max min-w-full border-separate border-spacing-0 text-sm", grid && TABLE_GRID_FRAME_CLS)}>
             <thead className="bg-muted">
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="text-right">
+                <tr key={hg.id} className="text-start">
                   {selectionEnabled && (
-                    <th className="p-2 w-10 text-center">
+                    <th className={cn("p-2 w-10 text-center align-middle border-b border-border/80", grid && "border-e border-border/70")}>
                       <input
                         type="checkbox"
                         aria-label="تَحديد كل المَرئي"
@@ -864,7 +916,12 @@ export function DataTable<T, K = string>({
                     return (
                       <th
                         key={h.id}
-                        className={`border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground ${columnPresentationClass(h.column)} ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
+                        className={cn(
+                          "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
+                          grid && TABLE_GRID_HEAD_BORDER_CLS,
+                          columnPresentationClass(h.column),
+                          sortable && "cursor-pointer select-none hover:bg-muted/80 group"
+                        )}
                         aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
                         {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                         onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
@@ -879,18 +936,7 @@ export function DataTable<T, K = string>({
                             : undefined
                         }
                       >
-                        {h.isPlaceholder ? null : (
-                          <span className="inline-flex items-center gap-1">
-                            {flexRender(h.column.columnDef.header, h.getContext())}
-                            {dir === "asc" ? (
-                              <ChevronUp aria-hidden className="size-3.5" />
-                            ) : dir === "desc" ? (
-                              <ChevronDown aria-hidden className="size-3.5" />
-                            ) : sortable ? (
-                              <ArrowUpDown aria-hidden className="size-3.5 opacity-30" />
-                            ) : null}
-                          </span>
-                        )}
+                        {renderHeaderContent(h)}
                       </th>
                     );
                   })}
@@ -926,10 +972,16 @@ export function DataTable<T, K = string>({
                     }}
                   >
                     {selectionEnabled && (
-                      <td className="p-2 w-10 text-center cursor-pointer" onClick={(e) => {
-                        e.stopPropagation();
-                        handleRowToggle(rowIndex, e);
-                      }}>
+                      <td
+                        className={cn(
+                          "p-2 w-10 text-center align-middle cursor-pointer border-b border-border/55",
+                          grid && "border-e border-border/45"
+                        )}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRowToggle(rowIndex, e);
+                        }}
+                      >
                         <input
                           type="checkbox"
                           aria-label={getRowSelectionLabel?.(row.original) ?? "تَحديد الصَفّ"}
@@ -944,7 +996,14 @@ export function DataTable<T, K = string>({
                       const cellVal = cellPrimitive(cell.getValue());
                       const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
                       return (
-                        <td key={cell.id} className={`border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle ${columnPresentationClass(cell.column)}`}>
+                        <td
+                          key={cell.id}
+                          className={cn(
+                            "border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle",
+                            grid && TABLE_GRID_CELL_BORDER_CLS,
+                            columnPresentationClass(cell.column)
+                          )}
+                        >
                           <CopyContextMenu
                             value={cellVal}
                             rowHeaders={copyHeaders}
@@ -959,9 +1018,9 @@ export function DataTable<T, K = string>({
                         </td>
                       );
                     })}
-                    </tr>
-                  );
-                })}
+                  </tr>
+                );
+              })}
               {!loading && visibleRows.length === 0 && (
                 <tr>
                   <td colSpan={effectiveColumns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">

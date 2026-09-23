@@ -1,3 +1,5 @@
+import { isAudioFeedbackEnabled } from "@/lib/audioFeedback";
+
 /**
  * صافرةُ إشعارٍ صغيرة (Web Audio) — 660Hz لـ150ms ثمّ 880Hz لـ200ms. لا ملفَّ صوتٍ ولا أصلَ إضافيّ.
  *
@@ -9,6 +11,7 @@
  * دورةُ حياةٍ لكلّ صفارة (نُغلقها بعد ~500ms).
  */
 export function playReadyBeep(): void {
+  if (!isAudioFeedbackEnabled()) return;
   try {
     const AC: typeof AudioContext | undefined =
       (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
@@ -46,6 +49,7 @@ export function playReadyBeep(): void {
  * - NORMAL: نغمة أحادية ناعمة (E5).
  */
 export function playAnnouncementChime(priority: "NORMAL" | "IMPORTANT" | "CRITICAL" = "NORMAL"): void {
+  if (!isAudioFeedbackEnabled()) return;
   try {
     const AC: typeof AudioContext | undefined =
       (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
