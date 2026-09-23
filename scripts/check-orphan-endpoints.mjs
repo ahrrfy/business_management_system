@@ -17,7 +17,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
 const BASELINE_PATH = path.join(__dirname, "orphan-endpoints-baseline.json");
-const EXTERNAL_CONSUMERS_PATH = path.join(REPO, "docs", "storefront", "mobile-trpc-consumers.json");
+const STOREFRONT_CONSUMERS_PATH = path.join(REPO, "docs", "storefront", "mobile-trpc-consumers.json");
+const SUPERAPP_CONSUMERS_PATH = path.join(REPO, "docs", "superapp", "mobile-trpc-consumers.json");
 
 // (١) خريطة مفتاح appRouter → ملف الراوتر، من server/routers.ts.
 const routersSrc = readFileSync(path.join(REPO, "server", "routers.ts"), "utf8");
@@ -89,7 +90,7 @@ function walkNativeAndroidClient(dir) {
     }
   }
 }
-walkNativeAndroidClient(path.join(REPO, "android-native", "app", "src", "main", "java"));
+// مسح عميل Expo للاتصال الآمن
 walkNativeAndroidClient(path.join(
   REPO,
   "expo",
@@ -102,15 +103,15 @@ walkNativeAndroidClient(path.join(
   "java",
 ));
 
-// تطبيق مكتبة العربية عميل Expo مستقل في مستودع/مشروع منفصل، لذلك لا يظهر ضمن client/src أو
-// android-native. نحفظ عقده في بيان JSON مُراجع بدلاً من توسعة baseline اليتامى: كل إجراء فيه
-// يظل معلناً كمسار مستهلك ويمكن تدقيقه مع تغييرات التطبيق نفسه.
-if (existsSync(EXTERNAL_CONSUMERS_PATH)) {
-  const externalConsumers = JSON.parse(readFileSync(EXTERNAL_CONSUMERS_PATH, "utf8"));
-  if (!Array.isArray(externalConsumers.procedures) || !externalConsumers.procedures.every((procedure) => typeof procedure === "string" && /^[\w.]+$/.test(procedure))) {
-    throw new Error(`بيان مستهلك متجر الجوال غير صالح: ${EXTERNAL_CONSUMERS_PATH}`);
+// تطبيقات Expo (المتجر وسوبر العربية) عملاء مستقلون، نحفظ عقود إجراءاتهم في بيانات JSON مُراجعة:
+for (const consumersPath of [STOREFRONT_CONSUMERS_PATH, SUPERAPP_CONSUMERS_PATH]) {
+  if (existsSync(consumersPath)) {
+    const consumers = JSON.parse(readFileSync(consumersPath, "utf8"));
+    if (!Array.isArray(consumers.procedures) || !consumers.procedures.every((procedure) => typeof procedure === "string" && /^[\w.]+$/.test(procedure))) {
+      throw new Error(`بيان مستهلك الجوال غير صالح: ${consumersPath}`);
+    }
+    for (const procedure of consumers.procedures) addUsedProcedure(procedure);
   }
-  for (const procedure of externalConsumers.procedures) addUsedProcedure(procedure);
 }
 
 // (٤) احسب اليتامى: إجراء خادميّ اسمه الورقيّ لا يظهر في أيّ سلسلة trpc واجهية.

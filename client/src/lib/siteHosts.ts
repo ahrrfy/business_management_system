@@ -41,7 +41,14 @@ export const PUBLIC_HOSTS: string[] = PUBLIC_HOST ? [PUBLIC_HOST, `www.${PUBLIC_
 export const INTERNAL_HOSTS: string[] = INTERNAL_HOST ? [INTERNAL_HOST] : [];
 
 /** الصفحات العامة (بيتها الدومين العام) — تُحوَّل إليه إن فُتحت على دومين الشركة. */
-export const PUBLIC_PATHS = ["/store", "/store/mobile-turnstile", "/apply", "/legal"] as const;
+export const PUBLIC_PATHS = [
+  "/store",
+  "/store/mobile-turnstile",
+  "/apply",
+  "/legal",
+  "/shelf-lookup",
+  "/price-check",
+] as const;
 
 /**
  * مسارات **مشتركة**: مسموحة على المضيفَين ولا تُحوَّل أبداً — لأن **تطبيق المناديب على Play (TWA)
@@ -136,4 +143,10 @@ export function storefrontUrl(hostname: string = currentHost()): string {
 /** رابط صفحة الوظائف العامة (يُنسَخ ويُنشر في إعلانات التوظيف) — الدومين العام. */
 export function careersUrl(hostname: string = currentHost()): string {
   return `${publicOriginFor(hostname)}/apply`;
+}
+
+/** رابط قارئ أسعار الرفوف للزبائن (مع الفرع اختيارياً) — الدومين العام دائماً. */
+export function shelfLookupUrl(branchId?: number | null, hostname: string = currentHost()): string {
+  const base = `${publicOriginFor(hostname)}/shelf-lookup`;
+  return branchId ? `${base}?branch=${branchId}` : base;
 }

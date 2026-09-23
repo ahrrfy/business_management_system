@@ -29,7 +29,14 @@ if (configResult.status !== 0) {
   if (!["super-arabia", "super-arabia-preview"].includes(config.scheme)) fail("The native deep-link scheme is outside the reviewed identities.");
   if (config.android?.usesCleartextTraffic === true) fail("Cleartext traffic must remain disabled.");
   if (config.extra?.apiBaseUrl) fail("The API endpoint must stay in the native transport configuration, not Expo public extras.");
-  if (!Array.isArray(config.plugins) || !config.plugins.some((plugin) => plugin === "expo-notifications")) {
+  if (
+    !Array.isArray(config.plugins) ||
+    !config.plugins.some(
+      (plugin) =>
+        plugin === "expo-notifications" ||
+        (Array.isArray(plugin) && plugin[0] === "expo-notifications"),
+    )
+  ) {
     fail("expo-notifications must remain a reviewed native plugin, not an ad-hoc JavaScript integration.");
   }
   if (config.extra?.expoProjectId !== "" && !/^[0-9a-f-]{36}$/i.test(config.extra?.expoProjectId ?? "")) {

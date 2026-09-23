@@ -29,4 +29,19 @@ describe("manual camera entry lifecycle", () => {
     expect(manual).toHaveBeenCalledWith("B1");
     expect(deliver).not.toHaveBeenCalled();
   });
+
+  it("configures ZXing fallback with TRY_HARDER and POSSIBLE_FORMATS hints", () => {
+    const source = readFileSync("client/src/components/scan/CameraScanner.tsx", "utf8");
+    expect(source).toContain("DecodeHintType.TRY_HARDER");
+    expect(source).toContain("DecodeHintType.POSSIBLE_FORMATS");
+    expect(source).toContain("BarcodeFormat.EAN_13");
+    expect(source).toContain("BarcodeFormat.QR_CODE");
+  });
+
+  it("configures continuous autofocus and non-blocking format intersection for native detector", () => {
+    const source = readFileSync("client/src/components/scan/CameraScanner.tsx", "utf8");
+    expect(source).toContain("focusMode");
+    expect(source).toContain("continuous");
+    expect(source).not.toContain("Incomplete barcode formats");
+  });
 });

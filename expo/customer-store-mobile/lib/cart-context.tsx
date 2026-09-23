@@ -9,8 +9,8 @@ type CartContextValue = {
   itemCount: number;
   isRestoring: boolean;
   quantityFor: (lineId: string) => number;
-  addProduct: (product: Product) => void;
-  addSelection: (product: Product, details: ProductSelectionDetails) => void;
+  addProduct: (product: Product, quantity?: number) => void;
+  addSelection: (product: Product, details: ProductSelectionDetails, quantity?: number) => void;
   increment: (lineId: string) => void;
   decrement: (lineId: string) => void;
   remove: (lineId: string) => void;
@@ -79,7 +79,7 @@ function normalizeCartLine(
 }
 
 /** منطق مشترك قابل للاختبار: أول ضغط ينشئ السطر، وكل ضغط لاحق يزيد الكمية نفسها. */
-export function addProductToCart(lines: CartLine[], input: Product | CartLine): CartLine[] {
+export function addProductToCart(lines: CartLine[], input: Product | CartLine, count: number = 1): CartLine[] {
   const product = "lineId" in input ? input.product : input;
   if (productOnlineOrderingIssue(product)) return lines;
   const selected = "lineId" in input ? input : normalizeCartLine(input);
@@ -87,12 +87,13 @@ export function addProductToCart(lines: CartLine[], input: Product | CartLine): 
   const existing = lines.find((line) => line.lineId === selected.lineId);
   if (existing) {
     return lines.map((line) => line.lineId === selected.lineId
-      ? { ...line, quantity: Math.min(line.quantity + 1, line.maxQuantity, MAX_QUANTITY_PER_LINE) }
+      ? { ...line, quantity: Math.min(line.quantity + count, line.maxQuantity, MAX_QUANTITY_PER_LINE) }
       : line);
   }
   const total = lines.reduce((sum, line) => sum + line.quantity, 0);
   if (lines.length >= MAX_CART_LINES || total >= MAX_TOTAL_QUANTITY) return lines;
-  return [...lines, selected];
+  const boundedQuantity = Math.min(count, selected.maxQuantity, MAX_QUANTITY_PER_LINE);
+  return [...lines, { ...selected, quantity: boundedQuantity }];
 }
 
 export function CartProvider({ children }: PropsWithChildren) {
@@ -117,9 +118,9 @@ export function CartProvider({ children }: PropsWithChildren) {
   }, [isRestoring, lines]);
 
   const value = useMemo<CartContextValue>(() => {
-    const addProduct = (product: Product) => setLines((current) => addProductToCart(current, product));
-    const addSelection = (product: Product, details: ProductSelectionDetails) =>
-      setLines((current) => addProductToCart(current, buildCartLine(product, details)));
+    const addProduct = (product: Product, count = 1) => setLines((current) => addProductToCart(current, product, count));
+    const addSelection = (product: Product, details: ProductSelectionDetails, count = 1) =>
+      setLines((current) => addProductToCart(current, buildCartLine(product, details), count));
     const increment = (lineId: string) => setLines((current) => {
       const total = current.reduce((sum, line) => sum + line.quantity, 0);
       if (total >= MAX_TOTAL_QUANTITY) return current;

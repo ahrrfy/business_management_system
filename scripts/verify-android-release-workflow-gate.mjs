@@ -16,12 +16,12 @@ const REQUIRED_WORKFLOWS = Object.freeze([
     requiredJobs: Object.freeze(["audit"]),
   }),
   Object.freeze({
-    file: "android-native-ci.yml",
-    label: "Native Android CI",
+    file: "expo-mobile-check.yml",
+    label: "Expo Mobile Check",
     allowedEvents: Object.freeze(["push", "workflow_dispatch"]),
     requiredJobs: Object.freeze([
-      "native-android-check",
-      "native-android-device-smoke",
+      "customer-store-check",
+      "superapp-check",
     ]),
   }),
 ]);
