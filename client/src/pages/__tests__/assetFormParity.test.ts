@@ -12,7 +12,7 @@ const editSource = readFileSync(new URL("../AssetEdit.tsx", import.meta.url), "u
 describe("تماثل نموذجَي الأصل (إضافة/تعديل)", () => {
   it("يحرس النموذجين معاً من فقد البيانات غير المحفوظة", () => {
     for (const source of [newSource, editSource]) {
-      expect(source).toContain('import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";');
+      expect(source).toMatch(/import\s*\{[^}]*\buseUnsavedGuard\b[^}]*\}\s*from\s*["']@\/hooks\/useUnsavedGuard["'];?/);
       expect(source).toContain("useUnsavedGuard(isDirty)");
     }
   });
