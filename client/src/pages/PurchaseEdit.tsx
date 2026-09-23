@@ -29,8 +29,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   copyInvoiceItems,
   hasInvoiceTransfer,
@@ -292,6 +293,7 @@ export default function PurchaseEdit() {
         utils.purchases.list.invalidate(),
       ]);
       notify.ok(`حُفظت تعديلات أمر الشراء ${r.poNumber}`);
+      bypassUnsavedGuard();
       navigate(`/purchases/${purchaseOrderId}`);
     },
     onError: (e) => notify.err(e),
@@ -426,13 +428,21 @@ export default function PurchaseEdit() {
     return null;
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (update.isPending) return;
     const err = validate();
     if (err) {
       notify.warn(err);
       return;
     }
+    const ok = await confirm({
+      title: "تأكيد تعديل أمر الشراء",
+      description: `سيتم حفظ التعديلات على أمر الشراء ${po.data?.poNumber ?? `#${purchaseOrderId}`} وتحديث البنود والقيمة الإجمالية (${fmtAr(docTotals.total)} ${state.currency === "USD" ? "$" : "د.ع"}).`,
+      confirmText: "تأكيد وحفظ التعديلات",
+      cancelText: "تراجع",
+    });
+    if (!ok) return;
+
     update.mutate({
       purchaseOrderId,
       expectedVersion: Number(po.data?.version),

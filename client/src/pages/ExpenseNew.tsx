@@ -26,7 +26,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Landmark } from "lucide-react";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   expenseApprovalExecutionText,
   expenseExecutionMode,
@@ -231,6 +231,7 @@ export default function ExpenseNew() {
           ? "تم رفع طلب المصروف للمالك بلا صرف مالي حتى الاعتماد"
           : "تم تسجيل المصروف وتنفيذه",
       );
+      bypassUnsavedGuard();
       navigate("/expenses");
     },
     onError: (e) => {
@@ -312,6 +313,16 @@ export default function ExpenseNew() {
         title: "رفع طلب اعتماد مصروف",
         description: `سيُحفظ طلب ${fmt(D(amount).toFixed(2))} د.ع بلا أي خصم أو قيد مالي. يستطيع مالك نشط آخر فقط اعتماده. ${expenseApprovalExecutionText(paymentMethod)}`,
         confirmText: "رفع طلب الاعتماد",
+        cancelText: "تراجع",
+      });
+      if (!ok) return;
+    } else if (executionMode === "DRAWER_IMMEDIATE") {
+      const ok = await confirm({
+        variant: "warning",
+        title: "تأكيد تسجيل المصروف",
+        description: `سيُصرف مبلغ ${fmt(D(amount).toFixed(2))} د.ع نقداً من درج الوردية الحالية ويُسجَّل قيد مصروف فوري. هل تؤكد العملية؟`,
+        confirmText: "تأكيد وصرف المصروف",
+        cancelText: "تراجع",
       });
       if (!ok) return;
     }

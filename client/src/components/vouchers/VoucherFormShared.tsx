@@ -30,7 +30,7 @@ import {
 } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import {
@@ -336,6 +336,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           "حُفظ الطلب بلا أثر مالي؛ تتاح الطباعة الرسمية بعد الاعتماد والتنفيذ.",
         );
       }
+      bypassUnsavedGuard();
       navigate("/vouchers");
     },
     onError: (e) => {
@@ -500,7 +501,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     };
   }
 
-  function submit(printAfter: "thermal" | "a4" | null = null) {
+  const partyDisplayName = useMemo(() => {
+    if (partyType === "CUSTOMER") return customerData.data?.name || "العميل";
+    if (partyType === "SUPPLIER") return supplierData.data?.name || "المورّد";
+    if (partyType === "DELIVERY_PARTY") return "شركة التوصيل";
+    return counterpartyName.trim() || "الطرف المحدد";
+  }, [partyType, customerData.data?.name, supplierData.data?.name, counterpartyName]);
+
+  async function submit(printAfter: "thermal" | "a4" | null = null) {
     setErr("");
     const v = validate();
     if (v) {
@@ -517,6 +525,29 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       );
       return;
     }
+
+    const formattedAmount = fmt(amount.trim());
+    const methodLabel = paymentMethodCompact(method);
+    const isOut = direction === "OUT";
+
+    const title = isOut ? "تأكيد سند الصرف" : "تأكيد سند القبض";
+    const description = isOut
+      ? `سيُسجَّل سند صرف بمبلغ ${formattedAmount} د.ع لصالح «${partyDisplayName}» بطريقة «${methodLabel}» ويُحال للاعتماد والتنفيذ المالي. هل تؤكد العملية؟`
+      : `سيُسجَّل سند قبض بمبلغ ${formattedAmount} د.ع من «${partyDisplayName}» بطريقة «${methodLabel}» وتُثبَّت الحركة المالية في الدفتر. هل تؤكد العملية؟`;
+    const confirmText = isOut ? "تأكيد الصرف" : "تأكيد القبض";
+
+    const ok = await confirm({
+      variant: isOut ? "warning" : "info",
+      title,
+      description,
+      confirmText,
+      cancelText: "تراجع",
+    });
+    if (!ok) {
+      if (isReceipt && printAfter === "a4") releaseReservedPrintWindow();
+      return;
+    }
+
     // حارس تجربة مستخدم فقط: سند الصرف المعلّق لا يطلب طباعة رسمية.
     setPendingPrintRef(isReceipt ? printAfter : null);
     create.mutate(buildPayload());
@@ -555,7 +586,10 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         confirmText: "مغادرة",
         cancelText: "بقاء",
       });
-      if (ok) navigate("/vouchers");
+      if (ok) {
+        bypassUnsavedGuard();
+        navigate("/vouchers");
+      }
     } finally {
       leaveBusyRef.current = false;
     }

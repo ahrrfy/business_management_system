@@ -15,7 +15,7 @@ import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { Check, Printer, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -189,6 +189,7 @@ export default function ProductionNew() {
       utils.production.recipeCapacity.invalidate();
       utils.inventory.onHand.invalidate();
       utils.inventory.movementsRich.invalidate();
+      bypassUnsavedGuard();
       navigate(`/production/${r.productionOrderId}`);
     },
     onError: (e) => { setError(e.message); notify.err(e); },

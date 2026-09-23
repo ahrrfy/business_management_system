@@ -32,7 +32,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems,
 } from "@/lib/invoiceTransfer";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
@@ -458,14 +458,10 @@ export default function SalesInvoice() {
       notify.ok("تم حفظ فاتورة البيع والكروت الرقمية واعتمادها");
       setDigitalIntentId(null);
       setDigitalFinalizeError(null);
-      setClientRequestId(crypto.randomUUID());
-      setCreditPrompt(null);
-      setMgrEmail("");
-      setMgrPwd("");
-      const printAfterSave = printAfterSaveRef.current;
-      const shareAfterSave = shareAfterSaveRef.current;
-      printAfterSaveRef.current = false;
-      shareAfterSaveRef.current = false;
+      setClientRequestId(crypto.randomUUID()); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+      const printAfterSave = printAfterSaveRef.current; const shareAfterSave = shareAfterSaveRef.current;
+      printAfterSaveRef.current = false; shareAfterSaveRef.current = false;
+      bypassUnsavedGuard();
       navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
     onError: (e) => setDigitalFinalizeError(e.message),
@@ -478,16 +474,11 @@ export default function SalesInvoice() {
       const id = (r as { invoiceId: number }).invoiceId;
       notify.ok("تم حفظ فاتورة البيع واعتمادها");
       // أعِد توليد المفتاح للفاتورة التالية + أغلق حوار الموافقة إن كان مفتوحاً.
-      setClientRequestId(crypto.randomUUID());
-      setCreditPrompt(null);
-      setMgrEmail("");
-      setMgrPwd("");
-      const printAfterSave = printAfterSaveRef.current;
-      const shareAfterSave = shareAfterSaveRef.current;
-      printAfterSaveRef.current = false;
-      shareAfterSaveRef.current = false;
-      navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`,
-      );
+      setClientRequestId(crypto.randomUUID()); setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+      const printAfterSave = printAfterSaveRef.current; const shareAfterSave = shareAfterSaveRef.current;
+      printAfterSaveRef.current = false; shareAfterSaveRef.current = false;
+      bypassUnsavedGuard();
+      navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
     onError: (e) => {
       // تجاوز حدّ الائتمان أو بيع بأقل من التكلفة ⇒ افتح حوار موافقة المدير بدل إظهار خطأ فقط.
@@ -516,6 +507,7 @@ export default function SalesInvoice() {
         `الطلب #${r.requestId} بانتظار مراجع مستقل — لم تتغيّر الفاتورة أو المخزون أو المال بعد.`,
       );
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+      bypassUnsavedGuard();
       navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
     },
     onError: (e) => {
@@ -534,6 +526,7 @@ export default function SalesInvoice() {
         `الطلب #${result.id} بانتظار مراجع مستقل — العكس والبديل وتسوية الفرق ستنفّذ ذرّياً عند الاعتماد.`,
       );
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+      bypassUnsavedGuard();
       navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
     },
     onError: (cause) => notify.err(cause),
@@ -989,8 +982,12 @@ export default function SalesInvoice() {
           variant: "warning",
           title: "مغادرة الفاتورة الحالية",
           description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المغادرة ستُفقدها. متابعة؟",
-          confirmText: "مغادرة",
-        }).then((ok) => { if (ok) navigate("/invoices"); });
+        }).then((ok) => {
+          if (ok) {
+            bypassUnsavedGuard();
+            navigate("/invoices");
+          }
+        });
         return;
       }
     };
