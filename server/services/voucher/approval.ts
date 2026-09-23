@@ -690,11 +690,29 @@ export async function approveVoucherTx(
       await lockCashSourceForUpdate(tx, source);
     }
   } else if (cashInPreview) {
+    const previewCashUser =
+      preview.createdBy != null
+        ? (
+            await tx
+              .select({ id: users.id, role: users.role, branchId: users.branchId })
+              .from(users)
+              .where(eq(users.id, Number(preview.createdBy)))
+              .limit(1)
+          )[0]
+        : null;
+    const previewCashActor: Actor = previewCashUser
+      ? {
+          userId: Number(previewCashUser.id),
+          branchId: Number(previewCashUser.branchId ?? preview.branchId),
+          role: previewCashUser.role,
+        }
+      : previewApproverActor;
+
     preResolvedCashIn =
       preResolvedCashIn ??
       (await shiftIdForCashTx(
         tx,
-        previewApproverActor,
+        previewCashActor,
         Number(preview.branchId),
         "اعتماد سند قبض نقدي",
       ));
@@ -1488,18 +1506,37 @@ export async function approveVoucherTx(
       cashBucket = "TREASURY";
     }
   } else if (paymentMethod === "CASH") {
+    const creatorUser =
+      r.createdBy != null
+        ? (
+            await tx
+              .select({ id: users.id, role: users.role, branchId: users.branchId })
+              .from(users)
+              .where(eq(users.id, Number(r.createdBy)))
+              .limit(1)
+          )[0]
+        : null;
+    const creatorCashActor: Actor = creatorUser
+      ? {
+          userId: Number(creatorUser.id),
+          branchId: Number(creatorUser.branchId ?? branchId),
+          role: creatorUser.role,
+        }
+      : approverActor;
+
     const g =
       preResolvedCashIn ??
       (await shiftIdForCashTx(
         tx,
-        approverActor,
+        creatorCashActor,
         branchId,
         "اعتماد سند قبض نقدي",
       ));
     shiftId = g.shiftId;
     cashBucket = g.cashBucket;
   } else {
-    shiftId = await openShiftIdTx(tx, approverActor.userId, branchId);
+    shiftId = null;
+    cashBucket = null;
   }
 
   let systemPurchaseOrder: typeof purchaseOrders.$inferSelect | null = null;
@@ -2027,6 +2064,7 @@ export async function approveVoucherTx(
         : new Date(
             r.voucherDate ? toDateStr(new Date(r.voucherDate)) : toDateStr(),
           ),
+      createdBy: direction === "IN" ? Number(r.createdBy ?? actor.userId) : actor.userId,
     });
   }
   if (
