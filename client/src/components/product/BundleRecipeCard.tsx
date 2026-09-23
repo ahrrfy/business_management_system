@@ -9,12 +9,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
+import { D, formatIqd, round2 } from "@/lib/money";
 
 type Component = {
   componentVariantId: number;
   componentBaseQuantity: number;
   productName?: string;
   sku?: string;
+  costPrice?: string;
 };
 
 export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId: number }) {
@@ -33,8 +35,16 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
       componentBaseQuantity: c.componentBaseQuantity,
       productName: c.componentProductName,
       sku: c.componentSku,
+      costPrice: c.componentCostPrice,
     }));
   }, [editing, compQ.data]);
+
+  const totalCost = useMemo(() => {
+    return rows.reduce((sum, r) => {
+      const unitCost = round2(D(r.costPrice ?? "0"));
+      return sum.plus(unitCost.mul(r.componentBaseQuantity));
+    }, D(0));
+  }, [rows]);
 
   const pickerDeb = useDebouncedValue(picker, 300);
   const searchQ = trpc.bundles.searchComponents.useQuery(
@@ -44,7 +54,11 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
 
   const setMut = trpc.bundles.setComponents.useMutation({
     onSuccess: async () => {
-      await Promise.all([utils.bundles.getComponents.invalidate(), utils.bundles.previewImpact.invalidate()]);
+      await Promise.all([
+        utils.bundles.getComponents.invalidate(),
+        utils.bundles.previewImpact.invalidate(),
+        utils.catalog.getForVariantEdit.invalidate(),
+      ]);
       setEditing(null);
       setPicker("");
       setError("");
@@ -67,9 +81,9 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
   function removeRow(vid: number) {
     setEditing((prev) => (prev ?? []).filter((r) => r.componentVariantId !== vid));
   }
-  function addRow(vid: number, name: string, sku: string) {
+  function addRow(vid: number, name: string, sku: string, costPrice?: string) {
     if ((editing ?? []).some((r) => r.componentVariantId === vid)) return;
-    setEditing((prev) => [...(prev ?? []), { componentVariantId: vid, componentBaseQuantity: 1, productName: name, sku }]);
+    setEditing((prev) => [...(prev ?? []), { componentVariantId: vid, componentBaseQuantity: 1, productName: name, sku, costPrice: costPrice ?? "0" }]);
     setPicker("");
   }
   function save() {
@@ -122,39 +136,53 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
                   <th className="px-3 py-2 text-right font-medium">المكوّن</th>
                   <th className="px-3 py-2 text-right font-medium">SKU</th>
                   <th className="px-3 py-2 text-right font-medium">الكميّة (بالوحدة الأساس)</th>
+                  <th className="px-3 py-2 text-right font-medium">كلفة الوحدة</th>
+                  <th className="px-3 py-2 text-right font-medium">إجمالي الكلفة</th>
                   {editing && <th className="px-3 py-2"></th>}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
-                  <tr key={r.componentVariantId} className="border-t">
-                    <td className="px-3 py-2">{r.productName ?? `#${r.componentVariantId}`}</td>
-                    <td className="px-3 py-2 text-xs text-muted-foreground">{r.sku ?? "—"}</td>
-                    <td className="px-3 py-2">
-                      {editing ? (
-                        <Input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={r.componentBaseQuantity}
-                          onChange={(e) => updateQty(r.componentVariantId, parseInt(e.target.value || "1", 10))}
-                          className="w-24"
-                        />
-                      ) : (
-                        <span>{r.componentBaseQuantity}</span>
-                      )}
-                    </td>
-                    {editing && (
-                      <td className="px-3 py-2 text-left">
-                        <Button variant="ghost" size="icon" onClick={() => removeRow(r.componentVariantId)} aria-label="حذف">
-                          <X aria-hidden className="size-4" />
-                        </Button>
+                {rows.map((r) => {
+                  const unitCost = round2(D(r.costPrice ?? "0"));
+                  const lineCost = unitCost.mul(r.componentBaseQuantity);
+                  return (
+                    <tr key={r.componentVariantId} className="border-t">
+                      <td className="px-3 py-2">{r.productName ?? `#${r.componentVariantId}`}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">{r.sku ?? "—"}</td>
+                      <td className="px-3 py-2">
+                        {editing ? (
+                          <Input
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={r.componentBaseQuantity}
+                            onChange={(e) => updateQty(r.componentVariantId, parseInt(e.target.value || "1", 10))}
+                            className="w-24"
+                          />
+                        ) : (
+                          <span>{r.componentBaseQuantity}</span>
+                        )}
                       </td>
-                    )}
-                  </tr>
-                ))}
+                      <td className="px-3 py-2 text-muted-foreground">{formatIqd(unitCost.toString())}</td>
+                      <td className="px-3 py-2 font-medium">{formatIqd(lineCost.toString())}</td>
+                      {editing && (
+                        <td className="px-3 py-2 text-left">
+                          <Button variant="ghost" size="icon" onClick={() => removeRow(r.componentVariantId)} aria-label="حذف">
+                            <X aria-hidden className="size-4" />
+                          </Button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+          </div>
+        )}
+        {rows.length > 0 && (
+          <div className="flex items-center justify-between p-3 rounded-md bg-muted/40 border text-sm">
+            <span className="font-medium text-muted-foreground">إجمالي كلفة البكج المحسوبة:</span>
+            <span className="text-base font-bold text-foreground">{formatIqd(totalCost.toString())}</span>
           </div>
         )}
         {editing && (
@@ -168,7 +196,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
                     <button
                       key={r.variantId}
                       type="button"
-                      onClick={() => addRow(r.variantId, r.productName, r.sku ?? "")}
+                      onClick={() => addRow(r.variantId, r.productName, r.sku ?? "", r.costPrice)}
                       className="w-full text-right px-3 py-2 hover:bg-accent focus:bg-accent text-sm flex items-center justify-between gap-2"
                     >
                       <span className="truncate">{r.productName}</span>

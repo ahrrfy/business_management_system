@@ -23,6 +23,7 @@ import {
   signedPostingLines,
 } from "../accounting/postingEngine";
 import { money, round2 } from "../money";
+import { syncBundlesContainingComponents } from "../bundleService";
 import { type Actor, withTx } from "../tx";
 import { spoilageSplit } from "./calc";
 import { nextProductionNumber, resolveLine, resolveRunPlan } from "./helpers";
@@ -818,4 +819,9 @@ async function produceOutputs(
     stockMap.set(l.variantId, denom);
     costMap.set(l.variantId, newCost.toFixed(2));
   }
+  // مزامنة تكلفة أيّ بكجات تحتوي على هذه المخرجات
+  await syncBundlesContainingComponents(
+    tx,
+    outLines.map((l) => l.variantId),
+  );
 }
