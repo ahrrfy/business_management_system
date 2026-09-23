@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { iqd } from "@/lib/assets/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ASSET_CATEGORIES, DEPRECIATION_METHODS } from "@shared/assets";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertCircle } from "lucide-react";
@@ -74,6 +74,7 @@ export default function AssetEdit() {
       notify.ok("تم حفظ تعديلات الأصل");
       await utils.assets.get.invalidate({ id });
       await utils.assets.list.invalidate();
+      bypassUnsavedGuard();
       navigate(`/assets/${a?.id ?? id}`);
     },
     onError: (e) => { setError(e.message); notify.err(e); },

@@ -33,7 +33,7 @@ import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   copyInvoiceItems,
   hasInvoiceTransfer,
@@ -456,6 +456,7 @@ export default function PurchaseNew() {
     onSuccess: async () => {
       await utils.purchases.list.invalidate();
       notify.ok("حُفظ أمر الشراء مسودة — راجعه ثم أرسله للاعتماد من قائمة المشتريات");
+      bypassUnsavedGuard();
       navigate("/purchases");
     },
     onError: (e) => notify.err(e),
@@ -465,6 +466,7 @@ export default function PurchaseNew() {
     onSuccess: async () => {
       await utils.purchases.requisitions.invalidate();
       notify.ok("تم حفظ طلب التأمين بنجاح وإسناده لمدير المشتريات للبحث والتفاوض مع الموردين في السوق");
+      bypassUnsavedGuard();
       navigate("/purchase-requisitions");
     },
     onError: (e) => notify.err(e),

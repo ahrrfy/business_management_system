@@ -16,7 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { fmtDateTime } from "@/lib/date";
 import { describeUserAgent } from "@/lib/userAgent";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { AlertTriangle, Check, Copy, Monitor, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
@@ -185,7 +185,11 @@ export default function UserEdit() {
     onError: (e) => setError(e.message),
   });
   const del = trpc.users.delete.useMutation({
-    onSuccess: async () => { await utils.users.list.invalidate(); navigate("/users"); },
+    onSuccess: async () => {
+      await utils.users.list.invalidate();
+      bypassUnsavedGuard();
+      navigate("/users");
+    },
     onError: (e) => setError(e.message),
   });
   const issueResetToken = trpc.users.issuePasswordResetToken.useMutation({

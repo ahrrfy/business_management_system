@@ -20,7 +20,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { buildQuotationLinePayload } from "@/lib/quotationPayload";
 
 import {
@@ -222,6 +222,7 @@ export default function QuotationNew() {
       const shareAfterSave = shareAfterSaveRef.current;
       printAfterSaveRef.current = false;
       shareAfterSaveRef.current = false;
+      bypassUnsavedGuard();
       navigate(`/quotations/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
     onError: (e) => {
@@ -243,6 +244,7 @@ export default function QuotationNew() {
       const shareAfterSave = shareAfterSaveRef.current;
       printAfterSaveRef.current = false;
       shareAfterSaveRef.current = false;
+      bypassUnsavedGuard();
       navigate(`/quotations/${result.quotationId}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
     },
     onError: (e) => {
@@ -259,6 +261,7 @@ export default function QuotationNew() {
       utils.quotations.list.invalidate();
       notify.ok("تم تحويل العرض إلى فاتورة بيع");
       const invoiceId = (r as { invoiceId: number }).invoiceId;
+      bypassUnsavedGuard();
       navigate(`/invoices/${invoiceId}`);
     },
     onError: (e) => notify.err(e),
