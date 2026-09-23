@@ -5,24 +5,26 @@
  * the mobile commerce experience stays coherent while campaigns change.
  */
 const primitive = {
-  ink: "#183D36",
-  inkSoft: "#5C716C",
-  canvas: "#FFF8F2",
+  ink: "#0F172A",
+  inkSoft: "#475569",
+  canvas: "#F8FAFC",
   surface: "#FFFFFF",
   line: "#E2E8F0",
-  emerald: "#0E806A",
-  emeraldDeep: "#075B4E",
-  emeraldSoft: "#E6F5F1",
-  azure: "#0E806A",
-  azureDeep: "#075B4E",
-  azureSoft: "#E6F5F1",
-  sky: "#E6F5F1",
-  coral: "#F05D53",
-  coralSoft: "#FFF0F0",
-  sand: "#FFF4DE",
-  blueSoft: "#E6F5F1",
-  muted: "#5C716C",
-  mutedSoft: "#8FA39E",
+  emerald: "#059669",
+  emeraldDeep: "#065F46",
+  emeraldSoft: "#ECFDF5",
+  azure: "#0284C7",
+  azureDeep: "#0369A1",
+  azureSoft: "#E0F2FE",
+  sky: "#ECFDF5",
+  coral: "#FF4757",
+  coralSoft: "#FFF1F2",
+  sand: "#FEF3C7",
+  gold: "#F59E0B",
+  goldSoft: "#FFFBEB",
+  blueSoft: "#EFF6FF",
+  muted: "#64748B",
+  mutedSoft: "#94A3B8",
   white: "#FFFFFF",
 } as const;
 
@@ -34,10 +36,12 @@ const semantic = {
   border: primitive.line,
   brand: primitive.emerald,
   brandStrong: primitive.emeraldDeep,
-  highlight: primitive.sky,
+  highlight: primitive.emeraldSoft,
   promotion: primitive.coral,
   promotionSurface: primitive.coralSoft,
   safeSurface: primitive.emeraldSoft,
+  luxuryGold: primitive.gold,
+  luxuryGoldSurface: primitive.goldSoft,
 } as const;
 
 export const storefrontDesign = {
@@ -52,17 +56,17 @@ export const storefrontDesign = {
     search: {
       background: semantic.surface,
       border: semantic.border,
-      actionBackground: semantic.brandStrong,
+      actionBackground: semantic.brand,
     },
     card: {
       background: semantic.surface,
       border: semantic.border,
-      radius: 24,
+      radius: 22,
     },
     primaryButton: {
-      background: semantic.brandStrong,
+      background: semantic.brand,
       foreground: primitive.white,
-      radius: 16,
+      radius: 14,
     },
   },
 } as const;
