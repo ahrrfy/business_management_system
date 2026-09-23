@@ -160,7 +160,11 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 
 **🗃️ الهجرات:** ملفات SQL مولَّدة (`pnpm db:generate` محلياً) تُطبَّق عبر drizzle-orm migrator. ⛔ **لا رقمَ «آخر هجرة» هنا** — كان هذا السطر يقول `0220` بينما `main` عند `0238`، وهو نوع الادّعاء الذي يشيخ في ساعات ويُضلّل من يبني عليه. اشتقّ رقمك دائماً بـ§٧-٤ب: `git fetch origin main` + `SELECT MAX(created_at) FROM __drizzle_migrations` على الإنتاج + `pnpm check:migrations`. ⛔ ولا `db:push` عارياً على الإنتاج (حارس `db-push-guard.mjs`)، ولا `drizzle-kit migrate` (يفشل صامتاً).
 
-**📱 تطبيق أندرويد أصيل «سوبر العربية»** (`android-native/`، Kotlin/Compose، مصادقة تشفيريّة بمفتاح جهاز EC P-256): على Google Play بمسار **Internal testing** فقط — **قرار المالك: لا Production ولا مراجعة Google** (الحساب شخصيّ). كل تحديثٍ للمختبِرين يلزمه رفع `versionCode` في **كل مواضعه المتزامنة** (`android-native/app/build.gradle.kts` بشقَّيه + `scripts/verify-mobile-release-env.mjs` + `.github/workflows/android-release.yml` — يحرسها `pnpm check:mobile-release`) ثم بناء AAB موقَّع عبر `android-release.yml` **ورفعٌ يدويّ** (CI لا يوصِل إلى Play).
+**📱 تطبيقا الجوال الأصيلان بنظام Expo (Android + iOS)** (أُعيد بناؤهما جذرياً وتطهير الإرث الكوتلن/TWA القديم):
+- **تطبيق سوبر العربية للموظفين والإدارة (`expo/superapp-mobile/`):** تطبيق أصيل (Android: `online.alarabiya.store` بـ`versionCode: 24`، وiOS: `online.alarabiya.superapp`). يدعم مركز القيادة، البصمة/التحقق الحيوي، بطاقات الرواتب، وسجل الدوام، مع نقل مؤمن وتثبيت الشهادات (SPKI Pinning).
+- **تطبيق مكتبة العربية للزبائن والمتجر (`expo/customer-store-mobile/`):** تطبيق أصيل (Android وiOS: `online.alarabiya.customerstore`). تجربة شراء إلكترونية كاملة بالهوية الزمردية (`#0E806A`) والخط العربي، مع سلة الشراء، الدفع عند الاستلام، وتتبع الطلبات.
+- **الحوكمة والفحص:** يحرس سلامة التطبيقين وعقود الخادم `pnpm check:mobile-release` و`pnpm mobile:check` و`pnpm mobile:test` والمسار الآلي `.github/workflows/expo-mobile-check.yml`.
+
 
 **⚙️ وحدات مبنيّة كاملةً لكنها معطَّلة/مشروطة افتراضياً — لا تفترض أنها تعمل، ولا تحذفها ظنّاً أنها ميتة:**
 

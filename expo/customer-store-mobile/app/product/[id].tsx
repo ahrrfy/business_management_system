@@ -145,6 +145,17 @@ export default function ProductDetailScreen() {
     addSelection(product, next.details);
     setSelectionErrors([]);
   };
+  const addDozenToCart = () => {
+    const next = validateProductSelection(product, {
+      variantId: selectedVariantId,
+      productUnitId: selectedUnitId,
+      customizationValues,
+    });
+    setSelectionErrors(next.errors);
+    if (!next.details) return;
+    addSelection(product, next.details, 12);
+    setSelectionErrors([]);
+  };
   const buyNow = () => {
     const next = validateProductSelection(product, {
       variantId: selectedVariantId,
@@ -398,7 +409,7 @@ export default function ProductDetailScreen() {
                         checked: selectedUnitId === unit.productUnitId,
                         disabled: !unit.inStock,
                       }}
-                    disabled={!unit.inStock && !onlineOrderingIssue}
+                      disabled={!unit.inStock && !onlineOrderingIssue}
                       key={unit.productUnitId}
                       onPress={() => {
                         setSelectedUnitId(unit.productUnitId);
@@ -407,24 +418,37 @@ export default function ProductDetailScreen() {
                       style={[
                         styles.unitChoice,
                         selectedUnitId === unit.productUnitId &&
-                          styles.choiceActive,
+                          styles.unitChoiceActive,
                         !unit.inStock && styles.choiceDisabled,
                       ]}
                     >
-                      <Text
-                        style={[
-                          styles.choiceText,
-                          selectedUnitId === unit.productUnitId &&
-                            styles.choiceTextActive,
-                        ]}
-                      >
-                        {unit.unitName}
-                      </Text>
+                      <View style={styles.unitHeaderRow}>
+                        <View
+                          style={[
+                            styles.unitRadio,
+                            selectedUnitId === unit.productUnitId &&
+                              styles.unitRadioActive,
+                          ]}
+                        >
+                          {selectedUnitId === unit.productUnitId && (
+                            <View style={styles.unitRadioDot} />
+                          )}
+                        </View>
+                        <Text
+                          style={[
+                            styles.choiceText,
+                            selectedUnitId === unit.productUnitId &&
+                              styles.choiceTextActive,
+                          ]}
+                        >
+                          {unit.unitName}
+                        </Text>
+                      </View>
                       <Text
                         style={[
                           styles.unitPrice,
                           selectedUnitId === unit.productUnitId &&
-                            styles.choiceTextActive,
+                            styles.unitPriceActive,
                         ]}
                       >
                         {formatIqd(unit.salePrice ?? unit.price)}
@@ -497,6 +521,36 @@ export default function ProductDetailScreen() {
           </Text>
         </View>
         <ProductReviews productId={product.productId ?? Number(product.id)} />
+        {!onlineOrderingIssue && selectedUnit?.inStock && (
+          <View style={styles.wholesaleUpsellCard}>
+            <View style={styles.wholesaleHeader}>
+              <View style={styles.wholesaleBadge}>
+                <MaterialIcons color="#B45309" name="local-offer" size={16} />
+                <Text style={styles.wholesaleBadgeText}>عرض الجملة الخاص</Text>
+              </View>
+              <Text style={styles.wholesaleSaveTag}>وفّر حتى 25%</Text>
+            </View>
+            <Text style={styles.wholesaleTitle}>
+              طلب درزن (12 قطعة) بسعر الجملة المخفض
+            </Text>
+            <Text style={styles.wholesaleSubtitle}>
+              طلب الكميات والدرزن يُفعل تلقائياً تسعير الجملة في سلتك
+            </Text>
+            <TouchableOpacity
+              accessibilityHint="يضيف 12 قطعة مباشرة إلى السلة لتفعيل سعر الجملة"
+              accessibilityLabel="أضف درزن (12 قطعة) بسعر الجملة"
+              accessibilityRole="button"
+              activeOpacity={0.85}
+              onPress={addDozenToCart}
+              style={styles.wholesaleButton}
+            >
+              <MaterialIcons color="#92400E" name="add-shopping-cart" size={18} />
+              <Text style={styles.wholesaleButtonText}>
+                أضف درزن (12 قطعة) بسعر الجملة
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
         {!onlineOrderingIssue && (
           <View style={styles.purchaseActions}>
             <TouchableOpacity
@@ -768,38 +822,86 @@ const styles = StyleSheet.create({
   },
   choice: {
     alignItems: "center",
-    backgroundColor: "#F7F7F4",
-    borderColor: "#DDE5DF",
-    borderRadius: 12,
-    borderWidth: 1,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    borderWidth: 1.5,
     flexDirection: "row-reverse",
     gap: 6,
-    minHeight: 44,
-    paddingHorizontal: 11,
+    minHeight: 46,
+    paddingHorizontal: 12,
     paddingVertical: 8,
   },
   unitChoice: {
-    backgroundColor: "#F7F7F4",
-    borderColor: "#DDE5DF",
-    borderRadius: 12,
-    borderWidth: 1,
-    minHeight: 54,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    alignItems: "flex-end",
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 18,
+    borderWidth: 1.5,
+    minHeight: 64,
+    minWidth: 104,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.02,
+    shadowRadius: 6,
+    elevation: 1,
+    gap: 4,
+  },
+  unitChoiceActive: {
+    backgroundColor: "#FFF5F1",
+    borderColor: "#FF6B4A",
+    borderWidth: 2,
+    shadowColor: "#FF6B4A",
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  unitHeaderRow: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 7,
+  },
+  unitRadio: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: "#CBD5E1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  unitRadioActive: {
+    borderColor: "#FF6B4A",
+    backgroundColor: "#FF6B4A",
+  },
+  unitRadioDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#FFFFFF",
   },
   choiceActive: {
-    backgroundColor: storefrontDesign.semantic.brandStrong,
-    borderColor: storefrontDesign.semantic.brandStrong,
+    backgroundColor: "#FFF5F1",
+    borderColor: "#FF6B4A",
+    borderWidth: 2,
   },
   choiceDisabled: { opacity: 0.38 },
-  choiceText: { color: "#315A50", fontFamily: "Cairo_700Bold", fontSize: 11 },
-  choiceTextActive: { color: "#FFFFFF" },
+  choiceText: { color: "#334155", fontFamily: "Cairo_700Bold", fontSize: 11 },
+  choiceTextActive: { color: "#FF6B4A", fontFamily: "Cairo_800ExtraBold" },
   unitPrice: {
-    color: "#5E736B",
+    color: "#64748B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 9,
+    fontSize: 11,
     marginTop: 2,
-    textAlign: "center",
+    textAlign: "right",
+  },
+  unitPriceActive: {
+    color: "#FF6B4A",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+    marginTop: 2,
+    textAlign: "right",
   },
   swatch: {
     borderColor: "#FFFFFF",
@@ -831,15 +933,16 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   input: {
-    backgroundColor: "#F7F8F6",
-    borderColor: "#DDE5DF",
-    borderRadius: 12,
-    borderWidth: 1,
-    color: "#183D36",
-    fontFamily: "Cairo_400Regular",
-    marginTop: 7,
-    minHeight: 48,
-    paddingHorizontal: 12,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    borderWidth: 1.5,
+    color: "#0F172A",
+    fontFamily: "Cairo_500Medium",
+    fontSize: 13,
+    marginTop: 8,
+    minHeight: 50,
+    paddingHorizontal: 14,
   },
   textarea: { minHeight: 96, paddingTop: 12, textAlignVertical: "top" },
   fileUnavailable: {
@@ -900,29 +1003,37 @@ const styles = StyleSheet.create({
   },
   addButton: {
     alignItems: "center",
-    backgroundColor: storefrontDesign.semantic.brandStrong,
-    borderRadius: 18,
+    backgroundColor: "#FF5A36",
+    borderRadius: 16,
     flex: 1,
     flexDirection: "row",
     gap: 8,
-    height: 60,
+    height: 54,
     justifyContent: "center",
     marginTop: 0,
+    shadowColor: "#FF5A36",
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    elevation: 3,
   },
-  addDisabled: { backgroundColor: "#AAB8B2" },
+  addDisabled: { backgroundColor: "#CBD5E1", shadowOpacity: 0, elevation: 0 },
   addButtonText: {
     color: "#FFFFFF",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 14,
   },
-  purchaseActions: { flexDirection: "row-reverse", gap: 9, marginTop: 19 },
+  purchaseActions: { flexDirection: "row-reverse", gap: 10, marginTop: 18 },
   buyNowButton: {
     alignItems: "center",
-    backgroundColor: "#161A22",
-    borderRadius: 18,
+    backgroundColor: "#7C5CFC",
+    borderRadius: 16,
     flex: 0.78,
-    height: 60,
+    height: 54,
     justifyContent: "center",
+    shadowColor: "#7C5CFC",
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 2,
   },
   buyNowText: {
     color: "#FFFFFF",
@@ -980,5 +1091,69 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontFamily: "Cairo_700Bold",
     fontSize: 12,
+  },
+  wholesaleUpsellCard: {
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
+    borderRadius: 20,
+    borderWidth: 1.5,
+    marginTop: 14,
+    padding: 14,
+    gap: 8,
+  },
+  wholesaleHeader: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+  },
+  wholesaleBadge: {
+    alignItems: "center",
+    backgroundColor: "#FEF3C7",
+    borderRadius: 8,
+    flexDirection: "row-reverse",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  wholesaleBadgeText: {
+    color: "#92400E",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
+  wholesaleSaveTag: {
+    color: "#B45309",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+  },
+  wholesaleTitle: {
+    color: "#78350F",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 14,
+    lineHeight: 22,
+    textAlign: "right",
+  },
+  wholesaleSubtitle: {
+    color: "#92400E",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 11,
+    lineHeight: 18,
+    textAlign: "right",
+  },
+  wholesaleButton: {
+    alignItems: "center",
+    backgroundColor: "#FDE68A",
+    borderColor: "#F59E0B",
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 6,
+    justifyContent: "center",
+    minHeight: 44,
+    marginTop: 4,
+  },
+  wholesaleButtonText: {
+    color: "#78350F",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 13,
   },
 });

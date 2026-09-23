@@ -11,8 +11,8 @@ const PUSH_TOKEN_KEY = "customer-store:expo-push-token:v1";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldPlaySound: false,
-    shouldSetBadge: false,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
     shouldShowBanner: true,
     shouldShowList: true,
   }),
@@ -51,12 +51,27 @@ async function requestExpoPushToken(): Promise<CustomerPushRegistration> {
       await Notifications.setNotificationChannelAsync("store_updates", {
         name: "عروض وتحديثات مكتبة العربية",
         importance: Notifications.AndroidImportance.HIGH,
-        vibrationPattern: [0, 180, 120, 180],
-        lightColor: "#075B4E",
+        sound: "default",
+        vibrationPattern: [0, 250, 200, 250],
+        lightColor: "#0E806A",
+        enableVibrate: true,
+        showBadge: true,
       });
     }
     const current = await Notifications.getPermissionsAsync();
-    const result = current.status === "granted" ? current : await Notifications.requestPermissionsAsync();
+    const result = current.status === "granted"
+      ? current
+      : await Notifications.requestPermissionsAsync({
+          ios: {
+            allowAlert: true,
+            allowBadge: true,
+            allowSound: true,
+            allowDisplayInCarPlay: false,
+            allowCriticalAlerts: false,
+            provideAppNotificationSettings: false,
+            allowProvisional: false,
+          },
+        });
     if (result.status !== "granted") {
       return { ok: false, message: "لم تُمنح موافقة الإشعارات. يمكنك تفعيلها لاحقاً من إعدادات الهاتف." };
     }
@@ -68,6 +83,55 @@ async function requestExpoPushToken(): Promise<CustomerPushRegistration> {
     return token ? { ok: true, token } : { ok: false, message: "تعذر الحصول على رمز جهاز الإشعارات." };
   } catch {
     return { ok: false, message: "تعذر إعداد الإشعارات حالياً. تحقق من الاتصال ثم أعد المحاولة." };
+  }
+}
+
+/** يرسل إشعاراً محلياً تجريبياً فورياً للتحقق من نغمة الصوت وظهوره في شاشة القفل واللوحة العلوية */
+export async function scheduleTestCustomerNotification(): Promise<{ ok: boolean; message: string }> {
+  const platform = nativePlatform();
+  if (!platform) {
+    return { ok: false, message: "إشعارات التطبيق متاحة على أجهزة الهاتف فقط." };
+  }
+  try {
+    if (platform === "ANDROID") {
+      await Notifications.setNotificationChannelAsync("store_updates", {
+        name: "عروض وتحديثات مكتبة العربية",
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: "default",
+        vibrationPattern: [0, 250, 200, 250],
+        lightColor: "#0E806A",
+        enableVibrate: true,
+        showBadge: true,
+      });
+    }
+    const current = await Notifications.getPermissionsAsync();
+    const result = current.status === "granted"
+      ? current
+      : await Notifications.requestPermissionsAsync({
+          ios: {
+            allowAlert: true,
+            allowBadge: true,
+            allowSound: true,
+          },
+        });
+    if (result.status !== "granted") {
+      return { ok: false, message: "يرجى منح إذن الإشعارات من إعدادات الهاتف أولاً." };
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "المكتبة العربية",
+        body: "طلبك قيد التجهيز وسيصلك إشعار فوري عند خروجه مع المندوب!",
+        sound: "default",
+        badge: 1,
+        data: { path: "/(tabs)/orders" },
+      },
+      trigger: null,
+    });
+    return { ok: true, message: "تم إرسال إشعار التجربة بنجاح مع نغمة الصوت." };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "تعذر تشغيل الإشعار.";
+    return { ok: false, message: msg };
   }
 }
 
@@ -160,5 +224,105 @@ export async function syncCustomerPushIdentity(customerSessionToken?: string): P
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * يجدول تنبيهاً محلياً صوتياً للسلة المتروكة بعد ساعتين إذا لم يتم إتمام الشراء
+ */
+export async function scheduleAbandonedCartAlert(
+  itemCount: number,
+  delaySeconds: number = 7200,
+): Promise<{ ok: boolean; message: string }> {
+  const platform = nativePlatform();
+  if (!platform || itemCount <= 0) {
+    return { ok: false, message: "لا تتوفر أصناف بالسلة أو المنصة غير مدعومة." };
+  }
+  try {
+    if (platform === "ANDROID") {
+      await Notifications.setNotificationChannelAsync("store_cart_reminders", {
+        name: "تذكير السلة غير المكتملة",
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: "default",
+        vibrationPattern: [0, 200, 150, 200],
+        lightColor: "#0E806A",
+        enableVibrate: true,
+        showBadge: true,
+      });
+    }
+
+    const current = await Notifications.getPermissionsAsync();
+    if (current.status !== "granted") {
+      return { ok: false, message: "إذن الإشعارات غير مفعل." };
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      identifier: "abandoned-cart-reminder",
+      content: {
+        title: "هل نسيت سلتك في مكتبة العربية؟ 🛒",
+        body: `لديك ${itemCount} أصناف بانتظارك في السلة، أكمل طلبك الآن قبل نفاد الكمية!`,
+        sound: "default",
+        badge: 1,
+        data: { path: "/(tabs)/cart" },
+      },
+      trigger: {
+        seconds: delaySeconds,
+      } as Notifications.NotificationTriggerInput,
+    });
+
+    return { ok: true, message: "تمت جدولة تذكير السلة بنجاح." };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "تعذر جدولة الإشعار.";
+    return { ok: false, message: msg };
+  }
+}
+
+/**
+ * يجدول إشعاراً بعروض وتخفيضات نهاية الأسبوع أو العروض الخاطفة
+ */
+export async function scheduleFlashSaleAlert(
+  title: string,
+  body: string,
+  delaySeconds: number = 3600,
+): Promise<{ ok: boolean; message: string }> {
+  const platform = nativePlatform();
+  if (!platform) {
+    return { ok: false, message: "الإشعارات متاحة على الهاتف فقط." };
+  }
+  try {
+    if (platform === "ANDROID") {
+      await Notifications.setNotificationChannelAsync("store_flash_sales", {
+        name: "العروض الخاطفة والخصومات",
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: "default",
+        vibrationPattern: [0, 250, 200, 250],
+        lightColor: "#E11D48",
+        enableVibrate: true,
+        showBadge: true,
+      });
+    }
+
+    const current = await Notifications.getPermissionsAsync();
+    if (current.status !== "granted") {
+      return { ok: false, message: "إذن الإشعارات غير مفعل." };
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        sound: "default",
+        badge: 1,
+        data: { path: "/(tabs)/categories" },
+      },
+      trigger: {
+        seconds: delaySeconds,
+      } as Notifications.NotificationTriggerInput,
+    });
+
+    return { ok: true, message: "تمت جدولة إشعار العرض بنجاح." };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "تعذر جدولة الإشعار.";
+    return { ok: false, message: msg };
   }
 }
