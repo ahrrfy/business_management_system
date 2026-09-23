@@ -33,7 +33,7 @@ const passwordResetSource = readFileSync(
 describe("تماثل نموذجَي المستخدم (إضافة/تعديل)", () => {
   it("يحرس النموذجين معاً من فقد البيانات غير المحفوظة بلقطةٍ مرجعية لا بحالةٍ فارغة", () => {
     for (const source of [newSource, editSource]) {
-      expect(source).toContain('import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";');
+      expect(source).toMatch(/import\s*\{[^}]*\buseUnsavedGuard\b[^}]*\}\s*from\s*["']@\/hooks\/useUnsavedGuard["'];?/);
       expect(source).toContain("baselineRef");
       expect(source).toMatch(/useUnsavedGuard\(isDirty/);
     }
