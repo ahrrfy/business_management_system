@@ -81,7 +81,15 @@ const config = {
   },
   plugins: [
     "expo-router",
-    "expo-notifications",
+    [
+      "expo-notifications",
+      {
+        icon: "./assets/icon.png",
+        color: "#0E806A",
+        defaultChannel: "super_arabia_updates",
+        enableBackgroundRemoteNotifications: false,
+      },
+    ],
     "expo-secure-store",
     "expo-local-authentication",
     "./plugins/withAndroidSplashApiGuard",

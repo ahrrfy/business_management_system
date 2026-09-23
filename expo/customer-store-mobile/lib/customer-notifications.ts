@@ -11,8 +11,8 @@ const PUSH_TOKEN_KEY = "customer-store:expo-push-token:v1";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldPlaySound: false,
-    shouldSetBadge: false,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
     shouldShowBanner: true,
     shouldShowList: true,
   }),
@@ -51,12 +51,27 @@ async function requestExpoPushToken(): Promise<CustomerPushRegistration> {
       await Notifications.setNotificationChannelAsync("store_updates", {
         name: "عروض وتحديثات مكتبة العربية",
         importance: Notifications.AndroidImportance.HIGH,
-        vibrationPattern: [0, 180, 120, 180],
-        lightColor: "#075B4E",
+        sound: "default",
+        vibrationPattern: [0, 250, 200, 250],
+        lightColor: "#0E806A",
+        enableVibrate: true,
+        showBadge: true,
       });
     }
     const current = await Notifications.getPermissionsAsync();
-    const result = current.status === "granted" ? current : await Notifications.requestPermissionsAsync();
+    const result = current.status === "granted"
+      ? current
+      : await Notifications.requestPermissionsAsync({
+          ios: {
+            allowAlert: true,
+            allowBadge: true,
+            allowSound: true,
+            allowDisplayInCarPlay: false,
+            allowCriticalAlerts: false,
+            provideAppNotificationSettings: false,
+            allowProvisional: false,
+          },
+        });
     if (result.status !== "granted") {
       return { ok: false, message: "لم تُمنح موافقة الإشعارات. يمكنك تفعيلها لاحقاً من إعدادات الهاتف." };
     }
@@ -68,6 +83,55 @@ async function requestExpoPushToken(): Promise<CustomerPushRegistration> {
     return token ? { ok: true, token } : { ok: false, message: "تعذر الحصول على رمز جهاز الإشعارات." };
   } catch {
     return { ok: false, message: "تعذر إعداد الإشعارات حالياً. تحقق من الاتصال ثم أعد المحاولة." };
+  }
+}
+
+/** يرسل إشعاراً محلياً تجريبياً فورياً للتحقق من نغمة الصوت وظهوره في شاشة القفل واللوحة العلوية */
+export async function scheduleTestCustomerNotification(): Promise<{ ok: boolean; message: string }> {
+  const platform = nativePlatform();
+  if (!platform) {
+    return { ok: false, message: "إشعارات التطبيق متاحة على أجهزة الهاتف فقط." };
+  }
+  try {
+    if (platform === "ANDROID") {
+      await Notifications.setNotificationChannelAsync("store_updates", {
+        name: "عروض وتحديثات مكتبة العربية",
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: "default",
+        vibrationPattern: [0, 250, 200, 250],
+        lightColor: "#0E806A",
+        enableVibrate: true,
+        showBadge: true,
+      });
+    }
+    const current = await Notifications.getPermissionsAsync();
+    const result = current.status === "granted"
+      ? current
+      : await Notifications.requestPermissionsAsync({
+          ios: {
+            allowAlert: true,
+            allowBadge: true,
+            allowSound: true,
+          },
+        });
+    if (result.status !== "granted") {
+      return { ok: false, message: "يرجى منح إذن الإشعارات من إعدادات الهاتف أولاً." };
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "المكتبة العربية",
+        body: "طلبك قيد التجهيز وسيصلك إشعار فوري عند خروجه مع المندوب!",
+        sound: "default",
+        badge: 1,
+        data: { path: "/(tabs)/orders" },
+      },
+      trigger: null,
+    });
+    return { ok: true, message: "تم إرسال إشعار التجربة بنجاح مع نغمة الصوت." };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "تعذر تشغيل الإشعار.";
+    return { ok: false, message: msg };
   }
 }
 
