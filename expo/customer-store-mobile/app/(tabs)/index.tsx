@@ -458,34 +458,34 @@ export default function HomeScreen() {
 
         <View style={styles.assuranceBar}>
           <View style={styles.assuranceItem}>
-            <View style={styles.assuranceIcon}>
+            <View style={[styles.assuranceIcon, { backgroundColor: "#ECFDF5" }]}>
               <MaterialIcons
-                color={storefrontDesign.semantic.brandStrong}
+                color="#059669"
                 name="local-shipping"
-                size={17}
+                size={19}
               />
             </View>
-            <Text style={styles.assuranceText}>توصيل داخل العراق</Text>
+            <Text style={styles.assuranceText}>توصيل لكافة المحافظات</Text>
           </View>
           <View style={styles.assuranceItem}>
-            <View style={styles.assuranceIcon}>
+            <View style={[styles.assuranceIcon, { backgroundColor: "#EFF6FF" }]}>
               <MaterialIcons
-                color={storefrontDesign.semantic.brandStrong}
+                color="#2563EB"
                 name="payments"
-                size={17}
+                size={19}
               />
             </View>
             <Text style={styles.assuranceText}>الدفع عند الاستلام</Text>
           </View>
           <View style={styles.assuranceItem}>
-            <View style={styles.assuranceIcon}>
+            <View style={[styles.assuranceIcon, { backgroundColor: "#FFFBEB" }]}>
               <MaterialIcons
-                color={storefrontDesign.semantic.brandStrong}
+                color="#D97706"
                 name="verified-user"
-                size={17}
+                size={19}
               />
             </View>
-            <Text style={styles.assuranceText}>سعر ومخزون مؤكدان</Text>
+            <Text style={styles.assuranceText}>ضمان وجودة معتمدة</Text>
           </View>
         </View>
 
@@ -608,16 +608,23 @@ export default function HomeScreen() {
                   styles.categoryIcon,
                   {
                     backgroundColor: [
-                      "#E7F4EE",
-                      "#FFF1D5",
-                      "#EAF1FF",
-                      "#FFECEF",
+                      "#ECFDF5",
+                      "#FFFBEB",
+                      "#EFF6FF",
+                      "#FFF1F2",
                     ][index % 4],
                   },
                 ]}
               >
                 <MaterialIcons
-                  color={storefrontDesign.semantic.brandStrong}
+                  color={
+                    [
+                      "#059669",
+                      "#D97706",
+                      "#2563EB",
+                      "#E11D48",
+                    ][index % 4]
+                  }
                   name={
                     "icon" in category
                       ? category.icon
@@ -625,16 +632,18 @@ export default function HomeScreen() {
                           index % 4
                         ] as never)
                   }
-                  size={25}
+                  size={26}
                 />
               </View>
-              <Text numberOfLines={2} style={styles.categoryText}>
+              <Text numberOfLines={1} style={styles.categoryText}>
                 {category.name}
               </Text>
               {"availableCount" in category && (
-                <Text style={styles.categoryCount}>
-                  {formatLatinNumber(category.availableCount)} منتج
-                </Text>
+                <View style={styles.categoryCountBadge}>
+                  <Text style={styles.categoryCountText}>
+                    {formatLatinNumber(category.availableCount)} منتج
+                  </Text>
+                </View>
               )}
             </TouchableOpacity>
           ))}
@@ -1008,28 +1017,32 @@ const styles = StyleSheet.create({
   searchRow: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: storefrontDesign.semantic.border,
-    borderRadius: 19,
-    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
+    borderWidth: 1.5,
     flexDirection: "row-reverse",
-    height: 58,
-    paddingLeft: 8,
+    height: 52,
+    paddingLeft: 6,
     paddingRight: 14,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
   },
   searchInput: {
-    color: "#183D36",
+    color: "#0F172A",
     flex: 1,
-    fontFamily: "Cairo_400Regular",
+    fontFamily: "Cairo_500Medium",
     fontSize: 13,
     marginHorizontal: 8,
   },
   searchAction: {
     alignItems: "center",
     backgroundColor: storefrontDesign.semantic.brandStrong,
-    borderRadius: 13,
-    height: 41,
+    borderRadius: 14,
+    height: 40,
     justifyContent: "center",
-    width: 39,
+    width: 40,
   },
   suggestions: {
     backgroundColor: "#FFFFFF",
@@ -1138,33 +1151,36 @@ const styles = StyleSheet.create({
   assuranceBar: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E6ECE7",
-    borderRadius: 22,
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
     borderWidth: 1,
     flexDirection: "row-reverse",
     justifyContent: "space-between",
-    marginTop: 19,
-    paddingHorizontal: 11,
-    paddingVertical: 10,
+    marginTop: 18,
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 1,
   },
   assuranceItem: {
     alignItems: "center",
     flex: 1,
     flexDirection: "column",
-    gap: 4,
+    gap: 6,
   },
   assuranceIcon: {
     alignItems: "center",
-    backgroundColor: storefrontDesign.semantic.safeSurface,
-    borderRadius: 11,
-    height: 31,
+    borderRadius: 14,
+    height: 38,
     justifyContent: "center",
-    width: 31,
+    width: 38,
   },
   assuranceText: {
-    color: "#38534C",
+    color: "#334155",
     fontFamily: "Cairo_700Bold",
-    fontSize: 8,
+    fontSize: 10,
     textAlign: "center",
   },
   offerStrip: { marginHorizontal: -16, marginTop: 13 },
@@ -1264,40 +1280,46 @@ const styles = StyleSheet.create({
     marginTop: "auto",
     width: 26,
   },
-  categoryList: { gap: 11, paddingLeft: 4, paddingRight: 2 },
+  categoryList: { gap: 12, paddingLeft: 4, paddingRight: 2 },
   categoryItem: {
     alignItems: "center",
-    minHeight: 107,
+    minHeight: 112,
     paddingHorizontal: 4,
-    paddingVertical: 2,
-    width: 88,
+    paddingVertical: 4,
+    width: 92,
   },
   categoryIcon: {
     alignItems: "center",
-    borderColor: "#FFFFFF",
-    borderRadius: 999,
-    borderWidth: 3,
+    borderColor: "#F1F5F9",
+    borderRadius: 22,
+    borderWidth: 1.5,
     elevation: 2,
-    height: 64,
+    height: 68,
     justifyContent: "center",
-    shadowColor: "#75839A",
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    width: 64,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    width: 68,
   },
   categoryText: {
     color: storefrontDesign.semantic.foreground,
     fontFamily: "Cairo_700Bold",
-    fontSize: 10,
-    lineHeight: 15,
-    marginTop: 6,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 8,
     textAlign: "center",
   },
-  categoryCount: {
-    color: "#6D817A",
+  categoryCountBadge: {
+    backgroundColor: "#F1F5F9",
+    borderRadius: 6,
+    marginTop: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  categoryCountText: {
+    color: "#64748B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 8,
-    marginTop: 1,
+    fontSize: 9,
   },
   productsPanel: {
     backgroundColor: "#EEF3F9",
@@ -1508,14 +1530,17 @@ const styles = StyleSheet.create({
     width: 38,
   },
   whatsappBanner: {
-    backgroundColor: "#F2FBF6",
-    borderColor: "#C5EBD6",
-    borderRadius: 20,
-    borderWidth: 1,
-    marginHorizontal: 16,
-    marginTop: 14,
-    padding: 14,
+    backgroundColor: "#F0FDF4",
+    borderColor: "#BBF7D0",
+    borderRadius: 22,
+    borderWidth: 1.5,
+    marginTop: 18,
+    padding: 16,
     gap: 12,
+    shadowColor: "#059669",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
   },
   whatsappBannerRight: {
     flexDirection: "row-reverse",
@@ -1523,41 +1548,47 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   whatsappBannerIcon: {
-    backgroundColor: "#0E806A",
-    borderRadius: 14,
-    width: 44,
-    height: 44,
+    backgroundColor: "#059669",
+    borderRadius: 16,
+    width: 48,
+    height: 48,
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#059669",
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
   },
   whatsappBannerText: {
     flex: 1,
   },
   whatsappBannerTitle: {
-    color: "#161A22",
+    color: "#0F172A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 14,
     textAlign: "right",
   },
   whatsappBannerSub: {
-    color: "#4F685D",
-    fontFamily: "Cairo_400Regular",
+    color: "#475569",
+    fontFamily: "Cairo_500Medium",
     fontSize: 11,
-    lineHeight: 16,
+    lineHeight: 17,
     marginTop: 2,
     textAlign: "right",
   },
   whatsappBadge: {
-    backgroundColor: "#E4F7EC",
-    borderRadius: 12,
+    backgroundColor: "#DCFCE7",
+    borderColor: "#86EFAC",
+    borderWidth: 1,
+    borderRadius: 14,
     flexDirection: "row-reverse",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 8,
+    paddingVertical: 10,
   },
   whatsappBadgeText: {
-    color: "#157347",
+    color: "#166534",
     fontFamily: "Cairo_700Bold",
     fontSize: 12,
   },
