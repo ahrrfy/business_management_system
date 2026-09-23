@@ -40,6 +40,7 @@ import {
 } from "./helpers";
 import { loadVoucherCategoryForPosting } from "./categoryAccounting";
 import { voucherPostingPlan } from "./posting";
+import type { VoucherCategoryPostingRole } from "@shared/voucherCategoryAccounting";
 import { withMysqlDeadlockRetry } from "./deadlockRetry";
 import type { VoucherInput, VoucherResult } from "./types";
 import { createHash } from "node:crypto";
@@ -715,14 +716,16 @@ export async function createVoucherTx(
         "فئة السند والحساب المقابل إلزاميان لسندات «أخرى» — عيّن فئة محاسبية مهيأة قبل الحفظ",
     });
   }
+  let categoryPostingRole: VoucherCategoryPostingRole | null = null;
   if (input.voucherCategoryId != null) {
     if (requiresCategoryAccounting) {
-      await loadVoucherCategoryForPosting(
+      const category = await loadVoucherCategoryForPosting(
         tx,
         input.voucherCategoryId,
         direction,
         { lock: true },
       );
+      categoryPostingRole = category.postingRole;
     } else if (options?.systemRequest?.kind !== "VOUCHER_CANCELLATION") {
       await validateCategory(tx, input.voucherCategoryId, direction);
     }
@@ -920,7 +923,7 @@ export async function createVoucherTx(
   const needsApproval =
     direction === "OUT" ||
     forcePendingApproval ||
-    options?.systemRequest?.kind === "VOUCHER_CANCELLATION";
+    options?.systemRequest != null;
   const resolvedActor = await resolveApprovalActor(tx, actor);
   const ownerApprovalPlan = planApproval({
     actor: resolvedActor,
@@ -1031,6 +1034,7 @@ export async function createVoucherTx(
       cashBucket,
       amount,
       referenceNumber: input.referenceNumber,
+      categoryPostingRole,
     });
     if (!posting) {
       throw new TRPCError({
