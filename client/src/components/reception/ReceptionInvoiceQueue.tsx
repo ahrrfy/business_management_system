@@ -328,7 +328,7 @@ export function ReceptionInvoiceQueue({
                       </Badge>
                     </td>
                     <td className="px-2 py-2">
-                      {r.consignmentNumber ? (
+                      {r.consignmentNumber && r.consignmentStatus !== "CANCELLED" ? (
                         <span className="inline-flex items-center gap-1 text-[10px] font-bold">
                           <Truck aria-hidden className="size-3" />
                           {r.consignmentNumber}
@@ -377,7 +377,7 @@ export function ReceptionInvoiceQueue({
                             تعديل
                           </a>
                         )}
-                        {!r.consignmentId && canFulfill && (
+                        {(!r.consignmentId || r.consignmentStatus === "CANCELLED") && canFulfill && (
                           <Button size="sm" variant="outline" className="h-7 px-1.5" title="إسناد للتوصيل" aria-label={`إسناد الفاتورة ${r.invoiceNumber} للتوصيل`} onClick={() => setDispatchTarget(r)}>
                             <Truck aria-hidden className="size-3" />
                           </Button>

@@ -36,5 +36,42 @@ describe("invoiceToReceipt", () => {
       name: "دفتر — أزرق — (قطعة)",
       quantity: 2,
     });
+    expect(receipt.delivery).toBeNull();
+  });
+
+  it("includes delivery information when courier consignment is active", () => {
+    const receipt = invoiceToReceipt({
+      invoiceNumber: "INV-43",
+      invoiceDate: "2026-07-28T11:35:00.000Z",
+      subtotal: "10000.00",
+      total: "10000.00",
+      courierName: "شركة البراق",
+      courierFee: "5000.00",
+      courierFeeCollection: "COURIER",
+      consignmentStatus: "DISPATCHED",
+      items: [],
+    });
+
+    expect(receipt.delivery).toEqual({
+      partyName: "شركة البراق",
+      fee: "5000.00",
+      feeCollection: "COURIER",
+    });
+  });
+
+  it("atomically omits delivery information when courier consignment is CANCELLED", () => {
+    const receipt = invoiceToReceipt({
+      invoiceNumber: "INV-44",
+      invoiceDate: "2026-07-28T11:35:00.000Z",
+      subtotal: "10000.00",
+      total: "10000.00",
+      courierName: "شركة البراق",
+      courierFee: "5000.00",
+      courierFeeCollection: "COURIER",
+      consignmentStatus: "CANCELLED",
+      items: [],
+    });
+
+    expect(receipt.delivery).toBeNull();
   });
 });

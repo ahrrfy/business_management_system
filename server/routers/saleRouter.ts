@@ -1,7 +1,7 @@
 import { INVOICE_CHANNELS } from "@shared/invoiceChannel";
 import { failOpaque } from "../lib/opaqueFailure";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, not, notInArray, or, sql,
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, not, notInArray, or, sql,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
@@ -1088,8 +1088,13 @@ export const saleRouter = router({
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id),
             )
           .leftJoin(users, eq(invoices.createdBy, users.id))
-          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id),
-            )
+          .leftJoin(
+            deliveryConsignments,
+            and(
+              eq(deliveryConsignments.invoiceId, invoices.id),
+              ne(deliveryConsignments.status, "CANCELLED"),
+            ),
+          )
           .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId),
             )
           .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
@@ -1167,8 +1172,13 @@ export const saleRouter = router({
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id),
             )
           .leftJoin(users, eq(invoices.createdBy, users.id))
-          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id),
-            )
+          .leftJoin(
+            deliveryConsignments,
+            and(
+              eq(deliveryConsignments.invoiceId, invoices.id),
+              ne(deliveryConsignments.status, "CANCELLED"),
+            ),
+          )
           .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId),
             )
           .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
@@ -1247,7 +1257,12 @@ export const saleRouter = router({
           .leftJoin(customers, eq(invoices.customerId, customers.id))
           .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id),
+          .leftJoin(
+            deliveryConsignments,
+            and(
+              eq(deliveryConsignments.invoiceId, invoices.id),
+              ne(deliveryConsignments.status, "CANCELLED"),
+            ),
           )
           .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
           .where(conds.length ? and(...conds) : undefined)
@@ -1347,8 +1362,13 @@ export const saleRouter = router({
           )
         .leftJoin(users, eq(invoices.createdBy, users.id))
         .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
-        .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id),
-          )
+        .leftJoin(
+          deliveryConsignments,
+          and(
+            eq(deliveryConsignments.invoiceId, invoices.id),
+            ne(deliveryConsignments.status, "CANCELLED"),
+          ),
+        )
         .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId),
           )
         .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
