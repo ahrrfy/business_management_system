@@ -433,6 +433,7 @@ export async function replaceBundleComponents(
       })),
     );
   }
+  await syncBundleVariantCost(tx, bundleVariantId);
   return validated;
 }
 
@@ -526,6 +527,60 @@ export async function computeBundleUnitCosts(
   }
   return costMap;
 }
+
+/**
+ * مزامنة تكلفة متغيّر البكج في جدول productVariants بناءً على مجموع تكاليف مكوّناته الحالية.
+ */
+export async function syncBundleVariantCost(
+  tx: Tx,
+  bundleVariantId: number,
+): Promise<string> {
+  const defs = await getBundleDefinitions(tx, [bundleVariantId]);
+  const costMap = await computeBundleUnitCosts(tx, [bundleVariantId], defs);
+  const cost = costMap.get(bundleVariantId) ?? "0.00";
+  await tx
+    .update(productVariants)
+    .set({ costPrice: cost })
+    .where(eq(productVariants.id, bundleVariantId));
+  return cost;
+}
+
+/**
+ * مزامنة ذرّية لجميع البكجات التي تحتوي على أيٍّ من المتغيّرات الممرّرة كمكوّنات.
+ * تُستدعى متى ما تغيّرت تكلفة متغيّر (إنتاج، استلام شراء، إعادة تقييم).
+ */
+export async function syncBundlesContainingComponents(
+  tx: Tx,
+  componentVariantIds: number[],
+): Promise<void> {
+  if (!componentVariantIds.length) return;
+  const uniqueIds = Array.from(
+    new Set(
+      componentVariantIds
+        .map(Number)
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  );
+  if (!uniqueIds.length) return;
+  const rows = await tx
+    .select({ bundleVariantId: bundleComponents.bundleVariantId })
+    .from(bundleComponents)
+    .where(inArray(bundleComponents.componentVariantId, uniqueIds));
+  if (!rows.length) return;
+  const bundleVariantIds = Array.from(
+    new Set(rows.map((r) => Number(r.bundleVariantId))),
+  );
+  const defs = await getBundleDefinitions(tx, bundleVariantIds);
+  const costMap = await computeBundleUnitCosts(tx, bundleVariantIds, defs);
+  for (const bid of bundleVariantIds) {
+    const cost = costMap.get(bid) ?? "0.00";
+    await tx
+      .update(productVariants)
+      .set({ costPrice: cost })
+      .where(eq(productVariants.id, bid));
+  }
+}
+
 
 /**
  * تكلفة الوحدة الأساس لكل بكج، بقراءةٍ واحدةٍ للوصفات وأخرى للتكاليف.
