@@ -83,6 +83,27 @@ export interface ShelfLookupNotFound {
 
 export type ShelfLookupResponse = ShelfLookupSuccess | ShelfLookupNotFound;
 
+/** استخراج الباركود النظيف سواء كان مدخلاً مجرداً أو رابطاً مشفراً في رمز QR. */
+function extractBarcodeFromInput(raw: string): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    try {
+      const url = new URL(trimmed);
+      const codeParam = url.searchParams.get("code") || url.searchParams.get("barcode") || url.searchParams.get("sku");
+      if (codeParam) return normalizeBarcodeScannerInput(codeParam);
+      const parts = url.pathname.split("/").filter(Boolean);
+      const last = parts[parts.length - 1];
+      if (last && /^[A-Za-z0-9_-]+$/.test(last) && last !== "shelf-lookup") {
+        return normalizeBarcodeScannerInput(last);
+      }
+    } catch {
+      // ليس رابطاً صالحاً
+    }
+  }
+  return normalizeBarcodeScannerInput(trimmed);
+}
+
 /** استخراج بارامترات البحث من رابط الصفحة. */
 function parseUrlParams(): { branchId?: number; initialBarcode?: string } {
   if (typeof window === "undefined") return {};
@@ -90,7 +111,7 @@ function parseUrlParams(): { branchId?: number; initialBarcode?: string } {
   const branchRaw = params.get("branch") || params.get("branchId");
   const branchId = branchRaw && !Number.isNaN(Number(branchRaw)) ? Number(branchRaw) : undefined;
   const barcodeParam = params.get("code") || params.get("barcode");
-  const initialBarcode = barcodeParam ? normalizeBarcodeScannerInput(barcodeParam) : undefined;
+  const initialBarcode = barcodeParam ? extractBarcodeFromInput(barcodeParam) : undefined;
   return { branchId, initialBarcode };
 }
 
@@ -138,7 +159,7 @@ export default function ShelfPriceLookup() {
   // معالجة التقاط باركود جديد عبر الكاميرا أو الإدخال اليدوي
   const handleDetectBarcode = useCallback(
     (scannedCode: string) => {
-      const cleanCode = normalizeBarcodeScannerInput(scannedCode);
+      const cleanCode = extractBarcodeFromInput(scannedCode);
       if (!cleanCode) return;
 
       // اهتزاز لمسي تأكيدي لطيف على الهواتف الذكية
