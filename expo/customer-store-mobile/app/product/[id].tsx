@@ -398,7 +398,7 @@ export default function ProductDetailScreen() {
                         checked: selectedUnitId === unit.productUnitId,
                         disabled: !unit.inStock,
                       }}
-                    disabled={!unit.inStock && !onlineOrderingIssue}
+                      disabled={!unit.inStock && !onlineOrderingIssue}
                       key={unit.productUnitId}
                       onPress={() => {
                         setSelectedUnitId(unit.productUnitId);
@@ -407,24 +407,37 @@ export default function ProductDetailScreen() {
                       style={[
                         styles.unitChoice,
                         selectedUnitId === unit.productUnitId &&
-                          styles.choiceActive,
+                          styles.unitChoiceActive,
                         !unit.inStock && styles.choiceDisabled,
                       ]}
                     >
-                      <Text
-                        style={[
-                          styles.choiceText,
-                          selectedUnitId === unit.productUnitId &&
-                            styles.choiceTextActive,
-                        ]}
-                      >
-                        {unit.unitName}
-                      </Text>
+                      <View style={styles.unitHeaderRow}>
+                        <View
+                          style={[
+                            styles.unitRadio,
+                            selectedUnitId === unit.productUnitId &&
+                              styles.unitRadioActive,
+                          ]}
+                        >
+                          {selectedUnitId === unit.productUnitId && (
+                            <View style={styles.unitRadioDot} />
+                          )}
+                        </View>
+                        <Text
+                          style={[
+                            styles.choiceText,
+                            selectedUnitId === unit.productUnitId &&
+                              styles.choiceTextActive,
+                          ]}
+                        >
+                          {unit.unitName}
+                        </Text>
+                      </View>
                       <Text
                         style={[
                           styles.unitPrice,
                           selectedUnitId === unit.productUnitId &&
-                            styles.choiceTextActive,
+                            styles.unitPriceActive,
                         ]}
                       >
                         {formatIqd(unit.salePrice ?? unit.price)}
@@ -779,37 +792,75 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   unitChoice: {
-    alignItems: "center",
+    alignItems: "flex-end",
     backgroundColor: "#FFFFFF",
     borderColor: "#E2E8F0",
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1.5,
-    minHeight: 56,
-    minWidth: 92,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    minHeight: 64,
+    minWidth: 104,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     shadowColor: "#0F172A",
     shadowOpacity: 0.02,
     shadowRadius: 6,
     elevation: 1,
+    gap: 4,
+  },
+  unitChoiceActive: {
+    backgroundColor: "#F8FAFC",
+    borderColor: "#0F172A",
+    borderWidth: 2,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  unitHeaderRow: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    gap: 7,
+  },
+  unitRadio: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: "#CBD5E1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  unitRadioActive: {
+    borderColor: "#0F172A",
+    backgroundColor: "#0F172A",
+  },
+  unitRadioDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#FFFFFF",
   },
   choiceActive: {
-    backgroundColor: "#ECFDF5",
-    borderColor: "#059669",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#0F172A",
     borderWidth: 2,
-    shadowColor: "#059669",
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
   },
   choiceDisabled: { opacity: 0.38 },
   choiceText: { color: "#334155", fontFamily: "Cairo_700Bold", fontSize: 11 },
-  choiceTextActive: { color: "#065F46", fontFamily: "Cairo_800ExtraBold" },
+  choiceTextActive: { color: "#0F172A", fontFamily: "Cairo_800ExtraBold" },
   unitPrice: {
     color: "#64748B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 10,
+    fontSize: 11,
     marginTop: 2,
-    textAlign: "center",
+    textAlign: "right",
+  },
+  unitPriceActive: {
+    color: "#059669",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+    marginTop: 2,
+    textAlign: "right",
   },
   swatch: {
     borderColor: "#FFFFFF",

@@ -458,42 +458,44 @@ export default function HomeScreen() {
 
         <View style={styles.assuranceBar}>
           <View style={styles.assuranceItem}>
-            <View style={[styles.assuranceIcon, { backgroundColor: "#ECFDF5" }]}>
+            <View style={styles.assuranceIcon}>
               <MaterialIcons
                 color="#059669"
                 name="local-shipping"
-                size={19}
+                size={18}
               />
             </View>
-            <Text style={styles.assuranceText}>توصيل لكافة المحافظات</Text>
+            <Text style={styles.assuranceText}>توصيل سريع للمحافظات</Text>
           </View>
+          <View style={styles.assuranceDivider} />
           <View style={styles.assuranceItem}>
-            <View style={[styles.assuranceIcon, { backgroundColor: "#EFF6FF" }]}>
+            <View style={styles.assuranceIcon}>
               <MaterialIcons
-                color="#2563EB"
+                color="#059669"
                 name="payments"
-                size={19}
+                size={18}
               />
             </View>
             <Text style={styles.assuranceText}>الدفع عند الاستلام</Text>
           </View>
+          <View style={styles.assuranceDivider} />
           <View style={styles.assuranceItem}>
-            <View style={[styles.assuranceIcon, { backgroundColor: "#FFFBEB" }]}>
+            <View style={styles.assuranceIcon}>
               <MaterialIcons
-                color="#D97706"
+                color="#059669"
                 name="verified-user"
-                size={19}
+                size={18}
               />
             </View>
             <Text style={styles.assuranceText}>ضمان وجودة معتمدة</Text>
           </View>
         </View>
 
-        {/* بطاقة خدمات الطباعة المباشرة والتصاميم الخاصة عبر واتساب */}
+        {/* خدمة الطباعة المتخصصة والتجهيز المكتبي — Executive Bespoke Printing Card */}
         <TouchableOpacity
-          accessibilityLabel="خدمات الطباعة والتصاميم الخاصة عبر واتساب"
+          accessibilityLabel="مركز الطباعة الرقمية والتجهيز المكتبي عبر واتساب"
           accessibilityRole="button"
-          activeOpacity={0.88}
+          activeOpacity={0.9}
           onPress={openWhatsAppPrinting}
           style={styles.whatsappBanner}
         >
@@ -502,17 +504,22 @@ export default function HomeScreen() {
               <MaterialIcons color="#FFFFFF" name="print" size={24} />
             </View>
             <View style={styles.whatsappBannerText}>
+              <View style={styles.whatsappBadgeRow}>
+                <Text style={styles.whatsappTag}>خدمة مؤسسية خاصة</Text>
+              </View>
               <Text style={styles.whatsappBannerTitle}>
-                خدمات الطباعة والتصاميم الخاصة
+                مركز الطباعة الرقمية والتجهيز المكتبي
               </Text>
               <Text style={styles.whatsappBannerSub}>
-                اطبع بحوثك، ملازمك وتصاميمك وتواصل معنا مباشرة عبر واتساب
+                طباعة بحوث، ملازم دراسية، وتجهيزات الشركات والمدارس مع تسعير فوري
               </Text>
             </View>
           </View>
-          <View style={styles.whatsappBadge}>
-            <MaterialIcons color="#157347" name="chat" size={16} />
-            <Text style={styles.whatsappBadgeText}>تواصل واطلب عبر واتساب</Text>
+          <View style={styles.whatsappActionRow}>
+            <View style={styles.whatsappBadge}>
+              <MaterialIcons color="#FFFFFF" name="chat" size={16} />
+              <Text style={styles.whatsappBadgeText}>تواصل مباشرة مع مسؤول الطباعة</Text>
+            </View>
           </View>
         </TouchableOpacity>
 
@@ -603,28 +610,9 @@ export default function HomeScreen() {
               }
               style={styles.categoryItem}
             >
-              <View
-                style={[
-                  styles.categoryIcon,
-                  {
-                    backgroundColor: [
-                      "#ECFDF5",
-                      "#FFFBEB",
-                      "#EFF6FF",
-                      "#FFF1F2",
-                    ][index % 4],
-                  },
-                ]}
-              >
+              <View style={styles.categoryIcon}>
                 <MaterialIcons
-                  color={
-                    [
-                      "#059669",
-                      "#D97706",
-                      "#2563EB",
-                      "#E11D48",
-                    ][index % 4]
-                  }
+                  color="#0F172A"
                   name={
                     "icon" in category
                       ? category.icon
@@ -632,7 +620,7 @@ export default function HomeScreen() {
                           index % 4
                         ] as never)
                   }
-                  size={26}
+                  size={24}
                 />
               </View>
               <Text numberOfLines={1} style={styles.categoryText}>
@@ -699,26 +687,17 @@ export default function HomeScreen() {
               activeOpacity={0.88}
               key={item.audience}
               onPress={() => router.push(item.route as never)}
-              style={[
-                styles.pathCard,
-                item.tone === "mint"
-                  ? styles.pathMint
-                  : item.tone === "sand"
-                    ? styles.pathSand
-                    : item.tone === "blue"
-                      ? styles.pathBlue
-                      : styles.pathRose,
-              ]}
+              style={styles.pathCard}
             >
               <View style={styles.pathIcon}>
-                <MaterialIcons color="#183D36" name={item.icon} size={25} />
+                <MaterialIcons color="#0F172A" name={item.icon} size={22} />
               </View>
               <Text style={styles.pathAudience}>{item.audience}</Text>
               <Text numberOfLines={2} style={styles.pathDirection}>
                 {item.direction}
               </Text>
               <View style={styles.pathArrow}>
-                <MaterialIcons color="#183D36" name="arrow-back" size={16} />
+                <MaterialIcons color="#059669" name="arrow-back" size={15} />
               </View>
             </TouchableOpacity>
           ))}
@@ -1157,31 +1136,40 @@ const styles = StyleSheet.create({
     flexDirection: "row-reverse",
     justifyContent: "space-between",
     marginTop: 18,
-    paddingHorizontal: 8,
+    paddingHorizontal: 12,
     paddingVertical: 12,
     shadowColor: "#0F172A",
-    shadowOpacity: 0.03,
+    shadowOpacity: 0.02,
     shadowRadius: 8,
     elevation: 1,
+  },
+  assuranceDivider: {
+    backgroundColor: "#E2E8F0",
+    height: 28,
+    width: 1,
   },
   assuranceItem: {
     alignItems: "center",
     flex: 1,
     flexDirection: "column",
-    gap: 6,
+    gap: 4,
   },
   assuranceIcon: {
     alignItems: "center",
-    borderRadius: 14,
-    height: 38,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    borderWidth: 1,
+    height: 36,
     justifyContent: "center",
-    width: 38,
+    width: 36,
   },
   assuranceText: {
-    color: "#334155",
+    color: "#0F172A",
     fontFamily: "Cairo_700Bold",
     fontSize: 10,
     textAlign: "center",
+    marginTop: 3,
   },
   offerStrip: { marginHorizontal: -16, marginTop: 13 },
   offerStripContent: { gap: 8, paddingHorizontal: 16 },
@@ -1238,42 +1226,46 @@ const styles = StyleSheet.create({
   pathList: { gap: 10, paddingHorizontal: 1 },
   pathCard: {
     alignItems: "flex-end",
-    borderRadius: 17,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
     borderWidth: 1,
-    minHeight: 137,
-    padding: 12,
-    width: 134,
+    minHeight: 140,
+    padding: 14,
+    width: 138,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 1,
   },
-  pathMint: { backgroundColor: "#E7F4FE", borderColor: "#D5EAF9" },
-  pathSand: { backgroundColor: "#FFF3DC", borderColor: "#F2E4C2" },
-  pathBlue: { backgroundColor: "#EAF1FF", borderColor: "#D8E4F8" },
-  pathRose: { backgroundColor: "#FFECEF", borderColor: "#F7DDE1" },
   pathIcon: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.76)",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
     borderRadius: 14,
-    height: 44,
+    borderWidth: 1,
+    height: 42,
     justifyContent: "center",
-    width: 44,
+    width: 42,
   },
   pathAudience: {
-    color: storefrontDesign.semantic.foreground,
+    color: "#0F172A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 14,
-    marginTop: 8,
+    marginTop: 10,
     textAlign: "right",
   },
   pathDirection: {
-    color: "#38534C",
+    color: "#64748B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 9,
-    lineHeight: 15,
-    marginTop: 2,
+    fontSize: 10,
+    lineHeight: 16,
+    marginTop: 3,
     textAlign: "right",
   },
   pathArrow: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "#ECFDF5",
     borderRadius: 10,
     height: 26,
     justifyContent: "center",
@@ -1283,26 +1275,31 @@ const styles = StyleSheet.create({
   categoryList: { gap: 12, paddingLeft: 4, paddingRight: 2 },
   categoryItem: {
     alignItems: "center",
-    minHeight: 112,
-    paddingHorizontal: 4,
-    paddingVertical: 4,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
+    borderWidth: 1,
+    minHeight: 114,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
     width: 92,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.02,
+    shadowRadius: 6,
+    elevation: 1,
   },
   categoryIcon: {
     alignItems: "center",
-    borderColor: "#F1F5F9",
-    borderRadius: 22,
-    borderWidth: 1.5,
-    elevation: 2,
-    height: 68,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+    borderRadius: 16,
+    borderWidth: 1,
+    height: 52,
     justifyContent: "center",
-    shadowColor: "#0F172A",
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    width: 68,
+    width: 52,
   },
   categoryText: {
-    color: storefrontDesign.semantic.foreground,
+    color: "#0F172A",
     fontFamily: "Cairo_700Bold",
     fontSize: 11,
     lineHeight: 16,
@@ -1317,7 +1314,7 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
   },
   categoryCountText: {
-    color: "#64748B",
+    color: "#475569",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 9,
   },
@@ -1530,22 +1527,22 @@ const styles = StyleSheet.create({
     width: 38,
   },
   whatsappBanner: {
-    backgroundColor: "#F0FDF4",
-    borderColor: "#BBF7D0",
-    borderRadius: 22,
-    borderWidth: 1.5,
-    marginTop: 18,
-    padding: 16,
-    gap: 12,
-    shadowColor: "#059669",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 2,
+    backgroundColor: "#0F172A",
+    borderColor: "#1E293B",
+    borderRadius: 24,
+    borderWidth: 1,
+    marginTop: 20,
+    padding: 18,
+    gap: 14,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.15,
+    shadowRadius: 14,
+    elevation: 4,
   },
   whatsappBannerRight: {
     flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 12,
+    alignItems: "flex-start",
+    gap: 14,
   },
   whatsappBannerIcon: {
     backgroundColor: "#059669",
@@ -1555,41 +1552,62 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#059669",
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
     elevation: 3,
   },
   whatsappBannerText: {
     flex: 1,
   },
+  whatsappBadgeRow: {
+    flexDirection: "row-reverse",
+    marginBottom: 4,
+  },
+  whatsappTag: {
+    backgroundColor: "rgba(5, 150, 105, 0.2)",
+    borderColor: "rgba(5, 150, 105, 0.4)",
+    borderRadius: 6,
+    borderWidth: 1,
+    color: "#34D399",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 9,
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+  },
   whatsappBannerTitle: {
-    color: "#0F172A",
+    color: "#FFFFFF",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 14,
+    fontSize: 15,
+    lineHeight: 22,
     textAlign: "right",
   },
   whatsappBannerSub: {
-    color: "#475569",
+    color: "#94A3B8",
     fontFamily: "Cairo_500Medium",
     fontSize: 11,
-    lineHeight: 17,
-    marginTop: 2,
+    lineHeight: 18,
+    marginTop: 3,
     textAlign: "right",
   },
+  whatsappActionRow: {
+    marginTop: 2,
+  },
   whatsappBadge: {
-    backgroundColor: "#DCFCE7",
-    borderColor: "#86EFAC",
-    borderWidth: 1,
+    backgroundColor: "#059669",
     borderRadius: 14,
     flexDirection: "row-reverse",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: 10,
+    gap: 8,
+    paddingVertical: 11,
+    shadowColor: "#059669",
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
   },
   whatsappBadgeText: {
-    color: "#166534",
-    fontFamily: "Cairo_700Bold",
+    color: "#FFFFFF",
+    fontFamily: "Cairo_800ExtraBold",
     fontSize: 12,
   },
 });
