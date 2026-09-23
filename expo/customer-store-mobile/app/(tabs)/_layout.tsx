@@ -5,7 +5,6 @@ import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useCart } from "@/lib/cart-context";
 import { Platform } from "react-native";
-import { storefrontDesign } from "@/lib/storefront-design";
 
 export default function TabLayout() {
   const { itemCount } = useCart();
