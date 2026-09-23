@@ -91,6 +91,7 @@ const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const Storefront = lazy(() => import("@/pages/Storefront"));
+const ShelfPriceLookup = lazy(() => import("@/pages/ShelfPriceLookup"));
 const MobileTurnstile = lazy(() => import("@/pages/MobileTurnstile"));
 const StoreHub = lazy(() => import("@/pages/StoreHub"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
@@ -382,6 +383,10 @@ export default function App() {
       <Route path="/price-checker">
         <PriceChecker />
       </Route>
+      {/* استعلام أسعار الرفوف بالباركود (QR Shelf Price Lookup) — صفحة عامة للجوال بلا AppLayout وبلا اشتراط تسجيل دخول */}
+      <Route path="/shelf-lookup" component={ShelfPriceLookup} />
+      {/* مسار توافقي رديف */}
+      <Route path="/price-check"><Redirect to="/shelf-lookup" /></Route>
       {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/kiosk" component={Kiosk} />
       {/* تحقق ضيق لتطبيق الهاتف: يعيد رمز Turnstile فقط، ولا يعرض المتجر أو بيانات العميل. */}
@@ -632,6 +637,7 @@ export default function App() {
       <Route path="/ap-aging"><Redirect to="/suppliers?tab=aging" /></Route>
       <Route path="/suppliers-statement"><RedirectKeepQuery to="/suppliers?tab=statement" /></Route>
       <Route path="/kiosk-devices"><Redirect to="/settings?tab=devices" /></Route>
+      <Route path="/shelf-qr"><Redirect to="/settings?tab=shelf-qr" /></Route>
       <Route path="/users"><Redirect to="/settings?tab=users" /></Route>
       {/* إدارة المستخدمين admin حصراً (userRouter كله adminProcedure) — كانت الواجهة تسمح
           للمدير بفتح الشاشة ثم يفشل كل استعلام/حفظ برسالة «ليست لديك صلاحية» (تحقيق ٦/٧). */}
