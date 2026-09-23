@@ -32,6 +32,7 @@ export interface InvoiceReceiptSource {
   courierName?: string | null;
   courierFee?: string | number | null;
   courierFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  consignmentStatus?: string | null;
   items: {
     productName?: string | null;
     variantName?: string | null;
@@ -88,7 +89,7 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
         : null,
       approvedAt: d.correctionAudit.reviewedAt ? fmtDateTime(d.correctionAudit.reviewedAt) : null,
     } : null,
-    delivery: d.courierName && Number(d.courierFee ?? 0) > 0
+    delivery: d.courierName && Number(d.courierFee ?? 0) > 0 && d.consignmentStatus !== "CANCELLED"
       ? { partyName: d.courierName, fee: d.courierFee ?? "0", feeCollection: d.courierFeeCollection ?? "COURIER" }
       : null,
   };

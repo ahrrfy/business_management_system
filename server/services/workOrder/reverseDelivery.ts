@@ -517,6 +517,7 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
 
 function assertSettledConsignmentOrNone(consignment: typeof deliveryConsignments.$inferSelect | undefined): void {
   if (!consignment) return;
+  if (consignment.status === "CANCELLED" && consignment.parcelStatus === "CANCELLED") return;
   const settled = consignment.status === "DELIVERED"
     && consignment.parcelStatus === "DELIVERED"
     && (consignment.moneyStatus === "SETTLED" || consignment.moneyStatus === "NOT_APPLICABLE");

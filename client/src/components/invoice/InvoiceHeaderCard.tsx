@@ -152,7 +152,7 @@ export function InvoiceHeaderCard({
             <div className="border-t pt-2.5">
               <SummaryRow label="الإجمالي" value={data.total} strong />
             </div>
-            {data.courierName && Number(data.courierFee ?? 0) > 0 && (
+            {data.courierName && Number(data.courierFee ?? 0) > 0 && data.consignmentStatus !== "CANCELLED" && (
               <div className="mt-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1 font-bold text-[var(--sem-warn)]">
@@ -174,7 +174,7 @@ export function InvoiceHeaderCard({
                 )}
               </div>
             )}
-            {data.consignmentNumber && (
+            {data.consignmentNumber && data.consignmentStatus !== "CANCELLED" && (
               <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 rounded-md border px-2.5 py-2 text-sm">
                 <span className="inline-flex items-center gap-1.5">
                   <Truck aria-hidden className="size-3.5 text-muted-foreground" />

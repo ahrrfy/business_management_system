@@ -45,8 +45,10 @@ export function CancelDeliveryAssignmentDialog({
       );
       await Promise.all([
         utils.delivery.invalidate(),
+        utils.sales.get.invalidate(),
         utils.sales.list.invalidate(),
         utils.sales.listPage.invalidate(),
+        utils.sales.listSummary.invalidate(),
       ]);
       onOpenChange(false);
       onCompleted?.();
