@@ -5,21 +5,24 @@
  * the mobile commerce experience stays coherent while campaigns change.
  */
 const primitive = {
-  ink: "#161A22",
-  inkSoft: "#59616F",
-  canvas: "#F3F5F9",
+  ink: "#183D36",
+  inkSoft: "#5C716C",
+  canvas: "#FFF8F2",
   surface: "#FFFFFF",
-  line: "#E2E7EF",
-  azure: "#2898E5",
-  azureDeep: "#147FCB",
-  azureSoft: "#E7F4FE",
-  sky: "#D9F0FF",
-  coral: "#F05252",
+  line: "#E2E8F0",
+  emerald: "#0E806A",
+  emeraldDeep: "#075B4E",
+  emeraldSoft: "#E6F5F1",
+  azure: "#0E806A",
+  azureDeep: "#075B4E",
+  azureSoft: "#E6F5F1",
+  sky: "#E6F5F1",
+  coral: "#F05D53",
   coralSoft: "#FFF0F0",
   sand: "#FFF4DE",
-  blueSoft: "#ECF5FF",
-  muted: "#737B88",
-  mutedSoft: "#ADB5C0",
+  blueSoft: "#E6F5F1",
+  muted: "#5C716C",
+  mutedSoft: "#8FA39E",
   white: "#FFFFFF",
 } as const;
 
@@ -29,12 +32,12 @@ const semantic = {
   foreground: primitive.ink,
   secondaryText: primitive.muted,
   border: primitive.line,
-  brand: primitive.azure,
-  brandStrong: primitive.azureDeep,
+  brand: primitive.emerald,
+  brandStrong: primitive.emeraldDeep,
   highlight: primitive.sky,
   promotion: primitive.coral,
   promotionSurface: primitive.coralSoft,
-  safeSurface: primitive.azureSoft,
+  safeSurface: primitive.emeraldSoft,
 } as const;
 
 export const storefrontDesign = {

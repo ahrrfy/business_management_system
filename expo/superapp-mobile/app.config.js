@@ -62,7 +62,7 @@ const config = {
     },
   },
   android: {
-    versionCode: 21,
+    versionCode: 24,
     package: identity.androidPackage,
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,

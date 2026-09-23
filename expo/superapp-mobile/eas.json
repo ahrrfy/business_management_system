@@ -37,6 +37,18 @@
         "ERP_API_BASE_URL": "https://srv1548487.hstgr.cloud",
         "ERP_TLS_SPKI_PINS": "heyx24VzgigLNUK_xrMM4IODY0kLR33mjqjg_b8HUPg,brzvtCELCIZUo4sD_qPX0ccRtPsd3DY6RfmxpOU9oB4"
       }
+    },
+    "store-android": {
+      "autoIncrement": true,
+      "distribution": "store",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "APP_VARIANT": "production",
+        "ERP_API_BASE_URL": "https://srv1548487.hstgr.cloud",
+        "ERP_TLS_SPKI_PINS": "heyx24VzgigLNUK_xrMM4IODY0kLR33mjqjg_b8HUPg,brzvtCELCIZUo4sD_qPX0ccRtPsd3DY6RfmxpOU9oB4"
+      }
     }
   }
 }

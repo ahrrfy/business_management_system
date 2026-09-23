@@ -27,7 +27,6 @@ export default tseslint.config(
       "dist/**",
       ".runtime/**",
       "_legacy/**",
-      "android-native/**",
       "client/public/**",
       // سكربتات الورشة تُنفَّذ في سياقٍ يسمح بـ على المستوى الأعلى.
       ".claude/**",

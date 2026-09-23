@@ -33,17 +33,9 @@ describe("إغلاق الوردية المبسّط", () => {
     expect(directCloseService).not.toContain('status: "PENDING"');
   });
 
-  it("يحذف اختيار المستلم من أندرويد أيضاً ويبقي السحب النقدي المنفصل محكوماً", () => {
-    const repository = read(
-      "../../../../android-native/app/src/main/java/online/alarabiya/superapp/data/ShiftRepository.kt",
-    );
-    const screen = read(
-      "../../../../android-native/app/src/main/java/online/alarabiya/superapp/feature/shifts/ShiftScreen.kt",
-    );
+  it("يبقي السحب النقدي المنفصل محكوماً في واجهة الكاشير", () => {
     const cashDrop = read("../../components/pos/CashDropDialog.tsx");
 
-    expect(repository).not.toContain("handoverToUserId");
-    expect(screen).not.toContain("مستلم عهدة النقد");
     expect(cashDrop).toContain("dropTo");
     expect(cashDrop).toContain("المستلِم");
   });
