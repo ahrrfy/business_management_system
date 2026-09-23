@@ -9,6 +9,7 @@ const Branches = lazy(() => import("@/pages/Branches"));
 const Users = lazy(() => import("@/pages/Users"));
 const Roles = lazy(() => import("@/pages/Roles"));
 const KioskDevices = lazy(() => import("@/pages/KioskDevices"));
+const ShelfQrLabels = lazy(() => import("@/pages/ShelfQrLabels"));
 const AuditLogs = lazy(() => import("@/pages/AuditLogs"));
 const LegacyDataRepair = lazy(() => import("@/pages/LegacyDataRepair"));
 const SystemHealth = lazy(() => import("@/pages/SystemHealth"));
@@ -20,6 +21,7 @@ const TABS: HubTab[] = [
   { value: "users", label: "المستخدمون", gate: { adminOnly: true }, Component: Users },
   { value: "roles", label: "الأدوار والصلاحيات", gate: { adminOnly: true }, Component: Roles },
   { value: "devices", label: "أجهزة قارئ الأسعار", gate: { adminOnly: true }, Component: KioskDevices },
+  { value: "shelf-qr", label: "ملصقات QR للرفوف", gate: { managerOnly: true }, Component: ShelfQrLabels },
   { value: "audit", label: "سجلّ التدقيق", gate: { adminOnly: true }, Component: AuditLogs },
   { value: "system-health", label: "صحة النظام", gate: { adminOnly: true }, Component: SystemHealth },
   { value: "delivery-data-repair", label: "معالجة بيانات التوصيل", gate: { adminOnly: true }, Component: LegacyDataRepair },

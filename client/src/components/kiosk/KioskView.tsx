@@ -15,7 +15,7 @@ import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { X, Maximize, WifiOff, Package, Keyboard } from "lucide-react";
+import { X, Maximize, WifiOff, Package, Keyboard, QrCode } from "lucide-react";
 import { fmtAr } from "@/lib/money";
 import { playScanSuccess, playScanNotFound } from "@/lib/audioFeedback";
 import { useScreenWakeLock } from "@/lib/screenWakeLock";
@@ -862,7 +862,16 @@ export default function KioskView({
                 <Maximize aria-hidden className="size-4" />
               </button>
               {!isDevice ? (
-                <button className="kpc-link-btn" onClick={() => navigate("/")}>خروج من الكشك ← لوحة التحكم</button>
+                <>
+                  <button
+                    className="kpc-link-btn inline-flex items-center gap-1.5"
+                    onClick={() => navigate("/settings?tab=shelf-qr")}
+                  >
+                    <QrCode aria-hidden className="size-4" />
+                    <span>طباعة ملصقات QR للرفوف (لهواتف الزبائن)</span>
+                  </button>
+                  <button className="kpc-link-btn" onClick={() => navigate("/")}>خروج من الكشك ← لوحة التحكم</button>
+                </>
               ) : (
                 onDeviceLogout && <button className="kpc-link-btn kpc-danger" onClick={onDeviceLogout}>إنهاء جلسة الجهاز (للموظّف)</button>
               )}
