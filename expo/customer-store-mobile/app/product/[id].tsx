@@ -145,6 +145,17 @@ export default function ProductDetailScreen() {
     addSelection(product, next.details);
     setSelectionErrors([]);
   };
+  const addDozenToCart = () => {
+    const next = validateProductSelection(product, {
+      variantId: selectedVariantId,
+      productUnitId: selectedUnitId,
+      customizationValues,
+    });
+    setSelectionErrors(next.errors);
+    if (!next.details) return;
+    addSelection(product, next.details, 12);
+    setSelectionErrors([]);
+  };
   const buyNow = () => {
     const next = validateProductSelection(product, {
       variantId: selectedVariantId,
@@ -510,6 +521,36 @@ export default function ProductDetailScreen() {
           </Text>
         </View>
         <ProductReviews productId={product.productId ?? Number(product.id)} />
+        {!onlineOrderingIssue && selectedUnit?.inStock && (
+          <View style={styles.wholesaleUpsellCard}>
+            <View style={styles.wholesaleHeader}>
+              <View style={styles.wholesaleBadge}>
+                <MaterialIcons color="#B45309" name="local-offer" size={16} />
+                <Text style={styles.wholesaleBadgeText}>عرض الجملة الخاص</Text>
+              </View>
+              <Text style={styles.wholesaleSaveTag}>وفّر حتى 25%</Text>
+            </View>
+            <Text style={styles.wholesaleTitle}>
+              طلب درزن (12 قطعة) بسعر الجملة المخفض
+            </Text>
+            <Text style={styles.wholesaleSubtitle}>
+              طلب الكميات والدرزن يُفعل تلقائياً تسعير الجملة في سلتك
+            </Text>
+            <TouchableOpacity
+              accessibilityHint="يضيف 12 قطعة مباشرة إلى السلة لتفعيل سعر الجملة"
+              accessibilityLabel="أضف درزن (12 قطعة) بسعر الجملة"
+              accessibilityRole="button"
+              activeOpacity={0.85}
+              onPress={addDozenToCart}
+              style={styles.wholesaleButton}
+            >
+              <MaterialIcons color="#92400E" name="add-shopping-cart" size={18} />
+              <Text style={styles.wholesaleButtonText}>
+                أضف درزن (12 قطعة) بسعر الجملة
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
         {!onlineOrderingIssue && (
           <View style={styles.purchaseActions}>
             <TouchableOpacity
@@ -1050,5 +1091,69 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontFamily: "Cairo_700Bold",
     fontSize: 12,
+  },
+  wholesaleUpsellCard: {
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
+    borderRadius: 20,
+    borderWidth: 1.5,
+    marginTop: 14,
+    padding: 14,
+    gap: 8,
+  },
+  wholesaleHeader: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+  },
+  wholesaleBadge: {
+    alignItems: "center",
+    backgroundColor: "#FEF3C7",
+    borderRadius: 8,
+    flexDirection: "row-reverse",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  wholesaleBadgeText: {
+    color: "#92400E",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
+  wholesaleSaveTag: {
+    color: "#B45309",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+  },
+  wholesaleTitle: {
+    color: "#78350F",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 14,
+    lineHeight: 22,
+    textAlign: "right",
+  },
+  wholesaleSubtitle: {
+    color: "#92400E",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 11,
+    lineHeight: 18,
+    textAlign: "right",
+  },
+  wholesaleButton: {
+    alignItems: "center",
+    backgroundColor: "#FDE68A",
+    borderColor: "#F59E0B",
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 6,
+    justifyContent: "center",
+    minHeight: 44,
+    marginTop: 4,
+  },
+  wholesaleButtonText: {
+    color: "#78350F",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 13,
   },
 });

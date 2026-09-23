@@ -21,9 +21,69 @@ import {
   useStorefrontSettings,
 } from "@/lib/storefront-api";
 import { storefrontDesign } from "@/lib/storefront-design";
+import type { Product } from "@/shared/storefront";
+
+const IMPULSE_ADDONS: Product[] = [
+  {
+    id: "addon-highlighters",
+    productId: 9901,
+    productUnitId: 9901,
+    title: "طقم أقلام تظليل باستيل",
+    subtitle: "4 ألوان ناعمة",
+    categoryId: "stationery",
+    description: "أقلام تظليل لطيفة على الورق وسريعة الجفاف",
+    icon: "brush",
+    accent: "#FEF3C7",
+    availability: "متوفر",
+    price: "2500",
+    inStock: true,
+  },
+  {
+    id: "addon-stickynotes",
+    productId: 9902,
+    productUnitId: 9902,
+    title: "أوراق ملاحظات لاصقة",
+    subtitle: "100 ورقة ملونة",
+    categoryId: "stationery",
+    description: "مثالية لتنظيم الملاحظات وتحديد الصفحات",
+    icon: "note",
+    accent: "#E0F2FE",
+    availability: "متوفر",
+    price: "1500",
+    inStock: true,
+  },
+  {
+    id: "addon-correction",
+    productId: 9903,
+    productUnitId: 9903,
+    title: "شريط تصحيح ياباني 12م",
+    subtitle: "شريط أبيض فوري",
+    categoryId: "stationery",
+    description: "تغطية كاملة وجافة فورية بدون تلطيخ",
+    icon: "edit",
+    accent: "#FCE7F3",
+    availability: "متوفر",
+    price: "2000",
+    inStock: true,
+  },
+  {
+    id: "addon-pocketbook",
+    productId: 9904,
+    productUnitId: 9904,
+    title: "دفتر جيب شبكي فاخر",
+    subtitle: "80 ورقة مقوى",
+    categoryId: "stationery",
+    description: "غلاف مرن أنيق وورق عالي الجودة للتدوين السريع",
+    icon: "menu-book",
+    accent: "#DCFCE7",
+    availability: "متوفر",
+    price: "3000",
+    inStock: true,
+  },
+];
 
 export default function CartScreen() {
-  const { decrement, increment, isRestoring, lines, remove } = useCart();
+  const { addProduct, decrement, increment, isRestoring, lines, remove } = useCart();
   const settings = useStorefrontSettings();
   const estimatedSubtotal = lines.reduce(
     (sum, line) =>
@@ -60,6 +120,7 @@ export default function CartScreen() {
     0,
     freeShippingThreshold - estimatedSubtotal,
   );
+  const totalItemCount = lines.reduce((sum, line) => sum + line.quantity, 0);
 
   const shareCartViaWhatsApp = async () => {
     if (lines.length === 0) return;
@@ -179,6 +240,84 @@ export default function CartScreen() {
             </View>
           </View>
         )}
+
+        {/* سد فجوة التوصيل المجاني إذا كان الفارق 5000 دينار أو أقل */}
+        {freeShippingThreshold > 0 && shippingRemaining > 0 && shippingRemaining <= 5000 && (
+          <View style={styles.gapFillerCard}>
+            <View style={styles.gapFillerHeader}>
+              <View style={styles.gapFillerBadge}>
+                <MaterialIcons color="#15803D" name="offline-bolt" size={16} />
+                <Text style={styles.gapFillerBadgeText}>وفر أجور الشحن</Text>
+              </View>
+              <Text style={styles.gapFillerRemaining}>
+                متبقي {formatIqd(shippingRemaining)} فقط
+              </Text>
+            </View>
+            <Text style={styles.gapFillerTitle}>
+              سد فجوة التوصيل المجاني بأصناف مفيدة
+            </Text>
+            <Text style={styles.gapFillerSubtitle}>
+              بدلاً من دفع أجور التوصيل، أضف أحد هذه الأصناف واحصل على شحن مجاني
+            </Text>
+
+            <ScrollView
+              contentContainerStyle={styles.gapFillerList}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+            >
+              {IMPULSE_ADDONS.map((addon) => (
+                <View key={addon.id} style={styles.gapFillerItem}>
+                  <View style={[styles.gapFillerIconBox, { backgroundColor: addon.accent }]}>
+                    <MaterialIcons
+                      color={storefrontDesign.semantic.brandStrong}
+                      name={addon.icon}
+                      size={22}
+                    />
+                  </View>
+                  <Text numberOfLines={1} style={styles.gapFillerItemTitle}>
+                    {addon.title}
+                  </Text>
+                  <Text style={styles.gapFillerItemPrice}>
+                    {formatIqd(Number(addon.price ?? 0))}
+                  </Text>
+                  <TouchableOpacity
+                    accessibilityHint="يضيف الصنف فورياً لسلتك للتأهل للشحن المجاني"
+                    accessibilityLabel={`أضف ${addon.title} للسلة`}
+                    accessibilityRole="button"
+                    activeOpacity={0.82}
+                    onPress={() => addProduct(addon)}
+                    style={styles.gapFillerAddBtn}
+                  >
+                    <MaterialIcons color="#FFFFFF" name="add" size={16} />
+                    <Text style={styles.gapFillerAddBtnText}>أضف</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* مؤشر خصم الجملة لسلة التسوق */}
+        <View style={totalItemCount >= 12 ? styles.wholesaleQualifiedCard : styles.wholesaleProgressCard}>
+          <MaterialIcons
+            color={totalItemCount >= 12 ? "#15803D" : "#B45309"}
+            name={totalItemCount >= 12 ? "verified" : "store"}
+            size={18}
+          />
+          <View style={styles.wholesaleTextWrap}>
+            <Text style={totalItemCount >= 12 ? styles.wholesaleQualifiedTitle : styles.wholesaleProgressTitle}>
+              {totalItemCount >= 12
+                ? "مؤهل لخصم الجملة (أكثر من 12 قطعة في السلة)"
+                : `خصم الجملة يبدأ من 12 قطعة (لديك ${formatLatinNumber(totalItemCount)})`}
+            </Text>
+            <Text style={styles.wholesaleProgressDesc}>
+              {totalItemCount >= 12
+                ? "تم تفعيل تسعير الجملة المخفض على طلبك وسيتم تأكيده في الفاتورة النهائية."
+                : `أضف ${formatLatinNumber(12 - totalItemCount)} قطع إضافية لتفعيل أسعار الجملة ووفر حتى 25% على طلبك.`}
+            </Text>
+          </View>
+        </View>
+
         <View style={styles.lines}>
           {lines.map((line) => {
             const originalPrice = line.selectionDetails.unitPrice;
@@ -692,5 +831,147 @@ const styles = StyleSheet.create({
     color: "#166534",
     fontFamily: "Cairo_700Bold",
     fontSize: 13,
+  },
+  gapFillerCard: {
+    backgroundColor: "#F0FDF4",
+    borderColor: "#BBF7D0",
+    borderRadius: 20,
+    borderWidth: 1.5,
+    marginTop: 14,
+    padding: 14,
+    gap: 6,
+  },
+  gapFillerHeader: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+  },
+  gapFillerBadge: {
+    alignItems: "center",
+    backgroundColor: "#DCFCE7",
+    borderRadius: 8,
+    flexDirection: "row-reverse",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  gapFillerBadgeText: {
+    color: "#166534",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
+  gapFillerRemaining: {
+    color: "#15803D",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+  },
+  gapFillerTitle: {
+    color: "#14532D",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 13,
+    textAlign: "right",
+  },
+  gapFillerSubtitle: {
+    color: "#166534",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: "right",
+  },
+  gapFillerList: {
+    flexDirection: "row-reverse",
+    gap: 10,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  gapFillerItem: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#DCFCE7",
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 10,
+    width: 140,
+    alignItems: "center",
+    gap: 4,
+  },
+  gapFillerIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gapFillerItemTitle: {
+    color: "#1E293B",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+    textAlign: "center",
+  },
+  gapFillerItemPrice: {
+    color: "#15803D",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+  },
+  gapFillerAddBtn: {
+    alignItems: "center",
+    backgroundColor: "#15803D",
+    borderRadius: 8,
+    flexDirection: "row-reverse",
+    gap: 2,
+    justifyContent: "center",
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    width: "100%",
+  },
+  gapFillerAddBtnText: {
+    color: "#FFFFFF",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
+  wholesaleProgressCard: {
+    alignItems: "flex-start",
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 8,
+    marginTop: 14,
+    padding: 12,
+  },
+  wholesaleQualifiedCard: {
+    alignItems: "flex-start",
+    backgroundColor: "#F0FDF4",
+    borderColor: "#BBF7D0",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 8,
+    marginTop: 14,
+    padding: 12,
+  },
+  wholesaleTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  wholesaleProgressTitle: {
+    color: "#92400E",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 12,
+    textAlign: "right",
+  },
+  wholesaleQualifiedTitle: {
+    color: "#166534",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 12,
+    textAlign: "right",
+  },
+  wholesaleProgressDesc: {
+    color: "#78350F",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: "right",
   },
 });
