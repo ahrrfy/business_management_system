@@ -885,8 +885,6 @@ export async function createVoucherTx(
         message: "اسم الطرف المقابل إلزامي لسندات «أخرى»",
       });
     }
-    // قبض OTHER يخلق نقداً من مصدر خارجي مجهول وقابل للتجزئة؛ لذلك يخضع دائماً إلى Maker‑Checker.
-    if (input.voucherType === "RECEIPT") forcePendingApproval = true;
   }
 
   // أساسا التاريخ متمايزان عمداً (إصلاح انحدار #604):
@@ -918,8 +916,8 @@ export async function createVoucherTx(
     input.voucherType,
     input.branchId,
   );
-  // عقد المالك: كل سند صرف يُنشأ طلباً معلّقاً، بصرف النظر عن المبلغ أو صفة المنشئ.
-  // سند القبض يبقى على سياسته القائمة (OTHER يحتاج Maker-Checker، وغيره مباشر).
+  // المسار الأول — الدستور المالي: سند القبض التشغيلي ينفذ مباشرةً في درج الكاشير المستلم الفعلي.
+  // بوابات الاعتماد محصورة في الصرف (خروج مال MONEY_OUT) والطلبات النظامية (محو أثر ERASE_EFFECT).
   const needsApproval =
     direction === "OUT" ||
     forcePendingApproval ||

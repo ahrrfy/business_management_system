@@ -55,9 +55,8 @@ beforeEach(async () => {
 });
 
 describe("ذمة اعتماد السندات ومسارات النقد (Voucher Approval & Cash Custody Liability)", () => {
-  it("سند قبض إيراد (OTHER نقدي) من الكاشير: يعلق للمطابقة، وعند اعتماد المالك يؤول لدرج ووردية الكاشير لا المالك", async () => {
+  it("سند قبض إيراد (OTHER نقدي) من الكاشير: يدخل درج ووردية الكاشير فوراً بلا تعليق ولا حجز في ذمة المالك (المسار الأول)", async () => {
     const cashierShiftId = await openShift(1, cashier.userId);
-    const ownerShiftId = await openShift(1, owner.userId);
 
     const r = await createVoucher(
       {
@@ -75,30 +74,25 @@ describe("ذمة اعتماد السندات ومسارات النقد (Voucher 
       cashier,
     );
 
-    // 1. معلق للتدقيق (Maker-Checker لسندات OTHER)
-    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    // 1. لا تعليق: معتمد ومكتمل فوراً لحظة الإنشاء
+    expect(r.approvalStatus).toBe("APPROVED");
 
-    // 2. المالك يعتمد السند
-    await approveVoucher(r.receiptId, owner);
-
-    // 3. النقد يؤول لوردية ودرج الكاشير (المستلم الفعلي) وليس المالك المعتمد
+    // 2. النقد في درج ووردية الكاشير المستلم الحقيقي
     const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(receipt.status).toBe("COMPLETED");
     expect(receipt.approvalStatus).toBe("APPROVED");
     expect(receipt.cashBucket).toBe("DRAWER");
     expect(receipt.shiftId).toBe(cashierShiftId);
-    expect(receipt.shiftId).not.toBe(ownerShiftId);
     expect(receipt.createdBy).toBe(cashier.userId);
 
-    // 4. القيد المحاسبي مرحل تحت كود الكاشير المستلم لا المالك
+    // 3. القيد المحاسبي مرحل تحت كود الكاشير لا المالك
     const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, r.receiptId));
     expect(entries).toHaveLength(1);
     expect(entries[0].entryType).toBe("PAYMENT_IN");
     expect(entries[0].createdBy).toBe(cashier.userId);
   });
 
-  it("سند قبض بطاقة إلكترونية (CARD): لا يمس درج الكاشير ولا درج المالك ولا يتطلب وردية", async () => {
+  it("سند قبض بطاقة إلكترونية (CARD): لا يمس درج الكاشير ولا يتطلب وردية ولا يدخل في ذمة المعتمد (المسار الأول)", async () => {
     const r = await createVoucher(
       {
         voucherType: "RECEIPT",
@@ -116,9 +110,7 @@ describe("ذمة اعتماد السندات ومسارات النقد (Voucher 
       cashier,
     );
 
-    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
-
-    await approveVoucher(r.receiptId, owner);
+    expect(r.approvalStatus).toBe("APPROVED");
 
     const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(receipt.status).toBe("COMPLETED");
