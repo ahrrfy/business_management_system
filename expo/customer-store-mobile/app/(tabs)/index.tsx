@@ -511,6 +511,74 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionOverline}>ابدأ بسرعة</Text>
+            <Text style={styles.sectionTitle}>تسوّق حسب القسم</Text>
+            <Text style={styles.sectionHint}>
+              كبسولات قرطاسية مبهجة ومختارات معتمدة
+            </Text>
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => router.push("/categories" as never)}
+          >
+            <Text style={styles.link}>كل الأقسام</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView
+          contentContainerStyle={styles.categoryList}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+        >
+          {discoveryCategories.map((category, index) => {
+            const tint = CATEGORY_TINTS[index % CATEGORY_TINTS.length];
+            return (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                key={`${category.id}-${category.name}`}
+                onPress={() =>
+                  router.push(
+                    category.id
+                      ? (`/categories?category=${category.id}` as never)
+                      : ("/categories" as never),
+                  )
+                }
+                style={styles.categoryItem}
+              >
+                <View
+                  style={[
+                    styles.categoryIcon,
+                    { backgroundColor: tint.bg, borderColor: tint.border },
+                  ]}
+                >
+                  <MaterialIcons
+                    color={tint.iconColor}
+                    name={
+                      "icon" in category
+                        ? category.icon
+                        : (["menu-book", "edit", "school", "card-giftcard"][
+                            index % 4
+                          ] as never)
+                    }
+                    size={26}
+                  />
+                </View>
+                <Text numberOfLines={1} style={styles.categoryText}>
+                  {category.name}
+                </Text>
+                {"availableCount" in category && (
+                  <View style={styles.categoryCountBadge}>
+                    <Text style={styles.categoryCountText}>
+                      {formatLatinNumber(category.availableCount)} منتج
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
         {/* خدمة الطباعة المتخصصة والتجهيز المكتبي — Scribble-Style Vibrant Gift Box & Printing Banner */}
         <TouchableOpacity
           accessibilityLabel="باقات الإهداء والطباعة المخصصة عبر واتساب"
@@ -596,74 +664,6 @@ export default function HomeScreen() {
             </ScrollView>
           </>
         )}
-
-        <View style={styles.sectionHeader}>
-          <View>
-            <Text style={styles.sectionOverline}>ابدأ بسرعة</Text>
-            <Text style={styles.sectionTitle}>تسوّق حسب القسم</Text>
-            <Text style={styles.sectionHint}>
-              كبسولات قرطاسية مبهجة ومختارات معتمدة
-            </Text>
-          </View>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => router.push("/categories" as never)}
-          >
-            <Text style={styles.link}>كل الأقسام</Text>
-          </TouchableOpacity>
-        </View>
-        <ScrollView
-          contentContainerStyle={styles.categoryList}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-        >
-          {discoveryCategories.map((category, index) => {
-            const tint = CATEGORY_TINTS[index % CATEGORY_TINTS.length];
-            return (
-              <TouchableOpacity
-                activeOpacity={0.85}
-                key={`${category.id}-${category.name}`}
-                onPress={() =>
-                  router.push(
-                    category.id
-                      ? (`/categories?category=${category.id}` as never)
-                      : ("/categories" as never),
-                  )
-                }
-                style={styles.categoryItem}
-              >
-                <View
-                  style={[
-                    styles.categoryIcon,
-                    { backgroundColor: tint.bg, borderColor: tint.border },
-                  ]}
-                >
-                  <MaterialIcons
-                    color={tint.iconColor}
-                    name={
-                      "icon" in category
-                        ? category.icon
-                        : (["menu-book", "edit", "school", "card-giftcard"][
-                            index % 4
-                          ] as never)
-                    }
-                    size={26}
-                  />
-                </View>
-                <Text numberOfLines={1} style={styles.categoryText}>
-                  {category.name}
-                </Text>
-                {"availableCount" in category && (
-                  <View style={styles.categoryCountBadge}>
-                    <Text style={styles.categoryCountText}>
-                      {formatLatinNumber(category.availableCount)} منتج
-                    </Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
 
         {/* Occasions Section (المناسبات الخاصة — من تطبيق Scribble المرجعي) */}
         <View style={styles.occasionsSection}>
