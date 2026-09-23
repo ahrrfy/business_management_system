@@ -219,16 +219,11 @@ export function voucherApprovalTrigger(
  * لقيدٍ قائم). حتى يُحسَم، **يُستبقى ضابطُه كما هو** — والاستبقاءُ هو الخيار الآمن لأنّه
  * لا يُغيّر شيئاً؛ إسقاطُه هو التغيير.
  */
-/**
- * سند القبض العادي لا يحتجز legacy approval بعد تحريره لمطابقة الدستور المالي:
- * النقد يُقيد فوراً في درج المستلم، والاعتماد الإلزامي محصور في خروج المال (MONEY_OUT)
- * ومحو الأثر (ERASE_EFFECT) فقط.
- */
 export function voucherApprovalRetainsLegacy(
   direction: "IN" | "OUT",
   systemKind: VoucherSystemKind | null,
 ): boolean {
-  return false;
+  return voucherApprovalTrigger(direction, systemKind) === null && direction === "IN";
 }
 
 /**

@@ -126,10 +126,11 @@ describe("الخزينة والسندات — الفعلُ لا الإجراء،
     expect(voucherApprovalTrigger("IN", "ACCRUAL_CORRECTION_REFUND")).toBe("ERASE_EFFECT");
   });
 
-  it("⭐ سندُ القبض العاديّ تصنيفُه null — ومحرر من الاستبقاء لمطابقة الدستور المالي", () => {
-    // القاعدةُ تقول «لا بوّابة»، والنقد يُقيد فوراً في درج المستلم الحقيقي دون تجميد في ذمة المعتمد.
+  it("⭐ سندُ القبض العاديّ تصنيفُه null — والمالك أبقى ضابطَه (٢/٩/٢٦)", () => {
+    // القاعدةُ تقول «لا بوّابة»، والواقعُ أنّه الضابط الوحيد على نقدٍ مجهول المصدر يدخل
+    // الخزينة. الحلُّ ليس مُطلِقاً ثالثاً بل استبقاءُ الضابط القائم كما هو.
     expect(voucherApprovalTrigger("IN", null)).toBeNull();
-    expect(voucherApprovalRetainsLegacy("IN", null)).toBe(false);
+    expect(voucherApprovalRetainsLegacy("IN", null)).toBe(true);
   });
 
   it("والاستبقاءُ لا يمسّ ما له مُطلِقٌ أصلاً — فلا يُزدوج الضابط", () => {

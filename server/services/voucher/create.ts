@@ -885,6 +885,8 @@ export async function createVoucherTx(
         message: "اسم الطرف المقابل إلزامي لسندات «أخرى»",
       });
     }
+    // قبض OTHER يخلق نقداً من مصدر خارجي مجهول وقابل للتجزئة؛ لذلك يخضع دائماً إلى Maker‑Checker.
+    if (input.voucherType === "RECEIPT") forcePendingApproval = true;
   }
 
   // أساسا التاريخ متمايزان عمداً (إصلاح انحدار #604):
@@ -921,7 +923,7 @@ export async function createVoucherTx(
   const needsApproval =
     direction === "OUT" ||
     forcePendingApproval ||
-    options?.systemRequest?.kind === "VOUCHER_CANCELLATION";
+    options?.systemRequest != null;
   const resolvedActor = await resolveApprovalActor(tx, actor);
   const ownerApprovalPlan = planApproval({
     actor: resolvedActor,

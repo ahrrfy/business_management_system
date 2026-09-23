@@ -50,7 +50,7 @@ const SITES: WiredSite[] = [
     retainLegacy: voucherApprovalRetainsLegacy("OUT", null),
   },
   {
-    name: "approveVoucher · قبض عادي (IN) — محرر لمطابقة الدستور المالي",
+    name: "approveVoucher · قبض عادي (IN) — مستبقى بقرار المالك",
     trigger: voucherApprovalTrigger("IN", null),
     retainLegacy: voucherApprovalRetainsLegacy("IN", null),
   },
@@ -105,7 +105,7 @@ describe("الزوج الذي يمرره كل موضع — تثبيت لا اش�
         "MONEY_OUT",
         false,
       ],
-      ["approveVoucher · قبض عادي (IN) — محرر لمطابقة الدستور المالي", null, false],
+      ["approveVoucher · قبض عادي (IN) — مستبقى بقرار المالك", null, true],
       ["approveVoucher · إلغاء سند قبض ⇒ إيصال OUT", "MONEY_OUT", false],
       ["approveVoucher · إلغاء سند صرف ⇒ إيصال IN على مستند منشور", "ERASE_EFFECT", false],
       ["approveVoucher · استرداد تصحيح استحقاق (IN)", "ERASE_EFFECT", false],
@@ -119,8 +119,9 @@ describe("الزوج الذي يمرره كل موضع — تثبيت لا اش�
     ]);
   });
 
-  it("قرار المالك: المستبقى موضع واحد لا غير — زيادة فرق النقد", () => {
+  it("قرار المالك: المستبقى موضعان اثنان لا غير — القبض العادي وزيادة فرق النقد", () => {
     expect(SITES.filter((s) => s.retainLegacy).map((s) => s.name)).toEqual([
+      "approveVoucher · قبض عادي (IN) — مستبقى بقرار المالك",
       "approveCashVarianceCase · زيادة — مستبقاة حتى يحسمها المالك",
     ]);
   });
