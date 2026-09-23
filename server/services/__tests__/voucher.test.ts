@@ -131,8 +131,8 @@ describe("سند قبض (RECEIPT) — IN", () => {
     expect(cust.currentBalance).toBe("70.00"); // 100 − 30
   });
 
-  it("قبض من OTHER موثق: يبقى معلقاً بلا قيد أو أثر نقدي حتى الاعتماد", async () => {
-    await openShift(1, 1); // shift-gate
+  it("قبض من OTHER موثق: ينفذ فوراً في وردية الكاشير ودرجه بلا تعليق (المسار الأول)", async () => {
+    const shiftId = await openShift(1, 1); // shift-gate
     const r = await createVoucher(
       {
         voucherType: "RECEIPT",
@@ -146,13 +146,16 @@ describe("سند قبض (RECEIPT) — IN", () => {
       actor,
     );
     expect(r.voucherNumber).toMatch(/^RV-/);
-    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(r.approvalStatus).toBe("APPROVED");
     const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
-    expect(receipt.cashBucket).toBeNull();
-    expect(receipt.shiftId).toBeNull();
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
-    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
-    expect(cust.currentBalance).toBe("100.00"); // لم يتغيّر
+    expect(receipt.status).toBe("COMPLETED");
+    expect(receipt.cashBucket).toBe("DRAWER");
+    expect(receipt.shiftId).toBe(shiftId);
+    expect(receipt.createdBy).toBe(actor.userId);
+    const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, r.receiptId));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entryType).toBe("PAYMENT_IN");
+    expect(entries[0].amount).toBe("200.00");
   });
 });
 
