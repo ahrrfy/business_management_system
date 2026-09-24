@@ -1087,7 +1087,13 @@ export async function createVoucherTx(
         direction === "IN" ? amount.neg() : amount,
       );
       if (direction === "IN") {
-        await autoSettleCustomerAccountTx(tx, Number(input.partyId), actor);
+        const [c] = await tx
+          .select({ currentBalance: customers.currentBalance })
+          .from(customers)
+          .where(eq(customers.id, Number(input.partyId)));
+        if (c && money(c.currentBalance).lte(0)) {
+          await autoSettleCustomerAccountTx(tx, Number(input.partyId), actor);
+        }
       }
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
