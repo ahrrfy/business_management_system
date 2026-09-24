@@ -17,7 +17,7 @@ import {
   type StudioTenantScope,
 } from "@/lib/productStudio/studioTenantScope";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
-import { AlertTriangle, ShieldCheck, Image, Megaphone, Loader2, ChevronRight } from "lucide-react";
+import { AlertTriangle, ShieldCheck, Image, Megaphone, Loader2, ChevronRight, Sparkles, Clock, Camera, CheckCircle2 } from "lucide-react";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { getOfflineProfile, saveOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
@@ -156,6 +156,48 @@ export default function StudioPhotographerWorkspace({
     },
     onError: (error) => notify.err(error),
   });
+
+  const myPendingTasks = trpc.productStudio.tasks.useInfiniteQuery(
+    {
+      scope: "MINE",
+      assigneeId: onlineUserId ?? undefined,
+      statuses: ["ASSIGNED", "IN_PROGRESS", "REJECTED"],
+    },
+    {
+      enabled: !offline && !!onlineUserId,
+      staleTime: 30_000,
+      getNextPageParam: (lastPage) => lastPage.nextCursor,
+    }
+  );
+
+  const nextTaskMutation = trpc.productStudio.nextPhotographerTask.useMutation({
+    onSuccess: (result: any) => {
+      if (!result) {
+        notify.ok("رائع! ليس لديك أي مهام مجدولة بانتظار التصوير حالياً.");
+        return;
+      }
+      applyStudioClaim({
+        taskId: result.taskId,
+        productName: result.productName,
+        revision: result.revision,
+        approvedImages: result.approvedImages,
+        requiredImages: result.requiredImages,
+        previousImages: result.previousImages,
+      });
+      notify.ok(`تم قفل وبدء «${result.productName}» بنجاح!`);
+      setTimeout(() => {
+        document.getElementById("studio-workspace-section")?.scrollIntoView({ behavior: "smooth" });
+      }, 100);
+    },
+    onError: (err: any) => {
+      notify.err(err);
+    },
+  });
+
+  const handleNextTask = () => {
+    if (offline) return;
+    nextTaskMutation.mutate();
+  };
 
   useEffect(() => {
     if (!offline && onlineOwner) {
@@ -366,6 +408,23 @@ export default function StudioPhotographerWorkspace({
         title="استوديو المنتجات (المصور)"
         description="التقط صور المنتجات، عدّلها، وارفعها للاعتماد."
         icon={<Image aria-hidden className="size-6" />}
+        actions={
+          !offline && (
+            <Button
+              size="default"
+              className="gap-2 bg-primary font-bold shadow-md hover:bg-primary/90 min-h-11"
+              disabled={nextTaskMutation.isPending}
+              onClick={handleNextTask}
+            >
+              {nextTaskMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Sparkles className="size-4" />
+              )}
+              تصوير المنتج التالي فوراً
+            </Button>
+          )
+        }
       />
 
       {dashboardData && storageActionsDisabled && (
@@ -486,6 +545,104 @@ export default function StudioPhotographerWorkspace({
                 </div>
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* بطاقة طابور مهام المصور الحالية — اختيار سريع أو انتقال فوري */}
+      {!offline && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardHeader className="pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Clock aria-hidden className="size-4 text-primary" />
+                طابوري النشط للمهام المجدولة
+              </CardTitle>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                className="gap-1.5 min-h-9"
+                disabled={nextTaskMutation.isPending}
+                onClick={handleNextTask}
+              >
+                {nextTaskMutation.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="size-3.5" />
+                )}
+                ابدأ التالي في طابوري
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {myPendingTasks.isLoading && (
+              <div className="flex items-center justify-center py-4 text-xs text-muted-foreground">
+                <Loader2 className="size-4 animate-spin me-2" /> جارٍ جلب مهامك المجدولة...
+              </div>
+            )}
+            {!myPendingTasks.isLoading && (myPendingTasks.data?.pages[0]?.items ?? []).length === 0 && (
+              <p className="py-3 text-center text-xs text-muted-foreground">
+                لا توجد مهام مجدولة بانتظار تصويرك حالياً. يمكنك مسح باركود أي منتج أدناه للبدء به فوراً.
+              </p>
+            )}
+            {!myPendingTasks.isLoading && (myPendingTasks.data?.pages[0]?.items ?? []).length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  لديك <strong>{myPendingTasks.data?.pages[0]?.items.length}</strong> مهمة مجدولة بانتظارك. اضغط على أي منها للبدء:
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {(myPendingTasks.data?.pages[0]?.items ?? []).slice(0, 6).map((task) => (
+                    <div
+                      key={task.id}
+                      className={`flex flex-col justify-between rounded-md border bg-background p-2.5 transition-all hover:border-primary ${
+                        selectedId === Number(task.id) ? "border-primary ring-2 ring-primary/30" : ""
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-start justify-between gap-1">
+                          <span className="min-w-0 truncate text-xs font-semibold">{task.productName}</span>
+                          {task.status === "REJECTED" ? (
+                            <Badge variant="danger" className="text-[10px]">مرفوضة وتحتاج تصحيح</Badge>
+                          ) : task.priority === "URGENT" || task.priority === "HIGH" ? (
+                            <Badge variant="warning" className="text-[10px]">أولوية عالية</Badge>
+                          ) : null}
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          مهمة #{task.id}
+                        </p>
+                      </div>
+                      <div className="mt-2 pt-2 border-t flex items-center justify-between">
+                        <span className="text-[10px] text-muted-foreground">
+                          {task.status === "IN_PROGRESS" ? "قيد العمل" : "مسندة إليك"}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          className="h-7 text-xs px-2"
+                          onClick={() => {
+                            applyStudioClaim({
+                              taskId: Number(task.id),
+                              productName: task.productName,
+                              revision: Number(task.revision ?? 1),
+                              approvedImages: 0,
+                              requiredImages: 1,
+                            });
+                            notify.ok(`تم اختيار «${task.productName}»`);
+                            setTimeout(() => {
+                              document.getElementById("studio-workspace-section")?.scrollIntoView({ behavior: "smooth" });
+                            }, 100);
+                          }}
+                        >
+                          بدء التصوير
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

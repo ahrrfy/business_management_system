@@ -2052,7 +2052,11 @@ export async function previewStudioCampaignBacklog(actor: ProductStudioActor, ca
   };
 }
 
-export async function createStudioCampaignBacklog(actor: ProductStudioActor, campaignId: number) {
+export async function createStudioCampaignBacklog(
+  actor: ProductStudioActor,
+  campaignId: number,
+  options?: { autoDistribute?: boolean },
+) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   return withStudioTx(async (tx) => {
     const campaign = (await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1).for("update"))[0];
@@ -2081,7 +2085,7 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
     // معاملةٍ واحدة (٤٢٨٥ صفاً في الإنتاج) فتحجب أيّ كتابةٍ على الكتالوج طوال تنفيذها،
     // وتُبقي بوّابة القيد المالي المشتركة محجوزةً معها.
     const missing = await missingStudioProducts(tx, BACKLOG_BATCH_LIMIT, campaign);
-    if (missing.length === 0) return { createdCount: 0, remaining: 0 };
+    if (missing.length === 0) return { createdCount: 0, remaining: 0, autoDistributed: false, assigneesCount: 0 };
     const ids = missing.map((product) => Number(product.id));
     await tx.select({ id: products.id }).from(products).where(inArray(products.id, ids)).for("update");
     const approvedByProduct = new Map<number, number>();
@@ -2097,6 +2101,25 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
         .groupBy(productImages.productId);
       for (const row of counts) approvedByProduct.set(Number(row.productId), Number(row.n));
     }
+
+    // توزيعٌ تلقائيّ عادل بالتناوب (Round-Robin) على مصوّري الحملة إن وُجدوا
+    const assignees = await tx
+      .select({ userId: productStudioCampaignAssignees.userId })
+      .from(productStudioCampaignAssignees)
+      .where(eq(productStudioCampaignAssignees.campaignId, campaignId))
+      .orderBy(asc(productStudioCampaignAssignees.id));
+
+    const shouldDistribute = (options?.autoDistribute ?? true) && assignees.length > 0;
+    let assigneeIdx = 0;
+    if (shouldDistribute) {
+      const [existingAssignedRow] = await tx
+        .select({ count: sql<number>`count(*)` })
+        .from(productImageJobs)
+        .where(and(eq(productImageJobs.campaignId, campaignId), isNotNull(productImageJobs.assignedTo)));
+      assigneeIdx = Number(existingAssignedRow?.count ?? 0) % assignees.length;
+    }
+
+    const now = new Date();
     // حرسُ سباق: حملتان نشطتان بنطاقٍ متقاطع تحسبان الناقص قبل أيّ إدراج، ثمّ تتسابقان
     // على القيد الفريد `(productId, activeSlot)`. `onDuplicateKeyUpdate` بضبطٍ ذاتيّ
     // يُحوّل الاصطدام إلى **تخطٍّ صامتٍ ذرّيّ** (`affectedRows=0`) بدل إسقاط الدفعة
@@ -2105,22 +2128,29 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
     const insertResult = await tx
       .insert(productImageJobs)
       .values(
-        missing.map((product) => ({
-          productId: Number(product.id),
-          campaignId,
-          branchId: Number(campaign.branchId),
-          sourceProductHash: productContentHash(product),
-          mode: "FLATTEN" as const,
-          status: "ASSIGNED" as const,
-          priority: "NORMAL" as const,
-          dueAt: campaign.dueAt,
-          revision: 1,
-          assignedTo: null,
-          assignedBy: null,
-          createdBy: actor.userId,
-          activeSlot: Math.min(MAX_REQUIRED_IMAGES, (approvedByProduct.get(Number(product.id)) ?? 0) + 1),
-          templateVersion: 1,
-        })),
+        missing.map((product) => {
+          const assignedTo = shouldDistribute ? Number(assignees[assigneeIdx].userId) : null;
+          if (shouldDistribute) {
+            assigneeIdx = (assigneeIdx + 1) % assignees.length;
+          }
+          return {
+            productId: Number(product.id),
+            campaignId,
+            branchId: Number(campaign.branchId),
+            sourceProductHash: productContentHash(product),
+            mode: "FLATTEN" as const,
+            status: "ASSIGNED" as const,
+            priority: "NORMAL" as const,
+            dueAt: campaign.dueAt,
+            revision: 1,
+            assignedTo,
+            assignedBy: assignedTo ? actor.userId : null,
+            assignedAt: assignedTo ? now : null,
+            createdBy: actor.userId,
+            activeSlot: Math.min(MAX_REQUIRED_IMAGES, (approvedByProduct.get(Number(product.id)) ?? 0) + 1),
+            templateVersion: 1,
+          };
+        }),
       )
       .onDuplicateKeyUpdate({ set: { productId: sql`productId` } });
     const affected = Number(
@@ -2140,10 +2170,207 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
       action: "productStudio.campaign.createBacklog",
       entityType: "productStudioCampaign",
       entityId: String(campaignId),
-      newValue: { createdCount, skippedDuplicates, attempted: missing.length, remaining },
+      newValue: { createdCount, skippedDuplicates, attempted: missing.length, remaining, autoDistributed: shouldDistribute, assigneesCount: assignees.length },
     });
-    return { createdCount, remaining };
+    return { createdCount, remaining, autoDistributed: shouldDistribute, assigneesCount: assignees.length };
   });
+}
+
+/**
+ * توليدٌ كاملٌ لطابور الحملة حتى الصفر (Drain Backlog Loop) — ينشئ كافة المهام المتبقية
+ * بدفعاتٍ ذرّية متعاقبة حتى الصفر مع التوزيع التلقائيّ على مصوّري الحملة.
+ */
+export async function drainStudioCampaignBacklog(
+  actor: ProductStudioActor,
+  campaignId: number,
+  options?: { autoDistribute?: boolean },
+): Promise<{ totalCreated: number; remaining: number; iterations: number }> {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  let totalCreated = 0;
+  let remaining = 0;
+  let iterations = 0;
+  const MAX_ITERATIONS = 50;
+
+  while (iterations < MAX_ITERATIONS) {
+    iterations++;
+    const res = await createStudioCampaignBacklog(actor, campaignId, { autoDistribute: options?.autoDistribute ?? true });
+    totalCreated += res.createdCount;
+    remaining = res.remaining;
+    if (res.createdCount === 0 || remaining === 0) {
+      break;
+    }
+  }
+
+  return { totalCreated, remaining, iterations };
+}
+
+/**
+ * توزيعٌ ذكيّ وعادل للمهام غير المسندة في الحملة بالتساوي والتناوب (Round-Robin) على المصوّربن.
+ */
+export async function distributeCampaignTasks(
+  actor: ProductStudioActor,
+  input: { campaignId: number; assigneeIds?: number[] },
+): Promise<{ distributedCount: number; assigneesCount: number }> {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  return withStudioTx(async (tx) => {
+    const campaign = await loadCampaign(actor, input.campaignId);
+    let targetAssigneeIds = input.assigneeIds && input.assigneeIds.length > 0 ? input.assigneeIds : [];
+    if (targetAssigneeIds.length === 0) {
+      const dbAssignees = await tx
+        .select({ userId: productStudioCampaignAssignees.userId })
+        .from(productStudioCampaignAssignees)
+        .where(eq(productStudioCampaignAssignees.campaignId, input.campaignId))
+        .orderBy(asc(productStudioCampaignAssignees.id));
+      targetAssigneeIds = dbAssignees.map((a) => Number(a.userId));
+    }
+    if (targetAssigneeIds.length === 0) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر توزيع المهام",
+          why: "لم يتم تحديد أي مصوّرين لهذه الحملة",
+          doThis: "أضف مصوّرين للحملة أولاً ثم أعد التوزيع",
+        }),
+      });
+    }
+
+    await assertCampaignAssignees(tx, actor, Number(campaign.branchId), targetAssigneeIds);
+
+    const unassignedTasks = await tx
+      .select({ id: productImageJobs.id })
+      .from(productImageJobs)
+      .where(and(
+        eq(productImageJobs.campaignId, input.campaignId),
+        isNull(productImageJobs.assignedTo),
+        isNotNull(productImageJobs.activeSlot),
+        eq(productImageJobs.status, "ASSIGNED"),
+      ))
+      .orderBy(asc(productImageJobs.priority), asc(productImageJobs.id))
+      .for("update");
+
+    if (unassignedTasks.length === 0) {
+      return { distributedCount: 0, assigneesCount: targetAssigneeIds.length };
+    }
+
+    let idx = 0;
+    const now = new Date();
+    for (const task of unassignedTasks) {
+      const assignedTo = targetAssigneeIds[idx % targetAssigneeIds.length];
+      idx++;
+      await tx
+        .update(productImageJobs)
+        .set({
+          assignedTo,
+          assignedBy: actor.userId,
+          assignedAt: now,
+          revision: sql`${productImageJobs.revision} + 1`,
+        })
+        .where(eq(productImageJobs.id, Number(task.id)));
+    }
+
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: Number(campaign.branchId),
+      action: "productStudio.campaign.distributeTasks",
+      entityType: "productStudioCampaign",
+      entityId: String(input.campaignId),
+      newValue: {
+        distributedCount: unassignedTasks.length,
+        assigneesCount: targetAssigneeIds.length,
+        assigneeIds: targetAssigneeIds,
+      },
+    });
+
+    return { distributedCount: unassignedTasks.length, assigneesCount: targetAssigneeIds.length };
+  });
+}
+
+/**
+ * جلبُ المهمة التالية ذات الأولوية القصوى للمصوّر لبدء التصوير فوراً بضغطة زرّ واحدة بلا حاجةٍ لمسح باركود.
+ */
+export async function getNextPhotographerTask(
+  actor: ProductStudioActor,
+): Promise<{
+  task: {
+    id: number;
+    productId: number;
+    productName: string;
+    barcode: string | null;
+    priority: string;
+    requiredImages: number;
+    approvedImages: number;
+    campaignName: string | null;
+  } | null;
+}> {
+  const db = requireDb();
+  const rows = await db
+    .select({
+      id: productImageJobs.id,
+      productId: productImageJobs.productId,
+      productName: products.name,
+      priority: productImageJobs.priority,
+      campaignName: productStudioCampaigns.name,
+      requiredImages: productStudioCampaigns.requiredImages,
+    })
+    .from(productImageJobs)
+    .innerJoin(products, eq(products.id, productImageJobs.productId))
+    .leftJoin(productStudioCampaigns, eq(productStudioCampaigns.id, productImageJobs.campaignId))
+    .where(and(
+      eq(productImageJobs.assignedTo, actor.userId),
+      inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "REJECTED"]),
+      isNotNull(productImageJobs.activeSlot),
+    ))
+    .orderBy(
+      sql`case ${productImageJobs.priority}
+        when 'URGENT' then 1
+        when 'HIGH' then 2
+        when 'NORMAL' then 3
+        else 4
+      end`,
+      asc(productImageJobs.id),
+    )
+    .limit(1);
+
+  if (rows.length === 0) {
+    return { task: null };
+  }
+
+  const task = rows[0];
+  if (!task || task.productId == null) {
+    return { task: null };
+  }
+  const productId = Number(task.productId);
+  const [approvedRow] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, productId),
+      isNull(productImages.variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
+
+  const [unitRow] = await db
+    .select({ barcode: productUnits.barcode })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productVariants.id, productUnits.variantId))
+    .where(and(
+      eq(productVariants.productId, productId),
+      isNotNull(productUnits.barcode),
+    ))
+    .limit(1);
+
+  return {
+    task: {
+      id: Number(task.id),
+      productId,
+      productName: task.productName,
+      barcode: unitRow?.barcode ?? null,
+      priority: task.priority,
+      requiredImages: Number(task.requiredImages ?? 1),
+      approvedImages: Number(approvedRow?.count ?? 0),
+      campaignName: task.campaignName ?? null,
+    },
+  };
 }
 
 /**
