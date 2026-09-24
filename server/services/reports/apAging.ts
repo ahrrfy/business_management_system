@@ -459,19 +459,36 @@ export async function getSupplierStatement(
     if (!gl || !gl.recognitionDate) return [];
     if ((from || to) && money(gl.periodTotal).isZero()) return [];
     const total = money(gl.total);
-    const openBalance = money(gl.balance).isPositive()
+    const rawGlBalance = money(gl.balance).isPositive()
       ? money(gl.balance)
       : money(0);
+    const glPaid = total.minus(rawGlBalance);
+    const validGlPaid = glPaid.isPositive() ? glPaid : money(0);
+    const orderPaid = money(po.paidAmount ?? 0);
+    // القيمة الأعلى بين ما سُجِّل على أمر الشراء (كالتسوية التلقائية FIFO) وما هو مقيّد في الدفتر العام
+    const effectivePaid = orderPaid.gt(validGlPaid) ? orderPaid : validGlPaid;
+    // الرصيد المفتوح الفعلي للأمر بعد احتساب السداد الفعلي
+    const effectiveOpenBalance = total.minus(effectivePaid);
+    const openBalance = effectiveOpenBalance.isPositive()
+      ? effectiveOpenBalance
+      : money(0);
+    // المبلغ المسدد على هذا الأمر زيادةً عما هو مربوط في الدفتر العام (مستقطع من الدفعات غير المخصصة)
+    const cappedEffectivePaid = effectivePaid.gt(total) ? total : effectivePaid;
+    const settledBeyondGl = cappedEffectivePaid.gt(validGlPaid)
+      ? cappedEffectivePaid.minus(validGlPaid)
+      : money(0);
+
     return [
       {
         ...po,
         total: toDbMoney(total),
         periodTotal: toDbMoney(gl.periodTotal),
-        // «مسدّد/مخفّض» = إجمالي PURCHASE ناقص رصيد GL المفتوح؛ يشمل المرتجع والإلغاء الصحيحين.
-        paidAmount: toDbMoney(total.minus(openBalance)),
-        // للاستعمال الداخلي فقط (أعمار الذمم أدناه) — لا يدخل الصفّ المُرسَل للواجهة.
+        // «مسدّد/مخفّض» = القيمة الأعلى بين مدفوع أمر الشراء ومدفوع الدفتر العام؛ يضمن ظهور التسوية التلقائية FIFO.
+        paidAmount: toDbMoney(effectivePaid),
+        // للاستعمال الداخلي فقط (أعمار الذمم وحساب الدفعات غير المخصصة) — لا يدخل الصفّ المُرسَل للواجهة.
         _openBalance: openBalance,
         _recognitionDate: gl.recognitionDate,
+        _settledBeyondGl: settledBeyondGl,
       },
     ];
   });
@@ -626,14 +643,23 @@ export async function getSupplierStatement(
   // دفعاتٌ للمورد (PAYMENT_OUT) غير مربوطةٍ بأمر شراءٍ بعينه («دفعة مستقلة») — هذا هو السبب
   // الجذريّ الأكثر شيوعاً لتباعد «المتبقّي» المجموع لكل الأوامر عن «غير مدفوع» الحقيقي: مبلغٌ
   // دخل الحساب فعلاً وخفّض ما ندين به، لكن لم يُخصَّص بعد لفاتورةٍ محدَّدة فيبقى غامضاً في
-  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه.
-  const unallocatedPayments = payments.reduce(
+  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه،
+  // مع استبعاد ما تم تسويته فعلياً على الأوامر (كالتسوية التلقائية FIFO).
+  const rawUnallocatedPayments = payments.reduce(
     (acc, p) =>
       p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null
         ? acc.plus(money(p.amount))
         : acc,
     money(0),
   );
+  const totalSettledBeyondGl = posWithTotals.reduce(
+    (acc, p) => acc.plus(p._settledBeyondGl),
+    money(0),
+  );
+  const remainingUnallocated = rawUnallocatedPayments.minus(totalSettledBeyondGl);
+  const unallocatedPayments = remainingUnallocated.isPositive()
+    ? remainingUnallocated
+    : money(0);
 
   // أذونات الاستلام المخزني المرحّلة ذات الأصل NATIVE غير المفوترة بعد (إفصاح رقابي للمحاسب)
   const unbilledReceiptRows = await db

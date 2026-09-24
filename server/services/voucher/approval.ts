@@ -494,11 +494,19 @@ export interface ApproveVoucherResult {
  * الاعتمادُ الذاتيّ للمالك يبقى كاملَ الأثر التدقيقيّ: createdBy وapprovedBy يُسجَّلان كما هما.
  * إعادة اعتماد سند APPROVED idempotent: تعيد البصمة بلا أي كتابة أو أثر مالي ثانٍ.
  */
+export interface ApproveVoucherOptions {
+  cashSource?: {
+    mode: "DRAWER" | "TREASURY";
+    shiftId?: number | null;
+  };
+}
+
 export async function approveVoucher(
   receiptId: number,
   actor: Actor,
+  options?: ApproveVoucherOptions,
 ): Promise<ApproveVoucherResult> {
-  return withTx((tx) => approveVoucherTx(tx, receiptId, actor));
+  return withTx((tx) => approveVoucherTx(tx, receiptId, actor, options));
 }
 
 /**
@@ -509,6 +517,7 @@ export async function approveVoucherTx(
   tx: Tx,
   receiptId: number,
   actor: Actor,
+  options?: ApproveVoucherOptions,
 ): Promise<ApproveVoucherResult> {
   const [preview] = await tx
     .select()
@@ -1506,6 +1515,26 @@ export async function approveVoucherTx(
           ? Number(cancellationOriginal.shiftId)
           : null;
       cashBucket = cancellationOriginal.cashBucket as "DRAWER" | "TREASURY";
+    } else if (
+      (systemRequest?.kind === "PURCHASE_SHIPPING" &&
+        systemRequest.fundingSource === "DRAWER") ||
+      options?.cashSource?.mode === "DRAWER"
+    ) {
+      const explicitShift =
+        options?.cashSource?.shiftId ??
+        (systemRequest?.kind === "PURCHASE_SHIPPING"
+          ? systemRequest.shiftId
+          : null);
+      const g = await shiftIdForCashTx(
+        tx,
+        approverActor,
+        branchId,
+        "اعتماد سند صرف شحن من درج الوردية",
+        "RETAIL",
+        explicitShift,
+      );
+      shiftId = g.shiftId;
+      cashBucket = g.cashBucket;
     } else {
       shiftId = null;
       cashBucket = "TREASURY";
@@ -1757,7 +1786,9 @@ export async function approveVoucherTx(
         cashBucket,
         shiftId,
         amount,
-        operation: "اعتماد إلغاء سند قبض من درج الوردية",
+        operation: cancellationOriginal
+          ? "اعتماد إلغاء سند قبض من درج الوردية"
+          : "اعتماد سند صرف شحن من درج الوردية",
       });
     }
   } else if (direction === "OUT") {
@@ -2112,6 +2143,19 @@ export async function approveVoucherTx(
       evidenceReference: systemRequest.sourceEvidenceReference,
       dedupeKey: `ACCRUAL:PAYMENT_SETTLED:${systemAccrualObligation.id}:${receiptId}`,
     });
+    if (systemAccrualObligation.expenseId != null && cashBucket === "DRAWER") {
+      await tx
+        .update(expenses)
+        .set({
+          receiptId,
+          shiftId,
+          cashBucket,
+          paymentMethod: "CASH",
+          source: "CASH",
+          status: "ACTIVE",
+        })
+        .where(eq(expenses.id, Number(systemAccrualObligation.expenseId)));
+    }
   }
   // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
   // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date

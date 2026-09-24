@@ -54,11 +54,24 @@ export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
     ...(d.notes ? [`ملاحظات: ${d.notes}`] : []),
   ];
 
+  const depositNum = Number(d.deposit || 0);
+  const isFullyPrepaid = depositNum >= Number(d.salePrice || 0) && codNum === 0;
+
   const totals = [
     { label: "قيمة الطلب", value: `${fmt(d.salePrice)} د.ع` },
-    ...(Number(d.deposit || 0) > 0 ? [{ label: "المدفوع مسبقاً (عربون)", value: `- ${fmt(d.deposit!)} د.ع` }] : []),
+    ...(depositNum > 0
+      ? [{
+          label: isFullyPrepaid ? "المدفوع مسبقاً (مدفوع بالكامل)" : "المدفوع مسبقاً (عربون)",
+          value: `- ${fmt(d.deposit!)} د.ع`,
+        }]
+      : []),
     { label: `أجرة التوصيل (${feeExplanation})`, value: feeNum > 0 ? `${fmt(feeNum)} د.ع` : "مجاناً" },
-    { label: "المطلوب تحصيله عند الاستلام", value: `${fmt(totalToCollectFromCustomer)} د.ع` },
+    {
+      label: isFullyPrepaid && courierFee
+        ? "المطلوب تحصيله عند الاستلام (أجرة التوصيل فقط)"
+        : "المطلوب تحصيله عند الاستلام",
+      value: `${fmt(totalToCollectFromCustomer)} د.ع`,
+    },
   ];
 
   return {
@@ -107,6 +120,8 @@ export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
     : counterFee
     ? "مقبوضة مسبقاً في المحل"
     : "يقبضها المندوب من الزبون";
+
+  const isFullyPrepaidHtml = Number(d.deposit || 0) >= Number(d.salePrice || 0) && codNum === 0;
 
   const body = `
   <div style="text-align:center;margin-bottom:2mm;">
@@ -166,7 +181,7 @@ export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
     </div>
     ${Number(d.deposit || 0) > 0 ? `
     <div style="display:flex;justify-content:space-between;font-size:11px;padding:0.8mm 0;font-weight:900;">
-      <span>المدفوع مسبقاً (عربون):</span>
+      <span>${isFullyPrepaidHtml ? "المدفوع مسبقاً (مدفوع بالكامل):" : "المدفوع مسبقاً (عربون):"}</span>
       <span>- ${fmt(d.deposit!)} د.ع</span>
     </div>` : ""}
 
@@ -178,10 +193,13 @@ export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
 
     <!-- المبلغ المطلوب عند الباب -->
     <div style="border-top:2.5px solid #000;margin-top:2mm;padding-top:2mm;text-align:center;background:#f5f5f5;border-radius:4px;padding-bottom:1.5mm;">
-      <div style="font-size:11.5px;font-weight:900;color:#000;">المطلوب تحصيله من الزبون عند الاستلام</div>
+      <div style="font-size:11.5px;font-weight:900;color:#000;">
+        ${isFullyPrepaidHtml && courierFee ? "المطلوب تحصيله من الزبون عند الاستلام (أجرة التوصيل فقط)" : "المطلوب تحصيله من الزبون عند الاستلام"}
+      </div>
       <div style="font-size:20px;font-weight:900;color:#000;margin-top:1mm;letter-spacing:0.5px;">
         ${fmt(totalToCollectFromCustomer)} د.ع
       </div>
+      ${isFullyPrepaidHtml ? `<div style="font-size:10.5px;font-weight:800;color:#0D6B52;margin-top:1.5mm;">البضاعة مدفوعة مسبقاً بالكامل بالفرع</div>` : ""}
     </div>
   </div>
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { asc, eq } from "drizzle-orm";
 import {
   accountingEntries,
@@ -28,6 +29,8 @@ import {
 } from "../ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import type { Actor } from "../tx";
+import { openShiftIdTx } from "../shiftService";
+import { settlePurchaseShippingFromShiftTx } from "./pay";
 import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../voucher/create";
 import { createGoodsReceiptInTx } from "./goodsReceipts";
 import { postSupplierInvoiceGrniTx } from "./grniAccounting";
@@ -79,12 +82,34 @@ async function recognizeShippingAndCustomsInTx(
     actor: Actor;
     deterministicKey: string;
     recognizedAt: Date;
+    shippingFundingSource?: {
+      mode: "DRAWER" | "TREASURY" | "ACCRUAL";
+      shiftId?: number | null;
+    };
   },
 ): Promise<number | null> {
   const amount = round2(
     money(input.shippingCost).plus(money(input.customsCost)),
   );
   if (!amount.gt(0)) return null;
+
+  const fundingMode = input.shippingFundingSource?.mode ?? "TREASURY";
+  let fundingShiftId: number | null = null;
+  if (fundingMode === "DRAWER") {
+    fundingShiftId =
+      input.shippingFundingSource?.shiftId ??
+      (await openShiftIdTx(tx, input.actor.userId, input.branchId, "RETAIL"));
+    if (!fundingShiftId) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذر صرف أجور الشحن من الدرج",
+          why: "لا توجد وردية مبيعات مفتوحة في هذا الفرع",
+          doThis: "افتح وردية مبيعات أولاً ثم أعد استلام أمر الشراء",
+        }),
+      });
+    }
+  }
 
   const token = createHash("sha256")
     .update(input.deterministicKey)
@@ -97,13 +122,13 @@ async function recognizeShippingAndCustomsInTx(
 
   const expenseResult = await tx.insert(expenses).values({
     branchId: input.branchId,
-    shiftId: null,
-    cashBucket: null,
+    shiftId: fundingShiftId,
+    cashBucket: fundingMode === "DRAWER" ? "DRAWER" : null,
     expenseDate: input.recognizedAt,
     category: "TRANSPORT",
     amount: toDbMoney(amount),
-    paymentMethod: "ACCRUAL",
-    source: "ACCRUAL",
+    paymentMethod: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
+    source: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
     description: `شحن/كمرك أمر الشراء ${input.poNumber}`,
     referenceNumber: reference,
     payee: beneficiaryName,
@@ -177,6 +202,8 @@ async function recognizeShippingAndCustomsInTx(
       expectedAmount: toDbMoney(amount),
       sourceShippingTotal: toDbMoney(amount),
       paymentReference: null,
+      fundingSource: fundingMode === "DRAWER" ? "DRAWER" : "TREASURY",
+      shiftId: fundingShiftId,
       obligationId: Number(obligation.id),
       obligationSourceHash: obligation.sourceHash,
       beneficiaryType: "OTHER",
@@ -195,7 +222,22 @@ async function recognizeShippingAndCustomsInTx(
     evidenceReference,
     dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
   });
-  await finalizeOwnerSystemVoucherTx(tx, request.receiptId, input.actor);
+  if (fundingMode === "DRAWER") {
+    await settlePurchaseShippingFromShiftTx(
+      tx,
+      {
+        purchaseOrderId: Number(input.purchaseOrderId),
+        shiftId: fundingShiftId,
+      },
+      input.actor,
+    );
+  } else {
+    await finalizeOwnerSystemVoucherTx(tx, request.receiptId, input.actor, {
+      cashSource: {
+        mode: "TREASURY",
+      },
+    });
+  }
   return request.receiptId;
 }
 
@@ -215,6 +257,12 @@ export async function postApprovedPurchaseInvoiceInTx(
   purchaseOrderId: number,
   actor: Actor,
   deterministicKeyInput: string,
+  options?: {
+    shippingFundingSource?: {
+      mode: "DRAWER" | "TREASURY" | "ACCRUAL";
+      shiftId?: number | null;
+    };
+  },
 ) {
   if (!Number.isSafeInteger(purchaseOrderId) || purchaseOrderId <= 0) {
     throw new TRPCError({
@@ -621,6 +669,7 @@ export async function postApprovedPurchaseInvoiceInTx(
       actor,
       deterministicKey,
       recognizedAt: postedAt,
+      shippingFundingSource: options?.shippingFundingSource,
     },
   );
 
