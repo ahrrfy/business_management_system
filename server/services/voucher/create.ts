@@ -199,6 +199,8 @@ export type SystemPaymentRequest =
       sourceShippingTotal: string;
       /** دليل أداة الدفع غير النقدية (مرجع تحويل/صك أو آخر 4 للبطاقة). */
       paymentReference?: string | null;
+      fundingSource?: "DRAWER" | "TREASURY";
+      shiftId?: number | null;
     } & AccrualObligationSystemSource)
   | {
       kind: "EXCHANGE_IQD_DEPOSIT";
@@ -1178,11 +1180,14 @@ export async function finalizeOwnerSystemVoucherTx(
   tx: Tx,
   receiptId: number,
   actor: Actor,
+  options?: {
+    cashSource?: { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
+  },
 ): Promise<boolean> {
   const resolvedActor = await resolveApprovalActor(tx, actor);
   if (!resolvedActor.isOwner) return false;
   const { approveVoucherTx } = await import("./approval");
-  const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+  const approval = await approveVoucherTx(tx, receiptId, resolvedActor, options);
   await logAuditTx(
     tx,
     {
