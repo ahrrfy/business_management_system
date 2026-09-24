@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { eq } from "drizzle-orm";
 import {
   customers,
@@ -1085,6 +1086,9 @@ export async function createVoucherTx(
         input.partyId,
         direction === "IN" ? amount.neg() : amount,
       );
+      if (direction === "IN") {
+        await autoSettleCustomerAccountTx(tx, Number(input.partyId), actor);
+      }
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {

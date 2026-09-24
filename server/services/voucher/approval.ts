@@ -1,6 +1,10 @@
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import {
+  autoSettleCustomerAccountTx,
+  autoSettleSupplierAccountTx,
+} from "../reconciliation/autoSettlementService";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   accountingEntries,
@@ -2135,6 +2139,9 @@ export async function approveVoucherTx(
       partyId,
       direction === "IN" ? amount.neg() : amount,
     );
+    if (direction === "IN") {
+      await autoSettleCustomerAccountTx(tx, partyId, actor);
+    }
     // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
     // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
     // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
@@ -2168,6 +2175,9 @@ export async function approveVoucherTx(
       partyId,
       direction === "OUT" ? amount.neg() : amount,
     );
+    if (direction === "OUT") {
+      await autoSettleSupplierAccountTx(tx, partyId, actor);
+    }
   } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
     await adjustDeliveryBalance(
       tx,
