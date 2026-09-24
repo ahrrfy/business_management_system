@@ -123,7 +123,7 @@ export function WorkOrderDeliverySection({
           <div className="flex flex-wrap items-center gap-2 pt-1 border-t">
             {/* إلغاء الإسناد إذا أُسند بالخطأ ولم يُحصّل */}
             {data.consignmentId != null &&
-              (data.parcelStatus === "ASSIGNED" || data.parcelStatus === "FAILED") &&
+              (data.parcelStatus === "ASSIGNED" || data.parcelStatus === "OUT_FOR_DELIVERY" || data.parcelStatus === "FAILED") &&
               (role === "admin" || role === "manager") && (
                 <Button
                   size="sm"

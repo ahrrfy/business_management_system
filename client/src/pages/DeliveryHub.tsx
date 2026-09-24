@@ -921,7 +921,7 @@ function InTransitTab() {
                 </>
               )}
               {/* إلغاء إسناد الطرد قبل قبوله أو عند تعذّره لإعادته للمخزن أو إعادة التوجيه */}
-              {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
+              {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
                 <Button
                   size="sm"
                   variant="ghost"
