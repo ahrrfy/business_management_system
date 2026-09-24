@@ -2085,7 +2085,7 @@ export async function createStudioCampaignBacklog(
     // معاملةٍ واحدة (٤٢٨٥ صفاً في الإنتاج) فتحجب أيّ كتابةٍ على الكتالوج طوال تنفيذها،
     // وتُبقي بوّابة القيد المالي المشتركة محجوزةً معها.
     const missing = await missingStudioProducts(tx, BACKLOG_BATCH_LIMIT, campaign);
-    if (missing.length === 0) return { createdCount: 0, remaining: 0, autoDistributed: false, assigneesCount: 0 };
+    if (missing.length === 0) return { createdCount: 0, remaining: 0 };
     const ids = missing.map((product) => Number(product.id));
     await tx.select({ id: products.id }).from(products).where(inArray(products.id, ids)).for("update");
     const approvedByProduct = new Map<number, number>();
@@ -2102,24 +2102,6 @@ export async function createStudioCampaignBacklog(
       for (const row of counts) approvedByProduct.set(Number(row.productId), Number(row.n));
     }
 
-    // توزيعٌ تلقائيّ عادل بالتناوب (Round-Robin) على مصوّري الحملة إن وُجدوا
-    const assignees = await tx
-      .select({ userId: productStudioCampaignAssignees.userId })
-      .from(productStudioCampaignAssignees)
-      .where(eq(productStudioCampaignAssignees.campaignId, campaignId))
-      .orderBy(asc(productStudioCampaignAssignees.id));
-
-    const shouldDistribute = (options?.autoDistribute ?? true) && assignees.length > 0;
-    let assigneeIdx = 0;
-    if (shouldDistribute) {
-      const [existingAssignedRow] = await tx
-        .select({ count: sql<number>`count(*)` })
-        .from(productImageJobs)
-        .where(and(eq(productImageJobs.campaignId, campaignId), isNotNull(productImageJobs.assignedTo)));
-      assigneeIdx = Number(existingAssignedRow?.count ?? 0) % assignees.length;
-    }
-
-    const now = new Date();
     // حرسُ سباق: حملتان نشطتان بنطاقٍ متقاطع تحسبان الناقص قبل أيّ إدراج، ثمّ تتسابقان
     // على القيد الفريد `(productId, activeSlot)`. `onDuplicateKeyUpdate` بضبطٍ ذاتيّ
     // يُحوّل الاصطدام إلى **تخطٍّ صامتٍ ذرّيّ** (`affectedRows=0`) بدل إسقاط الدفعة
@@ -2128,29 +2110,22 @@ export async function createStudioCampaignBacklog(
     const insertResult = await tx
       .insert(productImageJobs)
       .values(
-        missing.map((product) => {
-          const assignedTo = shouldDistribute ? Number(assignees[assigneeIdx].userId) : null;
-          if (shouldDistribute) {
-            assigneeIdx = (assigneeIdx + 1) % assignees.length;
-          }
-          return {
-            productId: Number(product.id),
-            campaignId,
-            branchId: Number(campaign.branchId),
-            sourceProductHash: productContentHash(product),
-            mode: "FLATTEN" as const,
-            status: "ASSIGNED" as const,
-            priority: "NORMAL" as const,
-            dueAt: campaign.dueAt,
-            revision: 1,
-            assignedTo,
-            assignedBy: assignedTo ? actor.userId : null,
-            assignedAt: assignedTo ? now : null,
-            createdBy: actor.userId,
-            activeSlot: Math.min(MAX_REQUIRED_IMAGES, (approvedByProduct.get(Number(product.id)) ?? 0) + 1),
-            templateVersion: 1,
-          };
-        }),
+        missing.map((product) => ({
+          productId: Number(product.id),
+          campaignId,
+          branchId: Number(campaign.branchId),
+          sourceProductHash: productContentHash(product),
+          mode: "FLATTEN" as const,
+          status: "ASSIGNED" as const,
+          priority: "NORMAL" as const,
+          dueAt: campaign.dueAt,
+          revision: 1,
+          assignedTo: null,
+          assignedBy: null,
+          createdBy: actor.userId,
+          activeSlot: Math.min(MAX_REQUIRED_IMAGES, (approvedByProduct.get(Number(product.id)) ?? 0) + 1),
+          templateVersion: 1,
+        })),
       )
       .onDuplicateKeyUpdate({ set: { productId: sql`productId` } });
     const affected = Number(
@@ -2170,21 +2145,21 @@ export async function createStudioCampaignBacklog(
       action: "productStudio.campaign.createBacklog",
       entityType: "productStudioCampaign",
       entityId: String(campaignId),
-      newValue: { createdCount, skippedDuplicates, attempted: missing.length, remaining, autoDistributed: shouldDistribute, assigneesCount: assignees.length },
+      newValue: { createdCount, skippedDuplicates, attempted: missing.length, remaining },
     });
-    return { createdCount, remaining, autoDistributed: shouldDistribute, assigneesCount: assignees.length };
+    return { createdCount, remaining };
   });
 }
 
 /**
  * توليدٌ كاملٌ لطابور الحملة حتى الصفر (Drain Backlog Loop) — ينشئ كافة المهام المتبقية
- * بدفعاتٍ ذرّية متعاقبة حتى الصفر مع التوزيع التلقائيّ على مصوّري الحملة.
+ * بدفعاتٍ ذرّية متعاقبة حتى الصفر مع إمكانية التوزيع التلقائيّ على مصوّري الحملة.
  */
 export async function drainStudioCampaignBacklog(
   actor: ProductStudioActor,
   campaignId: number,
   options?: { autoDistribute?: boolean },
-): Promise<{ totalCreated: number; remaining: number; iterations: number }> {
+): Promise<{ totalCreated: number; remaining: number; iterations: number; distributedCount?: number }> {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   let totalCreated = 0;
   let remaining = 0;
@@ -2193,7 +2168,7 @@ export async function drainStudioCampaignBacklog(
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
-    const res = await createStudioCampaignBacklog(actor, campaignId, { autoDistribute: options?.autoDistribute ?? true });
+    const res = await createStudioCampaignBacklog(actor, campaignId);
     totalCreated += res.createdCount;
     remaining = res.remaining;
     if (res.createdCount === 0 || remaining === 0) {
@@ -2201,7 +2176,17 @@ export async function drainStudioCampaignBacklog(
     }
   }
 
-  return { totalCreated, remaining, iterations };
+  let distributedCount = 0;
+  if (options?.autoDistribute) {
+    try {
+      const dist = await distributeCampaignTasks(actor, { campaignId });
+      distributedCount = dist.distributedCount;
+    } catch {
+      // إن لم يكن للحملة مصوّرون مسندون بعد، يكتمل استنزاف الطابور بنجاح
+    }
+  }
+
+  return { totalCreated, remaining, iterations, distributedCount };
 }
 
 /**

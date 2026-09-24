@@ -180,8 +180,8 @@ export const productStudioRouter = router({
     .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx), input)),
   previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
   createCampaignBacklog: productStudioManagerProcedure
-    .input(z.object({ campaignId, autoDistribute: z.boolean().optional() }))
-    .mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx), input.campaignId, { autoDistribute: input.autoDistribute })),
+    .input(z.object({ campaignId }))
+    .mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx), input.campaignId)),
   drainCampaignBacklog: productStudioManagerProcedure
     .input(z.object({ campaignId, autoDistribute: z.boolean().optional() }))
     .mutation(({ ctx, input }) => drainStudioCampaignBacklog(actor(ctx), input.campaignId, { autoDistribute: input.autoDistribute })),
