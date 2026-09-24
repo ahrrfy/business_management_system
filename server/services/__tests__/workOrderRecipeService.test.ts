@@ -12,6 +12,8 @@ import { getDb } from "../../db";
 import { createRecipe, getRecipeForProduct } from "../recipeService";
 import { createWorkOrder } from "../workOrder/create";
 import { startWorkOrder } from "../workOrder/lifecycle";
+import { cancelWorkOrder } from "../workOrder/cancel";
+import { setWorkOrderMaterials } from "../workOrder/materials";
 
 const TABLES = [
   "idempotencyKeys",
@@ -223,6 +225,7 @@ describe("خدمات ووصفات أوامر الشغل — اختبارات ت�
         customerId: 1,
         baseVariantId: 100,
         baseProductUnitId: 1000,
+        baseBaseQuantity: 2,
         title: "أمر شغل معطوب تاريخياً",
         quantity: 2,
         salePrice: "30000.00",
@@ -289,6 +292,7 @@ describe("خدمات ووصفات أوامر الشغل — اختبارات ت�
         customerId: 1,
         baseVariantId: 400,
         baseProductUnitId: 4000,
+        baseBaseQuantity: 1,
         title: "طلب خدمة تصميم خالصة",
         quantity: 1,
         salePrice: "10000.00",
@@ -317,4 +321,142 @@ describe("خدمات ووصفات أوامر الشغل — اختبارات ت�
       .where(eq(s.workOrderMaterials.workOrderId, woId));
     expect(mats).toHaveLength(0);
   });
+
+  it("cancelWorkOrder لأمر خدمة قيد التنفيذ يلغيه بسلاسة ولا يعيد أصناف الخدمة للمخزون", async () => {
+    // أمر خدمة قيد التنفيذ يحمل سطر خامة قماش 200 وسطر خدمة قديم 100
+    const [insertedWo] = await db()
+      .insert(s.workOrders)
+      .values({
+        orderNumber: "WO-TEST-CANCEL-1",
+        branchId: 1,
+        customerId: 1,
+        baseVariantId: 100,
+        baseProductUnitId: 1000,
+        baseBaseQuantity: 2,
+        title: "طلب خدمة قيد التنفيذ للإلغاء",
+        quantity: 2,
+        salePrice: "20000.00",
+        materialsCost: "5000.00",
+        status: "IN_PROGRESS",
+        baseConsumesInventory: false,
+      })
+      .$returningId();
+
+    const woId = insertedWo.id;
+
+    const [matFabric] = await db()
+      .insert(s.workOrderMaterials)
+      .values({
+        workOrderId: woId,
+        variantId: 200,
+        baseQuantity: 2,
+        unitCost: "2500.00",
+      })
+      .$returningId();
+
+    const [matService] = await db()
+      .insert(s.workOrderMaterials)
+      .values({
+        workOrderId: woId,
+        variantId: 100,
+        baseQuantity: 2,
+        unitCost: "0.00",
+      })
+      .$returningId();
+
+    // إلغاء الأمر مع تحديد قرار لكل سطر (إعادة القماش، وإعادة سطر الخدمة القديم)
+    const cancelRes = await cancelWorkOrder(
+      woId,
+      MGR,
+      {
+        expectedVersion: 1,
+        reason: "إلغاء بطلب العميل بعد البدء",
+        materials: [
+          { workOrderMaterialId: matFabric.id, returnBase: 2, wasteBase: 0 },
+          { workOrderMaterialId: matService.id, returnBase: 2, wasteBase: 0 },
+        ],
+      },
+      { approvedControlRequestId: 999 },
+    );
+
+    expect(cancelRes.status).toBe("CANCELLED");
+
+    // التحقق من أن القماش عاد للمخزون (كان 100، زاد 2 فصار 102)
+    const stockFabric = (
+      await db()
+        .select()
+        .from(s.branchStock)
+        .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 200)))
+    )[0];
+    expect(Number(stockFabric.quantity)).toBe(102);
+
+    // التحقق من أن صنف الخدمة 100 لم يُنشأ له أي صف في branchStock ولا حركة مخزون
+    const stockService = await db()
+      .select()
+      .from(s.branchStock)
+      .where(and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 100)));
+    expect(stockService).toHaveLength(0);
+  });
+
+  it("setWorkOrderMaterials يشفي أمر شغل قديم يحمل سطر صنف خدمة موسوم كأساس مادي ويستبدله بالمواد الصحيحة", async () => {
+    // أمر شغل بحالة RECEIVED تم إنشاؤه قديماً قبل الإصلاح: يحمل صنف الخدمة 100 مع isBaseMaterial: true
+    const [insertedWo] = await db()
+      .insert(s.workOrders)
+      .values({
+        orderNumber: "WO-TEST-LEGACY-EDIT-1",
+        branchId: 1,
+        customerId: 1,
+        baseVariantId: 100,
+        baseProductUnitId: 1000,
+        baseBaseQuantity: 1,
+        title: "طلب خدمة قديم يحتاج تعديل المواد",
+        quantity: 1,
+        salePrice: "15000.00",
+        status: "RECEIVED",
+        baseConsumesInventory: false,
+        version: 1,
+      })
+      .$returningId();
+
+    const woId = insertedWo.id;
+
+    await db().insert(s.workOrderMaterials).values({
+      workOrderId: woId,
+      variantId: 100,
+      baseQuantity: 1,
+      isBaseMaterial: true,
+      unitCost: "0.00",
+    });
+
+    // المستخدم أو الفني يعدل المواد: يرسل القماش 200 (ويحذف أو يترك سطر الخدمة 100)
+    const editRes = await setWorkOrderMaterials(
+      {
+        workOrderId: woId,
+        expectedVersion: 1,
+        reason: "إصلاح بنود الأمر وإضافة خامة القماش",
+        materials: [
+          // حتى لو الواجهة أرسلت سطر الخدمة 100 بالخطأ، الخادم يصفّيه تلقائياً
+          { variantId: 100, baseQuantity: 1 },
+          { variantId: 200, baseQuantity: 3 },
+        ],
+      },
+      MGR,
+    );
+
+    expect(editRes.workOrderId).toBe(woId);
+
+    // التحقق من جدول workOrderMaterials بعد التعديل:
+    // 1. سطر الخدمة 100 تم حذفه بالكامل
+    // 2. سطر القماش 200 تم حفظه بكمية 3 و isBaseMaterial: false
+    const currentMaterials = await db()
+      .select()
+      .from(s.workOrderMaterials)
+      .where(eq(s.workOrderMaterials.workOrderId, woId));
+
+    expect(currentMaterials).toHaveLength(1);
+    expect(currentMaterials[0].variantId).toBe(200);
+    expect(currentMaterials[0].baseQuantity).toBe(3);
+    expect(currentMaterials[0].isBaseMaterial).toBe(false);
+  });
 });
+
