@@ -120,6 +120,19 @@ export function DispatchPreviewCard({
               إرسالية: <strong className="font-mono text-foreground">{order.activeConsignment.consignmentNumber}</strong> ·
               حالة الطرد: <strong className="text-foreground">{order.activeConsignment.parcelStatus}</strong>
             </p>
+            <div className="flex flex-wrap items-center gap-2 text-xs pt-0.5">
+              <span className="rounded bg-background/90 px-2 py-0.5 border border-border font-medium">
+                المطلوب تحصيله في الإرسالية (COD):{" "}
+                <strong className="font-mono text-foreground">
+                  {D(order.activeConsignment.codAmount || "0").isZero()
+                    ? "0 د.ع (البضاعة مدفوعة مسبقاً)"
+                    : `${fmt(order.activeConsignment.codAmount)} د.ع`}
+                </strong>
+              </span>
+              <span className="rounded bg-background/90 px-2 py-0.5 border border-border font-medium">
+                حالة الذمة المالية: <strong className="text-foreground">{order.activeConsignment.moneyStatus}</strong>
+              </span>
+            </div>
             <p className="text-xs text-destructive font-bold">
               يجب إلغاء الإرسالية السابقة أو استرجاعها أولاً لعزل الذمم ومنع التداخل المالي.
             </p>
@@ -166,15 +179,26 @@ export function DispatchPreviewCard({
           <div className="flex items-center gap-2 rounded-xl border bg-background p-3">
             <BadgeDollarSign aria-hidden className="size-4 shrink-0 text-muted-foreground" />
             <div>
-              <p className="text-xs text-muted-foreground">القيمة والتحصيل (COD)</p>
-              <p className="font-bold font-mono">{fmt(order.salePrice)} د.ع</p>
+              <p className="text-xs text-muted-foreground">قيمة البضاعة والحساب</p>
+              <div className="flex items-center gap-2">
+                <p className="font-bold font-mono">{fmt(order.salePrice)} د.ع</p>
+                {D(codAmount).isZero() ? (
+                  <Badge variant="outline" className="border-emerald-500 text-emerald-700 bg-emerald-50 text-[11px] font-bold">
+                    مدفوعة بالكامل بالكاشير
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="border-amber-500 text-amber-700 bg-amber-50 text-[11px] font-bold">
+                    متبقي للتحصيل
+                  </Badge>
+                )}
+              </div>
               {D(codAmount).isZero() ? (
-                <p className="text-xs text-emerald-600 font-bold">
-                  مدفوع مسبقاً بالكامل ({fmt(order.deposit ?? order.salePrice)}) · متبقي البضاعة: 0 د.ع
+                <p className="text-xs text-emerald-700 font-bold">
+                  المطلوب تحصيله للبضاعة (COD): 0 د.ع
                 </p>
               ) : D(order.deposit ?? "0").gt(0) ? (
                 <p className="text-xs text-emerald-600 font-bold">
-                  عربون {fmt(order.deposit!)} · متبقٍّ {fmt(codAmount)} د.ع على المندوب
+                  عربون مسدد {fmt(order.deposit!)} د.ع · متبقي {fmt(codAmount)} د.ع على المندوب
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
@@ -185,87 +209,89 @@ export function DispatchPreviewCard({
           </div>
         </div>
 
-        <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-3">
-          <p className="text-xs font-extrabold text-primary flex items-center gap-1.5">
-            <Truck className="size-3.5" />
-            تثبيت بيانات الإسناد والتوصيل
-          </p>
+        <fieldset disabled={!!order.activeConsignment} className="m-0 min-w-0 border-0 p-0">
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-3">
+            <p className="text-xs font-extrabold text-primary flex items-center gap-1.5">
+              <Truck className="size-3.5" />
+              تثبيت بيانات الإسناد والتوصيل
+            </p>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-bold">اسم المستلم (إن اختلف عن العميل)</label>
+                <Input
+                  value={recipientName}
+                  onChange={(e) => onRecipientNameChange(e.target.value)}
+                  placeholder={order.customerName ?? "اسم المستلم..."}
+                  className="h-10 bg-background"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold">هاتف المستلم</label>
+                <IntlPhoneInput
+                  value={recipientPhone}
+                  onChange={onRecipientPhoneChange}
+                  placeholder="770 123 4567"
+                  className="h-10"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 flex items-center gap-1 text-xs font-bold">
+                  <Truck aria-hidden className="size-3.5 text-muted-foreground" />
+                  عنوان التوصيل
+                </label>
+                <Input
+                  value={deliveryAddress}
+                  onChange={(e) => onDeliveryAddressChange(e.target.value)}
+                  placeholder="المحافظة - المدينة - الحي - أقرب نقطة دالة..."
+                  className="h-10 bg-background"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold">أجرة التوصيل (د.ع)</label>
+                <MoneyInput
+                  value={dispatchFee}
+                  onChange={onDispatchFeeChange}
+                  placeholder="0"
+                  className="h-10"
+                  ariaLabel="أجرة التوصيل"
+                />
+              </div>
+            </div>
+
             <div>
-              <label className="mb-1 block text-xs font-bold">اسم المستلم (إن اختلف عن العميل)</label>
+              <label className="mb-1 flex items-center gap-1 text-xs font-bold">
+                <FileText aria-hidden className="size-3.5 text-muted-foreground" />
+                ملاحظات التوصيل
+              </label>
               <Input
-                value={recipientName}
-                onChange={(e) => onRecipientNameChange(e.target.value)}
-                placeholder={order.customerName ?? "اسم المستلم..."}
+                value={deliveryNotes}
+                onChange={(e) => onDeliveryNotesChange(e.target.value)}
+                placeholder="أي تعليمات للمندوب أو وقت التسليم المفضل..."
                 className="h-10 bg-background"
               />
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-bold">هاتف المستلم</label>
-              <IntlPhoneInput
-                value={recipientPhone}
-                onChange={onRecipientPhoneChange}
-                placeholder="770 123 4567"
-                className="h-10"
-              />
-            </div>
-          </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 flex items-center gap-1 text-xs font-bold">
-                <Truck aria-hidden className="size-3.5 text-muted-foreground" />
-                عنوان التوصيل
-              </label>
-              <Input
-                value={deliveryAddress}
-                onChange={(e) => onDeliveryAddressChange(e.target.value)}
-                placeholder="المحافظة - المدينة - الحي - أقرب نقطة دالة..."
-                className="h-10 bg-background"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-bold">أجرة التوصيل (د.ع)</label>
-              <MoneyInput
-                value={dispatchFee}
-                onChange={onDispatchFeeChange}
-                placeholder="0"
-                className="h-10"
-                ariaLabel="أجرة التوصيل"
-              />
-            </div>
+            {isCompanyParty && (
+              <div>
+                <label className="mb-1 flex items-center gap-1 text-xs font-bold">
+                  <Package aria-hidden className="size-3.5 text-muted-foreground" />
+                  رقم تتبع / بوليصة الشركة الخارجية (اختياري)
+                </label>
+                <Input
+                  value={externalTrackingRef}
+                  onChange={(e) => onExternalTrackingRefChange(e.target.value)}
+                  placeholder="رقم البوليصة أو شحنة الشركة..."
+                  className="h-10 bg-background font-mono text-xs"
+                  dir="ltr"
+                />
+              </div>
+            )}
           </div>
-
-          <div>
-            <label className="mb-1 flex items-center gap-1 text-xs font-bold">
-              <FileText aria-hidden className="size-3.5 text-muted-foreground" />
-              ملاحظات التوصيل
-            </label>
-            <Input
-              value={deliveryNotes}
-              onChange={(e) => onDeliveryNotesChange(e.target.value)}
-              placeholder="أي تعليمات للمندوب أو وقت التسليم المفضل..."
-              className="h-10 bg-background"
-            />
-          </div>
-
-          {isCompanyParty && (
-            <div>
-              <label className="mb-1 flex items-center gap-1 text-xs font-bold">
-                <Package aria-hidden className="size-3.5 text-muted-foreground" />
-                رقم تتبع / بوليصة الشركة الخارجية (اختياري)
-              </label>
-              <Input
-                value={externalTrackingRef}
-                onChange={(e) => onExternalTrackingRefChange(e.target.value)}
-                placeholder="رقم البوليصة أو شحنة الشركة..."
-                className="h-10 bg-background font-mono text-xs"
-                dir="ltr"
-              />
-            </div>
-          )}
-        </div>
+        </fieldset>
 
         <Button
           className="w-full py-6 text-base font-extrabold"
