@@ -90,4 +90,14 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
     // الحجزُ الوحيد الباقي في محطّة الفنّي هو الصلاحية نفسها.
     expect(station).toContain("const cannotOperate = !canOperateWorkOrders");
   });
+
+  it("⭐ يحرس استقلال إحصائيات أعمدة الكانبان وعزل مبالغ «طابور وارد» عن «مسحوب» بلا تكرار", () => {
+    const board = readPage("WorkOrders.tsx");
+    // يمنع ربط مبالغ الأعمدة بالحالة الخادمية العامة المسببة لتكرار مبالغ RECEIVED
+    expect(board).not.toContain("serverCounts?.stats?.[s.status]");
+    expect(board).toContain("colStatsMap");
+    expect(board).toContain("toAccessibleMoney(colStats.totalValue)");
+    expect(board).toContain('<bdi dir="ltr" aria-hidden="true">');
+    expect(board).toContain("wob-curr");
+  });
 });

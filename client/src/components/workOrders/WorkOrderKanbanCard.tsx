@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import type React from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Calendar, CheckCircle2, ChevronRight, Clock, Package, Printer, Timer, Truck } from "lucide-react";
-import { fmtAr, fmtInt } from "@/lib/money";
+import { fmtAr, fmtInt, toAccessibleMoney } from "@/lib/money";
 import { RowActions } from "@/components/list";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { ChannelMark } from "@/components/ChannelBadge";
@@ -198,8 +198,19 @@ export function WorkOrderKanbanCard({
         </div>
       )}
       <div className="wob-meta">
-        <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtInt(o.quantity)}</span>
-        <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtAr(o.salePrice)} <span className="wob-ml">د.ع</span></span>
+        <span className="wob-meta-pill" role="text" aria-label={`الكمية: ${o.quantity}`}>
+          <span className="wob-ml" aria-hidden="true">الكمية </span>
+          <bdi dir="ltr" aria-hidden="true">{fmtInt(o.quantity)}</bdi>
+        </span>
+        <span
+          className="wob-meta-pill"
+          role="text"
+          aria-label={`السعر: ${toAccessibleMoney(o.salePrice)}`}
+        >
+          <span className="wob-ml" aria-hidden="true">السعر </span>
+          <bdi dir="ltr" aria-hidden="true">{fmtAr(o.salePrice)}</bdi>
+          <span className="wob-curr" aria-hidden="true"> د.ع</span>
+        </span>
         {timing.state !== "UNKNOWN" && (
           <span
             className={`wob-meta-pill inline-flex items-center gap-1 ${
@@ -223,11 +234,23 @@ export function WorkOrderKanbanCard({
           <span
             className="wob-deliv"
             title={o.deliveryAddress ? `توصيل إلى: ${o.deliveryAddress}` : "توصيل"}
+            role="text"
+            aria-label={
+              Number(o.deliveryCost ?? 0) > 0
+                ? `أجرة التوصيل: ${toAccessibleMoney(o.deliveryCost)}`
+                : "توصيل للعميل"
+            }
           >
             <Truck aria-hidden className="size-3.5" />
-            {Number(o.deliveryCost ?? 0) > 0
-              ? <>توصيل <span dir="ltr">{fmtAr(o.deliveryCost)}</span></>
-              : "توصيل"}
+            {Number(o.deliveryCost ?? 0) > 0 ? (
+              <>
+                <span aria-hidden="true">توصيل </span>
+                <bdi dir="ltr" aria-hidden="true">{fmtAr(o.deliveryCost)}</bdi>
+                <span className="wob-curr" aria-hidden="true"> د.ع</span>
+              </>
+            ) : (
+              "توصيل"
+            )}
           </span>
         )}
         <span className={`wob-due wob-${di.state}`} style={{ marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 4 }}>{late ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>
