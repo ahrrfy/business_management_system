@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   FileCheck2,
   History,
+  MapPin,
   MessageCircle,
   Phone,
   Printer,
@@ -297,7 +298,9 @@ function DispatchTab() {
     const needle = query.trim().toLocaleLowerCase("ar");
     if (!needle) return allRows;
     return allRows.filter((o) =>
-      [o.orderNumber, o.title, o.customerName].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(needle)),
+      [o.orderNumber, o.title, o.customerName, o.deliveryPhone, o.customerPhone, o.deliveryAddress].some((v) =>
+        String(v ?? "").toLocaleLowerCase("ar").includes(needle),
+      ),
     );
   }, [allRows, query]);
 
@@ -321,7 +324,33 @@ function DispatchTab() {
           </>
         ),
       },
-      { id: "customer", header: "العميل", accessorFn: (o) => o.customerName ?? "عميل نقدي", cell: ({ row }) => row.original.customerName ?? "عميل نقدي" },
+      {
+        id: "customer",
+        header: "العميل",
+        accessorFn: (o) => o.customerName ?? "عميل نقدي",
+        cell: ({ row }) => {
+          const o = row.original;
+          const phone = o.deliveryPhone ?? o.customerPhone;
+          const addr = o.deliveryAddress;
+          return (
+            <div className="flex flex-col text-xs gap-0.5">
+              <span className="font-semibold text-foreground">{o.customerName ?? "عميل نقدي"}</span>
+              {phone && (
+                <span className="inline-flex items-center gap-1 font-mono text-muted-foreground" dir="ltr">
+                  <Phone className="size-3 text-muted-foreground" />
+                  <span>{phone}</span>
+                </span>
+              )}
+              {addr && (
+                <span className="inline-flex items-center gap-1 text-muted-foreground truncate max-w-[200px]" title={addr}>
+                  <MapPin className="size-3 text-muted-foreground shrink-0" />
+                  <span className="truncate">{addr}</span>
+                </span>
+              )}
+            </div>
+          );
+        },
+      },
       { id: "salePrice", header: "سعر البيع", accessorFn: (o) => fmt(o.salePrice), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.salePrice) },
       {
         id: "deposit",
@@ -661,7 +690,7 @@ function InTransitTab() {
     const q = query.trim().toLowerCase();
     if (!q) return filtered;
     return filtered.filter((r) =>
-      [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone, r.returnDeclaredReason, r.address]
+      [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone, (r as { customerPhone?: string | null }).customerPhone, r.returnDeclaredReason, r.address]
         .some((v) => (v ?? "").toLowerCase().includes(q)));
   }, [filtered, query]);
 
@@ -807,12 +836,26 @@ function InTransitTab() {
         accessorFn: (r) => r.recipientName ?? r.customerName ?? "—",
         cell: ({ row }) => {
           const r = row.original;
-          const phone = (r.recipientPhone ?? "").trim();
+          const phone = ((r.recipientPhone ?? (r as { customerPhone?: string | null }).customerPhone) ?? "").trim();
           return (
             <>
               <div>{r.recipientName ?? r.customerName ?? "—"}</div>
-              <div className="text-[11px] text-muted-foreground" dir="ltr">{phone || "—"}</div>
-              {r.address && <div className="mt-0.5 max-w-64 truncate text-[10px] text-muted-foreground" title={r.address}>{r.address}</div>}
+              <div className="text-[11px] text-muted-foreground flex items-center gap-1 font-mono" dir="ltr">
+                {phone ? (
+                  <>
+                    <Phone className="size-3 text-muted-foreground" />
+                    <span>{phone}</span>
+                  </>
+                ) : (
+                  "—"
+                )}
+              </div>
+              {r.address && (
+                <div className="mt-0.5 max-w-64 truncate text-[10px] text-muted-foreground flex items-center gap-1" title={r.address}>
+                  <MapPin className="size-3 text-muted-foreground shrink-0" />
+                  <span className="truncate">{r.address}</span>
+                </div>
+              )}
             </>
           );
         },
