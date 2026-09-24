@@ -980,7 +980,7 @@ async function claimFreshCampaignTask(
       });
     const taskId = Number(created.id);
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, variantId, campaignId: Number(campaign.id) }));
-    return { taskId, productName: displayName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id), variantId)) };
+    return { taskId, productId, variantId, productName: displayName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id), variantId)) };
   }
   // ترتيبُ التشخيص من الأخصّ إلى الأعمّ: «اكتملت» يسبق «خارج النطاق» يسبق «فرعٌ آخر»،
   // فالمصوّر يقرأ سبباً واحداً محدَّداً بدل عدّة سببٍ عامّ محتمل.
@@ -1068,14 +1068,14 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.claimByBarcode.upgradeVariant", Number(active.id), { productId, variantId, barcode: barcode.slice(0, 64) }),
       );
-      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
+      return { taskId: Number(active.id), productId, variantId, productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (Number(active.assignedTo) === actor.userId) {
       if (Number(active.barcodeVerifiedBy) !== actor.userId) {
         await tx.update(productImageJobs).set({ barcodeVerifiedBy: actor.userId, barcodeVerifiedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` }).where(eq(productImageJobs.id, active.id));
-        return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
+        return { taskId: Number(active.id), productId, variantId, productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
       }
-      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
+      return { taskId: Number(active.id), productId, variantId, productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (active.status === "PENDING_REVIEW" || active.submittedAt != null) {
       throw new TRPCError({
@@ -1209,7 +1209,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     await tx.insert(auditLogs).values(
       auditValues(actor, "productStudio.claimByBarcode", Number(active.id), { productId, variantId, upgradedFromParent: upgradeVariant, barcode: barcode.slice(0, 64), campaignId: Number(active.campaignId) }),
     );
-    return { taskId: Number(active.id), productName: displayName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId), variantId)) };
+    return { taskId: Number(active.id), productId, variantId, productName: displayName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId), variantId)) };
   });
 }
 
@@ -6119,4 +6119,212 @@ export async function linkStudioBarcode(
     actor.userId,
   );
 }
+
+/**
+ * مصفوفة باركودات وبدائل المنتج — القلب التقني لمنع فخ تصوير باركود واحد وإغفال باقي البدائل.
+ * يعيد كافة البدائل النشطة، وحداتها، باركوداتها (الأساسية والبديلة)، حالة الصور المعتمدة، والمهام الجارية.
+ */
+export async function getStudioProductVariantMatrix(actor: ProductStudioActor, productId: number) {
+  const db = requireDb();
+
+  const [product] = await db
+    .select({
+      id: products.id,
+      name: products.name,
+      isActive: products.isActive,
+      isService: products.isService,
+    })
+    .from(products)
+    .where(and(eq(products.id, productId), eq(products.isActive, true), eq(products.isService, false)))
+    .limit(1);
+
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير متاح للاستوديو",
+        why: "المنتج غير موجود أو معطّل أو من نوع خدمة لا تتطلب تصويراً",
+        doThis: "اختر منتجاً نشطاً من قائمة منتجات الاستوديو",
+      }),
+    });
+  }
+
+  // 1. جلب المتغيرات
+  const variants = await db
+    .select({
+      id: productVariants.id,
+      variantName: productVariants.variantName,
+      sku: productVariants.sku,
+      variantKind: productVariants.variantKind,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      isActive: productVariants.isActive,
+    })
+    .from(productVariants)
+    .where(and(eq(productVariants.productId, productId), eq(productVariants.isActive, true)))
+    .orderBy(asc(productVariants.id));
+
+  const variantIds = variants.map((v) => Number(v.id));
+
+  // 2. جلب الوحدات
+  const units = variantIds.length > 0
+    ? await db
+        .select({
+          id: productUnits.id,
+          variantId: productUnits.variantId,
+          unitName: productUnits.unitName,
+          barcode: productUnits.barcode,
+          isBaseUnit: productUnits.isBaseUnit,
+        })
+        .from(productUnits)
+        .where(and(inArray(productUnits.variantId, variantIds), eq(productUnits.isActive, true)))
+        .orderBy(asc(productUnits.id))
+    : [];
+
+  const unitIds = units.map((u) => Number(u.id));
+
+  // 3. جلب باركودات الوحدات البديلة
+  const aliasRows = unitIds.length > 0
+    ? await db
+        .select({
+          productUnitId: productUnitBarcodes.productUnitId,
+          barcode: productUnitBarcodes.barcode,
+        })
+        .from(productUnitBarcodes)
+        .where(inArray(productUnitBarcodes.productUnitId, unitIds))
+    : [];
+
+  // 4. جلب الصور المعتمدة للمنتج (المستوى العام وبدائل)
+  const approvedImages = await db
+    .select({
+      id: productImages.id,
+      variantId: productImages.variantId,
+      isPrimary: productImages.isPrimary,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+    })
+    .from(productImages)
+    .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.id));
+
+  // 5. جلب المهام النشطة
+  const activeJobs = await db
+    .select({
+      id: productImageJobs.id,
+      variantId: productImageJobs.variantId,
+      status: productImageJobs.status,
+      assignedTo: productImageJobs.assignedTo,
+      activeSlot: productImageJobs.activeSlot,
+    })
+    .from(productImageJobs)
+    .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot)));
+
+  // تجميع البيانات
+  const aliasesByUnitId = new Map<number, string[]>();
+  for (const a of aliasRows) {
+    const list = aliasesByUnitId.get(Number(a.productUnitId)) ?? [];
+    if (a.barcode && a.barcode.trim()) list.push(a.barcode.trim());
+    aliasesByUnitId.set(Number(a.productUnitId), list);
+  }
+
+  const unitsByVariantId = new Map<number, typeof units>();
+  for (const u of units) {
+    const list = unitsByVariantId.get(Number(u.variantId)) ?? [];
+    list.push(u);
+    unitsByVariantId.set(Number(u.variantId), list);
+  }
+
+  const imagesByVariantId = new Map<number | "PARENT", typeof approvedImages>();
+  for (const img of approvedImages) {
+    const key = img.variantId == null ? "PARENT" : Number(img.variantId);
+    const list = imagesByVariantId.get(key) ?? [];
+    list.push(img);
+    imagesByVariantId.set(key, list);
+  }
+
+  const activeJobByVariantId = new Map<number | "PARENT", (typeof activeJobs)[0]>();
+  for (const j of activeJobs) {
+    const key = j.variantId == null ? "PARENT" : Number(j.variantId);
+    if (!activeJobByVariantId.has(key)) {
+      activeJobByVariantId.set(key, j);
+    }
+  }
+
+  const parentImages = imagesByVariantId.get("PARENT") ?? [];
+
+  const matrixItems = variants.map((v) => {
+    const vId = Number(v.id);
+    const vUnits = unitsByVariantId.get(vId) ?? [];
+    const allBarcodesSet = new Set<string>();
+
+    const structuredUnits = vUnits.map((u) => {
+      const uAliases = aliasesByUnitId.get(Number(u.id)) ?? [];
+      if (u.barcode && u.barcode.trim()) allBarcodesSet.add(u.barcode.trim());
+      for (const alias of uAliases) allBarcodesSet.add(alias);
+      return {
+        unitId: Number(u.id),
+        unitName: u.unitName,
+        barcode: u.barcode ?? null,
+        isBaseUnit: Boolean(u.isBaseUnit),
+        aliases: uAliases,
+      };
+    });
+
+    const allBarcodes = Array.from(allBarcodesSet);
+    const baseUnit = structuredUnits.find((u) => u.isBaseUnit);
+    const primaryBarcode = baseUnit?.barcode ?? structuredUnits.find((u) => u.barcode)?.barcode ?? allBarcodes[0] ?? null;
+
+    const vImages = imagesByVariantId.get(vId) ?? [];
+    const primaryImg = vImages.find((img) => img.isPrimary) ?? vImages[0] ?? null;
+    const vActiveJob = activeJobByVariantId.get(vId) ?? null;
+
+    const status: "COVERED" | "IN_PROGRESS" | "MISSING" =
+      vImages.length > 0 ? "COVERED" : vActiveJob ? "IN_PROGRESS" : "MISSING";
+
+    return {
+      variantId: vId,
+      variantName: v.variantName || v.sku,
+      sku: v.sku,
+      variantKind: v.variantKind,
+      color: v.color ?? null,
+      colorHex: v.colorHex ?? null,
+      size: v.size ?? null,
+      primaryBarcode,
+      allBarcodes,
+      units: structuredUnits,
+      approvedImagesCount: vImages.length,
+      primaryImageThumb: primaryImg?.thumbDataUrl ?? null,
+      primaryImageId: primaryImg ? Number(primaryImg.id) : null,
+      activeJob: vActiveJob
+        ? {
+            id: Number(vActiveJob.id),
+            status: vActiveJob.status,
+            assignedTo: vActiveJob.assignedTo ? Number(vActiveJob.assignedTo) : null,
+            isMine: vActiveJob.assignedTo ? Number(vActiveJob.assignedTo) === actor.userId : false,
+          }
+        : null,
+      status,
+    };
+  });
+
+  const variantsWithImages = matrixItems.filter((item) => item.approvedImagesCount > 0).length;
+  const variantsMissingImages = matrixItems.length - variantsWithImages;
+  const isFullyCovered = matrixItems.length > 0 ? variantsMissingImages === 0 : parentImages.length > 0;
+  const totalBarcodes = Array.from(new Set(matrixItems.flatMap((i) => i.allBarcodes))).length;
+
+  return {
+    productId,
+    productName: product.name,
+    totalVariants: matrixItems.length,
+    totalBarcodes,
+    variantsWithImages,
+    variantsMissingImages,
+    isFullyCovered,
+    parentImagesCount: parentImages.length,
+    parentPrimaryImageThumb: parentImages[0]?.thumbDataUrl ?? null,
+    items: matrixItems,
+  };
+}
+
 

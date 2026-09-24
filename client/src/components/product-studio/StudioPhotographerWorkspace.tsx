@@ -1,4 +1,5 @@
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
+import { StudioProductVariantMatrixCard } from "@/components/product-studio/StudioProductVariantMatrixCard";
 import { ProductImageGallery } from "@/components/product-studio/ProductImageGallery";
 import { StudioCampaignImageBatch } from "@/components/product-studio/StudioCampaignImageBatch";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
@@ -185,6 +186,28 @@ export default function StudioPhotographerWorkspace({
         previousImages: result.previousImages,
       });
       notify.ok(`تم قفل وبدء «${result.productName}» بنجاح!`);
+      setTimeout(() => {
+        document.getElementById("studio-workspace-section")?.scrollIntoView({ behavior: "smooth" });
+      }, 100);
+    },
+    onError: (err: any) => {
+      notify.err(err);
+    },
+  });
+
+  const claimBarcodeMutation = trpc.productStudio.claimByBarcode.useMutation({
+    onSuccess: (result) => {
+      applyStudioClaim({
+        taskId: result.taskId,
+        productId: (result as { productId?: number }).productId,
+        variantId: (result as { variantId?: number | null }).variantId ?? null,
+        productName: result.productName,
+        revision: result.revision,
+        approvedImages: result.approvedImages,
+        requiredImages: result.requiredImages,
+        previousImages: (result as { previousImages?: any[] }).previousImages ?? [],
+      });
+      notify.ok(result.claimed ? `فُتح «${result.productName}» للتصوير` : `«${result.productName}» بين يديك أصلاً`);
       setTimeout(() => {
         document.getElementById("studio-workspace-section")?.scrollIntoView({ behavior: "smooth" });
       }, 100);
@@ -649,7 +672,15 @@ export default function StudioPhotographerWorkspace({
 
       {!offline && (
         <StudioCaptureStation
-          active={captured}
+          active={
+            captured
+              ? {
+                  ...captured,
+                  productId: captured.productId ?? (selected?.productId ? Number(selected.productId) : undefined),
+                  variantId: captured.variantId ?? (selected?.variantId ? Number(selected.variantId) : null),
+                }
+              : null
+          }
           offline={offline}
           onClaimed={applyStudioClaim}
           onClear={() => {
@@ -685,7 +716,7 @@ export default function StudioPhotographerWorkspace({
                     <ChevronRight aria-hidden className="size-4" /> عودة إلى المهام
                   </Button>
                   <CardTitle className="flex items-center justify-between text-base">
-                    <span>مساحة العمل: {selected.productName}</span>
+                    <span>مساحة العمل: {selected.productName}{selected.variantName ? ` — ${selected.variantName}` : ""}</span>
                     <Badge variant="outline">مهمة #{selected.id}</Badge>
                   </CardTitle>
                 </CardHeader>
@@ -697,16 +728,26 @@ export default function StudioPhotographerWorkspace({
                     </div>
                   )}
 
+                  {/* مصفوفة بدائل وباركودات المنتج لمنع تصوير بديل واحد وإغفال البقية */}
+                  {selected.productId != null && (
+                    <StudioProductVariantMatrixCard
+                      productId={Number(selected.productId)}
+                      activeVariantId={selected.variantId ? Number(selected.variantId) : null}
+                      onSelectBarcode={(b) => claimBarcodeMutation.mutate({ barcode: b })}
+                      disabled={offline || claimBarcodeMutation.isPending}
+                    />
+                  )}
+
                   {previousImages.data && previousImages.data.length > 0 && (
                     <div className="mb-4 rounded-md border p-3">
-                      <p className="mb-2 text-sm font-medium">ط§ظ„طµظˆط± ط§ظ„ط³ط§ط¨ظ‚ط© ط§ظ„ظ…ط¹طھظ…ط¯ط© ظ„ظ‡ط°ط§ ط§ظ„ظ…ظ†طھط¬ ({previousImages.data.length})</p>
+                      <p className="mb-2 text-sm font-medium">الصور السابقة المعتمدة لهذا المنتج ({previousImages.data.length})</p>
                       <div className="flex flex-wrap gap-2">
                         {previousImages.data.map((img) => (
                           <div key={img.id} className="relative h-20 w-20 shrink-0 overflow-hidden rounded-md border">
                             {img.thumbDataUrl ? (
-                              <img src={img.thumbDataUrl} alt="طµظˆط±ط© ط³ط§ط¨ظ‚ط©" className="h-full w-full object-cover" />
+                              <img src={img.thumbDataUrl} alt="صورة سابقة" className="h-full w-full object-cover" />
                             ) : (
-                              <div className="flex h-full w-full items-center justify-center bg-muted text-xs text-muted-foreground">ط¨ظ„ط§ ظ…طµط؛ظ‘ط±</div>
+                              <div className="flex h-full w-full items-center justify-center bg-muted text-xs text-muted-foreground">بلا مصغّر</div>
                             )}
                           </div>
                         ))}
