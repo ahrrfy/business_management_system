@@ -207,7 +207,7 @@ describe("sales.create + delivery — الإسناد في معاملة البي�
     expect(cn.codAmount).toBe("2000.00");
     expect(cn.deliveryFee).toBe("1500.00");
     expect(cn.feeCollection).toBe("COURIER");
-    expect(cn.parcelStatus).toBe("ASSIGNED");
+    expect(cn.parcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(cn.moneyStatus).toBe("UNSETTLED");
     expect(cn.status).toBe("DISPATCHED");
     expect(cn.governorate).toBe("baghdad");
@@ -349,7 +349,7 @@ describe("الجذر: الاستقبال يمرّر COD فتعبر فاتورة�
     expect(inv.status).toBe("PENDING");
     const cn = await consignmentByInvoice(invoiceId);
     expect(cn.codAmount).toBe("1000.00");
-    expect(cn.parcelStatus).toBe("ASSIGNED");
+    expect(cn.parcelStatus).toBe("OUT_FOR_DELIVERY");
   });
 
   it("الاستقبال يمرّر بوليصة الشركة كما مُسحت ويحفظ الصفر البادئ", async () => {
