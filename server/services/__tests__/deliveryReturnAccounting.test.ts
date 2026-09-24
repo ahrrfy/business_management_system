@@ -212,7 +212,7 @@ describe("delivery return — accounting mirrors", () => {
       lines: [{ productId: 1, unitPrice: "5000.00", unitCost: "3000.00", total: "5000.00", restoreStock: true }],
     });
 
-    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-line-counters" });
+    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-line-counters", returnReason: "رفض العميل" });
 
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, 140));
     expect(items.length).toBeGreaterThan(0);
@@ -245,7 +245,7 @@ describe("delivery return — accounting mirrors", () => {
       lines: [{ productId: 1, unitPrice: "5000.00", unitCost: "3000.00", total: "5000.00", restoreStock: true }],
     });
 
-    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-consignment-payable" });
+    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-consignment-payable", returnReason: "رفض العميل" });
 
     const supplier = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(supplier.currentBalance).toBe("0.00");
@@ -277,7 +277,7 @@ describe("delivery return — accounting mirrors", () => {
       ],
     });
 
-    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-owned-gift" });
+    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-owned-gift", returnReason: "رفض العميل" });
 
     const gift = (await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "GIFT_OUT")))[0];
     expect(gift.cost).toBe("-1000.00");
@@ -307,7 +307,7 @@ describe("delivery return — accounting mirrors", () => {
       ],
     });
 
-    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-mixed-sectors" });
+    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-mixed-sectors", returnReason: "رفض العميل" });
 
     const entry = await returnEntry(103);
     const journal = await journalForSource(Number(entry.id));
@@ -333,7 +333,7 @@ describe("delivery return — accounting mirrors", () => {
       lines: [{ productId: 1, unitPrice: "10000.00", unitCost: "2000.00", total: "10000.00", restoreStock: true }],
     });
 
-    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-taxed-delivery" });
+    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-taxed-delivery", returnReason: "رفض العميل" });
 
     const entry = await returnEntry(104);
     expect(entry.revenue).toBe("-10000.00");
@@ -388,7 +388,7 @@ describe("delivery return — accounting mirrors", () => {
       clientRequestId: "dispatch-print-return-carrier",
     }, MANAGER);
 
-    await returnConsignment(dispatched.consignmentId, { ...MANAGER, clientRequestId: "return-print-sale-carrier" });
+    await returnConsignment(dispatched.consignmentId, { ...MANAGER, clientRequestId: "return-print-sale-carrier", returnReason: "رفض العميل" });
 
     // الثابتُ تحت الاختبار: حركة OUT المُوسَمة PRINT_SALE (لا INVOICE) وُجدت وعادت فعلياً.
     expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(5);

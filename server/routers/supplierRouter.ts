@@ -14,7 +14,10 @@ import {
 import { managerProcedure, protectedProcedure, router, suppliersManagerProcedure, suppliersReadProcedure } from "../trpc";
 import { getSupplierSummary } from "../services/supplierOperationsService";
 import { withTx } from "../services/tx";
-import { autoSettleSupplierAccountTx } from "../services/reconciliation/autoSettlementService";
+import {
+  autoSettleAllSuppliersTx,
+  autoSettleSupplierAccountTx,
+} from "../services/reconciliation/autoSettlementService";
 
 /**
  * الموردون — شريحة كاملة.
@@ -227,5 +230,18 @@ export const supplierRouter = router({
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       };
       return withTx((tx) => autoSettleSupplierAccountTx(tx, input.supplierId, actor));
+    }),
+
+  /** تسوية شاملة لكافة أوامر شراء الموردين تلقائياً (رصيد صفري أو سدادات غير مخصصة). */
+  autoSettleAll: suppliersManagerProcedure
+    .input(z.object({ limit: z.number().int().positive().max(500).default(100) }).optional())
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      };
+      return withTx((tx) => autoSettleAllSuppliersTx(tx, actor, input?.limit ?? 100));
     }),
 });
