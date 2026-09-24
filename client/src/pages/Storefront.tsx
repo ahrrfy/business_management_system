@@ -27,8 +27,6 @@ import {
   MapPin,
   MessageCircle,
   Minus,
-  Layers,
-  LayoutGrid,
   Package,
   Pause,
   Play,
@@ -2243,33 +2241,6 @@ function StorefrontContent() {
       turnstileToken: turnstileToken!,
     });
   }
-  const chip = (active: boolean) =>
-    `whitespace-nowrap rounded-full px-4 py-1.5 text-xs font-bold transition ${
-      active
-        ? "bg-emerald-700 text-white shadow-sm shadow-[#1e4a63]/25"
-        : "bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-emerald-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"
-    }`;
-
-  const buyingPaths = [
-    { title: "المدرسة والجامعة", description: "أساسيات الدراسة وحقائب الطلاب في مكان واحد", keywords: ["مدرسة", "جامعة", "دراسة", "قرطاسية", "دفاتر", "اقلام", "حقائب"], icon: <Briefcase aria-hidden className="size-5 text-blue-600" />, tone: "bg-blue-50/80 text-blue-900 border border-blue-100 hover:border-blue-300 dark:bg-blue-950/40 dark:text-blue-200 dark:border-blue-900" },
-    { title: "المكتب اليومي", description: "دفاتر تنفيذية وتجهيزات تنظيم العمل الفاخرة", keywords: ["مكتب", "مستلزمات", "قرطاسية", "طباعة", "تنظيم"], icon: <LayoutGrid aria-hidden className="size-5 text-amber-600" />, tone: "bg-amber-50/80 text-amber-900 border border-amber-100 hover:border-amber-300 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-900" },
-    { title: "الهدايا والبكجات", description: "أطقم فاخرة متكاملة للإهداء والمناسبات الراقية", keywords: ["هدايا", "هدية", "مناسبات", "طباعة", "تغليف", "بكجات", "فاخر"], icon: <Package aria-hidden className="size-5 text-emerald-600" />, tone: "bg-emerald-50/80 text-emerald-900 border border-emerald-100 hover:border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-200 dark:border-emerald-900" },
-  ];
-  const selectBuyingPath = (keywords: string[]) => {
-    const normalizedKeywords = keywords.map(normalizeStorefrontArabic);
-    const match = cats.find((category) => {
-      const name = normalizeStorefrontArabic(category.name);
-      return normalizedKeywords.some((keyword) => keyword && name.includes(keyword));
-    });
-    if (match) {
-      selectCategory(match.id);
-      return;
-    }
-    // لا نخترع نتيجة بحث عند اختلاف تسمية التصنيف؛ نعرض المتاح بترتيب تجاري حقيقي.
-    setAvailability("IN_STOCK");
-    setSort("BEST_SELLERS");
-    scrollToResults();
-  };
 
   return (
     <div className="storefront min-h-dvh overflow-x-clip bg-slate-50/60 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
@@ -2304,7 +2275,7 @@ function StorefrontContent() {
             </span>
           </a>
           <nav className="hidden items-center gap-5 text-xs font-black text-slate-600 lg:flex dark:text-slate-300" aria-label="التنقل الرئيسي">
-            <a href="#store-start" className="transition hover:text-blue-600 dark:hover:text-blue-400">اكتشف</a>
+            <a href="#store-categories" className="transition hover:text-blue-600 dark:hover:text-blue-400">الأقسام</a>
             <a href="#store-results" className="transition hover:text-blue-600 dark:hover:text-blue-400">المنتجات</a>
             <a href="#store-deals" className="transition hover:text-orange-600 dark:hover:text-orange-400">العروض</a>
           </nav>
@@ -2442,17 +2413,13 @@ function StorefrontContent() {
               }}
             />
 
-            <section id="store-start" className="mt-8 scroll-mt-28 rounded-3xl border border-orange-100 bg-gradient-to-br from-orange-50/70 via-white to-amber-50/40 p-5 sm:p-7 dark:border-slate-800 dark:from-slate-900/90 dark:to-slate-900/60">
-              <div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">ابدأ من هنا</p><h2 className="mt-1 text-2xl font-black tracking-tight text-slate-900 dark:text-slate-100">اختَر طريق الشراء المناسب</h2></div><button type="button" onClick={() => scrollToResults()} className="hidden text-xs font-black text-blue-700 hover:underline dark:text-blue-400 sm:block">عرض كل المنتجات ←</button></div>
-              <div className="grid gap-3 md:grid-cols-3">{buyingPaths.map((path) => <button key={path.title} onClick={() => selectBuyingPath(path.keywords)} aria-label={`تصفح ${path.title}`} className={`flex min-h-36 flex-col justify-between rounded-2xl p-5 text-right transition hover:-translate-y-0.5 hover:shadow-md ${path.tone}`}><span className="flex size-10 items-center justify-center rounded-xl bg-white/80 shadow-sm">{path.icon}</span><span><span className="block text-lg font-black">{path.title}</span><span className="mt-1 block text-xs font-bold opacity-75">{path.description}</span><span className="mt-2 block text-[11px] font-black underline decoration-current/30 underline-offset-4">تصفح الاختيارات ←</span></span></button>)}</div>
-            </section>
-
             <StorefrontCategories
+              id="store-categories"
               categories={cats}
               selectedId={categoryId}
               onSelectCategory={selectCategory}
               categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
-              className="mt-8"
+              className="mt-8 scroll-mt-28"
             />
 
             {feedStrips.length > 0 && (
