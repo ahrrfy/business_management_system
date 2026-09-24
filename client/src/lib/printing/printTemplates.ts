@@ -975,8 +975,48 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
     const dl = d.delivery!;
     const fee = Number(dl.fee || 0);
     const shop = dl.feeCollection === "SHOP";
-    const pays = Number(d.total || 0) + (shop ? 0 : fee);
     const who = dl.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : shop ? "على المكتبة — مجاناً للزبون" : "يقبضها المندوب من الزبون";
+    const remainingMerchandise = Math.max(0, Number(d.total || 0) - Number(d.paid || 0));
+    const courierFee = dl.feeCollection === "COURIER" ? fee : 0;
+    const totalToCollect = remainingMerchandise + courierFee;
+
+    let customerDueRow = "";
+    if (totalToCollect === 0) {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">المطلوب من الزبون</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">0 د.ع (مدفوع بالكامل)</td>
+        </tr>`;
+    } else if (remainingMerchandise === 0 && courierFee > 0) {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون (أجرة التوصيل فقط)</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(courierFee)} د.ع</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="border:1px solid #000;padding:1mm 1.5mm;text-align:center;font-weight:800;font-size:10px;background:#f5f5f5;">
+            البضاعة مدفوعة مسبقاً بالكامل
+          </td>
+        </tr>`;
+    } else if (courierFee > 0) {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون شاملاً التوصيل</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(totalToCollect)} د.ع</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="border:1px solid #000;padding:0.8mm 1.5mm;text-align:center;font-weight:700;font-size:9.5px;color:#333;">
+            (متبقي البضاعة: ${fmt(remainingMerchandise)} + أجرة التوصيل: ${fmt(courierFee)})
+          </td>
+        </tr>`;
+    } else {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون (متبقي البضاعة)</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(remainingMerchandise)} د.ع</td>
+        </tr>`;
+    }
+
     return `
     <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
       <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1.2mm;font-weight:900;border:1px solid #000;">بيانات التوصيل</th></tr></thead>
@@ -984,7 +1024,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
         <tr><td style="width:35%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الجهة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.partyName)}</td></tr>
         ${dl.address ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">العنوان</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.address)}</td></tr>` : ''}
         <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">أجرة التوصيل</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${shop ? "مجاناً" : fmt(fee)} (${who})</td></tr>
-        ${shop ? '' : `<tr style="background:#000;color:#fff;font-weight:900;"><td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون شاملاً التوصيل</td><td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(pays)} د.ع</td></tr>`}
+        ${customerDueRow}
       </tbody>
     </table>`;
   })() : '';
