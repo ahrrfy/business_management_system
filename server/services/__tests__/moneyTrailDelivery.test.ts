@@ -258,7 +258,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
     const custBefore = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(Number(custBefore.currentBalance)).toBe(10000); // البيع الآجل رفع ذمّته
 
-    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-ret-1" } as never);
+    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-ret-1", returnReason: "رفض العميل" } as never);
 
     const party = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
     expect(Number(party.currentBalance)).toBe(0); // لم ترتفع قبل التسليم في المرحلة الثانية
@@ -300,7 +300,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
       createdBy: 1,
     });
 
-    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-legacy-ret-1" } as never);
+    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-legacy-ret-1", returnReason: "رفض العميل" } as never);
 
     const party = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
     expect(Number(party.currentBalance)).toBe(0);
@@ -332,7 +332,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
       returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true }, MANAGER),
     ).rejects.toThrowError(/إرسالية التوصيل/);
     await expect(
-      returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1" } as never),
+      returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1", returnReason: "رفض العميل" } as never),
     ).resolves.toBeTruthy();
     void shift;
   });

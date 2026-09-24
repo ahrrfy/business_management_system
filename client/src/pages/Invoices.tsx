@@ -759,7 +759,7 @@ export default function Invoices() {
                   label: "إلغاء إسناد التوصيل",
                   onSelect: () => setCancelDeliveryTarget(r),
                   variant: "destructive",
-                  hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "FAILED"),
+                  hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "OUT_FOR_DELIVERY" && r.consignmentParcelStatus !== "FAILED"),
                   gate: { roles: ["manager"], module: "store", level: "FULL" },
                 },
                 {
