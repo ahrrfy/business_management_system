@@ -70,9 +70,9 @@ export function InvoiceHeaderCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-5 md:grid-cols-3">
+        <div className="grid gap-6 lg:grid-cols-12">
           {/* البيانات الوصفية */}
-          <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
+          <div className="lg:col-span-7 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
             <Field label="القناة">
               <span className="inline-flex items-center gap-1.5">
                 <InvoiceChannelBadge row={data} />
@@ -118,6 +118,7 @@ export function InvoiceHeaderCard({
                     value={data.customerBalance ?? "0"}
                     display={fmt(data.customerBalance ?? "0")}
                     mono={false}
+                    truncate={false}
                   />
                 </div>
               </div>
@@ -125,7 +126,7 @@ export function InvoiceHeaderCard({
           </div>
 
           {/* لوحة الملخّص المالي */}
-          <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
+          <div className="lg:col-span-5 min-w-[280px] rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
             <SummaryRow label="قبل الضريبة" value={data.subtotal} />
             {hasDiscount && (
               <SummaryRow label="الخصم" value={data.discountAmount} />
@@ -151,7 +152,7 @@ export function InvoiceHeaderCard({
             <div className="border-t pt-2.5">
               <SummaryRow label="الإجمالي" value={data.total} strong />
             </div>
-            {data.courierName && Number(data.courierFee ?? 0) > 0 && (
+            {data.courierName && Number(data.courierFee ?? 0) > 0 && data.consignmentStatus !== "CANCELLED" && (
               <div className="mt-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1 font-bold text-[var(--sem-warn)]">
@@ -173,7 +174,7 @@ export function InvoiceHeaderCard({
                 )}
               </div>
             )}
-            {data.consignmentNumber && (
+            {data.consignmentNumber && data.consignmentStatus !== "CANCELLED" && (
               <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 rounded-md border px-2.5 py-2 text-sm">
                 <span className="inline-flex items-center gap-1.5">
                   <Truck aria-hidden className="size-3.5 text-muted-foreground" />

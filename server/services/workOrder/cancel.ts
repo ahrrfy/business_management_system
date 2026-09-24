@@ -4,7 +4,7 @@ import { and, desc, eq, isNull, like, notLike, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
-import { applyValuedInboundMovement } from "../inventoryService";
+import { applyValuedInboundMovement, isBundleVariant, isServiceVariant } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
@@ -409,17 +409,31 @@ export async function cancelWorkOrderInTx(
       }
 
       let returnedCost = money(0);
+      const variantIds = Array.from(new Set(mats.map((m) => Number(m.variantId)))).sort((a, b) => a - b);
+      const nonStockVariants = new Set<number>();
+      for (const vid of variantIds) {
+        if ((await isServiceVariant(tx, vid)) || (await isBundleVariant(tx, vid))) {
+          nonStockVariants.add(vid);
+        }
+      }
+
       await lockInventoryVariants(
         tx,
         mats
-          .filter((material) => (decisions.get(Number(material.id))?.returnBase ?? Number(material.baseQuantity)) > 0)
+          .filter((material) => {
+            const vid = Number(material.variantId);
+            if (nonStockVariants.has(vid)) return false;
+            return (decisions.get(Number(material.id))?.returnBase ?? Number(material.baseQuantity)) > 0;
+          })
           .map((material) => Number(material.variantId)),
       );
       const returnedByVariant = new Map<number, { quantity: number; value: Decimal }>();
       for (const m of mats) {
+        const variantId = Number(m.variantId);
+        const isNonStock = nonStockVariants.has(variantId);
         const consumed = Number(m.baseQuantity);
         const d = decisions.get(Number(m.id)) ?? { returnBase: consumed, wasteBase: 0 };
-        if (d.returnBase > 0) {
+        if (d.returnBase > 0 && !isNonStock) {
           const variantId = Number(m.variantId);
           const lineValue = round2(money(m.unitCost ?? "0").times(d.returnBase));
           const previous = returnedByVariant.get(variantId) ?? {
@@ -432,7 +446,10 @@ export async function cancelWorkOrderInTx(
         }
         // التكلفةُ بلقطة `unitCost` المختومة عند البدء — لا بتكلفةِ اليوم: الرجوعُ يعيد
         // للمخزون ما خرج منه بقيمته وقتَها، وإلّا حرّك حقوقاً بفرق تقييمٍ لا سببَ له.
-        returnedCost = returnedCost.plus(round2(money(m.unitCost ?? "0").times(d.returnBase)));
+        // الأصناف الخدمية والبكجات لا رصيد مخزني لها فلا تدخل في returnedCost المعكوس لمخزون الرف (§١٨/٨).
+        if (!isNonStock) {
+          returnedCost = returnedCost.plus(round2(money(m.unitCost ?? "0").times(d.returnBase)));
+        }
       }
       returnedCost = round2(returnedCost);
       // حركةٌ واحدة وWAVG واحد لكل متغيّر: تكرار المادة في أكثر من سطر لا يراكم تقريباً
@@ -914,8 +931,9 @@ export async function cancelWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string; permissionsOverride?: unknown },
   opts: CancelWorkOrderOptions = {},
+  control: ApprovedWorkOrderControl = {},
 ) {
-  return withTx((tx) => cancelWorkOrderInTx(tx, workOrderId, actor, opts));
+  return withTx((tx) => cancelWorkOrderInTx(tx, workOrderId, actor, opts, control));
 }
 
 /**

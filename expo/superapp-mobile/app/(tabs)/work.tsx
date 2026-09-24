@@ -12,7 +12,10 @@ import { AppMasthead, SectionTitle } from "@/components/Ui";
 import { colors, radius, space } from "@/constants/theme";
 import { useWorkspaceAccess } from "@/lib/workspaceAccess";
 
-type WorkView = "tasks" | "approvals";
+import { ShiftHandoverCard } from "@/components/ShiftHandoverCard";
+import { MobileStockAuditCard } from "@/components/MobileStockAuditCard";
+
+type WorkView = "tasks" | "field" | "approvals";
 type TaskStatus = "NEW" | "IN_PROGRESS" | "DONE";
 
 type PreviewTask = {
@@ -101,6 +104,10 @@ export default function WorkScreen() {
         focus={focus}
         onChanged={async () => { await access.refreshWorkspace(); }}
       />
+      <SectionTitle>تسليم الوردية وإغلاق الصندوق</SectionTitle>
+      <ShiftHandoverCard />
+      <SectionTitle>جرد المخزون الفوري بالباركود</SectionTitle>
+      <MobileStockAuditCard />
       <ExperienceState
         compact
         detail="إدارة طوابير الموظفين والموافقات الشاملة تبقى في النظام الأساسي وفق صلاحيات الدور."
@@ -207,6 +214,9 @@ function PreviewWorkScreen() {
           <Pressable accessibilityRole="tab" accessibilityState={{ selected: view === "tasks" }} onPress={() => chooseView("tasks")} style={[styles.segment, view === "tasks" && styles.segmentActive]}>
             <Text style={[styles.segmentText, view === "tasks" && styles.segmentTextActive]}>مهامي</Text>
           </Pressable>
+          <Pressable accessibilityRole="tab" accessibilityState={{ selected: view === "field" }} onPress={() => chooseView("field")} style={[styles.segment, view === "field" && styles.segmentActive]}>
+            <Text style={[styles.segmentText, view === "field" && styles.segmentTextActive]}>أدوات الميدان</Text>
+          </Pressable>
           <Pressable accessibilityRole="tab" accessibilityState={{ selected: view === "approvals" }} onPress={() => chooseView("approvals")} style={[styles.segment, view === "approvals" && styles.segmentActive]}>
             <Text style={[styles.segmentText, view === "approvals" && styles.segmentTextActive]}>الموافقات</Text>
           </Pressable>
@@ -248,6 +258,15 @@ function PreviewWorkScreen() {
                 </View>
               </AnimatedReveal>
             ))}
+          </View>
+        ) : view === "field" ? (
+          <View style={styles.groups}>
+            <AnimatedReveal delay={80}>
+              <ShiftHandoverCard />
+            </AnimatedReveal>
+            <AnimatedReveal delay={160}>
+              <MobileStockAuditCard />
+            </AnimatedReveal>
           </View>
         ) : (
           <ExperienceState actionLabel="العودة إلى مهامي" detail="ستظهر هنا الطلبات المصرح لك بمراجعتها فقط." onAction={() => chooseView("tasks")} state="empty" title="لا توجد موافقات بانتظارك" />

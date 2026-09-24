@@ -185,7 +185,7 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
                 });
               }
             }}
-            className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-right block w-full"
+            className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
             title="انقر لعرض تفاصيل السند/الحركة"
           >
             {fmt(r.debit)}
@@ -225,7 +225,7 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
                 });
               }
             }}
-            className="font-semibold hover:underline cursor-pointer transition-colors text-right block w-full"
+            className="font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
             title="انقر لعرض تفاصيل أمر الشراء/الحركة"
           >
             {fmt(r.credit)}
@@ -661,15 +661,14 @@ export default function SupplierStatement() {
                 <AgingCard aging={stmt.data.summary.aging} scoped={!!(from || to)} />
               </div>
 
-              {/* بند تسوية صريح لفجوة تخصيص الدفعات — بدل أن يبقى الفرق بين مجموع «المتبقّي»
-                  لكل فاتورة و«الرصيد المستحق» أعلاه صامتاً وغير مفسَّر (شكوى المالك الأصلية). */}
-              {(hasUnsettledMismatch || D(stmt.data.summary.unallocatedPayments).gt(0)) && (
+              {/* بند تسوية صريح لفجوة تخصيص الدفعات عند وجود أوامر شراء مفتوحة */}
+              {hasUnsettledMismatch && (
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]/60 p-3 text-xs">
                   <div className="flex items-start gap-2">
                     <AlertCircle aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-warn)]" />
                     <div className="space-y-1">
                       <span className="font-semibold text-[var(--sem-warn)]">
-                        تنبيه مطابقة الذمم — دفعات غير مخصصة أو فواتير مفتوحة:{" "}
+                        تنبيه مطابقة الذمم — دفعات غير مخصصة مع أوامر شراء مفتوحة:{" "}
                       </span>
                       <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)} د.ع</span>
                       <p className="text-muted-foreground leading-relaxed">
@@ -686,6 +685,22 @@ export default function SupplierStatement() {
                     <RefreshCw className={`h-4 w-4 ${autoSettleM.isPending ? "animate-spin" : ""}`} />
                     تسوية الأوامر تلقائياً (FIFO)
                   </Button>
+                </div>
+              )}
+
+              {/* إشعار معلوماتي في حال وجود دفعات غير مخصصة دون أوامر شراء مفتوحة (دفعة مقدمة / رصيد دائن على الحساب) */}
+              {!hasUnsettledMismatch && D(stmt.data.summary.unallocatedPayments).gt(0) && (
+                <div className="flex items-start gap-2 rounded-md border border-border/60 bg-[var(--sem-info-bg)]/60 p-3 text-xs">
+                  <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-info)]" />
+                  <div className="space-y-1">
+                    <span className="font-semibold text-[var(--sem-info)]">
+                      رصيد دفعات غير مخصصة على الحساب:{" "}
+                    </span>
+                    <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)} د.ع</span>
+                    <p className="text-muted-foreground leading-relaxed">
+                      يوجد رصيد دفعات مستقلة على حساب المورد دون وجود أوامر شراء مفتوحة حالياً (رصيد دائن / دفعة مقدمة). سيتم تخصيص هذا الرصيد تلقائياً عند إصدار أوامر شراء جديدة.
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -893,18 +908,20 @@ function AgingCard({ aging, scoped }: { aging: { d0_30: string; d31_60: string; 
             ]
           : <div className="w-full bg-border" />}
       </div>
-      <div className="grid grid-cols-5 gap-x-1 text-[10px]">
-        {AGING_BUCKETS.map((b, i) => (
-          <div key={b.key} className="text-center">
-            {/* bidi: "0–30" بلا مرساةٍ عربية تُعاد كتابتُها بصرياً "30-0" داخل حاويةٍ RTL بلا
-                عزلٍ صريح — dir="ltr" هنا إلزاميٌّ لا تجميليّ (أمسكته جولةٌ بصرية فعلية). */}
-            <div className={`font-semibold tabular-nums ${b.textCls}`} dir="ltr">{b.label}</div>
-            <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(values[i].toFixed(0))}</div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[340px] grid grid-cols-5 gap-x-1 text-[10px]">
+          {AGING_BUCKETS.map((b, i) => (
+            <div key={b.key} className="text-center min-w-0">
+              {/* bidi: "0–30" بلا مرساةٍ عربية تُعاد كتابتُها بصرياً "30-0" داخل حاويةٍ RTL بلا
+                  عزلٍ صريح — dir="ltr" هنا إلزاميٌّ لا تجميليّ (أمسكته جولةٌ بصرية فعلية). */}
+              <div className={`font-semibold tabular-nums ${b.textCls}`} dir="ltr">{b.label}</div>
+              <div className="tabular-nums text-muted-foreground whitespace-nowrap shrink-0" dir="ltr">{fmt(values[i].toFixed(0))}</div>
+            </div>
+          ))}
+          <div className="text-center min-w-0">
+            <div className="font-semibold tabular-nums text-[var(--sem-info)]">غير مصنَّف</div>
+            <div className="tabular-nums text-muted-foreground whitespace-nowrap shrink-0" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
           </div>
-        ))}
-        <div className="text-center">
-          <div className="font-semibold tabular-nums text-[var(--sem-info)]">غير مصنَّف</div>
-          <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
         </div>
       </div>
     </div>

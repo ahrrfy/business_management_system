@@ -15,6 +15,7 @@ interface StorefrontCategoriesProps {
   onSelectCategory: (id: number) => void;
   categoryCountFn: (cat: any) => number;
   className?: string;
+  id?: string;
 }
 
 const CATEGORY_THEMES = [
@@ -54,11 +55,13 @@ export function StorefrontCategories({
   onSelectCategory,
   categoryCountFn,
   className = "",
+  id = "store-categories",
 }: StorefrontCategoriesProps) {
   if (categories.length === 0) return null;
 
   return (
     <section
+      id={id}
       aria-labelledby="store-category-title"
       className={`rounded-3xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7 dark:border-slate-800 dark:bg-slate-900 ${className}`}
     >

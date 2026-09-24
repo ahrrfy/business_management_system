@@ -8,6 +8,7 @@ import {
   isPublicPath,
   redirectTargetUrl,
   resolveHostRedirect,
+  shelfLookupUrl,
   storefrontUrl,
 } from "./siteHosts";
 
@@ -20,6 +21,8 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/store")).toBe(true);
     expect(isPublicPath("/store/abc")).toBe(true);
     expect(isPublicPath("/apply")).toBe(true);
+    expect(isPublicPath("/shelf-lookup")).toBe(true);
+    expect(isPublicPath("/price-check")).toBe(true);
   });
   it("كل ما عداها داخليّ — بما فيه المسارات المتشابهة بالاسم", () => {
     expect(isPublicPath("/")).toBe(false);
@@ -100,6 +103,9 @@ describe("الروابط المُشارَكة — لا تتبع المضيف ا�
     expect(careersUrl(PUB)).toBe(`${PUBLIC_ORIGIN}/apply`);
     expect(storefrontUrl(INT)).toBe(`${PUBLIC_ORIGIN}/store`);
     expect(storefrontUrl(PUB)).toBe(`${PUBLIC_ORIGIN}/store`);
+    expect(shelfLookupUrl(null, INT)).toBe(`${PUBLIC_ORIGIN}/shelf-lookup`);
+    expect(shelfLookupUrl(1, INT)).toBe(`${PUBLIC_ORIGIN}/shelf-lookup?branch=1`);
+    expect(shelfLookupUrl(2, PUB)).toBe(`${PUBLIC_ORIGIN}/shelf-lookup?branch=2`);
   });
   it("الروابط الداخلية (بوّابة العدّ/الكشك) ⇒ دومين الشركة مطلقاً، حتى وأنت على الدومين العام", () => {
     expect(internalUrl("/count/AB12", PUB)).toBe(`${INTERNAL_ORIGIN}/count/AB12`);

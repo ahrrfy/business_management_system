@@ -22,6 +22,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { NumberInput } from "@/components/form/NumberInput";
 import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
+import ProductRecipeSection from "@/components/product/ProductRecipeSection";
 import { ConsignmentField } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { ProductCustomizationTemplateEditor } from "@/components/product/ProductCustomizationTemplateEditor";
@@ -241,16 +242,34 @@ export function ProductFormFields({
       <Card>
         <CardHeader><CardTitle className="text-base">التسعير والتصنيف · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <Field label={costLabel} required hint={model.consignment.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "موحّد لكل الألوان إلا ما له سعر خاص."}>
-            <MoneyInput id="product-cost" value={model.costPrice} onChange={(costPrice) => set({ costPrice })} placeholder="150" />
-            <ProductCostCoach
-              costPrice={model.costPrice}
-              baseRetail={model.units.find((u) => u.isBase)?.retail ?? ""}
-              categoryId={model.categoryId === "" ? null : Number(model.categoryId)}
-              brand={model.brand}
-              productType={model.productType}
-              productId={productId}
+          <Field
+            label={facts?.isBundle ? "تكلفة البكج (د.ع)" : costLabel}
+            required={!facts?.isBundle}
+            hint={
+              facts?.isBundle
+                ? "تُحسب وتُحدَّث تلقائياً وبشكل مباشر من مجموع مكوّنات البكج."
+                : model.consignment.isConsignment
+                  ? "المبلغ المستحقّ للمودِع عند البيع."
+                  : "موحّد لكل الألوان إلا ما له سعر خاص."
+            }
+          >
+            <MoneyInput
+              id="product-cost"
+              value={model.costPrice}
+              onChange={(costPrice) => set({ costPrice })}
+              placeholder={facts?.isBundle ? "محسوبة آلياً" : "150"}
+              disabled={!!facts?.isBundle}
             />
+            {!facts?.isBundle && (
+              <ProductCostCoach
+                costPrice={model.costPrice}
+                baseRetail={model.units.find((u) => u.isBase)?.retail ?? ""}
+                categoryId={model.categoryId === "" ? null : Number(model.categoryId)}
+                brand={model.brand}
+                productType={model.productType}
+                productId={productId}
+              />
+            )}
           </Field>
           <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">
             <NumberInput value={model.defaultMin} onChange={(defaultMin) => set({ defaultMin })} className="text-center" ariaLabel="الحد الأدنى الافتراضي" />
@@ -341,6 +360,10 @@ export function ProductFormFields({
 
       {facts?.isBundle && facts.bundleVariantId != null && (
         <BundleRecipeCard bundleVariantId={Number(facts.bundleVariantId)} />
+      )}
+
+      {productId != null && !facts?.isBundle && (
+        <ProductRecipeSection productId={productId} isService={model.isService} />
       )}
     </div>
   );

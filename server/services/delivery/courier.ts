@@ -107,6 +107,14 @@ export interface MyDeliveryRow {
   collectedAmount?: string | null;
   /** الحالة المالية للإرسالية. */
   moneyStatus?: string | null;
+  /** التوصيل مجاني للعميل (المتجر يتحمل الأجرة). */
+  deliveryFree?: boolean;
+  /** قيمة أجرة التوصيل الموهوبة للعميل. */
+  deliveryWaivedAmount?: string | null;
+  /** جهة استحقاق الأجرة: COURIER (يقبضها من الزبون) / SHOP (على المتجر) / COUNTER (مقبوضة مسبقاً). */
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  /** أجرة الإرسالية الحقيقية المسجلة. */
+  consignmentDeliveryFee?: string | null;
 }
 
 export interface MyDeliveriesResult {
@@ -162,6 +170,8 @@ export async function listMyDeliveries(
     // ١٠/٨ (تمرير كامل): الأجرة للمندوب — للفواتير الجديدة فقط (deliveryFee=0)؛ القديمة
     // شحنُها داخل codDue أصلاً فلا أجرة إضافية فوقه.
     shippingCost: sql<string>`CASE WHEN CAST(${invoices.deliveryFee} AS DECIMAL(15,2)) > 0 THEN '0.00' ELSE COALESCE(${onlineOrders.shippingCost}, '0.00') END`,
+    deliveryFree: onlineOrders.deliveryFree,
+    deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
   };
   const legacyOnlineQuery = () =>
     db
@@ -201,6 +211,7 @@ export async function listMyDeliveries(
       money(r.invReturned ?? "0"),
     );
     const due = Decimal.max(net.minus(money(r.invPaid ?? "0")), 0);
+    const isFree = r.deliveryFree === true;
     const row: MyDeliveryRow = {
       id: Number(r.id),
       kind: "online",
@@ -214,10 +225,14 @@ export async function listMyDeliveries(
       longitude: r.longitude ?? null,
       orderTotal: String(r.orderTotal),
       codDue: toDbMoney(due),
-      courierFee: toDbMoney(money(r.shippingCost ?? "0")),
+      courierFee: isFree ? "0.00" : toDbMoney(money(r.shippingCost ?? "0")),
       createdAt: r.createdAt,
       collectedAmount: r.invPaid ? String(r.invPaid) : "0",
       moneyStatus: null,
+      deliveryFree: isFree,
+      deliveryWaivedAmount: r.deliveryWaivedAmount ? String(r.deliveryWaivedAmount) : null,
+      feeCollection: isFree ? "SHOP" : "COURIER",
+      consignmentDeliveryFee: isFree ? String(r.deliveryWaivedAmount ?? "0") : String(r.shippingCost ?? "0"),
     };
     (r.status === "DELIVERED" ? delivered : toDeliver).push(row);
   }
@@ -251,6 +266,8 @@ export async function listMyDeliveries(
     deliveryFee: deliveryConsignments.deliveryFee,
     feeCollection: deliveryConsignments.feeCollection,
     invTotal: invoices.total,
+    deliveryFree: invoices.deliveryFree,
+    deliveryWaivedAmount: invoices.deliveryWaivedAmount,
     custName: customers.name,
     custPhone: sql<
       string | null
@@ -300,6 +317,7 @@ export async function listMyDeliveries(
       money(r.codAmount).minus(money(r.collectedAmount ?? "0")),
       0,
     );
+    const isFree = r.deliveryFree === true || r.feeCollection === "SHOP";
     const row: MyDeliveryRow = {
       id: Number(r.id),
       kind: "consignment",
@@ -337,6 +355,10 @@ export async function listMyDeliveries(
         round2(money(r.shortfallAssigned ?? "0")).gt(0)
           ? "PARTIAL"
           : (r.moneyStatus ?? null),
+      deliveryFree: isFree,
+      deliveryWaivedAmount: r.deliveryWaivedAmount ? String(r.deliveryWaivedAmount) : null,
+      feeCollection: (r.feeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP",
+      consignmentDeliveryFee: r.deliveryFee ? String(r.deliveryFee) : null,
     };
     (r.parcelStatus === "DELIVERED" ? delivered : toDeliver).push(row);
   }

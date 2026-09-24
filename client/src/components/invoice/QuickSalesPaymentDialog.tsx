@@ -289,7 +289,7 @@ export function QuickSalesPaymentDialog({
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v && !cannotClose) onClose(); }}>
       <DialogContent
-        className="max-w-md"
+        className="sm:max-w-md"
         dir="rtl"
         showCloseButton={!cannotClose}
         onEscapeKeyDown={(e) => { if (cannotClose) e.preventDefault(); }}

@@ -65,7 +65,7 @@ export function CancelWorkOrderDialogById({
   if (!d) {
     return (
       <Dialog open onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <PackageX aria-hidden className="size-4" /> إلغاء طلب الخدمة
@@ -207,7 +207,7 @@ export default function CancelWorkOrderDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <PackageX aria-hidden className="size-4" /> إلغاء طلب الخدمة

@@ -20,6 +20,7 @@ import { openCashDrawer, isWebUsbSupported } from "@/lib/printing/print";
 import { notify } from "@/lib/notify";
 import { PrintCustomerPhoneSection } from "./PrintCustomerPhoneSection";
 import type { OrderChannel } from "./PrintChannelCustomerBar";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 const SHOP = "الرؤية العربية";
 const DEPT = "قسم الطباعة والاستنساخ";
@@ -198,77 +199,16 @@ export function PrintPosHeader({
       <div style={{ width: 1, height: 26, background: C.border, flexShrink: 0 }} />
 
       {/* ── حقل البحث الموحد لكاشير الطباعة (طراز POS الموحد) ── */}
-      <div
-        style={{
-          flex: "1 1 280px",
-          minWidth: 240,
-          maxWidth: 380,
-          position: "relative",
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            right: 12,
-            color: C.mutedFg,
-            pointerEvents: "none",
-            display: "flex",
-            alignItems: "center",
-            zIndex: 1,
-          }}
-          aria-hidden
-        >
-          <Search size={16} />
-        </span>
-        <input
-          ref={searchRef}
-          autoFocus
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="ابحث عن خدمة أو امسح الباركود… (F2)"
-          dir="rtl"
-          style={{
-            width: "100%",
-            height: 36,
-            border: `2px solid ${C.primary}`,
-            borderRadius: 9,
-            background: C.primarySoft,
-            boxShadow: `inset 0 0 0 1px ${C.primary}22`,
-            color: C.fg,
-            fontFamily: "inherit",
-            fontSize: 13,
-            fontWeight: 600,
-            outline: "none",
-            paddingRight: 38,
-            paddingLeft: search ? 36 : 12,
-            boxSizing: "border-box",
-            transition: "all 0.15s ease",
-          }}
-        />
-        {search && (
-          <button
-            onClick={() => {
-              setSearch("");
-              searchRef.current?.focus();
-            }}
-            aria-label="مسح البحث"
-            style={{
-              position: "absolute",
-              left: 8,
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              color: C.mutedFg,
-              padding: 3,
-              display: "inline-flex",
-            }}
-          >
-            <X aria-hidden size={15} />
-          </button>
-        )}
-      </div>
+      <UnifiedSearchInput
+        ref={searchRef}
+        autoFocus
+        value={search}
+        onChange={setSearch}
+        placeholder="ابحث عن خدمة أو امسح الباركود… (F2)"
+        variant="pos"
+        size="compact"
+        className="flex-1 max-w-[380px] min-w-[240px]"
+      />
 
       {/* فاصل */}
       <div style={{ width: 1, height: 26, background: C.border, flexShrink: 0 }} />

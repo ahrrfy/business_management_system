@@ -21,7 +21,7 @@ import { TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 
 /**
  * إضافة عميل — v3 add-screens (+ تحسينات الأولوية العليا ٤/٧).
@@ -135,6 +135,7 @@ export default function CustomerNew() {
         utils.customers.list.invalidate(),
         utils.customers.smartSearch.invalidate(),
       ]);
+      bypassUnsavedGuard();
       navigate("/customers");
     },
     onError: (e) => {
@@ -217,6 +218,7 @@ export default function CustomerNew() {
       });
       if (!ok) return;
     }
+    bypassUnsavedGuard();
     navigate("/customers");
   }
 

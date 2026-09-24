@@ -4,7 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Platform, StyleSheet, Switch, Text, TouchableOpacity, View } from "react-native";
 
 import { ScreenContainer } from "@/components/screen-container";
-import { disableMarketingPush, enableMarketingPush, isMarketingPushEnabled } from "@/lib/customer-notifications";
+import {
+  disableMarketingPush,
+  enableMarketingPush,
+  isMarketingPushEnabled,
+  scheduleTestCustomerNotification,
+} from "@/lib/customer-notifications";
 import { LEGAL_ENABLED, openLegalPage } from "@/lib/legal-urls";
 
 export default function NotificationPreferencesScreen() {
@@ -40,6 +45,24 @@ export default function NotificationPreferencesScreen() {
       <View style={styles.content}>
         <View style={styles.hero}><View style={styles.icon}><MaterialIcons name="notifications-active" size={30} color="#075B4E" /></View><Text style={styles.title}>إشعاراتك</Text><Text style={styles.subtitle}>أنت تتحكم في العروض التي تصلك. لن نرسل إعلاناً دون موافقتك.</Text></View>
         <View style={styles.card}><View style={styles.row}><View style={styles.rowText}><Text style={styles.rowTitle}>عروض وتخفيضات مكتبة العربية</Text><Text style={styles.rowSubtitle}>تنبيهات اختيارية عن التخفيضات والبنرات والمنتجات المناسبة.</Text></View>{loading ? <ActivityIndicator color="#075B4E" /> : <Switch value={enabled} onValueChange={toggleMarketing} disabled={updating || Platform.OS === "web"} trackColor={{ false: "#D6DDD9", true: "#A8D8C8" }} thumbColor={enabled ? "#075B4E" : "#F7F7F7"} />}</View></View>
+        
+        <View style={styles.testCard}>
+          <TouchableOpacity
+            accessibilityLabel="تجربة نغمة الإشعار الآن"
+            accessibilityRole="button"
+            activeOpacity={0.8}
+            onPress={async () => {
+              const res = await scheduleTestCustomerNotification();
+              if (!res.ok) Alert.alert("تنبيه الإشعارات", res.message);
+            }}
+            style={styles.testButton}
+          >
+            <MaterialIcons name="volume-up" size={20} color="#FFFFFF" />
+            <Text style={styles.testButtonText}>تجربة نغمة وصوت الإشعار الآن</Text>
+          </TouchableOpacity>
+          <Text style={styles.testHint}>يصدر صوتاً واهتزازاً ويرسل تنبيهاً حياً لشاشة القفل للتحقق الفوري.</Text>
+        </View>
+
         <View style={styles.info}><MaterialIcons name="local-shipping" size={20} color="#075B4E"/><Text style={styles.infoText}>إشعارات حالة الطلب مهمة للتوصيل والمتابعة، أما الرسائل التسويقية فهي اختيارية ويمكن إيقافها في أي وقت.</Text></View>
         <View style={styles.info}><MaterialIcons name="privacy-tip" size={20} color="#075B4E"/><Text style={styles.infoText}>يقتصر رابط الإشعار على صفحات التطبيق الداخلية، ولا ينقل رقم هاتفك أو رصيدك في نص الإشعار.</Text></View>
         {LEGAL_ENABLED && <TouchableOpacity
@@ -61,5 +84,22 @@ export default function NotificationPreferencesScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { flex: 1, padding: 18 }, hero: { alignItems: "flex-end", marginTop: 8 }, icon: { alignItems: "center", backgroundColor: "#E1F1EA", borderRadius: 20, height: 64, justifyContent: "center", width: 64 }, title: { color: "#19372E", fontSize: 25, fontWeight: "900", marginTop: 15, textAlign: "right" }, subtitle: { color: "#61756D", fontSize: 13, lineHeight: 21, marginTop: 7, textAlign: "right" }, card: { backgroundColor: "#FFFFFF", borderColor: "#D9E8E1", borderRadius: 20, borderWidth: 1, marginTop: 27, padding: 16 }, row: { alignItems: "center", flexDirection: "row-reverse", gap: 12 }, rowText: { flex: 1 }, rowTitle: { color: "#20372F", fontSize: 15, fontWeight: "900", textAlign: "right" }, rowSubtitle: { color: "#6A7B74", fontSize: 11, lineHeight: 18, marginTop: 5, textAlign: "right" }, info: { alignItems: "flex-start", backgroundColor: "#EAF5F0", borderRadius: 15, flexDirection: "row-reverse", gap: 9, marginTop: 14, padding: 13 }, infoText: { color: "#375E50", flex: 1, fontSize: 11, fontWeight: "700", lineHeight: 18, textAlign: "right" }, policyLink: { alignItems: "center", alignSelf: "flex-end", flexDirection: "row-reverse", gap: 6, marginTop: 18, paddingHorizontal: 4, paddingVertical: 10 }, policyLinkText: { color: "#075B4E", fontSize: 12, fontWeight: "800", textDecorationLine: "underline" },
+  content: { flex: 1, padding: 18 },
+  hero: { alignItems: "flex-end", marginTop: 8 },
+  icon: { alignItems: "center", backgroundColor: "#E1F1EA", borderRadius: 20, height: 64, justifyContent: "center", width: 64 },
+  title: { color: "#19372E", fontSize: 25, fontWeight: "900", marginTop: 15, textAlign: "right" },
+  subtitle: { color: "#61756D", fontSize: 13, lineHeight: 21, marginTop: 7, textAlign: "right" },
+  card: { backgroundColor: "#FFFFFF", borderColor: "#D9E8E1", borderRadius: 20, borderWidth: 1, marginTop: 27, padding: 16 },
+  row: { alignItems: "center", flexDirection: "row-reverse", gap: 12 },
+  rowText: { flex: 1 },
+  rowTitle: { color: "#20372F", fontSize: 15, fontWeight: "900", textAlign: "right" },
+  rowSubtitle: { color: "#6A7B74", fontSize: 11, lineHeight: 18, marginTop: 5, textAlign: "right" },
+  testCard: { backgroundColor: "#F0F8F5", borderColor: "#C7E5DA", borderRadius: 20, borderWidth: 1, marginTop: 14, padding: 14, alignItems: "center" },
+  testButton: { backgroundColor: "#0E806A", borderRadius: 14, flexDirection: "row-reverse", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, paddingHorizontal: 20, width: "100%" },
+  testButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800", textAlign: "center" },
+  testHint: { color: "#375E50", fontSize: 11, fontWeight: "600", marginTop: 8, textAlign: "center" },
+  info: { alignItems: "flex-start", backgroundColor: "#EAF5F0", borderRadius: 15, flexDirection: "row-reverse", gap: 9, marginTop: 14, padding: 13 },
+  infoText: { color: "#375E50", flex: 1, fontSize: 11, fontWeight: "700", lineHeight: 18, textAlign: "right" },
+  policyLink: { alignItems: "center", alignSelf: "flex-end", flexDirection: "row-reverse", gap: 6, marginTop: 18, paddingHorizontal: 4, paddingVertical: 10 },
+  policyLinkText: { color: "#075B4E", fontSize: 12, fontWeight: "800", textDecorationLine: "underline" },
 });

@@ -5,6 +5,10 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
   customers,
+  productVariants,
+  products,
+  productionRecipeLines,
+  productionRecipes,
   users,
   workOrderMaterials,
   workOrders,
@@ -129,13 +133,91 @@ export async function startWorkOrder(
       .select()
       .from(workOrderMaterials)
       .where(eq(workOrderMaterials.workOrderId, workOrderId));
+
+    // الشفاء الذاتي للأوامر القائمة: إن كان الصنف الأساس خدمة وموجوداً خطأً كمادة في workOrderMaterials
+    let activeMats = mats;
+    if (wo.baseVariantId != null) {
+      const baseProductRow = (
+        await tx
+          .select({ isService: products.isService })
+          .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
+          .where(eq(productVariants.id, Number(wo.baseVariantId)))
+          .limit(1)
+      )[0];
+
+      if (baseProductRow?.isService === true) {
+        const invalidRows = mats.filter(
+          (m) => Number(m.variantId) === Number(wo.baseVariantId),
+        );
+        if (invalidRows.length > 0) {
+          const invalidIds = invalidRows.map((r) => Number(r.id));
+          await tx
+            .delete(workOrderMaterials)
+            .where(inArray(workOrderMaterials.id, invalidIds));
+
+          activeMats = mats.filter(
+            (m) => Number(m.variantId) !== Number(wo.baseVariantId),
+          );
+
+          // إن كانت المواد فارغة بعد إزالة سطر الخدمة، نشتق مواد الوصفة إن وُجدت
+          if (activeMats.length === 0) {
+            const activeRecipe = (
+              await tx
+                .select({ id: productionRecipes.id })
+                .from(productionRecipes)
+                .where(
+                  and(
+                    eq(productionRecipes.outputVariantId, Number(wo.baseVariantId)),
+                    eq(productionRecipes.isActive, true),
+                  ),
+                )
+                .limit(1)
+            )[0];
+
+            if (activeRecipe) {
+              const recipeLines = await tx
+                .select({
+                  inputVariantId: productionRecipeLines.inputVariantId,
+                  qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+                })
+                .from(productionRecipeLines)
+                .where(eq(productionRecipeLines.recipeId, Number(activeRecipe.id)))
+                .orderBy(productionRecipeLines.id);
+
+              const baseOutputQty = Number(wo.baseBaseQuantity ?? wo.quantity ?? 1);
+              if (recipeLines.length > 0) {
+                const newLines = recipeLines.map((line) => {
+                  const perOutput = new Decimal(line.qtyPerOutputBase);
+                  const totalQty = perOutput.times(baseOutputQty);
+                  return {
+                    workOrderId,
+                    variantId: Number(line.inputVariantId),
+                    baseQuantity: Math.max(1, Math.round(totalQty.toNumber())),
+                    unitCost: "0.00",
+                  };
+                });
+
+                await tx.insert(workOrderMaterials).values(newLines);
+
+                activeMats = await tx
+                  .select()
+                  .from(workOrderMaterials)
+                  .where(eq(workOrderMaterials.workOrderId, workOrderId));
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Deterministic lock order: ascending variantId.
-    mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
+    activeMats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
 
     // ترتيب القفل الحاكم مع الشراء/WAVG: productVariants ثم branchStock، وكلاهما تصاعدي. نضمن
     // وجود صفّ الرصيد أولاً لأن FOR UPDATE لا يقفل صفاً مفقوداً، ثم نحجز لقطة التكلفة حتى الترحيل.
     const variantIds = Array.from(
-      new Set(mats.map((m) => Number(m.variantId))),
+      new Set(activeMats.map((m) => Number(m.variantId))),
     ).sort((a, b) => a - b);
     const materialInfo = await assertStockedOwnedMaterials(
       tx,
@@ -182,7 +264,7 @@ export async function startWorkOrder(
     // على السطر (Codex P2: صفّان مكرّران بـ100 لصنفٍ واحد كانا يتجاوزان سقف 100 فيهبط الرصيد −200).
     let materialsCost = new Decimal(0);
     const aggregated = new Map<number, number>();
-    for (const m of mats) {
+    for (const m of activeMats) {
       const vid = Number(m.variantId);
       const unitCost = round2(money(costMap.get(vid) ?? "0"));
       const lineCost = round2(unitCost.times(m.baseQuantity));

@@ -97,7 +97,7 @@ export function normalizeKnownSystemBarcode(raw: string): string {
   if (!raw) return "";
   const normalized = normalizeBarcodeScannerInput(raw);
   if (!looksLikeSystemBarcode(normalized)) {
-    return raw.startsWith("]") ? normalized : raw.trim();
+    return raw.startsWith("]") ? normalized : raw;
   }
   const match = normalized.match(new RegExp(`^(${KNOWN_SYSTEM_PREFIXES.join("|")})([-|]?.*)$`, "i"));
   if (match) {

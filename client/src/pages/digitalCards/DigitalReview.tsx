@@ -558,7 +558,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
 
   return (
     <Dialog open={row != null} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>معالجة عملية الكروت #{row?.id}</DialogTitle>
           <DialogDescription>
@@ -864,7 +864,7 @@ function ResolveVarianceDialog({
 
   return (
     <Dialog open={reconciliation != null} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>معالجة اختلاف الرصيد — {reconciliation?.walletName}</DialogTitle>
           <DialogDescription>

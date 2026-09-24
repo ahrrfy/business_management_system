@@ -111,11 +111,13 @@ export function WorkOrdersTable({
     {
       accessorKey: "salePrice",
       header: "الإجمالي",
+      meta: { kind: "money" },
       cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.salePrice)}</span>,
     },
     {
       accessorKey: "deposit",
       header: "العربون",
+      meta: { kind: "money" },
       cell: ({ row }) => {
         const dep = D(row.original.deposit ?? 0);
         return dep.gt(0) ? <span dir="ltr" className="tabular-nums">{fmtAr(dep.toFixed(2))}</span> : <span className="text-muted-foreground">—</span>;
@@ -124,6 +126,7 @@ export function WorkOrdersTable({
     {
       id: "remaining",
       header: "المتبقي",
+      meta: { kind: "money" },
       cell: ({ row }) => {
         const o = row.original;
         if (o.status === "DELIVERED" || o.status === "CANCELLED") return <span className="text-muted-foreground">—</span>;

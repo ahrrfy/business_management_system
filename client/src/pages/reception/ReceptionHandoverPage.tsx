@@ -24,7 +24,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
 import { parseScan } from "@/lib/scanRouter";
@@ -141,7 +141,6 @@ export default function ReceptionHandoverPage() {
     ),
     { enabled: !scanned },
   );
-  const barcodeInput = useBarcodeInput((code) => void lookupOrder(code));
 
   // ─── تسليم ────────────────────────────────────────────────────────────────
 
@@ -355,19 +354,19 @@ export default function ReceptionHandoverPage() {
                 وجّه الماسح نحو تذكرة الطلب أو أدخل الرقم يدوياً
               </p>
               <div className="mt-6 flex gap-2">
-                <Input
+                <UnifiedSearchInput
                   ref={inputRef}
                   value={manualInput}
-                  onChange={(e) => setManualInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    barcodeInput.handleKeyDown(e, setManualInput);
-                    if (!e.defaultPrevented && e.key === "Enter" && manualInput.trim()) {
-                      void lookupOrder(manualInput.trim());
-                    }
+                  onChange={setManualInput}
+                  onScan={(code: string) => void lookupOrder(code)}
+                  onSubmit={(val: string) => {
+                    if (val.trim()) void lookupOrder(val.trim());
                   }}
                   placeholder="رقم الطلب (Enter للبحث)"
                   className="flex-1 h-12 text-center text-base font-bold"
                   dir="ltr"
+                  barcode={true}
+                  size="lg"
                   autoFocus
                 />
                 <Button
@@ -475,7 +474,7 @@ export default function ReceptionHandoverPage() {
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {PAYMENT_METHODS.map((p) => {
                         const enabled = isPosPaymentMethodEnabled(p.v);
                         const isSelected = method === p.v;

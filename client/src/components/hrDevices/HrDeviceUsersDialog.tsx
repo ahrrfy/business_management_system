@@ -49,7 +49,7 @@ export function HrDeviceUsersDialog({
         if (!o) onClose();
       }}
     >
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>ربط مستخدمي الجهاز بالموظفين</DialogTitle>
         </DialogHeader>

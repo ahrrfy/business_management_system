@@ -37,7 +37,7 @@ beforeEach(async () => {
 });
 
 describe("الضوابط الإدارية لمصدر النقد", () => {
-  it("قبض نقد من طرف حر لا ينشئ أثراً مالياً قبل توثيق المصدر واعتماد مدير آخر", async () => {
+  it("قبض نقد من طرف حر موثق ينفذ فوراً ويثبت أثره المالي في الخزينة الإدارية (المسار الأول)", async () => {
     const result = await createVoucher({
       voucherType: "RECEIPT",
       branchId: 1,
@@ -52,17 +52,15 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
       clientRequestId: "financial-admin-receipt-001",
     }, actor);
 
-    expect(result.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(result.approvalStatus).toBe("APPROVED");
     const rows = await db().select().from(s.receipts);
     expect(rows).toHaveLength(1);
-    expect(rows[0].cashBucket).toBeNull();
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(rows[0].status).toBe("COMPLETED");
+    expect(rows[0].cashBucket).toBe("TREASURY");
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 
-  // ٣١/٧ (قرار المالك: لا مُرفق إلزامي في النظام كله): القبض الحرّ بلا توثيق لم يعُد **يُرفَض** —
-  // كان الرافض هو عَتبة إلزام المُرفق وحدها. الضابط الأساس باقٍ: كل قبض OTHER يبقى PENDING_APPROVAL
-  // (اعتماد مدير ثانٍ) بلا أي أثر ماليّ حتى الاعتماد ⇒ لا نقدَ يدخل الخزينة بفاعلٍ واحد.
-  it("قبض حرّ بلا توثيق: لا يُرفض لكنه يبقى معلَّقاً بلا أثر ماليّ (اعتماد مدير ثانٍ)", async () => {
+  it("قبض حر بلا توثيق مسبق ينفذ فوراً في الخزينة طالما حُددت فئته المحاسبية وطرفه (المسار الأول)", async () => {
     const result = await createVoucher({
       voucherType: "RECEIPT",
       branchId: 1,
@@ -75,11 +73,12 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
       clientRequestId: "financial-admin-receipt-002",
     }, actor);
 
-    expect(result.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(result.approvalStatus).toBe("APPROVED");
     const rows = await db().select().from(s.receipts);
     expect(rows).toHaveLength(1);
-    expect(rows[0].cashBucket).toBeNull();
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(rows[0].status).toBe("COMPLETED");
+    expect(rows[0].cashBucket).toBe("TREASURY");
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 
   it("يرفض تأريخ السند في المستقبل", async () => {

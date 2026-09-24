@@ -5,7 +5,9 @@
 // الجداول تعرض الجميع والأعلام ترتّب لا تحجب. تصدير Excel متعدد الأوراق (ورقة لكل كاشف).
 import { useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ExternalLink, Eye } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { DraftDetailsModal } from "@/pages/reception/ReceptionDraftsPage";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, presetRange, type PeriodValue } from "@/components/reports/PeriodFilter";
@@ -122,6 +124,7 @@ function SectionCard({
 export default function AnomalyWatch() {
   const [period, setPeriod] = useState<PeriodValue>(WEEK_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [activeDraftActionId, setActiveDraftActionId] = useState<number | null>(null);
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.anomalyWatch.useQuery({
     from: period.from,
@@ -532,6 +535,18 @@ export default function AnomalyWatch() {
             subtitle="مالُ زبونٍ مقبوضٌ عربوناً وطلبُه ما زال معلّقاً بلا فاتورةٍ ولا إلغاء — كل صفٍّ إنذارٌ يُتابَع (تثبيتٌ أو ردّ). لقطة حاضرة لا تتقيّد بالفترة."
             count={aw.kpis.fundedStaleDrafts}
           >
+            <div className="border-b bg-muted/20 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">
+                يمكنك متابعة ومعالجة كافة المسودات والطلبات المحفوظة من التبويب المخصص في مركز الاستقبال
+              </span>
+              <a
+                href="/reception/operations?tab=drafts"
+                className="inline-flex items-center gap-1 font-bold text-primary hover:underline"
+              >
+                <span>فتح تبويب الطلبات المحفوظة</span>
+                <ExternalLink className="size-3" />
+              </a>
+            </div>
             <DataTable<AW["fundedStaleDrafts"]["rows"][number]>
               {...DETECTOR_TABLE}
               data={aw.fundedStaleDrafts.rows}
@@ -539,10 +554,57 @@ export default function AnomalyWatch() {
               getRowClassName={() => "bg-[var(--sem-warn-bg)]"}
               emptyText="لا طلبات مموّلة معلّقة فوق يوم."
               columns={[
-                txtCol("draft", "الطلب", (r) => r.draftNumber),
+                {
+                  id: "draft",
+                  header: "الطلب",
+                  meta: { kind: "code" },
+                  cell: ({ row }) => (
+                    <a
+                      href={`/reception/operations?tab=drafts&draftId=${row.original.draftId}`}
+                      className="font-bold font-mono text-primary hover:underline inline-flex items-center gap-1"
+                      title="معاينة في تبويب الطلبات المحفوظة"
+                    >
+                      <span>{row.original.draftNumber}</span>
+                      <ExternalLink className="size-2.5 opacity-60" />
+                    </a>
+                  ),
+                },
                 txtCol("user", "المُنشئ", (r) => r.userName),
                 moneyCol("held", "المحتجز", (r) => <span className="font-bold text-destructive">{fmtAr(r.heldNet)}</span>),
                 numCol("age", "عمره (ساعات)", (r) => r.ageHours),
+                {
+                  id: "actions",
+                  header: "المعالجة",
+                  meta: { align: "end" },
+                  cell: ({ row }) => (
+                    <div className="flex items-center gap-1.5 justify-end">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="default"
+                        className="h-7 px-2 text-[11px] gap-1"
+                        onClick={() => setActiveDraftActionId(row.original.draftId)}
+                        title="معاينة وحسم الطلب (رد العربون أو الإلغاء)"
+                      >
+                        <Eye className="size-3" />
+                        معالجة وحسم
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-[11px] gap-1"
+                        onClick={() => {
+                          window.location.href = `/reception?draftId=${row.original.draftId}`;
+                        }}
+                        title="إكمال الطلب وتثبيته في الكاشير"
+                      >
+                        <ExternalLink className="size-3" />
+                        الكاشير
+                      </Button>
+                    </div>
+                  ),
+                },
               ]}
             />
           </SectionCard>
@@ -628,6 +690,16 @@ export default function AnomalyWatch() {
             />
           </SectionCard>
         </div>
+      )}
+      {activeDraftActionId != null && (
+        <DraftDetailsModal
+          draftId={activeDraftActionId}
+          onClose={() => setActiveDraftActionId(null)}
+          onActionSuccess={() => {
+            void q.refetch();
+          }}
+          isElevated={true}
+        />
       )}
     </ReportShell>
   );

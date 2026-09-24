@@ -53,7 +53,7 @@ const FILTERS: { value: OnlineOrderStatus | null; label: string }[] = [
   { value: "DELIVERED", label: "سُلّم" },
 ];
 
-function money(v: string | number | null): string {
+function money(v: string | number | null | undefined): string {
   return v == null || v === "" ? "0" : fmtInt(v);
 }
 
@@ -62,7 +62,14 @@ function normalizeOrderStatus(status: string): OnlineOrderStatus {
   return (ONLINE_ORDER_STATUSES as readonly string[]).includes(status) ? (status as OnlineOrderStatus) : "PENDING";
 }
 
-type OrderRow = { id: number; orderNumber: string; total: string; customerName: string | null };
+type OrderRow = {
+  id: number;
+  orderNumber: string;
+  total: string;
+  customerName: string | null;
+  deliveryFree?: boolean;
+  deliveryWaivedAmount?: string;
+};
 type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
 
 // حجم صفحة الطلبات — نفس الافتراضي التاريخي (كان سقفاً صامتاً)، الآن صفحة أولى من ترقيم حقيقي.
@@ -156,9 +163,31 @@ export default function OrderFulfillment() {
       },
     },
     { id: "itemCount", header: "أصناف", accessorFn: (o) => o.itemCount, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.itemCount },
-    // نصُّ العرض للنسخ، والفرز على القيمة الخامّ: الفرز النصّيّ على «1,234 د.ع» يقرأه أصغر
-    // من «999 د.ع» فيقلب ترتيب مبالغ التحصيل عند الباب.
-    { id: "total", header: "الإجمالي (COD)", accessorFn: (o) => `${money(o.total)} د.ع`, meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.total ?? 0).cmp(D(b.original.total ?? 0)), cell: ({ row }) => <span className="font-bold">{money(row.original.total)} د.ع</span> },
+    {
+      id: "total",
+      header: "الإجمالي (COD)",
+      accessorFn: (o) => `${money(o.total)} د.ع`,
+      meta: { kind: "money" },
+      sortDescFirst: true,
+      sortingFn: (a, b) => D(a.original.total ?? 0).cmp(D(b.original.total ?? 0)),
+      cell: ({ row }) => {
+        const o = row.original;
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <span className="font-bold">{money(o.total)} د.ع</span>
+            {o.deliveryFree && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]"
+                title={`توصيل مجاني — المتجر يتحمل ${money(o.deliveryWaivedAmount)} د.ع`}
+              >
+                <Truck aria-hidden className="size-3" />
+                توصيل مجاني
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
     {
       id: "status",
       header: "الحالة",
@@ -247,7 +276,14 @@ export default function OrderFulfillment() {
                 gate: { roles: ["manager"], module: "store", level: "FULL" },
                 disabled: isBusy || dispatchM.isPending,
                 disabledReason: "هناك عملية جارية على الطلب",
-                onSelect: () => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName }),
+                onSelect: () => setDispatchTarget({
+                  id: o.id,
+                  orderNumber: o.orderNumber,
+                  total: o.total,
+                  customerName: o.customerName,
+                  deliveryFree: o.deliveryFree,
+                  deliveryWaivedAmount: o.deliveryWaivedAmount,
+                }),
               },
               {
                 key: "edit",
@@ -677,15 +713,28 @@ function DispatchModal({
           <Truck aria-hidden className="size-5 text-teal-600" />
           إرسال الطلب <span dir="ltr" className="tracking-wider">{order.orderNumber}</span>
         </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          {/* ١٠/٨ تمرير كامل: order.total (بضاعة+شحن) = ما يُحصّله المندوب عند الباب، لا «قيمة
-              الفاتورة/الذمّة» — الفاتورة وذمّة العميل تُنشآن بقيمة البضاعة فقط، وأجرة التوصيل
-              يقبضها المندوب من الزبون ويحتفظ بها (خارج الفاتورة). لا تُلصِق الرقم بـ«فاتورة». */}
-          يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> عند التسليم (COD) من{" "}
-          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"}: قيمة البضاعة
-          تُنشأ فاتورةً على ذمّته ويورّدها للمكتبة، وأجرة التوصيل يحتفظ بها المندوب. يُخصم المخزون ثم يُسند
-          الطلب للمندوب المُختار.
-        </p>
+        {order.deliveryFree ? (
+          <div className="mb-3 space-y-1 rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] p-3 text-xs leading-relaxed text-foreground">
+            <div className="flex items-center gap-1.5 font-bold text-[var(--sem-pos)]">
+              <Truck aria-hidden className="size-4 shrink-0" />
+              <span>توصيل مجاني — تتحمل المكتبة أجرته ({money(order.deliveryWaivedAmount)} د.ع)</span>
+            </div>
+            <p className="text-muted-foreground">
+              يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> فقط عند التسليم (COD) من{" "}
+              {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"} (قيمة البضاعة كاملةً). لا يدفع الزبون أي أجرة توصيل؛ وتُستحق أجرة التوصيل للمندوب على عاتق المكتبة وتُسوّى دفترياً.
+            </p>
+          </div>
+        ) : (
+          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+            {/* ١٠/٨ تمرير كامل: order.total (بضاعة+شحن) = ما يُحصّله المندوب عند الباب، لا «قيمة
+                الفاتورة/الذمّة» — الفاتورة وذمّة العميل تُنشآن بقيمة البضاعة فقط، وأجرة التوصيل
+                يقبضها المندوب من الزبون ويحتفظ بها (خارج الفاتورة). لا تُلصِق الرقم بـ«فاتورة». */}
+            يُحصّل المندوب <b className="text-foreground">{money(order.total)} د.ع</b> عند التسليم (COD) من{" "}
+            {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "العميل"}: قيمة البضاعة
+            تُنشأ فاتورةً على ذمّته ويورّدها للمكتبة، وأجرة التوصيل يحتفظ بها المندوب. يُخصم المخزون ثم يُسند
+            الطلب للمندوب المُختار.
+          </p>
+        )}
 
         {partiesQ.isLoading ? (
           <div className="py-8 text-center text-muted-foreground">

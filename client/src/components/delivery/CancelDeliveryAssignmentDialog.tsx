@@ -45,8 +45,10 @@ export function CancelDeliveryAssignmentDialog({
       );
       await Promise.all([
         utils.delivery.invalidate(),
+        utils.sales.get.invalidate(),
         utils.sales.list.invalidate(),
         utils.sales.listPage.invalidate(),
+        utils.sales.listSummary.invalidate(),
       ]);
       onOpenChange(false);
       onCompleted?.();
@@ -56,7 +58,7 @@ export function CancelDeliveryAssignmentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent dir="rtl" className="max-w-lg">
+      <DialogContent dir="rtl" className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-destructive">
             <Ban aria-hidden className="size-4" /> إلغاء إسناد الإرسالية{" "}

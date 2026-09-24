@@ -37,9 +37,29 @@ type NativeBarcodeDetector = {
 };
 
 type NativeBarcodeDetectorCtor = {
-  new (options: { formats: string[] }): NativeBarcodeDetector;
+  new (options?: { formats?: string[] }): NativeBarcodeDetector;
   getSupportedFormats?: () => Promise<string[]>;
 };
+
+async function applyCameraEnhancements(stream: MediaStream): Promise<void> {
+  const track = stream.getVideoTracks()[0];
+  if (!track || typeof track.applyConstraints !== "function") return;
+  try {
+    const capabilities = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & {
+      focusMode?: string[];
+      torch?: boolean;
+    };
+    const advanced: MediaTrackConstraintSet = {};
+    if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes("continuous")) {
+      (advanced as Record<string, unknown>).focusMode = "continuous";
+    }
+    if (Object.keys(advanced).length > 0) {
+      await track.applyConstraints({ advanced: [advanced] });
+    }
+  } catch {
+    // تجاهل إخفاق تطبيق التركيز التلقائي إن لم يكن مدعوماً في الجهاز
+  }
+}
 
 function cameraErrorMessage(error: unknown): string {
   const name = error instanceof DOMException ? error.name : "";
@@ -178,62 +198,96 @@ export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpe
     };
 
     const startNative = async (Detector: NativeBarcodeDetectorCtor) => {
-      // بعض المتصفحات تعرض BarcodeDetector لكنها لا تقبل جميع الصيغ؛ ننشئه
-      // أولاً حتى نستطيع الانتقال إلى ZXing قبل حجز الكاميرا عند حدوث ذلك.
-      const formats = ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "itf", "upc_a", "upc_e", "qr_code"];
-      if (Detector.getSupportedFormats) {
-        const supported = await Detector.getSupportedFormats();
-        if (formats.some((format) => !supported.includes(format))) throw new Error("Incomplete barcode formats");
+      // قائمة الصيغ المعتمدة لباركودات المنتجات والتجزئة والرموز المربعة
+      const desiredFormats = [
+        "qr_code",
+        "ean_13",
+        "ean_8",
+        "code_128",
+        "code_39",
+        "code_93",
+        "upc_a",
+        "upc_e",
+        "itf",
+        "codabar",
+        "data_matrix",
+      ];
+      let activeFormats = desiredFormats;
+      if (typeof Detector.getSupportedFormats === "function") {
+        try {
+          const supported = await Detector.getSupportedFormats();
+          if (Array.isArray(supported) && supported.length > 0) {
+            // نأخذ تقاطع الصيغ المدعومة في المتصفح الفعلي بدلاً من رمي خطأ وإسقاط المحرك
+            const matched = desiredFormats.filter((format) => supported.includes(format));
+            if (matched.length > 0) {
+              activeFormats = matched;
+            }
+          }
+        } catch {
+          // في حال تعذر فحص الصيغ المدعومة نتابع بالصيغ الأساسية
+        }
       }
       if (stopped) return;
-      const detector = new Detector({ formats });
+      const detector = new Detector({ formats: activeFormats });
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { min: 640, ideal: 1280, max: 1920 },
+          height: { min: 480, ideal: 720, max: 1080 },
         },
       });
       if (stopped) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      await applyCameraEnhancements(stream);
       ownedStream = stream;
       streamRef.current = stream;
       setTorchCapability(stream);
       const video = videoRef.current;
       if (!video) return;
       video.srcObject = stream;
-      await video.play();
+      try {
+        await video.play();
+      } catch {
+        // تجاهل أخطاء التشغيل عند إلغاء الحوار
+      }
       if (stopped) return;
       setEngine("native");
       let failedFrames = 0;
+      let isDetecting = false;
       const scanFrame = async () => {
         if (stopped) return;
         // في وضع `keepOpen` نُبقي الحلقةَ حيّةً أثناء التبريد بدل موتها بعد أوّل رصد.
-        // قبل الإصلاح: `if (stopped || detectedRef.current) return;` كان يوقف الجدولة
-        // نهائياً على أوّل رصد، فيبدو الماسح مفتوحاً على الشاشة لكنه ميّت — الجذر: مراجعة
-        // Codex P2 على PR #776 (٢٥/٨) — وضع `keepOpen` كان بلا أثرٍ على المسار الأصليّ.
         if (detectedRef.current) {
           if (keepOpenRef.current) nativeRaf = requestAnimationFrame(scanFrame);
           return;
         }
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        const currentVideo = videoRef.current;
+        if (!currentVideo) return;
+
+        if (
+          currentVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+          currentVideo.videoWidth > 0 &&
+          currentVideo.videoHeight > 0 &&
+          !isDetecting
+        ) {
+          isDetecting = true;
           try {
-            const codes = await detector.detect(video);
+            const codes = await detector.detect(currentVideo);
             if (stopped) return;
             failedFrames = 0;
-            const value = codes[0]?.rawValue;
-            if (value) {
-              deliver(value);
+            const valid = codes.find((code) => Boolean(code.rawValue && code.rawValue.trim()));
+            if (valid?.rawValue) {
+              deliver(valid.rawValue);
               // اللقطةُ الواحدة تموت بعد deliver (يستدعي stopMedia)، والمستمرّ يعيد الجدولة.
               if (!keepOpenRef.current) return;
             }
           } catch {
             if (stopped) return;
             // أخطاء المحرك المتكررة ليست إطاراً ضبابياً؛ انتقل إلى القارئ البديل.
-            if (++failedFrames >= 3) {
+            if (++failedFrames >= 5) {
               stop();
               try { await startFallback(); }
               catch (error) {
@@ -244,6 +298,8 @@ export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpe
               }
               return;
             }
+          } finally {
+            isDetecting = false;
           }
         }
         nativeRaf = requestAnimationFrame(scanFrame);
@@ -252,24 +308,45 @@ export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpe
     };
 
     const startFallback = async () => {
-      const { BrowserMultiFormatReader } = await import("@zxing/browser");
+      const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
+        import("@zxing/browser"),
+        import("@zxing/library"),
+      ]);
       if (stopped || !videoRef.current) return;
-      const reader = new BrowserMultiFormatReader(undefined, {
-        delayBetweenScanAttempts: 90,
-        delayBetweenScanSuccess: 250,
+
+      const hints = new Map<any, any>();
+      hints.set(DecodeHintType.TRY_HARDER, true);
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+        BarcodeFormat.QR_CODE,
+        BarcodeFormat.EAN_13,
+        BarcodeFormat.EAN_8,
+        BarcodeFormat.CODE_128,
+        BarcodeFormat.CODE_39,
+        BarcodeFormat.CODE_93,
+        BarcodeFormat.UPC_A,
+        BarcodeFormat.UPC_E,
+        BarcodeFormat.ITF,
+        BarcodeFormat.CODABAR,
+        BarcodeFormat.DATA_MATRIX,
+      ]);
+
+      const reader = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 100,
+        delayBetweenScanSuccess: 300,
       });
       const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-        });
+        audio: false,
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { min: 640, ideal: 1280, max: 1920 },
+          height: { min: 480, ideal: 720, max: 1080 },
+        },
+      });
       if (stopped) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      await applyCameraEnhancements(stream);
       ownedStream = stream;
       streamRef.current = stream;
       const controls = await reader.decodeFromStream(
@@ -280,8 +357,11 @@ export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpe
             return;
           }
           if (result) {
-            deliver(result.getText());
-            if (!keepOpenRef.current) callbackControls.stop();
+            const text = result.getText();
+            if (text && text.trim()) {
+              deliver(text);
+              if (!keepOpenRef.current) callbackControls.stop();
+            }
           }
         },
       );
@@ -389,9 +469,18 @@ export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpe
         <span className="size-11" aria-hidden />
       </div>
       <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/25 bg-black">
-        <video ref={videoRef} className="block max-h-[52vh] w-full object-cover" playsInline muted />
-        <div className="pointer-events-none absolute inset-[12%] rounded-xl border-2 border-white/80 shadow-[0_0_0_999px_rgba(0,0,0,0.28)]" />
-        <div className="pointer-events-none absolute inset-x-[16%] top-1/2 h-0.5 bg-primary shadow-[0_0_16px_rgba(255,255,255,0.9)]" />
+        <video ref={videoRef} className="block max-h-[52vh] w-full object-cover" playsInline muted autoPlay />
+        {/* إطار التحديد البصري المعتم للحواف */}
+        <div className="pointer-events-none absolute inset-[12%] rounded-xl border border-white/40 shadow-[0_0_0_999px_rgba(0,0,0,0.35)]" />
+        {/* زوايا إطار التوجيه الملونة لتسهيل محاذاة الباركود */}
+        <div className="pointer-events-none absolute inset-[12%]">
+          <div className="absolute -top-0.5 -right-0.5 size-6 rounded-tr-lg border-t-4 border-r-4 border-primary" />
+          <div className="absolute -top-0.5 -left-0.5 size-6 rounded-tl-lg border-t-4 border-l-4 border-primary" />
+          <div className="absolute -bottom-0.5 -right-0.5 size-6 rounded-br-lg border-b-4 border-r-4 border-primary" />
+          <div className="absolute -bottom-0.5 -left-0.5 size-6 rounded-bl-lg border-b-4 border-l-4 border-primary" />
+        </div>
+        {/* مؤشر خط الليزر المتحرك للدلالة على فاعلية المسح */}
+        <div className="pointer-events-none absolute inset-x-[14%] top-1/2 h-0.5 bg-primary shadow-[0_0_16px_rgba(255,255,255,0.9)] animate-pulse" />
         {torchAvailable && (
           <button
             type="button"

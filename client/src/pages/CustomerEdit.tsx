@@ -17,7 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 
@@ -264,6 +264,7 @@ export default function CustomerEdit() {
       });
       if (!ok) return;
     }
+    bypassUnsavedGuard();
     navigate("/customers");
   }
 

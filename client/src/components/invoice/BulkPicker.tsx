@@ -16,9 +16,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
@@ -214,7 +214,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         }
       }}
     >
-      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[85vh] sm:max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b p-5">
           <DialogTitle className="flex items-center gap-2 text-lg font-extrabold">
             <Package aria-hidden className="size-5" /> إضافة متعددة
@@ -225,17 +225,18 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         </DialogHeader>
 
         <div className="flex shrink-0 items-center gap-2 border-b px-5 py-2.5">
-          <div className="relative flex-1">
-            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-              <Search aria-hidden className="size-4" />
-            </span>
-            <Input
-              value={searchQ}
-              onChange={(e) => { setSearchQ(e.target.value); setLimit(PAGE); }}
-              placeholder="فلتر بالاسم أو SKU..."
-              className="h-9 pe-9"
-            />
-          </div>
+          <UnifiedSearchInput
+            value={searchQ}
+            onChange={(val) => {
+              setSearchQ(val);
+              setLimit(PAGE);
+            }}
+            placeholder="فلتر بالاسم أو SKU أو امسح الباركود..."
+            className="flex-1"
+            size="default"
+            debounceMs={200}
+            barcode={true}
+          />
           <Button type="button" size="sm" variant="outline" disabled={salePricingPending} onClick={selectAll}>
             تحديد الكل
           </Button>

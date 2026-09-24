@@ -20,7 +20,8 @@ import { notify } from "@/lib/notify";
 import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { internalUrl } from "@/lib/siteHosts";
-import { Download, X } from "lucide-react";
+import { Download, X, QrCode, ArrowLeft } from "lucide-react";
+import { Link } from "wouter";
 import { useMemo, useState } from "react";
 import { ListToolbar, RowActions, FilterField } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -281,6 +282,29 @@ export default function KioskDevices() {
         }
       />
 
+      {/* بطاقة وصول سريعة لملصقات الرفوف لهواتف الزبائن */}
+      <Card className="border-border bg-card/60">
+        <CardContent className="p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-primary/10 text-primary">
+              <QrCode aria-hidden className="size-5" />
+            </div>
+            <div>
+              <div className="font-semibold text-sm">ملصقات QR للرفوف (مسح بهاتف الزبون)</div>
+              <div className="text-xs text-muted-foreground">
+                تريد أن يفحص الزبائن الأسعار بكاميرات هواتفهم المحمولة مباشرة على الرفوف؟ يمكنك توليد وطباعة ملصقات الرفوف وشيتات A4 بضغطة واحدة.
+              </div>
+            </div>
+          </div>
+          <Link href="/settings?tab=shelf-qr">
+            <Button variant="outline" size="sm" className="inline-flex items-center gap-1.5 shrink-0">
+              <span>انتقل إلى مولّد ملصقات الرفوف</span>
+              <ArrowLeft aria-hidden className="size-4" />
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
+
       {/* المُشغّل الكوني — يُنزَّل مرّة، يُنسَخ على كل جهاز، يُلصَق فيه الرمز */}
       <Card className="border-primary/40 bg-primary/5">
         <CardHeader className="pb-2">
@@ -426,7 +450,7 @@ export default function KioskDevices() {
 
       {/* حوار تعديل بيانات الجهاز */}
       <Dialog open={!!editingDevice} onOpenChange={(open) => { if (!open) setEditingDevice(null); }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>تعديل بيانات الجهاز</DialogTitle>
             <DialogDescription>تعديل اسم الجهاز أو الفرع التابع له دون إبطال رمزه أو انقطاع اتصاله.</DialogDescription>

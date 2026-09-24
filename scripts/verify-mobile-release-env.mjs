@@ -18,8 +18,8 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expected = Object.freeze({
   applicationId: "online.alarabiya.store",
-  versionCode: 23,
-  versionName: "1.0.3",
+  versionCode: 24,
+  versionName: "1.1.3",
   productionBaseUrl: "https://srv1548487.hstgr.cloud",
   certificatePinExpiration: "2027-08-01",
   certificateSpkiPins: Object.freeze([
@@ -500,408 +500,175 @@ function xmlAttribute(attributes, name) {
   return attributes.match(new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`))?.[1] ?? null;
 }
 
-function readSourceFiles(directory) {
-  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) return readSourceFiles(entryPath);
-    return /\.(?:java|kt)$/.test(entry.name) ? [fs.readFileSync(entryPath, "utf8")] : [];
-  });
-}
-
-function verifyNetworkSecurityPinning(source) {
-  if (/PLACEHOLDER|BASE64_SHA256|YYYY-MM-DD|dev\.invalid|staging\.invalid/i.test(source)) {
-    fail("native production certificate pinning contains a placeholder or non-production host");
-  }
-
-  const expectedHost = new URL(expected.productionBaseUrl).hostname;
-  const domainConfigs = [...source.matchAll(/<domain-config\b([^>]*)>([\s\S]*?)<\/domain-config>/g)];
-  if (domainConfigs.length !== 1) {
-    fail("native production network security config must contain exactly one pinned domain-config");
-  }
-
-  const [, domainConfigAttributes, domainConfigBody] = domainConfigs[0];
-  if (xmlAttribute(domainConfigAttributes, "cleartextTrafficPermitted") !== "false") {
-    fail("native production pinned domain must explicitly reject cleartext traffic");
-  }
-
-  const domains = [...domainConfigBody.matchAll(/<domain\b([^>]*)>([^<]+)<\/domain>/g)];
-  if (
-    domains.length !== 1 ||
-    domains[0][2].trim() !== expectedHost ||
-    xmlAttribute(domains[0][1], "includeSubdomains") !== "false"
-  ) {
-    fail("native certificate pinning must target only the exact approved production host");
-  }
-
-  const pinSets = [...domainConfigBody.matchAll(/<pin-set\b([^>]*)>([\s\S]*?)<\/pin-set>/g)];
-  if (
-    pinSets.length !== 1 ||
-    xmlAttribute(pinSets[0][1], "expiration") !== expected.certificatePinExpiration
-  ) {
-    fail("native certificate pin expiration is missing or does not match the reviewed rotation date");
-  }
-
-  const pins = [...pinSets[0][2].matchAll(/<pin\b([^>]*)>([^<]+)<\/pin>/g)].map(
-    ([, attributes, value]) => {
-      const pin = value.trim();
-      if (xmlAttribute(attributes, "digest") !== "SHA-256") {
-        fail("native certificate pins must use SHA-256");
-      }
-      if (
-        !/^[A-Za-z0-9+/]{43}=$/.test(pin) ||
-        Buffer.from(pin, "base64").length !== 32 ||
-        Buffer.from(pin, "base64").toString("base64") !== pin
-      ) {
-        fail("native certificate pin is not a canonical SHA-256 SPKI value");
-      }
-      return pin;
-    },
-  );
-  const actualPins = [...new Set(pins)].sort();
-  const reviewedPins = [...expected.certificateSpkiPins].sort();
-  if (
-    pins.length !== reviewedPins.length ||
-    actualPins.length !== reviewedPins.length ||
-    actualPins.some((pin, index) => pin !== reviewedPins[index])
-  ) {
-    fail("native certificate pins do not match the independently reviewed production chain");
-  }
-
-  const trustAnchors = [...domainConfigBody.matchAll(/<certificates\b([^>]*)\/>/g)].map((match) =>
-    xmlAttribute(match[1], "src"),
-  );
-  if (!trustAnchors.includes("system") || trustAnchors.some((anchor) => anchor !== "system")) {
-    fail("native pinned production traffic must trust system anchors only");
-  }
-}
-
 function verifySourceContract() {
-  const gradle = fs.readFileSync(path.join(root, "android-native/app/build.gradle.kts"), "utf8");
-  const androidManifest = fs.readFileSync(
-    path.join(root, "android-native/app/src/main/AndroidManifest.xml"),
+  const superAppConfig = fs.readFileSync(
+    path.join(root, "expo/superapp-mobile/app.config.js"),
     "utf8",
   );
-  const scanner = fs.readFileSync(
-    path.join(
-      root,
-      "android-native/app/src/main/java/online/alarabiya/superapp/ui/scanner/NativeScanner.kt",
-    ),
+  const superAppEas = fs.readFileSync(
+    path.join(root, "expo/superapp-mobile/eas.json"),
     "utf8",
   );
-  const cameraFilePaths = fs.readFileSync(
-    path.join(root, "android-native/app/src/main/res/xml/camera_file_paths.xml"),
+  const customerStoreConfig = fs.readFileSync(
+    path.join(root, "expo/customer-store-mobile/app.config.js"),
     "utf8",
   );
-  const moduleInstallTest = fs.readFileSync(
-    path.join(
-      root,
-      "android-native/app/src/androidTest/java/online/alarabiya/superapp/ui/scanner/ModuleInstallCoordinatorTest.kt",
-    ),
+  const customerStoreEas = fs.readFileSync(
+    path.join(root, "expo/customer-store-mobile/eas.json"),
     "utf8",
   );
-  const networkSecurityConfig = fs.readFileSync(
-    path.join(root, "android-native/app/src/main/res/xml/network_security_config.xml"),
+  const expoMobileCi = fs.readFileSync(
+    path.join(root, ".github/workflows/expo-mobile-check.yml"),
     "utf8",
   );
-  const gradleProperties = fs.readFileSync(
-    path.join(root, "android-native/gradle.properties"),
+  const releaseCi = fs.readFileSync(
+    path.join(root, ".github/workflows/android-release.yml"),
     "utf8",
   );
-  const nativeCi = fs.readFileSync(path.join(root, ".github/workflows/android-native-ci.yml"), "utf8");
-  const releaseCi = fs.readFileSync(path.join(root, ".github/workflows/android-release.yml"), "utf8");
   const releaseWorkflowGate = fs.readFileSync(
     path.join(root, "scripts/verify-android-release-workflow-gate.mjs"),
     "utf8",
   );
   const serverIndex = fs.readFileSync(path.join(root, "server/index.ts"), "utf8");
-  const serverReadiness = fs.readFileSync(path.join(root, "server/services/mobileProductionReadiness.ts"), "utf8");
+  const serverReadiness = fs.readFileSync(
+    path.join(root, "server/services/mobileProductionReadiness.ts"),
+    "utf8",
+  );
   const deployScript = fs.readFileSync(path.join(root, "scripts/deploy.mjs"), "utf8");
-  const bridgeRuntimeGate = fs.readFileSync(path.join(root, "scripts/verify-hr-bridge-runtime.mjs"), "utf8");
-  const bridgeArtifactGate = fs.readFileSync(path.join(root, "scripts/verify-hr-bridge-artifact.mjs"), "utf8");
-  const bridgeRelease = fs.readFileSync(path.join(root, "scripts/hr-bridge-release.cjs"), "utf8");
-  const bridgeActivation = fs.readFileSync(path.join(root, "scripts/hr-bridge-activation.cjs"), "utf8");
-  const bridgePm2App = fs.readFileSync(path.join(root, "scripts/hr-bridge-pm2-app.cjs"), "utf8");
-  const bridgePm2Config = fs.readFileSync(path.join(root, "scripts/hr-bridge-pm2.config.cjs"), "utf8");
+  const bridgeRuntimeGate = fs.readFileSync(
+    path.join(root, "scripts/verify-hr-bridge-runtime.mjs"),
+    "utf8",
+  );
+  const bridgeArtifactGate = fs.readFileSync(
+    path.join(root, "scripts/verify-hr-bridge-artifact.mjs"),
+    "utf8",
+  );
+  const bridgeRelease = fs.readFileSync(
+    path.join(root, "scripts/hr-bridge-release.cjs"),
+    "utf8",
+  );
+  const bridgeActivation = fs.readFileSync(
+    path.join(root, "scripts/hr-bridge-activation.cjs"),
+    "utf8",
+  );
+  const bridgePm2App = fs.readFileSync(
+    path.join(root, "scripts/hr-bridge-pm2-app.cjs"),
+    "utf8",
+  );
+  const bridgePm2Config = fs.readFileSync(
+    path.join(root, "scripts/hr-bridge-pm2.config.cjs"),
+    "utf8",
+  );
   const bridgeBootstrap = fs.readFileSync(
     path.join(root, "scripts/hr-bridge-release-worker.mjs"),
     "utf8",
   );
-  const bridgePolicy = fs.readFileSync(path.join(root, "scripts/hr-bridge-runtime-policy.cjs"), "utf8");
-  const bridgeWorker = fs.readFileSync(path.join(root, "server/hr-bridge-worker.ts"), "utf8");
-  const bridgeReadiness = fs.readFileSync(path.join(root, "server/services/hrDevices/readiness.ts"), "utf8");
-  const bridgeImplementation = fs.readFileSync(path.join(root, "server/services/hrDevices/bridge.ts"), "utf8");
+  const bridgePolicy = fs.readFileSync(
+    path.join(root, "scripts/hr-bridge-runtime-policy.cjs"),
+    "utf8",
+  );
+  const bridgeWorker = fs.readFileSync(
+    path.join(root, "server/hr-bridge-worker.ts"),
+    "utf8",
+  );
+  const bridgeReadiness = fs.readFileSync(
+    path.join(root, "server/services/hrDevices/readiness.ts"),
+    "utf8",
+  );
+  const bridgeImplementation = fs.readFileSync(
+    path.join(root, "server/services/hrDevices/bridge.ts"),
+    "utf8",
+  );
   const packageJson = fs.readFileSync(path.join(root, "package.json"), "utf8");
   const ecosystem = fs.readFileSync(path.join(root, "ecosystem.config.cjs"), "utf8");
-  const productionEnvTemplate = fs.readFileSync(path.join(root, ".env.production.example"), "utf8");
-  const deviceProof = fs.readFileSync(
-    path.join(
-      root,
-      "android-native/app/src/main/java/online/alarabiya/superapp/core/security/DeviceProofKey.kt",
-    ),
+  const productionEnvTemplate = fs.readFileSync(
+    path.join(root, ".env.production.example"),
     "utf8",
   );
 
-  const requiredGradleFragments = [
-    `val productionApplicationId = "${expected.applicationId}"`,
-    `val productionVersionCode = ${expected.versionCode}`,
-    `val productionVersionName = "${expected.versionName}"`,
-    // بوّابة إصدار الإنتاج (verifyProductionReleaseInputs) تؤكّد الرقمَ حرفياً؛ ربطُها بالمتوقَّع هنا
-    // يمنع فخّاً أمسكه Codex على #722: رفعُ الرقم دون تحديث هذا التأكيد يُسقط bundleProdRelease وحده
-    // (لا يظهر في بناء dev المحليّ)، وكان check:mobile-release أعمى عنه.
-    `if (productionVersionCode != ${expected.versionCode} || productionVersionName != "${expected.versionName}") {`,
-    `val expectedProductionEndpoint = "${expected.productionBaseUrl}"`,
-    "applicationId = productionApplicationId",
-    'applicationIdSuffix = ".debug"',
-    'platform("androidx.compose:compose-bom:2025.05.01")',
-    'implementation(platform("com.google.firebase:firebase-bom:34.16.0"))',
-    '"**/libandroidx.graphics.path.so"',
-    '"**/libdatastore_shared_counter.so"',
-    'implementation("com.google.android.gms:play-services-code-scanner:16.1.0")',
-    'implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")',
-    'implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")',
-    'androidTestImplementation("com.google.android.gms:play-services-base-testing:16.2.0")',
-    'create("phoneApi26")',
-    "dependsOn(verifyProductionReleaseInputs)",
-  ];
-  for (const fragment of requiredGradleFragments) {
-    if (!gradle.includes(fragment)) fail("native Gradle release identity/policy is incomplete");
-  }
-  if (
-    !/^android\.experimental\.testOptions\.managedDevices\.allowOldApiLevelDevices=true$/m.test(
-      gradleProperties,
-    )
-  ) {
-    fail("API 26 managed-device smoke requires the explicit old-API opt-in");
-  }
-  verifyNetworkSecurityPinning(networkSecurityConfig);
-  const applicationIdSuffixes = [...gradle.matchAll(/applicationIdSuffix\s*=\s*"([^"]+)"/g)]
-    .map((match) => match[1]);
-  if (applicationIdSuffixes.length !== 1 || applicationIdSuffixes[0] !== ".debug") {
-    fail("only the debug build type may add an applicationId suffix");
-  }
-  for (const forbiddenDependency of [
-    "androidx.camera:",
-    "com.google.mlkit:barcode-scanning",
-    "com.google.mlkit:text-recognition",
-  ]) {
-    if (gradle.includes(forbiddenDependency)) {
-      fail("native scanner engines must not be embedded in the Android bundle");
-    }
-  }
-  if (
-    !/<meta-data\b(?=[^>]*android:name="com\.google\.mlkit\.vision\.DEPENDENCIES")(?=[^>]*android:value="barcode_ui,ocr")[^>]*\/>/.test(
-      androidManifest,
-    )
-  ) {
-    fail("downloadable scanner module configuration is incomplete");
-  }
-  if (
-    !/<uses-feature\b(?=[^>]*android:name="android\.hardware\.screen\.portrait")(?=[^>]*android:required="false")[^>]*\/>/.test(
-      androidManifest,
-    )
-  ) {
-    fail("ML Kit's portrait-only delegate must not make portrait a required Play device feature");
-  }
-  const fileProviders = [...androidManifest.matchAll(/<provider\b([^>]*)>([\s\S]*?)<\/provider>/g)]
-    .filter((match) => xmlAttribute(match[1], "android:name") === "androidx.core.content.FileProvider");
-  if (
-    fileProviders.length !== 1 ||
-    xmlAttribute(fileProviders[0][1], "android:authorities") !== "${applicationId}.fileprovider" ||
-    xmlAttribute(fileProviders[0][1], "android:exported") !== "false" ||
-    xmlAttribute(fileProviders[0][1], "android:grantUriPermissions") !== "true" ||
-    !/<meta-data\b(?=[^>]*android:name="android\.support\.FILE_PROVIDER_PATHS")(?=[^>]*android:resource="@xml\/camera_file_paths")[^>]*\/>/.test(
-      fileProviders[0][2],
-    )
-  ) {
-    fail("OCR FileProvider must remain private and grant only scoped capture URIs");
-  }
-  if (/android:process\s*=/.test(androidManifest)) {
-    fail("native app must remain single-process while shared-counter JNI is excluded");
-  }
+  // SuperApp mobile contract verification
   for (const fragment of [
-    "GmsBarcodeScanning.getClient",
-    "ActivityResultContracts.TakePicture()",
-    "ActivityResultContracts.RequestPermission()",
-    "Manifest.permission.CAMERA",
-    "TextRecognition.getClient",
-    "ModuleInstall.getClient",
-    "ensureOptionalModuleInstalled",
-    "if (moduleInstallAttempt == 0) return@LaunchedEffect",
-    "withContext(NonCancellable + Dispatchers.IO)",
-    "calculateOcrSampleSize",
+    `androidPackage: "${expected.applicationId}"`,
+    'iosBundleId: "online.alarabiya.superapp"',
+    `versionCode: ${expected.versionCode}`,
+    `version: "${expected.versionName}"`,
+    '"./plugins/withAlrueyaSecureTransport"',
   ]) {
-    if (!scanner.includes(fragment)) fail("scanner must delegate capture and inference outside the app bundle");
-  }
-  if (/androidx\.camera|com\.google\.mlkit\.vision\.barcode\.BarcodeScanning/.test(scanner)) {
-    fail("scanner source references an embedded native engine");
-  }
-  for (const fragment of [
-    "FakeModuleInstallClient",
-    "alreadyInstalledModuleSkipsInstallRequest",
-    "missingModuleRequestsImmediateInstall",
-    "stalledAvailabilityCheckTimesOut",
-    "installFailureIsPropagatedForRetryUi",
-  ]) {
-    if (!moduleInstallTest.includes(fragment)) {
-      fail("scanner module installation success, failure, and timeout paths must stay tested");
+    if (!superAppConfig.includes(fragment)) {
+      fail("SuperApp Expo release identity or configuration is incomplete");
     }
-  }
-  const cameraPathEntries = [
-    ...cameraFilePaths.matchAll(
-      /<(cache-path|files-path|external-path|external-cache-path|external-files-path|root-path)\b([^>]*)\/>/g,
-    ),
-  ];
-  if (
-    cameraPathEntries.length !== 1 ||
-    cameraPathEntries[0][1] !== "cache-path" ||
-    xmlAttribute(cameraPathEntries[0][2], "name") !== "scanner_capture" ||
-    xmlAttribute(cameraPathEntries[0][2], "path") !== "scanner/"
-  ) {
-    fail("OCR capture must be restricted to the private scanner cache directory");
-  }
-  const nativeAppSources = readSourceFiles(
-    path.join(root, "android-native/app/src/main/java"),
-  ).join("\n");
-  if (/\bPathIterator\b|MultiProcessDataStoreFactory|MultiProcessCoordinator/.test(nativeAppSources)) {
-    fail("optional AndroidX JNI exclusions are unsafe with PathIterator or multiprocess DataStore usage");
-  }
-  if (nativeAppSources.includes("IsLatin")) {
-    fail("native scanner policy must not use the API-26-incompatible IsLatin regex property");
-  }
-  for (const fragment of [
-    'const val KEY_ALIAS = "alrueya_native_device_proof_v2"',
-    "builder.setIsStrongBoxBacked(useStrongBox)",
-    "private fun loadExistingKeyPair(): KeyPair?",
-    "runCatching { keyStore.deleteEntry(KEY_ALIAS) }",
-  ]) {
-    if (!deviceProof.includes(fragment)) {
-      fail("native device-proof compatibility, key rotation, or recovery policy is incomplete");
-    }
-  }
-  if (deviceProof.includes("setUnlockedDeviceRequired") || deviceProof.includes("isHardwareBacked(")) {
-    fail("native device proof must work while locked and must not enforce an unverifiable hardware-only policy");
   }
 
-  for (const task of [
-    ":app:testDevDebugUnitTest",
-    ":app:lintDevDebug",
-    ":app:lintProdRelease",
-    ":app:compileDevDebugAndroidTestKotlin",
-    ":app:assembleDevDebug",
-    ":app:bundleProdRelease",
-    ":app:phoneApi26DevDebugAndroidTest",
+  // SuperApp EAS build & SPKI pinning verification
+  for (const fragment of [
+    '"store-android"',
+    '"store-ios"',
+    expected.productionBaseUrl,
+    "heyx24VzgigLNUK_xrMM4IODY0kLR33mjqjg_b8HUPg",
+    "brzvtCELCIZUo4sD_qPX0ccRtPsd3DY6RfmxpOU9oB4",
   ]) {
-    if (!nativeCi.includes(task)) fail(`native CI is missing ${task}`);
+    if (!superAppEas.includes(fragment)) {
+      fail("SuperApp EAS production build configuration or SPKI pinning is incomplete");
+    }
   }
-  if (!releaseCi.includes("working-directory: android-native")) fail("release workflow is not pinned to android-native");
-  if (/working-directory:\s*twa|\btwa\/gradlew\b/i.test(releaseCi)) fail("release workflow references the legacy TWA build");
+
+  // Customer store mobile contract verification
+  for (const fragment of [
+    'rawBundleId = "online.alarabiya.customerstore"',
+    'appName: "مكتبة العربية"',
+    'schemeFromBundleId = "maktabaalarabiya"',
+    "minSdkVersion: 26",
+  ]) {
+    if (!customerStoreConfig.includes(fragment)) {
+      fail("Customer Store Expo release identity or configuration is incomplete");
+    }
+  }
+
+  // Customer store EAS build verification
+  if (!customerStoreEas.includes('"play-internal"')) {
+    fail("Customer Store EAS configuration is missing store release profile");
+  }
+
+  // Mobile CI workflow verification
+  for (const job of ["customer-store-check:", "superapp-check:"]) {
+    if (!expoMobileCi.includes(job)) {
+      fail(`expo-mobile-check.yml is missing required job ${job}`);
+    }
+  }
+
+  // Release workflow gate verification
+  for (const fragment of [
+    'file: "ci.yml"',
+    'file: "security.yml"',
+    'file: "expo-mobile-check.yml"',
+    '"check-test-build"',
+    '"authz-guard"',
+    '"audit"',
+    '"customer-store-check"',
+    '"superapp-check"',
+    'eventName !== "workflow_dispatch"',
+    'ref !== "refs/heads/main"',
+    "RELEASE_GATE_ANCESTOR_WINDOW",
+    "listRecentShas",
+    "/commits?",
+    "dispatchIndex < 0",
+    'run.status !== "completed"',
+    'run.conclusion !== "success"',
+    '/jobs?per_page=100&filter=latest',
+    'job.status !== "completed" || job.conclusion !== "success"',
+  ]) {
+    if (!releaseWorkflowGate.includes(fragment)) {
+      fail("release workflow ancestor-window CI/security/mobile policy is incomplete");
+    }
+  }
+
   const releaseGateJob = yamlJobBlock(releaseCi, "release-gate");
   const signedArtifactsJob = yamlJobBlock(releaseCi, "signed-native-artifacts");
   if (!/^\s+run:\s+node scripts\/verify-android-release-workflow-gate\.mjs\s*$/m.test(releaseGateJob)) {
     fail("release workflow does not execute the exact-SHA workflow gate");
   }
   if (!/^    needs:\s*release-gate\s*$/m.test(signedArtifactsJob)) {
-    fail("signed Android artifacts are not blocked on the release gate");
-  }
-  const signedJobGateCalls = [
-    ...signedArtifactsJob.matchAll(
-      /^\s+run:\s+node scripts\/verify-android-release-workflow-gate\.mjs\s*$/gm,
-    ),
-  ].length;
-  if (signedJobGateCalls !== 2) {
-    fail("signed Android artifacts must recheck exact-SHA gates before signing and publication");
-  }
-  if (
-    !signedArtifactsJob.includes('aab_actual="$(keytool -printcert -jarfile') ||
-    !signedArtifactsJob.includes('test "$aab_actual" = "$expected"')
-  ) {
-    fail("release workflow does not verify the AAB signing certificate");
-  }
-  for (const fragment of [
-    'unzip -tqq "$aab"',
-    'unzip -tqq "$apk"',
-    'unzip -Z1 "$aab" > "$RUNNER_TEMP/aab-entries.txt"',
-    'unzip -Z1 "$apk" > "$RUNNER_TEMP/apk-entries.txt"',
-    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/aab-entries.txt"',
-    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/apk-entries.txt"',
-  ]) {
-    if (!signedArtifactsJob.includes(fragment)) {
-      fail("release workflow does not reject native libraries in the Play artifact");
-    }
-  }
-  for (const fragment of [
-    "Reject native libraries before merge",
-    ":app:bundleProdRelease",
-    "-x :app:verifyProductionReleaseInputs",
-    'unzip -tqq "$apk"',
-    'unzip -tqq "$aab"',
-    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/dev-apk-entries.txt"',
-    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/prod-aab-entries.txt"',
-  ]) {
-    if (!nativeCi.includes(fragment)) {
-      fail("native PR CI does not reject native libraries before merge");
-    }
-  }
-  const expectedProductionHost = new URL(expected.productionBaseUrl).hostname;
-  for (const fragment of [
-    'dump resources "$apk"',
-    '$NF == "xml/network_security_config"',
-    'network_security_config packaged path was not found',
-    'dump xmltree --file "$network_config_path" "$apk"',
-    `grep -Fq "T: '${expectedProductionHost}'"`,
-    "grep -Fq 'A: includeSubdomains=false'",
-    `grep -Fq 'A: expiration="${expected.certificatePinExpiration}"'`,
-    'test "$pin_count" -eq 2',
-  ]) {
-    if (!signedArtifactsJob.includes(fragment)) {
-      fail("release workflow does not verify certificate pinning in the packaged production APK");
-    }
-  }
-  if (!nativeCi.includes('- "scripts/verify-android-release-workflow-gate.mjs"')) {
-    fail("native CI path filters do not cover release gate changes");
-  }
-  const normalizedNativeCi = nativeCi.replace(/\r\n/g, "\n");
-  const nativePushTrigger = normalizedNativeCi.match(
-    /\n  push:\n([\s\S]*?)\n\npermissions:/,
-  )?.[1];
-  if (
-    !nativePushTrigger ||
-    !/^    branches:\s*\[main\]\s*$/m.test(nativePushTrigger) ||
-    /^    paths(?:-ignore)?:\s*$/m.test(nativePushTrigger)
-  ) {
-    fail("native CI must run on every main push so the exact-SHA release gate can succeed");
-  }
-  for (const fragment of [
-    // متطلبات المصفوفة الثلاثية والوظائف — ثابتة عبر أيّ تشدُّد أو تخفيف للنافذة.
-    'file: "ci.yml"',
-    'file: "security.yml"',
-    'file: "android-native-ci.yml"',
-    '"check-test-build"',
-    '"authz-guard"',
-    '"audit"',
-    '"native-android-check"',
-    '"native-android-device-smoke"',
-    // البوّابة الأساسية: workflow_dispatch على main حصراً.
-    'eventName !== "workflow_dispatch"',
-    'ref !== "refs/heads/main"',
-    // نافذة السلف (٢٧/٨/٢٦): بدل exact-SHA، نتحقّق أن الترتيب المُحدَّث سليم — قراءةُ آخر
-    // N SHAs من commits API، وGITHUB_SHA نفسه ضمن النافذة (يمنع dispatch من stale)، ونجاح
-    // البوّابات الثلاث كلها على السلف المختار. القوالب أدناه تكفل بقاء هذه الضمانات إن
-    // أعاد أحدهم صياغة الملف. `RELEASE_GATE_ANCESTOR_WINDOW` يبقى مرئياً كسقف مضبوط.
-    "RELEASE_GATE_ANCESTOR_WINDOW",
-    "listRecentShas",
-    "/commits?",
-    "dispatchIndex < 0",
-    // شرط نجاح CI: run.status/conclusion يجب أن يكونا completed/success لكل بوّابة.
-    'run.status !== "completed"',
-    'run.conclusion !== "success"',
-    // شرط نجاح الوظائف المطلوبة — verifyRequiredJobs يبقى حادّاً (لا يتغاضى عن انحدار).
-    '/jobs?per_page=100&filter=latest',
-    'job.status !== "completed" || job.conclusion !== "success"',
-  ]) {
-    if (!releaseWorkflowGate.includes(fragment)) {
-      fail("release workflow ancestor-window CI/security/native policy is incomplete");
-    }
+    fail("signed artifacts job is not blocked on the release gate");
   }
   for (const fragment of [
     "INTEGRATIONS_ENCRYPTION_KEY_SHA256:",

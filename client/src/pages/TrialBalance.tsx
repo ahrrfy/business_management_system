@@ -143,31 +143,37 @@ export default function TrialBalance() {
       {
         accessorKey: "openingDebit",
         header: "افتتاح مدين",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.openingDebit} />,
       },
       {
         accessorKey: "openingCredit",
         header: "افتتاح دائن",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.openingCredit} />,
       },
       {
         accessorKey: "periodDebit",
         header: "حركة مدين",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.periodDebit} />,
       },
       {
         accessorKey: "periodCredit",
         header: "حركة دائن",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.periodCredit} />,
       },
       {
         accessorKey: "closingDebit",
         header: "ختام مدين",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.closingDebit} />,
       },
       {
         accessorKey: "closingCredit",
         header: "ختام دائن",
+        meta: { kind: "money" },
         cell: ({ row }) => <Money value={row.original.closingCredit} />,
       },
     ],
@@ -393,7 +399,7 @@ export default function TrialBalance() {
 
 function Money({ value }: { value: string }) {
   return (
-    <span className="block text-left tabular-nums" dir="ltr">
+    <span className="block tabular-nums" dir="ltr">
       {moneyCell(value)}
     </span>
   );

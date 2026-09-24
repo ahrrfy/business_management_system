@@ -1,0 +1,28 @@
+{
+  "consumer": "superapp-mobile",
+  "purpose": "عقد الإجراءات التي يستهلكها تطبيق سوبر العربية (Expo) لإدارة الفروع والموظفين والقرارات التنفيذية.",
+  "procedures": [
+    "auth.register",
+    "catalog.getForEdit",
+    "catalog.updateProduct",
+    "customerNotes.dueTodayPage",
+    "customers.contractPricesPage",
+    "executive.commandCenter",
+    "nativePush.register",
+    "nativePush.revokeDevice",
+    "reports.reconcileSummary",
+    "salesPromotions.getById",
+    "superApp.approvalDetail",
+    "superApp.approvalInbox",
+    "superApp.bootstrap",
+    "superApp.modulePulse",
+    "superApp.notificationPreferences",
+    "superApp.payrollHistory",
+    "superApp.payslipDetail",
+    "superApp.requestLeave",
+    "superApp.updateNotificationPreferences",
+    "superApp.withdrawLeave",
+    "system.health",
+    "users.resetPassword"
+  ]
+}

@@ -782,7 +782,7 @@ export default function Products() {
 
       {/* توزيع مخزون البدائل لمنتجٍ واحد (من إجراء الصفّ). */}
       <Dialog open={breakdownProduct != null} onOpenChange={(o) => !o && setBreakdownProduct(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-right">توزيع مخزون البدائل</DialogTitle>
             <DialogDescription className="text-right">

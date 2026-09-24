@@ -1,8 +1,6 @@
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { createLatestBarcodeResolutionGate } from "@/lib/productStudio/barcodeResolution";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Camera, Loader2, Package, Search } from "lucide-react";
@@ -78,14 +76,7 @@ export function StudioProductPicker({
       if (barcodeResolutionGate.current.isCurrent(token)) setIsResolvingBarcode(false);
     }
   };
-  const barcodeInput = useBarcodeInput((barcode) => {
-    setQuery(barcode);
-    setOpen(true);
-    setUnknownBarcode("");
-    setUnknownBarcodeValue("");
-    setLinkAllowed(false);
-    void resolveBarcode(barcode);
-  });
+
 
   // لا نعرض نتيجة مفتاح أقدم أثناء مهلة debounce؛ يمنع اختيار نتيجة لا تخص النص الحالي.
   const rows = useMemo(
@@ -107,8 +98,6 @@ export function StudioProductPicker({
     setLinkAllowed(false);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    barcodeInput.handleKeyDown(event, setQuery);
-    if (event.defaultPrevented) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setOpen(true);
@@ -129,28 +118,33 @@ export function StudioProductPicker({
     <div className="space-y-1.5">
       <div className="relative flex gap-2">
         <div className="relative min-w-0 flex-1">
-          <Input
+          <UnifiedSearchInput
             id="studio-product-search"
             value={query}
-            onChange={(event) => {
+            onChange={(val) => {
               barcodeResolutionGate.current.next();
               setIsResolvingBarcode(false);
-              setQuery(event.target.value);
+              setQuery(val);
               setOpen(true);
               setUnknownBarcode("");
               setUnknownBarcodeValue("");
               setLinkAllowed(false);
             }}
+            onScan={(barcode: string) => {
+              setQuery(barcode);
+              setOpen(true);
+              setUnknownBarcode("");
+              setUnknownBarcodeValue("");
+              setLinkAllowed(false);
+              void resolveBarcode(barcode);
+            }}
             onFocus={() => setOpen(true)}
             onKeyDown={onKeyDown}
             placeholder="اسم المنتج أو SKU أو الباركود"
-            className={barcodeSearchInputClass}
-            role="combobox"
-            aria-expanded={open}
-            aria-controls="studio-product-results"
-            aria-activedescendant={rows[activeIndex] ? `studio-product-${rows[activeIndex].productId}` : undefined}
+            barcode={true}
+            className="w-full"
+            aria-label="اسم المنتج أو SKU أو الباركود"
           />
-          <BarcodeSearchCue />
         </div>
         <Button type="button" variant="outline" size="icon" className="size-11" onClick={() => setCameraOpen(true)} aria-label="مسح باركود بالكاميرا">
           <Camera className="size-4" />

@@ -316,7 +316,7 @@ const styles = StyleSheet.create({
   filter: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E4E9E4",
+    borderColor: "#E2E8F0",
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: "row-reverse",
@@ -324,7 +324,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 9,
   },
-  active: { backgroundColor: "#075345", borderColor: "#075345" },
+  active: { backgroundColor: "#059669", borderColor: "#059669" },
   filterText: { color: "#38534C", fontFamily: "Cairo_700Bold", fontSize: 11 },
   activeText: { color: "#FFFFFF" },
   filterCount: {
@@ -352,9 +352,9 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   catalogCount: {
-    backgroundColor: "#E6F4EE",
+    backgroundColor: "#ECFDF5",
     borderRadius: 999,
-    color: "#075345",
+    color: "#059669",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 10,
     overflow: "hidden",

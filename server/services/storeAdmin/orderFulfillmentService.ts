@@ -73,6 +73,8 @@ export interface OnlineOrderRow {
   couponCode: string | null;
   couponDiscount: string;
   deliveryFee: string;
+  deliveryFree: boolean;
+  deliveryWaivedAmount: string;
   deliveryPartyId: number | null;
   cancelReason: string | null;
   latitude?: string | null;
@@ -127,6 +129,8 @@ export async function listOnlineOrders(opts: {
       couponCode: onlineOrders.couponCode,
       couponDiscount: onlineOrders.couponDiscount,
       deliveryFee: onlineOrders.shippingCost,
+      deliveryFree: onlineOrders.deliveryFree,
+      deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
       deliveryPartyId: onlineOrders.deliveryPartyId,
       cancelReason: onlineOrders.cancelReason,
       latitude: onlineOrders.latitude,
@@ -150,6 +154,8 @@ export async function listOnlineOrders(opts: {
     couponCode: r.couponCode ?? null,
     couponDiscount: String(r.couponDiscount ?? "0"),
     deliveryFee: String(r.deliveryFee),
+    deliveryFree: r.deliveryFree === true,
+    deliveryWaivedAmount: String(r.deliveryWaivedAmount ?? "0"),
     deliveryPartyId: r.deliveryPartyId != null ? Number(r.deliveryPartyId) : null,
     cancelReason: r.cancelReason ?? null,
     itemCount: Number(r.itemCount),
@@ -213,6 +219,8 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         longitude: onlineOrders.longitude,
         subtotal: onlineOrders.subtotal,
         deliveryFee: onlineOrders.shippingCost,
+        deliveryFree: onlineOrders.deliveryFree,
+        deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
         deliveryPartyId: onlineOrders.deliveryPartyId,
         deliveryPartyName: deliveryParties.name,
         cancelReason: onlineOrders.cancelReason,
@@ -267,6 +275,8 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     longitude: order.longitude ? String(order.longitude) : null,
     subtotal: String(order.subtotal),
     deliveryFee: String(order.deliveryFee),
+    deliveryFree: order.deliveryFree === true,
+    deliveryWaivedAmount: String(order.deliveryWaivedAmount ?? "0"),
     deliveryPartyId: order.deliveryPartyId != null ? Number(order.deliveryPartyId) : null,
     deliveryPartyName: order.deliveryPartyName ?? null,
     labelToken: onlineOrderLabelToken(order.orderNumber),

@@ -12,11 +12,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { notify } from "@/lib/notify";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
-import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { WorkspaceBar } from "@/components/workspace/OperationalWorkspace";
+import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 
 export type ExportSpec<T> = {
   filename: string;
@@ -106,9 +104,6 @@ export function ListToolbar<T>({
   const formats = exportSpec?.formats ?? ["xlsx"];
   const [exporting, setExporting] = React.useState(false);
   const [filtersOpen, setFiltersOpen] = React.useState(false);
-  const barcodeInput = useBarcodeInput((code) => search?.onChange(code), {
-    enabled: Boolean(search?.barcode),
-  });
   // مع fetchAll نُتيح التصدير حتى لو كانت الصفحة الحالية فارغة (قد توجد نتائج في صفحات أخرى).
   const exportDisabled = !exportSpec || exporting || (!exportSpec.fetchAll && exportSpec.rows.length === 0);
 
@@ -246,20 +241,16 @@ export function ListToolbar<T>({
       {hasFilterSection && (
         <WorkspaceBar variant="filters" label="البحث والفلاتر" className="list-toolbar-filter-panel overflow-hidden">
           {search && (
-            <div className={cn("relative min-w-0 flex-1 sm:min-w-40", search.barcode && "sm:min-w-64")}>
-              <Search className={cn("pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-muted-foreground", search.barcode ? "left-2" : "right-2")} />
-              <Input
-                type="search"
-                autoFocus={search.autoFocus}
-                value={search.value}
-                onChange={(e) => search.onChange(search.barcode ? normalizeKnownSystemBarcode(e.target.value) : e.target.value)}
-                onKeyDown={(e) => barcodeInput.handleKeyDown(e, search.onChange)}
-                placeholder={search.placeholder ?? "بحث…"}
-                aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
-                className={cn("h-8 w-full pr-8", search.barcode && `pl-8 ${barcodeSearchInputClass}`)}
-              />
-              {search.barcode && <BarcodeSearchCue />}
-            </div>
+            <UnifiedSearchInput
+              value={search.value}
+              onChange={search.onChange}
+              placeholder={search.placeholder ?? "بحث…"}
+              aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
+              barcode={Boolean(search.barcode)}
+              autoFocus={search.autoFocus}
+              size="compact"
+              className={cn("min-w-0 flex-1 sm:min-w-40", search.barcode && "sm:min-w-64")}
+            />
           )}
           {quickFilters && <div className="hidden min-w-0 overflow-x-auto sm:block [&>div]:!flex-nowrap">{quickFilters}</div>}
           {(filters || quickFilters || activeFilterCount > 0) && (

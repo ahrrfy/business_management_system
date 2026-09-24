@@ -3,7 +3,12 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { TableColumnVisibility } from "@/components/table/TableColumnVisibility";
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+interface TableProps extends React.ComponentProps<"table"> {
+  /** تفعيل شبكة الحدود العمودية الكاملة (Full-Bordered Grid Table) */
+  grid?: boolean;
+}
+
+function Table({ className, grid = false, ...props }: TableProps) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   return (
     <div className="space-y-2">
@@ -11,11 +16,19 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
       <div
         ref={containerRef}
         data-slot="table-container"
-        className="relative w-full overflow-x-auto"
+        data-grid={grid || undefined}
+        className={cn(
+          "relative w-full overflow-x-auto",
+          grid && "rounded-md border border-border/80 shadow-xs"
+        )}
       >
         <table
           data-slot="table"
-          className={cn("w-max min-w-full caption-bottom border-separate border-spacing-0 text-sm", className)}
+          className={cn(
+            "w-max min-w-full caption-bottom border-separate border-spacing-0 text-sm",
+            grid && "[&_th:not(:last-child)]:border-e [&_th:not(:last-child)]:border-border/70 [&_td:not(:last-child)]:border-e [&_td:not(:last-child)]:border-border/45",
+            className
+          )}
           {...props}
         />
       </div>
@@ -74,7 +87,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "text-foreground h-[var(--ui-table-head)] border-b border-border/80 px-[var(--ui-table-cell-inline)] text-start align-middle text-xs font-bold whitespace-nowrap data-[align=center]:text-center data-[align=end]:text-end [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "text-foreground h-[var(--ui-table-head)] border-b border-border/80 px-[var(--ui-table-cell-inline)] text-start align-middle text-xs font-bold whitespace-nowrap data-[align=center]:text-center data-[align=end]:text-end [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}
@@ -87,7 +100,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "h-[var(--ui-table-row)] border-b border-border/55 px-[var(--ui-table-cell-inline)] py-3 text-start align-middle whitespace-nowrap data-[align=center]:text-center data-[align=end]:text-end data-[kind=number]:tabular-nums data-[kind=money]:tabular-nums data-[wrap=true]:whitespace-normal data-[wrap=true]:[overflow-wrap:anywhere] [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "h-[var(--ui-table-row)] border-b border-border/55 px-[var(--ui-table-cell-inline)] py-3 text-start align-middle whitespace-nowrap data-[align=center]:text-center data-[align=end]:text-end data-[kind=number]:tabular-nums data-[kind=money]:tabular-nums data-[wrap=true]:whitespace-normal data-[wrap=true]:[overflow-wrap:anywhere] [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}

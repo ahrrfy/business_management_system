@@ -328,7 +328,7 @@ export function ReceptionInvoiceQueue({
                       </Badge>
                     </td>
                     <td className="px-2 py-2">
-                      {r.consignmentNumber ? (
+                      {r.consignmentNumber && r.consignmentStatus !== "CANCELLED" ? (
                         <span className="inline-flex items-center gap-1 text-[10px] font-bold">
                           <Truck aria-hidden className="size-3" />
                           {r.consignmentNumber}
@@ -377,7 +377,7 @@ export function ReceptionInvoiceQueue({
                             تعديل
                           </a>
                         )}
-                        {!r.consignmentId && canFulfill && (
+                        {(!r.consignmentId || r.consignmentStatus === "CANCELLED") && canFulfill && (
                           <Button size="sm" variant="outline" className="h-7 px-1.5" title="إسناد للتوصيل" aria-label={`إسناد الفاتورة ${r.invoiceNumber} للتوصيل`} onClick={() => setDispatchTarget(r)}>
                             <Truck aria-hidden className="size-3" />
                           </Button>
@@ -1005,11 +1005,27 @@ function InvoiceDispatchDialog({
 
         {/* شفافية محاسبية صريحة: الأجرة ليست جزءاً ممّا يحصّله المندوب لنا. */}
         <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-          يحصّل المندوب{" "}
-          <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span>{" "}
-          د.ع
-          لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
-          {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
+          {remaining === 0 ? (
+            <>
+              الفاتورة <strong className="text-[var(--sem-pos)]">مدفوعة مسبقاً بالكامل</strong> (متبقي البضاعة: 0 د.ع).
+              {feeCollection === "COURIER" ? (
+                <> المطلوب من الزبون عند الاستلام: <strong className="font-bold tabular-nums text-foreground" dir="ltr">{fmt(round2(D(fee || 0)).toFixed(2))} د.ع</strong> (أجرة التوصيل فقط للمندوب).</>
+              ) : (
+                <> لا مبالغ مطلوبة من الزبون عند الاستلام.</>
+              )}
+            </>
+          ) : (
+            <>
+              يحصّل المندوب{" "}
+              <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span>{" "}
+              د.ع
+              لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
+              {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
+              {feeCollection === "COURIER" && Number(fee || 0) > 0 && (
+                <> إجمالي ما يدفعه الزبون للمندوب: <strong className="font-bold tabular-nums text-foreground" dir="ltr">{fmt(round2(D(remaining).plus(D(fee || 0))).toFixed(2))} د.ع</strong> شامل التوصيل.</>
+              )}
+            </>
+          )}
         </p>
 
         {partialNotice && (

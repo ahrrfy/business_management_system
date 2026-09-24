@@ -15,7 +15,7 @@ import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { Check, Printer, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -189,6 +189,7 @@ export default function ProductionNew() {
       utils.production.recipeCapacity.invalidate();
       utils.inventory.onHand.invalidate();
       utils.inventory.movementsRich.invalidate();
+      bypassUnsavedGuard();
       navigate(`/production/${r.productionOrderId}`);
     },
     onError: (e) => { setError(e.message); notify.err(e); },
@@ -286,18 +287,18 @@ export default function ProductionNew() {
       const valid = lineValid(l);
       const over = kind === "in" && base.gt(l.stockBase);
       return (
-        <div key={l.key} className="grid grid-cols-12 gap-2 items-center border rounded-md p-2">
-          <div className="col-span-4"><div className="font-medium text-sm">{l.productName}</div><div className="text-xs text-muted-foreground font-mono" dir="ltr">{l.sku}</div></div>
-          <div className="col-span-3">
+        <div key={l.key} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center border rounded-md p-2">
+          <div className="col-span-1 sm:col-span-4"><div className="font-medium text-sm">{l.productName}</div><div className="text-xs text-muted-foreground font-mono" dir="ltr">{l.sku}</div></div>
+          <div className="col-span-1 sm:col-span-3">
             <AppSelect className="h-9" value={String(l.productUnitId ?? "")} onValueChange={(value) => { const u = l.units.find((x) => x.productUnitId === Number(value)); setLine(list, setList, l.key, { productUnitId: Number(value), conversionFactor: String(u?.conversionFactor ?? "1") }); }}>
               {l.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ` × ${u.conversionFactor}`}</option>)}
             </AppSelect>
           </div>
-          <div className="col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setLine(list, setList, l.key, { qty: e.target.value })} /></div>
-          <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-[var(--sem-info)]">{fmt(unitOutCost.toString())}/و</span>}</div>
-          <div className="col-span-1 text-left"><button type="button" className="text-destructive text-sm" onClick={() => setList(list.filter((x) => x.key !== l.key))}>حذف</button></div>
-          {!valid && <div className="col-span-12 text-xs text-destructive">الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.</div>}
-          {over && <div className="col-span-12 text-xs text-[var(--stock-low)]">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
+          <div className="col-span-1 sm:col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setLine(list, setList, l.key, { qty: e.target.value })} /></div>
+          <div className="col-span-1 sm:col-span-2 text-start sm:text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-[var(--sem-info)]">{fmt(unitOutCost.toString())}/و</span>}</div>
+          <div className="col-span-1 sm:col-span-1 text-end sm:text-left"><button type="button" className="text-destructive text-sm" onClick={() => setList(list.filter((x) => x.key !== l.key))}>حذف</button></div>
+          {!valid && <div className="col-span-1 sm:col-span-12 text-xs text-destructive">الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.</div>}
+          {over && <div className="col-span-1 sm:col-span-12 text-xs text-[var(--stock-low)]">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
         </div>
       );
     });

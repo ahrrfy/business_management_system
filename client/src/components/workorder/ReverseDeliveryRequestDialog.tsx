@@ -265,7 +265,7 @@ export default function ReverseDeliveryRequestDialog({
         {buttonLabel}
       </Button>
       <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <RotateCcw aria-hidden className="size-4" />

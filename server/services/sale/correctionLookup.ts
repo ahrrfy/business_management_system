@@ -1,4 +1,4 @@
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, ne, or, sql } from "drizzle-orm";
 import { stripDocPrefix } from "@shared/documentNumber";
 import {
   customers,
@@ -75,7 +75,13 @@ export async function correctionRequestBlockReasonTx(
         onlineOrderStatus: onlineOrders.status,
       })
       .from(invoices)
-      .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+      .leftJoin(
+        deliveryConsignments,
+        and(
+          eq(deliveryConsignments.invoiceId, invoices.id),
+          ne(deliveryConsignments.status, "CANCELLED"),
+        ),
+      )
       .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
       .where(eq(invoices.id, Number(invoice.id)))
       .limit(1)
@@ -141,7 +147,13 @@ export async function lookupInvoiceForCorrection(
       .leftJoin(customers, eq(customers.id, invoices.customerId))
       .leftJoin(users, eq(users.id, invoices.createdBy))
       .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
-      .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+      .leftJoin(
+        deliveryConsignments,
+        and(
+          eq(deliveryConsignments.invoiceId, invoices.id),
+          ne(deliveryConsignments.status, "CANCELLED"),
+        ),
+      )
       .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
       .where(and(
         actor.role === "admin" ? undefined : eq(invoices.branchId, actor.branchId),

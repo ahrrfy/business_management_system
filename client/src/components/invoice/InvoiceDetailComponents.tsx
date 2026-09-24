@@ -211,17 +211,25 @@ export function invoicePaymentColumns(canOpenVouchers: boolean): ColumnDef<Invoi
   ];
 }
 
-/** حقل وصفي: عنوان صغير + قيمة. */
-export function Field({ label, children }: { label: string; children: ReactNode }) {
+/** حقل وصفي: عنوان صغير + قيمة (محمي ضد الاقتطاع المالي غير المقصود). */
+export function Field({
+  label,
+  children,
+  truncate = false,
+}: {
+  label: string;
+  children: ReactNode;
+  truncate?: boolean;
+}) {
   return (
     <div className="space-y-0.5 min-w-0">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="font-medium truncate">{children}</div>
+      <div className={cn("font-medium", truncate ? "truncate" : "break-words")}>{children}</div>
     </div>
   );
 }
 
-/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، بلا اقتطاع، قابل للنسخ). */
+/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، محمي قطعاً ضد الاقتطاع، قابل للنسخ). */
 export function SummaryRow({
   label,
   value,
@@ -234,10 +242,10 @@ export function SummaryRow({
   tone?: "amber" | "emerald";
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex items-center justify-between gap-3 min-w-0 py-0.5">
       <span
         className={cn(
-          "text-muted-foreground",
+          "text-muted-foreground shrink-0",
           strong && "font-semibold text-foreground",
         )}
       >
@@ -246,13 +254,18 @@ export function SummaryRow({
       <span
         dir="ltr"
         className={cn(
-          "tabular-nums",
-          strong ? "text-lg font-bold" : "text-sm",
+          "tabular-nums shrink-0 whitespace-nowrap text-end",
+          strong ? "text-base sm:text-lg font-bold" : "text-sm font-medium",
           tone === "amber" && "text-[var(--sem-warn)]",
           tone === "emerald" && "text-[var(--sem-pos)]",
         )}
       >
-        <CopyInline value={value} display={fmt(value)} mono={false} />
+        <CopyInline
+          value={value}
+          display={fmt(value)}
+          mono={false}
+          truncate={false}
+        />
       </span>
     </div>
   );
