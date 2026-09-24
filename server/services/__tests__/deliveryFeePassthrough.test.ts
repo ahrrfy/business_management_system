@@ -314,6 +314,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     await returnConsignment(dispatched.consignmentId, {
       ...MANAGER,
       clientRequestId: "return-cancelled-work-order-wip",
+      returnReason: "رفض العميل",
     });
     expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(0);
     expect(await roleNetDebit("COGS")).toBe(4500);

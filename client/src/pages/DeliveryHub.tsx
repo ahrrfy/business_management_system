@@ -964,7 +964,7 @@ function InTransitTab() {
                 </>
               )}
               {/* إلغاء إسناد الطرد قبل قبوله أو عند تعذّره لإعادته للمخزن أو إعادة التوجيه */}
-              {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
+              {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -1091,9 +1091,11 @@ function InTransitTab() {
       {selectedIds.size > 0 && canFulfil && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 p-2 text-sm">
           <span className="font-bold">المحدَّد: <span className="tabular-nums">{selectedIds.size}</span></span>
-          <Button size="sm" variant="outline" disabled={staffHandover.isPending || eligibleForHandoverIds.filter((id) => selectedIds.has(id)).length === 0} onClick={bulkHandover}>
-            <Send aria-hidden className="size-3.5" /> خرج مع المندوب ({selectedList.filter((r) => r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT").length})
-          </Button>
+          {eligibleForHandoverIds.filter((id) => selectedIds.has(id)).length > 0 && (
+            <Button size="sm" variant="outline" disabled={staffHandover.isPending} onClick={bulkHandover}>
+              <Send aria-hidden className="size-3.5" /> خرج مع المندوب ({selectedList.filter((r) => r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT").length})
+            </Button>
+          )}
           <Button size="sm" variant="outline" disabled={staffMarkFailed.isPending} onClick={() => setFailTarget({ ids: Array.from(selectedIds) })}>
             <XCircle aria-hidden className="size-3.5" /> علّم متعذّراً
           </Button>

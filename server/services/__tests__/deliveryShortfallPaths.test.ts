@@ -219,6 +219,6 @@ describe("كشفُ الشركة — العجزُ اختيارٌ في السطر 
       countedCash: "2500", clientRequestId: "stmt-bad-1",
     }, CASHIER)).rejects.toThrow(/غير معروف في القائمة/);
     expect((await ledgerOf(a.consignmentId)).map((e) => e.entryType)).toEqual(["COD_ASSIGNED"]);
-    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("ASSIGNED");
+    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("OUT_FOR_DELIVERY");
   });
 });
