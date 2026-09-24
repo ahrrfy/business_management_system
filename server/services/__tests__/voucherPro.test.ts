@@ -290,7 +290,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 
-  it("قبض OTHER الذي ينشئه المالك يعتمد تلقائيا في العملية نفسها", async () => {
+  it("قبض OTHER الذي ينشئه المالك ينفذ مباشرة في العملية نفسها بلا تعليق", async () => {
     const r = await createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
       paymentMethod: "CASH", partyType: "OTHER",
@@ -298,20 +298,19 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     }, adminActor);
     expect(r.approvalStatus).toBe("APPROVED");
     const [stored] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
-    expect(stored).toMatchObject({ status: "COMPLETED", approvedBy: adminActor.userId });
+    expect(stored).toMatchObject({ status: "COMPLETED", approvedBy: null, cashBucket: "TREASURY" });
   });
 
-  it("قبض OTHER — مالكٌ آخر غير المُنشئ يعتمده بنجاح", async () => {
+  it("قبض OTHER الذي ينشئه المدير ينفذ فوراً في الخزينة الإدارية بلا تعليق (المسار الأول)", async () => {
     const r = await createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
       paymentMethod: "CASH", partyType: "OTHER",
       description: "إيراد بيع مخلفات",
     }, managerActor);
 
-    const ap = await approveVoucher(r.receiptId, adminActor);
-    expect(ap.approvalStatus).toBe("APPROVED");
+    expect(r.approvalStatus).toBe("APPROVED");
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
-    expect(rc.approvedBy).toBe(adminActor.userId);
+    expect(rc).toMatchObject({ status: "COMPLETED", approvedBy: null, cashBucket: "TREASURY" });
   });
 
   it("يعيد فحص رصيد المورد الحالي عند الاعتماد ويُبقي الطلب معلّقاً إن استُهلك المستحق بعد الإنشاء", async () => {

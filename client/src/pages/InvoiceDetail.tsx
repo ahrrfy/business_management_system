@@ -275,7 +275,7 @@ export default function InvoiceDetail() {
     );
   const data = inv.data;
   const canPrintShippingLabel = !["CANCELLED", "RETURNED", "SUPERSEDED"].includes(data.status)
-    && data.consignmentId == null
+    && (data.consignmentId == null || data.consignmentStatus === "CANCELLED")
     && !["SHIPPED", "DELIVERED", "CANCELLED"].includes(data.onlineOrderStatus ?? "");
   // #1: المتبقّي الحقيقي = total − returnedTotal − paidAmount (يمنع التحصيل الزائد بعد مرتجع جزئي).
   const remaining = round2(
@@ -326,7 +326,7 @@ export default function InvoiceDetail() {
       ["manager"],
     ) &&
     data.consignmentId != null &&
-    (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "FAILED");
+    (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "OUT_FOR_DELIVERY" || data.consignmentParcelStatus === "FAILED");
   const hasDeliveryLifecycle =
     data.consignmentId != null || data.consignmentStatus != null || data.deliveryPartyId != null;
   // مرآة بصرية للحارس الخادمي: الإرسالية الحديثة لا تصبح آمنة إلا بعد CANCELLED النهائي.
@@ -647,7 +647,7 @@ export default function InvoiceDetail() {
       deliveryWaivedAmount: data.deliveryWaivedAmount,
       // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة ⇒ نمرّرها للعرض
       // كي تُظهر الفاتورة المطبوعة «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
-      courierDelivery: data.courierName && Number(data.courierFee ?? 0) > 0
+      courierDelivery: data.courierName && Number(data.courierFee ?? 0) > 0 && data.consignmentStatus !== "CANCELLED"
         ? { partyName: data.courierName, fee: data.courierFee ?? "0", feeCollection: data.courierFeeCollection ?? "COURIER",
             }
         : null,

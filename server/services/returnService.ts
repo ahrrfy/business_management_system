@@ -10,6 +10,7 @@ import {
   isNotNull,
   isNull,
   lte,
+  ne,
   sql,
 } from "drizzle-orm";
 import {
@@ -383,7 +384,12 @@ export async function returnSaleInTx(
           invoiceId: deliveryConsignments.invoiceId,
         })
         .from(deliveryConsignments)
-        .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+        .where(
+          and(
+            eq(deliveryConsignments.invoiceId, input.invoiceId),
+            ne(deliveryConsignments.status, "CANCELLED"),
+          ),
+        )
         .limit(1)
     )[0] ?? null;
   /**

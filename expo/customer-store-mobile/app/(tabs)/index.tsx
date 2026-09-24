@@ -75,6 +75,26 @@ const FALLBACK_DISCOVERY_CATEGORIES = [
   { id: 0, name: "المكتب", icon: "business-center" },
 ] as const;
 
+const STORE_OCCASIONS = [
+  { id: "grad", label: "تخرج", icon: "school", color: "#FFF1F2", textColor: "#E11D48", borderColor: "#FECDD3" },
+  { id: "bday", label: "أعياد ميلاد", icon: "cake", color: "#FEF3C7", textColor: "#D97706", borderColor: "#FDE68A" },
+  { id: "school", label: "المدارس", icon: "backpack", color: "#DCFCE7", textColor: "#059669", borderColor: "#BBF7D0" },
+  { id: "office", label: "المكاتب", icon: "business-center", color: "#E0E7FF", textColor: "#4F46E5", borderColor: "#C7D2FE" },
+  { id: "kids", label: "الأطفال", icon: "child-care", color: "#FCE7F3", textColor: "#DB2777", borderColor: "#FBCFE8" },
+  { id: "art", label: "المواهب", icon: "palette", color: "#FEF9C3", textColor: "#CA8A04", borderColor: "#FEF08A" },
+  { id: "wedding", label: "زفاف وإهداء", icon: "favorite", color: "#FFFBEB", textColor: "#B45309", borderColor: "#FDE68A" },
+  { id: "journal", label: "يوميات وتأمل", icon: "self-improvement", color: "#F3E8FF", textColor: "#9333EA", borderColor: "#E9D5FF" },
+] as const;
+
+const CATEGORY_TINTS = [
+  { bg: "#ECFDF5", border: "#A7F3D0", iconColor: "#059669" },
+  { bg: "#FFF7ED", border: "#FED7AA", iconColor: "#EA580C" },
+  { bg: "#FAF5FF", border: "#E9D5FF", iconColor: "#9333EA" },
+  { bg: "#FFF1F2", border: "#FECDD3", iconColor: "#E11D48" },
+  { bg: "#EFF6FF", border: "#BFDBFE", iconColor: "#2563EB" },
+  { bg: "#FDF2F8", border: "#FBCFE8", iconColor: "#DB2777" },
+];
+
 function routeFromBanner(banner: StorefrontBanner | null) {
   const url = banner?.ctaUrl ?? "";
   const categoryMatch = url.match(/[?&]category(?:Id)?=(\d+)/i);
@@ -460,59 +480,134 @@ export default function HomeScreen() {
           <View style={styles.assuranceItem}>
             <View style={styles.assuranceIcon}>
               <MaterialIcons
-                color={storefrontDesign.semantic.brandStrong}
+                color="#059669"
                 name="local-shipping"
-                size={17}
+                size={18}
               />
             </View>
-            <Text style={styles.assuranceText}>توصيل داخل العراق</Text>
+            <Text style={styles.assuranceText}>توصيل سريع للمحافظات</Text>
           </View>
+          <View style={styles.assuranceDivider} />
           <View style={styles.assuranceItem}>
             <View style={styles.assuranceIcon}>
               <MaterialIcons
-                color={storefrontDesign.semantic.brandStrong}
+                color="#059669"
                 name="payments"
-                size={17}
+                size={18}
               />
             </View>
             <Text style={styles.assuranceText}>الدفع عند الاستلام</Text>
           </View>
+          <View style={styles.assuranceDivider} />
           <View style={styles.assuranceItem}>
             <View style={styles.assuranceIcon}>
               <MaterialIcons
-                color={storefrontDesign.semantic.brandStrong}
+                color="#059669"
                 name="verified-user"
-                size={17}
+                size={18}
               />
             </View>
-            <Text style={styles.assuranceText}>سعر ومخزون مؤكدان</Text>
+            <Text style={styles.assuranceText}>ضمان وجودة معتمدة</Text>
           </View>
         </View>
 
-        {/* بطاقة خدمات الطباعة المباشرة والتصاميم الخاصة عبر واتساب */}
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionOverline}>ابدأ بسرعة</Text>
+            <Text style={styles.sectionTitle}>تسوّق حسب القسم</Text>
+            <Text style={styles.sectionHint}>
+              كبسولات قرطاسية مبهجة ومختارات معتمدة
+            </Text>
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => router.push("/categories" as never)}
+          >
+            <Text style={styles.link}>كل الأقسام</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView
+          contentContainerStyle={styles.categoryList}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+        >
+          {discoveryCategories.map((category, index) => {
+            const tint = CATEGORY_TINTS[index % CATEGORY_TINTS.length];
+            return (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                key={`${category.id}-${category.name}`}
+                onPress={() =>
+                  router.push(
+                    category.id
+                      ? (`/categories?category=${category.id}` as never)
+                      : ("/categories" as never),
+                  )
+                }
+                style={styles.categoryItem}
+              >
+                <View
+                  style={[
+                    styles.categoryIcon,
+                    { backgroundColor: tint.bg, borderColor: tint.border },
+                  ]}
+                >
+                  <MaterialIcons
+                    color={tint.iconColor}
+                    name={
+                      "icon" in category
+                        ? category.icon
+                        : (["menu-book", "edit", "school", "card-giftcard"][
+                            index % 4
+                          ] as never)
+                    }
+                    size={26}
+                  />
+                </View>
+                <Text numberOfLines={1} style={styles.categoryText}>
+                  {category.name}
+                </Text>
+                {"availableCount" in category && (
+                  <View style={styles.categoryCountBadge}>
+                    <Text style={styles.categoryCountText}>
+                      {formatLatinNumber(category.availableCount)} منتج
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {/* خدمة الطباعة المتخصصة والتجهيز المكتبي — Scribble-Style Vibrant Gift Box & Printing Banner */}
         <TouchableOpacity
-          accessibilityLabel="خدمات الطباعة والتصاميم الخاصة عبر واتساب"
+          accessibilityLabel="باقات الإهداء والطباعة المخصصة عبر واتساب"
           accessibilityRole="button"
-          activeOpacity={0.88}
+          activeOpacity={0.9}
           onPress={openWhatsAppPrinting}
           style={styles.whatsappBanner}
         >
           <View style={styles.whatsappBannerRight}>
             <View style={styles.whatsappBannerIcon}>
-              <MaterialIcons color="#FFFFFF" name="print" size={24} />
+              <MaterialIcons color="#FFFFFF" name="card-giftcard" size={26} />
             </View>
             <View style={styles.whatsappBannerText}>
+              <View style={styles.whatsappBadgeRow}>
+                <Text style={styles.whatsappTag}>🎁 باقات الإهداء والطباعة المخصصة</Text>
+              </View>
               <Text style={styles.whatsappBannerTitle}>
-                خدمات الطباعة والتصاميم الخاصة
+                اصنع هديتك وملازمك لكل مناسبة!
               </Text>
               <Text style={styles.whatsappBannerSub}>
-                اطبع بحوثك، ملازمك وتصاميمك وتواصل معنا مباشرة عبر واتساب
+                طباعة بحوث، ملازم دراسية، وتجهيزات الشركات والمدارس مع تسعير فوري
               </Text>
             </View>
           </View>
-          <View style={styles.whatsappBadge}>
-            <MaterialIcons color="#157347" name="chat" size={16} />
-            <Text style={styles.whatsappBadgeText}>تواصل واطلب عبر واتساب</Text>
+          <View style={styles.whatsappActionRow}>
+            <View style={styles.whatsappBadge}>
+              <MaterialIcons color="#7C5CFC" name="chat" size={16} />
+              <Text style={styles.whatsappBadgeText}>تواصل مع فريق الطباعة والإهداء عبر واتساب</Text>
+            </View>
           </View>
         </TouchableOpacity>
 
@@ -570,75 +665,54 @@ export default function HomeScreen() {
           </>
         )}
 
-        <View style={styles.sectionHeader}>
-          <View>
-            <Text style={styles.sectionOverline}>ابدأ بسرعة</Text>
-            <Text style={styles.sectionTitle}>تسوّق حسب القسم</Text>
-            <Text style={styles.sectionHint}>
-              اختصارات مرئية إلى المنتجات التي تحتاجها
-            </Text>
-          </View>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => router.push("/categories" as never)}
-          >
-            <Text style={styles.link}>كل الأقسام</Text>
-          </TouchableOpacity>
-        </View>
-        <ScrollView
-          contentContainerStyle={styles.categoryList}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-        >
-          {discoveryCategories.map((category, index) => (
-            <TouchableOpacity
-              activeOpacity={0.85}
-              key={`${category.id}-${category.name}`}
-              onPress={() =>
-                router.push(
-                  category.id
-                    ? (`/categories?category=${category.id}` as never)
-                    : ("/categories" as never),
-                )
-              }
-              style={styles.categoryItem}
-            >
-              <View
-                style={[
-                  styles.categoryIcon,
-                  {
-                    backgroundColor: [
-                      "#E7F4EE",
-                      "#FFF1D5",
-                      "#EAF1FF",
-                      "#FFECEF",
-                    ][index % 4],
-                  },
-                ]}
-              >
-                <MaterialIcons
-                  color={storefrontDesign.semantic.brandStrong}
-                  name={
-                    "icon" in category
-                      ? category.icon
-                      : (["menu-book", "edit", "school", "card-giftcard"][
-                          index % 4
-                        ] as never)
-                  }
-                  size={25}
-                />
-              </View>
-              <Text numberOfLines={2} style={styles.categoryText}>
-                {category.name}
+        {/* Occasions Section (المناسبات الخاصة — من تطبيق Scribble المرجعي) */}
+        <View style={styles.occasionsSection}>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionOverline}>باقات الإهداء والتجهيز</Text>
+              <Text style={styles.sectionTitle}>تسوّق حسب المناسبة</Text>
+              <Text style={styles.sectionHint}>
+                هدايا وقرطاسية مخصصة لكل مناسبة
               </Text>
-              {"availableCount" in category && (
-                <Text style={styles.categoryCount}>
-                  {formatLatinNumber(category.availableCount)} منتج
-                </Text>
-              )}
+            </View>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => router.push("/categories" as never)}
+            >
+              <Text style={styles.link}>عرض الكل</Text>
             </TouchableOpacity>
-          ))}
-        </ScrollView>
+          </View>
+          <ScrollView
+            contentContainerStyle={styles.occasionsList}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+          >
+            {STORE_OCCASIONS.map((occ) => (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                key={occ.id}
+                onPress={() => router.push("/categories" as never)}
+                style={styles.occasionItem}
+              >
+                <View
+                  style={[
+                    styles.occasionCircle,
+                    { backgroundColor: occ.color, borderColor: occ.borderColor },
+                  ]}
+                >
+                  <MaterialIcons
+                    color={occ.textColor}
+                    name={occ.icon as never}
+                    size={22}
+                  />
+                </View>
+                <Text numberOfLines={1} style={styles.occasionLabel}>
+                  {occ.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
 
         {productsState === "READY" && homeProducts.length > 0 && (
           <>
@@ -690,26 +764,17 @@ export default function HomeScreen() {
               activeOpacity={0.88}
               key={item.audience}
               onPress={() => router.push(item.route as never)}
-              style={[
-                styles.pathCard,
-                item.tone === "mint"
-                  ? styles.pathMint
-                  : item.tone === "sand"
-                    ? styles.pathSand
-                    : item.tone === "blue"
-                      ? styles.pathBlue
-                      : styles.pathRose,
-              ]}
+              style={styles.pathCard}
             >
               <View style={styles.pathIcon}>
-                <MaterialIcons color="#183D36" name={item.icon} size={25} />
+                <MaterialIcons color="#0F172A" name={item.icon} size={22} />
               </View>
               <Text style={styles.pathAudience}>{item.audience}</Text>
               <Text numberOfLines={2} style={styles.pathDirection}>
                 {item.direction}
               </Text>
               <View style={styles.pathArrow}>
-                <MaterialIcons color="#183D36" name="arrow-back" size={16} />
+                <MaterialIcons color="#059669" name="arrow-back" size={15} />
               </View>
             </TouchableOpacity>
           ))}
@@ -1008,28 +1073,32 @@ const styles = StyleSheet.create({
   searchRow: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: storefrontDesign.semantic.border,
-    borderRadius: 19,
-    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
+    borderWidth: 1.5,
     flexDirection: "row-reverse",
-    height: 58,
-    paddingLeft: 8,
+    height: 52,
+    paddingLeft: 6,
     paddingRight: 14,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
   },
   searchInput: {
-    color: "#183D36",
+    color: "#0F172A",
     flex: 1,
-    fontFamily: "Cairo_400Regular",
+    fontFamily: "Cairo_500Medium",
     fontSize: 13,
     marginHorizontal: 8,
   },
   searchAction: {
     alignItems: "center",
     backgroundColor: storefrontDesign.semantic.brandStrong,
-    borderRadius: 13,
-    height: 41,
+    borderRadius: 14,
+    height: 40,
     justifyContent: "center",
-    width: 39,
+    width: 40,
   },
   suggestions: {
     backgroundColor: "#FFFFFF",
@@ -1138,14 +1207,23 @@ const styles = StyleSheet.create({
   assuranceBar: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E6ECE7",
-    borderRadius: 22,
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
     borderWidth: 1,
     flexDirection: "row-reverse",
     justifyContent: "space-between",
-    marginTop: 19,
-    paddingHorizontal: 11,
-    paddingVertical: 10,
+    marginTop: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.02,
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  assuranceDivider: {
+    backgroundColor: "#E2E8F0",
+    height: 28,
+    width: 1,
   },
   assuranceItem: {
     alignItems: "center",
@@ -1155,17 +1233,20 @@ const styles = StyleSheet.create({
   },
   assuranceIcon: {
     alignItems: "center",
-    backgroundColor: storefrontDesign.semantic.safeSurface,
-    borderRadius: 11,
-    height: 31,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    borderWidth: 1,
+    height: 36,
     justifyContent: "center",
-    width: 31,
+    width: 36,
   },
   assuranceText: {
-    color: "#38534C",
+    color: "#0F172A",
     fontFamily: "Cairo_700Bold",
-    fontSize: 8,
+    fontSize: 10,
     textAlign: "center",
+    marginTop: 3,
   },
   offerStrip: { marginHorizontal: -16, marginTop: 13 },
   offerStripContent: { gap: 8, paddingHorizontal: 16 },
@@ -1222,82 +1303,97 @@ const styles = StyleSheet.create({
   pathList: { gap: 10, paddingHorizontal: 1 },
   pathCard: {
     alignItems: "flex-end",
-    borderRadius: 17,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
     borderWidth: 1,
-    minHeight: 137,
-    padding: 12,
-    width: 134,
+    minHeight: 140,
+    padding: 14,
+    width: 138,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 1,
   },
-  pathMint: { backgroundColor: "#E7F4FE", borderColor: "#D5EAF9" },
-  pathSand: { backgroundColor: "#FFF3DC", borderColor: "#F2E4C2" },
-  pathBlue: { backgroundColor: "#EAF1FF", borderColor: "#D8E4F8" },
-  pathRose: { backgroundColor: "#FFECEF", borderColor: "#F7DDE1" },
   pathIcon: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.76)",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
     borderRadius: 14,
-    height: 44,
+    borderWidth: 1,
+    height: 42,
     justifyContent: "center",
-    width: 44,
+    width: 42,
   },
   pathAudience: {
-    color: storefrontDesign.semantic.foreground,
+    color: "#0F172A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 14,
-    marginTop: 8,
+    marginTop: 10,
     textAlign: "right",
   },
   pathDirection: {
-    color: "#38534C",
+    color: "#64748B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 9,
-    lineHeight: 15,
-    marginTop: 2,
+    fontSize: 10,
+    lineHeight: 16,
+    marginTop: 3,
     textAlign: "right",
   },
   pathArrow: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.72)",
+    backgroundColor: "#ECFDF5",
     borderRadius: 10,
     height: 26,
     justifyContent: "center",
     marginTop: "auto",
     width: 26,
   },
-  categoryList: { gap: 11, paddingLeft: 4, paddingRight: 2 },
+  categoryList: { gap: 12, paddingLeft: 4, paddingRight: 2 },
   categoryItem: {
     alignItems: "center",
-    minHeight: 107,
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    width: 88,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
+    borderWidth: 1,
+    minHeight: 114,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    width: 92,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.02,
+    shadowRadius: 6,
+    elevation: 1,
   },
   categoryIcon: {
     alignItems: "center",
-    borderColor: "#FFFFFF",
-    borderRadius: 999,
-    borderWidth: 3,
-    elevation: 2,
-    height: 64,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+    borderRadius: 16,
+    borderWidth: 1,
+    height: 52,
     justifyContent: "center",
-    shadowColor: "#75839A",
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    width: 64,
+    width: 52,
   },
   categoryText: {
-    color: storefrontDesign.semantic.foreground,
+    color: "#0F172A",
     fontFamily: "Cairo_700Bold",
-    fontSize: 10,
-    lineHeight: 15,
-    marginTop: 6,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 8,
     textAlign: "center",
   },
-  categoryCount: {
-    color: "#6D817A",
+  categoryCountBadge: {
+    backgroundColor: "#F1F5F9",
+    borderRadius: 6,
+    marginTop: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  categoryCountText: {
+    color: "#475569",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 8,
-    marginTop: 1,
+    fontSize: 9,
   },
   productsPanel: {
     backgroundColor: "#EEF3F9",
@@ -1508,57 +1604,112 @@ const styles = StyleSheet.create({
     width: 38,
   },
   whatsappBanner: {
-    backgroundColor: "#F2FBF6",
-    borderColor: "#C5EBD6",
-    borderRadius: 20,
+    backgroundColor: "#7C5CFC",
+    borderColor: "rgba(255, 255, 255, 0.25)",
+    borderRadius: 24,
     borderWidth: 1,
-    marginHorizontal: 16,
-    marginTop: 14,
-    padding: 14,
-    gap: 12,
+    marginTop: 20,
+    padding: 18,
+    gap: 14,
+    shadowColor: "#7C5CFC",
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    elevation: 4,
   },
   whatsappBannerRight: {
     flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 12,
+    alignItems: "flex-start",
+    gap: 14,
   },
   whatsappBannerIcon: {
-    backgroundColor: "#0E806A",
-    borderRadius: 14,
-    width: 44,
-    height: 44,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    borderRadius: 16,
+    width: 48,
+    height: 48,
     alignItems: "center",
     justifyContent: "center",
   },
   whatsappBannerText: {
     flex: 1,
   },
-  whatsappBannerTitle: {
-    color: "#161A22",
+  whatsappBadgeRow: {
+    flexDirection: "row-reverse",
+    marginBottom: 4,
+  },
+  whatsappTag: {
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    borderRadius: 8,
+    color: "#FFFFFF",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 14,
+    fontSize: 9,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  whatsappBannerTitle: {
+    color: "#FFFFFF",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 16,
+    lineHeight: 24,
     textAlign: "right",
   },
   whatsappBannerSub: {
-    color: "#4F685D",
-    fontFamily: "Cairo_400Regular",
+    color: "#E0E7FF",
+    fontFamily: "Cairo_600SemiBold",
     fontSize: 11,
-    lineHeight: 16,
-    marginTop: 2,
+    lineHeight: 18,
+    marginTop: 3,
     textAlign: "right",
   },
+  whatsappActionRow: {
+    marginTop: 2,
+  },
   whatsappBadge: {
-    backgroundColor: "#E4F7EC",
-    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
     flexDirection: "row-reverse",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: 8,
+    gap: 8,
+    paddingVertical: 11,
+    shadowColor: "#000000",
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2,
   },
   whatsappBadgeText: {
-    color: "#157347",
-    fontFamily: "Cairo_700Bold",
+    color: "#7C5CFC",
+    fontFamily: "Cairo_800ExtraBold",
     fontSize: 12,
+  },
+  occasionsSection: {
+    marginTop: 10,
+  },
+  occasionsList: {
+    gap: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
+  occasionItem: {
+    alignItems: "center",
+    width: 68,
+  },
+  occasionCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+    marginBottom: 6,
+  },
+  occasionLabel: {
+    color: "#334155",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 10,
+    textAlign: "center",
   },
 });

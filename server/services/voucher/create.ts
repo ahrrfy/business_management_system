@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { eq } from "drizzle-orm";
 import {
   customers,
@@ -40,6 +41,7 @@ import {
 } from "./helpers";
 import { loadVoucherCategoryForPosting } from "./categoryAccounting";
 import { voucherPostingPlan } from "./posting";
+import type { VoucherCategoryPostingRole } from "@shared/voucherCategoryAccounting";
 import { withMysqlDeadlockRetry } from "./deadlockRetry";
 import type { VoucherInput, VoucherResult } from "./types";
 import { createHash } from "node:crypto";
@@ -198,6 +200,8 @@ export type SystemPaymentRequest =
       sourceShippingTotal: string;
       /** دليل أداة الدفع غير النقدية (مرجع تحويل/صك أو آخر 4 للبطاقة). */
       paymentReference?: string | null;
+      fundingSource?: "DRAWER" | "TREASURY";
+      shiftId?: number | null;
     } & AccrualObligationSystemSource)
   | {
       kind: "EXCHANGE_IQD_DEPOSIT";
@@ -715,14 +719,16 @@ export async function createVoucherTx(
         "فئة السند والحساب المقابل إلزاميان لسندات «أخرى» — عيّن فئة محاسبية مهيأة قبل الحفظ",
     });
   }
+  let categoryPostingRole: VoucherCategoryPostingRole | null = null;
   if (input.voucherCategoryId != null) {
     if (requiresCategoryAccounting) {
-      await loadVoucherCategoryForPosting(
+      const category = await loadVoucherCategoryForPosting(
         tx,
         input.voucherCategoryId,
         direction,
         { lock: true },
       );
+      categoryPostingRole = category.postingRole;
     } else if (options?.systemRequest?.kind !== "VOUCHER_CANCELLATION") {
       await validateCategory(tx, input.voucherCategoryId, direction);
     }
@@ -882,8 +888,6 @@ export async function createVoucherTx(
         message: "اسم الطرف المقابل إلزامي لسندات «أخرى»",
       });
     }
-    // قبض OTHER يخلق نقداً من مصدر خارجي مجهول وقابل للتجزئة؛ لذلك يخضع دائماً إلى Maker‑Checker.
-    if (input.voucherType === "RECEIPT") forcePendingApproval = true;
   }
 
   // أساسا التاريخ متمايزان عمداً (إصلاح انحدار #604):
@@ -915,12 +919,12 @@ export async function createVoucherTx(
     input.voucherType,
     input.branchId,
   );
-  // عقد المالك: كل سند صرف يُنشأ طلباً معلّقاً، بصرف النظر عن المبلغ أو صفة المنشئ.
-  // سند القبض يبقى على سياسته القائمة (OTHER يحتاج Maker-Checker، وغيره مباشر).
+  // المسار الأول — الدستور المالي: سند القبض التشغيلي ينفذ مباشرةً في درج الكاشير المستلم الفعلي.
+  // بوابات الاعتماد محصورة في الصرف (خروج مال MONEY_OUT) والطلبات النظامية (محو أثر ERASE_EFFECT).
   const needsApproval =
     direction === "OUT" ||
     forcePendingApproval ||
-    options?.systemRequest?.kind === "VOUCHER_CANCELLATION";
+    options?.systemRequest != null;
   const resolvedActor = await resolveApprovalActor(tx, actor);
   const ownerApprovalPlan = planApproval({
     actor: resolvedActor,
@@ -1031,6 +1035,7 @@ export async function createVoucherTx(
       cashBucket,
       amount,
       referenceNumber: input.referenceNumber,
+      categoryPostingRole,
     });
     if (!posting) {
       throw new TRPCError({
@@ -1083,6 +1088,15 @@ export async function createVoucherTx(
         input.partyId,
         direction === "IN" ? amount.neg() : amount,
       );
+      if (direction === "IN") {
+        const [c] = await tx
+          .select({ currentBalance: customers.currentBalance })
+          .from(customers)
+          .where(eq(customers.id, Number(input.partyId)));
+        if (c && money(c.currentBalance).lte(0)) {
+          await autoSettleCustomerAccountTx(tx, Number(input.partyId), actor);
+        }
+      }
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
@@ -1176,11 +1190,14 @@ export async function finalizeOwnerSystemVoucherTx(
   tx: Tx,
   receiptId: number,
   actor: Actor,
+  options?: {
+    cashSource?: { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
+  },
 ): Promise<boolean> {
   const resolvedActor = await resolveApprovalActor(tx, actor);
   if (!resolvedActor.isOwner) return false;
   const { approveVoucherTx } = await import("./approval");
-  const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+  const approval = await approveVoucherTx(tx, receiptId, resolvedActor, options);
   await logAuditTx(
     tx,
     {

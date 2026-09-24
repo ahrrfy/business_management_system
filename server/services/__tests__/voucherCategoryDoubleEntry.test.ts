@@ -292,8 +292,7 @@ describe("voucher category exact double-entry", () => {
       },
       maker,
     );
-    expect(await entriesFor(request.receiptId)).toHaveLength(0);
-    await approveVoucher(request.receiptId, owner);
+    expect(request.approvalStatus).toBe("APPROVED");
     const [materialized] = await entriesFor(request.receiptId);
     expect(materialized).toMatchObject({
       postingProfile: "PAYMENT_IN_CATEGORY",

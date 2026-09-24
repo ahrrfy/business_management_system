@@ -21,9 +21,69 @@ import {
   useStorefrontSettings,
 } from "@/lib/storefront-api";
 import { storefrontDesign } from "@/lib/storefront-design";
+import type { Product } from "@/shared/storefront";
+
+const IMPULSE_ADDONS: Product[] = [
+  {
+    id: "addon-highlighters",
+    productId: 9901,
+    productUnitId: 9901,
+    title: "طقم أقلام تظليل باستيل",
+    subtitle: "4 ألوان ناعمة",
+    categoryId: "stationery",
+    description: "أقلام تظليل لطيفة على الورق وسريعة الجفاف",
+    icon: "brush",
+    accent: "#FEF3C7",
+    availability: "متوفر",
+    price: "2500",
+    inStock: true,
+  },
+  {
+    id: "addon-stickynotes",
+    productId: 9902,
+    productUnitId: 9902,
+    title: "أوراق ملاحظات لاصقة",
+    subtitle: "100 ورقة ملونة",
+    categoryId: "stationery",
+    description: "مثالية لتنظيم الملاحظات وتحديد الصفحات",
+    icon: "note",
+    accent: "#E0F2FE",
+    availability: "متوفر",
+    price: "1500",
+    inStock: true,
+  },
+  {
+    id: "addon-correction",
+    productId: 9903,
+    productUnitId: 9903,
+    title: "شريط تصحيح ياباني 12م",
+    subtitle: "شريط أبيض فوري",
+    categoryId: "stationery",
+    description: "تغطية كاملة وجافة فورية بدون تلطيخ",
+    icon: "edit",
+    accent: "#FCE7F3",
+    availability: "متوفر",
+    price: "2000",
+    inStock: true,
+  },
+  {
+    id: "addon-pocketbook",
+    productId: 9904,
+    productUnitId: 9904,
+    title: "دفتر جيب شبكي فاخر",
+    subtitle: "80 ورقة مقوى",
+    categoryId: "stationery",
+    description: "غلاف مرن أنيق وورق عالي الجودة للتدوين السريع",
+    icon: "menu-book",
+    accent: "#DCFCE7",
+    availability: "متوفر",
+    price: "3000",
+    inStock: true,
+  },
+];
 
 export default function CartScreen() {
-  const { decrement, increment, isRestoring, lines, remove } = useCart();
+  const { addProduct, decrement, increment, isRestoring, lines, remove } = useCart();
   const settings = useStorefrontSettings();
   const estimatedSubtotal = lines.reduce(
     (sum, line) =>
@@ -60,6 +120,7 @@ export default function CartScreen() {
     0,
     freeShippingThreshold - estimatedSubtotal,
   );
+  const totalItemCount = lines.reduce((sum, line) => sum + line.quantity, 0);
 
   const shareCartViaWhatsApp = async () => {
     if (lines.length === 0) return;
@@ -179,6 +240,84 @@ export default function CartScreen() {
             </View>
           </View>
         )}
+
+        {/* سد فجوة التوصيل المجاني إذا كان الفارق 5000 دينار أو أقل */}
+        {freeShippingThreshold > 0 && shippingRemaining > 0 && shippingRemaining <= 5000 && (
+          <View style={styles.gapFillerCard}>
+            <View style={styles.gapFillerHeader}>
+              <View style={styles.gapFillerBadge}>
+                <MaterialIcons color="#15803D" name="offline-bolt" size={16} />
+                <Text style={styles.gapFillerBadgeText}>وفر أجور الشحن</Text>
+              </View>
+              <Text style={styles.gapFillerRemaining}>
+                متبقي {formatIqd(shippingRemaining)} فقط
+              </Text>
+            </View>
+            <Text style={styles.gapFillerTitle}>
+              سد فجوة التوصيل المجاني بأصناف مفيدة
+            </Text>
+            <Text style={styles.gapFillerSubtitle}>
+              بدلاً من دفع أجور التوصيل، أضف أحد هذه الأصناف واحصل على شحن مجاني
+            </Text>
+
+            <ScrollView
+              contentContainerStyle={styles.gapFillerList}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+            >
+              {IMPULSE_ADDONS.map((addon) => (
+                <View key={addon.id} style={styles.gapFillerItem}>
+                  <View style={[styles.gapFillerIconBox, { backgroundColor: addon.accent }]}>
+                    <MaterialIcons
+                      color={storefrontDesign.semantic.brandStrong}
+                      name={addon.icon}
+                      size={22}
+                    />
+                  </View>
+                  <Text numberOfLines={1} style={styles.gapFillerItemTitle}>
+                    {addon.title}
+                  </Text>
+                  <Text style={styles.gapFillerItemPrice}>
+                    {formatIqd(Number(addon.price ?? 0))}
+                  </Text>
+                  <TouchableOpacity
+                    accessibilityHint="يضيف الصنف فورياً لسلتك للتأهل للشحن المجاني"
+                    accessibilityLabel={`أضف ${addon.title} للسلة`}
+                    accessibilityRole="button"
+                    activeOpacity={0.82}
+                    onPress={() => addProduct(addon)}
+                    style={styles.gapFillerAddBtn}
+                  >
+                    <MaterialIcons color="#FFFFFF" name="add" size={16} />
+                    <Text style={styles.gapFillerAddBtnText}>أضف</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* مؤشر خصم الجملة لسلة التسوق */}
+        <View style={totalItemCount >= 12 ? styles.wholesaleQualifiedCard : styles.wholesaleProgressCard}>
+          <MaterialIcons
+            color={totalItemCount >= 12 ? "#15803D" : "#B45309"}
+            name={totalItemCount >= 12 ? "verified" : "store"}
+            size={18}
+          />
+          <View style={styles.wholesaleTextWrap}>
+            <Text style={totalItemCount >= 12 ? styles.wholesaleQualifiedTitle : styles.wholesaleProgressTitle}>
+              {totalItemCount >= 12
+                ? "مؤهل لخصم الجملة (أكثر من 12 قطعة في السلة)"
+                : `خصم الجملة يبدأ من 12 قطعة (لديك ${formatLatinNumber(totalItemCount)})`}
+            </Text>
+            <Text style={styles.wholesaleProgressDesc}>
+              {totalItemCount >= 12
+                ? "تم تفعيل تسعير الجملة المخفض على طلبك وسيتم تأكيده في الفاتورة النهائية."
+                : `أضف ${formatLatinNumber(12 - totalItemCount)} قطع إضافية لتفعيل أسعار الجملة ووفر حتى 25% على طلبك.`}
+            </Text>
+          </View>
+        </View>
+
         <View style={styles.lines}>
           {lines.map((line) => {
             const originalPrice = line.selectionDetails.unitPrice;
@@ -392,25 +531,31 @@ const styles = StyleSheet.create({
   },
   continueButton: {
     alignItems: "center",
-    backgroundColor: "#E7F4FE",
+    backgroundColor: "#ECFDF5",
+    borderColor: "#A7F3D0",
     borderRadius: 999,
+    borderWidth: 1,
     flexDirection: "row-reverse",
     gap: 4,
-    paddingHorizontal: 11,
-    paddingVertical: 9,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   continueText: {
-    color: "#147FCB",
+    color: "#059669",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 10,
   },
   shippingCard: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E7EF",
+    borderColor: "#E2E8F0",
     borderRadius: 20,
     borderWidth: 1,
     marginTop: 18,
-    padding: 14,
+    padding: 16,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 1,
   },
   shippingTop: {
     alignItems: "center",
@@ -419,35 +564,35 @@ const styles = StyleSheet.create({
   },
   shippingIcon: {
     alignItems: "center",
-    backgroundColor: "#E7F4FE",
-    borderRadius: 12,
-    height: 36,
+    backgroundColor: "#ECFDF5",
+    borderRadius: 14,
+    height: 40,
     justifyContent: "center",
-    width: 36,
+    width: 40,
   },
   shippingTitle: {
-    color: "#161A22",
+    color: "#0F172A",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 12,
+    fontSize: 13,
     textAlign: "right",
   },
   shippingHint: {
-    color: "#147FCB",
+    color: "#059669",
     fontFamily: "Cairo_700Bold",
-    fontSize: 10,
-    marginTop: 2,
+    fontSize: 11,
+    marginTop: 3,
     textAlign: "right",
   },
   progressTrack: {
-    backgroundColor: "#E5EAF1",
-    borderRadius: 9,
-    height: 7,
+    backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+    height: 8,
     marginTop: 12,
     overflow: "hidden",
   },
   progressValue: {
-    backgroundColor: "#2898E5",
-    borderRadius: 9,
+    backgroundColor: "#059669",
+    borderRadius: 10,
     height: "100%",
   },
   lines: { gap: 11, marginTop: 16 },
@@ -496,9 +641,9 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   linePrice: {
-    color: "#147FCB",
+    color: "#059669",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 14,
+    fontSize: 15,
     textAlign: "right",
   },
   oldPrice: {
@@ -511,19 +656,21 @@ const styles = StyleSheet.create({
   },
   controls: {
     alignItems: "center",
-    backgroundColor: "#F0F4F9",
-    borderRadius: 13,
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    borderWidth: 1,
     flexDirection: "row",
-    padding: 3,
+    padding: 2,
   },
   control: {
     alignItems: "center",
-    height: 40,
+    height: 38,
     justifyContent: "center",
-    width: 40,
+    width: 38,
   },
   quantity: {
-    color: "#161A22",
+    color: "#0F172A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 14,
     minWidth: 28,
@@ -532,14 +679,18 @@ const styles = StyleSheet.create({
   controlDisabled: { opacity: 0.35 },
   summary: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#EEE3D7",
-    borderRadius: 21,
+    borderColor: "#E2E8F0",
+    borderRadius: 24,
     borderWidth: 1,
     marginTop: 20,
-    padding: 15,
+    padding: 18,
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.03,
+    shadowRadius: 10,
+    elevation: 1,
   },
   summaryTitle: {
-    color: "#183D36",
+    color: "#0F172A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 16,
     marginBottom: 12,
@@ -548,26 +699,26 @@ const styles = StyleSheet.create({
   summaryRow: {
     flexDirection: "row-reverse",
     justifyContent: "space-between",
-    marginTop: 8,
+    marginTop: 10,
   },
   summaryLabel: {
-    color: "#65776F",
+    color: "#64748B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 12,
+    fontSize: 13,
   },
-  summaryValue: { color: "#334C43", fontFamily: "Cairo_700Bold", fontSize: 13 },
-  savings: { color: "#16835B", fontFamily: "Cairo_800ExtraBold", fontSize: 13 },
-  divider: { backgroundColor: "#F0E8DE", height: 1, marginTop: 12 },
+  summaryValue: { color: "#0F172A", fontFamily: "Cairo_700Bold", fontSize: 14 },
+  savings: { color: "#059669", fontFamily: "Cairo_800ExtraBold", fontSize: 14 },
+  divider: { backgroundColor: "#E2E8F0", height: 1, marginTop: 14 },
   total: {
-    color: "#0E806A",
+    color: "#059669",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 18,
+    fontSize: 20,
     marginTop: 4,
   },
   totalLabel: {
-    color: "#183D36",
-    fontFamily: "Cairo_700Bold",
-    fontSize: 14,
+    color: "#0F172A",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 15,
     marginTop: 6,
   },
   summaryNote: {
@@ -597,13 +748,17 @@ const styles = StyleSheet.create({
   },
   checkout: {
     alignItems: "center",
-    backgroundColor: "#147FCB",
+    backgroundColor: "#FF5A36",
     borderRadius: 18,
     flexDirection: "row",
     gap: 8,
-    height: 59,
+    height: 54,
     justifyContent: "center",
-    marginTop: 17,
+    marginTop: 18,
+    shadowColor: "#FF5A36",
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    elevation: 4,
   },
   checkoutText: {
     color: "#FFFFFF",
@@ -651,7 +806,7 @@ const styles = StyleSheet.create({
   },
   browse: {
     alignItems: "center",
-    backgroundColor: "#0E806A",
+    backgroundColor: storefrontDesign.semantic.brandStrong,
     borderRadius: 14,
     flexDirection: "row",
     gap: 8,
@@ -662,19 +817,161 @@ const styles = StyleSheet.create({
   browseText: { color: "#FFFFFF", fontFamily: "Cairo_700Bold", fontSize: 13 },
   shareWhatsAppBtn: {
     alignItems: "center",
-    backgroundColor: "#E8F8EE",
-    borderColor: "#A9E2BF",
+    backgroundColor: "#F0FDF4",
+    borderColor: "#BBF7D0",
+    borderRadius: 16,
+    borderWidth: 1.5,
+    flexDirection: "row-reverse",
+    gap: 8,
+    justifyContent: "center",
+    marginTop: 12,
+    paddingVertical: 13,
+  },
+  shareWhatsAppText: {
+    color: "#166534",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 13,
+  },
+  gapFillerCard: {
+    backgroundColor: "#F0FDF4",
+    borderColor: "#BBF7D0",
+    borderRadius: 20,
+    borderWidth: 1.5,
+    marginTop: 14,
+    padding: 14,
+    gap: 6,
+  },
+  gapFillerHeader: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+  },
+  gapFillerBadge: {
+    alignItems: "center",
+    backgroundColor: "#DCFCE7",
+    borderRadius: 8,
+    flexDirection: "row-reverse",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  gapFillerBadgeText: {
+    color: "#166534",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
+  gapFillerRemaining: {
+    color: "#15803D",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+  },
+  gapFillerTitle: {
+    color: "#14532D",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 13,
+    textAlign: "right",
+  },
+  gapFillerSubtitle: {
+    color: "#166534",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: "right",
+  },
+  gapFillerList: {
+    flexDirection: "row-reverse",
+    gap: 10,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  gapFillerItem: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#DCFCE7",
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 10,
+    width: 140,
+    alignItems: "center",
+    gap: 4,
+  },
+  gapFillerIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gapFillerItemTitle: {
+    color: "#1E293B",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+    textAlign: "center",
+  },
+  gapFillerItemPrice: {
+    color: "#15803D",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 12,
+  },
+  gapFillerAddBtn: {
+    alignItems: "center",
+    backgroundColor: "#15803D",
+    borderRadius: 8,
+    flexDirection: "row-reverse",
+    gap: 2,
+    justifyContent: "center",
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    width: "100%",
+  },
+  gapFillerAddBtnText: {
+    color: "#FFFFFF",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
+  wholesaleProgressCard: {
+    alignItems: "flex-start",
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
     borderRadius: 16,
     borderWidth: 1,
     flexDirection: "row-reverse",
     gap: 8,
-    justifyContent: "center",
-    marginTop: 10,
-    paddingVertical: 13,
+    marginTop: 14,
+    padding: 12,
   },
-  shareWhatsAppText: {
-    color: "#157347",
+  wholesaleQualifiedCard: {
+    alignItems: "flex-start",
+    backgroundColor: "#F0FDF4",
+    borderColor: "#BBF7D0",
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 8,
+    marginTop: 14,
+    padding: 12,
+  },
+  wholesaleTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  wholesaleProgressTitle: {
+    color: "#92400E",
     fontFamily: "Cairo_700Bold",
-    fontSize: 13,
+    fontSize: 12,
+    textAlign: "right",
+  },
+  wholesaleQualifiedTitle: {
+    color: "#166534",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 12,
+    textAlign: "right",
+  },
+  wholesaleProgressDesc: {
+    color: "#78350F",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: "right",
   },
 });

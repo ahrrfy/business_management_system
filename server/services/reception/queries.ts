@@ -6,7 +6,7 @@
 //
 // keyset (paginateKeyset) على idx_invoice_shift/idx_invoice_branch — الطابور القديم كان
 // sinceDays:1 مثبَّتاً وlimit 300 بلا ترقيم ⇒ فاتورة الأمس غير قابلة للوصول إطلاقاً (§٨.٥).
-import { and, desc, eq, gte, inArray, isNull, like, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -146,7 +146,13 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
         .leftJoin(customers, eq(customers.id, invoices.customerId))
         .leftJoin(users, eq(users.id, invoices.createdBy))
         .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-        .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+        .leftJoin(
+          deliveryConsignments,
+          and(
+            eq(deliveryConsignments.invoiceId, invoices.id),
+            ne(deliveryConsignments.status, "CANCELLED"),
+          ),
+        )
         .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
         .where(where)
         .orderBy(desc(invoices.id))

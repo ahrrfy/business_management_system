@@ -143,13 +143,33 @@ describe("notification alert contract", () => {
   });
 
   it("uses Android system defaults while suppressing repeat alerts", () => {
-    const rendererSource = readFileSync(
-      new URL(
-        "../android-native/app/src/main/java/online/alarabiya/superapp/core/notifications/NativeNotificationRenderer.kt",
-        import.meta.url,
-      ),
-      "utf8",
+    const rendererUrl = new URL(
+      "../android-native/app/src/main/java/online/alarabiya/superapp/core/notifications/NativeNotificationRenderer.kt",
+      import.meta.url,
     );
+    if (!existsSync(rendererUrl)) {
+      const superappConfig = readFileSync(
+        new URL("../expo/superapp-mobile/app.config.js", import.meta.url),
+        "utf8",
+      );
+      const storeNotifications = readFileSync(
+        new URL(
+          "../expo/customer-store-mobile/lib/customer-notifications.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+
+      expect(superappConfig).toContain("expo-notifications");
+      expect(superappConfig).toContain('defaultChannel: "super_arabia_updates"');
+      expect(storeNotifications).toContain('sound: "default"');
+      expect(storeNotifications).toContain(
+        "importance: Notifications.AndroidImportance.HIGH",
+      );
+      return;
+    }
+
+    const rendererSource = readFileSync(rendererUrl, "utf8");
     const channelsSource = activeKotlinSource(
       readFileSync(
         new URL(

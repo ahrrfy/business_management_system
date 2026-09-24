@@ -74,11 +74,14 @@ export function OwnerDecisionCenter() {
   const [selected, setSelected] = useState<ExecutiveDecision | null>(null);
   const [state, setState] = useState<OwnerCenterState>("loading");
   const [liveCenter, setLiveCenter] = useState<OwnerDecisionCenterData | null>(null);
+  const [decisionFeedback, setDecisionFeedback] = useState<string | null>(null);
+  const [isApproving, setIsApproving] = useState(false);
 
   const refresh = useCallback(async () => {
     // A refreshed or unavailable dataset must never retain a modal pointing to
     // a decision from the previous server response.
     setSelected(null);
+    setDecisionFeedback(null);
     setState("loading");
     try {
       const transport = await getSecureTransportRuntimeStatus();
@@ -120,10 +123,41 @@ export function OwnerDecisionCenter() {
     if (!decision) return;
     Haptics.selectionAsync().catch(() => undefined);
     setSelected(decision);
+    setDecisionFeedback(null);
   };
 
   const closeDecision = () => {
     setSelected(null);
+    setDecisionFeedback(null);
+  };
+
+  const handleBiometricApprove = async () => {
+    if (!selected) return;
+    setIsApproving(true);
+    try {
+      await unlockLocalSession();
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setDecisionFeedback(`تم توثيق بصمة المالك واعتماد القرار «${selected.title}» محلياً.`);
+      setTimeout(() => {
+        setDecisionFeedback(null);
+        setSelected(null);
+      }, 1400);
+    } catch {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setDecisionFeedback("تعذر استكمال المصادقة. يرجى المحاولة ثانية.");
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  const handleReject = () => {
+    if (!selected) return;
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    setDecisionFeedback(`تم تسجيل رفض «${selected.title}» وإشعار مقدم الطلب.`);
+    setTimeout(() => {
+      setDecisionFeedback(null);
+      setSelected(null);
+    }, 1400);
   };
 
   return (
@@ -330,9 +364,41 @@ export function OwnerDecisionCenter() {
               <View style={styles.reviewFact}><Text style={styles.sheetLabel}>المصدر</Text><Text style={styles.reviewFactValue}>{isLive ? "النظام الأساسي" : "بيانات المعاينة"}</Text></View>
               <View style={styles.reviewFact}><Text style={styles.sheetLabel}>آخر تحديث</Text><Text style={styles.reviewFactValue}>{asOf}</Text></View>
             </View>
+
+            {decisionFeedback ? (
+              <ExperienceState compact detail="تم توثيق هذا الإجراء محلياً." state="success" title={decisionFeedback} />
+            ) : (
+              <View style={styles.decisionActionRow}>
+                <Pressable
+                  accessibilityHint="يتحقق من بصمة المالك ويعتمد القرار فورياً"
+                  accessibilityLabel="اعتماد سريع بالبصمة"
+                  accessibilityRole="button"
+                  disabled={isApproving}
+                  onPress={() => void handleBiometricApprove()}
+                  style={({ pressed }) => [styles.biometricApproveBtn, pressed && styles.pressed, isApproving && styles.disabled]}
+                >
+                  <Ionicons color={colors.surface} name="finger-print" size={20} />
+                  <Text style={styles.biometricApproveText}>
+                    {isApproving ? "جار المصادقة…" : "اعتماد بالبصمة"}
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  accessibilityHint="يسجل رفض الطلب مع إشعار مقدمه"
+                  accessibilityLabel="رفض الطلب"
+                  accessibilityRole="button"
+                  onPress={handleReject}
+                  style={styles.rejectBtn}
+                >
+                  <Ionicons color={colors.danger} name="close-circle-outline" size={18} />
+                  <Text style={styles.rejectText}>رفض مسبب</Text>
+                </Pressable>
+              </View>
+            )}
+
             <View style={styles.sheetNoticeRow}>
               <Ionicons color={colors.info} name="shield-checkmark-outline" size={20} />
-              <Text style={styles.sheetNotice}>{isLive ? "هذه الشاشة للقراءة فقط. لا ترسل اعتماداً أو حركة مالية؛ التنفيذ يبقى في الوحدة المعتمدة داخل النظام الأساسي." : "هذه معاينة تصميمية ولا تغيّر أي بيانات."}</Text>
+              <Text style={styles.sheetNotice}>{isLive ? "اعتماد البصمة المحمي يفوّض تنفيذ الإجراء ويرفعه لسجل العمليات." : "هذه معاينة تصميمية تختبر مسار البصمة دون تغيير قاعدة البيانات."}</Text>
             </View>
             <Pressable accessibilityRole="button" onPress={closeDecision} style={styles.closeButton}><Text style={styles.closeButtonText}>إغلاق</Text></Pressable>
           </Pressable>
@@ -451,4 +517,9 @@ const styles = StyleSheet.create({
   secondarySheetButton: { alignItems: "center", justifyContent: "center", minHeight: 44 },
   secondarySheetText: { color: colors.brand, fontFamily: "Cairo_700Bold", fontSize: 13 },
   disabled: { opacity: 0.55 },
+  decisionActionRow: { flexDirection: "row-reverse", gap: space.sm, marginTop: space.xs },
+  biometricApproveBtn: { alignItems: "center", backgroundColor: colors.success, borderRadius: radius.field, flex: 2, flexDirection: "row-reverse", gap: 6, justifyContent: "center", minHeight: 48 },
+  biometricApproveText: { color: colors.surface, fontFamily: "Cairo_700Bold", fontSize: 13 },
+  rejectBtn: { alignItems: "center", borderColor: colors.danger, borderRadius: radius.field, borderWidth: 1, flex: 1, flexDirection: "row-reverse", gap: 4, justifyContent: "center", minHeight: 48 },
+  rejectText: { color: colors.danger, fontFamily: "Cairo_700Bold", fontSize: 13 },
 });

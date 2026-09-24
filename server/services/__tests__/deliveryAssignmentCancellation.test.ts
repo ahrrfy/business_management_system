@@ -222,7 +222,7 @@ beforeEach(async () => {
 });
 
 describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", () => {
-  it.each(["ASSIGNED", "FAILED"] as const)(
+  it.each(["OUT_FOR_DELIVERY", "FAILED"] as const)(
     "%s: يلغي الإسناد ويحرر COD بلا لمس الفاتورة أو المخزون أو الإيصالات",
     async (parcelStatus) => {
       await seedInvoice();
@@ -343,7 +343,6 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
   it.each([
     "ACCEPTED",
     "PICKED_UP",
-    "OUT_FOR_DELIVERY",
     "DELIVERED",
     "RETURNED",
     "CANCELLED",
@@ -524,7 +523,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
       partyId: 2,
       assignedUserId: 4,
       status: "DISPATCHED",
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
       moneyStatus: "UNSETTLED",
       recipientName: "المستلم الجديد",
       recipientPhone: "07711111111",
@@ -621,5 +620,102 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
         clientRequestId: "router-denied-cashier-cancel-106",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});
+
+describe("ذرية إسناد وإلغاء التوصيل في استعلامات المبيعات (Sales Queries Atomicity)", () => {
+  it("تنقية كاملة لبيانات التوصيل من sales.get و sales.list و sales.listPage عند إلغاء الإسناد مع إتاحة إعادة التنشيط", async () => {
+    await seedInvoice(100);
+    const api = caller("manager", null);
+
+    // 1. قبل الإسناد: الفاتورة بلا أي بيانات توصيل وتظهر في delivery === NONE
+    const initialGet = await api.sales.get({ invoiceId: 100 });
+    expect(initialGet.consignmentId).toBeNull();
+    expect(initialGet.consignmentNumber).toBeNull();
+    expect(initialGet.consignmentStatus).toBeNull();
+    expect(initialGet.courierName).toBeNull();
+    expect(initialGet.courierFee).toBeNull();
+    expect(initialGet.deliveryPartyId).toBeNull();
+
+    const initialListNone = await api.sales.list({ delivery: "NONE" });
+    expect(initialListNone.some((inv: any) => inv.id === 100)).toBe(true);
+
+    // 2. بعد الإسناد: تظهر بيانات التوصيل كاملة وتختفي من delivery === NONE
+    const dispatched = await dispatch(100, 1, "dispatch-test-atomicity-100");
+    const getAfterDispatch = await api.sales.get({ invoiceId: 100 });
+    expect(getAfterDispatch.consignmentId).toBe(dispatched.consignmentId);
+    expect(getAfterDispatch.consignmentNumber).toBe(dispatched.consignmentNumber);
+    expect(getAfterDispatch.consignmentStatus).toBe("DISPATCHED");
+    expect(getAfterDispatch.courierName).toBe("مندوب أول");
+    expect(Number(getAfterDispatch.courierFee)).toBe(1000);
+    expect(getAfterDispatch.deliveryPartyId).toBe(1);
+
+    const listDispatched = await api.sales.list({ delivery: "OPEN" });
+    expect(listDispatched.some((inv: any) => inv.id === 100)).toBe(true);
+
+    const listNoneAfterDispatch = await api.sales.list({ delivery: "NONE" });
+    expect(listNoneAfterDispatch.some((inv: any) => inv.id === 100)).toBe(false);
+
+    // 3. عند إلغاء الإسناد: تعود الفاتورة ذرّياً نقية تماماً من أي تسريب لبيانات الإسناد الملغى
+    await cancelDeliveryAssignment(
+      {
+        consignmentId: dispatched.consignmentId,
+        reason: "إلغاء الإسناد للتجربة الذرية",
+        clientRequestId: "cancel-atomicity-100",
+      },
+      MANAGER,
+    );
+
+    // 3.1 sales.get
+    const getAfterCancel = await api.sales.get({ invoiceId: 100 });
+    expect(getAfterCancel.consignmentId).toBeNull();
+    expect(getAfterCancel.consignmentNumber).toBeNull();
+    expect(getAfterCancel.consignmentStatus).toBeNull();
+    expect(getAfterCancel.courierName).toBeNull();
+    expect(getAfterCancel.courierFee).toBeNull();
+    expect(getAfterCancel.courierFeeCollection).toBeNull();
+    expect(getAfterCancel.deliveryPartyId).toBeNull();
+
+    // 3.2 sales.list
+    const listAfterCancelNone = await api.sales.list({ delivery: "NONE" });
+    expect(listAfterCancelNone.some((inv: any) => inv.id === 100)).toBe(true);
+
+    const listAfterCancelDispatched = await api.sales.list({ delivery: "OPEN" });
+    expect(listAfterCancelDispatched.some((inv: any) => inv.id === 100)).toBe(false);
+
+    // 3.3 sales.listPage
+    const listPageAfterCancel = await api.sales.listPage({
+      delivery: "NONE",
+      page: 1,
+      pageSize: 10,
+    });
+    const foundPageItem = listPageAfterCancel.rows.find((inv: any) => inv.id === 100);
+    expect(foundPageItem).toBeDefined();
+    expect(foundPageItem.consignmentId).toBeNull();
+    expect(foundPageItem.consignmentStatus).toBeNull();
+    expect(foundPageItem.deliveryPartyName).toBeNull();
+
+    // 4. إعادة الإسناد لجهة أخرى: يتم التنشيط الذري وتعود البيانات بالجهة الجديدة
+    await dispatchInvoiceToDelivery(
+      {
+        invoiceId: 100,
+        partyId: 2,
+        deliveryFee: "3000",
+        feeCollection: "COURIER",
+        recipientName: "المستلم",
+        recipientPhone: "07700000000",
+        deliveryAddress: "الكرادة",
+        clientRequestId: "redispatch-atomicity-100",
+      },
+      SALES,
+    );
+
+    const getAfterReactivate = await api.sales.get({ invoiceId: 100 });
+    expect(getAfterReactivate.consignmentId).toBe(dispatched.consignmentId);
+    expect(getAfterReactivate.consignmentStatus).toBe("DISPATCHED");
+    expect(getAfterReactivate.courierName).toBe("مندوب ثان");
+    expect(Number(getAfterReactivate.courierFee)).toBe(3000);
+    expect(getAfterReactivate.courierFeeCollection).toBe("COURIER");
+    expect(getAfterReactivate.deliveryPartyId).toBe(2);
   });
 });

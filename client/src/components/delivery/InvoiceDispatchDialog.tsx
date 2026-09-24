@@ -262,11 +262,27 @@ export function InvoiceDispatchDialog({
             </div>
           </div>
           <div className="rounded-md border bg-muted/35 p-2 text-xs leading-6 text-muted-foreground">
-            المتبقي الذي يحصله المندوب للمكتبة:{" "}
-            <strong className="tabular-nums text-foreground" dir="ltr">
-              {fmt(remaining.toFixed(2))} د.ع
-            </strong>
-            . أجرة التوصيل مستقلة ولا تُضاف إلى إيراد الفاتورة.
+            {remaining.isZero() ? (
+              <>
+                الفاتورة <strong className="text-[var(--sem-pos)]">مدفوعة مسبقاً بالكامل</strong> (متبقي البضاعة: 0 د.ع).
+                {feeCollection === "COURIER" ? (
+                  <> المطلوب من الزبون عند الاستلام: <strong className="tabular-nums text-foreground" dir="ltr">{fmt(new Decimal(fee || 0).toFixed(2))} د.ع</strong> (أجرة التوصيل فقط للمندوب).</>
+                ) : (
+                  <> لا مبالغ مطلوبة من الزبون عند الاستلام (الأجرة لا يدفعها الزبون).</>
+                )}
+              </>
+            ) : (
+              <>
+                المتبقي الذي يحصله المندوب للمكتبة:{" "}
+                <strong className="tabular-nums text-foreground" dir="ltr">
+                  {fmt(remaining.toFixed(2))} د.ع
+                </strong>
+                . أجرة التوصيل مستقلة ولا تُضاف إلى إيراد الفاتورة.
+                {feeCollection === "COURIER" && Number(fee || 0) > 0 && (
+                  <> إجمالي ما يدفعه الزبون للمندوب: <strong className="tabular-nums text-foreground" dir="ltr">{fmt(remaining.plus(new Decimal(fee || 0)).toFixed(2))} د.ع</strong> شامل التوصيل.</>
+                )}
+              </>
+            )}
           </div>
         </div>
 

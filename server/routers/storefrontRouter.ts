@@ -52,6 +52,8 @@ import { listStorefrontProductReviews, submitStorefrontProductReview } from "../
 import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOrderCouponService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
+import { lookupShelfPrice } from "../services/shelfPriceService";
+import { barcodeString } from "../lib/schemas";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
@@ -242,6 +244,17 @@ export const storefrontRouter = router({
   related: publicProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => storefrontRelated(input.productId)),
+
+  /**
+   * استعلام سعر الرف بالباركود (QR Shelf Price Lookup):
+   * وصول عام محمي بالـ Rate Limiting، لا يكشف تكلفة أو كميات مخزون أو أسعار جملة.
+   */
+  shelfLookup: storefrontPublicReadProcedure
+    .input(z.object({
+      barcode: barcodeString,
+      branchId: z.number().int().positive().optional(),
+    }))
+    .query(({ input }) => lookupShelfPrice(input.barcode, input.branchId)),
 
   /** توصيات السلة التي ضبطها المدير؛ لا تعيد التكلفة أو كمية المخزون. */
   cartRecommendations: storefrontPublicReadProcedure

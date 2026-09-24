@@ -5,7 +5,6 @@ import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useCart } from "@/lib/cart-context";
 import { Platform } from "react-native";
-import { storefrontDesign } from "@/lib/storefront-design";
 
 export default function TabLayout() {
   const { itemCount } = useCart();
@@ -16,38 +15,39 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: storefrontDesign.semantic.brandStrong,
-        tabBarActiveBackgroundColor: storefrontDesign.semantic.safeSurface,
-        tabBarInactiveTintColor: "#A0A9B5",
+        tabBarActiveTintColor: "#059669",
+        tabBarActiveBackgroundColor: "rgba(5, 150, 105, 0.09)",
+        tabBarInactiveTintColor: "#94A3B8",
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          bottom: Platform.OS === "web" ? 12 : Math.max(insets.bottom, 12),
-          borderRadius: 27,
-          borderTopWidth: 0,
-          elevation: 14,
+          bottom: Platform.OS === "web" ? 14 : Math.max(insets.bottom, 14),
+          borderRadius: 28,
+          borderWidth: 1,
+          borderColor: "rgba(226, 232, 240, 0.85)",
+          elevation: 10,
           height: tabBarHeight,
           left: 16,
           paddingBottom: bottomPadding,
-          paddingTop: 7,
+          paddingTop: 6,
           position: "absolute",
           right: 16,
-          backgroundColor: storefrontDesign.primitive.white,
-          shadowColor: "#6C7A8E",
+          backgroundColor: "rgba(255, 255, 255, 0.96)",
+          shadowColor: "#0F172A",
           shadowOffset: { width: 0, height: 8 },
-          shadowOpacity: 0.16,
-          shadowRadius: 18,
+          shadowOpacity: 0.10,
+          shadowRadius: 20,
         },
         // Cairo glyphs exceed React Navigation's implicit 10px line box on web,
         // which visually clips Arabic labels even when the tab bar itself fits.
         tabBarLabelStyle: {
-          fontFamily: "Cairo_600SemiBold",
-          fontSize: 9,
+          fontFamily: "Cairo_700Bold",
+          fontSize: 9.5,
           lineHeight: 16,
           marginTop: 0,
         },
         tabBarIconStyle: { marginTop: 0 },
-        tabBarItemStyle: { borderRadius: 17, marginHorizontal: 1 },
+        tabBarItemStyle: { borderRadius: 20, marginHorizontal: 2, paddingVertical: 2 },
       }}
     >
       <Tabs.Screen
@@ -78,7 +78,7 @@ export default function TabLayout() {
           title: "السلة",
           tabBarBadge: itemCount > 0 ? itemCount : undefined,
           tabBarBadgeStyle: {
-            backgroundColor: "#F05D53",
+            backgroundColor: "#FF4757",
             color: "#FFFFFF",
             fontFamily: "Cairo_800ExtraBold",
             fontSize: 10,

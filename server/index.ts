@@ -479,6 +479,22 @@ async function startServer() {
     }),
   );
 
+  // حدّ استعلام أسعار الرفوف بالباركود (QR Shelf Price Lookup):
+  // يمنع كشط الأسعار والتخمين الآلي المتسلسل (Scraping/Brute-force) — ٦٠ استعلاماً/دقيقة لكل IP.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 60 * 1000,
+      limit: Number(process.env.SHELF_LOOKUP_RATE_LIMIT_MAX ?? 60),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("storefront.shelfLookup"),
+      handler: rateLimitHandler(
+        "محاولات استعلام أسعار كثيرة بالباركود، انتظر دقيقة ثم أعد المحاولة.",
+      ),
+    }),
+  );
+
   // حدّ صارم على دخول بوابة العدّ الخارجية (تخمين PIN) — فوق قفل المحاولات في القاعدة.
   app.use(
     "/api/trpc",
