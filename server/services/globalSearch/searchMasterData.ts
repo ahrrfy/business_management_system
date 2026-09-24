@@ -4,6 +4,7 @@ import { branchStock, customers, productPrices, productUnits, productVariants, p
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { normalizeSearchText } from "../../../shared/searchNormalize";
+import { phoneSuffix10 } from "../../lib/phone";
 import type { SearchKind, SearchResult } from "./types";
 
 // ────────────────────────────── المنتجات + الوحدات + الباركود ──────────────────────────────
@@ -169,28 +170,44 @@ async function searchCustomers(
   query: string,
   limit: number,
 ): Promise<SearchResult[]> {
-  if (kind === "BARCODE") return []; // العملاء بلا باركود
+  if (kind === "BARCODE" && !/^\d{7,14}$/.test(query)) return []; // الباركود غير العددي ليس عميلاً
   if (kind === "DOC_NUMBER" && !/^\d+$/.test(query)) return []; // مُعرّف وثيقة كامل ⇒ ليس عميلاً
 
   const like_ = `%${escLike(query)}%`;
   // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط شاشة العملاء).
   const likeFolded = `%${escLike(normalizeSearchText(query))}%`;
+  const sfx = phoneSuffix10(query);
+
+  const orConds = [
+    sql`coalesce(${customers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`,
+    sql`${customers.phone} LIKE ${like_} ESCAPE '!'`,
+    sql`${customers.phone2} LIKE ${like_} ESCAPE '!'`,
+    sql`${customers.phone3} LIKE ${like_} ESCAPE '!'`,
+    sql`${customers.whatsapp} LIKE ${like_} ESCAPE '!'`,
+    sql`${customers.legacyCode} LIKE ${like_} ESCAPE '!'`,
+  ];
+
+  if (sfx) {
+    const sfxLike = `%${escLike(sfx)}%`;
+    orConds.push(
+      sql`${customers.phone} LIKE ${sfxLike} ESCAPE '!'`,
+      sql`${customers.phone2} LIKE ${sfxLike} ESCAPE '!'`,
+      sql`${customers.phone3} LIKE ${sfxLike} ESCAPE '!'`,
+      sql`${customers.whatsapp} LIKE ${sfxLike} ESCAPE '!'`,
+    );
+  }
+
   const conds = [
     eq(customers.isActive, true),
-    or(
-      sql`coalesce(${customers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`,
-      sql`${customers.phone} LIKE ${like_} ESCAPE '!'`,
-      sql`${customers.phone2} LIKE ${like_} ESCAPE '!'`,
-      sql`${customers.phone3} LIKE ${like_} ESCAPE '!'`,
-      sql`${customers.whatsapp} LIKE ${like_} ESCAPE '!'`,
-      sql`${customers.legacyCode} LIKE ${like_} ESCAPE '!'`,
-    ),
+    or(...orConds),
   ];
   const rows = await db
     .select({
       id: customers.id,
       name: customers.name,
       phone: customers.phone,
+      whatsapp: customers.whatsapp,
+      address: customers.address,
       city: customers.city,
       legacyCode: customers.legacyCode,
       balance: customers.currentBalance,
@@ -200,15 +217,20 @@ async function searchCustomers(
     .orderBy(asc(customers.name), desc(customers.id))
     .limit(limit);
 
-  return rows.map((r) => ({
-    type: "CUSTOMER" as const,
-    id: r.id,
-    title: r.name,
-    subtitle: [r.phone, r.city].filter(Boolean).join(" · ") || null,
-    meta: r.legacyCode ? `قديم: ${r.legacyCode}` : null,
-    route: `/customers?tab=list&q=${encodeURIComponent(query)}&focus=${r.id}`,
-    rank: r.name.toLowerCase().startsWith(query.toLowerCase()) ? 1 : 2,
-  }));
+  return rows.map((r) => {
+    const contactPhone = r.phone || r.whatsapp;
+    const location = r.address || r.city;
+    const isPhoneMatch = kind === "PHONE" || (sfx && (r.phone?.includes(sfx) || r.whatsapp?.includes(sfx)));
+    return {
+      type: "CUSTOMER" as const,
+      id: r.id,
+      title: r.name,
+      subtitle: [contactPhone, location].filter(Boolean).join(" · ") || null,
+      meta: r.legacyCode ? `قديم: ${r.legacyCode}` : null,
+      route: `/customers?tab=list&q=${encodeURIComponent(query)}&focus=${r.id}`,
+      rank: isPhoneMatch ? 0 : r.name.toLowerCase().startsWith(query.toLowerCase()) ? 1 : 2,
+    };
+  });
 }
 
 // ────────────────────────────── الموردين ──────────────────────────────

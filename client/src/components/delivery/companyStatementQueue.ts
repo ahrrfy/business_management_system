@@ -9,6 +9,10 @@ export interface CompanyStatementQueueCandidate {
   invoiceNumber?: string | null;
   customerName?: string | null;
   recipientName?: string | null;
+  customerPhone?: string | null;
+  recipientPhone?: string | null;
+  address?: string | null;
+  deliveryAddress?: string | null;
   codAmount: string | number;
   collectedAmount: string | number;
   counterSettledAmount?: string | number | null;
