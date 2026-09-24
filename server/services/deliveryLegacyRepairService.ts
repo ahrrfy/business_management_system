@@ -126,7 +126,7 @@ export async function getDeliveryLegacyFindings(input: { branchId?: number | nul
     isNull(deliveryConsignments.courierDeliveredAt),
     or(
       eq(deliveryConsignments.parcelStatus, "DELIVERED"),
-      and(eq(deliveryConsignments.parcelStatus, "ASSIGNED"), exists(createdByLegacyRepair)),
+      and(inArray(deliveryConsignments.parcelStatus, ["ASSIGNED", "OUT_FOR_DELIVERY"]), exists(createdByLegacyRepair)),
     )!,
   ];
   if (branchId != null) prepaidWhere.push(eq(deliveryConsignments.branchId, branchId));
@@ -749,7 +749,7 @@ async function recordPrepaidProof(
   if (
     !money(row.codAmount).isZero()
     || row.courierDeliveredAt != null
-    || (row.parcelStatus !== "DELIVERED" && (row.parcelStatus !== "ASSIGNED" || !createdByRepair))
+    || (row.parcelStatus !== "DELIVERED" && (!["ASSIGNED", "OUT_FOR_DELIVERY"].includes(row.parcelStatus) || !createdByRepair))
   ) {
     throw new TRPCError({
       code: "CONFLICT",
