@@ -30,6 +30,7 @@ export default defineConfig({
       "client/src/lib/printing/invoiceCorrectionPrint.test.ts",
       "client/src/lib/printing/receiptRaster.test.ts",
       "client/src/lib/printing/shiftRaster.test.ts",
+      "client/src/pages/__tests__/shiftDefaultOpenFilter.test.ts",
       "client/src/lib/printing/printTemplates.test.ts",
       "client/src/lib/printing/printTransport.test.ts",
       "client/src/lib/printing/receptionReceiptMeta.test.ts",
