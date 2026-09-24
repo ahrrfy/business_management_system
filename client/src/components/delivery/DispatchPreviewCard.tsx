@@ -168,7 +168,11 @@ export function DispatchPreviewCard({
             <div>
               <p className="text-xs text-muted-foreground">القيمة والتحصيل (COD)</p>
               <p className="font-bold font-mono">{fmt(order.salePrice)} د.ع</p>
-              {D(order.deposit ?? "0").gt(0) ? (
+              {D(codAmount).isZero() ? (
+                <p className="text-xs text-emerald-600 font-bold">
+                  مدفوع مسبقاً بالكامل ({fmt(order.deposit ?? order.salePrice)}) · متبقي البضاعة: 0 د.ع
+                </p>
+              ) : D(order.deposit ?? "0").gt(0) ? (
                 <p className="text-xs text-emerald-600 font-bold">
                   عربون {fmt(order.deposit!)} · متبقٍّ {fmt(codAmount)} د.ع على المندوب
                 </p>
@@ -273,8 +277,12 @@ export function DispatchPreviewCard({
             : isPending
             ? "جارٍ الإسناد ذرياً…"
             : D(dispatchFee || "0").gt(0)
-            ? `تأكيد الإسناد للمندوب · أجرة ${fmt(dispatchFee)} د.ع`
-            : "تأكيد الإسناد للمندوب"}
+            ? (D(codAmount).isZero()
+                ? `تأكيد الإسناد للمندوب · تحصيل أجرة فقط ${fmt(dispatchFee)} د.ع (البضاعة مدفوعة)`
+                : `تأكيد الإسناد للمندوب · تحصيل ${fmt(D(codAmount).plus(D(dispatchFee || "0")).toFixed(2))} د.ع شامل التوصيل`)
+            : D(codAmount).isZero()
+            ? "تأكيد الإسناد للمندوب · مدفوع بالكامل (تحصيل 0 د.ع)"
+            : `تأكيد الإسناد للمندوب · تحصيل ${fmt(codAmount)} د.ع`}
         </Button>
       </div>
     </Card>
