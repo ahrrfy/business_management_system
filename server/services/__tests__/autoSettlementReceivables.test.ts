@@ -26,6 +26,8 @@ const TABLES = [
   "branches",
   "users",
   "auditLogs",
+  "deliveryConsignments",
+  "deliveryParties",
 ];
 
 function db() {
@@ -303,5 +305,194 @@ describe("تسوية ومطابقة ذمم العملاء التلقائية (FI
 
     const [po] = await d.select().from(s.purchaseOrders).where(sql`id = 601`);
     expect(po.paidAmount).toBe("200000.00");
+  });
+
+  it("يسوي فواتير العميل المرتبطة بإرساليات توصيل محصلة ومسواة غير مقيدة دفترياً ويخفض رصيد العميل بالدفتر ويقفل الفاتورة PAID", async () => {
+    const d = db();
+    // عميل تم إنشاء فاتورة له من الاستقبال بمبلغ 150 ألف، وخرجت توصيل وسددها الزبون لشركة التوصيل وسوّت الشركة
+    // لكن لم تُقيّد دفترياً على حساب العميل فظل رصيد العميل 150 ألف والفاتورة معلقة
+    await d.insert(s.customers).values({
+      id: 70,
+      name: "عميل توصيل غير مقيد",
+      currentBalance: "150000.00",
+      defaultPriceTier: "RETAIL",
+    });
+
+    await d.insert(s.invoices).values({
+      id: 701,
+      invoiceNumber: "INV-701",
+      customerId: 70,
+      branchId: 1,
+      invoiceDate: new Date("2026-09-01"),
+      subtotal: "150000.00",
+      total: "150000.00",
+      paidAmount: "0.00",
+      status: "PENDING",
+    });
+
+    await d.insert(s.deliveryParties).values({
+      id: 7,
+      name: "شركة توصيل الرشيد",
+      branchId: 1,
+      partyType: "COMPANY",
+    });
+
+    await d.insert(s.deliveryConsignments).values({
+      id: 7001,
+      consignmentNumber: "CN-1-20260901-0070",
+      branchId: 1,
+      partyId: 7,
+      invoiceId: 701,
+      sourceType: "INVOICE",
+      sourceId: 701,
+      codAmount: "150000.00",
+      collectedAmount: "150000.00",
+      moneyStatus: "SETTLED",
+      status: "DELIVERED",
+    });
+
+    const res = await withTx((tx) => autoSettleCustomerAccountTx(tx, 70, actor));
+    expect(res.settledInvoicesCount).toBe(1);
+    expect(res.totalSettledAmount).toBe("150000.00");
+    expect(res.remainingOpenDebt).toBe("0.00");
+
+    // التحقق من أن رصيد العميل انخفض إلى 0.00 في قاعدة البيانات
+    const [cust] = await d.select().from(s.customers).where(sql`id = 70`);
+    expect(cust.currentBalance).toBe("0.00");
+
+    // التحقق من أن الفاتورة أقفلت تماماً كـ PAID
+    const [inv] = await d.select().from(s.invoices).where(sql`id = 701`);
+    expect(inv.status).toBe("PAID");
+    expect(inv.paidAmount).toBe("150000.00");
+
+    // التحقق من تسجيل قيد PAYMENT_IN ذري في دفتر الأستاذ بمفتاح التوصيل
+    const entries = await d
+      .select()
+      .from(s.accountingEntries)
+      .where(sql`dedupeKey = 'PAYMENT_IN:DELIVERY_RECONCILE:7001'`);
+    expect(entries.length).toBe(1);
+    expect(entries[0].entryType).toBe("PAYMENT_IN");
+    expect(entries[0].amount).toBe("150000.00");
+    expect(entries[0].customerId).toBe(70);
+
+    // التحقق من زوال الذمة الوهمية تماماً من تقرير أعمار الذمم
+    const aging = await getARAging({ branchId: 1 });
+    expect(aging.find((r) => r.customerId === 70)).toBeUndefined();
+  });
+
+  it("يمنع ازدواج الخصم من رصيد العميل إذا كانت إرسالية التوصيل قد قُيدت بالدفتر مسبقاً ويقفل الفاتورة المعلقة", async () => {
+    const d = db();
+    // عميل تم قيد تحصيل التوصيل له مسبقاً (فرصيده الجاري 0.00) ولكن الفاتورة بقيت PENDING
+    await d.insert(s.customers).values({
+      id: 80,
+      name: "عميل توصيل مقيد مسبقاً",
+      currentBalance: "0.00",
+      defaultPriceTier: "RETAIL",
+    });
+
+    await d.insert(s.invoices).values({
+      id: 801,
+      invoiceNumber: "INV-801",
+      customerId: 80,
+      branchId: 1,
+      invoiceDate: new Date("2026-09-02"),
+      subtotal: "75000.00",
+      total: "75000.00",
+      paidAmount: "0.00",
+      status: "PENDING",
+    });
+
+    await d.insert(s.deliveryParties).values({
+      id: 8,
+      name: "شركة توصيل بغداد",
+      branchId: 1,
+      partyType: "COMPANY",
+    });
+
+    await d.insert(s.deliveryConsignments).values({
+      id: 8001,
+      consignmentNumber: "CN-1-20260902-0080",
+      branchId: 1,
+      partyId: 8,
+      invoiceId: 801,
+      sourceType: "INVOICE",
+      sourceId: 801,
+      codAmount: "75000.00",
+      collectedAmount: "75000.00",
+      moneyStatus: "SETTLED",
+      status: "DELIVERED",
+    });
+
+    // تسجيل القيد السابق الذي خفض رصيد العميل بالفعل
+    await d.insert(s.accountingEntries).values({
+      entryType: "PAYMENT_IN",
+      dedupeKey: "PAYMENT_IN:COURIER_DELIVERY:8001",
+      branchId: 1,
+      invoiceId: 801,
+      customerId: 80,
+      amount: "75000.00",
+      entryDate: new Date(),
+    });
+
+    const res = await withTx((tx) => autoSettleCustomerAccountTx(tx, 80, actor));
+    expect(res.settledInvoicesCount).toBe(1);
+    expect(res.totalSettledAmount).toBe("75000.00");
+    expect(res.remainingOpenDebt).toBe("0.00");
+
+    // التأكد من عدم خصم رصيد العميل مرتين (يبقى 0.00 ولا يصبح سالباً)
+    const [cust] = await d.select().from(s.customers).where(sql`id = 80`);
+    expect(cust.currentBalance).toBe("0.00");
+
+    // التأكد من تحديث الفاتورة إلى PAID
+    const [inv] = await d.select().from(s.invoices).where(sql`id = 801`);
+    expect(inv.status).toBe("PAID");
+    expect(inv.paidAmount).toBe("75000.00");
+  });
+
+  it("المطابقة الشاملة لكافة الحسابات (autoSettleAllAccountsTx) تشمل عملاء التوصيل المحصل مع عملاء السدادات غير المخصصة", async () => {
+    const d = db();
+    await d.insert(s.customers).values([
+      { id: 91, name: "عميل سداد عام", currentBalance: "0.00", defaultPriceTier: "RETAIL" },
+      { id: 92, name: "عميل توصيل محصل", currentBalance: "80000.00", defaultPriceTier: "RETAIL" },
+    ]);
+
+    await d.insert(s.invoices).values([
+      { id: 901, invoiceNumber: "INV-901", customerId: 91, branchId: 1, invoiceDate: new Date(), subtotal: "50000.00", total: "50000.00", paidAmount: "0.00", status: "PENDING" },
+      { id: 902, invoiceNumber: "INV-902", customerId: 92, branchId: 1, invoiceDate: new Date(), subtotal: "80000.00", total: "80000.00", paidAmount: "0.00", status: "PENDING" },
+    ]);
+
+    await d.insert(s.deliveryParties).values({
+      id: 9,
+      name: "شركة النور",
+      branchId: 1,
+      partyType: "COMPANY",
+    });
+
+    await d.insert(s.deliveryConsignments).values({
+      id: 9002,
+      consignmentNumber: "CN-1-20260903-0092",
+      branchId: 1,
+      partyId: 9,
+      invoiceId: 902,
+      sourceType: "INVOICE",
+      sourceId: 902,
+      codAmount: "80000.00",
+      collectedAmount: "80000.00",
+      moneyStatus: "SETTLED",
+      status: "DELIVERED",
+    });
+
+    const res = await withTx((tx) => autoSettleAllAccountsTx(tx, actor, 100));
+    expect(res.settledAccountsCount).toBe(2);
+    expect(res.totalSettledInvoices).toBe(2);
+    expect(res.totalSettledAmount).toBe("130000.00");
+
+    const invs = await d.select().from(s.invoices).where(sql`customerId IN (91, 92)`);
+    for (const inv of invs) {
+      expect(inv.status).toBe("PAID");
+    }
+
+    const [c92] = await d.select().from(s.customers).where(sql`id = 92`);
+    expect(c92.currentBalance).toBe("0.00");
   });
 });
