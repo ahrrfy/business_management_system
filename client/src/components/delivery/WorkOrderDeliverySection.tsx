@@ -91,7 +91,7 @@ export function WorkOrderDeliverySection({
                       : data.parcelStatus === "PICKED_UP"
                       ? "استلمه السائق"
                       : data.parcelStatus === "OUT_FOR_DELIVERY"
-                      ? "خرج للتوصيل"
+                      ? "خرج للتوصيل / بالطريق"
                       : data.parcelStatus === "DELIVERED"
                       ? "تم التسليم للزبون"
                       : data.parcelStatus === "FAILED"

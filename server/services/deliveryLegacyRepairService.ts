@@ -640,10 +640,11 @@ async function createMissingConsignment(
         recipientPhone: wo.deliveryPhone ?? wo.contactPhone ?? null,
         deliveryAddress: wo.deliveryAddress ?? null,
         externalTrackingRef,
-        // لا نعدّ الدفع الكامل إثبات تسليم: الإرسالية تبدأ مفتوحة دائماً.
-        parcelStatus: "ASSIGNED",
+        // لا نعدّ الدفع الكامل إثبات تسليم: الإرسالية تبدأ مفتوحة دائماً، والإسناد ذري يبدأ بالطريق.
+        parcelStatus: "OUT_FOR_DELIVERY",
         moneyStatus: codAmount.gt(0) ? "UNSETTLED" : "NOT_APPLICABLE",
         status: "DISPATCHED",
+        outForDeliveryAt: new Date(),
         settledAt: codAmount.isZero() ? new Date() : null,
         dispatchedBy: ctx.user?.id ?? null,
         notes: input.note.trim(),
@@ -654,10 +655,10 @@ async function createMissingConsignment(
   })();
   const consignmentId = extractInsertId(inserted);
   await appendDeliveryEvent(tx, {
-    eventKey: `CN:${consignmentId}:LEGACY_ASSIGNED`,
+    eventKey: `CN:${consignmentId}:LEGACY_OUT_FOR_DELIVERY`,
     consignmentId,
-    eventType: "ASSIGNED",
-    toParcelStatus: "ASSIGNED",
+    eventType: "OUT_FOR_DELIVERY",
+    toParcelStatus: "OUT_FOR_DELIVERY",
     toMoneyStatus: codAmount.gt(0) ? "UNSETTLED" : "NOT_APPLICABLE",
     actorUserId: ctx.user?.id ?? null,
     payload: { legacyRepair: true, sourceType: "WORK_ORDER", sourceId: Number(wo.id), externalTrackingRef, decisionNote: input.note.trim() },
@@ -688,7 +689,7 @@ async function createMissingConsignment(
       deliveryFee: toDbMoney(fee),
       feeCollection,
       counterFeeHeld: toDbMoney(counterFeeHeld),
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
       moneyStatus: codAmount.gt(0) ? "UNSETTLED" : "NOT_APPLICABLE",
       courierDeliveredAt: null,
       decisionNote: input.note.trim(),
@@ -905,7 +906,8 @@ async function reopenPrepaidConsignment(
   try {
     await tx.update(deliveryConsignments).set({
       status: "DISPATCHED",
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
+      outForDeliveryAt: new Date(),
       moneyStatus: "NOT_APPLICABLE",
       externalTrackingRef,
     }).where(eq(deliveryConsignments.id, row.id));
@@ -917,7 +919,7 @@ async function reopenPrepaidConsignment(
     consignmentId: Number(row.id),
     eventType: "REASSIGNED",
     fromParcelStatus: row.parcelStatus,
-    toParcelStatus: "ASSIGNED",
+    toParcelStatus: "OUT_FOR_DELIVERY",
     fromMoneyStatus: row.moneyStatus,
     toMoneyStatus: "NOT_APPLICABLE",
     actorUserId: ctx.user?.id ?? null,
@@ -930,7 +932,7 @@ async function reopenPrepaidConsignment(
     oldValue: { status: row.status, parcelStatus: row.parcelStatus, moneyStatus: row.moneyStatus, courierDeliveredAt: null, externalTrackingRef: row.externalTrackingRef },
     newValue: {
       status: "DISPATCHED",
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
       moneyStatus: "NOT_APPLICABLE",
       courierDeliveredAt: null,
       externalTrackingRef,
