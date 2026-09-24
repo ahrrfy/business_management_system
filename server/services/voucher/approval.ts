@@ -1,11 +1,16 @@
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import {
+  autoSettleCustomerAccountTx,
+  autoSettleSupplierAccountTx,
+} from "../reconciliation/autoSettlementService";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   accountingEntries,
   accrualObligationEvents,
   assetMaintenance,
+  customers,
   digitalWalletTransactions,
   digitalWallets,
   employees,
@@ -2135,6 +2140,15 @@ export async function approveVoucherTx(
       partyId,
       direction === "IN" ? amount.neg() : amount,
     );
+    if (direction === "IN") {
+      const [c] = await tx
+        .select({ currentBalance: customers.currentBalance })
+        .from(customers)
+        .where(eq(customers.id, partyId));
+      if (c && money(c.currentBalance).lte(0)) {
+        await autoSettleCustomerAccountTx(tx, partyId, actor);
+      }
+    }
     // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
     // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
     // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
@@ -2168,6 +2182,15 @@ export async function approveVoucherTx(
       partyId,
       direction === "OUT" ? amount.neg() : amount,
     );
+    if (direction === "OUT") {
+      const [sRec] = await tx
+        .select({ currentBalance: suppliers.currentBalance })
+        .from(suppliers)
+        .where(eq(suppliers.id, partyId));
+      if (sRec && money(sRec.currentBalance).lte(0)) {
+        await autoSettleSupplierAccountTx(tx, partyId, actor);
+      }
+    }
   } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
     await adjustDeliveryBalance(
       tx,

@@ -576,19 +576,20 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
 
 export interface ARAgingPrintData {
   date: string;
-  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; }[];
-  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; };
+  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; }[];
+  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; };
 }
 
 export function printARAging(d: ARAgingPrintData): void {
   const cols = [
     { key: 'name', label: 'العميل' },
-    { key: 'd0_30', label: '0–30 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd31_60', label: '31–60 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd61_90', label: '61–90 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd91p', label: 'أكثر من 90', width: '18mm', align: 'left' as const },
-    { key: 'unpaid', label: 'إجمالي غير المسدّد', width: '22mm', align: 'left' as const, bold: true },
-    { key: 'balance', label: 'الرصيد الحالي', width: '20mm', align: 'left' as const },
+    { key: 'd0_30', label: '0–30 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd31_60', label: '31–60 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd61_90', label: '61–90 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd91p', label: 'أكثر من 90', width: '17mm', align: 'left' as const },
+    { key: 'unpaid', label: 'غير المسدّد', width: '20mm', align: 'left' as const, bold: true },
+    { key: 'unbucketed', label: 'غير مفوتر/افتتاحي', width: '22mm', align: 'left' as const },
+    { key: 'balance', label: 'الرصيد الحالي', width: '20mm', align: 'left' as const, bold: true },
   ];
   const rows = d.rows.map(r => ({
     name: r.name,
@@ -597,6 +598,7 @@ export function printARAging(d: ARAgingPrintData): void {
     d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
     d91p: r.d91p ? fmt(r.d91p) : '—',
     unpaid: fmt(r.unpaidTotal),
+    unbucketed: r.unbucketed != null ? (r.unbucketed !== 0 ? fmt(r.unbucketed) : '—') : (r.currentBalance - r.unpaidTotal !== 0 ? fmt(r.currentBalance - r.unpaidTotal) : '—'),
     balance: fmt(r.currentBalance),
   }));
 
@@ -608,14 +610,16 @@ export function printARAging(d: ARAgingPrintData): void {
     { label: '>90', val: t.d91p, color: '#DC2626' },
   ];
 
+  const unbucketedTotal = t.unbucketed ?? (t.currentBalance - t.unpaidTotal);
   const totalsRow = `<div style="display:flex;background:${B.green};color:#fff;border-radius:0 0 4px 4px;
     padding:2.5mm 3mm;font-size:10px;font-weight:700;margin-top:-4mm;margin-bottom:4mm;">
     <span style="flex:1;">الإجمالي</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d0_30)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d31_60)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d61_90)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d91p)}</span>
-    <span style="width:22mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d0_30)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d31_60)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d61_90)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d91p)}</span>
+    <span style="width:20mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:22mm;text-align:left;">${fmt(unbucketedTotal)}</span>
     <span style="width:20mm;text-align:left;">${fmt(t.currentBalance)}</span>
   </div>`;
 
@@ -636,19 +640,20 @@ export function printARAging(d: ARAgingPrintData): void {
 
 export interface APAgingPrintData {
   date: string;
-  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; }[];
-  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; };
+  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; }[];
+  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; };
 }
 
 export function printAPAging(d: APAgingPrintData): void {
   const cols = [
     { key: 'name', label: 'المورد' },
-    { key: 'd0_30', label: '0–30 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd31_60', label: '31–60 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd61_90', label: '61–90 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd91p', label: 'أكثر من 90', width: '18mm', align: 'left' as const },
-    { key: 'unpaid', label: 'إجمالي مستحق', width: '22mm', align: 'left' as const, bold: true },
-    { key: 'balance', label: 'الرصيد', width: '20mm', align: 'left' as const },
+    { key: 'd0_30', label: '0–30 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd31_60', label: '31–60 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd61_90', label: '61–90 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd91p', label: 'أكثر من 90', width: '17mm', align: 'left' as const },
+    { key: 'unpaid', label: 'إجمالي مستحق', width: '20mm', align: 'left' as const, bold: true },
+    { key: 'unbucketed', label: 'غير مفوتر/افتتاحي', width: '22mm', align: 'left' as const },
+    { key: 'balance', label: 'الرصيد', width: '20mm', align: 'left' as const, bold: true },
   ];
   const rows = d.rows.map(r => ({
     name: r.name,
@@ -657,6 +662,7 @@ export function printAPAging(d: APAgingPrintData): void {
     d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
     d91p: r.d91p ? fmt(r.d91p) : '—',
     unpaid: fmt(r.unpaidTotal),
+    unbucketed: r.unbucketed != null ? (r.unbucketed !== 0 ? fmt(r.unbucketed) : '—') : (r.currentBalance - r.unpaidTotal !== 0 ? fmt(r.currentBalance - r.unpaidTotal) : '—'),
     balance: fmt(r.currentBalance),
   }));
 
@@ -668,14 +674,16 @@ export function printAPAging(d: APAgingPrintData): void {
     { label: '>90', val: t.d91p, color: '#DC2626' },
   ];
 
+  const unbucketedTotal = t.unbucketed ?? (t.currentBalance - t.unpaidTotal);
   const totalsRow = `<div style="display:flex;background:#DC2626;color:#fff;border-radius:0 0 4px 4px;
     padding:2.5mm 3mm;font-size:10px;font-weight:700;margin-top:-4mm;margin-bottom:4mm;">
     <span style="flex:1;">الإجمالي</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d0_30)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d31_60)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d61_90)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d91p)}</span>
-    <span style="width:22mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d0_30)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d31_60)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d61_90)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d91p)}</span>
+    <span style="width:20mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:22mm;text-align:left;">${fmt(unbucketedTotal)}</span>
     <span style="width:20mm;text-align:left;">${fmt(t.currentBalance)}</span>
   </div>`;
 
