@@ -8,6 +8,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import type { Tx } from "../../db";
 import { customers, invoices, purchaseOrders, suppliers } from "../../../drizzle/schema";
 import { isDeadInvoice } from "@shared/predicates";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { computeInvoiceStatus } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { logAuditTx } from "../auditService";
@@ -332,12 +333,12 @@ export async function autoSettleSupplierAccountTx(
 }
 
 /**
- * تسوية شاملة لجميع العملاء الذين رصيدهم صفر لكن لديهم فواتير معلقة مفتوحة.
+ * تسوية شاملة لجميع حسابات العملاء التي تحوي سدادات غير مخصصة أو فواتير مفتوحة برصيد صفر/دائن.
  */
-export async function autoSettleZeroBalanceAccountsTx(
+export async function autoSettleAllAccountsTx(
   tx: Tx,
   actor: Actor,
-  limit = 50,
+  limit = 500,
 ): Promise<{
   customerCount: number;
   settledInvoicesCount: number;
@@ -345,8 +346,12 @@ export async function autoSettleZeroBalanceAccountsTx(
   totalSettledInvoices: number;
   totalSettledAmount: string;
 }> {
-  // جلب العملاء الذين رصيدهم صفر ولديهم فواتير معلقة بترتيب تصاعدي محدد لمنع التعارض
-  const zeroBalanceCustomersWithOpenInvoices = await tx
+  const openBal = openBalanceExpr(
+    { total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal },
+    "COLLECTIBLE",
+  );
+  // جلب العملاء الذين لديهم فواتير معلقة مع وجود سداد غير مخصص (الرصيد <= 0 أو مجموع الفواتير المفتوحة > الرصيد)
+  const customersWithUnsettledCredits = await tx
     .select({
       id: customers.id,
     })
@@ -358,8 +363,10 @@ export async function autoSettleZeroBalanceAccountsTx(
         sql`${invoices.status} IN ('PENDING', 'PARTIALLY_PAID')`,
       ),
     )
-    .where(sql`${customers.currentBalance} <= 0`)
-    .groupBy(customers.id)
+    .groupBy(customers.id, customers.currentBalance)
+    .having(
+      sql`${customers.currentBalance} <= 0 OR SUM(${openBal}) > CAST(${customers.currentBalance} AS DECIMAL(15,2))`,
+    )
     .orderBy(asc(customers.id))
     .limit(limit);
 
@@ -367,7 +374,7 @@ export async function autoSettleZeroBalanceAccountsTx(
   let settledInvoicesCount = 0;
   let totalSettled = money(0);
 
-  for (const c of zeroBalanceCustomersWithOpenInvoices) {
+  for (const c of customersWithUnsettledCredits) {
     const res = await autoSettleCustomerAccountTx(tx, Number(c.id), actor);
     if (res.settledInvoicesCount > 0 || res.partiallySettledInvoicesCount > 0) {
       customerCount++;
@@ -384,3 +391,77 @@ export async function autoSettleZeroBalanceAccountsTx(
     totalSettledAmount: toDbMoney(totalSettled),
   };
 }
+
+/**
+ * تسوية شاملة لجميع حسابات الموردين التي تحوي سدادات غير مخصصة أو أوامر شراء مفتوحة برصيد دائن غير مطابق.
+ */
+export async function autoSettleAllSuppliersTx(
+  tx: Tx,
+  actor: Actor,
+  limit = 500,
+): Promise<{
+  supplierCount: number;
+  settledOrdersCount: number;
+  settledAccountsCount: number;
+  totalSettledOrders: number;
+  totalSettledAmount: string;
+}> {
+  const suppliersWithUnsettledCredits = await tx
+    .select({
+      id: suppliers.id,
+    })
+    .from(suppliers)
+    .innerJoin(
+      purchaseOrders,
+      and(
+        eq(purchaseOrders.supplierId, suppliers.id),
+        sql`${purchaseOrders.status} IN ('CONFIRMED', 'RECEIVED')`,
+        sql`CAST(${purchaseOrders.paidAmount} AS DECIMAL(15,2)) < CAST(${purchaseOrders.total} AS DECIMAL(15,2))`,
+      ),
+    )
+    .groupBy(suppliers.id, suppliers.currentBalance)
+    .having(
+      sql`${suppliers.currentBalance} <= 0 OR SUM(CAST(${purchaseOrders.total} AS DECIMAL(15,2)) - CAST(${purchaseOrders.paidAmount} AS DECIMAL(15,2))) > CAST(${suppliers.currentBalance} AS DECIMAL(15,2))`,
+    )
+    .orderBy(asc(suppliers.id))
+    .limit(limit);
+
+  let supplierCount = 0;
+  let settledOrdersCount = 0;
+  let totalSettled = money(0);
+
+  for (const s of suppliersWithUnsettledCredits) {
+    const res = await autoSettleSupplierAccountTx(tx, Number(s.id), actor);
+    if (res.settledOrdersCount > 0 || res.partiallySettledOrdersCount > 0) {
+      supplierCount++;
+      settledOrdersCount += res.settledOrdersCount + res.partiallySettledOrdersCount;
+      totalSettled = totalSettled.plus(money(res.totalSettledAmount));
+    }
+  }
+
+  return {
+    supplierCount,
+    settledOrdersCount,
+    settledAccountsCount: supplierCount,
+    totalSettledOrders: settledOrdersCount,
+    totalSettledAmount: toDbMoney(totalSettled),
+  };
+}
+
+/**
+ * تسوية متوافقة رجعياً لحسابات العملاء ذات الرصيد الصفري أو السداد غير المخصص.
+ */
+export async function autoSettleZeroBalanceAccountsTx(
+  tx: Tx,
+  actor: Actor,
+  limit = 500,
+): Promise<{
+  customerCount: number;
+  settledInvoicesCount: number;
+  settledAccountsCount: number;
+  totalSettledInvoices: number;
+  totalSettledAmount: string;
+}> {
+  return autoSettleAllAccountsTx(tx, actor, limit);
+}
+
