@@ -43,7 +43,7 @@ import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { cn } from "@/lib/utils";
-import { fmtDate } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
@@ -302,9 +302,7 @@ export function ReceptionInvoiceQueue({
                       )}
                     </td>
                     <td className="px-2 py-2 text-muted-foreground" dir="ltr">
-                      {r.invoiceDate
-                        ? `${fmtDate(new Date(r.invoiceDate))} ${new Date(r.invoiceDate).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`
-                        : "—"}
+                      {r.invoiceDate ? fmtDateTime(r.invoiceDate) : "—"}
                     </td>
                     <td className="px-2 py-2">
                       <div className="max-w-36 truncate font-semibold">

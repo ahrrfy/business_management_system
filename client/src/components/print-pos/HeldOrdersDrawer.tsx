@@ -367,7 +367,7 @@ export function HeldOrdersDrawer({
                     <div className="flex items-center justify-between text-2xs text-muted-foreground border-t border-border/40 pt-2 mb-3">
                       <span>الإجمالي: {fmt(o.total)} د.ع</span>
                       <span>المدفوع: {fmt(o.paidAmount)} د.ع</span>
-                      <span>{new Date(o.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}</span>
+                      <span>{fmtTime(o.createdAt)}</span>
                     </div>
 
                     {/* أزرار الإجراءات السريعة */}

@@ -88,7 +88,7 @@ function DashboardHeader({
   const selectedBranch = branches.data?.find((branch) => branch.id === branchScope);
   const branchLabel = branchScope == null ? "كل الفروع" : (selectedBranch?.name ?? "الفرع المعيّن");
   const roleLabel = me.data?.isOwner ? "مالك النظام" : (me.data?.customRoleLabel ?? (role ? ROLE_LABEL[role] : undefined) ?? "مستخدم النظام");
-  const dateLabel = new Intl.DateTimeFormat("ar-IQ", { weekday: "long", day: "numeric", month: "long", year: "numeric", numberingSystem: "latn" }).format(new Date());
+  const dateLabel = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
 
   return (
     <header style={{ background: T.cardBg, borderBottom: `1px solid ${T.cardBord}`, padding: "22px 24px 18px" }}>
