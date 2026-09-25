@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye } from "lucide-react";
 import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@shared/quantityFormat";
 
 export interface StorefrontCatalogProduct {
   productId: number;
@@ -267,7 +268,7 @@ export function StorefrontProductCard({
             </button>
 
             <div className="flex items-center gap-1.5 px-2 font-mono text-xs font-black tabular-nums">
-              <span className="text-sm">{cartQuantity}</span>
+              <span className="text-sm">{formatQuantity(cartQuantity)}</span>
               <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
                 {p.unitName ? p.unitName : "في السلة"}
               </span>

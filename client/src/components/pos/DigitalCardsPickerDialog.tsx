@@ -2,6 +2,7 @@
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { D, fmtAr, moneyInput } from "@/lib/money";
+import { formatQuantity } from "@shared/quantityFormat";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -154,8 +155,8 @@ export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onP
           <input value={providerReference} disabled={picking} onChange={(event) => setProviderReference(event.target.value)} maxLength={120} placeholder="امسح أو اكتب رقم العملية الخارجية" dir="ltr" style={field} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void addBasket(); } }} />
           <small style={{ color: C.mutedFg }}>مرجع واحد لجميع بطاقات السلة، للمطابقة مع جهاز المزوّد. لا يوجد تحقق من منصته.</small>
         </label>
-        <small style={{ color: C.mutedFg }}>الحد الأقصى 50 بطاقة في الفاتورة؛ المضاف سابقاً: {existingCardCount}.</small>
-        <footer style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}><strong style={{ flex: 1 }}>{quantity} بطاقة · الإجمالي {fmtAr(total.toFixed(2))} د.ع</strong><button style={button} onClick={close}>إلغاء</button><button style={primary} disabled={picking || !draft.length || !providerReference.trim()} onClick={() => void addBasket()}>{picking ? ACTION_LABELS.verifying : "إضافة السلة إلى الفاتورة"}</button></footer>
+        <small style={{ color: C.mutedFg }}>الحد الأقصى 50 بطاقة في الفاتورة؛ المضاف سابقاً: {formatQuantity(existingCardCount)}.</small>
+        <footer style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}><strong style={{ flex: 1 }}>{formatQuantity(quantity)} بطاقة · الإجمالي {fmtAr(total.toFixed(2))} د.ع</strong><button style={button} onClick={close}>إلغاء</button><button style={primary} disabled={picking || !draft.length || !providerReference.trim()} onClick={() => void addBasket()}>{picking ? ACTION_LABELS.verifying : "إضافة السلة إلى الفاتورة"}</button></footer>
       </div>}
     </div>
     {reporting && <div role="dialog" aria-modal="true" aria-label="بلاغ تغيّر سعر المزوّد" style={{ position: "fixed", inset: 0, zIndex: 62, background: C.overlay, display: "grid", placeItems: "center", padding: 16 }}>
