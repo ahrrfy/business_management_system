@@ -70,20 +70,15 @@ import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
 import { StorefrontShippingBar } from "@/components/storefront/StorefrontShippingBar";
-import { StorefrontTrustTicker } from "@/components/storefront/StorefrontTrustTicker";
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
 import { StorefrontProductCard } from "@/components/storefront/StorefrontProductCard";
 import { StoreTrustAndHelp } from "@/components/storefront/StoreTrustAndHelp";
-import { CuratedRow, StorefrontCuratedRows, type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
+import { CuratedRow, type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
 import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColorSwatches";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
-import { StorefrontHero } from "@/components/storefront/StorefrontHero";
-import { StorefrontThematicGrid } from "@/components/storefront/StorefrontThematicGrid";
-import { StorefrontActiveThematicBanner } from "@/components/storefront/StorefrontActiveThematicBanner";
-import { StorefrontBuyingPaths } from "@/components/storefront/StorefrontBuyingPaths";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -1234,7 +1229,6 @@ function StorefrontContent() {
   const [brand, setBrand] = useState("");
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [selectedThematic, setSelectedThematic] = useState<{ id: string; title: string; tag: string; productIds: number[] } | null>(null);
   const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
   const [heartPulseTarget, setHeartPulseTarget] = useState<string | null>(null);
   const [heartPulseNonce, setHeartPulseNonce] = useState(0);
@@ -1778,7 +1772,6 @@ function StorefrontContent() {
   const filteredItems = useMemo(() => {
     const filtered = items.filter((p) => {
       if (showWishlist && !wishlistIds.has(p.productId)) return false;
-      if (selectedThematic && !selectedThematic.productIds.includes(p.productId)) return false;
       if (availability === "IN_STOCK" && !p.inStock) return false;
       if (brand && p.brand !== brand) return false;
       return matchesPriceFilter(Number(p.salePrice ?? p.price ?? 0), priceFilter);
@@ -1790,8 +1783,8 @@ function StorefrontContent() {
       const bPrice = Number(b.salePrice ?? b.price ?? 0);
       return sort === "PRICE_ASC" ? aPrice - bPrice : bPrice - aPrice;
     });
-  }, [availability, brand, items, priceFilter, selectedThematic, showWishlist, sort, wishlistIds]);
-  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematic != null;
+  }, [availability, brand, items, priceFilter, showWishlist, sort, wishlistIds]);
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist;
   // اقتراحات البحث: مُصفَّرة من `filteredItems` (Codex #4) — لا يظهر اقتراحٌ ينتفي فور اختياره.
   const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(filteredItems, rawSearch), [filteredItems, rawSearch]);
   useEffect(() => { setSearchSuggestionIndex(0); }, [rawSearch]);
@@ -2267,7 +2260,7 @@ function StorefrontContent() {
       <StorefrontStickyFilter
         categories={cats.map((c: any) => ({ categoryId: c.id ?? c.categoryId, name: c.name }))}
         selectedCategoryId={categoryId}
-        onSelectCategory={(id) => { setSelectedThematic(null); setCategoryId(id); scrollToResults(); }}
+        onSelectCategory={(id) => { setCategoryId(id); scrollToResults(); }}
         availability={availability}
         onToggleAvailability={() => { setAvailability((v) => v === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }}
         sort={sort}
@@ -2295,9 +2288,7 @@ function StorefrontContent() {
             </span>
           </a>
           <nav className="hidden items-center gap-5 text-xs font-black text-slate-600 lg:flex dark:text-slate-300" aria-label="التنقل الرئيسي">
-            <a href="#store-hero" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">اكتشف</a>
             <a href="#store-categories" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">الأقسام</a>
-            <a href="#store-picks" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">مختاراتنا</a>
             <a href="#store-results" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">المنتجات</a>
             <a href="#store-deals" className="transition hover:text-orange-600 dark:hover:text-orange-400">العروض</a>
           </nav>
@@ -2404,13 +2395,6 @@ function StorefrontContent() {
 
       <main id="store-main" tabIndex={-1} className="mx-auto w-full max-w-[1500px] overflow-x-clip px-4 py-6 pb-28 outline-none lg:px-8">
         <h1 className="sr-only">مكتبة العربية للتسوق والتوصيل في العراق</h1>
-        {supportingFailures.length > 0 && (
-          <section role="alert" aria-live="polite" className="mb-5 flex items-start gap-3 border-r-4 border-[#b87835] bg-[#fbf3e5] p-4 text-[#754f2c]">
-            <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0" />
-            <div className="min-w-0 flex-1"><p className="text-sm font-black">بعض بيانات المتجر تحتاج إلى إعادة المحاولة</p><p className="mt-1 text-xs leading-6">تعذّر تحميل {supportingFailures.map((source) => STOREFRONT_SOURCE_LABELS[source]).join("، ")}. يمكنك متابعة المنتجات المتاحة أو إعادة المحاولة.</p></div>
-            <button type="button" onClick={retrySupportingSources} className="shrink-0 border border-[#b87835]/50 bg-white px-3 py-2 text-xs font-black text-[#754f2c] hover:bg-[#f8e8d0]">إعادة المحاولة</button>
-          </section>
-        )}
         {announcement && <div className="mb-5 flex items-center gap-2 border border-[#ead8c8] bg-[#fff8f2] px-4 py-3 text-sm font-bold text-[#754f2c]"><BadgePercent aria-hidden className="size-4 shrink-0" /><span>{announcement}</span></div>}
         {shareFeedback && <div role={shareFeedback.tone === "err" ? "alert" : "status"} className={`animate__animated animate__fadeIn mb-5 border px-4 py-3 text-center text-xs font-bold ${SHARE_FEEDBACK_TONE_CLASS[shareFeedback.tone]}`}>{shareFeedback.text}</div>}
         {/* تنبيه — قاعدة الألوان في هذه الصفحة تختلف عن شاشات النظام: أصناف emerald/amber هنا
@@ -2427,43 +2411,13 @@ function StorefrontContent() {
 
         {!search && categoryId == null && !showWishlist && (
           <>
-            <div id="store-hero">
-              <StorefrontHero
-                heroBanners={heroBanners}
-                featuredHero={heroBanners[0] ?? null}
-                bannerCarouselComponent={heroBanners.length > 0 ? <BannerCarousel banners={heroBanners} slot="HERO" className="mb-0 size-full" /> : undefined}
-                onScrollToProducts={() => scrollToResults()}
-                onExplorePicks={() => {
-                  const el = document.getElementById("store-picks");
-                  el?.scrollIntoView({ behavior: "smooth" });
-                }}
-              />
-            </div>
-
-            <StorefrontTrustTicker
-              className="mt-4"
-              onOpenWhatsApp={() => {
-                const phone = settingsQ.data?.whatsappNumber;
-                if (phone) openWhatsApp(phone, "مرحباً، أود الاستفسار عن منتجات المتجر");
-              }}
-            />
-
-            <StorefrontBuyingPaths
-              onSelectPath={(keywords) => {
-                setRawSearch(keywords);
-                setSearch(keywords);
-                scrollToResults();
-              }}
-              onExploreAll={() => scrollToResults()}
-            />
-
             <StorefrontCategories
               id="store-categories"
               categories={cats}
               selectedId={categoryId}
-              onSelectCategory={(id) => { setSelectedThematic(null); selectCategory(id); }}
+              onSelectCategory={selectCategory}
               categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
-              className="mt-8 scroll-mt-28"
+              className="mt-4 scroll-mt-28"
             />
 
             {feedStrips.length > 0 && (
@@ -2497,37 +2451,6 @@ function StorefrontContent() {
                 </div>
               </section>
             )}
-
-            <StorefrontCuratedRows
-              dealProducts={dealProducts}
-              bestSellers={bestSellers}
-              onSelectProduct={setSelectedId}
-              onAddToCart={addFeaturedToCart}
-              recentlyAddedId={recentlyAddedProductId}
-              canBeOrdered={storefrontProductCanBeOrdered}
-              getCartQuantity={getProductCartQty}
-              onUpdateQuantity={handleProductQuantityDelta}
-            />
-
-            <StorefrontThematicGrid
-              onSelectCollection={(c) => {
-                setRawSearch("");
-                setSearch("");
-                setCategoryId(null);
-                setSelectedThematic({
-                  id: c.id,
-                  title: c.title,
-                  tag: c.tag,
-                  productIds: c.productIds ?? [],
-                });
-                scrollToResults();
-              }}
-              onSelectKeyword={(kw) => {
-                setSelectedThematic(null);
-                setSearch(kw);
-                scrollToResults();
-              }}
-            />
           </>
         )}
 
@@ -2535,15 +2458,13 @@ function StorefrontContent() {
           <div className="mb-5 flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end sm:justify-between dark:border-slate-800">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">
-                {selectedThematic ? "تشكيلة منتقاة ذكياً" : "كتالوج المتجر"}
+                كتالوج المتجر
               </p>
               <h2 className="mt-1 text-2xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100">
-                {selectedThematic ? `تشكيلة «${selectedThematic.title}»` : showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}
+                {showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}
               </h2>
               <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">
-                {selectedThematic
-                  ? `مختارات منتقاة (${selectedThematic.tag}) تضم ${filteredItems.length} صنفاً متطابقاً وجاهزاً للطلب`
-                  : search
+                {search
                   ? `نتائج البحث عن «${search}»`
                   : activeCatName
                   ? `منتجات فئة «${activeCatName}»`
@@ -2554,14 +2475,6 @@ function StorefrontContent() {
               {filteredItems.length} منتج
             </span>
           </div>
-
-          {selectedThematic && (
-            <StorefrontActiveThematicBanner
-              thematic={selectedThematic}
-              matchingCount={filteredItems.length}
-              onClear={() => setSelectedThematic(null)}
-            />
-          )}
           <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-3 lg:flex-row lg:items-center lg:justify-between dark:border-slate-800 dark:bg-slate-900/50">
             <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <button
