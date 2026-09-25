@@ -1,3 +1,5 @@
+import { formatIqd } from "./format";
+
 export type DecisionSeverity = "critical" | "warning" | "info";
 
 export type ExecutiveDecision = {
@@ -49,8 +51,8 @@ export const ownerDecisionCenterPreview: OwnerDecisionCenter = {
     },
   ],
   metrics: [
-    { label: "مبيعات اليوم", value: "2,480,000 د.ع", detail: "36 فاتورة", available: true },
-    { label: "رصيد الخزينة", value: "1,120,000 د.ع", detail: "آخر تسوية اليوم", available: true },
+    { label: "مبيعات اليوم", value: formatIqd(2480000), detail: "36 فاتورة", available: true },
+    { label: "رصيد الخزينة", value: formatIqd(1120000), detail: "آخر تسوية اليوم", available: true },
     { label: "مخزون منخفض", value: "12 صنف", detail: "يحتاج متابعة", available: true },
   ],
 };

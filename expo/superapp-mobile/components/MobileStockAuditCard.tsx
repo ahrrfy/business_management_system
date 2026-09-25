@@ -127,6 +127,7 @@ export function MobileStockAuditCard() {
             وفق قواعد الفصل الرقابي (SOD-04)، تم تسجيل الفروقات كطلب تسوية معلق لاعتماده من الإدارة دون تعديل الرصيد منفرداً.
           </Text>
           <Pressable
+            accessibilityLabel="بدء جلسة جرد رف جديد"
             accessibilityRole="button"
             onPress={() => setAdjustmentSubmitted(null)}
             style={styles.newAuditButton}
@@ -180,6 +181,7 @@ export function MobileStockAuditCard() {
 
           {/* زر فتح قائمة مراجعة الجرد */}
           <Pressable
+            accessibilityLabel="مراجعة الأصناف وتأكيد الجرد"
             accessibilityRole="button"
             onPress={() => setModalVisible(true)}
             style={({ pressed }) => [styles.reviewButton, pressed && styles.pressed]}
@@ -255,6 +257,7 @@ export function MobileStockAuditCard() {
 
             <View style={styles.modalButtonsRow}>
               <Pressable
+                accessibilityLabel="إلغاء وإغلاق جدول المطابقة"
                 accessibilityRole="button"
                 onPress={() => setModalVisible(false)}
                 style={styles.cancelButton}
@@ -263,6 +266,7 @@ export function MobileStockAuditCard() {
               </Pressable>
 
               <Pressable
+                accessibilityLabel="رفع طلب تسوية الجرد للإدارة"
                 accessibilityRole="button"
                 onPress={handleSubmitAudit}
                 style={({ pressed }) => [styles.confirmButton, pressed && styles.pressed]}
