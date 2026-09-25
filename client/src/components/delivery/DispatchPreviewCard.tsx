@@ -250,7 +250,7 @@ export function DispatchPreviewCard({
             <div>
               <label className="mb-1 flex items-center gap-1 text-xs font-bold">
                 <Package aria-hidden className="size-3.5 text-muted-foreground" />
-                رقم تتبع / بوليصة الشركة الخارجية (اختياري)
+                رقم تتبع / بوليصة الشركة الخارجية <span className="text-destructive font-black">*</span>
               </label>
               <Input
                 value={externalTrackingRef}
@@ -258,6 +258,8 @@ export function DispatchPreviewCard({
                 placeholder="رقم البوليصة أو شحنة الشركة..."
                 className="h-10 bg-background font-mono text-xs"
                 dir="ltr"
+                autoComplete="off"
+                maxLength={100}
               />
             </div>
           )}
@@ -266,7 +268,7 @@ export function DispatchPreviewCard({
         <Button
           className="w-full py-6 text-base font-extrabold"
           onClick={onConfirmDispatch}
-          disabled={isPending || !!order.activeConsignment}
+          disabled={isPending || !!order.activeConsignment || (isCompanyParty && !externalTrackingRef.trim())}
         >
           {order.activeConsignment
             ? "مسند مسبقاً للإرسالية " + order.activeConsignment.consignmentNumber
