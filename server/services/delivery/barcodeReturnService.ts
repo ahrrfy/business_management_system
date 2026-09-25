@@ -60,7 +60,7 @@ export async function returnByBarcode(
     });
   }
   const lookup = prepareDeliveryBarcodeLookup(rawCode);
-  const { code: cleanCode, systemCode, trackingCode, namespace, numericId } = lookup;
+  const { code: cleanCode, systemCode, trackingCode, strippedTrackingCode, namespace, numericId } = lookup;
   const scopedBranch = actor.role === "admin"
     ? null
     : (actor.branchId == null ? -1 : Number(actor.branchId));
@@ -77,7 +77,14 @@ export async function returnByBarcode(
             ? or(
                 numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
                 eq(deliveryConsignments.consignmentNumber, cleanCode),
-                trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                trackingCode
+                  ? or(
+                      eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                      strippedTrackingCode
+                        ? sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode}`
+                        : sql`0=1`,
+                    )
+                  : sql`0=1`,
                 numericId != null ? eq(invoices.id, numericId) : sql`0=1`,
                 eq(invoices.invoiceNumber, cleanCode),
                 eq(invoices.invoiceNumber, `INV-${cleanCode}`),
@@ -90,7 +97,14 @@ export async function returnByBarcode(
               )
             : or(
                 eq(deliveryConsignments.consignmentNumber, systemCode),
-                trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                trackingCode
+                  ? or(
+                      eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                      strippedTrackingCode
+                        ? sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode}`
+                        : sql`0=1`,
+                    )
+                  : sql`0=1`,
                 eq(invoices.invoiceNumber, cleanCode),
                 eq(workOrders.orderNumber, cleanCode),
                 eq(onlineOrders.orderNumber, cleanCode),
