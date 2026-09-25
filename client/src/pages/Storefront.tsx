@@ -74,12 +74,16 @@ import { StorefrontTrustTicker } from "@/components/storefront/StorefrontTrustTi
 import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
 import { StorefrontProductCard } from "@/components/storefront/StorefrontProductCard";
 import { StoreTrustAndHelp } from "@/components/storefront/StoreTrustAndHelp";
-import { CuratedRow, type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
+import { CuratedRow, StorefrontCuratedRows, type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
 import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColorSwatches";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
+import { StorefrontHero } from "@/components/storefront/StorefrontHero";
+import { StorefrontThematicGrid } from "@/components/storefront/StorefrontThematicGrid";
+import { StorefrontActiveThematicBanner } from "@/components/storefront/StorefrontActiveThematicBanner";
+import { StorefrontBuyingPaths } from "@/components/storefront/StorefrontBuyingPaths";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -1230,6 +1234,7 @@ function StorefrontContent() {
   const [brand, setBrand] = useState("");
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedThematic, setSelectedThematic] = useState<{ id: string; title: string; tag: string; productIds: number[] } | null>(null);
   const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
   const [heartPulseTarget, setHeartPulseTarget] = useState<string | null>(null);
   const [heartPulseNonce, setHeartPulseNonce] = useState(0);
@@ -1773,6 +1778,7 @@ function StorefrontContent() {
   const filteredItems = useMemo(() => {
     const filtered = items.filter((p) => {
       if (showWishlist && !wishlistIds.has(p.productId)) return false;
+      if (selectedThematic && !selectedThematic.productIds.includes(p.productId)) return false;
       if (availability === "IN_STOCK" && !p.inStock) return false;
       if (brand && p.brand !== brand) return false;
       return matchesPriceFilter(Number(p.salePrice ?? p.price ?? 0), priceFilter);
@@ -1784,8 +1790,8 @@ function StorefrontContent() {
       const bPrice = Number(b.salePrice ?? b.price ?? 0);
       return sort === "PRICE_ASC" ? aPrice - bPrice : bPrice - aPrice;
     });
-  }, [availability, brand, items, priceFilter, showWishlist, sort, wishlistIds]);
-  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist;
+  }, [availability, brand, items, priceFilter, selectedThematic, showWishlist, sort, wishlistIds]);
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist || selectedThematic != null;
   // اقتراحات البحث: مُصفَّرة من `filteredItems` (Codex #4) — لا يظهر اقتراحٌ ينتفي فور اختياره.
   const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(filteredItems, rawSearch), [filteredItems, rawSearch]);
   useEffect(() => { setSearchSuggestionIndex(0); }, [rawSearch]);
@@ -1921,6 +1927,19 @@ function StorefrontContent() {
     // في الفواصل البينية حتى لا يبقى مسار الشراء بلا محفّز ترويجي.
     return heroBanners.slice(1, 4);
   }, [heroBanners, inlineBanners, offers]);
+
+  const dealProducts = useMemo(
+    () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
+    [items]
+  );
+  const dealProductIds = useMemo(() => new Set(dealProducts.map((p) => p.productId)), [dealProducts]);
+  const bestSellers = useMemo(
+    () => [...items]
+      .filter((p) => p.inStock && !dealProductIds.has(p.productId))
+      .sort((a, b) => ((b.soldCount ?? 0) - (a.soldCount ?? 0)) || (b.productId - a.productId))
+      .slice(0, 12),
+    [dealProductIds, items]
+  );
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
   const productCartQuantities = useMemo(() => {
@@ -2243,11 +2262,12 @@ function StorefrontContent() {
   }
 
   return (
-    <div className="storefront min-h-dvh overflow-x-clip bg-slate-50/60 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+    <div className="storefront min-h-dvh overflow-x-clip bg-[#FFFBF7] text-[#183D36] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+      <div aria-hidden="true" className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(254,243,199,0.22),rgba(255,255,255,0))] dark:hidden" />
       <StorefrontStickyFilter
         categories={cats.map((c: any) => ({ categoryId: c.id ?? c.categoryId, name: c.name }))}
         selectedCategoryId={categoryId}
-        onSelectCategory={(id) => { setCategoryId(id); scrollToResults(); }}
+        onSelectCategory={(id) => { setSelectedThematic(null); setCategoryId(id); scrollToResults(); }}
         availability={availability}
         onToggleAvailability={() => { setAvailability((v) => v === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }}
         sort={sort}
@@ -2257,8 +2277,8 @@ function StorefrontContent() {
       />
       <a href="#store-main" className="fixed right-4 z-[100] -translate-y-[160%] rounded-xl bg-blue-600 px-4 py-3 text-sm font-black text-white shadow-lg transition-transform focus:translate-y-0" style={{ top: "calc(.5rem + env(safe-area-inset-top))" }}>تجاوز إلى محتوى المتجر</a>
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{cartStatus}</div>
-      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95" style={{ paddingTop: "env(safe-area-inset-top)" }}>
-        <div className="hidden border-b border-slate-100 bg-slate-100/60 sm:block dark:border-slate-800/80 dark:bg-slate-950">
+      <header className="sticky top-0 z-30 border-b border-amber-900/10 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+        <div className="hidden border-b border-amber-100/60 bg-amber-50/40 sm:block dark:border-slate-800/80 dark:bg-slate-950">
           <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-2 text-[11px] font-bold text-slate-600 lg:px-8 dark:text-slate-400">
             <span className="flex items-center gap-1.5"><Truck aria-hidden className="size-3.5 text-blue-600" /> توصيل سريع وموثوق إلى جميع المحافظات العراقية</span>
             <span className="flex items-center gap-1.5"><Banknote aria-hidden className="size-3.5 text-emerald-600" /> الدفع نقد عند الاستلام متاح على كافة الطلبات</span>
@@ -2266,7 +2286,7 @@ function StorefrontContent() {
         </div>
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-2 px-4 py-3 sm:flex-nowrap sm:gap-4 lg:px-8">
           <a href="/store" className="order-1 flex min-w-0 flex-1 items-center gap-3 text-right sm:order-none sm:min-w-[175px] sm:flex-none">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-600/20">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-600/20">
               <ShoppingBag aria-hidden className="size-5" />
             </span>
             <span className="min-w-0">
@@ -2275,8 +2295,10 @@ function StorefrontContent() {
             </span>
           </a>
           <nav className="hidden items-center gap-5 text-xs font-black text-slate-600 lg:flex dark:text-slate-300" aria-label="التنقل الرئيسي">
-            <a href="#store-categories" className="transition hover:text-blue-600 dark:hover:text-blue-400">الأقسام</a>
-            <a href="#store-results" className="transition hover:text-blue-600 dark:hover:text-blue-400">المنتجات</a>
+            <a href="#store-hero" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">اكتشف</a>
+            <a href="#store-categories" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">الأقسام</a>
+            <a href="#store-picks" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">مختاراتنا</a>
+            <a href="#store-results" className="transition hover:text-emerald-700 dark:hover:text-emerald-400">المنتجات</a>
             <a href="#store-deals" className="transition hover:text-orange-600 dark:hover:text-orange-400">العروض</a>
           </nav>
           <div className="relative order-4 w-full flex-none sm:order-none sm:min-w-0 sm:flex-1">
@@ -2405,19 +2427,41 @@ function StorefrontContent() {
 
         {!search && categoryId == null && !showWishlist && (
           <>
+            <div id="store-hero">
+              <StorefrontHero
+                heroBanners={heroBanners}
+                featuredHero={heroBanners[0] ?? null}
+                bannerCarouselComponent={heroBanners.length > 0 ? <BannerCarousel banners={heroBanners} slot="HERO" className="mb-0 size-full" /> : undefined}
+                onScrollToProducts={() => scrollToResults()}
+                onExplorePicks={() => {
+                  const el = document.getElementById("store-picks");
+                  el?.scrollIntoView({ behavior: "smooth" });
+                }}
+              />
+            </div>
+
             <StorefrontTrustTicker
-              className="mt-2"
+              className="mt-4"
               onOpenWhatsApp={() => {
                 const phone = settingsQ.data?.whatsappNumber;
                 if (phone) openWhatsApp(phone, "مرحباً، أود الاستفسار عن منتجات المتجر");
               }}
             />
 
+            <StorefrontBuyingPaths
+              onSelectPath={(keywords) => {
+                setRawSearch(keywords);
+                setSearch(keywords);
+                scrollToResults();
+              }}
+              onExploreAll={() => scrollToResults()}
+            />
+
             <StorefrontCategories
               id="store-categories"
               categories={cats}
               selectedId={categoryId}
-              onSelectCategory={selectCategory}
+              onSelectCategory={(id) => { setSelectedThematic(null); selectCategory(id); }}
               categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
               className="mt-8 scroll-mt-28"
             />
@@ -2453,6 +2497,37 @@ function StorefrontContent() {
                 </div>
               </section>
             )}
+
+            <StorefrontCuratedRows
+              dealProducts={dealProducts}
+              bestSellers={bestSellers}
+              onSelectProduct={setSelectedId}
+              onAddToCart={addFeaturedToCart}
+              recentlyAddedId={recentlyAddedProductId}
+              canBeOrdered={storefrontProductCanBeOrdered}
+              getCartQuantity={getProductCartQty}
+              onUpdateQuantity={handleProductQuantityDelta}
+            />
+
+            <StorefrontThematicGrid
+              onSelectCollection={(c) => {
+                setRawSearch("");
+                setSearch("");
+                setCategoryId(null);
+                setSelectedThematic({
+                  id: c.id,
+                  title: c.title,
+                  tag: c.tag,
+                  productIds: c.productIds ?? [],
+                });
+                scrollToResults();
+              }}
+              onSelectKeyword={(kw) => {
+                setSelectedThematic(null);
+                setSearch(kw);
+                scrollToResults();
+              }}
+            />
           </>
         )}
 
@@ -2460,13 +2535,15 @@ function StorefrontContent() {
           <div className="mb-5 flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end sm:justify-between dark:border-slate-800">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">
-                كتالوج المتجر
+                {selectedThematic ? "تشكيلة منتقاة ذكياً" : "كتالوج المتجر"}
               </p>
               <h2 className="mt-1 text-2xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100">
-                {showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}
+                {selectedThematic ? `تشكيلة «${selectedThematic.title}»` : showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}
               </h2>
               <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">
-                {search
+                {selectedThematic
+                  ? `مختارات منتقاة (${selectedThematic.tag}) تضم ${filteredItems.length} صنفاً متطابقاً وجاهزاً للطلب`
+                  : search
                   ? `نتائج البحث عن «${search}»`
                   : activeCatName
                   ? `منتجات فئة «${activeCatName}»`
@@ -2477,6 +2554,14 @@ function StorefrontContent() {
               {filteredItems.length} منتج
             </span>
           </div>
+
+          {selectedThematic && (
+            <StorefrontActiveThematicBanner
+              thematic={selectedThematic}
+              matchingCount={filteredItems.length}
+              onClear={() => setSelectedThematic(null)}
+            />
+          )}
           <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-3 lg:flex-row lg:items-center lg:justify-between dark:border-slate-800 dark:bg-slate-900/50">
             <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <button

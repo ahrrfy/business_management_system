@@ -113,7 +113,7 @@ export default function HomeScreen() {
     { limit: 8 },
   );
   const { categories } = useStorefrontCategories();
-  const [loadMarketing, setLoadMarketing] = useState(false);
+  const [loadMarketing] = useState(true);
   const { banners, offers } = useStorefrontMarketing(loadMarketing);
   const [query, setQuery] = useState("");
   const [searchActive, setSearchActive] = useState(false);
@@ -164,11 +164,6 @@ export default function HomeScreen() {
       )
       .slice(0, 4);
   }, [debouncedQuery, products]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setLoadMarketing(true), 900);
-    return () => clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     const clean = query.trim();
