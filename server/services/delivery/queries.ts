@@ -13,6 +13,9 @@ import { deliveryCashSource } from "./cashSource";
 import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { getDeliveryFinancialSummary } from "./lifecycle";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
+import { escLike } from "../../lib/sqlLike";
+import { phoneSuffix10 } from "../../lib/phone";
+import { ARABIC_NORMALIZATION_PAIRS, normalizeArabicSearch } from "../../../shared/storefrontSearchNormalize";
 
 /**
  * ⭐ Tier-2 #1 (٢٥/٨): ترقيمُ الصفحات لقوائم التوصيل — كانت الدوال أدناه تُحمّل الصفوف كلّها
@@ -237,6 +240,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       consignmentNumber: deliveryConsignments.consignmentNumber,
       invoiceId: deliveryConsignments.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
+      orderNumber: workOrders.orderNumber,
       externalTrackingRef: deliveryConsignments.externalTrackingRef,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
@@ -965,3 +969,320 @@ export async function listStaleParties(branchId: number | null) {
 
 // ش١ (٥/٨): listReceptionInvoiceQueue انتقلت إلى server/services/reception/queries.ts
 // (بترقيم keyset وفلاتر) — حُذفت هنا مع نقطة نهايتها (حارس check:orphans).
+
+export interface PredictiveConsignmentItem {
+  id: number;
+  consignmentNumber: string;
+  externalTrackingRef: string | null;
+  invoiceId: number | null;
+  invoiceNumber: string | null;
+  workOrderId: number | null;
+  orderNumber: string | null;
+  partyId: number;
+  partyName: string;
+  partyType: "INDIVIDUAL" | "COMPANY";
+  customerName: string;
+  customerPhone: string | null;
+  deliveryAddress: string | null;
+  parcelStatus: string;
+  moneyStatus: string;
+  status: string;
+  codAmount: string;
+  collectedAmount: string;
+  counterSettledAmount: string;
+  remainingAmount: string;
+  matchedOn: ("PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[];
+  score: number;
+}
+
+/**
+ * البحث التنبؤي الذكي في الإرساليات والطرود (Predictive Partial Search):
+ * يبحث بجزء من كم حرف (اسم العميل أو العنوان) أو من كم رقم (هاتف، فاتورة، إرسالية، طلب)
+ * ويعيد النتائج مرتبة حسب جودة التطابق لاكتمال التحديد الفوري في الواجهة.
+ */
+export async function predictiveSearchConsignments(
+  queryOrOpts: string | {
+    branchId?: number | null;
+    query: string;
+    partyId?: number | null;
+    limit?: number;
+  },
+  maybeOpts?: {
+    branchId?: number | null;
+    partyId?: number | null;
+    limit?: number;
+  },
+): Promise<PredictiveConsignmentItem[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const opts = typeof queryOrOpts === "string"
+    ? { query: queryOrOpts, branchId: maybeOpts?.branchId ?? null, partyId: maybeOpts?.partyId, limit: maybeOpts?.limit }
+    : queryOrOpts;
+
+  const rawQ = (opts.query ?? "").trim();
+  if (!rawQ || rawQ.length < 2) return [];
+
+  const toAsciiDigits = (s: string) =>
+    s
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
+
+  const effLimit = Math.max(1, Math.min(30, opts.limit ?? 10));
+  const asciiQ = toAsciiDigits(rawQ);
+  const digits = asciiQ.replace(/\D/g, "");
+  const normAr = normalizeArabicSearch(rawQ).replace(/ى/g, "ي");
+  const normPattern = `%${escLike(normAr)}%`;
+  const likeQuery = `%${escLike(rawQ)}%`;
+
+  const arabicLike = (col: any, pattern: string) => {
+    let expr = sql`${col}`;
+    for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
+      expr = sql`REPLACE(${expr}, ${from}, ${to})`;
+    }
+    expr = sql`REPLACE(${expr}, 'ى', 'ي')`;
+    return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
+  };
+
+  const searchConds: any[] = [
+    sql`${deliveryConsignments.consignmentNumber} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${deliveryConsignments.externalTrackingRef} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${invoices.invoiceNumber} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${workOrders.orderNumber} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${customers.name} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${deliveryConsignments.recipientName} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${workOrders.contactName} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${deliveryConsignments.deliveryAddress} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${customers.address} LIKE ${likeQuery} ESCAPE '!'`,
+    sql`${workOrders.deliveryAddress} LIKE ${likeQuery} ESCAPE '!'`,
+    arabicLike(customers.name, normPattern),
+    arabicLike(deliveryConsignments.recipientName, normPattern),
+    arabicLike(workOrders.contactName, normPattern),
+    arabicLike(deliveryConsignments.deliveryAddress, normPattern),
+    arabicLike(customers.address, normPattern),
+    arabicLike(workOrders.deliveryAddress, normPattern),
+  ];
+
+  if (digits.length >= 2) {
+    const likeDigits = `%${escLike(digits)}%`;
+    searchConds.push(
+      sql`${deliveryConsignments.recipientPhone} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${customers.phone} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${customers.phone2} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${customers.phone3} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${customers.whatsapp} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${workOrders.deliveryPhone} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${workOrders.contactPhone} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${deliveryConsignments.consignmentNumber} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${invoices.invoiceNumber} LIKE ${likeDigits} ESCAPE '!'`,
+      sql`${workOrders.orderNumber} LIKE ${likeDigits} ESCAPE '!'`,
+    );
+
+    if (digits.length <= 9) {
+      const numId = Number(digits);
+      if (!isNaN(numId) && numId > 0) {
+        searchConds.push(
+          eq(deliveryConsignments.id, numId),
+          eq(invoices.id, numId),
+          eq(workOrders.id, numId),
+        );
+      }
+    }
+
+    const localDigits = digits.startsWith("964") ? digits.slice(3) : digits.startsWith("00964") ? digits.slice(5) : digits;
+    if (localDigits.length >= 2 && localDigits !== digits) {
+      const likeLocal = `%${escLike(localDigits)}%`;
+      searchConds.push(
+        sql`${deliveryConsignments.recipientPhone} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${workOrders.deliveryPhone} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.phone} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.phone2} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.phone3} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.whatsapp} LIKE ${likeLocal} ESCAPE '!'`,
+      );
+    }
+  }
+
+  if (digits.length >= 7) {
+    const sfx = phoneSuffix10(digits);
+    if (sfx) {
+      const likeSfx = `%${escLike(sfx)}%`;
+      searchConds.push(
+        sql`${deliveryConsignments.recipientPhone} LIKE ${likeSfx} ESCAPE '!'`,
+        sql`${workOrders.deliveryPhone} LIKE ${likeSfx} ESCAPE '!'`,
+        sql`${customers.phone} LIKE ${likeSfx} ESCAPE '!'`,
+        sql`${customers.whatsapp} LIKE ${likeSfx} ESCAPE '!'`,
+      );
+    }
+  }
+
+  const baseConds: any[] = [
+    sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED', 'RETURNED')`,
+    or(...searchConds),
+  ];
+
+  if (opts.branchId != null) {
+    baseConds.push(eq(deliveryConsignments.branchId, opts.branchId));
+  }
+  if (opts.partyId != null) {
+    baseConds.push(eq(deliveryConsignments.partyId, opts.partyId));
+  }
+
+  const rows = await db
+    .select({
+      id: deliveryConsignments.id,
+      consignmentNumber: deliveryConsignments.consignmentNumber,
+      externalTrackingRef: deliveryConsignments.externalTrackingRef,
+      invoiceId: deliveryConsignments.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      workOrderId: deliveryConsignments.workOrderId,
+      orderNumber: workOrders.orderNumber,
+      partyId: deliveryConsignments.partyId,
+      partyName: deliveryParties.name,
+      partyType: deliveryParties.partyType,
+      parcelStatus: deliveryConsignments.parcelStatus,
+      moneyStatus: deliveryConsignments.moneyStatus,
+      status: deliveryConsignments.status,
+      codAmount: deliveryConsignments.codAmount,
+      collectedAmount: deliveryConsignments.collectedAmount,
+      counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      shortfallAssigned: consignmentShortfallAssignedSql,
+      customerName: sql<string>`COALESCE(NULLIF(${deliveryConsignments.recipientName}, ''), NULLIF(${customers.name}, ''), NULLIF(${workOrders.contactName}, ''), 'عميل نقدي')`,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
+    })
+    .from(deliveryConsignments)
+    .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+    .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
+    .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
+    .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+    .where(and(...baseConds))
+    .orderBy(desc(deliveryConsignments.id))
+    .limit(effLimit * 2);
+
+  const normQ = rawQ.toLowerCase();
+  const normArQ = normQ.replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
+
+  const scored = rows.map((r) => {
+    const matchedOn: ("PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[] = [];
+    const phone = r.customerPhone ?? "";
+    const name = r.customerName ?? "";
+    const normName = name.toLowerCase().replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
+    const invNum = r.invoiceNumber ?? "";
+    const cnNum = r.consignmentNumber ?? "";
+    const extRef = r.externalTrackingRef ?? "";
+    const ordNum = r.orderNumber ?? "";
+    const addr = r.deliveryAddress ?? "";
+    const normAddr = addr.toLowerCase().replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
+
+    let score = 3;
+
+    // مطابقة الهاتف
+    const sfxDigits = phoneSuffix10(digits);
+    const sfxPhone = phoneSuffix10(phone);
+    const phoneClean = phone.replace(/\D/g, "");
+    const localDigits = digits.startsWith("964") ? digits.slice(3) : digits.startsWith("00964") ? digits.slice(5) : digits;
+
+    const isPhoneMatch =
+      (digits.length >= 2 && phoneClean.includes(digits)) ||
+      (localDigits.length >= 2 && phoneClean.includes(localDigits)) ||
+      (sfxDigits != null && sfxPhone != null && sfxDigits === sfxPhone) ||
+      (sfxDigits != null && phoneClean.includes(sfxDigits));
+
+    if (isPhoneMatch) {
+      matchedOn.push("PHONE");
+      if (
+        phoneClean === digits ||
+        phoneClean === localDigits ||
+        phoneClean.endsWith(digits) ||
+        phoneClean.endsWith(localDigits) ||
+        (sfxDigits != null && sfxPhone != null && sfxDigits === sfxPhone)
+      ) {
+        score = Math.min(score, 0);
+      } else {
+        score = Math.min(score, 1);
+      }
+    }
+
+    // مطابقة رقم الإرسالية
+    if (cnNum.toLowerCase().includes(normQ) || (digits.length >= 2 && cnNum.includes(digits))) {
+      matchedOn.push("CONSIGNMENT_NUMBER");
+      if (cnNum.toLowerCase() === normQ || (extRef && extRef.toLowerCase() === normQ)) score = Math.min(score, 0);
+      else if (cnNum.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
+      else score = Math.min(score, 2);
+    }
+
+    // مطابقة رقم البوليصة الخارجي
+    if (extRef && (extRef.toLowerCase().includes(normQ) || (digits.length >= 2 && extRef.includes(digits)))) {
+      if (!matchedOn.includes("CONSIGNMENT_NUMBER")) matchedOn.push("CONSIGNMENT_NUMBER");
+      if (extRef.toLowerCase() === normQ) score = Math.min(score, 0);
+      else if (extRef.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
+      else score = Math.min(score, 2);
+    }
+
+    // مطابقة رقم الفاتورة
+    if (invNum.toLowerCase().includes(normQ) || (digits.length >= 2 && invNum.includes(digits))) {
+      matchedOn.push("INVOICE_NUMBER");
+      if (invNum.toLowerCase() === normQ) score = Math.min(score, 0);
+      else if (invNum.toLowerCase().startsWith(normQ)) score = Math.min(score, 1);
+      else score = Math.min(score, 2);
+    }
+
+    // مطابقة رقم أمر الشغل أو الطلب
+    if (ordNum && (ordNum.toLowerCase().includes(normQ) || (digits.length >= 2 && ordNum.includes(digits)))) {
+      matchedOn.push("ORDER_NUMBER");
+      if (ordNum.toLowerCase() === normQ) score = Math.min(score, 0);
+      else score = Math.min(score, 2);
+    }
+
+    // مطابقة اسم العميل
+    if (normName.includes(normArQ) || name.toLowerCase().includes(normQ)) {
+      matchedOn.push("CUSTOMER_NAME");
+      if (normName.startsWith(normArQ)) score = Math.min(score, 1);
+      else score = Math.min(score, 2);
+    }
+
+    // مطابقة العنوان
+    if (normAddr.includes(normArQ) || addr.toLowerCase().includes(normQ)) {
+      matchedOn.push("ADDRESS");
+      score = Math.min(score, 2);
+    }
+
+    const cod = money(r.codAmount ?? "0");
+    const collected = money(r.collectedAmount ?? "0");
+    const counterSettled = money(r.counterSettledAmount ?? "0");
+    const shortfall = money(r.shortfallAssigned ?? "0");
+    const netRemaining = cod.minus(collected).minus(counterSettled).minus(shortfall);
+    const remaining = netRemaining.isNegative() ? "0.00" : round2(netRemaining).toFixed(2);
+
+    return {
+      id: Number(r.id),
+      consignmentNumber: r.consignmentNumber,
+      externalTrackingRef: r.externalTrackingRef,
+      invoiceId: r.invoiceId ? Number(r.invoiceId) : null,
+      invoiceNumber: r.invoiceNumber,
+      workOrderId: r.workOrderId ? Number(r.workOrderId) : null,
+      orderNumber: r.orderNumber,
+      partyId: Number(r.partyId),
+      partyName: r.partyName ?? "جهة غير محددة",
+      partyType: (r.partyType as "INDIVIDUAL" | "COMPANY") ?? "INDIVIDUAL",
+      customerName: r.customerName,
+      customerPhone: r.customerPhone,
+      deliveryAddress: r.deliveryAddress,
+      parcelStatus: r.parcelStatus,
+      moneyStatus: r.moneyStatus,
+      status: r.status,
+      codAmount: String(r.codAmount ?? "0.00"),
+      collectedAmount: String(r.collectedAmount ?? "0.00"),
+      counterSettledAmount: String(r.counterSettledAmount ?? "0.00"),
+      remainingAmount: remaining,
+      matchedOn: (matchedOn.length > 0 ? matchedOn : ["CONSIGNMENT_NUMBER"]) as ("PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[],
+      score,
+    };
+  });
+
+  return scored
+    .sort((a, b) => a.score - b.score || b.id - a.id)
+    .slice(0, effLimit);
+}
+

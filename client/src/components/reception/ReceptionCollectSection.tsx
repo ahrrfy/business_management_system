@@ -21,6 +21,8 @@ import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStateme
 import { CompanyStatementScanQueue } from "@/components/delivery/CompanyStatementScanQueue";
 import { statementQueueRemaining, type CompanyStatementQueueCandidate } from "@/components/delivery/companyStatementQueue";
 import { companyStatementPartyTransition } from "@/components/delivery/statementDraft";
+import { PredictiveConsignmentSearchInput, type PredictiveItem } from "@/components/delivery/PredictiveConsignmentSearchInput";
+import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 
 export type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
@@ -118,29 +120,55 @@ export function ReceptionCollectSection({
       && (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL" || row.moneyStatus === "NOT_APPLICABLE")
   ));
   const normalizedParcelFilter = parcelFilter.trim().toLowerCase();
+  const filterDigits = parcelFilter.replace(/\D/g, "");
+  const normFilterAr = normalizeArabicSearch(parcelFilter);
+
+  const filterParcelRow = (row: (typeof openRows)[number]) => {
+    if (!normalizedParcelFilter) return true;
+    const r = row as {
+      customerPhone?: string | null;
+      recipientPhone?: string | null;
+      address?: string | null;
+      deliveryAddress?: string | null;
+      externalTrackingRef?: string | null;
+      orderNumber?: string | null;
+    };
+    const phone = r.customerPhone ?? r.recipientPhone ?? "";
+    const phoneDigits = phone.replace(/\D/g, "");
+    const addr = r.address ?? r.deliveryAddress ?? "";
+    const name = row.customerName ?? row.recipientName ?? "";
+    const num = row.invoiceNumber ?? String(row.invoiceId ?? "");
+    const cn = row.consignmentNumber ?? "";
+    const ext = r.externalTrackingRef ?? "";
+    const ord = r.orderNumber ?? "";
+
+    // ١. مطابقة جزئية للأرقام من خانتين فأكثر (هاتف، فاتورة، إرسالية، طلب)
+    if (filterDigits.length >= 2) {
+      if (phoneDigits.includes(filterDigits)) return true;
+      if (num.replace(/\D/g, "").includes(filterDigits)) return true;
+      if (cn.replace(/\D/g, "").includes(filterDigits)) return true;
+      if (ord.replace(/\D/g, "").includes(filterDigits)) return true;
+      if (ext.replace(/\D/g, "").includes(filterDigits)) return true;
+    }
+
+    // ٢. مطابقة نصوص مع تطبيع الأحرف العربية
+    if (normFilterAr) {
+      if (normalizeArabicSearch(name).includes(normFilterAr)) return true;
+      if (normalizeArabicSearch(addr).includes(normFilterAr)) return true;
+    }
+
+    // ٣. مطابقة عامة للرموز والأحرف الإنجليزية
+    return [name, phone, addr, num, cn, ext, ord].some((v) =>
+      v.toLowerCase().includes(normalizedParcelFilter),
+    );
+  };
+
   const displayedStatementRows = normalizedParcelFilter
-    ? statementRows.filter((row) => {
-        const r = row as { customerPhone?: string | null; recipientPhone?: string | null; address?: string | null; deliveryAddress?: string | null };
-        const phone = r.customerPhone ?? r.recipientPhone ?? "";
-        const addr = r.address ?? r.deliveryAddress ?? "";
-        const name = row.customerName ?? row.recipientName ?? "";
-        const num = row.invoiceNumber ?? String(row.invoiceId ?? "");
-        const cn = row.consignmentNumber ?? "";
-        const ext = row.externalTrackingRef ?? "";
-        return [name, phone, addr, num, cn, ext].some((v) => v.toLowerCase().includes(normalizedParcelFilter));
-      })
+    ? statementRows.filter(filterParcelRow)
     : statementRows;
 
   const displayedOpenRows = normalizedParcelFilter
-    ? openRows.filter((row) => {
-        const r = row as { customerPhone?: string | null; recipientPhone?: string | null; address?: string | null; deliveryAddress?: string | null };
-        const phone = r.customerPhone ?? r.recipientPhone ?? "";
-        const addr = r.address ?? r.deliveryAddress ?? "";
-        const name = row.customerName ?? row.recipientName ?? "";
-        const num = row.invoiceNumber ?? String(row.invoiceId ?? "");
-        const cn = row.consignmentNumber ?? "";
-        return [name, phone, addr, num, cn].some((v) => v.toLowerCase().includes(normalizedParcelFilter));
-      })
+    ? openRows.filter(filterParcelRow)
     : openRows;
 
   const remittableRows = openRows.filter((r) => r.parcelStatus === "DELIVERED");
@@ -376,6 +404,51 @@ export function ReceptionCollectSection({
     }
   }, [utils, partiesQ.data, staffConfirmMut, switchCollectParty]);
 
+  const handleSelectPredictiveParcel = useCallback(
+    async (item: PredictiveItem) => {
+      try {
+        const pInfo = (partiesQ.data ?? []).find((p) => p.id === item.partyId) ?? {
+          id: item.partyId,
+          name: item.partyName,
+          partyType: item.partyType,
+        };
+        switchCollectParty(item.partyId, item.partyType);
+
+        if (item.partyType === "COMPANY") {
+          const rem = round2(moneyInput(item.remainingAmount || "0"));
+          setSelectedStatementLines((prev) => ({ ...prev, [item.id]: true }));
+          setStatementAmounts((prev) => ({ ...prev, [item.id]: rem.toFixed(2) }));
+          setStatementQueueIds((prev) => (prev.includes(item.id) ? prev : [...prev, item.id]));
+          notify.ok(`تم اختيار الإرسالية ${item.consignmentNumber} لشركة ${pInfo.name}`);
+        } else {
+          const remaining = round2(moneyInput(item.remainingAmount || "0"));
+          if (item.parcelStatus !== "DELIVERED") {
+            const ok = await confirm({
+              title: "إثبات تسليم الطرد وقبض المبلغ",
+              description: `الإرسالية: ${item.consignmentNumber}\nالطلب: #${item.orderNumber ?? ""} — ${item.customerName ?? ""}\nالمبلغ المطلوب: ${fmt(remaining.toFixed(2))} د.ع\nالمندوب: ${pInfo.name}\n\nهل تود تأكيد تسليم الطرد للزبون وتجهيزه للتوريد للدرج؟`,
+              confirmText: "إثبات التسليم",
+            });
+            if (ok) {
+              staffConfirmMut.mutate({
+                consignmentId: item.id,
+                collectedAmount: remaining.toFixed(2),
+                evidence: "اختيار من البحث التنبؤي الذكي",
+                clientRequestId: crypto.randomUUID(),
+              });
+              setCountedCash(remaining.toFixed(2));
+            }
+          } else {
+            setCountedCash(remaining.toFixed(2));
+            notify.ok(`الإرسالية ${item.consignmentNumber} مسلَّمة — المبلغ المطلوب للتوريد: ${fmt(remaining.toFixed(2))} د.ع`);
+          }
+        }
+      } catch (e) {
+        notify.err(e, "تعذّر معالجة الطرد المختار");
+      }
+    },
+    [partiesQ.data, switchCollectParty, staffConfirmMut],
+  );
+
   useEffect(() => {
     if (scannedBarcode) {
       void handleCollectBarcode(scannedBarcode);
@@ -385,33 +458,28 @@ export function ReceptionCollectSection({
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
-      <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <ScanLine className="size-5 text-primary shrink-0" />
-          <span className="text-sm font-extrabold text-primary">مسح باركود الإرسالية أو الفاتورة أو طلب المتجر للتحصيل</span>
+      {/* ─── حقل البحث التنبؤي الذكي ومسح الباركود للتحصيل ─── */}
+      <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ScanLine className="size-5 text-primary shrink-0" />
+            <span className="text-sm font-extrabold text-primary">
+              البحث التنبؤي الذكي ومسح الباركود للتحصيل
+            </span>
+          </div>
+          <span className="text-xs text-muted-foreground font-mono bg-background/80 px-2 py-0.5 rounded border">
+            F2 للتركيز
+          </span>
         </div>
-        <div className="flex gap-2">
-          <Input
-            value={collectBarcodeInput}
-            onChange={(e) => setCollectBarcodeInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && collectBarcodeInput.trim()) {
-                void handleCollectBarcode(collectBarcodeInput.trim());
-              }
-            }}
-            placeholder="امسح باركود الإرسالية (CNS-...) أو الفاتورة أو طلب المتجر (Enter)"
-            className="flex-1 text-center font-bold text-sm h-11 bg-background"
-            dir="ltr"
-          />
-          <Button
-            variant="default"
-            className="h-11 font-bold px-4 gap-1.5"
-            onClick={() => void handleCollectBarcode(collectBarcodeInput.trim())}
-            disabled={!collectBarcodeInput.trim() || isSearchingCollect}
-          >
-            {isSearchingCollect ? <Loader2 className="size-4 animate-spin" /> : "بحث وتحديد"}
-          </Button>
-        </div>
+        <PredictiveConsignmentSearchInput
+          onSelect={handleSelectPredictiveParcel}
+          onBarcodeEnter={(raw) => void handleCollectBarcode(raw)}
+          partyId={selectedPartyId}
+          localCandidates={openRows}
+          placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+          className="w-full"
+          inputClassName="h-11 text-sm bg-background shadow-xs font-bold"
+        />
       </div>
 
       <Card className="gap-0 p-4">
@@ -523,9 +591,6 @@ export function ReceptionCollectSection({
                           value={statementNumber}
                           onChange={(e) => {
                             setStatementNumber(e.target.value);
-                            setSelectedStatementLines({});
-                            setStatementAmounts({});
-                            setStatementQueueIds([]);
                           }}
                           placeholder="مثال: STMT-2026-09"
                           className="h-10 bg-background font-mono font-bold"
@@ -611,12 +676,13 @@ export function ReceptionCollectSection({
 
                     {statementRows.length > 0 && (
                       <div className="relative">
-                        <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                        <Search aria-hidden="true" className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
                         <Input
                           type="text"
                           value={parcelFilter}
                           onChange={(e) => setParcelFilter(e.target.value)}
-                          placeholder="بحث برقم الهاتف، العنوان، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          aria-label="تصفية طرود كشف الشركة"
                           className="ps-9 h-9 text-xs"
                         />
                       </div>
@@ -753,12 +819,13 @@ export function ReceptionCollectSection({
 
                     {openRows.length > 0 && (
                       <div className="relative">
-                        <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                        <Search aria-hidden="true" className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
                         <Input
                           type="text"
                           value={parcelFilter}
                           onChange={(e) => setParcelFilter(e.target.value)}
-                          placeholder="بحث برقم الهاتف، العنوان، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          aria-label="تصفية الطرود المفتوحة"
                           className="ps-9 h-9 text-xs"
                         />
                       </div>
