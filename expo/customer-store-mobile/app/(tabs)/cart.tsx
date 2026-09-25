@@ -128,7 +128,7 @@ export default function CartScreen() {
     let message = "مرحباً مكتبة العربية، أود مراجعة هذه السلة والطلب عبركم:\n";
     lines.forEach((line, index) => {
       const price = line.selectionDetails.unitSalePrice ?? line.selectionDetails.unitPrice;
-      message += `${index + 1}. ${line.product.title} (${selectionDescription(line.selectionDetails)}) - الكمية: ${line.quantity} ${price ? `- السعر: ${formatIqd(price)}` : ""}\n`;
+      message += `${index + 1}. ${line.product.title} (${selectionDescription(line.selectionDetails)}) - الكمية: ${formatLatinNumber(line.quantity)} ${price ? `- السعر: ${formatIqd(price)}` : ""}\n`;
     });
     message += `الإجمالي التقديري: ${formatIqd(estimatedSubtotal)}\nالدفع: عند الاستلام.`;
     const url = rawNumber

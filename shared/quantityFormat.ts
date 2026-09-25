@@ -39,13 +39,13 @@ export interface FormatQuantityOptions {
  * تنسيق كمية للعرض فقط: إزالة الأصفار العشرية الزائدة مع حفظ الكسور الحقيقية وفواصل الآلاف.
  */
 export function formatQuantity(
-  value: string | number | null | undefined,
+  value: string | number | { toString(): string } | null | undefined,
   options?: FormatQuantityOptions,
 ): string {
   const fallback = options?.fallback ?? "—";
   if (value == null) return fallback;
 
-  const str = typeof value === "number" ? String(value) : String(value).trim();
+  const str = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : String(value).trim();
   if (str === "") return fallback;
 
   const num = Number(str);

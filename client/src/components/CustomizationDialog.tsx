@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { confirm } from "@/lib/confirm";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
 /**
@@ -544,7 +544,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               <span className="font-bold tabular-nums" dir="ltr">{fmt(unitTotal.toString())} د.ع</span>
             </div>
             <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">إجمالي البند ({quantity} × سعر الوحدة):</span>
+              <span className="text-muted-foreground">إجمالي البند ({formatQuantity(quantity)} × سعر الوحدة):</span>
               <span className="font-bold tabular-nums" dir="ltr">{fmt(orderTotal.toString())} د.ع</span>
             </div>
             {data.hasDelivery && D(data.deliveryCost || 0).gt(0) && (

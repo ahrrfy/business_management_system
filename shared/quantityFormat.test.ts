@@ -72,4 +72,11 @@ describe("shared/quantityFormat — تنسيق الكميات وإزالة ال�
     expect(fmtQty("1.500")).toBe("1.5");
     expect(fmtQty(null)).toBe("—");
   });
+
+  it("يتعامل بنجاح مع كائنات Decimal أو أي كائن يملك toString()", () => {
+    const fakeDecimalInt = { toString: () => "50.000" };
+    const fakeDecimalFrac = { toString: () => "3.1250" };
+    expect(formatQuantity(fakeDecimalInt)).toBe("50");
+    expect(formatQuantity(fakeDecimalFrac)).toBe("3.125");
+  });
 });
