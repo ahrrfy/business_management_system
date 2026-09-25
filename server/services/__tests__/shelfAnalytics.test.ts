@@ -90,6 +90,44 @@ describe("shelfAnalyticsService — محرك إحصائيات المستفيدي
     expect(stats.deviceBreakdown.ios).toBeGreaterThanOrEqual(1);
   });
 
+  it("يتعامل بمرونة مع معرف فرع غير موجود عبر الـ FK fallback دون إسقاط الاستعلام", async () => {
+    const visitorWithInvalidBranch = `test_fk_fallback_${Date.now()}`;
+    await recordShelfLookupEvent({
+      visitorId: visitorWithInvalidBranch,
+      barcode: "TEST_BARCODE_FALLBACK",
+      branchId: 999999, // فرع غير موجود إطلاقاً
+      productName: "منتج تجريبي",
+      found: true,
+      deviceType: "android",
+    });
+
+    const stats = await getShelfBeneficiariesStats({ range: "all" });
+    const fallbackScan = stats.recentScans.find((s) => s.barcode === "TEST_BARCODE_FALLBACK");
+    expect(fallbackScan).toBeDefined();
+    expect(fallbackScan?.branchId).toBeNull();
+  });
+
+  it("يدعم تصفية الإحصائيات حسب الفرع بدقة ذرية", async () => {
+    const branchStats = await getShelfBeneficiariesStats({ branchId: 1, range: "all" });
+    expect(branchStats).toBeDefined();
+    // كل العمليات في سجل recentScans يجب أن تعود للفرع 1
+    for (const scan of branchStats.recentScans) {
+      expect(scan.branchId).toBe(1);
+    }
+  });
+
+  it("يدعم تصفية الفترات الزمنية المختلفة (today, 7d, 30d, all)", async () => {
+    const todayStats = await getShelfBeneficiariesStats({ range: "today" });
+    expect(todayStats).toBeDefined();
+    expect(Array.isArray(todayStats.activityTimeline)).toBe(true);
+
+    const sevenDaysStats = await getShelfBeneficiariesStats({ range: "7d" });
+    expect(sevenDaysStats).toBeDefined();
+
+    const thirtyDaysStats = await getShelfBeneficiariesStats({ range: "30d" });
+    expect(thirtyDaysStats).toBeDefined();
+  });
+
   it("يدعم بذر عينة استرشادية واقعية للمعرض عند الحاجة", async () => {
     const inserted = await seedShowroomSampleAnalytics(15);
     expect(inserted).toBeGreaterThanOrEqual(0);

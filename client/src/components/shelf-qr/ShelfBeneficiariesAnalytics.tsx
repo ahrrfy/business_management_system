@@ -21,15 +21,14 @@ import {
   TrendingUp,
   RefreshCw,
   Sparkles,
-  Layers,
   Clock,
-  Laptop,
   Check,
   ShoppingBag,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -69,7 +68,9 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
   });
 
   const stats = statsQ.data;
+  const isLoading = statsQ.isLoading && !stats;
   const isRefreshing = statsQ.isFetching;
+  const isError = statsQ.isError;
 
   // إيجاد أقصى عدد استعلامات في المنحنى الزمني لحساب النسب المئوية للأعمدة
   const maxTimelineScans = Math.max(
@@ -142,7 +143,10 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
             className="h-9 gap-1.5 text-xs"
             title="تحديث الأرقام والإحصائيات الحية"
           >
-            <RefreshCw className={`size-3.5 ${isRefreshing ? "animate-spin text-primary" : ""}`} />
+            <RefreshCw
+              aria-hidden="true"
+              className={`size-3.5 ${isRefreshing ? "animate-spin text-primary" : ""}`}
+            />
             <span>تحديث مباشر</span>
           </Button>
 
@@ -154,100 +158,172 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
             className="h-9 gap-1.5 text-xs font-medium"
             title="توليد عينة استعلامات واقعية لحركة زوار المعرض للمعاينة والتحليل"
           >
-            <Sparkles className="size-3.5 text-primary" />
+            <Sparkles aria-hidden="true" className="size-3.5 text-primary" />
             <span>بيانات استرشادية</span>
           </Button>
         </div>
       </div>
 
-      {/* بطاقات مؤشرات الأداء الحيوية الأربعة (KPIs) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* عدد المستفيدين الفريدين */}
-        <Card className="border-primary/25 bg-gradient-to-br from-primary/5 via-card to-card shadow-xs">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground">عدد المستفيدين من الخدمة</CardTitle>
-            <div className="p-2 rounded-lg bg-primary/10 text-primary">
-              <Users className="size-4" />
+      {/* تنبيه حالة الخطأ إن حدث */}
+      {isError && (
+        <div
+          role="alert"
+          className="p-5 rounded-xl border border-destructive/30 bg-destructive/5 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-right"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-destructive/10 text-destructive">
+              <AlertCircle aria-hidden="true" className="size-5" />
             </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-foreground tracking-tight">
-              {fmtAr(stats?.uniqueBeneficiaries ?? 0)}
-              <span className="text-xs font-semibold text-muted-foreground mr-1.5">زبون مستفيد</span>
+            <div>
+              <h4 className="text-xs font-bold text-foreground">تعذّر تحديث بعض المؤشرات اللحظية</h4>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                يرجى التأكد من اتصال الخادم ثم الضغط على إعادة المحاولة.
+              </p>
             </div>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] bg-primary/10 text-primary border-primary/20">
-                +{fmtAr(stats?.todayBeneficiaries ?? 0)} اليوم
-              </Badge>
-              <span>أجهزة زوار فريدة ممسوحة</span>
-            </div>
-          </CardContent>
-        </Card>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => statsQ.refetch()}
+            className="h-8 text-xs gap-1.5 shrink-0"
+          >
+            <RefreshCw aria-hidden="true" className="size-3" />
+            <span>إعادة المحاولة</span>
+          </Button>
+        </div>
+      )}
 
-        {/* إجمالي الاستعلامات والمسح */}
-        <Card className="border-border shadow-xs">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground">إجمالي عمليات المسح</CardTitle>
-            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600">
-              <ScanLine className="size-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-foreground tracking-tight">
-              {fmtAr(stats?.totalScans ?? 0)}
-              <span className="text-xs font-semibold text-muted-foreground mr-1.5">استعلام باركود</span>
-            </div>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] bg-blue-500/10 text-blue-700 border-blue-200">
-                +{fmtAr(stats?.todayScans ?? 0)} اليوم
-              </Badge>
-              <span>مسح أسعار حي على الرفوف</span>
-            </div>
-          </CardContent>
-        </Card>
+      {/* بطاقات مؤشرات الأداء الحيوية الأربعة (KPIs) أو الهياكل أثناء التحميل */}
+      {isLoading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <Card key={i} className="border-border shadow-xs">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <Skeleton className="h-4 w-28" />
+                <Skeleton className="size-8 rounded-lg" />
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <Skeleton className="h-8 w-24" />
+                <Skeleton className="h-4 w-36" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* عدد المستفيدين الفريدين */}
+          <Card className="border-primary/25 bg-gradient-to-br from-primary/5 via-card to-card shadow-xs">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-xs font-bold text-muted-foreground">عدد المستفيدين من الخدمة</CardTitle>
+              <div className="p-2 rounded-lg bg-primary/10 text-primary">
+                <Users aria-hidden="true" className="size-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-black text-foreground tracking-tight tabular-nums">
+                {fmtAr(stats?.uniqueBeneficiaries ?? 0)}
+                <span className="text-xs font-semibold text-muted-foreground mr-1.5">زبون مستفيد</span>
+              </div>
+              <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
+                <Badge variant="outline" className="px-1.5 py-0 text-[10px] bg-primary/10 text-primary border-primary/20">
+                  +{fmtAr(stats?.todayBeneficiaries ?? 0)} اليوم
+                </Badge>
+                <span>أجهزة زوار فريدة ممسوحة</span>
+              </div>
+            </CardContent>
+          </Card>
 
-        {/* نسبة نجاح ومطابقة الأصناف */}
-        <Card className="border-border shadow-xs">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground">معدل مطابقة الأصناف</CardTitle>
-            <div className="p-2 rounded-lg bg-[var(--status-active)]/10 text-[var(--status-active)]">
-              <CheckCircle2 className="size-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-foreground tracking-tight">
-              %{stats ? stats.successRate : 100}
-              <span className="text-xs font-semibold text-muted-foreground mr-1.5">نجاح الاستعلام</span>
-            </div>
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
-              <span className="text-[var(--status-active)] font-bold">{fmtAr(stats?.foundScans ?? 0)} تم العثور</span>
-              <span>•</span>
-              <span className="text-muted-foreground">{fmtAr(stats?.notFoundScans ?? 0)} غير مسجل</span>
-            </div>
-          </CardContent>
-        </Card>
+          {/* إجمالي الاستعلامات والمسح */}
+          <Card className="border-border shadow-xs">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-xs font-bold text-muted-foreground">إجمالي عمليات المسح</CardTitle>
+              <div className="p-2 rounded-lg bg-[var(--sem-info)]/10 text-[var(--sem-info)]">
+                <ScanLine aria-hidden="true" className="size-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-black text-foreground tracking-tight tabular-nums">
+                {fmtAr(stats?.totalScans ?? 0)}
+                <span className="text-xs font-semibold text-muted-foreground mr-1.5">استعلام باركود</span>
+              </div>
+              <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
+                <Badge
+                  variant="outline"
+                  className="px-1.5 py-0 text-[10px] bg-[var(--sem-info)]/10 text-[var(--sem-info)] border-[var(--sem-info)]/30"
+                >
+                  +{fmtAr(stats?.todayScans ?? 0)} اليوم
+                </Badge>
+                <span>مسح أسعار حي على الرفوف</span>
+              </div>
+            </CardContent>
+          </Card>
 
-        {/* توزيع ونوع أجهزة الهواتف */}
-        <Card className="border-border shadow-xs">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground">أجهزة الزبائن بالمعرض</CardTitle>
-            <div className="p-2 rounded-lg bg-amber-500/10 text-amber-600">
-              <Smartphone className="size-4" />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-foreground tracking-tight">
-              %{androidPct}
-              <span className="text-xs font-semibold text-muted-foreground mr-1.5">أندرويد | %{iosPct} آيفون</span>
-            </div>
-            <div className="w-full bg-muted rounded-full h-2 mt-2 flex overflow-hidden">
-              <div className="bg-primary h-2" style={{ width: `${androidPct}%` }} title={`أندرويد: ${androidPct}%`} />
-              <div className="bg-sky-500 h-2" style={{ width: `${iosPct}%` }} title={`iOS / آيفون: ${iosPct}%`} />
-              <div className="bg-amber-400 h-2" style={{ width: `${desktopPct}%` }} title={`أخرى: ${desktopPct}%`} />
-            </div>
-          </CardContent>
+          {/* نسبة نجاح ومطابقة الأصناف */}
+          <Card className="border-border shadow-xs">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-xs font-bold text-muted-foreground">معدل مطابقة الأصناف</CardTitle>
+              <div className="p-2 rounded-lg bg-[var(--status-active)]/10 text-[var(--status-active)]">
+                <CheckCircle2 aria-hidden="true" className="size-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-black text-foreground tracking-tight tabular-nums">
+                %{stats ? stats.successRate : 100}
+                <span className="text-xs font-semibold text-muted-foreground mr-1.5">نجاح الاستعلام</span>
+              </div>
+              <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
+                <span className="text-[var(--status-active)] font-bold">{fmtAr(stats?.foundScans ?? 0)} تم العثور</span>
+                <span>•</span>
+                <span className="text-muted-foreground">{fmtAr(stats?.notFoundScans ?? 0)} غير مسجل</span>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* توزيع ونوع أجهزة الهواتف */}
+          <Card className="border-border shadow-xs">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-xs font-bold text-muted-foreground">أجهزة الزبائن بالمعرض</CardTitle>
+              <div className="p-2 rounded-lg bg-primary/10 text-primary">
+                <Smartphone aria-hidden="true" className="size-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-black text-foreground tracking-tight tabular-nums">
+                %{androidPct}
+                <span className="text-xs font-semibold text-muted-foreground mr-1.5">أندرويد | %{iosPct} آيفون</span>
+              </div>
+              <div className="w-full bg-muted rounded-full h-2 mt-2 flex overflow-hidden">
+                <div className="bg-primary h-2" style={{ width: `${androidPct}%` }} title={`أندرويد: ${androidPct}%`} />
+                <div className="bg-[var(--sem-info)] h-2" style={{ width: `${iosPct}%` }} title={`iOS / آيفون: ${iosPct}%`} />
+                <div className="bg-muted-foreground/40 h-2" style={{ width: `${desktopPct}%` }} title={`أخرى: ${desktopPct}%`} />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* في حال عدم وجود عمليات مسح إطلاقاً في هذا النطاق */}
+      {!isLoading && stats && stats.totalScans === 0 && (
+        <Card className="border-dashed bg-card/60 text-center p-8">
+          <div className="size-12 rounded-full bg-primary/10 text-primary flex items-center justify-center mx-auto mb-3">
+            <ScanLine aria-hidden="true" className="size-6" />
+          </div>
+          <h3 className="font-bold text-sm text-foreground">خدمة استعلام الرفوف بانتظار أول مسح</h3>
+          <p className="text-xs text-muted-foreground mt-1 max-w-md mx-auto">
+            لم تسجل أي عمليات مسح باركود في هذا النطاق الزمني حتى الآن. يمكنك استعراض ملصقات الرفوف أو تجربة المسح بالهاتف، أو توليد بيانات استرشادية واقعية.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => seedMutation.mutate({ count: 45 })}
+            disabled={seedMutation.isPending}
+            className="mt-4 gap-1.5 text-xs font-medium"
+          >
+            <Sparkles aria-hidden="true" className="size-3.5 text-primary" />
+            <span>توليد بيانات استرشادية للمعاينة</span>
+          </Button>
         </Card>
-      </div>
+      )}
 
       {/* القسم التحليلي: منحنى النشاط الزمني وساعات الذروة + مقارنة الفروع */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -257,7 +333,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="text-base flex items-center gap-2">
-                  <TrendingUp className="size-4 text-primary" />
+                  <TrendingUp aria-hidden="true" className="size-4 text-primary" />
                   <span>ساعات الذروة ونشاط الاستعلام في المعرض</span>
                 </CardTitle>
                 <CardDescription>
@@ -272,14 +348,23 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
             </div>
           </CardHeader>
           <CardContent>
-            {stats && stats.activityTimeline.length > 0 ? (
+            {isLoading ? (
               <div className="space-y-3 pt-2">
+                <Skeleton className="h-40 w-full rounded-md" />
+                <Skeleton className="h-4 w-48" />
+              </div>
+            ) : stats && stats.activityTimeline.length > 0 ? (
+              <div
+                role="img"
+                aria-label={`ساعات الذروة ونشاط الاستعلام في المعرض، إجمالي ${fmtAr(stats.totalScans)} مسح لـ ${fmtAr(stats.uniqueBeneficiaries)} مستفيد`}
+                className="space-y-3 pt-2"
+              >
                 <div className="grid grid-cols-5 sm:grid-cols-7 gap-2 items-end min-h-[160px] pb-2 border-b">
                   {stats.activityTimeline.map((item, idx) => {
                     const heightPercent = Math.max(12, Math.round((item.scans / maxTimelineScans) * 100));
                     return (
                       <div key={idx} className="flex flex-col items-center gap-1.5 flex-1 h-full justify-end group">
-                        <div className="text-[10px] font-bold text-primary opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                        <div className="text-[10px] font-bold text-primary opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap tabular-nums">
                           {fmtAr(item.scans)}
                         </div>
                         <div
@@ -287,7 +372,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                           style={{ height: `${heightPercent}%` }}
                         >
                           <div
-                            className="w-full bg-primary rounded-t-md"
+                            className="w-full bg-primary rounded-t-md transition-all"
                             style={{
                               height: item.scans > 0 ? `${Math.max(20, (item.beneficiaries / (item.scans || 1)) * 100)}%` : "0%",
                             }}
@@ -327,13 +412,19 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
         <Card className="lg:col-span-5">
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
-              <Store className="size-4 text-primary" />
+              <Store aria-hidden="true" className="size-4 text-primary" />
               <span>توزيع الاستعلامات حسب المعارض والفروع</span>
             </CardTitle>
             <CardDescription>مقارنة حجم التفاعل ومسح الرفوف بين فروع الشركة</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {stats && stats.branchBreakdown.length > 0 ? (
+            {isLoading ? (
+              <div className="space-y-3">
+                {[1, 2].map((i) => (
+                  <Skeleton key={i} className="h-16 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : stats && stats.branchBreakdown.length > 0 ? (
               stats.branchBreakdown.map((b, i) => {
                 const total = stats.totalScans || 1;
                 const pct = Math.round((b.scanCount / total) * 100);
@@ -341,7 +432,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                   <div key={i} className="p-3 rounded-lg border bg-muted/20 space-y-2">
                     <div className="flex items-center justify-between text-sm">
                       <div className="flex items-center gap-2">
-                        <Store className="size-4 text-primary" />
+                        <Store aria-hidden="true" className="size-4 text-primary" />
                         <span className="font-bold text-foreground">{b.branchName}</span>
                         {b.branchCode && (
                           <Badge variant="outline" className="text-[10px] px-1.5 py-0">
@@ -349,7 +440,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                           </Badge>
                         )}
                       </div>
-                      <div className="text-xs font-semibold text-muted-foreground">
+                      <div className="text-xs font-semibold text-muted-foreground tabular-nums">
                         %{pct} ({fmtAr(b.scanCount)} مسح)
                       </div>
                     </div>
@@ -358,7 +449,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                       <div className="bg-primary h-2 rounded-full transition-all" style={{ width: `${pct}%` }} />
                     </div>
 
-                    <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5">
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5 tabular-nums">
                       <span>{fmtAr(b.beneficiaryCount)} زبون فريد</span>
                       <span>معدل {b.beneficiaryCount > 0 ? Math.round((b.scanCount / b.beneficiaryCount) * 10) / 10 : 0} مسح/زبون</span>
                     </div>
@@ -380,7 +471,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
           <div className="flex items-center justify-between">
             <div>
               <CardTitle className="text-base flex items-center gap-2">
-                <ShoppingBag className="size-4 text-primary" />
+                <ShoppingBag aria-hidden="true" className="size-4 text-primary" />
                 <span>أكثر الأصناف استعلاماً وبحثاً من قِبل الزبائن (Top Scanned Products)</span>
               </CardTitle>
               <CardDescription>
@@ -391,7 +482,13 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
           </div>
         </CardHeader>
         <CardContent>
-          {stats && stats.topProducts.length > 0 ? (
+          {isLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {[1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-20 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : stats && stats.topProducts.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {stats.topProducts.map((p, idx) => {
                 const relativeWidth = Math.max(10, Math.round((p.scanCount / maxProductScans) * 100));
@@ -404,11 +501,11 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                     <div
                       className={`size-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
                         idx === 0
-                          ? "bg-amber-500 text-white shadow-xs"
+                          ? "bg-primary text-primary-foreground shadow-xs"
                           : idx === 1
-                          ? "bg-gray-400 text-white"
+                          ? "bg-muted-foreground/30 text-foreground"
                           : idx === 2
-                          ? "bg-amber-700 text-white"
+                          ? "bg-muted-foreground/20 text-foreground"
                           : "bg-muted text-muted-foreground"
                       }`}
                     >
@@ -425,7 +522,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                           loading="lazy"
                         />
                       ) : (
-                        <ShoppingBag className="size-5 text-muted-foreground/40" />
+                        <ShoppingBag aria-hidden="true" className="size-5 text-muted-foreground/40" />
                       )}
                     </div>
 
@@ -435,7 +532,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                         <h4 className="text-xs font-bold text-foreground truncate" title={p.productName}>
                           {p.productName}
                         </h4>
-                        <span className="text-xs font-black text-primary shrink-0">
+                        <span className="text-xs font-black text-primary shrink-0 tabular-nums">
                           {p.price ? formatIqd(p.price) : "غير محدد"}
                         </span>
                       </div>
@@ -455,7 +552,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                             style={{ width: `${relativeWidth}%` }}
                           />
                         </div>
-                        <span className="text-[11px] font-bold text-foreground shrink-0">
+                        <span className="text-[11px] font-bold text-foreground shrink-0 tabular-nums">
                           {fmtAr(p.scanCount)} مسح
                         </span>
                       </div>
@@ -478,7 +575,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
           <div className="flex items-center justify-between">
             <div>
               <CardTitle className="text-base flex items-center gap-2">
-                <Clock className="size-4 text-primary" />
+                <Clock aria-hidden="true" className="size-4 text-primary" />
                 <span>سجل النشاط المباشر واللحظي (Live Activity Feed)</span>
               </CardTitle>
               <CardDescription>
@@ -492,7 +589,13 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
           </div>
         </CardHeader>
         <CardContent>
-          {stats && stats.recentScans.length > 0 ? (
+          {isLoading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-12 w-full rounded-md" />
+              ))}
+            </div>
+          ) : stats && stats.recentScans.length > 0 ? (
             <div className="divide-y rounded-lg border overflow-hidden">
               {stats.recentScans.map((scan) => {
                 const scanDate = new Date(scan.createdAt);
@@ -513,7 +616,11 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                             : "bg-destructive/10 text-destructive"
                         }`}
                       >
-                        {scan.found ? <Check className="size-4" /> : <AlertCircle className="size-4" />}
+                        {scan.found ? (
+                          <Check aria-hidden="true" className="size-4" />
+                        ) : (
+                          <AlertCircle aria-hidden="true" className="size-4" />
+                        )}
                       </div>
 
                       <div className="min-w-0">
@@ -534,7 +641,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0 text-muted-foreground">
-                      <span className="text-[11px] font-mono">{timeString}</span>
+                      <span className="text-[11px] font-mono tabular-nums">{timeString}</span>
                       <Badge
                         variant={scan.found ? "default" : "destructive"}
                         className="text-[10px] px-1.5 py-0"

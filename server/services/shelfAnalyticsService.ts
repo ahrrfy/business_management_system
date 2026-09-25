@@ -13,7 +13,7 @@
  *  ٩. محاكي وتغذية البيانات الاسترشادية الواقعية للمعرض (Realistic Showroom Baseline Seeder).
  */
 import { createHash } from "node:crypto";
-import { and, count, countDistinct, desc, eq, gte, sql } from "drizzle-orm";
+import { and, count, countDistinct, desc, eq, gte, lt, sql } from "drizzle-orm";
 import {
   branches,
   categories,
@@ -27,6 +27,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logger } from "../logger";
+import { baghdadTodayUtcRange } from "./businessDay";
 
 const RETAIL = "RETAIL" as const;
 
@@ -103,23 +104,16 @@ function hashIp(ip?: string): string | null {
   }
 }
 
-/** توقيت بداية اليوم في بغداد (UTC+3) */
+/** توقيت بداية اليوم في بغداد (UTC+3) محولاً إلى UTC من مصدر الحقيقة المعتمد */
 export function getBaghdadStartOfToday(): Date {
-  const now = new Date();
-  // إزاحة بغداد +3 ساعات
-  const baghdadTime = new Date(now.getTime() + 3 * 60 * 60 * 1000);
-  const year = baghdadTime.getUTCFullYear();
-  const month = baghdadTime.getUTCMonth();
-  const date = baghdadTime.getUTCDate();
-  // منتصف الليل بتوقيت بغداد يعادل 21:00 UTC لليوم السابق
-  return new Date(Date.UTC(year, month, date) - 3 * 60 * 60 * 1000);
+  return baghdadTodayUtcRange().start;
 }
 
 /** تحديد تاريخ البداية وفق نطاق الفلترة */
 function getStartDateForRange(range: ShelfDateRange): Date | null {
   const now = new Date();
   if (range === "today") {
-    return getBaghdadStartOfToday();
+    return baghdadTodayUtcRange().start;
   }
   if (range === "7d") {
     return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -141,8 +135,8 @@ export async function recordShelfLookupEvent(params: RecordShelfLookupParams): P
   const barcode = String(params.barcode || "").trim().slice(0, 64);
   if (!barcode) return;
 
-  const branchId = params.branchId != null && params.branchId > 0 ? Number(params.branchId) : null;
-  const productId = params.productId != null && params.productId > 0 ? Number(params.productId) : null;
+  let branchId = params.branchId != null && params.branchId > 0 ? Number(params.branchId) : null;
+  let productId = params.productId != null && params.productId > 0 ? Number(params.productId) : null;
   const productName = params.productName ? String(params.productName).trim().slice(0, 255) : null;
   const deviceType = params.deviceType ? String(params.deviceType).trim().slice(0, 32) : "unknown";
   const ipHash = hashIp(params.ip);
@@ -160,7 +154,34 @@ export async function recordShelfLookupEvent(params: RecordShelfLookupParams): P
       ipHash,
       userAgent,
     });
-  } catch (err) {
+  } catch (err: any) {
+    const isFkError =
+      err?.code === "ER_NO_REFERENCED_ROW_2" ||
+      err?.code === "ER_NO_REFERENCED_ROW" ||
+      err?.cause?.code === "ER_NO_REFERENCED_ROW_2" ||
+      err?.cause?.code === "ER_NO_REFERENCED_ROW" ||
+      String(err?.message || "").includes("foreign key constraint fails") ||
+      String(err?.cause?.message || "").includes("foreign key constraint fails");
+
+    // في حال تعذر الإدراج بسبب قيد مفتاح أجنبي لفرع أو منتج غير موجود، نعيد الإدراج بمفاتيح فارغة لضمان عدم ضياع عملية الاستعلام
+    if (isFkError) {
+      try {
+        await db.insert(shelfLookupLogs).values({
+          visitorId,
+          branchId: null,
+          barcode,
+          productId: null,
+          productName,
+          found: Boolean(params.found),
+          deviceType,
+          ipHash,
+          userAgent,
+        });
+        return;
+      } catch {
+        // إخفاق صامت
+      }
+    }
     // تسجيل الخطأ دون التأثير على استجابة العميل
     logger.warn({ err, barcode }, "shelf.lookup.log_failed");
   }
@@ -181,7 +202,7 @@ export async function getShelfBeneficiariesStats(options?: {
   const range = options?.range ?? "7d";
   const branchId = options?.branchId && options.branchId > 0 ? Number(options.branchId) : undefined;
   const startDate = getStartDateForRange(range);
-  const todayStart = getBaghdadStartOfToday();
+  const { start: todayStart, endExclusive: todayEndExclusive } = baghdadTodayUtcRange();
 
   // التحقق إن كانت هناك بيانات، أو إذا كان الجدول فارغاً تماماً نقوم بتهيئة عينة واقعية
   const totalCountRows = await db
@@ -219,10 +240,17 @@ export async function getShelfBeneficiariesStats(options?: {
     .from(shelfLookupLogs)
     .where(mainFilter);
 
-  // ٢. مقاييس اليوم (بتوقيت بغداد)
+  // ٢. مقاييس اليوم (بتوقيت بغداد - نصف مفتوح)
   const todayFilter = branchId
-    ? and(eq(shelfLookupLogs.branchId, branchId), gte(shelfLookupLogs.createdAt, todayStart))
-    : gte(shelfLookupLogs.createdAt, todayStart);
+    ? and(
+        eq(shelfLookupLogs.branchId, branchId),
+        gte(shelfLookupLogs.createdAt, todayStart),
+        lt(shelfLookupLogs.createdAt, todayEndExclusive),
+      )
+    : and(
+        gte(shelfLookupLogs.createdAt, todayStart),
+        lt(shelfLookupLogs.createdAt, todayEndExclusive),
+      );
 
   const [todayRow] = await db
     .select({
@@ -366,13 +394,13 @@ export async function getShelfBeneficiariesStats(options?: {
     // تقسيم اليوم إلى فترات كل 3 ساعات بتوقيت بغداد
     const hourlyRows = await db
       .select({
-        hourBucket: sql<number>`FLOOR(HOUR(CONVERT_TZ(${shelfLookupLogs.createdAt}, '+00:00', '+03:00')) / 3) * 3`,
+        hourBucket: sql<number>`FLOOR(HOUR(DATE_ADD(${shelfLookupLogs.createdAt}, INTERVAL 3 HOUR)) / 3) * 3`,
         scans: count(shelfLookupLogs.id),
         beneficiaries: countDistinct(shelfLookupLogs.visitorId),
       })
       .from(shelfLookupLogs)
       .where(todayFilter)
-      .groupBy(sql`FLOOR(HOUR(CONVERT_TZ(${shelfLookupLogs.createdAt}, '+00:00', '+03:00')) / 3) * 3`);
+      .groupBy(sql`FLOOR(HOUR(DATE_ADD(${shelfLookupLogs.createdAt}, INTERVAL 3 HOUR)) / 3) * 3`);
 
     const hourMap = new Map<number, { scans: number; beneficiaries: number }>();
     for (const r of hourlyRows) {
@@ -403,14 +431,14 @@ export async function getShelfBeneficiariesStats(options?: {
     // تجميع يومي لآخر 7 أو 30 يوماً
     const dailyRows = await db
       .select({
-        dayYmd: sql<string>`DATE_FORMAT(CONVERT_TZ(${shelfLookupLogs.createdAt}, '+00:00', '+03:00'), '%Y-%m-%d')`,
+        dayYmd: sql<string>`DATE_FORMAT(DATE_ADD(${shelfLookupLogs.createdAt}, INTERVAL 3 HOUR), '%Y-%m-%d')`,
         scans: count(shelfLookupLogs.id),
         beneficiaries: countDistinct(shelfLookupLogs.visitorId),
       })
       .from(shelfLookupLogs)
       .where(mainFilter)
-      .groupBy(sql`DATE_FORMAT(CONVERT_TZ(${shelfLookupLogs.createdAt}, '+00:00', '+03:00'), '%Y-%m-%d')`)
-      .orderBy(sql`DATE_FORMAT(CONVERT_TZ(${shelfLookupLogs.createdAt}, '+00:00', '+03:00'), '%Y-%m-%d')`);
+      .groupBy(sql`DATE_FORMAT(DATE_ADD(${shelfLookupLogs.createdAt}, INTERVAL 3 HOUR), '%Y-%m-%d')`)
+      .orderBy(sql`DATE_FORMAT(DATE_ADD(${shelfLookupLogs.createdAt}, INTERVAL 3 HOUR), '%Y-%m-%d')`);
 
     activityTimeline = dailyRows.map((r) => {
       const parts = String(r.dayYmd).split("-");

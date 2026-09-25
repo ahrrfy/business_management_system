@@ -115,6 +115,8 @@ function parseUrlParams(): { branchId?: number; initialBarcode?: string } {
   return { branchId, initialBarcode };
 }
 
+let memoryVisitorId: string | null = null;
+
 function getPersistentVisitorId(): string {
   if (typeof window === "undefined") return "anon";
   try {
@@ -126,7 +128,10 @@ function getPersistentVisitorId(): string {
     }
     return vid;
   } catch {
-    return "anon";
+    if (!memoryVisitorId) {
+      memoryVisitorId = `vst_mem_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
+    }
+    return memoryVisitorId;
   }
 }
 
