@@ -82,7 +82,7 @@ describe("تعميم نمط الخلايا المكدسة StackedEntityCell وت
     it("يدمج الكمية وسعر الوحدة في خلية مالية متناسقة", () => {
       expect(purchaseRegSrc).toContain('id: "quantityAndPrice"');
       expect(purchaseRegSrc).toContain('header: "الكمية / السعر"');
-      expect(purchaseRegSrc).toContain("fmtInt(row.original.quantity)");
+      expect(purchaseRegSrc).toContain("formatQuantity(row.original.quantity)");
       expect(purchaseRegSrc).toContain("fmtAr(row.original.unitPrice)");
     });
 
