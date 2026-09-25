@@ -4,13 +4,13 @@
  * مخصص لإدارة المعرض والفروع (managerProcedure):
  *  - استخراج مؤشرات الأداء الحيوية وأعداد المستفيدين الحقيقيين.
  *  - توزيع النشاط حسب الفروع والأجهزة وأكثر المنتجات بحثاً.
- *  - إمكانية بذر بيانات استرشادية واقعية لتجربة وفحص مؤشرات المعرض.
+ *  - تصفير ومسح سجل الاستعلامات والبيانات الوهمية والبدء من الصفر.
  */
 import { z } from "zod";
 import { router, storeManagerProcedure } from "../trpc";
 import {
   getShelfBeneficiariesStats,
-  seedShowroomSampleAnalytics,
+  purgeShelfLookupLogs,
   type ShelfDateRange,
 } from "../services/shelfAnalyticsService";
 
@@ -35,18 +35,10 @@ export const shelfAnalyticsRouter = router({
     }),
 
   /**
-   * بذر بيانات استرشادية واقعية لحركة زوار المعرض (للتدشين والفحص البصري).
+   * مسح وتصفير كافة سجلات استعلامات الرفوف والبيانات الوهمية والبدء من الصفر.
    */
-  seedDemo: storeManagerProcedure
-    .input(
-      z
-        .object({
-          count: z.number().int().min(10).max(150).optional(),
-        })
-        .optional(),
-    )
-    .mutation(async ({ input }) => {
-      const inserted = await seedShowroomSampleAnalytics(input?.count ?? 45);
-      return { success: true, count: inserted };
-    }),
+  purgeLogs: storeManagerProcedure.mutation(async () => {
+    const deletedCount = await purgeShelfLookupLogs();
+    return { success: true, count: deletedCount };
+  }),
 });
