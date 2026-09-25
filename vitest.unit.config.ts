@@ -53,6 +53,7 @@ export default defineConfig({
       "client/src/lib/trpcClient.test.ts",
       "client/src/lib/cartDraft.test.ts",
       "client/src/lib/siteHosts.test.ts",
+      "client/src/lib/variants.test.ts",
       "client/src/lib/pwaUpdateLifecycle.test.ts",
       "client/src/lib/priceHistory.test.ts",
       "client/src/lib/dashboardActionScope.test.ts",

@@ -230,10 +230,10 @@ export default function ConsignmentNotes() {
                     </FilterField>
                   )}
                   <FilterField label="من">
-                    <input type="date" className={dateCls} value={f.from} onChange={(e) => patchFilters({ from: e.target.value })} />
+                    <Input type="date" className={dateCls} value={f.from} onChange={(e) => patchFilters({ from: e.target.value })} />
                   </FilterField>
                   <FilterField label="إلى">
-                    <input type="date" className={dateCls} value={f.to} onChange={(e) => patchFilters({ to: e.target.value })} />
+                    <Input type="date" className={dateCls} value={f.to} onChange={(e) => patchFilters({ to: e.target.value })} />
                   </FilterField>
                 </div>
               }

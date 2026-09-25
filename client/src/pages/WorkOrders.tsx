@@ -4,6 +4,7 @@ import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X, Zap } from "lucide-react";
@@ -726,7 +727,7 @@ export default function WorkOrders() {
         {/* نطاق تاريخ الاستلام (createdAt) — شامل لليوم بحدود UTC خادمياً. */}
         <div className="wob-date-range" aria-label="نطاق تاريخ الاستلام">
           <span>من</span>
-          <input
+          <Input
             type="date"
             className="wob-sel wob-date"
             value={f.from}
@@ -735,7 +736,7 @@ export default function WorkOrders() {
             title="من تاريخ الاستلام"
           />
           <span>إلى</span>
-          <input
+          <Input
             type="date"
             className="wob-sel wob-date"
             value={f.to}
