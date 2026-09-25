@@ -52,7 +52,7 @@ import { orderStatusChipClass, orderStatusLabelForCustomer } from "@shared/onlin
 export function formatStorefrontReservationDeadline(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "وقت غير متاح";
-  return new Intl.DateTimeFormat("ar-IQ", {
+  return new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Asia/Baghdad",

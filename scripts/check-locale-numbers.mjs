@@ -34,8 +34,13 @@ const SCAN_ROOTS = [
 
 // أنماط رفض — تُمسك locales عربية بلا `-u-nu-latn`.
 // `ar-IQ`, `ar-EG`, `ar-SA`, `ar-AR`, `ar` وحدها كلها تُنتج أرقاماً هندية.
-const BAD_TO_LOCALE = /\.toLocaleString\(\s*["'](ar(?:-[A-Z]{2})?)["']/g;
-const BAD_NUMBER_FORMAT = /\bIntl\.NumberFormat\(\s*["'](ar(?:-[A-Z]{2})?)["']/g;
+const BAD_PATTERNS = [
+  { name: "toLocaleString", regex: /\.toLocaleString\(\s*["'](ar(?:-[A-Za-z]{2})?)["']/g },
+  { name: "toLocaleDateString", regex: /\.toLocaleDateString\(\s*["'](ar(?:-[A-Za-z]{2})?)["']/g },
+  { name: "toLocaleTimeString", regex: /\.toLocaleTimeString\(\s*["'](ar(?:-[A-Za-z]{2})?)["']/g },
+  { name: "Intl.NumberFormat", regex: /\bIntl\.NumberFormat\(\s*["'](ar(?:-[A-Za-z]{2})?)["']/g },
+  { name: "Intl.DateTimeFormat", regex: /\bIntl\.DateTimeFormat\(\s*["'](ar(?:-[A-Za-z]{2})?)["']/g },
+];
 
 // نتغاضى عن التعليقات المفردة والوثائق (JSDoc).
 function isCommentLine(line) {
@@ -71,14 +76,18 @@ for (const root of SCAN_ROOTS) {
       if (isCommentLine(line)) continue;
       // اقتطاع كل نصٍّ بعد `//` في السطر — تعليقٌ خلفيّ قد يذكر `ar-IQ` نصّاً.
       const codeOnly = line.split("//")[0];
-      BAD_TO_LOCALE.lastIndex = 0;
-      BAD_NUMBER_FORMAT.lastIndex = 0;
-      let m;
-      while ((m = BAD_TO_LOCALE.exec(codeOnly)) !== null) {
-        findings.push({ file: rel, line: i + 1, snippet: line.trim().slice(0, 160), locale: m[1] });
-      }
-      while ((m = BAD_NUMBER_FORMAT.exec(codeOnly)) !== null) {
-        findings.push({ file: rel, line: i + 1, snippet: line.trim().slice(0, 160), locale: m[1] });
+      for (const pattern of BAD_PATTERNS) {
+        pattern.regex.lastIndex = 0;
+        let m;
+        while ((m = pattern.regex.exec(codeOnly)) !== null) {
+          findings.push({
+            file: rel,
+            line: i + 1,
+            api: pattern.name,
+            snippet: line.trim().slice(0, 160),
+            locale: m[1],
+          });
+        }
       }
     }
   }

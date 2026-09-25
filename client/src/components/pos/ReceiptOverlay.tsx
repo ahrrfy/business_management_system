@@ -9,6 +9,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { openCashDrawer } from "@/lib/printing/print";
 import { qrCodeDataUrl } from "@/lib/printing/qr";
 import { STOREFRONT_URL } from "@/lib/printing/brand";
+import { fmtTime } from "@/lib/date";
 import { type Receipt, fmt, type PosColors as C } from "./posShared";
 import { useModalFocus } from "./useModalFocus";
 import { VirtualCashDrawer } from "./VirtualCashDrawer";
@@ -238,7 +239,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
                 )}
               </span>
               <span style={{ direction: "ltr" }}>
-                {new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}
+                {fmtTime(new Date())}
               </span>
             </div>
 

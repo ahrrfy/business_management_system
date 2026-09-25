@@ -9,6 +9,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 
 import { confirm } from "@/lib/confirm";
 import { fmtAr as fmt, formatQuantity } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
@@ -122,7 +123,7 @@ export default function ConsignmentSettlements() {
       </style>
       </head><body>
       <h1>كشف تسوية مودِع — ${esc(s.consignorName)}</h1>
-      <p class="muted">الفترة من ${esc(s.period.startDate)} إلى ${esc(s.period.endDate)} · طُبع بتاريخ ${esc(new Date().toLocaleDateString("ar-IQ"))}</p>
+      <p class="muted">الفترة من ${esc(s.period.startDate)} إلى ${esc(s.period.endDate)} · طُبع بتاريخ ${esc(fmtDate(new Date()))}</p>
       <div class="kpis">
         <div class="kpi"><div class="l">المستحقّ الحاليّ</div><div class="v">${esc(fmt(s.currentOwed))}</div></div>
         <div class="kpi"><div class="l">مبيعات الفترة</div><div class="v">${esc(fmt(s.period.soldValue))}</div></div>

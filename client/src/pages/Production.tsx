@@ -3,6 +3,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { FilterField } from "@/components/list/FilterField";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
@@ -232,10 +233,10 @@ export default function Production() {
                   </FilterField>
                 )}
                 <FilterField label="من">
-                  <input type="date" className={dateCls} value={f.from} onChange={(e) => patchFilters({ from: e.target.value })} />
+                  <Input type="date" className={dateCls} value={f.from} onChange={(e) => patchFilters({ from: e.target.value })} />
                 </FilterField>
                 <FilterField label="إلى">
-                  <input type="date" className={dateCls} value={f.to} onChange={(e) => patchFilters({ to: e.target.value })} />
+                  <Input type="date" className={dateCls} value={f.to} onChange={(e) => patchFilters({ to: e.target.value })} />
                 </FilterField>
               </div>
             }
