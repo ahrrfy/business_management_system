@@ -402,7 +402,7 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
         const c = row.original;
         const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
         const canRemit = c.parcelStatus === "DELIVERED" && c.moneyStatus !== "SETTLED" && remaining > 0;
-        const canCancel = (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && Number(c.collectedAmount ?? 0) === 0;
+        const canCancel = (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "OUT_FOR_DELIVERY" || c.parcelStatus === "FAILED") && Number(c.collectedAmount ?? 0) === 0;
         return (
           <div className="flex items-center gap-1">
             {canRemit && (
@@ -504,7 +504,7 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
           <div className="text-xs">
             <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
             {c.failureReason && <div className="mb-1 text-destructive">{c.failureReason}</div>}
-            {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && (
+            {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "OUT_FOR_DELIVERY" || c.parcelStatus === "FAILED") && (
               <AppSelect
                 value={String(c.assignedUserId ?? "")}
                 disabled={reassignM.isPending}

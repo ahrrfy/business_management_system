@@ -541,11 +541,21 @@ export function buildCustomerDispatchMessage(d: CustomerDispatchMessageData): st
   if (d.courierPhone) L.push(`رقم المندوب: ${d.courierPhone}`);
   L.push("");
   if (feeCollection === "COURIER" && feeD > 0) {
-    L.push(`قيمة الطلب: ${fmtMoney(cod)} د.ع`);
-    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
-    L.push(`*الإجماليّ للمندوب: ${fmtMoney(cod + feeD)} د.ع*`);
+    if (cod > 0) {
+      L.push(`قيمة الطلب: ${fmtMoney(cod)} د.ع`);
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      L.push(`*الإجماليّ للمندوب: ${fmtMoney(cod + feeD)} د.ع*`);
+    } else {
+      L.push(`قيمة البضاعة: مدفوعة مسبقاً بالكامل`);
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      L.push(`*المطلوب للمندوب (أجرة التوصيل فقط): ${fmtMoney(feeD)} د.ع*`);
+    }
   } else {
-    L.push(`المبلغ المستحق للمندوب: ${fmtMoney(cod)} د.ع`);
+    if (cod > 0) {
+      L.push(`المبلغ المستحق للمندوب: ${fmtMoney(cod)} د.ع`);
+    } else {
+      L.push(`حالة الدفع: مدفوع بالكامل مسبقاً (المستحق للمندوب: 0 د.ع)`);
+    }
   }
   L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
   return L.join("\n");
@@ -588,11 +598,25 @@ export function buildCourierAssignmentMessage(d: CourierAssignmentMessageData): 
   if (d.customerPhone) L.push(`الهاتف: ${d.customerPhone}`);
   if (d.deliveryAddress) L.push(`العنوان: ${d.deliveryAddress}`);
   L.push("");
-  L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
-  if (feeD > 0) {
-    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
-    if (feeCollection === "COURIER") {
-      L.push(`*الإجماليّ من العميل: ${fmtMoney(cod + feeD)} د.ع*`);
+  if (cod > 0) {
+    L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
+    if (feeD > 0) {
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      if (feeCollection === "COURIER") {
+        L.push(`*الإجماليّ من العميل: ${fmtMoney(cod + feeD)} د.ع*`);
+      }
+    }
+  } else {
+    L.push(`مبلغ التحصيل (البضاعة): مدفوعة مسبقاً بالكامل (0 د.ع)`);
+    if (feeD > 0) {
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      if (feeCollection === "COURIER") {
+        L.push(`*المطلوب تحصيله من العميل (أجرة التوصيل فقط): ${fmtMoney(feeD)} د.ع*`);
+      } else {
+        L.push(`*المطلوب تحصيله من العميل: 0 د.ع (الأجرة غير مطلوبة من العميل)*`);
+      }
+    } else {
+      L.push(`*المطلوب تحصيله من العميل: 0 د.ع (مدفوع بالكامل)*`);
     }
   }
   L.push("", "برجاء التواصل مع العميل لتحديد موعد التسليم.", COMPANY_NAME);

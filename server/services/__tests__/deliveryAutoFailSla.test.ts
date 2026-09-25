@@ -105,7 +105,7 @@ describe("autoFailStaleParcels — تعذّرٌ بانقضاء SLA خلف علَ
     await ageParcel(a.consignmentId, 10);
     const res = await autoFailStaleParcels();
     expect(res).toEqual({ failed: 0, skippedByDailyCap: 0, skippedDuplicates: 0 });
-    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("ASSIGNED");
+    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("OUT_FOR_DELIVERY");
   });
 
   it("⭐ العلَم مفتوح: الطرد المتقادم بلا قبض يُوسَم FAILED بحدثٍ يحمل الدليل ومهمّةٍ للمالك، ولا يتكرّر", async () => {
@@ -122,7 +122,7 @@ describe("autoFailStaleParcels — تعذّرٌ بانقضاء SLA خلف علَ
     expect(cn.failureReason).toMatch(/تجاوز مهلة التوصيل/);
     const ev = (await eventsOf(a.consignmentId)).find((e) => e.eventType === AUTO_FAILED_SLA_EVENT);
     expect(ev).toBeTruthy();
-    expect(ev!.fromParcelStatus).toBe("ASSIGNED");
+    expect(ev!.fromParcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(ev!.toParcelStatus).toBe("FAILED");
     const payload = ev!.payload as Record<string, unknown>;
     expect(payload.authority).toBe("SYSTEM_SLA_SWEEP");
@@ -161,7 +161,7 @@ describe("autoFailStaleParcels — تعذّرٌ بانقضاء SLA خلف علَ
     const res = await autoFailStaleParcels();
     expect(res.failed).toBe(0);
     for (const id of [fresh.consignmentId, declared.consignmentId, collected.consignmentId]) {
-      expect((await consignmentOf(id)).parcelStatus).toBe("ASSIGNED");
+      expect((await consignmentOf(id)).parcelStatus).toBe("OUT_FOR_DELIVERY");
     }
   });
 
@@ -198,7 +198,7 @@ describe("autoFailStaleParcels — تعذّرٌ بانقضاء SLA خلف علَ
     expect(next.skippedByDailyCap).toBe(1);
   });
 
-  it("التراجع: إعادةُ الإسناد FAILED→ASSIGNED القائمة تعمل بعد الوسم الآليّ", async () => {
+  it("التراجع: إعادةُ الإسناد FAILED→OUT_FOR_DELIVERY القائمة تعمل بعد الوسم الآليّ", async () => {
     process.env[FLAG] = "ON";
     const a = await saleWithDelivery("af-rollback");
     await ageParcel(a.consignmentId, 10);
@@ -210,7 +210,7 @@ describe("autoFailStaleParcels — تعذّرٌ بانقضاء SLA خلف علَ
       MANAGER,
     );
     const cn = await consignmentOf(a.consignmentId);
-    expect(cn.parcelStatus).toBe("ASSIGNED");
+    expect(cn.parcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(cn.failedAt).toBeNull();
     expect(cn.failureReason).toBeNull();
     // الوسمُ الآليّ لا يتكرّر على طردٍ أُعيد إسناده (الحدث الواحد لكلّ طرد يمنعه) — الحسمُ صار بيد الموظّف.

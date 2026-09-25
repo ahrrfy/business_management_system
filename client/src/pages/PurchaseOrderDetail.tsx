@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,14 +7,34 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
 import { D, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
+import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
-import { Banknote, Pencil } from "lucide-react";
+import {
+  AlertTriangle,
+  Banknote,
+  CheckCircle2,
+  Clock,
+  ExternalLink,
+  HandCoins,
+  Landmark,
+  Pencil,
+  Receipt,
+  Truck,
+} from "lucide-react";
 import { Link, useParams } from "wouter";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /** بندُ أمر الشراء — مشتقٌّ من عقد `purchases.get` فلا ينجرف عن الخادم. */
 type PoItemRow = NonNullable<RouterOutputs["purchases"]["get"]>["items"][number];
@@ -132,6 +153,25 @@ export default function PurchaseOrderDetail() {
     "FULL",
   );
 
+  const [isSettleShippingOpen, setIsSettleShippingOpen] = useState(false);
+  const utils = trpc.useUtils();
+  const settleShippingMut = trpc.purchases.settleShippingFromShift.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        "تم صرف أجور الشحن من درج الوردية بنجاح",
+        `تم تسجيل سند الصرف رقم ${res.voucherNumber || `#${res.receiptId}`} بمبلغ ${fmtAr(res.amount)} د.ع وحسمه من رصيد الوردية #${res.shiftId}`,
+      );
+      setIsSettleShippingOpen(false);
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId }),
+        utils.purchases.list.invalidate(),
+      ]);
+    },
+    onError: (err) => {
+      notify.err(err);
+    },
+  });
+
   if (!Number.isFinite(purchaseOrderId) || purchaseOrderId <= 0) {
     return <ErrorState message="رقم أمر شراء غير صالح." />;
   }
@@ -159,6 +199,7 @@ export default function PurchaseOrderDetail() {
   }
 
   const d = po.data;
+
   const costHidden = d.total === null;
   const isUsd = d.agreedCurrency === "USD";
   // المتبقّي للمورّد بعملة الاتفاق: أمر الدولار تُتابَع ذمّته بـusdTotal−paidUsd−returnedUsd
@@ -343,18 +384,101 @@ export default function PurchaseOrderDetail() {
               </div>
 
               {(D(d.shippingCost ?? 0).gt(0) || D(d.customsCost ?? 0).gt(0)) && (
-                <div className="rounded-md border bg-[var(--sem-warn-bg)]/60 p-3">
-                  <p className="mb-2 text-xs font-semibold text-[var(--sem-warn)]">
-                    مصروف نقلٍ منفصل — لا يدخل «الإجمالي» أعلاه ولا ذمّة المورّد
-                  </p>
-                  <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-                    <Field label="الشحن">{fmtAr(d.shippingCost)}</Field>
-                    <Field label="الكمرك">{fmtAr(d.customsCost)}</Field>
-                  </div>
-                  <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                    يُستحقّ مصروف نقلٍ لناقلٍ مستقلّ عند الاستلام (سند صرفٍ خاصّ به)، ولا يُخفَّض عند مرتجع هذا الأمر.
-                  </p>
-                </div>
+                <Card>
+                  <CardContent className="p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2.5">
+                      <div className="flex items-center gap-2">
+                        <Truck className="size-4 text-primary" aria-hidden />
+                        <span className="font-semibold text-sm">أجور الشحن والكمرك والتفريغ</span>
+                      </div>
+                      <div>
+                        {d.shippingPayment?.obligationStatus === "PAID" ? (
+                          d.shippingPayment.cashBucket === "DRAWER" ? (
+                            <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] gap-1.5 py-1">
+                              <CheckCircle2 className="size-3.5" aria-hidden />
+                              مدفوع نقداً من درج الوردية #{d.shippingPayment.shiftId}
+                            </Badge>
+                          ) : d.shippingPayment.cashBucket === "TREASURY" ? (
+                            <Badge variant="outline" className="border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] text-[var(--sem-info)] gap-1.5 py-1">
+                              <Landmark className="size-3.5" aria-hidden />
+                              مدفوع من الخزينة الإدارية
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] gap-1.5 py-1">
+                              <CheckCircle2 className="size-3.5" aria-hidden />
+                              تم السداد بالكامل
+                            </Badge>
+                          )
+                        ) : d.shippingPayment?.obligationStatus === "PAYMENT_PENDING" ? (
+                          <Badge variant="outline" className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] gap-1.5 py-1">
+                            <Clock className="size-3.5" aria-hidden />
+                            طلب صرف بانتظار اعتماد المالك
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] text-[var(--sem-danger)] gap-1.5 py-1">
+                            <AlertTriangle className="size-3.5" aria-hidden />
+                            مستحق غير مسدد
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                      <Field label="أجور الشحن">{fmtAr(d.shippingCost)} د.ع</Field>
+                      <Field label="الرسوم الجمركية">{fmtAr(d.customsCost)} د.ع</Field>
+                      <Field label="إجمالي المصروف الإضافي">
+                        <span className="font-bold text-foreground">
+                          {fmtAr(d.shippingPayment?.totalLanded ?? D(d.shippingCost ?? 0).plus(D(d.customsCost ?? 0)).toString())} د.ع
+                        </span>
+                      </Field>
+                      {d.shippingPayment?.voucherNumber ? (
+                        <Field label="سند الصرف المالي">
+                          <Link
+                            href={`/vouchers?search=${encodeURIComponent(d.shippingPayment.voucherNumber)}`}
+                            className="text-primary hover:underline inline-flex items-center gap-1 font-mono text-xs font-semibold"
+                          >
+                            <Receipt className="size-3.5" aria-hidden />
+                            {d.shippingPayment.voucherNumber}
+                            <ExternalLink className="size-3" aria-hidden />
+                          </Link>
+                        </Field>
+                      ) : (
+                        <Field label="سند الصرف المالي">
+                          <span className="text-muted-foreground text-xs">لم يُنشأ سند بعد</span>
+                        </Field>
+                      )}
+                    </div>
+
+                    {d.shippingPayment?.payee ? (
+                      <div className="text-xs text-muted-foreground flex items-center gap-1 pt-1">
+                        <span>الجهة المستفيدة / الناقل:</span>
+                        <span className="font-medium text-foreground">{d.shippingPayment.payee}</span>
+                      </div>
+                    ) : null}
+
+                    {canEdit && d.shippingPayment?.obligationStatus !== "PAID" && d.status === "RECEIVED" ? (
+                      <div className="pt-2 flex items-center justify-between border-t gap-2 flex-wrap">
+                        <p className="text-xs text-muted-foreground">
+                          يمكن صرف أجور الشحن مباشرةً من درج الوردية النقدية النشطة لتُسجل كنفقات وردية وتُخصم من رصيد الكاشير.
+                        </p>
+                        <Button
+                          size="sm"
+                          onClick={() => setIsSettleShippingOpen(true)}
+                          disabled={settleShippingMut.isPending}
+                          className="gap-1.5 font-medium"
+                        >
+                          <HandCoins className="size-4" aria-hidden />
+                          صرف الشحن من درج الوردية
+                        </Button>
+                      </div>
+                    ) : null}
+
+                    <p className="text-[11px] leading-relaxed text-muted-foreground border-t pt-2">
+                      يُرسمَل هذا المبلغ في تكلفة المخزون عند الاستلام (Landed Cost)، ويُصرف لناقل مستقل بسند صرف مخصص
+                      يحسم من الوردية أو الخزينة ولا يؤثر على ذمة المورد الأساسية.
+                    </p>
+                  </CardContent>
+                </Card>
               )}
             </div>
           )}
@@ -362,6 +486,52 @@ export default function PurchaseOrderDetail() {
       </Card>
 
       {!costHidden ? <PurchaseOrderGovernance purchaseOrderId={purchaseOrderId} /> : null}
+
+      <Dialog open={isSettleShippingOpen} onOpenChange={setIsSettleShippingOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <HandCoins className="size-5 text-primary" aria-hidden />
+              تأكيد صرف أجور الشحن من درج الوردية
+            </DialogTitle>
+            <DialogDescription className="space-y-2 pt-2 text-right">
+              <div>
+                أمر الشراء: <span className="font-semibold text-foreground">{d.poNumber}</span>
+              </div>
+              <div>
+                مبلغ الشحن والكمرك المستحق:{" "}
+                <span className="font-bold text-foreground">
+                  {fmtAr(
+                    d.shippingPayment?.totalLanded ??
+                      D(d.shippingCost ?? 0).plus(D(d.customsCost ?? 0)).toString(),
+                  )}{" "}
+                  د.ع
+                </span>
+              </div>
+              <div className="rounded-md border bg-muted/50 p-2.5 text-xs text-muted-foreground leading-relaxed mt-2">
+                سيتم صرف المبلغ نقداً من درج الكاشير للوردية المفتوحة حالياً في الفرع، وخصم المبلغ من النقد المتوقع في الدرج تلقائياً لمنع ظهور أي عجز محاسبي عند إقفال الوردية.
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => setIsSettleShippingOpen(false)}
+              disabled={settleShippingMut.isPending}
+            >
+              إلغاء
+            </Button>
+            <Button
+              onClick={() => {
+                settleShippingMut.mutate({ purchaseOrderId: d.id });
+              }}
+              disabled={settleShippingMut.isPending}
+            >
+              {settleShippingMut.isPending ? "جارٍ الصرف…" : "تأكيد الصرف والخصم من الوردية"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -22,6 +22,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { NumberInput } from "@/components/form/NumberInput";
 import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
+import ProductRecipeSection from "@/components/product/ProductRecipeSection";
 import { ConsignmentField } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { ProductCustomizationTemplateEditor } from "@/components/product/ProductCustomizationTemplateEditor";
@@ -359,6 +360,10 @@ export function ProductFormFields({
 
       {facts?.isBundle && facts.bundleVariantId != null && (
         <BundleRecipeCard bundleVariantId={Number(facts.bundleVariantId)} />
+      )}
+
+      {productId != null && !facts?.isBundle && (
+        <ProductRecipeSection productId={productId} isService={model.isService} />
       )}
     </div>
   );

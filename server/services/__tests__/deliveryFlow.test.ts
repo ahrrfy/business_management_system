@@ -17,6 +17,7 @@ import {
   confirmConsignmentDelivery,
   createDeliveryParty,
   dispatchToDelivery,
+  listInTransitConsignments,
   listOpenConsignments,
   recordDeliveryRemittance,
   returnConsignment,
@@ -294,10 +295,10 @@ describe("delivery COD — money path", () => {
     expect(await partyBalance(partyId)).toBe("0.00");
     const stockBefore = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))).limit(1))[0];
 
-    const { rows: returnQueue } = await listOpenConsignments(partyId, 1);
-    expect(returnQueue.find((c) => Number(c.id) === disp.consignmentId)?.parcelStatus).toBe("ASSIGNED");
-    await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-1" });
-    expect((await listOpenConsignments(partyId, 1)).rows.some((c) => Number(c.id) === disp.consignmentId)).toBe(false);
+    const { rows: inTransitQueue } = await listInTransitConsignments(1);
+    expect(inTransitQueue.find((c) => Number(c.id) === disp.consignmentId)?.parcelStatus).toBe("OUT_FOR_DELIVERY");
+    await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-1", returnReason: "رفض العميل" });
+    expect((await listInTransitConsignments(1)).rows.some((c) => Number(c.id) === disp.consignmentId)).toBe(false);
     expect(await partyBalance(partyId)).toBe("0.00"); // العهدة عُكِست
     const inv = await invoice(disp.invoiceId);
     expect(inv.status).toBe("RETURNED");
@@ -315,7 +316,7 @@ describe("delivery COD — money path", () => {
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
     const results = await Promise.allSettled([
-      returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "race-delivery-return" }),
+      returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "race-delivery-return", returnReason: "رفض العميل" }),
       recordDeliveryRemittance({
         branchId: 1,
         partyId,
@@ -343,6 +344,7 @@ describe("delivery COD — money path", () => {
         ...MANAGER,
         clientRequestId: "race-consignment-refund",
         refundShiftId: shift.shiftId,
+        returnReason: "رفض العميل",
       }),
       returnSale({
         invoiceId: disp.invoiceId,
@@ -385,7 +387,7 @@ describe("delivery COD — money path", () => {
       const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
       // قبل الإصلاح: shiftIdForCashTx(actor=المديرة بلا وردية) ⇒ TREASURY (لا يظهر في Z-report الكاشير).
-      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-1" });
+      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-1", returnReason: "رفض العميل" });
 
       const outRows = await db()
         .select({ shiftId: s.receipts.shiftId, cashBucket: s.receipts.cashBucket, amount: s.receipts.amount })
@@ -405,7 +407,7 @@ describe("delivery COD — money path", () => {
       const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
       await expect(
-        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-2" }),
+        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-2", returnReason: "رفض العميل" }),
       ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
       void cashierShift;
@@ -418,7 +420,7 @@ describe("delivery COD — money path", () => {
       const woId = await readyWorkOrder(true);
       const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
-      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-3", refundShiftId: cashierShift.shiftId });
+      await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-3", refundShiftId: cashierShift.shiftId, returnReason: "رفض العميل" });
 
       expect(await drawerNet(cashierShift.shiftId)).toBe(0); // ٢٠٠٠ عربون IN − ٢٠٠٠ ردّ OUT = صفر
       expect(await drawerNet(mgrShift.shiftId)).toBe(0); // لم يُلمَس درج المديرة إطلاقاً
@@ -436,7 +438,7 @@ describe("delivery COD — money path", () => {
       });
 
       await expect(
-        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-4" }),
+        returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-4", returnReason: "رفض العميل" }),
       ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     });
   });
