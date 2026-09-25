@@ -562,6 +562,12 @@ option:disabled {
     content: "";
   }
 
+  /* إزاحة زر الخصوصية العائم لأعلى تلقائياً عند ظهور شريط السلة العائم لتفادي أي تراكب بصري */
+  body:has(.store-floating-cart) .storefront-consent.fixed.left-3 {
+    bottom: calc(5.25rem + env(safe-area-inset-bottom)) !important;
+    transition: bottom 0.25s ease-in-out;
+  }
+
   /* Important storefront actions get a short, role-specific feedback ring. */
   .storefront .store-action-button {
     position: relative;

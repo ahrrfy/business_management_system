@@ -107,7 +107,21 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
       return [...prev, { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle }];
     });
   };
-  const addMany = (items: InvoiceLine[]) => items.forEach(addLine);
+  const addMany = (items: InvoiceLine[]) => {
+    setLines((prev) => {
+      const next = [...prev];
+      for (const line of items) {
+        const i = next.findIndex((l) => l.productUnitId === line.productUnitId);
+        if (i >= 0) {
+          next[i] = { ...next[i], qty: next[i].qty + 1 };
+        } else {
+          const { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle } = line;
+          next.push({ productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle });
+        }
+      }
+      return next;
+    });
+  };
   const setQty = (idx: number, qty: number) => setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, qty } : l)));
   const removeAt = (idx: number) => setLines((prev) => prev.filter((_, i) => i !== idx));
 
