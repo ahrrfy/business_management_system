@@ -1,18 +1,19 @@
 // سجلّ المبيعات المفصّل — كل بنود الفواتير (سطر-سطر) بفلاتر (تاريخ/فرع) + إجماليات + ترقيم صفحات.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). ترقيم صفحات بالخادم (limit/offset).
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -21,51 +22,11 @@ type Row = RouterOutputs["reports"]["salesRegister"]["rows"][number];
 
 const PAGE = 200;
 
-const columns: ColumnDef<Row, unknown>[] = [
-  { id: "invoiceDate", header: "التاريخ", accessorFn: (r) => r.invoiceDate, meta: { kind: "date" }, cell: ({ row }) => row.original.invoiceDate },
-  {
-    id: "invoiceNumber",
-    header: "الفاتورة",
-    accessorFn: (r) => r.invoiceNumber,
-    meta: { kind: "code" },
-    cell: ({ row }) => (
-      <Link href={`/invoices/${row.original.invoiceId}`} className="text-primary underline-offset-2 hover:underline">
-        {row.original.invoiceNumber}
-      </Link>
-    ),
-  },
-  { id: "customerName", header: "العميل", accessorFn: (r) => r.customerName ?? "—", cell: ({ row }) => row.original.customerName ?? "—" },
-  {
-    id: "soldByName",
-    header: ATTRIBUTION_LABELS.performedBy,
-    accessorFn: (r) => r.soldByName ?? "",
-    meta: { kind: "actor" },
-    cell: ({ row }) => <ActorCell actor={{ name: row.original.soldByName }} />,
-  },
-  { id: "productName", header: "المنتج", accessorFn: (r) => r.productName, meta: { width: "wide" }, cell: ({ row }) => row.original.productName },
-  { id: "quantity", header: "الكمية", accessorFn: (r) => fmtAr(r.quantity), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.quantity) },
-  {
-    id: "unitPrice",
-    header: "السعر",
-    accessorFn: (r) => fmtAr(r.unitPrice),
-    meta: { kind: "money" },
-    cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.unitPrice)}</span>,
-  },
-  {
-    id: "unitCost",
-    header: "التكلفة",
-    accessorFn: (r) => fmtAr(r.unitCost),
-    meta: { kind: "money" },
-    cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.unitCost)}</span>,
-  },
-  { id: "total", header: "الإجمالي", accessorFn: (r) => fmtAr(r.total), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.total) },
-  { id: "profit", header: "الربح", accessorFn: (r) => fmtAr(r.profit), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.profit) },
-];
-
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function SalesRegister() {
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
@@ -73,6 +34,97 @@ export default function SalesRegister() {
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
+
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      { id: "invoiceDate", header: "التاريخ", accessorFn: (r) => r.invoiceDate, meta: { kind: "date" }, cell: ({ row }) => row.original.invoiceDate },
+      {
+        id: "customerAndInvoice",
+        header: "العميل / الفاتورة",
+        accessorFn: (r) => [r.customerName ?? "—", r.invoiceNumber].filter(Boolean).join(" · "),
+        meta: { width: "stacked" },
+        cell: ({ row }) => (
+          <StackedEntityCell
+            primary={row.original.customerName ?? "—"}
+            primaryTitle={row.original.customerName ?? undefined}
+            secondary={row.original.invoiceNumber}
+            secondaryTitle="فتح تفاصيل الفاتورة"
+            onSecondaryClick={
+              row.original.invoiceId
+                ? () => {
+                    navigate(`/invoices/${row.original.invoiceId}`);
+                  }
+                : undefined
+            }
+            copyValue={row.original.invoiceNumber}
+            copyTitle="نسخ رقم الفاتورة"
+          />
+        ),
+      },
+      {
+        id: "soldByName",
+        header: ATTRIBUTION_LABELS.performedBy,
+        accessorFn: (r) => r.soldByName ?? "",
+        meta: { kind: "actor" },
+        cell: ({ row }) => <ActorCell actor={{ name: row.original.soldByName }} />,
+      },
+      { id: "productName", header: "المنتج", accessorFn: (r) => r.productName, meta: { width: "wide" }, cell: ({ row }) => row.original.productName },
+      {
+        id: "quantityAndPrice",
+        header: "الكمية / السعر",
+        accessorFn: (r) => `${fmtAr(r.quantity)} × ${fmtAr(r.unitPrice)}`,
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => D(a.original.quantity || 0).cmp(D(b.original.quantity || 0)),
+        cell: ({ row }) => (
+          <div className="flex flex-col items-end gap-0.5">
+            <span className="font-semibold tabular-nums" dir="ltr">
+              {fmtAr(row.original.quantity)}
+            </span>
+            <span
+              className="text-[11px] text-muted-foreground tabular-nums"
+              title={`سعر البيع: ${fmtAr(row.original.unitPrice)}`}
+            >
+              بسعر {fmtAr(row.original.unitPrice)}
+            </span>
+          </div>
+        ),
+      },
+      { id: "total", header: "الإجمالي", accessorFn: (r) => fmtAr(r.total), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.total) },
+      {
+        id: "costAndProfit",
+        header: "الربح / التكلفة",
+        accessorFn: (r) => `${fmtAr(r.profit)} (تكلفة: ${fmtAr(r.unitCost)})`,
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => D(a.original.profit || 0).cmp(D(b.original.profit || 0)),
+        cell: ({ row }) => {
+          const p = Number(row.original.profit);
+          const isPos = p > 0;
+          const isNeg = p < 0;
+          return (
+            <div className="flex flex-col items-end gap-0.5">
+              <span
+                className={`font-semibold tabular-nums ${
+                  isNeg ? "text-money-negative" : isPos ? "text-money-positive" : "text-muted-foreground"
+                }`}
+                dir="ltr"
+              >
+                {fmtAr(row.original.profit)}
+              </span>
+              <span
+                className="text-[11px] text-muted-foreground tabular-nums"
+                title={`تكلفة الوحدة: ${fmtAr(row.original.unitCost)}`}
+              >
+                تكلفة: {fmtAr(row.original.unitCost)}
+              </span>
+            </div>
+          );
+        },
+      },
+    ],
+    [navigate],
+  );
 
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.salesRegister.useQuery({

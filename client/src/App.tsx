@@ -373,11 +373,11 @@ export default function App() {
       </Route>
       {/* إعادة توجيه قَديمة: /print-pos ⇒ /pos?mode=PRINT_SERVICES */}
       <Route path="/print-pos">
-        <Redirect to="/pos?mode=PRINT_SERVICES" />
+        <RedirectKeepQuery to="/pos?mode=PRINT_SERVICES" />
       </Route>
       {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION */}
       <Route path="/reception">
-        <Redirect to="/pos?mode=RECEPTION" />
+        <RedirectKeepQuery to="/pos?mode=RECEPTION" />
       </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — عامة بلا دخول */}
       <Route path="/price-checker">
@@ -386,7 +386,7 @@ export default function App() {
       {/* استعلام أسعار الرفوف بالباركود (QR Shelf Price Lookup) — صفحة عامة للجوال بلا AppLayout وبلا اشتراط تسجيل دخول */}
       <Route path="/shelf-lookup" component={ShelfPriceLookup} />
       {/* مسار توافقي رديف */}
-      <Route path="/price-check"><Redirect to="/shelf-lookup" /></Route>
+      <Route path="/price-check"><RedirectKeepQuery to="/shelf-lookup" /></Route>
       {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/kiosk" component={Kiosk} />
       {/* تحقق ضيق لتطبيق الهاتف: يعيد رمز Turnstile فقط، ولا يعرض المتجر أو بيانات العميل. */}
@@ -411,7 +411,7 @@ export default function App() {
       <Route path="/platform-admin" component={PlatformAdmin} />
       <Route path="/"><RootRoute /></Route>
       {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
-      <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
+      <Route path="/products"><RedirectKeepQuery to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       {/* الهجين (٢٩/٨): طابور مسودّات المحتوى المولَّدة تلقائياً بعد اعتماد صور الاستوديو —
           أسبق من `/products/:id/edit` لأنّ wouter يطابق بالنصّ (وإلّا ابتلعت :id هذه الشاشة). */}
@@ -422,42 +422,43 @@ export default function App() {
       <Route path="/catalog/image-studio/campaigns"><Shell><StudioRouteAccess><StudioCampaignsManager /></StudioRouteAccess></Shell></Route>
       <Route path="/catalog/image-studio"><Shell allowColdOffline><StudioRouteAccess><ProductImageStudio /></StudioRouteAccess></Shell></Route>
       {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
-      <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>
+      <Route path="/price-waves"><RedirectKeepQuery to="/inventory?tab=price-waves" /></Route>
       {/* العروض والحملات والكوبونات مملوكة لوحدة CRM؛ الرابط القديم محفوظ. */}
-      <Route path="/offers"><Redirect to="/crm?tab=offers" /></Route>
+      <Route path="/offers"><RedirectKeepQuery to="/crm?tab=offers" /></Route>
       {/* labels (٨/٧/٢٦): مسار مختصر لشاشة طباعة ملصقات الباركود (النموذج الرئيسي في InventoryHub). */}
-      <Route path="/labels/print"><Redirect to="/inventory?tab=barcodes" /></Route>
-      <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
-      <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
+      <Route path="/labels/print"><RedirectKeepQuery to="/inventory?tab=barcodes" /></Route>
+      <Route path="/categories"><RedirectKeepQuery to="/inventory?tab=categories" /></Route>
+      <Route path="/barcode-labels"><RedirectKeepQuery to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><RequireRole gate={INVOICE_LIST_GATE}><SalesHub /></RequireRole></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       {/* التصحيح: الكاشير يرفع طلباً صفريَّ الأثر من نفس شاشة البيع؛ مديرٌ مستقل يعتمد التنفيذ. */}
       <Route path="/invoices/:id/correct"><Shell><RequireRole gate={INVOICE_CORRECTION_GATE}><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole></Shell></Route>
-      <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
+      <Route path="/quotations"><RedirectKeepQuery to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
       <Route path="/quotations/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><QuotationNew /></RequireRole></Shell></Route>
       <Route path="/quotations/:id/edit"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><QuotationNew /></RequireRole></Shell></Route>
       <Route path="/quotations/:id"><Shell><QuotationDetail /></Shell></Route>
       <Route path="/crm"><Shell><CrmHub /></Shell></Route>
-      <Route path="/sales-pipeline"><Redirect to="/crm?tab=pipeline" /></Route>
-      <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
+      <Route path="/sales-pipeline"><RedirectKeepQuery to="/crm?tab=pipeline" /></Route>
+      <Route path="/customers"><RedirectKeepQuery to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
-      <Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>
-      <Route path="/sales-returns"><Redirect to="/returns?tab=sales" /></Route>
-      <Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/sales-returns/new"><RedirectKeepQuery to="/returns?tab=sales" /></Route>
+      <Route path="/sales-returns"><RedirectKeepQuery to="/returns?tab=sales" /></Route>
+      <Route path="/purchase-returns/new"><RedirectKeepQuery to="/returns?tab=purchases" /></Route>
       <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>
-      <Route path="/purchase-returns"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/purchase-returns"><RedirectKeepQuery to="/returns?tab=purchases" /></Route>
       <Route path="/purchases"><Shell><RequireRole roles={["manager", "purchasing", "warehouse", "accountant", "auditor"]} module="purchases" level="READ"><PurchasesHub /></RequireRole></Shell></Route>
       <Route path="/purchases/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseNew /></RequireRole></Shell></Route>
       {/* توافق روابط قديمة فقط: لا توجد عملية استلام مستقلة؛ الاعتماد النهائي يرحّل الفاتورة كاملة. */}
-      <Route path="/purchases/:id/receive">{(params) => <Redirect to={`/purchases/${params.id}`} />}</Route>
+      <Route path="/purchases/:id/receive">{(params) => <RedirectKeepQuery to={`/purchases/${params.id}`} />}</Route>
       <Route path="/purchases/:id/edit"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
-      <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
-      <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
-      <Route path="/purchases/returns-governance"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/purchases/goods-receipts"><RedirectKeepQuery to="/purchases" /></Route>
+      <Route path="/purchases/supplier-invoices"><RedirectKeepQuery to="/purchases" /></Route>
+      <Route path="/purchases/returns-governance"><RedirectKeepQuery to="/returns?tab=purchases" /></Route>
+      <Route path="/purchase-requisitions"><RedirectKeepQuery to="/purchases?tab=requisitions" /></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
@@ -466,7 +467,7 @@ export default function App() {
       {/* بعد المسارات الأخصّ عمداً: مسارٌ عامّ لا يبتلعها. */}
       <Route path="/purchases/:id"><Shell><RequireRole module="purchases" level="READ"><PurchaseOrderDetail /></RequireRole></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
-      <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
+      <Route path="/stocktakes"><RedirectKeepQuery to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
       <Route path="/stocktakes/:id/remaining"><Shell><StocktakeRemaining /></Shell></Route>
       <Route path="/stocktakes/:id/review"><Shell><StocktakeReview /></Shell></Route>
@@ -474,15 +475,15 @@ export default function App() {
       <Route path="/stocktakes/:id/sheets"><Shell><StocktakeCountSheets /></Shell></Route>
       <Route path="/stocktakes/:id"><Shell><StocktakeMonitor /></Shell></Route>
       <Route path="/inventory-movements"><RedirectKeepQuery to="/inventory?tab=movements" /></Route>
-      <Route path="/transfers"><Redirect to="/inventory?tab=transfers" /></Route>
+      <Route path="/transfers"><RedirectKeepQuery to="/inventory?tab=transfers" /></Route>
       <Route path="/work-orders"><Shell><RequireRole gate={WORK_ORDERS_HUB_GATE}><PrintHub /></RequireRole></Shell></Route>
       {/* إنشاء الخدمة دُمج في شاشة الاستقبال؛ الرابط القديم لا يفتح بوابة ثانية. */}
-      <Route path="/work-orders/new"><Redirect to="/pos?mode=RECEPTION" /></Route>
+      <Route path="/work-orders/new"><RedirectKeepQuery to="/pos?mode=RECEPTION" /></Route>
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
-      <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
-      <Route path="/work-orders/station"><Redirect to="/work-orders?tab=station" /></Route>
-      <Route path="/inbox"><Redirect to="/crm?tab=inbox" /></Route>
-      <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
+      <Route path="/work-orders/reception"><RedirectKeepQuery to="/pos?mode=RECEPTION" /></Route>
+      <Route path="/work-orders/station"><RedirectKeepQuery to="/work-orders?tab=station" /></Route>
+      <Route path="/inbox"><RedirectKeepQuery to="/crm?tab=inbox" /></Route>
+      <Route path="/settings/integrations"><RedirectKeepQuery to="/settings?tab=integrations" /></Route>
       <Route path="/work-orders/:id"><Shell><RequireRole module="workorders" level="READ"><WorkOrderDetail /></RequireRole></Shell></Route>
       {/* نظام المهام الموحّد (S2/T2.3) — حارس واجهي مرآة tasksReadProcedure (requireModule("tasks","READ"))؛
           الأدوار المذكورة = كل قوالب الأدوار بقيمة tasks≥READ (استثناء purchasing/courier=NONE). */}
@@ -517,51 +518,51 @@ export default function App() {
         <Route path="/reception/workflow"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionWorkflowPage /></RequireRole></Shell></Route>
         <Route path="/reception/handover"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionHandoverPage /></RequireRole></Shell></Route>
         <Route path="/reception/drafts"><Shell><RequireRole gate={RECEPTION_STATION_GATE}><ReceptionDraftsPage /></RequireRole></Shell></Route>
-      <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
+      <Route path="/production"><RedirectKeepQuery to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>
-      <Route path="/production-recipes"><Redirect to="/work-orders?tab=recipes" /></Route>
+      <Route path="/production-recipes"><RedirectKeepQuery to="/work-orders?tab=recipes" /></Route>
       <Route path="/assets"><Shell><RequireRole roles={["admin","manager"]}><AssetsHub /></RequireRole></Shell></Route>
       <Route path="/assets/new"><Shell><RequireRole roles={["admin","manager"]}><AssetNew /></RequireRole></Shell></Route>
-      <Route path="/assets/register"><Redirect to="/assets?tab=register" /></Route>
-      <Route path="/assets/custody-report"><Redirect to="/assets?tab=custody" /></Route>
-      <Route path="/assets/disposal-log"><Redirect to="/assets?tab=disposal" /></Route>
+      <Route path="/assets/register"><RedirectKeepQuery to="/assets?tab=register" /></Route>
+      <Route path="/assets/custody-report"><RedirectKeepQuery to="/assets?tab=custody" /></Route>
+      <Route path="/assets/disposal-log"><RedirectKeepQuery to="/assets?tab=disposal" /></Route>
       <Route path="/assets/:id/edit"><Shell><RequireRole roles={["admin","manager"]}><AssetEdit /></RequireRole></Shell></Route>
       <Route path="/assets/:id"><Shell><RequireRole roles={["admin","manager"]}><AssetDetail /></RequireRole></Shell></Route>
       <Route path="/hr"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrHub /></RequireRole></Shell></Route>
-      <Route path="/hr/employees"><Redirect to="/hr?tab=employees" /></Route>
+      <Route path="/hr/employees"><RedirectKeepQuery to="/hr?tab=employees" /></Route>
       <Route path="/hr/employees/new"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
       <Route path="/hr/employees/:id/edit"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
       <Route path="/hr/employees/:id"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeDetail /></RequireRole></Shell></Route>
       {/* تصفية خروج الموظف — قراءةٌ فقط تجمع ذمّته عبر ستّ وحدات قبل إنهاء الخدمة. */}
       <Route path="/hr/offboarding"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeOffboarding /></RequireRole></Shell></Route>
-      <Route path="/hr/attendance"><Redirect to="/hr?tab=attendance" /></Route>
-      <Route path="/hr/payroll"><Redirect to="/hr?tab=payroll" /></Route>
-      <Route path="/hr/leaves"><Redirect to="/hr?tab=leaves" /></Route>
-      <Route path="/hr/recruitment"><Redirect to="/hr?tab=recruitment" /></Route>
-      <Route path="/hr/devices"><Redirect to="/hr?tab=devices" /></Route>
-      <Route path="/hr/promotions"><Redirect to="/hr?tab=promotions" /></Route>
+      <Route path="/hr/attendance"><RedirectKeepQuery to="/hr?tab=attendance" /></Route>
+      <Route path="/hr/payroll"><RedirectKeepQuery to="/hr?tab=payroll" /></Route>
+      <Route path="/hr/leaves"><RedirectKeepQuery to="/hr?tab=leaves" /></Route>
+      <Route path="/hr/recruitment"><RedirectKeepQuery to="/hr?tab=recruitment" /></Route>
+      <Route path="/hr/devices"><RedirectKeepQuery to="/hr?tab=devices" /></Route>
+      <Route path="/hr/promotions"><RedirectKeepQuery to="/hr?tab=promotions" /></Route>
       {/* أُدمجت في وحدة الخزينة (TreasuryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
-      <Route path="/expenses"><Redirect to="/treasury?tab=expenses" /></Route>
+      <Route path="/expenses"><RedirectKeepQuery to="/treasury?tab=expenses" /></Route>
       <Route path="/expenses/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><ExpenseNew /></RequireRole></Shell></Route>
-      <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
+      <Route path="/vouchers"><RedirectKeepQuery to="/treasury?tab=vouchers" /></Route>
       <Route path="/vouchers/receipt/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherReceiptNew /></RequireRole></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherPaymentNew /></RequireRole></Shell></Route>
       {/* «محاسب» ينشئ السندات (المسارات أعلاه) وبوّابةُ الخادم لفئاتها تشمله (treasuryGlobalProcedure)،
           لكن حارس المسار كان يُسقطه ⇒ «لا تملك صلاحية» على الشاشة الوحيدة التي تُنشئ الفئة الإلزامية. */}
       <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
       <Route path="/expense-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="expenses" level="FULL"><ExpenseCategories /></RequireRole></Shell></Route>
-      <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
+      <Route path="/shifts"><RedirectKeepQuery to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
       <Route path="/card-account"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CardAccount /></RequireRole></Shell></Route>
       <Route path="/exchange"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury"><ExchangeHub /></RequireRole></Shell></Route>
-      <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
+      <Route path="/treasury/transfers"><RedirectKeepQuery to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
       {/* شاشة المندوب الذاتية «توصيلاتي» (courier فقط + منح صريح لوحدة courier؛ admin يعبُر). */}
       <Route path="/my-deliveries"><Shell><RequireRole roles={["courier"]} module="courier" level="READ"><MyDeliveries /></RequireRole></Shell></Route>
       {/* الجهة الإدارية للمتجر الإلكتروني: تثبيت الطلبات + طباعة الملصق (منفصل عن /store العلني). */}
       <Route path="/store-admin"><Shell><RequireRole roles={["admin","manager","cashier","sales_rep","accountant","auditor"]} module="store" level="READ"><StoreHub /></RequireRole></Shell></Route>
-      <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
+      <Route path="/delivery/parties"><RedirectKeepQuery to="/delivery?tab=parties" /></Route>
       <Route path="/reports"><Shell><ReportsHub /></Shell></Route>
       <Route path="/chart-of-accounts"><Shell><ChartOfAccounts /></Shell></Route>
       <Route path="/statutory-accounting"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><StatutoryAccounting /></RequireRole></Shell></Route>
@@ -614,17 +615,20 @@ export default function App() {
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
       <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrChangesReport /></RequireRole></Shell></Route>
       {/* لوحة المؤشّرات التنفيذية أُدمجت في كوكبِت «مركز التقارير» (ReportsOverview) — إعادة توجيه تَحفظ الروابط القديمة. */}
-      <Route path="/reports/executive"><Redirect to="/reports" /></Route>
-      <Route path="/sales-report"><Redirect to="/reports/sales-hub" /></Route>
+      <Route path="/reports/executive"><RedirectKeepQuery to="/reports" /></Route>
+      <Route path="/sales-report"><RedirectKeepQuery to="/reports/sales-hub" /></Route>
       <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesReportsHub /></RequireRole></Shell></Route>
       <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AgingReportsHub /></RequireRole></Shell></Route>
       {/* التذكيرات ليست تقارير قراءة — راوتراها على وحدتَي العملاء/الموردين بمستوى FULL. */}
       <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager","accountant"]} module="collections" level="FULL"><ARReminders /></RequireRole></Shell></Route>
       <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]} module="suppliers" level="FULL"><APReminders /></RequireRole></Shell></Route>
+      {/* توافق الروابط المباشرة السابقة للتذكيرات */}
+      <Route path="/ar-reminders"><RedirectKeepQuery to="/reports/ar-reminders" /></Route>
+      <Route path="/ap-reminders"><RedirectKeepQuery to="/reports/ap-reminders" /></Route>
       {/* أُدمجت في محور CRM (CrmHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       {/* تدقيق ١٧/٧: توجيه مباشر لـ/crm — كان يمرّ عبر /customers الذي يُعيد التوجيه لـ/crm?tab=customers
           فيُسقط tab ومعرّف العميل (?id=) ⇒ يهبط المستخدم على قائمة العملاء بدل الكشف/الأعمار. */}
-      <Route path="/ar-aging"><Redirect to="/crm?tab=aging" /></Route>
+      <Route path="/ar-aging"><RedirectKeepQuery to="/crm?tab=aging" /></Route>
       <Route path="/customers-statement"><RedirectKeepQuery to="/crm?tab=statement" /></Route>
       <Route path="/suppliers"><Shell><SuppliersHub /></Shell></Route>
       <Route path="/gifts"><Shell><RequireRole roles={["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"]} module="gifts" level="READ"><GiftsHub /></RequireRole></Shell></Route>
@@ -634,27 +638,27 @@ export default function App() {
       <Route path="/suppliers/new"><Shell><SupplierNew /></Shell></Route>
       <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
       {/* أُدمجت في وحدة الموردين (SuppliersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
-      <Route path="/ap-aging"><Redirect to="/suppliers?tab=aging" /></Route>
+      <Route path="/ap-aging"><RedirectKeepQuery to="/suppliers?tab=aging" /></Route>
       <Route path="/suppliers-statement"><RedirectKeepQuery to="/suppliers?tab=statement" /></Route>
-      <Route path="/kiosk-devices"><Redirect to="/settings?tab=devices" /></Route>
-      <Route path="/shelf-qr"><Redirect to="/settings?tab=shelf-qr" /></Route>
-      <Route path="/users"><Redirect to="/settings?tab=users" /></Route>
+      <Route path="/kiosk-devices"><RedirectKeepQuery to="/settings?tab=devices" /></Route>
+      <Route path="/shelf-qr"><RedirectKeepQuery to="/settings?tab=shelf-qr" /></Route>
+      <Route path="/users"><RedirectKeepQuery to="/settings?tab=users" /></Route>
       {/* إدارة المستخدمين admin حصراً (userRouter كله adminProcedure) — كانت الواجهة تسمح
           للمدير بفتح الشاشة ثم يفشل كل استعلام/حفظ برسالة «ليست لديك صلاحية» (تحقيق ٦/٧). */}
       <Route path="/users/new"><Shell><RequireRole roles={["admin"]}><UserNew /></RequireRole></Shell></Route>
       <Route path="/users/:id/edit"><Shell><RequireRole roles={["admin"]}><UserEdit /></RequireRole></Shell></Route>
-      <Route path="/roles"><Redirect to="/settings?tab=roles" /></Route>
+      <Route path="/roles"><RedirectKeepQuery to="/settings?tab=roles" /></Route>
       <Route path="/roles/new"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/announcements"><Shell><RequireRole roles={["admin","manager"]} module="announcements" level="READ"><Announcements /></RequireRole></Shell></Route>
       <Route path="/audit"><Shell><RequireRole roles={["admin","auditor"]}><AuditLogs /></RequireRole></Shell></Route>
       <Route path="/closing"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
-      <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
-      <Route path="/credit-approvals"><Redirect to="/closing?tab=credit" /></Route>
-      <Route path="/year-end"><Redirect to="/closing?tab=yearend" /></Route>
-      <Route path="/wip-report"><Redirect to="/closing?tab=wip" /></Route>
-      <Route path="/reconcile"><Redirect to="/closing?tab=reconcile" /></Route>
+      <Route path="/period-lock"><RedirectKeepQuery to="/closing?tab=period" /></Route>
+      <Route path="/credit-approvals"><RedirectKeepQuery to="/closing?tab=credit" /></Route>
+      <Route path="/year-end"><RedirectKeepQuery to="/closing?tab=yearend" /></Route>
+      <Route path="/wip-report"><RedirectKeepQuery to="/closing?tab=wip" /></Route>
+      <Route path="/reconcile"><RedirectKeepQuery to="/closing?tab=reconcile" /></Route>
       <Route path="/settings"><Shell><RequireRole roles={["admin","manager"]}><AdminHub /></RequireRole></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>

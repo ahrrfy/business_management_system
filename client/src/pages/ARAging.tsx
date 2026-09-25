@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list";
@@ -167,24 +168,27 @@ export default function ARAging() {
   const columns = useMemo<ColumnDef<Row, unknown>[]>(
     () => [
       {
-        id: "customerName",
-        header: "العميل",
-        accessorFn: (r) => r.customerName,
-        meta: { width: "wide" },
-        cell: ({ row }) => <span className="font-medium">{row.original.customerName}</span>,
-      },
-      {
-        id: "customerType",
-        header: "الفئة",
-        accessorFn: (r) => r.customerType ?? "—",
-        cell: ({ row }) => <span className="text-xs">{row.original.customerType ?? "—"}</span>,
-      },
-      {
-        id: "phone",
-        header: "الهاتف",
-        accessorFn: (r) => r.phone ?? "",
-        meta: { kind: "phone" },
-        cell: ({ row }) => <CopyInline value={row.original.phone} />,
+        id: "customerAndPhone",
+        header: "العميل / الفئة والهاتف",
+        accessorFn: (r) => [r.customerName, r.customerType, r.phone].filter(Boolean).join(" · "),
+        meta: { width: "stacked" },
+        cell: ({ row }) => (
+          <StackedEntityCell
+            primary={row.original.customerName}
+            primaryTitle={row.original.customerName}
+            secondary={row.original.phone}
+            secondaryTitle="رقم الهاتف"
+            copyValue={row.original.phone}
+            copyTitle="نسخ رقم الهاتف"
+            secondaryBadge={
+              row.original.customerType ? (
+                <span className="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground">
+                  {row.original.customerType}
+                </span>
+              ) : undefined
+            }
+          />
+        ),
       },
       moneyCol("d0_30", "0–30", (r) => r.d0_30),
       moneyCol("d31_60", "31–60", (r) => r.d31_60),
@@ -192,44 +196,27 @@ export default function ARAging() {
       moneyCol("d91p", "+90", (r) => r.d91p),
       moneyCol("unpaidTotal", "إجمالي غير المدفوع", (r) => r.unpaidTotal, "font-semibold"),
       {
-        /* المُعرِّف عربيٌّ عمداً: `DataTable` يشتقّ اسمَ العمود في منتقي الأعمدة وفي «نسخ
-           العمود كـTSV» من الترويسة **حين تكون نصّاً**، وإلّا رجع إلى `id`. وهذه ترويسةٌ
-           مركَّبة (فيها Popover) ⇒ لولا التعريب لقرأ الموظّف «unbilled» وسط أعمدةٍ عربية. */
-        id: "غير مفوتر/افتتاحي",
-        header: () => (
-          <span className="inline-flex items-center gap-1">
-            غير مفوتر/افتتاحي
-            {/* Popover بدل title (نمط ٢٤/٨، Codex #764): متاحٌ باللمس والتركيز.
-                الشرحُ محاسبيّ مهمّ — يُميّز رصيداً افتتاحياً مستورداً من فاتورةٍ غير مسجَّلة. */}
-            <Popover>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  aria-label="شرح: غير مفوتر/افتتاحي"
-                  // Codex P2 (٢٤/٨ على PR #770): هدف اللمس ≥ ٢٤×٢٤px (تُلبّي WCAG 2.5.8
-                  // للحاجة الحدّ الأدنى للأهداف؛ توسيعُ padding يعوّض عن حجم الأيقونة الصغير).
-                  className="inline-flex h-6 w-6 items-center justify-center rounded outline-none focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground hover:text-foreground hover:bg-accent"
-                  /* ترويسة `DataTable` نفسها زرُّ فرز: بلا كبح التصعيد يفتح النقرُ الشرحَ
-                     **ويقلب الفرز** معاً (وكذلك Enter/مسافة). الشرحُ قراءةٌ لا فرز. */
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => e.stopPropagation()}
-                >
-                  <Info aria-hidden className="size-3.5" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent side="top" className="max-w-xs text-xs">
-                الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم أو الحركات غير المُوثَّقة بفاتورة.
-              </PopoverContent>
-            </Popover>
-          </span>
-        ),
-        accessorFn: (r) => fmt(unbilledOf(r).toFixed(2)),
+        id: "currentBalance",
+        header: "الرصيد / الافتتاحي",
+        accessorFn: (r) =>
+          `رصيد: ${fmt(D(r.currentBalance || 0).toFixed(2))} · غير مفوتر: ${fmt(unbilledOf(r).toFixed(2))}`,
         meta: { kind: "money" },
         sortDescFirst: true,
-        sortingFn: (a, b) => unbilledOf(a.original).cmp(unbilledOf(b.original)),
-        cell: ({ row }) => <span className="text-[var(--sem-info)]">{fmt(unbilledOf(row.original).toFixed(2))}</span>,
+        sortingFn: (a, b) => D(a.original.currentBalance || 0).cmp(D(b.original.currentBalance || 0)),
+        cell: ({ row }) => (
+          <div className="flex flex-col items-end gap-0.5">
+            <span className="font-semibold tabular-nums" dir="ltr">
+              {fmt(D(row.original.currentBalance || 0).toFixed(2))}
+            </span>
+            <span
+              className="text-[11px] text-[var(--sem-info)] tabular-nums"
+              title="غير مفوتر/افتتاحي: يشمل الرصيد الافتتاحي المستورد أو الحركات غير الموثقة بفاتورة"
+            >
+              افتتاحي: {fmt(unbilledOf(row.original).toFixed(2))}
+            </span>
+          </div>
+        ),
       },
-      moneyCol("currentBalance", "الرصيد (لنا عليه)", (r) => r.currentBalance),
       {
         id: "oldestInvoiceDate",
         header: "أقدم فاتورة",
