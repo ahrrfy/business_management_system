@@ -304,6 +304,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
             id="pos-due-date"
             type="date"
             dir="ltr"
+            lang="en-GB"
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
             style={{ flex: 1, minWidth: 0, height: 32, border: `1.5px solid ${C.border}`, borderRadius: 7, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "0 8px", outline: "none", boxSizing: "border-box" }}

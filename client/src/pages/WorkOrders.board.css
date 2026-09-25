@@ -299,6 +299,8 @@
 .wob-col-kpi-value { color: var(--fg); }
 .wob-col-kpi-late { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: color-mix(in oklch, var(--sem-neg) 20%, transparent); }
 .wob-col-kpi-blocked { background: var(--sem-warn-bg); color: var(--sem-warn); border-color: color-mix(in oklch, var(--sem-warn) 20%, transparent); }
+.wob-curr { color: var(--muted-fg); font-weight: 500; font-size: 10.5px; margin-inline-start: 2px; }
+.wob-col-kpi bdi { font-variant-numeric: tabular-nums; direction: ltr; unicode-bidi: isolate; }
 
 /* نقطةُ إشارة الفنّيّ (kanban_state) — زرٌّ صغيرٌ في رأس البطاقة بجانب رقم الأمر.
    التوكنز `sem-*` تحرسها من `check:colors` وتتكيّف مع الوضع الداكن تلقائياً. */

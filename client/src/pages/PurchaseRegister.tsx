@@ -14,7 +14,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
-import { D, fmtAr, fmtInt } from "@/lib/money";
+import { D, fmtAr, fmtInt, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -22,7 +22,6 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type Row = RouterOutputs["reports"]["purchaseRegister"]["rows"][number];
 const PAGE = 200;
-
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -72,14 +71,14 @@ export default function PurchaseRegister() {
       {
         id: "quantityAndPrice",
         header: "الكمية / السعر",
-        accessorFn: (r) => `${fmtInt(r.quantity)} × ${fmtAr(r.unitPrice)}`,
+        accessorFn: (r) => `${formatQuantity(r.quantity)} × ${fmtAr(r.unitPrice)}`,
         meta: { kind: "money" },
         sortDescFirst: true,
         sortingFn: (a, b) => D(a.original.quantity || 0).cmp(D(b.original.quantity || 0)),
         cell: ({ row }) => (
           <div className="flex flex-col items-end gap-0.5">
             <span className="font-semibold tabular-nums" dir="ltr">
-              {fmtInt(row.original.quantity)}
+              {formatQuantity(row.original.quantity)}
             </span>
             <span
               className="text-[11px] text-muted-foreground tabular-nums"
@@ -199,7 +198,7 @@ export default function PurchaseRegister() {
           supplier: r.supplierName ?? "—",
           orderedBy: r.orderedByName ?? "—",
           product: r.productName ?? "—",
-          qty: r.quantity,
+          qty: formatQuantity(r.quantity),
           unitPrice: fmtAr(r.unitPrice),
           total: fmtAr(r.total),
         })),

@@ -26,6 +26,7 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { paymentMethodCompact, isUnifiedPaymentMethod } from "@shared/terms";
 import { notify } from "@/lib/notify";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
@@ -393,7 +394,7 @@ export default function CustomerStatement() {
   const openInvoicesCount = useMemo(() => {
     return (stmt.data?.invoices ?? []).filter((i) => {
       const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
-      const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
+      const active = !isDeadInvoice(i.status);
       return active && remaining.gt(0);
     }).length;
   }, [stmt.data?.invoices]);
@@ -407,7 +408,7 @@ export default function CustomerStatement() {
 
   const shownInvoices = useMemo(() => (stmt.data?.invoices ?? []).filter((i) => {
     const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
-    const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
+    const active = !isDeadInvoice(i.status);
     if (invoiceFilter === "DEPOSIT_DUE") return active && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER") && D(i.paidAmount).gt(0) && remaining.gt(0);
     if (invoiceFilter === "OUTSTANDING") return active && remaining.gt(0);
     if (invoiceFilter === "SETTLED") return active && remaining.lte(0);

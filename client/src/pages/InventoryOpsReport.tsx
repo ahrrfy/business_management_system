@@ -15,7 +15,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { fmtInt, fmtAr, formatIqd } from "@/lib/money";
+import { fmtInt, fmtAr, formatIqd, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 
 type View = "reorder" | "dead" | "risk" | "variance" | "negatives";
@@ -503,7 +503,7 @@ function ViewTable({
           mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
           mutedCol("category", "الفئة", (r) => String(r.categoryName ?? "—")),
           mutedCol("branch", "الفرع", (r) => String(r.branchName ?? "")),
-          numCol("quantity", "الرصيد", (r) => fmtAr(r.quantity), () => "text-money-negative font-bold"),
+          numCol("quantity", "الرصيد", (r) => formatQuantity(r.quantity), () => "text-money-negative font-bold"),
           moneyCol(
             "costPrice",
             "تكلفة الوحدة",
@@ -675,7 +675,7 @@ function ViewTable({
             </>
           ),
         },
-        numCol("diffQty", "الفرق", (r) => fmtAr(r.diffQty), (r) => (r.diffQty < 0 ? "text-money-negative" : "text-money-positive")),
+        numCol("diffQty", "الفرق", (r) => formatQuantity(r.diffQty), (r) => (r.diffQty < 0 ? "text-money-negative" : "text-money-positive")),
         moneyCol("value", "القيمة", (r) => fmtAr(r.value), (r) => (Number(r.value) < 0 ? "text-money-negative" : "text-money-positive")),
         mutedCol("reason", "السبب", (r) => String(r.reason ?? "")),
       ]}

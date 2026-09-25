@@ -9,6 +9,7 @@
 import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { CO, RECEIPT_PHONES, STOREFRONT_URL, fmt, logoUrl } from "./brand";
+import { fmtQty } from "@shared/quantityFormat";
 import type { ReceiptBrowserData } from "./printTemplates";
 import { buildDigitalBlocks } from "./digitalReceiptLines";
 import { qrCodeDataUrl } from "./qr";
@@ -275,7 +276,7 @@ export async function receiptToCanvas(
     ctx.fillText(lines[0], COL_NAME_R, y);
     ctx.font = "900 22px Cairo, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(String(it.quantity), COL_QTY_CENTER, y);
+    ctx.fillText(fmtQty(it.quantity), COL_QTY_CENTER, y);
     ctx.font = "800 22px Cairo, sans-serif";
     ctx.textAlign = "left";
     ctx.fillText(fmt(it.price), COL_PRICE_X, y);
@@ -379,10 +380,36 @@ export async function receiptToCanvas(
     if (dl.address) totRow("العنوان:", dl.address);
     const who = dl.feeCollection === "COUNTER" ? "مقبوضة الآن" : shop ? "على المكتبة" : "يقبضها المندوب";
     totRow("أجرة التوصيل:", shop ? "مجاناً" : `${fmt(fee)} (${who})`, true);
-    if (!shop) {
-      ctx.font = "900 25px Cairo, sans-serif"; ctx.textAlign = "right";
-      ctx.fillText("يدفع الزبون:", W - PAD, y);
-      ctx.textAlign = "left"; ctx.fillText(`${fmt(Number(d.total || 0) + fee)} د.ع`, PAD, y);
+
+    const remainingMerchandise = Math.max(0, Number(d.total || 0) - Number(d.paid || 0));
+    const courierFee = dl.feeCollection === "COURIER" ? fee : 0;
+    const totalToCollect = remainingMerchandise + courierFee;
+
+    if (totalToCollect === 0) {
+      ctx.font = "900 23px Cairo, sans-serif"; ctx.textAlign = "right";
+      ctx.fillText("المطلوب من الزبون:", W - PAD, y);
+      ctx.textAlign = "left"; ctx.fillText("0 د.ع (مدفوع بالكامل)", PAD, y);
+      y += 32;
+    } else if (remainingMerchandise === 0 && courierFee > 0) {
+      ctx.font = "900 23px Cairo, sans-serif"; ctx.textAlign = "right";
+      ctx.fillText("يدفع الزبون (أجرة التوصيل فقط):", W - PAD, y);
+      ctx.textAlign = "left"; ctx.fillText(`${fmt(courierFee)} د.ع`, PAD, y);
+      y += 28;
+      ctx.font = "700 17px Cairo, sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("البضاعة مدفوعة مسبقاً بالكامل", W / 2, y);
+      y += 26;
+    } else if (courierFee > 0) {
+      ctx.font = "900 24px Cairo, sans-serif"; ctx.textAlign = "right";
+      ctx.fillText("يدفع الزبون شاملاً التوصيل:", W - PAD, y);
+      ctx.textAlign = "left"; ctx.fillText(`${fmt(totalToCollect)} د.ع`, PAD, y);
+      y += 28;
+      ctx.font = "700 16px Cairo, sans-serif"; ctx.textAlign = "center";
+      ctx.fillText(`(متبقي البضاعة: ${fmt(remainingMerchandise)} + أجرة التوصيل: ${fmt(courierFee)})`, W / 2, y);
+      y += 26;
+    } else {
+      ctx.font = "900 24px Cairo, sans-serif"; ctx.textAlign = "right";
+      ctx.fillText("يدفع الزبون (متبقي البضاعة):", W - PAD, y);
+      ctx.textAlign = "left"; ctx.fillText(`${fmt(remainingMerchandise)} د.ع`, PAD, y);
       y += 32;
     }
   }

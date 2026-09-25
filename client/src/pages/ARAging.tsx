@@ -66,7 +66,7 @@ export default function ARAging() {
   });
   const sel = useRowSelection<number>();
   const utils = trpc.useUtils();
-  const autoSettleAllM = trpc.customers.autoSettleAllZero.useMutation({
+  const autoSettleAllM = trpc.customers.autoSettleAll.useMutation({
     onSuccess: (res) => {
       notify.ok(
         "تمت المطابقة الشاملة بنجاح",
@@ -310,12 +310,16 @@ export default function ARAging() {
                 name: r.customerName,
                 d0_30: D(r.d0_30||0).toNumber(), d31_60: D(r.d31_60||0).toNumber(),
                 d61_90: D(r.d61_90||0).toNumber(), d91p: D(r.d91p||0).toNumber(),
-                unpaidTotal: D(r.unpaidTotal||0).toNumber(), currentBalance: D(r.currentBalance||0).toNumber(),
+                unpaidTotal: D(r.unpaidTotal||0).toNumber(),
+                unbucketed: D(r.unbucketed ?? unbilledOf(r)).toNumber(),
+                currentBalance: D(r.currentBalance||0).toNumber(),
               })),
               totals: {
                 d0_30: D(totals.d0_30).toNumber(), d31_60: D(totals.d31_60).toNumber(),
                 d61_90: D(totals.d61_90).toNumber(), d91p: D(totals.d91p).toNumber(),
-                unpaidTotal: D(totals.unpaidTotal).toNumber(), currentBalance: D(totals.currentBalance).toNumber(),
+                unpaidTotal: D(totals.unpaidTotal).toNumber(),
+                unbucketed: D(totals.unbilled).toNumber(),
+                currentBalance: D(totals.currentBalance).toNumber(),
               },
             })}>طباعة PDF</Button>
             <Button
@@ -323,11 +327,11 @@ export default function ARAging() {
               size="sm"
               disabled={autoSettleAllM.isPending}
               onClick={() => autoSettleAllM.mutate()}
-              title="تسوية تلقائية لكافة فواتير العملاء الذين رصيدهم صفر أو دائن"
+              title="تسوية ومطابقة شاملة لكافة فواتير العملاء المسددة بنظام FIFO"
               className="gap-1.5"
             >
               <RefreshCw className={`size-3.5 ${autoSettleAllM.isPending ? "animate-spin" : ""}`} />
-              تسوية الحسابات المسددة
+              تسوية ومطابقة الذمم
             </Button>
             <Link href="/customers-statement"><Button variant="outline">كشف حساب عميل</Button></Link>
           </>

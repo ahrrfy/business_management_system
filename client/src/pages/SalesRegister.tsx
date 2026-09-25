@@ -13,7 +13,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { D, fmtAr } from "@/lib/money";
+import { D, fmtAr, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -21,7 +21,6 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Row = RouterOutputs["reports"]["salesRegister"]["rows"][number];
 
 const PAGE = 200;
-
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -72,14 +71,14 @@ export default function SalesRegister() {
       {
         id: "quantityAndPrice",
         header: "الكمية / السعر",
-        accessorFn: (r) => `${fmtAr(r.quantity)} × ${fmtAr(r.unitPrice)}`,
+        accessorFn: (r) => `${formatQuantity(r.quantity)} × ${fmtAr(r.unitPrice)}`,
         meta: { kind: "money" },
         sortDescFirst: true,
         sortingFn: (a, b) => D(a.original.quantity || 0).cmp(D(b.original.quantity || 0)),
         cell: ({ row }) => (
           <div className="flex flex-col items-end gap-0.5">
             <span className="font-semibold tabular-nums" dir="ltr">
-              {fmtAr(row.original.quantity)}
+              {formatQuantity(row.original.quantity)}
             </span>
             <span
               className="text-[11px] text-muted-foreground tabular-nums"
@@ -231,7 +230,7 @@ export default function SalesRegister() {
           customer: r.customerName ?? "—",
           soldBy: r.soldByName ?? "—",
           product: r.productName,
-          qty: fmtAr(r.quantity),
+          qty: formatQuantity(r.quantity),
           price: fmtAr(r.unitPrice),
           cost: fmtAr(r.unitCost),
           total: fmtAr(r.total),

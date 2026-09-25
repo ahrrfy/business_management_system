@@ -15,6 +15,7 @@ import { fmtDate as formatDate } from "../date";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg } from "./qr";
 import { CAIRO_FONT, CO, esc, fmt, logoUrl } from "./brand";
+import { fmtQty } from "@shared/quantityFormat";
 import { formatArabicMoneyWords } from "./tafqit";
 import {
   DEFAULT_SHIPPING_LABEL_SIZE,
@@ -118,7 +119,7 @@ export async function shippingLabelHtml(
     <tr>
       <td style="border:1px solid #000;text-align:center;font-weight:900;font-size:7.5pt;padding:0.3mm 0.5mm;width:10%;">[ &nbsp; ]</td>
       <td style="border:1px solid #000;font-weight:800;padding:0.3mm 0.6mm;font-size:7pt;line-height:1.15;">${esc(it.productName)}${it.unitName ? ` (${esc(it.unitName)})` : ""}</td>
-      <td style="border:1px solid #000;text-align:center;font-weight:900;padding:0.3mm 0.5mm;font-size:7.5pt;direction:ltr;width:18%;font-variant-numeric:tabular-nums;">×${fmt(it.quantity)}</td>
+      <td style="border:1px solid #000;text-align:center;font-weight:900;padding:0.3mm 0.5mm;font-size:7.5pt;direction:ltr;width:18%;font-variant-numeric:tabular-nums;">×${fmtQty(it.quantity)}</td>
     </tr>
   `).join("") + (remainingCount > 0 ? `
     <tr>

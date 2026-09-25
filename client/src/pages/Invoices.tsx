@@ -32,7 +32,7 @@ import { sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
 import { INVOICE_STATUSES, invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
-import { Calendar, CreditCard, Download, FileWarning, Printer, Truck, User, X } from "lucide-react";
+import { Calendar, CreditCard, Download, FileWarning, MapPin, Phone, Printer, Truck, User, X } from "lucide-react";
 import { downloadOfficialPdf } from "@/lib/exportPdf";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
@@ -490,13 +490,29 @@ export default function Invoices() {
           return (
             <StackedEntityCell
               primary={
-                n && id && canOpenStatement ? (
-                  <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title={n ? `${n} (فتح كشف حساب العميل)` : "فتح كشف حساب العميل"}>
-                    {n}
-                  </Link>
-                ) : (
-                  custName(n)
-                )
+                <div className="flex flex-col gap-0.5">
+                  <span className="inline-flex items-center gap-1.5 flex-wrap">
+                    {n && id && canOpenStatement ? (
+                      <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline font-semibold" title={n ? `${n} (فتح كشف حساب العميل)` : "فتح كشف حساب العميل"}>
+                        {n}
+                      </Link>
+                    ) : (
+                      <span className="font-semibold">{custName(n)}</span>
+                    )}
+                    {r.customerPhone && (
+                      <span className="inline-flex items-center gap-0.5 font-mono text-[11px] text-muted-foreground" dir="ltr">
+                        <Phone className="size-2.5 text-muted-foreground" />
+                        <span>{r.customerPhone}</span>
+                      </span>
+                    )}
+                  </span>
+                  {r.customerAddress && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground truncate max-w-[200px]" title={r.customerAddress}>
+                      <MapPin className="size-2.5 text-muted-foreground shrink-0" />
+                      <span className="truncate">{r.customerAddress}</span>
+                    </span>
+                  )}
+                </div>
               }
               primaryTitle={n ?? undefined}
               secondary={r.invoiceNumber}
@@ -772,7 +788,7 @@ export default function Invoices() {
                   label: "إلغاء إسناد التوصيل",
                   onSelect: () => setCancelDeliveryTarget(r),
                   variant: "destructive",
-                  hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "FAILED"),
+                  hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "OUT_FOR_DELIVERY" && r.consignmentParcelStatus !== "FAILED"),
                   gate: { roles: ["manager"], module: "store", level: "FULL" },
                 },
                 {

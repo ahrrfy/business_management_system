@@ -214,13 +214,18 @@ function isZeroMoney(value: ShiftCashMoneyValue): boolean | null {
 
 function defaultDateTimeFormatter(
   value: string | Date | null | undefined,
-  locale: string,
+  locale: string = "ar-IQ-u-nu-latn",
 ): ReactNode {
   if (value === null || value === undefined || value === "") return "—";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
 
-  return new Intl.DateTimeFormat(locale, {
+  const resolvedLocale =
+    locale.startsWith("ar") && !locale.includes("-u-nu-")
+      ? `${locale}-u-nu-latn`
+      : locale;
+
+  return new Intl.DateTimeFormat(resolvedLocale, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
@@ -418,7 +423,7 @@ export function ShiftCashReconciliation({
   title = "مطابقة نقد الوردية",
   description = "تفصيل الرصيد المتوقع ومقارنته بالنقد المعدود فعلياً.",
   currencyLabel = "د.ع",
-  locale = "ar-IQ",
+  locale = "ar-IQ-u-nu-latn",
   className,
   defaultExpandedKeys = [],
   formatMoney = defaultMoneyFormatter,

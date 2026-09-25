@@ -33,7 +33,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
@@ -469,7 +469,7 @@ export function SalesReturnPortal({
         const target = prev[existingIdx];
         if (target.quantity >= item.remainingQuantity) {
           notify.warn(
-            `الكمية في السلة وصلت للحد الأقصى المتاح (${item.remainingQuantity})`,
+            `الكمية في السلة وصلت للحد الأقصى المتاح (${formatQuantity(item.remainingQuantity)})`,
           );
           return prev;
         }
@@ -1028,13 +1028,13 @@ export function SalesReturnPortal({
                                 )}
                               </td>
                               <td className="p-2 text-center font-mono">
-                                {it.baseQuantity}
+                                {formatQuantity(it.baseQuantity)}
                               </td>
                               <td className="p-2 text-center font-mono text-muted-foreground">
-                                {it.returnedBaseQuantity}
+                                {formatQuantity(it.returnedBaseQuantity)}
                               </td>
                               <td className="p-2 text-center font-mono font-bold text-foreground">
-                                {it.remainingQuantity}
+                                {formatQuantity(it.remainingQuantity)}
                               </td>
                               <td className="p-2 font-mono">
                                 {fmt(it.unitPrice)} د.ع
@@ -1185,7 +1185,7 @@ export function SalesReturnPortal({
                                 )}
                                 {item.maxAllowedQuantity != null && (
                                   <span className="text-[10px] text-muted-foreground font-mono">
-                                    (المتبقي بالفاتورة: {item.maxAllowedQuantity})
+                                    (المتبقي بالفاتورة: {formatQuantity(item.maxAllowedQuantity)})
                                   </span>
                                 )}
                               </div>
@@ -1229,7 +1229,7 @@ export function SalesReturnPortal({
                                     ) {
                                       q = item.maxAllowedQuantity;
                                       notify.warn(
-                                        `الحد الأقصى المتاح للإرجاع من الفاتورة هو ${item.maxAllowedQuantity}`,
+                                        `الحد الأقصى المتاح للإرجاع من الفاتورة هو ${formatQuantity(item.maxAllowedQuantity)}`,
                                       );
                                     }
                                     setSalesCart((prev) =>
@@ -1248,7 +1248,7 @@ export function SalesReturnPortal({
                                       item.quantity >= item.maxAllowedQuantity
                                     ) {
                                       notify.warn(
-                                        `لا يمكن تجاوز الكمية المتبقية في الفاتورة (${item.maxAllowedQuantity})`,
+                                        `لا يمكن تجاوز الكمية المتبقية في الفاتورة (${formatQuantity(item.maxAllowedQuantity)})`,
                                       );
                                       return;
                                     }

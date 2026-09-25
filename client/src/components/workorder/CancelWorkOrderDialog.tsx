@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { RefundPreflight } from "@shared/refundPreflight";
@@ -266,7 +266,7 @@ export default function CancelWorkOrderDialog({
                       return (
                         <tr key={m.id} className="border-t">
                           <td className="p-2">{m.name}</td>
-                          <td className="p-2 text-center tabular-nums">{m.baseQuantity}</td>
+                          <td className="p-2 text-center tabular-nums">{formatQuantity(m.baseQuantity)}</td>
                           <td className="p-2 text-center">
                             <Input
                               type="number"
@@ -280,7 +280,7 @@ export default function CancelWorkOrderDialog({
                               className="mx-auto h-7 w-20 text-center"
                             />
                           </td>
-                          <td className="p-2 text-center font-bold tabular-nums">{m.baseQuantity - w}</td>
+                          <td className="p-2 text-center font-bold tabular-nums">{formatQuantity(m.baseQuantity - w)}</td>
                           <td className="p-2 text-end tabular-nums" dir="ltr">
                             {w > 0 ? (m.unitCost != null ? fmtAr(String(w * Number(m.unitCost))) : "—") : "—"}
                           </td>

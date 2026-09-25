@@ -30,7 +30,7 @@ import { Label } from "@/components/ui/label";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { RefundRailPicker, type RefundRailPickerState } from "@/components/ui/RefundRailPicker";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, formatQuantity, round2 } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { computeReturnTotal } from "@/lib/returnTotal";
 import { trpc } from "@/lib/trpc";
@@ -57,9 +57,9 @@ export function returnQuantityLabel(
   baseUnitName = "قطعة",
 ): string {
   if (base <= 0) return "0";
-  if (factor <= 1) return `${base} ${unitName || baseUnitName}`;
-  if (base % factor !== 0) return `${base} ${baseUnitName}`;
-  return `${base / factor} ${unitName} (${base} ${baseUnitName})`;
+  if (factor <= 1) return `${formatQuantity(base)} ${unitName || baseUnitName}`;
+  if (base % factor !== 0) return `${formatQuantity(base)} ${baseUnitName}`;
+  return `${formatQuantity(base / factor)} ${unitName} (${formatQuantity(base)} ${baseUnitName})`;
 }
 
 export interface ReturnComposerProps {
@@ -498,7 +498,7 @@ export function ReturnComposer({
           item.unitName,
           item.baseUnitName,
         )}`
-        : `${line.baseQuantity} وحدة`;
+        : `${formatQuantity(line.baseQuantity)} وحدة`;
     });
     const scope = `${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${quantities.join("، ")})`;
 

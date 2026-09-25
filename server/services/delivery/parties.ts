@@ -19,6 +19,7 @@ import {
   requireExternalTrackingRef,
   rethrowExternalTrackingRefDuplicate,
 } from "./trackingRefPolicy";
+import { stripTrackingLeadingZeros } from "@shared/barcodeScanner";
 import type { DeliveryActor, DeliveryPartyKind } from "./types";
 
 /** يمنع تعطيل/فكّ ربط جهة عليها طلبات متجر «مع المندوب» (SHIPPED) — وإلا تُيتَّم من مسار التحصيل
@@ -279,6 +280,7 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
         });
       }
       const consignmentByCanonicalRef = new Map<string, (typeof canonicalizedRefs)[number]>();
+      const consignmentByStrippedRef = new Map<string, (typeof canonicalizedRefs)[number]>();
       for (const consignment of canonicalizedRefs) {
         // The missing-ref guard above narrows this invariant for the conversion batch.
         const canonicalRef = consignment.canonicalRef as string;
@@ -293,7 +295,20 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
             }),
           });
         }
+        const stripped = stripTrackingLeadingZeros(canonicalRef);
+        const previousStripped = consignmentByStrippedRef.get(stripped);
+        if (previousStripped) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر تحويل المندوب إلى شركة توصيل",
+              why: `رقم البوليصة ${canonicalRef} يتطابق مع ${previousStripped.externalTrackingRef} في الإرسالية ${previousStripped.consignmentNumber} عند مقارنة الأرقام دون الأصفار البادئة؛ الشركة تحتاج رقماً فريداً لكل طرد لمنع اللبس عند مسح الباركود`,
+              doThis: "صحّح أرقام البوالص المتطابقة من تفاصيل الإرساليات، ثم أعد تحويل نوع الجهة إلى شركة",
+            }),
+          });
+        }
         consignmentByCanonicalRef.set(canonicalRef, consignment);
+        consignmentByStrippedRef.set(stripped, consignment);
       }
       for (const consignment of canonicalizedRefs) {
         const canonicalRef = consignment.canonicalRef as string;
@@ -775,12 +790,12 @@ export async function reassignDeliveryConsignment(
       externalTrackingRef,
       Number(cn.id),
     );
-    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "OUT_FOR_DELIVERY" && cn.parcelStatus !== "FAILED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: "تعذّرت إعادة إسناد الطرد",
-          why: `حالة الطرد الحاليّة (${cn.parcelStatus}) لا تسمح بإعادة الإسناد؛ الإعادة مسموحة قبل قبول الطرد (ASSIGNED) أو بعد تسجيل تعذّر التوصيل (FAILED) فقط`,
+          why: `حالة الطرد الحاليّة (${cn.parcelStatus}) لا تسمح بإعادة الإسناد؛ الإعادة مسموحة قبل تسليم الطرد أو بعد تسجيل تعذّر التوصيل (FAILED) فقط`,
           doThis: "إن كان الطرد قيد التوصيل الفعليّ، انتظر تسليمَه أو تسجيل تعذّره أوّلاً؛ وإن كان مُسلَّماً استعمل مسار المرتجع",
         }),
       });
@@ -809,10 +824,10 @@ export async function reassignDeliveryConsignment(
       await tx.update(deliveryConsignments).set({
         assignedUserId: input.assignedUserId ?? null,
         externalTrackingRef,
-        parcelStatus: "ASSIGNED",
+        parcelStatus: "OUT_FOR_DELIVERY",
         acceptedAt: null,
         pickedUpAt: null,
-        outForDeliveryAt: null,
+        outForDeliveryAt: new Date(),
         failedAt: null,
         failureReason: null,
       }).where(eq(deliveryConsignments.id, input.consignmentId));
@@ -825,7 +840,7 @@ export async function reassignDeliveryConsignment(
       consignmentId: Number(cn.id),
       eventType: "REASSIGNED",
       fromParcelStatus: cn.parcelStatus,
-      toParcelStatus: "ASSIGNED",
+      toParcelStatus: "OUT_FOR_DELIVERY",
       fromMoneyStatus: cn.moneyStatus,
       toMoneyStatus: cn.moneyStatus,
       actorUserId: actor.userId,
