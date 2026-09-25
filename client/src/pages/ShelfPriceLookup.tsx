@@ -115,9 +115,34 @@ function parseUrlParams(): { branchId?: number; initialBarcode?: string } {
   return { branchId, initialBarcode };
 }
 
+function getPersistentVisitorId(): string {
+  if (typeof window === "undefined") return "anon";
+  try {
+    const key = "shelf_lookup_vid";
+    let vid = localStorage.getItem(key);
+    if (!vid || vid.length < 10) {
+      vid = `vst_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
+      localStorage.setItem(key, vid);
+    }
+    return vid;
+  } catch {
+    return "anon";
+  }
+}
+
+function detectDeviceType(): "ios" | "android" | "desktop" {
+  if (typeof navigator === "undefined") return "desktop";
+  const ua = navigator.userAgent || "";
+  if (/iphone|ipad|ipod/i.test(ua)) return "ios";
+  if (/android/i.test(ua)) return "android";
+  return "desktop";
+}
+
 export default function ShelfPriceLookup() {
   const [, setLocation] = useLocation();
   const { branchId, initialBarcode } = useMemo(() => parseUrlParams(), []);
+  const visitorId = useMemo(() => getPersistentVisitorId(), []);
+  const deviceType = useMemo(() => detectDeviceType(), []);
 
   // إدارة حالة الباركود والماسح
   const [barcode, setBarcode] = useState<string | null>(initialBarcode ?? null);
@@ -127,11 +152,13 @@ export default function ShelfPriceLookup() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [selectedUnitIndex, setSelectedUnitIndex] = useState<number>(0);
 
-  // استدعاء tRPC لاستعلام سعر الصنف الممسوح
+  // استدعاء tRPC لاستعلام سعر الصنف الممسوح وحصر المستفيدين
   const lookupQuery = trpc.storefront.shelfLookup.useQuery(
     {
       barcode: barcode ?? "",
       branchId,
+      visitorId,
+      deviceType,
     },
     {
       enabled: Boolean(barcode),

@@ -53,6 +53,7 @@ import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOr
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
 import { lookupShelfPrice } from "../services/shelfPriceService";
+import { recordShelfLookupEvent } from "../services/shelfAnalyticsService";
 import { barcodeString } from "../lib/schemas";
 
 const labelSummaryInput = z.object({
@@ -248,13 +249,40 @@ export const storefrontRouter = router({
   /**
    * استعلام سعر الرف بالباركود (QR Shelf Price Lookup):
    * وصول عام محمي بالـ Rate Limiting، لا يكشف تكلفة أو كميات مخزون أو أسعار جملة.
+   * يسجل كل استعلام آلياً لحصر أعداد المستفيدين وتحليلات المعرض.
    */
   shelfLookup: storefrontPublicReadProcedure
     .input(z.object({
       barcode: barcodeString,
       branchId: z.number().int().positive().optional(),
+      visitorId: z.string().trim().max(64).optional(),
+      deviceType: z.enum(["ios", "android", "desktop", "unknown"]).optional(),
     }))
-    .query(({ input }) => lookupShelfPrice(input.barcode, input.branchId)),
+    .query(async ({ input, ctx }) => {
+      const result = await lookupShelfPrice(input.barcode, input.branchId);
+
+      const ua = String(ctx.req.headers["user-agent"] ?? "");
+      let detectedDevice = input.deviceType;
+      if (!detectedDevice) {
+        if (/iphone|ipad|ipod/i.test(ua)) detectedDevice = "ios";
+        else if (/android/i.test(ua)) detectedDevice = "android";
+        else detectedDevice = "desktop";
+      }
+
+      recordShelfLookupEvent({
+        visitorId: input.visitorId || (ctx.req.ip ? `vis_${ctx.req.ip.replace(/[^a-zA-Z0-9]/g, "").slice(0, 16)}` : "vis_anon"),
+        barcode: input.barcode,
+        branchId: input.branchId,
+        productId: result.found ? result.productId : null,
+        productName: result.found ? result.productName : null,
+        found: result.found,
+        deviceType: detectedDevice,
+        ip: ctx.req.ip,
+        userAgent: ua,
+      }).catch(() => {});
+
+      return result;
+    }),
 
   /** توصيات السلة التي ضبطها المدير؛ لا تعيد التكلفة أو كمية المخزون. */
   cartRecommendations: storefrontPublicReadProcedure
