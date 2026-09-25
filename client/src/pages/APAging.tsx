@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list";
@@ -159,18 +160,20 @@ export default function APAging() {
 
   const columns: ColumnDef<Row, unknown>[] = [
     {
-      id: "supplierName",
-      header: "المورد",
-      accessorFn: (r) => r.supplierName,
-      meta: { width: "wide", wrap: true },
-      cell: ({ row }) => <span className="font-medium">{row.original.supplierName}</span>,
-    },
-    {
-      id: "phone",
-      header: "الهاتف",
-      accessorFn: (r) => r.phone ?? "",
-      meta: { kind: "phone" },
-      cell: ({ row }) => <CopyInline value={row.original.phone} />,
+      id: "supplierAndPhone",
+      header: "المورد / الهاتف",
+      accessorFn: (r) => [r.supplierName, r.phone].filter(Boolean).join(" · "),
+      meta: { width: "stacked" },
+      cell: ({ row }) => (
+        <StackedEntityCell
+          primary={row.original.supplierName}
+          primaryTitle={row.original.supplierName}
+          secondary={row.original.phone}
+          secondaryTitle="رقم الهاتف"
+          copyValue={row.original.phone}
+          copyTitle="نسخ رقم الهاتف"
+        />
+      ),
     },
     agingMoneyColumn("d0_30", "0–30"),
     agingMoneyColumn("d31_60", "31–60"),
@@ -178,37 +181,27 @@ export default function APAging() {
     agingMoneyColumn("d91p", "+90"),
     agingMoneyColumn("unpaidTotal", "إجمالي غير المدفوع", "font-semibold"),
     {
-      /* عمودٌ مشتقّ (الرصيد − غير المدفوع) لا حقل خادميّ — ولم يكن قابلاً للفرز في الجدول الخامّ.
-         والمُعرِّف عربيٌّ عمداً (نفس نظيره في `ARAging`): `DataTable` يشتقّ اسم العمود في منتقي
-         الأعمدة وفي «نسخ العمود كـTSV» من الترويسة **حين تكون نصّاً**، وإلّا رجع إلى `id` —
-         وهذه ترويسةٌ مركَّبة (فيها Popover) ⇒ لولا التعريب لقرأ الموظّف «unbilled» وسط أعمدةٍ عربية. */
-      id: "غير مفوتر/افتتاحي",
-      header: () => (
-        <span className="inline-flex items-center gap-1">
-          غير مفوتر/افتتاحي
-          <Popover>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                aria-label="شرح: غير مفوتر/افتتاحي"
-                // Codex P2 (٢٤/٨ على PR #770): هدف لمس ٢٤×٢٤ (WCAG 2.5.8).
-                className="inline-flex h-6 w-6 items-center justify-center rounded outline-none focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground hover:text-foreground hover:bg-accent"
-              >
-                <Info aria-hidden className="size-3.5" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent side="top" className="max-w-xs text-xs">
-              الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم أو الحركات غير المُوثَّقة بفاتورة.
-            </PopoverContent>
-          </Popover>
-        </span>
-      ),
-      accessorFn: (r) => fmt(unbilledOf(r).toFixed(2)),
+      id: "currentBalance",
+      header: "الرصيد / الافتتاحي",
+      accessorFn: (r) =>
+        `رصيد: ${fmt(D(r.currentBalance || 0).toFixed(2))} · غير مفوتر: ${fmt(unbilledOf(r).toFixed(2))}`,
       meta: { kind: "money" },
-      enableSorting: false,
-      cell: ({ row }) => <span className="text-[var(--sem-info)]">{fmt(unbilledOf(row.original).toFixed(2))}</span>,
+      sortDescFirst: true,
+      sortingFn: (a, b) => D(a.original.currentBalance || 0).cmp(D(b.original.currentBalance || 0)),
+      cell: ({ row }) => (
+        <div className="flex flex-col items-end gap-0.5">
+          <span className="font-semibold tabular-nums" dir="ltr">
+            {fmt(D(row.original.currentBalance || 0).toFixed(2))}
+          </span>
+          <span
+            className="text-[11px] text-[var(--sem-info)] tabular-nums"
+            title="غير مفوتر/افتتاحي: يشمل الرصيد الافتتاحي المستورد أو الحركات غير الموثقة بفاتورة"
+          >
+            افتتاحي: {fmt(unbilledOf(row.original).toFixed(2))}
+          </span>
+        </div>
+      ),
     },
-    agingMoneyColumn("currentBalance", "الرصيد (له علينا)"),
     {
       id: "oldestPoDate",
       header: "أقدم أمر شراء",

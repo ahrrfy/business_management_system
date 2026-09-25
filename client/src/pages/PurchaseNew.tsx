@@ -467,7 +467,7 @@ export default function PurchaseNew() {
       await utils.purchases.requisitions.invalidate();
       notify.ok("تم حفظ طلب التأمين بنجاح وإسناده لمدير المشتريات للبحث والتفاوض مع الموردين في السوق");
       bypassUnsavedGuard();
-      navigate("/purchase-requisitions");
+      navigate("/purchases?tab=requisitions");
     },
     onError: (e) => notify.err(e),
   });
