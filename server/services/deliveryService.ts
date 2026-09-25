@@ -70,7 +70,9 @@ export {
   listPartyObligations,
   // Slice DFP1 (٣٠/٨/٢٦) — قائمة الجهات المتأخّرة (SLA على عمر الطرود المفتوحة).
   listStaleParties,
+  predictiveSearchConsignments,
 } from "./delivery/queries";
+export type { PredictiveConsignmentItem } from "./delivery/queries";
 // ٥/٨: إسناد فاتورةٍ قائمة (بيع مباشر بلا أمر شغل) للتوصيل — كان مستحيلاً بنيوياً.
 export type { DispatchInvoiceInput } from "./delivery/dispatchInvoice";
 export { dispatchInvoiceToDelivery } from "./delivery/dispatchInvoice";

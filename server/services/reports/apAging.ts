@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
@@ -130,12 +131,92 @@ export async function getAPAging(
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];
-  // REP-04 mirror: شراء الأصول/الرصيد الافتتاحي (OPENING) يقعان في currentBalance خارج دلاء أوامر
-  // الشراء ⇒ unbucketed = currentBalance − unpaidTotal (مُوقَّع، بلا قصّ) يُغلق الفرق فتتّزن الدلاء.
-  return (data as any[]).map((r) => ({
-    ...(r as APAgingRow),
-    unbucketed: toDbMoney(money(r.currentBalance).sub(money(r.unpaidTotal))),
-  }));
+  return (data as any[])
+    .map((r) => {
+      const scopedBalance = money(r.currentBalance);
+      let d0_30 = money(r.d0_30 || 0);
+      let d31_60 = money(r.d31_60 || 0);
+      let d61_90 = money(r.d61_90 || 0);
+      let d91p = money(r.d91p || 0);
+      const rawUnpaid = money(r.unpaidTotal || 0);
+
+      // حارس المبدأ المحاسبي الجوهري (AP Aging):
+      // إذا كان رصيد المورد صفراً أو سالباً (مديناً لنا)، فلا توجد ذمم دائنة مستحقة له
+      if (scopedBalance.lte(0)) {
+        return {
+          ...(r as APAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: "0.00",
+          d31_60: "0.00",
+          d61_90: "0.00",
+          d91p: "0.00",
+          unpaidTotal: "0.00",
+          unbucketed: toDbMoney(scopedBalance),
+          oldestPoDate: null,
+        };
+      }
+
+      // إذا كان إجمالي أوامر الشراء المفتوحة الخام يفوق الرصيد الفعلي الدائن:
+      // الفارق يمثل سدادات غير مخصصة تخفض الذمم وفق قاعدة الأسبقية FIFO
+      if (rawUnpaid.gt(scopedBalance)) {
+        let unallocatedPayment = rawUnpaid.minus(scopedBalance);
+
+        // تخفيض دلو >90
+        const alloc91p = Decimal.min(d91p, unallocatedPayment);
+        d91p = d91p.minus(alloc91p);
+        unallocatedPayment = unallocatedPayment.minus(alloc91p);
+
+        // تخفيض دلو 61-90
+        if (unallocatedPayment.gt(0)) {
+          const alloc61_90 = Decimal.min(d61_90, unallocatedPayment);
+          d61_90 = d61_90.minus(alloc61_90);
+          unallocatedPayment = unallocatedPayment.minus(alloc61_90);
+        }
+
+        // تخفيض دلو 31-60
+        if (unallocatedPayment.gt(0)) {
+          const alloc31_60 = Decimal.min(d31_60, unallocatedPayment);
+          d31_60 = d31_60.minus(alloc31_60);
+          unallocatedPayment = unallocatedPayment.minus(alloc31_60);
+        }
+
+        // تخفيض دلو 0-30
+        if (unallocatedPayment.gt(0)) {
+          const alloc0_30 = Decimal.min(d0_30, unallocatedPayment);
+          d0_30 = d0_30.minus(alloc0_30);
+          unallocatedPayment = unallocatedPayment.minus(alloc0_30);
+        }
+
+        const effectiveUnpaid = scopedBalance;
+        return {
+          ...(r as APAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: toDbMoney(d0_30),
+          d31_60: toDbMoney(d31_60),
+          d61_90: toDbMoney(d61_90),
+          d91p: toDbMoney(d91p),
+          unpaidTotal: toDbMoney(effectiveUnpaid),
+          unbucketed: "0.00",
+        };
+      }
+
+      const effectiveUnpaid = rawUnpaid;
+      const unbucketed = scopedBalance.minus(effectiveUnpaid);
+
+      return {
+        ...(r as APAgingRow),
+        currentBalance: toDbMoney(scopedBalance),
+        d0_30: toDbMoney(d0_30),
+        d31_60: toDbMoney(d31_60),
+        d61_90: toDbMoney(d61_90),
+        d91p: toDbMoney(d91p),
+        unpaidTotal: toDbMoney(effectiveUnpaid),
+        unbucketed: toDbMoney(unbucketed),
+      };
+    })
+    .filter((r) => {
+      return !(money(r.currentBalance).isZero() && money(r.unpaidTotal).isZero());
+    });
 }
 
 export interface SupplierStatementPO {
@@ -378,19 +459,36 @@ export async function getSupplierStatement(
     if (!gl || !gl.recognitionDate) return [];
     if ((from || to) && money(gl.periodTotal).isZero()) return [];
     const total = money(gl.total);
-    const openBalance = money(gl.balance).isPositive()
+    const rawGlBalance = money(gl.balance).isPositive()
       ? money(gl.balance)
       : money(0);
+    const glPaid = total.minus(rawGlBalance);
+    const validGlPaid = glPaid.isPositive() ? glPaid : money(0);
+    const orderPaid = money(po.paidAmount ?? 0);
+    // القيمة الأعلى بين ما سُجِّل على أمر الشراء (كالتسوية التلقائية FIFO) وما هو مقيّد في الدفتر العام
+    const effectivePaid = orderPaid.gt(validGlPaid) ? orderPaid : validGlPaid;
+    // الرصيد المفتوح الفعلي للأمر بعد احتساب السداد الفعلي
+    const effectiveOpenBalance = total.minus(effectivePaid);
+    const openBalance = effectiveOpenBalance.isPositive()
+      ? effectiveOpenBalance
+      : money(0);
+    // المبلغ المسدد على هذا الأمر زيادةً عما هو مربوط في الدفتر العام (مستقطع من الدفعات غير المخصصة)
+    const cappedEffectivePaid = effectivePaid.gt(total) ? total : effectivePaid;
+    const settledBeyondGl = cappedEffectivePaid.gt(validGlPaid)
+      ? cappedEffectivePaid.minus(validGlPaid)
+      : money(0);
+
     return [
       {
         ...po,
         total: toDbMoney(total),
         periodTotal: toDbMoney(gl.periodTotal),
-        // «مسدّد/مخفّض» = إجمالي PURCHASE ناقص رصيد GL المفتوح؛ يشمل المرتجع والإلغاء الصحيحين.
-        paidAmount: toDbMoney(total.minus(openBalance)),
-        // للاستعمال الداخلي فقط (أعمار الذمم أدناه) — لا يدخل الصفّ المُرسَل للواجهة.
+        // «مسدّد/مخفّض» = القيمة الأعلى بين مدفوع أمر الشراء ومدفوع الدفتر العام؛ يضمن ظهور التسوية التلقائية FIFO.
+        paidAmount: toDbMoney(effectivePaid),
+        // للاستعمال الداخلي فقط (أعمار الذمم وحساب الدفعات غير المخصصة) — لا يدخل الصفّ المُرسَل للواجهة.
         _openBalance: openBalance,
         _recognitionDate: gl.recognitionDate,
+        _settledBeyondGl: settledBeyondGl,
       },
     ];
   });
@@ -545,14 +643,23 @@ export async function getSupplierStatement(
   // دفعاتٌ للمورد (PAYMENT_OUT) غير مربوطةٍ بأمر شراءٍ بعينه («دفعة مستقلة») — هذا هو السبب
   // الجذريّ الأكثر شيوعاً لتباعد «المتبقّي» المجموع لكل الأوامر عن «غير مدفوع» الحقيقي: مبلغٌ
   // دخل الحساب فعلاً وخفّض ما ندين به، لكن لم يُخصَّص بعد لفاتورةٍ محدَّدة فيبقى غامضاً في
-  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه.
-  const unallocatedPayments = payments.reduce(
+  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه،
+  // مع استبعاد ما تم تسويته فعلياً على الأوامر (كالتسوية التلقائية FIFO).
+  const rawUnallocatedPayments = payments.reduce(
     (acc, p) =>
       p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null
         ? acc.plus(money(p.amount))
         : acc,
     money(0),
   );
+  const totalSettledBeyondGl = posWithTotals.reduce(
+    (acc, p) => acc.plus(p._settledBeyondGl),
+    money(0),
+  );
+  const remainingUnallocated = rawUnallocatedPayments.minus(totalSettledBeyondGl);
+  const unallocatedPayments = remainingUnallocated.isPositive()
+    ? remainingUnallocated
+    : money(0);
 
   // أذونات الاستلام المخزني المرحّلة ذات الأصل NATIVE غير المفوترة بعد (إفصاح رقابي للمحاسب)
   const unbilledReceiptRows = await db

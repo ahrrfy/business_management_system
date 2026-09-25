@@ -31,7 +31,7 @@ import { sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
 import { INVOICE_STATUSES, invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
-import { Calendar, CreditCard, Download, FileWarning, Printer, Truck, User, X } from "lucide-react";
+import { Calendar, CreditCard, Download, FileWarning, MapPin, Phone, Printer, Truck, User, X } from "lucide-react";
 import { downloadOfficialPdf } from "@/lib/exportPdf";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
@@ -520,13 +520,33 @@ export default function Invoices() {
         // فتح كشف الحساب من خلالها). «عميل نقدي» يظلّ نصاً (بلا customerId). للأدوار بلا `reports:READ`
         // يظلّ نصاً كذلك — كشف الحساب مقصور على المرتفعين (Codex P2 على PR #744).
         cell: ({ row }) => {
-          const n = row.original.customerName;
-          const id = row.original.customerId;
-          if (!n || !id || !canOpenStatement) return custName(n);
+          const r = row.original;
+          const n = r.customerName;
+          const id = r.customerId;
+          const phone = r.customerPhone;
+          const addr = r.customerAddress;
           return (
-            <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
-              {n}
-            </Link>
+            <div className="flex flex-col text-xs gap-0.5">
+              {!n || !id || !canOpenStatement ? (
+                <span className="font-semibold">{custName(n)}</span>
+              ) : (
+                <Link href={`/customers-statement?id=${id}`} className="font-semibold text-primary hover:underline" title="فتح كشف حساب العميل">
+                  {n}
+                </Link>
+              )}
+              {phone && (
+                <span className="inline-flex items-center gap-1 font-mono text-muted-foreground" dir="ltr">
+                  <Phone className="size-3 text-muted-foreground" />
+                  <span>{phone}</span>
+                </span>
+              )}
+              {addr && (
+                <span className="inline-flex items-center gap-1 text-muted-foreground truncate max-w-[200px]" title={addr}>
+                  <MapPin className="size-3 text-muted-foreground shrink-0" />
+                  <span className="truncate">{addr}</span>
+                </span>
+              )}
+            </div>
           );
         },
       },
@@ -759,7 +779,7 @@ export default function Invoices() {
                   label: "إلغاء إسناد التوصيل",
                   onSelect: () => setCancelDeliveryTarget(r),
                   variant: "destructive",
-                  hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "FAILED"),
+                  hidden: r.consignmentId == null || (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "OUT_FOR_DELIVERY" && r.consignmentParcelStatus !== "FAILED"),
                   gate: { roles: ["manager"], module: "store", level: "FULL" },
                 },
                 {

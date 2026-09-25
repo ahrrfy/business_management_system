@@ -231,9 +231,13 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
               sign: '+' as const,
               color: B.orange,
             },
-            ...(d.courierDelivery.feeCollection !== 'SHOP'
-              ? [{ label: 'المجموع النهائي (يدفعه الزبون شاملاً التوصيل)', value: fmtIQD(Number(d.total) + Number(d.courierDelivery.fee)) }]
-              : []),
+            ...(d.courierDelivery.feeCollection === 'COURIER'
+              ? (remainingNum === 0
+                  ? [{ label: 'المطلوب من الزبون (أجرة التوصيل فقط — البضاعة مدفوعة مسبقاً)', value: fmtIQD(d.courierDelivery.fee) }]
+                  : [{ label: 'المجموع النهائي (يدفعه الزبون شاملاً التوصيل)', value: fmtIQD(remainingNum + Number(d.courierDelivery.fee)) }])
+              : (remainingNum > 0
+                  ? [{ label: 'المطلوب من الزبون (متبقي الفاتورة)', value: fmtIQD(remainingNum) }]
+                  : [{ label: 'المطلوب من الزبون', value: '0 د.ع (مدفوع بالكامل)' }])),
           ]
         : []),
     ],

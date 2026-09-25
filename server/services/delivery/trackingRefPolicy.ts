@@ -1,10 +1,11 @@
 import { TRPCError } from "@trpc/server";
-import { normalizeBarcodeScannerInput } from "@shared/barcodeScanner";
+import { normalizeBarcodeScannerInput, stripTrackingLeadingZeros } from "@shared/barcodeScanner";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, or, sql } from "drizzle-orm";
 import { deliveryConsignments } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+
 
 export type DeliveryPartyType = "INDIVIDUAL" | "COMPANY";
 
@@ -100,13 +101,17 @@ export async function assertExternalTrackingRefAvailable(
   ignoreConsignmentId?: number | null,
 ): Promise<void> {
   if (externalTrackingRef == null) return;
+  const stripped = stripTrackingLeadingZeros(externalTrackingRef);
   const duplicate = (
     await tx
       .select({ id: deliveryConsignments.id, consignmentNumber: deliveryConsignments.consignmentNumber })
       .from(deliveryConsignments)
       .where(and(
         eq(deliveryConsignments.partyId, partyId),
-        eq(deliveryConsignments.externalTrackingRef, externalTrackingRef),
+        or(
+          eq(deliveryConsignments.externalTrackingRef, externalTrackingRef),
+          eq(sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef})`, stripped),
+        ),
         ignoreConsignmentId != null
           ? ne(deliveryConsignments.id, Number(ignoreConsignmentId))
           : undefined,
@@ -117,3 +122,4 @@ export async function assertExternalTrackingRefAvailable(
   if (!duplicate) return;
   throw externalTrackingRefConflict(externalTrackingRef, duplicate.consignmentNumber);
 }
+

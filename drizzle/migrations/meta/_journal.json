@@ -2339,6 +2339,13 @@
 			"when": 1788148824000,
 			"tag": "0366_store_thematic_collections",
 			"breakpoints": true
+		},
+		{
+			"idx": 367,
+			"version": "5",
+			"when": 1788148825000,
+			"tag": "0367_shelf_lookup_logs",
+			"breakpoints": true
 		}
 	]
 }

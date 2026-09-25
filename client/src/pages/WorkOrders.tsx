@@ -14,7 +14,7 @@ import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey 
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
-import { fmtAr, fmtInt, D, positiveDiff, round2 } from "@/lib/money";
+import { fmtAr, fmtInt, D, positiveDiff, round2, toAccessibleMoney } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { fmtDate, fmtDateTime, toDate } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
@@ -421,6 +421,42 @@ export default function WorkOrders() {
     return m;
   }, [filtered, dynColumns]);
 
+  const anyClientFilter =
+    f.pri !== "all" ||
+    f.ch !== "all" ||
+    f.dueToday === "1" ||
+    f.unassigned === "1" ||
+    f.blocked === "1" ||
+    f.late === "1" ||
+    f.deliv === "1" ||
+    (f.q?.trim() ?? "") !== "";
+
+  // ── حساب إحصائيات الأعمدة (القيمة الإجمالية، المتأخر، المعطل) ذرّياً من بطاقات العمود الفعلية ──
+  // يحلّ جذرياً علّة تكرار مبالغ الحالة الواحدة (RECEIVED) بين «طابور وارد» و«مسحوب»،
+  // ويصمد أمام كافة الفلاتر العميلية والتجميع المتبدل (حسب الفني/القناة/الأولوية).
+  const colStatsMap = useMemo(() => {
+    const map: Record<string, { totalValue: string; late: number; blocked: number }> = {};
+    dynColumns.forEach((c) => {
+      const colItems = byCol[c.key] ?? [];
+      let total = D(0);
+      let late = 0;
+      let blocked = 0;
+      for (const o of colItems) {
+        total = total.plus(D(o.salePrice || 0));
+        if (o.status !== "DELIVERED" && o.status !== "CANCELLED") {
+          const delta = dueDayDelta(o.dueDate);
+          if (delta != null && delta < 0) late++;
+        }
+        const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
+        if (ks === "BLOCKED" && o.status !== "DELIVERED" && o.status !== "CANCELLED") {
+          blocked++;
+        }
+      }
+      map[c.key] = { totalValue: total.toString(), late, blocked };
+    });
+    return map;
+  }, [dynColumns, byCol]);
+
   // ── الانتقال بين المراحل (الخطوة التالية فقط — التسليم خلف تأكيد مالي) ──
   async function attemptMove(order: WO, to: Status) {
     if (WO_NEXT_STATUS[order.status as WorkOrderStatus] !== to) {
@@ -783,19 +819,10 @@ export default function WorkOrders() {
               // D&D يعمل فقط في «حسب المرحلة» (`groupBy=stage`): الأخرى تحتاج mutations
               // مختلفة (assign/update) لم يُبنَ لها بعد جسر D&D — يبقى العرض قراءةً فقط.
               const isOver = dndEnabled && drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
-              // الموجة ١ — KPIs الرأس: العدّاد كما كان، ونضيف مجموع القيمة و«معطَّل» و«متأخّر».
-              // ⚠️ KPIs مقياسها الحالة الحاكمة `s.status` (وليس ColKey): «طابور وارد»/«مسحوب»
-              // كلاهما RECEIVED فتظهر لهما نفس أرقام الحالة — قرارٌ مقصود: KPIs مالٍ/تأخّرٍ
-              // تُحدَّد على الحالة الحقيقية، والانقسام العرضي بحسب الإسناد.
-              // في التجميع غير stage: KPIs الخادم لا تُطابق ⇒ نُخفيها (تُشتقّ لاحقاً بمجموعِ list).
-              // Codex #4 (الجولة ٢): وأيضاً حين يُفعَّل أيّ فلترٍ عميليّ (pri/ch/dueToday/
-              // unassigned/blocked) — رأس العمود كان يعرض قيماً على كامل الحالة فوق بطاقاتٍ
-              // مرشَّحة سريعاً (تقاطعٌ أصغر) ⇒ الرقم يخالف ما تراه العين.
-              const anyClientFilter =
-                f.pri !== "all" || f.ch !== "all" ||
-                f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1" || f.late === "1";
-              const colStats = groupBy === "stage" && !anyClientFilter ? serverCounts?.stats?.[s.status] : null;
-              const showValue = colStats != null;
+              // إحصائيات رأس العمود مشتقة حتمياً من بطاقات العمود نفسه (Single Source of Truth)
+              // لتطابق العين الأرقام 100% وتفصل «طابور وارد» عن «مسحوب»، وتصمد أمام الفلاتر والتجميع.
+              const colStats = colStatsMap[s.key] ?? { totalValue: "0", late: 0, blocked: 0 };
+              const showValue = Number(colStats.totalValue) > 0;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">
@@ -803,19 +830,37 @@ export default function WorkOrders() {
                     <div className="wob-col-head-txt">
                       <div className="wob-col-title">{s.label}</div>
                       <div className="wob-col-hint">{s.hint}</div>
-                      {showValue && Number(colStats.totalValue) > 0 && (
+                      {showValue && (
                         <div className="wob-col-kpis">
-                          <span className="wob-col-kpi wob-col-kpi-value" title="مجموع قيمة العمل الجاري في هذا العمود">
-                            {fmtAr(colStats.totalValue)} <span className="wob-ml">د.ع</span>
+                          <span
+                            className="wob-col-kpi wob-col-kpi-value"
+                            title="مجموع قيمة العمل الجاري في هذا العمود"
+                            role="text"
+                            aria-label={`مجموع قيمة العمل الجاري: ${toAccessibleMoney(colStats.totalValue)}`}
+                          >
+                            <bdi dir="ltr" aria-hidden="true">
+                              {fmtAr(colStats.totalValue)}
+                            </bdi>
+                            <span aria-hidden="true" className="wob-curr">د.ع</span>
                           </span>
                           {colStats.late > 0 && s.status !== "DELIVERED" && (
-                            <span className="wob-col-kpi wob-col-kpi-late" title="أوامرُ فات موعد استحقاقها">
-                              <Timer aria-hidden className="size-3" /> {fmtInt(colStats.late)} متأخّر
+                            <span
+                              className="wob-col-kpi wob-col-kpi-late"
+                              title="أوامرُ فات موعد استحقاقها"
+                              role="text"
+                              aria-label={`${colStats.late} طلبات متأخرة`}
+                            >
+                              <Timer aria-hidden className="size-3" /> <bdi dir="ltr">{fmtInt(colStats.late)}</bdi> متأخّر
                             </span>
                           )}
                           {colStats.blocked > 0 && s.status !== "DELIVERED" && (
-                            <span className="wob-col-kpi wob-col-kpi-blocked" title="أوامرٌ أشار الفنّيّ إلى تعطّلها">
-                              <AlertTriangle aria-hidden className="size-3" /> {fmtInt(colStats.blocked)} معطَّل
+                            <span
+                              className="wob-col-kpi wob-col-kpi-blocked"
+                              title="أوامرٌ أشار الفنّيّ إلى تعطّلها"
+                              role="text"
+                              aria-label={`${colStats.blocked} طلبات معطلة`}
+                            >
+                              <AlertTriangle aria-hidden className="size-3" /> <bdi dir="ltr">{fmtInt(colStats.blocked)}</bdi> معطَّل
                             </span>
                           )}
                         </div>

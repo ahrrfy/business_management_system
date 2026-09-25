@@ -30,6 +30,7 @@ export default defineConfig({
       "client/src/lib/printing/invoiceCorrectionPrint.test.ts",
       "client/src/lib/printing/receiptRaster.test.ts",
       "client/src/lib/printing/shiftRaster.test.ts",
+      "client/src/pages/__tests__/shiftDefaultOpenFilter.test.ts",
       "client/src/lib/printing/printTemplates.test.ts",
       "client/src/lib/printing/printTransport.test.ts",
       "client/src/lib/printing/receptionReceiptMeta.test.ts",
@@ -112,6 +113,7 @@ export default defineConfig({
       "client/src/components/invoice/__tests__/supplierInvoiceMatch.test.ts",
       // PUR-UNIT-01 (٤/٩/٢٦) — سعرُ الوحدة التقديريّ لشاشة الشراء = costBase × conversionFactor.
       "client/src/components/invoice/__tests__/purchasePrice.test.ts",
+      "client/src/components/invoice/__tests__/bulkPickerSelectionOrder.test.ts",
       "client/src/lib/unitPrice.test.ts",
       "client/src/lib/productStudio/mobileStudioUi.test.ts",
       "client/src/lib/productStudio/coldOfflinePolicy.test.ts",

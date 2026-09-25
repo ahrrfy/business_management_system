@@ -26,7 +26,8 @@ export async function unlockLocalSession(): Promise<void> {
   // iOS Keychain owns `biometryCurrentSet` and presents its own protected
   // prompt during the native read. A JavaScript prompt first would be duplicate
   // UX without extending the Keychain authorization window.
-  if (Platform.OS === "ios") return;
+  // Web preview environments also do not possess Android Keystore or system lock.
+  if (Platform.OS === "ios" || Platform.OS === "web") return;
   // Biometric enrollment is not required when Android can authenticate with
   // the secure screen-lock credential. The system prompt is the authority.
   const result = await LocalAuthentication.authenticateAsync({
