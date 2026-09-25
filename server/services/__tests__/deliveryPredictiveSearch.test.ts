@@ -73,7 +73,6 @@ async function seed() {
       phone: "07809123456",
       whatsapp: "07809123456",
       address: "بغداد - الكرادة خارج",
-      branchId: 1,
     },
     {
       id: 2,
@@ -81,7 +80,6 @@ async function seed() {
       phone: "07705554433",
       whatsapp: "07705554433",
       address: "البصرة - حي الجزائر قرب جامع الرسول",
-      branchId: 1,
     },
   ]);
 
@@ -94,6 +92,17 @@ async function seed() {
       customerId: 1,
       subtotal: "15000.00",
       total: "15000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      createdBy: 1,
+    },
+    {
+      id: 105,
+      invoiceNumber: "INV-2026-0105",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "8000.00",
+      total: "8000.00",
       paidAmount: "0.00",
       returnedTotal: "0.00",
       createdBy: 1,
@@ -222,6 +231,25 @@ async function seed() {
       deliveryFee: "3000.00",
       dispatchedBy: 1,
     },
+    {
+      id: 66,
+      consignmentNumber: "CNS-2026-0066",
+      partyId: 1,
+      branchId: 1,
+      invoiceId: 105,
+      sourceType: "INVOICE",
+      sourceId: 105,
+      recipientName: "زبون مرتجع",
+      recipientPhone: "07809998877",
+      parcelStatus: "RETURNED",
+      moneyStatus: "UNSETTLED",
+      status: "DISPATCHED",
+      codAmount: "8000.00",
+      collectedAmount: "0.00",
+      counterSettledAmount: "0.00",
+      deliveryFee: "3000.00",
+      dispatchedBy: 1,
+    },
   ]);
 }
 
@@ -328,6 +356,29 @@ describe("predictiveSearchConsignments — محرك البحث التنبؤي ا
     // مع partyId=1 يجب أن يظهر
     const resultsForParty1 = await predictiveSearchConsignments("3456", { branchId: 1, partyId: 1 });
     expect(resultsForParty1.find((r) => r.id === 88)).toBeDefined();
+  });
+
+  it("يطابق أرقام الهاتف المكتوبة بالأرقام المشرقية (الهندية ٠١٢٣٤٥٦٧٨٩)", async () => {
+    const results = await predictiveSearchConsignments("٣٤٥٦", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 88);
+    expect(found).toBeDefined();
+    expect(found?.customerPhone).toContain("07809123456");
+    expect(found?.matchedOn).toContain("PHONE");
+  });
+
+  it("يطابق أرقام الهاتف بالصيغة الدولية (+964)", async () => {
+    const results = await predictiveSearchConsignments("+9647809123456", { branchId: 1 });
+    expect(results.length).toBeGreaterThan(0);
+    const found = results.find((r) => r.id === 88);
+    expect(found).toBeDefined();
+    expect(found?.customerPhone).toContain("07809123456");
+    expect(found?.matchedOn).toContain("PHONE");
+  });
+
+  it("يستبعد الطرود المرتجعة (RETURNED) من نتائج البحث", async () => {
+    const results = await predictiveSearchConsignments("0066", { branchId: 1 });
+    expect(results.find((r) => r.id === 66)).toBeUndefined();
   });
 
   it("يرفض البحث إذا كان الاستعلام أقل من حرفين أو فارغاً", async () => {

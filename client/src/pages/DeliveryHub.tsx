@@ -1115,6 +1115,7 @@ function InTransitTab() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+          aria-label="بحث في طرود قيد التوصيل"
           className="h-10 max-w-md"
         />
         <div className="ms-auto flex flex-wrap items-center gap-2 text-xs">

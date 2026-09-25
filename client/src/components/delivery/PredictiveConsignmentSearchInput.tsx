@@ -5,33 +5,20 @@
  * 1. يبحث بجزء من كم حرف (اسم الزبون أو العنوان) أو من كم رقم (هاتف، فاتورة، إرسالية، طلب).
  * 2. محرك هجين (Hybrid Engine): تصفية فورية 0ms للطرود المحملة بالذاكرة + استعلام خادمي ذكي عبر tRPC.
  * 3. قائمة تنبؤية فورية (Live Dropdown) تظهر تلقائياً عند كتابة حرفين أو رقمين فأكثر.
- * 4. إبراز شارات نوع التطابق: 📱 هاتف · 👤 زبون · 🧾 فاتورة · 📦 إرسالية · 📍 عنوان.
+ * 4. إبراز شارات نوع التطابق: هاتف · زبون · فاتورة · إرسالية · عنوان · طلب.
  * 5. ملاحة كاملة بلوحة المفاتيح: الأسهم Up/Down للتنقل، Enter للاختيار، Esc للإغلاق، F2 للتركيز.
  * 6. صون المسافات والكتابة العربية: لا استدعاء لـ trim() أثناء الكتابة الحية.
- * 7. التزام تام بهوية النظام البصرية وحراس الجودة والتعريب RTL وصفر إيموجي.
+ * 7. معايير سهولة الوصول WAI-ARIA Combobox كاملة وصفر إيموجي.
  */
 import * as React from "react";
-import {
-  Building2,
-  CheckCircle2,
-  Clock,
-  FileText,
-  Loader2,
-  MapPin,
-  Package,
-  Phone,
-  Search,
-  Truck,
-  User,
-  X,
-} from "lucide-react";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { Loader2, Search, X } from "lucide-react";
+import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { fmt } from "@/lib/money";
 import { playReadyBeep } from "@/lib/notifyBeep";
 import { cn } from "@/lib/utils";
+import { PredictiveItemRow, type PredictiveItem } from "./PredictiveItemRow";
 
-export type PredictiveItem = RouterOutputs["delivery"]["predictiveSearch"][number];
+export type { PredictiveItem };
 
 export interface PredictiveConsignmentSearchInputProps {
   /** استدعاء عند اختيار طرد من القائمة التنبؤية */
@@ -46,22 +33,13 @@ export interface PredictiveConsignmentSearchInputProps {
   placeholder?: string;
   autoFocus?: boolean;
   disabled?: boolean;
+  /** تمكين اختصار F2 للتركيز على الحقل (افتراضياً true) */
+  enableF2Shortcut?: boolean;
   className?: string;
   inputClassName?: string;
   /** عند مسح الحقل */
   onClear?: () => void;
 }
-
-const PARCEL_STATUS_MAP: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
-  ASSIGNED: { label: "قيد الإسناد", variant: "outline" },
-  ACCEPTED: { label: "مقبول", variant: "outline" },
-  PICKED_UP: { label: "مستلم للتوصيل", variant: "secondary" },
-  OUT_FOR_DELIVERY: { label: "بالطريق مع المندوب", variant: "default" },
-  DELIVERED: { label: "مسلَّم للزبون", variant: "default" },
-  FAILED: { label: "تعذّر التسليم", variant: "destructive" },
-  RETURNED: { label: "مرتجع", variant: "destructive" },
-  CANCELLED: { label: "ملغى", variant: "destructive" },
-};
 
 /** تسوية الحروف العربية للبحث الجزئي */
 function normalizeArabic(text: string): string {
@@ -73,6 +51,13 @@ function normalizeArabic(text: string): string {
     .toLowerCase();
 }
 
+/** تحويل الأرقام المشرقية إلى أرقام لاتينية قياسية */
+function toAsciiDigits(str: string): string {
+  return str
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
+}
+
 export function PredictiveConsignmentSearchInput({
   onSelect,
   onBarcodeEnter,
@@ -81,6 +66,7 @@ export function PredictiveConsignmentSearchInput({
   placeholder = "بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…",
   autoFocus = false,
   disabled = false,
+  enableF2Shortcut = true,
   className,
   inputClassName,
   onClear,
@@ -114,7 +100,8 @@ export function PredictiveConsignmentSearchInput({
     const rawTrimmed = searchTerm.trim();
     if (rawTrimmed.length < 2) return [];
 
-    const digits = rawTrimmed.replace(/\D/g, "");
+    const ascii = toAsciiDigits(rawTrimmed);
+    const digits = ascii.replace(/\D/g, "");
     const normQ = rawTrimmed.toLowerCase();
     const normAr = normalizeArabic(normQ);
 
@@ -123,7 +110,7 @@ export function PredictiveConsignmentSearchInput({
     // ١. تصفية المرشحين المحليين فورياً (إذا وُجدوا)
     if (localCandidates && localCandidates.length > 0) {
       for (const row of localCandidates) {
-        const phone = String(row.customerPhone ?? row.recipientPhone ?? "");
+        const phone = toAsciiDigits(String(row.customerPhone ?? row.recipientPhone ?? ""));
         const name = String(row.customerName ?? row.recipientName ?? "");
         const normName = normalizeArabic(name);
         const inv = String(row.invoiceNumber ?? row.invoiceId ?? "");
@@ -223,6 +210,14 @@ export function PredictiveConsignmentSearchInput({
     }
   }, [searchTerm]);
 
+  // التمرير التلقائي للعنصر المظلل في القائمة
+  React.useEffect(() => {
+    if (highlightedIndex >= 0 && combinedResults[highlightedIndex]) {
+      const el = document.getElementById(`predictive-opt-${combinedResults[highlightedIndex].id}`);
+      el?.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlightedIndex, combinedResults]);
+
   // إغلاق القائمة عند النقر خارج المكون
   React.useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -236,6 +231,7 @@ export function PredictiveConsignmentSearchInput({
 
   // اختصار F2 للتركيز على الحقل
   React.useEffect(() => {
+    if (!enableF2Shortcut) return;
     function handleF2(e: KeyboardEvent) {
       if (e.key === "F2" && !disabled && inputRef.current) {
         e.preventDefault();
@@ -245,7 +241,7 @@ export function PredictiveConsignmentSearchInput({
     }
     window.addEventListener("keydown", handleF2);
     return () => window.removeEventListener("keydown", handleF2);
-  }, [disabled]);
+  }, [disabled, enableF2Shortcut]);
 
   const handleSelectItem = (item: PredictiveItem) => {
     playReadyBeep();
@@ -283,11 +279,12 @@ export function PredictiveConsignmentSearchInput({
       setHighlightedIndex((prev) => (prev > 0 ? prev - 1 : combinedResults.length - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const target = highlightedIndex >= 0 ? combinedResults[highlightedIndex] : combinedResults[0];
-      if (target) {
-        handleSelectItem(target);
-      } else if (searchTerm.trim()) {
-        onBarcodeEnter?.(searchTerm.trim());
+      if (highlightedIndex >= 0 && combinedResults[highlightedIndex]) {
+        handleSelectItem(combinedResults[highlightedIndex]);
+      } else if (onBarcodeEnter && searchTerm.trim()) {
+        onBarcodeEnter(searchTerm.trim());
+      } else if (combinedResults.length > 0 && combinedResults[0]) {
+        handleSelectItem(combinedResults[0]);
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -297,14 +294,17 @@ export function PredictiveConsignmentSearchInput({
   };
 
   const isSearching = serverQuery.isFetching;
+  const activeDescendantId =
+    isOpen && highlightedIndex >= 0 && combinedResults[highlightedIndex]
+      ? `predictive-opt-${combinedResults[highlightedIndex].id}`
+      : undefined;
 
   return (
     <div ref={containerRef} className={cn("relative w-full", className)} dir="rtl">
-      {/* حقل الإدخال الأساسي */}
+      {/* حقل الإدخال الأساسي بتنسيق WAI-ARIA Combobox */}
       <div className="relative flex items-center w-full">
-        {/* أيقونة البحث في البداية (اليمين في RTL) */}
         <span
-          aria-hidden
+          aria-hidden="true"
           className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground flex items-center z-10"
         >
           {isSearching ? (
@@ -316,6 +316,12 @@ export function PredictiveConsignmentSearchInput({
 
         <input
           ref={inputRef}
+          role="combobox"
+          aria-expanded={isOpen}
+          aria-haspopup="listbox"
+          aria-autocomplete="list"
+          aria-controls="predictive-consignment-listbox"
+          aria-activedescendant={activeDescendantId}
           type="text"
           value={searchTerm}
           disabled={disabled}
@@ -324,10 +330,7 @@ export function PredictiveConsignmentSearchInput({
           enterKeyHint="search"
           placeholder={placeholder}
           aria-label={placeholder}
-          onChange={(e) => {
-            // لا استدعاء لـ trim() أثناء الكتابة الحية لصون المسافات
-            setSearchTerm(e.target.value);
-          }}
+          onChange={(e) => setSearchTerm(e.target.value)}
           onFocus={() => {
             if (searchTerm.trim().length >= 2) setIsOpen(true);
           }}
@@ -341,7 +344,6 @@ export function PredictiveConsignmentSearchInput({
           )}
         />
 
-        {/* زر المسح السريع X في النهاية (اليسار في RTL) */}
         {searchTerm.length > 0 && !disabled && (
           <button
             type="button"
@@ -350,12 +352,12 @@ export function PredictiveConsignmentSearchInput({
             title="مسح البحث (Esc)"
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground rounded p-1 transition-colors z-10 focus:outline-none focus:ring-1 focus:ring-primary"
           >
-            <X className="size-4" />
+            <X aria-hidden="true" className="size-4" />
           </button>
         )}
       </div>
 
-      {/* القائمة التنبؤية المنبثقة (Live Predictive Dropdown) */}
+      {/* القائمة التنبؤية المنبثقة (Live Predictive Dropdown Listbox) */}
       {isOpen && (
         <div
           className={cn(
@@ -364,10 +366,14 @@ export function PredictiveConsignmentSearchInput({
           )}
         >
           {combinedResults.length === 0 ? (
-            <div className="p-4 text-center text-xs text-muted-foreground">
+            <div
+              role="status"
+              aria-live="polite"
+              className="p-4 text-center text-xs text-muted-foreground"
+            >
               {isSearching ? (
                 <div className="flex items-center justify-center gap-2">
-                  <Loader2 className="size-4 animate-spin text-primary" />
+                  <Loader2 aria-hidden="true" className="size-4 animate-spin text-primary" />
                   <span>جارٍ البحث والتوقع في السجلات…</span>
                 </div>
               ) : (
@@ -375,140 +381,26 @@ export function PredictiveConsignmentSearchInput({
               )}
             </div>
           ) : (
-            <div className="max-h-96 overflow-y-auto divide-y divide-border/60">
+            <div
+              id="predictive-consignment-listbox"
+              role="listbox"
+              aria-label="نتائج البحث والتوقع الذكي"
+              className="max-h-96 overflow-y-auto divide-y divide-border/60"
+            >
               <div className="px-3 py-1.5 bg-muted/40 text-[11px] font-bold text-muted-foreground flex items-center justify-between">
                 <span>نتائج التوقع الذكي ({combinedResults.length})</span>
                 <span className="text-[10px]">استخدم الأسهم و Enter للاختيار</span>
               </div>
 
-              {combinedResults.map((item, index) => {
-                const isHighlighted = index === highlightedIndex;
-                const statusMeta = PARCEL_STATUS_MAP[item.parcelStatus] ?? { label: item.parcelStatus, variant: "outline" };
-                const isCompany = item.partyType === "COMPANY";
-
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => handleSelectItem(item)}
-                    onMouseEnter={() => setHighlightedIndex(index)}
-                    className={cn(
-                      "p-3 cursor-pointer transition-colors text-xs space-y-1.5",
-                      isHighlighted ? "bg-primary/10 text-foreground" : "hover:bg-muted/40",
-                    )}
-                  >
-                    {/* السطر الأول: أرقام الطرد والفاتورة والشارات */}
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-extrabold text-sm font-mono text-foreground flex items-center gap-1">
-                          <Package className="size-3.5 text-primary shrink-0" />
-                          {item.consignmentNumber}
-                        </span>
-
-                        {item.externalTrackingRef && (
-                          <span className="font-bold text-xs text-primary font-mono bg-primary/10 px-1.5 py-0.5 rounded" dir="ltr">
-                            {item.externalTrackingRef}
-                          </span>
-                        )}
-
-                        {item.invoiceNumber && (
-                          <span className="text-xs text-muted-foreground font-mono flex items-center gap-1">
-                            <FileText className="size-3" />
-                            فاتورة #{item.invoiceNumber}
-                          </span>
-                        )}
-
-                        {item.orderNumber && (
-                          <span className="text-xs text-muted-foreground font-mono">
-                            طلب #{item.orderNumber}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* شارة حالة الطرد */}
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-background/80 text-foreground">
-                        {statusMeta.label}
-                      </span>
-                    </div>
-
-                    {/* السطر الثاني: اسم الزبون والهاتف والعنوان */}
-                    <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <User className="size-3 shrink-0 text-muted-foreground" />
-                        الزبون: <strong className="text-foreground">{item.customerName}</strong>
-                      </span>
-
-                      {item.customerPhone && (
-                        <span className="inline-flex items-center gap-1 font-mono text-foreground font-semibold" dir="ltr">
-                          <Phone className="size-3 text-muted-foreground shrink-0" />
-                          <span>{item.customerPhone}</span>
-                        </span>
-                      )}
-
-                      {item.deliveryAddress && (
-                        <span className="inline-flex items-center gap-1 truncate max-w-[220px]" title={item.deliveryAddress}>
-                          <MapPin className="size-3 text-muted-foreground shrink-0" />
-                          <span className="truncate">{item.deliveryAddress}</span>
-                        </span>
-                      )}
-                    </div>
-
-                    {/* السطر الثالث: جهة التوصيل والمبلغ المطلوب وشارات التطابق */}
-                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40 text-[11px]">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="inline-flex items-center gap-1 text-muted-foreground">
-                          {isCompany ? <Building2 className="size-3 shrink-0" /> : <Truck className="size-3 shrink-0" />}
-                          <span>{item.partyName}</span>
-                        </span>
-
-                        {/* شارات نوع التطابق */}
-                        {item.matchedOn?.map((kind) => {
-                          if (kind === "PHONE") {
-                            return (
-                              <span key={kind} className="text-[10px] font-bold bg-emerald-500/10 text-emerald-700 px-1.5 py-0.2 rounded border border-emerald-500/30">
-                                تطابق هاتف
-                              </span>
-                            );
-                          }
-                          if (kind === "CUSTOMER_NAME") {
-                            return (
-                              <span key={kind} className="text-[10px] font-bold bg-blue-500/10 text-blue-700 px-1.5 py-0.2 rounded border border-blue-500/30">
-                                تطابق اسم
-                              </span>
-                            );
-                          }
-                          if (kind === "INVOICE_NUMBER") {
-                            return (
-                              <span key={kind} className="text-[10px] font-bold bg-purple-500/10 text-purple-700 px-1.5 py-0.2 rounded border border-purple-500/30">
-                                تطابق فاتورة
-                              </span>
-                            );
-                          }
-                          if (kind === "CONSIGNMENT_NUMBER") {
-                            return (
-                              <span key={kind} className="text-[10px] font-bold bg-amber-500/10 text-amber-700 px-1.5 py-0.2 rounded border border-amber-500/30">
-                                تطابق إرسالية
-                              </span>
-                            );
-                          }
-                          if (kind === "ADDRESS") {
-                            return (
-                              <span key={kind} className="text-[10px] font-bold bg-indigo-500/10 text-indigo-700 px-1.5 py-0.2 rounded border border-indigo-500/30">
-                                تطابق عنوان
-                              </span>
-                            );
-                          }
-                          return null;
-                        })}
-                      </div>
-
-                      <div className="text-end">
-                        <span className="text-muted-foreground me-1">المطلوب (COD):</span>
-                        <strong className="text-foreground font-mono font-bold">{fmt(item.remainingAmount)} د.ع</strong>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              {combinedResults.map((item, index) => (
+                <PredictiveItemRow
+                  key={item.id}
+                  item={item}
+                  isHighlighted={index === highlightedIndex}
+                  onSelect={handleSelectItem}
+                  onMouseEnter={() => setHighlightedIndex(index)}
+                />
+              ))}
             </div>
           )}
         </div>

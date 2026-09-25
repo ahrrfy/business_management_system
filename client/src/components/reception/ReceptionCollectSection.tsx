@@ -415,20 +415,17 @@ export function ReceptionCollectSection({
         switchCollectParty(item.partyId, item.partyType);
 
         if (item.partyType === "COMPANY") {
-          const rem = Number(item.remainingAmount ?? (Number(item.codAmount || 0) - Number(item.collectedAmount || 0)));
+          const rem = round2(moneyInput(item.remainingAmount || "0"));
           setSelectedStatementLines((prev) => ({ ...prev, [item.id]: true }));
           setStatementAmounts((prev) => ({ ...prev, [item.id]: rem.toFixed(2) }));
           setStatementQueueIds((prev) => (prev.includes(item.id) ? prev : [...prev, item.id]));
           notify.ok(`تم اختيار الإرسالية ${item.consignmentNumber} لشركة ${pInfo.name}`);
         } else {
-          const remaining = Math.max(
-            0,
-            Number(item.codAmount ?? 0) - Number(item.collectedAmount ?? 0) - Number(item.counterSettledAmount ?? 0),
-          );
+          const remaining = round2(moneyInput(item.remainingAmount || "0"));
           if (item.parcelStatus !== "DELIVERED") {
             const ok = await confirm({
               title: "إثبات تسليم الطرد وقبض المبلغ",
-              description: `الإرسالية: ${item.consignmentNumber}\nالطلب: #${item.orderNumber ?? ""} — ${item.customerName ?? ""}\nالمبلغ المطلوب: ${fmt(String(remaining))} د.ع\nالمندوب: ${pInfo.name}\n\nهل تود تأكيد تسليم الطرد للزبون وتجهيزه للتوريد للدرج؟`,
+              description: `الإرسالية: ${item.consignmentNumber}\nالطلب: #${item.orderNumber ?? ""} — ${item.customerName ?? ""}\nالمبلغ المطلوب: ${fmt(remaining.toFixed(2))} د.ع\nالمندوب: ${pInfo.name}\n\nهل تود تأكيد تسليم الطرد للزبون وتجهيزه للتوريد للدرج؟`,
               confirmText: "إثبات التسليم",
             });
             if (ok) {
@@ -438,11 +435,11 @@ export function ReceptionCollectSection({
                 evidence: "اختيار من البحث التنبؤي الذكي",
                 clientRequestId: crypto.randomUUID(),
               });
-              setCountedCash(String(remaining));
+              setCountedCash(remaining.toFixed(2));
             }
           } else {
-            setCountedCash(String(remaining));
-            notify.ok(`الإرسالية ${item.consignmentNumber} مسلَّمة — المبلغ المطلوب للتوريد: ${fmt(String(remaining))} د.ع`);
+            setCountedCash(remaining.toFixed(2));
+            notify.ok(`الإرسالية ${item.consignmentNumber} مسلَّمة — المبلغ المطلوب للتوريد: ${fmt(remaining.toFixed(2))} د.ع`);
           }
         }
       } catch (e) {
@@ -594,9 +591,6 @@ export function ReceptionCollectSection({
                           value={statementNumber}
                           onChange={(e) => {
                             setStatementNumber(e.target.value);
-                            setSelectedStatementLines({});
-                            setStatementAmounts({});
-                            setStatementQueueIds([]);
                           }}
                           placeholder="مثال: STMT-2026-09"
                           className="h-10 bg-background font-mono font-bold"
@@ -682,12 +676,13 @@ export function ReceptionCollectSection({
 
                     {statementRows.length > 0 && (
                       <div className="relative">
-                        <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                        <Search aria-hidden="true" className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
                         <Input
                           type="text"
                           value={parcelFilter}
                           onChange={(e) => setParcelFilter(e.target.value)}
                           placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          aria-label="تصفية طرود كشف الشركة"
                           className="ps-9 h-9 text-xs"
                         />
                       </div>
@@ -824,12 +819,13 @@ export function ReceptionCollectSection({
 
                     {openRows.length > 0 && (
                       <div className="relative">
-                        <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                        <Search aria-hidden="true" className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
                         <Input
                           type="text"
                           value={parcelFilter}
                           onChange={(e) => setParcelFilter(e.target.value)}
                           placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          aria-label="تصفية الطرود المفتوحة"
                           className="ps-9 h-9 text-xs"
                         />
                       </div>

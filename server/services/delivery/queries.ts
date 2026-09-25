@@ -240,6 +240,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       consignmentNumber: deliveryConsignments.consignmentNumber,
       invoiceId: deliveryConsignments.invoiceId,
       invoiceNumber: invoices.invoiceNumber,
+      orderNumber: workOrders.orderNumber,
       externalTrackingRef: deliveryConsignments.externalTrackingRef,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
@@ -1022,9 +1023,15 @@ export async function predictiveSearchConsignments(
   const rawQ = (opts.query ?? "").trim();
   if (!rawQ || rawQ.length < 2) return [];
 
+  const toAsciiDigits = (s: string) =>
+    s
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
+
   const effLimit = Math.max(1, Math.min(30, opts.limit ?? 10));
-  const digits = rawQ.replace(/\D/g, "");
-  const normAr = normalizeArabicSearch(rawQ);
+  const asciiQ = toAsciiDigits(rawQ);
+  const digits = asciiQ.replace(/\D/g, "");
+  const normAr = normalizeArabicSearch(rawQ).replace(/ى/g, "ي");
   const normPattern = `%${escLike(normAr)}%`;
   const likeQuery = `%${escLike(rawQ)}%`;
 
@@ -1033,6 +1040,7 @@ export async function predictiveSearchConsignments(
     for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
       expr = sql`REPLACE(${expr}, ${from}, ${to})`;
     }
+    expr = sql`REPLACE(${expr}, 'ى', 'ي')`;
     return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
   };
 
@@ -1080,6 +1088,19 @@ export async function predictiveSearchConsignments(
         );
       }
     }
+
+    const localDigits = digits.startsWith("964") ? digits.slice(3) : digits.startsWith("00964") ? digits.slice(5) : digits;
+    if (localDigits.length >= 2 && localDigits !== digits) {
+      const likeLocal = `%${escLike(localDigits)}%`;
+      searchConds.push(
+        sql`${deliveryConsignments.recipientPhone} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${workOrders.deliveryPhone} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.phone} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.phone2} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.phone3} LIKE ${likeLocal} ESCAPE '!'`,
+        sql`${customers.whatsapp} LIKE ${likeLocal} ESCAPE '!'`,
+      );
+    }
   }
 
   if (digits.length >= 7) {
@@ -1087,6 +1108,8 @@ export async function predictiveSearchConsignments(
     if (sfx) {
       const likeSfx = `%${escLike(sfx)}%`;
       searchConds.push(
+        sql`${deliveryConsignments.recipientPhone} LIKE ${likeSfx} ESCAPE '!'`,
+        sql`${workOrders.deliveryPhone} LIKE ${likeSfx} ESCAPE '!'`,
         sql`${customers.phone} LIKE ${likeSfx} ESCAPE '!'`,
         sql`${customers.whatsapp} LIKE ${likeSfx} ESCAPE '!'`,
       );
@@ -1094,7 +1117,7 @@ export async function predictiveSearchConsignments(
   }
 
   const baseConds: any[] = [
-    sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED')`,
+    sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED', 'RETURNED')`,
     or(...searchConds),
   ];
 
@@ -1155,10 +1178,30 @@ export async function predictiveSearchConsignments(
     let score = 3;
 
     // مطابقة الهاتف
-    if (digits.length >= 2 && phone.includes(digits)) {
+    const sfxDigits = phoneSuffix10(digits);
+    const sfxPhone = phoneSuffix10(phone);
+    const phoneClean = phone.replace(/\D/g, "");
+    const localDigits = digits.startsWith("964") ? digits.slice(3) : digits.startsWith("00964") ? digits.slice(5) : digits;
+
+    const isPhoneMatch =
+      (digits.length >= 2 && phoneClean.includes(digits)) ||
+      (localDigits.length >= 2 && phoneClean.includes(localDigits)) ||
+      (sfxDigits != null && sfxPhone != null && sfxDigits === sfxPhone) ||
+      (sfxDigits != null && phoneClean.includes(sfxDigits));
+
+    if (isPhoneMatch) {
       matchedOn.push("PHONE");
-      if (phone === digits || phone.endsWith(digits)) score = Math.min(score, 0);
-      else score = Math.min(score, 1);
+      if (
+        phoneClean === digits ||
+        phoneClean === localDigits ||
+        phoneClean.endsWith(digits) ||
+        phoneClean.endsWith(localDigits) ||
+        (sfxDigits != null && sfxPhone != null && sfxDigits === sfxPhone)
+      ) {
+        score = Math.min(score, 0);
+      } else {
+        score = Math.min(score, 1);
+      }
     }
 
     // مطابقة رقم الإرسالية
@@ -1205,11 +1248,12 @@ export async function predictiveSearchConsignments(
       score = Math.min(score, 2);
     }
 
-    const cod = Number(r.codAmount ?? 0);
-    const collected = Number(r.collectedAmount ?? 0);
-    const counterSettled = Number(r.counterSettledAmount ?? 0);
-    const shortfall = Number(r.shortfallAssigned ?? 0);
-    const remaining = Math.max(0, cod - collected - counterSettled - shortfall);
+    const cod = money(r.codAmount ?? "0");
+    const collected = money(r.collectedAmount ?? "0");
+    const counterSettled = money(r.counterSettledAmount ?? "0");
+    const shortfall = money(r.shortfallAssigned ?? "0");
+    const netRemaining = cod.minus(collected).minus(counterSettled).minus(shortfall);
+    const remaining = netRemaining.isNegative() ? "0.00" : round2(netRemaining).toFixed(2);
 
     return {
       id: Number(r.id),
@@ -1231,7 +1275,7 @@ export async function predictiveSearchConsignments(
       codAmount: String(r.codAmount ?? "0.00"),
       collectedAmount: String(r.collectedAmount ?? "0.00"),
       counterSettledAmount: String(r.counterSettledAmount ?? "0.00"),
-      remainingAmount: remaining.toFixed(2),
+      remainingAmount: remaining,
       matchedOn: (matchedOn.length > 0 ? matchedOn : ["CONSIGNMENT_NUMBER"]) as ("PHONE" | "CUSTOMER_NAME" | "INVOICE_NUMBER" | "CONSIGNMENT_NUMBER" | "ADDRESS" | "ORDER_NUMBER")[],
       score,
     };
