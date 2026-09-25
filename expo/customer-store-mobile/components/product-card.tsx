@@ -125,6 +125,7 @@ export function ProductCard({
       <TouchableOpacity
         accessibilityLabel={`${isSaved(product.id) ? "إزالة" : "حفظ"} ${product.title} من المفضلة`}
         activeOpacity={0.86}
+        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
         onPress={() => toggle(product.id)}
         style={styles.favorite}
       >
@@ -142,6 +143,7 @@ export function ProductCard({
         <TouchableOpacity
           accessibilityLabel={`معاينة سريعة ${product.title}`}
           activeOpacity={0.86}
+          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           onPress={() => onQuickView(product)}
           style={styles.quick}
         >
@@ -306,8 +308,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     height: 32,
     justifyContent: "center",
-    left: 8,
     position: "absolute",
+    right: 44,
     top: 8,
     width: 32,
     shadowColor: "#183D36",
