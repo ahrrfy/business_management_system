@@ -55,6 +55,7 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { type ShortfallReason } from "@shared/shortfallReason";
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
+import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 import { cn } from "@/lib/utils";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
@@ -295,13 +296,26 @@ function DispatchTab() {
 
   const allRows = ready.data ?? [];
   const rows = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase("ar");
-    if (!needle) return allRows;
-    return allRows.filter((o) =>
-      [o.orderNumber, o.title, o.customerName, o.deliveryPhone, o.customerPhone, o.deliveryAddress].some((v) =>
-        String(v ?? "").toLocaleLowerCase("ar").includes(needle),
-      ),
-    );
+    const q = query.trim().toLowerCase();
+    if (!q) return allRows;
+    const digits = query.replace(/\D/g, "");
+    const normAr = normalizeArabicSearch(query);
+    return allRows.filter((o) => {
+      const phone1 = (o.deliveryPhone ?? "").replace(/\D/g, "");
+      const phone2 = (o.customerPhone ?? "").replace(/\D/g, "");
+      if (digits.length >= 2) {
+        if (phone1.includes(digits) || phone2.includes(digits)) return true;
+        if ((o.orderNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
+      }
+      if (normAr) {
+        if (normalizeArabicSearch(o.customerName ?? "").includes(normAr)) return true;
+        if (normalizeArabicSearch(o.title ?? "").includes(normAr)) return true;
+        if (normalizeArabicSearch(o.deliveryAddress ?? "").includes(normAr)) return true;
+      }
+      return [o.orderNumber, o.title, o.customerName, o.deliveryPhone, o.customerPhone, o.deliveryAddress].some((v) =>
+        String(v ?? "").toLowerCase().includes(q),
+      );
+    });
   }, [allRows, query]);
 
   const readyColumns = useMemo<ColumnDef<ReadyOrder, unknown>[]>(
@@ -457,9 +471,9 @@ function DispatchTab() {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="رقم الطلب أو العميل…"
+              placeholder="بحث بالهاتف أو الزبون أو الطلب…"
               aria-label="بحث في الطلبات الجاهزة"
-              className="h-8 w-56"
+              className="h-8 w-64"
             />
             <Button variant="outline" size="sm" onClick={() => void ready.refetch()} disabled={ready.isFetching}>
               <RotateCcw aria-hidden className={cn("size-3.5", ready.isFetching && "animate-spin")} />
@@ -689,9 +703,38 @@ function InTransitTab() {
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return filtered;
-    return filtered.filter((r) =>
-      [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone, (r as { customerPhone?: string | null }).customerPhone, r.returnDeclaredReason, r.address]
-        .some((v) => (v ?? "").toLowerCase().includes(q)));
+    const digits = query.replace(/\D/g, "");
+    const normAr = normalizeArabicSearch(query);
+    return filtered.filter((r) => {
+      const phone1 = (r.recipientPhone ?? "").replace(/\D/g, "");
+      const phone2 = ((r as { customerPhone?: string | null }).customerPhone ?? "").replace(/\D/g, "");
+      if (digits.length >= 2) {
+        if (phone1.includes(digits) || phone2.includes(digits)) return true;
+        if ((r.invoiceNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
+        if ((r.orderNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
+        if ((r.consignmentNumber ?? "").replace(/\D/g, "").includes(digits)) return true;
+      }
+      if (normAr) {
+        if (normalizeArabicSearch(r.customerName ?? "").includes(normAr)) return true;
+        if (normalizeArabicSearch(r.recipientName ?? "").includes(normAr)) return true;
+        if (normalizeArabicSearch(r.partyName ?? "").includes(normAr)) return true;
+        if (normalizeArabicSearch(r.driverName ?? "").includes(normAr)) return true;
+        if (normalizeArabicSearch(r.address ?? "").includes(normAr)) return true;
+      }
+      return [
+        r.consignmentNumber,
+        r.invoiceNumber,
+        r.orderNumber,
+        r.partyName,
+        r.driverName,
+        r.recipientName,
+        r.customerName,
+        r.recipientPhone,
+        (r as { customerPhone?: string | null }).customerPhone,
+        r.returnDeclaredReason,
+        r.address,
+      ].some((v) => (v ?? "").toLowerCase().includes(q));
+    });
   }, [filtered, query]);
 
   // ── Counts per view key (صادقة، بحسب الاشتقاق الموحّد) ──
@@ -1071,7 +1114,7 @@ function InTransitTab() {
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="بحث برقم الإرسالية/الفاتورة/الطلب، أو الجهة أو المستلم أو العنوان…"
+          placeholder="بحث برقم الهاتف، اسم الزبون، رقم الفاتورة أو الإرسالية…"
           className="h-10 max-w-md"
         />
         <div className="ms-auto flex flex-wrap items-center gap-2 text-xs">
