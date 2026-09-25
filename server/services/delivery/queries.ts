@@ -259,12 +259,17 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       endCustomerId: deliveryConsignments.endCustomerId,
       customerName: customers.name,
       recipientName: deliveryConsignments.recipientName,
+      recipientPhone: deliveryConsignments.recipientPhone,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      address: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
+      deliveryAddress: deliveryConsignments.deliveryAddress,
       dispatchedAt: deliveryConsignments.dispatchedAt,
       /** للجهة بوّابة؟ — القاموس المشترك يميّز به «مُسنَد» عن «بانتظار كشف الشركة». */
       partyHasPortal: partyHasPortalSql,
     })
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+    .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(
       eq(deliveryConsignments.partyId, partyId),
@@ -357,10 +362,12 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       codDue: sql<string>`CASE WHEN ${deliveryConsignments.returnDeclaredAt} IS NOT NULL THEN 0 ELSE GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2)), 0) END`,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone2}, ''))`,
       // العنوان على الإرسالية أوّلاً (يُلقَط لحظة الإرسال وقد يُعدَّل عليها)، وأمرُ الشغل
       // احتياطٌ للصفوف القديمة التي أُنشئت قبل نسخه — لا العكس: التعليق السابق («لا عمود له
       // على الإرسالية») كان كاذباً منذ أُضيف العمود، فبقيت طرودُ المتجر والفواتير بلا عنوان.
-      address: sql<string | null>`COALESCE(${deliveryConsignments.deliveryAddress}, ${workOrders.deliveryAddress})`,
+      address: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
+      deliveryAddress: deliveryConsignments.deliveryAddress,
       /** للجهة بوّابة؟ — يقرّر عرضَ الصفّ «مُسنَد» أم «بانتظار كشف الشركة» (فعلُ موظّف). */
       partyHasPortal: partyHasPortalSql,
       customerName: customers.name,
@@ -415,6 +422,8 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
       customerName: customers.name,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.whatsapp}, ''))`,
+      address: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${customers.address}, ''))`,
       dispatchedAt: deliveryConsignments.dispatchedAt,
       courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
       settledAt: deliveryConsignments.settledAt,

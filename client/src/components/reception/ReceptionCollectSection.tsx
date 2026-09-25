@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import type { RouterOutputs } from "@/lib/trpc";
-import { BarChart3, Building2, CheckCircle2, CheckSquare, Clock, Loader2, ScanLine, Square, User } from "lucide-react";
+import { BarChart3, Building2, CheckCircle2, CheckSquare, Clock, Loader2, MapPin, Phone, ScanLine, Search, Square, User } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +59,7 @@ export function ReceptionCollectSection({
   const [statementQueueIds, setStatementQueueIds] = useState<number[]>([]);
   const [countedCash, setCountedCash] = useState("");
   const [collectBarcodeInput, setCollectBarcodeInput] = useState("");
+  const [parcelFilter, setParcelFilter] = useState("");
   const [isSearchingCollect, setIsSearchingCollect] = useState(false);
 
   const switchCollectParty = useCallback((
@@ -116,6 +117,32 @@ export function ReceptionCollectSection({
       && row.parcelStatus !== "RETURNED"
       && (row.moneyStatus === "UNSETTLED" || row.moneyStatus === "PARTIAL" || row.moneyStatus === "NOT_APPLICABLE")
   ));
+  const normalizedParcelFilter = parcelFilter.trim().toLowerCase();
+  const displayedStatementRows = normalizedParcelFilter
+    ? statementRows.filter((row) => {
+        const r = row as { customerPhone?: string | null; recipientPhone?: string | null; address?: string | null; deliveryAddress?: string | null };
+        const phone = r.customerPhone ?? r.recipientPhone ?? "";
+        const addr = r.address ?? r.deliveryAddress ?? "";
+        const name = row.customerName ?? row.recipientName ?? "";
+        const num = row.invoiceNumber ?? String(row.invoiceId ?? "");
+        const cn = row.consignmentNumber ?? "";
+        const ext = row.externalTrackingRef ?? "";
+        return [name, phone, addr, num, cn, ext].some((v) => v.toLowerCase().includes(normalizedParcelFilter));
+      })
+    : statementRows;
+
+  const displayedOpenRows = normalizedParcelFilter
+    ? openRows.filter((row) => {
+        const r = row as { customerPhone?: string | null; recipientPhone?: string | null; address?: string | null; deliveryAddress?: string | null };
+        const phone = r.customerPhone ?? r.recipientPhone ?? "";
+        const addr = r.address ?? r.deliveryAddress ?? "";
+        const name = row.customerName ?? row.recipientName ?? "";
+        const num = row.invoiceNumber ?? String(row.invoiceId ?? "");
+        const cn = row.consignmentNumber ?? "";
+        return [name, phone, addr, num, cn].some((v) => v.toLowerCase().includes(normalizedParcelFilter));
+      })
+    : openRows;
+
   const remittableRows = openRows.filter((r) => r.parcelStatus === "DELIVERED");
   const remittableTotal = remittableRows.reduce((sum, r) => {
     const due = Math.max(0, Number(r.codAmount ?? 0) - Number(r.collectedAmount ?? 0) - Number((r as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
@@ -582,15 +609,35 @@ export function ReceptionCollectSection({
                       </div>
                     </div>
 
+                    {statementRows.length > 0 && (
+                      <div className="relative">
+                        <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                        <Input
+                          type="text"
+                          value={parcelFilter}
+                          onChange={(e) => setParcelFilter(e.target.value)}
+                          placeholder="بحث برقم الهاتف، العنوان، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          className="ps-9 h-9 text-xs"
+                        />
+                      </div>
+                    )}
+
                     {statementRows.length === 0 ? (
                       <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
                         لا توجد طرود مفتوحة لهذه الشركة
                       </div>
+                    ) : displayedStatementRows.length === 0 ? (
+                      <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+                        لا توجد نتائج مطابقة للبحث &ldquo;{parcelFilter}&rdquo;
+                      </div>
                     ) : (
                       <div className="space-y-2">
-                        {statementRows.map((row) => {
+                        {displayedStatementRows.map((row) => {
                           const cod = statementQueueRemaining(row as CompanyStatementQueueCandidate);
                           const isSelected = !!selectedStatementLines[row.id];
+                          const r = row as { customerPhone?: string | null; recipientPhone?: string | null; address?: string | null; deliveryAddress?: string | null };
+                          const phone = r.customerPhone ?? r.recipientPhone;
+                          const address = r.address ?? r.deliveryAddress;
                           return (
                             <div
                               key={row.id}
@@ -619,8 +666,20 @@ export function ReceptionCollectSection({
                                     <span className="text-xs text-muted-foreground font-mono">{row.consignmentNumber}</span>
                                     {row.externalTrackingRef && <span className="text-xs font-bold text-primary font-mono" dir="ltr">{row.externalTrackingRef}</span>}
                                   </div>
-                                  <div className="text-xs text-muted-foreground">
+                                  <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1">
                                     {row.customerName && <span>الزبون: <strong className="text-foreground">{row.customerName}</strong></span>}
+                                    {phone && (
+                                      <span className="inline-flex items-center gap-1 font-mono" dir="ltr">
+                                        <Phone className="size-3 text-muted-foreground" />
+                                        <span className="text-foreground font-semibold">{phone}</span>
+                                      </span>
+                                    )}
+                                    {address && (
+                                      <span className="inline-flex items-center gap-1">
+                                        <MapPin className="size-3 text-muted-foreground shrink-0" />
+                                        <span className="text-foreground truncate max-w-[200px]" title={address}>{address}</span>
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -691,18 +750,39 @@ export function ReceptionCollectSection({
                         </span>
                       )}
                     </h3>
+
+                    {openRows.length > 0 && (
+                      <div className="relative">
+                        <Search className="absolute start-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                        <Input
+                          type="text"
+                          value={parcelFilter}
+                          onChange={(e) => setParcelFilter(e.target.value)}
+                          placeholder="بحث برقم الهاتف، العنوان، اسم الزبون، رقم الفاتورة أو الإرسالية…"
+                          className="ps-9 h-9 text-xs"
+                        />
+                      </div>
+                    )}
+
                     {openConsQ.isLoading ? (
                       <div className="py-4 text-center text-xs text-muted-foreground">جارٍ تحميل الطرود…</div>
                     ) : openRows.length === 0 ? (
                       <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
                         لا توجد طرود مفتوحة
                       </div>
+                    ) : displayedOpenRows.length === 0 ? (
+                      <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+                        لا توجد نتائج مطابقة للبحث &ldquo;{parcelFilter}&rdquo;
+                      </div>
                     ) : (
                       <div className="space-y-2">
-                        {openRows.map((row) => {
+                        {displayedOpenRows.map((row) => {
                           const cod = Number(row.codAmount ?? 0);
                           const isDelivered = row.parcelStatus === "DELIVERED";
                           const isInTransit = !isDelivered;
+                          const r = row as { customerPhone?: string | null; recipientPhone?: string | null; address?: string | null; deliveryAddress?: string | null };
+                          const phone = r.customerPhone ?? r.recipientPhone;
+                          const address = r.address ?? r.deliveryAddress;
                           return (
                             <div key={row.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border bg-background p-3 shadow-xs">
                               <div className="min-w-0 space-y-1">
@@ -726,6 +806,18 @@ export function ReceptionCollectSection({
                                 </div>
                                 <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
                                   {row.customerName && <span>الزبون: <strong className="text-foreground">{row.customerName}</strong></span>}
+                                  {phone && (
+                                    <span className="inline-flex items-center gap-1 font-mono" dir="ltr">
+                                      <Phone className="size-3 text-muted-foreground" />
+                                      <span className="text-foreground font-semibold">{phone}</span>
+                                    </span>
+                                  )}
+                                  {address && (
+                                    <span className="inline-flex items-center gap-1">
+                                      <MapPin className="size-3 text-muted-foreground shrink-0" />
+                                      <span className="text-foreground truncate max-w-[220px]" title={address}>{address}</span>
+                                    </span>
+                                  )}
                                   <span>المطلوب (COD): <strong className="text-foreground tabular-nums">{fmt(String(cod))} د.ع</strong></span>
                                 </div>
                               </div>

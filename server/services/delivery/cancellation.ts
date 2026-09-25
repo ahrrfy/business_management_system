@@ -131,11 +131,11 @@ export async function cancelDeliveryAssignment(
     // رجوعٌ مُعلَن: تعرّضُه حُرِّر سلفاً، وإلغاءُ الإسناد يكتب `COD_RELEASED` ثانياً ⇒ تحريرٌ
     // مزدوج (ولا فهرسَ فريد على `eventKey` يمنعه). المخرجُ الوحيد: الاسترجاع بعد الاستلام.
     assertNotReturnDeclared(cn, "cancel");
-    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "OUT_FOR_DELIVERY" && cn.parcelStatus !== "FAILED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message:
-          "لا يُلغى الإسناد بعد قبول الطرد أو استلامه؛ أعد العهدة مادياً أولاً",
+          "لا يُلغى الإسناد بعد تسليم الطرد أو بدء تحصيله؛ أعد العهدة مادياً أولاً",
       });
     }
     if (

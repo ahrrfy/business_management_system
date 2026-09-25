@@ -128,6 +128,10 @@ export interface ReceivePurchaseInput {
   shippingBeneficiaryName?: string | null;
   /** رقم فاتورة/وصل الناقل أو مستند الكمرك الذي يثبت الاعتراف، لا مرجع الدفع اللاحق. */
   shippingEvidenceReference?: string | null;
+  /** مصدر تمويل مصروف الشحن: DRAWER لدرج الوردية، TREASURY للخزينة الإدارية، ACCRUAL للاستحقاق المعلق. */
+  shippingFundingSource?: "DRAWER" | "TREASURY" | "ACCRUAL" | null;
+  /** رقم الوردية المفتوحة للصرف النقدي عند اختيار DRAWER. */
+  shippingShiftId?: number | null;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة الاستلام الأول (لا تكرار للمخزون/AP). */
   clientRequestId?: string | null;
 }

@@ -790,12 +790,12 @@ export async function reassignDeliveryConsignment(
       externalTrackingRef,
       Number(cn.id),
     );
-    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "OUT_FOR_DELIVERY" && cn.parcelStatus !== "FAILED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: "تعذّرت إعادة إسناد الطرد",
-          why: `حالة الطرد الحاليّة (${cn.parcelStatus}) لا تسمح بإعادة الإسناد؛ الإعادة مسموحة قبل قبول الطرد (ASSIGNED) أو بعد تسجيل تعذّر التوصيل (FAILED) فقط`,
+          why: `حالة الطرد الحاليّة (${cn.parcelStatus}) لا تسمح بإعادة الإسناد؛ الإعادة مسموحة قبل تسليم الطرد أو بعد تسجيل تعذّر التوصيل (FAILED) فقط`,
           doThis: "إن كان الطرد قيد التوصيل الفعليّ، انتظر تسليمَه أو تسجيل تعذّره أوّلاً؛ وإن كان مُسلَّماً استعمل مسار المرتجع",
         }),
       });
@@ -824,10 +824,10 @@ export async function reassignDeliveryConsignment(
       await tx.update(deliveryConsignments).set({
         assignedUserId: input.assignedUserId ?? null,
         externalTrackingRef,
-        parcelStatus: "ASSIGNED",
+        parcelStatus: "OUT_FOR_DELIVERY",
         acceptedAt: null,
         pickedUpAt: null,
-        outForDeliveryAt: null,
+        outForDeliveryAt: new Date(),
         failedAt: null,
         failureReason: null,
       }).where(eq(deliveryConsignments.id, input.consignmentId));
@@ -840,7 +840,7 @@ export async function reassignDeliveryConsignment(
       consignmentId: Number(cn.id),
       eventType: "REASSIGNED",
       fromParcelStatus: cn.parcelStatus,
-      toParcelStatus: "ASSIGNED",
+      toParcelStatus: "OUT_FOR_DELIVERY",
       fromMoneyStatus: cn.moneyStatus,
       toMoneyStatus: cn.moneyStatus,
       actorUserId: actor.userId,

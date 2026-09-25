@@ -26,6 +26,7 @@ import {
   workOrderMaterials,
   workOrders,
 } from "../../drizzle/schema";
+import { phoneSuffix10 } from "../lib/phone";
 import { getDb } from "../db";
 import {
   cancelWorkOrder,
@@ -373,9 +374,29 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
   const search = input?.q?.trim();
   if (search) {
     const pat = `%${escLike(search)}%`;
-    conds.push(
-      sql`(${workOrders.orderNumber} LIKE ${pat} ESCAPE '!' OR ${workOrders.title} LIKE ${pat} ESCAPE '!' OR ${customers.name} LIKE ${pat} ESCAPE '!')`,
-    );
+    const sfx = phoneSuffix10(search);
+    const searchConds = [
+      sql`${workOrders.orderNumber} LIKE ${pat} ESCAPE '!'`,
+      sql`${workOrders.title} LIKE ${pat} ESCAPE '!'`,
+      sql`${customers.name} LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone2}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone3}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.whatsapp}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${workOrders.deliveryPhone}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${workOrders.contactPhone}, '') LIKE ${pat} ESCAPE '!'`,
+    ];
+    if (sfx) {
+      const sfxPat = `%${escLike(sfx)}%`;
+      searchConds.push(
+        sql`coalesce(${customers.phone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${customers.phone2}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${customers.whatsapp}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${workOrders.deliveryPhone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${workOrders.contactPhone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...searchConds)!);
   }
   if (input?.from) {
     const from = new Date(input.from);
