@@ -494,7 +494,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         notes: input.notes ?? (reusableCn.notes ?? null),
         feeCollection,
         feeSettledAt: null,
-        parcelStatus: "ASSIGNED",
+        parcelStatus: "OUT_FOR_DELIVERY",
         moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
         status: "DISPATCHED",
         remittanceId: null,
@@ -503,7 +503,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         dispatchedAt: new Date(),
         acceptedAt: null,
         pickedUpAt: null,
-        outForDeliveryAt: null,
+        outForDeliveryAt: new Date(),
         courierDeliveredAt: null,
         custodyRecognizedAt: null,
         failedAt: null,
@@ -541,13 +541,15 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       notes: input.notes ?? null,
       feeCollection,
       feeSettledAt: null,
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
       moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
       // COD=0 يعني «لا عهدة مالية»، لا يعني أن الطرد وصل. كل طرد يبدأ تشغيلياً
       // DISPATCHED ويبقى ظاهراً للمندوب حتى ختم التسليم الفعلي.
       status: "DISPATCHED",
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
+      dispatchedAt: new Date(),
+      outForDeliveryAt: new Date(),
       externalTrackingRef,
     });
     const consignmentId = reusableCn ? Number(reusableCn.id) : extractInsertId(cnRes!);
@@ -557,10 +559,11 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       // للأول — فيبقى تاريخ الطرد كاملاً: أُسنِد، أُلغي، أُعيد إسناده لجهةٍ أخرى.
       eventKey: reusableCn
         ? `CN:${consignmentId}:REASSIGNED:${input.clientRequestId ?? Date.now()}`
-        : `CN:${consignmentId}:ASSIGNED`,
+        : `CN:${consignmentId}:OUT_FOR_DELIVERY`,
       consignmentId,
-      eventType: "ASSIGNED",
-      toParcelStatus: "ASSIGNED",
+      eventType: reusableCn ? "REASSIGNED" : "OUT_FOR_DELIVERY",
+      fromParcelStatus: reusableCn ? reusableCn.parcelStatus : null,
+      toParcelStatus: "OUT_FOR_DELIVERY",
       toMoneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
       actorUserId: actor.userId,
       payload: { partyId: input.partyId, sourceType: "WORK_ORDER", sourceId: consignmentSourceId },

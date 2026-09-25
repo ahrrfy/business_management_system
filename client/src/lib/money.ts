@@ -108,6 +108,25 @@ export const formatIqd = (v: string | number | null | undefined): string => {
   return `${fmtAr(v)} د.ع`;
 };
 
+/**
+ * توليد نص نفاذي فصيح لقارئات الشاشة (Screen Readers A11y Vocalization).
+ * يُزيل فواصل الآلاف المسببة لوقفات التلعثم في محركات TTS، ويستبدل الرمز المختصر "د.ع" بـ "دينار عراقي".
+ * مثال: 204500 => "204500 دينار عراقي" (تنطقها قارئات الشاشة ككتلة نطقية واحدة: مئتان وأربعة آلاف وخمسمائة دينار عراقي).
+ * مثال: -5000 => "سالب 5000 دينار عراقي".
+ */
+export const toAccessibleMoney = (
+  value: string | number | null | undefined,
+  currency: string = "دينار عراقي"
+): string => {
+  if (value === null || value === undefined || value === "") return "لا يوجد مبلغ";
+  const d = round2(D(value));
+  const isNeg = d.isNegative();
+  const absVal = d.abs().toNumber();
+  const prefix = isNeg ? "سالب " : "";
+  return `${prefix}${absVal} ${currency}`.trim();
+};
+
 /** نسبة كسرية (0.05) ⇒ نصّ مئوي "5%" (منزلة واحدة، تُجرَّد ".0"). */
 export const pct = (frac: string | number | null | undefined) =>
   `${Math.round((Number(frac ?? 0) * 100) * 10) / 10}`.replace(/\.0$/, "") + "%";
+

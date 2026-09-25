@@ -31,12 +31,18 @@ import { canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
 const DOC_PREFIX_RX = /^(INV|QT|PO|WO|SR|PR|ORD|CN|CNS)[-\s]?/i;
 const NUM_ONLY_RX = /^\d+$/;
 const PHONE_PREFIX_RX = /^\+/;
+const IRAQI_PHONE_RX = /^(?:(?:\+|00)?964|0)?7\d{9}$/;
 
 export function classifyQuery(raw: string): { kind: SearchKind; query: string } {
   const trimmed = (raw ?? "").trim();
   if (!trimmed) return { kind: "TEXT", query: "" };
 
   const canon = canonicalizeBarcodeInput(trimmed);
+
+  // هاتف بصيغة E.164 (+9647...) أو رقم عراقي محلي (07xxxxxxxxx أو 7xxxxxxxxx).
+  if (PHONE_PREFIX_RX.test(trimmed) || IRAQI_PHONE_RX.test(canon)) {
+    return { kind: "PHONE", query: trimmed };
+  }
 
   // باركود ماسح ضوئي: أرقام صرفة + طول قياسي (يدعم الأرقام اللاتينية والمطوية من العربية-الهندية).
   if (NUM_ONLY_RX.test(canon) && canon.length >= 8 && canon.length <= 14) {
@@ -49,10 +55,6 @@ export function classifyQuery(raw: string): { kind: SearchKind; query: string } 
   // رقم وثيقة قصير (المالك يكتب أحياناً «9164» قاصداً QT-2606-9164).
   if (NUM_ONLY_RX.test(canon) && canon.length <= 7) {
     return { kind: "DOC_NUMBER", query: canon };
-  }
-  // هاتف بصيغة E.164 (+9647...). نمرّر بقية الأنماط لـTEXT (البحث في الهاتف يظل يعمل عبر LIKE).
-  if (PHONE_PREFIX_RX.test(trimmed)) {
-    return { kind: "PHONE", query: trimmed };
   }
   return { kind: "TEXT", query: trimmed };
 }
