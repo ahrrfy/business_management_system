@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
@@ -41,9 +41,9 @@ const returnItemColumns: ColumnDef<ReturnItemRow, unknown>[] = [
   {
     id: "quantity",
     header: "الكمية",
-    accessorFn: (r) => r.quantity,
+    accessorFn: (r) => formatQuantity(r.quantity),
     meta: { kind: "number" },
-    cell: ({ row }) => row.original.quantity,
+    cell: ({ row }) => formatQuantity(row.original.quantity),
   },
   {
     id: "unitPrice",

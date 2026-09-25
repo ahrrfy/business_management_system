@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 
@@ -79,7 +80,7 @@ export default function StoreQuoteRequests() {
                 {request.customerPhone && <div className="mt-3 flex items-center gap-1.5 text-sm"><Phone className="size-4 text-muted-foreground" /><span dir="ltr">{request.customerPhone}</span><span className="text-xs text-muted-foreground">({request.contactPreference === "WHATSAPP" ? "واتساب" : "اتصال"})</span></div>}
                 <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground/85">{request.customerNote}</p>
                 <div className="mt-3 rounded-lg bg-muted/40 p-3 text-sm">
-                  {request.items.map((item, index) => <div key={`${item.productName}-${index}`} className="py-0.5">{item.productName}{item.variantLabel ? ` — ${item.variantLabel}` : ""} · {item.quantity} {item.unitName}</div>)}
+                  {request.items.map((item, index) => <div key={`${item.productName}-${index}`} className="py-0.5">{item.productName}{item.variantLabel ? ` — ${item.variantLabel}` : ""} · {formatQuantity(item.quantity)} {item.unitName}</div>)}
                 </div>
                 {request.status === "QUOTED" && (
                   <p className="mt-3 rounded-lg border border-border/70 bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">

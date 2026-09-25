@@ -59,7 +59,7 @@ export function formatStorefrontReservationDeadline(value: Date | string): strin
   }).format(date);
 }
 type TrackData = NonNullable<RouterOutputs["storefront"]["trackOrderByToken"]>;
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
@@ -3230,7 +3230,7 @@ function StorefrontContent() {
               </div>
               <div className="rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <p className="mb-2 text-xs font-extrabold text-slate-500">منتجات الطلب</p>
-                <div className="space-y-2">{labelQ.data.items.map((it, index) => <div key={index} className="flex justify-between gap-3 border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-800"><span>{it.productName}{it.unitName ? ` — ${it.unitName}` : ""}</span><b className="shrink-0 tabular-nums">×{it.quantity}</b></div>)}</div>
+                <div className="space-y-2">{labelQ.data.items.map((it, index) => <div key={index} className="flex justify-between gap-3 border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-800"><span>{it.productName}{it.unitName ? ` — ${it.unitName}` : ""}</span><b className="shrink-0 tabular-nums">×{formatQuantity(it.quantity)}</b></div>)}</div>
                 <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-base font-extrabold dark:border-slate-700"><span>المبلغ عند الاستلام</span><span dir="ltr" className="text-money-positive">{money(labelQ.data.total)} د.ع</span></div>
               </div>
             </div>
@@ -3323,7 +3323,7 @@ function StorefrontContent() {
                 <div className="divide-y divide-slate-100 dark:divide-slate-800">
                   {trackResult.items.map((it, i) => (
                     <div key={i} className="flex items-center justify-between py-2 text-sm">
-                      <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">{it.productName} <span className="text-slate-400">×{it.quantity}</span></span>
+                      <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">{it.productName} <span className="text-slate-400">×{formatQuantity(it.quantity)}</span></span>
                       <span className="tabular-nums text-slate-500" dir="ltr">{money(it.total)} د.ع</span>
                     </div>
                   ))}

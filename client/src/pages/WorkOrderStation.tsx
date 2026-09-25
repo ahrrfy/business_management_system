@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
-import { fmtAr, fmtInt, positiveDiff } from "@/lib/money";
+import { fmtAr, fmtInt, formatQuantity, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
@@ -50,9 +50,7 @@ const materialColumns: ColumnDef<WorkOrderMaterialRow, unknown>[] = [
     cell: ({ row }) => `${row.original.productName ?? "—"}${row.original.variantName ? ` · ${row.original.variantName}` : ""}`,
   },
   { id: "sku", header: "SKU", accessorFn: (m) => m.sku ?? "—", meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs">{row.original.sku ?? "—"}</span> },
-  // `accessorFn` نصُّ العرض (بفواصل آلاف) ⇒ الفرز الافتراضيّ نصّيّ يقرأ «1,200» أصغر من «900»؛
-  // `sortingFn` صريحٌ على القيمة الخامّ.
-  { id: "baseQuantity", header: "الكمية (أساس)", accessorFn: (m) => fmtInt(m.baseQuantity), meta: { kind: "number", align: "center" }, sortingFn: (a, b) => Number(a.original.baseQuantity ?? 0) - Number(b.original.baseQuantity ?? 0), cell: ({ row }) => fmtInt(row.original.baseQuantity) },
+  { id: "baseQuantity", header: "الكمية (أساس)", accessorFn: (m) => formatQuantity(m.baseQuantity), meta: { kind: "number", align: "center" }, sortingFn: (a, b) => Number(a.original.baseQuantity ?? 0) - Number(b.original.baseQuantity ?? 0), cell: ({ row }) => formatQuantity(row.original.baseQuantity) },
 ];
 
 const PRIORITIES: Record<string, { label: string; cls: string }> = {
@@ -364,7 +362,7 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
                     </div>
                     <div className="rounded-lg border bg-muted/20 p-3">
                       <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Layers aria-hidden className="size-3.5" /> الكَمية</div>
-                      <div className="font-bold text-base mt-1 tabular-nums">{fmtInt(d.quantity)}</div>
+                      <div className="font-bold text-base mt-1 tabular-nums">{formatQuantity(d.quantity)}</div>
                     </div>
                     <div className="rounded-lg border bg-muted/20 p-3">
                       <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> التَسليم</div>

@@ -4,7 +4,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Gift, Paperclip } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { cn } from "@/lib/utils";
 import type { RouterOutputs } from "@/lib/trpc";
@@ -89,9 +89,9 @@ export function invoiceItemColumns(subtotal: string): ColumnDef<InvoiceItemRow, 
     {
       id: "quantity",
       header: "الكمية",
-      accessorFn: (it) => it.quantity,
+      accessorFn: (it) => formatQuantity(it.quantity),
       meta: { kind: "number", align: "center" },
-      cell: ({ row }) => row.original.quantity,
+      cell: ({ row }) => formatQuantity(row.original.quantity),
     },
     {
       id: "unitPrice",
@@ -113,14 +113,14 @@ export function invoiceItemColumns(subtotal: string): ColumnDef<InvoiceItemRow, 
     {
       id: "returned",
       header: "مرتجع",
-      accessorFn: (it) => `${it.returnedBaseQuantity}/${it.baseQuantity}`,
+      accessorFn: (it) => `${formatQuantity(it.returnedBaseQuantity)}/${formatQuantity(it.baseQuantity)}`,
       meta: { kind: "number", align: "center" },
       cell: ({ row }) => {
         const it = row.original;
         const returned = Number(it.returnedBaseQuantity) > 0;
         return (
           <span className={`text-xs ${returned ? "text-[var(--sem-warn)] font-medium" : "text-muted-foreground"}`}>
-            {it.returnedBaseQuantity}/{it.baseQuantity}
+            {formatQuantity(it.returnedBaseQuantity)}/{formatQuantity(it.baseQuantity)}
           </span>
         );
       },

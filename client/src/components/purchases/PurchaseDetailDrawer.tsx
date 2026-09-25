@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { D, fmt, fmtAr, positiveDiff } from "@/lib/money";
+import { D, fmt, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
@@ -68,18 +68,18 @@ function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
     {
       id: "quantity",
       header: "الكمية",
-      accessorFn: (it) => fmtAr(it.quantity),
+      accessorFn: (it) => formatQuantity(it.quantity),
       meta: { kind: "number" },
-      cell: ({ row }) => fmtAr(row.original.quantity),
+      cell: ({ row }) => formatQuantity(row.original.quantity),
     },
     {
       id: "received",
       header: "المستلَم / المطلوب",
-      accessorFn: (it) => fmtAr(it.receivedBaseQuantity) + " / " + fmtAr(it.baseQuantity),
+      accessorFn: (it) => formatQuantity(it.receivedBaseQuantity) + " / " + formatQuantity(it.baseQuantity),
       meta: { kind: "number" },
       cell: ({ row }) => (
         <span className="tabular-nums font-mono text-xs">
-          {fmtAr(row.original.receivedBaseQuantity)} / {fmtAr(row.original.baseQuantity)}
+          {formatQuantity(row.original.receivedBaseQuantity)} / {formatQuantity(row.original.baseQuantity)}
         </span>
       ),
     },

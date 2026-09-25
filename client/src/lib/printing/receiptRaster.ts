@@ -9,6 +9,7 @@
 import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { CO, RECEIPT_PHONES, STOREFRONT_URL, fmt, logoUrl } from "./brand";
+import { fmtQty } from "@shared/quantityFormat";
 import type { ReceiptBrowserData } from "./printTemplates";
 import { buildDigitalBlocks } from "./digitalReceiptLines";
 import { qrCodeDataUrl } from "./qr";
@@ -275,7 +276,7 @@ export async function receiptToCanvas(
     ctx.fillText(lines[0], COL_NAME_R, y);
     ctx.font = "900 22px Cairo, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(String(it.quantity), COL_QTY_CENTER, y);
+    ctx.fillText(fmtQty(it.quantity), COL_QTY_CENTER, y);
     ctx.font = "800 22px Cairo, sans-serif";
     ctx.textAlign = "left";
     ctx.fillText(fmt(it.price), COL_PRICE_X, y);

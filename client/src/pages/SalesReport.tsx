@@ -12,7 +12,7 @@ import { fmtDate } from "@/lib/date";
 import { sourceTypeLabel } from "@/lib/labels";
 import { INVOICE_FILTER_METHODS, METHOD_LABEL, paymentMethodLabel, type InvoiceFilterMethod } from "@/lib/paymentMethod";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
-import { D, fmtAr } from "@/lib/money";
+import { D, fmtAr, formatQuantity } from "@/lib/money";
 import { canSeeCost } from "@shared/permissions";
 import { INVOICE_STATUSES, invoiceStatusLabel, isDeadInvoiceStatus, type InvoiceStatus } from "@shared/invoiceStatus";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -625,7 +625,7 @@ const topColumns: ColumnDef<TopRow, unknown>[] = [
   {
     accessorKey: "qtySold",
     header: "الكمية المباعة",
-    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+    cell: (c) => <span className="tabular-nums" dir="ltr">{formatQuantity(c.getValue() as string)}</span>,
   },
   {
     accessorKey: "revenue",
@@ -724,7 +724,7 @@ const slowColumns: ColumnDef<SlowRow, unknown>[] = [
   {
     accessorKey: "qtyInStock",
     header: "المخزون الحالي",
-    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+    cell: (c) => <span className="tabular-nums" dir="ltr">{formatQuantity(c.getValue() as string)}</span>,
   },
   {
     accessorKey: "lastSaleDate",

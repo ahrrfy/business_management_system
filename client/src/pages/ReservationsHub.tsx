@@ -8,7 +8,7 @@ import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard,
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -899,7 +899,7 @@ function ReservationLinesBlock({ detail }: { detail: ReservationDetail }) {
                 {variantLabel ? <span className="text-muted-foreground"> — {variantLabel}</span> : null}
               </div>
               <div className="text-xs text-muted-foreground">
-                {l.unitName} × {l.quantity.toLocaleString("en-US")}
+                {l.unitName} × {formatQuantity(l.quantity)}
                 {l.quotedUnitPrice != null ? ` · السعر ${fmt(l.quotedUnitPrice)} د.ع` : " · بلا سعر مرجعي"}
               </div>
             </div>
