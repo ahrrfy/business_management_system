@@ -70,7 +70,7 @@ import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
 import { StorefrontShippingBar } from "@/components/storefront/StorefrontShippingBar";
-import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
+import { StorefrontFloatingCart } from "@/components/storefront/StorefrontFloatingCart";
 import { StorefrontProductCard } from "@/components/storefront/StorefrontProductCard";
 import { StoreTrustAndHelp } from "@/components/storefront/StoreTrustAndHelp";
 import { CuratedRow, type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
@@ -932,7 +932,7 @@ function CategoryChipStrip({
           onClick={() => onPick(null)}
           className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 ${
             selectedId == null
-              ? "border-slate-900 bg-slate-900 text-white shadow-sm dark:border-white dark:bg-white dark:text-slate-900"
+              ? "border-[#183D36] bg-[#183D36] text-white shadow-xs dark:border-white dark:bg-white dark:text-slate-900"
               : "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
           }`}
         >
@@ -945,7 +945,7 @@ function CategoryChipStrip({
             onClick={() => onPick(c.id)}
             className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 ${
               selectedId === c.id
-                ? "border-orange-600 bg-orange-600 text-white shadow-sm"
+                ? "border-[#0E806A] bg-[#0E806A] text-white shadow-xs"
                 : "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
             }`}
           >
@@ -2369,7 +2369,7 @@ function StorefrontContent() {
           </button>
           <button ref={cartButtonRef} onClick={() => setPanel("cart")} aria-label="السلة" className="order-3 relative flex size-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-blue-600 hover:text-blue-600 sm:order-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
             <ShoppingCart aria-hidden className={`size-5 ${cartFlight ? "animate__animated animate__tada animate__faster" : ""}`} />
-            {cartCount > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[10px] font-black text-white shadow-sm">{cartCount}</span>}
+            {cartCount > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-[#0E806A] px-1 text-[10px] font-black text-white shadow-xs">{cartCount}</span>}
           </button>
           {!isPublicHost(typeof window !== "undefined" ? window.location.hostname : "") && (
             <Link href="/login" className="hidden shrink-0 items-center gap-1.5 text-[11px] font-bold text-slate-500 hover:text-blue-600 sm:flex dark:text-slate-400"><User aria-hidden className="size-4" /> دخول الفريق</Link>
@@ -2409,55 +2409,16 @@ function StorefrontContent() {
 
         <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
-        {!search && categoryId == null && !showWishlist && (
-          <>
-            <StorefrontCategories
-              id="store-categories"
-              categories={cats}
-              selectedId={categoryId}
-              onSelectCategory={selectCategory}
-              categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
-              className="mt-4 scroll-mt-28"
-            />
-
-            {feedStrips.length > 0 && (
-              <div className="mt-8 rounded-3xl bg-slate-900 p-3 shadow-xl sm:p-4">
-                <BannerCarousel banners={feedStrips} slot="INLINE" />
-              </div>
-            )}
-
-            {offers.length > 0 && (
-              <section id="store-deals" className="mt-10 rounded-3xl border border-rose-100 bg-gradient-to-br from-rose-50/70 via-white to-orange-50/50 p-5 shadow-xs sm:p-7 dark:border-slate-800 dark:from-slate-900 dark:to-slate-900/60">
-                <div className="mb-5 flex items-end justify-between">
-                  <div>
-                    <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-rose-600">
-                      <Flame className="size-4 animate-pulse text-rose-600" />
-                      <span>تخفيضات وصفقات حصرية</span>
-                    </div>
-                    <h2 className="mt-1 text-2xl font-black text-slate-900 dark:text-slate-100">صفقات تستحق الإضافة</h2>
-                  </div>
-                  <BadgePercent aria-hidden className="size-6 text-rose-600" />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {offers.slice(0, 3).map((o) => (
-                    <div key={o.id} className="flex items-center justify-between gap-4 rounded-2xl border border-rose-100 bg-white p-4 shadow-xs transition hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
-                      <div>
-                        <p className="text-sm font-black text-slate-900 dark:text-slate-100">{o.name}</p>
-                        <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p>
-                      </div>
-                      <Tag aria-hidden className="size-5 shrink-0 text-rose-600" />
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-          </>
+        {!search && categoryId == null && !showWishlist && feedStrips.length > 0 && (
+          <div className="mb-6 rounded-2xl bg-slate-900 p-3 shadow-md sm:p-4">
+            <BannerCarousel banners={feedStrips} slot="INLINE" />
+          </div>
         )}
 
-        <section id="store-results" className="mt-12 scroll-mt-36 rounded-3xl bg-white p-5 shadow-xs ring-1 ring-slate-200/70 sm:p-7 dark:bg-slate-900 dark:ring-slate-800">
+        <section id="store-results" className="mt-4 sm:mt-6 scroll-mt-36 rounded-3xl bg-white p-5 shadow-xs ring-1 ring-slate-200/70 sm:p-7 dark:bg-slate-900 dark:ring-slate-800">
           <div className="mb-5 flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end sm:justify-between dark:border-slate-800">
             <div>
-              <p className="text-xs font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">
+              <p className="text-xs font-black uppercase tracking-[0.15em] text-[#0E806A] dark:text-emerald-400">
                 كتالوج المتجر
               </p>
               <h2 className="mt-1 text-2xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100">
@@ -2627,29 +2588,14 @@ function StorefrontContent() {
         </div>
       </footer>
 
-      {/* جزيرة السلة العائمة الحديثة (Dynamic Island Cart Dock) */}
-      {cartCount > 0 && panel == null && (
-        <div className="fixed inset-x-3 bottom-4 z-30 mx-auto max-w-lg sm:bottom-6 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2">
-          <div className="store-dynamic-dock flex flex-col gap-2 rounded-2xl border border-white/20 bg-slate-950/95 p-2.5 sm:p-3 text-white shadow-2xl backdrop-blur-xl ring-1 ring-black/40">
-            <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} compact />
-            <div className="flex items-center justify-between gap-3">
-              <button type="button" onClick={() => setPanel("cart")} className="flex min-w-0 items-center gap-2.5 text-right focus:outline-none">
-                <div className="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/15 bg-white/10">
-                  {lastAddedItem?.imageUrl ? <img src={lastAddedItem.imageUrl} alt="" className="size-full object-cover" /> : <ShoppingBag aria-hidden className="size-5 text-emerald-400" />}
-                  <span className="absolute -bottom-1 -right-1 flex min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[9px] font-black text-white shadow-sm">{cartCount}</span>
-                </div>
-                <div className="min-w-0">
-                  <span className="block truncate text-xs font-bold text-stone-300">سلة المشتريات ({cartCount})</span>
-                  <span className="block font-mono text-sm font-black text-amber-300 tabular-nums">{money(cartSubtotal)} د.ع</span>
-                </div>
-              </button>
-              <button type="button" onClick={() => setPanel("cart")} className="group flex shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-l from-emerald-600 to-teal-600 px-4 py-2.5 text-xs font-black text-white shadow-md shadow-emerald-600/30 transition hover:from-emerald-500 hover:to-teal-500 active:scale-95">
-                <span>عرض السلة وإتمام الطلب</span>
-                <ArrowRight aria-hidden className="size-3.5 rotate-180 transition-transform group-hover:-translate-x-0.5" />
-              </button>
-            </div>
-          </div>
-        </div>
+
+      {/* شريط السلة الذكي العائم — نمط عالمي في متناول الإبهام يظهر عند إضافة منتجات */}
+      {panel == null && cartCount > 0 && (
+        <StorefrontFloatingCart
+          cartCount={cartCount}
+          cartSubtotal={cartSubtotal}
+          onOpenCart={() => setPanel("cart")}
+        />
       )}
 
       {/* شارة «الخصوصية» ثابتة أسفل اليسار؛ نرفع واتساب 4rem حتى لا يتراكبا على الهاتف. */}
