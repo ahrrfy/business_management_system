@@ -1115,7 +1115,7 @@ export const workOrderRouter = router({
       const db = getDb();
       if (!db) return null;
       const lookup = prepareDeliveryBarcodeLookup(input.orderNumber);
-      const { code, systemCode, trackingCode, documentCode, namespace, numericId } = lookup;
+      const { code, systemCode, trackingCode, strippedTrackingCode, documentCode, namespace, numericId } = lookup;
       const scopedBranchId = canCrossBranches(ctx.user)
         ? null
         : (ctx.user.branchId == null ? -1 : Number(ctx.user.branchId));
@@ -1187,7 +1187,11 @@ export const workOrderRouter = router({
                 sourceType: deliveryConsignments.sourceType,
                 sourceId: deliveryConsignments.sourceId,
                 linkedOnlineOrderId: onlineOrders.id,
-                matchRank: sql<number>`CASE WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}) THEN 100 WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50 ELSE 10 END`,
+                matchRank: sql<number>`CASE
+                  WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}) THEN 100
+                  WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
+                  WHEN TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode} THEN 40
+                  ELSE 10 END`,
               })
               .from(deliveryConsignments)
               .leftJoin(onlineOrders, eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId))
@@ -1198,11 +1202,21 @@ export const workOrderRouter = router({
                     ? or(
                         numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
                         eq(deliveryConsignments.consignmentNumber, code),
-                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                        trackingCode
+                          ? or(
+                              eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                              eq(sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef})`, strippedTrackingCode),
+                            )
+                          : sql`0=1`,
                       )
                     : or(
                         eq(deliveryConsignments.consignmentNumber, systemCode),
-                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                        trackingCode
+                          ? or(
+                              eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                              eq(sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef})`, strippedTrackingCode),
+                            )
+                          : sql`0=1`,
                       ),
                 branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
               ))
