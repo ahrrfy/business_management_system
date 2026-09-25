@@ -6,7 +6,8 @@ import { priceDecimalsFor, type PriceCurrency } from "@shared/moneyPrecision";
  *  and to mirror the server's HALF_UP rounding. Never use parseFloat/Number for money. */
 Decimal.set({ rounding: Decimal.ROUND_HALF_UP });
 
-export const D = (v: string | number | null | undefined) => new Decimal(v == null || v === "" ? 0 : v);
+export const D = (v: string | number | null | undefined) =>
+  new Decimal(v == null || v === "" ? 0 : v);
 
 /**
  * قراءةُ **مُدخَلٍ ماليٍّ قيد الكتابة** بأمان — للعرض والشروط داخل النماذج، لا للإرسال.
@@ -34,7 +35,8 @@ export const moneyInput = (v: string | number | null | undefined): Decimal => {
 };
 
 /** Round to 2 dp, HALF_UP. */
-export const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+export const round2 = (v: Decimal) =>
+  v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
 /**
  * تسلسل **سعر وحدةٍ** بدقّة عملته (`shared/moneyPrecision`): الدينار منزلتان والدولار أربع.
@@ -45,22 +47,31 @@ export const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP
  * الدالّة تسلسلةٌ بلا فقدٍ لما دخل فعلاً (والخادم يرفض ما تجاوز دقّة العملة بدل تقريبه).
  * المبالغُ الأخرى (إجماليات/دفعات/خصومات) تبقى `round2` — أعمدتها `decimal(15,2)`.
  */
-export const toUnitPriceStr = (v: string | number | null | undefined, currency: PriceCurrency) => {
+export const toUnitPriceStr = (
+  v: string | number | null | undefined,
+  currency: PriceCurrency,
+) => {
   const dp = priceDecimalsFor(currency);
   return D(v).toDecimalPlaces(dp, Decimal.ROUND_HALF_UP).toFixed(dp);
 };
 
 /** unitPrice × quantity → 2dp string. */
-export const lineTotal = (unitPrice: string | number, quantity: string | number) =>
-  round2(D(unitPrice).times(D(quantity))).toFixed(2);
+export const lineTotal = (
+  unitPrice: string | number,
+  quantity: string | number,
+) => round2(D(unitPrice).times(D(quantity))).toFixed(2);
 
 /** Sum a list of 2dp money strings → 2dp string. */
 export const sum = (values: Array<string | number>) =>
-  round2(values.reduce<Decimal>((acc, v) => acc.plus(D(v)), new Decimal(0))).toFixed(2);
+  round2(
+    values.reduce<Decimal>((acc, v) => acc.plus(D(v)), new Decimal(0)),
+  ).toFixed(2);
 
 /** base = quantity × conversionFactor (must be an integer for the purchase to be valid). */
-export const toBase = (quantity: string | number, conversionFactor: string | number) =>
-  D(quantity).times(D(conversionFactor));
+export const toBase = (
+  quantity: string | number,
+  conversionFactor: string | number,
+) => D(quantity).times(D(conversionFactor));
 
 /** تنسيق مبلغ **للعرض فقط**: فواصل آلاف + منزلتان كحدٍّ أقصى، بلا أصفارٍ زائدة (1,234,567 أو
  *  1,234,567.5) — طلب المالك ٣/٩ يُلغي القرار السابق (١١/٦: منزلتان ثابتتان دائماً) الذي كان
@@ -68,11 +79,19 @@ export const toBase = (quantity: string | number, conversionFactor: string | num
  *  فيزيل تناقضاً كان قائماً بين الدالّتين. لا فقدان دقّة: كسرٌ حقيقي (1,234,567.5) يبقى ظاهراً.
  *  ⛔ ممنوع في حمولات الـAPI (zod moneyStr يرفض الفواصل) — للإرسال استعمل round2(D(v)).toFixed(2). */
 export const fmt = (v: string | number | null | undefined) =>
-  round2(D(v)).toNumber().toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  round2(D(v))
+    .toNumber()
+    .toLocaleString("en-US", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    });
 
 /** فرق موجب بدقّة Decimal — مكافئ خادمي `positiveDiff` لحساب «المتبقّي» بلا انجراف float.
  *  Math.max(0, Number(total) - Number(paid)) → positiveDiff(total, paid).toFixed(2) */
-export const positiveDiff = (a: string | number | null | undefined, b: string | number | null | undefined) => {
+export const positiveDiff = (
+  a: string | number | null | undefined,
+  b: string | number | null | undefined,
+) => {
   const d = D(a).minus(D(b));
   return d.isNegative() ? new Decimal(0) : d;
 };
@@ -80,7 +99,10 @@ export const positiveDiff = (a: string | number | null | undefined, b: string | 
 /** تقريب نقدي للدينار العراقي على الواجهة (مكافئ خادمي `roundCashIQD`). يُستعمل في الكاشير قبل
  *  إرسال طلب البيع النقدي ⇒ يلغي الفكّة الوهمية (لا توجد فئات أصغر من ٢٥٠ د.ع).
  *  HALF_UP إلى أقرب مضاعف لـ`denom`. سالب/صفر ⇒ صفر. */
-export const roundCashIQD = (amount: string | number | null | undefined, denom: number = 250) => {
+export const roundCashIQD = (
+  amount: string | number | null | undefined,
+  denom: number = 250,
+) => {
   const a = D(amount);
   if (a.isNegative() || a.isZero()) return new Decimal(0);
   const halfDenom = D(denom).div(2);
@@ -90,14 +112,19 @@ export const roundCashIQD = (amount: string | number | null | undefined, denom: 
 
 /** Format integer money (IQD whole-number) with locale separators. Decimal-safe sum first if needed. */
 export const fmtInt = (v: string | number | null | undefined) =>
-  D(v).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ-u-nu-latn");
+  D(v)
+    .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+    .toNumber()
+    .toLocaleString("ar-IQ-u-nu-latn");
 
 /** تنسيق مبلغ بـ**ar-IQ** locale (أرقام لاتينية) حتى منزلتين عشريتين — **بلا** لاحقة عملة.
  *  null/undefined/"" ⇒ "—". مكافئ مركزي لتكرار Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 })
  *  المنتشر في الصفحات (Customers/Suppliers/PurchaseOrderDetail/WorkOrderDetail/SalesReport/BarcodeLabels…). */
 export const fmtAr = (v: string | number | null | undefined): string => {
   if (v === null || v === undefined || v === "") return "—";
-  return round2(D(v)).toNumber().toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+  return round2(D(v))
+    .toNumber()
+    .toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 };
 
 /** تنسيق مبلغ كاملاً بالدينار العراقي للعرض: ar-IQ locale + لاحقة "د.ع".
@@ -129,4 +156,14 @@ export const toAccessibleMoney = (
 /** نسبة كسرية (0.05) ⇒ نصّ مئوي "5%" (منزلة واحدة، تُجرَّد ".0"). */
 export const pct = (frac: string | number | null | undefined) =>
   `${Math.round((Number(frac ?? 0) * 100) * 10) / 10}`.replace(/\.0$/, "") + "%";
+
+/**
+ * تنسيق الكميات للعرض فقط: إزالة الأصفار العشرية الزائدة مع حفظ الكسور الحقيقية وفواصل الآلاف.
+ * مصدر الحقيقة الوحيد مستورد من @shared/quantityFormat.
+ */
+export {
+  formatQuantity,
+  fmtQty,
+  type FormatQuantityOptions,
+} from "@shared/quantityFormat";
 

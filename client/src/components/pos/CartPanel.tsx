@@ -10,6 +10,7 @@ import { ShoppingCart, X, AlertTriangle, CreditCard, PackagePlus } from "lucide-
 import { motion } from "framer-motion";
 import { digitalOfferingDescription, digitalOfferingTypeLabel } from "@shared/digitalSale";
 import { type Tier, type NumMode, type CartItem, type PosRow, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
+import { formatQuantity } from "@shared/quantityFormat";
 import { CartCustomerButton } from "./CartCustomerButton";
 import { CartDeliveryPanel } from "./CartDeliveryPanel";
 import { CartPanelFooter } from "./CartPanelFooter";
@@ -290,11 +291,11 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                     {!c.digital && !c.row.isService && isKnown && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", marginTop: 5, fontSize: 11.5, fontWeight: 700, color: C.mutedFg }}>
                         <span>{branchName}</span>
-                        <span>فعلي {fmt(c.row.stockBase ?? 0)}</span>
+                        <span>فعلي {formatQuantity(c.row.stockBase ?? 0)}</span>
                         <span style={{ color: (c.row.reservedBase ?? 0) > 0 ? C.amber : C.mutedFg }}>
-                          محجوز {fmt(c.row.reservedBase ?? 0)}
+                          محجوز {formatQuantity(c.row.reservedBase ?? 0)}
                         </span>
-                        <span>متاح للبيع {fmt(c.row.availableBase ?? c.row.stockBase ?? 0)}</span>
+                        <span>متاح للبيع {formatQuantity(c.row.availableBase ?? c.row.stockBase ?? 0)}</span>
                       </div>
                     )}
                     {allocations.length > 0 && (
@@ -304,7 +305,7 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                             key={allocation.reservationId}
                             style={{ border: `1px solid ${C.amber}`, background: C.amberSoft, color: C.modeFg, borderRadius: 5, padding: "2px 7px", fontSize: 11.5, fontWeight: 800 }}
                           >
-                            حجز باسم {allocation.customerName} · {fmt(allocation.remainingBase)} وحدة أساس
+                            حجز باسم {allocation.customerName} · {formatQuantity(allocation.remainingBase)} وحدة أساس
                           </span>
                         ))}
                       </div>
@@ -340,7 +341,7 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                         <AlertTriangle aria-hidden size={12} />
                         {availInUnit === 0
                           ? "لا يكفي لوحدة كاملة"
-                          : `المتاح ${fmt(availInUnit)} ${c.row.unitName} فقط`}
+                          : `المتاح ${formatQuantity(availInUnit)} ${c.row.unitName} فقط`}
                       </span>
                     )}
                   </td>
@@ -371,7 +372,7 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                   </td>
                   {/* عمود المخزون: ∞ للخدمات، رقم بلون أحمر/أصفر/طبيعي حسب الحالة. */}
                   <td style={{ ...TD, direction: "ltr", fontWeight: 700, color: isOut ? C.danger : isShort ? C.amber : C.mutedFg }}>
-                    {c.row.isService ? "∞" : isKnown ? fmt(availInUnit) : "…"}
+                    {c.row.isService ? "∞" : isKnown ? formatQuantity(availInUnit) : "…"}
                   </td>
                   <td style={{ ...TD, padding: "6px 6px" }}>
                     {c.digital ? (

@@ -9,6 +9,7 @@
  * غير المشمولة بالتسليم هذا. الأسماء المُعاد تصديرها في هذا الملف هي المداخل الرئيسية للثمانية أعلاه.
  */
 import { BRAND as B, esc, fmt, fmtC, openPrintWindow } from './brand';
+import { fmtQty } from '@shared/quantityFormat';
 import { fmtDate as formatDate } from '../date';
 import {
   wrapA4Doc,
@@ -62,14 +63,7 @@ function taxLabel(taxAmount: string | number | null | undefined, taxRate: number
   return 'ضريبة المبيعات';
 }
 
-/** كميات — تحتفظ بالكسور (البيع يقبل حتى ٣ منازل). عرض «١.٥» كما هو لا «٢». */
-function fmtQty(n: string | number | null | undefined): string {
-  if (n == null || n === '') return '—';
-  const num = Number(n);
-  if (Number.isNaN(num)) return String(n);
-  // تجميل: بلا كسور زائدة (1.500 ⇒ 1.5) لكن 1.5 يبقى كما هو.
-  return num.toLocaleString('en-US', { maximumFractionDigits: 3 });
-}
+export { fmtQty };
 
 /** اتّجاه رصيد العميل (الموجب = لنا عليه). */
 function balanceDirCustomer(balance: number): string {

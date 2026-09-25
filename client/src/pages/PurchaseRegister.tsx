@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { fmtAr, fmtInt } from "@/lib/money";
+import { fmtAr, fmtInt, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -44,7 +44,7 @@ const columns: ColumnDef<Row, unknown>[] = [
     cell: ({ row }) => <ActorCell actor={{ name: row.original.orderedByName }} />,
   },
   { id: "productName", header: "المنتج", accessorFn: (r) => r.productName ?? "—", meta: { width: "wide" }, cell: ({ row }) => row.original.productName ?? "—" },
-  { id: "quantity", header: "الكمية", accessorFn: (r) => fmtInt(r.quantity), meta: { kind: "number" }, cell: ({ row }) => fmtInt(row.original.quantity) },
+  { id: "quantity", header: "الكمية", accessorFn: (r) => formatQuantity(r.quantity), meta: { kind: "number" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
   {
     id: "unitPrice",
     header: "سعر الوحدة",
@@ -170,7 +170,7 @@ export default function PurchaseRegister() {
           supplier: r.supplierName ?? "—",
           orderedBy: r.orderedByName ?? "—",
           product: r.productName ?? "—",
-          qty: r.quantity,
+          qty: formatQuantity(r.quantity),
           unitPrice: fmtAr(r.unitPrice),
           total: fmtAr(r.total),
         })),

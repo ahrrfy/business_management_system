@@ -2,7 +2,7 @@ import { Check, Printer, Truck, FileText, Wrench, Package } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/CopyButton";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { fmtDate, fmtTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import type { LastSaleSummary } from "./cartMath";
@@ -138,7 +138,7 @@ export function ReceiptOverlay({
                       {item.name}
                     </span>
                     <span className="col-span-2 text-center tabular-nums text-slate-500" dir="ltr">
-                      {item.quantity}
+                      {formatQuantity(item.quantity)}
                     </span>
                     <span className="col-span-4 text-left font-bold tabular-nums text-slate-900" dir="ltr">
                       {fmt(item.total)}

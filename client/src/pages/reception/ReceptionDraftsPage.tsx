@@ -31,7 +31,7 @@ import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -491,7 +491,7 @@ export function DraftDetailsModal({
                               <p className="text-[11px] text-muted-foreground">{l.customizationText}</p>
                             )}
                           </TableCell>
-                          <TableCell className="p-2 font-mono">{l.quantity}</TableCell>
+                          <TableCell className="p-2 font-mono">{formatQuantity(l.quantity)}</TableCell>
                           <TableCell className="p-2 font-mono">{fmtAr(l.unitPrice)}</TableCell>
                           <TableCell className="p-2 font-mono font-bold">{fmtAr(l.lineTotal)}</TableCell>
                         </TableRow>

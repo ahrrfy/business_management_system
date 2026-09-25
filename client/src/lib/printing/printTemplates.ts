@@ -8,6 +8,7 @@
  */
 import { workOrderStatusLabel, workOrderStatusPrintColor } from "@shared/workOrderStatus";
 import { BRAND as B, CAIRO_FONT, CO, RECEIPT_PHONES, STOREFRONT_URL, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
+import { fmtQty } from '@shared/quantityFormat';
 import { fmtDate, fmtDateTime } from '../date';
 import {
   wrapA4Doc, wrapReceiptDoc,
@@ -271,7 +272,7 @@ export function printPO(d: POPrintData): void {
   const rows = d.items.map(it => ({
     name: it.productName,
     unit: it.unitName ?? '',
-    qty: fmt(it.quantity),
+    qty: fmtQty(it.quantity),
     price: fmt(it.unitPrice),
     amount: fmt(it.total),
   }));
@@ -942,7 +943,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const itemRows = d.items.map(it => `
     <tr>
       <td style="padding:1.5mm 1mm;font-weight:900;font-size:11.5px;color:#000;line-height:1.25;border:1px solid #000;">${esc(it.name)}</td>
-      <td style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;direction:ltr;">${it.quantity}</td>
+      <td style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;direction:ltr;">${fmtQty(it.quantity)}</td>
       <td style="text-align:left;padding:1.5mm 1mm;font-weight:800;font-size:11.5px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.price)}</td>
       <td style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.total)}</td>
     </tr>
@@ -1200,7 +1201,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
 
   ${d.quantity != null && String(d.quantity).trim() ? `
   <div style="display:flex;justify-content:space-between;font-size:10px;padding:0.5mm 0;">
-    <span style="font-weight:700;">الكمية:</span><span>${esc(String(d.quantity))}</span>
+    <span style="font-weight:700;">الكمية:</span><span>${esc(fmtQty(d.quantity))}</span>
   </div>` : ''}
 
   ${specsHtml}

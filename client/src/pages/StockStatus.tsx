@@ -14,7 +14,7 @@ import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 
 type Row = RouterOutputs["reports"]["stockStatus"]["rows"][number];
@@ -82,7 +82,7 @@ export default function StockStatus() {
         header: "الكمية",
         accessorFn: (r) => Number(r.quantity),
         cell: ({ row }) => (
-          <span dir="ltr" className="tabular-nums">{fmtInt(row.original.quantity)}</span>
+          <span dir="ltr" className="tabular-nums">{formatQuantity(row.original.quantity)}</span>
         ),
       },
       {
@@ -90,7 +90,7 @@ export default function StockStatus() {
         header: "حدّ إعادة الطلب",
         accessorFn: (r) => Number(r.minStock),
         cell: ({ row }) => (
-          <span dir="ltr" className="tabular-nums text-muted-foreground">{fmtInt(row.original.minStock)}</span>
+          <span dir="ltr" className="tabular-nums text-muted-foreground">{formatQuantity(row.original.minStock)}</span>
         ),
       },
       {
@@ -132,8 +132,8 @@ export default function StockStatus() {
         { key: "productName", header: "المنتج" },
         { key: "variantLabel", header: "المتغيّر" },
         { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
-        { key: "quantity", header: "الكمية", map: (r) => r.quantity },
-        { key: "minStock", header: "حدّ إعادة الطلب", map: (r) => r.minStock },
+        { key: "quantity", header: "الكمية", map: (r) => formatQuantity(r.quantity) },
+        { key: "minStock", header: "حدّ إعادة الطلب", map: (r) => formatQuantity(r.minStock) },
         { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
       ],
     });
@@ -159,8 +159,8 @@ export default function StockStatus() {
         product: r.productName,
         variant: r.variantLabel,
         branch: r.branchName ?? "—",
-        qty: fmtInt(r.quantity),
-        min: fmtInt(r.minStock),
+        qty: formatQuantity(r.quantity),
+        min: formatQuantity(r.minStock),
         status: STATUS_LABEL[r.status] ?? r.status,
       })),
       summary: totals

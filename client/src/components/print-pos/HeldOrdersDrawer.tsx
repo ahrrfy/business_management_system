@@ -18,7 +18,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
-import { fmt, round2, D } from "@/lib/money";
+import { fmt, formatQuantity, round2, D } from "@/lib/money";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -347,7 +347,7 @@ export function HeldOrdersDrawer({
                             • {line.itemNameSnapshot || "خدمة طباعة"}
                           </span>
                           <span>
-                            {line.quantity} × {fmt(line.unitPrice)}
+                            {formatQuantity(line.quantity)} × {fmt(line.unitPrice)}
                           </span>
                         </div>
                       ))}
