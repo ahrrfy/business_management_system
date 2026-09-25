@@ -588,7 +588,7 @@ export default function HomeScreen() {
             </View>
             <View style={styles.whatsappBannerText}>
               <View style={styles.whatsappBadgeRow}>
-                <Text style={styles.whatsappTag}>🎁 باقات الإهداء والطباعة المخصصة</Text>
+                <Text style={styles.whatsappTag}>باقات الإهداء والطباعة المخصصة</Text>
               </View>
               <Text style={styles.whatsappBannerTitle}>
                 اصنع هديتك وملازمك لكل مناسبة!
@@ -600,7 +600,7 @@ export default function HomeScreen() {
           </View>
           <View style={styles.whatsappActionRow}>
             <View style={styles.whatsappBadge}>
-              <MaterialIcons color="#7C5CFC" name="chat" size={16} />
+              <MaterialIcons color="#0E806A" name="chat" size={16} />
               <Text style={styles.whatsappBadgeText}>تواصل مع فريق الطباعة والإهداء عبر واتساب</Text>
             </View>
           </View>
@@ -762,14 +762,14 @@ export default function HomeScreen() {
               style={styles.pathCard}
             >
               <View style={styles.pathIcon}>
-                <MaterialIcons color="#0F172A" name={item.icon} size={22} />
+                <MaterialIcons color="#183D36" name={item.icon} size={22} />
               </View>
               <Text style={styles.pathAudience}>{item.audience}</Text>
               <Text numberOfLines={2} style={styles.pathDirection}>
                 {item.direction}
               </Text>
               <View style={styles.pathArrow}>
-                <MaterialIcons color="#059669" name="arrow-back" size={15} />
+                <MaterialIcons color="#0E806A" name="arrow-back" size={15} />
               </View>
             </TouchableOpacity>
           ))}
@@ -1068,20 +1068,20 @@ const styles = StyleSheet.create({
   searchRow: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 20,
     borderWidth: 1.5,
     flexDirection: "row-reverse",
     height: 52,
     paddingLeft: 6,
     paddingRight: 14,
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOpacity: 0.04,
     shadowRadius: 8,
     elevation: 1,
   },
   searchInput: {
-    color: "#0F172A",
+    color: "#183D36",
     flex: 1,
     fontFamily: "Cairo_500Medium",
     fontSize: 13,
@@ -1202,7 +1202,7 @@ const styles = StyleSheet.create({
   assuranceBar: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 20,
     borderWidth: 1,
     flexDirection: "row-reverse",
@@ -1210,13 +1210,13 @@ const styles = StyleSheet.create({
     marginTop: 18,
     paddingHorizontal: 12,
     paddingVertical: 12,
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOpacity: 0.02,
     shadowRadius: 8,
     elevation: 1,
   },
   assuranceDivider: {
-    backgroundColor: "#E2E8F0",
+    backgroundColor: "#F1E5DA",
     height: 28,
     width: 1,
   },
@@ -1228,8 +1228,8 @@ const styles = StyleSheet.create({
   },
   assuranceIcon: {
     alignItems: "center",
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E2E8F0",
+    backgroundColor: "#FAF5EE",
+    borderColor: "#F1E5DA",
     borderRadius: 12,
     borderWidth: 1,
     height: 36,
@@ -1237,7 +1237,7 @@ const styles = StyleSheet.create({
     width: 36,
   },
   assuranceText: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_700Bold",
     fontSize: 10,
     textAlign: "center",
@@ -1299,21 +1299,21 @@ const styles = StyleSheet.create({
   pathCard: {
     alignItems: "flex-end",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 20,
     borderWidth: 1,
     minHeight: 140,
     padding: 14,
     width: 138,
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOpacity: 0.03,
     shadowRadius: 8,
     elevation: 1,
   },
   pathIcon: {
     alignItems: "center",
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E2E8F0",
+    backgroundColor: "#FAF5EE",
+    borderColor: "#F1E5DA",
     borderRadius: 14,
     borderWidth: 1,
     height: 42,
@@ -1321,14 +1321,14 @@ const styles = StyleSheet.create({
     width: 42,
   },
   pathAudience: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 14,
     marginTop: 10,
     textAlign: "right",
   },
   pathDirection: {
-    color: "#64748B",
+    color: "#5A6E68",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 10,
     lineHeight: 16,
@@ -1348,22 +1348,22 @@ const styles = StyleSheet.create({
   categoryItem: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 20,
     borderWidth: 1,
     minHeight: 114,
     paddingHorizontal: 8,
     paddingVertical: 10,
     width: 92,
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOpacity: 0.02,
     shadowRadius: 6,
     elevation: 1,
   },
   categoryIcon: {
     alignItems: "center",
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E2E8F0",
+    backgroundColor: "#FAF5EE",
+    borderColor: "#F1E5DA",
     borderRadius: 16,
     borderWidth: 1,
     height: 52,
@@ -1371,7 +1371,7 @@ const styles = StyleSheet.create({
     width: 52,
   },
   categoryText: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_700Bold",
     fontSize: 11,
     lineHeight: 16,
@@ -1379,20 +1379,20 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   categoryCountBadge: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: "#FAF5EE",
     borderRadius: 6,
     marginTop: 3,
     paddingHorizontal: 6,
     paddingVertical: 1,
   },
   categoryCountText: {
-    color: "#475569",
+    color: "#5A6E68",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 9,
   },
   productsPanel: {
-    backgroundColor: "#EEF3F9",
-    borderColor: "#E0E8F1",
+    backgroundColor: "#FAF5EE",
+    borderColor: "#F1E5DA",
     borderRadius: 27,
     borderWidth: 1,
     marginTop: 28,
@@ -1411,7 +1411,7 @@ const styles = StyleSheet.create({
   },
   filterChip: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#DDDED8",
+    borderColor: "#F1E5DA",
     borderRadius: 12,
     borderWidth: 1,
     paddingHorizontal: 11,
@@ -1431,7 +1431,7 @@ const styles = StyleSheet.create({
   sortChip: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#DDDED8",
+    borderColor: "#F1E5DA",
     borderRadius: 11,
     borderWidth: 1,
     flex: 1,
@@ -1599,14 +1599,14 @@ const styles = StyleSheet.create({
     width: 38,
   },
   whatsappBanner: {
-    backgroundColor: "#7C5CFC",
+    backgroundColor: "#0E806A",
     borderColor: "rgba(255, 255, 255, 0.25)",
     borderRadius: 24,
     borderWidth: 1,
     marginTop: 20,
     padding: 18,
     gap: 14,
-    shadowColor: "#7C5CFC",
+    shadowColor: "#0E806A",
     shadowOpacity: 0.25,
     shadowRadius: 14,
     elevation: 4,
@@ -1648,7 +1648,7 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   whatsappBannerSub: {
-    color: "#E0E7FF",
+    color: "#E8F5EF",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 11,
     lineHeight: 18,
@@ -1666,13 +1666,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     paddingVertical: 11,
-    shadowColor: "#000000",
+    shadowColor: "#0E806A",
     shadowOpacity: 0.08,
     shadowRadius: 6,
     elevation: 2,
   },
   whatsappBadgeText: {
-    color: "#7C5CFC",
+    color: "#0E806A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 12,
   },
