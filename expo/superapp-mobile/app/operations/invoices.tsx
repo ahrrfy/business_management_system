@@ -16,7 +16,7 @@ import * as Haptics from "expo-haptics";
 import { AnimatedReveal } from "@/components/AnimatedReveal";
 import { UnifiedScreenHeader } from "@/components/UnifiedScreenHeader";
 import { colors, radius, space } from "@/constants/theme";
-import { formatIqd } from "@/lib/format";
+import { formatIqd, formatQuantity } from "@/lib/format";
 import { fetchRealInvoices, type RealInvoice } from "@/lib/operationsApi";
 
 type InvoiceStatus = "PAID" | "PENDING" | "CANCELLED";
@@ -308,7 +308,7 @@ export default function InvoicesScreen() {
                       <View style={styles.itemInfo}>
                         <Text style={styles.itemName}>{item.name}</Text>
                         <Text style={styles.itemMeta}>
-                          {item.qty} × {formatIqd(item.unitPrice)}
+                          {formatQuantity(item.qty)} × {formatIqd(item.unitPrice)}
                         </Text>
                       </View>
                       <Text style={styles.itemTotal}>{formatIqd(item.total)}</Text>

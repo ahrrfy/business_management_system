@@ -9,7 +9,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { Loader2, Plus, Trash2, ShoppingCart, Search, AlertCircle, Package } from "lucide-react";
 
 export interface EditOnlineOrderDialogProps {
@@ -370,7 +370,7 @@ export function EditOnlineOrderDialog({
                             >
                               -
                             </Button>
-                            <span className="w-8 text-center font-bold text-sm">{it.quantity}</span>
+                            <span className="w-8 text-center font-bold text-sm">{formatQuantity(it.quantity)}</span>
                             <Button
                               type="button"
                               variant="ghost"

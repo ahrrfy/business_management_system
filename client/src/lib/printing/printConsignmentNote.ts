@@ -78,7 +78,7 @@ export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
     <thead><tr><th class="c">#</th>${showDir ? '<th class="c">الاتجاه</th>' : ""}<th>المنتج</th><th>الرمز</th><th class="c">الكمية</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
-  <div class="tot">إجمالي القطع (بالوحدة الأساس): ${showDir ? `صافي ${totalBase}` : Math.abs(totalBase)}</div>
+  <div class="tot">إجمالي القطع (بالوحدة الأساس): ${showDir ? `صافي ${fmtQty(totalBase)}` : fmtQty(Math.abs(totalBase))}</div>
   ${note.notes ? `<div class="notes"><b>ملاحظات:</b> ${esc(note.notes)}</div>` : ""}
   <div class="sign"><div class="s">أمين المخزن / المستلِم</div><div class="s">المودِع</div></div>
   <div class="ft">هذه البضاعة أمانة برسم البيع — ملكيتها للمودِع حتى بيعها · ${esc(CO.footerLine)}</div>
