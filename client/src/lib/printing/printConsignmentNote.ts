@@ -1,6 +1,7 @@
 // بضاعة الأمانة (ش٢) — طباعة سند حركة أمانة (إيداع/سحب/استبدال) A4. نمط قوالب V2.
 // بلا أيّ مجموع ماليّ (بضاعة لا فاتورة) — عدد القطع فقط + توقيعان. esc() على كل حقل حرّ.
 import { BRAND, CAIRO_FONT, CO, esc, logoUrl, openPrintWindow } from "./brand";
+import { fmtQty } from "@shared/quantityFormat";
 
 export interface ConsignmentNoteForPrint {
   noteNumber: string;
@@ -30,7 +31,7 @@ export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
         ${showDir ? `<td class="c"><span class="dir ${l.lineDirection === "IN" ? "in" : "out"}">${l.lineDirection === "IN" ? "إيداع" : "سحب"}</span></td>` : ""}
         <td>${esc(l.productName)}</td>
         <td class="mono">${esc(l.sku ?? "")}</td>
-        <td class="c">${esc(l.quantity)}</td>
+        <td class="c">${esc(fmtQty(l.quantity))}</td>
       </tr>`,
     )
     .join("");

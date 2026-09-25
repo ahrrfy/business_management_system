@@ -12,7 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -43,7 +43,7 @@ const columns: ColumnDef<Row, unknown>[] = [
     cell: ({ row }) => <ActorCell actor={{ name: row.original.soldByName }} />,
   },
   { id: "productName", header: "المنتج", accessorFn: (r) => r.productName, meta: { width: "wide" }, cell: ({ row }) => row.original.productName },
-  { id: "quantity", header: "الكمية", accessorFn: (r) => fmtAr(r.quantity), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.quantity) },
+  { id: "quantity", header: "الكمية", accessorFn: (r) => formatQuantity(r.quantity), meta: { kind: "number" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
   {
     id: "unitPrice",
     header: "السعر",
@@ -179,7 +179,7 @@ export default function SalesRegister() {
           customer: r.customerName ?? "—",
           soldBy: r.soldByName ?? "—",
           product: r.productName,
-          qty: fmtAr(r.quantity),
+          qty: formatQuantity(r.quantity),
           price: fmtAr(r.unitPrice),
           cost: fmtAr(r.unitCost),
           total: fmtAr(r.total),

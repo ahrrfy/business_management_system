@@ -13,7 +13,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -91,9 +91,9 @@ function TypeBadge({ type }: { type: MovementType }) {
 // الكمية الموقَّعة تأتي من الخادم (signedQty عبر signedMoveQty — نفس مصدر الكاردكس/الجرد)، تشمل اتجاه
 // ADJUST المستنبَط من علامة «(فرق ±D)». هنا نُنسّق العرض فقط — لا تخمين اتجاه في العميل (تدقيق ١١/٨).
 function fmtSignedQty(signed: number): string {
-  if (signed > 0) return `+${fmtInt(signed)}`;
-  if (signed < 0) return `−${fmtInt(Math.abs(signed))}`;
-  return fmtInt(0);
+  if (signed > 0) return `+${formatQuantity(signed)}`;
+  if (signed < 0) return `−${formatQuantity(Math.abs(signed))}`;
+  return formatQuantity(0);
 }
 
 /* ============================ Page ============================ */

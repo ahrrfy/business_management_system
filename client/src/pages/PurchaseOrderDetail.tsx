@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { D, fmtAr, positiveDiff } from "@/lib/money";
+import { D, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
@@ -58,15 +58,15 @@ function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
       ),
     },
     { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName ?? "—", cell: ({ row }) => row.original.unitName ?? "—" },
-    { id: "quantity", header: "الكمية", accessorFn: (it) => fmtAr(it.quantity), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.quantity) },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => formatQuantity(it.quantity), meta: { kind: "number" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
     {
       // الطرفان بوحدة الأساس: `quantity` بوحدة الشراء و`receivedBaseQuantity` بالأساس،
       // فمقارنتهما مباشرةً تُظهر «٢ مطلوب / ٢٤ مستلَم» لكرتونٍ من ١٢.
       id: "received",
       header: "المستلَم / المطلوب (أساس)",
-      accessorFn: (it) => fmtAr(it.receivedBaseQuantity) + " / " + fmtAr(it.baseQuantity),
+      accessorFn: (it) => formatQuantity(it.receivedBaseQuantity) + " / " + formatQuantity(it.baseQuantity),
       meta: { kind: "number" },
-      cell: ({ row }) => fmtAr(row.original.receivedBaseQuantity) + " / " + fmtAr(row.original.baseQuantity),
+      cell: ({ row }) => formatQuantity(row.original.receivedBaseQuantity) + " / " + formatQuantity(row.original.baseQuantity),
     },
     {
       id: "unitPrice",

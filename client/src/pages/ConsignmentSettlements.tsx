@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 
 import { confirm } from "@/lib/confirm";
-import { fmtAr as fmt } from "@/lib/money";
+import { fmtAr as fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
@@ -103,7 +103,7 @@ export default function ConsignmentSettlements() {
     if (!w) return;
     const lineRows = s.lines
       .map(
-        (l) => `<tr><td>${esc(l.productName)} <span class="muted">${esc(l.sku)}</span></td><td class="num">${esc(String(l.soldQty))}</td><td class="num">${esc(fmt(l.soldValue))}</td><td class="num">${esc(fmt(l.share))}</td><td class="num">${esc(fmt(l.margin))}</td></tr>`,
+        (l) => `<tr><td>${esc(l.productName)} <span class="muted">${esc(l.sku)}</span></td><td class="num">${esc(formatQuantity(l.soldQty))}</td><td class="num">${esc(fmt(l.soldValue))}</td><td class="num">${esc(fmt(l.share))}</td><td class="num">${esc(fmt(l.margin))}</td></tr>`,
       )
       .join("");
     w.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف تسوية مودِع</title>
@@ -131,7 +131,7 @@ export default function ConsignmentSettlements() {
       </div>
       <table><thead><tr><th>المنتج</th><th>كمية</th><th>مُباع</th><th>حصّة</th><th>هامش</th></tr></thead>
       <tbody>${lineRows || `<tr><td colspan="5" class="muted">لا مبيعات في هذه الفترة.</td></tr>`}</tbody></table>
-      <p class="muted">البضاعة المتبقية لدى المكتبة: ${esc(String(s.remaining.qty))} قطعة — قيمتها بالحصّة ${esc(fmt(s.remaining.valueByShare))} د.ع.</p>
+      <p class="muted">البضاعة المتبقية لدى المكتبة: ${esc(formatQuantity(s.remaining.qty))} قطعة — قيمتها بالحصّة ${esc(fmt(s.remaining.valueByShare))} د.ع.</p>
       <script>setTimeout(()=>window.print(),300)</script>
       </body></html>`);
     w.document.close();
@@ -375,7 +375,7 @@ export default function ConsignmentSettlements() {
                         </>
                       ),
                     },
-                    { id: "qty", header: "كمية", meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.soldQty },
+                    { id: "qty", header: "كمية", meta: { kind: "number", align: "center" }, cell: ({ row }) => formatQuantity(row.original.soldQty) },
                     { id: "sold", header: "مُباع", meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.soldValue) },
                     { id: "share", header: "حصّة", meta: { kind: "money" }, cell: ({ row }) => <span className="text-muted-foreground">{fmt(row.original.share)}</span> },
                     { id: "margin", header: "هامش", meta: { kind: "money" }, cell: ({ row }) => <span className="text-[var(--money-positive)]">{fmt(row.original.margin)}</span> },
@@ -383,7 +383,7 @@ export default function ConsignmentSettlements() {
                 />
               </div>
               <div className="flex items-center gap-6 text-sm border-t pt-3">
-                <span>البضاعة المتبقية لدى المكتبة: <b className="tabular-nums">{statement.data.remaining.qty}</b> قطعة</span>
+                <span>البضاعة المتبقية لدى المكتبة: <b className="tabular-nums">{formatQuantity(statement.data.remaining.qty)}</b> قطعة</span>
                 <span className="text-muted-foreground">قيمتها بالحصّة: <span className="tabular-nums" dir="ltr">{fmt(statement.data.remaining.valueByShare)}</span></span>
               </div>
             </div>

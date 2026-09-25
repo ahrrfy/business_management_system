@@ -14,7 +14,7 @@ import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -620,7 +620,7 @@ export default function GiftsHub() {
                       { id: "product", header: "المنتج", meta: { width: "wide" }, cell: ({ row }) => row.original.productName },
                       { id: "sku", header: "SKU", meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.sku}</span> },
                       { id: "unit", header: "الوحدة", cell: ({ row }) => row.original.unitName },
-                      { id: "qty", header: "الكمية", meta: { kind: "number" }, cell: ({ row }) => Number(row.original.quantity) },
+                      { id: "qty", header: "الكمية", meta: { kind: "number" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
                     ]}
                   />
                 </div>
