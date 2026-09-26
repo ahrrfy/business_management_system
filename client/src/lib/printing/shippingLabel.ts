@@ -110,21 +110,31 @@ export async function shippingLabelHtml(
   const isCompact = h <= 60;
   const isLandscape = !isCompact && w > h;
 
-  // إعداد قائمة الأصناف بحدود جدول صارمة وعدد مضبوط لمنع الفيضان خارج الملصق نهائياً (صفحة واحدة فقط)
-  const MAX_PORTRAIT_ITEMS = 2;
-  const displayItems = o.items.slice(0, MAX_PORTRAIT_ITEMS);
-  const remainingCount = o.items.length - MAX_PORTRAIT_ITEMS;
+  // حساب سعة الأصناف ديناميكياً حسب الارتفاع المتاح لمنع تجاوز صفحة واحدة
+  let maxItems = 2;
+  if (isLandscape) {
+    maxItems = h >= 90 ? 4 : 2;
+  } else if (h >= 140) {
+    maxItems = 10;
+  } else if (h >= 115) {
+    maxItems = 6;
+  } else if (h >= 95) {
+    maxItems = 4;
+  }
+
+  const displayItems = o.items.slice(0, maxItems);
+  const remainingCount = o.items.length - maxItems;
 
   const itemsRows = displayItems.map((it) => `
     <tr>
-      <td style="border:1px solid #000;text-align:center;font-weight:900;font-size:7.5pt;padding:0.3mm 0.5mm;width:10%;">[ &nbsp; ]</td>
-      <td style="border:1px solid #000;font-weight:800;padding:0.3mm 0.6mm;font-size:7pt;line-height:1.15;">${esc(it.productName)}${it.unitName ? ` (${esc(it.unitName)})` : ""}</td>
-      <td style="border:1px solid #000;text-align:center;font-weight:900;padding:0.3mm 0.5mm;font-size:7.5pt;direction:ltr;width:18%;font-variant-numeric:tabular-nums;">×${fmtQty(it.quantity)}</td>
+      <td style="border:1px solid #000;text-align:center;font-weight:900;font-size:7pt;padding:0.25mm 0.5mm;width:10%;">[ &nbsp; ]</td>
+      <td style="border:1px solid #000;font-weight:800;padding:0.25mm 0.6mm;font-size:6.8pt;line-height:1.15;">${esc(it.productName)}${it.unitName ? ` (${esc(it.unitName)})` : ""}</td>
+      <td style="border:1px solid #000;text-align:center;font-weight:900;padding:0.25mm 0.5mm;font-size:7pt;direction:ltr;width:18%;font-variant-numeric:tabular-nums;">×${fmtQty(it.quantity)}</td>
     </tr>
   `).join("") + (remainingCount > 0 ? `
     <tr>
-      <td style="border:1px solid #000;text-align:center;font-weight:900;font-size:7pt;padding:0.25mm;">[ &nbsp; ]</td>
-      <td style="border:1px solid #000;font-weight:800;padding:0.25mm 0.6mm;font-size:6.5pt;" colspan="2">+ ${remainingCount} صنف إضافي في الفاتورة المرفقة</td>
+      <td style="border:1px solid #000;text-align:center;font-weight:900;font-size:6.5pt;padding:0.2mm;">[ &nbsp; ]</td>
+      <td style="border:1px solid #000;font-weight:800;padding:0.2mm 0.6mm;font-size:6.5pt;" colspan="2">+ ${remainingCount} صنف إضافي في الفاتورة المرفقة</td>
     </tr>
   ` : "");
 

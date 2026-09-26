@@ -1,14 +1,51 @@
-import { formatBaghdadTime } from "@/lib/format";
+import { formatBaghdadTime } from "./format";
 
-const getBackendUrl = (): string => {
-  if (typeof window !== "undefined" && window.location) {
+export const getBackendUrl = (): string => {
+  let expoApiUrl: string | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Constants = require("expo-constants");
+    expoApiUrl = (Constants?.default || Constants)?.expoConfig?.extra?.apiBaseUrl;
+  } catch {
+    // In Node test environments where expo-constants is not available
+  }
+
+  const configured =
+    expoApiUrl ||
+    process.env.EXPO_PUBLIC_API_URL ||
+    process.env.ERP_API_BASE_URL;
+  if (configured && typeof configured === "string" && configured.trim().length > 0) {
+    return configured.trim();
+  }
+  if (typeof window !== "undefined" && window.location && window.location.origin) {
     if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
       return "http://localhost:3000";
     }
     return window.location.origin;
   }
-  return "http://localhost:3000";
+  return "https://srv1548487.hstgr.cloud";
 };
+
+export function getTodayBaghdadYmd(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+export function formatYmdInBaghdad(dateInput?: string | Date | null): string {
+  if (!dateInput) return "";
+  const d = typeof dateInput === "string" ? new Date(dateInput) : dateInput;
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
 
 async function trpcQuery<T>(path: string, input?: Record<string, unknown>): Promise<T> {
   const url = new URL(`${getBackendUrl()}/api/trpc/${path}`);
@@ -41,6 +78,34 @@ async function trpcQuery<T>(path: string, input?: Record<string, unknown>): Prom
   return data?.result?.data?.json as T;
 }
 
+async function trpcMutation<T>(path: string, input?: Record<string, unknown>): Promise<T> {
+  const url = `${getBackendUrl()}/api/trpc/${path}?batch=1`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-erp-csrf": "1",
+    },
+    credentials: "include",
+    body: JSON.stringify({ "0": { json: input ?? {} } }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.json?.message || `خطأ في الاتصال بالخادم (${res.status})`);
+  }
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    if (data[0]?.error) {
+      throw new Error(data[0].error.json?.message || "خطأ في معالجة الطلب");
+    }
+    return data[0]?.result?.data?.json as T;
+  }
+  if (data?.error) {
+    throw new Error(data.error.json?.message || "خطأ في معالجة الطلب");
+  }
+  return data?.result?.data?.json as T;
+}
+
 export type RealInvoice = {
   id: string;
   invoiceNumber: string;
@@ -49,11 +114,14 @@ export type RealInvoice = {
   salespersonName?: string;
   branchName: string;
   amount: number;
-  paymentMethod: "CASH" | "CARD" | "CREDIT";
-  status: "PAID" | "PENDING" | "CANCELLED";
+  paidAmount: number;
+  remainingAmount: number;
+  paymentMethod: "CASH" | "CARD" | "WALLET" | "TRANSFER" | "MIXED" | "CREDIT";
+  status: "PAID" | "PENDING" | "CANCELLED" | "RETURNED" | "SUPERSEDED" | "PARTIALLY_PAID";
   createdAt: string;
+  invoiceDateYmd: string;
   itemCount: number;
-  items: { name: string; qty: number; unitPrice: number; total: number }[];
+  items: { name: string; qty: number; unitPrice: number; total: number; unitName?: string }[];
 };
 
 export async function fetchRealInvoices(options?: {
@@ -70,19 +138,41 @@ export async function fetchRealInvoices(options?: {
     return rawList.map((row) => {
       const amount = parseFloat(row.total || "0");
       const paid = parseFloat(row.paidAmount || "0");
+      const remainingAmount = Math.max(0, amount - paid);
+
+      const rawStatus = String(row.status || "").toUpperCase();
       let status: RealInvoice["status"] = "PENDING";
-      if (row.status === "CANCELLED") status = "CANCELLED";
-      else if (paid >= amount && amount > 0) status = "PAID";
-      else if (row.status === "COMPLETED" || row.status === "PAID") status = "PAID";
+      if (rawStatus === "CANCELLED") {
+        status = "CANCELLED";
+      } else if (rawStatus === "RETURNED") {
+        status = "RETURNED";
+      } else if (rawStatus === "SUPERSEDED") {
+        status = "SUPERSEDED";
+      } else if (paid >= amount && amount > 0) {
+        status = "PAID";
+      } else if (paid > 0 && paid < amount) {
+        status = "PARTIALLY_PAID";
+      } else if (rawStatus === "COMPLETED" || rawStatus === "PAID") {
+        status = "PAID";
+      }
 
       let paymentMethod: RealInvoice["paymentMethod"] = "CASH";
-      if (row.paymentMethod === "CARD" || row.paymentMethod === "ZAIN_CASH" || row.paymentMethod === "QI_CARD") {
+      const rawPm = String(row.paymentMethod || "").toUpperCase();
+      if (rawPm === "CARD" || rawPm === "QI_CARD") {
         paymentMethod = "CARD";
-      } else if (row.paymentMethod === "DEBT" || row.paymentMethod === "CREDIT" || status === "PENDING") {
+      } else if (rawPm === "WALLET" || rawPm === "ZAIN_CASH") {
+        paymentMethod = "WALLET";
+      } else if (rawPm === "TRANSFER") {
+        paymentMethod = "TRANSFER";
+      } else if (rawPm === "MIXED") {
+        paymentMethod = "MIXED";
+      } else if (rawPm === "DEBT" || rawPm === "CREDIT" || status === "PENDING") {
         paymentMethod = "CREDIT";
       }
 
       const branchName = row.branchId === 2 ? "فرع الكرادة" : "الفرع الرئيسي - المنصور";
+      const invoiceDateRaw = row.invoiceDate || row.createdAt;
+      const invoiceDateYmd = formatYmdInBaghdad(invoiceDateRaw) || (typeof invoiceDateRaw === "string" ? invoiceDateRaw.slice(0, 10) : "");
 
       return {
         id: String(row.id),
@@ -92,10 +182,13 @@ export async function fetchRealInvoices(options?: {
         salespersonName: row.salespersonName || undefined,
         branchName,
         amount,
+        paidAmount: paid,
+        remainingAmount,
         paymentMethod,
         status,
-        createdAt: formatBaghdadTime(row.invoiceDate || row.createdAt) ?? "—",
-        itemCount: 1,
+        createdAt: formatBaghdadTime(invoiceDateRaw) ?? "—",
+        invoiceDateYmd,
+        itemCount: Number(row.itemCount ?? 1),
         items: [
           {
             name: `فاتورة مبيعات رقم ${row.invoiceNumber || row.id}`,
@@ -109,6 +202,39 @@ export async function fetchRealInvoices(options?: {
   } catch (error) {
     console.error("fetchRealInvoices failed:", error);
     throw error;
+  }
+}
+
+export async function fetchRealInvoiceDetails(invoiceId: number): Promise<{
+  id: string;
+  invoiceNumber: string;
+  items: { name: string; qty: number; unitPrice: number; total: number; unitName?: string }[];
+  payments: { amount: number; paymentMethod: string; createdAt: string }[];
+} | null> {
+  try {
+    const raw = await trpcQuery<any>("sales.get", { invoiceId });
+    if (!raw) return null;
+    const items = (raw.items || []).map((it: any) => ({
+      name: it.productName || it.variantName || `صنف #${it.productId}`,
+      qty: Number(it.quantity ?? it.baseQuantity ?? 1),
+      unitPrice: parseFloat(it.unitPrice || "0"),
+      total: parseFloat(it.total || "0"),
+      unitName: it.unitName || undefined,
+    }));
+    const payments = (raw.payments || []).map((p: any) => ({
+      amount: parseFloat(p.amount || "0"),
+      paymentMethod: p.paymentMethod || "CASH",
+      createdAt: formatBaghdadTime(p.createdAt) ?? "—",
+    }));
+    return {
+      id: String(raw.id),
+      invoiceNumber: String(raw.invoiceNumber || raw.id),
+      items,
+      payments,
+    };
+  } catch (err) {
+    console.error(`fetchRealInvoiceDetails(${invoiceId}) failed:`, err);
+    return null;
   }
 }
 
@@ -130,19 +256,40 @@ export async function fetchRealInventory(options?: {
   limit?: number;
 }): Promise<RealInventoryItem[]> {
   try {
-    const result = await trpcQuery<{ rows: any[] }>("catalog.adminList", {
-      branchId: 1,
-      limit: options?.limit ?? 60,
-      q: options?.query?.trim() || undefined,
-    });
-    if (!result?.rows || !Array.isArray(result.rows)) return [];
+    const [mansourRes, karradaRes] = await Promise.all([
+      trpcQuery<{ rows: any[] }>("catalog.adminList", {
+        branchId: 1,
+        limit: options?.limit ?? 60,
+        q: options?.query?.trim() || undefined,
+      }),
+      trpcQuery<{ rows: any[] }>("catalog.adminList", {
+        branchId: 2,
+        limit: options?.limit ?? 60,
+        q: options?.query?.trim() || undefined,
+      }).catch(() => null),
+    ]);
 
-    return result.rows.map((row) => {
-      const stock = Number(row.availableBase ?? row.stockBase ?? 0);
+    if (!mansourRes?.rows || !Array.isArray(mansourRes.rows)) return [];
+
+    const karradaStockMap = new Map<number, number>();
+    if (karradaRes?.rows && Array.isArray(karradaRes.rows)) {
+      for (const r of karradaRes.rows) {
+        const factor = Number(r.conversionFactor) > 0 ? Number(r.conversionFactor) : 1;
+        const base = Number(r.availableBase ?? r.stockBase ?? 0);
+        karradaStockMap.set(Number(r.productId), Math.floor(base / factor));
+      }
+    }
+
+    return mansourRes.rows.map((row) => {
+      const factor = Number(row.conversionFactor) > 0 ? Number(row.conversionFactor) : 1;
+      const base = Number(row.availableBase ?? row.stockBase ?? 0);
+      const stock = Math.floor(base / factor);
+      const karradaQty = karradaStockMap.get(Number(row.productId)) ?? 0;
       const reorder = Number(row.reorderPoint ?? row.minStock ?? 5);
+      const totalAvailable = stock + karradaQty;
       let status: RealInventoryItem["status"] = "IN_STOCK";
-      if (stock <= 0) status = "OUT_OF_STOCK";
-      else if (stock <= reorder) status = "LOW_STOCK";
+      if (totalAvailable <= 0) status = "OUT_OF_STOCK";
+      else if (totalAvailable <= reorder) status = "LOW_STOCK";
 
       return {
         id: String(row.productId),
@@ -150,7 +297,7 @@ export async function fetchRealInventory(options?: {
         barcode: row.barcode || "لا يوجد باركود",
         category: row.categoryName || "عام",
         branchMansourQty: stock,
-        branchKarradaQty: 0,
+        branchKarradaQty: karradaQty,
         reorderLevel: reorder,
         unitPrice: parseFloat(row.price || "0"),
         unit: row.unitName || "قطعة",
@@ -199,6 +346,8 @@ export async function fetchRealCustomers(): Promise<RealCustomer[]> {
 
 export type RealApproval = {
   id: string;
+  numericId: number;
+  kind: string;
   type: "DISCOUNT" | "CREDIT" | "EXPENSE" | "LEAVE" | "STOCK_ADJUSTMENT";
   title: string;
   amount?: number;
@@ -207,28 +356,108 @@ export type RealApproval = {
   notes: string;
   createdAt: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
+  expectedVersion?: number | null;
+  allowedActions?: ("APPROVE" | "REJECT" | "WITHDRAW")[];
 };
 
 export async function fetchRealApprovals(): Promise<RealApproval[]> {
   try {
-    const rawList = await trpcQuery<any[]>("superApp.approvalInbox", { limit: 30 });
+    const inbox = await trpcQuery<{ rows: any[] }>("decisions.inbox", { limit: 40 }).catch(() => null);
+    if (inbox?.rows && Array.isArray(inbox.rows)) {
+      return inbox.rows.map((row) => {
+        let type: RealApproval["type"] = "EXPENSE";
+        const kind = String(row.kind || "").toLowerCase();
+        if (kind.includes("stock") || kind.includes("inventory")) {
+          type = "STOCK_ADJUSTMENT";
+        } else if (kind.includes("leave") || kind.includes("hr")) {
+          type = "LEAVE";
+        } else if (kind.includes("sale") || kind.includes("discount")) {
+          type = "DISCOUNT";
+        } else if (kind.includes("credit") || kind.includes("voucher")) {
+          type = "CREDIT";
+        }
+
+        const notes =
+          row.reason ||
+          (Array.isArray(row.summaryItems)
+            ? row.summaryItems.map((s: any) => `${s.label}: ${s.value}`).join(" · ")
+            : "بانتظار المراجعة والاعتماد");
+
+        return {
+          id: `${row.kind}-${row.id}`,
+          numericId: Number(row.id),
+          kind: String(row.kind),
+          type,
+          title: row.title || "طلب اعتماد معلق",
+          amount: row.amount ? parseFloat(row.amount) : undefined,
+          requesterName: row.requestedByName || "مستخدم النظام",
+          branchName: row.branchName || "الفرع الرئيسي",
+          notes,
+          createdAt: formatBaghdadTime(row.requestedAt) ?? "—",
+          status: "PENDING",
+          expectedVersion: row.expectedVersion ?? null,
+          allowedActions: row.allowedActions,
+        };
+      });
+    }
+
+    const rawList = await trpcQuery<any[]>("superApp.approvalInbox", { limit: 40 });
     if (!Array.isArray(rawList)) return [];
 
-    return rawList.map((row) => ({
-      id: String(row.id),
-      type: row.type || "EXPENSE",
-      title: row.title || "طلب اعتماد معلق",
-      amount: row.amount ? parseFloat(row.amount) : undefined,
-      requesterName: row.requesterName || "مستخدم النظام",
-      branchName: row.branchName || "الفرع الرئيسي",
-      notes: row.notes || "بانتظار المراجعة والاعتماد",
-      createdAt: formatBaghdadTime(row.createdAt || new Date().toISOString()) ?? "—",
-      status: "PENDING",
-    }));
+    return rawList.map((row) => {
+      let kind = "expense.approve";
+      let type: RealApproval["type"] = "EXPENSE";
+      if (row.kind === "inventory") {
+        kind = "inventory.adjustment.approve";
+        type = "STOCK_ADJUSTMENT";
+      } else if (row.kind === "leave") {
+        kind = "hr.leave.decide";
+        type = "LEAVE";
+      } else if (row.kind === "voucher") {
+        kind = "treasury.voucher.approve";
+        type = "CREDIT";
+      } else if (row.kind === "sales_control") {
+        kind = "sales.control.approve";
+        type = "DISCOUNT";
+      }
+
+      return {
+        id: `${kind}-${row.id}`,
+        numericId: Number(row.id),
+        kind,
+        type,
+        title: row.title || "طلب اعتماد معلق",
+        amount: row.amount ? parseFloat(String(row.amount)) : undefined,
+        requesterName: row.requesterName || "مستخدم النظام",
+        branchName: row.branchName || "الفرع الرئيسي",
+        notes: row.detail || row.notes || "بانتظار المراجعة والاعتماد",
+        createdAt: formatBaghdadTime(row.createdAt || new Date().toISOString()) ?? "—",
+        status: "PENDING",
+        expectedVersion: null,
+      };
+    });
   } catch (error) {
     console.error("fetchRealApprovals failed:", error);
     return [];
   }
+}
+
+export async function submitRealDecision(input: {
+  kind: string;
+  id: number;
+  action: "APPROVE" | "REJECT";
+  reason?: string;
+  expectedVersion?: number | null;
+}): Promise<{ outcome: string }> {
+  const clientRequestId = `mob-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  return trpcMutation<{ outcome: string }>("decisions.decide", {
+    kind: input.kind,
+    id: input.id,
+    action: input.action,
+    clientRequestId,
+    reason: input.reason?.trim() || undefined,
+    expectedVersion: input.expectedVersion ?? null,
+  });
 }
 
 export type RealTreasuryOverview = {
@@ -245,83 +474,59 @@ export type RealTreasuryOverview = {
 };
 
 export async function fetchRealTreasuryOverview(): Promise<RealTreasuryOverview> {
+  const dashboard = await trpcQuery<any>("treasury.getDashboard");
+  const treasuryBalance = (dashboard?.treasuryBalances || []).reduce(
+    (sum: number, b: any) => sum + parseFloat(b.balance || "0"),
+    0,
+  );
+  const drawerBalance = (dashboard?.drawerBalances || []).reduce(
+    (sum: number, d: any) => sum + parseFloat(d.expectedCash || "0"),
+    0,
+  );
+  const todayReceipts = parseFloat(dashboard?.todayReceiptsTotal || "0");
+  const todayExpenses = parseFloat(dashboard?.todayExpensesTotal || "0");
+
+  const branchTreasuries = (dashboard?.treasuryBalances || []).map((b: any) => ({
+    branchId: b.branchId || 1,
+    branchName: b.branchName || (b.branchId === 2 ? "فرع الكرادة" : "الفرع الرئيسي - المنصور"),
+    balance: parseFloat(b.balance || "0"),
+  }));
+
+  const activeDrawers = (dashboard?.drawerBalances || []).map((d: any) => ({
+    shiftId: d.shiftId || 1,
+    cashierName: d.cashierName || "كاشير مناوب",
+    branchName: d.branchName || (d.branchId === 2 ? "فرع الكرادة" : "الفرع الرئيسي"),
+    expectedCash: parseFloat(d.expectedCash || "0"),
+  }));
+
+  let recentMovements: RealTreasuryOverview["recentMovements"] = [];
   try {
-    const dashboard = await trpcQuery<any>("treasury.getDashboard");
-    const treasuryBalance = dashboard?.treasuryBalances?.reduce(
-      (sum: number, b: any) => sum + parseFloat(b.balance || "0"),
-      0,
-    ) ?? 140687454;
-    const drawerBalance = dashboard?.drawerBalances?.reduce(
-      (sum: number, d: any) => sum + parseFloat(d.expectedCash || "0"),
-      0,
-    ) ?? 231500;
-    const todayReceipts = parseFloat(dashboard?.todayReceiptsTotal || "205500");
-    const todayExpenses = parseFloat(dashboard?.todayExpensesTotal || "2000");
-
-    const branchTreasuries = (dashboard?.treasuryBalances || []).map((b: any) => ({
-      branchId: b.branchId || 1,
-      branchName: b.branchName || (b.branchId === 2 ? "فرع الكرادة" : "الفرع الرئيسي - المنصور"),
-      balance: parseFloat(b.balance || "0"),
+    const movementsRes = await trpcQuery<any>("treasury.getRecentMovements", { limit: 10 });
+    const rows = movementsRes?.rows || (Array.isArray(movementsRes) ? movementsRes : []);
+    recentMovements = rows.map((m: any) => ({
+      id: String(m.id || Math.random()),
+      type: m.type === "EXPENSE" ? "EXPENSE" : "RECEIPT",
+      amount: parseFloat(m.amount || "0"),
+      description: m.description || m.categoryName || (m.type === "EXPENSE" ? "صرف مصاريف تشغيلية" : "مقبوضات مبيعات"),
+      branchName: m.branchId === 2 ? "فرع الكرادة" : "الفرع الرئيسي",
+      createdAt: formatBaghdadTime(m.createdAt || new Date().toISOString()) ?? "اليوم",
     }));
-
-    const activeDrawers = (dashboard?.drawerBalances || []).map((d: any) => ({
-      shiftId: d.shiftId || 1,
-      cashierName: d.cashierName || "كاشير مناوب",
-      branchName: d.branchName || (d.branchId === 2 ? "فرع الكرادة" : "الفرع الرئيسي"),
-      expectedCash: parseFloat(d.expectedCash || "0"),
-    }));
-
-    let recentMovements: RealTreasuryOverview["recentMovements"] = [];
-    try {
-      const movementsRes = await trpcQuery<any>("treasury.getRecentMovements", { limit: 10 });
-      const rows = movementsRes?.rows || (Array.isArray(movementsRes) ? movementsRes : []);
-      recentMovements = rows.map((m: any) => ({
-        id: String(m.id || Math.random()),
-        type: m.type === "EXPENSE" ? "EXPENSE" : "RECEIPT",
-        amount: parseFloat(m.amount || "0"),
-        description: m.description || m.categoryName || (m.type === "EXPENSE" ? "صرف مصاريف تشغيلية" : "مقبوضات مبيعات"),
-        branchName: m.branchId === 2 ? "فرع الكرادة" : "الفرع الرئيسي",
-        createdAt: formatBaghdadTime(m.createdAt || new Date().toISOString()) ?? "اليوم",
-      }));
-    } catch {
-      // If movements fails, fallback gracefully
-      recentMovements = [];
-    }
-
-    return {
-      treasuryBalance,
-      drawerBalance,
-      totalLiquidCash: treasuryBalance + drawerBalance,
-      todayReceipts,
-      todayExpenses,
-      netTodayCashFlow: todayReceipts - todayExpenses,
-      openShiftsCount: dashboard?.openShiftsCount || activeDrawers.length,
-      branchTreasuries,
-      activeDrawers,
-      recentMovements,
-    };
-  } catch (error) {
-    console.error("fetchRealTreasuryOverview failed:", error);
-    // Provide robust fallback with real database balance figures
-    return {
-      treasuryBalance: 140687454,
-      drawerBalance: 231500,
-      totalLiquidCash: 140918954,
-      todayReceipts: 205500,
-      todayExpenses: 2000,
-      netTodayCashFlow: 203500,
-      openShiftsCount: 2,
-      branchTreasuries: [
-        { branchId: 1, branchName: "الفرع الرئيسي - المنصور", balance: 135450000 },
-        { branchId: 2, branchName: "فرع الكرادة", balance: 5237454 },
-      ],
-      activeDrawers: [
-        { shiftId: 101, cashierName: "أحمد الكاشير (tray)", branchName: "المنصور", expectedCash: 142500 },
-        { shiftId: 102, cashierName: "حيدر فلاح (hydr.flah)", branchName: "الكرادة", expectedCash: 89000 },
-      ],
-      recentMovements: [],
-    };
+  } catch {
+    recentMovements = [];
   }
+
+  return {
+    treasuryBalance,
+    drawerBalance,
+    totalLiquidCash: treasuryBalance + drawerBalance,
+    todayReceipts,
+    todayExpenses,
+    netTodayCashFlow: todayReceipts - todayExpenses,
+    openShiftsCount: dashboard?.openShiftsCount || activeDrawers.length,
+    branchTreasuries,
+    activeDrawers,
+    recentMovements,
+  };
 }
 
 export type RealSupplier = {
@@ -374,8 +579,8 @@ export async function fetchRealPurchases(): Promise<RealPurchaseOrder[]> {
       supplierName: row.supplierName || "مورد معتمد",
       total: parseFloat(row.total || "0"),
       paidAmount: parseFloat(row.paidAmount || "0"),
-      currency: row.poCurrency || "IQD",
-      status: row.poStatus || "CONFIRMED",
+      currency: row.agreedCurrency || row.poCurrency || "IQD",
+      status: row.status || row.poStatus || "CONFIRMED",
       orderDate: formatBaghdadTime(row.orderDate || row.createdAt) ?? "—",
     }));
   } catch (error) {
@@ -383,4 +588,3 @@ export async function fetchRealPurchases(): Promise<RealPurchaseOrder[]> {
     return [];
   }
 }
-

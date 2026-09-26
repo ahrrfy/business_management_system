@@ -25,33 +25,6 @@ import { useWorkspaceAccess } from "@/lib/workspaceAccess";
 
 type Step = "credentials" | "twoFactor";
 
-const PROD_TEST_ACCOUNTS = [
-  {
-    roleTitle: "المدير العام والمالك",
-    displayName: "أحمد خالد الزبيدي",
-    identifier: "ahrrfy",
-    badge: "صلاحيات كاملة",
-    icon: "shield-checkmark" as const,
-    color: "#0E806A",
-  },
-  {
-    roleTitle: "مدير الفرع والمبيعات",
-    displayName: "حيدر فلاح",
-    identifier: "hydr.flah",
-    badge: "إدارة الفروع",
-    icon: "briefcase" as const,
-    color: "#2563EB",
-  },
-  {
-    roleTitle: "كاشير الصندوق والعمليات",
-    displayName: "أحمد الكاشير",
-    identifier: "tray",
-    badge: "نقطة البيع",
-    icon: "cart" as const,
-    color: "#D97706",
-  },
-];
-
 function readableError(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (/invalid login (identifier|password)/i.test(message) || /البريد أو كلمة المرور غير صحيحة/i.test(message)) {
@@ -124,15 +97,6 @@ export default function SignInScreen() {
     }
   };
 
-  const selectQuickAccount = (acc: typeof PROD_TEST_ACCOUNTS[0]) => {
-    if (Platform.OS !== "web") {
-      void Haptics.selectionAsync().catch(() => {});
-    }
-    setIdentifier(acc.identifier);
-    setPassword("");
-    setError(null);
-  };
-
   const submitTwoFactor = async () => {
     if (!ticket || (!twoFactorCode.trim() && !recoveryCode.trim())) {
       setError("اكتب رمز التحقق أو رمز الاسترداد.");
@@ -174,54 +138,15 @@ export default function SignInScreen() {
           </View>
         </View>
 
-        {/* Quick Roles Section */}
-        {step === "credentials" && (
-          <View style={styles.quickSection}>
-            <View style={styles.quickSectionHeader}>
-              <Ionicons name="flash-outline" size={16} color="#D4AF37" />
-              <Text style={styles.quickSectionTitle}>الدخول التجريبي بالحسابات المعتمدة</Text>
-            </View>
-            <View style={styles.quickAccountsList}>
-              {PROD_TEST_ACCOUNTS.map((acc) => (
-                <Pressable
-                  key={acc.identifier}
-                  accessibilityRole="button"
-                  onPress={() => selectQuickAccount(acc)}
-                  style={({ pressed }) => [
-                    styles.quickCard,
-                    pressed && styles.quickCardPressed,
-                  ]}
-                >
-                  <View style={styles.quickCardRight}>
-                    <View style={[styles.quickCardIconWrap, { backgroundColor: acc.color + "18" }]}>
-                      <Ionicons name={acc.icon} size={20} color={acc.color} />
-                    </View>
-                    <View style={styles.quickCardText}>
-                      <View style={styles.quickCardTitleRow}>
-                        <Text style={styles.quickCardTitle}>{acc.roleTitle}</Text>
-                        <View style={[styles.quickBadge, { backgroundColor: acc.color + "15" }]}>
-                          <Text style={[styles.quickBadgeText, { color: acc.color }]}>{acc.badge}</Text>
-                        </View>
-                      </View>
-                      <Text style={styles.quickCardSub}>{acc.displayName} • ({acc.identifier})</Text>
-                    </View>
-                  </View>
-                  <Ionicons name="arrow-back" size={16} color={colors.mutedInk} />
-                </Pressable>
-              ))}
-            </View>
-          </View>
-        )}
-
-        {/* Manual Credentials / Two-Factor Form */}
+        {/* Secure Credentials / Two-Factor Form */}
         <Card>
           <View style={styles.formHeader}>
             <Text style={styles.formTitle}>
-              {step === "credentials" ? "الدخول اليدوي ببياناتك" : "التحقق بخطوتين (2FA)"}
+              {step === "credentials" ? "تسجيل الدخول الآمن" : "التحقق بخطوتين (2FA)"}
             </Text>
             <Text style={styles.formSubtitle}>
               {step === "credentials"
-                ? "أدخل اسم المستخدم أو البريد الإلكتروني وكلمة المرور المعتمدة بالنظام."
+                ? "أدخل معرف الدخول وكلمة المرور المعتمدة بالنظام."
                 : "أدخل رمز تطبيق المصادقة (TOTP) أو رمز الاسترداد المحفوظ لديك."}
             </Text>
           </View>
@@ -436,81 +361,6 @@ const styles = StyleSheet.create({
     color: "#6EE7B7",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 11,
-  },
-
-  quickSection: {
-    gap: space.xs,
-  },
-  quickSectionHeader: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: space.xxs,
-  },
-  quickSectionTitle: {
-    color: "#D4AF37",
-    fontFamily: "Cairo_700Bold",
-    fontSize: 13,
-  },
-  quickAccountsList: {
-    gap: space.xs,
-  },
-  quickCard: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#0C231E",
-    padding: space.sm,
-    borderRadius: radius.card,
-    borderWidth: 1,
-    borderColor: "#18433A",
-  },
-  quickCardPressed: {
-    backgroundColor: "#133830",
-    borderColor: "#D4AF37",
-  },
-  quickCardRight: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: space.sm,
-    flex: 1,
-  },
-  quickCardIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  quickCardText: {
-    flex: 1,
-    gap: 2,
-  },
-  quickCardTitleRow: {
-    flexDirection: "row-reverse",
-    alignItems: "center",
-    gap: 8,
-  },
-  quickCardTitle: {
-    color: "#F8FAFC",
-    fontFamily: "Cairo_700Bold",
-    fontSize: 14,
-    textAlign: "right",
-  },
-  quickBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 6,
-  },
-  quickBadgeText: {
-    fontFamily: "Cairo_600SemiBold",
-    fontSize: 10,
-  },
-  quickCardSub: {
-    color: "#94A3B8",
-    fontFamily: "Cairo_400Regular",
-    fontSize: 12,
-    textAlign: "right",
   },
 
   formHeader: {
