@@ -19,7 +19,7 @@ sitemapRouter.get("/robots.txt", (_req, res) => {
   res.status(200).send(fallback);
 });
 
-sitemapRouter.get("/sitemap.xml", async (req, res) => {
+const handleSitemap = async (req: import("express").Request, res: import("express").Response) => {
   try {
     const host = req.get("host") || "";
     const protocol = req.protocol === "https" || req.get("x-forwarded-proto") === "https" ? "https" : "http";
@@ -31,7 +31,10 @@ sitemapRouter.get("/sitemap.xml", async (req, res) => {
   } catch (err) {
     res.status(500).send("Error generating sitemap");
   }
-});
+};
+
+sitemapRouter.get("/sitemap.xml", handleSitemap);
+sitemapRouter.get("/store/sitemap.xml", handleSitemap);
 
 const handleMerchantFeed = async (req: import("express").Request, res: import("express").Response) => {
   try {
@@ -49,6 +52,7 @@ const handleMerchantFeed = async (req: import("express").Request, res: import("e
 
 sitemapRouter.get("/feeds/google-merchant.xml", handleMerchantFeed);
 sitemapRouter.get("/api/feeds/google-merchant.xml", handleMerchantFeed);
+sitemapRouter.get("/store/feeds/google-merchant.xml", handleMerchantFeed);
 
 // معالج التحقق من ملكية الموقع لمحرك بحث جوجل (Google Search Console)
 const handleGoogleVerification = (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
