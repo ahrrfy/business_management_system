@@ -14,6 +14,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
+import { formatQuantity } from "@shared/quantityFormat";
 import type { Currency, InvoiceLine, InvoiceType, PriceSource, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
@@ -579,20 +580,20 @@ export function ProductSearchBar({
                     {p.isService ? (
                       <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
                     ) : p.isBundle ? (
-                      <span>المتاح كبكج كامل: {fmtNum(p.availableBase)}</span>
+                      <span>المتاح كبكج كامل: {formatQuantity(p.availableBase)}</span>
                     ) : (
                       <>
-                        <span>فعلي: {fmtNum(p.stockBase)}</span>
+                        <span>فعلي: {formatQuantity(p.stockBase)}</span>
                         <span>•</span>
-                        <span className={stockBadgeColor(p.availableBase)}>متاح للبيع: {fmtNum(p.availableBase)}</span>
+                        <span className={stockBadgeColor(p.availableBase)}>متاح للبيع: {formatQuantity(p.availableBase)}</span>
                         {p.reservedBase > 0 && (
                           <>
                             <span>•</span>
-                            <span className="text-[var(--sem-warn)]">محجوز: {fmtNum(p.reservedBase)}</span>
+                            <span className="text-[var(--sem-warn)]">محجوز: {formatQuantity(p.reservedBase)}</span>
                             {p.reservedBase > p.stockBase && (
                               <>
                                 <span>•</span>
-                                <span>زيادة حجز: {fmtNum(p.reservedBase - p.stockBase)}</span>
+                                <span>زيادة حجز: {formatQuantity(p.reservedBase - p.stockBase)}</span>
                               </>
                             )}
                           </>

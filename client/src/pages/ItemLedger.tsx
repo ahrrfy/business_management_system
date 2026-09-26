@@ -302,7 +302,7 @@ export default function ItemLedger() {
                       <div className="font-medium">{variantLabel(v)}</div>
                       <div className="text-xs text-muted-foreground font-mono flex justify-between" dir="ltr">
                         <span>{v.sku}</span>
-                        <span>متاح {fmtInt(v.stockBase)}</span>
+                        <span>متاح {formatQuantity(v.stockBase)}</span>
                       </div>
                     </button>
                   ))}

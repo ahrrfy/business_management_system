@@ -310,7 +310,7 @@ export default function InventoryScreen() {
                             styles.qtyLow,
                         ]}
                       >
-                        {selectedItem.branchMansourQty} {selectedItem.unit}
+                        {formatQuantity(selectedItem.branchMansourQty)} {selectedItem.unit}
                       </Text>
                     </View>
 

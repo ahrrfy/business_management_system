@@ -198,7 +198,7 @@ export default function TransfersLog() {
       labels.set(
         Number(line.id),
         line.bundleComponents
-          .map((component) => `${fmtInt(component.baseQuantityPerBundle)} × ${component.productName}${component.variantName ? ` — ${component.variantName}` : ""}`)
+          .map((component) => `${formatQuantity(component.baseQuantityPerBundle)} × ${component.productName}${component.variantName ? ` — ${component.variantName}` : ""}`)
           .join(" + "),
       );
     }
@@ -229,7 +229,7 @@ export default function TransfersLog() {
       const st = recv[Number(l.id)] ?? { qty: String(l.quantitySent), note: "" };
       const q = st.qty.trim() === "" ? NaN : Number(st.qty);
       if (!Number.isInteger(q) || q < 0) return "كمية غير صالحة";
-      if (q > l.quantitySent) return `تتجاوز المرسَل (${l.quantitySent})`;
+      if (q > l.quantitySent) return `تتجاوز المرسَل (${formatQuantity(l.quantitySent)})`;
       if (q !== l.quantitySent && !st.note.trim()) return "الفرق يتطلّب ملاحظة";
       return "";
     });
