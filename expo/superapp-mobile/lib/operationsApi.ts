@@ -1,9 +1,17 @@
-import Constants from "expo-constants";
-import { formatBaghdadTime } from "@/lib/format";
+import { formatBaghdadTime } from "./format";
 
 export const getBackendUrl = (): string => {
+  let expoApiUrl: string | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Constants = require("expo-constants");
+    expoApiUrl = (Constants?.default || Constants)?.expoConfig?.extra?.apiBaseUrl;
+  } catch {
+    // In Node test environments where expo-constants is not available
+  }
+
   const configured =
-    Constants.expoConfig?.extra?.apiBaseUrl ||
+    expoApiUrl ||
     process.env.EXPO_PUBLIC_API_URL ||
     process.env.ERP_API_BASE_URL;
   if (configured && typeof configured === "string" && configured.trim().length > 0) {

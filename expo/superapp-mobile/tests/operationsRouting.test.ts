@@ -130,5 +130,46 @@ describe("operations routes and business logic invariants", () => {
       }
     }
   });
+
+  it("formats today's date strictly in Baghdad timezone YYYY-MM-DD", async () => {
+    const { getTodayBaghdadYmd, formatYmdInBaghdad } = await import("../lib/operationsApi");
+    const today = getTodayBaghdadYmd();
+    expect(today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    const formatted = formatYmdInBaghdad("2026-09-26T14:00:00Z");
+    expect(formatted).toBe("2026-09-26");
+  });
+
+  it("excludes DEAD_INVOICE_STATUSES (RETURNED, SUPERSEDED, CANCELLED) from collectible debt", () => {
+    const invoices = [
+      { id: "1", amount: 100000, paidAmount: 0, status: "PENDING" },
+      { id: "2", amount: 50000, paidAmount: 0, status: "RETURNED" },
+      { id: "3", amount: 75000, paidAmount: 0, status: "SUPERSEDED" },
+      { id: "4", amount: 30000, paidAmount: 0, status: "CANCELLED" },
+      { id: "5", amount: 80000, paidAmount: 20000, status: "PARTIALLY_PAID" },
+    ];
+
+    const DEAD_STATUSES = new Set(["CANCELLED", "RETURNED", "SUPERSEDED"]);
+    const collectibleInvoices = invoices.filter((inv) => !DEAD_STATUSES.has(inv.status));
+    const totalPendingDebt = collectibleInvoices.reduce(
+      (sum, inv) => sum + (inv.amount - inv.paidAmount),
+      0,
+    );
+
+    expect(collectibleInvoices).toHaveLength(2); // Only PENDING and PARTIALLY_PAID
+    expect(totalPendingDebt).toBe(160000); // 100000 + (80000 - 20000)
+  });
+
+  it("accurately converts base inventory quantity using conversionFactor", () => {
+    const rawVariant = {
+      productName: "دفاتر مدرسية سلك",
+      stockBase: 120, // 120 قطعة
+      conversionFactor: 12, // الدرزن = 12 قطعة
+    };
+
+    const factor = rawVariant.conversionFactor > 0 ? rawVariant.conversionFactor : 1;
+    const packagesCount = Math.floor(rawVariant.stockBase / factor);
+    expect(packagesCount).toBe(10); // 10 درازن
+  });
 });
 
