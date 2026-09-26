@@ -1,4 +1,7 @@
 import type { Request } from "express";
+import { and, eq } from "drizzle-orm";
+import { categories } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { storefrontProduct } from "./storefrontService";
 
 function escapeHtml(str: string): string {
@@ -96,6 +99,41 @@ export async function resolveStorefrontSeoMeta(
               telephone: "+9647838666999",
               url: `${baseOrigin}/store`,
             },
+            shippingDetails: {
+              "@type": "OfferShippingDetails",
+              shippingRate: {
+                "@type": "MonetaryAmount",
+                value: "5000",
+                currency: "IQD",
+              },
+              shippingDestination: {
+                "@type": "DefinedRegion",
+                addressCountry: "IQ",
+              },
+              deliveryTime: {
+                "@type": "ShippingDeliveryTime",
+                handlingTime: {
+                  "@type": "QuantitativeValue",
+                  minValue: 0,
+                  maxValue: 1,
+                  unitCode: "d",
+                },
+                transitTime: {
+                  "@type": "QuantitativeValue",
+                  minValue: 1,
+                  maxValue: 3,
+                  unitCode: "d",
+                },
+              },
+            },
+            hasMerchantReturnPolicy: {
+              "@type": "MerchantReturnPolicy",
+              applicableCountry: "IQ",
+              returnPolicyCategory: "https://schema.org/MerchantReturnFiniteReturnWindow",
+              merchantReturnDays: 7,
+              returnMethod: "https://schema.org/ReturnByMail",
+              returnFees: "https://schema.org/FreeReturn",
+            },
           },
         };
 
@@ -152,6 +190,85 @@ export async function resolveStorefrontSeoMeta(
           currency: "IQD",
           jsonLd: [productSchema, breadcrumbsSchema],
         };
+      }
+    } catch {
+      // السقوط للبيانات الافتراضية بأمان
+    }
+  }
+
+  // فحص مسار قسم/تصنيف: /store/category/:id أو ?category=:id
+  let categoryId: number | null = null;
+  const catMatch = pathname.match(/^\/store\/category\/(\d+)/);
+  if (catMatch) {
+    categoryId = Number(catMatch[1]);
+  } else if (pathname === "/store" || pathname === "/store/") {
+    const params = new URLSearchParams(search);
+    const queryCatId = Number(params.get("category"));
+    if (Number.isInteger(queryCatId) && queryCatId > 0) {
+      categoryId = queryCatId;
+    }
+  }
+
+  if (categoryId && Number.isInteger(categoryId) && categoryId > 0) {
+    try {
+      const db = getDb();
+      if (db) {
+        const [cat] = await db
+          .select({
+            id: categories.id,
+            name: categories.name,
+          })
+          .from(categories)
+          .where(and(eq(categories.id, categoryId), eq(categories.isActive, true), eq(categories.showInStore, true)))
+          .limit(1);
+
+        if (cat) {
+          const title = `${cat.name} | قرطاسية ومستلزمات - المكتبة العربية`;
+          const description = `تصفح واشترِ أفضل منتجات ${cat.name} من متجر المكتبة العربية في العراق. جودة أصلية وتوصيل سريع لكافة المحافظات مع خيار الدفع نقد عند الاستلام.`;
+          const canonicalUrl = `${baseOrigin}/store/category/${cat.id}`;
+          const imageUrl = `${baseOrigin}/icon-512.png`;
+
+          const breadcrumbsSchema: Record<string, unknown> = {
+            "@context": "https://schema.org",
+            "@type": "BreadcrumbList",
+            itemListElement: [
+              {
+                "@type": "ListItem",
+                position: 1,
+                name: "المتجر",
+                item: `${baseOrigin}/store`,
+              },
+              {
+                "@type": "ListItem",
+                position: 2,
+                name: cat.name,
+                item: canonicalUrl,
+              },
+            ],
+          };
+
+          const collectionSchema: Record<string, unknown> = {
+            "@context": "https://schema.org",
+            "@type": "CollectionPage",
+            name: `${cat.name} - المكتبة العربية`,
+            description,
+            url: canonicalUrl,
+            isPartOf: {
+              "@type": "WebSite",
+              name: "المكتبة العربية",
+              url: `${baseOrigin}/store`,
+            },
+          };
+
+          return {
+            title,
+            description,
+            canonicalUrl,
+            imageUrl,
+            ogType: "website",
+            jsonLd: [collectionSchema, breadcrumbsSchema],
+          };
+        }
       }
     } catch {
       // السقوط للبيانات الافتراضية بأمان

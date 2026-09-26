@@ -6,6 +6,8 @@ Allow: /store/*
 Allow: /apply
 Allow: /api/img/
 Allow: /llms.txt
+Allow: /feeds/
+Allow: /feeds/*
 Disallow: /api/
 Disallow: /pos
 Disallow: /print-pos
