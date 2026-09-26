@@ -3,6 +3,7 @@ import { appErrorMessage } from "@shared/errors";
 import {
   normalizeBarcodeScannerInput,
   normalizeKnownSystemBarcode,
+  stripTrackingLeadingZeros,
 } from "@shared/barcodeScanner";
 import { stripDocPrefix } from "@shared/documentNumber";
 
@@ -36,6 +37,7 @@ export interface DeliveryBarcodeLookup {
 export interface PreparedDeliveryBarcodeLookup extends DeliveryBarcodeLookup {
   systemCode: string;
   trackingCode: string;
+  strippedTrackingCode: string;
   documentCode: string;
 }
 
@@ -63,6 +65,7 @@ export function classifyDeliveryBarcode(code: string): DeliveryBarcodeLookup {
 export function prepareDeliveryBarcodeLookup(raw: string): PreparedDeliveryBarcodeLookup {
   const systemCode = normalizeKnownSystemBarcode(raw);
   const trackingCode = normalizeBarcodeScannerInput(raw);
+  const strippedTrackingCode = stripTrackingLeadingZeros(trackingCode);
   const systemLookup = classifyDeliveryBarcode(systemCode);
   const lookup = systemLookup.namespace === "REFERENCE"
     ? classifyDeliveryBarcode(trackingCode)
@@ -70,8 +73,9 @@ export function prepareDeliveryBarcodeLookup(raw: string): PreparedDeliveryBarco
   const documentCode = lookup.namespace === "ONLINE_ORDER"
     ? systemCode.replace(/^ORD-(\d+)$/i, "$1")
     : stripDocPrefix(systemCode);
-  return { ...lookup, systemCode, trackingCode, documentCode };
+  return { ...lookup, systemCode, trackingCode, strippedTrackingCode, documentCode };
 }
+
 
 export function namespaceAllowsTarget(
   namespace: DeliveryBarcodeNamespace,

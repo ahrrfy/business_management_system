@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import { Tag, TrendingUp, Play, Pause, ArrowRight, Check, AlertTriangle, Plus, Minus, Layers, Package } from "lucide-react";
 import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@shared/quantityFormat";
 
 function money(v: string | number | null): string {
   if (v == null || v === "") return "0";
@@ -165,7 +166,7 @@ function CuratedProductCard({
             </button>
 
             <div className="flex items-center gap-1 font-mono text-[11px] font-black tabular-nums">
-              <span>{cartQuantity}</span>
+              <span>{formatQuantity(cartQuantity)}</span>
               <span className="text-[9px] font-bold text-emerald-700 dark:text-emerald-400">
                 {p.unitName ? p.unitName : "بالسلة"}
               </span>

@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { confirm } from "@/lib/confirm";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
@@ -136,7 +136,7 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
               <div key={line.id} className="flex items-start justify-between gap-2 border-b pb-1.5 last:border-0">
                 <div>
                   <div className="font-medium">{line.productName}{line.variantName ? ` — ${line.variantName}` : ""}</div>
-                  <div className="text-xs text-muted-foreground">{line.quantity} {line.unitName ?? "وحدة"} × {fmt(line.unitPrice)}</div>
+                  <div className="text-xs text-muted-foreground">{formatQuantity(line.quantity)} {line.unitName ?? "وحدة"} × {fmt(line.unitPrice)}</div>
                 </div>
                 <div dir="ltr" className="shrink-0 font-bold tabular-nums">{fmt(line.total)}</div>
               </div>
@@ -177,7 +177,7 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
                     {line.change === "changed" && <Badge variant="warning">معدّل</Badge>}
                     {line.isGift && <Badge variant="neutral">هدية</Badge>}
                   </div>
-                  <div className="text-xs text-muted-foreground">{line.quantity} {line.unitName} × {fmt(line.unitPrice)}</div>
+                  <div className="text-xs text-muted-foreground">{formatQuantity(line.quantity)} {line.unitName} × {fmt(line.unitPrice)}</div>
                 </div>
                 <div dir="ltr" className="shrink-0 font-bold tabular-nums">{fmt(line.total)}</div>
               </div>

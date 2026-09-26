@@ -1,6 +1,7 @@
 // بضاعة الأمانة (ش٢) — طباعة سند حركة أمانة (إيداع/سحب/استبدال) A4. نمط قوالب V2.
 // بلا أيّ مجموع ماليّ (بضاعة لا فاتورة) — عدد القطع فقط + توقيعان. esc() على كل حقل حرّ.
 import { BRAND, CAIRO_FONT, CO, esc, logoUrl, openPrintWindow } from "./brand";
+import { fmtQty } from "@shared/quantityFormat";
 
 export interface ConsignmentNoteForPrint {
   noteNumber: string;
@@ -30,7 +31,7 @@ export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
         ${showDir ? `<td class="c"><span class="dir ${l.lineDirection === "IN" ? "in" : "out"}">${l.lineDirection === "IN" ? "إيداع" : "سحب"}</span></td>` : ""}
         <td>${esc(l.productName)}</td>
         <td class="mono">${esc(l.sku ?? "")}</td>
-        <td class="c">${esc(l.quantity)}</td>
+        <td class="c">${esc(fmtQty(l.quantity))}</td>
       </tr>`,
     )
     .join("");
@@ -77,7 +78,7 @@ export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
     <thead><tr><th class="c">#</th>${showDir ? '<th class="c">الاتجاه</th>' : ""}<th>المنتج</th><th>الرمز</th><th class="c">الكمية</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
-  <div class="tot">إجمالي القطع (بالوحدة الأساس): ${showDir ? `صافي ${totalBase}` : Math.abs(totalBase)}</div>
+  <div class="tot">إجمالي القطع (بالوحدة الأساس): ${showDir ? `صافي ${fmtQty(totalBase)}` : fmtQty(Math.abs(totalBase))}</div>
   ${note.notes ? `<div class="notes"><b>ملاحظات:</b> ${esc(note.notes)}</div>` : ""}
   <div class="sign"><div class="s">أمين المخزن / المستلِم</div><div class="s">المودِع</div></div>
   <div class="ft">هذه البضاعة أمانة برسم البيع — ملكيتها للمودِع حتى بيعها · ${esc(CO.footerLine)}</div>

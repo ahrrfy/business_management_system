@@ -7,6 +7,7 @@
 // `printReceipt` سيكون مضلِّلاً. `printDoc` يمنحنا عنواناً/سطوراً/جدولاً/تذييلاً حرّاً بنفس تدرّج
 // الطابعات (جسر ← WebUSB ← نافذة). النمط مطابقٌ لـ`printDeliverySlip` في `deliveryDocs.ts`.
 import { D, fmt } from "@/lib/money";
+import { fmtQty } from "@shared/quantityFormat";
 import { fmtDate, fmtTime, type DateInput } from "@/lib/date";
 import { printDoc } from "@/lib/printing/print";
 import type { PrintDoc } from "@/lib/printing/render";
@@ -55,7 +56,7 @@ export function reservationToTicketDoc(res: ReservationTicketSource): PrintDoc {
     const price = l.quotedUnitPrice != null ? fmt(l.quotedUnitPrice) : "غير مُسعَّر";
     return {
       name: l.productName + (attrs ? ` — ${attrs}` : ""),
-      quantityPrice: `${l.quantity} × ${price}${l.unitName ? ` / ${l.unitName}` : ""}`,
+      quantityPrice: `${fmtQty(l.quantity)} × ${price}${l.unitName ? ` / ${l.unitName}` : ""}`,
       total: l.lineTotal != null ? fmt(l.lineTotal) : "—",
     };
   });

@@ -6,7 +6,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
-import { fmt, fmtInt, pct } from "@/lib/money";
+import { fmt, fmtInt, formatQuantity, pct } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -41,9 +41,9 @@ function lineHeadColumns(nameHeader: string): ColumnDef<ProductionLine, unknown>
     {
       id: "qty",
       header: "الكمية (أساس)",
-      accessorFn: (l) => fmtInt(l.baseQuantity),
+      accessorFn: (l) => formatQuantity(l.baseQuantity),
       meta: { kind: "number", align: "center" },
-      cell: ({ row }) => fmtInt(row.original.baseQuantity),
+      cell: ({ row }) => formatQuantity(row.original.baseQuantity),
     },
   ];
 }
@@ -151,11 +151,11 @@ export default function ProductionDetail() {
         <Card>
           <CardHeader><CardTitle className="text-base">الإنتاجية والهدر</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-            <div><div className="text-xs text-muted-foreground">الدفعة</div><div className="font-semibold tabular-nums" dir="ltr">{fmtInt(doc.batchQty)}</div></div>
-            <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-money-positive tabular-nums" dir="ltr">{fmtInt(doc.goodQty)}</div></div>
-            <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-[var(--stock-low)] tabular-nums" dir="ltr">{fmtInt(doc.scrapQty)}</div></div>
+            <div><div className="text-xs text-muted-foreground">الدفعة</div><div className="font-semibold tabular-nums" dir="ltr">{formatQuantity(doc.batchQty)}</div></div>
+            <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-money-positive tabular-nums" dir="ltr">{formatQuantity(doc.goodQty)}</div></div>
+            <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-[var(--stock-low)] tabular-nums" dir="ltr">{formatQuantity(doc.scrapQty)}</div></div>
             <div><div className="text-xs text-muted-foreground">الإنتاجية</div><div className="font-semibold tabular-nums" dir="ltr">{yieldPct != null ? pct(yieldPct) : "—"}</div></div>
-            <div><div className="text-xs text-muted-foreground">خسارة هدر غير طبيعي</div><div className={`font-semibold tabular-nums ${abLoss > 0 ? "text-money-negative" : "text-muted-foreground"}`} dir="ltr">{abLoss > 0 ? `${fmt(doc.abnormalLoss)} (${abnormalUnits} وحدة)` : "لا يوجد"}</div></div>
+            <div><div className="text-xs text-muted-foreground">خسارة هدر غير طبيعي</div><div className={`font-semibold tabular-nums ${abLoss > 0 ? "text-money-negative" : "text-muted-foreground"}`} dir="ltr">{abLoss > 0 ? `${fmt(doc.abnormalLoss)} (${formatQuantity(abnormalUnits)} وحدة)` : "لا يوجد"}</div></div>
           </CardContent>
         </Card>
       )}

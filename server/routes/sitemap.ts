@@ -1,7 +1,8 @@
-﻿import fs from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { Router } from "express";
 import { generateStorefrontSitemapXml } from "../services/storefrontSitemapService";
+import { generateGoogleMerchantFeedXml } from "../services/storefrontMerchantFeedService";
 
 export const sitemapRouter = Router();
 
@@ -31,3 +32,21 @@ sitemapRouter.get("/sitemap.xml", async (req, res) => {
     res.status(500).send("Error generating sitemap");
   }
 });
+
+const handleMerchantFeed = async (req: import("express").Request, res: import("express").Response) => {
+  try {
+    const host = req.get("host") || "";
+    const protocol = req.protocol === "https" || req.get("x-forwarded-proto") === "https" ? "https" : "http";
+    const customOrigin = host ? `${protocol}://${host}` : undefined;
+    const xml = await generateGoogleMerchantFeedXml(customOrigin);
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
+    res.status(200).send(xml);
+  } catch (err) {
+    res.status(500).send("Error generating Google Merchant feed");
+  }
+};
+
+sitemapRouter.get("/feeds/google-merchant.xml", handleMerchantFeed);
+sitemapRouter.get("/api/feeds/google-merchant.xml", handleMerchantFeed);
+

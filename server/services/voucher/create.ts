@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { eq } from "drizzle-orm";
 import {
   customers,
@@ -199,6 +200,8 @@ export type SystemPaymentRequest =
       sourceShippingTotal: string;
       /** دليل أداة الدفع غير النقدية (مرجع تحويل/صك أو آخر 4 للبطاقة). */
       paymentReference?: string | null;
+      fundingSource?: "DRAWER" | "TREASURY";
+      shiftId?: number | null;
     } & AccrualObligationSystemSource)
   | {
       kind: "EXCHANGE_IQD_DEPOSIT";
@@ -1085,6 +1088,15 @@ export async function createVoucherTx(
         input.partyId,
         direction === "IN" ? amount.neg() : amount,
       );
+      if (direction === "IN") {
+        const [c] = await tx
+          .select({ currentBalance: customers.currentBalance })
+          .from(customers)
+          .where(eq(customers.id, Number(input.partyId)));
+        if (c && money(c.currentBalance).lte(0)) {
+          await autoSettleCustomerAccountTx(tx, Number(input.partyId), actor);
+        }
+      }
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
     } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
@@ -1178,11 +1190,14 @@ export async function finalizeOwnerSystemVoucherTx(
   tx: Tx,
   receiptId: number,
   actor: Actor,
+  options?: {
+    cashSource?: { mode: "DRAWER" | "TREASURY"; shiftId?: number | null };
+  },
 ): Promise<boolean> {
   const resolvedActor = await resolveApprovalActor(tx, actor);
   if (!resolvedActor.isOwner) return false;
   const { approveVoucherTx } = await import("./approval");
-  const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+  const approval = await approveVoucherTx(tx, receiptId, resolvedActor, options);
   await logAuditTx(
     tx,
     {

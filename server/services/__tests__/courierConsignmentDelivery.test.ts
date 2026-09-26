@@ -146,6 +146,8 @@ async function dispatchReception(partyId: number): Promise<{ consignmentId: numb
 }
 
 async function advanceToOutForDelivery(consignmentId: number, userId = 3) {
+  const current = await consignment(consignmentId);
+  if (current?.parcelStatus === "OUT_FOR_DELIVERY") return;
   for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
     await transitionConsignmentParcel(
       { consignmentId, toStatus, clientRequestId: `test-${consignmentId}-${toStatus}` },
@@ -424,11 +426,11 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("تسليم مباشر من حالة ASSIGNED (بلا الحاجة للمرور بـ ACCEPTED أو OUT_FOR_DELIVERY)", async () => {
+  it("تسليم مباشر من حالة OUT_FOR_DELIVERY (بلا الحاجة للمرور بـ ACCEPTED أو إشعار خروج إضافي)", async () => {
     const { partyA } = await seedParties();
-    const disp = await dispatchReception(partyA); // parcelStatus = ASSIGNED
+    const disp = await dispatchReception(partyA); // parcelStatus = OUT_FOR_DELIVERY
     const cnBefore = await consignment(disp.consignmentId);
-    expect(cnBefore.parcelStatus).toBe("ASSIGNED");
+    expect(cnBefore.parcelStatus).toBe("OUT_FOR_DELIVERY");
 
     // التسليم مباشرة دون استدعاء advanceToOutForDelivery
     const res = await confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 3 });

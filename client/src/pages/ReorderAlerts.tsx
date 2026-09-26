@@ -27,7 +27,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { FileEdit, ShoppingCart } from "lucide-react";
@@ -399,7 +399,7 @@ export default function ReorderAlerts() {
                           </span>
                         )}
                       </TableCell>
-                      <TableCell className="text-left tabular-nums font-semibold">{fmtInt(r.quantity)}</TableCell>
+                      <TableCell className="text-left tabular-nums font-semibold">{formatQuantity(r.quantity)}</TableCell>
                       <TableCell className="text-left tabular-nums">
                         {isEditing ? (
                           <Input
@@ -412,7 +412,7 @@ export default function ReorderAlerts() {
                             autoFocus
                           />
                         ) : (
-                          fmtInt(r.minStock)
+                          formatQuantity(r.minStock)
                         )}
                       </TableCell>
                       <TableCell className="text-left tabular-nums">
@@ -426,12 +426,12 @@ export default function ReorderAlerts() {
                             aria-label="حدّ إعادة الطلب"
                           />
                         ) : (
-                          fmtInt(r.reorderPoint)
+                          formatQuantity(r.reorderPoint)
                         )}
                       </TableCell>
                       <TableCell className="text-left tabular-nums text-xs">
                         {r.dailyVelocity > 0 ? (
-                          <div title={`إجمالي مبيعات 30 يوماً: ${fmtInt(r.sales30d)} قطعة`}>
+                          <div title={`إجمالي مبيعات 30 يوماً: ${formatQuantity(r.sales30d)} قطعة`}>
                             <span className="font-semibold">{r.dailyVelocity}</span>
                             <span className="text-muted-foreground text-[10px] mx-1">/ يوم</span>
                           </div>
@@ -465,7 +465,7 @@ export default function ReorderAlerts() {
                       </TableCell>
                       <TableCell className="text-left tabular-nums font-semibold text-primary">
                         <div>
-                          <span>{fmtInt(r.suggestedQty)}</span>
+                          <span>{formatQuantity(r.suggestedQty)}</span>
                           {r.dailyVelocity > 0 && (
                             <span className="block text-[9px] text-muted-foreground font-normal">
                               تنبؤ ١٤ يوم + أمان
@@ -603,7 +603,7 @@ export default function ReorderAlerts() {
                         <TableCell>
                           {r.productName} <span className="text-xs text-muted-foreground">({variantLabel(r)})</span>
                         </TableCell>
-                        <TableCell className="text-left tabular-nums">{fmtInt(r.quantity)}</TableCell>
+                        <TableCell className="text-left tabular-nums">{formatQuantity(r.quantity)}</TableCell>
                         <TableCell className="text-left">
                           <Input
                             dir="ltr"
@@ -760,8 +760,8 @@ function BranchOverridesPanel(props: {
                             className="h-8 w-20 text-center" aria-label="override للحد الأدنى" />
                         ) : (
                           <>
-                            <b>{o.minStock == null ? "—" : fmtInt(o.minStock)}</b>
-                            <span className="text-muted-foreground text-xs mx-1">/ {o.defaultMinStock == null ? "—" : fmtInt(o.defaultMinStock)}</span>
+                            <b>{o.minStock == null ? "—" : formatQuantity(o.minStock)}</b>
+                            <span className="text-muted-foreground text-xs mx-1">/ {o.defaultMinStock == null ? "—" : formatQuantity(o.defaultMinStock)}</span>
                           </>
                         )}
                       </TableCell>
@@ -773,8 +773,8 @@ function BranchOverridesPanel(props: {
                             className="h-8 w-20 text-center" aria-label="override لحدّ إعادة الطلب" />
                         ) : (
                           <>
-                            <b>{o.reorderPoint == null ? "—" : fmtInt(o.reorderPoint)}</b>
-                            <span className="text-muted-foreground text-xs mx-1">/ {o.defaultReorderPoint == null ? "—" : fmtInt(o.defaultReorderPoint)}</span>
+                            <b>{o.reorderPoint == null ? "—" : formatQuantity(o.reorderPoint)}</b>
+                            <span className="text-muted-foreground text-xs mx-1">/ {o.defaultReorderPoint == null ? "—" : formatQuantity(o.defaultReorderPoint)}</span>
                           </>
                         )}
                       </TableCell>

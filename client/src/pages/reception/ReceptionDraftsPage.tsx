@@ -31,7 +31,8 @@ import { Input } from "@/components/ui/input";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { useSearch } from "wouter";
@@ -236,7 +237,7 @@ export default function ReceptionDraftsPage() {
                             <div className="space-y-0.5">
                               <div className="flex items-center gap-1 text-muted-foreground">
                                 <Calendar className="size-3" />
-                                <span>{createdAtDate.toLocaleDateString("ar-IQ")}</span>
+                                <span>{fmtDate(createdAtDate)}</span>
                               </div>
                               <div className={`flex items-center gap-1 text-[11px] ${isStale ? "text-destructive font-bold" : "text-muted-foreground"}`}>
                                 <Clock className="size-3" />
@@ -490,7 +491,7 @@ export function DraftDetailsModal({
                               <p className="text-[11px] text-muted-foreground">{l.customizationText}</p>
                             )}
                           </TableCell>
-                          <TableCell className="p-2 font-mono">{l.quantity}</TableCell>
+                          <TableCell className="p-2 font-mono">{formatQuantity(l.quantity)}</TableCell>
                           <TableCell className="p-2 font-mono">{fmtAr(l.unitPrice)}</TableCell>
                           <TableCell className="p-2 font-mono font-bold">{fmtAr(l.lineTotal)}</TableCell>
                         </TableRow>
@@ -535,7 +536,7 @@ export function DraftDetailsModal({
                             <div className="text-[11px] text-muted-foreground flex items-center gap-3">
                               <span>إيصال #{p.receiptId}</span>
                               {p.referenceNumber && <span>مرجع: {p.referenceNumber}</span>}
-                              <span>{new Date(p.createdAt).toLocaleDateString("ar-IQ")}</span>
+                              <span>{fmtDate(p.createdAt)}</span>
                             </div>
                           </div>
 

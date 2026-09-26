@@ -1608,7 +1608,7 @@ export const returnRouter = router({
             differenceAmount: input.settlement.differenceAmount,
             customerName,
             customerPhone,
-            dateStr: now.toLocaleDateString("ar-IQ", {
+            dateStr: now.toLocaleDateString("ar-IQ-u-nu-latn", {
               year: "numeric",
               month: "long",
               day: "numeric",
@@ -2304,12 +2304,12 @@ export const returnRouter = router({
               unitPrice: i.unitPrice,
               barcode: i.barcode,
             })),
-            dateStr: now.toLocaleDateString("ar-IQ", {
+            dateStr: now.toLocaleDateString("ar-IQ-u-nu-latn", {
               year: "numeric",
               month: "long",
               day: "numeric",
             }),
-            timeStr: now.toLocaleTimeString("ar-IQ", {
+            timeStr: now.toLocaleTimeString("ar-IQ-u-nu-latn", {
               hour: "2-digit",
               minute: "2-digit",
             }),
@@ -2586,12 +2586,12 @@ export const returnRouter = router({
               unitCost: i.unitCost,
               barcode: i.barcode,
             })),
-            dateStr: now.toLocaleDateString("ar-IQ", {
+            dateStr: now.toLocaleDateString("ar-IQ-u-nu-latn", {
               year: "numeric",
               month: "long",
               day: "numeric",
             }),
-            timeStr: now.toLocaleTimeString("ar-IQ", {
+            timeStr: now.toLocaleTimeString("ar-IQ-u-nu-latn", {
               hour: "2-digit",
               minute: "2-digit",
             }),

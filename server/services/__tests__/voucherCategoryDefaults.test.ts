@@ -48,9 +48,16 @@ describe("كتالوج فئات السندات الافتراضي", () => {
     const covered = new Set(
       DEFAULT_VOUCHER_CATEGORIES.map((d) => d.postingRole),
     );
-    for (const role of VOUCHER_CATEGORY_POSTING_ROLES) {
+    // الأدوار التشغيلية الأساسية في الكتالوج الافتراضي (هجرة 0202).
+    // الأدوار التخصصية (LOAN_RECEIVABLE و INVESTMENT_PAYABLE) تُنشأ كفئات مخصصة بحسب اتفاق التمويل.
+    const defaultCoveredRoles = VOUCHER_CATEGORY_POSTING_ROLES.filter(
+      (role) => role !== "LOAN_RECEIVABLE" && role !== "INVESTMENT_PAYABLE",
+    );
+    for (const role of defaultCoveredRoles) {
       expect(covered.has(role), `الدور ${role} بلا فئة افتراضية`).toBe(true);
     }
+    expect(VOUCHER_CATEGORY_POSTING_ROLES).toContain("LOAN_RECEIVABLE");
+    expect(VOUCHER_CATEGORY_POSTING_ROLES).toContain("INVESTMENT_PAYABLE");
   });
 
   it("يوفّر فئات جاهزة للقبض وللصرف معاً (البلاغ: القبض كان بفئتين فقط)", () => {

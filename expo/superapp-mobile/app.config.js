@@ -106,6 +106,7 @@ const config = {
   extra: {
     buildVariant: variant,
     expoProjectId,
+    apiBaseUrl,
     eas: {
       projectId: expoProjectId,
     },

@@ -6,7 +6,7 @@
 import { useMemo, useState } from "react";
 import { BarChart3, Eye, Loader2, MapPin, MousePointerClick, PackageCheck, ShoppingBag, ShoppingCart, TrendingUp, Trophy, XCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
-import { fmt, fmtInt } from "@/lib/money";
+import { fmt, fmtInt, formatQuantity } from "@/lib/money";
 import { ONLINE_ORDER_STATUSES, orderStatusLabel, orderStatusChartColor } from "@shared/onlineOrderStatus";
 
 // النطاقات بحبيبة يوم بغداد (UTC+3) لتطابق تفسير الخادم — لا بمنطقة المتصفّح (قد تنزلق يوماً على جهازٍ
@@ -106,7 +106,7 @@ export default function StoreAnalytics() {
                     <div key={p.productId} className="flex items-center gap-2 text-sm">
                       <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{i + 1}</span>
                       <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">{fmtInt(p.qty)} قطعة</span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground">{formatQuantity(p.qty)} قطعة</span>
                       <span className="w-24 shrink-0 text-left font-bold tabular-nums text-xs">{fmt(p.revenue)} د.ع</span>
                     </div>
                   ))}
