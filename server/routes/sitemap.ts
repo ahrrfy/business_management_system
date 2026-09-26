@@ -50,3 +50,31 @@ const handleMerchantFeed = async (req: import("express").Request, res: import("e
 sitemapRouter.get("/feeds/google-merchant.xml", handleMerchantFeed);
 sitemapRouter.get("/api/feeds/google-merchant.xml", handleMerchantFeed);
 
+// معالج التحقق من ملكية الموقع لمحرك بحث جوجل (Google Search Console)
+const handleGoogleVerification = (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+  const fileName = req.params.filename || "google46a4537ddb358508.html";
+  if (!/^google[a-zA-Z0-9_-]+\.html$/.test(fileName)) {
+    return next();
+  }
+  const possiblePaths = [
+    path.resolve(process.cwd(), "client", "public", fileName),
+    path.resolve(process.cwd(), "dist", "public", fileName),
+  ];
+  for (const filePath of possiblePaths) {
+    if (fs.existsSync(filePath)) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      return res.sendFile(filePath);
+    }
+  }
+  if (fileName === "google46a4537ddb358508.html") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.status(200).send("google-site-verification: google46a4537ddb358508.html\n");
+  }
+  return next();
+};
+
+sitemapRouter.get("/:filename(google[a-zA-Z0-9_-]+\\.html)", handleGoogleVerification);
+sitemapRouter.get("/store/:filename(google[a-zA-Z0-9_-]+\\.html)", handleGoogleVerification);
+
