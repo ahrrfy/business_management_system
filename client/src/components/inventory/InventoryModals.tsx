@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { D, fmt, fmtInt } from "@/lib/money";
+import { D, fmt, fmtInt, formatQuantity } from "@/lib/money";
 import { Scale, XCircle } from "lucide-react";
 import type { Decimal } from "decimal.js";
 
@@ -169,7 +169,7 @@ export function InventoryModals({
                       إجمالي الكمية المملوكة
                     </span>
                     <span className="tabular-nums">
-                      {fmtInt(revalPreview.data.totalQuantity)}
+                      {formatQuantity(revalPreview.data.totalQuantity)}
                     </span>
                   </div>
                   {revalPreview.data.branches.length > 1 && (
@@ -178,7 +178,7 @@ export function InventoryModals({
                       {revalPreview.data.branches
                         .map(
                           (b) =>
-                            `${b.branchName ?? `#${b.branchId}`} (${fmtInt(b.quantity)})`,
+                            `${b.branchName ?? `#${b.branchId}`} (${formatQuantity(b.quantity)})`,
                         )
                         .join(" · ")}
                     </p>

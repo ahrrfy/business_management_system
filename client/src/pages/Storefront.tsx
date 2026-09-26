@@ -1997,7 +1997,7 @@ function StorefrontContent() {
     const cartKey = customizationCartKey(p.productUnitId, p.customization);
     const currentLine = cartRef.current.get(cartKey);
     if (p.stockLimit != null && (currentLine?.qty ?? 0) >= p.stockLimit) {
-      setCartStatus(`بلغت الكمية المتوفرة من ${p.productName}: ${p.stockLimit}.`);
+      setCartStatus(`بلغت الكمية المتوفرة من ${p.productName}: ${formatQuantity(p.stockLimit)}.`);
       return;
     }
     if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
@@ -2134,9 +2134,9 @@ function StorefrontContent() {
   function setQty(cartKey: string, qty: number) {
     const line = cartRef.current.get(cartKey);
     if (line?.stockLimit != null && qty > line.stockLimit) {
-      setCartStatus(`المتوفر من ${line.name} هو ${line.stockLimit} فقط.`);
+      setCartStatus(`المتوفر من ${line.name} هو ${formatQuantity(line.stockLimit)} فقط.`);
     } else if (line) {
-      setCartStatus(qty <= 0 ? `تمت إزالة ${line.name} من السلة.` : `أصبحت كمية ${line.name}: ${Math.max(1, qty)}.`);
+      setCartStatus(qty <= 0 ? `تمت إزالة ${line.name} من السلة.` : `أصبحت كمية ${line.name}: ${formatQuantity(Math.max(1, qty))}.`);
     }
     recordStorefrontCartChange();
     setCart((prev) => setStorefrontCartQuantity(prev, cartKey, qty));
@@ -2785,14 +2785,14 @@ function StorefrontContent() {
                       <p className={`mt-2 text-xs font-bold ${detailUnit?.inStock ? "text-[var(--stock-ok)]" : "text-stock-out"}`}>
                         {detailUnit?.inStock
                           ? detailUnit.stockLeft != null
-                            ? `متوفّر — بقي ${detailUnit.stockLeft} فقط، سارع بالطلب`
+                            ? `متوفّر — بقي ${formatQuantity(detailUnit.stockLeft)} فقط، سارع بالطلب`
                             : "متوفّر"
                           : "غير متوفّر حالياً"}
                       </p>
                     )}
                     {!detailQ.data.isCustomizable && detailQ.data.soldCount >= 3 && (
                       <p className="mt-1 flex items-center gap-1 text-xs font-bold text-orange-500">
-                        <Flame aria-hidden className="size-3.5" /> {detailQ.data.soldCount >= 10 ? "من الأكثر مبيعاً" : `بيع ${detailQ.data.soldCount} مرة`}
+                        <Flame aria-hidden className="size-3.5" /> {detailQ.data.soldCount >= 10 ? "من الأكثر مبيعاً" : `بيع ${formatQuantity(detailQ.data.soldCount)} مرة`}
                       </p>
                     )}
                   </div>

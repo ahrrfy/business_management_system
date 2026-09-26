@@ -14,6 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
+import { formatQuantity } from "@shared/quantityFormat";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import type { Currency, InvoiceLine, InvoiceType, PriceSource, PriceTier } from "./types";
 
@@ -301,12 +302,12 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                       {p.isService ? (
                         <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
                       ) : p.isBundle ? (
-                        <span>المتاح كبكج كامل: {fmtNum(p.availableBase)}</span>
+                        <span>المتاح كبكج كامل: {formatQuantity(p.availableBase)}</span>
                       ) : (
                         <>
-                          <span>فعلي: {fmtNum(p.stockBase)}</span>
-                          {p.reservedBase > 0 && <span className="text-[var(--sem-warn)]">محجوز: {fmtNum(p.reservedBase)}</span>}
-                          <span className={p.availableBase < 5 ? "text-[var(--sem-neg)]" : ""}>متاح للبيع: {fmtNum(p.availableBase)}</span>
+                          <span>فعلي: {formatQuantity(p.stockBase)}</span>
+                          {p.reservedBase > 0 && <span className="text-[var(--sem-warn)]">محجوز: {formatQuantity(p.reservedBase)}</span>}
+                          <span className={p.availableBase < 5 ? "text-[var(--sem-neg)]" : ""}>متاح للبيع: {formatQuantity(p.availableBase)}</span>
                         </>
                       )}
                     </div>

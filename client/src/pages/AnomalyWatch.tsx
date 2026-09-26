@@ -479,7 +479,7 @@ export default function AnomalyWatch() {
               columns={[
                 txtCol("user", "المُنشئ", (r) => r.userName),
                 numCol("notes", "سندات السحب/الاستبدال", (r) => strong(r.flagged, r.noteCount)),
-                numCol("qty", "الوحدات المسحوبة", (r) => fmtAr(r.totalQty)),
+                numCol("qty", "الوحدات المسحوبة", (r) => formatQuantity(r.totalQty)),
                 moneyCol("value", "قيمة الحصص", (r) => <span className="text-muted-foreground">{fmtAr(r.totalValue)}</span>),
                 flagCol(),
               ]}
