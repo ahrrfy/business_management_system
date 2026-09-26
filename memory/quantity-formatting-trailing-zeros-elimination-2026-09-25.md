@@ -101,7 +101,7 @@
 
 ---
 
-## ٥. نتائج التحقق والدمج والنشر
+## ٥. نتائج التحقق والدمج والنشر (المرحلة الأولى)
 
 1. **فحوصات الجودة المحلية وعبر السحاب:**
    - فحص الأنواع (`pnpm check`): 0 أخطاء (100% Clean).
@@ -110,5 +110,62 @@
 2. **الدمج في المستودع:**
    - دمج طلب الدمج PR #1256 في فرع `main` بالالتزام `4b640178`.
 3. **النشر الإنتاجي:**
-   - تنفيذ `pnpm prod:deploy` على خادم Hostinger VPS (`srv1548487.hstgr.cloud`).
+   - تنفيذ `pnpm prod:deploy` على خادم Hostinger VPS (`srv1548487.hstgr.cloud`) في 233.5 ثانية.
    - استقرار عمال الويب في PM2 وجسر الحضور، ونجاح فحص الحيوية 200 OK على `/healthz`.
+
+---
+
+## ٦. المرحلة الثانية: التدقيق الجنائي العميق، دعم Decimal، وتطهير تطبيقات الموبايل (PR #1265)
+
+استكمالاً لبروتوكول V.E.R.I.F.Y الصارم واستهداف القضاء بنسبة 100% على أي ظهور للأصفار الزائدة حتى في أعمق النوافذ الحوارية والشاشات الداخلية وتطبيقات الموبايل:
+
+### ٦.١ النطاق المضاف والمطهّر (32 ملفاً إضافياً):
+1. **نوافذ الإرجاع والشاشات الحوارية:**
+   - إيصالات المرتجع الحراري (`client/src/components/returns/printThermalReturnReceipt.ts`).
+   - نافذة المرتجع بلا إيصال (`client/src/components/returns/NoReceiptReturnDialog.tsx`).
+   - بوابة استرجاع المبيعات وحساب الكميات القصوى (`client/src/components/returns/SalesReturnPortal.tsx`).
+   - نافذة تعديل الطلبات الإلكترونية (`client/src/components/store/EditOnlineOrderDialog.tsx`).
+   - سلة الكاشير وشاشة معاينة الإيصال (`client/src/components/pos/CartPanel.tsx`, `client/src/components/pos/ReceiptOverlay.tsx`).
+   - نافذة اختيار البطاقات الرقمية ومحدد الكميات (`client/src/components/pos/DigitalCardsPickerDialog.tsx`).
+2. **سندات التحويل المخزني والعمليات:**
+   - سلة سند التحويل المخزني وشارات النقص والنافذ (`client/src/components/transfer/TransferCart.tsx`).
+   - سجل المناقلات وإجماليات السندات المنقولة والمستلمة ومودال الاستلام (`client/src/pages/TransfersLog.tsx`).
+   - وثائق نقل بضاعة الأمانة (`client/src/lib/printing/printConsignmentNote.ts`).
+3. **أوامر الشغل والتصنيع والتركيبات:**
+   - بطاقات كانبان لأوامر الشغل وشارات الكمية (`client/src/components/workOrders/WorkOrderKanbanCard.tsx`).
+   - وصفات وتراكيب الإنتاج ومعاينة BOM ومطابقة الوحدات الأساس (`client/src/pages/ProductionRecipes.tsx`).
+4. **المتجر والمنتجات والنماذج:**
+   - المتجر الإلكتروني، الصفوف المنسقة، والبطاقات، وسلة التسوق (`client/src/pages/Storefront.tsx`, `StorefrontCuratedRows.tsx`, `StorefrontProductCard.tsx`).
+   - نافذة التخصيص والملاحظات (`client/src/components/CustomizationDialog.tsx`).
+   - حقول ونماذج المنتجات البسيطة والمتعددة وإجمالي المخزون (`SimpleProductForm.tsx`, `ProductVariantsFields.tsx`).
+   - حاسبة تسعير الطباعة ونماذج المشتريات والمبيعات ومطابقة الوحدات الكسرية (`PrintPricingCalculator.tsx`, `PurchaseEdit.tsx`, `PurchaseNew.tsx`, `SalesInvoiceNew.tsx`).
+5. **تطبيقات الموبايل (Expo Native Apps):**
+   - تطبيق كادر العمليات (`expo/superapp-mobile`):
+     - إضافة دالة `formatQuantity` المعتمدة في `lib/format.ts`.
+     - تطهير كميات المخزون وحد الطلب في `app/operations/inventory.tsx`.
+     - تطهير كميات الفواتير في `app/operations/invoices.tsx`.
+     - تطهير بطاقات الجرد والتدقيق المخزني والفروقات في `components/MobileStockAuditCard.tsx`.
+   - تطبيق متجر العملاء (`expo/customer-store-mobile`):
+     - توحيد عرض كميات السلة وإشعارات واتساب في `app/(tabs)/cart.tsx`.
+     - توحيد كميات طلبات عروض الأسعار في `app/request-quote.tsx`.
+     - توحيد كميات نافذة السلة الجانبية في `components/side-cart.tsx`.
+     - توحيد وصف الاختيارات والكميات في `lib/checkout-selection.ts`.
+
+### ٦.٢ الترقية المعمارية للمرونة الحسابية
+- تم تحديث توقيع الدالة المركزية `formatQuantity` في `shared/quantityFormat.ts` ليقبل `string | number | { toString(): string } | null | undefined`.
+- يتيح ذلك تمرير كائنات `Decimal` و `BigNumber` مباشرة بأمان ودون الحاجة لتحويلات يدوية أو حدوث أخطاء فحص أنواع.
+- تعزيز حزمة الاختبارات لتصبح 12 اختباراً آلياً شاملاً في `shared/quantityFormat.test.ts`.
+
+### ٦.٣ نتائج دمج ونشر المرحلة الثانية
+1. **فحوصات الجودة:**
+   - فحص الأنواع `pnpm check`: اجتياز كامل 0 أخطاء.
+   - حراس الجودة المعمارية `pnpm check:guards`: اجتياز كامل لجميع الحراس الـ 45.
+   - اختبارات الوحدة `shared/quantityFormat.test.ts`: نجاح 12/12 بنسبة 100%.
+2. **فحوصات الـ CI والدمج:**
+   - اجتياز 16 فحصاً في GitHub Actions CI (شاملة `superapp-check`, `customer-store-check`, `quality-build`, والشاردات الثمانية).
+   - دمج PR #1265 في فرع `main` بالالتزام `73fdd29d`.
+3. **النشر الإنتاجي:**
+   - تنفيذ `pnpm prod:deploy` بنجاح على Hostinger VPS (`srv1548487.hstgr.cloud`) في 246.6 ثانية.
+   - ثبات عمال الويب PM2 cluster وجسر الحضور erp-hr-bridge.
+   - التحقق الحي من فحص الصحة: `HTTP/2 200 OK` على `https://srv1548487.hstgr.cloud/healthz`.
+
