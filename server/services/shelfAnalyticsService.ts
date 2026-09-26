@@ -10,7 +10,7 @@
  *  ٦. تصنيف أجهزة الزبائن (iOS / Android / Desktop).
  *  ٧. منحنى النشاط الزمني وساعات الذروة في المعرض.
  *  ٨. سجل العمليات والنشاط المباشر واللحظي (Live Scan Stream).
- *  ٩. محاكي وتغذية البيانات الاسترشادية الواقعية للمعرض (Realistic Showroom Baseline Seeder).
+ *  ٩. مسح وتصفير سجلات الاستعلامات والبيانات التجريبية والبدء من الصفر.
  */
 import { createHash } from "node:crypto";
 import { and, count, countDistinct, desc, eq, gte, lt, sql } from "drizzle-orm";
@@ -204,20 +204,7 @@ export async function getShelfBeneficiariesStats(options?: {
   const startDate = getStartDateForRange(range);
   const { start: todayStart, endExclusive: todayEndExclusive } = baghdadTodayUtcRange();
 
-  // التحقق إن كانت هناك بيانات، أو إذا كان الجدول فارغاً تماماً نقوم بتهيئة عينة واقعية
-  const totalCountRows = await db
-    .select({ total: count() })
-    .from(shelfLookupLogs);
-  const rawTotal = Number(totalCountRows[0]?.total ?? 0);
 
-  if (rawTotal === 0) {
-    // في حال كانت قاعدة البيانات فارغة من الاستعلامات، نقوم بتوليد عينة استرشادية واقعية
-    try {
-      await seedShowroomSampleAnalytics(45);
-    } catch {
-      // إخفاق صامت للبذر
-    }
-  }
 
   // بناء شروط التصفية
   const whereClauses = [];
@@ -516,84 +503,17 @@ function createEmptyStats(): ShelfBeneficiariesStats {
 }
 
 /**
- * توليد وتعبئة بيانات استرشادية واقعية لحركة زوار المعرض
- * تُستخدم عند تدشين الميزة أو بطلب المدير لمشاهدة إحصائيات معقولة وشاملة.
+ * مسح وتصفير كافة سجلات استعلامات الرفوف والبيانات الوهمية للبدء من الصفر بحركات حقيقية فقط.
  */
-export async function seedShowroomSampleAnalytics(targetScans = 45): Promise<number> {
+export async function purgeShelfLookupLogs(): Promise<number> {
   const db = getDb();
   if (!db) return 0;
 
-  // جلب عينة من المنتجات النشطة المتوفرة بالمعرض
-  const sampleProducts = await db
-    .select({
-      id: products.id,
-      name: products.name,
-      barcode: productUnits.barcode,
-    })
-    .from(products)
-    .innerJoin(productVariants, eq(productVariants.productId, products.id))
-    .innerJoin(productUnits, eq(productUnits.variantId, productVariants.id))
-    .where(
-      and(
-        eq(products.isActive, true),
-        eq(productVariants.isActive, true),
-        eq(productUnits.isActive, true),
-      ),
-    )
-    .limit(25);
-
-  if (sampleProducts.length === 0) return 0;
-
-  // الفروع
-  const branchList = await db.select({ id: branches.id }).from(branches);
-  const branchIds = branchList.map((b) => Number(b.id));
-  if (branchIds.length === 0) branchIds.push(1);
-
-  // توليد زوار افتراضيين ذوي بصمات أجهزة واقعية
-  const visitorCount = Math.max(12, Math.floor(targetScans / 2.5));
-  const visitors: Array<{ id: string; device: "android" | "ios" | "desktop" }> = [];
-  for (let i = 1; i <= visitorCount; i++) {
-    const rand = Math.random();
-    const device: "android" | "ios" | "desktop" = rand < 0.65 ? "android" : rand < 0.9 ? "ios" : "desktop";
-    visitors.push({
-      id: `vst_${Math.random().toString(36).substring(2, 10)}_${i}`,
-      device,
-    });
+  try {
+    const [res] = await db.execute(sql`DELETE FROM ${shelfLookupLogs}`);
+    return Number((res as any)?.affectedRows ?? 0);
+  } catch (err) {
+    logger.error({ err }, "shelf.lookup.purge_failed");
+    throw err;
   }
-
-  const now = Date.now();
-  const insertValues: Array<typeof shelfLookupLogs.$inferInsert> = [];
-
-  for (let i = 0; i < targetScans; i++) {
-    const visitor = visitors[Math.floor(Math.random() * visitors.length)];
-    const isMatched = Math.random() > 0.08; // 92% نسبة نجاح
-    const product = isMatched ? sampleProducts[Math.floor(Math.random() * sampleProducts.length)] : null;
-    const barcode = product?.barcode || `69${Math.floor(10000000000 + Math.random() * 90000000000)}`;
-    const branchId = branchIds[Math.floor(Math.random() * branchIds.length)];
-
-    // توزيع زمني على مدار آخر 6 أيام مع تركيز على فترات ما بعد الظهيرة والمساء
-    const daysAgo = Math.floor(Math.random() * 6);
-    const hour = 10 + Math.floor(Math.random() * 11); // بين 10 صباحاً و 9 مساءً
-    const minute = Math.floor(Math.random() * 60);
-    const scanTime = new Date(now - daysAgo * 24 * 60 * 60 * 1000);
-    scanTime.setUTCHours(hour, minute, Math.floor(Math.random() * 60));
-
-    insertValues.push({
-      visitorId: visitor.id,
-      branchId,
-      barcode,
-      productId: product?.id ? Number(product.id) : null,
-      productName: product?.name || (isMatched ? null : "رمز غير مسجل بالباركود"),
-      found: isMatched,
-      deviceType: visitor.device,
-      createdAt: scanTime,
-    });
-  }
-
-  // إدخال على دفعات آمنة
-  if (insertValues.length > 0) {
-    await db.insert(shelfLookupLogs).values(insertValues);
-  }
-
-  return insertValues.length;
 }
