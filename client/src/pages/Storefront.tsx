@@ -79,6 +79,7 @@ import { StorefrontStickyFilter } from "@/components/storefront/StorefrontSticky
 import { StorefrontColorSwatches } from "@/components/storefront/StorefrontColorSwatches";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
+import { AnimatedAddToCartButton } from "@/components/storefront/AnimatedAddToCartButton";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -1029,6 +1030,7 @@ function RelatedProductStrip({
   onRecommendationClick: (recommendedProductId: number) => void;
 }) {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
+  const [addedId, setAddedId] = useState<number | null>(null);
   const filteredProducts = products.filter((product) => matchesPriceFilter(Number(product.salePrice ?? product.price ?? 0), priceFilter));
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
@@ -1039,18 +1041,25 @@ function RelatedProductStrip({
   };
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("button, a, select, input, label")) return;
     const scroller = scrollerRef.current;
     if (!scroller) return;
     dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
-    scroller.setPointerCapture(event.pointerId);
   };
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const scroller = scrollerRef.current;
     if (!scroller || !dragRef.current.active) return;
     const delta = event.clientX - dragRef.current.startX;
-    if (Math.abs(delta) > 6) dragRef.current.moved = true;
-    if (dragRef.current.moved) event.preventDefault();
-    scroller.scrollLeft = dragRef.current.startScroll - delta;
+    if (Math.abs(delta) > 6) {
+      if (!dragRef.current.moved) {
+        dragRef.current.moved = true;
+        if (!scroller.hasPointerCapture(event.pointerId)) {
+          scroller.setPointerCapture(event.pointerId);
+        }
+      }
+      event.preventDefault();
+      scroller.scrollLeft = dragRef.current.startScroll - delta;
+    }
   };
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
     const scroller = scrollerRef.current;
@@ -1106,7 +1115,34 @@ function RelatedProductStrip({
             <div className="flex flex-1 flex-col gap-1 p-2">
               <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} className="line-clamp-2 min-h-[2.2em] text-right text-[11px] font-bold leading-tight" aria-label={`فتح تفاصيل ${rp.productName}`}>{rp.productName}</button>
               <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-              <button type="button" onClick={(event) => { onRecommendationClick(rp.productId); onAdd(rp, event); }} disabled={!storefrontProductCanBeOrdered(rp)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95 disabled:cursor-not-allowed disabled:opacity-50">{rp.isCustomizable ? <AlertTriangle aria-hidden className="size-3" /> : <Plus aria-hidden className="size-3" />} {recommendationActionLabel(rp)}</button>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRecommendationClick(rp.productId);
+                  if (!recommendationNeedsSelection(rp) && storefrontProductCanBeOrdered(rp)) {
+                    setAddedId(rp.productId);
+                    window.setTimeout(() => setAddedId((curr) => curr === rp.productId ? null : curr), 1500);
+                  }
+                  onAdd(rp, event);
+                }}
+                disabled={!storefrontProductCanBeOrdered(rp)}
+                className={`store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${
+                  addedId === rp.productId ? "bg-emerald-600! text-white! shadow-emerald-500/20" : ""
+                }`}
+              >
+                {addedId === rp.productId ? (
+                  <>
+                    <Check aria-hidden className="size-3 animate-scale-in" />
+                    <span>تمت الإضافة</span>
+                  </>
+                ) : (
+                  <>
+                    {rp.isCustomizable ? <AlertTriangle aria-hidden className="size-3" /> : <Plus aria-hidden className="size-3" />}
+                    <span>{recommendationActionLabel(rp)}</span>
+                  </>
+                )}
+              </button>
             </div>
           </article>
         ))}
@@ -2045,7 +2081,7 @@ function StorefrontContent() {
       window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
       return;
     }
-    if (p.productUnitId > 0 && p.price != null && p.inStock !== false) {
+    if (p.productUnitId > 0 && (p.salePrice ?? p.price) != null && p.inStock !== false) {
       addToCart({
         productUnitId: p.productUnitId,
         productId: p.productId,
@@ -2798,25 +2834,23 @@ function StorefrontContent() {
                   </div>
                 </div>
                 <div className="sticky bottom-0 mt-2 border-t border-slate-100 bg-white/95 pt-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/95">
-                <button
-                  onClick={(event) => {
-                    if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants(event.currentTarget);
-                    else {
-                      addSelectedUnit(event.currentTarget);
-                    }
-                  }}
-                  disabled={detailQ.data.isCustomizable || !!customizationValidation || ((detailQ.data?.variants?.length ?? 0) > 1
-                    ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
-                    : !detailUnit?.inStock || detailUnit.price == null)}
-                  className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
-                >
-                  {detailQ.data.isCustomizable ? <AlertTriangle aria-hidden className="size-4" /> : <Plus aria-hidden className="size-4" />}
-                  {detailQ.data.isCustomizable
-                    ? STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE
-                    : (detailQ.data?.variants?.length ?? 0) > 1
-                    ? "أضف الاختيارات إلى السلة"
-                    : detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
-                </button>
+                  <AnimatedAddToCartButton
+                    onAdd={(btnEl) => {
+                      if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants(btnEl);
+                      else addSelectedUnit(btnEl);
+                    }}
+                    disabled={detailQ.data.isCustomizable || !!customizationValidation || ((detailQ.data?.variants?.length ?? 0) > 1
+                      ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
+                      : !detailUnit?.inStock || detailUnit.price == null)}
+                    label={detailQ.data.isCustomizable
+                      ? STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE
+                      : (detailQ.data?.variants?.length ?? 0) > 1
+                      ? "أضف الاختيارات إلى السلة"
+                      : detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
+                    icon={detailQ.data.isCustomizable ? <AlertTriangle aria-hidden className="size-4" /> : undefined}
+                    cartCount={cartLines.reduce((acc, l) => acc + l.qty, 0)}
+                    showCartCount={true}
+                  />
                 </div>
 
                 {/* محتويات البكج */}
