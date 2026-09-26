@@ -302,7 +302,9 @@ export default function AssetDetail() {
       <Card>
         <CardContent className="p-4 space-y-1.5">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">استهلاك القيمة ({depreciationMethodLabel(a.depreciationMethod)})</span>
+            <span className="text-muted-foreground">
+              {a.category === "land" ? "استهلاك القيمة (أصل دائم لا يستهلك)" : `استهلاك القيمة (${depreciationMethodLabel(a.depreciationMethod)})`}
+            </span>
             <span className="tabular-nums" dir="ltr">{a.depPct}%</span>
           </div>
           <Progress value={a.depPct} />
@@ -329,7 +331,7 @@ export default function AssetDetail() {
             <Field label="تاريخ الشراء" value={fmtDate(a.purchaseDate)} dir="ltr" />
             <Field label="نهاية الكفالة" value={fmtDate(a.warrantyEnd)} dir="ltr" />
             <Field label="الحالة الفنية" value={a.condition} />
-            <Field label="العمر الإنتاجي" value={`${a.usefulLifeYears} سنة`} />
+            <Field label="العمر الإنتاجي" value={a.category === "land" ? "غير محدد (أصل غير خاضع للاستهلاك)" : `${a.usefulLifeYears} سنة`} />
             <Field label="القيمة التخريدية" value={iqd(a.salvageValue)} dir="ltr" />
             <Field label="إجمالي الصيانة" value={iqd(a.maintTotal)} dir="ltr" />
             {a.status === "disposed" || a.status === "retired" ? (
@@ -345,15 +347,24 @@ export default function AssetDetail() {
         <TabsContent value="depreciation">
           <Card>
             <CardHeader><CardTitle className="text-base">جدول الإهلاك السنوي — {depreciationMethodLabel(a.depreciationMethod)}</CardTitle></CardHeader>
-            <CardContent className="p-0">
-              <DataTable<ScheduleRow>
-                {...EMBEDDED_TABLE}
-                columns={scheduleColumns}
-                data={a.schedule}
-                /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد. */
-                getRowClassName={(r) => (r.isCurrent ? "!bg-primary/5 font-medium" : undefined)}
-                emptyText="لا جدول إهلاك لهذا الأصل."
-              />
+            <CardContent className={a.category === "land" ? "p-6" : "p-0"}>
+              {a.category === "land" ? (
+                <div className="rounded-md border border-sky-500/20 bg-sky-50/50 dark:bg-sky-950/20 p-4 text-sm text-sky-800 dark:text-sky-300">
+                  <p className="font-semibold mb-1">أصل غير خاضع للاستهلاك (الأراضي)</p>
+                  <p className="text-xs text-muted-foreground">
+                    وفقاً للمعيار المحاسبي الدولي IAS 16 والنظام المحاسبي الموحد، تتميز الأراضي بعمر إنتاجي غير محدد ولا تخضع لأقساط إهلاك سنوية، وتظل قيمتها الدفترية مساوية لتكلفة الاقتناء.
+                  </p>
+                </div>
+              ) : (
+                <DataTable<ScheduleRow>
+                  {...EMBEDDED_TABLE}
+                  columns={scheduleColumns}
+                  data={a.schedule}
+                  /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد. */
+                  getRowClassName={(r) => (r.isCurrent ? "!bg-primary/5 font-medium" : undefined)}
+                  emptyText="لا جدول إهلاك لهذا الأصل."
+                />
+              )}
             </CardContent>
           </Card>
         </TabsContent>

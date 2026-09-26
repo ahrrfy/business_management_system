@@ -39,6 +39,25 @@ export const IRAQI_UNIFIED_ACCOUNTS: ImportedStatutoryAccount[] = [
     sortOrder: 110,
   },
   {
+    code: "111",
+    name: "الأراضي والعقارات",
+    type: "ASSET",
+    normalBalance: "DEBIT",
+    parentCode: "11",
+    isPosting: true,
+    sortOrder: 111,
+    notes: "أراضٍ وعقارات مملوكة غير خاضعة للاندثار",
+  },
+  {
+    code: "112",
+    name: "المباني والإنشاءات",
+    type: "ASSET",
+    normalBalance: "DEBIT",
+    parentCode: "11",
+    isPosting: true,
+    sortOrder: 112,
+  },
+  {
     code: "113",
     name: "آلات ومعدات الطباعة والتجليد",
     type: "ASSET",
@@ -175,6 +194,16 @@ export const IRAQI_UNIFIED_ACCOUNTS: ImportedStatutoryAccount[] = [
     parentCode: "158",
     isPosting: true,
     sortOrder: 1583,
+  },
+  {
+    code: "1584",
+    name: "سلف وقروض حسنة ممنوحة للغير",
+    type: "ASSET",
+    normalBalance: "DEBIT",
+    parentCode: "158",
+    isPosting: true,
+    sortOrder: 1584,
+    notes: "قروض وسلف حسنة ممنوحة للغير مستحقة السداد للشركة",
   },
   {
     code: "18",
@@ -352,6 +381,16 @@ export const IRAQI_UNIFIED_ACCOUNTS: ImportedStatutoryAccount[] = [
     isPosting: true,
     sortOrder: 221,
     notes: "قرار المالك: إثبات تمويلات الخزينة والمصروفات المسددة منه شخصياً",
+  },
+  {
+    code: "228",
+    name: "أموال تشغيل واستثمار بالمشاركة",
+    type: "EQUITY",
+    normalBalance: "CREDIT",
+    parentCode: "22",
+    isPosting: true,
+    sortOrder: 228,
+    notes: "أموال تشغيل مستلمة من مستثمرين مقابل حصة في الأرباح والخسائر",
   },
   {
     code: "24",
@@ -882,6 +921,8 @@ export const SYSTEM_ROLE_TO_IRAQI_UNIFIED_CODE: Record<string, string> = {
   EXCHANGE_PAYABLE_IQD: "2682", // ذمم صيرفة دائنة د.ع
   EXCHANGE_PAYABLE_USD: "2683", // ذمم صيرفة دائنة دولار
   LOAN_PAYABLE: "24", // قروض مستحقة
+  LOAN_RECEIVABLE: "1584", // سلف وقروض حسنة للغير
+  INVESTMENT_PAYABLE: "228", // أموال تشغيل واستثمار بالمشاركة
   OTHER_LIABILITY: "269", // التزامات أخرى
 
   // المصروفات والاستخدامات

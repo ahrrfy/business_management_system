@@ -44,6 +44,19 @@ export function computeDepreciation(
   // الحسابات بـDecimal (§٥): الأموال لا تُحسب بـJS Number. الإرجاع كأرقام صحيحة (دينار)
   // لأن العقد الخارجي مع الواجهة/الاختبارات يستعمل number — نخرج عبر toNumber() بعد التقريب.
   const cost = money(a.purchaseValue);
+  if (a.usefulLifeYears === 0) {
+    const stop = a.disposalDate ? new Date(a.disposalDate) : null;
+    const age = Math.max(0, yearsBetween(new Date(a.purchaseDate), stop || asOf));
+    return {
+      annualDep: 0,
+      accumulated: 0,
+      bookValue: cost.toNumber(),
+      depPct: 0,
+      ageYears: new Decimal(age).toDecimalPlaces(1, Decimal.ROUND_HALF_UP).toNumber(),
+      depRate: 0,
+      schedule: [],
+    };
+  }
   const sal = a.salvageValue === "" || a.salvageValue == null ? new Decimal(0) : money(a.salvageValue);
   const life = a.usefulLifeYears || 1;
   const method = a.depreciationMethod || "sl";

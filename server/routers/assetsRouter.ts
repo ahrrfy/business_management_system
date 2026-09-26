@@ -144,7 +144,7 @@ export const assetsRouter = router({
         purchaseDate: z.string().min(1), // YYYY-MM-DD
         purchaseValue: moneyStr,
         salvageValue: moneyStrOpt,
-        usefulLifeYears: z.number().int().positive().max(100),
+        usefulLifeYears: z.number().int().min(0).max(100),
         depreciationMethod: methodEnum.default("sl"),
         condition: z.string().trim().optional(),
         warrantyEnd: z.string().optional(),
@@ -166,6 +166,12 @@ export const assetsRouter = router({
           return money(d.purchaseValue).gt(0);
         },
         { message: "قيمة الشراء يجب أن تكون أكبر من صفر", path: ["purchaseValue"] },
+      ).refine(
+        (d) => (d.category === "land" ? d.usefulLifeYears === 0 : d.usefulLifeYears > 0),
+        {
+          message: "الأراضي لا تخضع للإهلاك ويجب أن يكون عمرها الإنتاجي 0، بينما الفئات الأخرى تتطلب عمراً إنتاجياً أكبر من صفر",
+          path: ["usefulLifeYears"],
+        },
       ),
     )
     .mutation(async ({ input, ctx }) => {
@@ -215,7 +221,7 @@ export const assetsRouter = router({
         purchaseDate: z.string().min(1),
         purchaseValue: moneyStr,
         salvageValue: moneyStrOpt,
-        usefulLifeYears: z.number().int().positive().max(100),
+        usefulLifeYears: z.number().int().min(0).max(100),
         depreciationMethod: methodEnum.default("sl"),
         condition: z.string().trim().optional(),
         warrantyEnd: z.string().optional(),
@@ -226,6 +232,12 @@ export const assetsRouter = router({
           return money(d.salvageValue ?? "0").lte(money(d.purchaseValue));
         },
         { message: "القيمة التخريدية يجب ألا تتجاوز قيمة الشراء", path: ["salvageValue"] },
+      ).refine(
+        (d) => (d.category === "land" ? d.usefulLifeYears === 0 : d.usefulLifeYears > 0),
+        {
+          message: "الأراضي لا تخضع للإهلاك ويجب أن يكون عمرها الإنتاجي 0، بينما الفئات الأخرى تتطلب عمراً إنتاجياً أكبر من صفر",
+          path: ["usefulLifeYears"],
+        },
       ),
     )
     .mutation(async ({ input, ctx }) => {
