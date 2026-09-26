@@ -1115,34 +1115,24 @@ function RelatedProductStrip({
             <div className="flex flex-1 flex-col gap-1 p-2">
               <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} className="line-clamp-2 min-h-[2.2em] text-right text-[11px] font-bold leading-tight" aria-label={`فتح تفاصيل ${rp.productName}`}>{rp.productName}</button>
               <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onRecommendationClick(rp.productId);
-                  if (!recommendationNeedsSelection(rp) && storefrontProductCanBeOrdered(rp)) {
-                    setAddedId(rp.productId);
-                    window.setTimeout(() => setAddedId((curr) => curr === rp.productId ? null : curr), 1500);
-                  }
-                  onAdd(rp, event);
-                }}
-                disabled={!storefrontProductCanBeOrdered(rp)}
-                className={`store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${
-                  addedId === rp.productId ? "bg-emerald-600! text-white! shadow-emerald-500/20" : ""
-                }`}
-              >
-                {addedId === rp.productId ? (
-                  <>
-                    <Check aria-hidden className="size-3 animate-scale-in" />
-                    <span>تمت الإضافة</span>
-                  </>
-                ) : (
-                  <>
-                    {rp.isCustomizable ? <AlertTriangle aria-hidden className="size-3" /> : <Plus aria-hidden className="size-3" />}
-                    <span>{recommendationActionLabel(rp)}</span>
-                  </>
-                )}
-              </button>
+              <div className="mt-auto w-full">
+                <AnimatedAddToCartButton
+                  size="xs"
+                  disabled={!storefrontProductCanBeOrdered(rp)}
+                  label={recommendationActionLabel(rp)}
+                  addedLabel="تمت الإضافة"
+                  icon={rp.isCustomizable ? <AlertTriangle aria-hidden className="size-3" /> : undefined}
+                  onAdd={(btnEl) => {
+                    onRecommendationClick(rp.productId);
+                    if (!recommendationNeedsSelection(rp) && storefrontProductCanBeOrdered(rp)) {
+                      setAddedId(rp.productId);
+                      window.setTimeout(() => setAddedId((curr) => curr === rp.productId ? null : curr), 1500);
+                    }
+                    onAdd(rp, { currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
+                  }}
+                  showCartCount={false}
+                />
+              </div>
             </div>
           </article>
         ))}
