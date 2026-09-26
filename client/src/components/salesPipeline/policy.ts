@@ -4,12 +4,10 @@ import {
   type SalesLeadStatus,
   type SalesOpportunityStage,
 } from "@shared/salesPipeline";
+import { fmtDate } from "@/lib/date";
 
 export function pipelineDate(value: Date | string | null | undefined): string {
-  if (!value) return "—";
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString("ar-IQ-u-nu-latn");
+  return fmtDate(value);
 }
 
 export function isPastPipelineDate(

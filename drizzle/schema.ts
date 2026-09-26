@@ -17774,3 +17774,35 @@ export const controlRequests = mysqlTable(
 
 export type ControlRequest = typeof controlRequests.$inferSelect;
 export type InsertControlRequest = typeof controlRequests.$inferInsert;
+
+/**
+ * سجلّ عمليات استعلام ومسح أسعار الرفوف بالباركود وحصر أعداد المستفيدين (Shelf QR Lookup & Beneficiaries Log).
+ * يُمكّن إدارة المعرض من متابعة حجم استفادة الزبائن من الخدمة، وأكثر المنتجات استعلاماً،
+ * ونشاط الفروع، وأوقات الذروة، بلا تخزين أي بيانات شخصية للمستهلكين.
+ */
+export const shelfLookupLogs = mysqlTable(
+  "shelfLookupLogs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    visitorId: varchar("visitorId", { length: 64 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    barcode: varchar("barcode", { length: 64 }).notNull(),
+    productId: bigint("productId", { mode: "number" }).references(() => products.id),
+    productName: varchar("productName", { length: 255 }),
+    found: boolean("found").default(false).notNull(),
+    deviceType: varchar("deviceType", { length: 32 }).default("unknown").notNull(),
+    ipHash: varchar("ipHash", { length: 64 }),
+    userAgent: varchar("userAgent", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    visitorIdx: index("idx_shelf_lookup_visitor").on(table.visitorId),
+    branchIdx: index("idx_shelf_lookup_branch").on(table.branchId),
+    productIdx: index("idx_shelf_lookup_product").on(table.productId),
+    createdIdx: index("idx_shelf_lookup_created").on(table.createdAt),
+    foundIdx: index("idx_shelf_lookup_found").on(table.found),
+  }),
+);
+
+export type ShelfLookupLog = typeof shelfLookupLogs.$inferSelect;
+export type InsertShelfLookupLog = typeof shelfLookupLogs.$inferInsert;

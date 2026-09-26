@@ -458,6 +458,7 @@ export default function App() {
       <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/returns-governance"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/purchase-requisitions"><Redirect to="/purchases?tab=requisitions" /></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
@@ -621,6 +622,9 @@ export default function App() {
       {/* التذكيرات ليست تقارير قراءة — راوتراها على وحدتَي العملاء/الموردين بمستوى FULL. */}
       <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager","accountant"]} module="collections" level="FULL"><ARReminders /></RequireRole></Shell></Route>
       <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]} module="suppliers" level="FULL"><APReminders /></RequireRole></Shell></Route>
+      {/* توافق الروابط المباشرة السابقة للتذكيرات */}
+      <Route path="/ar-reminders"><Redirect to="/reports/ar-reminders" /></Route>
+      <Route path="/ap-reminders"><Redirect to="/reports/ap-reminders" /></Route>
       {/* أُدمجت في محور CRM (CrmHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       {/* تدقيق ١٧/٧: توجيه مباشر لـ/crm — كان يمرّ عبر /customers الذي يُعيد التوجيه لـ/crm?tab=customers
           فيُسقط tab ومعرّف العميل (?id=) ⇒ يهبط المستخدم على قائمة العملاء بدل الكشف/الأعمار. */}

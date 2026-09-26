@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
-import { D, fmtAr, positiveDiff } from "@/lib/money";
+import { D, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { trpc, type RouterInputs } from "@/lib/trpc";
@@ -229,7 +229,7 @@ export default function WorkOrderDetail() {
       customerName: wo.data.customerName ?? undefined,
       customerPhone: wo.data.customerPhone ?? undefined,
       jobTitle: wo.data.title,
-      quantity: wo.data.quantity ? `${wo.data.quantity} نسخة` : undefined,
+      quantity: wo.data.quantity ? `${formatQuantity(wo.data.quantity)} نسخة` : undefined,
       specs: wo.data.customizationText ?? undefined,
       total: wo.data.salePrice,
       // ش٤: التذكرة تُثبت العربون والمتبقّي (كانت تطبع الإجمالي وحده — أكثر ما يُتنازَع عليه).
@@ -607,7 +607,7 @@ export default function WorkOrderDetail() {
             jobType: data.title,
             specs: data.customizationText,
             items: [{
-              name: `${data.title} (${data.quantity} نسخة)`,
+              name: `${data.title} (${formatQuantity(data.quantity)} نسخة)`,
               unit: 'مهمة',
               quantity: 1,
               unitPrice: data.salePrice,
@@ -628,7 +628,7 @@ export default function WorkOrderDetail() {
               customerName: data.customerName ?? undefined,
               customerPhone: data.customerPhone ?? undefined,
               jobTitle: data.title,
-              quantity: data.quantity ? `${data.quantity} نسخة` : undefined,
+              quantity: data.quantity ? `${formatQuantity(data.quantity)} نسخة` : undefined,
               specs: data.customizationText ?? undefined,
               total: data.salePrice,
               paidUpfront: Number(data.deposit ?? 0) > 0 ? data.deposit : null,
@@ -725,7 +725,7 @@ export default function WorkOrderDetail() {
             <div className="lg:col-span-7 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="رقم الأمر"><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
-              <Field label="الكمية">{data.quantity}</Field>
+              <Field label="الكمية">{formatQuantity(data.quantity)}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               <Field label="قناة الاستلام"><ChannelBadge channel={data.receptionChannel} handle={data.channelHandle} /></Field>
               <Field label="عداد الوقت / المدة">

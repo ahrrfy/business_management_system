@@ -1,6 +1,7 @@
 // فاتورة A4 رسمية (للحكومة/الشركات) — تُطبع عبر المتصفّح (تشكيل عربي مثالي + «حفظ كـPDF»).
 // نُفضّلها على @react-pdf/renderer لأنّ الأخير لا يصل/يشكّل الحروف العربية صحيحاً.
 import { CAIRO_FONT } from "./brand";
+import { fmtQty } from "@shared/quantityFormat";
 import { fmtDate } from "../date";
 
 export type A4InvoiceItem = {
@@ -35,7 +36,7 @@ function buildHtml(inv: A4Invoice): string {
       (it, i) => `<tr>
       <td class="c">${i + 1}</td>
       <td>${esc(it.productName)}${it.unitName ? ` <span class="u">(${esc(it.unitName)})</span>` : ""}</td>
-      <td class="c">${esc(it.quantity)}</td>
+      <td class="c">${esc(fmtQty(it.quantity))}</td>
       <td class="l">${money(it.unitPrice)}</td>
       <td class="l">${money(it.total)}</td>
     </tr>`,

@@ -88,12 +88,11 @@ export default function Login() {
       try {
         const now = new Date();
         setBaghdadTime(
-          now.toLocaleTimeString("ar-IQ", {
+          now.toLocaleTimeString("ar-IQ-u-nu-latn", {
             timeZone: "Asia/Baghdad",
             hour: "2-digit",
             minute: "2-digit",
             second: "2-digit",
-            numberingSystem: "latn",
           })
         );
       } catch {
