@@ -1,0 +1,286 @@
+.animated-cart-btn-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.animated-cart-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 52px;
+  border-radius: 9999px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+  touch-action: manipulation;
+  overflow: visible;
+  padding: 0;
+}
+
+.animated-cart-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The ink bag outside the pill */
+.animated-cart-btn .bag--out {
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  translate: -50% 0;
+  z-index: 0;
+  color: #0f172a;
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: center bottom;
+}
+
+:is(.dark) .animated-cart-btn .bag--out {
+  color: #e2e8f0;
+}
+
+/* The dark pill */
+.animated-cart-btn .pill {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 9999px;
+  background: #0f172a;
+  color: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.animated-cart-btn:hover:not(:disabled) .pill {
+  background: #1e293b;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.35);
+  transform: translateY(-1px);
+}
+
+.animated-cart-btn:active:not(:disabled) .pill {
+  transform: translateY(1px) scale(0.99);
+}
+
+.animated-cart-btn:disabled .pill {
+  background: #94a3b8;
+  box-shadow: none;
+  transform: none;
+}
+
+:is(.dark) .animated-cart-btn:disabled .pill {
+  background: #334155;
+  color: #64748b;
+}
+
+/* White bag inside the pill */
+.animated-cart-btn .bag--in {
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  translate: -50% 0;
+  z-index: 3;
+  color: #ffffff;
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: center bottom;
+}
+
+/* The cart */
+.animated-cart-btn .cart {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: var(--from-left, -180px) -50%;
+  z-index: 2;
+  color: #ffffff;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+}
+
+/* Pill label */
+.animated-cart-btn .pill__label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+/* Sub-label for count in cart */
+.animated-cart-counter {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:is(.dark) .animated-cart-counter {
+  color: #94a3b8;
+}
+
+.animated-cart-counter.bump {
+  animation: counter-bump 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes counter-bump {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.25); color: #10b981; }
+  100% { transform: scale(1); }
+}
+
+/* ========================================================
+   ANIMATION STATES (60-frame clock on 2.4s)
+   1 frame = 40ms
+   ======================================================== */
+.animated-cart-btn[data-state="adding"] {
+  --from-left: -180px;
+  --to-centre: 0px;
+  --to-exit: 180px;
+}
+
+/* 1. Label fades/shrinks out during adding */
+.animated-cart-btn[data-state="adding"] .pill__label {
+  animation: label-hide-show 2.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes label-hide-show {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  12%, 80% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  92%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 2. Cart animation */
+.animated-cart-btn[data-state="adding"] .cart {
+  opacity: 1;
+  animation: cart-run 2.4s linear forwards;
+}
+
+@keyframes cart-run {
+  0% {
+    translate: var(--from-left, -180px) -50%;
+  }
+  16.667% {
+    translate: var(--from-left, -180px) -50%;
+  }
+  38%, 55% {
+    translate: var(--to-centre, 0px) -50%;
+    animation-timing-function: cubic-bezier(.6, 0, .9, .4);
+  }
+  83.333% {
+    translate: var(--to-exit, 180px) -50%;
+    animation-timing-function: step-end;
+  }
+  83.4% {
+    translate: var(--from-left, -180px) -50%;
+  }
+  98.333%, 100% {
+    translate: var(--from-left, -180px) -50%;
+    opacity: 0;
+  }
+}
+
+/* 3. Outer bag (ink) dropping behind the pill */
+.animated-cart-btn[data-state="adding"] .bag--out {
+  animation: bag-drop-out 2.4s cubic-bezier(0.5, 0, 0.75, 0) forwards;
+}
+
+@keyframes bag-drop-out {
+  0%, 15% {
+    opacity: 0;
+    translate: -50% -10px;
+  }
+  16.667% {
+    opacity: 1;
+    translate: -50% 0;
+  }
+  41.667% {
+    translate: -50% 28px;
+    opacity: 1;
+  }
+  43% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+    translate: -50% 0;
+  }
+}
+
+/* 4. Inner bag (white) dropping inside the pill clip and riding away in cart */
+.animated-cart-btn[data-state="adding"] .bag--in {
+  animation: bag-ride-in 2.4s cubic-bezier(0.5, 0, 0.75, 0) forwards;
+}
+
+@keyframes bag-ride-in {
+  0%, 16.667% {
+    opacity: 1;
+    translate: -50% 0;
+  }
+  41.667% {
+    translate: -50% 28px;
+    transform: scale(1.15, 0.85);
+  }
+  46% {
+    translate: -50% 27px;
+    transform: scale(0.95, 1.05);
+  }
+  50%, 55% {
+    translate: -50% 28px;
+    transform: scale(1, 1);
+    animation-timing-function: cubic-bezier(.6, 0, .9, .4);
+  }
+  83.333% {
+    translate: calc(-50% + var(--to-exit, 180px)) 28px;
+    transform: scale(1, 1);
+    animation-timing-function: step-end;
+  }
+  83.4% {
+    translate: -50% 0;
+    opacity: 0;
+  }
+  100% {
+    translate: -50% 0;
+    opacity: 0;
+  }
+}
+
+/* When state is "added" */
+.animated-cart-btn[data-state="added"] .pill {
+  background: #059669;
+}
+
+.animated-cart-btn[data-state="added"] .pill__label {
+  color: #ffffff;
+}
