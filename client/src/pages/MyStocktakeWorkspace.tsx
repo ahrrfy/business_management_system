@@ -32,7 +32,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { errMsg, notify } from "@/lib/notify";
 import { isNetworkError } from "@/lib/netError";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import {
   enqueue,
   newClientRequestId,
@@ -934,7 +934,7 @@ export default function MyStocktakeWorkspace() {
                 <span className="w-14 shrink-0 text-left sm:w-[110px] sm:text-right">
                   {myQty != null ? (
                     <span className="font-mono text-primary" dir="ltr">
-                      {fmtInt(myQty)}
+                      {formatQuantity(myQty)}
                     </span>
                   ) : (
                     <span className="text-muted-foreground">—</span>

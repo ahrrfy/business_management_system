@@ -18,7 +18,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { fmtAr, formatIqd, fmtInt, D } from "@/lib/money";
+import { fmtAr, formatIqd, fmtInt, formatQuantity, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 
 type Dim =
@@ -271,7 +271,7 @@ export default function ProfitabilityReport() {
       return (products.data ?? []).map((r) => ({
         productId: r.productId,
         label: r.productName,
-        sub: fmtInt(r.qtySold),
+        sub: formatQuantity(r.qtySold),
         revenue: r.revenue,
         cost: r.cost,
         profit: r.profit,
