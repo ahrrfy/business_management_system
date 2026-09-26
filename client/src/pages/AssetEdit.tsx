@@ -10,7 +10,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { ASSET_CATEGORIES, DEPRECIATION_METHODS, categoryDefaultLife } from "@shared/assets";
+import { ASSET_CATEGORIES, DEPRECIATION_METHODS } from "@shared/assets";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -133,11 +133,7 @@ export default function AssetEdit() {
           <div className="space-y-1"><Label htmlFor="name">اسم الأصل *</Label><Input id="name" value={form.name} onChange={(e) => set({ name: e.target.value })} /></div>
           <div className="space-y-1">
             <Label htmlFor="cat">الفئة *</Label>
-            <AppSelect id="cat" className="h-9" value={form.category} onValueChange={(next) => set({
-              category: next,
-              usefulLifeYears: next === "land" ? "0" : (form.usefulLifeYears === "0" ? String(categoryDefaultLife(next)) : form.usefulLifeYears),
-              salvageValue: next === "land" ? "0" : form.salvageValue,
-            })}>
+            <AppSelect id="cat" className="h-9" value={form.category} onValueChange={(next) => set({ category: next })}>
               {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
             </AppSelect>
           </div>
