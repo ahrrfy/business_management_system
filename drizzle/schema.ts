@@ -3538,9 +3538,9 @@ export const voucherCategories = mysqlTable(
     postingRoleCheck: check(
       "chk_vchcat_posting_role",
       sql`${table.postingRole} IS NULL OR (
-        (${table.direction} = 'IN' AND ${table.postingRole} IN ('OTHER_REVENUE','CAPITAL','OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY'))
-        OR (${table.direction} = 'OUT' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','SALARIES','RENT','UTILITIES','OPERATING_EXPENSE','DELIVERY_EXPENSE','GIFTS_PROMO','LOSSES','OTHER_EXPENSE'))
-        OR (${table.direction} = 'BOTH' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY'))
+        (${table.direction} = 'IN' AND ${table.postingRole} IN ('OTHER_REVENUE','CAPITAL','OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','LOAN_RECEIVABLE','INVESTMENT_PAYABLE'))
+        OR (${table.direction} = 'OUT' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','SALARIES','RENT','UTILITIES','OPERATING_EXPENSE','DELIVERY_EXPENSE','GIFTS_PROMO','LOSSES','OTHER_EXPENSE','LOAN_RECEIVABLE','INVESTMENT_PAYABLE'))
+        OR (${table.direction} = 'BOTH' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','LOAN_RECEIVABLE','INVESTMENT_PAYABLE'))
       )`,
     ),
   }),
@@ -9554,6 +9554,8 @@ export const fixedAssets = mysqlTable(
       "vehicles",
       "printing",
       "devices",
+      "land",
+      "buildings",
     ]).notNull(),
     brand: varchar("brand", { length: 120 }),
     serial: varchar("serial", { length: 120 }),
