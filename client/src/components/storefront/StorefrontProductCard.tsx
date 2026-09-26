@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye } from "lucide-react";
 import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
+import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";
 
 export interface StorefrontCatalogProduct {
   productId: number;
@@ -288,33 +289,20 @@ export function StorefrontProductCard({
             </button>
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={handleAddClick}
-            disabled={!orderable}
-            className={`store-primary-action mt-auto flex h-10 sm:h-11 w-full items-center justify-center gap-1.5 rounded-xl px-2 text-xs font-black text-white shadow-xs transition-all duration-200 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800 dark:disabled:text-slate-600 ${
-              showAdded
-                ? "bg-emerald-700 shadow-emerald-600/30 scale-[1.02]"
-                : "bg-[#0E806A] hover:bg-[#0b6b58] shadow-[#0E806A]/20"
-            }`}
-          >
-            {showAdded ? (
-              <>
-                <Check aria-hidden className="size-3.5 animate-scale-in" />
-                <span>تمت الإضافة</span>
-              </>
-            ) : p.isCustomizable ? (
-              <>
-                <AlertTriangle aria-hidden className="size-3.5" />
-                <span className="truncate">{actionLabel}</span>
-              </>
-            ) : (
-              <>
-                <Plus aria-hidden className="size-3.5" />
-                <span className="truncate">{actionLabel}</span>
-              </>
-            )}
-          </button>
+          <div className="mt-auto w-full">
+            <AnimatedAddToCartButton
+              size="sm"
+              disabled={!orderable}
+              label={actionLabel ?? "أضف إلى السلة"}
+              addedLabel="تمت الإضافة"
+              icon={p.isCustomizable ? <AlertTriangle aria-hidden className="size-3.5" /> : undefined}
+              onAdd={(btnEl) => {
+                onAdd(p, { currentTarget: btnEl, stopPropagation: () => {} } as unknown as React.MouseEvent<HTMLButtonElement>);
+              }}
+              cartCount={cartQuantity}
+              showCartCount={false}
+            />
+          </div>
         )}
       </div>
     </article>

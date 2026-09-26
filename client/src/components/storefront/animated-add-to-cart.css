@@ -22,6 +22,24 @@
   touch-action: manipulation;
   overflow: visible;
   padding: 0;
+  container-type: inline-size;
+  --from-left: -200px;
+  --to-centre: 0px;
+  --to-exit: 200px;
+  --bag-drop-y: 28px;
+}
+
+@supports (container-type: inline-size) {
+  .animated-cart-btn {
+    --from-left: calc(-50cqw - 45px);
+    --to-centre: 0px;
+    --to-exit: calc(50cqw + 45px);
+  }
+}
+
+.animated-cart-btn.btn--sm {
+  height: 42px;
+  --bag-drop-y: 22px;
 }
 
 .animated-cart-btn:disabled {
@@ -42,6 +60,12 @@
   transform-origin: center bottom;
 }
 
+.animated-cart-btn.btn--sm .bag--out {
+  width: 18px;
+  height: 20px;
+  top: -15px;
+}
+
 :is(.dark) .animated-cart-btn .bag--out {
   color: #e2e8f0;
 }
@@ -60,7 +84,7 @@
   color: #ffffff;
   overflow: hidden;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, background-color 0.2s ease;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, background-color 0.25s ease;
 }
 
 .animated-cart-btn:hover:not(:disabled) .pill {
@@ -97,6 +121,12 @@
   transform-origin: center bottom;
 }
 
+.animated-cart-btn.btn--sm .bag--in {
+  width: 18px;
+  height: 20px;
+  top: -15px;
+}
+
 /* The cart */
 .animated-cart-btn .cart {
   position: absolute;
@@ -112,6 +142,11 @@
   opacity: 0;
 }
 
+.animated-cart-btn.btn--sm .cart svg {
+  width: 28px;
+  height: 24px;
+}
+
 /* Pill label */
 .animated-cart-btn .pill__label {
   display: inline-flex;
@@ -123,6 +158,11 @@
   letter-spacing: -0.01em;
   color: #ffffff;
   transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.animated-cart-btn.btn--sm .pill__label {
+  font-size: 0.8rem;
+  gap: 0.35rem;
 }
 
 /* Sub-label for count in cart */
@@ -147,7 +187,7 @@
 
 @keyframes counter-bump {
   0% { transform: scale(1); }
-  50% { transform: scale(1.25); color: #10b981; }
+  50% { transform: scale(1.3); color: #10b981; }
   100% { transform: scale(1); }
 }
 
@@ -155,11 +195,6 @@
    ANIMATION STATES (60-frame clock on 2.4s)
    1 frame = 40ms
    ======================================================== */
-.animated-cart-btn[data-state="adding"] {
-  --from-left: -180px;
-  --to-centre: 0px;
-  --to-exit: 180px;
-}
 
 /* 1. Label fades/shrinks out during adding */
 .animated-cart-btn[data-state="adding"] .pill__label {
@@ -189,24 +224,24 @@
 
 @keyframes cart-run {
   0% {
-    translate: var(--from-left, -180px) -50%;
+    translate: var(--from-left) -50%;
   }
   16.667% {
-    translate: var(--from-left, -180px) -50%;
+    translate: var(--from-left) -50%;
   }
   38%, 55% {
     translate: var(--to-centre, 0px) -50%;
     animation-timing-function: cubic-bezier(.6, 0, .9, .4);
   }
   83.333% {
-    translate: var(--to-exit, 180px) -50%;
+    translate: var(--to-exit) -50%;
     animation-timing-function: step-end;
   }
   83.4% {
-    translate: var(--from-left, -180px) -50%;
+    translate: var(--from-left) -50%;
   }
   98.333%, 100% {
-    translate: var(--from-left, -180px) -50%;
+    translate: var(--from-left) -50%;
     opacity: 0;
   }
 }
@@ -226,7 +261,7 @@
     translate: -50% 0;
   }
   41.667% {
-    translate: -50% 28px;
+    translate: -50% var(--bag-drop-y, 28px);
     opacity: 1;
   }
   43% {
@@ -249,20 +284,20 @@
     translate: -50% 0;
   }
   41.667% {
-    translate: -50% 28px;
+    translate: -50% var(--bag-drop-y, 28px);
     transform: scale(1.15, 0.85);
   }
   46% {
-    translate: -50% 27px;
+    translate: -50% calc(var(--bag-drop-y, 28px) - 1px);
     transform: scale(0.95, 1.05);
   }
   50%, 55% {
-    translate: -50% 28px;
+    translate: -50% var(--bag-drop-y, 28px);
     transform: scale(1, 1);
     animation-timing-function: cubic-bezier(.6, 0, .9, .4);
   }
   83.333% {
-    translate: calc(-50% + var(--to-exit, 180px)) 28px;
+    translate: calc(-50% + var(--to-exit)) var(--bag-drop-y, 28px);
     transform: scale(1, 1);
     animation-timing-function: step-end;
   }
@@ -279,8 +314,24 @@
 /* When state is "added" */
 .animated-cart-btn[data-state="added"] .pill {
   background: #059669;
+  box-shadow: 0 4px 14px rgba(5, 150, 105, 0.35);
 }
 
 .animated-cart-btn[data-state="added"] .pill__label {
   color: #ffffff;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .animated-cart-btn .cart,
+  .animated-cart-btn .bag--out,
+  .animated-cart-btn .bag--in {
+    display: none !important;
+  }
+  .animated-cart-btn .pill__label {
+    animation: none !important;
+  }
+  .animated-cart-counter.bump {
+    animation: none !important;
+  }
 }

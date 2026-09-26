@@ -2141,7 +2141,6 @@ function StorefrontContent() {
     setCart((previous) => addStorefrontCartLines(previous, selections));
     setCartStatus(`تمت إضافة ${selections.length} من اختيارات ${detailQ.data.productName} إلى السلة.`);
     triggerCartFlight(sourceElement, detailMedia.fallbackUrl);
-    setSelectedId(null);
   }
   function addSelectedUnit(sourceElement?: HTMLElement | null) {
     if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || !detailUnit || !detailUnit.inStock || customizationValidation) return;
@@ -2165,7 +2164,6 @@ function StorefrontContent() {
     setCart((previous) => addStorefrontCartLines(previous, [selection]));
     setCartStatus(`تمت إضافة ${detailQ.data.productName} إلى السلة.`);
     triggerCartFlight(sourceElement, detailMedia.fallbackUrl);
-    setSelectedId(null);
   }
   function setQty(cartKey: string, qty: number) {
     const line = cartRef.current.get(cartKey);
@@ -2848,7 +2846,7 @@ function StorefrontContent() {
                       ? "أضف الاختيارات إلى السلة"
                       : detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
                     icon={detailQ.data.isCustomizable ? <AlertTriangle aria-hidden className="size-4" /> : undefined}
-                    cartCount={cartLines.reduce((acc, l) => acc + l.qty, 0)}
+                    cartCount={getProductCartQty(detailQ.data.productId)}
                     showCartCount={true}
                   />
                 </div>

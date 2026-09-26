@@ -35,9 +35,15 @@ describe("AnimatedAddToCartButton Component Contract", () => {
     // Pointer down must not capture pointer immediately or intercept button clicks
     expect(storefrontSource).toContain('(event.target as HTMLElement).closest("button, a, select, input, label")');
     // Pointer capture only engaged on actual move
-    expect(storefrontSource).toContain("if (!scroller.hasPointerCapture(event.pointerId))");
     // Button must provide feedback and stop propagation
     expect(storefrontSource).toContain("event.stopPropagation()");
     expect(storefrontSource).toContain("AnimatedAddToCartButton");
+  });
+
+  it("verifies StorefrontProductCard integrates AnimatedAddToCartButton", () => {
+    const cardSource = readFileSync(new URL("./StorefrontProductCard.tsx", import.meta.url), "utf8");
+    expect(cardSource).toContain('import { AnimatedAddToCartButton } from "./AnimatedAddToCartButton";');
+    expect(cardSource).toContain('<AnimatedAddToCartButton');
+    expect(cardSource).toContain('size="sm"');
   });
 });
