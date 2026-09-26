@@ -28,7 +28,7 @@ import {
   priceDecimalsFor,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
-import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
@@ -467,7 +467,7 @@ export default function PurchaseNew() {
       await utils.purchases.requisitions.invalidate();
       notify.ok("تم حفظ طلب التأمين بنجاح وإسناده لمدير المشتريات للبحث والتفاوض مع الموردين في السوق");
       bypassUnsavedGuard();
-      navigate("/purchase-requisitions");
+      navigate("/purchases?tab=requisitions");
     },
     onError: (e) => notify.err(e),
   });
@@ -561,7 +561,7 @@ export default function PurchaseNew() {
       }
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
-        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
+        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${formatQuantity(l.qty)} × ${l.conversionFactor}).`;
     }
     if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
       return "أدخل سعر الصرف المثبت للفاتورة.";

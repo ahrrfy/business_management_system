@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Heart, Share2, Plus, Minus, AlertTriangle, Flame, Package, TrendingUp, Check, Eye } from "lucide-react";
 import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@shared/quantityFormat";
 
 export interface StorefrontCatalogProduct {
   productId: number;
@@ -118,7 +119,7 @@ export function StorefrontProductCard({
             )}
             {p.stockLeft != null && p.stockLeft <= 3 && p.stockLeft > 0 && (
               <span className="inline-flex items-center gap-1 rounded-md bg-rose-600 px-1.5 py-0.5 text-[10px] font-black text-white shadow-xs">
-                <span>بقي {p.stockLeft}</span>
+                <span>بقي {formatQuantity(p.stockLeft)}</span>
               </span>
             )}
           </div>
@@ -239,7 +240,7 @@ export function StorefrontProductCard({
           {p.stockLeft != null && p.stockLeft > 0 && p.stockLeft <= 5 ? (
             <span className="flex items-center gap-1 font-extrabold text-orange-600 dark:text-orange-400">
               <Flame aria-hidden className="size-3" />
-              بقي {p.stockLeft} فقط!
+              بقي {formatQuantity(p.stockLeft)} فقط!
             </span>
           ) : p.soldCount >= 3 ? (
             <span className="flex items-center gap-1 text-blue-700 dark:text-blue-400">
@@ -267,7 +268,7 @@ export function StorefrontProductCard({
             </button>
 
             <div className="flex items-center gap-1.5 px-2 font-mono text-xs font-black tabular-nums">
-              <span className="text-sm">{cartQuantity}</span>
+              <span className="text-sm">{formatQuantity(cartQuantity)}</span>
               <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
                 {p.unitName ? p.unitName : "في السلة"}
               </span>

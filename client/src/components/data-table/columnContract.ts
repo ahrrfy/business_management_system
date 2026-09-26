@@ -2,7 +2,7 @@ import type { Column, ColumnDef } from "@tanstack/react-table";
 
 export type TableColumnKind = "text" | "number" | "money" | "date" | "datetime" | "code" | "phone" | "status" | "actor" | "actions";
 export type TableColumnAlign = "start" | "center" | "end";
-export type TableColumnWidth = "id" | "date" | "money" | "status" | "actor" | "actions" | "wide";
+export type TableColumnWidth = "id" | "date" | "money" | "status" | "actor" | "actions" | "wide" | "stacked";
 
 declare module "@tanstack/react-table" {
   interface ColumnMeta<TData, TValue> {
@@ -45,6 +45,7 @@ const WIDTH_CLASS: Record<TableColumnWidth, string> = {
   actor: "w-40 min-w-40",
   actions: "w-28 min-w-28",
   wide: "min-w-64",
+  stacked: "w-52 min-w-44",
 };
 
 export type ResolvedColumnPresentation = {
@@ -103,7 +104,7 @@ export function withColumnPresentation<T>(
  */
 
 /** يستخرج عدداً من نصٍّ معروض (فواصل آلاف · رموز عملة · علامة سالب · نسبة). */
-function numericFromDisplay(value: unknown): number | null {
+export function numericFromDisplay(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value !== "string") return null;
   /*
@@ -114,8 +115,10 @@ function numericFromDisplay(value: unknown): number | null {
    * الترتيب، صعوداً وهبوطاً. تحويلُه قبل التنقية يُبقي الإشارة.
    */
   const normalized = value.replace(/−/g, "-");
-  // نُبقي الأرقام والفاصلة العشرية والسالب فقط — الفواصل والرموز والوحدات تُطرَح.
-  const cleaned = normalized.replace(/[^\d.\-]/g, "");
+  // نلتقط أوّل رمزٍ عدديّ (بما في ذلك السالب والفاصلة وفواصل الآلاف) لمنع دمج الأرقام المتعددة في الخلايا المكدسة
+  const match = normalized.match(/-?\s*\d[\d,]*(?:\.\d+)?/);
+  if (!match) return null;
+  const cleaned = match[0].replace(/\s+/g, "").replace(/,/g, "");
   if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;

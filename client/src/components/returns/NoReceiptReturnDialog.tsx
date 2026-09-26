@@ -14,7 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { notify } from "@/lib/notify";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { playReadyBeep } from "@/lib/notifyBeep";
 import { trpc } from "@/lib/trpc";
@@ -621,7 +621,7 @@ export function NoReceiptReturnDialog({
                                 >
                                   <Minus className="size-3" aria-hidden />
                                 </button>
-                                <span className="w-6 text-center font-mono font-bold">{itm.quantity}</span>
+                                <span className="w-6 text-center font-mono font-bold">{formatQuantity(itm.quantity)}</span>
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -755,7 +755,7 @@ export function NoReceiptReturnDialog({
                                   >
                                     <Minus className="size-3" aria-hidden />
                                   </button>
-                                  <span className="w-6 text-center font-mono font-bold">{itm.quantity}</span>
+                                  <span className="w-6 text-center font-mono font-bold">{formatQuantity(itm.quantity)}</span>
                                   <button
                                     type="button"
                                     onClick={() => {

@@ -1,9 +1,9 @@
 // سجلّ المشتريات — تفصيل بنود أوامر الشراء (مرآة السجلّ التفصيلي للمبيعات). عرض + تصدير + طباعة.
 // المصدر: reports.purchaseRegister (كل البنود عدا الملغاة ضمن الفترة) — ترقيم صفحات بالخادم (limit/offset).
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -12,8 +12,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
-import { fmtAr, fmtInt, formatQuantity } from "@/lib/money";
+import { D, fmtAr, fmtInt, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -21,50 +22,77 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type Row = RouterOutputs["reports"]["purchaseRegister"]["rows"][number];
 const PAGE = 200;
-
-const columns: ColumnDef<Row, unknown>[] = [
-  { id: "orderDate", header: "التاريخ", accessorFn: (r) => r.orderDate, meta: { kind: "date" }, cell: ({ row }) => row.original.orderDate },
-  {
-    id: "poNumber",
-    header: "أمر الشراء",
-    accessorFn: (r) => r.poNumber ?? `#${r.poId}`,
-    meta: { kind: "code" },
-    cell: ({ row }) => (
-      <Link href={`/purchases/${row.original.poId}`} className="text-primary underline-offset-2 hover:underline">
-        {row.original.poNumber ?? `#${row.original.poId}`}
-      </Link>
-    ),
-  },
-  { id: "supplierName", header: "المورّد", accessorFn: (r) => r.supplierName ?? "—", cell: ({ row }) => row.original.supplierName ?? "—" },
-  {
-    id: "orderedByName",
-    header: ATTRIBUTION_LABELS.performedBy,
-    accessorFn: (r) => r.orderedByName ?? "",
-    meta: { kind: "actor" },
-    cell: ({ row }) => <ActorCell actor={{ name: row.original.orderedByName }} />,
-  },
-  { id: "productName", header: "المنتج", accessorFn: (r) => r.productName ?? "—", meta: { width: "wide" }, cell: ({ row }) => row.original.productName ?? "—" },
-  { id: "quantity", header: "الكمية", accessorFn: (r) => formatQuantity(r.quantity), meta: { kind: "number" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
-  {
-    id: "unitPrice",
-    header: "سعر الوحدة",
-    accessorFn: (r) => fmtAr(r.unitPrice),
-    meta: { kind: "money" },
-    cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.unitPrice)}</span>,
-  },
-  { id: "total", header: "الإجمالي", accessorFn: (r) => fmtAr(r.total), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.total) },
-];
-
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function PurchaseRegister() {
+  const [, navigate] = useLocation();
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
   const [supplierId, setSupplierId] = useState<number | "">("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
+
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      { id: "orderDate", header: "التاريخ", accessorFn: (r) => r.orderDate, meta: { kind: "date" }, cell: ({ row }) => row.original.orderDate },
+      {
+        id: "supplierAndOrder",
+        header: "المورّد / أمر الشراء",
+        accessorFn: (r) => [r.supplierName, r.poNumber ?? (r.poId ? `#${r.poId}` : null)].filter(Boolean).join(" · "),
+        meta: { width: "stacked" },
+        cell: ({ row }) => (
+          <StackedEntityCell
+            primary={row.original.supplierName ?? "—"}
+            primaryTitle={row.original.supplierName ?? undefined}
+            secondary={row.original.poNumber ?? `#${row.original.poId}`}
+            secondaryTitle="فتح أمر الشراء"
+            onSecondaryClick={
+              row.original.poId
+                ? () => {
+                    navigate(`/purchases/${row.original.poId}`);
+                  }
+                : undefined
+            }
+            copyValue={row.original.poNumber ?? (row.original.poId ? String(row.original.poId) : null)}
+            copyTitle="نسخ رقم أمر الشراء"
+          />
+        ),
+      },
+      {
+        id: "orderedByName",
+        header: ATTRIBUTION_LABELS.performedBy,
+        accessorFn: (r) => r.orderedByName ?? "",
+        meta: { kind: "actor" },
+        cell: ({ row }) => <ActorCell actor={{ name: row.original.orderedByName }} />,
+      },
+      { id: "productName", header: "المنتج", accessorFn: (r) => r.productName ?? "—", meta: { width: "wide" }, cell: ({ row }) => row.original.productName ?? "—" },
+      {
+        id: "quantityAndPrice",
+        header: "الكمية / السعر",
+        accessorFn: (r) => `${formatQuantity(r.quantity)} × ${fmtAr(r.unitPrice)}`,
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => D(a.original.quantity || 0).cmp(D(b.original.quantity || 0)),
+        cell: ({ row }) => (
+          <div className="flex flex-col items-end gap-0.5">
+            <span className="font-semibold tabular-nums" dir="ltr">
+              {formatQuantity(row.original.quantity)}
+            </span>
+            <span
+              className="text-[11px] text-muted-foreground tabular-nums"
+              title={`سعر الوحدة: ${fmtAr(row.original.unitPrice)}`}
+            >
+              بسعر {fmtAr(row.original.unitPrice)}
+            </span>
+          </div>
+        ),
+      },
+      { id: "total", header: "الإجمالي", accessorFn: (r) => fmtAr(r.total), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.total) },
+    ],
+    [navigate],
+  );
   const [printing, setPrinting] = useState(false);
 
   const dq = useDebouncedValue(query, 250);

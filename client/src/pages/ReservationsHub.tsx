@@ -458,9 +458,9 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
         </AppSelect>
         <div className="flex items-center gap-1.5">
           <label htmlFor="res-filter-from" className="text-xs text-muted-foreground whitespace-nowrap">ينتهي من</label>
-          <input id="res-filter-from" type="date" className={selectCls} value={from} onChange={(e) => setFrom(e.target.value)} />
+          <Input id="res-filter-from" type="date" className={selectCls} value={from} onChange={(e) => setFrom(e.target.value)} />
           <label htmlFor="res-filter-to" className="text-xs text-muted-foreground">إلى</label>
-          <input id="res-filter-to" type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
+          <Input id="res-filter-to" type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
         <div className="relative flex-1 min-w-52">
           <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground"><Search className="size-4" /></span>

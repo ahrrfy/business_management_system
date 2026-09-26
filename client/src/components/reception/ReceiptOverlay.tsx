@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/CopyButton";
 import { fmt, formatQuantity } from "@/lib/money";
+import { fmtDate, fmtTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import type { LastSaleSummary } from "./cartMath";
 import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
@@ -26,7 +27,7 @@ export function ReceiptOverlay({
   const isCredit = Boolean(lastSale.creditStr && Number(lastSale.creditStr) > 0);
   const allItems = (lastSale.receipts ?? []).flatMap((r) => r.items ?? []);
   const now = new Date();
-  const timeStr = now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" });
+  const timeStr = fmtTime(now);
 
   return (
     <div
@@ -97,7 +98,7 @@ export function ReceiptOverlay({
             <div className="text-base font-black text-slate-900">الرؤية العربية</div>
             <div className="text-[11px] text-slate-500">إيصال قسم الاستقبال والمبيعات المعتمد</div>
             <div className="mt-1 flex items-center justify-between text-[10px] text-slate-400">
-              <span className="font-mono">{new Date().toLocaleDateString("ar-IQ")}</span>
+              <span className="font-mono">{fmtDate(new Date())}</span>
               <span dir="ltr" className="font-mono">{timeStr}</span>
             </div>
           </div>

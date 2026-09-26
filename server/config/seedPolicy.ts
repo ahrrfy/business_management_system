@@ -3,6 +3,7 @@ import { isStrongPassword } from "../../shared/const";
 const PUBLISHED_PASSWORDS = new Set([
   "",
   "Admin@12345",
+  "AlroyaAdmin2026!",
   "ضع-كلمة-قوية-هنا",
   "CHANGE_ME_STRONG_PASSWORD",
 ]);

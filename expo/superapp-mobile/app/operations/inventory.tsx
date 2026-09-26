@@ -16,7 +16,7 @@ import * as Haptics from "expo-haptics";
 import { AnimatedReveal } from "@/components/AnimatedReveal";
 import { UnifiedScreenHeader } from "@/components/UnifiedScreenHeader";
 import { colors, radius, space } from "@/constants/theme";
-import { formatIqd } from "@/lib/format";
+import { formatIqd, formatQuantity } from "@/lib/format";
 import { fetchRealInventory, type RealInventoryItem } from "@/lib/operationsApi";
 
 type StockStatus = "IN_STOCK" | "LOW_STOCK" | "OUT_OF_STOCK";
@@ -198,7 +198,7 @@ export default function InventoryScreen() {
               return (
                 <AnimatedReveal delay={idx * 25} key={item.id}>
                   <Pressable
-                    accessibilityLabel={`${item.name}، الكمية المتاحة ${item.branchMansourQty}`}
+                    accessibilityLabel={`${item.name}، الكمية المتاحة ${formatQuantity(item.branchMansourQty)}`}
                     accessibilityRole="button"
                     onPress={() => handleSelectItem(item)}
                     style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressed]}
@@ -237,12 +237,12 @@ export default function InventoryScreen() {
                               styles.qtyLow,
                           ]}
                         >
-                          {item.branchMansourQty} {item.unit}
+                          {formatQuantity(item.branchMansourQty)} {item.unit}
                         </Text>
                       </View>
                       <View style={styles.branchStock}>
                         <Text style={styles.branchLabel}>حد الطلب:</Text>
-                        <Text style={styles.branchSubQty}>{item.reorderLevel} {item.unit}</Text>
+                        <Text style={styles.branchSubQty}>{formatQuantity(item.reorderLevel)} {item.unit}</Text>
                       </View>
                     </View>
                   </Pressable>
@@ -310,7 +310,7 @@ export default function InventoryScreen() {
                             styles.qtyLow,
                         ]}
                       >
-                        {selectedItem.branchMansourQty} {selectedItem.unit}
+                        {formatQuantity(selectedItem.branchMansourQty)} {selectedItem.unit}
                       </Text>
                     </View>
 
@@ -320,7 +320,7 @@ export default function InventoryScreen() {
                         <Text style={styles.branchCardSub}>يطلق تنبيهاً عند وصول الرصيد له</Text>
                       </View>
                       <Text style={styles.branchCardQty}>
-                        {selectedItem.reorderLevel} {selectedItem.unit}
+                        {formatQuantity(selectedItem.reorderLevel)} {selectedItem.unit}
                       </Text>
                     </View>
                   </View>

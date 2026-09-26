@@ -382,7 +382,7 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                       <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
                         <button onClick={(e) => { e.stopPropagation(); changeQty(lineId, c.qty - 1); }}
                           style={{ width: 44, height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
-                        <span style={{ minWidth: 40, textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.fg }}>{c.qty}</span>
+                        <span style={{ minWidth: 40, textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.fg }}>{formatQuantity(c.qty)}</span>
                         <button onClick={(e) => { e.stopPropagation(); changeQty(lineId, c.qty + 1); }}
                           title={isOut || isShort ? "الزيادة تتجاوز المخزون المتاح" : undefined}
                           style={{ width: 44, height: 44, border: `1.5px solid ${isOut || isShort ? accent : C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: isOut || isShort ? accent : C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>

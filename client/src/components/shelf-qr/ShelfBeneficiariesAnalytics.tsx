@@ -20,10 +20,11 @@ import {
   Smartphone,
   TrendingUp,
   RefreshCw,
-  Sparkles,
   Clock,
   Check,
   ShoppingBag,
+  Trash2,
+  ExternalLink,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { fmtAr, formatIqd } from "@/lib/money";
 
 interface Props {
@@ -57,15 +59,28 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
     },
   );
 
-  const seedMutation = trpc.shelfAnalytics.seedDemo.useMutation({
+  const purgeMutation = trpc.shelfAnalytics.purgeLogs.useMutation({
     onSuccess: (res) => {
-      notify.ok(`تمت تعبئة ${res.count} عملية استعلام استرشادية واقعية بنجاح.`);
+      notify.ok(`تم تصفير ومسح سجل الاستعلامات بنجاح (${fmtAr(res.count)} سجل).`);
       utils.shelfAnalytics.getStats.invalidate();
     },
     onError: () => {
-      notify.err("تعذّرت تعبئة البيانات الاسترشادية.");
+      notify.err("تعذّر تصفير سجل الاستعلامات.");
     },
   });
+
+  const handlePurgeLogs = async () => {
+    const ok = await confirm({
+      title: "تصفير ومسح سجل الاستعلامات",
+      description: "هل أنت متأكد من مسح كافة سجلات استعلامات الرفوف والبدء من الصفر؟ سيتم حذف جميع الحركات السابقة نهائياً وتصفير كافة المؤشرات.",
+      confirmText: "تصفير السجل نهائياً",
+      cancelText: "إلغاء",
+      variant: "danger",
+    });
+    if (ok) {
+      purgeMutation.mutate();
+    }
+  };
 
   const stats = statsQ.data;
   const isLoading = statsQ.isLoading && !stats;
@@ -151,15 +166,15 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
           </Button>
 
           <Button
-            variant="secondary"
+            variant="outline"
             size="sm"
-            onClick={() => seedMutation.mutate({ count: 45 })}
-            disabled={seedMutation.isPending}
-            className="h-9 gap-1.5 text-xs font-medium"
-            title="توليد عينة استعلامات واقعية لحركة زوار المعرض للمعاينة والتحليل"
+            onClick={handlePurgeLogs}
+            disabled={purgeMutation.isPending}
+            className="h-9 gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30 font-medium"
+            title="مسح وتصفير كافة سجلات الاستعلامات والبيانات والبدء من الصفر"
           >
-            <Sparkles aria-hidden="true" className="size-3.5 text-primary" />
-            <span>بيانات استرشادية</span>
+            <Trash2 aria-hidden="true" className="size-3.5" />
+            <span>تصفير السجل</span>
           </Button>
         </div>
       </div>
@@ -268,7 +283,7 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-black text-foreground tracking-tight tabular-nums">
-                %{stats ? stats.successRate : 100}
+                %{stats && stats.totalScans > 0 ? stats.successRate : 0}
                 <span className="text-xs font-semibold text-muted-foreground mr-1.5">نجاح الاستعلام</span>
               </div>
               <div className="flex items-center gap-1.5 mt-2 text-xs text-muted-foreground">
@@ -302,26 +317,27 @@ export function ShelfBeneficiariesAnalytics({ branches, defaultBranchId = "" }: 
         </div>
       )}
 
-      {/* في حال عدم وجود عمليات مسح إطلاقاً في هذا النطاق */}
+      {/* في حال عدم وجود عمليات مسح حقيقية في هذا النطاق */}
       {!isLoading && stats && stats.totalScans === 0 && (
         <Card className="border-dashed bg-card/60 text-center p-8">
           <div className="size-12 rounded-full bg-primary/10 text-primary flex items-center justify-center mx-auto mb-3">
             <ScanLine aria-hidden="true" className="size-6" />
           </div>
-          <h3 className="font-bold text-sm text-foreground">خدمة استعلام الرفوف بانتظار أول مسح</h3>
-          <p className="text-xs text-muted-foreground mt-1 max-w-md mx-auto">
-            لم تسجل أي عمليات مسح باركود في هذا النطاق الزمني حتى الآن. يمكنك استعراض ملصقات الرفوف أو تجربة المسح بالهاتف، أو توليد بيانات استرشادية واقعية.
+          <h3 className="font-bold text-sm text-foreground">خدمة استعلام الرفوف بانتظار أول مسح للزبائن</h3>
+          <p className="text-xs text-muted-foreground mt-1.5 max-w-lg mx-auto leading-relaxed">
+            لم تُسجّل أي عمليات مسح باركود في هذا النطاق الزمني حتى الآن. ستبدأ الإحصائيات والمؤشرات بالظهور والنمو تلقائياً وبشكل حي فور قيام زوار المعرض بمسح رموز الرفوف والباركود بهواتفهم.
           </p>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => seedMutation.mutate({ count: 45 })}
-            disabled={seedMutation.isPending}
-            className="mt-4 gap-1.5 text-xs font-medium"
-          >
-            <Sparkles aria-hidden="true" className="size-3.5 text-primary" />
-            <span>توليد بيانات استرشادية للمعاينة</span>
-          </Button>
+          <div className="flex flex-wrap items-center justify-center gap-2 mt-5">
+            <a
+              href="/shelf-lookup"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-xs"
+            >
+              <ExternalLink aria-hidden="true" className="size-3.5" />
+              <span>تجربة مسح صنف في قارئ الرفوف</span>
+            </a>
+          </div>
         </Card>
       )}
 

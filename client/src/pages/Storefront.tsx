@@ -52,7 +52,7 @@ import { orderStatusChipClass, orderStatusLabelForCustomer } from "@shared/onlin
 export function formatStorefrontReservationDeadline(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "وقت غير متاح";
-  return new Intl.DateTimeFormat("ar-IQ", {
+  return new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Asia/Baghdad",
@@ -1997,7 +1997,7 @@ function StorefrontContent() {
     const cartKey = customizationCartKey(p.productUnitId, p.customization);
     const currentLine = cartRef.current.get(cartKey);
     if (p.stockLimit != null && (currentLine?.qty ?? 0) >= p.stockLimit) {
-      setCartStatus(`بلغت الكمية المتوفرة من ${p.productName}: ${p.stockLimit}.`);
+      setCartStatus(`بلغت الكمية المتوفرة من ${p.productName}: ${formatQuantity(p.stockLimit)}.`);
       return;
     }
     if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
@@ -2134,9 +2134,9 @@ function StorefrontContent() {
   function setQty(cartKey: string, qty: number) {
     const line = cartRef.current.get(cartKey);
     if (line?.stockLimit != null && qty > line.stockLimit) {
-      setCartStatus(`المتوفر من ${line.name} هو ${line.stockLimit} فقط.`);
+      setCartStatus(`المتوفر من ${line.name} هو ${formatQuantity(line.stockLimit)} فقط.`);
     } else if (line) {
-      setCartStatus(qty <= 0 ? `تمت إزالة ${line.name} من السلة.` : `أصبحت كمية ${line.name}: ${Math.max(1, qty)}.`);
+      setCartStatus(qty <= 0 ? `تمت إزالة ${line.name} من السلة.` : `أصبحت كمية ${line.name}: ${formatQuantity(Math.max(1, qty))}.`);
     }
     recordStorefrontCartChange();
     setCart((prev) => setStorefrontCartQuantity(prev, cartKey, qty));
@@ -2682,11 +2682,11 @@ function StorefrontContent() {
                                     <div key={unit.productUnitId} className={`flex items-center justify-between gap-1 rounded-md border px-1.5 py-0.5 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}>
                                       <button type="button" disabled={!unit.inStock} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); if (quantity === 0) setVariantQuantity(unit.productUnitId, 1); }} className="min-w-0 flex-1 text-right text-[11px] font-bold text-slate-700 disabled:cursor-not-allowed dark:text-slate-200">
                                         <span className="block truncate">{unit.unitName}{variant.size ? ` · ${variant.size}` : ""}</span>
-                                        <span className="mt-0.5 block text-xs font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock ? " · نفد" : unit.stockLeft != null ? ` · المتوفر ${unit.stockLeft}` : " · متوفر"}</span>
+                                        <span className="mt-0.5 block text-xs font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock ? " · نفد" : unit.stockLeft != null ? ` · المتوفر ${formatQuantity(unit.stockLeft)}` : " · متوفر"}</span>
                                       </button>
                                       <div className="flex shrink-0 items-center gap-1.5">
                                         <button type="button" aria-label={`إنقاص ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); setVariantQuantity(unit.productUnitId, quantity - 1); }} className="flex size-6 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3" /></button>
-                                        <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
+                                        <span className="w-5 text-center text-sm font-extrabold tabular-nums">{formatQuantity(quantity)}</span>
                                         <button type="button" aria-label={`زيادة ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); setVariantQuantity(unit.productUnitId, quantity + 1); }} className="flex size-6 items-center justify-center rounded-full bg-[var(--sem-pos)] text-background disabled:cursor-not-allowed disabled:opacity-40"><Plus aria-hidden className="size-3" /></button>
                                       </div>
                                     </div>
@@ -2716,11 +2716,11 @@ function StorefrontContent() {
                               <div key={unit.productUnitId} className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 ${selected ? "border-[var(--sem-pos)] bg-emerald-50/60 dark:bg-emerald-500/10" : "border-slate-200 dark:border-slate-700"}`}>
                                 <button type="button" disabled={!unit.inStock} onClick={() => { setSelectedStoreUnitId(unit.productUnitId); if (!variantQuantities.has(unit.productUnitId)) setVariantQuantity(unit.productUnitId, 1); }} className="min-w-0 flex-1 text-right text-xs font-bold text-slate-700 disabled:opacity-50 dark:text-slate-200">
                                   <span className="block truncate">{unit.unitName}</span>
-                                  <span className="mt-0.5 block text-xs font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock ? " · نفد" : unit.stockLeft != null ? ` · المتوفر ${unit.stockLeft}` : " · متوفر"}</span>
+                                  <span className="mt-0.5 block text-xs font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock ? " · نفد" : unit.stockLeft != null ? ` · المتوفر ${formatQuantity(unit.stockLeft)}` : " · متوفر"}</span>
                                 </button>
                                 <div className="flex shrink-0 items-center gap-1.5">
                                   <button type="button" aria-label={`إنقاص ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => setVariantQuantity(unit.productUnitId, quantity - 1)} className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3.5" /></button>
-                                  <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
+                                  <span className="w-5 text-center text-sm font-extrabold tabular-nums">{formatQuantity(quantity)}</span>
                                   <button type="button" aria-label={`زيادة ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => { setSelectedStoreUnitId(unit.productUnitId); setVariantQuantity(unit.productUnitId, quantity + 1); }} className="flex size-7 items-center justify-center rounded-full bg-[var(--sem-pos)] text-background disabled:opacity-40"><Plus aria-hidden className="size-3.5" /></button>
                                 </div>
                               </div>
@@ -2785,14 +2785,14 @@ function StorefrontContent() {
                       <p className={`mt-2 text-xs font-bold ${detailUnit?.inStock ? "text-[var(--stock-ok)]" : "text-stock-out"}`}>
                         {detailUnit?.inStock
                           ? detailUnit.stockLeft != null
-                            ? `متوفّر — بقي ${detailUnit.stockLeft} فقط، سارع بالطلب`
+                            ? `متوفّر — بقي ${formatQuantity(detailUnit.stockLeft)} فقط، سارع بالطلب`
                             : "متوفّر"
                           : "غير متوفّر حالياً"}
                       </p>
                     )}
                     {!detailQ.data.isCustomizable && detailQ.data.soldCount >= 3 && (
                       <p className="mt-1 flex items-center gap-1 text-xs font-bold text-orange-500">
-                        <Flame aria-hidden className="size-3.5" /> {detailQ.data.soldCount >= 10 ? "من الأكثر مبيعاً" : `بيع ${detailQ.data.soldCount} مرة`}
+                        <Flame aria-hidden className="size-3.5" /> {detailQ.data.soldCount >= 10 ? "من الأكثر مبيعاً" : `بيع ${formatQuantity(detailQ.data.soldCount)} مرة`}
                       </p>
                     )}
                   </div>
@@ -2829,7 +2829,7 @@ function StorefrontContent() {
                       {detailQ.data.bundleItems.map((bi, i) => (
                         <li key={i} className="flex justify-between">
                           <span>{bi.name}</span>
-                          <span className="tabular-nums text-slate-500">×{bi.quantity}</span>
+                          <span className="tabular-nums text-slate-500">×{formatQuantity(bi.quantity)}</span>
                         </li>
                       ))}
                     </ul>
@@ -2878,14 +2878,14 @@ function StorefrontContent() {
                       <p className="line-clamp-2 text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{l.name}</p>
                       {summarizeStorefrontCustomization(l.customization) && <p className="mt-1 line-clamp-2 text-[10px] font-bold leading-relaxed text-[#a16b2a]">تخصيص: {summarizeStorefrontCustomization(l.customization)}</p>}
                       <p className="mt-1 text-sm font-extrabold text-emerald-600 dark:text-emerald-400">{money(l.price)} د.ع</p>
-                      <p className="mt-1 text-xs font-bold text-[#59636a]">{l.stockLimit != null ? `المتوفر: ${l.stockLimit}` : "متوفر للطلب"}</p>
+                      <p className="mt-1 text-xs font-bold text-[#59636a]">{l.stockLimit != null ? `المتوفر: ${formatQuantity(l.stockLimit)}` : "متوفر للطلب"}</p>
                     </div>
                     <div className="flex flex-col items-center gap-1.5">
                       <div className="flex items-center gap-2">
                         <button type="button" onClick={() => setQty(l.cartKey, l.qty - 1)} aria-label={`إنقاص كمية ${l.name}`} className="flex size-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300">
                           <Minus aria-hidden className="size-3.5" />
                         </button>
-                        <span className="w-6 text-center text-sm font-extrabold tabular-nums">{l.qty}</span>
+                        <span className="w-6 text-center text-sm font-extrabold tabular-nums">{formatQuantity(l.qty)}</span>
                         <button type="button" onClick={() => setQty(l.cartKey, l.qty + 1)} disabled={l.stockLimit != null && l.qty >= l.stockLimit} aria-label={`زيادة كمية ${l.name}`} className="flex size-11 items-center justify-center rounded-full bg-emerald-700 text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500">
                           <Plus aria-hidden className="size-3.5" />
                         </button>
@@ -3047,7 +3047,7 @@ function StorefrontContent() {
                     <div key={progress.productId} className="flex items-start gap-2.5">
                       <Package aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
                       <div className="min-w-0">
-                        <p className="text-xs font-black leading-5 text-[var(--sem-info)]">أضف {progress.remainingBaseQuantity} قطعة إضافية للوصول إلى سعر الجملة</p>
+                        <p className="text-xs font-black leading-5 text-[var(--sem-info)]">أضف {formatQuantity(progress.remainingBaseQuantity)} قطعة إضافية للوصول إلى سعر الجملة</p>
                         <p className="mt-0.5 text-[11px] font-bold leading-5 text-[var(--sem-info)]/75">{progress.productName} — تُحسب الألوان والوحدات لهذا المنتج معاً.</p>
                       </div>
                     </div>

@@ -2,6 +2,7 @@ import { deriveInvoiceChannel, invoiceChannelLabel, invoiceChannelOptions } from
 import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -84,13 +85,7 @@ const CONSIGNMENT_STATUS: Record<string, { label: string; cls: string }> = {
 function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "returnedTotal" | "status">) {
   if (row.status === "CANCELLED" || row.status === "RETURNED") return false;
   if (row.sourceType !== "ORDER" && row.sourceType !== "WORKORDER") return false;
-  return (
-    D(row.paidAmount).gt(0) &&
-    D(row.total)
-      .minus(D(row.paidAmount))
-      .minus(D(row.returnedTotal ?? "0"))
-      .gt(0)
-  );
+  return D(row.paidAmount).gt(0) && D(row.total).minus(D(row.paidAmount)).minus(D(row.returnedTotal ?? "0")).gt(0);
 }
 
 // تعريب التصدير موحّد عبر قاموس labels المركزي — صار يغطّي CONFIRMED وSUPERSEDED معاً، فسقط
@@ -122,6 +117,7 @@ const INVOICE_EXPORT_COLUMNS: ExportColumn<Row>[] = [
   { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
   { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
   { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+  { key: "remainingAmount", header: "المتبقي", map: (r) => Number(D(r.total).minus(D(r.paidAmount)).minus(D(r.returnedTotal ?? "0")).toFixed(2)) },
   { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentLabel(r) },
   { key: "status", header: "الحالة", map: (r) => exportStatusLabel(r.status) },
 ];
@@ -483,72 +479,64 @@ export default function Invoices() {
   const columns = useMemo<ColumnDef<Row, unknown>[]>(
     () => [
       {
-        accessorKey: "invoiceNumber",
-        header: "رقم الفاتورة",
+        id: "customerAndInvoice",
+        header: "العميل / رقم الفاتورة",
+        accessorFn: (r) => [r.customerName ?? "عميل نقدي", r.invoiceNumber].filter(Boolean).join(" · "),
+        meta: { width: "stacked" },
         cell: ({ row }) => {
           const r = row.original;
+          const n = r.customerName;
+          const id = r.customerId;
           return (
-            <div className="flex min-w-0 flex-col items-start gap-0.5">
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setDrawerInvoiceId(r.id)}
-                  className="font-mono font-medium text-primary hover:underline cursor-pointer text-right"
-                  title="معاينة تفاصيل الفاتورة"
-                >
-                  {r.invoiceNumber}
-                </button>
-                <CopyInline value={r.invoiceNumber} />
-              </div>
-              {/* نسب التصحيح (0168): كانت تُكتَب ويقرؤها `get` وحده ⤇ فاتورةٌ
-                مُستبدَلة تبدو في القائمة كأيّ غيرها (طلب المالك ١٧/٨). */}
-              {r.correctedByInvoiceId != null && <span className="rounded bg-[var(--sem-warn-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-warn)]">مُستبدَلة — لها تصحيح</span>}
-              {r.correctionOfInvoiceId != null && <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-info)]">تصحيحٌ لفاتورة سابقة</span>}
-            </div>
+            <StackedEntityCell
+              primary={
+                <div className="flex flex-col gap-0.5">
+                  <span className="inline-flex items-center gap-1.5 flex-wrap">
+                    {n && id && canOpenStatement ? (
+                      <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline font-semibold" title={n ? `${n} (فتح كشف حساب العميل)` : "فتح كشف حساب العميل"}>
+                        {n}
+                      </Link>
+                    ) : (
+                      <span className="font-semibold">{custName(n)}</span>
+                    )}
+                    {r.customerPhone && (
+                      <span className="inline-flex items-center gap-0.5 font-mono text-[11px] text-muted-foreground" dir="ltr">
+                        <Phone className="size-2.5 text-muted-foreground" />
+                        <span>{r.customerPhone}</span>
+                      </span>
+                    )}
+                  </span>
+                  {r.customerAddress && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground truncate max-w-[200px]" title={r.customerAddress}>
+                      <MapPin className="size-2.5 text-muted-foreground shrink-0" />
+                      <span className="truncate">{r.customerAddress}</span>
+                    </span>
+                  )}
+                </div>
+              }
+              primaryTitle={n ?? undefined}
+              secondary={r.invoiceNumber}
+              secondaryTitle="معاينة تفاصيل الفاتورة"
+              onSecondaryClick={() => setDrawerInvoiceId(r.id)}
+              copyValue={r.invoiceNumber}
+              copyTitle="نسخ رقم الفاتورة"
+              secondaryBadge={
+                r.correctedByInvoiceId != null || r.correctionOfInvoiceId != null ? (
+                  <span className="inline-flex items-center gap-1 shrink-0">
+                    {r.correctedByInvoiceId != null && <span className="rounded bg-[var(--sem-warn-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-warn)]">مُستبدَلة</span>}
+                    {r.correctionOfInvoiceId != null && <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-info)]">تصحيح</span>}
+                  </span>
+                ) : undefined
+              }
+            />
           );
         },
       },
       {
         accessorKey: "invoiceDate",
         header: "التاريخ",
+        meta: { kind: "date" },
         cell: (c) => fmtDate(c.getValue() as string),
-      },
-      {
-        accessorKey: "customerName",
-        header: "العميل",
-        // ٢٤/٨ (تدقيق): اسم العميل صار رابطاً لكشف حسابه — يوفّر خطوة يوميّة (فتح الفاتورة ثمّ
-        // فتح كشف الحساب من خلالها). «عميل نقدي» يظلّ نصاً (بلا customerId). للأدوار بلا `reports:READ`
-        // يظلّ نصاً كذلك — كشف الحساب مقصور على المرتفعين (Codex P2 على PR #744).
-        cell: ({ row }) => {
-          const r = row.original;
-          const n = r.customerName;
-          const id = r.customerId;
-          const phone = r.customerPhone;
-          const addr = r.customerAddress;
-          return (
-            <div className="flex flex-col text-xs gap-0.5">
-              {!n || !id || !canOpenStatement ? (
-                <span className="font-semibold">{custName(n)}</span>
-              ) : (
-                <Link href={`/customers-statement?id=${id}`} className="font-semibold text-primary hover:underline" title="فتح كشف حساب العميل">
-                  {n}
-                </Link>
-              )}
-              {phone && (
-                <span className="inline-flex items-center gap-1 font-mono text-muted-foreground" dir="ltr">
-                  <Phone className="size-3 text-muted-foreground" />
-                  <span>{phone}</span>
-                </span>
-              )}
-              {addr && (
-                <span className="inline-flex items-center gap-1 text-muted-foreground truncate max-w-[200px]" title={addr}>
-                  <MapPin className="size-3 text-muted-foreground shrink-0" />
-                  <span className="truncate">{addr}</span>
-                </span>
-              )}
-            </div>
-          );
-        },
       },
       // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (سطر واحد لكل فرع لا معنى لتمييزه).
       ...(showBranchCol
@@ -628,47 +616,68 @@ export default function Invoices() {
         ),
       },
       {
-        accessorKey: "total",
-        header: "الإجمالي",
+        id: "financialSummary",
+        header: "المبالغ (الإجمالي / المتبقي)",
+        accessorFn: (r) => `${fmt(r.total)} (مدفوع: ${fmt(r.paidAmount)})`,
         meta: { kind: "money" },
-        cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
-      },
-      {
-        accessorKey: "paidAmount",
-        header: "المدفوع",
-        meta: { kind: "money" },
-        cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
-      },
-      {
-        accessorKey: "paymentMethod",
-        header: "طريقة الدفع",
-        cell: (c) => {
-          const r = c.row.original;
-          // بالطريق مع المندوب ⇒ الحقيقة «عند الاستلام»؛ العربون المقبوض يُذكر بطريقته تحتها.
-          if (codInTransit(r)) {
-            return (
-              <div className="flex flex-col items-start gap-0.5">
-                <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">عند الاستلام (COD)</span>
-                {D(r.paidAmount).gt(0) && r.paymentMethod && <span className="text-[11px] text-muted-foreground">عربون: {paymentMethodLabel(r.paymentMethod)}</span>}
+        sortDescFirst: true,
+        sortingFn: (a, b) => D(a.original.total || 0).cmp(D(b.original.total || 0)),
+        cell: ({ row }) => {
+          const r = row.original;
+          const total = D(r.total ?? 0);
+          const paid = D(r.paidAmount ?? 0);
+          const returned = D(r.returnedTotal ?? 0);
+          const remaining = total.minus(paid).minus(returned);
+          const isSettled = remaining.lte(0) && total.gt(0);
+          return (
+            <div className="flex flex-col items-end gap-0.5">
+              <span className="font-semibold tabular-nums" dir="ltr">{fmt(total.toFixed(2))}</span>
+              <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
+                <span className="text-muted-foreground" title="المدفوع">مدفوع: {fmt(paid.toFixed(2))}</span>
+                {remaining.gt(0) ? (
+                  <span className="font-medium text-money-negative" title="المتبقي للتحصيل">متبقٍ: {fmt(remaining.toFixed(2))}</span>
+                ) : isSettled ? (
+                  <span className="font-medium text-money-positive" title="مسدد بالكامل">مسدد</span>
+                ) : null}
               </div>
-            );
-          }
-          const m = r.paymentMethod;
-          if (!m) return <span className="text-muted-foreground">—</span>;
-          return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(m)}`}>{paymentMethodLabel(m)}</span>;
+            </div>
+          );
+        },
+      },
+      {
+        id: "paymentAndCollection",
+        header: "طريقة الدفع والتحصيل",
+        accessorFn: (r) => paymentLabel(r),
+        cell: ({ row }) => {
+          const r = row.original;
+          const depositDue = isDepositDue(r);
+          return (
+            <div className="flex flex-col items-start gap-1">
+              {codInTransit(r) ? (
+                <span className="inline-block rounded-full px-2 py-0.5 text-xs font-semibold badge-stock-low">عند الاستلام (COD)</span>
+              ) : r.paymentMethod ? (
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${paymentMethodClass(r.paymentMethod)}`}>{paymentMethodLabel(r.paymentMethod)}</span>
+              ) : (
+                <span className="text-muted-foreground text-xs">—</span>
+              )}
+              {depositDue && <span className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-bold badge-stock-low">عربون — متبقٍ للتحصيل</span>}
+              {codInTransit(r) && D(r.paidAmount).gt(0) && r.paymentMethod && (
+                <span className="text-[10px] text-muted-foreground">عربون: {paymentMethodLabel(r.paymentMethod)}</span>
+              )}
+            </div>
+          );
         },
       },
       {
         accessorKey: "status",
         header: "الحالة",
+        meta: { kind: "status" },
         cell: (c) => {
           const s = c.getValue() as string;
-          const depositDue = isDepositDue(c.row.original);
           return (
-            <div className="flex flex-col items-start gap-1">
-              <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>{invoiceStatusLabel(s)}</span>
-              {depositDue && <span className="inline-block rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — يحتاج تحصيل الباقي</span>}
-            </div>
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>
+              {invoiceStatusLabel(s)}
+            </span>
           );
         },
       },
@@ -837,7 +846,7 @@ export default function Invoices() {
 
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
-  const TSV_HEADERS = useMemo(() => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "القناة", "رقم أمر الشغل", "التوصيل", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "طريقة الدفع", "الحالة"], []);
+  const TSV_HEADERS = useMemo(() => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "القناة", "رقم أمر الشغل", "التوصيل", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "المتبقي", "طريقة الدفع", "الحالة"], []);
   const selectedRows = useMemo(() => data.filter((r) => sel.isSelected(r.id)), [data, sel]);
   const selectedTsv = useMemo(() => {
     if (!selectedRows.length) return "";
@@ -854,6 +863,7 @@ export default function Invoices() {
       "محطة البيع": r.deviceId ?? "",
       الإجمالي: Number(r.total),
       المدفوع: Number(r.paidAmount),
+      المتبقي: Number(D(r.total).minus(D(r.paidAmount)).minus(D(r.returnedTotal ?? "0")).toFixed(2)),
       "طريقة الدفع": paymentLabel(r),
       الحالة: exportStatusLabel(r.status),
     }));

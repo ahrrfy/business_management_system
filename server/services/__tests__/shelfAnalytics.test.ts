@@ -4,13 +4,16 @@ import { getDb } from "../../db";
 import {
   getBaghdadStartOfToday,
   getShelfBeneficiariesStats,
+  purgeShelfLookupLogs,
   recordShelfLookupEvent,
-  seedShowroomSampleAnalytics,
 } from "../shelfAnalyticsService";
 
 describe("shelfAnalyticsService — محرك إحصائيات المستفيدين", () => {
   beforeEach(async () => {
     const db = getDb()!;
+
+    // تصفير أي سجلات سابقة لضمان عزل الاختبارات التام
+    await purgeShelfLookupLogs().catch(() => {});
 
     // تهيئة الفروع للاختبار
     await db.insert(branches).values([
@@ -44,7 +47,7 @@ describe("shelfAnalyticsService — محرك إحصائيات المستفيدي
     expect(todayStart.getUTCHours()).toBe(21);
   });
 
-  it("يسجل عمليات الاستعلام ويحسب أعداد المستفيدين والنسب الإحصائية", async () => {
+  it("يسجل عمليات الاستعلام ويحسب أعداد المستفيدين والنسب الإحصائية الحقيقية", async () => {
     const testVisitorA = `test_vis_a_${Date.now()}`;
     const testVisitorB = `test_vis_b_${Date.now()}`;
 
@@ -81,13 +84,13 @@ describe("shelfAnalyticsService — محرك إحصائيات المستفيدي
 
     const stats = await getShelfBeneficiariesStats({ range: "all" });
 
-    expect(stats.totalScans).toBeGreaterThanOrEqual(3);
-    expect(stats.uniqueBeneficiaries).toBeGreaterThanOrEqual(2);
-    expect(stats.foundScans).toBeGreaterThanOrEqual(2);
-    expect(stats.notFoundScans).toBeGreaterThanOrEqual(1);
-    expect(stats.successRate).toBeGreaterThan(0);
-    expect(stats.deviceBreakdown.android).toBeGreaterThanOrEqual(2);
-    expect(stats.deviceBreakdown.ios).toBeGreaterThanOrEqual(1);
+    expect(stats.totalScans).toBe(3);
+    expect(stats.uniqueBeneficiaries).toBe(2);
+    expect(stats.foundScans).toBe(2);
+    expect(stats.notFoundScans).toBe(1);
+    expect(stats.successRate).toBe(66.7);
+    expect(stats.deviceBreakdown.android).toBe(2);
+    expect(stats.deviceBreakdown.ios).toBe(1);
   });
 
   it("يتعامل بمرونة مع معرف فرع غير موجود عبر الـ FK fallback دون إسقاط الاستعلام", async () => {
@@ -108,8 +111,18 @@ describe("shelfAnalyticsService — محرك إحصائيات المستفيدي
   });
 
   it("يدعم تصفية الإحصائيات حسب الفرع بدقة ذرية", async () => {
+    await recordShelfLookupEvent({
+      visitorId: `test_branch_vis_${Date.now()}`,
+      barcode: "TEST_BARCODE_B1",
+      branchId: 1,
+      productName: "منتج فرع 1",
+      found: true,
+      deviceType: "android",
+    });
+
     const branchStats = await getShelfBeneficiariesStats({ branchId: 1, range: "all" });
     expect(branchStats).toBeDefined();
+    expect(branchStats.totalScans).toBe(1);
     // كل العمليات في سجل recentScans يجب أن تعود للفرع 1
     for (const scan of branchStats.recentScans) {
       expect(scan.branchId).toBe(1);
@@ -128,12 +141,31 @@ describe("shelfAnalyticsService — محرك إحصائيات المستفيدي
     expect(thirtyDaysStats).toBeDefined();
   });
 
-  it("يدعم بذر عينة استرشادية واقعية للمعرض عند الحاجة", async () => {
-    const inserted = await seedShowroomSampleAnalytics(15);
-    expect(inserted).toBeGreaterThanOrEqual(0);
+  it("يدعم تصفية ومسح كافة سجلات استعلامات الرفوف والبيانات الوهمية والبدء من الصفر", async () => {
+    // تسجيل استعلام تجريبي
+    await recordShelfLookupEvent({
+      visitorId: "test_purge_vis",
+      barcode: "TEST_BARCODE_PURGE",
+      branchId: 1,
+      productName: "صنف للتصفير",
+      found: true,
+      deviceType: "android",
+    });
 
-    const stats = await getShelfBeneficiariesStats({ range: "7d" });
-    expect(stats.totalScans).toBeGreaterThanOrEqual(inserted);
-    expect(stats.recentScans.length).toBeGreaterThan(0);
+    const statsBefore = await getShelfBeneficiariesStats({ range: "all" });
+    expect(statsBefore.totalScans).toBeGreaterThan(0);
+
+    // تصفير السجل
+    const deletedCount = await purgeShelfLookupLogs();
+    expect(deletedCount).toBeGreaterThan(0);
+
+    // التحقق من تصفير كافة المؤشرات وانعدام أي بيانات وهمية
+    const statsAfter = await getShelfBeneficiariesStats({ range: "all" });
+    expect(statsAfter.totalScans).toBe(0);
+    expect(statsAfter.uniqueBeneficiaries).toBe(0);
+    expect(statsAfter.foundScans).toBe(0);
+    expect(statsAfter.notFoundScans).toBe(0);
+    expect(statsAfter.activityTimeline.length).toBe(0);
+    expect(statsAfter.recentScans.length).toBe(0);
   });
 });

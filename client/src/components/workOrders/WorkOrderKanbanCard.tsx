@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import type React from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Calendar, CheckCircle2, ChevronRight, Clock, Package, Printer, Timer, Truck } from "lucide-react";
-import { fmtAr, fmtInt, toAccessibleMoney } from "@/lib/money";
+import { fmtAr, formatQuantity, toAccessibleMoney } from "@/lib/money";
 import { RowActions } from "@/components/list";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { ChannelMark } from "@/components/ChannelBadge";
@@ -198,9 +198,9 @@ export function WorkOrderKanbanCard({
         </div>
       )}
       <div className="wob-meta">
-        <span className="wob-meta-pill" role="text" aria-label={`الكمية: ${o.quantity}`}>
+        <span className="wob-meta-pill" role="text" aria-label={`الكمية: ${formatQuantity(o.quantity)}`}>
           <span className="wob-ml" aria-hidden="true">الكمية </span>
-          <bdi dir="ltr" aria-hidden="true">{fmtInt(o.quantity)}</bdi>
+          <bdi dir="ltr" aria-hidden="true">{formatQuantity(o.quantity)}</bdi>
         </span>
         <span
           className="wob-meta-pill"

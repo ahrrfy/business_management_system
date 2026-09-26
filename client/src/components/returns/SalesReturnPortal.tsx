@@ -204,7 +204,7 @@ export function SalesReturnPortal({
         let newQty = target.quantity + (line.qty || 1);
         if (maxQty != null && newQty > maxQty) {
           notify.warn(
-            `الكمية المطلوبة تتجاوز المتبقي في الفاتورة (${maxQty})`,
+            `الكمية المطلوبة تتجاوز المتبقي في الفاتورة (${formatQuantity(maxQty)})`,
           );
           newQty = maxQty;
         }
@@ -282,7 +282,7 @@ export function SalesReturnPortal({
           let newQty = target.quantity + 1;
           if (maxQty != null && newQty > maxQty) {
             notify.warn(
-              `الكمية المطلوبة تتجاوز المتبقي في الفاتورة (${maxQty})`,
+              `الكمية المطلوبة تتجاوز المتبقي في الفاتورة (${formatQuantity(maxQty)})`,
             );
             newQty = maxQty;
           }
@@ -1057,7 +1057,7 @@ export function SalesReturnPortal({
                                     <Plus className="size-2.5" />
                                     <span>
                                       {inCartQty > 0
-                                        ? `في السلة (${inCartQty})`
+                                        ? `في السلة (${formatQuantity(inCartQty)})`
                                         : "إضافة"}
                                     </span>
                                   </Button>

@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
+import { fmtDate } from "@/lib/date";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -554,11 +555,7 @@ export default function VoucherCategories() {
                             {receipt.voucherNumber ?? `#${receiptId}`}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            {receipt.voucherDate
-                              ? new Date(
-                                  receipt.voucherDate,
-                                ).toLocaleDateString("ar-IQ")
-                              : "—"}
+                            {fmtDate(receipt.voucherDate)}
                           </div>
                         </td>
                         <td className="p-2">
