@@ -295,9 +295,15 @@ export default function InventoryOpsReport() {
             : pc.key === "openedLabel" ? (r.opened ? "مُفتتَح" : "بانتظار الافتتاح")
             : (r as Record<string, unknown>)[pc.key];
           const v = raw == null ? "" : typeof raw === "number" ? fmtAr(raw) : String(raw);
-          o[pc.key] = ["quantity", "minStock", "qtyInStock", "threshold", "qtySoldRecent", "coverDays", "costPrice", "stockValue", "value", "diffQty", "negValue"].includes(pc.key)
+          const isMoney = ["costPrice", "stockValue", "value", "negValue"].includes(pc.key);
+          const isQty = ["quantity", "minStock", "qtyInStock", "threshold", "qtySoldRecent", "diffQty"].includes(pc.key);
+          o[pc.key] = isMoney
             ? fmtAr(Number((r as Record<string, unknown>)[pc.key] ?? 0))
-            : v;
+            : isQty
+              ? formatQuantity((r as Record<string, unknown>)[pc.key] as number | string)
+              : pc.key === "coverDays"
+                ? fmtAr(Number((r as Record<string, unknown>)[pc.key] ?? 0))
+                : v;
         }
         return o;
       }),
@@ -557,8 +563,8 @@ function ViewTable({
           { id: "product", header: "المنتج", accessorFn: (r) => String(r.productName ?? ""), meta: { width: "wide" }, cell: ({ row }) => row.original.productName },
           mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
           mutedCol("branch", "الفرع", (r) => String(r.branchName ?? "—")),
-          numCol("quantity", "الكمية", (r) => fmtInt(r.quantity)),
-          numCol("minStock", "حدّ الطلب", (r) => fmtInt(r.minStock), () => "text-muted-foreground"),
+          numCol("quantity", "الكمية", (r) => formatQuantity(r.quantity)),
+          numCol("minStock", "حدّ الطلب", (r) => formatQuantity(r.minStock), () => "text-muted-foreground"),
           {
             id: "status",
             header: "الحالة",
@@ -592,7 +598,7 @@ function ViewTable({
           },
           mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
           mutedCol("category", "الفئة", (r) => String(r.categoryName ?? "—")),
-          numCol("qtyInStock", "الرصيد", (r) => fmtInt(r.qtyInStock)),
+          numCol("qtyInStock", "الرصيد", (r) => formatQuantity(r.qtyInStock)),
           moneyCol("costPrice", "تكلفة الوحدة", (r) => fmtAr(r.costPrice), () => "text-muted-foreground"),
           moneyCol("stockValue", "قيمة المخزون", (r) => fmtAr(r.stockValue), () => "text-money-negative"),
           numCol("daysSinceLastSale", "أيام بلا بيع", (r) => (r.daysSinceLastSale == null ? "لا بيع" : fmtAr(r.daysSinceLastSale)), () => "text-stock-low"),
@@ -625,9 +631,9 @@ function ViewTable({
           },
           mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
           mutedCol("category", "الفئة", (r) => String(r.categoryName ?? "—")),
-          numCol("qtyInStock", "الرصيد", (r) => fmtInt(r.qtyInStock), () => "text-stock-low"),
-          numCol("threshold", "حدّ الطلب", (r) => fmtInt(r.threshold), () => "text-muted-foreground"),
-          numCol("qtySoldRecent", `مبيع ${riskDays}ي`, (r) => fmtInt(r.qtySoldRecent), () => "text-money-positive"),
+          numCol("qtyInStock", "الرصيد", (r) => formatQuantity(r.qtyInStock), () => "text-stock-low"),
+          numCol("threshold", "حدّ الطلب", (r) => formatQuantity(r.threshold), () => "text-muted-foreground"),
+          numCol("qtySoldRecent", `مبيع ${riskDays}ي`, (r) => formatQuantity(r.qtySoldRecent), () => "text-money-positive"),
           numCol("coverDays", "أيام تغطية", (r) => (r.coverDays == null ? "—" : fmtAr(r.coverDays))),
         ]}
       />

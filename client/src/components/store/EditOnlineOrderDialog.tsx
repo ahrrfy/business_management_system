@@ -437,7 +437,7 @@ export function EditOnlineOrderDialog({
                       >
                         {availableSearchUnits.map((u) => (
                           <option key={u.productUnitId} value={String(u.productUnitId)}>
-                            {u.productName} ({u.variantLabel}) - {fmtInt(u.price)} د.ع [متاح: {u.stock}]
+                            {u.productName} ({u.variantLabel}) - {fmtInt(u.price)} د.ع [متاح: {formatQuantity(u.stock)}]
                           </option>
                         ))}
                       </AppSelect>

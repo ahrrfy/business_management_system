@@ -15,7 +15,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fmtDateTime } from "@/lib/date";
 import { type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { fmt, fmtInt } from "@/lib/money";
+import { fmt, fmtInt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -111,7 +111,7 @@ export default function Production() {
       rows: all.map((r) => ({
         docNumber: String(r.docNumber ?? ""),
         branchName: String(r.branchName ?? ""),
-        outputQty: fmtInt(r.outputQty),
+        outputQty: formatQuantity(r.outputQty),
         totalCost: fmt(r.totalCost),
         status: statusLabel(r.status),
         createdAt: fmtDateTime(r.createdAt),
@@ -132,7 +132,7 @@ export default function Production() {
     {
       id: "outputQty", header: "كمية المخرجات",
       accessorFn: (r) => Number(r.outputQty),
-      cell: ({ row }) => fmtInt(row.original.outputQty),
+      cell: ({ row }) => formatQuantity(row.original.outputQty),
       meta: { kind: "number" },
     },
     {
