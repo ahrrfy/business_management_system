@@ -17,19 +17,25 @@ import { AnimatedReveal } from "@/components/AnimatedReveal";
 import { UnifiedScreenHeader } from "@/components/UnifiedScreenHeader";
 import { colors, radius, space } from "@/constants/theme";
 import { formatIqd, formatQuantity } from "@/lib/format";
-import { fetchRealInvoices, type RealInvoice } from "@/lib/operationsApi";
+import { fetchRealInvoiceDetails, fetchRealInvoices, getTodayBaghdadYmd, type RealInvoice } from "@/lib/operationsApi";
 
-type InvoiceStatus = "PAID" | "PENDING" | "CANCELLED";
+type InvoiceStatus = "PAID" | "PARTIALLY_PAID" | "PENDING" | "CANCELLED" | "RETURNED" | "SUPERSEDED";
 
 const statusConfig: Record<InvoiceStatus, { label: string; tone: string; bg: string }> = {
   PAID: { label: "مسددة بالكامل", tone: colors.success, bg: "#EAF9EF" },
+  PARTIALLY_PAID: { label: "مسددة جزئياً", tone: colors.info, bg: "#EEF3FB" },
   PENDING: { label: "أجل / معلقة", tone: colors.warning, bg: "#FEF7E6" },
   CANCELLED: { label: "ملغاة", tone: colors.danger, bg: "#FEEBEB" },
+  RETURNED: { label: "مرتجعة", tone: colors.danger, bg: "#FEEBEB" },
+  SUPERSEDED: { label: "مستبدلة", tone: colors.mutedInk, bg: "#F3F4F6" },
 };
 
-const paymentConfig = {
+const paymentConfig: Record<string, string> = {
   CASH: "نقداً",
   CARD: "بطاقة مصرفية",
+  WALLET: "محفظة إلكترونية",
+  TRANSFER: "حوالة مصرفية",
+  MIXED: "دفع مختلط",
   CREDIT: "حساب آجل",
 };
 
@@ -39,6 +45,7 @@ export default function InvoicesScreen() {
   const [filter, setFilter] = useState<"ALL" | InvoiceStatus>("ALL");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedInvoice, setSelectedInvoice] = useState<RealInvoice | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
 
@@ -72,10 +79,15 @@ export default function InvoicesScreen() {
     });
   }, [invoices, filter, searchQuery]);
 
-  const totalSales = useMemo(() => {
+  const todaySales = useMemo(() => {
+    const todayYmd = getTodayBaghdadYmd();
     return invoices
-      .filter((inv) => inv.status === "PAID")
-      .reduce((sum, inv) => sum + inv.amount, 0);
+      .filter(
+        (inv) =>
+          (inv.status === "PAID" || inv.status === "PARTIALLY_PAID") &&
+          inv.invoiceDateYmd === todayYmd,
+      )
+      .reduce((sum, inv) => sum + inv.paidAmount, 0);
   }, [invoices]);
 
   const onRefresh = async () => {
@@ -84,9 +96,24 @@ export default function InvoicesScreen() {
     await loadData();
   };
 
-  const handleSelectInvoice = (inv: RealInvoice) => {
+  const handleSelectInvoice = async (inv: RealInvoice) => {
     void Haptics.selectionAsync();
     setSelectedInvoice(inv);
+    setDetailsLoading(true);
+    try {
+      const details = await fetchRealInvoiceDetails(Number(inv.id));
+      if (details?.items && details.items.length > 0) {
+        setSelectedInvoice((prev) =>
+          prev && prev.id === inv.id
+            ? { ...prev, items: details.items, itemCount: details.items.length }
+            : prev,
+        );
+      }
+    } catch (e) {
+      console.error("Failed to load invoice items:", e);
+    } finally {
+      setDetailsLoading(false);
+    }
   };
 
   const copyInvoiceNumber = (num: string) => {
@@ -112,7 +139,7 @@ export default function InvoicesScreen() {
         <AnimatedReveal delay={50} style={styles.kpiContainer}>
           <View style={styles.kpiBox}>
             <Text style={styles.kpiLabel}>مبيعات اليوم المحصلة</Text>
-            <Text style={styles.kpiValue}>{formatIqd(totalSales)}</Text>
+            <Text style={styles.kpiValue}>{formatIqd(todaySales)}</Text>
           </View>
           <View style={styles.kpiDivider} />
           <View style={styles.kpiBox}>
@@ -300,6 +327,7 @@ export default function InvoicesScreen() {
 
                 <View style={styles.itemsHeader}>
                   <Text style={styles.itemsTitle}>بنود ومواد الفاتورة</Text>
+                  {detailsLoading ? <ActivityIndicator color={colors.brand} size="small" /> : null}
                 </View>
 
                 <ScrollView style={styles.itemsList}>

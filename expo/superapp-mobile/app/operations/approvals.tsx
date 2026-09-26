@@ -19,7 +19,7 @@ import { UnifiedScreenHeader } from "@/components/UnifiedScreenHeader";
 import { colors, radius, space } from "@/constants/theme";
 import { formatIqd } from "@/lib/format";
 import { unlockLocalSession } from "@/lib/localSessionUnlock";
-import { fetchRealApprovals } from "@/lib/operationsApi";
+import { fetchRealApprovals, submitRealDecision } from "@/lib/operationsApi";
 import { getNativeMobileCommandCenter } from "@/lib/secureTransport";
 
 type ApprovalCategory = "STOCK" | "EXPENSE" | "DISCOUNT" | "LEAVE";
@@ -35,6 +35,9 @@ type ApprovalItem = {
   amountOrMetric: string;
   reason: string;
   createdAt: string;
+  kind?: string;
+  numericId?: number;
+  expectedVersion?: number | null;
 };
 
 const categoryConfig: Record<ApprovalCategory, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
@@ -68,6 +71,9 @@ export default function ApprovalsScreen() {
 
       const combined: ApprovalItem[] = realApprovals.map((app) => ({
         id: `appr-${app.id}`,
+        numericId: app.numericId,
+        kind: app.kind,
+        expectedVersion: app.expectedVersion,
         category: (app.type === "STOCK_ADJUSTMENT"
           ? "STOCK"
           : app.type === "EXPENSE"
@@ -131,27 +137,52 @@ export default function ApprovalsScreen() {
     setIsProcessing(true);
     try {
       await unlockLocalSession();
+      if (item.kind && item.numericId) {
+        await submitRealDecision({
+          kind: item.kind,
+          id: item.numericId,
+          action: "APPROVE",
+          expectedVersion: item.expectedVersion,
+        });
+      }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
       setSelectedItem(null);
       setFeedback(`تم اعتماد القرار بنجاح وتوثيق موافقة الإدارة: «${item.title}»`);
-    } catch {
+    } catch (err: any) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setFeedback("فشلت عملية المصادقة. أعد المحاولة ثانية.");
+      setFeedback(err?.message || "فشلت عملية المصادقة. أعد المحاولة ثانية.");
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleRejectConfirm = () => {
+  const handleRejectConfirm = async () => {
     if (!selectedItem) return;
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    const title = selectedItem.title;
-    setItems((prev) => prev.filter((i) => i.id !== selectedItem.id));
-    setRejectModalVisible(false);
-    setSelectedItem(null);
-    setRejectReason("");
-    setFeedback(`تم صرف النظر عن القرار: «${title}» وتسجيل الملاحظة.`);
+    setIsProcessing(true);
+    try {
+      if (selectedItem.kind && selectedItem.numericId) {
+        await submitRealDecision({
+          kind: selectedItem.kind,
+          id: selectedItem.numericId,
+          action: "REJECT",
+          reason: rejectReason.trim() || undefined,
+          expectedVersion: selectedItem.expectedVersion,
+        });
+      }
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      const title = selectedItem.title;
+      setItems((prev) => prev.filter((i) => i.id !== selectedItem.id));
+      setRejectModalVisible(false);
+      setSelectedItem(null);
+      setRejectReason("");
+      setFeedback(`تم صرف النظر عن القرار: «${title}» وتسجيل الملاحظة.`);
+    } catch (err: any) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setFeedback(err?.message || "فشلت عملية تسجيل الرفض. أعد المحاولة ثانية.");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
