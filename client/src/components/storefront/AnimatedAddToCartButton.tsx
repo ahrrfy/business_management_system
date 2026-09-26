@@ -11,6 +11,7 @@ export interface AnimatedAddToCartButtonProps {
   className?: string;
   cartCount?: number;
   showCartCount?: boolean;
+  size?: "default" | "sm";
   "aria-label"?: string;
 }
 
@@ -23,6 +24,7 @@ export function AnimatedAddToCartButton({
   className = "",
   cartCount,
   showCartCount = false,
+  size = "default",
   "aria-label": ariaLabel,
 }: AnimatedAddToCartButtonProps) {
   const [state, setState] = useState<"idle" | "adding" | "added">("idle");
@@ -41,7 +43,24 @@ export function AnimatedAddToCartButton({
     };
   }, []);
 
+  // حساب أبعاد الحركة ديناميكياً لضمان خروج ودخول العربة بدقة في جميع مقاسات الشاشات والأزرار
+  useEffect(() => {
+    const updateDimensions = () => {
+      if (buttonRef.current) {
+        const width = buttonRef.current.offsetWidth || (size === "sm" ? 140 : 280);
+        const half = Math.ceil(width / 2) + (size === "sm" ? 30 : 45);
+        buttonRef.current.style.setProperty("--from-left", `-${half}px`);
+        buttonRef.current.style.setProperty("--to-exit", `${half}px`);
+        buttonRef.current.style.setProperty("--to-centre", "0px");
+      }
+    };
+    updateDimensions();
+    window.addEventListener("resize", updateDimensions);
+    return () => window.removeEventListener("resize", updateDimensions);
+  }, [size]);
+
   const handleClick = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
     if (disabled || state !== "idle") return;
 
     const sourceElement = e.currentTarget;
@@ -69,7 +88,16 @@ export function AnimatedAddToCartButton({
       timeoutsRef.current.push(bumpTimer);
     }, 2000);
 
-    timeoutsRef.current.push(addTimer);
+    // ضمان الانتقال لحالة تمت الإضافة حتى لو لم يُلتقط حدث animationend
+    const fallbackTimer = window.setTimeout(() => {
+      setState("added");
+      const resetTimer = window.setTimeout(() => {
+        setState("idle");
+      }, 1500);
+      timeoutsRef.current.push(resetTimer);
+    }, 2420);
+
+    timeoutsRef.current.push(addTimer, fallbackTimer);
   };
 
   const handleCartAnimationEnd = (e: React.AnimationEvent<HTMLSpanElement>) => {
@@ -77,7 +105,7 @@ export function AnimatedAddToCartButton({
       setState("added");
       const resetTimer = window.setTimeout(() => {
         setState("idle");
-      }, 1000);
+      }, 1500);
       timeoutsRef.current.push(resetTimer);
     }
   };
@@ -91,10 +119,10 @@ export function AnimatedAddToCartButton({
         disabled={disabled}
         onClick={handleClick}
         aria-label={ariaLabel ?? label}
-        className="animated-cart-btn"
+        className={`animated-cart-btn ${size === "sm" ? "btn--sm" : ""}`}
       >
         {/* الكيس الخارجي الحبري بلون غامق فوق الكبسولة */}
-        <svg className="bag bag--out" viewBox="0 0 24 24" width="22" height="24" aria-hidden="true">
+        <svg className="bag bag--out" viewBox="0 0 24 24" width={size === "sm" ? "18" : "22"} height={size === "sm" ? "20" : "24"} aria-hidden="true">
           <path className="bag_handle" d="M 7 9 C 7 4.5 17 4.5 17 9" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
           <rect className="bag_body" x="4" y="9" width="16" height="13" rx="2.5" fill="currentColor" />
         </svg>
@@ -102,14 +130,14 @@ export function AnimatedAddToCartButton({
         {/* الكبسولة الداكنة المقتطعة */}
         <span className="pill">
           {/* الكيس الداخلي الأبيض داخل الكبسولة */}
-          <svg className="bag bag--in" viewBox="0 0 24 24" width="22" height="24" aria-hidden="true">
+          <svg className="bag bag--in" viewBox="0 0 24 24" width={size === "sm" ? "18" : "22"} height={size === "sm" ? "20" : "24"} aria-hidden="true">
             <path className="bag_handle" d="M 7 9 C 7 4.5 17 4.5 17 9" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
             <rect className="bag_body" x="4" y="9" width="16" height="13" rx="2.5" fill="currentColor" />
           </svg>
 
           {/* عربة التسوق المتحركة */}
           <span className="cart" onAnimationEnd={handleCartAnimationEnd} aria-hidden="true">
-            <svg viewBox="0 0 52 44" width="36" height="30">
+            <svg viewBox="0 0 52 44" width={size === "sm" ? "28" : "36"} height={size === "sm" ? "24" : "30"}>
               <path className="cart__fill" d="M 16 11 h 29 l -3.5 13 h -20.5 z" fill="currentColor" opacity="0.25" />
               <g className="cart__line" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M 4 7 h 7 l 6.5 20 h 24 l 4.5 -16 H 13" />
@@ -123,12 +151,12 @@ export function AnimatedAddToCartButton({
           <span className="pill__label">
             {state === "added" ? (
               <>
-                <Check aria-hidden className="size-4.5 stroke-[2.5]" />
+                <Check aria-hidden className={size === "sm" ? "size-3.5 stroke-[2.5]" : "size-4.5 stroke-[2.5]"} />
                 <span>{addedLabel}</span>
               </>
             ) : (
               <>
-                {icon ?? <Plus aria-hidden className="size-4.5 stroke-[2.5]" />}
+                {icon ?? <Plus aria-hidden className={size === "sm" ? "size-3.5 stroke-[2.5]" : "size-4.5 stroke-[2.5]"} />}
                 <span>{label}</span>
               </>
             )}
@@ -138,7 +166,7 @@ export function AnimatedAddToCartButton({
 
       {/* مؤشر عدد القطع في السلة أسفل الكبسولة كما في النموذج */}
       {showCartCount && cartCount != null && (
-        <div className={`animated-cart-counter ${bump ? "bump" : ""}`}>
+        <div className={`animated-cart-counter ${bump ? "bump" : ""}`} aria-live="polite">
           <span className="tabular-nums font-mono text-sm">{cartCount}</span>
           <span>في سلتك</span>
         </div>
