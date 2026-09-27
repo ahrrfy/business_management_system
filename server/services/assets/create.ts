@@ -19,7 +19,7 @@ import { appErrorMessage } from "@shared/errors";
 import type { Decimal } from "decimal.js";
 
 /** الرمز التالي AST-#### — قراءة مرتّبة تحت قفل FOR UPDATE تُضيّق السباق، وقيد UNIQUE هو الحارس النهائي. */
-async function nextAssetCode(tx: Tx): Promise<string> {
+export async function nextAssetCode(tx: Tx): Promise<string> {
   const rows = await tx
     .select({ code: fixedAssets.code })
     .from(fixedAssets)
@@ -166,6 +166,7 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       usefulLifeYears: input.category === "land" ? 0 : input.usefulLifeYears,
       depreciationMethod: input.depreciationMethod ?? "sl",
       accumulatedDepreciation: toDbMoney(initialDepreciation),
+      openingDepreciation: toDbMoney(initialDepreciation),
       condition: input.condition ?? null,
       warrantyEnd: input.warrantyEnd ?? null,
       linkedDeviceId: input.linkedDeviceId ?? null,
