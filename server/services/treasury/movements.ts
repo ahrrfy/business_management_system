@@ -1,11 +1,24 @@
-// آخر حركات نقدية موحَّدة (receipts + expenses) — للسجلّ.
-import { sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
 import { receiptCashEventAtSql } from "../cash/cashEventAt";
 import { isPotentialCashCustodyRecipient } from "../cash/custodyBlindCount";
 import { PAY_METHOD_AR, isCashier, rowsOf } from "./helpers";
+import {
+  expenseStockItems,
+  invoiceItems,
+  productVariants,
+  products,
+} from "../../../drizzle/schema";
+import type {
+  FinancialCellProvenancePayload,
+  ProvenanceDocumentRef,
+  ProvenanceMovementType,
+  ProvenancePartyKind,
+  ProvenanceSubItem,
+} from "@shared/financialProvenance";
+import { computeProvenanceReconciliation } from "@shared/financialProvenance";
 
 export interface MovementRow {
   id: string; // r:NN أو e:NN
@@ -45,6 +58,7 @@ export interface MovementRow {
   documentDate: string | null;
   integrityWarnings: string[];
   createdAt: string;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 export async function getRecentMovements(
@@ -274,6 +288,84 @@ export async function getRecentMovements(
     `),
   );
 
+  const invoiceIds = Array.from(
+    new Set(
+      rows
+        .map((r) => (r.invoiceId != null ? Number(r.invoiceId) : null))
+        .filter((id): id is number => id != null && !Number.isNaN(id) && id > 0),
+    ),
+  );
+
+  const expenseIds = Array.from(
+    new Set(
+      rows
+        .map((r) => (r.expenseId != null ? Number(r.expenseId) : null))
+        .filter((id): id is number => id != null && !Number.isNaN(id) && id > 0),
+    ),
+  );
+
+  const invoiceItemMap = new Map<number, ProvenanceSubItem[]>();
+  if (invoiceIds.length > 0) {
+    const items = await db
+      .select({
+        invoiceId: invoiceItems.invoiceId,
+        id: invoiceItems.id,
+        name: sql<string>`COALESCE(${invoiceItems.itemNameSnapshot}, ${products.name})`,
+        quantity: invoiceItems.quantity,
+        unitPrice: invoiceItems.unitPrice,
+        total: invoiceItems.total,
+      })
+      .from(invoiceItems)
+      .leftJoin(productVariants, eq(productVariants.id, invoiceItems.variantId))
+      .leftJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(invoiceItems.invoiceId, invoiceIds));
+
+    for (const it of items) {
+      const invId = Number(it.invoiceId);
+      const list = invoiceItemMap.get(invId) ?? [];
+      list.push({
+        id: it.id,
+        label: it.name || "بند فاتورة",
+        amount: toDbMoney(money(it.total ?? 0)),
+        quantity: it.quantity != null ? Number(it.quantity) : undefined,
+        unitPrice: it.unitPrice != null ? toDbMoney(money(it.unitPrice)) : undefined,
+        type: "item",
+      });
+      invoiceItemMap.set(invId, list);
+    }
+  }
+
+  const expenseStockItemMap = new Map<number, ProvenanceSubItem[]>();
+  if (expenseIds.length > 0) {
+    const stockItems = await db
+      .select({
+        expenseId: expenseStockItems.expenseId,
+        id: expenseStockItems.id,
+        name: products.name,
+        quantity: expenseStockItems.quantity,
+        unitCost: expenseStockItems.unitCost,
+        lineCost: expenseStockItems.lineCost,
+      })
+      .from(expenseStockItems)
+      .leftJoin(productVariants, eq(productVariants.id, expenseStockItems.variantId))
+      .leftJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(expenseStockItems.expenseId, expenseIds));
+
+    for (const it of stockItems) {
+      const expId = Number(it.expenseId);
+      const list = expenseStockItemMap.get(expId) ?? [];
+      list.push({
+        id: it.id,
+        label: it.name || "مادة مخزنية مستهلكة",
+        amount: toDbMoney(money(it.lineCost ?? 0)),
+        quantity: it.quantity != null ? Number(it.quantity) : undefined,
+        unitPrice: it.unitCost != null ? toDbMoney(money(it.unitCost)) : undefined,
+        type: "stock_item",
+      });
+      expenseStockItemMap.set(expId, list);
+    }
+  }
+
   return rows.map((r) => {
     const cashBucket =
       r.cashBucket === "TREASURY"
@@ -305,12 +397,146 @@ export async function getRecentMovements(
           : String(value);
     const asId = (value: unknown) => (value == null ? null : Number(value));
 
+    const invoiceId = asId(r.invoiceId);
+    const expenseId = asId(r.expenseId);
+    const invItems = invoiceId != null ? invoiceItemMap.get(invoiceId) : undefined;
+    const expStockItems = expenseId != null ? expenseStockItemMap.get(expenseId) : undefined;
+
+    let movementType: ProvenanceMovementType = "revenue";
+    if (r.direction === "OUT") {
+      movementType = r.partyType === "SUPPLIER" ? "delivery" : "expense";
+    } else {
+      movementType =
+        r.partyType === "CUSTOMER" && invoiceId == null
+          ? "collection"
+          : "revenue";
+    }
+
+    const docRefs: ProvenanceDocumentRef[] = [];
+    if (r.voucherNumber) {
+      docRefs.push({
+        docType: "voucher",
+        docNumber: String(r.voucherNumber),
+        date: asIso(r.documentDate),
+      });
+    }
+    if (invoiceId != null) {
+      docRefs.push({
+        docType: "invoice",
+        docNumber: String(r.referenceNumber || invoiceId),
+        docId: invoiceId,
+        date: asIso(r.documentDate),
+      });
+    }
+    if (r.referenceNumber && invoiceId == null) {
+      docRefs.push({
+        docType: "receipt",
+        docNumber: String(r.referenceNumber),
+        date: asIso(r.documentDate),
+      });
+    }
+    if (expenseId != null) {
+      docRefs.push({
+        docType: "expense",
+        docNumber: `EXP-${expenseId}`,
+        docId: expenseId,
+        date: asIso(r.documentDate),
+      });
+    }
+
+    const rowAmount = toDbMoney(money(r.amount ?? 0));
+    let subItems: ProvenanceSubItem[] = [];
+
+    if (invItems && invItems.length > 0) {
+      const invSum = invItems.reduce((acc, it) => acc.plus(money(it.amount)), money(0));
+      if (invSum.sub(money(rowAmount)).abs().lte(0.005)) {
+        subItems = invItems;
+      } else {
+        subItems = [
+          {
+            id: `alloc-${r.id}`,
+            label: `دفعة مقبوضة على الفاتورة #${r.referenceNumber || invoiceId}`,
+            amount: rowAmount,
+            note: `إجمالي بنود الفاتورة (${invItems.length} صنف): ${toDbMoney(invSum)} د.ع`,
+          },
+        ];
+      }
+    } else if (expStockItems && expStockItems.length > 0) {
+      const stockSum = expStockItems.reduce((acc, it) => acc.plus(money(it.amount)), money(0));
+      if (stockSum.sub(money(rowAmount)).abs().lte(0.005)) {
+        subItems = expStockItems;
+      } else {
+        subItems = [
+          {
+            id: `stock-alloc-${r.id}`,
+            label: `مصروف مواد مخزنية مستهلكة`,
+            amount: rowAmount,
+            note: `إجمالي بنود المواد (${expStockItems.length} صنف): ${toDbMoney(stockSum)} د.ع`,
+          },
+        ];
+      }
+    } else {
+      subItems = [
+        {
+          id: String(r.id),
+          label: r.description
+            ? String(r.description)
+            : r.source === "EXPENSE"
+              ? "مصروف تشغيلي"
+              : "حركة مقبوضات نقدية",
+          amount: rowAmount,
+        },
+      ];
+    }
+
+    const reconciliation = computeProvenanceReconciliation(rowAmount, subItems);
+
+    const provenance: FinancialCellProvenancePayload = {
+      movementType,
+      title: r.description
+        ? String(r.description)
+        : r.source === "EXPENSE"
+          ? "سند صرف / مصروف"
+          : "إيصال قبض",
+      totalAmount: rowAmount,
+      party: r.partyName
+        ? {
+            name: String(r.partyName),
+            kind:
+              (r.partyType?.toLowerCase() as ProvenancePartyKind) || "entity",
+            id: asId(r.partyId),
+          }
+        : r.expensePayee
+          ? {
+              name: String(r.expensePayee),
+              kind: "beneficiary",
+            }
+          : null,
+      documentRef: docRefs[0] ?? null,
+      docRefs,
+      category: r.expenseCategory
+        ? String(r.expenseCategory)
+        : r.partyType
+          ? String(r.partyType)
+          : null,
+      paymentMethod,
+      cashBucket,
+      actorName: r.createdByName ? String(r.createdByName) : null,
+      actor: r.createdByName
+        ? { name: String(r.createdByName), id: asId(r.createdBy) }
+        : null,
+      branchName: r.branchName ? String(r.branchName) : null,
+      notes: r.description ? String(r.description) : null,
+      subItems,
+      reconciliation,
+    };
+
     return {
       id: String(r.id),
       rawId: Number(r.rawId),
       source: r.source === "EXPENSE" ? "EXPENSE" : "RECEIPT",
       direction: r.direction === "OUT" ? "OUT" : "IN",
-      amount: toDbMoney(money(r.amount ?? 0)),
+      amount: rowAmount,
       paymentMethod,
       paymentMethodLabel: PAY_METHOD_AR[paymentMethod] ?? paymentMethod,
       cashBucket,
@@ -336,10 +562,10 @@ export async function getRecentMovements(
         r.approvedByName == null ? null : String(r.approvedByName),
       referenceNumber:
         r.referenceNumber == null ? null : String(r.referenceNumber),
-      invoiceId: asId(r.invoiceId),
+      invoiceId,
       workOrderId: asId(r.workOrderId),
       reservationId: asId(r.reservationId),
-      expenseId: asId(r.expenseId),
+      expenseId,
       expensePayee: r.expensePayee == null ? null : String(r.expensePayee),
       expenseCategory:
         r.expenseCategory == null ? null : String(r.expenseCategory),
@@ -348,6 +574,7 @@ export async function getRecentMovements(
       documentDate: asIso(r.documentDate),
       integrityWarnings: warnings,
       createdAt: asIso(r.createdAt) ?? "",
+      provenance,
     };
   });
 }
