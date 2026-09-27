@@ -296,13 +296,17 @@ export default function VoucherCategories() {
   const syncRevenue = trpc.voucherCategories.syncFromRevenueCategories.useMutation({
     onSuccess: async (res) => {
       await utils.voucherCategories.list.invalidate();
-      if (!res.inserted.length && !res.mapped.length) {
-        notify.ok(`فئات الإيرادات والكتالوج متطابقة مسبقاً (${res.total} فئة)`);
+      const parts: string[] = [];
+      if (res.inserted.length) parts.push(`+${res.inserted.length} إيرادات جديدة`);
+      if (res.mapped.length) parts.push(`${res.mapped.length} عُيّن حسابها`);
+      if (res.deleted.length) parts.push(`${res.deleted.length} فئات منتجات حُذفت`);
+      if (res.deactivated.length) parts.push(`${res.deactivated.length} فئات منتجات عُطّلت`);
+
+      if (parts.length === 0) {
+        notify.ok(`فئات الإيرادات المحاسبية مطابقة ومكتملة مسبقاً (${res.total} فئة)`);
         return;
       }
-      notify.ok(
-        `تمت مزامنة فئات الإيرادات: +${res.inserted.length} جديدة، ${res.mapped.length} عُيّن حسابها`,
-      );
+      notify.ok(`تمت معالجة فئات الإيرادات: ${parts.join("، ")}`);
     },
     onError: (e) => notify.err(e),
   });
@@ -406,10 +410,10 @@ export default function VoucherCategories() {
   async function confirmSyncRevenue() {
     const ok = await confirm({
       variant: "info",
-      title: "مزامنة فئات الإيرادات وأقسام الكتالوج مع فئات السندات",
+      title: "مزامنة فئات الإيرادات والأنشطة المحاسبية وتطهير فئات السندات",
       description:
-        "سيتم استيراد وتأمين كافة فئات الإيرادات التشغيلية والخدمية (الطباعة، القرطاسية، الفلكس، التوصيل، الهدايا، التصميم، الصيانة، والتحصيلات) وأقسام الكتالوج النشطة، وربطها بحساباتها المقابلة لتظهر فوراً في سندات القبض. هل تريد المتابعة؟",
-      confirmText: "مزامنة الآن",
+        "سيتم تأمين كافة فئات الإيرادات التشغيلية والخدمية والتمويلية القياسية (الطباعة، الفلكس، مبيعات القرطاسية والهدايا العامة، التوصيل، التصميم، الصيانة، تحصيل السلف واستثمار المشاركة)، وتطهير القائمة واستبعاد أي تصنيفات منتجات أو كتب لحصر السندات في المعاملات المالية البحتة. هل تريد المتابعة؟",
+      confirmText: "مزامنة وتطهير الآن",
     });
     if (!ok) return;
     syncRevenue.mutate();
@@ -547,7 +551,7 @@ export default function VoucherCategories() {
                 onClick={() => void confirmSyncRevenue()}
               >
                 <ArrowUpToLine aria-hidden className="size-4 ms-1" />
-                {syncRevenue.isPending ? "جارٍ المزامنة…" : "مزامنة فئات الإيرادات والكتالوج"}
+                {syncRevenue.isPending ? "جارٍ المزامنة والتطهير…" : "مزامنة فئات الإيرادات والأنشطة"}
               </Button>
             )}
             {canManage && (
