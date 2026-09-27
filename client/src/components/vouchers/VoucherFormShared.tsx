@@ -159,16 +159,16 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const selectedCategoryReady =
     selectedCategory != null &&
     isVoucherCategoryRoleCompatible(
-      selectedCategory.direction,
+      direction,
       selectedCategory.postingRole,
     );
   /** فئات صالحة فعلاً لهذا الاتجاه (نشِطة + حساب مقابل متوافق) — صفرٌ يعني طريقاً مسدوداً. */
   const readyCategoryCount = useMemo(
     () =>
       categoryOptions.filter((c) =>
-        isVoucherCategoryRoleCompatible(c.direction, c.postingRole),
+        isVoucherCategoryRoleCompatible(direction, c.postingRole),
       ).length,
-    [categoryOptions],
+    [categoryOptions, direction],
   );
   // مرآة بوّابة الخادم لفئات السندات (treasuryGlobalProcedure) — إخفاء بصريّ فقط، والإنفاذ خادميّ.
   const canManageCategories =
@@ -842,14 +842,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                     value={Number(c.id)}
                     disabled={
                       !isVoucherCategoryRoleCompatible(
-                        c.direction,
+                        direction,
                         c.postingRole,
                       )
                     }
                   >
                     {c.name}
                     {!isVoucherCategoryRoleCompatible(
-                      c.direction,
+                      direction,
                       c.postingRole,
                     )
                       ? (
@@ -912,6 +912,19 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   إدارة الفئات
                 </Link>
               </p>
+              {partyType === "OTHER" && (
+                <div className="rounded-md border border-border/60 bg-muted/40 p-2.5 text-[11px] text-muted-foreground space-y-1">
+                  <p className="font-medium text-foreground flex items-center gap-1.5">
+                    <Info aria-hidden className="size-3.5 text-primary shrink-0" />
+                    توجيه محاسبي للطرف (أخرى):
+                  </p>
+                  <p>
+                    {isReceipt
+                      ? "مبيعات القرطاسية والمطبعة والخدمات المخزنية تُسجل عبر نقاط البيع (POS) أو فواتير المبيعات لخصم المخزون آلياً. وتحصيل ديون العملاء يُسجل باختيار الطرف (عميل) لإبراء ذمتهم."
+                      : "سداد فواتير المشتريات يُسجل باختيار الطرف (مورد) لتسوية الذمم. وسلف الموظفين تُسجل عبر إدارة السلف. الفئات هنا للمصروفات والمسحوبات التشغيلية والمباشرة."}
+                  </p>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

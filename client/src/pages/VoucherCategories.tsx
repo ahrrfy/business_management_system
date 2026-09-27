@@ -21,7 +21,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, Edit3, Plus, RotateCcw, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, CheckCircle2, Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
 import { ListToolbar, RowActions } from "@/components/list";
 import {
   isVoucherCategoryRoleCompatible,
@@ -279,6 +279,19 @@ export default function VoucherCategories() {
     },
     onError: (e) => notify.err(e),
   });
+  const syncExpenses = trpc.voucherCategories.syncFromExpenseCategories.useMutation({
+    onSuccess: async (res) => {
+      await utils.voucherCategories.list.invalidate();
+      if (!res.inserted.length && !res.mapped.length) {
+        notify.ok(`فئات المصروفات متطابقة مسبقاً (${res.total} فئة)`);
+        return;
+      }
+      notify.ok(
+        `تمت مزامنة فئات المصروفات: +${res.inserted.length} جديدة، ${res.mapped.length} عُيّن حسابها`,
+      );
+    },
+    onError: (e) => notify.err(e),
+  });
   const merge = trpc.voucherCategories.merge.useMutation({
     onSuccess: async () => {
       await utils.voucherCategories.list.invalidate();
@@ -362,6 +375,18 @@ export default function VoucherCategories() {
     });
     if (!ok) return;
     restoreDefaults.mutate();
+  }
+
+  async function confirmSyncExpenses() {
+    const ok = await confirm({
+      variant: "info",
+      title: "مزامنة فئات المصروفات مع فئات السندات",
+      description:
+        "سيتم استيراد كافة فئات المصروفات التشغيلية النشطة من إدارة المصروفات إلى فئات السندات وربطها بحساباتها المقابلة المعتمدة، لتظهر في سندات الصرف. هل تريد المتابعة؟",
+      confirmText: "مزامنة الآن",
+    });
+    if (!ok) return;
+    syncExpenses.mutate();
   }
 
   async function toggleActive(r: Row) {
@@ -475,6 +500,17 @@ export default function VoucherCategories() {
               >
                 <RotateCcw aria-hidden className="size-4 ms-1" />
                 {restoreDefaults.isPending ? "جارٍ الاستعادة…" : "استعادة الافتراضية"}
+              </Button>
+            )}
+            {canManage && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncExpenses.isPending}
+                onClick={() => void confirmSyncExpenses()}
+              >
+                <ArrowDownToLine aria-hidden className="size-4 ms-1" />
+                {syncExpenses.isPending ? "جارٍ المزامنة…" : "مزامنة فئات المصروفات"}
               </Button>
             )}
             {canManage && (
@@ -675,6 +711,17 @@ export default function VoucherCategories() {
                 <option value="OUT">صرف فقط</option>
               </AppSelect>
             </div>
+            {direction === "BOTH" && (
+              <div className="md:col-span-2 rounded-md border border-border/70 bg-muted/40 p-2.5 text-xs text-muted-foreground space-y-1">
+                <p className="font-medium text-foreground flex items-center gap-1.5">
+                  <Info aria-hidden className="size-3.5 text-primary shrink-0" />
+                  قاعدة الفئات ثنائية الاتجاه (قبض وصرف):
+                </p>
+                <p>
+                  محاسبياً، تقتصر الفئات المشتركة على حسابات حقوق الملكية والالتزامات الوسيطة التي تقبل التغذية والسحب (جاري المالك، القروض المستلمة والمسددة، الأمانات والتأمينات). المصروفات التشغيلية وإيرادات المبيعات لا تكون ثنائية صوناً لسلامة القيد المزدوج ودورة المخزون.
+                </p>
+              </div>
+            )}
             <div className="space-y-1 md:col-span-2">
               <Label>الحساب المحاسبي المقابل *</Label>
               <AppSelect
