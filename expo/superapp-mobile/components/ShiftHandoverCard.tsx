@@ -19,13 +19,13 @@ type Denomination = {
 };
 
 const DENOMINATIONS: Denomination[] = [
-  { label: "50,000 د.ع", value: 50000 },
-  { label: "25,000 د.ع", value: 25000 },
-  { label: "10,000 د.ع", value: 10000 },
-  { label: "5,000 د.ع", value: 5000 },
-  { label: "1,000 د.ع", value: 1000 },
-  { label: "500 د.ع", value: 500 },
-  { label: "250 د.ع", value: 250 },
+  { label: formatIqd(50000), value: 50000 },
+  { label: formatIqd(25000), value: 25000 },
+  { label: formatIqd(10000), value: 10000 },
+  { label: formatIqd(5000), value: 5000 },
+  { label: formatIqd(1000), value: 1000 },
+  { label: formatIqd(500), value: 500 },
+  { label: formatIqd(250), value: 250 },
 ];
 
 export function ShiftHandoverCard() {
@@ -164,6 +164,7 @@ export function ShiftHandoverCard() {
           </View>
 
           <Pressable
+            accessibilityLabel="تسجيل وردية جديدة"
             accessibilityRole="button"
             onPress={handleReset}
             style={styles.newShiftButton}
@@ -180,6 +181,7 @@ export function ShiftHandoverCard() {
           </View>
 
           <Pressable
+            accessibilityLabel="بدء عد الفئات النقدية وإغلاق الصندوق"
             accessibilityRole="button"
             onPress={() => setModalVisible(true)}
             style={({ pressed }) => [styles.openModalButton, pressed && styles.pressed]}
@@ -257,6 +259,7 @@ export function ShiftHandoverCard() {
 
             <View style={styles.modalButtonsRow}>
               <Pressable
+                accessibilityLabel="إلغاء العد وإغلاق النافذة"
                 accessibilityRole="button"
                 onPress={() => setModalVisible(false)}
                 style={styles.cancelButton}
@@ -265,6 +268,7 @@ export function ShiftHandoverCard() {
               </Pressable>
 
               <Pressable
+                accessibilityLabel="تأكيد وإصدار سند تسليم الوردية"
                 accessibilityRole="button"
                 onPress={handleFinalizeClose}
                 style={({ pressed }) => [styles.confirmButton, pressed && styles.pressed]}

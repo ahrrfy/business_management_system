@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -186,7 +186,7 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
                 <span className="min-w-0 flex-1 truncate" title={it.label}>{it.label}</span>
                 {it.qty != null && it.qty !== "" && (
                   <span className="tabular-nums text-muted-foreground" dir="ltr">
-                    {typeof it.qty === "number" ? fmtAr(it.qty) : it.qty}{it.unit ? ` ${it.unit}` : ""}
+                    {formatQuantity(it.qty)}{it.unit ? ` ${it.unit}` : ""}
                   </span>
                 )}
                 {it.unitPrice != null && it.unitPrice !== "" && (

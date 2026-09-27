@@ -635,4 +635,22 @@ export const CHART_ACCOUNTS: SeedAccount[] = [
     systemRole: "INVENTORY_REVALUATION",
     sortOrder: 568,
   },
+  {
+    id: 70,
+    code: "1195",
+    name: "قروض وسلف حسنة للغير",
+    type: "ASSET",
+    parentId: 1,
+    systemRole: "LOAN_RECEIVABLE",
+    sortOrder: 1195,
+  },
+  {
+    id: 71,
+    code: "2195",
+    name: "أموال تشغيل واستثمار بالمشاركة",
+    type: "LIABILITY",
+    parentId: 8,
+    systemRole: "INVESTMENT_PAYABLE",
+    sortOrder: 2195,
+  },
 ];

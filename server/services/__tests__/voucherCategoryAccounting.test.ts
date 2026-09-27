@@ -12,6 +12,8 @@ import {
   assertVoucherCategoryDefinition,
   findVoucherCategoryMappingIssues,
 } from "../voucher/categoryAccounting";
+import { EXPENSE_BUCKET_TO_VOUCHER_POSTING_ROLE } from "../voucher/syncExpenses";
+import { EXPENSE_BUCKETS } from "../../../shared/expenseCategories";
 
 describe("voucher category accounting contract", () => {
   it("يحصر حسابات القبض والصرف ويجعل BOTH تقاطعاً آمناً", () => {
@@ -83,5 +85,16 @@ describe("voucher category accounting contract", () => {
       { id: 1, name: "نشطة بلا حساب", reason: "UNMAPPED" },
       { id: 2, name: "تاريخية مستعملة", reason: "UNMAPPED" },
     ]);
+  });
+
+  it("يطابق كل دلو من دلاء المصروفات الثمانية مع دور صرف معتمد ومتوافق مع OUT", () => {
+    for (const bucket of EXPENSE_BUCKETS) {
+      const role = EXPENSE_BUCKET_TO_VOUCHER_POSTING_ROLE[bucket];
+      expect(role, `الدلو ${bucket} بلا دور مقابل`).toBeDefined();
+      expect(
+        isVoucherCategoryRoleCompatible("OUT", role),
+        `دور الدلو ${bucket} (${role}) غير متوافق مع الصرف OUT`,
+      ).toBe(true);
+    }
   });
 });

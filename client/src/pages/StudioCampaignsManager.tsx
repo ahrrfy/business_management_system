@@ -31,6 +31,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { fmtDate } from "@/lib/date";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   STUDIO_CAMPAIGN_STATUS_AR,
@@ -430,7 +431,7 @@ export default function StudioCampaignsManager() {
                             <span className={dueColor}>
                               {" · "}
                               {dueClass === "overdue" ? "انتهت" : dueClass === "soon" ? "تنتهي" : "ينتهي"}{" "}
-                              {new Date(c.dueAt as unknown as string | Date).toLocaleDateString("ar-IQ-u-nu-latn")}
+                              {fmtDate(c.dueAt as unknown as string | Date)}
                             </span>
                           )}
                         </p>

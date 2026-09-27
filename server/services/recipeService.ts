@@ -1226,3 +1226,275 @@ export async function recipePreview(args: {
     };
   });
 }
+
+export interface ProductRecipeSummary {
+  id: number;
+  name: string;
+  outputVariantId: number;
+  outputProductUnitId: number;
+  laborPerOutputBase: string;
+  wasteStdPct: string;
+  notes: string | null;
+  isActive: boolean;
+  createdAt: Date | null;
+}
+
+export interface ProductRecipeDetail extends ProductRecipeSummary {
+  outputProductName: string | null;
+  outputSku: string | null;
+  outputUnitName: string | null;
+  lines: Array<{
+    id: number;
+    inputVariantId: number;
+    inputProductUnitId: number | null;
+    inputProductName: string;
+    inputSku: string;
+    inputCostPrice: string;
+    qtyPerOutputBase: string;
+    notes: string | null;
+    units: Array<{
+      productUnitId: number;
+      unitName: string;
+      conversionFactor: string;
+      isBaseUnit: boolean;
+    }>;
+  }>;
+}
+
+export interface ProductRecipeResult {
+  product: {
+    id: number;
+    name: string;
+    isService: boolean;
+    isBundle: boolean;
+    isActive: boolean;
+  };
+  primaryVariantId: number | null;
+  primaryProductUnitId: number | null;
+  baseUnitName: string | null;
+  recipe: ProductRecipeDetail | null;
+  allRecipes: ProductRecipeSummary[];
+}
+
+/** استرجاع وصفة منتج (خدمة أو مادي) مع المتغير والوحدة الأساس وقائمة الوصفات المرتبطة */
+export async function getRecipeForProduct(
+  productId: number,
+): Promise<ProductRecipeResult> {
+  return withTx(async (tx) => {
+    const product = (
+      await tx
+        .select({
+          id: products.id,
+          name: products.name,
+          isService: products.isService,
+          isBundle: products.isBundle,
+          isActive: products.isActive,
+        })
+        .from(products)
+        .where(eq(products.id, productId))
+        .limit(1)
+    )[0];
+    if (!product) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر عرض وصفة المنتج",
+          why: `المنتج رقم #${productId} غير موجود في الكتالوج`,
+          doThis: "تحقق من رقم المنتج ثم أعد فتح بطاقة المنتج",
+        }),
+      });
+    }
+
+    const variants = await tx
+      .select({
+        id: productVariants.id,
+        variantName: productVariants.variantName,
+        sku: productVariants.sku,
+        isActive: productVariants.isActive,
+      })
+      .from(productVariants)
+      .where(eq(productVariants.productId, productId))
+      .orderBy(asc(productVariants.id));
+
+    const variantIds = variants.map((v) => Number(v.id));
+    if (variantIds.length === 0) {
+      return {
+        product: {
+          id: Number(product.id),
+          name: product.name,
+          isService: Boolean(product.isService),
+          isBundle: Boolean(product.isBundle),
+          isActive: Boolean(product.isActive),
+        },
+        primaryVariantId: null,
+        primaryProductUnitId: null,
+        baseUnitName: null,
+        recipe: null,
+        allRecipes: [],
+      };
+    }
+
+    const baseUnits = await tx
+      .select({
+        id: productUnits.id,
+        variantId: productUnits.variantId,
+        unitName: productUnits.unitName,
+        isBaseUnit: productUnits.isBaseUnit,
+      })
+      .from(productUnits)
+      .where(
+        and(
+          inArray(productUnits.variantId, variantIds),
+          eq(productUnits.isBaseUnit, true),
+          eq(productUnits.isActive, true),
+        ),
+      );
+
+    const primaryVariantId = variantIds[0];
+    const primaryUnit =
+      baseUnits.find((u) => Number(u.variantId) === primaryVariantId) ??
+      baseUnits[0];
+    const primaryProductUnitId = primaryUnit ? Number(primaryUnit.id) : null;
+    const baseUnitName = primaryUnit ? primaryUnit.unitName : null;
+
+    const recipeRows = await tx
+      .select({
+        id: productionRecipes.id,
+        name: productionRecipes.name,
+        outputVariantId: productionRecipes.outputVariantId,
+        outputProductUnitId: productionRecipes.outputProductUnitId,
+        laborPerOutputBase: productionRecipes.laborPerOutputBase,
+        wasteStdPct: productionRecipes.wasteStdPct,
+        notes: productionRecipes.notes,
+        isActive: productionRecipes.isActive,
+        createdAt: productionRecipes.createdAt,
+      })
+      .from(productionRecipes)
+      .where(inArray(productionRecipes.outputVariantId, variantIds))
+      .orderBy(desc(productionRecipes.isActive), desc(productionRecipes.id));
+
+    const allRecipes: ProductRecipeSummary[] = recipeRows.map((r) => ({
+      id: Number(r.id),
+      name: r.name,
+      outputVariantId: Number(r.outputVariantId),
+      outputProductUnitId: Number(r.outputProductUnitId),
+      laborPerOutputBase: String(r.laborPerOutputBase ?? "0"),
+      wasteStdPct: String(r.wasteStdPct ?? "0"),
+      notes: r.notes ?? null,
+      isActive: Boolean(r.isActive),
+      createdAt: r.createdAt,
+    }));
+
+    const targetRecipe =
+      recipeRows.find((r) => r.isActive === true) ?? recipeRows[0] ?? null;
+
+    let fullRecipe: ProductRecipeDetail | null = null;
+    if (targetRecipe) {
+      const recId = Number(targetRecipe.id);
+      const lines = await tx
+        .select({
+          id: productionRecipeLines.id,
+          inputVariantId: productionRecipeLines.inputVariantId,
+          inputProductUnitId: productionRecipeLines.inputProductUnitId,
+          inputProductName: products.name,
+          inputSku: productVariants.sku,
+          inputCostPrice: productVariants.costPrice,
+          qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+          notes: productionRecipeLines.notes,
+        })
+        .from(productionRecipeLines)
+        .leftJoin(
+          productVariants,
+          eq(productionRecipeLines.inputVariantId, productVariants.id),
+        )
+        .leftJoin(products, eq(productVariants.productId, products.id))
+        .where(eq(productionRecipeLines.recipeId, recId))
+        .orderBy(productionRecipeLines.id);
+
+      const inVarIds = Array.from(
+        new Set(lines.map((l) => Number(l.inputVariantId))),
+      );
+      const unitsByVariant = new Map<
+        number,
+        Array<{
+          productUnitId: number;
+          unitName: string;
+          conversionFactor: string;
+          isBaseUnit: boolean;
+        }>
+      >();
+      if (inVarIds.length > 0) {
+        const unitRows = await tx
+          .select({
+            variantId: productUnits.variantId,
+            id: productUnits.id,
+            unitName: productUnits.unitName,
+            conversionFactor: productUnits.conversionFactor,
+            isBaseUnit: productUnits.isBaseUnit,
+          })
+          .from(productUnits)
+          .where(inArray(productUnits.variantId, inVarIds));
+        for (const u of unitRows) {
+          const vid = Number(u.variantId);
+          if (!unitsByVariant.has(vid)) unitsByVariant.set(vid, []);
+          unitsByVariant.get(vid)!.push({
+            productUnitId: Number(u.id),
+            unitName: u.unitName,
+            conversionFactor: String(u.conversionFactor),
+            isBaseUnit: Boolean(u.isBaseUnit),
+          });
+        }
+      }
+
+      const outVariant = variants.find(
+        (v) => Number(v.id) === Number(targetRecipe.outputVariantId),
+      );
+      const outUnit = baseUnits.find(
+        (u) => Number(u.id) === Number(targetRecipe.outputProductUnitId),
+      );
+
+      fullRecipe = {
+        id: recId,
+        name: targetRecipe.name,
+        outputVariantId: Number(targetRecipe.outputVariantId),
+        outputProductUnitId: Number(targetRecipe.outputProductUnitId),
+        outputProductName: product.name,
+        outputSku: outVariant?.sku ?? null,
+        outputUnitName: outUnit?.unitName ?? null,
+        laborPerOutputBase: String(targetRecipe.laborPerOutputBase ?? "0"),
+        wasteStdPct: String(targetRecipe.wasteStdPct ?? "0"),
+        notes: targetRecipe.notes ?? null,
+        isActive: Boolean(targetRecipe.isActive),
+        createdAt: targetRecipe.createdAt,
+        lines: lines.map((l) => ({
+          id: Number(l.id),
+          inputVariantId: Number(l.inputVariantId),
+          inputProductUnitId:
+            l.inputProductUnitId != null ? Number(l.inputProductUnitId) : null,
+          inputProductName: l.inputProductName ?? "",
+          inputSku: l.inputSku ?? "",
+          inputCostPrice: String(l.inputCostPrice ?? "0"),
+          qtyPerOutputBase: String(l.qtyPerOutputBase),
+          notes: l.notes ?? null,
+          units: unitsByVariant.get(Number(l.inputVariantId)) ?? [],
+        })),
+      };
+    }
+
+    return {
+      product: {
+        id: Number(product.id),
+        name: product.name,
+        isService: Boolean(product.isService),
+        isBundle: Boolean(product.isBundle),
+        isActive: Boolean(product.isActive),
+      },
+      primaryVariantId,
+      primaryProductUnitId,
+      baseUnitName,
+      recipe: fullRecipe,
+      allRecipes,
+    };
+  });
+}
+

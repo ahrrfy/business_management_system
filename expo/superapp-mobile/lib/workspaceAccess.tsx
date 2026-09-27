@@ -84,11 +84,9 @@ export function WorkspaceAccessProvider({ children }: PropsWithChildren) {
       const transport = await getSecureTransportRuntimeStatus();
       if (!isCurrent()) return snapshotRef.current;
       if (transport.kind === "unavailable" || !transport.configured) {
-        // Preview data is allowed only in the local web design surface. A
-        // native/store build fails closed instead of impersonating live data.
-        const next: WorkspaceSnapshot = Platform.OS === "web" && __DEV__
-          ? { mode: "preview", today: null }
-          : { mode: "error", today: null };
+        // Zero-Mock policy: Never impersonate live data with fake preview slop.
+        // Direct the user to the secure sign-in gate.
+        const next: WorkspaceSnapshot = { mode: "signedOut", today: null };
         publish(next);
         setUnlocked(true);
         return next;

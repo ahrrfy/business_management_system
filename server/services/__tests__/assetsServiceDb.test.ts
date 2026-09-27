@@ -1500,3 +1500,139 @@ describe("createAsset — حرّاس العهدة عند الإنشاء (تدق�
     expect(Number(custody[0].employeeId)).toBe(1);
   });
 });
+
+describe("createAsset — دعم الأراضي والمباني وسحوبات الخزينة الكبرى (IAS 16)", () => {
+  it("إضافة أصل من فئة المباني (buildings) ينجح وتُحسب أقساط إهلاكه", async () => {
+    const asset = await mkPendingAsset({
+      name: "مبنى الإدارة والمطبعة",
+      category: "buildings",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "250000000",
+      salvageValue: "0",
+      usefulLifeYears: 25,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "شركة الرافدين للمقاولات",
+      acquisitionEvidenceReference: "DEED-BUILD-2024",
+    });
+    expect(asset).toBeDefined();
+    expect(asset?.category).toBe("buildings");
+    expect(asset?.usefulLifeYears).toBe(25);
+    expect(asset?.annualDep).toBe(10000000);
+  });
+
+  it("إضافة أصل من فئة الأراضي (land) ينجح بعمر إنتاجي 0 وبلا إهلاك", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض 300 متر مربع",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "1000000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "مكتبة + هدى",
+      acquisitionEvidenceReference: "CONTRACT-1",
+    });
+    expect(asset).toBeDefined();
+    expect(asset?.category).toBe("land");
+    expect(asset?.usefulLifeYears).toBe(0);
+    expect(asset?.annualDep).toBe(0);
+    expect(asset?.bookValue).toBe(1000000000);
+  });
+
+  it("اقتناء المالك لأصل بمبلغ يفوق رصيد الخزينة المتاح يثبت الأصل والالتزام مع بقاء السند معلقاً (paymentPending: true)", async () => {
+    assetRequestSequence += 1;
+    const asset = await createAsset(
+      {
+        name: "عقار واستثمار تجاري",
+        category: "buildings",
+        purchaseDate: "2024-01-01",
+        purchaseValue: "1000000000",
+        salvageValue: "0",
+        usefulLifeYears: 50,
+        depreciationMethod: "sl",
+        branchId: 1,
+        acquisitionBeneficiaryName: "المالك البائع",
+        acquisitionEvidenceReference: "DEED-BIG-VAL",
+        clientRequestId: `asset-big-val-${assetRequestSequence}`,
+      },
+      OWNER,
+    );
+    expect(asset).toBeDefined();
+    expect(asset?.isActive).toBe(true);
+    expect(asset?.paymentPending).toBe(true);
+  });
+
+  it("تعديل بيانات أصل من فئة الأراضي (land) بعمر إنتاجي 0 ينجح دون استثناء", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض تجارية بالكرادة",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "500000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "المالك السابق",
+      acquisitionEvidenceReference: "DEED-KARRADA-2024",
+    });
+    expect(asset).toBeDefined();
+
+    const updated = await updateAsset(
+      asset!.id,
+      {
+        name: "ارض تجارية بالكرادة - معدل",
+        category: "land",
+        purchaseDate: "2024-01-01",
+        purchaseValue: "500000000",
+        salvageValue: "0",
+        usefulLifeYears: 0,
+        depreciationMethod: "sl",
+        branchId: 1,
+        location: "الكرادة داخل",
+      },
+      OWNER,
+    );
+    expect(updated).toBeDefined();
+    expect(updated?.name).toBe("ارض تجارية بالكرادة - معدل");
+    expect(updated?.category).toBe("land");
+    expect(updated?.usefulLifeYears).toBe(0);
+    expect(updated?.annualDep).toBe(0);
+  });
+
+  it("تعديل أصل أراضي بعمر إنتاجي أكبر من صفر يرمي استثناء صريحاً", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض زراعية بالدورة",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "300000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "المالك البائع",
+      acquisitionEvidenceReference: "DEED-DORA-2024",
+    });
+    expect(asset).toBeDefined();
+
+    await expect(
+      updateAsset(
+        asset!.id,
+        {
+          name: "ارض زراعية بالدورة",
+          category: "land",
+          purchaseDate: "2024-01-01",
+          purchaseValue: "300000000",
+          salvageValue: "0",
+          usefulLifeYears: 10,
+          depreciationMethod: "sl",
+          branchId: 1,
+        },
+        OWNER,
+      ),
+    ).rejects.toThrow("الأراضي لا تخضع للإهلاك ويجب أن يكون عمرها الإنتاجي 0");
+  });
+});
+
+

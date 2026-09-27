@@ -1,0 +1,91 @@
+# توثيق معمارية وحوكمة مزامنة فئات المصروفات وتصحيح توافق اتجاه الفئات المحاسبية في السندات
+
+**التاريخ:** 27 سبتمبر 2026  
+**المجال:** الفئات المحاسبية، سندات الصرف والقبض، مزامنة المصروفات، وتوافق الأدوار المحاسبية  
+**الحالة:** مُنجز ومُتحقق منه محلياً ومرجعي في `fix_voucher_accounting_categories`  
+
+---
+
+## ١. ملخص المسألة وجذورها الجنائية (Root Cause Analysis)
+
+ورد استفسار وتحقيق محاسبي وبرمجي حول:
+1. لماذا لا تظهر بعض الفئات الإيرادية في سند القبض (`vouchers/receipt/new`)؟
+2. لماذا لا تظهر فئات المصروفات المنشأة في وحدة المصروفات ضمن فئات سند الصرف (`vouchers/payment/new`)؟
+3. كيف تعمل الفئات المشتركة ثنائية الاتجاه (`BOTH`) ولماذا كانت تختفي أو تقصر في بعض السيناريوهات؟
+
+### الجذور التقنية والمحاسبية المكتشفة:
+- **انفصال الجداول والبنية التحتية:** فئات المصروفات تُخزن في جدول `expenseCategories` وتصنف بدلاء تشغيلية (`EXPENSE_BUCKETS` مثل RENT, UTILITIES, SUPPLIES, SALARY, TRANSPORT, MAINTENANCE, MARKETING, OTHER)، بينما سندات الصرف والقبض تقرأ حصرياً من جدول `voucherCategories` المرتبط بأدوار الترحيل المالي (`postingRole`). إنشاء فئة مصروفات لم يكن يُزامن تلقائياً إلى فئات السندات.
+- **عطب فحص اتجاه الفئة في نموذج السند (`VoucherFormShared.tsx`):**
+  كان الاستدعاء البرمجي:
+  ```ts
+  isVoucherCategoryRoleCompatible(c.direction, c.postingRole)
+  ```
+  بدلاً من:
+  ```ts
+  isVoucherCategoryRoleCompatible(direction, c.postingRole)
+  ```
+  مما أدى إلى فحص توافق الفئة مع اتجاهها الثابت بدلاً من اتجاه السند الجاري إنشاؤه (`IN` أو `OUT`)، فاستبعد فئات شرعية عند التعامل مع الفئات ذات الاتجاه المشترك `BOTH` أو عند اختلاف الإسناد.
+- **غياب التوجيه والإرشاد المحاسبي في شاشات الإدخال:** عند اختيار طرف من نوع `OTHER` (أطراف متفرقة أو حسابات وسيطة)، كان يغيب الإيضاح المحاسبي لكيفية ترحيل القيد في الدفتر اليومي وأهمية اختيار الفئة المتوافقة مع طبيعة العملية (إيراد vs مصروف vs قيد تسوية).
+
+---
+
+## ٢. الحلول والمعالجات المنجزة
+
+### ١. خدمة المزامنة الذرية لفئات المصروفات (`server/services/voucher/syncExpenses.ts`)
+- بناء خدمة موثوقة ومحمية بـ `withTx`:
+  - تقرأ كافة فئات المصروفات النشطة من `expenseCategories`.
+  - تطابق كل دلو مصروفات مع دوره المحاسبي النظامي المقابل:
+    - `RENT` ➔ `EXPENSE_RENT`
+    - `UTILITIES` ➔ `EXPENSE_UTILITIES`
+    - `SUPPLIES` ➔ `EXPENSE_SUPPLIES`
+    - `SALARY` ➔ `EXPENSE_SALARIES`
+    - `TRANSPORT` ➔ `EXPENSE_TRANSPORT`
+    - `MAINTENANCE` ➔ `EXPENSE_MAINTENANCE`
+    - `MARKETING` ➔ `EXPENSE_MARKETING`
+    - `OTHER` ➔ `EXPENSE_OTHER`
+  - تنفذ المزامنة بأسلوب `idempotent` لمنع التكرار؛ إذا كانت الفئة متزامنة مسبقاً بنفس الاسم أو الكود يتم تخطيها أو تحديث ربطها دون إنشاء صفوف مكررة.
+  - تسجيل العملية بالكامل في سجل التدقيق (`auditLog`).
+
+### ٢. راوتر السندات (`server/routers/voucherRouter.ts`)
+- إضافة إجراء طفرة محمي بصلاحية مالية `syncFromExpenseCategories` يتيح لمدير الحسابات والمخولين مزامنة الفئات بنقرة زر ذرية وموثقة.
+
+### ٣. واجهة إدارة الفئات المحاسبية (`client/src/pages/VoucherCategories.tsx`)
+- إضافة زر «مزامنة فئات المصروفات» في شريط أدوات الفئات مع إشعار نجاح فوري بعدد الفئات المتزامنة والجديدة.
+- توفير بطاقة إرشادية وتوضيح مرئي للفئات ثنائية الاتجاه (`BOTH`) تبين كيفية استخدامها في كلا نوعي السندات وطبيعة ترحيلها المحاسبي.
+
+### ٤. تصحيح نموذج السندات الموحد (`client/src/components/vouchers/VoucherFormShared.tsx`)
+- إصلاح فحص التوافق المحاسبي ليعتمد الاتجاه الفعلي للسند:
+  ```ts
+  isVoucherCategoryRoleCompatible(direction, c.postingRole)
+  ```
+- إضافة شريط إرشادي تنبيهي عند اختيار طرف من نوع `OTHER` يوضح أثر الفئة المختارة على القيود اليومية (مدين/دائن) وحساب الأستاذ العام المعني.
+
+---
+
+## ٣. التحقق والاختبارات الآلية
+
+- **اختبارات الخدمات الخلفية والواجهة:**
+  - `server/services/__tests__/voucherCategoryAccounting.test.ts` (6 اختبارات).
+  - `client/src/lib/voucherCategoryAccounting.test.ts` (3 اختبارات).
+  - `server/services/__tests__/voucherCategorySyncExpenses.test.ts` (اختبار تكاملي شامل لدورة المزامنة والـ idempotency).
+- **الفحوصات الهندسية الشاملة:**
+  - `pnpm check`: اجتياز بنسبة 100% وبلا أي خطأ برمجي أو خطأ أنواع (TypeScript).
+  - `pnpm check:guards`: اجتياز كامل لجميع الحرّاس الأحد عشر والحراس المعماريين.
+
+---
+
+## ٤. الدمج والنشر الإنتاجي المدار والتحقق الحي
+
+- **طلب الدمج والـ CI:**
+  - فتح طلب الدمج [PR #1285](https://github.com/ahrrfy/business_management_system/pull/1285).
+  - اجتياز كافة وظائف GitHub Actions الـ 14 بنسبة 100% Green (الأمان، التدقيق، حارس الصلاحيات، جودة البناء، وشاردات الاختبار الـ 8).
+  - دمج PR #1285 في `main` بالالتزام المدموج [`9e33d7c3`](https://github.com/ahrrfy/business_management_system/commit/9e33d7c3).
+- **النشر الإنتاجي الذري (`pnpm prod:deploy`):**
+  - تم تنفيذ النشر الذري المدار على خادم Hostinger VPS (`srv1548487.hstgr.cloud` / `alroya-prod`) في **295.0 ثانية**.
+  - شمل: `git pull --ff-only` للالتزام `9e33d7c3`، `pnpm install --frozen-lockfile`، النسخ الاحتياطي الذري `db:backup`، الفحص الآمن للهجرات `db:migrate:safe`، مطابقة المخطط `db:verify`، البناء الشامل `pnpm build`، وإعادة التحميل المتزامن لعناقيد PM2 (3 عمال ويب + جسر الحضور `erp-hr-bridge`).
+- **التحقق الحي (Live Health Check):**
+  - تأكيد صحة الخدمة 200 OK على:
+    - `https://srv1548487.hstgr.cloud/healthz`: `{"ok":true,"time":"2026-09-27T12:33:38.277Z"}`
+    - `https://alarabiya.online/healthz`: `{"ok":true,"time":"2026-09-27T12:33:47.047Z"}`
+  - ثبات عمال PM2 الـ 3 وجسر الحضور في حالة `online`.
+

@@ -162,8 +162,8 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       supplierId: input.supplierId ?? null,
       purchaseDate: input.purchaseDate,
       purchaseValue: toDbMoney(input.purchaseValue),
-      salvageValue: toDbMoney(input.salvageValue ?? "0"),
-      usefulLifeYears: input.usefulLifeYears,
+      salvageValue: toDbMoney(input.category === "land" ? "0" : (input.salvageValue ?? "0")),
+      usefulLifeYears: input.category === "land" ? 0 : input.usefulLifeYears,
       depreciationMethod: input.depreciationMethod ?? "sl",
       accumulatedDepreciation: toDbMoney(initialDepreciation),
       condition: input.condition ?? null,
@@ -341,7 +341,21 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
           evidenceReference,
           dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
         });
-        await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor);
+        try {
+          await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor);
+        } catch (e: any) {
+          // إذا كان رصيد الخزينة غير كافٍ للصرف الفوري، يظل السند بانتظار الاعتماد (PENDING_APPROVAL)
+          // وتظل ذمة الاستحقاق قائمة (PAYMENT_PENDING) والأصل نشطاً وفق العقد المحاسبي (paymentPending: true).
+          if (
+            e instanceof TRPCError &&
+            e.code === "PRECONDITION_FAILED" &&
+            (e.message.includes("الخزينة") || e.message.includes("المتاح") || e.message.includes("غير ممول"))
+          ) {
+            // رصيد الخزينة غير كافٍ للصرف الفوري — السند يبقى معلقاً ليُصرف لاحقاً عند تغذية الخزينة
+          } else {
+            throw e;
+          }
+        }
       }
     }
 

@@ -36,3 +36,18 @@ export function formatBaghdadTime(value: string): string | null {
     minute: "2-digit",
   }).format(date);
 }
+
+/**
+ * تنسيق كميات المخزون والمبيعات لتجنب الأصفار الزائدة بعد الفاصلة
+ * (e.g. 1000.000 -> 1,000, 1.500 -> 1.5, 0.250 -> 0.25)
+ */
+export function formatQuantity(value: number | string | null | undefined): string {
+  if (value == null) return "0";
+  const num = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(num)) return "0";
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  }).format(num);
+}
+

@@ -115,7 +115,10 @@ export function CompanyStatementScanQueue({
                     <span className="font-mono text-primary" dir="ltr">{candidate.externalTrackingRef}</span>
                   </div>
                   <p className="truncate text-[11px] text-muted-foreground">
-                    {candidate.customerName ?? candidate.recipientName ?? "عميل نقدي"} · {candidate.consignmentNumber}
+                    {candidate.customerName ?? candidate.recipientName ?? "عميل نقدي"}
+                    {(candidate.customerPhone ?? candidate.recipientPhone) && ` · ${candidate.customerPhone ?? candidate.recipientPhone}`}
+                    {(candidate.address ?? candidate.deliveryAddress) && ` · ${candidate.address ?? candidate.deliveryAddress}`}
+                    {` · ${candidate.consignmentNumber}`}
                   </p>
                 </div>
                 <div className="text-end text-xs">

@@ -105,3 +105,36 @@ export function normalizeKnownSystemBarcode(raw: string): string {
   }
   return normalized;
 }
+
+/**
+ * يُزيل الأصفار البادئة (0, 00, 000) من رقم التتبع أو بوليصة شركة التوصيل للحصول على النواة الرقمية:
+ * - "0404221" => "404221"
+ * - "00404221" => "404221"
+ * - "000404221" => "404221"
+ * - "404221" => "404221"
+ * - "000" => "0"
+ * - "0" => "0"
+ * - "00AB123" => "AB123"
+ * - "CN-0123" => "CN-0123"
+ */
+export function stripTrackingLeadingZeros(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const stripped = trimmed.replace(/^0+/, "");
+  return stripped.length > 0 ? stripped : "0";
+}
+
+/**
+ * يفحص التكافؤ القانوني بين رقمي تتبع مع التسامح التام مع الأصفار البادئة (0, 00, 000):
+ * - يطابق أولاً بعد التطبيع القياسي للماسح (مع تصحيح لوحة المفاتيح العربية وتجريد AIM)
+ * - يتسامح مع اختلاف الأصفار البادئة إن تطابقت نواة الرمز بعد تجريد الأصفار البادئة
+ */
+export function trackingRefsEquivalent(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const normA = normalizeBarcodeScannerInput(a);
+  const normB = normalizeBarcodeScannerInput(b);
+  if (!normA || !normB) return false;
+  if (normA.toLowerCase() === normB.toLowerCase()) return true;
+  return stripTrackingLeadingZeros(normA).toLowerCase() === stripTrackingLeadingZeros(normB).toLowerCase();
+}
+

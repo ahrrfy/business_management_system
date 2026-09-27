@@ -58,6 +58,7 @@ import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternal
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
 import { lookupInvoiceForCorrection } from "../services/sale/correctionLookup";
+import { phoneSuffix10 } from "../lib/phone";
 
 // فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
 // الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
@@ -448,6 +449,25 @@ export function buildSalesListConds(
     const term = stripDocPrefix(input.q);
     const raw = `%${escLike(term)}%`;
     const folded = `%${escLike(normalizeSearchText(term))}%`;
+    const phoneSuffix = phoneSuffix10(term);
+    const phoneConds = [
+      sql`coalesce(${customers.phone}, '') LIKE ${raw} ESCAPE '!'`,
+      sql`coalesce(${customers.phone2}, '') LIKE ${raw} ESCAPE '!'`,
+      sql`coalesce(${customers.phone3}, '') LIKE ${raw} ESCAPE '!'`,
+      sql`coalesce(${customers.whatsapp}, '') LIKE ${raw} ESCAPE '!'`,
+      sql`coalesce(${invoices.contactPhone}, '') LIKE ${raw} ESCAPE '!'`,
+      sql`coalesce(${deliveryConsignments.recipientPhone}, '') LIKE ${raw} ESCAPE '!'`,
+    ];
+    if (phoneSuffix) {
+      const suffixRaw = `%${escLike(phoneSuffix)}%`;
+      phoneConds.push(
+        sql`coalesce(${customers.phone}, '') LIKE ${suffixRaw} ESCAPE '!'`,
+        sql`coalesce(${customers.phone2}, '') LIKE ${suffixRaw} ESCAPE '!'`,
+        sql`coalesce(${customers.whatsapp}, '') LIKE ${suffixRaw} ESCAPE '!'`,
+        sql`coalesce(${invoices.contactPhone}, '') LIKE ${suffixRaw} ESCAPE '!'`,
+        sql`coalesce(${deliveryConsignments.recipientPhone}, '') LIKE ${suffixRaw} ESCAPE '!'`,
+      );
+    }
     conds.push(
       or(
         sql`${invoices.invoiceNumber} LIKE ${raw} ESCAPE '!'`,
@@ -461,6 +481,7 @@ export function buildSalesListConds(
         // مطابقةٌ تامّة لا LIKE: `sourceId` يحمل أيضاً clientRequestId (uuid) لفواتير POS،
         // فـLIKE على جزءٍ قصير يلوّث النتائج.
         eq(invoices.sourceId, term),
+        ...phoneConds,
       )!,
     );
   }
@@ -1056,6 +1077,7 @@ export const saleRouter = router({
             customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
             customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
             customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
+            customerAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''), NULLIF(${workOrderInvoiceCustomer.address}, ''))`,
             createdBy: invoices.createdBy,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
@@ -1140,7 +1162,8 @@ export const saleRouter = router({
             paymentMethod: invoices.paymentMethod,
             customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
             customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
-            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
+            customerAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${workOrders.deliveryAddress}, ''), NULLIF(${customers.address}, ''), NULLIF(${workOrderInvoiceCustomer.address}, ''))`,
             createdBy: invoices.createdBy,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,

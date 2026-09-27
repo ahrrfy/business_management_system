@@ -11,6 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 import { colors, radius, space } from "@/constants/theme";
+import { formatQuantity } from "@/lib/format";
 
 type AuditItem = {
   barcode: string;
@@ -127,6 +128,7 @@ export function MobileStockAuditCard() {
             وفق قواعد الفصل الرقابي (SOD-04)، تم تسجيل الفروقات كطلب تسوية معلق لاعتماده من الإدارة دون تعديل الرصيد منفرداً.
           </Text>
           <Pressable
+            accessibilityLabel="بدء جلسة جرد رف جديد"
             accessibilityRole="button"
             onPress={() => setAdjustmentSubmitted(null)}
             style={styles.newAuditButton}
@@ -180,6 +182,7 @@ export function MobileStockAuditCard() {
 
           {/* زر فتح قائمة مراجعة الجرد */}
           <Pressable
+            accessibilityLabel="مراجعة الأصناف وتأكيد الجرد"
             accessibilityRole="button"
             onPress={() => setModalVisible(true)}
             style={({ pressed }) => [styles.reviewButton, pressed && styles.pressed]}
@@ -213,7 +216,7 @@ export function MobileStockAuditCard() {
                     <View style={styles.itemInfo}>
                       <Text style={styles.itemName}>{item.name}</Text>
                       <Text style={styles.itemBarcode}>
-                        باركود: {item.barcode} · المسجل: {item.expectedQty} {item.unit}
+                        باركود: {item.barcode} · المسجل: {formatQuantity(item.expectedQty)} {item.unit}
                       </Text>
                       <Text
                         style={[
@@ -224,8 +227,8 @@ export function MobileStockAuditCard() {
                         {diff === 0
                           ? "مطابق تماماً"
                           : diff > 0
-                          ? `زيادة (+${diff} ${item.unit})`
-                          : `عجز (${diff} ${item.unit})`}
+                          ? `زيادة (+${formatQuantity(diff)} ${item.unit})`
+                          : `عجز (${formatQuantity(diff)} ${item.unit})`}
                       </Text>
                     </View>
 
@@ -238,7 +241,7 @@ export function MobileStockAuditCard() {
                       >
                         <Ionicons color={colors.ink} name="remove" size={16} />
                       </Pressable>
-                      <Text style={styles.itemCountText}>{item.countedQty}</Text>
+                      <Text style={styles.itemCountText}>{formatQuantity(item.countedQty)}</Text>
                       <Pressable
                         accessibilityLabel="زيادة"
                         accessibilityRole="button"
@@ -255,6 +258,7 @@ export function MobileStockAuditCard() {
 
             <View style={styles.modalButtonsRow}>
               <Pressable
+                accessibilityLabel="إلغاء وإغلاق جدول المطابقة"
                 accessibilityRole="button"
                 onPress={() => setModalVisible(false)}
                 style={styles.cancelButton}
@@ -263,6 +267,7 @@ export function MobileStockAuditCard() {
               </Pressable>
 
               <Pressable
+                accessibilityLabel="رفع طلب تسوية الجرد للإدارة"
                 accessibilityRole="button"
                 onPress={handleSubmitAudit}
                 style={({ pressed }) => [styles.confirmButton, pressed && styles.pressed]}

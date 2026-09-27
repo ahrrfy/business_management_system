@@ -12,7 +12,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { exportRows } from "@/lib/export";
 import { fmtDate, fmtDateTime } from "@/lib/date";
-import { D, round2, fmt, fmtInt } from "@/lib/money";
+import { D, round2, fmt, fmtInt, formatQuantity } from "@/lib/money";
 import {
   printStocktakeReport,
   STOCKTAKE_REASON_LABEL,
@@ -83,8 +83,10 @@ type ReportData = {
 const dOnly = (v?: string | Date | null): string => fmtDate(v);
 const dts = (v?: string | Date | null): string => fmtDateTime(v);
 
-const signedInt = (n: number): string =>
-  n > 0 ? `+${fmtInt(n)}` : n < 0 ? `−${fmtInt(Math.abs(n))}` : "0";
+const signedInt = (n: number | string | null | undefined): string => {
+  const num = Number(n ?? 0);
+  return num > 0 ? `+${formatQuantity(num)}` : num < 0 ? `−${formatQuantity(Math.abs(num))}` : "0";
+};
 
 /** مبلغ مُشار بدقّة decimal (عرض فقط). */
 const signedMoney = (v: string | number | null | undefined): string => {
@@ -281,18 +283,18 @@ export default function StocktakeReport() {
       {
         id: "book",
         header: isOpening ? "الرصيد السابق" : "الدفتري",
-        accessorFn: (r) => fmtInt(bookOf(r)),
+        accessorFn: (r) => formatQuantity(bookOf(r)),
         meta: { kind: "number" },
         sortingFn: (a, b) => bookOf(a.original) - bookOf(b.original),
-        cell: ({ row }) => fmtInt(bookOf(row.original)),
+        cell: ({ row }) => formatQuantity(bookOf(row.original)),
       },
       {
         id: "final",
         header: isOpening ? "الرصيد المعتمد" : "المعدود المصحَّح",
-        accessorFn: (r) => fmtInt(finalOf(r)),
+        accessorFn: (r) => formatQuantity(finalOf(r)),
         meta: { kind: "number" },
         sortingFn: (a, b) => finalOf(a.original) - finalOf(b.original),
-        cell: ({ row }) => fmtInt(finalOf(row.original)),
+        cell: ({ row }) => formatQuantity(finalOf(row.original)),
       },
       {
         id: "diff",

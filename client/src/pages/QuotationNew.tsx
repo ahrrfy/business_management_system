@@ -15,7 +15,7 @@ import { AlertTriangle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { D } from "@/lib/money";
+import { D, formatQuantity } from "@/lib/money";
 import { PageHeader } from "@/components/PageHeader";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
@@ -139,7 +139,7 @@ export default function QuotationNew() {
       request.governorate ? `المحافظة: ${request.governorate}` : null,
       `وصف العميل: ${request.customerNote}`,
       staleLines.length
-        ? `بنود تحتاج مراجعة يدوية لأنها لم تعد متاحة بالكتالوج: ${staleLines.map((item) => `${item.productName} × ${item.quantity} ${item.unitName}`).join("، ")}`
+        ? `بنود تحتاج مراجعة يدوية لأنها لم تعد متاحة بالكتالوج: ${staleLines.map((item) => `${item.productName} × ${formatQuantity(item.quantity)} ${item.unitName}`).join("، ")}`
         : null,
     ].filter(Boolean).join("\n");
     dispatch({

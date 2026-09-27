@@ -16,6 +16,7 @@ import {
 import { fmtDate, fmtDateTime } from "../date";
 import { wrapA4Doc, docHeader, docMeta, docTable, docFooter } from "./docHtml";
 import { code128Svg } from "./barcode";
+import { fmtQty } from "@shared/quantityFormat";
 
 // ─── تسميات مشتركة (تُستورد أيضاً في شاشات الجرد) ────────────────────────────
 
@@ -47,9 +48,11 @@ const dOnly = (v?: string | Date | null): string => fmtDate(v);
 
 const dts = (v?: string | Date | null): string => fmtDateTime(v);
 
-/** كمية صحيحة مُشارة (+/−) — للعرض فقط. */
-const signedInt = (n: number): string =>
-  n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(Math.abs(n))}` : "0";
+/** كمية مُشارة (+/−) — للعرض فقط. */
+const signedInt = (n: number | string | null | undefined): string => {
+  const num = Number(n ?? 0);
+  return num > 0 ? `+${fmtQty(num)}` : num < 0 ? `−${fmtQty(Math.abs(num))}` : "0";
+};
 
 /** مبلغ مُشار (+/−) — قيمة decimal نصية محسوبة سلفاً؛ التحويل هنا للعرض فقط. */
 const signedMoney = (v: string | number | null | undefined): string => {
@@ -243,8 +246,8 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
   ];
   const adjRows = d.adjusted.map((r) => ({
     name: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}${r.baseUnit ? ` (${r.baseUnit})` : ""}${r.sku ? ` · ${r.sku}` : ""}`,
-    book: fmt(r.bookQty),
-    counted: fmt(r.adjustedQty),
+    book: fmtQty(r.bookQty),
+    counted: fmtQty(r.adjustedQty),
     diff: signedInt(r.diff),
     value: signedMoney(r.value),
     reason: r.reasonLabel,

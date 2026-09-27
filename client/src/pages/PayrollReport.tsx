@@ -6,6 +6,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { D, fmtAr, fmtInt, round2 } from "@/lib/money";
 import { exportSheets } from "@/lib/export";
@@ -299,7 +300,7 @@ export default function PayrollReport() {
     backHref="/reports" kpis={kpis} onExport={onExport} onPrint={onPrint}
     actions={<Button variant="outline" size="sm" onClick={printFinancialLedger} disabled={!ledger.length}><Printer className="size-4" aria-hidden /> طباعة سجل الأموال</Button>}
     exportDisabled={!rows.length && !ledger.length} printDisabled={!rows.length}
-    filters={<div className="flex flex-wrap items-end gap-3"><div className="flex flex-col gap-1"><label className="text-[11px] text-muted-foreground">الشهر</label><input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} className={inputCls} /></div>{period && <button type="button" onClick={() => setPeriod("")} className="h-9 rounded-md px-3 text-xs text-muted-foreground hover:bg-accent">عرض الكل</button>}</div>}
+    filters={<div className="flex flex-wrap items-end gap-3"><div className="flex flex-col gap-1"><label className="text-[11px] text-muted-foreground">الشهر</label><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} className={inputCls} /></div>{period && <button type="button" onClick={() => setPeriod("")} className="h-9 rounded-md px-3 text-xs text-muted-foreground hover:bg-accent">عرض الكل</button>}</div>}
   >
     {(runsQ.isError || obligationsQ.isError || ledgerQ.isError) ? <ErrorState message="تعذّر تحميل تقرير الرواتب." onRetry={() => { void runsQ.refetch(); void obligationsQ.refetch(); void ledgerQ.refetch(); }} /> : <div className="space-y-4">
       <DataTable columns={cols} data={rows} loading={runsQ.isLoading} emptyText="لا مسيّرات رواتب في هذا النطاق." pageSize={Infinity} />

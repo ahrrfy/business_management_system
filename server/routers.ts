@@ -68,6 +68,7 @@ import { promotionsV2Router } from "./routers/promotionsV2Router";
 import { platformAdminRouter } from "./routers/platformAdminRouter";
 import { storefrontRouter } from "./routers/storefrontRouter";
 import { storeAdminRouter } from "./routers/storeAdminRouter";
+import { shelfAnalyticsRouter } from "./routers/shelfAnalyticsRouter";
 import { courierRouter } from "./routers/courierRouter";
 import { crmRouter } from "./routers/crmRouter";
 import { offlineRouter } from "./routers/offlineRouter";
@@ -159,6 +160,7 @@ export const appRouter = router({
   kiosk: kioskRouter,
   storefront: storefrontRouter,
   storeAdmin: storeAdminRouter,
+  shelfAnalytics: shelfAnalyticsRouter,
   production: productionRouter,
   assets: assetsRouter,
   employees: employeeRouter,

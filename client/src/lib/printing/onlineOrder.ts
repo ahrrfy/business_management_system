@@ -1,4 +1,5 @@
 import { printDoc } from "./print";
+import { fmtQty } from "@shared/quantityFormat";
 import { CAIRO_FONT, CO, esc, fmt, openPrintWindow, logoUrl } from "./brand";
 import { fmtDateTime } from "../date";
 import { formatArabicMoneyWords } from "./tafqit";
@@ -54,7 +55,7 @@ export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
     columns: ["المنتج والمواصفات", "الكمية", "المبلغ"],
     rows: d.items.map((item) => [
       `${item.productName}${item.variantLabel ? ` — ${item.variantLabel}` : ""}${item.unitName ? ` (${item.unitName})` : ""}`,
-      `×${fmt(item.quantity)}`,
+      `×${fmtQty(item.quantity)}`,
       `${fmt(item.total)} د.ع`,
     ]),
     totals: [
@@ -94,7 +95,7 @@ export function printOnlineOrderPreparationA4(d: OnlineOrderPrintData): void {
       <div class="num">${index + 1}</div>
       ${image ? `<img src="${esc(image)}" alt="${esc(item.productName)}" />` : `<div class="no-image">لا توجد صورة</div>`}
       <div class="info"><h3>${esc(item.productName)}</h3>${item.variantLabel ? `<p class="variant">${esc(item.variantLabel)}</p>` : ""}<p>الوحدة: ${esc(item.unitName || "قطعة")}</p></div>
-      <div class="qty">×${esc(fmt(item.quantity))}</div>
+      <div class="qty">×${esc(fmtQty(item.quantity))}</div>
     </article>`;
   }).join("");
   const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ورقة تجهيز ${esc(d.orderNumber)}</title>${CAIRO_FONT}
