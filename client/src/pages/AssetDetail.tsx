@@ -175,6 +175,13 @@ export default function AssetDetail() {
     },
     onError: (e) => notify.err(e),
   });
+  const reclassifyToOpening = trpc.assets.reclassifyToOpening.useMutation({
+    onSuccess: async () => {
+      notify.ok("تم تحويل الأصل إلى رصيد افتتاحي وإلغاء طلب الصرف وعكس قيد الاستحقاق بنجاح");
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const a = q.data;
   const Icon = useMemo(() => (a ? categoryIcon(a.category) : null), [a]);
@@ -193,6 +200,11 @@ export default function AssetDetail() {
     a.accrualObligationKind === "ASSET_ACQUISITION_CASH" &&
     ["ACCRUED_UNPAID", "PAYMENT_PENDING", "PAID"].includes(a.settlementStatus ?? "") &&
     pendingCorrection == null;
+  const canReclassifyToOpening =
+    me.data?.isOwner === true &&
+    a.status !== "disposed" &&
+    (a.paymentPending === true || a.settlementStatus === "PAYMENT_PENDING" || a.settlementStatus === "ACCRUED_UNPAID") &&
+    a.accrualObligationKind === "ASSET_ACQUISITION_CASH";
 
   return (
     <div className="space-y-4 max-w-5xl">
@@ -230,6 +242,26 @@ export default function AssetDetail() {
             {a.status !== "disposed" && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
             {a.settlementStatus === "PAYABLE_UNSETTLED" && <Button variant="outline" size="sm" disabled={requestSupplierSettlement.isPending} onClick={() => requestSupplierSettlement.mutate({ assetId: id, clientRequestId: supplierSettlementRequestId })}>طلب سداد ذمة المورد</Button>}
             {canRequestCorrection && <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenCorrection(true)}>طلب تصحيح الاقتناء</Button>}
+            {canReclassifyToOpening && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-primary/40 text-primary hover:bg-primary/5"
+                disabled={reclassifyToOpening.isPending}
+                onClick={async () => {
+                  const ok = await confirm({
+                    variant: "warning",
+                    title: "تحويل الأصل إلى رصيد افتتاحي سابق للنظام",
+                    description: `هل هذا الأصل «${a.name}» (${a.code}) تم شراؤه وسداده قبل بدء العمل بالنظام؟ تحويله سيلغي سند الصرف المعلق فوراً ويعكس قيد الاستحقاق ويثبت الأصل مقابل حقوق الملكية الافتتاحية دون سحب أي نقد من الخزينة.`,
+                    confirmText: "تحويل وإلغاء طلب الصرف",
+                  });
+                  if (!ok) return;
+                  reclassifyToOpening.mutate({ assetId: id });
+                }}
+              >
+                تحويل لرصيد افتتاحي (إلغاء الصرف)
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={() => setOpenLabel(true)}>بطاقة الأصل</Button>
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
             {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: "إعادة الأصل للخدمة", description: `إعادة الأصل «${a.name}» (${a.code}) من الصيانة إلى الخدمة؟`, confirmText: "إعادة للخدمة" }))) return; returnMaint.mutate({ assetId: id }); }} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}
@@ -240,12 +272,37 @@ export default function AssetDetail() {
       </Card>
 
       {settlement.liabilityOutstanding && (
-        <div role="status" className="rounded-md border badge-status-pending p-3 text-sm">
+        <div role="status" className="rounded-md border badge-status-pending p-3 text-sm space-y-2">
           <div className="font-bold">{settlement.detail}</div>
-          <p className="mt-1">
+          <p>
             الأصل مُثبت تشغيلياً، وتسوية الالتزام معلّقة. الحيازة وقيمة الأصل مثبتتان ويستمر التشغيل والإهلاك وفق حالته.
             {isPaymentPending ? " لم يخرج نقد بعد." : ""}
           </p>
+          {canReclassifyToOpening && (
+            <div className="pt-2 border-t border-border flex items-center justify-between flex-wrap gap-2 text-xs">
+              <span className="text-muted-foreground">
+                إذا كان هذا الأصل مُقتنى ومُسدداً بالكامل في وقت سابق قبل بناء النظام:
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs border-primary/40 text-primary hover:bg-primary/5"
+                disabled={reclassifyToOpening.isPending}
+                onClick={async () => {
+                  const ok = await confirm({
+                    variant: "warning",
+                    title: "تحويل الأصل إلى رصيد افتتاحي سابق للنظام",
+                    description: `هل هذا الأصل «${a.name}» (${a.code}) تم شراؤه وسداده قبل بدء العمل بالنظام؟ تحويله سيلغي سند الصرف المعلق فوراً ويعكس قيد الاستحقاق ويثبت الأصل مقابل حقوق الملكية الافتتاحية دون سحب أي نقد من الخزينة.`,
+                    confirmText: "تحويل وإلغاء طلب الصرف",
+                  });
+                  if (!ok) return;
+                  reclassifyToOpening.mutate({ assetId: id });
+                }}
+              >
+                تحويل لرصيد افتتاحي وإلغاء طلب الصرف
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
