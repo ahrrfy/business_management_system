@@ -36,6 +36,7 @@ import {
 import { assertVoucherCategoryDefinition } from "../services/voucher/categoryAccounting";
 import { ensureDefaultVoucherCategories } from "../services/voucher/defaults";
 import { syncExpenseCategoriesToVouchersInTx } from "../services/voucher/syncExpenses";
+import { syncRevenueCategoriesToVouchersInTx } from "../services/voucher/syncRevenue";
 import { extractInsertId } from "../lib/insertId";
 import { assertBranchOwnership } from "../services/voucher/helpers";
 import {
@@ -575,6 +576,28 @@ export const voucherCategoryRouter = router({
     if (result.inserted.length || result.mapped.length) {
       await logAudit(ctx, {
         action: "voucherCategory.syncFromExpenseCategories",
+        entityType: "voucherCategory",
+        newValue: {
+          inserted: result.inserted,
+          mapped: result.mapped,
+          skipped: result.skipped,
+          total: result.total,
+        },
+      });
+    }
+    invalidateVoucherCategoriesCache();
+    return result;
+  }),
+
+  /**
+   * مزامنة وتوفير فئات الإيرادات وأقسام الكتالوج إلى فئات السندات — لظهور كافة فئات الإيرادات في سندات القبض.
+   * idempotent: الفئات الموجودة مسبقاً تُترك كما هي، وتُضاف الفئات الناقصة مع تعيين حسابها المقابل الصحيح.
+   */
+  syncFromRevenueCategories: treasuryGlobalProcedure.mutation(async ({ ctx }) => {
+    const result = await withTx((tx) => syncRevenueCategoriesToVouchersInTx(tx));
+    if (result.inserted.length || result.mapped.length) {
+      await logAudit(ctx, {
+        action: "voucherCategory.syncFromRevenueCategories",
         entityType: "voucherCategory",
         newValue: {
           inserted: result.inserted,
