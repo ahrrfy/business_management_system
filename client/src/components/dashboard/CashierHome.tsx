@@ -1,6 +1,7 @@
 import type React from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { FinancialCellProvenanceHover } from "@/components/financial";
 import type { WorkspaceNavItem } from "@/lib/workspaceProfiles";
 import {
   cashierProfileActions,
@@ -415,23 +416,26 @@ export function CashierHome({
           {/* مؤشر الوردية المباشر في الرأس */}
           {canViewShift && <div>
             {shift ? (
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 14px",
-                  borderRadius: 999,
-                  background: "var(--sem-pos-bg)",
-                  border: "1px solid var(--sem-pos)",
-                  color: "var(--sem-pos)",
-                  fontSize: "0.8125rem",
-                  fontWeight: 800,
-                }}
-              >
-                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--sem-pos)", display: "inline-block" }} />
-                <span>الوردية مفتوحة #{shift.id}</span>
-              </div>
+              <FinancialCellProvenanceHover data={(shift as any).provenance}>
+                <div
+                  className="cursor-pointer hover:opacity-90 transition-opacity"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "7px 14px",
+                    borderRadius: 999,
+                    background: "var(--sem-pos-bg)",
+                    border: "1px solid var(--sem-pos)",
+                    color: "var(--sem-pos)",
+                    fontSize: "0.8125rem",
+                    fontWeight: 800,
+                  }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--sem-pos)", display: "inline-block" }} />
+                  <span>الوردية مفتوحة #{shift.id}</span>
+                </div>
+              </FinancialCellProvenanceHover>
             ) : (
               <div
                 style={{

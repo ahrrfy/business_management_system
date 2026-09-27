@@ -23,7 +23,13 @@ import {
   assertTreasuryOutException,
   computeDrawerCashBalance,
   lockCashSourceForUpdate,
+  materializedDrawerCashConditions,
 } from "./cash/cashAvailability";
+import {
+  type FinancialCellProvenancePayload,
+  type ProvenanceSubItem,
+  computeProvenanceReconciliation,
+} from "@shared/financialProvenance";
 import { utcTodayStart } from "./businessDay";
 import { assertPeriodOpen } from "./periodLockService";
 import { lockBranchMonthCloseGate } from "./reports/monthCloseGate";
@@ -1313,3 +1319,295 @@ export async function shiftIdForCashTx(
   );
   return { shiftId: sid, cashBucket: "DRAWER" };
 }
+
+/**
+ * إثراء قائمة الورديات ببطاقة الهوية المالية ومطابقة النقد (FinancialCellProvenance)
+ * ينفّذ استعلاماً تجميعياً واحداً (Batched Query) على إيصالات الدرج المادية لمنع N+1 نهائياً.
+ */
+export async function enrichShiftListProvenance<
+  T extends {
+    id: number;
+    branchId: number;
+    branchName?: string | null;
+    userId: number;
+    userName?: string | null;
+    openingBalance: string;
+    expectedCash?: string | null;
+    countedCash?: string | null;
+    variance?: string | null;
+    status: string;
+    shiftType: string;
+    countedBreakdown?: unknown;
+  },
+>(
+  rows: T[],
+): Promise<
+  (T & {
+    provenance?: FinancialCellProvenancePayload;
+    countedProvenance?: FinancialCellProvenancePayload;
+  })[]
+> {
+  const db = getDb();
+  if (!db || rows.length === 0) return rows;
+
+  const shiftIds = rows
+    .map((r) => Number(r.id))
+    .filter((id) => !isNaN(id) && id > 0);
+  if (shiftIds.length === 0) return rows;
+
+  const receiptRows = await db
+    .select({
+      id: receipts.id,
+      shiftId: receipts.shiftId,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      referenceNumber: receipts.referenceNumber,
+      invoiceId: receipts.invoiceId,
+      invoiceShiftId: invoices.shiftId,
+      expenseId: expenses.id,
+    })
+    .from(receipts)
+    .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+    .where(
+      and(
+        inArray(receipts.shiftId, shiftIds),
+        ...materializedDrawerCashConditions(),
+      ),
+    );
+
+  const receiptsByShift = new Map<number, typeof receiptRows>();
+  for (const r of receiptRows) {
+    if (r.shiftId == null) continue;
+    const sid = Number(r.shiftId);
+    let list = receiptsByShift.get(sid);
+    if (!list) {
+      list = [];
+      receiptsByShift.set(sid, list);
+    }
+    list.push(r);
+  }
+
+  return rows.map((sh) => {
+    const sid = Number(sh.id);
+    const shReceipts = receiptsByShift.get(sid) ?? [];
+
+    let cashSales = money(0);
+    let collections = money(0);
+    let otherIn = money(0);
+    let refunds = money(0);
+    let expensesSum = money(0);
+    let drops = money(0);
+    let otherOut = money(0);
+
+    for (const r of shReceipts) {
+      const amt = money(r.amount);
+      if (r.direction === "IN") {
+        if (r.invoiceId != null && r.invoiceShiftId === sid) {
+          cashSales = cashSales.plus(amt);
+        } else if (r.invoiceId != null) {
+          collections = collections.plus(amt);
+        } else {
+          otherIn = otherIn.plus(amt);
+        }
+      } else {
+        const ref = r.referenceNumber ?? "";
+        if (ref.startsWith("CD-") || ref.startsWith("CH-")) {
+          drops = drops.plus(amt);
+        } else if (r.expenseId != null) {
+          expensesSum = expensesSum.plus(amt);
+        } else {
+          refunds = refunds.plus(amt);
+        }
+      }
+    }
+
+    const opening = money(sh.openingBalance ?? "0");
+    const subItems: ProvenanceSubItem[] = [];
+
+    subItems.push({
+      label: "الرصيد الافتتاحي للدرج",
+      amount: toDbMoney(opening),
+      category: "افتتاحي",
+    });
+
+    if (cashSales.gt(0)) {
+      subItems.push({
+        label: "مبيعات نقدية للوردية",
+        amount: toDbMoney(cashSales),
+        category: "مبيعات",
+      });
+    }
+
+    if (collections.gt(0)) {
+      subItems.push({
+        label: "تحصيلات فواتير سابقة وذمم",
+        amount: toDbMoney(collections),
+        category: "تحصيل",
+      });
+    }
+
+    if (otherIn.gt(0)) {
+      subItems.push({
+        label: "إيداعات ومقبوضات نقدية أخرى",
+        amount: toDbMoney(otherIn),
+        category: "إيداع",
+      });
+    }
+
+    if (refunds.gt(0)) {
+      subItems.push({
+        label: "مردودات نقدية للزبائن",
+        amount: toDbMoney(refunds.neg()),
+        category: "مردود",
+      });
+    }
+
+    if (expensesSum.gt(0)) {
+      subItems.push({
+        label: "مصروفات نقدية من الدرج",
+        amount: toDbMoney(expensesSum.neg()),
+        category: "مصروف",
+      });
+    }
+
+    if (drops.gt(0)) {
+      subItems.push({
+        label: "سحوبات تسليم للخزينة (Cash Drop / تحويل)",
+        amount: toDbMoney(drops.neg()),
+        category: "توريد خزينة",
+      });
+    }
+
+    if (otherOut.gt(0)) {
+      subItems.push({
+        label: "مسحوبات نقدية أخرى من الدرج",
+        amount: toDbMoney(otherOut.neg()),
+        category: "سحب",
+      });
+    }
+
+    const calculatedExpected = opening
+      .plus(cashSales)
+      .plus(collections)
+      .plus(otherIn)
+      .minus(refunds)
+      .minus(expensesSum)
+      .minus(drops)
+      .minus(otherOut);
+
+    const totalAmount =
+      sh.expectedCash != null
+        ? sh.expectedCash
+        : toDbMoney(calculatedExpected);
+
+    const warnings: string[] = [];
+    if (sh.variance != null && !money(sh.variance).isZero()) {
+      warnings.push(`فرق النقد عند الإغلاق: ${sh.variance} د.ع`);
+    }
+
+    const provenance: FinancialCellProvenancePayload = {
+      movementType: "balance",
+      title: `مطابقة نقد الوردية #${sh.id} (${sh.shiftType})`,
+      totalAmount,
+      party: {
+        name: sh.userName || `كاشير #${sh.userId}`,
+        type: "employee",
+        id: sh.userId,
+      },
+      branchName: sh.branchName ?? null,
+      documentRef: {
+        docType: "shift",
+        docNumber: `SH-${sh.id}`,
+        docId: sh.id,
+      },
+      shiftInfo: {
+        shiftId: sid,
+        shiftType: sh.shiftType,
+        ownerName: sh.userName ?? null,
+      },
+      subItems,
+      reconciliation: computeProvenanceReconciliation(totalAmount, subItems),
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
+
+    let countedProvenance: FinancialCellProvenancePayload | undefined;
+    if (sh.countedCash != null) {
+      const countedItems: ProvenanceSubItem[] = [];
+      let breakdown: Record<string, number> | null = null;
+      if (sh.countedBreakdown) {
+        if (typeof sh.countedBreakdown === "string") {
+          try {
+            breakdown = JSON.parse(sh.countedBreakdown);
+          } catch {
+            breakdown = null;
+          }
+        } else if (typeof sh.countedBreakdown === "object") {
+          breakdown = sh.countedBreakdown as Record<string, number>;
+        }
+      }
+
+      if (breakdown && Object.keys(breakdown).length > 0) {
+        const denoms = Object.keys(breakdown)
+          .map(Number)
+          .filter((n) => !isNaN(n) && n > 0)
+          .sort((a, b) => b - a);
+
+        for (const d of denoms) {
+          const qty = Number(breakdown[String(d)] ?? 0);
+          if (qty > 0) {
+            const lineTotal = money(d).times(qty);
+            countedItems.push({
+              label: `فئة ${d.toLocaleString("en-US")} د.ع (${qty} ورقة)`,
+              amount: toDbMoney(lineTotal),
+              quantity: qty,
+              unitPrice: d,
+              category: "فئة نقدية",
+            });
+          }
+        }
+      }
+
+      if (countedItems.length === 0) {
+        countedItems.push({
+          label: "إجمالي النقد المعدود عند الإغلاق",
+          amount: sh.countedCash,
+        });
+      }
+
+      countedProvenance = {
+        movementType: "balance",
+        title: `النقد المعدود - وردية #${sh.id}`,
+        totalAmount: sh.countedCash,
+        party: {
+          name: sh.userName || `كاشير #${sh.userId}`,
+          type: "employee",
+          id: sh.userId,
+        },
+        branchName: sh.branchName ?? null,
+        documentRef: {
+          docType: "shift",
+          docNumber: `SH-${sh.id}`,
+          docId: sh.id,
+        },
+        shiftInfo: {
+          shiftId: sid,
+          shiftType: sh.shiftType,
+          ownerName: sh.userName ?? null,
+        },
+        subItems: countedItems,
+        reconciliation: computeProvenanceReconciliation(
+          sh.countedCash,
+          countedItems,
+        ),
+      };
+    }
+
+    return {
+      ...sh,
+      provenance,
+      countedProvenance,
+    };
+  });
+}
+
