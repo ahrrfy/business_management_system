@@ -1518,7 +1518,7 @@ describe("createAsset — دعم الأراضي والمباني وسحوبات 
     expect(asset).toBeDefined();
     expect(asset?.category).toBe("buildings");
     expect(asset?.usefulLifeYears).toBe(25);
-    expect(asset?.depreciation?.annualDep).toBe(10000000);
+    expect(asset?.annualDep).toBe(10000000);
   });
 
   it("إضافة أصل من فئة الأراضي (land) ينجح بعمر إنتاجي 0 وبلا إهلاك", async () => {
@@ -1537,8 +1537,8 @@ describe("createAsset — دعم الأراضي والمباني وسحوبات 
     expect(asset).toBeDefined();
     expect(asset?.category).toBe("land");
     expect(asset?.usefulLifeYears).toBe(0);
-    expect(asset?.depreciation?.annualDep).toBe(0);
-    expect(asset?.depreciation?.bookValue).toBe(1000000000);
+    expect(asset?.annualDep).toBe(0);
+    expect(asset?.bookValue).toBe(1000000000);
   });
 
   it("اقتناء المالك لأصل بمبلغ يفوق رصيد الخزينة المتاح يثبت الأصل والالتزام مع بقاء السند معلقاً (paymentPending: true)", async () => {
