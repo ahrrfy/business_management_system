@@ -112,7 +112,7 @@ export const userRouter = router({
       }).refine((d) => !!(d.email || d.username), { message: NEED_IDENTIFIER, path: ["username"] })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId, role: ctx.user.role, isOwner: !!(ctx.user as any).isOwner });
+      const res = await createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId, role: ctx.user.role });
       await logAudit(ctx, {
         action: "user.create",
         entityType: "user",
