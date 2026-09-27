@@ -22,7 +22,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, ArrowDownToLine, CheckCircle2, Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, CheckCircle2, Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
 import { ListToolbar, RowActions } from "@/components/list";
 import {
   isVoucherCategoryRoleCompatible,
@@ -293,6 +293,19 @@ export default function VoucherCategories() {
     },
     onError: (e) => notify.err(e),
   });
+  const syncRevenue = trpc.voucherCategories.syncFromRevenueCategories.useMutation({
+    onSuccess: async (res) => {
+      await utils.voucherCategories.list.invalidate();
+      if (!res.inserted.length && !res.mapped.length) {
+        notify.ok(`فئات الإيرادات والكتالوج متطابقة مسبقاً (${res.total} فئة)`);
+        return;
+      }
+      notify.ok(
+        `تمت مزامنة فئات الإيرادات: +${res.inserted.length} جديدة، ${res.mapped.length} عُيّن حسابها`,
+      );
+    },
+    onError: (e) => notify.err(e),
+  });
   const merge = trpc.voucherCategories.merge.useMutation({
     onSuccess: async () => {
       await utils.voucherCategories.list.invalidate();
@@ -388,6 +401,18 @@ export default function VoucherCategories() {
     });
     if (!ok) return;
     syncExpenses.mutate();
+  }
+
+  async function confirmSyncRevenue() {
+    const ok = await confirm({
+      variant: "info",
+      title: "مزامنة فئات الإيرادات وأقسام الكتالوج مع فئات السندات",
+      description:
+        "سيتم استيراد وتأمين كافة فئات الإيرادات التشغيلية والخدمية (الطباعة، القرطاسية، الفلكس، التوصيل، الهدايا، التصميم، الصيانة، والتحصيلات) وأقسام الكتالوج النشطة، وربطها بحساباتها المقابلة لتظهر فوراً في سندات القبض. هل تريد المتابعة؟",
+      confirmText: "مزامنة الآن",
+    });
+    if (!ok) return;
+    syncRevenue.mutate();
   }
 
   async function toggleActive(r: Row) {
@@ -512,6 +537,17 @@ export default function VoucherCategories() {
               >
                 <ArrowDownToLine aria-hidden className="size-4 ms-1" />
                 {syncExpenses.isPending ? "جارٍ المزامنة…" : "مزامنة فئات المصروفات"}
+              </Button>
+            )}
+            {canManage && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncRevenue.isPending}
+                onClick={() => void confirmSyncRevenue()}
+              >
+                <ArrowUpToLine aria-hidden className="size-4 ms-1" />
+                {syncRevenue.isPending ? "جارٍ المزامنة…" : "مزامنة فئات الإيرادات والكتالوج"}
               </Button>
             )}
             {canManage && (

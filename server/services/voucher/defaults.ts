@@ -23,6 +23,7 @@ import {
 } from "../../../shared/voucherCategoryDefaults";
 import type { Tx } from "../../db";
 import { withTx } from "../tx";
+import { syncRevenueCategoriesToVouchersInTx } from "./syncRevenue";
 
 export interface EnsureDefaultCategoriesResult {
   /** فئات أُنشئت الآن. */
@@ -106,6 +107,17 @@ export async function ensureDefaultVoucherCategoriesInTx(
     result.inserted = missing.map((def) => def.name);
     result.total += missing.length;
   }
+
+  // مزامنة وتوفير فئات الإيرادات وأقسام الكتالوج التجاري ذرياً
+  const revenueResult = await syncRevenueCategoriesToVouchersInTx(tx);
+  result.inserted.push(...revenueResult.inserted);
+  result.mapped.push(...revenueResult.mapped);
+  for (const s of revenueResult.skipped) {
+    if (!result.skipped.includes(s)) {
+      result.skipped.push(s);
+    }
+  }
+  result.total += revenueResult.inserted.length;
 
   return result;
 }
