@@ -1500,3 +1500,68 @@ describe("createAsset — حرّاس العهدة عند الإنشاء (تدق�
     expect(Number(custody[0].employeeId)).toBe(1);
   });
 });
+
+describe("createAsset — دعم الأراضي والمباني وسحوبات الخزينة الكبرى (IAS 16)", () => {
+  it("إضافة أصل من فئة المباني (buildings) ينجح وتُحسب أقساط إهلاكه", async () => {
+    const asset = await mkPendingAsset({
+      name: "مبنى الإدارة والمطبعة",
+      category: "buildings",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "250000000",
+      salvageValue: "0",
+      usefulLifeYears: 25,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "شركة الرافدين للمقاولات",
+      acquisitionEvidenceReference: "DEED-BUILD-2024",
+    });
+    expect(asset).toBeDefined();
+    expect(asset?.category).toBe("buildings");
+    expect(asset?.usefulLifeYears).toBe(25);
+    expect(asset?.depreciation?.annualDep).toBe(10000000);
+  });
+
+  it("إضافة أصل من فئة الأراضي (land) ينجح بعمر إنتاجي 0 وبلا إهلاك", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض 300 متر مربع",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "1000000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "مكتبة + هدى",
+      acquisitionEvidenceReference: "CONTRACT-1",
+    });
+    expect(asset).toBeDefined();
+    expect(asset?.category).toBe("land");
+    expect(asset?.usefulLifeYears).toBe(0);
+    expect(asset?.depreciation?.annualDep).toBe(0);
+    expect(asset?.depreciation?.bookValue).toBe(1000000000);
+  });
+
+  it("اقتناء المالك لأصل بمبلغ يفوق رصيد الخزينة المتاح يثبت الأصل والالتزام مع بقاء السند معلقاً (paymentPending: true)", async () => {
+    assetRequestSequence += 1;
+    const asset = await createAsset(
+      {
+        name: "عقار واستثمار تجاري",
+        category: "buildings",
+        purchaseDate: "2024-01-01",
+        purchaseValue: "1000000000",
+        salvageValue: "0",
+        usefulLifeYears: 50,
+        depreciationMethod: "sl",
+        branchId: 1,
+        acquisitionBeneficiaryName: "المالك البائع",
+        acquisitionEvidenceReference: "DEED-BIG-VAL",
+        clientRequestId: `asset-big-val-${assetRequestSequence}`,
+      },
+      OWNER,
+    );
+    expect(asset).toBeDefined();
+    expect(asset?.isActive).toBe(true);
+    expect(asset?.paymentPending).toBe(true);
+  });
+});
+
