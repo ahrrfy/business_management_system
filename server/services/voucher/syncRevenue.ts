@@ -1,20 +1,21 @@
 /**
- * جسر مزامنة وتوفير فئات الإيرادات وأقسام الكتالوج (categories) إلى فئات السندات (voucherCategories).
+ * تأمين ومزامنة فئات الإيرادات والأنشطة والقبوضات التمويلية القياسية في فئات السندات (voucherCategories)
+ * وتطهيرها التام من أي تصنيفات بضائع أو كتب أو أقسام كتالوج منتجات متجرية تسربت سابقاً.
  *
- * المشكلة:
- * كانت فئات سندات القبض (IN) محصورة تاريخياً في 10 فئات عامة فقط، وتغيب عنها كافة فئات
- * وأنشطة الشركة التشغيلية (خدمات الطباعة، مبيعات القرطاسية، الفلكس، التوصيل، الهدايا، التجهيزات المكتبية،
- * والتصميم)، إضافة إلى غياب أقسام الكتالوج التجاري وفئات استرداد القروض والاستثمار بالمشاركة.
- *
- * الحل:
- * هذه الخدمة تُؤمّن وتُزامن ذرياً:
- * 1. كتالوج الإيرادات التشغيلية والخدمية والتمويلية القياسية للشركة (STANDARD_REVENUE_CATEGORIES).
- * 2. كافة أقسام الكتالوج التجاري النشطة من جدول categories.
- * وتُسند لكل منها دورها المحاسبي المتوافق مع اتجاه القبض (IN) بأسلوب idempotent محصن.
+ * المنظور المحاسبي والرقابي:
+ * 1. سند القبض (Receipt Voucher) وثيقة مالية وتدفق نقدي وبنكي، يُثبت حركة النقدية مقابل الإيرادات
+ *    العامة أو الخدمات أو التمويل، ولا يحتوي على باركود أو كميات ولا يخصم مخزوناً (branchStock) ولا يحسب COGS.
+ * 2. أصناف وبضائع المتجر والكتب والمستلزمات تُباع حصراً عبر نقاط البيع (POS) وفواتير المبيعات
+ *    لضمان انضباط الجرد المستمر وحساب الأرباح بدقة ومنع المخزون الوهمي (Phantom Inventory).
+ * 3. هذه الخدمة تضمن ذرياً:
+ *    - حصر فئات القبض في الكتالوج القياسي المعتمد للأنشطة والخدمات والمقبوضات التمويلية (STANDARD_REVENUE_CATEGORIES).
+ *    - استئصال وحذف أي تصنيفات منتجات تسربت سابقاً إلى voucherCategories ولم ترتبط بسندات.
+ *    - تعطيل (deactivate) أي فئة منتجات متسربة ارتبطت بسندات سابقة حفاظاً على الأثر التدقيقي والتاريخي.
  */
-import { and, eq, isNull } from "drizzle-orm";
-import { categories, voucherCategories } from "../../../drizzle/schema";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { categories, receipts, voucherCategories } from "../../../drizzle/schema";
 import type { VoucherCategoryPostingRole } from "../../../shared/voucherCategoryAccounting";
+import { DEFAULT_VOUCHER_CATEGORIES } from "../../../shared/voucherCategoryDefaults";
 import type { Tx } from "../../db";
 
 export interface StandardRevenueCategoryDef {
@@ -109,6 +110,13 @@ export const STANDARD_REVENUE_CATEGORIES: readonly StandardRevenueCategoryDef[] 
     },
   ]);
 
+export interface CleanupProductCategoriesResult {
+  /** أسماء فئات المنتجات التي حُذفت نهائياً لعدم ارتباطها بأي سندات */
+  deleted: string[];
+  /** أسماء فئات المنتجات التي عُطّلت لارتباطها بسندات سابقة */
+  deactivated: string[];
+}
+
 export interface SyncRevenueCategoriesResult {
   /** أسماء الفئات الجديدة التي أُضيفت إلى فئات السندات */
   inserted: string[];
@@ -116,6 +124,10 @@ export interface SyncRevenueCategoriesResult {
   mapped: string[];
   /** أسماء الفئات التي تم تخطيها لوجودها مسبقاً بحساب معتمد */
   skipped: string[];
+  /** فئات المنتجات التي حُذفت نهائياً أثناء التنظيف */
+  deleted: string[];
+  /** فئات المنتجات التي عُطّلت أثناء التنظيف */
+  deactivated: string[];
   /** إجمالي الفئات المعالجة والموجودة */
   total: number;
 }
@@ -124,10 +136,92 @@ function nameKey(name: string): string {
   return name.trim().toLocaleLowerCase("ar");
 }
 
+/**
+ * تنظيف وتطهير فئات السندات (voucherCategories) من تصنيفات المنتجات المخزنية والكتب.
+ * - إذا لم ترتبط الفئة بأي سند: تُحذف فوراً.
+ * - إذا ارتبطت الفئة بسند تاريخي: تُعطّل فوراً لمنع اختيارها مستقبلاً دون كسر الأثر التدقيقي.
+ */
+export async function cleanupProductCategoriesFromVouchersInTx(
+  tx: Tx,
+): Promise<CleanupProductCategoriesResult> {
+  const protectedNames = new Set<string>();
+  for (const item of STANDARD_REVENUE_CATEGORIES) {
+    protectedNames.add(nameKey(item.name));
+  }
+  for (const item of DEFAULT_VOUCHER_CATEGORIES) {
+    protectedNames.add(nameKey(item.name));
+  }
+
+  // جلب كافة أسماء الفئات من جدول كتالوج المنتجات
+  const productCats = await tx
+    .select({ name: categories.name })
+    .from(categories);
+  const productCatNames = new Set(productCats.map((c) => nameKey(c.name)));
+
+  const allVoucherCategories = await tx
+    .select({
+      id: voucherCategories.id,
+      name: voucherCategories.name,
+      description: voucherCategories.description,
+      isActive: voucherCategories.isActive,
+    })
+    .from(voucherCategories)
+    .for("update");
+
+  const deleted: string[] = [];
+  const deactivated: string[] = [];
+
+  for (const vCat of allVoucherCategories) {
+    const key = nameKey(vCat.name);
+    // حماية الفئات القياسية والافتراضية
+    if (protectedNames.has(key)) {
+      continue;
+    }
+
+    const isLeakedProductCat =
+      productCatNames.has(key) ||
+      (vCat.description?.includes("مُزامن من أقسام الكتالوج") ?? false);
+
+    if (!isLeakedProductCat) {
+      continue;
+    }
+
+    // فحص الارتباط بالسندات
+    const [usage] = await tx
+      .select({ count: sql<number>`count(*)` })
+      .from(receipts)
+      .where(eq(receipts.voucherCategoryId, Number(vCat.id)));
+
+    const usedCount = Number(usage?.count || 0);
+
+    if (usedCount === 0) {
+      await tx
+        .delete(voucherCategories)
+        .where(eq(voucherCategories.id, Number(vCat.id)));
+      deleted.push(vCat.name);
+    } else if (vCat.isActive) {
+      await tx
+        .update(voucherCategories)
+        .set({ isActive: false })
+        .where(eq(voucherCategories.id, Number(vCat.id)));
+      deactivated.push(vCat.name);
+    }
+  }
+
+  return { deleted, deactivated };
+}
+
+/**
+ * مزامنة وتوفير فئات الإيرادات والأنشطة والقبوضات التمويلية القياسية في فئات السندات ذرياً،
+ * وتطهير جدول voucherCategories من أي فئات منتجات متسربة.
+ */
 export async function syncRevenueCategoriesToVouchersInTx(
   tx: Tx,
 ): Promise<SyncRevenueCategoriesResult> {
-  // قفل فئات السندات لمنع التسابق
+  // أولاً: تنظيف أي فئات منتجات متسربة
+  const cleanup = await cleanupProductCategoriesFromVouchersInTx(tx);
+
+  // ثانياً: قفل فئات السندات لمنع التسابق
   const existingVouchers = await tx
     .select({
       id: voucherCategories.id,
@@ -147,6 +241,8 @@ export async function syncRevenueCategoriesToVouchersInTx(
     inserted: [],
     mapped: [],
     skipped: [],
+    deleted: cleanup.deleted,
+    deactivated: cleanup.deactivated,
     total: 0,
   };
 
@@ -159,7 +255,7 @@ export async function syncRevenueCategoriesToVouchersInTx(
     isActive: boolean;
   }> = [];
 
-  // ١. معالجة كتالوج الإيرادات القياسية الشاملة
+  // ثالثاً: معالجة كتالوج الإيرادات القياسية المعتمدة حصراً
   for (const item of STANDARD_REVENUE_CATEGORIES) {
     const key = nameKey(item.name);
     const current = byName.get(key);
@@ -178,7 +274,7 @@ export async function syncRevenueCategoriesToVouchersInTx(
 
     result.total += 1;
 
-    // إذا كانت الفئة قائمة وبلا حساب مقابل واتجاهها IN
+    // إذا كانت الفئة قائمة وبلا حساب مقابل واتجاهها IN أو BOTH
     if (!current.postingRole && (current.direction === "IN" || current.direction === "BOTH")) {
       await tx
         .update(voucherCategories)
@@ -192,60 +288,6 @@ export async function syncRevenueCategoriesToVouchersInTx(
       result.mapped.push(item.name.trim());
     } else {
       result.skipped.push(item.name.trim());
-    }
-  }
-
-  // ٢. معالجة أقسام الكتالوج التجاري النشطة (categories)
-  const activeCatalogCategories = await tx
-    .select({
-      id: categories.id,
-      name: categories.name,
-      description: categories.description,
-      sortOrder: categories.sortOrder,
-    })
-    .from(categories)
-    .where(eq(categories.isActive, true));
-
-  for (const cat of activeCatalogCategories) {
-    const key = nameKey(cat.name);
-    const current = byName.get(key);
-
-    if (!current) {
-      // تفادي التكرار إن كانت مسجلة بالفعل ضمن toInsert
-      if (toInsert.some((item) => nameKey(item.name) === key)) {
-        continue;
-      }
-
-      toInsert.push({
-        name: cat.name.trim(),
-        direction: "IN",
-        postingRole: "OTHER_REVENUE",
-        description:
-          cat.description?.trim() ||
-          `إيراد نشاط تجاري وخدمي مُزامن من أقسام الكتالوج (${cat.name.trim()})`,
-        sortOrder: cat.sortOrder || 150,
-        isActive: true,
-      });
-      continue;
-    }
-
-    result.total += 1;
-
-    if (!current.postingRole && (current.direction === "IN" || current.direction === "BOTH")) {
-      await tx
-        .update(voucherCategories)
-        .set({ postingRole: "OTHER_REVENUE" })
-        .where(
-          and(
-            eq(voucherCategories.id, Number(current.id)),
-            isNull(voucherCategories.postingRole),
-          ),
-        );
-      result.mapped.push(cat.name.trim());
-    } else {
-      if (!result.skipped.includes(cat.name.trim())) {
-        result.skipped.push(cat.name.trim());
-      }
     }
   }
 

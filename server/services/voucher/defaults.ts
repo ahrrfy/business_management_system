@@ -108,7 +108,7 @@ export async function ensureDefaultVoucherCategoriesInTx(
     result.total += missing.length;
   }
 
-  // مزامنة وتوفير فئات الإيرادات وأقسام الكتالوج التجاري ذرياً
+  // مزامنة وتوفير فئات الإيرادات والأنشطة القياسية وتطهير فئات المنتجات ذرياً
   const revenueResult = await syncRevenueCategoriesToVouchersInTx(tx);
   result.inserted.push(...revenueResult.inserted);
   result.mapped.push(...revenueResult.mapped);

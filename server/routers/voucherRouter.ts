@@ -590,12 +590,17 @@ export const voucherCategoryRouter = router({
   }),
 
   /**
-   * مزامنة وتوفير فئات الإيرادات وأقسام الكتالوج إلى فئات السندات — لظهور كافة فئات الإيرادات في سندات القبض.
-   * idempotent: الفئات الموجودة مسبقاً تُترك كما هي، وتُضاف الفئات الناقصة مع تعيين حسابها المقابل الصحيح.
+   * مزامنة وتوفير فئات الإيرادات والأنشطة القياسية وتطهير فئات السندات من تصنيفات المنتجات.
+   * idempotent: الفئات المعتمدة تُترك كما هي، وتُضاف الفئات الناقصة، وتُحذف أو تُعطّل فئات المنتجات المتسربة.
    */
   syncFromRevenueCategories: treasuryGlobalProcedure.mutation(async ({ ctx }) => {
     const result = await withTx((tx) => syncRevenueCategoriesToVouchersInTx(tx));
-    if (result.inserted.length || result.mapped.length) {
+    if (
+      result.inserted.length ||
+      result.mapped.length ||
+      result.deleted.length ||
+      result.deactivated.length
+    ) {
       await logAudit(ctx, {
         action: "voucherCategory.syncFromRevenueCategories",
         entityType: "voucherCategory",
@@ -603,6 +608,8 @@ export const voucherCategoryRouter = router({
           inserted: result.inserted,
           mapped: result.mapped,
           skipped: result.skipped,
+          deleted: result.deleted,
+          deactivated: result.deactivated,
           total: result.total,
         },
       });
