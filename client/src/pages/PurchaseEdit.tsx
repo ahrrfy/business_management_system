@@ -23,7 +23,7 @@ import {
   isWithinPriceDecimals,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
-import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { LoadingState, ErrorState } from "@/components/PageState";
@@ -414,7 +414,7 @@ export default function PurchaseEdit() {
       }
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
-        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
+        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${formatQuantity(l.qty)} × ${l.conversionFactor}).`;
     }
     if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
       return "أدخل سعر الصرف المثبت للفاتورة.";

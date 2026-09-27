@@ -5,6 +5,7 @@
 // في الشكل أصلاً). printReceipt نفسه يرفض أرقام DRF- (الحارس المرافق).
 import { printDoc } from "./print";
 import { D, round2 } from "@/lib/money";
+import { fmtQty } from "@shared/quantityFormat";
 
 export interface DraftTicketData {
   draftNumber: string;
@@ -72,7 +73,7 @@ export async function printDraftTicket(d: DraftTicketData) {
       ...(d.contactPhone ? [`الهاتف: ${d.contactPhone}`] : []),
     ],
     columns: ["الصنف", "الكمية", "الإجمالي"],
-    rows: d.items.map((it) => [it.name, String(it.quantity), it.total]),
+    rows: d.items.map((it) => [it.name, fmtQty(it.quantity), it.total]),
     totals: [{ label: "الإجمالي التقديري", value: d.total }],
     footer: [
       d.notes?.trim() || null,

@@ -8,6 +8,7 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { ArrowDown, Camera, CheckCircle2, Eye, Image as ImageIcon, Info, Loader2, ScanLine, Sparkles, ZoomIn } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { StudioProductVariantMatrixCard } from "./StudioProductVariantMatrixCard";
 import { StudioUnknownBarcodeResolver } from "./StudioUnknownBarcodeResolver";
 import { isUnknownStudioBarcodeFailure, shouldSubmitManualBarcode } from "./studioUnknownBarcode";
 
@@ -24,6 +25,8 @@ export interface StudioPreviousImage {
 
 export interface ClaimedStudioProduct {
   taskId: number;
+  productId?: number;
+  variantId?: number | null;
   productName: string;
   revision: number;
   approvedImages: number;
@@ -68,6 +71,8 @@ export function StudioCaptureStation({
       setCameraOpen(false);
       onClaimed({
         taskId: result.taskId,
+        productId: (result as { productId?: number }).productId,
+        variantId: (result as { variantId?: number | null }).variantId ?? null,
         productName: result.productName,
         revision: result.revision,
         approvedImages: result.approvedImages,
@@ -258,6 +263,18 @@ export function StudioCaptureStation({
                 </div>
               </div>
             </div>
+
+            {/* مصفوفة باركودات وبدائل المنتج — تكشف كافة البدائل المتبقية وتمنع فخ تصوير باركود واحد */}
+            {active.productId != null && (
+              <div className="pt-1">
+                <StudioProductVariantMatrixCard
+                  productId={active.productId}
+                  activeVariantId={active.variantId}
+                  onSelectBarcode={(scanned) => submitCode(scanned)}
+                  disabled={offline || claim.isPending}
+                />
+              </div>
+            )}
           </div>
         ) : (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">

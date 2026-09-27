@@ -9,7 +9,9 @@ import { CopyButton } from "@/components/CopyButton";
 import { openCashDrawer } from "@/lib/printing/print";
 import { qrCodeDataUrl } from "@/lib/printing/qr";
 import { STOREFRONT_URL } from "@/lib/printing/brand";
+import { fmtTime } from "@/lib/date";
 import { type Receipt, fmt, type PosColors as C } from "./posShared";
+import { formatQuantity } from "@shared/quantityFormat";
 import { useModalFocus } from "./useModalFocus";
 import { VirtualCashDrawer } from "./VirtualCashDrawer";
 
@@ -238,7 +240,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
                 )}
               </span>
               <span style={{ direction: "ltr" }}>
-                {new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}
+                {fmtTime(new Date())}
               </span>
             </div>
 
@@ -296,7 +298,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint, onPrintLabel }:
                     <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {ln.name}
                     </span>
-                    <span style={{ textAlign: "center", color: "#64748b", direction: "ltr" }}>{ln.qty}</span>
+                    <span style={{ textAlign: "center", color: "#64748b", direction: "ltr" }}>{formatQuantity(ln.qty)}</span>
                     <span style={{ textAlign: "left", fontWeight: 700, direction: "ltr" }}>{fmt(ln.total)}</span>
                   </div>
                 ))}

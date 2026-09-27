@@ -390,6 +390,25 @@ option:disabled {
   }
 }
 
+/* حقول التواريخ والأوقات: ضمان الاتجاه LTR والأرقام اللاتينية 1234 دائماً
+   المشكلة: محرك Chromium في بيئات RTL ينعكس فيه نص الـ placeholder لـ input[type="date"]
+   إلى «ةنس/رهش/موي» ويحوّل الأرقام إلى هندية «٢٥/٠٩/٢٠٢٦».
+   الحل: اتجاه LTR قاطع + أرقام جدولية tabular-nums + مؤشر تقويم قابل للنقر. */
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"],
+input[type="month"] {
+  direction: ltr !important;
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+}
+
 /* تنبيه خطأ بارز (notify.errBig) — أخطاء البيع الحرجة كنقص المخزون: عنوان/وصف/أيقونة أكبر. */
 .notify-err-big [data-title] {
   font-size: 16.5px;
@@ -560,6 +579,12 @@ option:disabled {
     background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
     animation: storefront-shimmer-sweep 2.4s infinite;
     content: "";
+  }
+
+  /* إزاحة زر الخصوصية العائم لأعلى تلقائياً عند ظهور شريط السلة العائم لتفادي أي تراكب بصري */
+  body:has(.store-floating-cart) .storefront-consent.fixed.left-3 {
+    bottom: calc(5.25rem + env(safe-area-inset-bottom)) !important;
+    transition: bottom 0.25s ease-in-out;
   }
 
   /* Important storefront actions get a short, role-specific feedback ring. */

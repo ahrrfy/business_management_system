@@ -8,6 +8,7 @@
 // لا اعتماديات جديدة — القمع/التوزيع بأشرطة CSS بسيطة (لا مكتبة رسوم).
 import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem, type KpiTone } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -546,11 +547,11 @@ export default function WhatsappHubReport() {
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">من</label>
-            <input type="date" className={dateCls} value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+            <Input type="date" className={dateCls} value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">إلى</label>
-            <input type="date" className={dateCls} value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+            <Input type="date" className={dateCls} value={to} min={from} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>

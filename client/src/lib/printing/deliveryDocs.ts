@@ -3,6 +3,7 @@
 // (~8ك مضغوطة) لشاشة استقبال عالية التردّد رغم استعمالها دالتين فقط. هنا: مكتبة طباعة صرفة، بلا React.
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
+import { fmtDateTime } from "@/lib/date";
 import { printDoc } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
 
@@ -84,7 +85,7 @@ export function printDeliveryManifest(
     subtitle: `${party.name} · ${parcels.length} طرداً`,
     meta: [
       branchName ? `الفرع: ${branchName}` : "",
-      `التاريخ: ${now.toLocaleDateString("ar-IQ")}  ${now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`,
+      `التاريخ: ${fmtDateTime(now)}`,
       party.phone ? `الجهة: ${party.name} — ${party.phone}` : `الجهة: ${party.name}`,
     ].filter(Boolean),
     // سطر لكل طرد داخل الجدول (يستخدم totals كصفوف مفتاح/قيمة عريضة كي يبقى ضمن قالب zreport العام).

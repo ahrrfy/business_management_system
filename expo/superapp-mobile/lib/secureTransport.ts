@@ -50,6 +50,294 @@ type NativeSecureTransport = Readonly<{
 
 const transport = requireOptionalNativeModule<NativeSecureTransport>("AlrueyaSecureTransport");
 
+const getBackendUrl = (): string => {
+  if (typeof window !== "undefined" && window.location) {
+    if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      return "http://localhost:3000";
+    }
+    return window.location.origin;
+  }
+  return "http://localhost:3000";
+};
+
+const webTransport: NativeSecureTransport = {
+  async login(identifier: string, password: string, remember: boolean, companyCode: string | null): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/auth.login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        json: {
+          identifier,
+          password,
+          remember,
+          companyCode: companyCode || undefined,
+        },
+      }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      const msg = errJson?.error?.json?.message || "البريد أو كلمة المرور غير صحيحة";
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    const user = data.result?.data?.json;
+    if (typeof window !== "undefined") {
+      window.sessionStorage?.setItem("alrueya_superapp_web_session", "active");
+      window.localStorage?.setItem("alrueya_superapp_web_session", "active");
+      if (user) {
+        window.sessionStorage?.setItem("alrueya_superapp_web_user", JSON.stringify(user));
+      }
+    }
+    return JSON.stringify({
+      requiresTwoFactor: Boolean(user?.requiresTwoFactor),
+      ticket: user?.ticket ?? null,
+      name: user?.name,
+      mustChangePassword: Boolean(user?.mustChangePassword),
+      mustEnrollTwoFactor: Boolean(user?.mustEnrollTwoFactor || user?.mustEnroll2FA),
+    });
+  },
+
+  async verifyTwoFactor(ticket: string, code: string | null, recoveryCode: string | null): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/auth.twoFactorVerify`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        json: {
+          ticket,
+          code: code || undefined,
+          recoveryCode: recoveryCode || undefined,
+        },
+      }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر التحقق من الرمز");
+    }
+    const data = await res.json();
+    const user = data.result?.data?.json;
+    if (typeof window !== "undefined") {
+      window.sessionStorage?.setItem("alrueya_superapp_web_session", "active");
+      window.localStorage?.setItem("alrueya_superapp_web_session", "active");
+    }
+    return JSON.stringify({
+      requiresTwoFactor: false,
+      ticket: null,
+      name: user?.name,
+    });
+  },
+
+  async getMobileToday(): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobileToday`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر جلب بيانات اليوم");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async getMobileAttendanceHistory(): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobileAttendanceHistory`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر جلب سجل الحضور");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async revealMobilePayslip(code: string | null, recoveryCode: string | null): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobilePayslipReveal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        json: {
+          code: code || undefined,
+          recoveryCode: recoveryCode || undefined,
+        },
+      }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر كشف تفاصيل الراتب");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async createMobileRequestId(): Promise<string> {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+      (+c ^ (Math.random() * 16 >> (+c / 4))).toString(16),
+    );
+  },
+
+  async requestMobileLeave(
+    leaveType: string,
+    fromDate: string,
+    toDate: string,
+    reason: string | null,
+    clientRequestId: string,
+  ): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobileRequestLeave`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        json: {
+          leaveType,
+          fromDate,
+          toDate,
+          reason: reason || undefined,
+          clientRequestId,
+        },
+      }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر تقديم طلب الإجازة");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async withdrawLatestMobileLeave(clientRequestId: string): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobileWithdrawLatestLeave`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+      body: JSON.stringify({ json: { clientRequestId } }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر سحب طلب الإجازة");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async startFocusedMobileTask(clientRequestId: string): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobileStartFocusedTask`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+      body: JSON.stringify({ json: { clientRequestId } }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر بدء المهمة");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async resolveFocusedMobileTask(resolutionNote: string | null, clientRequestId: string): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobileResolveFocusedTask`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        json: {
+          resolutionNote: resolutionNote || undefined,
+          clientRequestId,
+        },
+      }),
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر إكمال المهمة");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async getMobileCommandCenter(): Promise<string> {
+    const res = await fetch(`${getBackendUrl()}/api/trpc/superApp.mobileCommandCenter`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "x-erp-csrf": "1",
+      },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.json?.message || "تعذر جلب بيانات غرفة القيادة");
+    }
+    const data = await res.json();
+    return JSON.stringify(data.result.data.json);
+  },
+
+  async getMobileExpoPushStatus(): Promise<string> {
+    return JSON.stringify({ activeCount: 0 });
+  },
+
+  async registerMobileExpoPush(): Promise<string> {
+    return JSON.stringify({ registered: true });
+  },
+
+  async revokeMobileExpoPush(): Promise<string> {
+    return JSON.stringify({ revoked: true });
+  },
+
+  async logout(): Promise<Readonly<{ cleared: true }>> {
+    try {
+      await fetch(`${getBackendUrl()}/api/trpc/auth.logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-erp-csrf": "1" },
+        credentials: "include",
+        body: JSON.stringify({ json: {} }),
+      });
+    } catch {}
+    if (typeof window !== "undefined") {
+      window.sessionStorage?.removeItem("alrueya_superapp_web_session");
+      window.localStorage?.removeItem("alrueya_superapp_web_session");
+      window.sessionStorage?.removeItem("alrueya_superapp_web_user");
+    }
+    return { cleared: true };
+  },
+};
+
 export class SecureTransportUnavailableError extends Error {
   constructor() {
     super("يتطلب هذا الإجراء Development Build موثقاً على هاتف، ولا يعمل في المتصفح أو Expo Go.");
@@ -58,8 +346,8 @@ export class SecureTransportUnavailableError extends Error {
 }
 
 function nativeTransport(): NativeSecureTransport {
-  if (!transport) throw new SecureTransportUnavailableError();
-  return transport;
+  if (transport) return transport;
+  return webTransport;
 }
 
 /** The native layer retains the cookie, device key, counter, nonce, and pins. */

@@ -91,7 +91,7 @@ describe("قيد التوصيل — الطرد بالطريق لا يختفي", 
 
     const { rows } = await listInTransitConsignments(1);
     expect(rows).toHaveLength(1);
-    expect(rows[0].parcelStatus).toBe("ASSIGNED");
+    expect(rows[0].parcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(Number(rows[0].codDue)).toBe(20000);
     expect(rows[0].partyName).toBe("مندوب أحمد");
     expect(rows[0].workOrderId).toBe(workOrderId);

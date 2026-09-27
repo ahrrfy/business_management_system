@@ -15,7 +15,7 @@ import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { RowActions, type RowAction } from "@/components/list";
 import { CopyInline } from "@/components/CopyButton";
 import { ChannelBadge } from "@/components/ChannelBadge";
-import { fmtAr, fmtInt, D, positiveDiff } from "@/lib/money";
+import { fmtAr, fmtInt, formatQuantity, D, positiveDiff } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import {
   type WorkOrderStatus,
@@ -80,7 +80,7 @@ export function WorkOrdersTable({
           <div className="max-w-56">
             <div className="truncate font-medium">{o.title}</div>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              {fmtInt(o.quantity)} ×
+              {formatQuantity(o.quantity)} ×
               <span className={`wob-pri ${pri.cls}`} style={{ padding: "0 4px" }}><span className="wob-pri-dot" />{pri.label}</span>
             </div>
           </div>
@@ -288,7 +288,7 @@ export function WorkOrdersTable({
               positive: o.status === "DELIVERED",
             }}
             metadata={[
-              { label: "الكمية", value: `${fmtInt(o.quantity)} نسخة` },
+              { label: "الكمية", value: `${formatQuantity(o.quantity)} نسخة` },
               { label: "الأولوية", value: pri.label },
               ...(timing.state !== "UNKNOWN"
                 ? [{ label: "المدة", value: timing.badgeLabel, icon: timing.state === "RUNNING" ? Clock : CheckCircle2 }]

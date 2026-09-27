@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
+import { formatQuantity } from "@shared/quantityFormat";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { RecordForm } from "@/components/form/RecordForm";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
@@ -363,7 +364,7 @@ export default function SimpleProductForm() {
           <>
             سيُحفظ منتج بسيط واحد بـ<b className="text-foreground" dir="ltr">{units.length}</b> وحدة
             {baseBarcode ? " (بباركود)" : " (بلا باركود)"}
-            {totalStock > 0 && <> — رصيد افتتاحيّ <b className="text-foreground" dir="ltr">{totalStock}</b> {baseUnitName}</>}.
+            {totalStock > 0 && <> — رصيد افتتاحيّ <b className="text-foreground" dir="ltr">{formatQuantity(totalStock)}</b> {baseUnitName}</>}.
           </>
         }
       >

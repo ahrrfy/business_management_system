@@ -114,8 +114,8 @@ describe("لوحة الجهات — الدلاء الخمسة والنقد بم�
     expect(rows).toHaveLength(1);
     let row = rows[0];
     expect(row.partyId).toBe(PARTY);
-    expect(row.assigned).toEqual({ count: 2, amount: "5000.00" });
-    expect(row.inTransit.count).toBe(0);
+    expect(row.assigned).toEqual({ count: 0, amount: "0.00" });
+    expect(row.inTransit).toEqual({ count: 2, amount: "5000.00" });
     expect(row.deliveredUnremitted.count).toBe(0);
     expect(row.cashInHandLedger).toBe("0.00");
     expect(row.cashInHandStored).toBe("0.00");
@@ -127,7 +127,8 @@ describe("لوحة الجهات — الدلاء الخمسة والنقد بم�
     await confirmDelivered(a.consignmentId, "2000");
     rows = await board();
     row = rows[0];
-    expect(row.assigned).toEqual({ count: 1, amount: "3000.00" });
+    expect(row.assigned).toEqual({ count: 0, amount: "0.00" });
+    expect(row.inTransit).toEqual({ count: 1, amount: "3000.00" });
     expect(row.deliveredUnremitted).toEqual({ count: 1, amount: "2000.00" });
     expect(row.cashInHandLedger).toBe("2000.00");
     expect(row.cashInHandStored).toBe("2000.00");
@@ -142,11 +143,12 @@ describe("لوحة الجهات — الدلاء الخمسة والنقد بم�
     rows = await board();
     row = rows[0];
     expect(row.deliveredUnremitted.count).toBe(0);
-    expect(row.assigned).toEqual({ count: 1, amount: "3000.00" });
+    expect(row.assigned).toEqual({ count: 0, amount: "0.00" });
+    expect(row.inTransit).toEqual({ count: 1, amount: "3000.00" });
     expect(row.cashInHandLedger).toBe("0.00");
     expect(row.cashInHandStored).toBe("0.00");
     expect(row.net).toBe("3000.00");
-    expect(await consignmentOf(b.consignmentId).then((c) => c.parcelStatus)).toBe("ASSIGNED");
+    expect(await consignmentOf(b.consignmentId).then((c) => c.parcelStatus)).toBe("OUT_FOR_DELIVERY");
   });
 
   it("جهةٌ بلا فرعٍ مُسنَد لغير العابر ⇒ رفضٌ صريح", async () => {

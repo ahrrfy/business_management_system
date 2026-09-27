@@ -326,7 +326,7 @@ export default function InvoiceDetail() {
       ["manager"],
     ) &&
     data.consignmentId != null &&
-    (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "FAILED");
+    (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "OUT_FOR_DELIVERY" || data.consignmentParcelStatus === "FAILED");
   const hasDeliveryLifecycle =
     data.consignmentId != null || data.consignmentStatus != null || data.deliveryPartyId != null;
   // مرآة بصرية للحارس الخادمي: الإرسالية الحديثة لا تصبح آمنة إلا بعد CANCELLED النهائي.

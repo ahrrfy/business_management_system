@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react";
 import { Store, Search, X, CreditCard, WifiOff } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { SHOP, fmt, type PosColors as C } from "./posShared";
+import { formatQuantity } from "@shared/quantityFormat";
 
 export interface POSHeaderProps {
   C: C;
@@ -159,7 +160,7 @@ export function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results
                     {p.sku} · {p.unitName}
                     {!p.isService && (
                       <span style={{ marginRight: 10, color: stockColor(p.availableBase ?? p.stockBase) }}>
-                        {branchName} · فعلي: {fmt(p.stockBase)} · محجوز: {fmt(p.reservedBase ?? 0)} · متاح للبيع: {fmt(p.availableBase ?? p.stockBase)}
+                        {branchName} · فعلي: {formatQuantity(p.stockBase)} · محجوز: {formatQuantity(p.reservedBase ?? 0)} · متاح للبيع: {formatQuantity(p.availableBase ?? p.stockBase)}
                       </span>
                     )}
                   </div>

@@ -77,7 +77,11 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
     deny(req, res, "CSRF: مصدر الطلب غير صالح");
     return;
   }
-  if (sourceOrigin !== host) {
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (sourceOrigin !== host && !allowedOrigins.includes(sourceOrigin)) {
     deny(req, res, "CSRF: مصدر الطلب غير مصرَّح");
     return;
   }

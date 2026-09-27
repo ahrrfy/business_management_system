@@ -35,7 +35,7 @@ import {
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { createPostingIntent, signedPostingLines } from "../accounting/postingEngine";
-import { applyMovement, applyValuedInboundMovement } from "../inventoryService";
+import { applyMovement, applyValuedInboundMovement, isBundleVariant, isServiceVariant } from "../inventoryService";
 import { assertStockedOwnedMaterials } from "../inventory/materialEligibility";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
@@ -135,8 +135,18 @@ export async function setWorkOrderMaterialsInTx(
       .from(workOrderMaterials)
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
 
+    const baseVariantId = wo.baseVariantId == null ? null : Number(wo.baseVariantId);
+    const baseBaseQuantity = wo.baseBaseQuantity == null ? null : Number(wo.baseBaseQuantity);
+
+    // إن كان الأمر مصنفاً كخدمة (لا تستهلك مخزون الصنف الأساس)، نستبعد أي سطر يحمل الصنف الأساس نفسه
+    // من القائمة المطلوبة تلقائياً؛ لأن صنف الخدمة لا يُخزن ولا يدخل كمادة في workOrderMaterials.
+    const effectiveMaterials =
+      wo.baseConsumesInventory === false && baseVariantId != null
+        ? input.materials.filter((m) => Number(m.variantId) !== baseVariantId)
+        : input.materials;
+
     const currentQty = aggregate(currentRows);
-    const desiredQty = aggregate(input.materials);
+    const desiredQty = aggregate(effectiveMaterials);
     // لقطة التكلفة المحفوظة وقت الاستهلاك — لا تُعاد قراءتها من `costPrice` الحيّ للأصناف
     // القائمة، وإلّا حرّك تغيّرُ WAVG بين البدء والتعديل قيمةَ WIP بلا أيّ حركةٍ فعلية.
     const snapshotCost = new Map<number, Decimal>();
@@ -164,8 +174,6 @@ export async function setWorkOrderMaterialsInTx(
     // على فاتورة التسليم. حذفُه من المواد مع إبقائه في رأس الأمر كان يفوتر منتجاً بلا خصم مخزون.
     // اللقطة الثلاثية تميّز الخدمة من المادي؛ NULL على أمر تاريخي يعني أن الحقيقة غير موثوقة،
     // لذلك يفشل التحرير مغلقاً بدلاً من تخمين تصنيف اليوم أو أول وحدة حالية.
-    const baseVariantId = wo.baseVariantId == null ? null : Number(wo.baseVariantId);
-    const baseBaseQuantity = wo.baseBaseQuantity == null ? null : Number(wo.baseBaseQuantity);
     const markedBaseRows = currentRows.filter((row) => row.isBaseMaterial === true);
     if (baseVariantId != null && wo.baseConsumesInventory == null) {
       throw new TRPCError({
@@ -207,15 +215,6 @@ export async function setWorkOrderMaterialsInTx(
           }),
         });
       }
-    } else if (markedBaseRows.length > 0) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: `تعذّر تعديل مواد أمر الشغل ${wo.orderNumber}`,
-          why: "الأمر مصنّف خدمةً بلا استهلاك للصنف الأساس، لكنه يحمل سطر مادة موسوماً كأساس مادي؛ الحالتان متناقضتان",
-          doThis: "أوقف التعديل واطلب تصحيح الأمر قبل المتابعة كي لا يُخصم مخزون خدمة أو تُفوتر بضاعة بلا حركة",
-        }),
-      });
     }
 
     // التحرير يثبت أهلية كل مادة ستبقى بلا نقصان، حتى لو كان الطلب idempotent. أمّا مادةٌ
@@ -228,9 +227,21 @@ export async function setWorkOrderMaterialsInTx(
             (desiredQty.get(variantId) ?? 0) < (currentQty.get(variantId) ?? 0),
         )
       : [];
+    const checkVariantIds: number[] = [];
+    for (const vid of (consumed ? touchedIds : desiredIds)) {
+      const isService = await isServiceVariant(tx, vid);
+      const isBundle = await isBundleVariant(tx, vid);
+      if (isService || isBundle) {
+        if ((desiredQty.get(vid) ?? 0) > 0) {
+          checkVariantIds.push(vid);
+        }
+      } else {
+        checkVariantIds.push(vid);
+      }
+    }
     const materialInfo = await assertStockedOwnedMaterials(
       tx,
-      consumed ? touchedIds : desiredIds,
+      checkVariantIds,
       "مادة أمر الشغل",
       { allowInactiveVariantIds: reducedIds },
     );
@@ -281,16 +292,20 @@ export async function setWorkOrderMaterialsInTx(
         } else {
           // المادة المخفَّضة تعود بالقيمة التي خرجت بها عند البدء، لا بتكلفة اليوم.
           // الحركة والقيمة وWAVG تُحدَّث تحت mutex الصنف وكل أرصدته في primitive واحدة.
-          await applyValuedInboundMovement(tx, {
-            variantId: vid,
-            branchId: Number(wo.branchId),
-            baseQuantity: -delta,
-            historicalValue: lineCostDelta.abs(),
-            referenceType: "WORK_ORDER",
-            referenceId: input.workOrderId,
-            createdBy: actor.userId,
-            notes: `تعديل بنود أمر الشغل ${wo.orderNumber}`,
-          });
+          const isService = await isServiceVariant(tx, vid);
+          const isBundle = await isBundleVariant(tx, vid);
+          if (!isService && !isBundle) {
+            await applyValuedInboundMovement(tx, {
+              variantId: vid,
+              branchId: Number(wo.branchId),
+              baseQuantity: -delta,
+              historicalValue: lineCostDelta.abs(),
+              referenceType: "WORK_ORDER",
+              referenceId: input.workOrderId,
+              createdBy: actor.userId,
+              notes: `تعديل بنود أمر الشغل ${wo.orderNumber}`,
+            });
+          }
         }
       }
       costDelta = round2(costDelta);

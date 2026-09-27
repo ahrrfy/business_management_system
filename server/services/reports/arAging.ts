@@ -2,6 +2,7 @@
 //  - getARAging: شيخوخة الذمم المدينة لكل العملاء، بدلاء 0-30/31-60/61-90/90+.
 //  - getCustomerStatement: كشف حساب عميل (فواتير + دفعات + ملخّص).
 import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import { openBalanceExpr, openBalanceOf } from "@shared/predicates/openBalance";
 import { accountingEntries, customers, invoices, orderPayments, receipts, users } from "../../../drizzle/schema";
@@ -63,7 +64,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       ) cb ON cb.customerId = c.id`
     : sql``;
   const currentBalanceExpr = opts.branchId
-    ? sql`COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0))`
+    ? sql`CASE WHEN c.currentBalance <= 0 THEN c.currentBalance ELSE COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0)) END`
     : sql`c.currentBalance`;
   const branchGroup = opts.branchId ? sql`, cb.balance` : sql``;
   const balanceHaving = opts.branchId
@@ -106,17 +107,97 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];
-  // REP-04: الدلاء تُعمَّر من الفواتير المستحقّة فقط؛ الرصيد الافتتاحي (OPENING) والسندات المستقلّة
-  // تقع خارجها ⇒ unbucketed = currentBalance − unpaidTotal (مُوقَّع، بلا قصّ) يُغلق الفرق فتتّزن
-  // الدلاء مع الرصيد الجاري. بدقّة decimal (§٥).
-  return (data as any[]).map((r) => {
-    const scopedBalance = money(r.currentBalance);
-    return {
-      ...(r as ARAgingRow),
-      currentBalance: toDbMoney(scopedBalance),
-      unbucketed: toDbMoney(scopedBalance.sub(money(r.unpaidTotal))),
-    };
-  });
+  return (data as any[])
+    .map((r) => {
+      const scopedBalance = money(r.currentBalance);
+      let d0_30 = money(r.d0_30 || 0);
+      let d31_60 = money(r.d31_60 || 0);
+      let d61_90 = money(r.d61_90 || 0);
+      let d91p = money(r.d91p || 0);
+      const rawUnpaid = money(r.unpaidTotal || 0);
+
+      // حارس المبدأ المحاسبي الجوهري (DoD §٥):
+      // إذا كان رصيد العميل صفراً أو سالباً (دائن)، فلا توجد ذمم مدينة مستحقة على العميل إطلاقاً
+      // وكل الفواتير المفتوحة في الدفتر تخضع للتسوية التلقائية كمسددة
+      if (scopedBalance.lte(0)) {
+        return {
+          ...(r as ARAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: "0.00",
+          d31_60: "0.00",
+          d61_90: "0.00",
+          d91p: "0.00",
+          unpaidTotal: "0.00",
+          unbucketed: toDbMoney(scopedBalance),
+          oldestInvoiceDate: null,
+        };
+      }
+
+      // إذا كان إجمالي الفواتير المفتوحة الخام يفوق الرصيد الفعلي المدين:
+      // الفارق يمثل سدادات غير مخصصة تخفض الذمم وفق قاعدة الأسبقية المحاسبية FIFO
+      // (الأقدم يُسدد أولاً: >90 ثم 61-90 ثم 31-60 ثم 0-30)
+      if (rawUnpaid.gt(scopedBalance)) {
+        let unallocatedPayment = rawUnpaid.minus(scopedBalance);
+
+        // تخفيض دلو >90
+        const alloc91p = Decimal.min(d91p, unallocatedPayment);
+        d91p = d91p.minus(alloc91p);
+        unallocatedPayment = unallocatedPayment.minus(alloc91p);
+
+        // تخفيض دلو 61-90
+        if (unallocatedPayment.gt(0)) {
+          const alloc61_90 = Decimal.min(d61_90, unallocatedPayment);
+          d61_90 = d61_90.minus(alloc61_90);
+          unallocatedPayment = unallocatedPayment.minus(alloc61_90);
+        }
+
+        // تخفيض دلو 31-60
+        if (unallocatedPayment.gt(0)) {
+          const alloc31_60 = Decimal.min(d31_60, unallocatedPayment);
+          d31_60 = d31_60.minus(alloc31_60);
+          unallocatedPayment = unallocatedPayment.minus(alloc31_60);
+        }
+
+        // تخفيض دلو 0-30
+        if (unallocatedPayment.gt(0)) {
+          const alloc0_30 = Decimal.min(d0_30, unallocatedPayment);
+          d0_30 = d0_30.minus(alloc0_30);
+          unallocatedPayment = unallocatedPayment.minus(alloc0_30);
+        }
+
+        const effectiveUnpaid = scopedBalance;
+        return {
+          ...(r as ARAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: toDbMoney(d0_30),
+          d31_60: toDbMoney(d31_60),
+          d61_90: toDbMoney(d61_90),
+          d91p: toDbMoney(d91p),
+          unpaidTotal: toDbMoney(effectiveUnpaid),
+          unbucketed: "0.00",
+        };
+      }
+
+      // الحالة الطبيعية: rawUnpaid <= scopedBalance
+      // الفارق (scopedBalance - rawUnpaid) رصيد افتتاحي/غير مفوتر موجب
+      const effectiveUnpaid = rawUnpaid;
+      const unbucketed = scopedBalance.minus(effectiveUnpaid);
+
+      return {
+        ...(r as ARAgingRow),
+        currentBalance: toDbMoney(scopedBalance),
+        d0_30: toDbMoney(d0_30),
+        d31_60: toDbMoney(d31_60),
+        d61_90: toDbMoney(d61_90),
+        d91p: toDbMoney(d91p),
+        unpaidTotal: toDbMoney(effectiveUnpaid),
+        unbucketed: toDbMoney(unbucketed),
+      };
+    })
+    .filter((r) => {
+      // استبعاد الحسابات الصفرية تماماً (الرصيد الجاري صفر والذمة المستحقة صفر)
+      return !(money(r.currentBalance).isZero() && money(r.unpaidTotal).isZero());
+    });
 }
 
 export interface CustomerStatementInvoice {

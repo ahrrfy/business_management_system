@@ -26,6 +26,7 @@ import {
   workOrderMaterials,
   workOrders,
 } from "../../drizzle/schema";
+import { phoneSuffix10 } from "../lib/phone";
 import { getDb } from "../db";
 import {
   cancelWorkOrder,
@@ -373,9 +374,29 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
   const search = input?.q?.trim();
   if (search) {
     const pat = `%${escLike(search)}%`;
-    conds.push(
-      sql`(${workOrders.orderNumber} LIKE ${pat} ESCAPE '!' OR ${workOrders.title} LIKE ${pat} ESCAPE '!' OR ${customers.name} LIKE ${pat} ESCAPE '!')`,
-    );
+    const sfx = phoneSuffix10(search);
+    const searchConds = [
+      sql`${workOrders.orderNumber} LIKE ${pat} ESCAPE '!'`,
+      sql`${workOrders.title} LIKE ${pat} ESCAPE '!'`,
+      sql`${customers.name} LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone2}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone3}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.whatsapp}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${workOrders.deliveryPhone}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${workOrders.contactPhone}, '') LIKE ${pat} ESCAPE '!'`,
+    ];
+    if (sfx) {
+      const sfxPat = `%${escLike(sfx)}%`;
+      searchConds.push(
+        sql`coalesce(${customers.phone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${customers.phone2}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${customers.whatsapp}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${workOrders.deliveryPhone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${workOrders.contactPhone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...searchConds)!);
   }
   if (input?.from) {
     const from = new Date(input.from);
@@ -1094,7 +1115,7 @@ export const workOrderRouter = router({
       const db = getDb();
       if (!db) return null;
       const lookup = prepareDeliveryBarcodeLookup(input.orderNumber);
-      const { code, systemCode, trackingCode, documentCode, namespace, numericId } = lookup;
+      const { code, systemCode, trackingCode, strippedTrackingCode, documentCode, namespace, numericId } = lookup;
       const scopedBranchId = canCrossBranches(ctx.user)
         ? null
         : (ctx.user.branchId == null ? -1 : Number(ctx.user.branchId));
@@ -1166,7 +1187,11 @@ export const workOrderRouter = router({
                 sourceType: deliveryConsignments.sourceType,
                 sourceId: deliveryConsignments.sourceId,
                 linkedOnlineOrderId: onlineOrders.id,
-                matchRank: sql<number>`CASE WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}) THEN 100 WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50 ELSE 10 END`,
+                matchRank: sql<number>`CASE
+                  WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}) THEN 100
+                  WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
+                  WHEN TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode} THEN 40
+                  ELSE 10 END`,
               })
               .from(deliveryConsignments)
               .leftJoin(onlineOrders, eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId))
@@ -1177,11 +1202,21 @@ export const workOrderRouter = router({
                     ? or(
                         numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
                         eq(deliveryConsignments.consignmentNumber, code),
-                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                        trackingCode
+                          ? or(
+                              eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                              eq(sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef})`, strippedTrackingCode),
+                            )
+                          : sql`0=1`,
                       )
                     : or(
                         eq(deliveryConsignments.consignmentNumber, systemCode),
-                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                        trackingCode
+                          ? or(
+                              eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                              eq(sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef})`, strippedTrackingCode),
+                            )
+                          : sql`0=1`,
                       ),
                 branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
               ))

@@ -76,7 +76,8 @@ export default function AssetNew() {
     if (!form.name.trim()) { setError("اسم الأصل مطلوب."); return; }
     if (!form.purchaseValue.trim()) { setError("قيمة الشراء مطلوبة."); return; }
     if (!(Number(form.purchaseValue) > 0)) { setError("قيمة الشراء يجب أن تكون أكبر من صفر."); return; }
-    if (!(Number(form.usefulLifeYears) > 0)) { setError("العمر الإنتاجي يجب أن يكون أكبر من صفر."); return; }
+    const isLand = form.category === "land";
+    if (!isLand && !(Number(form.usefulLifeYears) > 0)) { setError("العمر الإنتاجي يجب أن يكون أكبر من صفر."); return; }
     if (!form.acquisitionEvidenceReference.trim()) { setError("مرجع فاتورة أو عقد الاقتناء مطلوب."); return; }
     if (!form.supplierId && !form.acquisitionBeneficiaryName.trim()) { setError("اسم البائع الحقيقي مطلوب عند عدم اختيار مورد مسجل."); return; }
     create.mutate({
@@ -93,8 +94,8 @@ export default function AssetNew() {
       clientRequestId,
       purchaseDate: form.purchaseDate,
       purchaseValue: form.purchaseValue.trim(),
-      salvageValue: form.salvageValue.trim() || "0",
-      usefulLifeYears: Number(form.usefulLifeYears),
+      salvageValue: isLand ? "0" : (form.salvageValue.trim() || "0"),
+      usefulLifeYears: isLand ? 0 : Number(form.usefulLifeYears),
       depreciationMethod: form.method,
       condition: form.condition.trim() || undefined,
       warrantyEnd: form.warrantyEnd.trim() || undefined,
@@ -172,18 +173,29 @@ export default function AssetNew() {
       <Card className="lg:col-span-2">
         <CardHeader><CardTitle className="text-base">الإهلاك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-1">
-            <Label>الطريقة</Label>
-            <AppSelect className="h-9" value={form.method} onValueChange={(next) => set({ method: next as "sl" | "db" })}>
-              {DEPRECIATION_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-            </AppSelect>
-          </div>
-          <div className="space-y-1"><Label>العمر الإنتاجي (سنوات) *</Label><Input dir="ltr" inputMode="numeric" value={form.usefulLifeYears} onChange={(e) => set({ usefulLifeYears: e.target.value.replace(/\D/g, "") })} /></div>
-          <div className="space-y-1"><Label>القيمة التخريدية (د.ع)</Label><MoneyInput value={form.salvageValue} onChange={(salvageValue) => set({ salvageValue })} decimals={0} placeholder="0" /></div>
-          <div className="md:col-span-3 rounded-md border bg-muted/30 p-3 flex items-center justify-between">
-            <span className="text-sm text-muted-foreground">القسط السنوي المُقدَّر ({DEPRECIATION_METHODS.find((m) => m.key === form.method)?.short})</span>
-            <span className="text-lg font-bold tabular-nums" dir="ltr">{iqd(annual)} د.ع</span>
-          </div>
+          {form.category === "land" ? (
+            <div className="md:col-span-3 rounded-md border border-sky-500/20 bg-sky-50/50 dark:bg-sky-950/20 p-4 text-sm text-sky-800 dark:text-sky-300">
+              <p className="font-semibold mb-1">أصل غير خاضع للاستهلاك (الأراضي)</p>
+              <p className="text-xs text-muted-foreground">
+                وفقاً للمعيار المحاسبي الدولي IAS 16 والنظام المحاسبي الموحد، تتميز الأراضي بعمر إنتاجي غير محدد ولا تخضع لأقساط إهلاك سنوية، وتظل قيمتها الدفترية مساوية لتكلفة الاقتناء.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1">
+                <Label>الطريقة</Label>
+                <AppSelect className="h-9" value={form.method} onValueChange={(next) => set({ method: next as "sl" | "db" })}>
+                  {DEPRECIATION_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+                </AppSelect>
+              </div>
+              <div className="space-y-1"><Label>العمر الإنتاجي (سنوات) *</Label><Input dir="ltr" inputMode="numeric" value={form.usefulLifeYears} onChange={(e) => set({ usefulLifeYears: e.target.value.replace(/\D/g, "") })} /></div>
+              <div className="space-y-1"><Label>القيمة التخريدية (د.ع)</Label><MoneyInput value={form.salvageValue} onChange={(salvageValue) => set({ salvageValue })} decimals={0} placeholder="0" /></div>
+              <div className="md:col-span-3 rounded-md border bg-muted/30 p-3 flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">القسط السنوي المُقدَّر ({DEPRECIATION_METHODS.find((m) => m.key === form.method)?.short})</span>
+                <span className="text-lg font-bold tabular-nums" dir="ltr">{iqd(annual)} د.ع</span>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
       </div>

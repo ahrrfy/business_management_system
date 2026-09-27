@@ -6,6 +6,8 @@
  */
 
 export const ASSET_CATEGORIES = [
+  { key: "land", label: "أراضي وعقارات", defaultLife: 0 },
+  { key: "buildings", label: "مباني وإنشاءات", defaultLife: 25 },
   { key: "computers", label: "أجهزة حاسوب", defaultLife: 4 },
   { key: "display", label: "شاشات وعرض", defaultLife: 5 },
   { key: "furniture", label: "أثاث مكتبي", defaultLife: 10 },

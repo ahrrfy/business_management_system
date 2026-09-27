@@ -37,6 +37,7 @@ import {
 } from "../salesPromotionService";
 import { consumeCoupon, hashCouponCode, lockCouponForSale } from "../couponService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "../accounting/postingEngine";
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
@@ -1610,6 +1611,9 @@ export async function createSaleInTx(
     }
     if (input.customerId) {
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
+      if (effectiveTotalD.gt(paidNow)) {
+        await autoSettleCustomerAccountTx(tx, input.customerId, actor);
+      }
     }
     if (input.clientRequestId && requestFingerprint) {
       await recordIdempotencyKey(tx, "sale.create", input.clientRequestId, invoiceId, requestFingerprint);
