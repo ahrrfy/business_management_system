@@ -43,6 +43,7 @@ export default function AssetEdit() {
     branchId: "", location: "", condition: "",
     supplierId: "", purchaseDate: "", purchaseValue: "", warrantyEnd: "",
     method: "sl" as "sl" | "db", usefulLifeYears: "1", salvageValue: "0",
+    accumulatedDepreciation: "",
   });
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
 
@@ -54,6 +55,7 @@ export default function AssetEdit() {
       branchId: a.branchId ? String(a.branchId) : "", location: a.location ?? "", condition: a.condition ?? "",
       supplierId: a.supplierId ? String(a.supplierId) : "", purchaseDate: a.purchaseDate ?? "", purchaseValue: stripMoney(a.purchaseValue), warrantyEnd: a.warrantyEnd ?? "",
       method: (a.depreciationMethod as "sl" | "db") ?? "sl", usefulLifeYears: String(a.usefulLifeYears ?? 1), salvageValue: stripMoney(a.salvageValue),
+      accumulatedDepreciation: stripMoney(a.accumulated),
     };
     setForm(loadedForm);
     setBaseline(JSON.stringify(loadedForm));
@@ -178,6 +180,7 @@ export default function AssetEdit() {
           </div>
           <div className="space-y-1"><Label htmlFor="pdate">تاريخ الشراء *</Label><Input id="pdate" type="date" dir="ltr" value={form.purchaseDate} readOnly aria-describedby="asset-financial-lock" /></div>
           <div className="space-y-1"><Label htmlFor="pval">قيمة الشراء (د.ع) *</Label><MoneyInput id="pval" value={form.purchaseValue} onChange={() => undefined} decimals={0} disabled aria-describedby="asset-financial-lock" /></div>
+          <div className="space-y-1"><Label htmlFor="accDep">مجمع الإهلاك (د.ع)</Label><MoneyInput id="accDep" value={form.accumulatedDepreciation} onChange={() => undefined} decimals={0} disabled aria-describedby="asset-financial-lock" /></div>
           <div className="space-y-1"><Label htmlFor="war">نهاية الكفالة</Label><Input id="war" type="date" dir="ltr" value={form.warrantyEnd} onChange={(e) => set({ warrantyEnd: e.target.value })} /></div>
         </CardContent>
       </Card>

@@ -2023,8 +2023,9 @@ export const PROFILE_POLICIES = Object.freeze({
   OPENING_FIXED_ASSET: profilePolicy(
     "OPENING",
     ["FIXED_ASSETS"],
-    ["OPENING_EQUITY"],
+    ["OPENING_EQUITY", "ACCUMULATED_DEPRECIATION"],
     {
+      requiredCreditRoles: ["OPENING_EQUITY"],
       sourceAssertions: [
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["FIXED_ASSETS"]),
       ],

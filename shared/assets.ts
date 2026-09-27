@@ -51,3 +51,32 @@ export const DEPRECIATION_METHOD_KEYS = DEPRECIATION_METHODS.map((m) => m.key) a
   DepreciationMethod,
   ...DepreciationMethod[],
 ];
+
+export const ASSET_ACQUISITION_TYPES = [
+  {
+    key: "OPENING",
+    label: "أصل سابق لبناء النظام (رصيد افتتاحي / ممول مسبقاً)",
+    short: "أصل افتتاحي",
+    description: "أصل تم شراؤه وسداده بالكامل قبل بدء العمل بالنظام؛ لا يتطلب أي صرف نقدي من الخزينة ولا يولد سندات صرف.",
+  },
+  {
+    key: "NEW_PURCHASE_CASH",
+    label: "شراء نقدي جديد (من الخزينة)",
+    short: "شراء نقدي",
+    description: "شراء أصل نقداً في الوقت الحالي؛ يُنشئ طلب صرف نقدي يخضع للاعتماد والصرف من الخزينة.",
+  },
+  {
+    key: "NEW_PURCHASE_SUPPLIER",
+    label: "شراء آجل جديد (على ذمة مورد)",
+    short: "آجل من مورد",
+    description: "شراء أصل بالآجل من مورّد مسجل؛ يُسجل ذمة دائنة للمورد في الحسابات وتُسدد بدفعات لاحقة.",
+  },
+] as const;
+export type AssetAcquisitionType = (typeof ASSET_ACQUISITION_TYPES)[number]["key"];
+export const ASSET_ACQUISITION_TYPE_KEYS = ASSET_ACQUISITION_TYPES.map((t) => t.key) as [
+  AssetAcquisitionType,
+  ...AssetAcquisitionType[],
+];
+export const assetAcquisitionTypeLabel = (k: string): string =>
+  ASSET_ACQUISITION_TYPES.find((t) => t.key === k)?.label ?? k;
+
