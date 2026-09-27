@@ -177,7 +177,6 @@ export default defineConfig({
       "client/src/pages/__tests__/workOrderOperationalUx.test.ts",
       "client/src/components/workOrders/WorkOrderControlApprovals.test.ts",
       "client/src/components/workorder/DesignFileCard.test.tsx",
-      "client/src/pages/__tests__/TaskDetailDesignApproval.test.tsx",
       "client/src/components/workorder/ReverseDeliveryRequestDialog.test.tsx",
       "client/src/components/pos/DigitalFulfillmentDialog.test.tsx",
       "client/src/components/pos/digitalBasket.test.ts",

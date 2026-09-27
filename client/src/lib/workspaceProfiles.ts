@@ -30,7 +30,6 @@ export type WorkspaceProfileId =
 
 export type WorkspaceQueueId =
   | "decisions"
-  | "my_tasks"
   | "cash_reconciliation"
   | "delivery_settlement"
   | "retail_shift"
@@ -159,13 +158,6 @@ const NAV = {
   printPos: stationItem("PRINT_SERVICES", "print_pos", "كاشير خدمات الطباعة"),
   receptionPos: stationItem("RECEPTION", "reception_pos", "استقبال الطلبات"),
   myWork: nav("my_work", "مطلوب مني الآن", "/my-work", AUTHENTICATED_ACCESS),
-  tasks: nav("my_tasks", "مهامي", "/tasks?tab=mine", moduleAccess("tasks")),
-  courierTasks: nav(
-    "my_tasks",
-    "مهامي",
-    "/tasks?tab=mine",
-    moduleAccess("tasks", "READ", []),
-  ),
   invoices: nav(
     "invoices",
     "الفواتير",
@@ -317,8 +309,6 @@ const NAV = {
 
 const QUEUE = {
   decisions: queue("decisions", AUTHENTICATED_ACCESS),
-  myTasks: queue("my_tasks", moduleAccess("tasks")),
-  courierTasks: queue("my_tasks", moduleAccess("tasks", "READ", [])),
   cashReconciliation: queue(
     "cash_reconciliation",
     moduleAccess("treasury", "FULL", ["manager", "accountant"]),
@@ -381,33 +371,31 @@ const PROFILES: Readonly<
       QUEUE.retailShift,
       QUEUE.printShift,
       QUEUE.receptionShift,
-      QUEUE.myTasks,
     ],
   },
   cashier_retail: {
     defaultActionId: NAV.retailPos.id,
-    primaryNav: [NAV.retailPos, NAV.invoices, NAV.returns, NAV.tasks],
-    queues: [QUEUE.retailShift, QUEUE.myTasks, QUEUE.decisions],
+    primaryNav: [NAV.retailPos, NAV.invoices, NAV.returns],
+    queues: [QUEUE.retailShift, QUEUE.decisions],
   },
   cashier_print: {
     defaultActionId: NAV.printPos.id,
-    primaryNav: [NAV.printPos, NAV.invoices, NAV.priceChecker, NAV.tasks],
-    queues: [QUEUE.printShift, QUEUE.myTasks, QUEUE.decisions],
+    primaryNav: [NAV.printPos, NAV.invoices, NAV.priceChecker],
+    queues: [QUEUE.printShift, QUEUE.decisions],
   },
   reception: {
     defaultActionId: NAV.receptionPos.id,
-    primaryNav: [NAV.receptionPos, NAV.workOrders, NAV.invoices, NAV.tasks],
+    primaryNav: [NAV.receptionPos, NAV.workOrders, NAV.invoices],
     queues: [
       QUEUE.receptionShift,
       QUEUE.receptionHandover,
       QUEUE.workOrdersMine,
-      QUEUE.myTasks,
     ],
   },
   technician: {
     defaultActionId: NAV.workOrders.id,
-    primaryNav: [NAV.workOrders, NAV.tasks, NAV.productStudio, NAV.inbox],
-    queues: [QUEUE.workOrdersMine, QUEUE.myTasks, QUEUE.decisions],
+    primaryNav: [NAV.workOrders, NAV.productStudio, NAV.inbox],
+    queues: [QUEUE.workOrdersMine, QUEUE.decisions],
   },
   warehouse: {
     defaultActionId: NAV.inventory.id,
@@ -417,7 +405,7 @@ const PROFILES: Readonly<
       NAV.transfers,
       NAV.backorders,
     ],
-    queues: [QUEUE.myStocktakes, QUEUE.backorders, QUEUE.myTasks],
+    queues: [QUEUE.myStocktakes, QUEUE.backorders],
   },
   purchasing: {
     defaultActionId: NAV.purchases.id,
@@ -427,7 +415,7 @@ const PROFILES: Readonly<
   sales: {
     defaultActionId: NAV.crmFollowups.id,
     primaryNav: [NAV.crmFollowups, NAV.inbox, NAV.pipeline, NAV.quotations],
-    queues: [QUEUE.salesFollowups, QUEUE.myTasks, QUEUE.decisions],
+    queues: [QUEUE.salesFollowups, QUEUE.decisions],
   },
   audit: {
     defaultActionId: NAV.reports.id,
@@ -436,8 +424,8 @@ const PROFILES: Readonly<
   },
   courier: {
     defaultActionId: NAV.myDeliveries.id,
-    primaryNav: [NAV.myDeliveries, NAV.courierTasks],
-    queues: [QUEUE.myDeliveries, QUEUE.courierTasks],
+    primaryNav: [NAV.myDeliveries],
+    queues: [QUEUE.myDeliveries],
   },
   general: {
     primaryNav: [
@@ -445,14 +433,12 @@ const PROFILES: Readonly<
       NAV.printPos,
       NAV.receptionPos,
       NAV.myWork,
-      NAV.tasks,
       NAV.invoices,
       NAV.inventory,
       NAV.reports,
     ],
     queues: [
       QUEUE.decisions,
-      QUEUE.myTasks,
       QUEUE.retailShift,
       QUEUE.printShift,
       QUEUE.receptionShift,

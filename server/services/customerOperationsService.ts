@@ -1,5 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
-import { arReminders, customerNotes, customers, invoices, tasks, users } from "../../drizzle/schema";
+import { arReminders, customerNotes, customers, invoices, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "../../shared/searchNormalize";
@@ -232,12 +232,7 @@ function derivedCustomers(input: CustomerOperationsInput): SQL {
         ORDER BY r.id DESC
         LIMIT 1
       ) AS lastReminderAt,
-      (
-        SELECT COUNT(*)
-        FROM ${tasks} t
-        WHERE t.customerId = ${customers.id}
-          AND t.taskStatus NOT IN ('RESOLVED', 'CANCELLED')
-      ) AS openTasks
+      0 AS openTasks
     FROM ${customers}
     ${base.length ? sql`WHERE ${sql.join(base, sql` AND `)}` : sql``}
   `;

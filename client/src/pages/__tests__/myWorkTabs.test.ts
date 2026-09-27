@@ -226,23 +226,6 @@ function resetQueries() {
       failedSources: [],
       kinds: [decisionRow.kind],
     }),
-    workspace: ready({
-      employee: {
-        name: "سارة علي",
-        position: "مبيعات",
-        department: "المعرض",
-      },
-      tasks: [
-        {
-          id: 41,
-          taskNumber: "TSK-41",
-          title: "متابعة تجهيز الطلب",
-          status: "IN_PROGRESS",
-          priority: "HIGH",
-          dueAt: null,
-        },
-      ],
-    }),
     notifications: ready({
       rows: [
         {
@@ -250,7 +233,7 @@ function resetQueries() {
           title: "تحديث الإشعار",
           body: "اكتمل الإجراء",
           createdAt: "2026-09-17T08:00:00.000Z",
-          route: "/tasks/41",
+          route: "/work-orders/41",
           requiresAction: false,
           readAt: null,
         },
@@ -331,14 +314,13 @@ afterEach(async () => {
 });
 
 describe("MyWork tab URL contract", () => {
-  it("defaults to decisions and accepts the three explicit tabs", () => {
+  it("defaults to decisions and accepts explicit tabs", () => {
     expect(resolveMyWorkTab("", "")).toEqual({
       tab: "decisions",
       invalidTab: null,
       focusAnnouncements: false,
     });
     expect(resolveMyWorkTab("tab=decisions", "").tab).toBe("decisions");
-    expect(resolveMyWorkTab("tab=tasks", "").tab).toBe("tasks");
     expect(resolveMyWorkTab("tab=updates", "").tab).toBe("updates");
   });
 
@@ -354,10 +336,10 @@ describe("MyWork tab URL contract", () => {
   });
 
   it("lets a valid explicit tab win over a stale legacy hash", () => {
-    expect(resolveMyWorkTab("tab=tasks", "#announcements")).toEqual({
-      tab: "tasks",
+    expect(resolveMyWorkTab("tab=updates", "#announcements")).toEqual({
+      tab: "updates",
       invalidTab: null,
-      focusAnnouncements: false,
+      focusAnnouncements: true,
     });
   });
 
@@ -367,12 +349,17 @@ describe("MyWork tab URL contract", () => {
       invalidTab: "forbidden",
       focusAnnouncements: false,
     });
+    expect(resolveMyWorkTab("tab=tasks", "")).toEqual({
+      tab: "decisions",
+      invalidTab: "tasks",
+      focusAnnouncements: false,
+    });
   });
 
   it("writes a shareable tab URL while preserving unrelated query parameters", () => {
     expect(
-      buildMyWorkTabHref("/my-work", "source=bell&tab=updates", "tasks"),
-    ).toBe("/my-work?source=bell&tab=tasks");
+      buildMyWorkTabHref("/my-work", "source=bell&tab=decisions", "updates"),
+    ).toBe("/my-work?source=bell&tab=updates");
   });
 });
 
@@ -391,28 +378,22 @@ describe("MyWork component wiring", () => {
     expect(harness.enabled).toMatchObject({
       decisions: true,
       branches: true,
-      workspace: false,
       notifications: false,
       announcements: false,
     });
 
-    await clickTab("مهامي");
-    expect(harness.url).toBe("/my-work?tab=tasks");
+    await clickTab("تحديثات");
+    expect(harness.url).toBe("/my-work?tab=updates");
     expect(
       container.querySelector('[role="tab"][aria-selected="true"]')
         ?.textContent,
-    ).toContain("مهامي");
+    ).toContain("تحديثات");
     expect(harness.enabled).toMatchObject({
       decisions: false,
       branches: false,
-      workspace: true,
-      notifications: false,
-      announcements: false,
+      notifications: true,
+      announcements: true,
     });
-    expect(
-      container.querySelector('a[href="/tasks/41"]')?.textContent,
-    ).toContain("متابعة تجهيز الطلب");
-    expect(container.querySelector('a[href="/tasks?tab=mine"]')).not.toBeNull();
 
     await act(async () => setHarnessUrl("/my-work?tab=decisions"));
     expect(
@@ -425,12 +406,12 @@ describe("MyWork component wiring", () => {
   });
 
   it("restores an explicit tab on refresh", async () => {
-    await renderPage("/my-work?tab=tasks");
+    await renderPage("/my-work?tab=updates");
     expect(
       container.querySelector('[role="tab"][aria-selected="true"]')
         ?.textContent,
-    ).toContain("مهامي");
-    expect(harness.enabled.workspace).toBe(true);
+    ).toContain("تحديثات");
+    expect(harness.enabled.notifications).toBe(true);
     expect(harness.enabled.decisions).toBe(false);
   });
 

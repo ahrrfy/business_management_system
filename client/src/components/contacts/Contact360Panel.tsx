@@ -48,7 +48,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { StatusBadge as TaskStatusBadge } from "@/pages/TasksHub";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
@@ -273,32 +272,6 @@ function InvoicesCard({ invoices }: { invoices: Extract<Contact360Data, { kind: 
   );
 }
 
-/* ═══════════ المهام المفتوحة (عميل فقط) ═══════════ */
-
-function OpenTasksCard({ tasks }: { tasks: Extract<Contact360Data, { kind: "customer" }>["openTasks"] }) {
-  return (
-    <SectionCard icon={ClipboardList} title="المهام المفتوحة">
-      {tasks.length === 0 ? (
-        <p className="text-xs text-muted-foreground">لا مهام مفتوحة.</p>
-      ) : (
-        <ul className="space-y-1">
-          {tasks.map((t) => (
-            <li key={t.id}>
-              <Link
-                href={`/tasks/${t.id}`}
-                className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
-              >
-                <span className="font-mono text-xs shrink-0" dir="ltr">{t.taskNumber}</span>
-                <span className="truncate flex-1">{t.title}</span>
-                <TaskStatusBadge status={t.taskStatus} />
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </SectionCard>
-  );
-}
 
 /* ═══════════ المحادثات ═══════════ */
 
@@ -638,7 +611,6 @@ export function Contact360Panel({
                 />
               )}
               {q.data.kind === "customer" && <InvoicesCard invoices={q.data.invoices} />}
-              {q.data.kind === "customer" && <OpenTasksCard tasks={q.data.openTasks} />}
               <ConversationsCard conversations={q.data.conversations} />
               <ContactPersonsCard partyKind={kind} partyId={id} canWrite={canWritePersons} />
               <DuplicatesCard kind={kind} id={id} onOpenContact={onOpenContact} />

@@ -29,8 +29,7 @@ const TABLES = [
   "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks",
-  "shifts", "workOrderMaterials", "workOrders", "serviceTypes", "customers", "suppliers", "branches", "users",
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "shifts", "workOrderMaterials", "workOrders", "serviceTypes", "customers", "suppliers", "branches", "users",
 ];
 
 function db() {

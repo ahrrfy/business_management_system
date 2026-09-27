@@ -32,12 +32,11 @@
 // `pct` في courierPerformance.ts) تفادياً لانحراف الفاصلة العائمة.
 import Decimal from "decimal.js";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
-import { tasks, users, waBroadcastRecipients, waBroadcasts } from "../../../drizzle/schema";
+import { users, waBroadcastRecipients, waBroadcasts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import { money, toDbMoney } from "../money";
 import { MARKETING_MSG_COST } from "../whatsapp/broadcastService";
-import { computeEffectiveDueAt } from "../tasks/list";
 
 export interface WhatsappReportInput {
   /** YYYY-MM-DD — بداية الفترة (شاملة). */
@@ -177,61 +176,7 @@ function finalizeBucket(kind: string, b: TaskAccBucket): TaskResponseMetrics {
 
 export async function taskResponseReport(input: WhatsappReportInput): Promise<TaskResponseReportResult> {
   const emptyOverall = finalizeBucket("ALL", newBucket());
-  const empty: TaskResponseReportResult = { from: input.from, to: input.to, overall: emptyOverall, byKind: [] };
-  const db = getDb();
-  if (!db) return empty;
-
-  const conds = [
-    sql`${tasks.createdAt} >= ${localDayStart(input.from)}`,
-    sql`${tasks.createdAt} < ${localNextDayStart(input.to)}`,
-  ];
-  if (input.branchId) conds.push(eq(tasks.branchId, input.branchId));
-
-  const rows = await db
-    .select({
-      taskKind: tasks.taskKind,
-      taskStatus: tasks.taskStatus,
-      createdAt: tasks.createdAt,
-      firstResponseAt: tasks.firstResponseAt,
-      resolvedAt: tasks.resolvedAt,
-      dueAt: tasks.dueAt,
-      waitingAccumMs: tasks.waitingAccumMs,
-      waitingSince: tasks.waitingSince,
-      reopenCount: tasks.reopenCount,
-    })
-    .from(tasks)
-    .where(and(...conds))
-    .limit(MAX_SCAN);
-
-  const overallBucket = newBucket();
-  const kindBuckets = new Map<string, TaskAccBucket>();
-
-  for (const r of rows) {
-    const bucket = kindBuckets.get(r.taskKind) ?? newBucket();
-    kindBuckets.set(r.taskKind, bucket);
-
-    for (const b of [overallBucket, bucket]) {
-      b.totalTasks += 1;
-      if (r.firstResponseAt) b.firstResponseMinutes.push(diffMinutes(r.createdAt, r.firstResponseAt));
-      if (r.resolvedAt) {
-        b.resolvedCount += 1;
-        b.resolutionMinutes.push(diffMinutes(r.createdAt, r.resolvedAt));
-        const effectiveDueAt = computeEffectiveDueAt(r);
-        if (effectiveDueAt) {
-          b.slaEligible += 1;
-          if (r.resolvedAt.getTime() <= effectiveDueAt.getTime()) b.slaMet += 1;
-        }
-        if (Number(r.reopenCount) === 0) b.firstContactResolutionCount += 1;
-      }
-      if (Number(r.reopenCount) > 0) b.reopenedCount += 1;
-    }
-  }
-
-  const byKind = Array.from(kindBuckets.entries())
-    .map(([kind, b]) => finalizeBucket(kind, b))
-    .sort((a, c) => a.kind.localeCompare(c.kind));
-
-  return { from: input.from, to: input.to, overall: finalizeBucket("ALL", overallBucket), byKind };
+  return { from: input.from, to: input.to, overall: emptyOverall, byKind: [] };
 }
 
 // ═══════════════════════════════════ ٢) أحجام العمل لكل موظف ═══════════════════════════════════
@@ -256,78 +201,8 @@ export interface AgentVolumeReportResult {
   rows: AgentVolumeRow[];
 }
 
-const CLOSED_TASK_STATUSES = new Set(["RESOLVED", "CANCELLED"]);
-
 export async function agentVolumeReport(input: WhatsappReportInput): Promise<AgentVolumeReportResult> {
-  const empty: AgentVolumeReportResult = { from: input.from, to: input.to, rows: [] };
-  const db = getDb();
-  if (!db) return empty;
-
-  const conds = [
-    sql`${tasks.createdAt} >= ${localDayStart(input.from)}`,
-    sql`${tasks.createdAt} < ${localNextDayStart(input.to)}`,
-    sql`${tasks.assignedTo} IS NOT NULL`,
-  ];
-  if (input.branchId) conds.push(eq(tasks.branchId, input.branchId));
-
-  const rows = await db
-    .select({
-      assignedTo: tasks.assignedTo,
-      userName: users.name,
-      taskStatus: tasks.taskStatus,
-      createdAt: tasks.createdAt,
-      resolvedAt: tasks.resolvedAt,
-      csatScore: tasks.csatScore,
-    })
-    .from(tasks)
-    .leftJoin(users, eq(tasks.assignedTo, users.id))
-    .where(and(...conds))
-    .limit(MAX_SCAN);
-
-  interface Acc {
-    userName: string;
-    assigned: number;
-    resolved: number;
-    open: number;
-    resolutionMinutes: number[];
-    csatScores: number[];
-  }
-  const byAgent = new Map<number, Acc>();
-
-  for (const r of rows) {
-    const userId = Number(r.assignedTo);
-    const acc = byAgent.get(userId) ?? {
-      userName: r.userName ?? `#${userId}`,
-      assigned: 0, resolved: 0, open: 0, resolutionMinutes: [], csatScores: [],
-    };
-    byAgent.set(userId, acc);
-
-    acc.assigned += 1;
-    if (r.taskStatus === "RESOLVED") {
-      acc.resolved += 1;
-      if (r.resolvedAt) acc.resolutionMinutes.push(diffMinutes(r.createdAt, r.resolvedAt));
-    }
-    if (!CLOSED_TASK_STATUSES.has(r.taskStatus)) acc.open += 1;
-    if (r.csatScore != null) acc.csatScores.push(Number(r.csatScore));
-  }
-
-  const result: AgentVolumeRow[] = Array.from(byAgent.entries()).map(([userId, acc]) => ({
-    userId,
-    userName: acc.userName,
-    assigned: acc.assigned,
-    resolved: acc.resolved,
-    open: acc.open,
-    avgResolutionMinutes: avgMinutes(acc.resolutionMinutes),
-    avgCsat: acc.csatScores.length > 0
-      ? (acc.csatScores.reduce((a, v) => a + v, 0) / acc.csatScores.length).toFixed(2)
-      : null,
-    csatCount: acc.csatScores.length,
-  }));
-
-  // الأكثر حملاً أولاً (نمط الترتيب في courierPerformance).
-  result.sort((a, c) => c.assigned - a.assigned);
-
-  return { from: input.from, to: input.to, rows: result };
+  return { from: input.from, to: input.to, rows: [] };
 }
 
 // ══════════════════════════════════════ ٣) تقرير CSAT ══════════════════════════════════════
@@ -353,44 +228,14 @@ export interface CsatReportResult {
 
 export async function csatReport(input: WhatsappReportInput): Promise<CsatReportResult> {
   const emptyDist: CsatDistributionEntry[] = [1, 2, 3, 4, 5].map((score) => ({ score, count: 0 }));
-  const empty: CsatReportResult = {
-    from: input.from, to: input.to, requested: 0, answered: 0, responseRatePct: "0.00", average: null, distribution: emptyDist,
-  };
-  const db = getDb();
-  if (!db) return empty;
-
-  const conds = [
-    sql`${tasks.csatRequestedAt} IS NOT NULL`,
-    sql`${tasks.csatRequestedAt} >= ${localDayStart(input.from)}`,
-    sql`${tasks.csatRequestedAt} < ${localNextDayStart(input.to)}`,
-  ];
-  if (input.branchId) conds.push(eq(tasks.branchId, input.branchId));
-
-  const rows = await db
-    .select({ csatScore: tasks.csatScore })
-    .from(tasks)
-    .where(and(...conds))
-    .limit(MAX_SCAN);
-
-  const distMap = new Map<number, number>([[1, 0], [2, 0], [3, 0], [4, 0], [5, 0]]);
-  let answeredSum = 0;
-  let answeredCount = 0;
-  for (const r of rows) {
-    if (r.csatScore == null) continue;
-    const score = Number(r.csatScore);
-    answeredCount += 1;
-    answeredSum += score;
-    distMap.set(score, (distMap.get(score) ?? 0) + 1);
-  }
-
   return {
     from: input.from,
     to: input.to,
-    requested: rows.length,
-    answered: answeredCount,
-    responseRatePct: pct(answeredCount, rows.length),
-    average: answeredCount > 0 ? (answeredSum / answeredCount).toFixed(2) : null,
-    distribution: Array.from(distMap.entries()).sort((a, c) => a[0] - c[0]).map(([score, count]) => ({ score, count })),
+    requested: 0,
+    answered: 0,
+    responseRatePct: "0.00",
+    average: null,
+    distribution: emptyDist,
   };
 }
 

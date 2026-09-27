@@ -22,7 +22,7 @@ import { startWorkOrder } from "../workOrder/lifecycle";
 
 const TABLES = [
   "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions",
-  "taskEvents", "tasks", "serviceTypes", "idempotencyKeys", "accountingEntries",
+  "serviceTypes", "idempotencyKeys", "accountingEntries",
   "receipts", "inventoryMovements", "workOrderMaterials", "workOrderImages",
   "workOrders", "invoiceItems", "invoices", "branchStock", "productPrices",
   "productUnits", "productVariants", "products", "shifts", "customers",
@@ -124,14 +124,12 @@ describe("اعتماد التصميم بلا رفع ملفّ", () => {
     expect(wo.status).toBe("IN_PROGRESS");
   });
 
-  it("سجلُّ القرار حقيقيّ: مهمّةٌ محسومة ودليلٌ محفوظ — لا موافقةٌ وهميّة", async () => {
+  it("سجلُّ القرار حقيقيّ: دليلٌ محفوظ وسجلُّ مراجعة — لا موافقةٌ وهميّة", async () => {
     const woId = await orderWithoutAnyDesignFile("no-upload-2");
     const requested = await requestWorkOrderDesignApproval(
       { workOrderId: woId, requestKey: "no-upload-req-2", note: null },
       TECH,
     );
-    const taskId = Number(requested.approval.taskId);
-    expect(taskId).toBeGreaterThan(0);
 
     await decideWorkOrderDesignApproval({
       approvalId: Number(requested.approval.id),
@@ -141,8 +139,6 @@ describe("اعتماد التصميم بلا رفع ملفّ", () => {
       evidence: { type: "OTHER", reference: "مكالمة هاتفية مع العميل — نسخة 1" },
     }, MANAGER);
 
-    const task = (await db().select().from(s.tasks).where(eq(s.tasks.id, taskId)).limit(1))[0];
-    expect(task.taskStatus).toBe("RESOLVED");
     const approval = (await db().select().from(s.workOrderDesignApprovals)
       .where(eq(s.workOrderDesignApprovals.id, Number(requested.approval.id))).limit(1))[0];
     expect(approval.evidenceType).toBe("OTHER");

@@ -35,7 +35,7 @@ const TABLES = [
   "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
   "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
   "workOrderControlRequests", "workOrderEvents", "workOrderDesignApprovals",
-  "workOrderDesignRevisions", "taskEvents", "tasks", "serviceTypes",
+  "workOrderDesignRevisions", "serviceTypes",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "shifts", "customers", "branches", "users",

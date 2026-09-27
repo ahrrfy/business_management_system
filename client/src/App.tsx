@@ -113,9 +113,6 @@ const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
 const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
-// نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
-const TasksHub = lazy(() => import("@/pages/TasksHub"));
-const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
 const AssetDetail = lazy(() => import("@/pages/AssetDetail"));
@@ -484,22 +481,6 @@ export default function App() {
       <Route path="/inbox"><Redirect to="/crm?tab=inbox" /></Route>
       <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
       <Route path="/work-orders/:id"><Shell><RequireRole module="workorders" level="READ"><WorkOrderDetail /></RequireRole></Shell></Route>
-      {/* نظام المهام الموحّد (S2/T2.3) — حارس واجهي مرآة tasksReadProcedure (requireModule("tasks","READ"))؛
-          الأدوار المذكورة = كل قوالب الأدوار بقيمة tasks≥READ (استثناء purchasing/courier=NONE). */}
-      <Route path="/tasks">
-        <Shell>
-          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
-            <TasksHub />
-          </RequireRole>
-        </Shell>
-      </Route>
-      <Route path="/tasks/:id">
-        <Shell>
-          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
-            <TaskDetail />
-          </RequireRole>
-        </Shell>
-      </Route>
       {/* ١٩/٨ (طلب المالك): **لكل مفهومٍ شاشةٌ واحدة**. كان `/reservations` يُحوَّل إلى طبقةٍ فوق
           شاشة الكاشير — فلا شاشةَ للحجوزات أصلاً، والبطاقةُ في الرئيسية تعيدك إلى الشاشة نفسها
           المزدحمة. استعادت شاشتَها (المكوّن يدعم الوضعين: `embedded` وغير المضمَّن). */}

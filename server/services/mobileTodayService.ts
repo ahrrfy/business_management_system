@@ -6,7 +6,6 @@ import {
   leaveRequests,
   payrollItems,
   payrollRuns,
-  tasks,
 } from "../../drizzle/schema";
 import type { DB } from "../db";
 import { resolveSuperAppAuthority } from "./superAppAuthority";
@@ -32,7 +31,6 @@ export type MobileTodayActor = {
 };
 
 export const mobileTodayDestinations = [
-  "TASKS",
   "SELF_ATTENDANCE",
   "SELF_LEAVE",
   "SELF_PAYROLL",
@@ -185,7 +183,7 @@ export async function getMobileToday(input: {
     };
   }
 
-  const [[todayAttendance], [focus], [leave], [payroll]] = await Promise.all([
+  const [[todayAttendance], [leave], [payroll]] = await Promise.all([
     db
       .select({
         checkIn: attendance.checkIn,
@@ -199,23 +197,6 @@ export async function getMobileToday(input: {
           eq(attendance.attendanceDate, input.date),
         ),
       )
-      .limit(1),
-    db
-      .select({
-        id: tasks.id,
-        title: tasks.title,
-        priority: tasks.priority,
-        status: tasks.taskStatus,
-        dueAt: tasks.dueAt,
-      })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.assignedTo, input.actor.userId),
-          inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
-        ),
-      )
-      .orderBy(asc(tasks.dueAt), asc(tasks.createdAt))
       .limit(1),
     db
       .select({
@@ -272,13 +253,7 @@ export async function getMobileToday(input: {
         checkOut: todayAttendance?.checkOut ?? null,
         action: { destination: "SELF_ATTENDANCE", requiresStepUp: false },
       },
-      focus: focus
-        ? {
-            ...focus,
-            status: focus.status as "NEW" | "IN_PROGRESS" | "WAITING_CUSTOMER",
-            action: { destination: "TASKS", requiresStepUp: false },
-          }
-        : null,
+      focus: null,
       leave: leave
         ? {
             ...leave,

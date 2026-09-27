@@ -231,7 +231,6 @@
   "D7::server/routers/shiftRouter.ts": 1,
   "D7::server/routers/supplierInvoicesRouter.ts": 3,
   "D7::server/routers/supplierPaymentsRouter.ts": 4,
-  "D7::server/routers/tasksRouter.ts": 1,
   "D7::server/routers/treasuryRouter.ts": 3,
   "D7::server/routers/workOrderRouter.ts": 2,
   "D8::server/services/cashTransferService.ts": 1,

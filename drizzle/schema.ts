@@ -11976,128 +11976,6 @@ export type InsertWaWebhookEvent = typeof waWebhookEvents.$inferInsert;
  * `waHubSettings` singleton (نَمَط openingModeSettings) لِإِعدادات مَركَز واتساب الأَعمال.
  */
 
-/** تَذكرة مُوَحَّدة: طَلب خِدمة/دَعم/اِستِفسار/مُتابَعة/داخِلية — بِغَضّ النَظر عَن قَناة الوُرود. */
-export const tasks = mysqlTable(
-  "tasks",
-  {
-    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    taskNumber: varchar("taskNumber", { length: 40 }).notNull(),
-    branchId: bigint("branchId", { mode: "number" })
-      .notNull()
-      .references(() => branches.id),
-    taskKind: mysqlEnum("taskKind", [
-      "SERVICE_REQUEST",
-      "SUPPORT",
-      "INQUIRY",
-      "FOLLOW_UP",
-      "INTERNAL",
-    ])
-      .default("INQUIRY")
-      .notNull(),
-    taskStatus: mysqlEnum("taskStatus", [
-      "NEW",
-      "IN_PROGRESS",
-      "WAITING_CUSTOMER",
-      "RESOLVED",
-      "CANCELLED",
-    ])
-      .default("NEW")
-      .notNull(),
-    priority: mysqlEnum("priority", ["LOW", "NORMAL", "HIGH", "URGENT"])
-      .default("NORMAL")
-      .notNull(),
-    title: varchar("title", { length: 200 }).notNull(),
-    description: text("description"),
-    customerId: bigint("customerId", { mode: "number" }).references(
-      () => customers.id,
-    ),
-    supplierId: bigint("supplierId", { mode: "number" }).references(
-      () => suppliers.id,
-    ),
-    conversationId: bigint("conversationId", { mode: "number" }).references(
-      () => conversations.id,
-    ),
-    linkedWorkOrderId: bigint("linkedWorkOrderId", {
-      mode: "number",
-    }).references(() => workOrders.id),
-    linkedInvoiceId: bigint("linkedInvoiceId", { mode: "number" }).references(
-      () => invoices.id,
-    ),
-    linkedQuotationId: bigint("linkedQuotationId", {
-      mode: "number",
-    }).references(() => quotations.id),
-    serviceTypeId: bigint("serviceTypeId", { mode: "number" }).references(
-      () => serviceTypes.id,
-    ),
-    // قَناة الاِستِلام (نَفس تِعداد convChannel) — null لِمَهمّة داخِلية بِلا قَناة خارِجية.
-    sourceChannel: mysqlEnum("sourceChannel", [
-      "WHATSAPP",
-      "INSTAGRAM",
-      "TIKTOK",
-      "STORE",
-      "PHONE",
-      "WALK_IN",
-      "OTHER",
-    ]),
-    assignedTo: int("assignedTo").references(() => users.id),
-    createdBy: int("createdBy").references(() => users.id),
-    dueAt: timestamp("dueAt"),
-    firstResponseAt: timestamp("firstResponseAt"),
-    resolvedAt: timestamp("resolvedAt"),
-    // مِرساة إِيقاف عَدّاد SLA أَثناء اِنتِظار العَميل + المُتَراكِم مِن فَترات اِنتِظار سابِقة (ms).
-    waitingSince: timestamp("waitingSince"),
-    waitingAccumMs: bigint("waitingAccumMs", { mode: "number" })
-      .default(0)
-      .notNull(),
-    csatScore: tinyint("csatScore"),
-    csatRequestedAt: timestamp("csatRequestedAt"),
-    reopenCount: int("reopenCount").default(0).notNull(),
-    resolutionNote: text("resolutionNote"),
-    createdAt: timestamp("createdAt").defaultNow().notNull(),
-    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  },
-  (t) => ({
-    numberUq: unique("uq_task_number").on(t.taskNumber),
-    branchStatusIdx: index("idx_task_branch_status").on(
-      t.branchId,
-      t.taskStatus,
-    ),
-    assigneeIdx: index("idx_task_assignee").on(t.assignedTo, t.taskStatus),
-    customerIdx: index("idx_task_customer").on(t.customerId),
-    convIdx: index("idx_task_conv").on(t.conversationId),
-  }),
-);
-export type Task = typeof tasks.$inferSelect;
-export type InsertTask = typeof tasks.$inferInsert;
-
-/** سِجلّ أَحداث المَهمّة — تَعليق/تَغيير حالة/إِسناد/رَبط/نِظام/CSAT. تَسلسُليّ بِلا حَذف أَو status. */
-export const taskEvents = mysqlTable(
-  "taskEvents",
-  {
-    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    taskId: bigint("taskId", { mode: "number" })
-      .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
-    eventType: mysqlEnum("eventType", [
-      "COMMENT",
-      "STATUS",
-      "ASSIGN",
-      "LINK",
-      "SYSTEM",
-      "CSAT",
-    ]).notNull(),
-    fromStatus: varchar("fromStatus", { length: 20 }),
-    toStatus: varchar("toStatus", { length: 20 }),
-    note: text("note"),
-    userId: int("userId").references(() => users.id),
-    createdAt: timestamp("createdAt").defaultNow().notNull(),
-  },
-  (t) => ({
-    taskIdx: index("idx_task_events_task").on(t.taskId, t.createdAt),
-  }),
-);
-export type TaskEvent = typeof taskEvents.$inferSelect;
-export type InsertTaskEvent = typeof taskEvents.$inferInsert;
 
 /** نَوع خِدمة مَرجِعي — تَصنيف + أَولوية اِفتِراضية + SLA بِالساعات (null = بِلا SLA مَضبوط). */
 export const serviceTypes = mysqlTable(
@@ -13111,7 +12989,6 @@ export const workOrderDesignApprovals = mysqlTable(
     workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id),
     branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
     revisionId: bigint("revisionId", { mode: "number" }).notNull(),
-    taskId: bigint("taskId", { mode: "number" }).references(() => tasks.id),
     status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "SUPERSEDED"]).default("PENDING").notNull(),
     requestedBy: int("requestedBy").notNull().references(() => users.id),
     requestNote: varchar("requestNote", { length: 500 }),
@@ -13129,7 +13006,6 @@ export const workOrderDesignApprovals = mysqlTable(
     revisionUq: unique("uq_wo_design_approval_revision").on(table.revisionId),
     workStatusIdx: index("idx_wo_design_approval_work_status").on(table.workOrderId, table.status),
     branchStatusIdx: index("idx_wo_design_approval_branch_status").on(table.branchId, table.status),
-    taskIdx: index("idx_wo_design_approval_task").on(table.taskId),
     requesterIdx: index("idx_wo_design_approval_requester").on(table.requestedBy),
     reviewerIdx: index("idx_wo_design_approval_reviewer").on(table.reviewedBy),
     revisionFk: foreignKey({

@@ -28,8 +28,6 @@ import {
 export interface FollowUpValue {
   note: string;
   followUpDate: string | null;
-  createTask: boolean;
-  taskPriority: "LOW" | "NORMAL" | "HIGH" | "URGENT";
 }
 
 export function CustomerFollowUpDialog({
@@ -52,8 +50,6 @@ export function CustomerFollowUpDialog({
   const [amount, setAmount] = useState(defaultAmount ?? "");
   const [date, setDate] = useState("");
   const [details, setDetails] = useState("");
-  const [createTask, setCreateTask] = useState(false);
-  const [priority, setPriority] = useState<FollowUpValue["taskPriority"]>("NORMAL");
 
   useEffect(() => {
     if (!open) return;
@@ -62,8 +58,6 @@ export function CustomerFollowUpDialog({
     setOutcome("REACHED");
     setDate("");
     setDetails("");
-    setCreateTask(false);
-    setPriority("NORMAL");
   }, [open, defaultAmount]);
 
   const note = useMemo(() => {
@@ -82,7 +76,7 @@ export function CustomerFollowUpDialog({
         <DialogHeader>
           <DialogTitle>تسجيل متابعة — {customerName}</DialogTitle>
           <DialogDescription>
-            تُحفظ النتيجة في سجل العميل، ويمكن إنشاء مهمة متابعة مرتبطة به في الوقت نفسه.
+            تُحفظ النتيجة في سجل العميل.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -110,25 +104,10 @@ export function CustomerFollowUpDialog({
             <Label htmlFor="follow-details">تفاصيل</Label>
             <Textarea id="follow-details" rows={3} maxLength={1200} value={details} onChange={(e) => setDetails(e.target.value)} placeholder="ما الذي تم الاتفاق عليه؟" />
           </div>
-          <label className="flex items-center gap-2 text-sm sm:col-span-2">
-            <input type="checkbox" className="size-4" checked={createTask} onChange={(e) => setCreateTask(e.target.checked)} />
-            إنشاء مهمة متابعة مرتبطة بالعميل
-          </label>
-          {createTask && (
-            <div className="space-y-1">
-              <Label htmlFor="follow-priority">أولوية المهمة</Label>
-              <select id="follow-priority" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={priority} onChange={(e) => setPriority(e.target.value as FollowUpValue["taskPriority"])}>
-                <option value="LOW">منخفضة</option>
-                <option value="NORMAL">عادية</option>
-                <option value="HIGH">عالية</option>
-                <option value="URGENT">عاجلة</option>
-              </select>
-            </div>
-          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>إلغاء</Button>
-          <Button onClick={() => onSubmit({ note, followUpDate: date || null, createTask, taskPriority: priority })} disabled={submitting || !note}>
+          <Button onClick={() => onSubmit({ note, followUpDate: date || null })} disabled={submitting || !note}>
             {submitting ? "جارٍ الحفظ…" : "حفظ المتابعة"}
           </Button>
         </DialogFooter>

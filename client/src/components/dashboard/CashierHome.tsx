@@ -26,7 +26,6 @@ import {
   RotateCcw,
   ShoppingBag,
   Store,
-  Ticket,
   Truck,
 } from "lucide-react";
 
@@ -165,7 +164,6 @@ function cashierActionIcon(icon: CashierActionIcon): Tile["icon"] {
     case "returns": return RotateCcw;
     case "workorders": return Printer;
     case "price": return Barcode;
-    case "tasks": return Ticket;
   }
 }
 
@@ -175,12 +173,10 @@ export function CashierHome({
   station,
   defaultAction,
   primaryNav,
-  tasksBrief,
 }: {
   station: PosStation;
   defaultAction: WorkspaceNavItem;
   primaryNav: readonly WorkspaceNavItem[];
-  tasksBrief?: React.ReactNode;
 }) {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
@@ -560,13 +556,6 @@ export function CashierHome({
           tiles={profileTiles}
         />
       </div>
-
-      {/* طابور المهام الشخصي إن وُجد */}
-      {tasksBrief && (
-        <div style={{ width: "100%", maxWidth: 1180 }}>
-          {tasksBrief}
-        </div>
-      )}
     </div>
   );
 }

@@ -129,8 +129,6 @@ describe("سجل وحدات التطبيق", () => {
     expect(dashboard).toContain("enabled: canViewBrief && branchScope !== undefined");
     expect(dashboard).toContain("if (!canViewBrief) return null;");
     expect(dashboard).toContain("canViewWorkOrders ? brief.overdueWorkOrders : 0");
-    expect(dashboard).toContain('profileActionHref(primaryNav, "my_tasks")');
-    expect(dashboard).toContain('canSeeTasks && (role === "admin" || branchScope !== undefined)');
     expect(dashboard).not.toContain('href: "/inventory"');
     expect(dashboard).not.toContain('href={`/work-orders?branch=${branchScope}`}');
     expect(dashboard).not.toContain('href="/tasks?tab=mine"');

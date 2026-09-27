@@ -74,7 +74,6 @@ import { offlineRouter } from "./routers/offlineRouter";
 import { imageStudioRouter } from "./routers/imageStudioRouter";
 import { productStudioRouter } from "./routers/productStudioRouter";
 import { printPricingRouter } from "./routers/printPricingRouter";
-import { tasksRouter } from "./routers/tasksRouter";
 import { contactsRouter } from "./routers/contactsRouter";
 import { broadcastsRouter } from "./routers/broadcastsRouter";
 import { reservationsRouter } from "./routers/reservationsRouter";
@@ -206,8 +205,6 @@ export const appRouter = router({
   crm: crmRouter,
   // تعدد الشركات — شاشة إدارة المنصّة (منفصلة تماماً عن جلسة/أدوار أي شركة).
   platformAdmin: platformAdminRouter,
-  // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، ٢٣/٧/٢٦): تذكرة موحّدة لكل طلب خدمة/دعم/استفسار.
-  tasks: tasksRouter,
   // بنك جهات الاتصال (S3، T3.2): بحث موحّد + بطاقة ٣٦٠° + أشخاص اتصال B2B + كشف ازدواج.
   // مفتاح صلاحيات «crm» القائم يُعاد استخدامه (لا مفتاح جديد) — لا علاقة بـ`crm:` أعلاه
   // (ذاك مفتاح راوتر حملات/كوبونات تاريخي على وحدة «campaigns» رغم الاسم).
