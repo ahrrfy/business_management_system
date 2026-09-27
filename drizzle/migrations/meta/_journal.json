@@ -2353,6 +2353,13 @@
 			"when": 1788148826000,
 			"tag": "0368_purge_fake_shelf_lookup_logs",
 			"breakpoints": true
+		},
+		{
+			"idx": 369,
+			"version": "5",
+			"when": 1788148827000,
+			"tag": "0369_fixed_assets_category_land_buildings",
+			"breakpoints": true
 		}
 	]
 }
