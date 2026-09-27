@@ -24,7 +24,9 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
 import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
 import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
-import { PlayCircle, Trash2, Upload, FileText, ExternalLink } from "lucide-react";
+import { PlayCircle, Trash2, Upload, FileText, ExternalLink, ArrowLeftRight, QrCode } from "lucide-react";
+import { AssetQrTagDialog } from "@/components/assets/AssetQrTagDialog";
+import { AssetTransferDialog } from "@/components/assets/AssetTransferDialog";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
@@ -107,6 +109,7 @@ export default function AssetDetail() {
   const [openHandover, setOpenHandover] = useState(false);
   const [openMaint, setOpenMaint] = useState(false);
   const [openLabel, setOpenLabel] = useState(false);
+  const [openTransfer, setOpenTransfer] = useState(false);
   const [openDispose, setOpenDispose] = useState(false);
   const [openCorrection, setOpenCorrection] = useState(false);
 
@@ -262,7 +265,26 @@ export default function AssetDetail() {
                 تحويل لرصيد افتتاحي (إلغاء الصرف)
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={() => setOpenLabel(true)}>بطاقة الأصل</Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-1.5"
+              onClick={() => setOpenLabel(true)}
+            >
+              <QrCode className="size-3.5" />
+              <span>ملصق الأصل / QR</span>
+            </Button>
+            {isLive && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-1.5"
+                onClick={() => setOpenTransfer(true)}
+              >
+                <ArrowLeftRight className="size-3.5" />
+                <span>مناقلة فرع</span>
+              </Button>
+            )}
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
             {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: "إعادة الأصل للخدمة", description: `إعادة الأصل «${a.name}» (${a.code}) من الصيانة إلى الخدمة؟`, confirmText: "إعادة للخدمة" }))) return; returnMaint.mutate({ assetId: id }); }} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenHandover(true)}>تسليم عهدة</Button>}
@@ -354,6 +376,31 @@ export default function AssetDetail() {
         <Card><CardContent className="p-4"><div className="text-muted-foreground text-xs mb-1">الإهلاك المتراكم</div><div className="text-lg font-bold tabular-nums" dir="ltr">{iqd(a.accumulated)}</div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="text-muted-foreground text-xs mb-1">العمر التشغيلي</div><div className="text-lg font-bold tabular-nums" dir="ltr">{a.ageYears} سنة</div></CardContent></Card>
       </div>
+
+      {Number((a as any).openingDepreciation || 0) > 0 && (
+        <div className="rounded-lg border bg-muted/40 p-3 text-xs flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-foreground">تفصيل مجمع الإهلاك (IAS 16):</span>
+            <span className="text-muted-foreground">أصل ذو إهلاك افتتاحي سابق لبدء النظام</span>
+          </div>
+          <div className="flex items-center gap-4 tabular-nums" dir="ltr">
+            <div>
+              <span className="text-muted-foreground text-[11px] me-1">إهلاك ما قبل النظام:</span>
+              <span className="font-bold">{iqd((a as any).openingDepreciation)}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground text-[11px] me-1">إهلاك النظام:</span>
+              <span className="font-bold">
+                {iqd(Math.max(0, Number(a.accumulated || 0) - Number((a as any).openingDepreciation || 0)))}
+              </span>
+            </div>
+            <div>
+              <span className="text-muted-foreground text-[11px] me-1">الإجمالي:</span>
+              <span className="font-bold text-primary">{iqd(a.accumulated)}</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* شريط استهلاك القيمة */}
       <Card>
@@ -664,20 +711,33 @@ export default function AssetDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* نافذة بطاقة الأصل (QR) */}
-      <Dialog open={openLabel} onOpenChange={setOpenLabel}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>بطاقة الأصل</DialogTitle></DialogHeader>
-          <div className="flex flex-col items-center gap-3 py-2">
-            <BarcodeDisplay barcodeSet={{ barcode128: a.code, qrPayload: a.code, displayLabel: `${a.name}\n${a.code}` }} size="md" showCode128={false} />
-            <div className="text-sm text-muted-foreground">{a.serial ? <span dir="ltr">SN: {a.serial}</span> : null}</div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenLabel(false)}>إغلاق</Button>
-            <Button onClick={() => printAssetLabel({ code: a.code, name: a.name, serial: a.serial, branchName: a.branchName, category: a.category })}>طباعة الملصق</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ملصق تتبع الأصل ورمز QR */}
+      <AssetQrTagDialog
+        open={openLabel}
+        onOpenChange={setOpenLabel}
+        asset={{
+          code: a.code,
+          name: a.name,
+          serial: a.serial,
+          branchName: a.branchName,
+          category: assetCategoryLabel(a.category),
+        }}
+      />
+
+      {/* مناقلة الأصل بين الفروع */}
+      <AssetTransferDialog
+        open={openTransfer}
+        onOpenChange={setOpenTransfer}
+        asset={{
+          id: a.id,
+          code: a.code,
+          name: a.name,
+          branchId: a.branchId,
+          location: a.location,
+          custodianId: a.custodianId,
+        }}
+        onSuccess={refresh}
+      />
 
       {/* نافذة الإخراج / الاستبعاد */}
       <Dialog open={openDispose} onOpenChange={(o) => { setOpenDispose(o); if (!o) { setDReason(""); setDValue(""); } }}>

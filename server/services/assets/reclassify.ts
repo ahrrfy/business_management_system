@@ -185,6 +185,7 @@ export async function reclassifyAssetToOpening(assetId: number, actor: Actor) {
       .update(fixedAssets)
       .set({
         recognitionStatus: "ACTIVE",
+        openingDepreciation: toDbMoney(depr),
       })
       .where(eq(fixedAssets.id, assetId));
 

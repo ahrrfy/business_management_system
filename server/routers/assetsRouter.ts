@@ -70,6 +70,17 @@ export const assetsRouter = router({
   custodyReport: assetRead.query(({ ctx }) => svc.custodyReport(companyBranchScope(ctx.user))),
   disposalLog: assetRead.query(({ ctx }) => svc.disposalLog(companyBranchScope(ctx.user))),
   formOptions: assetRead.query(({ ctx }) => svc.formOptions(companyBranchScope(ctx.user))),
+  registerReport: assetRead
+    .input(
+      z
+        .object({
+          category: categoryEnum.optional(),
+          branchId: z.number().int().positive().optional(),
+          status: statusEnum.optional(),
+        })
+        .optional(),
+    )
+    .query(({ input, ctx }) => svc.fixedAssetRegisterReport(input, companyBranchScope(ctx.user))),
 
   requestSupplierSettlement: assetWrite
     .input(z.object({ assetId: z.number().int().positive(), clientRequestId: z.string().trim().min(8).max(64) }))
@@ -220,6 +231,67 @@ export const assetsRouter = router({
     .input(z.object({ assetId: z.number().int().positive() }))
     .mutation(({ input, ctx }) => svc.reclassifyAssetToOpening(input.assetId, actorOf(ctx.user))),
 
+  import: assetWrite
+    .input(
+      z.object({
+        rows: z.array(svc.assetImportRowSchema).min(1).max(2000),
+        options: z
+          .object({
+            dryRun: z.boolean().default(false),
+            skipFailed: z.boolean().default(false),
+          })
+          .default({ dryRun: false, skipFailed: false }),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const summary = await svc.importAssets(
+        input.rows,
+        input.options,
+        actorOf(ctx.user),
+        companyBranchScope(ctx.user),
+      );
+      if (summary.committed) {
+        await logAudit(ctx, {
+          action: "asset.import",
+          entityType: "fixedAsset",
+          newValue: {
+            total: summary.total,
+            created: summary.created,
+            failed: summary.failed,
+            totalCost: summary.totalCost,
+            totalOpeningDepreciation: summary.totalOpeningDepreciation,
+            totalNetBookValue: summary.totalNetBookValue,
+          },
+        });
+      }
+      return summary;
+    }),
+
+  transferBranch: assetWrite
+    .input(
+      z.object({
+        assetId: z.number().int().positive(),
+        targetBranchId: z.number().int().positive(),
+        targetCustodianId: z.number().int().positive().optional().nullable(),
+        location: z.string().trim().max(255).optional().nullable(),
+        reason: z.string().trim().min(3, "سبب المناقلة مطلوب").max(255),
+        transferDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await svc.transferAssetBranch(input, actorOf(ctx.user));
+      await logAudit(ctx, {
+        action: "asset.transfer_branch",
+        entityType: "fixedAsset",
+        entityId: input.assetId,
+        newValue: {
+          targetBranchId: input.targetBranchId,
+          targetCustodianId: input.targetCustodianId,
+          reason: input.reason,
+        },
+      });
+      return res;
+    }),
 
   // FI-02: ترحيل إهلاك شهر (تشغيل يدويّ أو عبر مهمة دورية) — assets/FULL + تدقيق. idempotent.
   postDepreciation: assetWrite

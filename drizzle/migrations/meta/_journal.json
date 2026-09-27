@@ -2360,6 +2360,13 @@
 			"when": 1788148827000,
 			"tag": "0369_fixed_assets_category_land_buildings",
 			"breakpoints": true
+		},
+		{
+			"idx": 371,
+			"version": "5",
+			"when": 1788148829000,
+			"tag": "0371_fixed_assets_opening_depreciation",
+			"breakpoints": true
 		}
 	]
 }
