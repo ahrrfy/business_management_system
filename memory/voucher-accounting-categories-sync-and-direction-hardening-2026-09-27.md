@@ -71,3 +71,21 @@
 - **الفحوصات الهندسية الشاملة:**
   - `pnpm check`: اجتياز بنسبة 100% وبلا أي خطأ برمجي أو خطأ أنواع (TypeScript).
   - `pnpm check:guards`: اجتياز كامل لجميع الحرّاس الأحد عشر والحراس المعماريين.
+
+---
+
+## ٤. الدمج والنشر الإنتاجي المدار والتحقق الحي
+
+- **طلب الدمج والـ CI:**
+  - فتح طلب الدمج [PR #1285](https://github.com/ahrrfy/business_management_system/pull/1285).
+  - اجتياز كافة وظائف GitHub Actions الـ 14 بنسبة 100% Green (الأمان، التدقيق، حارس الصلاحيات، جودة البناء، وشاردات الاختبار الـ 8).
+  - دمج PR #1285 في `main` بالالتزام المدموج [`9e33d7c3`](https://github.com/ahrrfy/business_management_system/commit/9e33d7c3).
+- **النشر الإنتاجي الذري (`pnpm prod:deploy`):**
+  - تم تنفيذ النشر الذري المدار على خادم Hostinger VPS (`srv1548487.hstgr.cloud` / `alroya-prod`) في **295.0 ثانية**.
+  - شمل: `git pull --ff-only` للالتزام `9e33d7c3`، `pnpm install --frozen-lockfile`، النسخ الاحتياطي الذري `db:backup`، الفحص الآمن للهجرات `db:migrate:safe`، مطابقة المخطط `db:verify`، البناء الشامل `pnpm build`، وإعادة التحميل المتزامن لعناقيد PM2 (3 عمال ويب + جسر الحضور `erp-hr-bridge`).
+- **التحقق الحي (Live Health Check):**
+  - تأكيد صحة الخدمة 200 OK على:
+    - `https://srv1548487.hstgr.cloud/healthz`: `{"ok":true,"time":"2026-09-27T12:33:38.277Z"}`
+    - `https://alarabiya.online/healthz`: `{"ok":true,"time":"2026-09-27T12:33:47.047Z"}`
+  - ثبات عمال PM2 الـ 3 وجسر الحضور في حالة `online`.
+
