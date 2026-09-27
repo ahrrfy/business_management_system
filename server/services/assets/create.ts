@@ -4,7 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { accountingEntries, assetCustodyLog, branches, employees, fixedAssets, kioskDevices, suppliers } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { createPostingIntent, signedPostingLines } from "../accounting/postingEngine";
+import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "../accounting/postingEngine";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
@@ -14,6 +14,9 @@ import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../v
 import { fixedAssetAccrualRecognition } from "../accounting/accrualPosting";
 import { createAccrualObligationTx, transitionAccrualObligationTx } from "../accounting/accrualObligations";
 import { idempotencyHash, payloadHashMatches } from "../idempotency";
+import type { AssetAcquisitionType } from "@shared/assets";
+import { appErrorMessage } from "@shared/errors";
+import type { Decimal } from "decimal.js";
 
 /** الرمز التالي AST-#### — قراءة مرتّبة تحت قفل FOR UPDATE تُضيّق السباق، وقيد UNIQUE هو الحارس النهائي. */
 async function nextAssetCode(tx: Tx): Promise<string> {
@@ -45,26 +48,40 @@ export interface CreateAssetInput {
   warrantyEnd?: string | null;
   linkedDeviceId?: number | null;
   acquisitionBeneficiaryName?: string | null;
-  acquisitionEvidenceReference: string;
+  acquisitionEvidenceReference?: string | null;
   clientRequestId: string;
+  acquisitionType?: AssetAcquisitionType;
+  accumulatedDepreciation?: string | null;
 }
 
 export async function createAsset(input: CreateAssetInput, actor: Actor) {
   const scope = companyBranchScope(actor);
   const targetBranchId = resolveTargetBranch(scope, input.branchId, { required: false });
   const clientRequestId = input.clientRequestId.trim();
-  const evidenceReference = input.acquisitionEvidenceReference.trim();
+  const isOpening = input.acquisitionType === "OPENING";
+  const rawEvidence = (input.acquisitionEvidenceReference ?? "").trim();
+  const evidenceReference = isOpening && !rawEvidence ? "رصيد افتتاحي سابق لبناء النظام" : rawEvidence;
   const freeBeneficiary = input.acquisitionBeneficiaryName?.trim() ?? "";
   const placeholderEvidence = new Set(["-", "لا يوجد", "بدون", "none", "n/a"]);
   const genericBeneficiaries = new Set(["البائع", "المورد", "صاحب الأصل", "vendor", "supplier", "unknown"]);
   if (
     !clientRequestId ||
-    !evidenceReference ||
-    placeholderEvidence.has(evidenceReference.toLocaleLowerCase("ar-IQ"))
+    (!isOpening && (!evidenceReference || placeholderEvidence.has(evidenceReference.toLocaleLowerCase("ar-IQ"))))
   ) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح الطلب ومرجع مستند الاقتناء إلزاميان" });
   }
+  if (isOpening && input.supplierId != null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذر تسجيل الأصل الافتتاحي مع ربط بمورد",
+        why: "الأصول الافتتاحية السابقة لبناء النظام تم تمويلها مسبقاً وتُثبت مقابل حقوق الملكية الافتتاحية",
+        doThis: "احذف اختيار المورد لتسجيله كرصيد افتتاحي، أو اختر نوع الشراء الآجل إذا كان شراءً جديداً على الحساب",
+      }),
+    });
+  }
   if (
+    !isOpening &&
     input.supplierId == null &&
     (
       !freeBeneficiary ||
@@ -80,8 +97,10 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
   const requestPayloadHash = idempotencyHash({
     ...input,
     branchId: targetBranchId,
+    acquisitionType: input.acquisitionType ?? (input.supplierId ? "NEW_PURCHASE_SUPPLIER" : "NEW_PURCHASE_CASH"),
     acquisitionBeneficiaryName: freeBeneficiary || null,
     acquisitionEvidenceReference: evidenceReference,
+    accumulatedDepreciation: input.accumulatedDepreciation ? toDbMoney(input.accumulatedDepreciation) : "0.00",
     clientRequestId,
   });
   const id = await withTx(async (tx) => {
@@ -120,6 +139,17 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     }
     const code = await nextAssetCode(tx);
     const value = money(input.purchaseValue);
+    const initialDepreciation = isOpening ? money(input.accumulatedDepreciation ?? "0") : money("0");
+    if (initialDepreciation.gt(value)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذر حفظ الأصل برصيد إهلاك متراكم غير متطابق",
+          why: `الإهلاك المتراكم السابق (${initialDepreciation.toFixed(2)}) يتجاوز تكلفة الشراء الأصلية (${value.toFixed(2)})`,
+          doThis: "أدخل مجمع إهلاك سابق أقل من أو يساوي قيمة الشراء، أو اتركه فارغاً",
+        }),
+      });
+    }
     const [res] = await tx.insert(fixedAssets).values({
       code,
       name: input.name,
@@ -135,27 +165,61 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       salvageValue: toDbMoney(input.category === "land" ? "0" : (input.salvageValue ?? "0")),
       usefulLifeYears: input.category === "land" ? 0 : input.usefulLifeYears,
       depreciationMethod: input.depreciationMethod ?? "sl",
+      accumulatedDepreciation: toDbMoney(initialDepreciation),
       condition: input.condition ?? null,
       warrantyEnd: input.warrantyEnd ?? null,
       linkedDeviceId: input.linkedDeviceId ?? null,
       clientRequestId,
       requestPayloadHash,
-      // إضافة سجل الأصل هنا هي مستند الحيازة/الجاهزية للاستخدام. توقيت السداد لا
-      // يغيّر وجود الأصل: غير المدفوع يبقى نشطاً ويقابله ACCRUED_EXPENSES حتى التسوية.
+      // إضافة سجل الأصل هنا هي مستند الحيازة/الجاهزية للاستخدام.
+      // الأصل الافتتاحي يُثبت فوراً بحقوق الملكية؛ غير المدفوع يُقابله ACCRUED_EXPENSES حتى التسوية.
       isActive: true,
     });
     const newId = extractInsertId(res);
 
-    // FI-01/FA-01 (تدقيق ٢٠/٦، قرار المالك «كل إضافة = شراء جديد يُقيَّد»، ولا أصول قائمة سابقاً):
-    // اقتناء الأصل يُرحَّل للدفتر فيُقابله التزام/نقد ⇒ لا تُنفَخ حقوق الملكية (أصل بلا مصدر تمويل).
-    // مورّد ⇒ ذمم دائنة AP + قيد PURCHASE (يُسدَّد لاحقاً بسند). بلا مورّد ⇒ نقد PAYMENT_OUT من الخزينة.
+    // FI-01/FA-01: اقتناء الأصل يُرحَّل للدفتر:
+    // ١) أصل سابق لبناء النظام (افتتاحي) ⇒ قيد OPENING مقابل OPENING_EQUITY (بلا صرف نقدي وبلا سند).
+    // ٢) شراء آجل من مورّد ⇒ ذمم دائنة AP + قيد PURCHASE (يُسدَّد لاحقاً بسند).
+    // ٣) شراء نقدي حديث بلا مورّد ⇒ نقد PAYMENT_OUT من الخزينة عبر سند صرف نظامي يخضع للاعتماد.
     const acqBranch = targetBranchId;
     const acqDate = new Date(input.purchaseDate);
     if (value.gt(0)) {
       if (acqBranch == null) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "إثبات اقتناء الأصل يتطلب فرعاً مالياً محدداً" });
       }
-      if (input.supplierId) {
+      if (isOpening) {
+        const netBookValue = value.minus(initialDepreciation);
+        const lines = [debitLine("FIXED_ASSETS", value)];
+        const roleCredits: Record<string, Decimal> = {
+          OPENING_EQUITY: netBookValue,
+        };
+        if (initialDepreciation.gt(0)) {
+          lines.push(creditLine("ACCUMULATED_DEPRECIATION", initialDepreciation));
+          roleCredits.ACCUMULATED_DEPRECIATION = initialDepreciation;
+        }
+        lines.push(creditLine("OPENING_EQUITY", netBookValue));
+        const sourceComponents = {
+          roleDebits: { FIXED_ASSETS: value },
+          roleCredits,
+        } as const;
+
+        await postEntry(tx, {
+          entryType: "OPENING",
+          branchId: acqBranch,
+          amount: value,
+          entryDate: acqDate,
+          postingIntent: createPostingIntent(
+            "OPENING_FIXED_ASSET",
+            "OPENING",
+            lines,
+            sourceComponents,
+          ),
+          postingSourceComponents: sourceComponents,
+          dedupeKey: `ASSET_OPENING:${newId}`,
+          notes: `إثبات أصل ${code} كأصل افتتاحي سابق لبناء النظام (ممول من رأس المال)`,
+          createdBy: actor.userId,
+        });
+      } else if (input.supplierId) {
         const [supplier] = await tx
           .select({ id: suppliers.id, name: suppliers.name, isActive: suppliers.isActive })
           .from(suppliers)

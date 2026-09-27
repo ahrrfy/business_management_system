@@ -5,6 +5,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+  ASSET_ACQUISITION_TYPE_KEYS,
   ASSET_CATEGORY_KEYS,
   ASSET_STATUS_KEYS,
   DEPRECIATION_METHOD_KEYS,
@@ -30,6 +31,7 @@ const assetWrite = protectedProcedure.use(requireModule("assets", "FULL"));
 const categoryEnum = z.enum(ASSET_CATEGORY_KEYS);
 const statusEnum = z.enum(ASSET_STATUS_KEYS);
 const methodEnum = z.enum(DEPRECIATION_METHOD_KEYS);
+const acquisitionTypeEnum = z.enum(ASSET_ACQUISITION_TYPE_KEYS).default("NEW_PURCHASE_CASH");
 // مبلغ مالي: رقم موجب بمنزلتين عشريتين كحدّ أقصى (يصدّ NaN/السالب/الفواصل قبل بلوغ القاعدة).
 const moneyStr = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة (رقم موجب بمنزلتين كحدّ أقصى)");
 const moneyStrOpt = moneyStr.optional();
@@ -150,8 +152,10 @@ export const assetsRouter = router({
         warrantyEnd: z.string().optional(),
         linkedDeviceId: z.number().int().positive().optional(),
         acquisitionBeneficiaryName: z.string().trim().min(2).max(200).optional(),
-        acquisitionEvidenceReference: z.string().trim().min(1).max(191),
+        acquisitionEvidenceReference: z.string().trim().max(191).optional(),
         clientRequestId: z.string().trim().min(8).max(64),
+        acquisitionType: acquisitionTypeEnum,
+        accumulatedDepreciation: moneyStrOpt,
       }).refine(
         (d) => {
           const re = /^\d+(\.\d{1,2})?$/;
@@ -172,6 +176,18 @@ export const assetsRouter = router({
           message: "الأراضي لا تخضع للإهلاك ويجب أن يكون عمرها الإنتاجي 0، بينما الفئات الأخرى تتطلب عمراً إنتاجياً أكبر من صفر",
           path: ["usefulLifeYears"],
         },
+      ).refine(
+        (d) => {
+          if (!d.accumulatedDepreciation) return true;
+          return money(d.accumulatedDepreciation).lte(money(d.purchaseValue));
+        },
+        { message: "الإهلاك المتراكم السابق لا يجوز أن يتجاوز قيمة الشراء", path: ["accumulatedDepreciation"] },
+      ).refine(
+        (d) => {
+          if (d.acquisitionType === "OPENING") return true;
+          return !!d.acquisitionEvidenceReference && d.acquisitionEvidenceReference.trim().length > 0;
+        },
+        { message: "مرجع مستند أو فاتورة الاقتناء إلزامي للشراء الجديد", path: ["acquisitionEvidenceReference"] },
       ),
     )
     .mutation(async ({ input, ctx }) => {
@@ -183,7 +199,13 @@ export const assetsRouter = router({
             action: "asset.create",
             entityType: "fixedAsset",
             entityId: a?.id,
-            newValue: { code: a?.code, name: input.name, category: input.category, purchaseValue: input.purchaseValue },
+            newValue: {
+              code: a?.code,
+              name: input.name,
+              category: input.category,
+              purchaseValue: input.purchaseValue,
+              acquisitionType: input.acquisitionType,
+            },
           });
           return a;
         } catch (e: any) {
@@ -193,6 +215,11 @@ export const assetsRouter = router({
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء الأصل" });
     }),
+
+  reclassifyToOpening: assetWrite
+    .input(z.object({ assetId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) => svc.reclassifyAssetToOpening(input.assetId, actorOf(ctx.user))),
+
 
   // FI-02: ترحيل إهلاك شهر (تشغيل يدويّ أو عبر مهمة دورية) — assets/FULL + تدقيق. idempotent.
   postDepreciation: assetWrite
