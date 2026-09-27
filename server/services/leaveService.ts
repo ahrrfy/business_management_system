@@ -27,6 +27,8 @@ import { actorSuffix } from "@shared/notificationActorLabel";
 import { createAppNotification } from "./appNotificationService";
 import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
 import { withIdempotency } from "./idempotency";
+import Decimal from "decimal.js";
+import { money, round2 } from "./money";
 
 /** عدد الأيام شاملاً الطرفين من تاريخين "YYYY-MM-DD" — يُحسب بتقويم UTC ثابت (مستقلّ عن منطقة الخادم). */
 function daysInclusive(from: string, to: string): number {
@@ -567,4 +569,33 @@ export async function balances(scopedBranchId?: number | null) {
     annualLeaveBalance: r.annualLeaveBalance ?? 0,
     sickLeaveBalance: r.sickLeaveBalance ?? 0,
   }));
+}
+
+/**
+ * احتساب بدل الإجازات السنوية غير المستعملة بموجب المادة 77 من قانون العمل العراقي رقم 37 لسنة 2015.
+ * يستحق العامل أجراً عن أيام الإجازة السنوية التي لم يستعملها عند انتهاء خدمته.
+ * الأجر اليومي = (الراتب الأساس + البدلات) ÷ 30
+ * بدل الإجازة = الأجر اليومي × رصيد الإجازات السنوية المتبقية.
+ */
+export function calculateLeaveEncashment(employee: {
+  salary?: string | number | null;
+  allowances?: string | number | null;
+  annualLeaveBalance?: number | null;
+}): {
+  dailyWage: Decimal;
+  unusedDays: number;
+  encashmentAmount: Decimal;
+} {
+  const salary = money(employee.salary ?? 0);
+  const allowances = money(employee.allowances ?? 0);
+  const grossMonthly = salary.plus(allowances);
+  const dailyWage = round2(grossMonthly.div(30));
+  const unusedDays = Math.max(0, Number(employee.annualLeaveBalance ?? 0));
+  const encashmentAmount = round2(dailyWage.times(unusedDays));
+
+  return {
+    dailyWage,
+    unusedDays,
+    encashmentAmount,
+  };
 }

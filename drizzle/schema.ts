@@ -11460,6 +11460,369 @@ export type EmployeeTermination = typeof employeeTerminations.$inferSelect;
 export type InsertEmployeeTermination =
   typeof employeeTerminations.$inferInsert;
 
+/* ============================ الموارد البشرية — المستندات/العقوبات/العقود/المكافآت/التنقلات/السلف/العهد ============================ */
+
+/** مستندات الموظف الرسمية (جوازات سفر، إقامات العمالة الأجنبية، إجازات العمل، الفحوصات الطبية، الهويات). */
+export const employeeDocuments = mysqlTable(
+  "employeeDocuments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    documentType: mysqlEnum("documentType", [
+      "PASSPORT",
+      "RESIDENCY_VISA",
+      "WORK_PERMIT",
+      "NATIONAL_ID",
+      "HEALTH_CERTIFICATE",
+      "EDUCATION_CERTIFICATE",
+      "CONTRACT_SCAN",
+      "OTHER",
+    ]).notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    documentNumber: varchar("documentNumber", { length: 100 }),
+    issueDate: date("issueDate", { mode: "string" }),
+    expiryDate: date("expiryDate", { mode: "string" }),
+    fileUrl: mediumtext("fileUrl"),
+    fileSize: int("fileSize"),
+    mimeType: varchar("mimeType", { length: 100 }),
+    notes: text("notes"),
+    status: mysqlEnum("status", [
+      "ACTIVE",
+      "EXPIRED",
+      "EXPIRING_SOON",
+    ])
+      .default("ACTIVE")
+      .notNull(),
+    alertDaysBefore: int("alertDaysBefore").default(30).notNull(),
+    createdById: int("createdById").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_doc_employee").on(t.employeeId),
+    typeIdx: index("idx_emp_doc_type").on(t.documentType),
+    expiryIdx: index("idx_emp_doc_expiry").on(t.expiryDate),
+    statusIdx: index("idx_emp_doc_status").on(t.status),
+  }),
+);
+export type EmployeeDocument = typeof employeeDocuments.$inferSelect;
+export type InsertEmployeeDocument = typeof employeeDocuments.$inferInsert;
+
+/** العقوبات والإنذارات الانضباطية والاستقطاعات بموجب قانون العمل العراقي رقم 37 لسنة 2015. */
+export const employeePenalties = mysqlTable(
+  "employeePenalties",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    penaltyType: mysqlEnum("penaltyType", [
+      "ATTENTION",
+      "WARNING",
+      "SALARY_DEDUCTION",
+      "SUSPENSION",
+      "DISMISSAL",
+    ]).notNull(),
+    decisionNumber: varchar("decisionNumber", { length: 100 }).notNull(),
+    decisionDate: date("decisionDate", { mode: "string" }).notNull(),
+    reason: text("reason").notNull(),
+    deductionDays: decimal("deductionDays", { precision: 5, scale: 2 })
+      .default("0")
+      .notNull(),
+    deductionAmount: decimal("deductionAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    payrollRunId: bigint("payrollRunId", { mode: "number" }).references(
+      () => payrollRuns.id,
+    ),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "APPROVED",
+      "APPLIED",
+      "CANCELLED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_penalty_employee").on(t.employeeId),
+    statusIdx: index("idx_emp_penalty_status").on(t.status),
+    payrollRunIdx: index("idx_emp_penalty_payroll_run").on(t.payrollRunId),
+  }),
+);
+export type EmployeePenalty = typeof employeePenalties.$inferSelect;
+export type InsertEmployeePenalty = typeof employeePenalties.$inferInsert;
+
+/** عقود العمل وفترة التجربة ومواعيد تجديد العقود. */
+export const employeeContracts = mysqlTable(
+  "employeeContracts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    contractType: mysqlEnum("contractType", [
+      "FIXED_TERM",
+      "INDEFINITE",
+      "PROBATION",
+      "SEASONAL",
+    ])
+      .default("FIXED_TERM")
+      .notNull(),
+    contractNumber: varchar("contractNumber", { length: 100 }),
+    startDate: date("startDate", { mode: "string" }).notNull(),
+    endDate: date("endDate", { mode: "string" }),
+    probationEndDate: date("probationEndDate", { mode: "string" }),
+    jobTitle: varchar("jobTitle", { length: 150 }),
+    basicSalary: decimal("basicSalary", { precision: 15, scale: 2 }),
+    allowances: decimal("allowances", { precision: 15, scale: 2 }).default("0"),
+    terms: text("terms"),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "ACTIVE",
+      "RENEWED",
+      "TERMINATED",
+      "EXPIRED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    fileUrl: mediumtext("fileUrl"),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_contract_employee").on(t.employeeId),
+    statusIdx: index("idx_emp_contract_status").on(t.status),
+    probationIdx: index("idx_emp_contract_probation").on(t.probationEndDate),
+    endIdx: index("idx_emp_contract_end").on(t.endDate),
+  }),
+);
+export type EmployeeContract = typeof employeeContracts.$inferSelect;
+export type InsertEmployeeContract = typeof employeeContracts.$inferInsert;
+
+/** المكافآت الفورية الاستثنائية المرتبطة بسندات صرف الخزينة المباشرة أو مسيّر الرواتب. */
+export const employeeSpotBonuses = mysqlTable(
+  "employeeSpotBonuses",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    reason: varchar("reason", { length: 255 }).notNull(),
+    decisionNumber: varchar("decisionNumber", { length: 100 }),
+    disbursementType: mysqlEnum("disbursementType", [
+      "CASH_TREASURY",
+      "PAYROLL_ADDITION",
+    ])
+      .default("CASH_TREASURY")
+      .notNull(),
+    voucherId: bigint("voucherId", { mode: "number" }),
+    payrollRunId: bigint("payrollRunId", { mode: "number" }).references(
+      () => payrollRuns.id,
+    ),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "APPROVED",
+      "PAID",
+      "CANCELLED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    paidAt: timestamp("paidAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_spot_bonus_employee").on(t.employeeId),
+    branchIdx: index("idx_spot_bonus_branch").on(t.branchId),
+    statusIdx: index("idx_spot_bonus_status").on(t.status),
+  }),
+);
+export type EmployeeSpotBonus = typeof employeeSpotBonuses.$inferSelect;
+export type InsertEmployeeSpotBonus = typeof employeeSpotBonuses.$inferInsert;
+
+/** سجل التنقلات الإدارية بين الفروع والأقسام مع حفظ التاريخ الوظيفي. */
+export const employeeTransfers = mysqlTable(
+  "employeeTransfers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    fromBranchId: bigint("fromBranchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    toBranchId: bigint("toBranchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    fromDepartment: varchar("fromDepartment", { length: 100 }),
+    toDepartment: varchar("toDepartment", { length: 100 }),
+    fromPosition: varchar("fromPosition", { length: 100 }),
+    toPosition: varchar("toPosition", { length: 100 }),
+    decisionNumber: varchar("decisionNumber", { length: 100 }).notNull(),
+    transferDate: date("transferDate", { mode: "string" }).notNull(),
+    effectiveDate: date("effectiveDate", { mode: "string" }).notNull(),
+    reason: varchar("reason", { length: 255 }),
+    notes: text("notes"),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "APPROVED",
+      "EFFECTIVE",
+      "CANCELLED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_transfer_employee").on(t.employeeId),
+    statusIdx: index("idx_emp_transfer_status").on(t.status),
+    effectiveDateIdx: index("idx_emp_transfer_effective").on(t.effectiveDate),
+  }),
+);
+export type EmployeeTransfer = typeof employeeTransfers.$inferSelect;
+export type InsertEmployeeTransfer = typeof employeeTransfers.$inferInsert;
+
+/** طلبات السلف والقروض الذاتية للموظفين مع التحقق من سقف الاستقطاع القانوني (المادة 51). */
+export const employeeLoanRequests = mysqlTable(
+  "employeeLoanRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    installmentsCount: int("installmentsCount").default(1).notNull(),
+    monthlyDeduction: decimal("monthlyDeduction", { precision: 15, scale: 2 })
+      .notNull(),
+    reason: varchar("reason", { length: 255 }),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "APPROVED",
+      "REJECTED",
+      "CANCELLED",
+      "DISBURSED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    advanceId: bigint("advanceId", { mode: "number" }).references(
+      () => employeeAdvances.id,
+    ),
+    rejectionReason: varchar("rejectionReason", { length: 255 }),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    reviewedById: int("reviewedById").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empStatusIdx: index("idx_emp_loan_req_employee_status").on(
+      t.employeeId,
+      t.status,
+    ),
+    branchIdx: index("idx_emp_loan_req_branch").on(t.branchId),
+  }),
+);
+export type EmployeeLoanRequest = typeof employeeLoanRequests.$inferSelect;
+export type InsertEmployeeLoanRequest = typeof employeeLoanRequests.$inferInsert;
+
+/** سجل العهد العينية والأدوات ومعدات العمل المسلمة للموظف وحوكمة إرجاعها قبل المخالصة. */
+export const employeeCustody = mysqlTable(
+  "employeeCustody",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    itemType: mysqlEnum("itemType", [
+      "TOOL",
+      "DEVICE",
+      "VEHICLE",
+      "KEY",
+      "DOCUMENT",
+      "UNIFORM",
+      "OTHER",
+    ])
+      .default("TOOL")
+      .notNull(),
+    itemName: varchar("itemName", { length: 200 }).notNull(),
+    itemCode: varchar("itemCode", { length: 100 }),
+    serialNumber: varchar("serialNumber", { length: 100 }),
+    quantity: int("quantity").default(1).notNull(),
+    conditionAtHandover: varchar("conditionAtHandover", { length: 100 }),
+    handoverDate: date("handoverDate", { mode: "string" }).notNull(),
+    expectedReturnDate: date("expectedReturnDate", { mode: "string" }),
+    actualReturnDate: date("actualReturnDate", { mode: "string" }),
+    conditionAtReturn: varchar("conditionAtReturn", { length: 100 }),
+    returnNotes: text("returnNotes"),
+    status: mysqlEnum("status", [
+      "HELD",
+      "RETURNED",
+      "DAMAGED",
+      "LOST",
+    ])
+      .default("HELD")
+      .notNull(),
+    notes: text("notes"),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    receivedById: int("receivedById").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_custody_employee").on(t.employeeId),
+    branchIdx: index("idx_emp_custody_branch").on(t.branchId),
+    statusIdx: index("idx_emp_custody_status").on(t.status),
+  }),
+);
+export type EmployeeCustody = typeof employeeCustody.$inferSelect;
+export type InsertEmployeeCustody = typeof employeeCustody.$inferInsert;
+
 /* ============================================================
  * المرحلة ٦: إقفال مالي + موافقات ائتمان + رولوفر سنوي
  * ============================================================ */
