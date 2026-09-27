@@ -1563,5 +1563,76 @@ describe("createAsset — دعم الأراضي والمباني وسحوبات 
     expect(asset?.isActive).toBe(true);
     expect(asset?.paymentPending).toBe(true);
   });
+
+  it("تعديل بيانات أصل من فئة الأراضي (land) بعمر إنتاجي 0 ينجح دون استثناء", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض تجارية بالكرادة",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "500000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "المالك السابق",
+      acquisitionEvidenceReference: "DEED-KARRADA-2024",
+    });
+    expect(asset).toBeDefined();
+
+    const updated = await updateAsset(
+      asset!.id,
+      {
+        name: "ارض تجارية بالكرادة - معدل",
+        category: "land",
+        purchaseDate: "2024-01-01",
+        purchaseValue: "500000000",
+        salvageValue: "0",
+        usefulLifeYears: 0,
+        depreciationMethod: "sl",
+        branchId: 1,
+        location: "الكرادة داخل",
+      },
+      OWNER,
+    );
+    expect(updated).toBeDefined();
+    expect(updated?.name).toBe("ارض تجارية بالكرادة - معدل");
+    expect(updated?.category).toBe("land");
+    expect(updated?.usefulLifeYears).toBe(0);
+    expect(updated?.annualDep).toBe(0);
+  });
+
+  it("تعديل أصل أراضي بعمر إنتاجي أكبر من صفر يرمي استثناء صريحاً", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض زراعية بالدورة",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "300000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "المالك البائع",
+      acquisitionEvidenceReference: "DEED-DORA-2024",
+    });
+    expect(asset).toBeDefined();
+
+    await expect(
+      updateAsset(
+        asset!.id,
+        {
+          name: "ارض زراعية بالدورة",
+          category: "land",
+          purchaseDate: "2024-01-01",
+          purchaseValue: "300000000",
+          salvageValue: "0",
+          usefulLifeYears: 10,
+          depreciationMethod: "sl",
+          branchId: 1,
+        },
+        OWNER,
+      ),
+    ).rejects.toThrow("الأراضي لا تخضع للإهلاك ويجب أن يكون عمرها الإنتاجي 0");
+  });
 });
+
 
