@@ -12,6 +12,8 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { StatementReconcile } from "@/components/StatementReconcile";
+import { FinancialCellProvenanceHover } from "@/components/financial";
+import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -87,18 +89,19 @@ function stmtMoneyCol<T>(
     sortingFn: (a, b) => D(get(a.original)).cmp(D(get(b.original))),
     cell: ({ row }) => {
       const val = display ? display(row.original) : fmt(get(row.original));
-      if (onClick) {
-        return (
-          <button
-            type="button"
-            onClick={() => onClick(row.original)}
-            className={`${cls ?? ""} hover:underline cursor-pointer text-end block w-full`}
-          >
-            {val}
-          </button>
-        );
-      }
-      return <span className={cls}>{val}</span>;
+      const prov = (row.original as { provenance?: FinancialCellProvenancePayload }).provenance;
+      const content = onClick ? (
+        <button
+          type="button"
+          onClick={() => onClick(row.original)}
+          className={`${cls ?? ""} hover:underline cursor-pointer text-end block w-full`}
+        >
+          {val}
+        </button>
+      ) : (
+        <span className={`${cls ?? ""} text-end block w-full hover:underline cursor-pointer`}>{val}</span>
+      );
+      return <FinancialCellProvenanceHover data={prov}>{content}</FinancialCellProvenanceHover>;
     },
   };
 }

@@ -53,6 +53,8 @@ import { selectClsFull } from "@/lib/ui/formStyles";
 
 // المساعدات والأنواع والمكوّنات مستخرَجة إلى components/expenses/ (ترشيق الصفحة).
 import { ExpenseTracePanel } from "@/components/expenses/ExpenseTracePanel";
+import { ExpenseMobileCard } from "@/components/expenses/ExpenseMobileCard";
+import { FinancialCellProvenanceHover } from "@/components/financial";
 import { printExpenseReceipt } from "@/components/expenses/printExpenseReceipt";
 import {
   APPROVAL_LABEL,
@@ -1210,129 +1212,18 @@ export default function Expenses() {
                     </span>
                   </span>
                 </div>
-                {group.entries.map(({ row: r, warnings }) => {
-                  const expanded = expandedDescriptions.has(Number(r.id));
-                  const traceExpanded = expandedTraces.has(Number(r.id));
-                  return (
-                    <article
-                      key={Number(r.id)}
-                      className="space-y-3 rounded-lg border p-3"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono text-xs" dir="ltr">
-                              EXP#{Number(r.id)}
-                            </span>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
-                            >
-                              {STATUS_LABEL[r.status] ?? r.status}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {fmtDate(r.expenseDate as unknown as string)} ·{" "}
-                            {r.branchName ?? "—"}
-                          </p>
-                        </div>
-                        <p className="text-lg font-bold tabular-nums" dir="ltr">
-                          {fmt(r.amount)}
-                        </p>
-                      </div>
-                      <div>
-                        <p
-                          className={`text-sm leading-6 ${expanded ? "whitespace-pre-wrap" : "line-clamp-2"}`}
-                        >
-                          {r.description?.trim() || "لا يوجد شرح للعملية"}
-                        </p>
-                        {(r.description?.length ?? 0) > 80 && (
-                          <button
-                            type="button"
-                            className="mt-1 text-xs text-primary underline-offset-4 hover:underline"
-                            onClick={() => toggleDescription(Number(r.id))}
-                          >
-                            {expanded ? "طي الشرح" : "عرض الشرح كاملاً"}
-                          </button>
-                        )}
-                      </div>
-                      <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-                        <div>
-                          <dt className="text-muted-foreground">المستفيد</dt>
-                          <dd className="font-medium">{r.payee ?? "—"}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">
-                            الفئة / المركز
-                          </dt>
-                          <dd>
-                            {expenseCategoryText(r)}
-                            {r.costCenter ? ` · ${r.costCenter}` : ""}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">
-                            مصدر التمويل
-                          </dt>
-                          <dd>{fundingDetail(r)}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">
-                            أنشأ العملية
-                          </dt>
-                          <dd>
-                            {r.createdByName ??
-                              (r.createdBy != null ? `#${r.createdBy}` : "—")}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">السند</dt>
-                          <dd dir="ltr">
-                            {r.receiptVoucherNumber ??
-                              (r.receiptId ? `R#${r.receiptId}` : "—")}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">وقت التسجيل</dt>
-                          <dd dir="ltr">
-                            {fmtDateTime(r.createdAt as unknown as string)}
-                          </dd>
-                        </div>
-                      </dl>
-                      {warnings.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {warnings.map((warning) => (
-                            <span
-                              key={warning}
-                              className="rounded-full badge-status-cancelled px-2 py-0.5 text-[11px]"
-                            >
-                              {warning}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          aria-expanded={traceExpanded}
-                          onClick={() => toggleTrace(Number(r.id))}
-                        >
-                          {traceExpanded ? (
-                            <ChevronUp aria-hidden className="size-4" />
-                          ) : (
-                            <ChevronDown aria-hidden className="size-4" />
-                          )}
-                          مسار التتبّع
-                        </Button>
-                        <RowActions actions={actionsFor(r)} />
-                      </div>
-                      {traceExpanded && (
-                        <ExpenseTracePanel expenseId={Number(r.id)} />
-                      )}
-                    </article>
-                  );
-                })}
+                {group.entries.map(({ row: r, warnings }) => (
+                  <ExpenseMobileCard
+                    key={Number(r.id)}
+                    row={r}
+                    warnings={warnings}
+                    expanded={expandedDescriptions.has(Number(r.id))}
+                    traceExpanded={expandedTraces.has(Number(r.id))}
+                    onToggleDescription={toggleDescription}
+                    onToggleTrace={toggleTrace}
+                    actions={actionsFor(r)}
+                  />
+                ))}
               </section>
             ))}
             {list.data && visibleEntries.length === 0 && (
@@ -1580,7 +1471,11 @@ export default function Expenses() {
                                 className="p-2 text-start text-base font-bold tabular-nums"
                                 dir="ltr"
                               >
-                                {fmt(r.amount)}
+                                <FinancialCellProvenanceHover data={(r as any).provenance}>
+                                  <span className="cursor-pointer hover:underline text-end block w-full">
+                                    {fmt(r.amount)}
+                                  </span>
+                                </FinancialCellProvenanceHover>
                               </td>
                               <td className="p-2">
                                 <span

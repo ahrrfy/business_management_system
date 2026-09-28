@@ -13,6 +13,7 @@ import { ShiftFundingDecisionDialogs } from "@/components/shifts/ShiftFundingDec
 import { ShiftInvoicesDialog } from "@/components/shifts/ShiftInvoicesDialog";
 import {
   adaptShiftCashReconciliation,
+  FinancialCellProvenanceHover,
 } from "@/components/financial";
 import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
@@ -896,21 +897,39 @@ export default function Shifts() {
                 header: "الافتتاحي",
                 accessorFn: (r) => fmt(r.openingBalance),
                 meta: { kind: "money" },
-                cell: ({ row }) => fmt(row.original.openingBalance),
+                cell: ({ row }) => (
+                  <FinancialCellProvenanceHover data={(row.original as any).provenance}>
+                    <span className="tabular-nums font-bold text-end block w-full hover:underline cursor-pointer">
+                      {fmt(row.original.openingBalance)}
+                    </span>
+                  </FinancialCellProvenanceHover>
+                ),
               },
               {
                 id: "expectedCash",
                 header: "المتوقع",
                 accessorFn: (r) => (r.expectedCash != null ? fmt(r.expectedCash) : "—"),
                 meta: { kind: "money" },
-                cell: ({ row }) => (row.original.expectedCash != null ? fmt(row.original.expectedCash) : "—"),
+                cell: ({ row }) => (
+                  <FinancialCellProvenanceHover data={(row.original as any).provenance}>
+                    <span className="tabular-nums font-bold text-end block w-full hover:underline cursor-pointer">
+                      {row.original.expectedCash != null ? fmt(row.original.expectedCash) : "—"}
+                    </span>
+                  </FinancialCellProvenanceHover>
+                ),
               },
               {
                 id: "countedCash",
                 header: "المعدود",
                 accessorFn: (r) => (r.countedCash != null ? fmt(r.countedCash) : "—"),
                 meta: { kind: "money" },
-                cell: ({ row }) => (row.original.countedCash != null ? fmt(row.original.countedCash) : "—"),
+                cell: ({ row }) => (
+                  <FinancialCellProvenanceHover data={(row.original as any).countedProvenance ?? (row.original as any).provenance}>
+                    <span className="tabular-nums font-bold text-end block w-full hover:underline cursor-pointer">
+                      {row.original.countedCash != null ? fmt(row.original.countedCash) : "—"}
+                    </span>
+                  </FinancialCellProvenanceHover>
+                ),
               },
               {
                 id: "variance",
@@ -918,9 +937,11 @@ export default function Shifts() {
                 accessorFn: (r) => (r.variance != null ? fmt(r.variance) : "—"),
                 meta: { kind: "money" },
                 cell: ({ row }) => (
-                  <span className={`font-semibold ${varianceCls(row.original.variance)}`}>
-                    {row.original.variance != null ? fmt(row.original.variance) : "—"}
-                  </span>
+                  <FinancialCellProvenanceHover data={(row.original as any).provenance}>
+                    <span className={`tabular-nums font-semibold text-end block w-full hover:underline cursor-pointer ${varianceCls(row.original.variance)}`}>
+                      {row.original.variance != null ? fmt(row.original.variance) : "—"}
+                    </span>
+                  </FinancialCellProvenanceHover>
                 ),
               },
               {

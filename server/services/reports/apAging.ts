@@ -6,6 +6,9 @@ import {
   exchangeHouses,
   exchangeTransactions,
   goodsReceipts,
+  productVariants,
+  products,
+  purchaseOrderItems,
   purchaseOrders,
   receipts,
   suppliers,
@@ -22,6 +25,14 @@ import {
   supplierApEffectSql,
 } from "../ledger/supplierApEffect";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
+import type {
+  FinancialCellProvenancePayload,
+  ProvenanceDocumentRef,
+  ProvenanceMovementType,
+  ProvenancePartyKind,
+  ProvenanceSubItem,
+} from "@shared/financialProvenance";
+import { computeProvenanceReconciliation } from "@shared/financialProvenance";
 
 /** أعمدة القيد بالاسم المستعار `ae` للاستعمال في استعلامات SQL الخام أدناه. */
 const AE = {
@@ -230,6 +241,7 @@ export interface SupplierStatementPO {
   settlementType?: "CASH" | "CREDIT";
   createdBy: number | null;
   createdByName: string | null;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 export interface SupplierStatementPayment {
@@ -251,6 +263,7 @@ export interface SupplierStatementPayment {
   exchangeHouseName: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 export interface SupplierStatementUnbilledReceipt {
@@ -693,47 +706,215 @@ export async function getSupplierStatement(
       ),
     );
 
+  const poIds = posWithTotals.map((p) => Number(p.id)).filter((id) => id > 0);
+  const poItemMap = new Map<number, ProvenanceSubItem[]>();
+  if (poIds.length > 0) {
+    const poItemRows = await db
+      .select({
+        purchaseOrderId: purchaseOrderItems.purchaseOrderId,
+        id: purchaseOrderItems.id,
+        name: products.name,
+        quantity: purchaseOrderItems.quantity,
+        unitPrice: purchaseOrderItems.unitPrice,
+        total: purchaseOrderItems.total,
+        usdTotal: purchaseOrderItems.usdTotal,
+      })
+      .from(purchaseOrderItems)
+      .leftJoin(productVariants, eq(productVariants.id, purchaseOrderItems.variantId))
+      .leftJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(purchaseOrderItems.purchaseOrderId, poIds));
+
+    for (const it of poItemRows) {
+      const poId = Number(it.purchaseOrderId);
+      const list = poItemMap.get(poId) ?? [];
+      list.push({
+        id: it.id,
+        label: it.name || "صنف أمر شراء",
+        amount: toDbMoney(money(it.total ?? 0)),
+        quantity: it.quantity != null ? Number(it.quantity) : undefined,
+        unitPrice: it.unitPrice != null ? toDbMoney(money(it.unitPrice)) : undefined,
+        type: "item",
+      });
+      poItemMap.set(poId, list);
+    }
+  }
+
   return {
-    supplier: s,
-    unbilledReceipts: unbilledReceiptRows.map((r) => ({
-      goodsReceiptId: Number(r.goodsReceiptId),
-      receiptNumber: r.receiptNumber,
-      purchaseOrderId: r.purchaseOrderId ? Number(r.purchaseOrderId) : null,
-      poNumber: r.poNumber ?? null,
-      receivedAt: r.receivedAt,
-      totalAmount: String(r.totalAmount ?? "0.00"),
-      notes: r.notes ?? null,
-    })),
-    purchaseOrders: posWithTotals.map((p) => ({
-      id: Number(p.id),
-      poNumber: p.poNumber,
-      orderDate: p.orderDate,
-      expectedDeliveryDate: p.expectedDeliveryDate,
-      total: String(p.total),
-      paidAmount: String(p.paidAmount),
-      status: p.status,
-      createdBy: p.createdBy ? Number(p.createdBy) : null,
-      createdByName: p.createdByName,
-    })),
-    payments: payments.map((p) => ({
-      id: Number(p.id),
-      // entryType جديد: تميّز الواجهة بين دفعة مورد (PAYMENT_OUT)، استرداد من مورد (PAYMENT_IN)،
-      // ومرتجع شراء (RETURN، مخزَّن بإشارة سالبة) — لكي يقرأ المحاسب الكشف بإشارته الصحيحة.
-      entryType: p.entryType,
-      dedupeKey: p.dedupeKey ?? null,
-      purchaseOrderId: p.purchaseOrderId ? Number(p.purchaseOrderId) : null,
-      receiptId: p.receiptId ? Number(p.receiptId) : null,
-      amount: String(p.amount),
-      entryDate: p.entryDate as Date,
-      notes: p.notes,
-      voucherNumber: p.voucherNumber,
-      paymentMethod: p.paymentMethod,
-      referenceNumber: p.referenceNumber,
-      exchangeHouseId: p.exchangeHouseId ? Number(p.exchangeHouseId) : null,
-      exchangeHouseName: p.exchangeHouseName,
-      createdBy: p.createdBy ? Number(p.createdBy) : null,
-      createdByName: p.createdByName,
-    })),
+      supplier: s,
+      unbilledReceipts: unbilledReceiptRows.map((r) => ({
+        goodsReceiptId: Number(r.goodsReceiptId),
+        receiptNumber: r.receiptNumber,
+        purchaseOrderId: r.purchaseOrderId ? Number(r.purchaseOrderId) : null,
+        poNumber: r.poNumber ?? null,
+        receivedAt: r.receivedAt,
+        totalAmount: String(r.totalAmount ?? "0.00"),
+        notes: r.notes ?? null,
+      })),
+      purchaseOrders: posWithTotals.map((p) => {
+        const poTotal = toDbMoney(money(p.total ?? 0));
+        const rawItems = poItemMap.get(Number(p.id)) ?? [];
+        const subItems: ProvenanceSubItem[] = [...rawItems];
+        if (subItems.length === 0) {
+          subItems.push({
+            id: `po-${p.id}`,
+            label: `أمر شراء #${p.poNumber}`,
+            amount: poTotal,
+          });
+        } else {
+          const currentSum = subItems.reduce((acc, it) => acc.plus(money(it.amount)), money(0));
+          const diff = money(poTotal).minus(currentSum);
+          if (!diff.isZero() && diff.abs().lte(100)) {
+            subItems.push({
+              id: `adj-po-${p.id}`,
+              label: "تسوية / مصاريف شحن وكمرك",
+              amount: diff.isNegative() ? `-${toDbMoney(diff.abs())}` : toDbMoney(diff),
+              type: "adjustment",
+            });
+          }
+        }
+
+        const reconciliation = computeProvenanceReconciliation(poTotal, subItems);
+        const poProvenance: FinancialCellProvenancePayload = {
+          movementType: "delivery",
+          title: `أمر شراء #${p.poNumber}`,
+          totalAmount: poTotal,
+          party: {
+            name: s.name,
+            kind: "supplier",
+            id: s.id,
+            phone: s.phone,
+          },
+          documentRef: {
+            docType: "purchase_order",
+            docNumber: p.poNumber,
+            docId: Number(p.id),
+            date: p.orderDate instanceof Date ? p.orderDate.toISOString() : String(p.orderDate),
+          },
+          docRefs: [
+            {
+              docType: "purchase_order",
+              docNumber: p.poNumber,
+              docId: Number(p.id),
+              date: p.orderDate instanceof Date ? p.orderDate.toISOString() : String(p.orderDate),
+            },
+          ],
+          actorName: p.createdByName,
+          actor: p.createdByName ? { name: p.createdByName, id: p.createdBy ? Number(p.createdBy) : null } : null,
+          notes: `حالة أمر الشراء: ${p.status}`,
+          subItems,
+          reconciliation,
+        };
+
+        return {
+          id: Number(p.id),
+          poNumber: p.poNumber,
+          orderDate: p.orderDate,
+          expectedDeliveryDate: p.expectedDeliveryDate,
+          total: String(p.total),
+          paidAmount: String(p.paidAmount),
+          status: p.status,
+          createdBy: p.createdBy ? Number(p.createdBy) : null,
+          createdByName: p.createdByName,
+          provenance: poProvenance,
+        };
+      }),
+      payments: payments.map((p) => {
+        const pAmount = toDbMoney(money(p.amount ?? 0));
+        let movementType: ProvenanceMovementType = "delivery";
+        if (p.entryType === "PAYMENT_IN") {
+          movementType = "collection";
+        } else if (p.entryType === "RETURN") {
+          movementType = "difference";
+        } else if (p.entryType === "PURCHASE" || p.entryType === "ADJUST") {
+          movementType = "expense";
+        }
+
+        const docRefs: ProvenanceDocumentRef[] = [];
+        if (p.voucherNumber) {
+          docRefs.push({
+            docType: "voucher",
+            docNumber: p.voucherNumber,
+            date: p.entryDate instanceof Date ? p.entryDate.toISOString() : String(p.entryDate),
+          });
+        }
+        if (p.purchaseOrderId) {
+          docRefs.push({
+            docType: "purchase_order",
+            docNumber: `PO-${p.purchaseOrderId}`,
+            docId: p.purchaseOrderId,
+            date: p.entryDate instanceof Date ? p.entryDate.toISOString() : String(p.entryDate),
+          });
+        }
+        if (p.receiptId) {
+          docRefs.push({
+            docType: "receipt",
+            docNumber: p.referenceNumber || `REC-${p.receiptId}`,
+            docId: p.receiptId,
+            date: p.entryDate instanceof Date ? p.entryDate.toISOString() : String(p.entryDate),
+          });
+        }
+
+        const subItems: ProvenanceSubItem[] = [
+          {
+            id: `pay-${p.id}`,
+            label:
+              p.notes ||
+              (p.entryType === "PAYMENT_OUT"
+                ? "دفعة سداد مورد"
+                : p.entryType === "PAYMENT_IN"
+                  ? "استرداد دفعة من مورد"
+                  : p.entryType === "RETURN"
+                    ? "مرتجع مشتريات"
+                    : "تسوية حساب مورد"),
+            amount: pAmount,
+          },
+        ];
+
+        const paymentProvenance: FinancialCellProvenancePayload = {
+          movementType,
+          title:
+            p.notes ||
+            (p.entryType === "PAYMENT_OUT"
+              ? "سند صرف مورد"
+              : "حركة حساب مورد"),
+          totalAmount: pAmount,
+          party: {
+            name: s.name,
+            kind: "supplier",
+            id: s.id,
+            phone: s.phone,
+          },
+          documentRef: docRefs[0] ?? null,
+          docRefs,
+          paymentMethod: p.paymentMethod,
+          actorName: p.createdByName,
+          actor: p.createdByName
+            ? { name: p.createdByName, id: p.createdBy ? Number(p.createdBy) : null }
+            : null,
+          notes: p.notes,
+          subItems,
+          reconciliation: computeProvenanceReconciliation(pAmount, subItems),
+        };
+
+        return {
+          id: Number(p.id),
+          entryType: p.entryType,
+          dedupeKey: p.dedupeKey ?? null,
+          purchaseOrderId: p.purchaseOrderId ? Number(p.purchaseOrderId) : null,
+          receiptId: p.receiptId ? Number(p.receiptId) : null,
+          amount: String(p.amount),
+          entryDate: p.entryDate as Date,
+          notes: p.notes,
+          voucherNumber: p.voucherNumber,
+          paymentMethod: p.paymentMethod,
+          referenceNumber: p.referenceNumber,
+          exchangeHouseId: p.exchangeHouseId ? Number(p.exchangeHouseId) : null,
+          exchangeHouseName: p.exchangeHouseName,
+          createdBy: p.createdBy ? Number(p.createdBy) : null,
+          createdByName: p.createdByName,
+          provenance: paymentProvenance,
+        };
+      }),
     summary: {
       totalPurchases: toDbMoney(totalPurchases),
       totalPaid: toDbMoney(totalPaid),

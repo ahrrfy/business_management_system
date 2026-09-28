@@ -8,7 +8,7 @@ import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
-import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
+import { closeShift, enrichShiftListProvenance, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { remediateAndCloseLegacyNegativeShifts } from "../services/legacyNegativeShiftService";
 import { createCashDrop } from "../services/cashDropService";
 import {
@@ -107,6 +107,7 @@ export const shiftRouter = router({
             variance: shifts.variance,
             status: shifts.status,
             shiftType: shifts.shiftType,
+            countedBreakdown: shifts.countedBreakdown,
             openedAt: shifts.openedAt,
             closedAt: shifts.closedAt,
           })
@@ -127,7 +128,8 @@ export const shiftRouter = router({
         },
         { rowsLength: rows.length, limit: i.limit ?? 50, offset: i.offset },
       );
-      return { rows, total, hasMore, nextCursor };
+      const enrichedRows = await enrichShiftListProvenance(rows);
+      return { rows: enrichedRows, total, hasMore, nextCursor };
     }),
 
   /** عهد التمويل الإضافي المسندة لصاحب الوردية الحالي فقط، بصرف النظر عن مسمى دوره. */
@@ -518,7 +520,7 @@ export const shiftRouter = router({
         shiftType: z.enum(["RETAIL", "RECEPTION", "PRINT_SERVICES"]).optional(),
       }),
     )
-    .query(({ input, ctx }) => {
+    .query(async ({ input, ctx }) => {
       const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
       const effective = ctx.scopedBranchId ?? input.branchId ?? assignedBranchId;
       if (effective == null) {
@@ -532,6 +534,9 @@ export const shiftRouter = router({
           }),
         });
       }
-      return getOpenShift(ctx.user.id, effective, input.shiftType);
+      const shift = await getOpenShift(ctx.user.id, effective, input.shiftType);
+      if (!shift) return null;
+      const [enriched] = await enrichShiftListProvenance([shift]);
+      return enriched ?? shift;
     }),
 });
