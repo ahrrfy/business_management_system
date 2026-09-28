@@ -20,7 +20,6 @@ import {
   receptionDrafts,
   serviceTypes,
   shifts,
-  tasks,
   workOrderEvents,
   workOrderImages,
   workOrderMaterials,
@@ -1003,30 +1002,7 @@ export const workOrderRouter = router({
       .from(workOrderImages)
       .where(eq(workOrderImages.workOrderId, input.workOrderId))
       .orderBy(desc(workOrderImages.revision), asc(workOrderImages.sortOrder), asc(workOrderImages.id));
-    /**
-     * ش٢ — **الأمر يقول حالة حجزه بنفسه**: مهمّةٌ مفتوحةٌ نوعُها حاجز. استعلامٌ واحد بدل
-     * إجراءٍ جديد أو فلترةٍ في الواجهة، والحالةُ مشتقّةٌ من الواقع فلا تكذب البطاقة حين
-     * تُفتَح نسخةٌ جديدة (تعود «بانتظار الموافقة» تلقائياً).
-     */
-    const blockingRows = await db
-      .select({
-        id: tasks.id,
-        taskNumber: tasks.taskNumber,
-        title: tasks.title,
-        status: tasks.taskStatus,
-        dueAt: tasks.dueAt,
-      })
-      .from(tasks)
-      .innerJoin(serviceTypes, eq(serviceTypes.id, tasks.serviceTypeId))
-      .where(
-        and(
-          eq(tasks.linkedWorkOrderId, input.workOrderId),
-          inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
-          eq(serviceTypes.blocksExecution, true),
-        ),
-      )
-      .limit(1);
-    const blockingTask = blockingRows[0] ?? null;
+    const blockingTask = null;
     /**
      * ش٥ (0238) — **إخوةُ الطلب**: الزبون يرى طلباً واحداً، وأوامرُ السلّة الواحدة كانت لا
      * يعرف بعضُها بعضاً. استعلامٌ مفهرسٌ واحد (`idx_wo_draft`) بدل مسحِ `idempotencyKeys`
@@ -1083,7 +1059,7 @@ export const workOrderRouter = router({
       courierDeliveredAt: deliveryInfo.courierDeliveredAt ?? null,
       kanbanState: wo.kanbanState,
       blockedReason: wo.blockedReason,
-      blockingTaskLabel: blockingTask?.title ?? null,
+      blockingTaskLabel: null,
     });
     const nextActionReason =
       nextAction == null ? nextActionTerminalReason("WORK_ORDER", wo.status) : null;

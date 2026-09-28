@@ -67,7 +67,7 @@ const TABLES = [
   "goodsReceiptAccountingLinks", "goodsReceiptItems", "goodsReceipts",
   "externalPaymentAttempts",
   "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations", "purchaseOrderRevisionItems", "purchaseOrderRevisions",
-  "workOrderEvents", "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks", "serviceTypes",
+  "workOrderEvents", "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions", "serviceTypes",
   "salesExchangeCommands", "salesControlRequests", "returnRequests", "idempotencyKeys", "auditLogs",
   "accountingEntries", "receipts", "expenses", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products",

@@ -11,7 +11,6 @@ import {
   ClipboardCheck,
   Boxes,
   Package,
-  ListChecks,
   Truck,
   Menu,
   type LucideIcon,
@@ -37,22 +36,6 @@ interface MobileBottomNavProps {
   workOrderReadyCount?: number;
   deliveryReadyCount?: number;
 }
-
-const TASKS_GATE = {
-  roles: [
-    "admin",
-    "manager",
-    "accountant",
-    "cashier",
-    "warehouse",
-    "print_operator",
-    "sales_rep",
-    "auditor",
-    "user",
-  ],
-  module: "tasks",
-  level: "READ",
-} satisfies RoleGate;
 
 const DELIVERY_GATE = {
   roles: ["admin", "manager", "accountant", "cashier", "auditor"],
@@ -94,7 +77,6 @@ export function getMobileBottomNavItems(
         icon: PackageCheck,
         gate: { roles: ["courier"], module: "courier", level: "READ" },
       },
-      { href: "/tasks", label: "المهام", icon: ListChecks, gate: TASKS_GATE },
     ];
     return [
       ...visibleItems(candidates, role, permsOverride),
@@ -124,7 +106,6 @@ export function getMobileBottomNavItems(
       },
       { href: "/delivery", label: "التوصيل", icon: Truck, gate: DELIVERY_GATE },
       { href: "/price-checker", label: "الماسح", icon: ScanLine },
-      { href: "/tasks", label: "المهام", icon: ListChecks, gate: TASKS_GATE },
     ];
     return [
       ...visibleItems(candidates, role, permsOverride).slice(0, 4),
@@ -148,7 +129,6 @@ export function getMobileBottomNavItems(
         icon: Package,
         gate: { module: "purchases" },
       },
-      { href: "/tasks", label: "المهام", icon: ListChecks, gate: TASKS_GATE },
     ];
     return [
       ...visibleItems(candidates, role, permsOverride).slice(0, 4),

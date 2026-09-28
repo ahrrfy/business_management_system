@@ -21,7 +21,7 @@ import { declareConsignmentReturn } from "../delivery/declaredReturn";
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
   "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
-  "taskEvents", "tasks", "notificationOccurrences",
+  "notificationOccurrences",
   "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock", "productPrices", "productUnits",
   "productVariants", "products", "shifts", "customers", "branches", "users",
@@ -128,18 +128,14 @@ describe("autoFailStaleParcels — تعذّرٌ بانقضاء SLA خلف علَ
     expect(payload.authority).toBe("SYSTEM_SLA_SWEEP");
     expect(payload.thresholdDays).toBe(7);
     expect(Number(payload.ageDays)).toBeGreaterThanOrEqual(10);
-    const task = (await db().select().from(s.tasks))[0];
-    expect(task).toBeTruthy();
-    expect(Number(task.linkedInvoiceId)).toBe(a.invoiceId);
-    expect(Number(task.assignedTo)).toBe(OWNER_ID);
-    expect(task.title).toContain(cn.consignmentNumber);
+    // لا عهدةَ ولا دفترَ تحرّك: الوسمُ تشغيليّ.
     // لا عهدةَ ولا دفترَ تحرّك: الوسمُ تشغيليّ.
     expect((await db().select().from(s.deliveryLedgerEntries)).map((e) => e.entryType)).toEqual(["COD_ASSIGNED"]);
 
     // الدورة التالية (ومن الكنّاس العامّ) لا تُعيد الوسم ولا تفتح مهمّةً ثانية.
     const again = await sweepStaleConsignments();
     expect(again.autoFailed).toBe(0);
-    expect((await db().select().from(s.tasks)).length).toBe(1);
+    
   });
 
   it("لا يُوسَم: طردٌ حديث، أو أُعلن رجوعُه، أو قُبض منه شيءٌ في الدفتر", async () => {

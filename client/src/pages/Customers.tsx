@@ -76,13 +76,6 @@ export default function Customers() {
   // بل «مخفي»؛ لذا لا نعرض «بلا حدّ» إلا للمدير/الإدمن حيث null=ائتمان غير محدود فعلاً.
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
-  const canCreateTasks = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "tasks",
-    "FULL",
-    ["cashier", "manager", "sales_rep", "print_operator"],
-  );
   // ٢٤/٨ (Codex P2 على PR #744): كشف الحساب تحت `reports=READ` — البقيّة يُعاد توجيهها بلا نتيجة.
   const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
@@ -213,7 +206,6 @@ export default function Customers() {
     onError: (e) => notify.err(e),
   });
   const createNote = trpc.customerNotes.create.useMutation();
-  const createTask = trpc.tasks.create.useMutation();
 
   const total = list.data?.total ?? 0;
   const rows = (list.data?.rows ?? []) as DisplayRow[];
@@ -320,61 +312,13 @@ export default function Customers() {
         followUpDate: value.followUpDate,
         branchId: effectiveFollowUpBranchId,
       });
-      if (value.createTask) {
-        if (!canCreateTasks) throw new Error("ليست لديك صلاحية إنشاء المهام");
-        await createTask.mutateAsync({
-          branchId: effectiveFollowUpBranchId,
-          kind: "FOLLOW_UP",
-          title: `متابعة تحصيل — ${followTarget.name}`,
-          description: value.note,
-          priority: value.taskPriority,
-          customerId: Number(followTarget.id),
-          sourceChannel: "PHONE",
-          dueAt: value.followUpDate ? `${value.followUpDate}T09:00:00Z` : null,
-        });
-      }
       await Promise.all([
         utils.customerNotes.list.invalidate({ customerId: Number(followTarget.id) }),
         utils.customerNotes.dueToday.invalidate(),
-        utils.tasks.list.invalidate(),
         utils.customers.operations.invalidate(),
       ]);
-      notify.ok(value.createTask ? "حُفظت المتابعة وأُنشئت المهمة" : "حُفظت المتابعة");
+      notify.ok("حُفظت المتابعة");
       setFollowTarget(null);
-    } catch (error) {
-      notify.err(error);
-    }
-  }
-
-  async function createBulkFollowUpTasks() {
-    if (!canCreateTasks || selectedRows.length === 0) return;
-    if (effectiveFollowUpBranchId == null) {
-      notify.err("اختر الفرع أولاً قبل إنشاء مهام المتابعة");
-      return;
-    }
-    const ok = await confirm({
-      title: "إنشاء مهام متابعة",
-      description: `سيتم إنشاء مهمة متابعة مرتبطة لكل عميل من العملاء المحددين (${selectedRows.length}).`,
-      confirmText: "إنشاء المهام",
-    });
-    if (!ok) return;
-    try {
-      await Promise.all(
-        selectedRows.map((row) =>
-          createTask.mutateAsync({
-            branchId: effectiveFollowUpBranchId,
-            kind: "FOLLOW_UP",
-            title: `متابعة تحصيل — ${row.name}`,
-            description: `متابعة جماعية من شاشة العملاء. الرصيد الحالي: ${fmt(row.currentBalance)} د.ع`,
-            priority: "NORMAL",
-            customerId: Number(row.id),
-            sourceChannel: "OTHER",
-          }),
-        ),
-      );
-      await utils.tasks.list.invalidate();
-      notify.ok(`تم إنشاء ${selectedRows.length} مهمة متابعة`);
-      sel.clear();
     } catch (error) {
       notify.err(error);
     }
@@ -515,7 +459,6 @@ export default function Customers() {
                   {COLLECTION_STATUS[c.collectionStatus]?.label ?? c.collectionStatus}
                 </Badge>
                 {c.daysOverdue > 0 && <span className="text-[10px] text-muted-foreground">{c.daysOverdue} يوم</span>}
-                {c.openTasks > 0 && <span className="text-[10px] text-muted-foreground">{c.openTasks} مهمة مفتوحة</span>}
               </div>
             );
           },
@@ -984,7 +927,6 @@ export default function Customers() {
                 <Link href="/reports/ar-reminders"><Button size="sm">برنامج التحصيل اليوم</Button></Link>
                 <Link href="/crm?tab=aging"><Button size="sm" variant="outline">أعمار الذمم</Button></Link>
                 <Link href="/crm?tab=followups"><Button size="sm" variant="outline">سجل المتابعات</Button></Link>
-                <Link href="/tasks?tab=list&overdue=1"><Button size="sm" variant="outline">المهام المتأخرة</Button></Link>
               </div>
               {(summary?.collectorActivity30d?.length ?? 0) > 0 && (
                 <details className="text-xs">
@@ -1009,7 +951,7 @@ export default function Customers() {
         onOpenChange={(open) => { if (!open) setFollowTarget(null); }}
         customerName={followTarget?.name ?? ""}
         defaultAmount={followTarget?.currentBalance ?? null}
-        submitting={createNote.isPending || createTask.isPending}
+        submitting={createNote.isPending}
         onSubmit={(value) => void saveFollowUp(value)}
       />
 
@@ -1022,16 +964,9 @@ export default function Customers() {
         onPrint={printSelectedCollectionList}
         printLabel="طباعة قائمة التحصيل"
         actions={
-          <>
-            <Button size="sm" variant="outline" onClick={() => void copySelectedAsWhatsAppSummary()}>
-              معاينة واتساب
-            </Button>
-            {canCreateTasks && (
-              <Button size="sm" variant="outline" onClick={() => void createBulkFollowUpTasks()} disabled={createTask.isPending}>
-                إنشاء مهام متابعة
-              </Button>
-            )}
-          </>
+          <Button size="sm" variant="outline" onClick={() => void copySelectedAsWhatsAppSummary()}>
+            معاينة واتساب
+          </Button>
         }
       />
     </div>

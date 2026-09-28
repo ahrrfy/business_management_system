@@ -727,106 +727,6 @@ const WOIco = ({ color }: { color: string }) => (
   </svg>
 );
 
-const TasksIco = ({ color }: { color: string }) => (
-  <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
-    <rect x="3" y="3" width="14" height="14" rx="2.5" stroke={color} strokeWidth="1.6" />
-    <path d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4" stroke={color} strokeWidth="1.6" strokeLinecap="round" />
-  </svg>
-);
-
-/* ═══════════ المهام والتذاكر (نظام المهام الموحّد S2/T2.3) ═══════════
-   بطاقتان: «مهامي المفتوحة» (شخصيّ — assignedTo=أنا، لا RESOLVED/CANCELLED) و«مهام متأخّرة»
-   (تشغيليّ — نطاق فرع المستخدم نفسه المُستعمَل في MetricsBar/MorningBrief). يظهر لأي دور يملك
-   tasks≥READ ويُبقي ملفُ عمله «مهامي» ضمن الإجراءات الرئيسية؛ ويختفي كلياً عند صفرَين.
-   myOpenTasks يُحسب خادمياً بلا حدّ صفحات، والراوتر يمرّر هوية المستخدم المصادَق حصراً. */
-function TasksBrief({
-  branchScope,
-  primaryNav,
-}: {
-  branchScope: number | undefined;
-  primaryNav: readonly WorkspaceNavItem[];
-}) {
-  const T = useT();
-  const me = trpc.auth.me.useQuery();
-  const role = me.data?.role ?? "";
-  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const tasksHref = profileActionHref(primaryNav, "my_tasks");
-
-  // بوّابة رؤية — مرآة hasModuleAccess (القالب فقط، بلا استثناء أدوار خارج القائمة) مطابقةً تماماً
-  // لبوّابة الخادم tasksReadProcedure (requireModule("tasks","READ")، بلا قائمة أدوار صريحة هناك أيضاً).
-  const canSeeTasks =
-    !!role &&
-    !!tasksHref &&
-    hasModuleAccess(role, override, "tasks", "READ");
-
-  // overdueTasks تشغيليّ — نفس مفتاح استعلام dashboardMetrics المُستهلَك أصلاً في MetricsBar/
-  // MorningBrief (branchId مطابق) ⇒ react-query يُدَدِّب الطلب، لا شبكة إضافية.
-  const metrics = trpc.reports.dashboardMetrics.useQuery(
-    { branchId: branchScope, includeTodaySales: true },
-    { enabled: canSeeTasks && (role === "admin" || branchScope !== undefined) },
-  );
-  const overdueTasks = metrics.data?.morningBrief.overdueTasks ?? 0;
-  const myOpenTasks = metrics.data?.morningBrief.myOpenTasks ?? 0;
-
-  if (!canSeeTasks || !tasksHref) return null;
-  if (metrics.isLoading) {
-    return (
-      <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", color: T.muted, fontSize: "0.75rem" }}>
-        جارٍ تحديث المهام…
-      </section>
-    );
-  }
-  if (metrics.isError) {
-    return (
-      <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px" }}>
-        <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
-          <span>تعذّر تحديث المهام.</span>
-          <button type="button" onClick={() => void metrics.refetch()} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
-            <RefreshCw aria-hidden size={13} />
-            إعادة المحاولة
-          </button>
-        </div>
-      </section>
-    );
-  }
-  if (myOpenTasks === 0 && overdueTasks === 0) return null;
-
-  return (
-    <section
-      style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", display: "flex", flexDirection: "column", gap: 10 }}
-      aria-label="المهام والتذاكر"
-    >
-      <h2 style={{ fontSize: "0.8125rem", fontWeight: 800, color: T.text, margin: 0, letterSpacing: "0.01em" }}>
-        المهام والتذاكر
-      </h2>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
-        {myOpenTasks > 0 && (
-          <BriefCard
-            href={tasksHref}
-            label="مهامي المفتوحة"
-            count={myOpenTasks}
-            sub="مهام مُسنَدة إليك بانتظار المتابعة"
-            accent="var(--sem-info)"
-            iconBg="var(--sem-info-bg)"
-            icon={<TasksIco color="var(--sem-info)" />}
-          />
-        )}
-        {overdueTasks > 0 && (
-          <BriefCard
-            href={`${tasksHref.split("?")[0]}?tab=list&overdue=1`}
-            label="مهام متأخّرة"
-            count={overdueTasks}
-            sub="تجاوزت الاستحقاق الفعلي — تحتاج متابعة"
-            accent="var(--sem-neg)"
-            iconBg="var(--sem-neg-bg)"
-            icon={<TasksIco color="var(--sem-neg)" />}
-          />
-        )}
-      </div>
-    </section>
-  );
-}
-
 /* ═══════════ DASHBOARD ═══════════ */
 
 export default function Dashboard() {
@@ -867,12 +767,6 @@ export default function Dashboard() {
         station={cashierStation}
         defaultAction={profile.defaultAction}
         primaryNav={profile.primaryNav}
-        tasksBrief={(
-          <TasksBrief
-            branchScope={dashboardActionBranchId(me.data.branchId)}
-            primaryNav={profile.primaryNav}
-          />
-        )}
       />
     );
   }
@@ -889,7 +783,6 @@ export default function Dashboard() {
       />
       <MetricsBar branchScope={branchScope} primaryNav={profile.primaryNav} />
       <MorningBrief branchScope={branchScope} isAdmin={isAdmin} primaryNav={profile.primaryNav} />
-      <TasksBrief branchScope={branchScope} primaryNav={profile.primaryNav} />
     </motion.div>
   );
 }

@@ -36,7 +36,6 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   },
   { id: "crm", href: "/crm", label: "CRM والعلاقات", description: "عملاء ومحادثات وعروض", section: 1, icon: Users, module: "crm" },
   { id: "myWork", href: "/my-work", label: "مطلوب مني الآن", description: "قرارات ومهام تنتظر الإجراء", section: 4, icon: ClipboardCheck },
-  { id: "tasks", href: "/tasks", label: "المهام والتذاكر", description: "إسناد ومتابعة وSLA", section: 4, icon: ListChecks, module: "tasks" },
   { id: "sales", href: "/invoices", label: "المبيعات", description: "فواتير ومدفوعات", section: 1, icon: Receipt, ...INVOICE_LIST_GATE },
   {
     id: "returns",
