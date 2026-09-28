@@ -311,6 +311,7 @@ export default defineConfig({
       "server/routers/__tests__/deliveryDeadLetterAuthority.test.ts",
       "server/routers/__tests__/operationalOrphanCutover.test.ts",
       "server/routers/__tests__/workOrderTimelineCutover.test.ts",
+      "server/routers/__tests__/workOrderUnsettledDeliveryBlock.test.ts",
       "server/routers/__tests__/commissionsAuthority.test.ts",
       "server/routers/__tests__/attendanceRouterAuthority.test.ts",
       "server/services/commissions/scope.test.ts",

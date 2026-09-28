@@ -20,8 +20,8 @@ import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
-import {
-  assertBaseProductUnitBinding,
+import { appErrorMessage } from "@shared/errors";
+import { assertBaseProductUnitBinding,
   requireWorkOrderBaseSnapshot,
 } from "./baseInventorySnapshot";
 
@@ -31,6 +31,10 @@ export interface DeliverWorkOrderInput {
   clientRequestId?: string | null;
   /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
   partialDispatchConfirmed?: boolean;
+  /** إضافة المتبقي غير المستحصل إلى ذمة العميل (باعتماد مدير) */
+  addToCustomerDebt?: boolean;
+  /** معرّف المدير الذي اعتمد إضافة المتبقي إلى ذمة العميل */
+  managerOverrideByUserId?: number | null;
 }
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
@@ -229,6 +233,32 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: COD_PICKUP_PAYMENT_ERROR_AR(unpaidPortion.toFixed(2)),
       });
     }
+
+    // حظر تسليم أي طلب استلام مباشر بمتبقٍ غير مستحصل بدون اعتماد مدير صريح لإضافته إلى ذمة العميل
+    const isDirectPickup = !wo.hasDelivery;
+    const isElevated = actor.role === "manager" || actor.role === "admin";
+    if (isDirectPickup && unpaidPortion.gt(0)) {
+      if (!input.addToCustomerDebt) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لا يمكن تسليم الطلب بمتبقٍ مالي غير مستحصل",
+            why: `يوجد متبقٍ غير مدفوع بقيمة ${unpaidPortion.toFixed(2)} د.ع`,
+            doThis: "استوفِ كامل المبلغ نقداً أو اطلب اعتماد المدير لإضافة المتبقي إلى ذمة العميل",
+          }),
+        });
+      }
+      if (!isElevated && !input.managerOverrideByUserId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "اعتماد المدير مطلوب لإضافة المتبقي لذمة العميل",
+            why: `الموظف الحالي ليس مديراً ويلزم اعتماد مسؤول لتحويل ${unpaidPortion.toFixed(2)} د.ع لذمة العميل`,
+            doThis: "أدخل بريد وكلمة مرور المدير لاعتماد العملية وإتمام التسليم",
+          }),
+        });
+      }
+    }
     // ش١ (٥/٨): فاتورة التسليم تنتمي لوردية مُسلِّمها — كانت تُنشأ بلا shiftId فتسقط خارج
     // طابور فواتير المحطة (innerJoin shifts) وخارج نطاق reception.collectOnInvoice، بينما هي
     // **الحالة الأولى** لتسديد المتبقّي (عربونٌ مقبوض والباقي عند الاستلام). تُحلّ مبكراً وتُعاد
@@ -274,7 +304,10 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     });
 
     if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
-      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
+      const hasCreditOverride = Boolean(input.addToCustomerDebt && (isElevated || input.managerOverrideByUserId != null));
+      if (!hasCreditOverride) {
+        await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
+      }
     }
 
     // ترتيب الأقفال القانوني (فحص الحمل ٣٠/٨/٢٦): صفّ العميل يُقفَل **قبل** عدّاد الترقيم دائماً،

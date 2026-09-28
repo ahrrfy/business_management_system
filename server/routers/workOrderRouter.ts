@@ -65,7 +65,7 @@ import { invoiceBarcodeSet, onlineOrderLabelToken, workOrderBarcodeSet } from ".
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { money } from "../services/money";
+import { money, round2 } from "../services/money";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { withTx } from "../services/tx";
@@ -1259,6 +1259,7 @@ export const workOrderRouter = router({
           deliveryCost: workOrders.deliveryCost,
           deliveryFeeCollection: workOrders.deliveryFeeCollection,
           branchId: workOrders.branchId,
+          invoiceId: workOrders.invoiceId,
           version: workOrders.version,
           notes: workOrders.customizationText,
           createdAt: workOrders.createdAt,
@@ -1297,8 +1298,46 @@ export const workOrderRouter = router({
           .orderBy(desc(deliveryConsignments.id))
           .limit(1);
 
+        let linkedInvoice: {
+          id: number;
+          invoiceNumber: string;
+          total: string;
+          paidAmount: string;
+          remaining: string;
+          isUnsettled: boolean;
+        } | null = null;
+
+        if (row.invoiceId != null) {
+          const [invRow] = await db
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              total: invoices.total,
+              paidAmount: invoices.paidAmount,
+              status: invoices.status,
+            })
+            .from(invoices)
+            .where(eq(invoices.id, Number(row.invoiceId)))
+            .limit(1);
+
+          if (invRow && invRow.status !== "CANCELLED" && invRow.status !== "RETURNED") {
+            const invTotal = money(invRow.total);
+            const invPaid = money(invRow.paidAmount ?? "0");
+            const rem = round2(invTotal.minus(invPaid));
+            linkedInvoice = {
+              id: Number(invRow.id),
+              invoiceNumber: invRow.invoiceNumber,
+              total: String(invRow.total),
+              paidAmount: String(invRow.paidAmount ?? "0"),
+              remaining: rem.toFixed(2),
+              isUnsettled: rem.gt(0),
+            };
+          }
+        }
+
         return {
           ...row,
+          linkedInvoice,
           qrPayload: workOrderBarcodeSet({
             orderNumber: row.orderNumber,
             createdAt: row.createdAt,
@@ -2169,15 +2208,40 @@ export const workOrderRouter = router({
         clientRequestId: z.string().optional().nullable(),
         /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
+        /** إضافة المتبقي غير المستحصل إلى ذمة العميل (باعتماد مدير) */
+        addToCustomerDebt: z.boolean().optional(),
+        /** بيانات اعتماد المدير للموافقة على إضافة المتبقي إلى ذمة العميل */
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
+      let approvedByManagerId: number | null = null;
+      if (input.managerApproval) {
+        const effectiveBranchId = ctx.user.role === "admin"
+          ? (ctx.user.branchId ?? undefined)
+          : (ctx.user.branchId ?? 1);
+        approvedByManagerId = await verifyManagerApproval(input.managerApproval, ctx, effectiveBranchId);
+      }
+      const deliverPayload = {
+        ...input,
+        managerOverrideByUserId: approvedByManagerId,
+      };
       // ER_DUP_ENTRY على invoiceNumber ممكن تحت تزامن POS+WO، وكذلك ضحيّة deadlock
       // (تسليم WO يتقاطع قفلياً مع البيع على customers/documentCounters) ⇒ أعد المحاولة كـsaleRouter.
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await deliverWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+          const res = await deliverWorkOrder(deliverPayload, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
           await logAudit(ctx, { action: "workOrder.deliver", entityType: "workOrder", entityId: input.workOrderId });
+          if (input.addToCustomerDebt) {
+            await logAudit(ctx, {
+              action: "workOrder.deliver.debtApproved",
+              entityType: "workOrder",
+              entityId: input.workOrderId,
+              newValue: {
+                managerOverrideByUserId: approvedByManagerId ?? (ctx.user.role === "admin" || ctx.user.role === "manager" ? ctx.user.id : null),
+              },
+            });
+          }
           return res;
         } catch (e: any) {
           if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
