@@ -970,10 +970,15 @@ export default function WorkOrders() {
         order={deliverOrder}
         pending={deliver.isPending}
         onClose={() => setDeliverOrder(null)}
-        onConfirm={async (payment) => {
+        onConfirm={async (payment, extra) => {
           if (!deliverOrder) return;
           if (!(await confirm({ variant: "danger", title: "تسليم الأمر وإصدار الفاتورة", description: `تسليم «${deliverOrder.title}» (${deliverOrder.orderNumber}) يُصدر فاتورة نهائية بمبلغ ${fmtAr(deliverOrder.salePrice)} د.ع ويحدّث المخزون والذمم — لا رجعة فيه. اكتب «تسليم» للتأكيد.`, confirmText: "تسليم وإصدار الفاتورة", cancelText: "تراجع", requireText: "تسليم" }))) return;
-          deliver.mutate({ workOrderId: deliverOrder.id, payment });
+          deliver.mutate({
+            workOrderId: deliverOrder.id,
+            payment,
+            addToCustomerDebt: extra?.addToCustomerDebt,
+            managerApproval: extra?.managerApproval,
+          });
         }}
       />
       <EditWorkOrderDialog
