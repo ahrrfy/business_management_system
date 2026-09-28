@@ -37,7 +37,14 @@ export type { AddAssetDocumentInput } from "./assets/documents";
 export { addAssetDocument, deleteAssetDocument } from "./assets/documents";
 export type { DepreciationRunResult } from "./assets/monthlyDepreciation";
 export { postMonthlyDepreciation } from "./assets/monthlyDepreciation";
-export { dashboard, custodyReport, disposalLog } from "./assets/reports";
+export { dashboard, custodyReport, disposalLog, fixedAssetRegisterReport } from "./assets/reports";
+export type { AssetRegisterFilters } from "./assets/reports";
 export { requestSupplierAssetSettlement } from "./assets/supplierSettlement";
 export { reclassifyAssetToOpening } from "./assets/reclassify";
+export { importAssets, assetImportRowSchema } from "./assets/import";
+export type { AssetImportRow, AssetImportOptions, AssetImportSummary } from "./assets/import";
+export { transferAssetBranch } from "./assets/transfer";
+export type { TransferAssetInput } from "./assets/transfer";
+
+
 

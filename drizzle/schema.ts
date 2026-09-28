@@ -9594,6 +9594,13 @@ export const fixedAssets = mysqlTable(
     })
       .default("0")
       .notNull(),
+    /** إهلاك سابق للنظام للأصول الافتتاحية (IAS 16) — يُثبت في القيد الافتتاحي ويبقى ثابتاً كمرجع تاريخي. */
+    openingDepreciation: decimal("openingDepreciation", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
 
     condition: varchar("condition", { length: 60 }),
     warrantyEnd: date("warrantyEnd", { mode: "string" }),
