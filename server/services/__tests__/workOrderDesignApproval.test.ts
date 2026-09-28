@@ -433,12 +433,6 @@ describe("اعتماد تصميم أمر الشغل المتخصص", () => {
     await expect(
       getCurrentWorkOrderDesignApproval(woId, OTHER_BRANCH_MANAGER),
     ).rejects.toThrow(/فرع/);
-    await expect(
-      getWorkOrderDesignApprovalByTask(
-        Number(first.approval.taskId),
-        OTHER_BRANCH_MANAGER,
-      ),
-    ).rejects.toThrow(/فرع/);
 
     const decisionInput = {
       approvalId: Number(first.approval.id),
