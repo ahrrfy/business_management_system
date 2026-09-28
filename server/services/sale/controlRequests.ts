@@ -258,7 +258,12 @@ export async function requestSalesControl(
       input.invoiceId,
     );
     assertBranch(Number(invoice.branchId), actor);
-    if (actor.scopedOwnerId != null && Number(invoice.createdBy ?? -1) !== Number(actor.scopedOwnerId)) {
+    const isReturn = input.requestType === "SALES_RETURN";
+    if (
+      !isReturn &&
+      actor.scopedOwnerId != null &&
+      Number(invoice.createdBy ?? -1) !== Number(actor.scopedOwnerId)
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -268,7 +273,7 @@ export async function requestSalesControl(
         }),
       });
     }
-    if (actor.invoiceScope === "reception") {
+    if (actor.invoiceScope === "reception" && !isReturn) {
       const invoiceShift = invoice.shiftId == null ? null : (
         await tx
           .select({ shiftType: shifts.shiftType })
