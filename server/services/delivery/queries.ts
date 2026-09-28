@@ -204,31 +204,18 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     FROM ${deliveryLedgerEntries}
     WHERE ${deliveryLedgerEntries.consignmentId} = ${deliveryConsignments.id}
   ),0),0)`;
-  const remittable = and(
-    eq(deliveryConsignments.parcelStatus, "DELIVERED"),
-    sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`,
-  );
-  const returnable = and(
-    eq(deliveryConsignments.status, "DISPATCHED"),
-    sql`${deliveryConsignments.parcelStatus} IN ('ASSIGNED','FAILED')`,
-    sql`${deliveryConsignments.moneyStatus} IN ('NOT_APPLICABLE','UNSETTLED')`,
-    sql`CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)) = 0`,
-  );
   const unpaidFee = and(
     eq(deliveryConsignments.parcelStatus, "DELIVERED"),
     sql`${feeDue} > 0`,
   );
-  // كشف الشركة مستندٌ يثبت التسليم والتحصيل معاً؛ لذلك يجب أن يرى كل طردٍ مفتوح للشركة
-  // حتى لو كان ACCEPTED/PICKED_UP/OUT_FOR_DELIVERY، لا ASSIGNED/FAILED فقط. هذه التوسعة
-  // تخصّ الشركات وحدها؛ تطبيقها على المندوب الفردي يعيد الطرد الوسيط إلى قائمة التسوية
-  // قبل أن يصبح قابلاً لأي إجراء مالي (وتبقى رؤيته الصحيحة في «قيد التوصيل»).
-  const statementCandidate = and(
-    sql`EXISTS (
-      SELECT 1 FROM ${deliveryParties}
-      WHERE ${deliveryParties.id} = ${partyId}
-        AND ${deliveryParties.partyType} = 'COMPANY'
-    )`,
-    eq(deliveryConsignments.status, "DISPATCHED"),
+  /**
+   * الإرساليات المفتوحة للجهة (سواء كانت شركة توصيل أو مندوباً فردياً):
+   * تشمل كافة الطرود المسندة بذمة الجهة التي لم تُغلق بعد (DISPATCHED أو PARTIAL)، وليست ملغاة أو مرتجعة،
+   * ومبالغها غير مسواة أو قيد التوصيل (ASSIGNED, ACCEPTED, PICKED_UP, OUT_FOR_DELIVERY, FAILED, DELIVERED).
+   * تظهر فور الإسناد بجدول ذمة الجهة مع أو بدون بحث.
+   */
+  const openCandidate = and(
+    inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
     sql`${deliveryConsignments.parcelStatus} NOT IN ('CANCELLED','RETURNED')`,
     sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL','NOT_APPLICABLE')`,
   );
@@ -277,7 +264,7 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(
       eq(deliveryConsignments.partyId, partyId),
-      or(remittable, returnable, unpaidFee, statementCandidate),
+      or(openCandidate, unpaidFee),
       branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
       page.cursor != null ? gt(deliveryConsignments.id, page.cursor) : undefined,
     ))

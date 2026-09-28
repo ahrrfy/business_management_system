@@ -413,6 +413,8 @@ export function ReceptionCollectSection({
           partyType: item.partyType,
         };
         switchCollectParty(item.partyId, item.partyType);
+        const targetSearchKey = item.invoiceNumber || item.consignmentNumber;
+        setParcelFilter(targetSearchKey);
 
         if (item.partyType === "COMPANY") {
           const rem = round2(moneyInput(item.remainingAmount || "0"));
@@ -422,31 +424,18 @@ export function ReceptionCollectSection({
           notify.ok(`تم اختيار الإرسالية ${item.consignmentNumber} لشركة ${pInfo.name}`);
         } else {
           const remaining = round2(moneyInput(item.remainingAmount || "0"));
-          if (item.parcelStatus !== "DELIVERED") {
-            const ok = await confirm({
-              title: "إثبات تسليم الطرد وقبض المبلغ",
-              description: `الإرسالية: ${item.consignmentNumber}\nالطلب: #${item.orderNumber ?? ""} — ${item.customerName ?? ""}\nالمبلغ المطلوب: ${fmt(remaining.toFixed(2))} د.ع\nالمندوب: ${pInfo.name}\n\nهل تود تأكيد تسليم الطرد للزبون وتجهيزه للتوريد للدرج؟`,
-              confirmText: "إثبات التسليم",
-            });
-            if (ok) {
-              staffConfirmMut.mutate({
-                consignmentId: item.id,
-                collectedAmount: remaining.toFixed(2),
-                evidence: "اختيار من البحث التنبؤي الذكي",
-                clientRequestId: crypto.randomUUID(),
-              });
-              setCountedCash(remaining.toFixed(2));
-            }
-          } else {
+          if (item.parcelStatus === "DELIVERED") {
             setCountedCash(remaining.toFixed(2));
             notify.ok(`الإرسالية ${item.consignmentNumber} مسلَّمة — المبلغ المطلوب للتوريد: ${fmt(remaining.toFixed(2))} د.ع`);
+          } else {
+            notify.ok(`الإرسالية ${item.consignmentNumber} بعهدة المندوب ${pInfo.name} — في الطريق`);
           }
         }
       } catch (e) {
         notify.err(e, "تعذّر معالجة الطرد المختار");
       }
     },
-    [partiesQ.data, switchCollectParty, staffConfirmMut],
+    [partiesQ.data, switchCollectParty],
   );
 
   useEffect(() => {
