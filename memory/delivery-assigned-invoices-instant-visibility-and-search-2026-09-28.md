@@ -63,3 +63,29 @@
 - **الحرّاس وفحص الأنواع:**
   - `pnpm check`: اجتياز كامل بدون أي خطأ في الأنواع (0 errors).
   - `pnpm check:guards`: اجتياز كامل الحرّاس بنجاح تام (100% GREEN).
+
+---
+
+## ٥. الدمج والنشر الإنتاجي المدار والتحقق الحي
+
+- **طلب الدمج وفحوصات التكامل المستمر (CI):**
+  - تم فتح [PR #1309](https://github.com/ahrrfy/business_management_system/pull/1309).
+  - اجتياز كامل فحوصات GitHub Actions CI الـ 14 (Check Run #36471991502) بنسبة 100% Green (`quality-build`, `test-shard-1-of-8` حتى `test-shard-8-of-8`, `authz-guard`, `check-test-build`, `audit`, `scope`, `GitGuardian`).
+  - الدمج في `main` بالالتزام المعتمد:
+    ```
+    44008fdd Merge pull request #1309 from ahrrfy/fix_delivery_assigned_invoices_visibility
+    ```
+
+- **النشر الإنتاجي الذري (`pnpm prod:deploy`):**
+  - تم تنفيذ أمر النشر الذري المدار على سيرفر الإنتاج Hostinger VPS (`srv1548487.hstgr.cloud` / `187.124.183.140`) عبر المستخدم المخصص `deploy`:
+    ```bash
+    sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
+    ```
+  - اكتمل النشر بنجاح تام في **296.5 ثانية**.
+  - ثبات عمال PM2 الـ 3 لعنقود الخادم (`erp-server`) وجسر الحضور المؤسسي (`erp-hr-bridge`) بلا أي توقف في الخدمة (Zero-Downtime).
+  - التحقق من سلامة المخطط وقاعدة البيانات `db:verify` بصفر انحراف.
+
+- **التأكيد الحي لنقاط النهاية (Live Health Checks):**
+  - `https://srv1548487.hstgr.cloud/healthz`: `HTTP/1.1 200 OK` `{"ok":true,"time":"2026-09-28T19:49:29.660Z"}`
+  - `https://alarabiya.online/healthz`: `HTTP/1.1 200 OK` `{"ok":true,"time":"2026-09-28T19:49:32.634Z"}`
+
