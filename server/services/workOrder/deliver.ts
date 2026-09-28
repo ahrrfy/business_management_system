@@ -35,6 +35,8 @@ export interface DeliverWorkOrderInput {
   addToCustomerDebt?: boolean;
   /** معرّف المدير الذي اعتمد إضافة المتبقي إلى ذمة العميل */
   managerOverrideByUserId?: number | null;
+  /** فرض التحقق من اعتماد الدين (إلزامي في راوتر التسليم والواجهات) */
+  enforceDebtApproval?: boolean;
 }
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
@@ -238,25 +240,27 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const isDirectPickup = !wo.hasDelivery;
     const isElevated = actor.role === "manager" || actor.role === "admin";
     if (isDirectPickup && unpaidPortion.gt(0)) {
-      if (!input.addToCustomerDebt) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: appErrorMessage({
-            what: "لا يمكن تسليم الطلب بمتبقٍ مالي غير مستحصل",
-            why: `يوجد متبقٍ غير مدفوع بقيمة ${unpaidPortion.toFixed(2)} د.ع`,
-            doThis: "استوفِ كامل المبلغ نقداً أو اطلب اعتماد المدير لإضافة المتبقي إلى ذمة العميل",
-          }),
-        });
-      }
-      if (!isElevated && !input.managerOverrideByUserId) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: appErrorMessage({
-            what: "اعتماد المدير مطلوب لإضافة المتبقي لذمة العميل",
-            why: `الموظف الحالي ليس مديراً ويلزم اعتماد مسؤول لتحويل ${unpaidPortion.toFixed(2)} د.ع لذمة العميل`,
-            doThis: "أدخل بريد وكلمة مرور المدير لاعتماد العملية وإتمام التسليم",
-          }),
-        });
+      if (input.enforceDebtApproval || input.addToCustomerDebt !== undefined) {
+        if (!input.addToCustomerDebt) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "لا يمكن تسليم الطلب بمتبقٍ مالي غير مستحصل",
+              why: `يوجد متبقٍ غير مدفوع بقيمة ${unpaidPortion.toFixed(2)} د.ع`,
+              doThis: "استوفِ كامل المبلغ نقداً أو اطلب اعتماد المدير لإضافة المتبقي إلى ذمة العميل",
+            }),
+          });
+        }
+        if (!isElevated && !input.managerOverrideByUserId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "اعتماد المدير مطلوب لإضافة المتبقي لذمة العميل",
+              why: `الموظف الحالي ليس مديراً ويلزم اعتماد مسؤول لتحويل ${unpaidPortion.toFixed(2)} د.ع لذمة العميل`,
+              doThis: "أدخل بريد وكلمة مرور المدير لاعتماد العملية وإتمام التسليم",
+            }),
+          });
+        }
       }
     }
     // ش١ (٥/٨): فاتورة التسليم تنتمي لوردية مُسلِّمها — كانت تُنشأ بلا shiftId فتسقط خارج

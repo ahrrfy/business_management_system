@@ -2225,6 +2225,7 @@ export const workOrderRouter = router({
       const deliverPayload = {
         ...input,
         managerOverrideByUserId: approvedByManagerId,
+        enforceDebtApproval: true,
       };
       // ER_DUP_ENTRY على invoiceNumber ممكن تحت تزامن POS+WO، وكذلك ضحيّة deadlock
       // (تسليم WO يتقاطع قفلياً مع البيع على customers/documentCounters) ⇒ أعد المحاولة كـsaleRouter.
