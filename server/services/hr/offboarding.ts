@@ -21,6 +21,7 @@ import {
   deliveryParties,
   deliveryPartyMembers,
   employeeAdvances,
+  employeeCustody,
   employees,
   fixedAssets,
   shifts,
@@ -33,6 +34,7 @@ import type { CompanyBranchScope } from "../companyBranchScope";
 export type ClearanceKey =
   | "OPEN_SHIFT"
   | "ASSET_CUSTODY"
+  | "EQUIPMENT_CUSTODY"
   | "OUTSTANDING_ADVANCE"
   | "UNPAID_COMMISSION"
   | "DELIVERY_MEMBERSHIP"
@@ -135,6 +137,36 @@ export async function getEmployeeClearance(
       resolvePath: "/assets",
       resolveHint: "انقل العهدة لموظّفٍ آخر أو أعِدها أصلاً عامّاً قبل إنهاء الخدمة.",
       details: custody.map((a) => `${a.name}${a.code ? ` (${a.code})` : ""}`),
+    });
+  }
+
+  // ٢-ب) عهد عينية وأدوات عمل — أدوات أو معدات أو أجهزة مسلّمة للموظف لم تُسترجع بعد.
+  const openCustody = await db
+    .select({
+      id: employeeCustody.id,
+      itemName: employeeCustody.itemName,
+      itemCode: employeeCustody.itemCode,
+      quantity: employeeCustody.quantity,
+    })
+    .from(employeeCustody)
+    .where(
+      and(
+        eq(employeeCustody.employeeId, employeeId),
+        eq(employeeCustody.status, "HELD"),
+      ),
+    );
+  if (openCustody.length) {
+    items.push({
+      key: "EQUIPMENT_CUSTODY",
+      label: "عهد عينية وأدوات عمل",
+      severity: "BLOCKING",
+      count: openCustody.length,
+      amount: null,
+      resolvePath: `/hr/employees/${employeeId}`,
+      resolveHint: "استلم كافة الأدوات والعهد العينية المسلمة للموظف وسوّ حالتها قبل إنهاء الخدمة.",
+      details: openCustody.map(
+        (c) => `${c.itemName}${c.itemCode ? ` (${c.itemCode})` : ""}${c.quantity > 1 ? ` — العدد ${c.quantity}` : ""}`,
+      ),
     });
   }
 

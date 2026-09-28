@@ -11,7 +11,7 @@ import { branches, employees, hrDeviceUsers, roles, users } from "../../drizzle/
 // بيومٍ سابقٍ ويضيع يومُ الإنهاء نفسه — وهو عين ما جاء هذا التغيير لينقذه.
 import { baghdadToday } from "./businessDay";
 import type { Tx } from "../db";
-import { requireDb, withTx, type Actor } from "./tx";
+import { requireDb, withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import { escapeLike } from "../lib/sqlLike";
@@ -514,7 +514,7 @@ export type AccountSpec =
 export async function createEmployeeWithAccount(
   input: EmployeeInput,
   account: AccountSpec,
-  actor: Actor,
+  actor: MaybeScopedActor,
 ): Promise<{ employeeId: number; userId: number | null }> {
   return withTx(async (tx) => {
     let userId: number | null = null;
@@ -567,7 +567,7 @@ export async function unlinkEmployeeAccount(employeeId: number) {
 }
 
 /** إنشاء حساب نظام جديد لموظف قائم وربطه — ذرّياً (وضع التعديل). */
-export async function createAccountForEmployee(employeeId: number, user: CreateUserInput, actor: Actor) {
+export async function createAccountForEmployee(employeeId: number, user: CreateUserInput, actor: MaybeScopedActor) {
   let userId = 0;
   await withTx(async (tx) => {
     const [e] = await tx

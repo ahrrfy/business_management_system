@@ -2367,6 +2367,14 @@
 			"when": 1788148829000,
 			"tag": "0371_fixed_assets_opening_depreciation",
 			"breakpoints": true
+		},
+		{
+			"idx": 373,
+			"version": "5",
+			"when": 1788148831000,
+			"tag": "0373_hr_missing_enterprise_transactions",
+			"breakpoints": true
 		}
 	]
 }
+
