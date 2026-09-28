@@ -107,9 +107,9 @@ describe("قيد التوصيل — الطرد بالطريق لا يختفي", 
       expect(inTransit, `parcelStatus=${p} يجب أن يبقى مرئياً`).toHaveLength(1);
       expect(inTransit[0].parcelStatus).toBe(p);
 
-      // إثباتُ الثقب القديم: هاتان القائمتان لا تريانه — ولذلك وُجد التبويب الجديد.
+      // جاهز للإرسال لا يراه لأنه أُرسل، بينما قائمة الإرساليات المفتوحة تراه بوضوح بذمة المندوب
       expect(await listReadyForDispatch(1)).toHaveLength(0);
-      expect((await listOpenConsignments(1, 1)).rows).toHaveLength(0);
+      expect((await listOpenConsignments(1, 1)).rows).toHaveLength(1);
     }
   });
 
