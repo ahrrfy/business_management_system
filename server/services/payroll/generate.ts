@@ -9,6 +9,7 @@ import {
   attendance,
   commissionRunLines,
   commissionRuns,
+  employeePenalties,
   employees,
   employeeTerminations,
   hrAttendancePunches,
@@ -302,6 +303,34 @@ export async function generatePayroll(period: string, actor: Actor) {
     // يُملأ advanceDeduction ويدخل **ضمن** deductions (لا فوقها) فيَنقص net تلقائياً.
     const advanceByEmp = await suggestDeductionsTx(tx, emps.map((e) => Number(e.id)));
 
+    // استقطاعات العقوبات والإنذارات الانضباطية المعتمدة غير المطبقة:
+    const empIds = emps.map((e) => Number(e.id));
+    const approvedPenalties = empIds.length > 0
+      ? await tx
+          .select({
+            id: employeePenalties.id,
+            employeeId: employeePenalties.employeeId,
+            deductionAmount: employeePenalties.deductionAmount,
+          })
+          .from(employeePenalties)
+          .where(
+            and(
+              inArray(employeePenalties.employeeId, empIds),
+              eq(employeePenalties.status, "APPROVED"),
+              isNull(employeePenalties.payrollRunId),
+              sql`${employeePenalties.deductionAmount} > 0`,
+            ),
+          )
+      : [];
+    const penaltiesByEmp = new Map<number, { total: Decimal; ids: number[] }>();
+    for (const pen of approvedPenalties) {
+      const empId = Number(pen.employeeId);
+      const curr = penaltiesByEmp.get(empId) ?? { total: new Decimal(0), ids: [] };
+      curr.total = curr.total.plus(money(pen.deductionAmount));
+      curr.ids.push(Number(pen.id));
+      penaltiesByEmp.set(empId, curr);
+    }
+
     // المكوّنات القانونية العراقية (البند ④): إعدادات مفردة تُقرأ مرّة واحدة داخل المعاملة (لقطة).
     // **كل مكوّن معطَّل افتراضياً** ⇒ computeLegalComponents تُعيد صفراً ⇒ صفر أثر على deductions/net
     // (انحدار صفريّ مُثبَت باختبار). النِّسب/الشرائح يضبطها المالك مع محاسبه القانونيّ.
@@ -540,9 +569,12 @@ export async function generatePayroll(period: string, actor: Actor) {
       // خسارة على الشركة. القصّ يضمن net ≥ 0 ⇒ المُسوّى = المُقتطَع فعلاً، وتُستكمَل البقيّة لاحقاً.
       // (حين المكوّنات القانونية معطَّلة statutoryDeduction=0 ⇒ الصيغة مطابقة لما كانت — صفر انحدار.)
       const absorbableWage = Decimal.max(0, round2(gross.plus(overtime).plus(commission).minus(leaveDeduction).minus(statutoryDeduction)));
+      const empPenalties = penaltiesByEmp.get(Number(e.id));
+      const penaltyDeduction = empPenalties ? empPenalties.total : new Decimal(0);
+      const remainingForAdvance = Decimal.max(0, absorbableWage.minus(penaltyDeduction));
       const suggestedAdvance = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
-      const advanceDeduction = round2(Decimal.min(suggestedAdvance, absorbableWage));
-      const deductions = round2(advanceDeduction.plus(leaveDeduction).plus(statutoryDeduction));
+      const advanceDeduction = round2(Decimal.min(suggestedAdvance, remainingForAdvance));
+      const deductions = round2(advanceDeduction.plus(leaveDeduction).plus(statutoryDeduction).plus(penaltyDeduction));
       const net = computeNet(gross, overtime, commission, deductions);
       await tx.insert(payrollItems).values({
         runId,
@@ -602,6 +634,15 @@ export async function generatePayroll(period: string, actor: Actor) {
     // ربط الالتقاط داخل نفس المعاملة — أثر تدقيقي ثنائي الاتجاه (التشغيلة تعرف مسيّرها).
     if (commissionRun) {
       await tx.update(commissionRuns).set({ payrollRunId: runId }).where(eq(commissionRuns.id, Number(commissionRun.id)));
+    }
+
+    // ربط العقوبات المستقطعة برقم المسيّر وتحديث حالتها إلى APPLIED
+    const allAppliedPenaltyIds = Array.from(penaltiesByEmp.values()).flatMap((p) => p.ids);
+    if (allAppliedPenaltyIds.length > 0) {
+      await tx
+        .update(employeePenalties)
+        .set({ payrollRunId: runId, status: "APPLIED" })
+        .where(inArray(employeePenalties.id, allAppliedPenaltyIds));
     }
 
     // حصر البصمات غير المربوطة بموظف في شهر المسيّر (إن وجدت) للتنبيه الرقابي الشفاف

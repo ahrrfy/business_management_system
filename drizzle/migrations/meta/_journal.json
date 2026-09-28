@@ -2369,11 +2369,19 @@
 			"breakpoints": true
 		},
 		{
-			"idx": 372,
+			"idx": 373,
 			"version": "5",
-			"when": 1788148830000,
-			"tag": "0372_remove_tasks_and_task_events",
+			"when": 1788148831000,
+			"tag": "0373_hr_missing_enterprise_transactions",
+			"breakpoints": true
+		},
+		{
+			"idx": 374,
+			"version": "5",
+			"when": 1788148832000,
+			"tag": "0374_remove_tasks_and_task_events",
 			"breakpoints": true
 		}
 	]
 }
+

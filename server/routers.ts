@@ -42,6 +42,7 @@ import { kioskRouter } from "./routers/kioskRouter";
 import { productionRouter } from "./routers/productionRouter";
 import { assetsRouter } from "./routers/assetsRouter";
 import { employeeRouter } from "./routers/employeeRouter";
+import { hrEnterpriseRouter } from "./routers/hrEnterpriseRouter";
 import { attendanceRouter } from "./routers/attendanceRouter";
 import { payrollRouter } from "./routers/payrollRouter";
 import { installmentRouter } from "./routers/installmentRouter";
@@ -163,6 +164,7 @@ export const appRouter = router({
   production: productionRouter,
   assets: assetsRouter,
   employees: employeeRouter,
+  hrEnterprise: hrEnterpriseRouter,
   attendance: attendanceRouter,
   payroll: payrollRouter,
   installments: installmentRouter,
