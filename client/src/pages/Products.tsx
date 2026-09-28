@@ -34,7 +34,7 @@ import { notify } from "@/lib/notify";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlternativeStockCard } from "@/components/stocktake/AlternativeStockBreakdown";
@@ -616,7 +616,7 @@ export default function Products() {
               {
                 id: "stockBase",
                 header: "الرصيد الفعلي",
-                accessorFn: (r) => r.stockBase,
+                accessorFn: (r) => formatQuantity(r.stockBase),
                 meta: { kind: "number" },
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
@@ -624,10 +624,10 @@ export default function Products() {
                   const unitQty = isBase ? row.original.stockBase : Math.trunc(row.original.stockBase / factor) || 0;
                   return (
                     <div className="flex flex-col items-end">
-                      <span className="font-medium tabular-nums">{unitQty} {row.original.unitName}</span>
+                      <span className="font-medium tabular-nums">{formatQuantity(unitQty)} {row.original.unitName}</span>
                       {!isBase && (
                         <span className="text-[10px] text-muted-foreground tabular-nums">
-                          ({row.original.stockBase} بالأساس)
+                          ({formatQuantity(row.original.stockBase)} بالأساس)
                         </span>
                       )}
                     </div>
@@ -637,7 +637,7 @@ export default function Products() {
               {
                 id: "reservedBase",
                 header: "المحجوز والمخصص",
-                accessorFn: (r) => r.reservedBase,
+                accessorFn: (r) => formatQuantity(r.reservedBase),
                 meta: { kind: "number" },
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
@@ -645,10 +645,10 @@ export default function Products() {
                   const resQty = isBase ? row.original.reservedBase : Math.trunc(row.original.reservedBase / factor) || 0;
                   return (
                     <div className="flex flex-col items-end">
-                      <span className="font-medium tabular-nums">{resQty} {row.original.unitName}</span>
+                      <span className="font-medium tabular-nums">{formatQuantity(resQty)} {row.original.unitName}</span>
                       {!isBase && (
                         <span className="text-[10px] text-muted-foreground tabular-nums">
-                          ({row.original.reservedBase} بالأساس)
+                          ({formatQuantity(row.original.reservedBase)} بالأساس)
                         </span>
                       )}
                     </div>
@@ -658,7 +658,7 @@ export default function Products() {
               {
                 id: "availableBase",
                 header: "المتاح للبيع",
-                accessorFn: (r) => r.availableBase,
+                accessorFn: (r) => formatQuantity(r.availableBase),
                 meta: { kind: "number" },
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
@@ -667,12 +667,12 @@ export default function Products() {
                   return (
                     <div className="flex flex-col items-end">
                       <span className="font-medium tabular-nums">
-                        {availQty} {row.original.unitName}
+                        {formatQuantity(availQty)} {row.original.unitName}
                         {row.original.bundleCapacity && <BundleCapacityNote capacity={row.original.bundleCapacity} />}
                       </span>
                       {!isBase && (
                         <span className="text-[10px] text-muted-foreground tabular-nums">
-                          ({row.original.availableBase} بالأساس)
+                          ({formatQuantity(row.original.availableBase)} بالأساس)
                         </span>
                       )}
                     </div>

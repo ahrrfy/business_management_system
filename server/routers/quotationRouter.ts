@@ -19,6 +19,7 @@ import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyStrin
 import { retryOnDup } from "../lib/retryDup";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
+import { phoneSuffix10 } from "../lib/phone";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
 
@@ -65,14 +66,29 @@ export const quotationRouter = router({
       if (input?.to) conds.push(lt(quotations.createdAt, utcNextDayStart(input.to)));
       if (input?.status) conds.push(eq(quotations.status, input.status));
       if (branchId != null) conds.push(eq(quotations.branchId, branchId));
-      // بحث نصّي آمن (escLike + ESCAPE '!'): رقم العرض/اسم العميل/الملاحظات.
+      // بحث نصّي آمن (escLike + ESCAPE '!'): رقم العرض/اسم العميل/الملاحظات/الهاتف.
       if (input?.q) {
-        const pat = `%${escLike(input.q.trim())}%`;
-        const cond = or(
+        const queryStr = input.q.trim();
+        const pat = `%${escLike(queryStr)}%`;
+        const sfx = phoneSuffix10(queryStr);
+        const orConds = [
           sql`${quotations.quoteNumber} LIKE ${pat} ESCAPE '!'`,
           sql`${customers.name} LIKE ${pat} ESCAPE '!'`,
           sql`${quotations.notes} LIKE ${pat} ESCAPE '!'`,
-        );
+          sql`coalesce(${customers.phone}, '') LIKE ${pat} ESCAPE '!'`,
+          sql`coalesce(${customers.phone2}, '') LIKE ${pat} ESCAPE '!'`,
+          sql`coalesce(${customers.phone3}, '') LIKE ${pat} ESCAPE '!'`,
+          sql`coalesce(${customers.whatsapp}, '') LIKE ${pat} ESCAPE '!'`,
+        ];
+        if (sfx) {
+          const sfxPat = `%${escLike(sfx)}%`;
+          orConds.push(
+            sql`coalesce(${customers.phone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+            sql`coalesce(${customers.phone2}, '') LIKE ${sfxPat} ESCAPE '!'`,
+            sql`coalesce(${customers.whatsapp}, '') LIKE ${sfxPat} ESCAPE '!'`,
+          );
+        }
+        const cond = or(...orConds);
         if (cond) conds.push(cond);
       }
       const { rows, hasMore, nextCursor } = await paginateKeyset({
@@ -95,6 +111,7 @@ export const quotationRouter = router({
               customerId: quotations.customerId,
               customerName: customers.name,
               customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+              customerAddress: customers.address,
             })
             .from(quotations)
             .leftJoin(customers, eq(quotations.customerId, customers.id))

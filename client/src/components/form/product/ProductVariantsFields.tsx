@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { formatQuantity } from "@shared/quantityFormat";
 import { NumberInput } from "@/components/form/NumberInput";
 import { MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
@@ -261,7 +262,7 @@ export function ProductVariantsFields({
           {model.variants.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-6 gap-y-1 px-1 text-xs text-muted-foreground">
               <span>الإجمالي: <b className="text-foreground" dir="ltr">{model.variants.length}</b> منتج (<span dir="ltr">{activeCount}</span> مفعّل)</span>
-              <span>مخزون كلّي (كل الفروع): <b className="text-foreground" dir="ltr">{totalStock}</b> قطعة</span>
+              <span>مخزون كلّي (كل الفروع): <b className="text-foreground" dir="ltr">{formatQuantity(totalStock)}</b> قطعة</span>
               <span>سعر البيع الأساس: <b className="text-foreground" dir="ltr">{baseRetail || "—"}</b> د.ع</span>
             </div>
           )}

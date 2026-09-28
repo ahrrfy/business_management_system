@@ -24,7 +24,9 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
 import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
 import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
-import { PlayCircle, Trash2, Upload, FileText, ExternalLink } from "lucide-react";
+import { PlayCircle, Trash2, Upload, FileText, ExternalLink, ArrowLeftRight, QrCode } from "lucide-react";
+import { AssetQrTagDialog } from "@/components/assets/AssetQrTagDialog";
+import { AssetTransferDialog } from "@/components/assets/AssetTransferDialog";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
@@ -107,6 +109,7 @@ export default function AssetDetail() {
   const [openHandover, setOpenHandover] = useState(false);
   const [openMaint, setOpenMaint] = useState(false);
   const [openLabel, setOpenLabel] = useState(false);
+  const [openTransfer, setOpenTransfer] = useState(false);
   const [openDispose, setOpenDispose] = useState(false);
   const [openCorrection, setOpenCorrection] = useState(false);
 
@@ -175,6 +178,13 @@ export default function AssetDetail() {
     },
     onError: (e) => notify.err(e),
   });
+  const reclassifyToOpening = trpc.assets.reclassifyToOpening.useMutation({
+    onSuccess: async () => {
+      notify.ok("تم تحويل الأصل إلى رصيد افتتاحي وإلغاء طلب الصرف وعكس قيد الاستحقاق بنجاح");
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const a = q.data;
   const Icon = useMemo(() => (a ? categoryIcon(a.category) : null), [a]);
@@ -193,6 +203,11 @@ export default function AssetDetail() {
     a.accrualObligationKind === "ASSET_ACQUISITION_CASH" &&
     ["ACCRUED_UNPAID", "PAYMENT_PENDING", "PAID"].includes(a.settlementStatus ?? "") &&
     pendingCorrection == null;
+  const canReclassifyToOpening =
+    me.data?.isOwner === true &&
+    a.status !== "disposed" &&
+    (a.paymentPending === true || a.settlementStatus === "PAYMENT_PENDING" || a.settlementStatus === "ACCRUED_UNPAID") &&
+    a.accrualObligationKind === "ASSET_ACQUISITION_CASH";
 
   return (
     <div className="space-y-4 max-w-5xl">
@@ -230,7 +245,46 @@ export default function AssetDetail() {
             {a.status !== "disposed" && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
             {a.settlementStatus === "PAYABLE_UNSETTLED" && <Button variant="outline" size="sm" disabled={requestSupplierSettlement.isPending} onClick={() => requestSupplierSettlement.mutate({ assetId: id, clientRequestId: supplierSettlementRequestId })}>طلب سداد ذمة المورد</Button>}
             {canRequestCorrection && <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenCorrection(true)}>طلب تصحيح الاقتناء</Button>}
-            <Button variant="outline" size="sm" onClick={() => setOpenLabel(true)}>بطاقة الأصل</Button>
+            {canReclassifyToOpening && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-primary/40 text-primary hover:bg-primary/5"
+                disabled={reclassifyToOpening.isPending}
+                onClick={async () => {
+                  const ok = await confirm({
+                    variant: "warning",
+                    title: "تحويل الأصل إلى رصيد افتتاحي سابق للنظام",
+                    description: `هل هذا الأصل «${a.name}» (${a.code}) تم شراؤه وسداده قبل بدء العمل بالنظام؟ تحويله سيلغي سند الصرف المعلق فوراً ويعكس قيد الاستحقاق ويثبت الأصل مقابل حقوق الملكية الافتتاحية دون سحب أي نقد من الخزينة.`,
+                    confirmText: "تحويل وإلغاء طلب الصرف",
+                  });
+                  if (!ok) return;
+                  reclassifyToOpening.mutate({ assetId: id });
+                }}
+              >
+                تحويل لرصيد افتتاحي (إلغاء الصرف)
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-1.5"
+              onClick={() => setOpenLabel(true)}
+            >
+              <QrCode className="size-3.5" />
+              <span>ملصق الأصل / QR</span>
+            </Button>
+            {isLive && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-1.5"
+                onClick={() => setOpenTransfer(true)}
+              >
+                <ArrowLeftRight className="size-3.5" />
+                <span>مناقلة فرع</span>
+              </Button>
+            )}
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
             {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: "إعادة الأصل للخدمة", description: `إعادة الأصل «${a.name}» (${a.code}) من الصيانة إلى الخدمة؟`, confirmText: "إعادة للخدمة" }))) return; returnMaint.mutate({ assetId: id }); }} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenHandover(true)}>تسليم عهدة</Button>}
@@ -240,12 +294,37 @@ export default function AssetDetail() {
       </Card>
 
       {settlement.liabilityOutstanding && (
-        <div role="status" className="rounded-md border badge-status-pending p-3 text-sm">
+        <div role="status" className="rounded-md border badge-status-pending p-3 text-sm space-y-2">
           <div className="font-bold">{settlement.detail}</div>
-          <p className="mt-1">
+          <p>
             الأصل مُثبت تشغيلياً، وتسوية الالتزام معلّقة. الحيازة وقيمة الأصل مثبتتان ويستمر التشغيل والإهلاك وفق حالته.
             {isPaymentPending ? " لم يخرج نقد بعد." : ""}
           </p>
+          {canReclassifyToOpening && (
+            <div className="pt-2 border-t border-border flex items-center justify-between flex-wrap gap-2 text-xs">
+              <span className="text-muted-foreground">
+                إذا كان هذا الأصل مُقتنى ومُسدداً بالكامل في وقت سابق قبل بناء النظام:
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs border-primary/40 text-primary hover:bg-primary/5"
+                disabled={reclassifyToOpening.isPending}
+                onClick={async () => {
+                  const ok = await confirm({
+                    variant: "warning",
+                    title: "تحويل الأصل إلى رصيد افتتاحي سابق للنظام",
+                    description: `هل هذا الأصل «${a.name}» (${a.code}) تم شراؤه وسداده قبل بدء العمل بالنظام؟ تحويله سيلغي سند الصرف المعلق فوراً ويعكس قيد الاستحقاق ويثبت الأصل مقابل حقوق الملكية الافتتاحية دون سحب أي نقد من الخزينة.`,
+                    confirmText: "تحويل وإلغاء طلب الصرف",
+                  });
+                  if (!ok) return;
+                  reclassifyToOpening.mutate({ assetId: id });
+                }}
+              >
+                تحويل لرصيد افتتاحي وإلغاء طلب الصرف
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -298,11 +377,38 @@ export default function AssetDetail() {
         <Card><CardContent className="p-4"><div className="text-muted-foreground text-xs mb-1">العمر التشغيلي</div><div className="text-lg font-bold tabular-nums" dir="ltr">{a.ageYears} سنة</div></CardContent></Card>
       </div>
 
+      {Number((a as any).openingDepreciation || 0) > 0 && (
+        <div className="rounded-lg border bg-muted/40 p-3 text-xs flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-foreground">تفصيل مجمع الإهلاك (IAS 16):</span>
+            <span className="text-muted-foreground">أصل ذو إهلاك افتتاحي سابق لبدء النظام</span>
+          </div>
+          <div className="flex items-center gap-4 tabular-nums" dir="ltr">
+            <div>
+              <span className="text-muted-foreground text-[11px] me-1">إهلاك ما قبل النظام:</span>
+              <span className="font-bold">{iqd((a as any).openingDepreciation)}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground text-[11px] me-1">إهلاك النظام:</span>
+              <span className="font-bold">
+                {iqd(Math.max(0, Number(a.accumulated || 0) - Number((a as any).openingDepreciation || 0)))}
+              </span>
+            </div>
+            <div>
+              <span className="text-muted-foreground text-[11px] me-1">الإجمالي:</span>
+              <span className="font-bold text-primary">{iqd(a.accumulated)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* شريط استهلاك القيمة */}
       <Card>
         <CardContent className="p-4 space-y-1.5">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">استهلاك القيمة ({depreciationMethodLabel(a.depreciationMethod)})</span>
+            <span className="text-muted-foreground">
+              {a.category === "land" ? "استهلاك القيمة (أصل دائم لا يستهلك)" : `استهلاك القيمة (${depreciationMethodLabel(a.depreciationMethod)})`}
+            </span>
             <span className="tabular-nums" dir="ltr">{a.depPct}%</span>
           </div>
           <Progress value={a.depPct} />
@@ -329,7 +435,7 @@ export default function AssetDetail() {
             <Field label="تاريخ الشراء" value={fmtDate(a.purchaseDate)} dir="ltr" />
             <Field label="نهاية الكفالة" value={fmtDate(a.warrantyEnd)} dir="ltr" />
             <Field label="الحالة الفنية" value={a.condition} />
-            <Field label="العمر الإنتاجي" value={`${a.usefulLifeYears} سنة`} />
+            <Field label="العمر الإنتاجي" value={a.category === "land" ? "غير محدد (أصل غير خاضع للاستهلاك)" : `${a.usefulLifeYears} سنة`} />
             <Field label="القيمة التخريدية" value={iqd(a.salvageValue)} dir="ltr" />
             <Field label="إجمالي الصيانة" value={iqd(a.maintTotal)} dir="ltr" />
             {a.status === "disposed" || a.status === "retired" ? (
@@ -345,15 +451,24 @@ export default function AssetDetail() {
         <TabsContent value="depreciation">
           <Card>
             <CardHeader><CardTitle className="text-base">جدول الإهلاك السنوي — {depreciationMethodLabel(a.depreciationMethod)}</CardTitle></CardHeader>
-            <CardContent className="p-0">
-              <DataTable<ScheduleRow>
-                {...EMBEDDED_TABLE}
-                columns={scheduleColumns}
-                data={a.schedule}
-                /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد. */
-                getRowClassName={(r) => (r.isCurrent ? "!bg-primary/5 font-medium" : undefined)}
-                emptyText="لا جدول إهلاك لهذا الأصل."
-              />
+            <CardContent className={a.category === "land" ? "p-6" : "p-0"}>
+              {a.category === "land" ? (
+                <div className="rounded-md border border-sky-500/20 bg-sky-50/50 dark:bg-sky-950/20 p-4 text-sm text-sky-800 dark:text-sky-300">
+                  <p className="font-semibold mb-1">أصل غير خاضع للاستهلاك (الأراضي)</p>
+                  <p className="text-xs text-muted-foreground">
+                    وفقاً للمعيار المحاسبي الدولي IAS 16 والنظام المحاسبي الموحد، تتميز الأراضي بعمر إنتاجي غير محدد ولا تخضع لأقساط إهلاك سنوية، وتظل قيمتها الدفترية مساوية لتكلفة الاقتناء.
+                  </p>
+                </div>
+              ) : (
+                <DataTable<ScheduleRow>
+                  {...EMBEDDED_TABLE}
+                  columns={scheduleColumns}
+                  data={a.schedule}
+                  /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد. */
+                  getRowClassName={(r) => (r.isCurrent ? "!bg-primary/5 font-medium" : undefined)}
+                  emptyText="لا جدول إهلاك لهذا الأصل."
+                />
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -596,20 +711,33 @@ export default function AssetDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* نافذة بطاقة الأصل (QR) */}
-      <Dialog open={openLabel} onOpenChange={setOpenLabel}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>بطاقة الأصل</DialogTitle></DialogHeader>
-          <div className="flex flex-col items-center gap-3 py-2">
-            <BarcodeDisplay barcodeSet={{ barcode128: a.code, qrPayload: a.code, displayLabel: `${a.name}\n${a.code}` }} size="md" showCode128={false} />
-            <div className="text-sm text-muted-foreground">{a.serial ? <span dir="ltr">SN: {a.serial}</span> : null}</div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenLabel(false)}>إغلاق</Button>
-            <Button onClick={() => printAssetLabel({ code: a.code, name: a.name, serial: a.serial, branchName: a.branchName, category: a.category })}>طباعة الملصق</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ملصق تتبع الأصل ورمز QR */}
+      <AssetQrTagDialog
+        open={openLabel}
+        onOpenChange={setOpenLabel}
+        asset={{
+          code: a.code,
+          name: a.name,
+          serial: a.serial,
+          branchName: a.branchName,
+          category: assetCategoryLabel(a.category),
+        }}
+      />
+
+      {/* مناقلة الأصل بين الفروع */}
+      <AssetTransferDialog
+        open={openTransfer}
+        onOpenChange={setOpenTransfer}
+        asset={{
+          id: a.id,
+          code: a.code,
+          name: a.name,
+          branchId: a.branchId,
+          location: a.location,
+          custodianId: a.custodianId,
+        }}
+        onSuccess={refresh}
+      />
 
       {/* نافذة الإخراج / الاستبعاد */}
       <Dialog open={openDispose} onOpenChange={(o) => { setOpenDispose(o); if (!o) { setDReason(""); setDValue(""); } }}>

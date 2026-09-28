@@ -24,6 +24,7 @@ import {
   createRecipe,
   deleteRecipe,
   getRecipe,
+  getRecipeForProduct,
   listRecipes,
   listRunnableRecipes,
   recipePreview,
@@ -31,7 +32,7 @@ import {
   updateRecipe,
 } from "../services/recipeService";
 import { logAudit } from "../services/auditService";
-import { inventoryManagerProcedure, router } from "../trpc";
+import { inventoryManagerProcedure, productsReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const lineInput = z.object({
@@ -321,6 +322,11 @@ export const productionRouter = router({
     listRunnable: inventoryManagerProcedure.query(() => listRunnableRecipes()),
 
     get: inventoryManagerProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getRecipe(input.id)),
+
+    /** وصفة منتج محدد (خدمة أو مادي) مع متغيّره الأساس ووحدته للعرض المباشر في بطاقة المنتج */
+    forProduct: productsReadProcedure
+      .input(z.object({ productId: z.number().int().positive() }))
+      .query(({ input }) => getRecipeForProduct(input.productId)),
 
     create: inventoryManagerProcedure.input(recipeInput).mutation(async ({ input, ctx }) => {
       try {

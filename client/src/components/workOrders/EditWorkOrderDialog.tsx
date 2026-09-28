@@ -1,6 +1,7 @@
 // حوار تعديل تفاصيل أمر الشغل — مستخرج من WorkOrders.tsx لخفض حجم الصفحة.
 import { useEffect, useRef, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -178,7 +179,7 @@ export function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrd
                 </div>
                 <div className="space-y-1">
                   <Label>موعد الاستحقاق</Label>
-                  <input type="date" className={dlgInput} value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
+                  <Input type="date" className={dlgInput} value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">

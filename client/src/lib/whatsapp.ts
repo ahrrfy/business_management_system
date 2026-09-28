@@ -5,6 +5,7 @@
 
 import { fmtDate } from "./date";
 import { D } from "./money";
+import { formatQuantity } from "@shared/quantityFormat";
 import { invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
@@ -160,7 +161,7 @@ export function buildInvoiceMessage(data: InvoiceMessageData): string {
   if (data.items && data.items.length > 0) {
     lines.push("*التفاصيل:*");
     for (const it of data.items.slice(0, 6)) {
-      lines.push(`  • ${it.productName} × ${it.quantity} ${it.unitName ?? ""} = ${fmtMoney(it.total)} د.ع.`);
+      lines.push(`  • ${it.productName} × ${formatQuantity(it.quantity)} ${it.unitName ?? ""} = ${fmtMoney(it.total)} د.ع.`);
     }
     if (data.items.length > 6) lines.push(`  ... و${data.items.length - 6} بنود أخرى`);
     lines.push("");
@@ -208,7 +209,7 @@ export function buildQuotationMessage(data: QuotationMessageData): string {
   if (data.items && data.items.length > 0) {
     lines.push("*البنود:*");
     for (const it of data.items.slice(0, 8)) {
-      lines.push(`  • ${it.productName} × ${it.quantity} ${it.unitName ?? ""} = ${fmtMoney(it.total)} د.ع.`);
+      lines.push(`  • ${it.productName} × ${formatQuantity(it.quantity)} ${it.unitName ?? ""} = ${fmtMoney(it.total)} د.ع.`);
     }
     lines.push("");
   }
@@ -336,11 +337,11 @@ export function buildConsignmentWithdrawMessage(data: ConsignmentWithdrawMessage
   if (data.consignorName) L.push(`عزيزنا ${data.consignorName}،`);
   if (out.length > 0) {
     L.push("تمّ سحب الأصناف التالية من بضاعتكم المودَعة لدينا:");
-    for (const l of out.slice(0, 15)) L.push(`  • ${l.label} × ${fmtMoney(l.quantity)}`);
+    for (const l of out.slice(0, 15)) L.push(`  • ${l.label} × ${formatQuantity(l.quantity)}`);
   }
   if (inn.length > 0) {
     L.push("وأُودِعت لديكم الأصناف التالية:");
-    for (const l of inn.slice(0, 15)) L.push(`  • ${l.label} × ${fmtMoney(l.quantity)}`);
+    for (const l of inn.slice(0, 15)) L.push(`  • ${l.label} × ${formatQuantity(l.quantity)}`);
   }
   L.push("", "للتأكيد أو الاستفسار عن أيّ فرق يُرجى التواصل معنا.", COMPANY_NAME);
   return L.join("\n");
@@ -355,14 +356,14 @@ export interface GiftMessageData {
 
 /**
  * رسالة إشعار هدية عبر wa.me (يدويّة، بلا API): للصادر إشعار العميل بهديته، وللوارد شكرُ المورّد.
- * مجاملة لا مطالبة (بلا مبالغ/تكلفة). بلا إيموجي (تظهر «�» على واتساب، انظر [[whatsapp]]).
+ * مجاملة لا مطالبة (بلا مبالغ/تكلفة). بلا إيموجي (تظهر «» على واتساب، انظر [[whatsapp]]).
  */
 export function buildGiftMessage(data: GiftMessageData): string {
   const isIn = data.direction === "IN";
   const L: string[] = [`*${isIn ? "إشعار استلام هدية" : "إشعار هدية"}*`, COMPANY_NAME, `سند رقم: ${data.giftNumber}`, `التاريخ: ${today()}`, ""];
   if (data.partyName) L.push(isIn ? `شكراً ${data.partyName}،` : `عزيزنا ${data.partyName}،`);
   L.push(isIn ? "تسلّمنا منكم الأصناف التالية هديةً مجّانية:" : "يسرّنا إهداؤكم الأصناف التالية مجّاناً:");
-  for (const l of data.lines.slice(0, 15)) L.push(`  • ${l.productName} × ${l.quantity} ${l.unit}`);
+  for (const l of data.lines.slice(0, 15)) L.push(`  • ${l.productName} × ${formatQuantity(l.quantity)} ${l.unit}`);
   L.push("", isIn ? "نقدّر تعاونكم الكريم." : "نتمنّى لكم يوماً سعيداً — ولا يترتّب على هذه الهدية أيّ دفع.", COMPANY_NAME);
   return L.join("\n");
 }
@@ -383,7 +384,7 @@ export interface StorefrontCartLine {
  */
 export function buildStorefrontCartMessage(items: StorefrontCartLine[], subtotal: number): string {
   const L: string[] = [`*طلب جديد من المتجر*`, COMPANY_NAME, "", "*المطلوب:*"];
-  for (const it of items.slice(0, 20)) L.push(`  • ${it.name} × ${it.quantity} = ${fmtMoney(it.total)} د.ع.`);
+  for (const it of items.slice(0, 20)) L.push(`  • ${it.name} × ${formatQuantity(it.quantity)} = ${fmtMoney(it.total)} د.ع.`);
   if (items.length > 20) L.push(`  ... و${items.length - 20} صنفاً آخر`);
   L.push("", `*المجموع:* ${fmtMoney(subtotal)} د.ع.`, "", "أودّ إتمام هذا الطلب — الدفع عند الاستلام.");
   return L.join("\n");
@@ -485,7 +486,7 @@ export function buildWorkOrderStatusMessage(d: WorkOrderStatusMessageData): stri
   if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
   L.push(line);
   L.push("");
-  L.push(`الطلب: ${d.title}${d.quantity ? ` (${d.quantity} نسخة)` : ""}`);
+  L.push(`الطلب: ${d.title}${d.quantity ? ` (${formatQuantity(d.quantity)} نسخة)` : ""}`);
   if (d.dueDate && d.status !== "DELIVERED" && d.status !== "CANCELLED") {
     L.push(`الموعد المتوقّع: ${String(d.dueDate).slice(0, 10)}`);
   }
@@ -540,11 +541,21 @@ export function buildCustomerDispatchMessage(d: CustomerDispatchMessageData): st
   if (d.courierPhone) L.push(`رقم المندوب: ${d.courierPhone}`);
   L.push("");
   if (feeCollection === "COURIER" && feeD > 0) {
-    L.push(`قيمة الطلب: ${fmtMoney(cod)} د.ع`);
-    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
-    L.push(`*الإجماليّ للمندوب: ${fmtMoney(cod + feeD)} د.ع*`);
+    if (cod > 0) {
+      L.push(`قيمة الطلب: ${fmtMoney(cod)} د.ع`);
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      L.push(`*الإجماليّ للمندوب: ${fmtMoney(cod + feeD)} د.ع*`);
+    } else {
+      L.push(`قيمة البضاعة: مدفوعة مسبقاً بالكامل`);
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      L.push(`*المطلوب للمندوب (أجرة التوصيل فقط): ${fmtMoney(feeD)} د.ع*`);
+    }
   } else {
-    L.push(`المبلغ المستحق للمندوب: ${fmtMoney(cod)} د.ع`);
+    if (cod > 0) {
+      L.push(`المبلغ المستحق للمندوب: ${fmtMoney(cod)} د.ع`);
+    } else {
+      L.push(`حالة الدفع: مدفوع بالكامل مسبقاً (المستحق للمندوب: 0 د.ع)`);
+    }
   }
   L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
   return L.join("\n");
@@ -587,11 +598,25 @@ export function buildCourierAssignmentMessage(d: CourierAssignmentMessageData): 
   if (d.customerPhone) L.push(`الهاتف: ${d.customerPhone}`);
   if (d.deliveryAddress) L.push(`العنوان: ${d.deliveryAddress}`);
   L.push("");
-  L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
-  if (feeD > 0) {
-    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
-    if (feeCollection === "COURIER") {
-      L.push(`*الإجماليّ من العميل: ${fmtMoney(cod + feeD)} د.ع*`);
+  if (cod > 0) {
+    L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
+    if (feeD > 0) {
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      if (feeCollection === "COURIER") {
+        L.push(`*الإجماليّ من العميل: ${fmtMoney(cod + feeD)} د.ع*`);
+      }
+    }
+  } else {
+    L.push(`مبلغ التحصيل (البضاعة): مدفوعة مسبقاً بالكامل (0 د.ع)`);
+    if (feeD > 0) {
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      if (feeCollection === "COURIER") {
+        L.push(`*المطلوب تحصيله من العميل (أجرة التوصيل فقط): ${fmtMoney(feeD)} د.ع*`);
+      } else {
+        L.push(`*المطلوب تحصيله من العميل: 0 د.ع (الأجرة غير مطلوبة من العميل)*`);
+      }
+    } else {
+      L.push(`*المطلوب تحصيله من العميل: 0 د.ع (مدفوع بالكامل)*`);
     }
   }
   L.push("", "برجاء التواصل مع العميل لتحديد موعد التسليم.", COMPANY_NAME);

@@ -28,10 +28,52 @@ import "./lib/theme/tokens.css";
 import "./lib/theme/comfort.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
 
+/**
+ * حارس عام لحقول التاريخ والوقت في شاشات النظام:
+ * يضمن تعيين lang="en-GB" و dir="ltr" على كل input[type=date/time/datetime-local/month]
+ * لمنع محرك Chromium من عكس نص placeholder إلى «ةنس/رهش/موي» أو إظهار الأرقام الهندية.
+ */
+function installDateTimeInputLocaleGuard() {
+  if (typeof document === "undefined") return;
+
+  const enforce = (node: Node) => {
+    if (node instanceof HTMLInputElement) {
+      const type = node.type;
+      if (type === "date" || type === "time" || type === "datetime-local" || type === "month") {
+        if (!node.getAttribute("lang")) node.setAttribute("lang", "en-GB");
+        if (!node.getAttribute("dir")) node.setAttribute("dir", "ltr");
+      }
+    } else if (node instanceof HTMLElement) {
+      const inputs = node.querySelectorAll<HTMLInputElement>(
+        'input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"]'
+      );
+      inputs.forEach((input) => {
+        if (!input.getAttribute("lang")) input.setAttribute("lang", "en-GB");
+        if (!input.getAttribute("dir")) input.setAttribute("dir", "ltr");
+      });
+    }
+  };
+
+  enforce(document.documentElement);
+
+  const observer = new MutationObserver((mutations) => {
+    for (let i = 0; i < mutations.length; i++) {
+      const added = mutations[i].addedNodes;
+      for (let j = 0; j < added.length; j++) {
+        enforce(added[j]);
+      }
+    }
+  });
+
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+}
+
 // قبل أول رسم: يمنع قفزة التخطيط عند وجود مقياس محفوظ على الجهاز.
 applyStoredDisplayScale();
 // يفتح قناة Web Audio مع أول تفاعل موثوق، ثم يضيف نقرةً خفيفة للأزرار والروابط.
 installGlobalInteractionAudio();
+// يضبط حقول التواريخ والأوقات فوراً وديناميكياً لتظهر بنسق لاتيني غربي 1234 وبلا انعكاس حروفي
+installDateTimeInputLocaleGuard();
 
 /** أدوات عامة قد تفتح بحثاً/مسحاً شبكياً؛ لا تُركب على Studio البارد. */
 function GlobalOverlays() {

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 function InputOTP({
   className,
   containerClassName,
+  dir = "ltr",
   ...props
 }: React.ComponentProps<typeof OTPInput> & {
   containerClassName?: string;
@@ -14,11 +15,12 @@ function InputOTP({
   return (
     <OTPInput
       data-slot="input-otp"
+      dir={dir}
       containerClassName={cn(
         "flex items-center gap-2 has-disabled:opacity-50",
         containerClassName
       )}
-      className={cn("disabled:cursor-not-allowed", className)}
+      className={cn("disabled:cursor-not-allowed tabular-nums", className)}
       {...props}
     />
   );

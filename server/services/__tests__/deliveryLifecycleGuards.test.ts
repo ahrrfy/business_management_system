@@ -215,6 +215,7 @@ describe("الإرجاع من أيّ حالة عبور — مخرجٌ للطرد
   it("الإرجاع من ASSIGNED يبقى كما كان — بلا سببٍ إلزاميّ (لم يخرج أصلاً)", async () => {
     const woId = await readyDeliveryOrder("g-6");
     await dispatch(woId, "gd-6");
+    await setParcel("ASSIGNED");
 
     await expect(returnConsignment(await consignmentId(), { ...MANAGER, clientRequestId: "ret-assigned" }))
       .resolves.toMatchObject({ reversed: true });

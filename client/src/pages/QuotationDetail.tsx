@@ -13,7 +13,7 @@ import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { buildQuotationMessage } from "@/lib/whatsapp";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, round2, formatQuantity } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -72,7 +72,7 @@ function quotationItemColumns(subtotal: string): ColumnDef<QuotationItemRow, unk
       ),
     },
     { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName, cell: ({ row }) => <span className="text-muted-foreground">{row.original.unitName}</span> },
-    { id: "quantity", header: "الكمية", accessorFn: (it) => it.quantity, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.quantity },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => formatQuantity(it.quantity), meta: { kind: "number", align: "center" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
     // `accessorFn` نصُّ العرض (للنسخ) ⇒ `sortingFn` صريحٌ بـDecimal: الفرز الافتراضيّ نصّيّ
     // فيقرأ «1,234» أصغر من «999» ويقلب ترتيب البنود.
     { id: "unitPrice", header: "سعر الوحدة", accessorFn: (it) => fmt(it.unitPrice), meta: { kind: "money" }, sortingFn: (a, b) => D(a.original.unitPrice).cmp(D(b.original.unitPrice)), cell: ({ row }) => fmt(row.original.unitPrice) },

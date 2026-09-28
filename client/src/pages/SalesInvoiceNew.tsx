@@ -24,7 +24,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { D, round2, toBase, fmt } from "@/lib/money";
+import { D, round2, toBase, fmt, formatQuantity } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card } from "@/components/ui/card";
@@ -696,7 +696,7 @@ export default function SalesInvoice() {
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
-        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
+        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${formatQuantity(l.qty)} × ${l.conversionFactor}).`;
     }
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
     // في وضع التصحيح: الدفع مقترح فقط ويُثبت عند الاعتماد؛ بوابة الإثبات أدناه للبيع الجديد.

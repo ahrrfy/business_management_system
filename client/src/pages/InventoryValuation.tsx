@@ -11,7 +11,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 
-import { fmtAr, fmtInt } from "@/lib/money";
+import { fmtAr, fmtInt, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -32,7 +32,7 @@ export default function InventoryValuation() {
   const kpis: KpiItem[] = totals
     ? [
         { label: "عدد المنتجات", value: totals.items, tone: "info" },
-        { label: "إجمالي الكمية", value: fmtInt(totals.totalQty) },
+        { label: "إجمالي الكمية", value: formatQuantity(totals.totalQty) },
         { label: "إجمالي القيمة (بالتكلفة)", value: fmtAr(totals.totalValue), tone: "positive" },
       ]
     : [];
@@ -68,13 +68,13 @@ export default function InventoryValuation() {
       rows: rows.map((r) => ({
         category: r.categoryName,
         items: String(r.items),
-        qty: fmtInt(r.totalQty),
+        qty: formatQuantity(r.totalQty),
         value: fmtAr(r.totalValue),
       })),
       summary: totals
         ? [
             { label: "عدد المنتجات", value: String(totals.items) },
-            { label: "إجمالي الكمية", value: fmtInt(totals.totalQty) },
+            { label: "إجمالي الكمية", value: formatQuantity(totals.totalQty) },
             { label: "إجمالي القيمة (بالتكلفة)", value: fmtAr(totals.totalValue), large: true, bold: true },
           ]
         : undefined,
@@ -98,8 +98,8 @@ export default function InventoryValuation() {
     {
       id: "totalQty", header: "إجمالي الكمية",
       accessorFn: (r) => Number(r.totalQty),
-      cell: ({ row }) => fmtInt(row.original.totalQty),
-      footer: () => (totals ? fmtInt(totals.totalQty) : null),
+      cell: ({ row }) => formatQuantity(row.original.totalQty),
+      footer: () => (totals ? formatQuantity(totals.totalQty) : null),
       meta: { kind: "number" },
     },
     {

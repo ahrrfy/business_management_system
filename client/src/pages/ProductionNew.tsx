@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, fmtInt, pct, round2 } from "@/lib/money";
+import { D, fmt, fmtInt, formatQuantity, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -377,14 +377,14 @@ export default function ProductionNew() {
                       <div className="text-xl text-muted-foreground pb-2">=</div>
                       <div className="space-y-1">
                         <Label>السليم الناتج</Label>
-                        <div className="h-9 flex items-center gap-1 font-bold badge-status-active rounded-md px-3" dir="ltr">{fmt(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
+                        <div className="h-9 flex items-center gap-1 font-bold badge-status-active rounded-md px-3" dir="ltr">{formatQuantity(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
                       </div>
                     </div>
                     {cap && (
                       <div className="rounded-md border bg-muted/30 p-2.5 text-sm flex flex-wrap items-center gap-x-4 gap-y-2">
                         <span className="flex items-center gap-1.5">
                           الأقصى الممكن إنتاجه الآن:
-                          <b className="tabular-nums" dir="ltr">{fmtInt(cap.maxBatch)}</b>
+                          <b className="tabular-nums" dir="ltr">{formatQuantity(cap.maxBatch)}</b>
                           <span className="text-xs text-muted-foreground">{cap.outputUnitName}</span>
                         </span>
                         {cap.maxBatch > 0 && (
@@ -400,7 +400,7 @@ export default function ProductionNew() {
                         )}
                         {cap.maxBatch === 0 && cap.maxByStock > 0 && (
                           <span className="text-xs text-[var(--sem-warn)]">
-                            المخزون يكفي {fmtInt(cap.maxByStock)} فقط — دون أصغر دفعة صالحة ({fmtInt(cap.batchMultiple)}).
+                            المخزون يكفي {formatQuantity(cap.maxByStock)} فقط — دون أصغر دفعة صالحة ({formatQuantity(cap.batchMultiple)}).
                           </span>
                         )}
                       </div>
@@ -415,9 +415,9 @@ export default function ProductionNew() {
                       <div>
                         <Meter value={pv.good} max={pv.batch || 1} tone={pv.yieldPct >= 1 - Number(pv.wasteStdPct) ? "ok" : "warn"} label="الإنتاجية (Yield)" right={pct(pv.yieldPct)} />
                         <div className="flex gap-4 flex-wrap text-xs text-muted-foreground mt-2">
-                          <span>بدأ التشغيل: <b className="text-foreground" dir="ltr">{fmt(pv.batch)}</b></span>
-                          <span>مسموح طبيعي: <b className="text-foreground" dir="ltr">{fmt(pv.normalAllow)}</b></span>
-                          {pv.abnormalUnits > 0 && <span>هدر غير طبيعي: <b className="text-destructive" dir="ltr">{fmt(pv.abnormalUnits)}</b></span>}
+                          <span>بدأ التشغيل: <b className="text-foreground" dir="ltr">{formatQuantity(pv.batch)}</b></span>
+                          <span>مسموح طبيعي: <b className="text-foreground" dir="ltr">{formatQuantity(pv.normalAllow)}</b></span>
+                          {pv.abnormalUnits > 0 && <span>هدر غير طبيعي: <b className="text-destructive" dir="ltr">{formatQuantity(pv.abnormalUnits)}</b></span>}
                         </div>
                       </div>
                     )}
@@ -427,7 +427,7 @@ export default function ProductionNew() {
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">المدخلات المُستهلَكة</CardTitle>
-                    <p className="text-xs text-muted-foreground">محسوبة من الوصفة × ما بدأ التشغيل ({fmt(pv?.batch ?? 0)}). الأشرطة تُظهر المتاح الحيّ.</p>
+                    <p className="text-xs text-muted-foreground">محسوبة من الوصفة × ما بدأ التشغيل ({formatQuantity(pv?.batch ?? 0)}). الأشرطة تُظهر المتاح الحيّ.</p>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {preview.isLoading && <p className="text-xs text-muted-foreground">جارٍ الحساب…</p>}
@@ -437,13 +437,13 @@ export default function ProductionNew() {
                         <div key={i.variantId} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-3 items-center border rounded-md p-3">
                           <div>
                             <div className="font-medium text-sm">{i.productName}</div>
-                            <div className="text-xs text-muted-foreground" dir="ltr">يُستهلك {fmt(i.consumed)} · كلفة {fmt(i.lineCost)} د.ع</div>
+                            <div className="text-xs text-muted-foreground" dir="ltr">يُستهلك {formatQuantity(i.consumed)} · كلفة {fmt(i.lineCost)} د.ع</div>
                           </div>
                           <div>
-                            <Meter value={i.consumed} max={i.available ?? i.consumed} tone={tone} right={`${fmt(i.consumed)} / ${i.available != null ? fmt(i.available) : "—"}`} />
+                            <Meter value={i.consumed} max={i.available ?? i.consumed} tone={tone} right={`${formatQuantity(i.consumed)} / ${i.available != null ? formatQuantity(i.available) : "—"}`} />
                             {i.short
-                              ? <div className="text-xs font-semibold text-destructive mt-1.5">المتاح أقل بـ {fmt(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل</div>
-                              : i.available != null && <div className="text-xs font-semibold text-money-positive mt-1.5 flex items-center gap-1"><Check aria-hidden className="size-3.5" /><span>يكفي — يتبقّى {fmt(i.available - i.consumed)}</span></div>}
+                              ? <div className="text-xs font-semibold text-destructive mt-1.5">المتاح أقل بـ {formatQuantity(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل</div>
+                              : i.available != null && <div className="text-xs font-semibold text-money-positive mt-1.5 flex items-center gap-1"><Check aria-hidden className="size-3.5" /><span>يكفي — يتبقّى {formatQuantity(i.available - i.consumed)}</span></div>}
                           </div>
                         </div>
                       );
@@ -551,19 +551,19 @@ export default function ProductionNew() {
                 <div className="flex items-stretch gap-2">
                   <div className="flex-1 text-center p-2 rounded-md bg-muted/50">
                     <div className="text-[10px] text-muted-foreground font-bold">قبل</div>
-                    <div className="text-base font-bold" dir="ltr">{fmt(pv?.wavg.oldQty ?? 0)}</div>
+                    <div className="text-base font-bold" dir="ltr">{formatQuantity(pv?.wavg.oldQty ?? 0)}</div>
                     <div className="text-[11px] text-muted-foreground" dir="ltr">{fmt(pv?.wavg.oldCost ?? 0)}</div>
                   </div>
                   <div className="flex items-center text-muted-foreground">←</div>
                   <div className="flex-1 text-center p-2 rounded-md bg-[var(--sem-info-bg)]">
                     <div className="text-[10px] text-muted-foreground font-bold">يُضاف</div>
-                    <div className="text-base font-bold" dir="ltr">+{fmt(pv?.wavg.addQty ?? 0)}</div>
+                    <div className="text-base font-bold" dir="ltr">+{formatQuantity(pv?.wavg.addQty ?? 0)}</div>
                     <div className="text-[11px] text-muted-foreground" dir="ltr">{fmt(pv?.unitCost ?? 0)}</div>
                   </div>
                   <div className="flex items-center text-muted-foreground">←</div>
                   <div className="flex-1 text-center p-2 rounded-md bg-[var(--sem-pos-bg)]">
                     <div className="text-[10px] text-muted-foreground font-bold">بعد</div>
-                    <div className="text-base font-bold" dir="ltr">{fmt(pv?.wavg.newQty ?? 0)}</div>
+                    <div className="text-base font-bold" dir="ltr">{formatQuantity(pv?.wavg.newQty ?? 0)}</div>
                     <div className="text-[11px] text-muted-foreground" dir="ltr">{fmt(pv?.wavg.newCost ?? 0)}</div>
                   </div>
                 </div>

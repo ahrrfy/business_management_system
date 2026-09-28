@@ -2362,6 +2362,13 @@
 			"breakpoints": true
 		},
 		{
+			"idx": 371,
+			"version": "5",
+			"when": 1788148829000,
+			"tag": "0371_fixed_assets_opening_depreciation",
+			"breakpoints": true
+		},
+		{
 			"idx": 372,
 			"version": "5",
 			"when": 1788148830000,

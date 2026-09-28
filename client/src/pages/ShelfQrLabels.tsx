@@ -37,7 +37,10 @@ import {
   Smartphone,
   Eye,
   Info,
+  Users,
+  BarChart3,
 } from "lucide-react";
+import { ShelfBeneficiariesAnalytics } from "@/components/shelf-qr/ShelfBeneficiariesAnalytics";
 
 const TEMPLATES: { id: ShelfQrTemplateType; label: string; desc: string; sizeHint: string }[] = [
   {
@@ -77,6 +80,13 @@ export default function ShelfQrLabels() {
   const [subtitle, setSubtitle] = useState("امسح لمعرفة السعر والعروض");
   const [customNote, setCustomNote] = useState("");
   const [sheetCount, setSheetCount] = useState("24");
+  const [activeSubTab, setActiveSubTab] = useState<"analytics" | "labels">(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("sub") === "labels" || p.get("mode") === "labels") return "labels";
+    }
+    return "analytics";
+  });
 
   // الرابط المشفر في الرمز
   const targetBranchId = selectedBranchId ? Number(selectedBranchId) : null;
@@ -176,7 +186,56 @@ export default function ShelfQrLabels() {
         description="توليد وطباعة ملصقات وبوسترات رمز الاستجابة السريعة (QR) للأرفف والمعارض لتمكين الزبائن من مسح الباركود بهواتفهم ومعرفة الأسعار والعروض فوراً."
       />
 
-      <div className="grid gap-6 lg:grid-cols-12 items-start">
+      {/* شريط التبديل بين إحصائيات المستفيدين ومولّد الملصقات */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
+        <div className="flex items-center gap-2">
+          <Button
+            variant={activeSubTab === "analytics" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveSubTab("analytics")}
+            className="gap-2 font-bold"
+          >
+            <BarChart3 aria-hidden className="size-4" />
+            <span>إحصائيات واستخدام الخدمة (المستفيدون)</span>
+          </Button>
+          <Button
+            variant={activeSubTab === "labels" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveSubTab("labels")}
+            className="gap-2 font-bold"
+          >
+            <Printer aria-hidden className="size-4" />
+            <span>تصميم وطباعة ملصقات الرفوف</span>
+          </Button>
+        </div>
+
+        {activeSubTab === "analytics" ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveSubTab("labels")}
+            className="gap-1.5 text-xs font-semibold"
+          >
+            <QrCode aria-hidden className="size-3.5 text-primary" />
+            <span>طباعة ملصقات جديدة للرفوف</span>
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveSubTab("analytics")}
+            className="gap-1.5 text-xs font-semibold"
+          >
+            <BarChart3 aria-hidden className="size-3.5 text-primary" />
+            <span>عرض إحصائيات المستفيدين</span>
+          </Button>
+        )}
+      </div>
+
+      {activeSubTab === "analytics" ? (
+        <ShelfBeneficiariesAnalytics branches={branches} defaultBranchId={selectedBranchId} />
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-12 items-start">
         {/* عمود خيارات التوليد والإعدادات (5 أعمدة) */}
         <div className="space-y-4 lg:col-span-5">
           {/* نطاق الفرع والرابط */}
@@ -543,6 +602,7 @@ export default function ShelfQrLabels() {
           </Card>
         </div>
       </div>
+      )}
     </div>
   );
 }

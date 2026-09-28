@@ -4,6 +4,8 @@
 // شريحة import-integration: حقول النظام القديم (رصيد افتتاحي موقَّع/عملة/رقم قديم/نشط/آخر تعامل/هواتف إضافية)
 // + أسعار صريحة لكل فئة ومخزون افتتاحي للمنتجات. الأموال نصوص دائماً (قاعدة decimal.js).
 
+import type { AssetCategory } from "@shared/assets";
+
 export type CustomerImportRow = {
   name: string;
   phone?: string; // E.164 بعد التطبيع (07… → +9647…)
@@ -65,3 +67,22 @@ export type ProductImportRow = {
   governmentPrice?: string; // «سعر حكومي»
   openingStock?: number; // عدد صحيح ≥ 0 (السالب = خطأ صفّي في العميل ⇒ الصف يُتجاوَز ولا يُستورَد)
 };
+
+export type AssetImportRow = {
+  rowNumber?: number;
+  name: string;
+  category: AssetCategory;
+  branchId?: number | null;
+  location?: string | null;
+  custodianId?: number | null;
+  purchaseDate: string;
+  purchaseValue: string;
+  salvageValue?: string;
+  usefulLifeYears: number;
+  depreciationMethod?: "sl" | "db";
+  serial?: string | null;
+  model?: string | null;
+  notes?: string | null;
+  accumulatedDepreciation?: string;
+};
+

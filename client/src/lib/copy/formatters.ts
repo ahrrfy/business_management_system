@@ -9,7 +9,7 @@
  *  - TSV لا يَسمَح بِالـtab/newline داخِل الخَلية ⇒ يُستَبدَل بِمَسافة.
  */
 
-import { fmtAr, round2, D, positiveDiff } from "@/lib/money";
+import { fmtAr, formatQuantity, round2, D, positiveDiff } from "@/lib/money";
 import { fmtDate, fmtDateTime, type DateInput } from "@/lib/date";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { invoiceRemaining } from "@shared/predicates/invoiceRemaining";
@@ -81,7 +81,7 @@ export function formatInvoiceAsWhatsApp(inv: InvoiceCopyData): string {
   L.push("*البُنود:*");
   for (const it of inv.items) {
     const unit = it.unit ? ` ${txt(it.unit)}` : "";
-    L.push(`- ${txt(it.name)} × ${fmtAr(it.qty)}${unit} = ${fmtAr(it.total)} د.ع`);
+    L.push(`- ${txt(it.name)} × ${formatQuantity(it.qty)}${unit} = ${fmtAr(it.total)} د.ع`);
   }
   L.push(SEP);
 
@@ -150,7 +150,7 @@ export function formatQuotationAsWhatsApp(q: QuotationCopyData): string {
   L.push("*البُنود:*");
   for (const it of q.items) {
     const unit = it.unit ? ` ${txt(it.unit)}` : "";
-    L.push(`- ${txt(it.name)} × ${fmtAr(it.qty)}${unit} = ${fmtAr(it.total)} د.ع`);
+    L.push(`- ${txt(it.name)} × ${formatQuantity(it.qty)}${unit} = ${fmtAr(it.total)} د.ع`);
   }
   L.push(SEP);
 
@@ -304,7 +304,7 @@ export function formatWorkOrderAsWhatsApp(wo: WorkOrderCopyData): string {
     for (const it of wo.items) {
       const unit = it.unit ? ` ${txt(it.unit)}` : "";
       const notes = it.notes ? ` — ${txt(it.notes)}` : "";
-      L.push(`- ${txt(it.name)} × ${fmtAr(it.qty)}${unit}${notes}`);
+      L.push(`- ${txt(it.name)} × ${formatQuantity(it.qty)}${unit}${notes}`);
     }
     L.push(SEP);
   }

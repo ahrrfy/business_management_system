@@ -4,6 +4,7 @@ import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CopyInline } from "@/components/CopyButton";
 import { Input } from "@/components/ui/input";
@@ -42,7 +43,7 @@ import {
 } from "@shared/permissions";
 import type { PrintOpenResult } from "@shared/printAudit";
 import { useMemo, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   CheckCircle2,
   XCircle,
@@ -172,6 +173,14 @@ export default function Vouchers() {
     "READ",
     ["admin", "manager", "accountant", "auditor"],
   );
+  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "reports",
+    "READ",
+    ["admin", "manager", "accountant", "auditor"],
+  );
+  const [, navigate] = useLocation();
 
   const filterInput = useMemo(
     () => ({
@@ -791,25 +800,45 @@ export default function Vouchers() {
             columns={[
               {
                 id: "voucherNumber",
-                header: "رقم السند",
-                accessorFn: (r) => String(r.voucherNumber ?? "—"),
-                meta: { width: "wide" },
+                header: "رقم السند / المرجع",
+                accessorFn: (r) =>
+                  [
+                    r.voucherNumber ? String(r.voucherNumber) : null,
+                    r.referenceNumber,
+                    r.signatureHash ? `#${shortHash(r.signatureHash)}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · "),
+                meta: { width: "stacked" },
+                sortDescFirst: true,
+                sortingFn: (a, b) => Number(a.original.voucherNumber || 0) - Number(b.original.voucherNumber || 0),
                 cell: ({ row }) => {
                   const r = row.original;
+                  const vNum = String(r.voucherNumber ?? "—");
+                  const refOrHash =
+                    r.referenceNumber || (r.signatureHash ? `#${shortHash(r.signatureHash)}` : undefined);
                   return (
-                    <span className="font-mono text-xs">
-                      <CopyInline value={String(r.voucherNumber ?? "—")} />
-                      {r.signatureHash && (
-                        <div className="text-[10px] text-muted-foreground" title={`بَصمة كاملة: ${r.signatureHash}`}>
-                          #{shortHash(r.signatureHash)}
-                        </div>
-                      )}
+                    <div className="flex flex-col gap-0.5">
+                      <StackedEntityCell
+                        primary={vNum}
+                        primaryTitle={vNum}
+                        secondary={refOrHash}
+                        secondaryTitle={
+                          r.signatureHash
+                            ? `بَصمة كاملة: ${r.signatureHash}`
+                            : r.referenceNumber
+                              ? `مرجع: ${r.referenceNumber}`
+                              : undefined
+                        }
+                        copyValue={r.voucherNumber ? String(r.voucherNumber) : null}
+                        copyTitle="نسخ رقم السند"
+                      />
                       {accrualPaymentAttemptLabel({
                         attempt: r.resubmitAttempt,
                         rootReceiptId: r.resubmitRootReceiptId,
                         priorReceiptId: r.resubmitPriorReceiptId,
                       }) && (
-                        <div className="mt-1 text-[10px] text-muted-foreground font-sans" dir="rtl">
+                        <div className="text-[10px] text-muted-foreground font-sans" dir="rtl">
                           {accrualPaymentAttemptLabel({
                             attempt: r.resubmitAttempt,
                             rootReceiptId: r.resubmitRootReceiptId,
@@ -819,7 +848,7 @@ export default function Vouchers() {
                       )}
                       {r.resubmitReason && (
                         <div
-                          className="mt-0.5 max-w-52 truncate text-[10px] text-muted-foreground font-sans"
+                          className="max-w-52 truncate text-[10px] text-muted-foreground font-sans"
                           title={r.resubmitReason}
                           dir="rtl"
                         >
@@ -827,11 +856,11 @@ export default function Vouchers() {
                         </div>
                       )}
                       {r.resubmitLineageStatus === "BROKEN" && (
-                        <div className="mt-1 text-[10px] text-[var(--sem-neg)] font-sans" dir="rtl">
+                        <div className="text-[10px] text-[var(--sem-neg)] font-sans" dir="rtl">
                           سلسلة إعادة الإصدار غير مكتملة — يلزم تدقيق
                         </div>
                       )}
-                    </span>
+                    </div>
                   );
                 },
               },
@@ -841,6 +870,8 @@ export default function Vouchers() {
                 accessorFn: (r) => fmtDate(r.voucherDate),
                 /* بلا kind: "date" — الخليّة تحمل سطراً عربياً («أُدخل: …») وعزلُ الاتّجاه يقلبه. */
                 meta: { width: "date" },
+                sortDescFirst: true,
+                sortingFn: (a, b) => new Date(a.original.voucherDate ?? 0).getTime() - new Date(b.original.voucherDate ?? 0).getTime(),
                 cell: ({ row }) => (
                   <span className="text-xs">
                     {fmtDate(row.original.voucherDate)}
@@ -873,55 +904,88 @@ export default function Vouchers() {
                 : []),
               {
                 id: "direction",
-                header: "النوع",
-                accessorFn: (r) => TYPE_LABEL[r.direction],
+                header: "النوع والاعتماد",
+                accessorFn: (r) => `${TYPE_LABEL[r.direction] ?? r.direction} - ${voucherApprovalLabel(r)}`,
                 meta: { kind: "status" },
-                cell: ({ row }) => (
-                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
-                    {TYPE_LABEL[row.original.direction]}
-                  </span>
-                ),
+                cell: ({ row }) => {
+                  const r = row.original;
+                  const isPending = r.approvalStatus === "PENDING_APPROVAL";
+                  const isRejected = r.approvalStatus === "REJECTED";
+                  return (
+                    <div className="flex flex-col items-center gap-1">
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
+                        {TYPE_LABEL[r.direction]}
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] ${
+                          isPending ? "badge-status-pending" : isRejected ? "badge-status-cancelled" : "badge-status-active"
+                        }`}
+                      >
+                        {isPending && <ShieldQuestion aria-hidden className="size-2.5" />}
+                        {isRejected && <XCircle aria-hidden className="size-2.5" />}
+                        {!isPending && !isRejected && <CheckCircle2 aria-hidden className="size-2.5" />}
+                        {voucherApprovalLabel(r)}
+                      </span>
+                    </div>
+                  );
+                },
               },
               {
                 id: "party",
-                header: "الطرف",
+                header: "الطرف / الفاتورة",
                 accessorFn: (r) =>
-                  r.partyName?.trim() || r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—",
-                meta: { width: "wide" },
+                  [
+                    r.partyName?.trim() || r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—",
+                    r.invoiceNumber ? `فاتورة #${r.invoiceNumber}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · "),
+                meta: { width: "stacked" },
                 cell: ({ row }) => {
                   const r = row.original;
                   const partyDisplay =
                     r.partyName?.trim() || r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
+                  const invoiceText = r.invoiceNumber ? `فاتورة #${r.invoiceNumber}` : undefined;
+                  const isLinkableParty =
+                    Boolean(r.partyId) &&
+                    (r.partyType === "CUSTOMER" || r.partyType === "SUPPLIER") &&
+                    canOpenStatement;
                   return (
-                    <span className="text-xs">
-                      {partyDisplay}
-                      {r.partyType !== "OTHER" && r.counterpartyName && r.counterpartyName !== partyDisplay && (
-                        <div className="text-[10px] text-muted-foreground">{r.counterpartyName}</div>
-                      )}
-                      {/*
-                        أُزيل سطرُ «نفّذ: …» المدفون داخل خليّة الطرف: صار للفاعل عمودٌ
-                        مستقلّ باسم العقد. إبقاؤه هنا يُكرّر المعلومة في خليّتين ويُبقي
-                        الخلطَ الذي نُعالجه: الطرفُ الآخر والفاعلُ دوران مختلفان.
-                      */}
-                      {r.invoiceNumber && (
-                        // ٢٤/٨ (تدقيق + Codex P2 على PR #746): رابطٌ مباشرٌ بـ`invoiceId` لا فلترٍ
-                        // بالرقم — «INV-1» و«INV-10» و«INV-11» يتشابهان في `q=INV-1` فتُرجع
-                        // القائمةُ نتائجَ كثيرة. الآن قفزةٌ مباشرة إلى الفاتورة المذكورة.
-                        canOpenInvoices && r.invoiceId != null ? (
-                          <Link
-                            href={`/invoices/${r.invoiceId}`}
-                            className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
-                            title="فتح الفاتورة"
-                          >
-                            <Link2 aria-hidden className="size-3" /> فاتورة #{r.invoiceNumber}
-                          </Link>
-                        ) : (
-                          <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
-                            فاتورة #{r.invoiceNumber}
-                          </div>
-                        )
-                      )}
-                    </span>
+                    <StackedEntityCell
+                      primary={
+                        <div className="flex flex-col">
+                          {isLinkableParty ? (
+                            <Link
+                              href={statementHref(r)}
+                              className="text-primary hover:underline"
+                              title={`فتح كشف حساب ${r.partyType === "CUSTOMER" ? "العميل" : "المورّد"}`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {partyDisplay}
+                            </Link>
+                          ) : (
+                            <span>{partyDisplay}</span>
+                          )}
+                          {r.partyType !== "OTHER" && r.counterpartyName && r.counterpartyName !== partyDisplay && (
+                            <span className="text-[10px] text-muted-foreground">{r.counterpartyName}</span>
+                          )}
+                        </div>
+                      }
+                      primaryTitle={partyDisplay}
+                      secondary={invoiceText}
+                      secondaryTitle={invoiceText ? "فتح تفاصيل الفاتورة المرتبطة" : undefined}
+                      secondaryIsCode={false}
+                      secondaryDir="auto"
+                      onSecondaryClick={
+                        canOpenInvoices && r.invoiceId != null
+                          ? () => {
+                              navigate(`/invoices/${r.invoiceId}`);
+                            }
+                          : undefined
+                      }
+                      copyValue={r.invoiceNumber ?? undefined}
+                      copyTitle="نسخ رقم الفاتورة"
+                    />
                   );
                 },
               },
@@ -967,29 +1031,7 @@ export default function Vouchers() {
                 meta: { align: "center" },
                 cell: ({ row }) => <span className="text-xs">{paymentMethodLabel(row.original.paymentMethod)}</span>,
               },
-              {
-                id: "approval",
-                header: "الاعتماد",
-                accessorFn: (r) => voucherApprovalLabel(r),
-                meta: { kind: "status" },
-                cell: ({ row }) => {
-                  const r = row.original;
-                  const isPending = r.approvalStatus === "PENDING_APPROVAL";
-                  const isRejected = r.approvalStatus === "REJECTED";
-                  return (
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
-                        isPending ? "badge-status-pending" : isRejected ? "badge-status-cancelled" : "badge-status-active"
-                      }`}
-                    >
-                      {isPending && <ShieldQuestion aria-hidden className="size-3" />}
-                      {isRejected && <XCircle aria-hidden className="size-3" />}
-                      {!isPending && !isRejected && <CheckCircle2 aria-hidden className="size-3" />}
-                      {voucherApprovalLabel(r)}
-                    </span>
-                  );
-                },
-              },
+
               {
                 id: "attachment",
                 header: "المُرفَق",
