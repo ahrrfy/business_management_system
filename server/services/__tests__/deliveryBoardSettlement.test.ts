@@ -344,3 +344,17 @@ describe("اقتراح الجهة بالمنطقة — دليلٌ لا تخمي�
     expect((await board())[0].staleOpenParcels).toBe(1);
   });
 });
+
+describe("listOpenConsignments — ظهور الفواتير المسندة للمندوب فورياً وبذمته", () => {
+  it("الفاتورة المسندة حديثاً للمندوب الفردي تظهر فوراً في قائمته المفتوحة بحالة OUT_FOR_DELIVERY", async () => {
+    await openReception();
+    const a = await saleWithDelivery("imm-1", "1");
+    const open = await listOpenConsignments(PARTY, 1);
+    const row = open.rows.find((r: { id: number }) => Number(r.id) === a.consignmentId);
+    expect(row).toBeDefined();
+    expect(row?.parcelStatus).toBe("OUT_FOR_DELIVERY");
+    expect(row?.moneyStatus).toBe("UNSETTLED");
+    expect(Number(row?.codAmount)).toBe(1000);
+  });
+});
+
