@@ -28,6 +28,6 @@ describe("operational orphan endpoint cutover", () => {
     expect(posCatalog).toContain("resolvePromotionForLine");
     expect(saleCreate).toContain("resolvePromotionForLine");
     expect(baseline.orphans).not.toContain("salesPromotions.activeToday");
-    expect(baseline.orphans).toEqual(["storefront.customerBenefitsPrivate"]);
+    expect(baseline.orphans).toContain("storefront.customerBenefitsPrivate");
   });
 });

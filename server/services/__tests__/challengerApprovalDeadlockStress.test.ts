@@ -122,10 +122,10 @@ describe("ADVERSARIAL STRESS: EDGE-FIN-01 Approval Deadlock Avoidance", () => {
     expect(receipt.invoiceId).toBeNull();
     expect(receipt.internalNote).toContain("مبلغ السند يتجاوز المتبقي");
 
-    // B. Invoice remains at 15,000 paid (never overpaid to 35,000)
+    // B. Invoice settled to full 20,000 paid via automatic credit settlement (never overpaid to 35,000)
     const [inv] = await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId));
-    expect(money(inv.paidAmount).toFixed(2)).toBe("15000.00");
-    expect(inv.status).toBe("PARTIALLY_PAID");
+    expect(money(inv.paidAmount).toFixed(2)).toBe("20000.00");
+    expect(inv.status).toBe("PAID");
 
     // C. Customer balance credited by full voucher amount (5,000 - 20,000 = -15,000 creditor)
     const [cust] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
