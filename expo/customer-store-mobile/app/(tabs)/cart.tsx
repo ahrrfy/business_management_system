@@ -159,21 +159,21 @@ export default function CartScreen() {
     return (
       <ScreenContainer className="px-4" containerClassName="bg-background">
         <ScrollView contentContainerStyle={styles.emptyScroll}>
-          <Text style={styles.title}>سلة المشتريات</Text>
+          <Text style={styles.title}>مسواكك وسلة مشترياتك</Text>
           <View style={styles.empty}>
             <View style={styles.emptyIcon}>
               <MaterialIcons color="#0C5A4B" name="shopping-bag" size={39} />
             </View>
-            <Text style={styles.emptyTitle}>السلة تنتظر اختياراتك</Text>
+            <Text style={styles.emptyTitle}>سلتك فارغة عيني!</Text>
             <Text style={styles.emptyText}>
-              استكشف الكتب والقرطاسية وأضف ما تحتاجه، وستبقى اختياراتك محفوظة.
+              تصفح المنتجات واختار اليعجبك واستفاد من عروض اليوم، ومسواكك يوصل لباب بيتك.
             </Text>
             <TouchableOpacity
               activeOpacity={0.88}
               onPress={() => router.push("/categories" as never)}
               style={styles.browse}
             >
-              <Text style={styles.browseText}>ابدأ التسوق</Text>
+              <Text style={styles.browseText}>تصفح المسواك وابدأ التسوق</Text>
               <MaterialIcons color="#FFFFFF" name="arrow-back" size={18} />
             </TouchableOpacity>
           </View>
@@ -188,9 +188,9 @@ export default function CartScreen() {
       >
         <View style={styles.header}>
           <View>
-            <Text style={styles.title}>سلة المشتريات</Text>
+            <Text style={styles.title}>مسواكك وسلة مشترياتك</Text>
             <Text style={styles.subtitle}>
-              {formatLatinNumber(lines.length)} اختيارات جاهزة للمراجعة
+              {formatLatinNumber(lines.length)} مادة بمسواكك جاهزة للمراجعة
             </Text>
           </View>
           <TouchableOpacity
@@ -204,7 +204,7 @@ export default function CartScreen() {
               name="add"
               size={18}
             />
-            <Text style={styles.continueText}>إضافة منتجات</Text>
+            <Text style={styles.continueText}>إضافة مسواك</Text>
           </TouchableOpacity>
         </View>
         {freeShippingThreshold > 0 && (
@@ -448,23 +448,23 @@ export default function CartScreen() {
           })}
         </View>
         <View style={styles.summary}>
-          <Text style={styles.summaryTitle}>ملخص الطلب</Text>
+          <Text style={styles.summaryTitle}>ملخص المسواك والطلب</Text>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryValue}>
               {formatIqd(estimatedSubtotal)}
             </Text>
-            <Text style={styles.summaryLabel}>إجمالي المنتجات</Text>
+            <Text style={styles.summaryLabel}>مجموع المسواك</Text>
           </View>
           {savedAmount > 0 && (
             <View style={styles.summaryRow}>
               <Text style={styles.savings}>{formatIqd(savedAmount)}</Text>
-              <Text style={styles.summaryLabel}>التوفير الحالي</Text>
+              <Text style={styles.summaryLabel}>الخصم المباشر (وفرته)</Text>
             </View>
           )}
           <View style={styles.divider} />
           <View style={styles.summaryRow}>
             <Text style={styles.total}>{formatIqd(estimatedSubtotal)}</Text>
-            <Text style={styles.totalLabel}>الإجمالي المبدئي</Text>
+            <Text style={styles.totalLabel}>المجموع الكلي الصافي</Text>
           </View>
           <Text style={styles.summaryNote}>
             تظهر رسوم التوصيل والإجمالي النهائي بوضوح بعد اختيار المحافظة في
@@ -484,7 +484,7 @@ export default function CartScreen() {
           onPress={() => router.push("/checkout" as never)}
           style={styles.checkout}
         >
-          <Text style={styles.checkoutText}>تابع لإتمام الطلب (الدفع عند الاستلام)</Text>
+          <Text style={styles.checkoutText}>أكد طلبك وهسة نجهزه الك — الدفع عند الباب</Text>
           <MaterialIcons color="#FFFFFF" name="arrow-back" size={20} />
         </TouchableOpacity>
 

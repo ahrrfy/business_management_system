@@ -259,7 +259,7 @@ export async function scheduleAbandonedCartAlert(
     await Notifications.scheduleNotificationAsync({
       identifier: "abandoned-cart-reminder",
       content: {
-        title: "هل نسيت سلتك في مكتبة العربية؟ 🛒",
+        title: "هل نسيت سلتك في مكتبة العربية؟",
         body: `لديك ${itemCount} أصناف بانتظارك في السلة، أكمل طلبك الآن قبل نفاد الكمية!`,
         sound: "default",
         badge: 1,
