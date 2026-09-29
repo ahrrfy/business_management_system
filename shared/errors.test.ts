@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { appError, appErrorMessage, type AppErrorParts } from "./errors";
+import { TRPCError } from "@trpc/server";
+import { appError, appErrorMessage, AppContractError, type AppErrorParts } from "./errors";
 
 /**
  * الأجزاء الأربعة عقدٌ لا اصطلاح تحرير: هذه الاختبارات تُثبت أنّ الجزء الثالث («ماذا تفعل الآن»)
@@ -181,5 +182,43 @@ describe("عقد رسالة الخطأ (appError)", () => {
     expect(err.doThis).toMatch(/صفِّر/);
     expect(err.message).toContain(err.doThis);
     expect(err.action?.href).toBe("/purchases");
+  });
+
+  describe("VULN-GRD-04: AppContractError & TRPCError compliance", () => {
+    it("throws AppContractError which is an instance of TRPCError with code BAD_REQUEST", () => {
+      try {
+        appError({ ...VALID, what: "" });
+        expect.unreachable("should have thrown");
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(AppContractError);
+        expect(err).toBeInstanceOf(TRPCError);
+        expect(err.code).toBe("BAD_REQUEST");
+        expect(err.message).toContain("ماذا حدث");
+      }
+    });
+
+    it("throws AppContractError on duplicate why/doThis", () => {
+      try {
+        appError({ ...VALID, doThis: VALID.why });
+        expect.unreachable("should have thrown");
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(AppContractError);
+        expect(err).toBeInstanceOf(TRPCError);
+        expect(err.code).toBe("BAD_REQUEST");
+        expect(err.message).toContain("يكرّر");
+      }
+    });
+
+    it("throws AppContractError on invalid external action.href", () => {
+      try {
+        appError({ ...VALID, action: { label: "افتح", href: "https://external.com" } });
+        expect.unreachable("should have thrown");
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(AppContractError);
+        expect(err).toBeInstanceOf(TRPCError);
+        expect(err.code).toBe("BAD_REQUEST");
+        expect(err.message).toContain("ليست مساراً داخل النظام");
+      }
+    });
   });
 });

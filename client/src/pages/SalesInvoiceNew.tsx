@@ -92,7 +92,9 @@ function toYmdUtc(v: unknown): string {
 
 export default function SalesInvoice() {
   const [, navigate] = useLocation();
-  const me = trpc.auth.me.useQuery(); const utils = trpc.useUtils(); const defaultBranchId = me.data?.branchId || 1;
+  const me = trpc.auth.me.useQuery();
+  const utils = trpc.useUtils();
+  const defaultBranchId = me.data?.branchId ? Number(me.data.branchId) : 0;
 
   const [state, dispatch] = useReducer(
     invoiceReducer,
@@ -675,6 +677,7 @@ export default function SalesInvoice() {
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
     if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
+    if (!state.branchId) return "اختر الفرع.";
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     const digitalError = validateDigitalInvoiceCheckout(state.items, {
       isCorrection, hasOpenShift: !!currentShift.data,

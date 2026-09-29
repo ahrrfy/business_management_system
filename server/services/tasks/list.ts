@@ -1,5 +1,6 @@
 // قراءة المهام: قائمة مُرقَّمة (keyset) + تفاصيل مهمة + قائمة الموظفين القابلين للإسناد.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { customers, suppliers, taskEvents, tasks, users } from "../../../drizzle/schema";
 import { paginateKeyset } from "../../lib/paginateKeyset";
@@ -218,12 +219,35 @@ export async function getTask(ctx: TaskListCtx, taskId: number) {
       .where(eq(tasks.id, taskId))
       .limit(1)
   )[0];
-  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "المهمة غير موجودة" });
+  if (!row) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المهمة غير موجودة",
+        why: `لم يتم العثور على مهمة برقم ${taskId}`,
+        doThis: "تأكد من رقم المهمة أو أعد تحميل القائمة",
+      }),
+    });
+  }
   if (ctx.scopedBranchId != null && Number(row.branchId) !== ctx.scopedBranchId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "المهمة لا تخصّ فرعك" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "المهمة لا تخصّ فرعك",
+        why: `المهمة مسندة للفرع ${row.branchId} وحسابك معزول للفرع ${ctx.scopedBranchId}`,
+        doThis: "راجع مسؤول الفرع أو بدّل نطاق الفرع إذا كنت مخولاً",
+      }),
+    });
   }
   if (ctx.scopedOwnerId != null && !isTaskVisibleToOwnerScope(row, ctx.scopedOwnerId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة لا تخصّك" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "هذه المهمة لا تخصّك",
+        why: "المهمة ليست مسندة إليك وليست من إنشائك",
+        doThis: "اختر مهمة مسندة إليك أو اسحب مهمة جديدة من الطابور الوارد",
+      }),
+    });
   }
 
   const events = await db

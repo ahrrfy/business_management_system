@@ -382,7 +382,12 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
   });
 
   const canSave =
-    !!employeeId && !!amount && D(amount || 0).gt(0) && !overApproval && !grantM.isPending;
+    !!employeeId &&
+    !!selected?.branchId &&
+    !!amount &&
+    D(amount || 0).gt(0) &&
+    !overApproval &&
+    !grantM.isPending;
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -402,6 +407,11 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
             {!!employeeId && balQ.data && D(balQ.data.balance).gt(0) && (
               <p className="text-xs text-money-negative mt-1">
                 عليه سلف نشطة متبقّيها {iqd(balQ.data.balance)} د.ع ({balQ.data.activeCount} سلفة) — الخصم بالأقدم أولاً.
+              </p>
+            )}
+            {!!employeeId && selected && !selected.branchId && (
+              <p className="text-xs text-money-negative mt-1" role="alert">
+                الموظف غير مسند إلى فرع — يلزم إسناد الموظف إلى فرع من شاشة الموظفين قبل صرف السلفة.
               </p>
             )}
           </div>
@@ -439,10 +449,13 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button
             onClick={() => {
-              if (!selected) return;
+              if (!selected || !selected.branchId) {
+                notify.err("الموظف غير مسند إلى فرع — يلزم إسناد الموظف إلى فرع أولاً.");
+                return;
+              }
               grantM.mutate({
                 employeeId: Number(selected.id),
-                branchId: Number(selected.branchId ?? 1),
+                branchId: Number(selected.branchId),
                 amount: D(amount).toFixed(2),
                 monthlyDeduction: monthly.trim() ? D(monthly).toFixed(2) : null,
                 note: note.trim() || null,

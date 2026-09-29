@@ -20,24 +20,44 @@ const BASELINE_PATH = path.join(__dirname, "orphan-endpoints-baseline.json");
 const STOREFRONT_CONSUMERS_PATH = path.join(REPO, "docs", "storefront", "mobile-trpc-consumers.json");
 const SUPERAPP_CONSUMERS_PATH = path.join(REPO, "docs", "superapp", "mobile-trpc-consumers.json");
 
-// (١) خريطة مفتاح appRouter → ملف الراوتر، من server/routers.ts.
+// (١) خريطة مفتاح appRouter → ملف الراوتر واسم المتغيّر، من server/routers.ts.
 const routersSrc = readFileSync(path.join(REPO, "server", "routers.ts"), "utf8");
 const varToFile = {}; // RouterVar -> basename
-for (const m of routersSrc.matchAll(/import\s*\{\s*(\w+Router)\s*\}\s*from\s*"\.\/routers\/([\w]+)"/g)) {
-  varToFile[m[1]] = m[2];
+for (const m of routersSrc.matchAll(/import\s*\{([^}]+)\}\s*from\s*"\.\/routers\/([\w]+)"/g)) {
+  for (const part of m[1].split(",")) {
+    const name = part.trim();
+    if (name.endsWith("Router")) varToFile[name] = m[2];
+  }
 }
 const keyToFile = {}; // appRouter key -> router file basename
+const keyToVar = {};  // appRouter key -> exported router variable name
 const appBody = routersSrc.slice(routersSrc.indexOf("appRouter = router({"));
 for (const m of appBody.matchAll(/^\s{2}(\w+):\s*(\w+Router)\s*,/gm)) {
   const file = varToFile[m[2]];
-  if (file) keyToFile[m[1]] = file;
+  if (file) {
+    keyToFile[m[1]] = file;
+    keyToVar[m[1]] = m[2];
+  }
 }
 
-// (٢) استخراج أسماء إجراءات كل ملف راوتر (heuristic: مفاتيح المستوى الأعلى داخل router({...})).
-function extractProcedures(file) {
+// (٢) استخراج أسماء إجراءات كل راوتر بدقة، مع عزل المتغيّر إن حوى الملفّ أكثر من راوتر.
+function extractProcedures(file, varName) {
   const p = path.join(REPO, "server", "routers", file + ".ts");
   if (!existsSync(p)) return [];
   const src = readFileSync(p, "utf8");
+
+  // إن حوى الملفّ راوترات متعدّدة (مثل voucherRouter.ts: voucherRouter + voucherCategoryRouter):
+  if (varName && src.includes(`export const ${varName}`)) {
+    const startIdx = src.indexOf(`export const ${varName}`);
+    const nextExport = src.indexOf("export const ", startIdx + 15);
+    const routerSlice = nextExport !== -1 ? src.slice(startIdx, nextExport) : src.slice(startIdx);
+    const procs = new Set();
+    for (const m of routerSlice.matchAll(/^\s{2,4}(\w+):\s*(?:[\w.]*[Pp]rocedure\b|router\(|t\.procedure\b)/gm)) {
+      procs.add(m[1]);
+    }
+    return [...procs];
+  }
+
   const procs = new Set();
   // اسمٌ: <بانٍ>Procedure  |  اسمٌ: router(  |  اسمٌ: publicProcedure/protectedProcedure
   for (const m of src.matchAll(/^\s{2,4}(\w+):\s*(?:[\w.]*[Pp]rocedure\b|router\(|t\.procedure\b)/gm)) {
@@ -46,12 +66,23 @@ function extractProcedures(file) {
   return [...procs];
 }
 
-// (٣) استدعاءات الواجهة عبر client/src — نجمع **كل مقاطع** سلاسل trpc./utils. (يعالج الراوترات
-// المتداخلة: trpc.commissions.runs.approve ⇒ المقطع «approve» يُعدّ مستهلَكاً). ميلٌ متعمَّد نحو
-// «مستهلَك» (أقلّ إيجابيات كاذبة): إجراءٌ يُعدّ حيّاً إن ظهر اسمه الورقيّ كأيّ مقطعٍ في سلسلة trpc.
-const usedSegments = new Set();
+// (٣) استدعاءات الواجهة عبر client/src وAndroid/Expo:
+// نربط كل استدعاء بمفتاح الراوتر المعنيّ (routerKey) لمنع الإعفاء العام عبر التطابق العرضيّ
+// لأسماء الإجراءات الشائعة (list, get, create, update, delete).
+const usedByRouter = new Map();
+
 function addUsedProcedure(procedure) {
-  for (const seg of procedure.split(".")) usedSegments.add(seg);
+  const parts = procedure.split(".");
+  if (parts.length < 2) return;
+  const routerKey = parts[0];
+  if (!usedByRouter.has(routerKey)) {
+    usedByRouter.set(routerKey, new Set());
+  }
+  const routerSet = usedByRouter.get(routerKey);
+  // إضافة المقاطع المتبقية تحت نطاق هذا الراوتر حصراً (يعالج أيضاً الراوترات المتداخلة مثل commissions.runs.approve)
+  for (let i = 1; i < parts.length; i++) {
+    routerSet.add(parts[i]);
+  }
 }
 
 function walkClient(dir) {
@@ -114,11 +145,12 @@ for (const consumersPath of [STOREFRONT_CONSUMERS_PATH, SUPERAPP_CONSUMERS_PATH]
   }
 }
 
-// (٤) احسب اليتامى: إجراء خادميّ اسمه الورقيّ لا يظهر في أيّ سلسلة trpc واجهية.
+// (٤) احسب اليتامى: إجراء خادميّ لا يظهر استدعاؤه تحت نطاق راوتره في أي واجهة أو عميل جوال.
 const orphans = [];
 for (const [key, file] of Object.entries(keyToFile)) {
-  for (const proc of extractProcedures(file)) {
-    if (!usedSegments.has(proc)) orphans.push(`${key}.${proc}`);
+  const routerSet = usedByRouter.get(key) || new Set();
+  for (const proc of extractProcedures(file, keyToVar[key])) {
+    if (!routerSet.has(proc)) orphans.push(`${key}.${proc}`);
   }
 }
 orphans.sort();

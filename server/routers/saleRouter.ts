@@ -50,7 +50,7 @@ import { randomUUID } from "node:crypto";
 import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesCorrectionProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope,
 } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
-import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/schemas";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { withTx } from "../services/tx";
 import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternalPaymentAttempt, type PosExternalPaymentMethod,
@@ -555,8 +555,8 @@ export const saleRouter = router({
         // المصدر سلطة خادمية؛ يبقى POS في عقد العميل للتوافق فقط، ولا تُقبل قنوات داخلية هنا.
         sourceType: z.literal("POS").default("POS"),
         lines: z.array(lineSchema).min(1),
-        invoiceDiscount: z.string().optional(),
-        taxRatePercent: z.string().optional(),
+        invoiceDiscount: nonNegMoneyString.optional(),
+        taxRatePercent: percentString.optional(),
         // أجرة التوصيل: إيرادُ شحنٍ بلا تكلفةٍ ولا مخزون، يدخل إجمالي الفاتورة ويُعكَس كاملاً عند
         // الإرجاع الكامل (`returnService`). كان المحرّك يدعمه (`createSale`) بينما الراوتر لا يقبله،
         // فبقيت خانة الشحن مخفيّةً في شاشة الفاتورة المتقدّمة. «توصيل مجاني» = صفر (أو تركُه فارغاً).
@@ -917,7 +917,7 @@ export const saleRouter = router({
         deliveryFee: nonNegMoneyString.nullish(),
         deliveryFree: z.boolean().optional(),
         deliveryWaivedAmount: nonNegMoneyString.nullish(),
-        taxRatePercent: z.string().nullish(),
+        taxRatePercent: percentString.nullish(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").nullish(),
         notes: z.string().max(5000).nullish(),
         // اقتراح قبض فرقٍ عند الاعتماد؛ لا درج ولا إثبات مزوّد يُنشأ في مرحلة الطلب.

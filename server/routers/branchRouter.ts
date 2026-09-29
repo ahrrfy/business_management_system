@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createBranch, listActiveBranches, listBranchesAdmin, setBranchActive, updateBranch } from "../services/branchService";
 import { logAudit } from "../services/auditService";
 import { adminProcedure, protectedProcedure, router } from "../trpc";
+import { resolveActorBranchId } from "../lib/branchAuthority";
 
 const BRANCH_TYPES = ["MAIN", "SALES"] as const;
 
@@ -20,10 +21,12 @@ export const branchRouter = router({
         type: z.enum(BRANCH_TYPES),
         address: z.string().max(1000).nullish(),
         phone: z.string().max(20).nullish(),
+        branchId: z.number().int().positive().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createBranch(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const branchId = resolveActorBranchId(ctx, input.branchId);
+      const res = await createBranch(input, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, { action: "branch.create", entityType: "branch", entityId: res.id, newValue: { name: res.name, code: res.code } });
       return res;
     }),
@@ -37,18 +40,21 @@ export const branchRouter = router({
         type: z.enum(BRANCH_TYPES).optional(),
         address: z.string().max(1000).nullish(),
         phone: z.string().max(20).nullish(),
+        branchId: z.number().int().positive().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await updateBranch(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const branchId = resolveActorBranchId(ctx, input.branchId ?? input.id);
+      const res = await updateBranch(input, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, { action: "branch.update", entityType: "branch", entityId: input.id, newValue: input });
       return res;
     }),
 
   setActive: adminProcedure
-    .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
+    .input(z.object({ id: z.number().int().positive(), isActive: z.boolean(), branchId: z.number().int().positive().optional() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await setBranchActive(input.id, input.isActive, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const branchId = resolveActorBranchId(ctx, input.branchId ?? input.id);
+      const res = await setBranchActive(input.id, input.isActive, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, { action: input.isActive ? "branch.activate" : "branch.deactivate", entityType: "branch", entityId: input.id });
       return res;
     }),

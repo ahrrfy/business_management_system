@@ -102,12 +102,20 @@ async function claimTaskInTx(tx: Tx, taskId: number, actor: TaskActor): Promise<
   if (task.taskStatus !== "NEW")
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "لا يمكن سحب المهمة إلا وهي جديدة",
+      message: appErrorMessage({
+        what: "لا يمكن سحب المهمة إلا وهي جديدة",
+        why: `حالة المهمة الحالية (${task.taskStatus}) وليست جديدة (NEW)`,
+        doThis: "سحب المهمة متاح فقط للمهام الجديدة غير المسندة",
+      }),
     });
   if (task.assignedTo != null && Number(task.assignedTo) !== actor.userId)
     throw new TRPCError({
       code: "CONFLICT",
-      message: "المهمة مُسنَدة بالفعل لموظف آخر",
+      message: appErrorMessage({
+        what: "المهمة مُسنَدة بالفعل لموظف آخر",
+        why: `المهمة مسندة إلى موظف آخر (${task.assignedTo})`,
+        doThis: "اختر مهمة غير مسندة أو اطلب من الإدارة إعادة إسنادها",
+      }),
     });
 
   const patch: Record<string, unknown> = {
@@ -284,7 +292,11 @@ export async function assignTask(
     if (!(OPEN_STATUSES as readonly string[]).includes(task.taskStatus))
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن إعادة إسناد مهمة مغلقة (محلولة أو ملغاة)",
+        message: appErrorMessage({
+          what: "لا يمكن إعادة إسناد المهمة",
+          why: `المهمة في حالة مغلقة (${task.taskStatus})`,
+          doThis: "إعادة الإسناد متاحة للمهام المفتوحة فقط",
+        }),
       });
     if (assignedTo != null) {
       const u = (
@@ -303,7 +315,11 @@ export async function assignTask(
       if (!u || !u.isActive)
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "الموظف غير موجود أو معطّل",
+          message: appErrorMessage({
+            what: "الموظف غير موجود أو معطّل",
+            why: "المعرف الممرر لموظف غير نشط أو غير مسجل",
+            doThis: "اختر موظفاً نشطاً لإسناد المهمة إليه",
+          }),
         });
       // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن وحدهما عابرا الفروع؛ مدير الفرع مقيَّدٌ بفرعه.
       // المُسنَد إليه صفٌّ خام غير مُطبَّع ⇒ نستشير isOwner صراحةً عبر canCrossBranches (P2 مراجعة Codex).
@@ -314,7 +330,11 @@ export async function assignTask(
       if (!elevatedAssignee && Number(u.branchId) !== Number(task.branchId)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يمكن إسناد المهمة إلى موظف من فرع آخر",
+          message: appErrorMessage({
+            what: "لا يمكن إسناد المهمة إلى موظف من فرع آخر",
+            why: `الموظف ينتمي للفرع ${u.branchId} بينما المهمة في الفرع ${task.branchId}`,
+            doThis: "اختر موظفاً من نفس الفرع أو موظفاً إدارياً عاماً",
+          }),
         });
       }
     }
@@ -356,7 +376,11 @@ export async function setWaiting(
     if (task.taskStatus !== "NEW" && task.taskStatus !== "IN_PROGRESS")
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن الانتقال لحالة الانتظار من هذه الحالة",
+        message: appErrorMessage({
+          what: "لا يمكن الانتقال لحالة الانتظار من هذه الحالة",
+          why: `حالة المهمة الحالية (${task.taskStatus}) لا تسمح بوضعها في الانتظار`,
+          doThis: "يمكن تعيين الانتظار للمهام الجديدة أو قيد التنفيذ فقط",
+        }),
       });
     await tx
       .update(tasks)
@@ -394,7 +418,11 @@ export async function resumeTask(taskId: number, actor: TaskActor) {
     if (task.taskStatus !== "WAITING_CUSTOMER")
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "المهمة ليست في حالة انتظار العميل",
+        message: appErrorMessage({
+          what: "المهمة ليست في حالة انتظار العميل",
+          why: `حالة المهمة الحالية هي (${task.taskStatus})`,
+          doThis: "استئناف المهمة متاح فقط للمهام المنتظرة لرد العميل",
+        }),
       });
 
     const waitingSince = toDateOrNull(task.waitingSince);
@@ -446,12 +474,20 @@ async function resolveTaskInTx(
   )
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "لا يمكن حلّ مهمة ليست قيد التنفيذ أو الانتظار",
+      message: appErrorMessage({
+        what: "لا يمكن حلّ المهمة",
+        why: `حالة المهمة الحالية (${task.taskStatus}) وليست قيد التنفيذ أو الانتظار`,
+        doThis: "ابدأ تنفيذ المهمة أولاً قبل محاولة تعليمها كمحلولة",
+      }),
     });
   if (task.taskKind === "SUPPORT" && !resolutionNote?.trim())
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "ملاحظة الحلّ إلزامية لمهام الدعم (SUPPORT)",
+      message: appErrorMessage({
+        what: "ملاحظة الحلّ إلزامية لمهام الدعم (SUPPORT)",
+        why: "مهام الدعم الفني تتطلب توثيق إجراءات الحل للمتابعة",
+        doThis: "أدخل شرحاً واضحاً في حقل ملاحظة الحل لإتمام الإغلاق",
+      }),
     });
 
   const patch: Record<string, unknown> = {
@@ -644,14 +680,22 @@ export async function reopenTask(
     if (task.taskStatus !== "RESOLVED")
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن إعادة فتح إلا مهمة محلولة",
+        message: appErrorMessage({
+          what: "لا يمكن إعادة فتح إلا مهمة محلولة",
+          why: `حالة المهمة الحالية (${task.taskStatus}) وليست محلولة (RESOLVED)`,
+          doThis: "إعادة الفتح متاحة فقط للمهام المحسومة سابقاً",
+        }),
       });
     const resolvedAt = toDateOrNull(task.resolvedAt);
     const sevenDaysMs = 7 * 24 * 3600_000;
     if (!resolvedAt || Date.now() - resolvedAt.getTime() > sevenDaysMs) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن إعادة فتح مهمة مضى على حلّها أكثر من ٧ أيام",
+        message: appErrorMessage({
+          what: "تجاوزت مهلة إعادة فتح المهمة",
+          why: "مضى على حلّ المهمة أكثر من ٧ أيام",
+          doThis: "أنشئ مهمة جديدة بدلاً من إعادة فتح هذه المهمة القديمة",
+        }),
       });
     }
     await tx
@@ -695,7 +739,11 @@ export async function cancelTask(
     if (!note?.trim())
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "سبب الإلغاء مطلوب",
+        message: appErrorMessage({
+          what: "سبب الإلغاء مطلوب",
+          why: "تم إرسال حقل سبب الإلغاء فارغاً",
+          doThis: "أدخل سبباً واضحاً لإلغاء المهمة للمساءلة والتدقيق",
+        }),
       });
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
@@ -703,7 +751,11 @@ export async function cancelTask(
     if (!(OPEN_STATUSES as readonly string[]).includes(task.taskStatus))
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن إلغاء مهمة بهذه الحالة",
+        message: appErrorMessage({
+          what: "لا يمكن إلغاء مهمة بهذه الحالة",
+          why: `المهمة بحالة (${task.taskStatus}) ولا يمكن إلغاؤها`,
+          doThis: "الإلغاء متاح للمهام المفتوحة فقط",
+        }),
       });
     await tx
       .update(tasks)
@@ -742,7 +794,11 @@ export async function addComment(
     if (!note?.trim())
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "نصّ التعليق مطلوب",
+        message: appErrorMessage({
+          what: "نصّ التعليق مطلوب",
+          why: "تم إرسال حقل التعليق فارغاً",
+          doThis: "أدخل نص التعليق لإضافته للمهمة",
+        }),
       });
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);

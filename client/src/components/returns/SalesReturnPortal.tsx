@@ -657,21 +657,15 @@ export function SalesReturnPortal({
           phone: salesCustomerPhone.trim() || undefined,
         },
         disposition: salesDisposition,
-        items: salesCart.map((i) => {
-          const factor = Math.max(1, Number(i.conversionFactor) || 1);
-          const baseQty = Math.round(i.quantity * factor);
-          const totalLineAmount = Number(i.unitPrice) * i.quantity;
-          const baseUnitPrice = (totalLineAmount / baseQty).toFixed(2);
-          return {
-            variantId: i.variantId,
-            productUnitId: i.productUnitId,
-            invoiceItemId: i.invoiceItemId,
-            productName: i.productName,
-            barcode: i.barcode,
-            quantity: baseQty,
-            unitPrice: baseUnitPrice,
-          };
-        }),
+        items: salesCart.map((i) => ({
+          variantId: i.variantId,
+          productUnitId: i.productUnitId,
+          invoiceItemId: i.invoiceItemId,
+          productName: i.productName,
+          barcode: i.barcode,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+        })),
         settlement: {
           method: salesRefundMethod,
           totalAmount: String(salesTotal),

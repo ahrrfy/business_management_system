@@ -1,6 +1,7 @@
 // نظام المهام الموحّد — راوتر tRPC (S2). نمط workOrderRouter.ts: قراءة/كتابة تنفيذية/كتابة مديرية،
 // كل الكتابات مُدقَّقة عبر logAudit.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { serviceTypes } from "../../drizzle/schema";
@@ -100,7 +101,14 @@ export const tasksRouter = router({
       // لا يُنشئ مهمّة خارج فرعه المُسنَد (كان `|| manager` يُعفيه).
       const elevated = ctx.user.role === "admin";
       if (!elevated && Number(ctx.user.branchId) !== input.branchId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إنشاء مهمة لفرع آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا تستطيع إنشاء مهمة لفرع آخر",
+            why: `حسابك مسند إلى الفرع ${ctx.user.branchId} والمهمة مطلوبة للفرع ${input.branchId}`,
+            doThis: "أنشئ المهمة ضمن فرعك المسند أو اطلب من الإدارة إنشاءها",
+          }),
+        });
       }
       const res = await createTask(input, { userId: ctx.user.id, branchId: input.branchId, role: ctx.user.role, name: ctx.user.name });
       await logAudit(ctx, {

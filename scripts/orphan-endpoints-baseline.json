@@ -1,6 +1,31 @@
 {
   "generatedNote": "يتامى قائمون مسموحون مؤقّتاً (تدقيق ١٧/٧) — قلّصها بحذف الميت أو وصله بواجهة. لا تُوسِّعها.",
   "orphans": [
-    "storefront.customerBenefitsPrivate"
+    "catalog.productImages",
+    "exchange.get",
+    "nativePush.status",
+    "offline.catalogSnapshot",
+    "offline.customersSnapshot",
+    "offline.replayPrintSale",
+    "offline.replayReception",
+    "offline.replayReturn",
+    "offline.replaySale",
+    "offline.stockSnapshot",
+    "offline.versions",
+    "periodLock.exportCertificate",
+    "productStudio.saveDraft",
+    "production.preview",
+    "purchaseIntegrity.get",
+    "purchaseReturns.create",
+    "purchases.controlRequest",
+    "purchases.pay",
+    "purchases.requestControl",
+    "returns.rejectRequest",
+    "storefront.customerBenefitsPrivate",
+    "supplierInvoiceApproval.get",
+    "users.changePassword",
+    "vouchers.thresholds",
+    "workOrderDesignApproval.request",
+    "workOrders.create"
   ]
 }

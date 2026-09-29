@@ -1,5 +1,6 @@
 // إنشاء مهمة (NEW) — تذكرة موحّدة لأي طلب خدمة/دعم/استفسار بغضّ النظر عن قناة الورود.
 import { hasModuleAccess } from "@shared/permissions";
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { serviceTypes, taskEvents, tasks, users } from "../../../drizzle/schema";
@@ -48,7 +49,16 @@ export type CreateTaskActor = { userId: number | null; branchId: number; role?: 
  */
 export async function createTask(input: CreateTaskInput, actor: CreateTaskActor, tx?: Tx) {
   const run = async (t: Tx) => {
-    if (!input.title?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان المهمة مطلوب" });
+    if (!input.title?.trim()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "عنوان المهمة مطلوب",
+          why: "تم إرسال حقل العنوان فارغاً",
+          doThis: "أدخل عنواناً واضحاً للمهمة للمتابعة",
+        }),
+      });
+    }
 
     if (input.assignedTo != null) {
       const assignee = (await t
@@ -57,13 +67,27 @@ export async function createTask(input: CreateTaskInput, actor: CreateTaskActor,
         .where(eq(users.id, input.assignedTo))
         .limit(1))[0];
       if (!assignee || !assignee.isActive) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "الموظف غير موجود أو معطّل",
+            why: "المعرف الممرر غير مسجل أو حسابه متوقف",
+            doThis: "اختر موظفاً نشطاً لإسناد المهمة إليه",
+          }),
+        });
       }
       // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن وحدهما عابرا الفروع؛ مدير الفرع مقيَّدٌ بفرعه.
       // المُسنَد إليه صفٌّ خام غير مُطبَّع ⇒ نستشير isOwner صراحةً عبر canCrossBranches (P2 مراجعة Codex).
       const elevatedAssignee = canCrossBranches({ role: assignee.role, isOwner: assignee.isOwner });
       if (!elevatedAssignee && Number(assignee.branchId) !== input.branchId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد المهمة إلى موظف من فرع آخر" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لا يمكن إسناد المهمة إلى موظف من فرع آخر",
+            why: `الموظف ينتمي للفرع ${assignee.branchId} بينما المهمة في الفرع ${input.branchId}`,
+            doThis: "اختر موظفاً من نفس الفرع أو موظفاً إدارياً عاماً",
+          }),
+        });
       }
       // ش٢ (١٩/٨): الفحص كان **الفرعَ والتفعيل فقط** — فتُسنَد المهمّة لمن لا تفتح له شاشة
       // `/tasks` أصلاً، فتقف الخامة على شخصٍ لا يرى ما يُنتظر منه. وأثرُه يتضاعف مع المهمّة
@@ -71,7 +95,11 @@ export async function createTask(input: CreateTaskInput, actor: CreateTaskActor,
       if (!hasModuleAccess(assignee.role, (assignee.permissionsOverride as never) ?? null, "tasks", "FULL")) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يمكن إسناد المهمة إلى موظف لا يملك صلاحية المهام — اختر موظفاً آخر أو امنحه الصلاحية",
+          message: appErrorMessage({
+            what: "لا يمكن إسناد المهمة إلى موظف لا يملك صلاحية المهام",
+            why: "الموظف المختار لا يملك صلاحية الوصول الكاملة لوحدة المهام",
+            doThis: "اختر موظفاً آخر أو امنحه الصلاحية من شاشة إدارة المستخدمين",
+          }),
         });
       }
     }

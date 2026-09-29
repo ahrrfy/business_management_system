@@ -1,5 +1,6 @@
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
+import { logAuditTx } from "../auditService";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -2123,12 +2124,60 @@ export async function approveVoucherTx(
     // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
     // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
     if (r.invoiceId != null) {
-      await allocateVoucherToInvoiceTx(tx, {
+      const allocation = await allocateVoucherToInvoiceTx(tx, {
         invoiceId: Number(r.invoiceId),
         amount,
         direction,
         paymentMethod,
+        voucherBranchId: Number(r.branchId),
+        gracefulSettledInvoice: true,
       });
+
+      if (!allocation.allocated) {
+        // EDGE-FIN-01: الفاتورة سُدّدت مسبقاً أو أُلغيت أو لا يمكن استيعاب مبلغ السند عليها بالكامل.
+        // منعاً لتعليق السند في DEADLOCK دائم، يتم فك ربط الفاتورة من السند وقيد المبلغ
+        // بالكامل على رصيد حساب العميل مع توثيق ذلك في الملاحظات الداخلية وسجل التدقيق.
+        const unallocatedNote =
+          allocation.unallocatedReason === "ALREADY_SETTLED"
+            ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} مسددة مسبقاً بالكامل — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
+            : allocation.unallocatedReason === "DEAD_INVOICE"
+              ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} ملغاة أو مرتجعة أو مستبدلة — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
+              : allocation.unallocatedReason === "EXCEEDS_REMAINING"
+                ? `[تنبيه اعتماد: مبلغ السند يتجاوز المتبقي على الفاتورة #${r.invoiceId} — فُكّ ربط السند بها وقُيّد المبلغ بالكامل على رصيد العميل]`
+                : `[تنبيه اعتماد: تعذر تخصيص الفاتورة #${r.invoiceId} (${allocation.unallocatedReason}) — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`;
+
+        const updatedInternalNote = r.internalNote
+          ? `${r.internalNote}\n${unallocatedNote}`
+          : unallocatedNote;
+
+        await tx
+          .update(receipts)
+          .set({
+            invoiceId: null,
+            internalNote: updatedInternalNote,
+          })
+          .where(eq(receipts.id, receiptId));
+
+        await logAuditTx(
+          tx,
+          {
+            userId: actor.userId,
+            branchId,
+          },
+          {
+            action: "voucher.unlink_invoice_on_approval",
+            entityType: "receipt",
+            entityId: receiptId,
+            branchId,
+            oldValue: { invoiceId: Number(r.invoiceId) },
+            newValue: {
+              invoiceId: null,
+              unallocatedReason: allocation.unallocatedReason,
+              amount: toDbMoney(amount),
+            },
+          },
+        );
+      }
     }
     await adjustCustomerBalance(
       tx,

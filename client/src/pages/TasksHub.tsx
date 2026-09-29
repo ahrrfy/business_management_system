@@ -123,7 +123,7 @@ function BoardCard({ task, onClick }: { task: TaskRow; onClick: () => void }) {
     nextAction: task.taskStatus === "WAITING_CUSTOMER" ? "نحتاج ردّكم للمتابعة وإكمال الطلب." : null,
   });
   return (
-    <div className="rounded-lg border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors">
+    <Card className="p-3 hover:border-primary/50 hover:shadow-sm transition-colors">
       <button type="button" onClick={onClick} className="w-full space-y-2 text-right">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-mono text-muted-foreground truncate" dir="ltr">{task.taskNumber}</span>
@@ -153,7 +153,7 @@ function BoardCard({ task, onClick }: { task: TaskRow; onClick: () => void }) {
           />
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
