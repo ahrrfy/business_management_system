@@ -1,5 +1,26 @@
-import { loadGuestTrackingOrders, rememberGuestTrackingOrder } from '@/lib/storefrontGuestTracking';
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    storefront: {
+      catalog: { useInfiniteQuery: () => ({}) },
+      product: { useQuery: () => ({}) },
+      labelSummary: { useQuery: () => ({}) },
+      related: { useQuery: () => ({}) },
+      cartRecommendations: { useQuery: () => ({}) },
+      quoteOrder: { useQuery: () => ({}) },
+      categories: { useQuery: () => ({}) },
+      offers: { useQuery: () => ({}) },
+      banners: { useQuery: () => ({}) },
+      settings: { useQuery: () => ({}) },
+      trackRecommendationClick: { useMutation: () => ({}) },
+      createCartShare: { useMutation: () => ({}) },
+      trackOrderByToken: { useMutation: () => ({}) },
+    },
+  },
+}));
+
+import { loadGuestTrackingOrders, rememberGuestTrackingOrder } from '@/lib/storefrontGuestTracking';
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
@@ -469,6 +490,63 @@ describe("getStorefrontSearchSuggestions", () => {
     // undefined brand يجب ألّا يرمي؛ يُعامَل كأنّه سلسلة فارغة
     expect(() => getStorefrontSearchSuggestions(items as never, "قلم")).not.toThrow();
     expect(getStorefrontSearchSuggestions(items as never, "قلم")).toHaveLength(1);
+  });
+
+  it("matches multiple tokens across the product name in any order (R1)", () => {
+    const items = [
+      p(1, "كتاب احياء اول متوسط متميزين"),
+      p(2, "كتاب كيمياء اول متوسط متميزين"),
+      p(3, "دفتر احياء مدرسي"),
+    ];
+
+    expect(getStorefrontSearchSuggestions(items, "احياء متميزين").map((it) => it.productId)).toEqual([1]);
+    expect(getStorefrontSearchSuggestions(items, "متميزين احياء").map((it) => it.productId)).toEqual([1]);
+    expect(getStorefrontSearchSuggestions(items, "متميزين اول").map((it) => it.productId)).toEqual([1, 2]);
+  });
+
+  it("normalizes Eastern Arabic and Western digits symmetrically (R1)", () => {
+    const items = [
+      p(1, "دفتر 100 ورقة"),
+      p(2, "دفتر ٢٠٠ ورقة"),
+    ];
+
+    // بحث بأرقام مشرقية يطابق منتجاً بأرقام غربية
+    expect(getStorefrontSearchSuggestions(items, "دفتر ١٠٠").map((it) => it.productId)).toEqual([1]);
+    // بحث بأرقام غربية يطابق منتجاً بأرقام مشرقية
+    expect(getStorefrontSearchSuggestions(items, "دفتر 200").map((it) => it.productId)).toEqual([2]);
+    // بحث بالرقم وحده
+    expect(getStorefrontSearchSuggestions(items, "100").map((it) => it.productId)).toEqual([1]);
+    expect(getStorefrontSearchSuggestions(items, "٢٠٠").map((it) => it.productId)).toEqual([2]);
+  });
+
+  it("normalizes alif maqsura (ى) and yaa (ي) in suggestions (R1)", () => {
+    const items = [
+      p(1, "مستشفى الأمل"),
+      p(2, "مكتبة الشرق"),
+    ];
+
+    expect(getStorefrontSearchSuggestions(items, "مستشفي").map((it) => it.productId)).toEqual([1]);
+  });
+
+  it("ranks exact matches higher than prefix/infix matches (R3)", () => {
+    const items = [
+      p(1, "دفتر سلك 100 ورقة"),
+      p(2, "دفتر"),
+      p(3, "قلم جاف مع دفتر"),
+    ];
+
+    const result = getStorefrontSearchSuggestions(items, "دفتر").map((it) => it.productId);
+    expect(result).toEqual([2, 1, 3]);
+  });
+
+  it("prioritizes in-stock products over out-of-stock products (R3)", () => {
+    const items = [
+      { productId: 1, productName: "دفتر كشكول فاخر", inStock: false },
+      { productId: 2, productName: "دفتر كشكول عادي", inStock: true },
+    ];
+
+    const result = getStorefrontSearchSuggestions(items, "دفتر كشكول").map((it) => it.productId);
+    expect(result).toEqual([2, 1]);
   });
 });
 

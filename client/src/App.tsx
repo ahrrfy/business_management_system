@@ -404,6 +404,7 @@ export default function App() {
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       {/* بوابة التحقق الرقمي من أصالة المستندات والفواتير عبر QR المشفر — عامة بلا دخول */}
+      <Route path="/verify/:id" component={VerifyDocument} />
       <Route path="/verify" component={VerifyDocument} />
       <Route path="/platform-admin" component={PlatformAdmin} />
       <Route path="/"><RootRoute /></Route>

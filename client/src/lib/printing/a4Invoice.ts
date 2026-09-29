@@ -1,8 +1,8 @@
-// فاتورة A4 رسمية (للحكومة/الشركات) — تُطبع عبر المتصفّح (تشكيل عربي مثالي + «حفظ كـPDF»).
-// نُفضّلها على @react-pdf/renderer لأنّ الأخير لا يصل/يشكّل الحروف العربية صحيحاً.
 import { CAIRO_FONT } from "./brand";
 import { fmtQty } from "@shared/quantityFormat";
 import { fmtDate } from "../date";
+import { qrCodeSvgSync } from "./qr";
+import { resolveQrUrl } from "./render";
 
 export type A4InvoiceItem = {
   productName: string;
@@ -21,6 +21,8 @@ export type A4Invoice = {
   total: string | number;
   paidAmount?: string | number | null;
   items: A4InvoiceItem[];
+  qrUrl?: string | null;
+  qrPayload?: string | null;
 };
 
 const SHOP = "الرؤية العربية للتجارة العامة — المكتبة العربية للطباعة والقرطاسية";
@@ -31,6 +33,14 @@ const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&
 function buildHtml(inv: A4Invoice): string {
   const remaining = Number(inv.total ?? 0) - Number(inv.paidAmount ?? 0);
   const date = fmtDate(inv.invoiceDate ?? new Date());
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const verificationUrl = inv.qrUrl?.trim()
+    || (inv.qrPayload?.trim()
+      ? resolveQrUrl(inv.qrPayload.trim())
+      : (origin ? `${origin}/verify?ref=${encodeURIComponent(inv.invoiceNumber)}` : `/verify?ref=${encodeURIComponent(inv.invoiceNumber)}`));
+  const qrSvg = qrCodeSvgSync(verificationUrl, { size: 72, margin: 1 });
+
   const rows = inv.items
     .map(
       (it, i) => `<tr>
@@ -71,9 +81,12 @@ ${CAIRO_FONT}
 </style></head><body>
   <div class="head">
     <div class="shop">${SHOP}</div>
-    <div style="text-align:left">
-      <div class="title">فاتورة</div>
-      <div class="meta">رقم: <b>${esc(inv.invoiceNumber)}</b><br>التاريخ: ${esc(date)}</div>
+    <div style="display:flex;align-items:center;gap:12px">
+      ${qrSvg ? `<div class="qr" style="width:72px;height:72px">${qrSvg}</div>` : ""}
+      <div style="text-align:left">
+        <div class="title">فاتورة</div>
+        <div class="meta">رقم: <b>${esc(inv.invoiceNumber)}</b><br>التاريخ: ${esc(date)}</div>
+      </div>
     </div>
   </div>
   <div class="cust">العميل: <b>${esc(inv.customerName ?? "عميل نقدي")}</b></div>

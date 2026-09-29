@@ -8,7 +8,7 @@
  * نظام عرض تجاري مستقل للمتجر: تنقل واضح، اكتشاف بالفئات، عروض مختارة، كتالوج قابل للتصفية، وسلة ودفع عند الاستلام.
  * الأولوية للوضوح والمقارنة وسرعة الوصول إلى قرار الشراء، مع الحفاظ على منطق البيانات الحقيقي في النظام.
  */
-import React, { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
@@ -34,6 +34,7 @@ import {
   TrendingUp,
   Phone,
   Plus,
+  RotateCcw,
   Search,
   Share2,
   ShieldCheck,
@@ -62,7 +63,7 @@ type TrackData = NonNullable<RouterOutputs["storefront"]["trackOrderByToken"]>;
 import { fmtInt, formatQuantity } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
-import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
+import { normalizeArabicSearch, getStorefrontSearchSuggestions } from "@shared/storefrontSearchNormalize";
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 import { BannerCarousel } from "@/components/store/BannerCarousel";
@@ -879,32 +880,160 @@ function CategoryChipStrip({
   selectedId: number | null;
   onPick: (id: number | null) => void;
 }) {
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
-  const move = (direction: -1 | 1) => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    scroller.scrollBy({ left: direction * Math.max(220, Math.floor(scroller.clientWidth * 0.65)), behavior: "smooth" });
-  };
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const set0Ref = useRef<HTMLDivElement | null>(null);
+  const set1Ref = useRef<HTMLDivElement | null>(null);
+  const offsetRef = useRef(0);
+  const targetNudgeRef = useRef(0);
+  const isHoveredRef = useRef(false);
+  const isFocusedRef = useRef(false);
+  const isDraggingRef = useRef(false);
+  const isPausedTemporarilyRef = useRef(false);
+  const pauseTimerRef = useRef<number | null>(null);
+  const dragStartRef = useRef({ x: 0, startOffset: 0, moved: false });
+
+  const allChips = useMemo(
+    () => [{ id: null, name: "كل الأقسام" }, ...cats.map((c) => ({ id: c.id, name: c.name }))],
+    [cats],
+  );
+
+  const repeatCount = useMemo(() => {
+    if (allChips.length === 0) return 1;
+    if (allChips.length < 6) return 5;
+    if (allChips.length < 12) return 4;
+    return 3;
+  }, [allChips.length]);
+
+  const pauseAutoSlideTemporarily = useCallback((ms = 1800) => {
+    isPausedTemporarilyRef.current = true;
+    if (pauseTimerRef.current != null) {
+      window.clearTimeout(pauseTimerRef.current);
+    }
+    pauseTimerRef.current = window.setTimeout(() => {
+      isPausedTemporarilyRef.current = false;
+      pauseTimerRef.current = null;
+    }, ms);
+  }, []);
+
+  const move = useCallback(
+    (direction: -1 | 1) => {
+      targetNudgeRef.current += direction * 240;
+      pauseAutoSlideTemporarily(2000);
+    },
+    [pauseAutoSlideTemporarily],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (mediaQuery.matches) return;
+
+    let animId: number;
+    let lastTime = performance.now();
+
+    const tick = (now: number) => {
+      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+
+      let unitWidth = 0;
+      if (set0Ref.current && set1Ref.current) {
+        unitWidth = Math.abs(set1Ref.current.offsetLeft - set0Ref.current.offsetLeft);
+      } else if (set0Ref.current) {
+        unitWidth = set0Ref.current.offsetWidth + 8;
+      }
+
+      if (unitWidth > 0 && trackRef.current) {
+        if (!isDraggingRef.current) {
+          if (Math.abs(targetNudgeRef.current) > 0.5) {
+            const step = targetNudgeRef.current * Math.min(1, 12 * dt);
+            offsetRef.current += step;
+            targetNudgeRef.current -= step;
+          } else {
+            targetNudgeRef.current = 0;
+            const isPaused = isHoveredRef.current || isFocusedRef.current || isPausedTemporarilyRef.current;
+            if (!isPaused) {
+              offsetRef.current += 38 * dt;
+            }
+          }
+
+          if (offsetRef.current >= unitWidth) {
+            offsetRef.current -= unitWidth;
+          } else if (offsetRef.current < 0) {
+            offsetRef.current += unitWidth;
+          }
+
+          trackRef.current.style.transform = `translate3d(${offsetRef.current}px, 0, 0)`;
+        }
+      }
+
+      animId = requestAnimationFrame(tick);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        isPausedTemporarilyRef.current = true;
+      } else {
+        lastTime = performance.now();
+        isPausedTemporarilyRef.current = false;
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    animId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(animId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (pauseTimerRef.current != null) {
+        window.clearTimeout(pauseTimerRef.current);
+      }
+    };
+  }, []);
+
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button")) return;
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
-    scroller.setPointerCapture(event.pointerId);
+    if (event.button !== 0) return;
+    dragStartRef.current = {
+      x: event.clientX,
+      startOffset: offsetRef.current,
+      moved: false,
+    };
+    isDraggingRef.current = true;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   };
+
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const scroller = scrollerRef.current;
-    if (!scroller || !dragRef.current.active) return;
-    const delta = event.clientX - dragRef.current.startX;
-    if (Math.abs(delta) > 6) dragRef.current.moved = true;
-    scroller.scrollLeft = dragRef.current.startScroll - delta;
+    if (!isDraggingRef.current || !trackRef.current) return;
+    const deltaX = event.clientX - dragStartRef.current.x;
+    if (Math.abs(deltaX) > 5) {
+      dragStartRef.current.moved = true;
+    }
+    let newOffset = dragStartRef.current.startOffset + deltaX;
+
+    let unitWidth = 0;
+    if (set0Ref.current && set1Ref.current) {
+      unitWidth = Math.abs(set1Ref.current.offsetLeft - set0Ref.current.offsetLeft);
+    } else if (set0Ref.current) {
+      unitWidth = set0Ref.current.offsetWidth + 8;
+    }
+
+    if (unitWidth > 0) {
+      newOffset = ((newOffset % unitWidth) + unitWidth) % unitWidth;
+    }
+    offsetRef.current = newOffset;
+    trackRef.current.style.transform = `translate3d(${offsetRef.current}px, 0, 0)`;
   };
+
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    const scroller = scrollerRef.current;
-    dragRef.current.active = false;
-    if (scroller?.hasPointerCapture(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
-    window.setTimeout(() => { dragRef.current.moved = false; }, 0);
+    if (!isDraggingRef.current) return;
+    isDraggingRef.current = false;
+    try {
+      if ((event.currentTarget as HTMLElement).hasPointerCapture(event.pointerId)) {
+        (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // Ignore
+    }
+    pauseAutoSlideTemporarily(1500);
+    window.setTimeout(() => { dragStartRef.current.moved = false; }, 60);
   };
 
   return (
@@ -917,43 +1046,61 @@ function CategoryChipStrip({
       >
         <ArrowRight aria-hidden className="size-3.5 rotate-180" />
       </button>
+
       <div
-        ref={scrollerRef}
         dir="rtl"
-        className="flex min-w-0 flex-1 cursor-grab touch-pan-x scroll-smooth gap-2 overflow-x-auto py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
+        className="relative flex min-w-0 flex-1 cursor-grab touch-pan-x overflow-hidden py-2.5 active:cursor-grabbing select-none [mask-image:linear-gradient(to_right,transparent,black_28px,black_calc(100%-28px),transparent)]"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
-        aria-label="أقسام المنتجات — اسحب لاكتشاف المزيد"
+        onMouseEnter={() => { isHoveredRef.current = true; }}
+        onMouseLeave={() => { if (!isDraggingRef.current) isHoveredRef.current = false; }}
+        onFocusCapture={() => { isFocusedRef.current = true; }}
+        onBlurCapture={() => { isFocusedRef.current = false; }}
+        aria-label="أقسام المنتجات — حركة سلايد مستمرة"
       >
-        <button
-          type="button"
-          onClick={() => onPick(null)}
-          className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 ${
-            selectedId == null
-              ? "border-[#183D36] bg-[#183D36] text-white shadow-xs dark:border-white dark:bg-white dark:text-slate-900"
-              : "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
-          }`}
+        <div
+          ref={trackRef}
+          className="flex shrink-0 items-center gap-2 will-change-transform"
+          style={{ transform: "translate3d(0, 0, 0)" }}
         >
-          كل الأقسام
-        </button>
-        {cats.map((c) => (
-          <button
-            type="button"
-            key={c.id}
-            onClick={() => onPick(c.id)}
-            className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 ${
-              selectedId === c.id
-                ? "border-[#0E806A] bg-[#0E806A] text-white shadow-xs"
-                : "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
-            }`}
-          >
-            {c.name}
-          </button>
-        ))}
+          {Array.from({ length: repeatCount }).map((_, setIndex) => (
+            <div
+              key={setIndex}
+              ref={setIndex === 0 ? set0Ref : setIndex === 1 ? set1Ref : undefined}
+              className="flex shrink-0 items-center gap-2"
+              aria-hidden={setIndex > 0 ? "true" : undefined}
+            >
+              {allChips.map((chip) => {
+                const isSelected = chip.id == null ? selectedId == null : selectedId === chip.id;
+                const activeClass = chip.id == null
+                  ? "border-[#183D36] bg-[#183D36] text-white shadow-xs dark:border-white dark:bg-white dark:text-slate-900"
+                  : "border-[#0E806A] bg-[#0E806A] text-white shadow-xs";
+                const inactiveClass = "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300";
+
+                return (
+                  <button
+                    type="button"
+                    key={`${setIndex}-${chip.id ?? "all"}`}
+                    tabIndex={setIndex > 0 ? -1 : 0}
+                    onClick={() => {
+                      if (dragStartRef.current.moved) return;
+                      onPick(chip.id);
+                    }}
+                    className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-colors duration-200 hover:-translate-y-0.5 active:scale-95 ${
+                      isSelected ? activeClass : inactiveClass
+                    }`}
+                  >
+                    {chip.name}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
       </div>
+
       <button
         type="button"
         onClick={() => move(-1)}
@@ -1210,16 +1357,9 @@ function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
   }
 }
 
-// اقتراحات البحث: مُصفَّرة من `filteredItems` (لا `items`) — لتحترم الفلاتر النشطة (قائمة أعجبتني،
-// الماركة، السعر، التوفّر). كان الاقتراح من `items` يعرض منتجاً يختفي فور اختياره لأنّ
-// فلترَ العميل يرفضه (Codex P2 على #761). العتبة حرفان ≥ لضبط الضوضاء.
-export function getStorefrontSearchSuggestions<T extends { productName: string; brand?: string | null }>(products: T[], rawSearch: string): T[] {
-  const term = normalizeStorefrontArabic(rawSearch.trim());
-  if (term.length < 2) return [];
-  return products
-    .filter((product) => normalizeStorefrontArabic(`${product.productName} ${product.brand ?? ""}`).includes(term))
-    .slice(0, 6);
-}
+// اقتراحات البحث موحدة مع الخادم عبر `@shared/storefrontSearchNormalize`:
+// تطابق متعدد الكلمات (Tokens) بأي ترتيب مع تطبيع الأرقام والحروف والبحث الجزئي وترتيب الملاءمة.
+export { getStorefrontSearchSuggestions };
 
 function hasStorefrontAnalyticsConsent(): boolean {
   try {
@@ -1254,6 +1394,7 @@ function StorefrontContent() {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
   const [brand, setBrand] = useState("");
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
+  const [catalogSeed, setCatalogSeed] = useState(() => Math.random().toString(36).slice(2, 10));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
   const [heartPulseTarget, setHeartPulseTarget] = useState<string | null>(null);
@@ -1412,6 +1553,7 @@ function StorefrontContent() {
     search: search || undefined,
     limit: 48,
     availability,
+    seed: sort === "RECOMMENDED" && !search ? catalogSeed : undefined,
   } as const;
   const catalogQ = trpc.storefront.catalog.useInfiniteQuery(
     catalogInput,
@@ -2500,20 +2642,33 @@ function StorefrontContent() {
               )}
             </div>
             <div className="flex items-center justify-between gap-3">
-              <label className="relative shrink-0">
-                <span className="sr-only">ترتيب النتائج</span>
-                <select
-                  value={sort}
-                  onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }}
-                  className="appearance-none rounded-xl border border-slate-200 bg-white py-2 pr-3 pl-8 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-600 focus:ring-1 focus:ring-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                >
-                  <option value="RECOMMENDED">الترتيب المقترح</option>
-                  <option value="BEST_SELLERS">الأكثر مبيعاً</option>
-                  <option value="PRICE_ASC">السعر: الأقل أولاً</option>
-                  <option value="PRICE_DESC">السعر: الأعلى أولاً</option>
-                </select>
-                <ChevronDown aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
-              </label>
+              <div className="flex items-center gap-1.5">
+                <label className="relative shrink-0">
+                  <span className="sr-only">ترتيب النتائج</span>
+                  <select
+                    value={sort}
+                    onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }}
+                    className="appearance-none rounded-xl border border-slate-200 bg-white py-2 pr-3 pl-8 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-600 focus:ring-1 focus:ring-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    <option value="RECOMMENDED">الترتيب المقترح</option>
+                    <option value="BEST_SELLERS">الأكثر مبيعاً</option>
+                    <option value="PRICE_ASC">السعر: الأقل أولاً</option>
+                    <option value="PRICE_DESC">السعر: الأعلى أولاً</option>
+                  </select>
+                  <ChevronDown aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                </label>
+                {sort === "RECOMMENDED" && !search && (
+                  <button
+                    type="button"
+                    onClick={() => setCatalogSeed(Math.random().toString(36).slice(2, 10))}
+                    title="تجديد الترتيب المقترح واكتشاف منتجات أخرى"
+                    aria-label="تجديد الترتيب المقترح واكتشاف منتجات أخرى"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-xs transition hover:border-[#1e4a63] hover:text-[#1e4a63] active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-blue-400 dark:hover:text-blue-400"
+                  >
+                    <RotateCcw aria-hidden className="size-3.5" />
+                  </button>
+                )}
+              </div>
               {(hasRefinements || categoryId != null || search) && (
                 <button type="button" onClick={clearCatalogFilters} className="text-xs font-black text-orange-600 hover:underline dark:text-orange-400">مسح الفلاتر</button>
               )}

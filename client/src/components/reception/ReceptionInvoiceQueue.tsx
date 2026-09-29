@@ -206,6 +206,7 @@ export function ReceptionInvoiceQueue({
         taxRate: Number(d.taxRatePercent ?? 0),
         total: d.total,
         paidAmount: d.paidAmount,
+        qrPayload: d.qrPayload ?? null,
         items: d.items.map((it, i) => ({
           productName: it.productName ?? "",
           unitName: it.unitName,

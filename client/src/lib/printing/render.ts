@@ -41,10 +41,13 @@ export function resolveQrUrl(payload: string): string {
   if (!payload) return "";
   if (payload.startsWith("http://") || payload.startsWith("https://")) return payload;
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  if (payload.startsWith("/")) {
+    return origin ? `${origin}${payload}` : payload;
+  }
   if (origin) {
     return `${origin}/verify?payload=${encodeURIComponent(payload)}`;
   }
-  return payload;
+  return `/verify?payload=${encodeURIComponent(payload)}`;
 }
 
 export interface TextMeasureLike {

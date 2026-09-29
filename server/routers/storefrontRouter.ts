@@ -174,6 +174,8 @@ export const storefrontRouter = router({
         cursor: z.number().int().positive().nullish(),
         // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
         availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
+        // بذرة عشوائية لتنويع ظهور المنتجات عند كل دخول أو تحديث للصفحة
+        seed: z.string().max(64).nullish(),
       })
     )
     .query(({ input }) =>
@@ -184,6 +186,7 @@ export const storefrontRouter = router({
         limit: input.limit,
         cursor: input.cursor ?? null,
         availability: input.availability,
+        seed: input.seed,
       })
     ),
 

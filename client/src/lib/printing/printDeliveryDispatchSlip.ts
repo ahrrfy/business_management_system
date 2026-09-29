@@ -99,9 +99,10 @@ export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
     /* بلا باركود عند تعذر التوليد */
   }
 
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
   const qrPayload = d.consignmentNumber
     ? `https://alarabiya.online/track/${encodeURIComponent(d.consignmentNumber)}`
-    : `ORD:${d.orderNumber}`;
+    : (origin ? `${origin}/verify?ref=${encodeURIComponent(d.orderNumber)}` : `/verify?ref=${encodeURIComponent(d.orderNumber)}`);
   const qrSvg = qrCodeSvgSync(qrPayload, { size: 125, margin: 1 });
 
   const codNum = Number(d.codAmount || 0);

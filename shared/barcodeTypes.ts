@@ -17,7 +17,23 @@ export interface BarcodeSet {
 }
 
 /** أنواع المستندات المدعومة في النظام */
-export type DocType = "INV" | "WO" | "PO" | "QUO" | "CUST";
+export type DocType = "INV" | "WO" | "PO" | "QUO" | "CUST" | "ORD";
+
+/** القاموس المركزي للتسميات العربية لأنواع المستندات المرمزة */
+export const DOC_TYPE_AR: Record<DocType, string> = {
+  INV: "فاتورة مبيعات",
+  WO: "أمر شغل / طلب خدمة",
+  PO: "أمر شراء",
+  QUO: "عرض سعر",
+  CUST: "ملف عميل",
+  ORD: "طلب متجر إلكتروني",
+};
+
+export function docTypeLabel(type: string | null | undefined): string {
+  if (!type) return "مستند نظام";
+  return (DOC_TYPE_AR as Record<string, string>)[type] ?? type;
+}
+
 
 /**
  * نتيجة تحليل أي مدخل ماسح — discriminated union لتوجيه الإجراء.
@@ -63,6 +79,14 @@ export interface CustomerPayloadFields {
   name: string;
 }
 
+/** البيانات الدنيا لبناء payload طلب المتجر الإلكتروني */
+export interface OnlineOrderPayloadFields {
+  orderNumber: string;
+  orderDate?: string | Date;
+  total?: string;
+  branchId?: number;
+}
+
 /** استجابة إجراء verify على الخادم */
 export interface VerifyResult {
   valid: boolean;
@@ -71,4 +95,7 @@ export interface VerifyResult {
   date?: string;
   amount?: string;
   branchId?: number;
+  status?: string;
+  customerName?: string;
 }
+

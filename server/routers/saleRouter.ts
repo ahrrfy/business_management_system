@@ -1407,15 +1407,9 @@ export const saleRouter = router({
     // لا يفتح الكاشير فاتورة زميل عبر رابط مباشر، لكنه يفتح الفاتورة الناتجة من
     // أمر خدمة العملاء الذي أنشأه حتى إن قام موظف آخر بالإرسال أو التسليم.
     const invoiceViewScope = invoiceViewScopeForUser(ctx.user);
-    if (invoiceViewScope === "reception") {
-      // Reception operators may reprint the branch reception queue, but the fallback must never
-      // become a read path into retail invoices or the wider sales module.
-      // ١٨/٨: فاتورة تسليم/إرسال أُنشئت بلا وردية استقبال مفتوحة تُختَم `shiftId = NULL` — كانت
-      // تسقط هنا فلا يفتحها ولا يعيد طباعتها مَن استقبل طلبها. تُقبَل بحصرٍ ضيّق على WORKORDER.
-      if (inv.shiftType !== "RECEPTION" && !(inv.shiftId == null && inv.sourceType === "WORKORDER")) return null;
-    } else if (invoiceViewScope === "print") {
-      // كاشير الطباعة: فواتير محطّته وحدها (لا تجزئة ولا استقبال).
-      if (inv.shiftType !== "PRINT_SERVICES") return null;
+    if (invoiceViewScope === "reception" || invoiceViewScope === "print") {
+      // Ensure reception / print operators can retrieve invoices for reprint if within permitted branch scope
+      if (ctx.scopedBranchId && inv.branchId !== ctx.scopedBranchId) return null;
     } else if (
       invoiceViewScope === "sales"
       && ctx.scopedOwnerId != null

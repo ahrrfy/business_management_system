@@ -633,6 +633,7 @@ export default function InvoiceDetail() {
       taxRate: Number(data.taxRatePercent ?? 0),
       total: data.total,
       paidAmount: data.paidAmount,
+      qrPayload: data.qrPayload ?? null,
       items: data.items.map((it, i) => ({
         productName: it.productName ?? "",
         unitName: it.unitName,
