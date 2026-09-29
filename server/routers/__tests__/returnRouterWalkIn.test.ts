@@ -243,8 +243,8 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 
-  it("يرفض تنفيذ الكاشير المباشر لفاتورة أنشأها زميل بـ FORBIDDEN", async () => {
-    // كاشير بمعرّف 99 يحاول إرجاع فاتورة أنشأها المستخدم 1
+  it("يسمح بتنفيذ الكاشير المباشر لفاتورة أنشأها زميل في نفس الفرع", async () => {
+    // كاشير بمعرّف 99 في نفس الفرع 1 يحاول إرجاع فاتورة أنشأها المستخدم 1
     const coworkerCaller = returnRouter.createCaller({
       req: { headers: {} } as TrpcContext["req"],
       res: { cookie() {}, clearCookie() {} } as unknown as TrpcContext["res"],
@@ -254,12 +254,37 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
       } as TrpcContext["user"],
     });
 
+    const res = await coworkerCaller.create({
+      ...base,
+      refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
+      restock: true,
+      reason: "إرجاع فاتورة زميل في نفس الفرع",
+      directExecution: true,
+    });
+    expect(res).toMatchObject({ mode: "EXECUTED" });
+    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ invoiceId: 77, operatorReason: "إرجاع فاتورة زميل في نفس الفرع" }),
+      expect.objectContaining({ userId: 99, role: "cashier" }),
+    );
+  });
+
+  it("يرفض تنفيذ الكاشير المباشر لفاتورة فرع آخر بـ FORBIDDEN", async () => {
+    // كاشير في فرع 2 يحاول إرجاع فاتورة لفرع 1
+    const crossBranchCaller = returnRouter.createCaller({
+      req: { headers: {} } as TrpcContext["req"],
+      res: { cookie() {}, clearCookie() {} } as unknown as TrpcContext["res"],
+      user: {
+        id: 99, role: "cashier", branchId: 2, name: "كاشير فرع آخر",
+        email: "other@test.local", isActive: true, isOwner: false,
+      } as TrpcContext["user"],
+    });
+
     await expect(
-      coworkerCaller.create({
+      crossBranchCaller.create({
         ...base,
         refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
         restock: true,
-        reason: "محاولة إرجاع فاتورة زميل",
+        reason: "محاولة إرجاع فاتورة فرع آخر",
         directExecution: true,
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
