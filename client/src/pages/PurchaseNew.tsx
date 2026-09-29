@@ -136,7 +136,7 @@ export default function PurchaseNew() {
 
   /* ─── editor state (reducer) ───────────────────────────────────── */
   const [state, dispatch] = useReducer(invoiceReducer, undefined, () => ({
-    ...createInitialState(INVOICE_TYPE, me.data?.branchId ?? 1),
+    ...createInitialState(INVOICE_TYPE, me.data?.branchId ? Number(me.data.branchId) : 0),
   }));
 
   const requisitionHydratedRef = useRef(false);
@@ -224,12 +224,13 @@ export default function PurchaseNew() {
     requisitionUnitIds,
   ]);
 
+  const purchaseBranchId = state.branchId || me.data?.branchId;
   const purchasableCatalog = trpc.catalog.forPurchase.useQuery(
     {
-      branchId: Number(state.branchId || me.data?.branchId || 1),
+      branchId: purchaseBranchId as number,
       limit: 500,
     },
-    { enabled: prefillVariantIds.length > 0 },
+    { enabled: prefillVariantIds.length > 0 && Boolean(purchaseBranchId) },
   );
 
   const prefillHydratedRef = useRef(false);

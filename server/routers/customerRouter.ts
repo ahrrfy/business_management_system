@@ -21,6 +21,7 @@ import {
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
+import { resolveActorBranchId } from "../lib/branchAuthority";
 import { positiveMoneyString } from "../lib/schemas";
 import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, customersReceptionCreateProcedure, managerProcedure, router, userHasCrmWriteAccess } from "../trpc";
 import { getCustomerOperations } from "../services/customerOperationsService";
@@ -158,8 +159,10 @@ export const customerRouter = router({
       // "0" = نقديّ فقط (افتراض)، موجب = سقف يُفحَص، "" أو غير مُمرَّر = افتراض.
       // نمرّرها كنصّ لتمييز "" (غير مُقصود) عن "0" (مقصود).
       creditLimit: z.string().regex(/^(\d+(\.\d+)?)?$/).optional(),
+      branchId: z.number().int().positive().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
+      const branchId = resolveActorBranchId(ctx, input.branchId);
       const result = await resolveReceptionCustomerByPhone(
         {
           phone: input.phone,
@@ -169,7 +172,7 @@ export const customerRouter = router({
         },
         {
           userId: ctx.user.id,
-          branchId: ctx.user.branchId ?? 1,
+          branchId,
           role: ctx.user.role,
         },
       );
@@ -222,6 +225,7 @@ export const customerRouter = router({
         openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
         // dup-detect (٦/٧): مفتاح idempotency من النموذج (UUID لكل فتح) — إعادة الإرسال تعيد نفس العميل.
         clientRequestId: z.string().min(8).max(64).optional(),
+        branchId: z.number().int().positive().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -242,7 +246,8 @@ export const customerRouter = router({
         : hasCrmWrite
           ? { ...input, creditLimit: "0" }
           : { ...input, creditLimit: "0", openingBalance: undefined, openingBalanceDirection: undefined };
-      const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const branchId = resolveActorBranchId(ctx, input.branchId);
+      const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId });
       // إعادة تشغيل idempotent = لا كتابة جديدة ⇒ لا نكرّر سجلّ التدقيق.
       if (!r.idempotentReplay) {
         await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: hasCrmWrite && !!input.openingBalance } });

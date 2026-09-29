@@ -493,6 +493,8 @@ export async function createVoucherTx(
     systemRequest?: SystemPaymentRequest;
     /** يؤجل اعتماد المالك حتى تربط الوحدة الأم السند بمصدره داخل المعاملة نفسها. */
     deferOwnerAutoApproval?: boolean;
+    /** إذن تجاوز صريح للمقاصة بين الفروع عبر بروتوكول نظامي معتمد (VULN-FIN-02). */
+    allowInterBranchClearing?: boolean;
   },
 ): Promise<VoucherResult> {
   const normalizedReferenceNumber = input.referenceNumber?.trim() || null;
@@ -786,6 +788,21 @@ export async function createVoucherTx(
           message: "الفاتورة المرتبطة لا تخصّ هذا العميل",
         });
       }
+      // VULN-FIN-02: منع سداد فاتورة فرع آخر بسند قبض محلي
+      if (
+        Number(inv.branchId) !== Number(input.branchId) &&
+        options?.systemRequest?.kind !== "VOUCHER_CANCELLATION" &&
+        !options?.allowInterBranchClearing
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لا يمكن سداد فاتورة فرع آخر بسند قبض محلي",
+            why: `الفاتورة المرتبطة #${inv.id} تتبع الفرع (${inv.branchId}) بينما السند صادر من الفرع (${input.branchId})`,
+            doThis: "سدّد الفاتورة من فرعها الأصلي أو استخدم مقاصة تسوية بين الفروع المعتمدة",
+          }),
+        });
+      }
       // المُستبدَلة كانت تمرّ: `correct.ts` يتركها بـ`total` كاملاً و`returnedTotal` مُصفَّراً
       // ⇒ تجتاز فلتر «مستحقّة» وتُعرَض للمحاسب في مُنتقي الفواتير بمتبقٍّ = إجماليها، فيُربَط
       // بها قبضٌ بينما الالتزام الحقيقيّ على البديلة (مالٌ يُنسَب لمستندٍ عُكِس بالكامل).
@@ -799,6 +816,35 @@ export async function createVoucherTx(
           code: "BAD_REQUEST",
           message: "لا يمكن الربط بفاتورة ملغاة أو مرتجعة أو مستبدَلة بمصحّحة",
         });
+      }
+      // التحقق الاستباقي عند الإنشاء (حتى للسندات المعلقة): منع إنشاء سند مربوط بفاتورة مسددة بالكامل أو بمبلغ يتجاوز المتبقي
+      if (
+        input.voucherType === "RECEIPT" &&
+        options?.systemRequest?.kind !== "VOUCHER_CANCELLATION"
+      ) {
+        const net = money(inv.total).minus(money(inv.returnedTotal ?? "0"));
+        const paid = money(inv.paidAmount);
+        const remaining = net.minus(paid);
+        if (remaining.lte(0)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذر ربط السند بالفاتورة",
+              why: `الفاتورة المرتبطة #${inv.id} مسددة بالكامل بالفعل`,
+              doThis: "اترك الربط بالفاتورة فارغاً لقيد المبلغ على رصيد حساب العميل",
+            }),
+          });
+        }
+        if (money(input.amount).gt(remaining)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذر ربط السند بالفاتورة",
+              why: `مبلغ السند (${money(input.amount).toFixed(2)}) يتجاوز المتبقّي على الفاتورة (${remaining.toFixed(2)})`,
+              doThis: "اترك الربط بالفاتورة فارغاً لقيده على حساب العميل، أو قسّمه على فواتيره",
+            }),
+          });
+        }
       }
     }
   } else if (input.partyType === "SUPPLIER") {
@@ -1079,6 +1125,8 @@ export async function createVoucherTx(
         amount,
         direction,
         paymentMethod: input.paymentMethod,
+        voucherBranchId: input.branchId,
+        allowInterBranchClearing: options?.allowInterBranchClearing,
       });
     }
 
