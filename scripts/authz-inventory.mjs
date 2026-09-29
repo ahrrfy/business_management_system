@@ -248,6 +248,27 @@ const PROCEDURES = {
     roles: ["cashier", "manager"],
     branch: "required",
   },
+  returnsProcedure: {
+    authority: "module-gate",
+    module: "sales|workorders",
+    level: "FULL",
+    roles: ["cashier", "manager", "print_operator"],
+    branch: "required",
+  },
+  returnsCashierProcedure: {
+    authority: "module-gate",
+    module: "sales|workorders",
+    level: "FULL",
+    roles: ["cashier", "manager", "print_operator"],
+    branch: "required",
+  },
+  salesOrReceptionCashierProcedure: {
+    authority: "module-gate",
+    module: "sales|workorders",
+    level: "FULL",
+    roles: ["cashier", "manager", "print_operator"],
+    branch: "required",
+  },
   salesManagerProcedure: {
     authority: "module-gate",
     module: "sales",
