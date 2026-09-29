@@ -560,6 +560,48 @@ export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos"
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
 export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
+
+/**
+ * التحقق من صلاحية كاشير الاستقبال أو المبيعات لتنفيذ المرتجعات:
+ * تقبل كاشير المبيعات (sales: FULL) أو كاشير/مشغّل محطة الاستقبال (workorders: FULL).
+ */
+export function returnOperationsAllowed(user: {
+  role: string;
+  permissionsOverride?: unknown;
+}): boolean {
+  if (user.role === "admin") return true;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  const salesAllowed = moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]);
+  const receptionAllowed = moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+  return salesAllowed || receptionAllowed;
+}
+
+/**
+ * إجراء المرتجعات الموحّد (كاشير مبيعات أو مشغّل استقبال بفرع مُسنَد).
+ * يمنح الوصول لمسارات returns.getInvoice و returns.create لفواتير الفرع.
+ */
+export const returnsProcedure = auditedProcedure
+  .use(
+    t.middleware(async ({ ctx, next, path }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+      if (!returnOperationsAllowed(ctx.user)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر الوصول لعمليات المرتجعات",
+            why: "صلاحيات غير كافية لهذا الإجراء — يتطلب صلاحية كاشير المبيعات أو مشغّل الاستقبال",
+            doThis: "تأكد من تسجيل الدخول بحساب كاشير مبيعات أو استقبال أو راجع مدير الفرع",
+          }),
+        });
+      }
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }),
+  )
+  .use(requireOwnBranch);
+
+export const returnsCashierProcedure = returnsProcedure;
+export const salesOrReceptionCashierProcedure = returnsProcedure;
 /**
  * طلب تصحيح فاتورة من محرّر البيع: مبيعات FULL، أو محطة استقبال workorders:FULL، مع
  * products:READ لأن المحرّر الأصلي يحمّل وحدات الكتالوج وأسعاره لإعادة بناء السطور.

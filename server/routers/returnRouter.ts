@@ -65,6 +65,7 @@ import {
 } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
 import {
+  returnsProcedure,
   router,
   salesCashierProcedure,
   salesManagerProcedure,
@@ -116,22 +117,9 @@ const ymd = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
-/**
- * نطاق ملكية الكاشير (نظير `scopedOwnerId` في `branchScopedProcedure` و`sales.get`).
- * المدير والمسؤول والمالك = null (يرون ويعكسون كل فواتير الفرع).
- * الكاشير = معرفه الشخصي (لا يرى ولا يعكس إلا فواتيره وفواتير أوامر الشغل التي استقبلها).
- */
-function getScopedOwnerId(
-  user?: { id?: number | string; role?: string; isOwner?: boolean } | null,
-): number | null {
-  if (!user) return null;
-  if (canCrossBranches(user) || user.role === "manager") return null;
-  return Number(user.id);
-}
-
 // المرتجعات تعكس مخزوناً ونقداً ⇒ كاشير بوردية مفتوحة أو مدير فأعلى.
 export const returnRouter = router({
-  create: salesCashierProcedure
+  create: returnsProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -246,37 +234,23 @@ export const returnRouter = router({
         });
       }
 
-      // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يرجع فاتورة زميله في الفرع نفسه،
-      // لكنه يرجع فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
-      const scopedOwnerId = getScopedOwnerId(ctx.user);
-      if (
-        scopedOwnerId != null &&
-        Number(invRow.createdBy) !== scopedOwnerId &&
-        Number(invRow.workOrderCreatedBy) !== scopedOwnerId
-      ) {
+      /**
+       * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
+       *
+       * فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) لا من مسار المرتجع.
+       */
+      if (invRow.sourceType === "WORKORDER") {
         throw new TRPCError({
-          code: "FORBIDDEN",
+          code: "PRECONDITION_FAILED",
           message: appErrorMessage({
             what: "تعذّر تسجيل المرتجع",
-            why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
-            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+            why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+            doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
           }),
         });
       }
 
       if (shouldExecuteDirect) {
-        /**
-         * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
-         *
-         * فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) لا من مسار المرتجع.
-         */
-        if (invRow.sourceType === "WORKORDER") {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
-          });
-        }
         const executed =
           ctx.user.isOwner === true
             ? await returnSaleAsOwner(
@@ -769,7 +743,7 @@ export const returnRouter = router({
       return rows.map((r) => ({ id: Number(r.id), name: r.name }));
     }),
 
-  getInvoice: salesCashierProcedure
+  getInvoice: returnsProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -781,6 +755,7 @@ export const returnRouter = router({
             invoiceNumber: invoices.invoiceNumber,
             status: invoices.status,
             branchId: invoices.branchId,
+            sourceType: invoices.sourceType,
             /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
             createdBy: invoices.createdBy,
             workOrderCreatedBy: workOrders.createdBy,
@@ -817,20 +792,14 @@ export const returnRouter = router({
         });
       }
 
-      // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يقرأ تفاصيل فاتورة زميله في الفرع نفسه،
-      // لكنه يقرأ فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
-      const scopedOwnerId = getScopedOwnerId(ctx.user);
-      if (
-        scopedOwnerId != null &&
-        Number(inv.createdBy) !== scopedOwnerId &&
-        Number(inv.workOrderCreatedBy) !== scopedOwnerId
-      ) {
+      // عزل أوامر الشغل: فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع
+      if (inv.sourceType === "WORKORDER") {
         throw new TRPCError({
-          code: "FORBIDDEN",
+          code: "PRECONDITION_FAILED",
           message: appErrorMessage({
-            what: "تعذّر قراءة تفاصيل الفاتورة للمرتجع",
-            why: "لا يملك الكاشير صلاحية الوصول إلى فاتورة أنشأها موظف آخر",
-            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع إتمام المرتجع",
+            what: "تعذّر تحميل تفاصيل الفاتورة للمرتجع",
+            why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+            doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
           }),
         });
       }
