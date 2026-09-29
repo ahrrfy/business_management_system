@@ -20,6 +20,8 @@ import { getSalesRegister } from "../reportsSalesService";
 import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
 
+import { truncateTables } from "./__testUtils__";
+
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
 const TABLES = [
@@ -28,19 +30,13 @@ const TABLES = [
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
+  "salesControlRequests", "returnRequests",
 ];
 
 function db() {
   const d = getDb();
   if (!d) throw new Error("DATABASE_URL not set for tests");
   return d;
-}
-
-async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
 async function seedBase() {
@@ -86,7 +82,7 @@ async function stockQty() {
 }
 
 beforeEach(async () => {
-  await reset();
+  await truncateTables(TABLES);
   await seedBase();
 });
 
@@ -150,13 +146,31 @@ describe("returns.getInvoice — عزل الفرع (IDOR قراءة)", () => {
     expect(asOwnMgr?.id).toBe(invoiceId);
   });
 
-  it("عزل ملكية الكاشير: كاشير زميل في نفس الفرع ⇒ FORBIDDEN؛ كاشير منشئ الفاتورة ⇒ يقرأ", async () => {
+  it("نطاق كاشير الفرع: كاشير زميل في نفس الفرع ⇒ يقرأ؛ كاشير فرع آخر ⇒ FORBIDDEN", async () => {
     const { invoiceId } = await sellFive(); // فاتورة أنشأها المستخدم 1 في الفرع 1
-    // كاشير زميل (userId: 2 في الفرع 1)
-    await expect(caller("cashier", 1, 2).returns.getInvoice({ invoiceId })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    // كاشير صاحب الفاتورة (userId: 1 في الفرع 1)
+    // كاشير زميل في نفس الفرع (userId: 2 في الفرع 1) ⇒ يقرأ بنجاح
+    const asColleague = await caller("cashier", 1, 2).returns.getInvoice({ invoiceId });
+    expect(asColleague?.id).toBe(invoiceId);
+    // كاشير صاحب الفاتورة (userId: 1 في الفرع 1) ⇒ يقرأ بنجاح
     const asOwnCashier = await caller("cashier", 1, 1).returns.getInvoice({ invoiceId });
     expect(asOwnCashier?.id).toBe(invoiceId);
+    // كاشير من فرع آخر (userId: 2 في الفرع 2) ⇒ FORBIDDEN
+    await expect(caller("cashier", 2, 2).returns.getInvoice({ invoiceId })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("كاشير الاستقبال (workorders: FULL) في نفس الفرع يقرأ الفاتورة؛ فرع آخر ⇒ FORBIDDEN", async () => {
+    const { invoiceId } = await sellFive();
+    const asReception = await caller("print_operator", 1, 3).returns.getInvoice({ invoiceId });
+    expect(asReception?.id).toBe(invoiceId);
+    await expect(caller("print_operator", 2, 3).returns.getInvoice({ invoiceId })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("فاتورة أمر الشغل (WORKORDER) محجوبة عن getInvoice بـ PRECONDITION_FAILED", async () => {
+    const { invoiceId } = await sellFive();
+    await db().update(s.invoices).set({ sourceType: "WORKORDER" }).where(eq(s.invoices.id, invoiceId));
+    await expect(caller("cashier", 1, 1).returns.getInvoice({ invoiceId })).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
   });
 
   it("بكج قديم بوحدة اسمها قطعة يُعرض ويُرجع بوحدة بكج تشغيلية", async () => {
