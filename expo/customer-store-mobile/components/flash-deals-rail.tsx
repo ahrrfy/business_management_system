@@ -14,7 +14,6 @@ import {
 import { useCart } from "@/lib/cart-context";
 import {
   formatIqd,
-  formatLatinNumber,
   productDiscountPercent,
   storefrontDisplayPrice,
 } from "@/lib/storefront-api";

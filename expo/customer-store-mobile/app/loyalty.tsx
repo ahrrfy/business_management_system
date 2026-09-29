@@ -27,7 +27,6 @@ import {
   requestStorefrontFirstOrderCoupon,
   type StorefrontCustomerBenefits,
 } from "@/lib/storefront-api";
-import { storefrontDesign } from "@/lib/storefront-design";
 
 export type LoyaltyTier = "BRONZE" | "SILVER" | "GOLD" | "VIP";
 

@@ -17,15 +17,11 @@ import { ProductCard } from "@/components/product-card";
 import { ScreenContainer } from "@/components/screen-container";
 import { useCart } from "@/lib/cart-context";
 import {
-  formatIqd,
   formatLatinNumber,
   productDiscountPercent,
-  storefrontDisplayPrice,
   useStorefrontCatalog,
   useStorefrontMarketing,
 } from "@/lib/storefront-api";
-import { storefrontDesign } from "@/lib/storefront-design";
-import type { Product } from "@/shared/storefront";
 
 type DealFilter = "ALL" | "FLASH" | "UNDER_10K" | "DISCOUNTED";
 
@@ -34,7 +30,7 @@ export default function DealsScreen() {
   const columns = width >= 720 ? 2 : 1;
   const { itemCount } = useCart();
   const { offers } = useStorefrontMarketing(true);
-  const { products, loading, error, refresh } = useStorefrontCatalog(
+  const { products, loading, refresh } = useStorefrontCatalog(
     undefined,
     undefined,
     { limit: 32 },

@@ -11,7 +11,6 @@ import Svg, {
 } from "react-native-svg";
 
 import { formatLatinNumber } from "@/lib/storefront-api";
-import { storefrontDesign } from "@/lib/storefront-design";
 
 export type LoyaltyProgress = {
   currentPoints: number;

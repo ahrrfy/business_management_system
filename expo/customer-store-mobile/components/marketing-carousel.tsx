@@ -86,28 +86,6 @@ export const FALLBACK_BANNERS: Slide[] = [
   },
 ];
 
-function offerSlide(offer: StorefrontOffer, index: number): Slide {
-  const amount = Number(offer.discountAmount);
-  const percent = Number(offer.discountPercent);
-  const saving =
-    offer.type === "PERCENT" && percent > 0
-      ? `${percent}%`
-      : amount > 0
-        ? `${new Intl.NumberFormat("en-US").format(amount)} د.ع`
-        : "سعر خاص";
-
-  return {
-    id: `offer-${offer.id}`,
-    kicker: `عرض فعّال · ${saving}`,
-    title: offer.name,
-    subtitle: "يُطبّق وفق شروط العرض المعلنة عند إتمام السلة.",
-    cta: "استكشف المنتجات",
-    tone: (["evergreen", "citrus", "berry"] as SlideTone[])[index % 3],
-    source: null,
-    isFullBanner: false,
-  };
-}
-
 function decorativeIcon(tone: SlideTone) {
   return tone === "citrus"
     ? "auto-stories"

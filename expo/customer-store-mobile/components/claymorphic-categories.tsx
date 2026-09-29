@@ -204,10 +204,10 @@ function ClaymorphicCategoryItem({
 }
 
 type ClaymorphicCategoriesProps = {
-  categories: ReadonlyArray<
+  categories: readonly (
     | StorefrontCategory
     | { id: number | string; name: string; icon?: string; availableCount?: number }
-  >;
+  )[];
   selectedCategoryId?: string | null;
   onSelectCategory: (categoryId: string) => void;
   onViewAll?: () => void;
