@@ -10,7 +10,7 @@ import { getTodayNetSales } from "../services/reports/todaySales";
 import { resolveSuperAppAuthority } from "../services/superAppAuthority";
 
 export const executiveDestinationKeys = [
-  "INSIGHTS", "RECEIVABLES", "PRODUCTS", "SHIFTS", "WORK_ORDERS", "PURCHASING", "TASKS",
+  "INSIGHTS", "RECEIVABLES", "PRODUCTS", "SHIFTS", "WORK_ORDERS", "PURCHASING",
 ] as const;
 export type ExecutiveDestinationKey = (typeof executiveDestinationKeys)[number];
 
@@ -82,7 +82,6 @@ export function resolveExecutiveCapabilities(user: ExecutiveUser) {
     inventory: permissionReadable(permissions, "inventory") || permissionReadable(permissions, "products"),
     receivables: permissionReadable(permissions, "collections") || permissionReadable(permissions, "sales"),
     workOrders: permissionReadable(permissions, "workorders"),
-    tasks: permissionReadable(permissions, "tasks"),
     treasury: permissionReadable(permissions, "treasury"),
     purchasing: permissionReadable(permissions, "purchases") || permissionReadable(permissions, "suppliers"),
   };
@@ -103,8 +102,6 @@ export function selectPermittedExecutiveMetrics(
       arRemindersDue: receivables ? metrics.morningBrief.arRemindersDue : null,
       promisedToday: receivables ? metrics.morningBrief.promisedToday : null,
       overdueWorkOrders: capabilities.workOrders ? metrics.morningBrief.overdueWorkOrders : null,
-      myOpenTasks: capabilities.tasks ? metrics.morningBrief.myOpenTasks : null,
-      overdueTasks: capabilities.tasks ? metrics.morningBrief.overdueTasks : null,
     },
   };
 }
@@ -116,7 +113,6 @@ function actionPermitted(action: ExecutiveAction, capabilities: ExecutiveCapabil
     case "SHIFTS": return capabilities.treasury;
     case "WORK_ORDERS": return capabilities.workOrders;
     case "PURCHASING": return capabilities.purchasing;
-    case "TASKS": return capabilities.tasks;
     case "INSIGHTS": return capabilities.financial;
   }
 }

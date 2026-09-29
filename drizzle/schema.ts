@@ -3538,9 +3538,9 @@ export const voucherCategories = mysqlTable(
     postingRoleCheck: check(
       "chk_vchcat_posting_role",
       sql`${table.postingRole} IS NULL OR (
-        (${table.direction} = 'IN' AND ${table.postingRole} IN ('OTHER_REVENUE','CAPITAL','OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY'))
-        OR (${table.direction} = 'OUT' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','SALARIES','RENT','UTILITIES','OPERATING_EXPENSE','DELIVERY_EXPENSE','GIFTS_PROMO','LOSSES','OTHER_EXPENSE'))
-        OR (${table.direction} = 'BOTH' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY'))
+        (${table.direction} = 'IN' AND ${table.postingRole} IN ('OTHER_REVENUE','CAPITAL','OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','LOAN_RECEIVABLE','INVESTMENT_PAYABLE'))
+        OR (${table.direction} = 'OUT' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','SALARIES','RENT','UTILITIES','OPERATING_EXPENSE','DELIVERY_EXPENSE','GIFTS_PROMO','LOSSES','OTHER_EXPENSE','LOAN_RECEIVABLE','INVESTMENT_PAYABLE'))
+        OR (${table.direction} = 'BOTH' AND ${table.postingRole} IN ('OWNER_CURRENT','LOAN_PAYABLE','OTHER_LIABILITY','LOAN_RECEIVABLE','INVESTMENT_PAYABLE'))
       )`,
     ),
   }),
@@ -9554,6 +9554,8 @@ export const fixedAssets = mysqlTable(
       "vehicles",
       "printing",
       "devices",
+      "land",
+      "buildings",
     ]).notNull(),
     brand: varchar("brand", { length: 120 }),
     serial: varchar("serial", { length: 120 }),
@@ -9587,6 +9589,13 @@ export const fixedAssets = mysqlTable(
     /** FI-02: الإهلاك المتراكم المُرحَّل للدفتر — يَتتبّع computeDepreciation عبر الترحيل الشهري؛
      *  الميزانية تَقرأ NBV = purchaseValue − هذا العمود. */
     accumulatedDepreciation: decimal("accumulatedDepreciation", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    /** إهلاك سابق للنظام للأصول الافتتاحية (IAS 16) — يُثبت في القيد الافتتاحي ويبقى ثابتاً كمرجع تاريخي. */
+    openingDepreciation: decimal("openingDepreciation", {
       precision: 15,
       scale: 2,
     })
@@ -11458,6 +11467,369 @@ export type EmployeeTermination = typeof employeeTerminations.$inferSelect;
 export type InsertEmployeeTermination =
   typeof employeeTerminations.$inferInsert;
 
+/* ============================ الموارد البشرية — المستندات/العقوبات/العقود/المكافآت/التنقلات/السلف/العهد ============================ */
+
+/** مستندات الموظف الرسمية (جوازات سفر، إقامات العمالة الأجنبية، إجازات العمل، الفحوصات الطبية، الهويات). */
+export const employeeDocuments = mysqlTable(
+  "employeeDocuments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    documentType: mysqlEnum("documentType", [
+      "PASSPORT",
+      "RESIDENCY_VISA",
+      "WORK_PERMIT",
+      "NATIONAL_ID",
+      "HEALTH_CERTIFICATE",
+      "EDUCATION_CERTIFICATE",
+      "CONTRACT_SCAN",
+      "OTHER",
+    ]).notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    documentNumber: varchar("documentNumber", { length: 100 }),
+    issueDate: date("issueDate", { mode: "string" }),
+    expiryDate: date("expiryDate", { mode: "string" }),
+    fileUrl: mediumtext("fileUrl"),
+    fileSize: int("fileSize"),
+    mimeType: varchar("mimeType", { length: 100 }),
+    notes: text("notes"),
+    status: mysqlEnum("status", [
+      "ACTIVE",
+      "EXPIRED",
+      "EXPIRING_SOON",
+    ])
+      .default("ACTIVE")
+      .notNull(),
+    alertDaysBefore: int("alertDaysBefore").default(30).notNull(),
+    createdById: int("createdById").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_doc_employee").on(t.employeeId),
+    typeIdx: index("idx_emp_doc_type").on(t.documentType),
+    expiryIdx: index("idx_emp_doc_expiry").on(t.expiryDate),
+    statusIdx: index("idx_emp_doc_status").on(t.status),
+  }),
+);
+export type EmployeeDocument = typeof employeeDocuments.$inferSelect;
+export type InsertEmployeeDocument = typeof employeeDocuments.$inferInsert;
+
+/** العقوبات والإنذارات الانضباطية والاستقطاعات بموجب قانون العمل العراقي رقم 37 لسنة 2015. */
+export const employeePenalties = mysqlTable(
+  "employeePenalties",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    penaltyType: mysqlEnum("penaltyType", [
+      "ATTENTION",
+      "WARNING",
+      "SALARY_DEDUCTION",
+      "SUSPENSION",
+      "DISMISSAL",
+    ]).notNull(),
+    decisionNumber: varchar("decisionNumber", { length: 100 }).notNull(),
+    decisionDate: date("decisionDate", { mode: "string" }).notNull(),
+    reason: text("reason").notNull(),
+    deductionDays: decimal("deductionDays", { precision: 5, scale: 2 })
+      .default("0")
+      .notNull(),
+    deductionAmount: decimal("deductionAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    payrollRunId: bigint("payrollRunId", { mode: "number" }).references(
+      () => payrollRuns.id,
+    ),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "APPROVED",
+      "APPLIED",
+      "CANCELLED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_penalty_employee").on(t.employeeId),
+    statusIdx: index("idx_emp_penalty_status").on(t.status),
+    payrollRunIdx: index("idx_emp_penalty_payroll_run").on(t.payrollRunId),
+  }),
+);
+export type EmployeePenalty = typeof employeePenalties.$inferSelect;
+export type InsertEmployeePenalty = typeof employeePenalties.$inferInsert;
+
+/** عقود العمل وفترة التجربة ومواعيد تجديد العقود. */
+export const employeeContracts = mysqlTable(
+  "employeeContracts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    contractType: mysqlEnum("contractType", [
+      "FIXED_TERM",
+      "INDEFINITE",
+      "PROBATION",
+      "SEASONAL",
+    ])
+      .default("FIXED_TERM")
+      .notNull(),
+    contractNumber: varchar("contractNumber", { length: 100 }),
+    startDate: date("startDate", { mode: "string" }).notNull(),
+    endDate: date("endDate", { mode: "string" }),
+    probationEndDate: date("probationEndDate", { mode: "string" }),
+    jobTitle: varchar("jobTitle", { length: 150 }),
+    basicSalary: decimal("basicSalary", { precision: 15, scale: 2 }),
+    allowances: decimal("allowances", { precision: 15, scale: 2 }).default("0"),
+    terms: text("terms"),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "ACTIVE",
+      "RENEWED",
+      "TERMINATED",
+      "EXPIRED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    fileUrl: mediumtext("fileUrl"),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_contract_employee").on(t.employeeId),
+    statusIdx: index("idx_emp_contract_status").on(t.status),
+    probationIdx: index("idx_emp_contract_probation").on(t.probationEndDate),
+    endIdx: index("idx_emp_contract_end").on(t.endDate),
+  }),
+);
+export type EmployeeContract = typeof employeeContracts.$inferSelect;
+export type InsertEmployeeContract = typeof employeeContracts.$inferInsert;
+
+/** المكافآت الفورية الاستثنائية المرتبطة بسندات صرف الخزينة المباشرة أو مسيّر الرواتب. */
+export const employeeSpotBonuses = mysqlTable(
+  "employeeSpotBonuses",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    reason: varchar("reason", { length: 255 }).notNull(),
+    decisionNumber: varchar("decisionNumber", { length: 100 }),
+    disbursementType: mysqlEnum("disbursementType", [
+      "CASH_TREASURY",
+      "PAYROLL_ADDITION",
+    ])
+      .default("CASH_TREASURY")
+      .notNull(),
+    voucherId: bigint("voucherId", { mode: "number" }),
+    payrollRunId: bigint("payrollRunId", { mode: "number" }).references(
+      () => payrollRuns.id,
+    ),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "APPROVED",
+      "PAID",
+      "CANCELLED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    paidAt: timestamp("paidAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_spot_bonus_employee").on(t.employeeId),
+    branchIdx: index("idx_spot_bonus_branch").on(t.branchId),
+    statusIdx: index("idx_spot_bonus_status").on(t.status),
+  }),
+);
+export type EmployeeSpotBonus = typeof employeeSpotBonuses.$inferSelect;
+export type InsertEmployeeSpotBonus = typeof employeeSpotBonuses.$inferInsert;
+
+/** سجل التنقلات الإدارية بين الفروع والأقسام مع حفظ التاريخ الوظيفي. */
+export const employeeTransfers = mysqlTable(
+  "employeeTransfers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    fromBranchId: bigint("fromBranchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    toBranchId: bigint("toBranchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    fromDepartment: varchar("fromDepartment", { length: 100 }),
+    toDepartment: varchar("toDepartment", { length: 100 }),
+    fromPosition: varchar("fromPosition", { length: 100 }),
+    toPosition: varchar("toPosition", { length: 100 }),
+    decisionNumber: varchar("decisionNumber", { length: 100 }).notNull(),
+    transferDate: date("transferDate", { mode: "string" }).notNull(),
+    effectiveDate: date("effectiveDate", { mode: "string" }).notNull(),
+    reason: varchar("reason", { length: 255 }),
+    notes: text("notes"),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "APPROVED",
+      "EFFECTIVE",
+      "CANCELLED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    approvedById: int("approvedById").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_transfer_employee").on(t.employeeId),
+    statusIdx: index("idx_emp_transfer_status").on(t.status),
+    effectiveDateIdx: index("idx_emp_transfer_effective").on(t.effectiveDate),
+  }),
+);
+export type EmployeeTransfer = typeof employeeTransfers.$inferSelect;
+export type InsertEmployeeTransfer = typeof employeeTransfers.$inferInsert;
+
+/** طلبات السلف والقروض الذاتية للموظفين مع التحقق من سقف الاستقطاع القانوني (المادة 51). */
+export const employeeLoanRequests = mysqlTable(
+  "employeeLoanRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    installmentsCount: int("installmentsCount").default(1).notNull(),
+    monthlyDeduction: decimal("monthlyDeduction", { precision: 15, scale: 2 })
+      .notNull(),
+    reason: varchar("reason", { length: 255 }),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "APPROVED",
+      "REJECTED",
+      "CANCELLED",
+      "DISBURSED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    advanceId: bigint("advanceId", { mode: "number" }).references(
+      () => employeeAdvances.id,
+    ),
+    rejectionReason: varchar("rejectionReason", { length: 255 }),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    reviewedById: int("reviewedById").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empStatusIdx: index("idx_emp_loan_req_employee_status").on(
+      t.employeeId,
+      t.status,
+    ),
+    branchIdx: index("idx_emp_loan_req_branch").on(t.branchId),
+  }),
+);
+export type EmployeeLoanRequest = typeof employeeLoanRequests.$inferSelect;
+export type InsertEmployeeLoanRequest = typeof employeeLoanRequests.$inferInsert;
+
+/** سجل العهد العينية والأدوات ومعدات العمل المسلمة للموظف وحوكمة إرجاعها قبل المخالصة. */
+export const employeeCustody = mysqlTable(
+  "employeeCustody",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" })
+      .notNull()
+      .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    itemType: mysqlEnum("itemType", [
+      "TOOL",
+      "DEVICE",
+      "VEHICLE",
+      "KEY",
+      "DOCUMENT",
+      "UNIFORM",
+      "OTHER",
+    ])
+      .default("TOOL")
+      .notNull(),
+    itemName: varchar("itemName", { length: 200 }).notNull(),
+    itemCode: varchar("itemCode", { length: 100 }),
+    serialNumber: varchar("serialNumber", { length: 100 }),
+    quantity: int("quantity").default(1).notNull(),
+    conditionAtHandover: varchar("conditionAtHandover", { length: 100 }),
+    handoverDate: date("handoverDate", { mode: "string" }).notNull(),
+    expectedReturnDate: date("expectedReturnDate", { mode: "string" }),
+    actualReturnDate: date("actualReturnDate", { mode: "string" }),
+    conditionAtReturn: varchar("conditionAtReturn", { length: 100 }),
+    returnNotes: text("returnNotes"),
+    status: mysqlEnum("status", [
+      "HELD",
+      "RETURNED",
+      "DAMAGED",
+      "LOST",
+    ])
+      .default("HELD")
+      .notNull(),
+    notes: text("notes"),
+    createdById: int("createdById")
+      .notNull()
+      .references(() => users.id),
+    receivedById: int("receivedById").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empIdx: index("idx_emp_custody_employee").on(t.employeeId),
+    branchIdx: index("idx_emp_custody_branch").on(t.branchId),
+    statusIdx: index("idx_emp_custody_status").on(t.status),
+  }),
+);
+export type EmployeeCustody = typeof employeeCustody.$inferSelect;
+export type InsertEmployeeCustody = typeof employeeCustody.$inferInsert;
+
 /* ============================================================
  * المرحلة ٦: إقفال مالي + موافقات ائتمان + رولوفر سنوي
  * ============================================================ */
@@ -11976,128 +12348,6 @@ export type InsertWaWebhookEvent = typeof waWebhookEvents.$inferInsert;
  * `waHubSettings` singleton (نَمَط openingModeSettings) لِإِعدادات مَركَز واتساب الأَعمال.
  */
 
-/** تَذكرة مُوَحَّدة: طَلب خِدمة/دَعم/اِستِفسار/مُتابَعة/داخِلية — بِغَضّ النَظر عَن قَناة الوُرود. */
-export const tasks = mysqlTable(
-  "tasks",
-  {
-    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    taskNumber: varchar("taskNumber", { length: 40 }).notNull(),
-    branchId: bigint("branchId", { mode: "number" })
-      .notNull()
-      .references(() => branches.id),
-    taskKind: mysqlEnum("taskKind", [
-      "SERVICE_REQUEST",
-      "SUPPORT",
-      "INQUIRY",
-      "FOLLOW_UP",
-      "INTERNAL",
-    ])
-      .default("INQUIRY")
-      .notNull(),
-    taskStatus: mysqlEnum("taskStatus", [
-      "NEW",
-      "IN_PROGRESS",
-      "WAITING_CUSTOMER",
-      "RESOLVED",
-      "CANCELLED",
-    ])
-      .default("NEW")
-      .notNull(),
-    priority: mysqlEnum("priority", ["LOW", "NORMAL", "HIGH", "URGENT"])
-      .default("NORMAL")
-      .notNull(),
-    title: varchar("title", { length: 200 }).notNull(),
-    description: text("description"),
-    customerId: bigint("customerId", { mode: "number" }).references(
-      () => customers.id,
-    ),
-    supplierId: bigint("supplierId", { mode: "number" }).references(
-      () => suppliers.id,
-    ),
-    conversationId: bigint("conversationId", { mode: "number" }).references(
-      () => conversations.id,
-    ),
-    linkedWorkOrderId: bigint("linkedWorkOrderId", {
-      mode: "number",
-    }).references(() => workOrders.id),
-    linkedInvoiceId: bigint("linkedInvoiceId", { mode: "number" }).references(
-      () => invoices.id,
-    ),
-    linkedQuotationId: bigint("linkedQuotationId", {
-      mode: "number",
-    }).references(() => quotations.id),
-    serviceTypeId: bigint("serviceTypeId", { mode: "number" }).references(
-      () => serviceTypes.id,
-    ),
-    // قَناة الاِستِلام (نَفس تِعداد convChannel) — null لِمَهمّة داخِلية بِلا قَناة خارِجية.
-    sourceChannel: mysqlEnum("sourceChannel", [
-      "WHATSAPP",
-      "INSTAGRAM",
-      "TIKTOK",
-      "STORE",
-      "PHONE",
-      "WALK_IN",
-      "OTHER",
-    ]),
-    assignedTo: int("assignedTo").references(() => users.id),
-    createdBy: int("createdBy").references(() => users.id),
-    dueAt: timestamp("dueAt"),
-    firstResponseAt: timestamp("firstResponseAt"),
-    resolvedAt: timestamp("resolvedAt"),
-    // مِرساة إِيقاف عَدّاد SLA أَثناء اِنتِظار العَميل + المُتَراكِم مِن فَترات اِنتِظار سابِقة (ms).
-    waitingSince: timestamp("waitingSince"),
-    waitingAccumMs: bigint("waitingAccumMs", { mode: "number" })
-      .default(0)
-      .notNull(),
-    csatScore: tinyint("csatScore"),
-    csatRequestedAt: timestamp("csatRequestedAt"),
-    reopenCount: int("reopenCount").default(0).notNull(),
-    resolutionNote: text("resolutionNote"),
-    createdAt: timestamp("createdAt").defaultNow().notNull(),
-    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  },
-  (t) => ({
-    numberUq: unique("uq_task_number").on(t.taskNumber),
-    branchStatusIdx: index("idx_task_branch_status").on(
-      t.branchId,
-      t.taskStatus,
-    ),
-    assigneeIdx: index("idx_task_assignee").on(t.assignedTo, t.taskStatus),
-    customerIdx: index("idx_task_customer").on(t.customerId),
-    convIdx: index("idx_task_conv").on(t.conversationId),
-  }),
-);
-export type Task = typeof tasks.$inferSelect;
-export type InsertTask = typeof tasks.$inferInsert;
-
-/** سِجلّ أَحداث المَهمّة — تَعليق/تَغيير حالة/إِسناد/رَبط/نِظام/CSAT. تَسلسُليّ بِلا حَذف أَو status. */
-export const taskEvents = mysqlTable(
-  "taskEvents",
-  {
-    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    taskId: bigint("taskId", { mode: "number" })
-      .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
-    eventType: mysqlEnum("eventType", [
-      "COMMENT",
-      "STATUS",
-      "ASSIGN",
-      "LINK",
-      "SYSTEM",
-      "CSAT",
-    ]).notNull(),
-    fromStatus: varchar("fromStatus", { length: 20 }),
-    toStatus: varchar("toStatus", { length: 20 }),
-    note: text("note"),
-    userId: int("userId").references(() => users.id),
-    createdAt: timestamp("createdAt").defaultNow().notNull(),
-  },
-  (t) => ({
-    taskIdx: index("idx_task_events_task").on(t.taskId, t.createdAt),
-  }),
-);
-export type TaskEvent = typeof taskEvents.$inferSelect;
-export type InsertTaskEvent = typeof taskEvents.$inferInsert;
 
 /** نَوع خِدمة مَرجِعي — تَصنيف + أَولوية اِفتِراضية + SLA بِالساعات (null = بِلا SLA مَضبوط). */
 export const serviceTypes = mysqlTable(
@@ -13111,7 +13361,6 @@ export const workOrderDesignApprovals = mysqlTable(
     workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id),
     branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
     revisionId: bigint("revisionId", { mode: "number" }).notNull(),
-    taskId: bigint("taskId", { mode: "number" }).references(() => tasks.id),
     status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "SUPERSEDED"]).default("PENDING").notNull(),
     requestedBy: int("requestedBy").notNull().references(() => users.id),
     requestNote: varchar("requestNote", { length: 500 }),
@@ -13129,7 +13378,6 @@ export const workOrderDesignApprovals = mysqlTable(
     revisionUq: unique("uq_wo_design_approval_revision").on(table.revisionId),
     workStatusIdx: index("idx_wo_design_approval_work_status").on(table.workOrderId, table.status),
     branchStatusIdx: index("idx_wo_design_approval_branch_status").on(table.branchId, table.status),
-    taskIdx: index("idx_wo_design_approval_task").on(table.taskId),
     requesterIdx: index("idx_wo_design_approval_requester").on(table.requestedBy),
     reviewerIdx: index("idx_wo_design_approval_reviewer").on(table.reviewedBy),
     revisionFk: foreignKey({
@@ -17774,3 +18022,35 @@ export const controlRequests = mysqlTable(
 
 export type ControlRequest = typeof controlRequests.$inferSelect;
 export type InsertControlRequest = typeof controlRequests.$inferInsert;
+
+/**
+ * سجلّ عمليات استعلام ومسح أسعار الرفوف بالباركود وحصر أعداد المستفيدين (Shelf QR Lookup & Beneficiaries Log).
+ * يُمكّن إدارة المعرض من متابعة حجم استفادة الزبائن من الخدمة، وأكثر المنتجات استعلاماً،
+ * ونشاط الفروع، وأوقات الذروة، بلا تخزين أي بيانات شخصية للمستهلكين.
+ */
+export const shelfLookupLogs = mysqlTable(
+  "shelfLookupLogs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    visitorId: varchar("visitorId", { length: 64 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    barcode: varchar("barcode", { length: 64 }).notNull(),
+    productId: bigint("productId", { mode: "number" }).references(() => products.id),
+    productName: varchar("productName", { length: 255 }),
+    found: boolean("found").default(false).notNull(),
+    deviceType: varchar("deviceType", { length: 32 }).default("unknown").notNull(),
+    ipHash: varchar("ipHash", { length: 64 }),
+    userAgent: varchar("userAgent", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    visitorIdx: index("idx_shelf_lookup_visitor").on(table.visitorId),
+    branchIdx: index("idx_shelf_lookup_branch").on(table.branchId),
+    productIdx: index("idx_shelf_lookup_product").on(table.productId),
+    createdIdx: index("idx_shelf_lookup_created").on(table.createdAt),
+    foundIdx: index("idx_shelf_lookup_found").on(table.found),
+  }),
+);
+
+export type ShelfLookupLog = typeof shelfLookupLogs.$inferSelect;
+export type InsertShelfLookupLog = typeof shelfLookupLogs.$inferInsert;

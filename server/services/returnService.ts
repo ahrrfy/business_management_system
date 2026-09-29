@@ -2358,10 +2358,14 @@ export async function returnSaleDirect(
       const isOwner = Boolean(userRow.isOwner);
       const isAdmin = effectiveRole === "admin";
       const hasSalesFull = effectivePermissions.sales === "FULL";
+      const hasReceptionFull =
+        effectiveRole === "print_operator" &&
+        effectivePermissions.workorders === "FULL";
       const isAuthorized =
         isOwner ||
         isAdmin ||
-        (["manager", "cashier"].includes(effectiveRole) && hasSalesFull);
+        (["manager", "cashier"].includes(effectiveRole) && hasSalesFull) ||
+        hasReceptionFull;
 
       if (!isAuthorized) {
         throw new TRPCError({
@@ -2393,7 +2397,10 @@ export async function returnSaleDirect(
         }
       }
 
-      if (effectiveRole === "cashier") {
+      const isCashierOrReception =
+        effectiveRole === "cashier" || effectiveRole === "print_operator";
+
+      if (isCashierOrReception) {
         const [invRow] = await tx
           .select({
             branchId: invoices.branchId,
@@ -2423,19 +2430,20 @@ export async function returnSaleDirect(
           });
         }
 
+        // عزل الفروع: كاشير لا ينفّذ مرتجعاً مباشراً لفاتورة فرع آخر
         if (
           !isOwner &&
           !isAdmin &&
           invRow &&
-          Number(invRow.createdBy) !== Number(actor.userId) &&
-          Number(invRow.workOrderCreatedBy) !== Number(actor.userId)
+          actor.branchId != null &&
+          Number(invRow.branchId) !== Number(actor.branchId)
         ) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
               what: "تعذّر تنفيذ المرتجع المباشر",
-              why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
-              doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+              why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+              doThis: "سجّل المرتجع من الفرع المصدر أو اطلب من الإدارة إتمامه",
             }),
           });
         }

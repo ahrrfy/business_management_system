@@ -19,47 +19,11 @@ const INVOICE_ALIAS_OPEN_BALANCE_COLS = {
   returnedTotal: sql`i.returnedTotal`,
 };
 
-/** شرط SQL خام لمهمة متأخّرة — مرآة `overdueSqlCond` في `server/services/tasks/list.ts`
- *  (لا استيراد مباشر: تلك الدالة تستعمل أعمدة drizzle مكتوبة `tasks.dueAt`، وهذا الملف يبني
- *  استعلامات SQL خام بأسماء أعمدة حرفية `t.col` — نمط بقيّة هذا الملف). أي تعديل لتعريف
- *  «التأخّر» هناك يجب أن يُطبَّق هنا أيضاً.
- */
-const TASK_OVERDUE_SQL_COND = sql`
-  t.dueAt IS NOT NULL
-  AND DATE_ADD(t.dueAt, INTERVAL (t.waitingAccumMs * 1000 + IF(t.waitingSince IS NOT NULL, TIMESTAMPDIFF(MICROSECOND, t.waitingSince, NOW()), 0)) MICROSECOND) < NOW()
-  AND t.taskStatus NOT IN ('RESOLVED','CANCELLED')
-`;
-
-/**
- * عدد المهام المفتوحة (غير RESOLVED/CANCELLED) المُسنَدة لمستخدمٍ بعينه — استعلامٌ خفيف مستقلّ
- * (لا يمرّ بكامل `getDashboardMetrics`) لأنّ هذا الرقم شخصيٌّ بطبعه (يختلف لكل مستخدم) بخلاف
- * بقيّة حقول morningBrief المُخزَّنة مؤقّتاً في `morningPushScheduler.ts` عبر `metricsCache`
- * (تُحسب مرّة واحدة لكل قيمة includeOpeningBalance بغضّ النظر عن عدد المشتركين — تجنّباً لتكرار
- * N+1 الذي أُصلح ٥/٧؛ إضافة رقمٍ شخصيّ داخل تلك الدالة الثقيلة كانت ستُعيد فتح تلك العلّة).
- */
 export async function getMyTaskBriefCounts(
-  userId: number,
-  overdueBranchId?: number | null,
+  _userId: number,
+  _overdueBranchId?: number | null,
 ): Promise<{ open: number; overdueInScope: number }> {
-  const db = getDb();
-  if (!db) return { open: 0, overdueInScope: 0 };
-  const overdueBranchFilter = overdueBranchId == null
-    ? sql``
-    : sql`AND t.branchId = ${overdueBranchId}`;
-  const rows = await db.execute(sql`
-    SELECT
-      COUNT(*) AS openCount,
-      COALESCE(SUM(CASE WHEN (${TASK_OVERDUE_SQL_COND}) ${overdueBranchFilter} THEN 1 ELSE 0 END), 0) AS overdueInScope
-    FROM tasks t
-    WHERE t.assignedTo = ${userId}
-      AND t.taskStatus NOT IN ('RESOLVED','CANCELLED')
-  `);
-  const data = (rows as any)[0] ?? rows;
-  const row = Array.isArray(data) ? data[0] : undefined;
-  return {
-    open: Number(row?.openCount ?? 0),
-    overdueInScope: Number(row?.overdueInScope ?? 0),
-  };
+  return { open: 0, overdueInScope: 0 };
 }
 
 export async function getMyOpenTasksCount(userId: number): Promise<number> {
@@ -201,7 +165,6 @@ async function fetchSharedDashboardMetrics(
   const branchFilterInv = branchId == null ? sql`` : sql`AND i.branchId = ${branchId}`;
   const branchFilterAe = branchId == null ? sql`` : sql`AND ae.branchId = ${branchId}`;
   const branchFilterWo = branchId == null ? sql`` : sql`AND wo.branchId = ${branchId}`;
-  const branchFilterTasks = branchId == null ? sql`` : sql`AND t.branchId = ${branchId}`;
 
   // مبيعات اليوم من التعريف التشغيلي الحاكم نفسه المستعمل في المسارات التنفيذية والموبايل.
   // التجميع خادميّ بلا limit، وحدود اليوم هي يوم بغداد المدني لا تاريخ جهاز المستخدم.
@@ -295,16 +258,7 @@ async function fetchSharedDashboardMetrics(
     (Array.isArray(woData) ? woData[0]?.c : 0) ?? 0
   );
 
-  // مهام متأخّرة (نظام المهام الموحّد S2) — تشغيليّ بنفس منزلة overdueWorkOrders (لا تقييد
-  // reports)، ونفس نطاق الفرع (branchFilterTasks) المُستعمَل لبقيّة هذه البطاقة.
-  const taskRows = await db.execute(sql`
-    SELECT COUNT(*) AS c
-    FROM tasks t
-    WHERE ${TASK_OVERDUE_SQL_COND}
-      ${branchFilterTasks}
-  `);
-  const taskData = (taskRows as any)[0] ?? taskRows;
-  const overdueTasks = Number((Array.isArray(taskData) ? taskData[0]?.c : 0) ?? 0);
+  const overdueTasks = 0;
 
   // نبض المبيعات: مبيعات أمس (صافي = total − returnedTotal، غير الملغاة) مقابل معدّل آخر ٧ أيام
   // مكتملة (D-7..D-1، بلا اليوم الجاري غير المكتمل). العزل عبر الفرع. avg = مجموع النافذة ÷ ٧

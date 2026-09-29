@@ -4,6 +4,9 @@ import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import {
   accountingEntries,
+  accrualObligations,
+  accrualObligationEvents,
+  expenses,
   productUnits,
   productVariants,
   products,
@@ -11,12 +14,14 @@ import {
   purchaseOrderControlRequests,
   purchaseOrderItems,
   purchaseOrders,
+  receipts,
   supplierPayments,
   supplierPaymentRefunds,
   suppliers,
   users,
 } from "../../drizzle/schema";
 import { nextActionTerminalReason } from "@shared/nextAction";
+import { appErrorMessage } from "@shared/errors";
 import { derivePurchaseOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
@@ -57,6 +62,7 @@ import {
   updatePurchaseRequisition,
   updatePurchaseOrder,
 } from "../services/purchaseService";
+import { settlePurchaseShippingFromShift } from "../services/purchase/pay";
 import { assertLegacyPurchaseWritePathDisabled } from "../services/purchase/governanceCutover";
 import {
   canSeeCostForUser,
@@ -470,6 +476,56 @@ export const purchaseRouter = router({
       }),
     )
     .mutation(() => assertLegacyPurchaseWritePathDisabled("purchases.pay")),
+
+  /**
+   * صرف أجور الشحن والكمرك لأمر الشراء من درج نقدية وردية المبيعات المفتوحة (DRAWER).
+   * يُنشئ/يُكمّل سند الصرف، يُسجّل قيد PAYMENT_OUT على خزينة الدرج، ويُسقط المبلغ من رصيد
+   * الوردية المتوقّع لمنع العجز الصامت عند إغلاق الوردية، ويحوّل التزام الشحن إلى PAID.
+   */
+  settleShippingFromShift: purchasesManagerProcedure
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        shiftId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر صرف شحن أمر الشراء",
+            why: "لا يوجد فرع مُسنَد لهذا المستخدم في جلسة العمل الحالية",
+            doThis: "سجّل الدخول بمستخدم مُسنَد لفرع أو اطلب من المدير إسناد فرع لحسابك",
+          }),
+        });
+      }
+      const res = await settlePurchaseShippingFromShift(
+        {
+          purchaseOrderId: input.purchaseOrderId,
+          shiftId: input.shiftId,
+        },
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId ?? 0),
+          role: ctx.user.role,
+        },
+      );
+      await logAudit(ctx, {
+        action: "purchase.settleShippingFromShift",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: {
+          purchaseOrderId: res.purchaseOrderId,
+          receiptId: res.receiptId,
+          voucherNumber: res.voucherNumber,
+          shiftId: res.shiftId,
+          amount: res.amount,
+          status: res.status,
+        },
+      });
+      return res;
+    }),
 
   cancel: purchasesManagerProcedure
     .input(
@@ -1284,6 +1340,127 @@ export const purchaseRouter = router({
           ? nextActionTerminalReason("PURCHASE_ORDER", po.status)
           : null;
 
+      // فحص وسحب بيانات سداد الشحن/الكمرك المرتبطة بالأمر
+      const shippingTotal = money(po.shippingCost ?? 0).plus(money(po.customsCost ?? 0));
+      let shippingPayment: {
+        hasShipping: boolean;
+        obligationId: number | null;
+        totalLanded: string;
+        obligationStatus: string;
+        beneficiaryName: string | null;
+        evidenceReference: string | null;
+        voucherId: number | null;
+        voucherNumber: string | null;
+        voucherStatus: string | null;
+        approvalStatus: string | null;
+        cashBucket: string | null;
+        shiftId: number | null;
+        payee: string | null;
+        paidAt: Date | null;
+        settledAmount: string | null;
+      } | null = null;
+
+      if (shippingTotal.gt(0)) {
+        const [shippingObligation] = await db
+          .select()
+          .from(accrualObligations)
+          .where(
+            and(
+              eq(accrualObligations.purchaseOrderId, po.id),
+              eq(accrualObligations.kind, "PURCHASE_SHIPPING"),
+            ),
+          )
+          .orderBy(desc(accrualObligations.id))
+          .limit(1);
+
+        let linkedReceipt: {
+          id: number;
+          referenceNumber: string | null;
+          voucherNumber: string | null;
+          status: string;
+          approvalStatus: string;
+          shiftId: number | null;
+          cashBucket: string | null;
+          counterpartyName: string | null;
+          createdAt: Date;
+          approvedAt: Date | null;
+          amount: string;
+        } | null = null;
+
+        if (shippingObligation) {
+          const [latestEvent] = await db
+            .select({
+              receiptId: accrualObligationEvents.receiptId,
+            })
+            .from(accrualObligationEvents)
+            .where(
+              and(
+                eq(accrualObligationEvents.obligationId, shippingObligation.id),
+                sql`${accrualObligationEvents.receiptId} IS NOT NULL`,
+              ),
+            )
+            .orderBy(desc(accrualObligationEvents.id))
+            .limit(1);
+
+          let receiptId = latestEvent?.receiptId ?? null;
+          if (!receiptId && shippingObligation.expenseId != null) {
+            const [exp] = await db
+              .select({ receiptId: expenses.receiptId })
+              .from(expenses)
+              .where(eq(expenses.id, shippingObligation.expenseId))
+              .limit(1);
+            if (exp?.receiptId) {
+              receiptId = exp.receiptId;
+            }
+          }
+
+          if (receiptId) {
+            const [rcpt] = await db
+              .select({
+                id: receipts.id,
+                referenceNumber: receipts.referenceNumber,
+                voucherNumber: receipts.voucherNumber,
+                status: receipts.status,
+                approvalStatus: receipts.approvalStatus,
+                shiftId: receipts.shiftId,
+                cashBucket: receipts.cashBucket,
+                counterpartyName: receipts.counterpartyName,
+                createdAt: receipts.createdAt,
+                approvedAt: receipts.approvedAt,
+                amount: receipts.amount,
+              })
+              .from(receipts)
+              .where(eq(receipts.id, receiptId))
+              .limit(1);
+            linkedReceipt = rcpt
+              ? {
+                  ...rcpt,
+                  id: Number(rcpt.id),
+                  shiftId: rcpt.shiftId != null ? Number(rcpt.shiftId) : null,
+                }
+              : null;
+          }
+        }
+
+        shippingPayment = {
+          hasShipping: true,
+          obligationId: shippingObligation ? Number(shippingObligation.id) : null,
+          totalLanded: toDbMoney(shippingTotal),
+          obligationStatus: shippingObligation?.status ?? "NONE",
+          beneficiaryName: shippingObligation?.beneficiaryName ?? null,
+          evidenceReference: shippingObligation?.evidenceReference ?? null,
+          voucherId: linkedReceipt ? Number(linkedReceipt.id) : null,
+          voucherNumber: linkedReceipt?.voucherNumber ?? linkedReceipt?.referenceNumber ?? null,
+          voucherStatus: linkedReceipt?.status ?? null,
+          approvalStatus: linkedReceipt?.approvalStatus ?? null,
+          cashBucket: linkedReceipt?.cashBucket ?? null,
+          shiftId: linkedReceipt?.shiftId ? Number(linkedReceipt.shiftId) : null,
+          payee: linkedReceipt?.counterpartyName ?? shippingObligation?.beneficiaryName ?? null,
+          paidAt: linkedReceipt?.approvedAt ?? linkedReceipt?.createdAt ?? null,
+          settledAmount: linkedReceipt?.amount ?? null,
+        };
+      }
+
       // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
       if (!canSeeCostForUser(ctx.user)) {
         // 0204: الخصم وسعرُ ما قبله **تكلفةٌ أيضاً** (يكشفان بنية سعر المورّد) ⇒ يُحجبان مع البقيّة.
@@ -1303,6 +1480,7 @@ export const purchaseRouter = router({
           invoiceDiscount: null,
           usdInvoiceDiscount: null,
           linkedCashPaidAmount: null,
+          shippingPayment: null,
         };
         // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
         // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
@@ -1321,6 +1499,6 @@ export const purchaseRouter = router({
         );
         return { ...poMasked, items: itemsMasked, nextAction, nextActionReason };
       }
-      return { ...po, linkedCashPaidAmount, items, nextAction, nextActionReason };
+      return { ...po, linkedCashPaidAmount, shippingPayment, items, nextAction, nextActionReason };
     }),
 });

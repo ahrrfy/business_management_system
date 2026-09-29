@@ -26,6 +26,8 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
 import { AlertCircle, ExternalLink, Info, RefreshCw } from "lucide-react";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
+import { FinancialCellProvenanceHover } from "@/components/financial";
+import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
 
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
@@ -77,6 +79,7 @@ interface LedgerRow {
   paymentStatus?: "PAID" | "PARTIAL" | "UNPAID";
   poId?: number;
   receiptId?: number;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 const FILTER_GROUP_LABEL: Record<"all" | LedgerFilterGroup, string> = {
@@ -163,33 +166,35 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
         const r = row.original;
         if (r.debit == null) return <span className="text-muted-foreground">—</span>;
         return (
-          <button
-            type="button"
-            onClick={() => {
-              if (r.receiptId) {
-                onDrilldown({ type: "VOUCHER", receiptId: r.receiptId });
-              } else {
-                onDrilldown({
-                  type: "GENERIC",
-                  title: r.description,
-                  subtitle: r.descriptionSub,
-                  amount: r.debit ?? "0",
-                  date: r.date,
-                  direction: "DEBIT",
-                  details: {
-                    "المرجع": r.ref,
-                    "المنفذ": r.actor,
-                    "البيان": r.description,
-                    "التفاصيل": r.descriptionSub,
-                  },
-                });
-              }
-            }}
-            className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
-            title="انقر لعرض تفاصيل السند/الحركة"
-          >
-            {fmt(r.debit)}
-          </button>
+          <FinancialCellProvenanceHover data={r.provenance}>
+            <button
+              type="button"
+              onClick={() => {
+                if (r.receiptId) {
+                  onDrilldown({ type: "VOUCHER", receiptId: r.receiptId });
+                } else {
+                  onDrilldown({
+                    type: "GENERIC",
+                    title: r.description,
+                    subtitle: r.descriptionSub,
+                    amount: r.debit ?? "0",
+                    date: r.date,
+                    direction: "DEBIT",
+                    details: {
+                      "المرجع": r.ref,
+                      "المنفذ": r.actor,
+                      "البيان": r.description,
+                      "التفاصيل": r.descriptionSub,
+                    },
+                  });
+                }
+              }}
+              className="text-money-positive font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
+              title="انقر لعرض تفاصيل السند/الحركة"
+            >
+              {fmt(r.debit)}
+            </button>
+          </FinancialCellProvenanceHover>
         );
       },
       footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.debit)).toFixed(2)),
@@ -203,33 +208,35 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
         const r = row.original;
         if (r.credit == null) return <span className="text-muted-foreground">—</span>;
         return (
-          <button
-            type="button"
-            onClick={() => {
-              if (r.poId) {
-                onDrilldown({ type: "PURCHASE_ORDER", poId: r.poId });
-              } else {
-                onDrilldown({
-                  type: "GENERIC",
-                  title: r.description,
-                  subtitle: r.descriptionSub,
-                  amount: r.credit ?? "0",
-                  date: r.date,
-                  direction: "CREDIT",
-                  details: {
-                    "المرجع": r.ref,
-                    "المنفذ": r.actor,
-                    "البيان": r.description,
-                    "التفاصيل": r.descriptionSub,
-                  },
-                });
-              }
-            }}
-            className="font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
-            title="انقر لعرض تفاصيل أمر الشراء/الحركة"
-          >
-            {fmt(r.credit)}
-          </button>
+          <FinancialCellProvenanceHover data={r.provenance}>
+            <button
+              type="button"
+              onClick={() => {
+                if (r.poId) {
+                  onDrilldown({ type: "PURCHASE_ORDER", poId: r.poId });
+                } else {
+                  onDrilldown({
+                    type: "GENERIC",
+                    title: r.description,
+                    subtitle: r.descriptionSub,
+                    amount: r.credit ?? "0",
+                    date: r.date,
+                    direction: "CREDIT",
+                    details: {
+                      "المرجع": r.ref,
+                      "المنفذ": r.actor,
+                      "البيان": r.description,
+                      "التفاصيل": r.descriptionSub,
+                    },
+                  });
+                }
+              }}
+              className="font-semibold hover:underline cursor-pointer transition-colors text-end block w-full"
+              title="انقر لعرض تفاصيل أمر الشراء/الحركة"
+            >
+              {fmt(r.credit)}
+            </button>
+          </FinancialCellProvenanceHover>
         );
       },
       footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.credit)).toFixed(2)),
@@ -239,7 +246,11 @@ function getLedgerColumns(onDrilldown: (target: DrilldownTarget) => void): Colum
       header: "الرصيد الجاري",
       accessorFn: (r) => fmt(r.balance),
       meta: { kind: "money" },
-      cell: ({ row }) => <span className="font-bold">{fmt(row.original.balance)}</span>,
+      cell: ({ row }) => (
+        <FinancialCellProvenanceHover data={row.original.provenance}>
+          <span className="font-bold text-end block w-full hover:underline cursor-pointer">{fmt(row.original.balance)}</span>
+        </FinancialCellProvenanceHover>
+      ),
     },
     {
       id: "paymentStatus",
@@ -349,6 +360,7 @@ export default function SupplierStatement() {
         openHref: `/purchases/${p.id}`,
         paymentStatus,
         poId: Number(p.id),
+        provenance: (p as any).provenance,
       };
     });
     // F7 (تدقيق ٢/٧): إشارة الأثر على AP لكل نوع قيد (مطابقة reconcileSupplierBalances):
@@ -403,6 +415,7 @@ export default function SupplierStatement() {
         filterGroup,
         poId: p.purchaseOrderId ? Number(p.purchaseOrderId) : undefined,
         receiptId: p.receiptId ? Number(p.receiptId) : undefined,
+        provenance: (p as any).provenance,
       };
     });
     // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
@@ -435,6 +448,12 @@ export default function SupplierStatement() {
             credit: null,
             balance: openingBal.toFixed(2),
             filterGroup: "other",
+            provenance: {
+              movementType: "balance",
+              title: "رصيد افتتاحي مرحل للمورد",
+              totalAmount: openingBal.toFixed(2),
+              party: { name: d.supplier.name, kind: "supplier" },
+            },
           },
           ...activityRows,
         ]
@@ -661,15 +680,14 @@ export default function SupplierStatement() {
                 <AgingCard aging={stmt.data.summary.aging} scoped={!!(from || to)} />
               </div>
 
-              {/* بند تسوية صريح لفجوة تخصيص الدفعات — بدل أن يبقى الفرق بين مجموع «المتبقّي»
-                  لكل فاتورة و«الرصيد المستحق» أعلاه صامتاً وغير مفسَّر (شكوى المالك الأصلية). */}
-              {(hasUnsettledMismatch || D(stmt.data.summary.unallocatedPayments).gt(0)) && (
+              {/* بند تسوية صريح لفجوة تخصيص الدفعات عند وجود أوامر شراء مفتوحة */}
+              {hasUnsettledMismatch && (
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]/60 p-3 text-xs">
                   <div className="flex items-start gap-2">
                     <AlertCircle aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-warn)]" />
                     <div className="space-y-1">
                       <span className="font-semibold text-[var(--sem-warn)]">
-                        تنبيه مطابقة الذمم — دفعات غير مخصصة أو فواتير مفتوحة:{" "}
+                        تنبيه مطابقة الذمم — دفعات غير مخصصة مع أوامر شراء مفتوحة:{" "}
                       </span>
                       <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)} د.ع</span>
                       <p className="text-muted-foreground leading-relaxed">
@@ -686,6 +704,22 @@ export default function SupplierStatement() {
                     <RefreshCw className={`h-4 w-4 ${autoSettleM.isPending ? "animate-spin" : ""}`} />
                     تسوية الأوامر تلقائياً (FIFO)
                   </Button>
+                </div>
+              )}
+
+              {/* إشعار معلوماتي في حال وجود دفعات غير مخصصة دون أوامر شراء مفتوحة (دفعة مقدمة / رصيد دائن على الحساب) */}
+              {!hasUnsettledMismatch && D(stmt.data.summary.unallocatedPayments).gt(0) && (
+                <div className="flex items-start gap-2 rounded-md border border-border/60 bg-[var(--sem-info-bg)]/60 p-3 text-xs">
+                  <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-info)]" />
+                  <div className="space-y-1">
+                    <span className="font-semibold text-[var(--sem-info)]">
+                      رصيد دفعات غير مخصصة على الحساب:{" "}
+                    </span>
+                    <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)} د.ع</span>
+                    <p className="text-muted-foreground leading-relaxed">
+                      يوجد رصيد دفعات مستقلة على حساب المورد دون وجود أوامر شراء مفتوحة حالياً (رصيد دائن / دفعة مقدمة). سيتم تخصيص هذا الرصيد تلقائياً عند إصدار أوامر شراء جديدة.
+                    </p>
+                  </div>
                 </div>
               )}
 

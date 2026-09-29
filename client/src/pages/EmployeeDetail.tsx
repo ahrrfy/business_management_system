@@ -1,6 +1,11 @@
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { DeviceLinkCard } from "@/components/hr/DeviceLinkCard";
 import { EmployeeStatementCard } from "@/components/hr/EmployeeStatementCard";
+import { EmployeeDocumentsTab } from "@/components/hr/EmployeeDocumentsTab";
+import { EmployeeContractsTab } from "@/components/hr/EmployeeContractsTab";
+import { EmployeeCustodyTab } from "@/components/hr/EmployeeCustodyTab";
+import { EmployeePenaltiesTab } from "@/components/hr/EmployeePenaltiesTab";
+import { EmployeeEnterpriseOperationsTab } from "@/components/hr/EmployeeEnterpriseOperationsTab";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -173,6 +178,11 @@ export default function EmployeeDetail() {
           <TabsTrigger value="personal">شخصية</TabsTrigger>
           <TabsTrigger value="education">دراسية ({education.length})</TabsTrigger>
           <TabsTrigger value="salary">الراتب</TabsTrigger>
+          <TabsTrigger value="documents">الوثائق</TabsTrigger>
+          <TabsTrigger value="contracts">العقود والتجربة</TabsTrigger>
+          <TabsTrigger value="custody">العهد والمعدات</TabsTrigger>
+          <TabsTrigger value="penalties">العقوبات والإنذارات</TabsTrigger>
+          <TabsTrigger value="operations">العمليات والسلف</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -255,6 +265,37 @@ export default function EmployeeDetail() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="documents">
+          <EmployeeDocumentsTab employeeId={id} />
+        </TabsContent>
+
+        <TabsContent value="contracts">
+          <EmployeeContractsTab employeeId={id} />
+        </TabsContent>
+
+        <TabsContent value="custody">
+          <EmployeeCustodyTab employeeId={id} branchId={e.branchId ?? undefined} />
+        </TabsContent>
+
+        <TabsContent value="penalties">
+          <EmployeePenaltiesTab
+            employeeId={id}
+            branchId={e.branchId ?? undefined}
+            currentUserId={me.data?.id}
+          />
+        </TabsContent>
+
+        <TabsContent value="operations">
+          <EmployeeEnterpriseOperationsTab
+            employeeId={id}
+            branchId={e.branchId ?? undefined}
+            basicSalary={e.salary}
+            allowances={e.allowances}
+            annualLeaveBalance={e.annualLeaveBalance}
+            currentUserId={me.data?.id}
+          />
         </TabsContent>
       </Tabs>
 

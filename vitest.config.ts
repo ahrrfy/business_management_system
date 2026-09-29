@@ -10,7 +10,17 @@ export default defineConfig({
       "@": path.resolve(import.meta.dirname, "client", "src"),
     },
   },
+  server: {
+    deps: {
+      inline: ["drizzle-orm"],
+    },
+  },
   test: {
+    server: {
+      deps: {
+        inline: ["drizzle-orm"],
+      },
+    },
     environment: "node",
     // ⭐ **`.tsx` ضمن النطاق** (٣/٩/٢٦): كان النطاق `*.test.ts` وحدها، و`test:unit` ليست
     // خطوةً في CI ⇒ **٢٨ ملفَّ `*.test.tsx` خارج كلّ مراقبة**، وقد شاخ أحدُها فعلاً وبقي

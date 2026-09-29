@@ -14,8 +14,6 @@ import { appRouter } from "../../routers";
 
 const TABLES = [
   "auditLogs",
-  "taskEvents",
-  "tasks",
   "conversations",
   "contactPersons",
   "deliveryParties",
@@ -200,10 +198,6 @@ describe("contacts.contact360 — بطاقة ٣٦٠° للعميل", () => {
       { invoiceNumber: "INV-360-2", sourceType: "POS", branchId: 1, customerId, subtotal: "50.00", total: "50.00", status: "PENDING" },
     ]);
 
-    await d.insert(s.tasks).values([
-      { taskNumber: "TSK-360-1", branchId: 1, title: "مهمة مفتوحة", customerId, taskStatus: "NEW" },
-      { taskNumber: "TSK-360-2", branchId: 1, title: "مهمة محلولة", customerId, taskStatus: "RESOLVED" },
-    ]);
 
     await d.insert(s.conversations).values({
       branchId: 1,
@@ -230,8 +224,7 @@ describe("contacts.contact360 — بطاقة ٣٦٠° للعميل", () => {
     expect(res.kind).toBe("customer");
     expect(res.customer.name).toBe("عميل بطاقة ٣٦٠");
     expect(res.invoices).toHaveLength(2);
-    expect(res.openTasks).toHaveLength(1);
-    expect(res.openTasks[0].title).toBe("مهمة مفتوحة");
+    expect(res.openTasks).toHaveLength(0);
     expect(res.conversations).toHaveLength(1);
     expect(res.contactPersons).toHaveLength(1);
     expect(res.contactPersons[0].name).toBe("شخص فعّال");
@@ -397,13 +390,6 @@ describe("contacts.contact360 — عزل الفرع للمحادثات/المه�
     const custRes = await d.insert(s.customers).values({ name: "عميل عزل الفرع ٣٦٠" });
     const customerId = extractInsertId(custRes);
 
-    await d.insert(s.tasks).values({
-      taskNumber: "TSK-ISO360-1",
-      branchId: 2,
-      title: "مهمة الفرع ٢ فقط",
-      customerId,
-      taskStatus: "NEW",
-    });
     await d.insert(s.conversations).values({
       branchId: 2,
       channel: "WHATSAPP",
@@ -415,18 +401,15 @@ describe("contacts.contact360 — عزل الفرع للمحادثات/المه�
 
     const cashierBranch1 = await callerFor(3);
     const cashierRes = await cashierBranch1.contacts.contact360({ kind: "customer", id: customerId });
-    expect(cashierRes.openTasks).toHaveLength(0);
     expect(cashierRes.conversations).toHaveLength(0);
 
     const adminCaller = await callerFor(1);
     const adminRes = await adminCaller.contacts.contact360({ kind: "customer", id: customerId });
-    expect(adminRes.openTasks).toHaveLength(1);
     expect(adminRes.conversations).toHaveLength(1);
 
     // عزل مدير الفرع (قرار المالك ١٢/٨ يعكس ٢٣/٧): المدير مقصورٌ بفرعه فلا يرى مهمّة/محادثة الفرع ٢.
     const managerCaller = await callerFor(2);
     const managerRes = await managerCaller.contacts.contact360({ kind: "customer", id: customerId });
-    expect(managerRes.openTasks).toHaveLength(0);
     expect(managerRes.conversations).toHaveLength(0);
   });
 
@@ -435,13 +418,6 @@ describe("contacts.contact360 — عزل الفرع للمحادثات/المه�
     const custRes = await d.insert(s.customers).values({ name: "عميل فرع مطابق ٣٦٠" });
     const customerId = extractInsertId(custRes);
 
-    await d.insert(s.tasks).values({
-      taskNumber: "TSK-ISO360-2",
-      branchId: 1,
-      title: "مهمة الفرع ١",
-      customerId,
-      taskStatus: "NEW",
-    });
     await d.insert(s.conversations).values({
       branchId: 1,
       channel: "WHATSAPP",
@@ -453,7 +429,6 @@ describe("contacts.contact360 — عزل الفرع للمحادثات/المه�
 
     const cashierBranch1 = await callerFor(3);
     const res = await cashierBranch1.contacts.contact360({ kind: "customer", id: customerId });
-    expect(res.openTasks).toHaveLength(1);
     expect(res.conversations).toHaveLength(1);
   });
 });

@@ -50,8 +50,6 @@ const TABLES = [
   "workOrderControlRequests",
   "workOrderDesignApprovals",
   "workOrderDesignRevisions",
-  "taskEvents",
-  "tasks",
   "serviceTypes",
   "accountingEntries",
   "receipts",

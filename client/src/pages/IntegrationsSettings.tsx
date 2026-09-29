@@ -605,9 +605,9 @@ function AutomationSettingsCard() {
             ))}
           </div>
           <div className="flex items-center gap-2">
-            <input type="time" value={draft.hoursFrom} onChange={(e) => setDraft({ ...draft, hoursFrom: e.target.value })} dir="ltr" className="h-9 border rounded-md px-2 text-sm bg-background" />
+            <Input type="time" value={draft.hoursFrom} onChange={(e) => setDraft({ ...draft, hoursFrom: e.target.value })} className="h-9 w-32" />
             <span className="text-xs text-muted-foreground">إلى</span>
-            <input type="time" value={draft.hoursTo} onChange={(e) => setDraft({ ...draft, hoursTo: e.target.value })} dir="ltr" className="h-9 border rounded-md px-2 text-sm bg-background" />
+            <Input type="time" value={draft.hoursTo} onChange={(e) => setDraft({ ...draft, hoursTo: e.target.value })} className="h-9 w-32" />
           </div>
           <p className="text-[11px] text-muted-foreground">اترك الأيام كلها بلا اختيار لإلغاء ساعات الدوام (كل الأوقات ضمن الدوام). توقيت بغداد (UTC+3).</p>
         </div>

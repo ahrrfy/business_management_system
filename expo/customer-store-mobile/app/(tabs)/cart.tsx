@@ -128,7 +128,7 @@ export default function CartScreen() {
     let message = "مرحباً مكتبة العربية، أود مراجعة هذه السلة والطلب عبركم:\n";
     lines.forEach((line, index) => {
       const price = line.selectionDetails.unitSalePrice ?? line.selectionDetails.unitPrice;
-      message += `${index + 1}. ${line.product.title} (${selectionDescription(line.selectionDetails)}) - الكمية: ${line.quantity} ${price ? `- السعر: ${formatIqd(price)}` : ""}\n`;
+      message += `${index + 1}. ${line.product.title} (${selectionDescription(line.selectionDetails)}) - الكمية: ${formatLatinNumber(line.quantity)} ${price ? `- السعر: ${formatIqd(price)}` : ""}\n`;
     });
     message += `الإجمالي التقديري: ${formatIqd(estimatedSubtotal)}\nالدفع: عند الاستلام.`;
     const url = rawNumber
@@ -159,21 +159,21 @@ export default function CartScreen() {
     return (
       <ScreenContainer className="px-4" containerClassName="bg-background">
         <ScrollView contentContainerStyle={styles.emptyScroll}>
-          <Text style={styles.title}>سلة المشتريات</Text>
+          <Text style={styles.title}>مسواكك وسلة مشترياتك</Text>
           <View style={styles.empty}>
             <View style={styles.emptyIcon}>
               <MaterialIcons color="#0C5A4B" name="shopping-bag" size={39} />
             </View>
-            <Text style={styles.emptyTitle}>السلة تنتظر اختياراتك</Text>
+            <Text style={styles.emptyTitle}>سلتك فارغة عيني!</Text>
             <Text style={styles.emptyText}>
-              استكشف الكتب والقرطاسية وأضف ما تحتاجه، وستبقى اختياراتك محفوظة.
+              تصفح المنتجات واختار اليعجبك واستفاد من عروض اليوم، ومسواكك يوصل لباب بيتك.
             </Text>
             <TouchableOpacity
               activeOpacity={0.88}
               onPress={() => router.push("/categories" as never)}
               style={styles.browse}
             >
-              <Text style={styles.browseText}>ابدأ التسوق</Text>
+              <Text style={styles.browseText}>تصفح المسواك وابدأ التسوق</Text>
               <MaterialIcons color="#FFFFFF" name="arrow-back" size={18} />
             </TouchableOpacity>
           </View>
@@ -188,9 +188,9 @@ export default function CartScreen() {
       >
         <View style={styles.header}>
           <View>
-            <Text style={styles.title}>سلة المشتريات</Text>
+            <Text style={styles.title}>مسواكك وسلة مشترياتك</Text>
             <Text style={styles.subtitle}>
-              {formatLatinNumber(lines.length)} اختيارات جاهزة للمراجعة
+              {formatLatinNumber(lines.length)} مادة بمسواكك جاهزة للمراجعة
             </Text>
           </View>
           <TouchableOpacity
@@ -204,7 +204,7 @@ export default function CartScreen() {
               name="add"
               size={18}
             />
-            <Text style={styles.continueText}>إضافة منتجات</Text>
+            <Text style={styles.continueText}>إضافة مسواك</Text>
           </TouchableOpacity>
         </View>
         {freeShippingThreshold > 0 && (
@@ -448,23 +448,23 @@ export default function CartScreen() {
           })}
         </View>
         <View style={styles.summary}>
-          <Text style={styles.summaryTitle}>ملخص الطلب</Text>
+          <Text style={styles.summaryTitle}>ملخص المسواك والطلب</Text>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryValue}>
               {formatIqd(estimatedSubtotal)}
             </Text>
-            <Text style={styles.summaryLabel}>إجمالي المنتجات</Text>
+            <Text style={styles.summaryLabel}>مجموع المسواك</Text>
           </View>
           {savedAmount > 0 && (
             <View style={styles.summaryRow}>
               <Text style={styles.savings}>{formatIqd(savedAmount)}</Text>
-              <Text style={styles.summaryLabel}>التوفير الحالي</Text>
+              <Text style={styles.summaryLabel}>الخصم المباشر (وفرته)</Text>
             </View>
           )}
           <View style={styles.divider} />
           <View style={styles.summaryRow}>
             <Text style={styles.total}>{formatIqd(estimatedSubtotal)}</Text>
-            <Text style={styles.totalLabel}>الإجمالي المبدئي</Text>
+            <Text style={styles.totalLabel}>المجموع الكلي الصافي</Text>
           </View>
           <Text style={styles.summaryNote}>
             تظهر رسوم التوصيل والإجمالي النهائي بوضوح بعد اختيار المحافظة في
@@ -484,7 +484,7 @@ export default function CartScreen() {
           onPress={() => router.push("/checkout" as never)}
           style={styles.checkout}
         >
-          <Text style={styles.checkoutText}>تابع لإتمام الطلب (الدفع عند الاستلام)</Text>
+          <Text style={styles.checkoutText}>أكد طلبك وهسة نجهزه الك — الدفع عند الباب</Text>
           <MaterialIcons color="#FFFFFF" name="arrow-back" size={20} />
         </TouchableOpacity>
 
@@ -547,12 +547,12 @@ const styles = StyleSheet.create({
   },
   shippingCard: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 20,
     borderWidth: 1,
     marginTop: 18,
     padding: 16,
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOpacity: 0.03,
     shadowRadius: 8,
     elevation: 1,
@@ -571,34 +571,34 @@ const styles = StyleSheet.create({
     width: 40,
   },
   shippingTitle: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 13,
     textAlign: "right",
   },
   shippingHint: {
-    color: "#059669",
+    color: "#0E806A",
     fontFamily: "Cairo_700Bold",
     fontSize: 11,
     marginTop: 3,
     textAlign: "right",
   },
   progressTrack: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: "#FAF5EE",
     borderRadius: 10,
     height: 8,
     marginTop: 12,
     overflow: "hidden",
   },
   progressValue: {
-    backgroundColor: "#059669",
+    backgroundColor: "#0E806A",
     borderRadius: 10,
     height: "100%",
   },
   lines: { gap: 11, marginTop: 16 },
   line: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E7EF",
+    borderColor: "#F1E5DA",
     borderRadius: 22,
     borderWidth: 1,
     flexDirection: "row-reverse",
@@ -621,13 +621,13 @@ const styles = StyleSheet.create({
   },
   lineText: { flex: 1 },
   lineTitle: {
-    color: "#161A22",
+    color: "#183D36",
     fontFamily: "Cairo_700Bold",
     fontSize: 14,
     textAlign: "right",
   },
   lineSub: {
-    color: "#737B88",
+    color: "#5A6E68",
     fontFamily: "Cairo_400Regular",
     fontSize: 10,
     marginTop: 4,
@@ -641,13 +641,13 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   linePrice: {
-    color: "#059669",
+    color: "#0E806A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 15,
     textAlign: "right",
   },
   oldPrice: {
-    color: "#A6AFBA",
+    color: "#8C9E96",
     fontFamily: "Cairo_400Regular",
     fontSize: 10,
     marginTop: 2,
@@ -656,8 +656,8 @@ const styles = StyleSheet.create({
   },
   controls: {
     alignItems: "center",
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E2E8F0",
+    backgroundColor: "#FAF5EE",
+    borderColor: "#F1E5DA",
     borderRadius: 14,
     borderWidth: 1,
     flexDirection: "row",
@@ -670,7 +670,7 @@ const styles = StyleSheet.create({
     width: 38,
   },
   quantity: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 14,
     minWidth: 28,
@@ -679,18 +679,18 @@ const styles = StyleSheet.create({
   controlDisabled: { opacity: 0.35 },
   summary: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 24,
     borderWidth: 1,
     marginTop: 20,
     padding: 18,
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOpacity: 0.03,
     shadowRadius: 10,
     elevation: 1,
   },
   summaryTitle: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 16,
     marginBottom: 12,
@@ -702,21 +702,21 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   summaryLabel: {
-    color: "#64748B",
+    color: "#5A6E68",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 13,
   },
-  summaryValue: { color: "#0F172A", fontFamily: "Cairo_700Bold", fontSize: 14 },
-  savings: { color: "#059669", fontFamily: "Cairo_800ExtraBold", fontSize: 14 },
-  divider: { backgroundColor: "#E2E8F0", height: 1, marginTop: 14 },
+  summaryValue: { color: "#183D36", fontFamily: "Cairo_700Bold", fontSize: 14 },
+  savings: { color: "#0E806A", fontFamily: "Cairo_800ExtraBold", fontSize: 14 },
+  divider: { backgroundColor: "#F1E5DA", height: 1, marginTop: 14 },
   total: {
-    color: "#059669",
+    color: "#0E806A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 20,
     marginTop: 4,
   },
   totalLabel: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 15,
     marginTop: 6,

@@ -8,7 +8,7 @@ import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard,
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -458,9 +458,9 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
         </AppSelect>
         <div className="flex items-center gap-1.5">
           <label htmlFor="res-filter-from" className="text-xs text-muted-foreground whitespace-nowrap">ينتهي من</label>
-          <input id="res-filter-from" type="date" className={selectCls} value={from} onChange={(e) => setFrom(e.target.value)} />
+          <Input id="res-filter-from" type="date" className={selectCls} value={from} onChange={(e) => setFrom(e.target.value)} />
           <label htmlFor="res-filter-to" className="text-xs text-muted-foreground">إلى</label>
-          <input id="res-filter-to" type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
+          <Input id="res-filter-to" type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
         <div className="relative flex-1 min-w-52">
           <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground"><Search className="size-4" /></span>
@@ -899,7 +899,7 @@ function ReservationLinesBlock({ detail }: { detail: ReservationDetail }) {
                 {variantLabel ? <span className="text-muted-foreground"> — {variantLabel}</span> : null}
               </div>
               <div className="text-xs text-muted-foreground">
-                {l.unitName} × {l.quantity.toLocaleString("en-US")}
+                {l.unitName} × {formatQuantity(l.quantity)}
                 {l.quotedUnitPrice != null ? ` · السعر ${fmt(l.quotedUnitPrice)} د.ع` : " · بلا سعر مرجعي"}
               </div>
             </div>

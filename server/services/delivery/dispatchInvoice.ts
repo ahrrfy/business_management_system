@@ -279,7 +279,7 @@ export async function dispatchInvoiceInTx(
         longitude: input.longitude ?? null,
         externalTrackingRef,
         notes: input.notes ?? (already.notes ?? null),
-        parcelStatus: "ASSIGNED",
+        parcelStatus: "OUT_FOR_DELIVERY",
         moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
         status: "DISPATCHED",
         remittanceId: null,
@@ -287,7 +287,7 @@ export async function dispatchInvoiceInTx(
         dispatchedAt,
         acceptedAt: null,
         pickedUpAt: null,
-        outForDeliveryAt: null,
+        outForDeliveryAt: dispatchedAt,
         settledAt: codPositive ? null : dispatchedAt,
         courierDeliveredAt: null,
         custodyRecognizedAt: null,
@@ -322,13 +322,14 @@ export async function dispatchInvoiceInTx(
         latitude: input.latitude ?? null,
         longitude: input.longitude ?? null,
         notes: input.notes ?? null,
-        parcelStatus: "ASSIGNED",
+        parcelStatus: "OUT_FOR_DELIVERY",
         moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
         // اكتمال الدفع لا يثبت وصول الطرد؛ أبقه تشغيلياً مع المندوب حتى ختم التسليم.
         status: "DISPATCHED",
         settledAt: codPositive ? null : dispatchedAt,
         dispatchedBy: actor.userId,
         dispatchedAt,
+        outForDeliveryAt: dispatchedAt,
         externalTrackingRef,
       });
       consignmentId = extractInsertId(cnRes);
@@ -360,11 +361,11 @@ export async function dispatchInvoiceInTx(
     await appendDeliveryEvent(tx, {
       eventKey: already
         ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
-        : `CN:${consignmentId}:ASSIGNED`,
+        : `CN:${consignmentId}:OUT_FOR_DELIVERY`,
       consignmentId,
-      eventType: already ? "ASSIGNMENT_REACTIVATED" : "ASSIGNED",
+      eventType: already ? "ASSIGNMENT_REACTIVATED" : "OUT_FOR_DELIVERY",
       fromParcelStatus: already?.parcelStatus ?? null,
-      toParcelStatus: "ASSIGNED",
+      toParcelStatus: "OUT_FOR_DELIVERY",
       fromMoneyStatus: already?.moneyStatus ?? null,
       toMoneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
       actorUserId: actor.userId,

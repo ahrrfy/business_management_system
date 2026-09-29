@@ -14,7 +14,7 @@ import { Package, PackagePlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@/lib/money";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import { BulkPicker } from "@/components/invoice/BulkPicker";
 import type { InvoiceLine } from "@/components/invoice/types";
@@ -107,7 +107,21 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
       return [...prev, { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle }];
     });
   };
-  const addMany = (items: InvoiceLine[]) => items.forEach(addLine);
+  const addMany = (items: InvoiceLine[]) => {
+    setLines((prev) => {
+      const next = [...prev];
+      for (const line of items) {
+        const i = next.findIndex((l) => l.productUnitId === line.productUnitId);
+        if (i >= 0) {
+          next[i] = { ...next[i], qty: next[i].qty + 1 };
+        } else {
+          const { productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle } = line;
+          next.push({ productId, variantId, productUnitId, name, sku, barcode, unit, qty, conversionFactor, stockBase, availableBase, isBundle });
+        }
+      }
+      return next;
+    });
+  };
   const setQty = (idx: number, qty: number) => setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, qty } : l)));
   const removeAt = (idx: number) => setLines((prev) => prev.filter((_, i) => i !== idx));
 
@@ -127,7 +141,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
           </span>
           {lines.length > 0 && (
             <span className="rounded-full bg-primary px-2.5 py-0.5 text-xs font-bold text-primary-foreground">
-              {fmtInt(lines.length)} سطر · {fmtInt(totalBase)} وحدة سند
+              {lines.length} سطر · {formatQuantity(totalBase)} وحدة سند
             </span>
           )}
         </div>
@@ -197,7 +211,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                       )}
                       {!st.isOut && st.isShort && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
-                          {st.availInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${fmtInt(st.availInUnit)} فقط`}
+                          {st.availInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${formatQuantity(st.availInUnit)} فقط`}
                         </span>
                       )}
                     </div>
@@ -212,14 +226,14 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                       )}
                       dir="ltr"
                     >
-                      {fmtInt(st.availInUnit)}
+                      {formatQuantity(st.availInUnit)}
                     </span>
                   </td>
                   <td className={td}>
                     <QuantityControl value={l.qty} onChange={(v) => setQty(idx, v)} />
                   </td>
                   <td className={cn(td, "text-sm font-extrabold tabular-nums")} dir="ltr">
-                    {fmtInt(st.baseQty)}
+                    {formatQuantity(st.baseQty)}
                     {l.isBundle && (
                       <div className="text-[10px] font-normal text-muted-foreground" dir="rtl">بكج</div>
                     )}

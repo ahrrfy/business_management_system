@@ -73,4 +73,44 @@ describe("receiptToCanvas — سعة الإيصال", () => {
     expect(drawn).not.toBeNull();
     expect(drawn!.height).toBeLessThan(canvas.height);
   });
+
+  it("فاتورة مدفوعة مسبقاً بالكامل مع توصيل تطلب فقط أجرة التوصيل وتفصح عن السداد المسبق", async () => {
+    const fillTextCalls: string[] = [];
+    const context = {
+      save: vi.fn(), restore: vi.fn(), fillRect: vi.fn(), drawImage: vi.fn(),
+      fillText: vi.fn((text: string) => fillTextCalls.push(String(text))),
+      setLineDash: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+      arcTo: vi.fn(), closePath: vi.fn(),
+      measureText: (s: string) => ({ width: s.length * 10 }),
+      fillStyle: "", strokeStyle: "", lineWidth: 1, textAlign: "start", font: "",
+      textBaseline: "alphabetic", direction: "rtl",
+    };
+    const canvas = { width: 0, height: 0, getContext: () => context };
+    vi.stubGlobal("document", {
+      fonts: { load: () => Promise.resolve([]) },
+      createElement: () => canvas,
+    });
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+
+    await receiptToCanvas({
+      receiptNumber: "INV-PAID-DLV", date: "2026-09-24", time: "12:00",
+      cashierName: "كاشير", customerName: "زبون نقدي", shiftId: 1,
+      items: [{ name: "بضاعة مدفوعة", quantity: 1, price: "50000", total: "50000" }],
+      subtotal: "50000", total: "50000", paymentMethod: "نقدي", paid: "50000", change: "0",
+      delivery: {
+        partyName: "شركة البراق", fee: "5000", feeCollection: "COURIER",
+        address: "البصرة",
+      },
+    });
+
+    // لا يجوز مطلقاً أن يظهر إجمالي 55,000 د.ع على الزبون
+    expect(fillTextCalls.some((t) => t.includes("55,000"))).toBe(false);
+    // يجب أن يظهر فقط أجرة التوصيل 5,000 د.ع مع إفصاح السداد المسبق
+    expect(fillTextCalls.some((t) => t.includes("يدفع الزبون (أجرة التوصيل فقط):"))).toBe(true);
+    expect(fillTextCalls.some((t) => t.includes("5,000 د.ع"))).toBe(true);
+    expect(fillTextCalls.some((t) => t.includes("البضاعة مدفوعة مسبقاً بالكامل"))).toBe(true);
+  });
 });

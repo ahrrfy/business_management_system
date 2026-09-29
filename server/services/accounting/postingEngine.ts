@@ -40,6 +40,8 @@ export const ACCOUNT_ROLES = [
   "ACCUMULATED_DEPRECIATION",
   "OWNER_CURRENT",
   "LOAN_PAYABLE",
+  "LOAN_RECEIVABLE",
+  "INVESTMENT_PAYABLE",
   "OTHER_LIABILITY",
   "CAPITAL",
   "RETAINED_EARNINGS",
@@ -607,11 +609,15 @@ const VOUCHER_CATEGORY_IN_ROLES = [
   "CAPITAL",
   "OWNER_CURRENT",
   "LOAN_PAYABLE",
+  "LOAN_RECEIVABLE",
+  "INVESTMENT_PAYABLE",
   "OTHER_LIABILITY",
 ] as const;
 const VOUCHER_CATEGORY_OUT_ROLES = [
   "OWNER_CURRENT",
   "LOAN_PAYABLE",
+  "LOAN_RECEIVABLE",
+  "INVESTMENT_PAYABLE",
   "OTHER_LIABILITY",
   "SALARIES",
   "RENT",
@@ -2023,8 +2029,14 @@ export const PROFILE_POLICIES = Object.freeze({
   OPENING_FIXED_ASSET: profilePolicy(
     "OPENING",
     ["FIXED_ASSETS"],
-    ["OPENING_EQUITY"],
+    ["OPENING_EQUITY", "ACCUMULATED_DEPRECIATION"],
     {
+      requiredCreditRoles: ["OPENING_EQUITY"],
+      requireRoleComponents: [
+        "FIXED_ASSETS",
+        "OPENING_EQUITY",
+        "ACCUMULATED_DEPRECIATION",
+      ],
       sourceAssertions: [
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["FIXED_ASSETS"]),
       ],

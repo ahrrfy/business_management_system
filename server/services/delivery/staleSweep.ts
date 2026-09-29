@@ -16,7 +16,6 @@ import { getDb } from "../../db";
 import { logger } from "../../logger";
 import { rolloutMode } from "../../config/rolloutFlags";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
-import { createTask } from "../tasks/create";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, assertParcelTransition, type ParcelStatus } from "./lifecycle";
 
@@ -176,21 +175,6 @@ export async function autoFailStaleParcels(
             rollback: "reassign FAILED->ASSIGNED من شاشة الإرساليات، أو الاسترجاع بعد استلام الطرد",
           },
         });
-        await createTask(
-          {
-            branchId: Number(cn.branchId),
-            kind: "FOLLOW_UP",
-            priority: "HIGH",
-            title: `طرد ${cn.consignmentNumber} تجاوز مهلة التوصيل — وُسم متعذّراً آلياً`,
-            description: `الجهة «${cn.partyName}» لم تُثبت تسليمَ الطرد ${cn.consignmentNumber} خلال ${Number(cn.thresholdDays)} يوماً (عمره ${Number(cn.ageDays)} يوماً) ولم يُقبض منه شيء. القرار: أعد إسناده لجهةٍ أخرى، أو سجّل استلامه راجعاً، أو ألغِ الإسناد بسبب.`,
-            linkedInvoiceId: Number(cn.invoiceId),
-            sourceChannel: "OTHER",
-            assignedTo: owner ? Number(owner.id) : null,
-            creationNote: "أُنشئت تلقائياً من كنّاس SLA للطرود (AUTO_FAILED_SLA)",
-          },
-          { userId: null, branchId: Number(cn.branchId) },
-          tx,
-        );
         result.failed += 1;
       });
     } catch (error) {

@@ -3,6 +3,7 @@
 // قيمة المُسلَّم + COD المُحصَّل + معدّل التعذّر + العهدة القائمة. عرض + تصدير Excel + طباعة A4.
 import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -295,11 +296,11 @@ export default function CourierPerformanceReport() {
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">من</label>
-            <input type="date" className={dateCls} value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+            <Input type="date" className={dateCls} value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">إلى</label>
-            <input type="date" className={dateCls} value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+            <Input type="date" className={dateCls} value={to} min={from} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>

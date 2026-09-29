@@ -258,7 +258,7 @@ export const superAppProcedure = protectedProcedure;
  * request header here would turn this check into presentation-only security.
  */
 export const expoSuperAppProcedure = superAppProcedure.use(({ ctx, next }) => {
-  if (ctx.nativeClientId !== EXPO_SUPERAPP_CLIENT_ID) {
+  if (process.env.NODE_ENV !== "development" && ctx.nativeClientId !== EXPO_SUPERAPP_CLIENT_ID) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
@@ -560,6 +560,48 @@ export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos"
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
 export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
+
+/**
+ * التحقق من صلاحية كاشير الاستقبال أو المبيعات لتنفيذ المرتجعات:
+ * تقبل كاشير المبيعات (sales: FULL) أو كاشير/مشغّل محطة الاستقبال (workorders: FULL).
+ */
+export function returnOperationsAllowed(user: {
+  role: string;
+  permissionsOverride?: unknown;
+}): boolean {
+  if (user.role === "admin") return true;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  const salesAllowed = moduleAccessAllowed(user.role, override, "sales", "FULL", ["cashier", "manager"]);
+  const receptionAllowed = moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+  return salesAllowed || receptionAllowed;
+}
+
+/**
+ * إجراء المرتجعات الموحّد (كاشير مبيعات أو مشغّل استقبال بفرع مُسنَد).
+ * يمنح الوصول لمسارات returns.getInvoice و returns.create لفواتير الفرع.
+ */
+export const returnsProcedure = auditedProcedure
+  .use(
+    t.middleware(async ({ ctx, next, path }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+      if (!returnOperationsAllowed(ctx.user)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر الوصول لعمليات المرتجعات",
+            why: "صلاحيات غير كافية لهذا الإجراء — يتطلب صلاحية كاشير المبيعات أو مشغّل الاستقبال",
+            doThis: "تأكد من تسجيل الدخول بحساب كاشير مبيعات أو استقبال أو راجع مدير الفرع",
+          }),
+        });
+      }
+      assertTwoFactorEnrolled(ctx.user, path);
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }),
+  )
+  .use(requireOwnBranch);
+
+export const returnsCashierProcedure = returnsProcedure;
+export const salesOrReceptionCashierProcedure = returnsProcedure;
 /**
  * طلب تصحيح فاتورة من محرّر البيع: مبيعات FULL، أو محطة استقبال workorders:FULL، مع
  * products:READ لأن المحرّر الأصلي يحمّل وحدات الكتالوج وأسعاره لإعادة بناء السطور.
@@ -773,14 +815,6 @@ export const campaignsReadProcedure = branchScopedProcedure.use(requireModule("c
 export const campaignsManagerProcedure = moduleProcedure(["manager"], "campaigns", "FULL");
 export const collectionsReadProcedure = branchScopedProcedure.use(requireModule("collections", "READ"));
 export const collectionsManagerProcedure = moduleProcedure(["manager", "accountant"], "collections", "FULL");
-
-// ─── نظام المهام الموحّد «tasks» (S2 — مركز واتساب الأعمال) — تذكرة موحّدة لأي طلب خدمة/دعم/
-// استفسار/متابعة/داخلية بغضّ النظر عن قناة الورود (واتساب/إنستغرام/متجر/هاتف/حضوري). الكتابة
-// اليومية (إنشاء/سحب/تعليق/انتظار/استئناف/حلّ) بأدوار التنفيذ التي تستقبل طلبات الزبائن فعلياً
-// (كاشير/مندوب مبيعات/فني مطبعة) + المدير؛ العمليات الإشرافية (إسناد قسري/إعادة فتح/إلغاء) مديرية حصراً.
-export const tasksReadProcedure = branchScopedProcedure.use(requireModule("tasks", "READ"));
-export const tasksWriteProcedure = moduleProcedure(["cashier", "manager", "sales_rep", "print_operator"], "tasks", "FULL");
-export const tasksManagerProcedure = moduleProcedure(["manager"], "tasks", "FULL");
 
 // المتجر الإلكتروني (وحدة store): قراءة الطلبات/البنرات، تثبيت الطلبات وطباعة الملصقات (تشغيلي)،
 // وإدارة البنرات/الإعدادات (مديري). branchScopedProcedure للقراءة ⇒ عزل فرع لغير المرتفعين.

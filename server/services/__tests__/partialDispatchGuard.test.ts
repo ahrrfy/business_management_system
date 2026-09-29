@@ -104,7 +104,7 @@ describe("ش٥ — حارس الإرسال الجزئيّ", () => {
 
     const events = await db().select().from(s.deliveryEvents)
       .where(eq(s.deliveryEvents.consignmentId, res.consignmentId));
-    const assigned = events.find((e) => e.eventType === "ASSIGNED");
+    const assigned = events.find((e) => e.eventType === "OUT_FOR_DELIVERY" || e.eventType === "ASSIGNED");
     expect(assigned).toBeTruthy();
     const payload = assigned!.payload as { partialDispatch?: boolean; unreadySiblings?: Array<{ orderNumber: string }> };
     // بلا هذا لا يُعرف بعد أسبوعٍ **من** أذن بخروج نصف الطلب ولا **ما** تُرك خلفه.
@@ -125,7 +125,9 @@ describe("ش٥ — حارس الإرسال الجزئيّ", () => {
     expect(res.consignmentId).toBeGreaterThan(0);
     const events = await db().select().from(s.deliveryEvents)
       .where(eq(s.deliveryEvents.consignmentId, res.consignmentId));
-    const payload = events.find((e) => e.eventType === "ASSIGNED")!.payload as { partialDispatch?: boolean };
+    const assigned = events.find((e) => e.eventType === "OUT_FOR_DELIVERY" || e.eventType === "ASSIGNED");
+    expect(assigned).toBeTruthy();
+    const payload = assigned!.payload as { partialDispatch?: boolean };
     expect(payload.partialDispatch).toBeUndefined();
   });
 

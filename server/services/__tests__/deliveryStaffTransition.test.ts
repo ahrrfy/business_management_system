@@ -113,6 +113,11 @@ async function dispatchCn(partyId: number, externalTrackingRef?: string): Promis
     partyId,
     ...(externalTrackingRef ? { externalTrackingRef } : {}),
   }, CASHIER);
+  await db().update(s.deliveryConsignments)
+    .set({ parcelStatus: "ASSIGNED", outForDeliveryAt: null })
+    .where(eq(s.deliveryConsignments.id, disp.consignmentId));
+  await db().delete(s.deliveryEvents).where(eq(s.deliveryEvents.consignmentId, disp.consignmentId));
+  await db().delete(s.deliveryOutbox).where(eq(s.deliveryOutbox.topic, "delivery.out_for_delivery"));
   return disp.consignmentId;
 }
 

@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
-import { D, formatIqd, round2 } from "@/lib/money";
+import { D, formatIqd, formatQuantity, round2 } from "@/lib/money";
 
 type Component = {
   componentVariantId: number;
@@ -160,7 +160,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
                             className="w-24"
                           />
                         ) : (
-                          <span>{r.componentBaseQuantity}</span>
+                          <span>{formatQuantity(r.componentBaseQuantity)}</span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">{formatIqd(unitCost.toString())}</td>

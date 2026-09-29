@@ -114,8 +114,8 @@ describe("لوحة الجهات — الدلاء الخمسة والنقد بم�
     expect(rows).toHaveLength(1);
     let row = rows[0];
     expect(row.partyId).toBe(PARTY);
-    expect(row.assigned).toEqual({ count: 2, amount: "5000.00" });
-    expect(row.inTransit.count).toBe(0);
+    expect(row.assigned).toEqual({ count: 0, amount: "0.00" });
+    expect(row.inTransit).toEqual({ count: 2, amount: "5000.00" });
     expect(row.deliveredUnremitted.count).toBe(0);
     expect(row.cashInHandLedger).toBe("0.00");
     expect(row.cashInHandStored).toBe("0.00");
@@ -127,7 +127,8 @@ describe("لوحة الجهات — الدلاء الخمسة والنقد بم�
     await confirmDelivered(a.consignmentId, "2000");
     rows = await board();
     row = rows[0];
-    expect(row.assigned).toEqual({ count: 1, amount: "3000.00" });
+    expect(row.assigned).toEqual({ count: 0, amount: "0.00" });
+    expect(row.inTransit).toEqual({ count: 1, amount: "3000.00" });
     expect(row.deliveredUnremitted).toEqual({ count: 1, amount: "2000.00" });
     expect(row.cashInHandLedger).toBe("2000.00");
     expect(row.cashInHandStored).toBe("2000.00");
@@ -142,11 +143,12 @@ describe("لوحة الجهات — الدلاء الخمسة والنقد بم�
     rows = await board();
     row = rows[0];
     expect(row.deliveredUnremitted.count).toBe(0);
-    expect(row.assigned).toEqual({ count: 1, amount: "3000.00" });
+    expect(row.assigned).toEqual({ count: 0, amount: "0.00" });
+    expect(row.inTransit).toEqual({ count: 1, amount: "3000.00" });
     expect(row.cashInHandLedger).toBe("0.00");
     expect(row.cashInHandStored).toBe("0.00");
     expect(row.net).toBe("3000.00");
-    expect(await consignmentOf(b.consignmentId).then((c) => c.parcelStatus)).toBe("ASSIGNED");
+    expect(await consignmentOf(b.consignmentId).then((c) => c.parcelStatus)).toBe("OUT_FOR_DELIVERY");
   });
 
   it("جهةٌ بلا فرعٍ مُسنَد لغير العابر ⇒ رفضٌ صريح", async () => {
@@ -342,3 +344,17 @@ describe("اقتراح الجهة بالمنطقة — دليلٌ لا تخمي�
     expect((await board())[0].staleOpenParcels).toBe(1);
   });
 });
+
+describe("listOpenConsignments — ظهور الفواتير المسندة للمندوب فورياً وبذمته", () => {
+  it("الفاتورة المسندة حديثاً للمندوب الفردي تظهر فوراً في قائمته المفتوحة بحالة OUT_FOR_DELIVERY", async () => {
+    await openReception();
+    const a = await saleWithDelivery("imm-1", "1");
+    const open = await listOpenConsignments(PARTY, 1);
+    const row = open.rows.find((r: { id: number }) => Number(r.id) === a.consignmentId);
+    expect(row).toBeDefined();
+    expect(row?.parcelStatus).toBe("OUT_FOR_DELIVERY");
+    expect(row?.moneyStatus).toBe("UNSETTLED");
+    expect(Number(row?.codAmount)).toBe(1000);
+  });
+});
+

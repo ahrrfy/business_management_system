@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
-import { D, fmtAr, positiveDiff } from "@/lib/money";
+import { D, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { trpc, type RouterInputs } from "@/lib/trpc";
@@ -29,6 +29,7 @@ import { printShippingLabel } from "@/lib/printing/shippingLabel";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { Printer, MessageCircle, Truck, CheckCircle2, Clock } from "lucide-react";
+import { WorkOrderDeliveryPaymentCard, type WoPaymentMethod } from "@/components/workOrders/WorkOrderDeliveryPaymentCard";
 import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
@@ -61,12 +62,6 @@ import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
 const PRIORITY_LABEL: Record<string, string> = { LOW: "منخفض", NORMAL: "عادي", URGENT: "عاجل" };
 
-const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
-  { v: "CASH", label: "نقدي" },
-  { v: "TRANSFER", label: "تحويل" },
-  { v: "CARD", label: "بطاقة" },
-  { v: "WALLET", label: "محفظة" },
-];
 
 type CancelInput = RouterInputs["workOrders"]["cancel"];
 type CancelControlInput = Extract<
@@ -176,8 +171,11 @@ export default function WorkOrderDetail() {
   const [editingMaterials, setEditingMaterials] = useState(false);
 
   const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [payMethod, setPayMethod] = useState<WoPaymentMethod>("CASH");
   const [payReference, setPayReference] = useState("");
+  const [showDeliveryMgrApproval, setShowDeliveryMgrApproval] = useState(false);
+  const [deliveryMgrApproval, setDeliveryMgrApproval] = useState<{ email: string; password: string } | null>(null);
+  const [deliveryAddToDebt, setDeliveryAddToDebt] = useState(false);
   const [partialDispatchMessage, setPartialDispatchMessage] = useState("");
   const deliverRequestIdRef = useRef<string | null>(null);
   const cancelAttemptRef = useRef<PendingCancelAttempt | null>(null);
@@ -229,7 +227,7 @@ export default function WorkOrderDetail() {
       customerName: wo.data.customerName ?? undefined,
       customerPhone: wo.data.customerPhone ?? undefined,
       jobTitle: wo.data.title,
-      quantity: wo.data.quantity ? `${wo.data.quantity} نسخة` : undefined,
+      quantity: wo.data.quantity ? `${formatQuantity(wo.data.quantity)} نسخة` : undefined,
       specs: wo.data.customizationText ?? undefined,
       total: wo.data.salePrice,
       // ش٤: التذكرة تُثبت العربون والمتبقّي (كانت تطبع الإجمالي وحده — أكثر ما يُتنازَع عليه).
@@ -607,7 +605,7 @@ export default function WorkOrderDetail() {
             jobType: data.title,
             specs: data.customizationText,
             items: [{
-              name: `${data.title} (${data.quantity} نسخة)`,
+              name: `${data.title} (${formatQuantity(data.quantity)} نسخة)`,
               unit: 'مهمة',
               quantity: 1,
               unitPrice: data.salePrice,
@@ -628,7 +626,7 @@ export default function WorkOrderDetail() {
               customerName: data.customerName ?? undefined,
               customerPhone: data.customerPhone ?? undefined,
               jobTitle: data.title,
-              quantity: data.quantity ? `${data.quantity} نسخة` : undefined,
+              quantity: data.quantity ? `${formatQuantity(data.quantity)} نسخة` : undefined,
               specs: data.customizationText ?? undefined,
               total: data.salePrice,
               paidUpfront: Number(data.deposit ?? 0) > 0 ? data.deposit : null,
@@ -725,7 +723,7 @@ export default function WorkOrderDetail() {
             <div className="lg:col-span-7 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="رقم الأمر"><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
-              <Field label="الكمية">{data.quantity}</Field>
+              <Field label="الكمية">{formatQuantity(data.quantity)}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               <Field label="قناة الاستلام"><ChannelBadge channel={data.receptionChannel} handle={data.channelHandle} /></Field>
               <Field label="عداد الوقت / المدة">
@@ -895,49 +893,23 @@ export default function WorkOrderDetail() {
       )}
 
       {data.status === "READY" && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">دفعة عند التسليم (اختياري)</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1">
-              <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(data.salePrice)} د.ع</span></div>
-              {D(data.deposit ?? 0).gt(0) && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(data.deposit)} د.ع</span></div>}
-              <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmt(remainingDue.toFixed(2))} د.ع</span></div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-              <div className="space-y-1">
-                <Label>المبلغ المدفوع الآن (الافتراضي = المستحق)</Label>
-                <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="الرصيد المستحق" ariaLabel="مبلغ الدفعة" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="wo-pay-method">طريقة الدفع</Label>
-                {/* `disabled` على الخيار محفوظ — AppSelect يمرّره إلى SelectItem (سياسة القبض تبقى مُنفَّذة). */}
-                <AppSelect id="wo-pay-method" value={payMethod} onValueChange={(value) => setPayMethod(value as typeof payMethod)}>
-                  {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
-                </AppSelect>
-              </div>
-              {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
-               *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind
-               *  القائمة في هذه الشاشة. الخادم يرفض دفعاً غير نقديّ بلا مرجع (deliver.ts superRefine)
-               *  فكان الحفظ يفشل بخطأ zod عامّ لا يشرح السبب — الحقل يمنعه مبكراً. */}
-              {payMethod !== "CASH" && (
-                <div className="space-y-1">
-                  <Label htmlFor="pay-ref">مرجع العملية {D(payAmount || "0").gt(0) && <span className="text-destructive">*</span>}</Label>
-                  <Input
-                    id="pay-ref"
-                    dir="ltr"
-                    value={payReference}
-                    onChange={(e) => setPayReference(e.target.value)}
-                    placeholder="رقم إشعار الجهاز/التحويل"
-                    className={cn(payReference.trim() === "" && D(payAmount || "0").gt(0) && "border-[var(--sem-warn)]")}
-                  />
-                  {payReference.trim() === "" && D(payAmount || "0").gt(0) && (
-                    <p className="text-[11px] text-[var(--sem-warn)]">مطلوب لمطابقة دفعة {METHODS.find((m) => m.v === payMethod)?.label} مع كشف الحساب.</p>
-                  )}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <WorkOrderDeliveryPaymentCard
+          salePrice={data.salePrice}
+          deposit={data.deposit}
+          remainingDue={remainingDue}
+          payAmount={payAmount}
+          setPayAmount={setPayAmount}
+          payMethod={payMethod}
+          setPayMethod={setPayMethod}
+          payReference={payReference}
+          setPayReference={setPayReference}
+          deliveryMgrApproval={deliveryMgrApproval}
+          onClearMgrApproval={() => {
+            setDeliveryMgrApproval(null);
+            setDeliveryAddToDebt(false);
+          }}
+          onRequestMgrApproval={() => setShowDeliveryMgrApproval(true)}
+        />
       )}
 
       {/* باركود + QR تذكرة طلب الخدمة */}
@@ -999,6 +971,8 @@ export default function WorkOrderDetail() {
               ...(payAmount && D(payAmount).gt(0)
                 ? { payment: { amount: D(payAmount).toFixed(2), method: payMethod, reference: payMethod !== "CASH" ? payReference.trim() : undefined } }
                 : {}),
+              addToCustomerDebt: deliveryAddToDebt,
+              managerApproval: deliveryMgrApproval ?? undefined,
             })}
           >
             {deliver.isPending ? "جارٍ التنفيذ…" : "أقرّ التسليم الجزئي"}
@@ -1098,6 +1072,12 @@ export default function WorkOrderDetail() {
             onClick={async () => {
               const payAmountD = D(payAmount || "0");
               const payNow = payAmountD.gt(0);
+              const unpaidRemainder = positiveDiff(remainingDue.toFixed(2), payAmountD.toFixed(2));
+              const hasUnpaidRemainder = unpaidRemainder.gt(0);
+              if (hasUnpaidRemainder && (!deliveryAddToDebt || !deliveryMgrApproval)) {
+                setError(`لا يمكن تسليم الطلب بمتبقٍ غير مستحصل (${fmt(unpaidRemainder.toFixed(2))} د.ع) دون اعتماد المسؤول لإضافته إلى ذمة العميل.`);
+                return;
+              }
               if (!isPosPaymentMethodEnabled(payMethod)) {
                 setError(posPaymentRejectionMessage(payMethod));
                 return;
@@ -1120,6 +1100,8 @@ export default function WorkOrderDetail() {
                 clientRequestId: deliverRequestIdRef.current ?? (deliverRequestIdRef.current = newClientRequestId()),
                 payment: payNow ? { amount: payAmountD.toFixed(2), method: payMethod, reference: payMethod !== "CASH" ? payReference.trim() : undefined } : undefined,
                 partialDispatchConfirmed: false,
+                addToCustomerDebt: deliveryAddToDebt,
+                managerApproval: deliveryMgrApproval ?? undefined,
               });
             }}
             disabled={deliver.isPending}
@@ -1323,6 +1305,20 @@ export default function WorkOrderDetail() {
           cancel.mutate(input);
         }}
       />
+      {showDeliveryMgrApproval && (
+        <ManagerApprovalDialog
+          zIndexClass="z-[110]"
+          title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
+          description={`تسليم الطلب مع بقاء ${fmt(positiveDiff(remainingDue.toFixed(2), D(payAmount || "0").toFixed(2)).toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
+          onCancel={() => setShowDeliveryMgrApproval(false)}
+          onApprove={(email, password) => {
+            setDeliveryMgrApproval({ email, password });
+            setDeliveryAddToDebt(true);
+            setShowDeliveryMgrApproval(false);
+            setError("");
+          }}
+        />
+      )}
     </div>
   );
 }

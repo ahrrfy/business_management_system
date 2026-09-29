@@ -557,7 +557,7 @@ export default function ProductDetailScreen() {
               accessibilityHint="يحفظ البديل والوحدة وبيانات التخصيص المختارة"
               accessibilityLabel={
                 quantity
-                  ? `أضف نسخة أخرى، الكمية الحالية ${quantity}`
+                  ? `أضف نسخة أخرى، الكمية الحالية ${formatLatinNumber(quantity)}`
                   : "أضف الاختيار إلى السلة"
               }
               accessibilityRole="button"
@@ -569,7 +569,7 @@ export default function ProductDetailScreen() {
               ]}
             >
               <Text style={styles.addButtonText}>
-                {quantity ? `أضف أخرى • في السلة ${quantity}` : "أضف للسلة"}
+                {quantity ? `أضف أخرى • في السلة ${formatLatinNumber(quantity)}` : "أضف للسلة"}
               </Text>
               <MaterialIcons
                 color="#FFFFFF"

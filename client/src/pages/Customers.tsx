@@ -9,6 +9,7 @@ import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { PageHeader } from "@/components/PageHeader";
@@ -20,7 +21,7 @@ import { confirm } from "@/lib/confirm";
 import { formatCustomerCard, formatTableAsTSV } from "@/lib/copy/formatters";
 import { CUSTOMER_FIELDS, CUSTOMER_IMPORT_META } from "@/lib/importFields";
 import type { CustomerImportRow } from "@/lib/importTypes";
-import { fmtAr as fmt } from "@/lib/money";
+import { D, fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -75,13 +76,6 @@ export default function Customers() {
   // بل «مخفي»؛ لذا لا نعرض «بلا حدّ» إلا للمدير/الإدمن حيث null=ائتمان غير محدود فعلاً.
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
-  const canCreateTasks = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "tasks",
-    "FULL",
-    ["cashier", "manager", "sales_rep", "print_operator"],
-  );
   // ٢٤/٨ (Codex P2 على PR #744): كشف الحساب تحت `reports=READ` — البقيّة يُعاد توجيهها بلا نتيجة.
   const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
@@ -212,7 +206,6 @@ export default function Customers() {
     onError: (e) => notify.err(e),
   });
   const createNote = trpc.customerNotes.create.useMutation();
-  const createTask = trpc.tasks.create.useMutation();
 
   const total = list.data?.total ?? 0;
   const rows = (list.data?.rows ?? []) as DisplayRow[];
@@ -319,61 +312,13 @@ export default function Customers() {
         followUpDate: value.followUpDate,
         branchId: effectiveFollowUpBranchId,
       });
-      if (value.createTask) {
-        if (!canCreateTasks) throw new Error("ليست لديك صلاحية إنشاء المهام");
-        await createTask.mutateAsync({
-          branchId: effectiveFollowUpBranchId,
-          kind: "FOLLOW_UP",
-          title: `متابعة تحصيل — ${followTarget.name}`,
-          description: value.note,
-          priority: value.taskPriority,
-          customerId: Number(followTarget.id),
-          sourceChannel: "PHONE",
-          dueAt: value.followUpDate ? `${value.followUpDate}T09:00:00Z` : null,
-        });
-      }
       await Promise.all([
         utils.customerNotes.list.invalidate({ customerId: Number(followTarget.id) }),
         utils.customerNotes.dueToday.invalidate(),
-        utils.tasks.list.invalidate(),
         utils.customers.operations.invalidate(),
       ]);
-      notify.ok(value.createTask ? "حُفظت المتابعة وأُنشئت المهمة" : "حُفظت المتابعة");
+      notify.ok("حُفظت المتابعة");
       setFollowTarget(null);
-    } catch (error) {
-      notify.err(error);
-    }
-  }
-
-  async function createBulkFollowUpTasks() {
-    if (!canCreateTasks || selectedRows.length === 0) return;
-    if (effectiveFollowUpBranchId == null) {
-      notify.err("اختر الفرع أولاً قبل إنشاء مهام المتابعة");
-      return;
-    }
-    const ok = await confirm({
-      title: "إنشاء مهام متابعة",
-      description: `سيتم إنشاء مهمة متابعة مرتبطة لكل عميل من العملاء المحددين (${selectedRows.length}).`,
-      confirmText: "إنشاء المهام",
-    });
-    if (!ok) return;
-    try {
-      await Promise.all(
-        selectedRows.map((row) =>
-          createTask.mutateAsync({
-            branchId: effectiveFollowUpBranchId,
-            kind: "FOLLOW_UP",
-            title: `متابعة تحصيل — ${row.name}`,
-            description: `متابعة جماعية من شاشة العملاء. الرصيد الحالي: ${fmt(row.currentBalance)} د.ع`,
-            priority: "NORMAL",
-            customerId: Number(row.id),
-            sourceChannel: "OTHER",
-          }),
-        ),
-      );
-      await utils.tasks.list.invalidate();
-      notify.ok(`تم إنشاء ${selectedRows.length} مهمة متابعة`);
-      sel.clear();
     } catch (error) {
       notify.err(error);
     }
@@ -416,74 +361,87 @@ export default function Customers() {
   const columns: ColumnDef<DisplayRow, unknown>[] = [
     {
       id: "name",
-      header: "الاسم",
-      accessorFn: (c) => c.name ?? "",
-      meta: { width: "wide", wrap: true },
+      header: "العميل / الهاتف",
+      accessorFn: (c) => [c.name, c.phone, legacyCodeOf(c)].filter(Boolean).join(" · "),
+      meta: { width: "stacked" },
       cell: ({ row }) => {
         const c = row.original;
         const id = Number(c.id);
-        /* الميل من البحث الشامل (?focus=): الصفّ يُمرَّر لوسط الشاشة. DataTable لا يمرّر ref
-           للصفّ، فنعلّق ref التمرير على أوّل خليّةٍ فيه — نفس النتيجة البصرية. */
         const fr = rowProps(id);
+        const legacy = legacyCodeOf(c);
         return (
-          <span ref={fr.ref} className="font-medium">
-            {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف حسابه — يوفّر خطوةً يومية. للأدوار بلا
-                `reports:READ` نعرضه نصاً — كشف الحساب مقصور خادميّاً على المرتفعين. */}
-            {canOpenStatement ? (
-              <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
-                {c.name}
-              </Link>
-            ) : (
-              c.name
-            )}
+          <span ref={fr.ref} className="block w-full">
+            <StackedEntityCell
+              primary={
+                canOpenStatement ? (
+                  <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
+                    {c.name}
+                  </Link>
+                ) : (
+                  c.name
+                )
+              }
+              primaryTitle={c.name ?? undefined}
+              secondary={c.phone || (legacy ? `#${legacy}` : undefined)}
+              secondaryTitle={c.phone ? "رقم الهاتف" : legacy ? `الرقم القديم: ${legacy}` : undefined}
+              copyValue={c.phone}
+              copyTitle="نسخ رقم الهاتف"
+              secondaryBadge={
+                legacy && c.phone ? (
+                  <span className="text-[10px] text-muted-foreground font-mono" title={`الرقم القديم: ${legacy}`}>
+                    ({legacy})
+                  </span>
+                ) : undefined
+              }
+            />
           </span>
         );
       },
     },
-    // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ) — كما كان.
-    ...(hasLegacy
-      ? [{
-          id: "legacyCode",
-          header: "الرقم القديم",
-          accessorFn: (c: DisplayRow) => legacyCodeOf(c) ?? "—",
-          meta: { kind: "code" as const },
-          cell: ({ row }) => <span className="text-xs text-muted-foreground">{legacyCodeOf(row.original) ?? "—"}</span>,
-        } as ColumnDef<DisplayRow, unknown>]
-      : []),
-    { id: "customerType", header: "النوع", accessorFn: (c) => c.customerType ?? "—", cell: ({ row }) => <span className="text-xs">{row.original.customerType ?? "—"}</span> },
     {
-      id: "phone",
-      header: "الهاتف",
-      accessorFn: (c) => c.phone ?? "",
-      meta: { kind: "phone" },
-      cell: ({ row }) => <CopyInline value={row.original.phone} />,
+      id: "typeTierAndCity",
+      header: "الفئة والنوع / المدينة",
+      accessorFn: (c) =>
+        [TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier, c.customerType, c.city, c.district]
+          .filter(Boolean)
+          .join(" · "),
+      cell: ({ row }) => {
+        const c = row.original;
+        const cityDistrict = [c.city, c.district].filter(Boolean).join(" / ");
+        return (
+          <div className="flex flex-col items-start gap-0.5 text-xs">
+            <div className="flex items-center gap-1">
+              <span className="font-medium">{TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier}</span>
+              {c.customerType && (
+                <span className="text-muted-foreground text-[11px]">({c.customerType})</span>
+              )}
+            </div>
+            {cityDistrict ? (
+              <span className="text-[11px] text-muted-foreground">{cityDistrict}</span>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
-      id: "city",
-      header: "المدينة/المنطقة",
-      accessorFn: (c) => [c.city, c.district].filter(Boolean).join(" / ") || "—",
-      cell: ({ row }) => <span className="text-xs">{[row.original.city, row.original.district].filter(Boolean).join(" / ") || "—"}</span>,
-    },
-    {
-      id: "priceTier",
-      header: "فئة السعر",
-      accessorFn: (c) => TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier,
-      cell: ({ row }) => <span className="text-xs">{TIER_LABEL[row.original.defaultPriceTier] ?? row.original.defaultPriceTier}</span>,
-    },
-    {
-      id: "creditLimit",
-      header: "سقف الائتمان",
-      // للكاشير `null` = «مخفيّ» لا «بلا حدّ» (maskCustomerSensitive) — التمييز محفوظ كما كان.
-      accessorFn: (c) => (isElevated && c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)),
+      id: "balanceAndCreditLimit",
+      header: "الرصيد / سقف الائتمان",
+      accessorFn: (c) =>
+        `رصيد: ${fmt(c.currentBalance ?? 0)} · سقف: ${isElevated && c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)}`,
       meta: { kind: "money" },
-      cell: ({ row }) => (isElevated && row.original.creditLimit == null ? "بلا حدّ" : fmt(row.original.creditLimit)),
-    },
-    {
-      id: "balance",
-      header: "الرصيد",
-      accessorFn: (c) => fmt(c.currentBalance ?? 0),
-      meta: { kind: "money" },
-      cell: ({ row }) => <BalanceCell amount={row.original.currentBalance} entityType="customer" />,
+      sortDescFirst: true,
+      sortingFn: (a, b) => D(a.original.currentBalance || 0).cmp(D(b.original.currentBalance || 0)),
+      cell: ({ row }) => (
+        <div className="flex flex-col items-end gap-0.5">
+          <BalanceCell amount={row.original.currentBalance} entityType="customer" />
+          <span
+            className="text-[11px] text-muted-foreground tabular-nums"
+            title="سقف الائتمان المسموح به"
+          >
+            سقف: {isElevated && row.original.creditLimit == null ? "بلا حدّ" : fmt(row.original.creditLimit)}
+          </span>
+        </div>
+      ),
     },
     ...(isElevated
       ? [{
@@ -501,7 +459,6 @@ export default function Customers() {
                   {COLLECTION_STATUS[c.collectionStatus]?.label ?? c.collectionStatus}
                 </Badge>
                 {c.daysOverdue > 0 && <span className="text-[10px] text-muted-foreground">{c.daysOverdue} يوم</span>}
-                {c.openTasks > 0 && <span className="text-[10px] text-muted-foreground">{c.openTasks} مهمة مفتوحة</span>}
               </div>
             );
           },
@@ -591,7 +548,7 @@ export default function Customers() {
                 key: "reminder",
                 kind: "create",
                 label: "تذكير واتساب",
-                href: "/ar-reminders",
+                href: "/reports/ar-reminders",
                 hidden: !isElevated,
                 gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
               },
@@ -967,10 +924,9 @@ export default function Customers() {
                 </button>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Link href="/ar-reminders"><Button size="sm">برنامج التحصيل اليوم</Button></Link>
+                <Link href="/reports/ar-reminders"><Button size="sm">برنامج التحصيل اليوم</Button></Link>
                 <Link href="/crm?tab=aging"><Button size="sm" variant="outline">أعمار الذمم</Button></Link>
                 <Link href="/crm?tab=followups"><Button size="sm" variant="outline">سجل المتابعات</Button></Link>
-                <Link href="/tasks?tab=list&overdue=1"><Button size="sm" variant="outline">المهام المتأخرة</Button></Link>
               </div>
               {(summary?.collectorActivity30d?.length ?? 0) > 0 && (
                 <details className="text-xs">
@@ -995,7 +951,7 @@ export default function Customers() {
         onOpenChange={(open) => { if (!open) setFollowTarget(null); }}
         customerName={followTarget?.name ?? ""}
         defaultAmount={followTarget?.currentBalance ?? null}
-        submitting={createNote.isPending || createTask.isPending}
+        submitting={createNote.isPending}
         onSubmit={(value) => void saveFollowUp(value)}
       />
 
@@ -1008,16 +964,9 @@ export default function Customers() {
         onPrint={printSelectedCollectionList}
         printLabel="طباعة قائمة التحصيل"
         actions={
-          <>
-            <Button size="sm" variant="outline" onClick={() => void copySelectedAsWhatsAppSummary()}>
-              معاينة واتساب
-            </Button>
-            {canCreateTasks && (
-              <Button size="sm" variant="outline" onClick={() => void createBulkFollowUpTasks()} disabled={createTask.isPending}>
-                إنشاء مهام متابعة
-              </Button>
-            )}
-          </>
+          <Button size="sm" variant="outline" onClick={() => void copySelectedAsWhatsAppSummary()}>
+            معاينة واتساب
+          </Button>
         }
       />
     </div>

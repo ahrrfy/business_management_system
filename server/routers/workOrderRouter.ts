@@ -20,12 +20,12 @@ import {
   receptionDrafts,
   serviceTypes,
   shifts,
-  tasks,
   workOrderEvents,
   workOrderImages,
   workOrderMaterials,
   workOrders,
 } from "../../drizzle/schema";
+import { phoneSuffix10 } from "../lib/phone";
 import { getDb } from "../db";
 import {
   cancelWorkOrder,
@@ -65,7 +65,7 @@ import { invoiceBarcodeSet, onlineOrderLabelToken, workOrderBarcodeSet } from ".
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { money } from "../services/money";
+import { money, round2 } from "../services/money";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { withTx } from "../services/tx";
@@ -373,9 +373,29 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
   const search = input?.q?.trim();
   if (search) {
     const pat = `%${escLike(search)}%`;
-    conds.push(
-      sql`(${workOrders.orderNumber} LIKE ${pat} ESCAPE '!' OR ${workOrders.title} LIKE ${pat} ESCAPE '!' OR ${customers.name} LIKE ${pat} ESCAPE '!')`,
-    );
+    const sfx = phoneSuffix10(search);
+    const searchConds = [
+      sql`${workOrders.orderNumber} LIKE ${pat} ESCAPE '!'`,
+      sql`${workOrders.title} LIKE ${pat} ESCAPE '!'`,
+      sql`${customers.name} LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone2}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.phone3}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${customers.whatsapp}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${workOrders.deliveryPhone}, '') LIKE ${pat} ESCAPE '!'`,
+      sql`coalesce(${workOrders.contactPhone}, '') LIKE ${pat} ESCAPE '!'`,
+    ];
+    if (sfx) {
+      const sfxPat = `%${escLike(sfx)}%`;
+      searchConds.push(
+        sql`coalesce(${customers.phone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${customers.phone2}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${customers.whatsapp}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${workOrders.deliveryPhone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+        sql`coalesce(${workOrders.contactPhone}, '') LIKE ${sfxPat} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...searchConds)!);
   }
   if (input?.from) {
     const from = new Date(input.from);
@@ -982,30 +1002,7 @@ export const workOrderRouter = router({
       .from(workOrderImages)
       .where(eq(workOrderImages.workOrderId, input.workOrderId))
       .orderBy(desc(workOrderImages.revision), asc(workOrderImages.sortOrder), asc(workOrderImages.id));
-    /**
-     * ش٢ — **الأمر يقول حالة حجزه بنفسه**: مهمّةٌ مفتوحةٌ نوعُها حاجز. استعلامٌ واحد بدل
-     * إجراءٍ جديد أو فلترةٍ في الواجهة، والحالةُ مشتقّةٌ من الواقع فلا تكذب البطاقة حين
-     * تُفتَح نسخةٌ جديدة (تعود «بانتظار الموافقة» تلقائياً).
-     */
-    const blockingRows = await db
-      .select({
-        id: tasks.id,
-        taskNumber: tasks.taskNumber,
-        title: tasks.title,
-        status: tasks.taskStatus,
-        dueAt: tasks.dueAt,
-      })
-      .from(tasks)
-      .innerJoin(serviceTypes, eq(serviceTypes.id, tasks.serviceTypeId))
-      .where(
-        and(
-          eq(tasks.linkedWorkOrderId, input.workOrderId),
-          inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
-          eq(serviceTypes.blocksExecution, true),
-        ),
-      )
-      .limit(1);
-    const blockingTask = blockingRows[0] ?? null;
+    const blockingTask = null;
     /**
      * ش٥ (0238) — **إخوةُ الطلب**: الزبون يرى طلباً واحداً، وأوامرُ السلّة الواحدة كانت لا
      * يعرف بعضُها بعضاً. استعلامٌ مفهرسٌ واحد (`idx_wo_draft`) بدل مسحِ `idempotencyKeys`
@@ -1062,7 +1059,7 @@ export const workOrderRouter = router({
       courierDeliveredAt: deliveryInfo.courierDeliveredAt ?? null,
       kanbanState: wo.kanbanState,
       blockedReason: wo.blockedReason,
-      blockingTaskLabel: blockingTask?.title ?? null,
+      blockingTaskLabel: null,
     });
     const nextActionReason =
       nextAction == null ? nextActionTerminalReason("WORK_ORDER", wo.status) : null;
@@ -1094,7 +1091,7 @@ export const workOrderRouter = router({
       const db = getDb();
       if (!db) return null;
       const lookup = prepareDeliveryBarcodeLookup(input.orderNumber);
-      const { code, systemCode, trackingCode, documentCode, namespace, numericId } = lookup;
+      const { code, systemCode, trackingCode, strippedTrackingCode, documentCode, namespace, numericId } = lookup;
       const scopedBranchId = canCrossBranches(ctx.user)
         ? null
         : (ctx.user.branchId == null ? -1 : Number(ctx.user.branchId));
@@ -1166,7 +1163,11 @@ export const workOrderRouter = router({
                 sourceType: deliveryConsignments.sourceType,
                 sourceId: deliveryConsignments.sourceId,
                 linkedOnlineOrderId: onlineOrders.id,
-                matchRank: sql<number>`CASE WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}) THEN 100 WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50 ELSE 10 END`,
+                matchRank: sql<number>`CASE
+                  WHEN ${deliveryConsignments.consignmentNumber} IN (${code}, ${systemCode}) THEN 100
+                  WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
+                  WHEN TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode} THEN 40
+                  ELSE 10 END`,
               })
               .from(deliveryConsignments)
               .leftJoin(onlineOrders, eq(deliveryConsignments.invoiceId, onlineOrders.invoiceId))
@@ -1177,11 +1178,21 @@ export const workOrderRouter = router({
                     ? or(
                         numericId != null ? eq(deliveryConsignments.id, numericId) : sql`0=1`,
                         eq(deliveryConsignments.consignmentNumber, code),
-                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                        trackingCode
+                          ? or(
+                              eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                              eq(sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef})`, strippedTrackingCode),
+                            )
+                          : sql`0=1`,
                       )
                     : or(
                         eq(deliveryConsignments.consignmentNumber, systemCode),
-                        trackingCode ? eq(deliveryConsignments.externalTrackingRef, trackingCode) : sql`0=1`,
+                        trackingCode
+                          ? or(
+                              eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                              eq(sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef})`, strippedTrackingCode),
+                            )
+                          : sql`0=1`,
                       ),
                 branchFilter != null ? eq(deliveryConsignments.branchId, branchFilter) : sql`1=1`,
               ))
@@ -1248,6 +1259,7 @@ export const workOrderRouter = router({
           deliveryCost: workOrders.deliveryCost,
           deliveryFeeCollection: workOrders.deliveryFeeCollection,
           branchId: workOrders.branchId,
+          invoiceId: workOrders.invoiceId,
           version: workOrders.version,
           notes: workOrders.customizationText,
           createdAt: workOrders.createdAt,
@@ -1286,8 +1298,46 @@ export const workOrderRouter = router({
           .orderBy(desc(deliveryConsignments.id))
           .limit(1);
 
+        let linkedInvoice: {
+          id: number;
+          invoiceNumber: string;
+          total: string;
+          paidAmount: string;
+          remaining: string;
+          isUnsettled: boolean;
+        } | null = null;
+
+        if (row.invoiceId != null) {
+          const [invRow] = await db
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              total: invoices.total,
+              paidAmount: invoices.paidAmount,
+              status: invoices.status,
+            })
+            .from(invoices)
+            .where(eq(invoices.id, Number(row.invoiceId)))
+            .limit(1);
+
+          if (invRow && invRow.status !== "CANCELLED" && invRow.status !== "RETURNED") {
+            const invTotal = money(invRow.total);
+            const invPaid = money(invRow.paidAmount ?? "0");
+            const rem = round2(invTotal.minus(invPaid));
+            linkedInvoice = {
+              id: Number(invRow.id),
+              invoiceNumber: invRow.invoiceNumber,
+              total: String(invRow.total),
+              paidAmount: String(invRow.paidAmount ?? "0"),
+              remaining: rem.toFixed(2),
+              isUnsettled: rem.gt(0),
+            };
+          }
+        }
+
         return {
           ...row,
+          linkedInvoice,
           qrPayload: workOrderBarcodeSet({
             orderNumber: row.orderNumber,
             createdAt: row.createdAt,
@@ -2158,15 +2208,41 @@ export const workOrderRouter = router({
         clientRequestId: z.string().optional().nullable(),
         /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
+        /** إضافة المتبقي غير المستحصل إلى ذمة العميل (باعتماد مدير) */
+        addToCustomerDebt: z.boolean().optional(),
+        /** بيانات اعتماد المدير للموافقة على إضافة المتبقي إلى ذمة العميل */
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
+      let approvedByManagerId: number | null = null;
+      if (input.managerApproval) {
+        const effectiveBranchId = ctx.user.role === "admin"
+          ? (ctx.user.branchId ?? undefined)
+          : (ctx.user.branchId ?? 1);
+        approvedByManagerId = await verifyManagerApproval(input.managerApproval, ctx, effectiveBranchId);
+      }
+      const deliverPayload = {
+        ...input,
+        managerOverrideByUserId: approvedByManagerId,
+        enforceDebtApproval: true,
+      };
       // ER_DUP_ENTRY على invoiceNumber ممكن تحت تزامن POS+WO، وكذلك ضحيّة deadlock
       // (تسليم WO يتقاطع قفلياً مع البيع على customers/documentCounters) ⇒ أعد المحاولة كـsaleRouter.
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await deliverWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+          const res = await deliverWorkOrder(deliverPayload, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
           await logAudit(ctx, { action: "workOrder.deliver", entityType: "workOrder", entityId: input.workOrderId });
+          if (input.addToCustomerDebt) {
+            await logAudit(ctx, {
+              action: "workOrder.deliver.debtApproved",
+              entityType: "workOrder",
+              entityId: input.workOrderId,
+              newValue: {
+                managerOverrideByUserId: approvedByManagerId ?? (ctx.user.role === "admin" || ctx.user.role === "manager" ? ctx.user.id : null),
+              },
+            });
+          }
           return res;
         } catch (e: any) {
           if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;

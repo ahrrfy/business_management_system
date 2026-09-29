@@ -320,9 +320,16 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           pickupKeyRef.current = null; // إغلاق قبل المحاولة = دورةٌ جديدة عند فتحٍ لاحق
           setPickupTarget(null);
         }}
-        onConfirm={(payment) => {
+        onConfirm={(payment, extra) => {
           const ord = pickupTarget!;
-          deliver.mutate({ workOrderId: ord.id, payment, clientRequestId: ensurePickupKey(), partialDispatchConfirmed: false });
+          deliver.mutate({
+            workOrderId: ord.id,
+            payment,
+            addToCustomerDebt: extra?.addToCustomerDebt,
+            managerApproval: extra?.managerApproval,
+            clientRequestId: ensurePickupKey(),
+            partialDispatchConfirmed: false,
+          });
         }}
       />
       <PartialPickupConfirmDialog

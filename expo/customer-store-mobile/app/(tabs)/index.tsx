@@ -1,11 +1,13 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Linking,
   ScrollView,
   StyleSheet,
@@ -15,11 +17,22 @@ import {
   View,
 } from "react-native";
 
+import { ClaymorphicCategories } from "@/components/claymorphic-categories";
+import {
+  DeliveryLocationModal,
+  resolveDeliveryLocation,
+  type DeliveryLocation,
+} from "@/components/delivery-location-modal";
+import { FlashDealsRail, isSub10kDeal } from "@/components/flash-deals-rail";
+import { FloatingCartBar } from "@/components/floating-cart-bar";
+import { HeroMascotCard } from "@/components/hero-mascot-card";
+import { LoyaltyProgressCard } from "@/components/loyalty-progress-card";
 import { MarketingCarousel } from "@/components/marketing-carousel";
 import { ProductCard } from "@/components/product-card";
 import { QuickProductView } from "@/components/quick-product-view";
 import { ScreenContainer } from "@/components/screen-container";
 import { SideCart } from "@/components/side-cart";
+import { TrustCardsRow } from "@/components/trust-cards-row";
 import { useCart } from "@/lib/cart-context";
 import {
   catalogDisplayState,
@@ -36,35 +49,39 @@ import { storefrontDesign } from "@/lib/storefront-design";
 import type { Product } from "@/shared/storefront";
 
 const RECENT_SEARCHES_KEY = "@al_arabiya/recent-searches-v1";
+const DELIVERY_LOCATION_KEY = "@al_arabiya/delivery-location-v1";
 
-const SHOPPER_PATHS = [
+export const CART_BOUNCE_SPRING_CONFIG = {
+  damping: 12,
+  stiffness: 200,
+  idleScale: 1.0,
+  peakScale: 1.25,
+} as const;
+
+export const SHOPPER_PATHS = [
   {
     audience: "طالب",
     direction: "كتب ولوازم دراسية",
     icon: "menu-book",
     route: "/search",
-    tone: "mint",
   },
   {
     audience: "فرد",
     direction: "قرطاسية وهدايا",
     icon: "edit",
     route: "/categories",
-    tone: "sand",
   },
   {
     audience: "مكتب",
     direction: "تجهيزات العمل",
     icon: "business-center",
     route: "/categories",
-    tone: "blue",
   },
   {
     audience: "شركة",
     direction: "طلب عرض للكميات",
     icon: "corporate-fare",
     route: "/request-quote",
-    tone: "rose",
   },
 ] as const;
 
@@ -86,15 +103,6 @@ const STORE_OCCASIONS = [
   { id: "journal", label: "يوميات وتأمل", icon: "self-improvement", color: "#F3E8FF", textColor: "#9333EA", borderColor: "#E9D5FF" },
 ] as const;
 
-const CATEGORY_TINTS = [
-  { bg: "#ECFDF5", border: "#A7F3D0", iconColor: "#059669" },
-  { bg: "#FFF7ED", border: "#FED7AA", iconColor: "#EA580C" },
-  { bg: "#FAF5FF", border: "#E9D5FF", iconColor: "#9333EA" },
-  { bg: "#FFF1F2", border: "#FECDD3", iconColor: "#E11D48" },
-  { bg: "#EFF6FF", border: "#BFDBFE", iconColor: "#2563EB" },
-  { bg: "#FDF2F8", border: "#FBCFE8", iconColor: "#DB2777" },
-];
-
 function routeFromBanner(banner: StorefrontBanner | null) {
   const url = banner?.ctaUrl ?? "";
   const categoryMatch = url.match(/[?&]category(?:Id)?=(\d+)/i);
@@ -110,11 +118,11 @@ export default function HomeScreen() {
   const { products, loading, error, refresh } = useStorefrontCatalog(
     undefined,
     undefined,
-    { limit: 8 },
+    { limit: 30 },
   );
   const { categories } = useStorefrontCategories();
-  const [loadMarketing, setLoadMarketing] = useState(false);
-  const { banners, offers } = useStorefrontMarketing(loadMarketing);
+  const { banners, offers } = useStorefrontMarketing();
+  const settings = useStorefrontSettings();
   const [query, setQuery] = useState("");
   const [searchActive, setSearchActive] = useState(false);
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -127,10 +135,42 @@ export default function HomeScreen() {
     "POPULAR" | "PRICE_ASC" | "PRICE_DESC"
   >("POPULAR");
 
+  // Delivery Location State
+  const [deliveryLocation, setDeliveryLocation] = useState<DeliveryLocation>(() =>
+    resolveDeliveryLocation("بغداد", "الكرخ"),
+  );
+  const [locationModalVisible, setLocationModalVisible] = useState(false);
+
+  // Cart Button Spring Scale Bounce Animation
+  const cartScaleAnim = useRef(new Animated.Value(1)).current;
+
+  const triggerCartBounce = () => {
+    Animated.sequence([
+      Animated.spring(cartScaleAnim, {
+        toValue: CART_BOUNCE_SPRING_CONFIG.peakScale,
+        damping: CART_BOUNCE_SPRING_CONFIG.damping,
+        stiffness: CART_BOUNCE_SPRING_CONFIG.stiffness,
+        useNativeDriver: true,
+      }),
+      Animated.spring(cartScaleAnim, {
+        toValue: CART_BOUNCE_SPRING_CONFIG.idleScale,
+        damping: CART_BOUNCE_SPRING_CONFIG.damping,
+        stiffness: CART_BOUNCE_SPRING_CONFIG.stiffness,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
   const saleProducts = useMemo(
     () => products.filter((product) => productDiscountPercent(product) != null),
     [products],
   );
+
+  const sub10kProducts = useMemo(
+    () => products.filter(isSub10kDeal),
+    [products],
+  );
+
   const discoveryCategories = categories.length
     ? categories
     : FALLBACK_DISCOVERY_CATEGORIES;
@@ -152,7 +192,9 @@ export default function HomeScreen() {
       return (right.soldCount ?? 0) - (left.soldCount ?? 0);
     });
   }, [homeCategoryId, homeSort, products]);
+
   const productsState = catalogDisplayState(homeProducts, loading, error);
+
   const quickMatches = useMemo(() => {
     const clean = debouncedQuery.trim().toLocaleLowerCase("ar");
     if (clean.length < 2) return [];
@@ -164,11 +206,6 @@ export default function HomeScreen() {
       )
       .slice(0, 4);
   }, [debouncedQuery, products]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setLoadMarketing(true), 900);
-    return () => clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     const clean = query.trim();
@@ -194,6 +231,17 @@ export default function HomeScreen() {
           values.every((value) => typeof value === "string")
         )
           setRecentSearches(values.slice(0, 6));
+      })
+      .catch(() => undefined);
+
+    void AsyncStorage.getItem(DELIVERY_LOCATION_KEY)
+      .then((raw) => {
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.governorate === "string") {
+            setDeliveryLocation(resolveDeliveryLocation(parsed.governorate, parsed.area));
+          }
+        }
       })
       .catch(() => undefined);
   }, []);
@@ -230,7 +278,25 @@ export default function HomeScreen() {
     );
   };
 
-  const settings = useStorefrontSettings();
+  const handleBarcodeScan = () => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(
+      () => undefined,
+    );
+    Alert.alert(
+      "مسح الباركود السريع",
+      "وجّه الكاميرا نحو باركود المنتج أو الكتاب للبحث المباشر عنه في الكتالوج.",
+      [
+        { text: "إلغاء", style: "cancel" },
+        {
+          text: "فتح الكاميرا",
+          onPress: () => {
+            router.push("/search" as never);
+          },
+        },
+      ],
+    );
+  };
+
   const openWhatsAppPrinting = async () => {
     const rawNumber = settings?.whatsappNumber?.replace(/\D/g, "");
     if (!rawNumber) {
@@ -258,10 +324,34 @@ export default function HomeScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
+        {/* Delivery Location Selector in Top Header */}
+        <View style={styles.deliveryBar}>
+          <TouchableOpacity
+            accessibilityHint="يفتح قائمة اختيار المحافظة والمنطقة للتوصيل"
+            accessibilityLabel={`تغيير موقع التوصيل، الحالي: ${deliveryLocation.formatted}`}
+            accessibilityRole="button"
+            activeOpacity={0.82}
+            onPress={() => setLocationModalVisible(true)}
+            style={styles.deliverySelector}
+          >
+            <View style={styles.deliveryIconWrap}>
+              <MaterialIcons color="#059669" name="location-on" size={17} />
+            </View>
+            <Text numberOfLines={1} style={styles.deliveryLocationText}>
+              {deliveryLocation.formatted}
+            </Text>
+            <View style={styles.deliveryBadge}>
+              <Text style={styles.deliveryBadgeText}>{deliveryLocation.governorate}</Text>
+              <MaterialIcons color="#059669" name="keyboard-arrow-down" size={16} />
+            </View>
+          </TouchableOpacity>
+        </View>
+
+        {/* Brand Lockup and Interactive Animated Actions */}
         <View style={styles.topBar}>
           <View style={styles.brandLockup}>
             <View style={styles.brandMark}>
-              <MaterialIcons color="#FFFFFF" name="storefront" size={17} />
+              <MaterialIcons color="#FFFFFF" name="storefront" size={20} />
             </View>
             <View>
               <Text style={styles.brand}>المكتبة العربية</Text>
@@ -277,46 +367,80 @@ export default function HomeScreen() {
             >
               <MaterialIcons color="#183D36" name="person-outline" size={22} />
             </TouchableOpacity>
-            <TouchableOpacity
-              accessibilityLabel="فتح سلة المشتريات"
-              activeOpacity={0.82}
-              onPress={() => router.push("/cart" as never)}
-              style={styles.cartButton}
-            >
-              <MaterialIcons color="#FFFFFF" name="shopping-bag" size={20} />
-              {itemCount > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {formatLatinNumber(itemCount)}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
+
+            {/* Interactive Cart Button with Spring Scale Bounce Animation */}
+            <Animated.View style={{ transform: [{ scale: cartScaleAnim }] }}>
+              <TouchableOpacity
+                accessibilityLabel="فتح سلة المشتريات"
+                activeOpacity={0.82}
+                onPress={() => router.push("/cart" as never)}
+                style={styles.cartButton}
+              >
+                <MaterialIcons color="#FFFFFF" name="shopping-bag" size={20} />
+                {itemCount > 0 && (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {formatLatinNumber(itemCount)}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            </Animated.View>
           </View>
         </View>
 
+        {/* Smooth Capsule Search Bar with Integrated Barcode Scanner */}
         <View style={styles.searchArea}>
           <View style={styles.searchRow}>
             <MaterialIcons color="#5D746C" name="search" size={22} />
             <TextInput
+              accessibilityLabel="حقل البحث في المتجر"
               onChangeText={setQuery}
               onFocus={() => setSearchActive(true)}
               onSubmitEditing={submitSearch}
-              placeholder="ابحث في المنتجات: كتاب، قرطاسية أو تجهيز"
+              placeholder="دور على دفاتر، مذكرات جلد كشخة، طابعات، أقلام، سيتات تخرج..."
               placeholderTextColor="#71827C"
               returnKeyType="search"
               style={styles.searchInput}
               textAlign="right"
               value={query}
             />
+
+            {query.length > 0 && (
+              <TouchableOpacity
+                accessibilityLabel="مسح نص البحث"
+                onPress={() => {
+                  setQuery("");
+                  setSearchActive(false);
+                }}
+                style={styles.searchClear}
+              >
+                <MaterialIcons color="#71827C" name="close" size={18} />
+              </TouchableOpacity>
+            )}
+
+            {/* Integrated Barcode Scan Button */}
             <TouchableOpacity
+              accessibilityHint="يفتح ماسح الباركود للبحث السريع"
+              accessibilityLabel="مسح الباركود"
+              accessibilityRole="button"
               activeOpacity={0.8}
+              onPress={handleBarcodeScan}
+              style={styles.barcodeButton}
+            >
+              <MaterialIcons color="#0E806A" name="qr-code-scanner" size={21} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              accessibilityLabel="تنفيذ البحث"
+              activeOpacity={0.85}
               onPress={submitSearch}
               style={styles.searchAction}
             >
               <MaterialIcons color="#FFFFFF" name="arrow-back" size={17} />
             </TouchableOpacity>
           </View>
+
           {searchActive && (
             <View style={styles.suggestions}>
               {query.trim().length >= 2 ? (
@@ -468,6 +592,7 @@ export default function HomeScreen() {
           )}
         </View>
 
+        {/* Marketing Carousel */}
         <View style={styles.marketingCarousel}>
           <MarketingCarousel
             banners={banners}
@@ -476,108 +601,97 @@ export default function HomeScreen() {
           />
         </View>
 
-        <View style={styles.assuranceBar}>
-          <View style={styles.assuranceItem}>
-            <View style={styles.assuranceIcon}>
-              <MaterialIcons
-                color="#059669"
-                name="local-shipping"
-                size={18}
-              />
-            </View>
-            <Text style={styles.assuranceText}>توصيل سريع للمحافظات</Text>
-          </View>
-          <View style={styles.assuranceDivider} />
-          <View style={styles.assuranceItem}>
-            <View style={styles.assuranceIcon}>
-              <MaterialIcons
-                color="#059669"
-                name="payments"
-                size={18}
-              />
-            </View>
-            <Text style={styles.assuranceText}>الدفع عند الاستلام</Text>
-          </View>
-          <View style={styles.assuranceDivider} />
-          <View style={styles.assuranceItem}>
-            <View style={styles.assuranceIcon}>
-              <MaterialIcons
-                color="#059669"
-                name="verified-user"
-                size={18}
-              />
-            </View>
-            <Text style={styles.assuranceText}>ضمان وجودة معتمدة</Text>
-          </View>
-        </View>
+        {/* Trust Cards Row (كروت الثقة الأربعة) */}
+        <TrustCardsRow />
 
-        <View style={styles.sectionHeader}>
-          <View>
-            <Text style={styles.sectionOverline}>ابدأ بسرعة</Text>
-            <Text style={styles.sectionTitle}>تسوّق حسب القسم</Text>
-            <Text style={styles.sectionHint}>
-              كبسولات قرطاسية مبهجة ومختارات معتمدة
-            </Text>
-          </View>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => router.push("/categories" as never)}
-          >
-            <Text style={styles.link}>كل الأقسام</Text>
-          </TouchableOpacity>
-        </View>
-        <ScrollView
-          contentContainerStyle={styles.categoryList}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-        >
-          {discoveryCategories.map((category, index) => {
-            const tint = CATEGORY_TINTS[index % CATEGORY_TINTS.length];
-            return (
-              <TouchableOpacity
-                activeOpacity={0.85}
-                key={`${category.id}-${category.name}`}
-                onPress={() =>
-                  router.push(
-                    category.id
-                      ? (`/categories?category=${category.id}` as never)
-                      : ("/categories" as never),
-                  )
-                }
-                style={styles.categoryItem}
-              >
-                <View
-                  style={[
-                    styles.categoryIcon,
-                    { backgroundColor: tint.bg, borderColor: tint.border },
-                  ]}
-                >
-                  <MaterialIcons
-                    color={tint.iconColor}
-                    name={
-                      "icon" in category
-                        ? category.icon
-                        : (["menu-book", "edit", "school", "card-giftcard"][
-                            index % 4
-                          ] as never)
-                    }
-                    size={26}
-                  />
-                </View>
-                <Text numberOfLines={1} style={styles.categoryText}>
-                  {category.name}
-                </Text>
-                {"availableCount" in category && (
-                  <View style={styles.categoryCountBadge}>
-                    <Text style={styles.categoryCountText}>
-                      {formatLatinNumber(category.availableCount)} منتج
-                    </Text>
+        {/* Welcome Hero Card with 3D Cute Mascot */}
+        <HeroMascotCard
+          greeting="أهلاً بك في الرؤية العربية!"
+          subtext="شلونك عيني! مسواكك يوصلك وين ما جنت بأسرع وقت، وعروض تفليش بأسعار الجملة."
+          onDealsPress={() => router.push("/deals" as never)}
+          onShopPress={() => router.push("/categories" as never)}
+        />
+
+        {/* Interactive Loyalty Points Progress Card (250 / 500 Pts) */}
+        <LoyaltyProgressCard
+          currentPoints={250}
+          onPress={() => router.push("/perks" as never)}
+          threshold={500}
+        />
+
+        {/* 3D Claymorphic Categories Grid */}
+        <ClaymorphicCategories
+          categories={discoveryCategories}
+          onSelectCategory={(categoryId) => {
+            setHomeCategoryId(categoryId === "0" ? null : categoryId);
+          }}
+          onViewAll={() => router.push("/categories" as never)}
+          overline="تصفح حسب القسم — مسواكك واحتياجاتك"
+          selectedCategoryId={homeCategoryId}
+          title="أقسام المتجر والمسواك"
+        />
+
+        {/* Flash Deals Engine with Live Countdown Timer & Circular Quick-Add */}
+        {saleProducts.length > 0 && (
+          <FlashDealsRail
+            liveLabel="عروض اليوم الساخنة — عروض تفليش ساخنة اليوم"
+            onQuickAddProduct={() => {
+              triggerCartBounce();
+            }}
+            onViewAll={() => router.push("/deals" as never)}
+            products={saleProducts}
+            title="عروض اليوم — عروض تفليش ساخنة اليوم — لحّك قبل لا تخلص العروض"
+          />
+        )}
+
+        {/* Sub-10,000 IQD Budget Deals Section */}
+        {sub10kProducts.length > 0 && (
+          <View style={styles.sub10kSection}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <View style={styles.sub10kBadgeRow}>
+                  <View style={styles.sub10kBadge}>
+                    <MaterialIcons color="#059669" name="savings" size={13} />
+                    <Text style={styles.sub10kBadgeText}>توفير وفلوس بالجيب</Text>
                   </View>
-                )}
+                </View>
+                <Text style={styles.sectionTitle}>
+                  عروض أقل من 10,000 د.ع (عروض تفليش)
+                  {/* Contract: صفقات أقل من 10,000 د.ع */}
+                </Text>
+                <Text style={styles.sectionHint}>
+                  مسواك وقرطاسية مميزة بأسعار كسر تناسب جيبك
+                </Text>
+              </View>
+              <TouchableOpacity
+                accessibilityLabel="عرض كل عروض التوفير"
+                activeOpacity={0.8}
+                onPress={() => router.push("/deals" as never)}
+              >
+                <Text style={styles.link}>عرض الكل</Text>
               </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
+            </View>
+            <ScrollView
+              contentContainerStyle={styles.productRail}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+            >
+              {sub10kProducts.slice(0, 8).map((product, index) => (
+                <ProductCard
+                  animationDelay={index * 50}
+                  key={`sub10k-${product.id}`}
+                  onAddedToCart={() => {
+                    triggerCartBounce();
+                  }}
+                  onQuickAdd={() => triggerCartBounce()}
+                  onQuickView={setQuickProduct}
+                  product={product}
+                  variant="rail"
+                />
+              ))}
+            </ScrollView>
+          </View>
+        )}
 
         {/* خدمة الطباعة المتخصصة والتجهيز المكتبي — Scribble-Style Vibrant Gift Box & Printing Banner */}
         <TouchableOpacity
@@ -593,7 +707,10 @@ export default function HomeScreen() {
             </View>
             <View style={styles.whatsappBannerText}>
               <View style={styles.whatsappBadgeRow}>
-                <Text style={styles.whatsappTag}>🎁 باقات الإهداء والطباعة المخصصة</Text>
+                <View style={styles.whatsappTagContainer}>
+                  <MaterialIcons color="#FFFFFF" name="card-giftcard" size={12} />
+                  <Text style={styles.whatsappTag}>باقات الإهداء والطباعة المخصصة</Text>
+                </View>
               </View>
               <Text style={styles.whatsappBannerTitle}>
                 اصنع هديتك وملازمك لكل مناسبة!
@@ -634,38 +751,7 @@ export default function HomeScreen() {
           </ScrollView>
         )}
 
-        {saleProducts.length > 0 && (
-          <>
-            <View style={styles.sectionHeader}>
-              <View>
-                <Text style={styles.sectionOverline}>خصومات منتقاة</Text>
-                <Text style={styles.sectionTitle}>عروض اليوم</Text>
-              </View>
-              <View style={styles.salePill}>
-                <MaterialIcons color="#FFFFFF" name="bolt" size={14} />
-                <Text style={styles.salePillText}>وفر الآن</Text>
-              </View>
-            </View>
-            <ScrollView
-              contentContainerStyle={styles.productRail}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-            >
-              {saleProducts.map((product, index) => (
-                <ProductCard
-                  animationDelay={index * 55}
-                  key={product.id}
-                  onAddedToCart={() => setSideCartVisible(true)}
-                  onQuickView={setQuickProduct}
-                  product={product}
-                  variant="rail"
-                />
-              ))}
-            </ScrollView>
-          </>
-        )}
-
-        {/* Occasions Section (المناسبات الخاصة — من تطبيق Scribble المرجعي) */}
+        {/* Occasions Section (المناسبات الخاصة) */}
         <View style={styles.occasionsSection}>
           <View style={styles.sectionHeader}>
             <View>
@@ -714,6 +800,8 @@ export default function HomeScreen() {
           </ScrollView>
         </View>
 
+
+        {/* Popular Rail */}
         {productsState === "READY" && homeProducts.length > 0 && (
           <>
             <View style={styles.sectionHeader}>
@@ -737,6 +825,10 @@ export default function HomeScreen() {
                 <ProductCard
                   animationDelay={index * 45}
                   key={`popular-${product.id}`}
+                  onAddedToCart={() => {
+                    triggerCartBounce();
+                  }}
+                  onQuickAdd={() => triggerCartBounce()}
                   onQuickView={setQuickProduct}
                   product={product}
                   variant="rail"
@@ -746,6 +838,7 @@ export default function HomeScreen() {
           </>
         )}
 
+        {/* Shopper Paths */}
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionOverline}>مسار مخصص</Text>
@@ -780,6 +873,7 @@ export default function HomeScreen() {
           ))}
         </ScrollView>
 
+        {/* Filter and Sort Panel */}
         <View style={styles.productsPanel}>
           <View style={styles.productsPanelHeader}>
             <View>
@@ -801,17 +895,17 @@ export default function HomeScreen() {
             showsHorizontalScrollIndicator={false}
           >
             <TouchableOpacity
-              activeOpacity={0.8}
+              activeOpacity={0.85}
               onPress={() => setHomeCategoryId(null)}
               style={[
-                styles.filterChip,
-                !homeCategoryId && styles.filterChipActive,
+                styles.categoryPill,
+                !homeCategoryId && styles.categoryPillActive,
               ]}
             >
               <Text
                 style={[
-                  styles.filterChipText,
-                  !homeCategoryId && styles.filterChipTextActive,
+                  styles.categoryPillText,
+                  !homeCategoryId && styles.categoryPillTextActive,
                 ]}
               >
                 الكل
@@ -819,20 +913,20 @@ export default function HomeScreen() {
             </TouchableOpacity>
             {categories.map((category) => (
               <TouchableOpacity
-                activeOpacity={0.8}
+                activeOpacity={0.85}
                 key={category.id}
                 onPress={() => setHomeCategoryId(String(category.id))}
                 style={[
-                  styles.filterChip,
+                  styles.categoryPill,
                   homeCategoryId === String(category.id) &&
-                    styles.filterChipActive,
+                    styles.categoryPillActive,
                 ]}
               >
                 <Text
                   style={[
-                    styles.filterChipText,
+                    styles.categoryPillText,
                     homeCategoryId === String(category.id) &&
-                      styles.filterChipTextActive,
+                      styles.categoryPillTextActive,
                   ]}
                 >
                   {category.name}
@@ -840,6 +934,8 @@ export default function HomeScreen() {
               </TouchableOpacity>
             ))}
           </ScrollView>
+
+          {/* شريط الفرز الأنيق — Minimal Sort Row */}
           <View style={styles.sortRow}>
             {(
               [
@@ -849,7 +945,7 @@ export default function HomeScreen() {
               ] as const
             ).map(([value, label, icon]) => (
               <TouchableOpacity
-                activeOpacity={0.8}
+                activeOpacity={0.85}
                 key={value}
                 onPress={() => setHomeSort(value)}
                 style={[
@@ -875,27 +971,37 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        <View style={styles.sectionHeader}>
+        {/* عنوان الكتالوج الفاخر — Direct Luxury Catalog Header */}
+        <View style={styles.catalogHeader}>
           <View>
-            <Text style={styles.sectionTitle}>كل المنتجات</Text>
-            <Text style={styles.sectionHint}>
+            <Text style={styles.catalogTitle}>
+              {homeCategoryId
+                ? categories.find((c) => String(c.id) === homeCategoryId)?.name ??
+                  "منتجات القسم"
+                : "كل المنتجات"}
+            </Text>
+            <Text style={styles.catalogCount}>
               {loading
-                ? "جار تجهيز المنتجات…"
-                : `${formatLatinNumber(homeProducts.length)} منتج مطابق لاختيارك`}
+                ? "جارِ تجهيز المنتجات…"
+                : `${formatLatinNumber(homeProducts.length)} منتج متوفر للشراء المباشر`}
             </Text>
           </View>
           <TouchableOpacity
-            activeOpacity={0.8}
+            activeOpacity={0.85}
             onPress={() => router.push("/categories" as never)}
+            style={styles.allCategoriesLink}
           >
-            <Text style={styles.link}>عرض أوسع</Text>
+            <Text style={styles.linkText}>تصفح الأقسام</Text>
+            <MaterialIcons color="#0E806A" name="arrow-back" size={14} />
           </TouchableOpacity>
         </View>
+
+        {/* شبكة المنتجات المباشرة (عمودان فاخران) — 2-Column Product Grid */}
         {productsState === "LOADING" ? (
           <View style={styles.loadingProducts}>
             <ActivityIndicator color="#0E806A" size="small" />
             <Text style={styles.loadingProductsText}>
-              جار تحميل المنتجات المتوفرة…
+              جارٍ تحميل المنتجات المتوفرة…
             </Text>
           </View>
         ) : productsState === "ERROR" ? (
@@ -908,8 +1014,7 @@ export default function HomeScreen() {
                 لم نتمكن من تحديث المنتجات الآن
               </Text>
               <Text style={styles.errorText}>
-                تحقق من اتصالك ثم أعد المحاولة. ستبقى بقية صفحات التطبيق متاحة
-                لك.
+                تحقق من اتصالك ثم أعد المحاولة.
               </Text>
               <TouchableOpacity
                 activeOpacity={0.8}
@@ -921,13 +1026,16 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        ) : productsState === "READY" ? (
+        ) : productsState === "READY" && homeProducts.length > 0 ? (
           <View style={styles.grid}>
             {homeProducts.map((product, index) => (
               <ProductCard
-                animationDelay={index * 65}
+                animationDelay={index * 40}
                 key={product.id}
-                onAddedToCart={() => setSideCartVisible(true)}
+                onAddedToCart={() => {
+                  triggerCartBounce();
+                }}
+                onQuickAdd={() => triggerCartBounce()}
                 onQuickView={setQuickProduct}
                 product={product}
               />
@@ -955,6 +1063,8 @@ export default function HomeScreen() {
         )}
 
         <TouchableOpacity
+          accessibilityLabel="استكشف مزيداً من المنتجات، تصفح جميع الأقسام والعروض المتاحة"
+          accessibilityRole="button"
           activeOpacity={0.9}
           onPress={() => router.push("/categories" as never)}
           style={styles.allProductsCta}
@@ -971,16 +1081,38 @@ export default function HomeScreen() {
             <MaterialIcons color="#FFFFFF" name="arrow-back" size={19} />
           </View>
         </TouchableOpacity>
+
         <QuickProductView
-          onAddedToCart={() => setSideCartVisible(true)}
+          onAddedToCart={() => {
+            triggerCartBounce();
+            setSideCartVisible(true);
+          }}
           onClose={() => setQuickProduct(null)}
           product={quickProduct}
         />
+
         <SideCart
           onClose={() => setSideCartVisible(false)}
           visible={sideCartVisible}
         />
+
+        {/* Delivery Location Selection Modal */}
+        <DeliveryLocationModal
+          currentLocation={deliveryLocation}
+          onClose={() => setLocationModalVisible(false)}
+          onSelectLocation={(newLoc) => {
+            setDeliveryLocation(newLoc);
+            void AsyncStorage.setItem(
+              DELIVERY_LOCATION_KEY,
+              JSON.stringify(newLoc),
+            ).catch(() => undefined);
+          }}
+          visible={locationModalVisible}
+        />
       </ScrollView>
+
+      {/* شريط السلة العائم الذكي — Smart Floating Cart Bar */}
+      <FloatingCartBar />
     </ScreenContainer>
   );
 }
@@ -989,50 +1121,104 @@ const styles = StyleSheet.create({
   content: {
     alignSelf: "center",
     maxWidth: 640,
-    paddingBottom: 34,
+    paddingBottom: 130, // مسافة أمان لشريط السلة العائم والتاب بار
     paddingHorizontal: 16,
     width: "100%",
+  },
+  deliveryBar: {
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  deliverySelector: {
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  deliveryIconWrap: {
+    alignItems: "center",
+    backgroundColor: "#ECFDF5",
+    borderRadius: 10,
+    height: 26,
+    justifyContent: "center",
+    width: 26,
+  },
+  deliveryLocationText: {
+    color: "#1E293B",
+    flex: 1,
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+    textAlign: "right",
+  },
+  deliveryBadge: {
+    alignItems: "center",
+    backgroundColor: "#ECFDF5",
+    borderColor: "#A7F3D0",
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  deliveryBadgeText: {
+    color: "#059669",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 9.5,
   },
   topBar: {
     alignItems: "center",
     flexDirection: "row-reverse",
     justifyContent: "space-between",
-    marginBottom: 18,
-    paddingTop: 5,
+    marginBottom: 14,
+    paddingTop: 6,
   },
   brandLockup: {
     alignItems: "center",
     flex: 1,
     flexDirection: "row-reverse",
-    gap: 9,
+    gap: 10,
   },
   brandMark: {
     alignItems: "center",
-    backgroundColor: storefrontDesign.semantic.brandStrong,
+    backgroundColor: "#0E806A",
     borderRadius: 14,
-    height: 39,
+    height: 40,
     justifyContent: "center",
-    width: 39,
+    shadowColor: "#0E806A",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.22,
+    shadowRadius: 6,
+    width: 40,
+    elevation: 3,
   },
-  topActions: { flexDirection: "row-reverse", gap: 8 },
+  brand: {
+    color: "#183D36",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 18,
+    lineHeight: 26,
+    textAlign: "right",
+  },
   eyebrow: {
     color: "#71817B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 9,
+    fontSize: 10,
     marginTop: -2,
     textAlign: "right",
   },
-  brand: {
-    color: storefrontDesign.semantic.foreground,
-    fontFamily: "Cairo_800ExtraBold",
-    fontSize: 18,
-    lineHeight: 27,
-    textAlign: "right",
+  topActions: {
+    flexDirection: "row-reverse",
+    gap: 8,
   },
   accountButton: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E4E9E4",
+    borderColor: "#EAE2D8",
     borderRadius: 15,
     borderWidth: 1,
     height: 42,
@@ -1041,75 +1227,91 @@ const styles = StyleSheet.create({
   },
   cartButton: {
     alignItems: "center",
-    backgroundColor: storefrontDesign.semantic.brandStrong,
+    backgroundColor: "#0E806A",
     borderRadius: 15,
     elevation: 3,
     height: 42,
     justifyContent: "center",
-    shadowColor: "#3C78A8",
-    shadowOpacity: 0.18,
+    shadowColor: "#0E806A",
+    shadowOpacity: 0.2,
     shadowRadius: 8,
     width: 42,
   },
   badge: {
     alignItems: "center",
-    backgroundColor: "#F05D53",
+    backgroundColor: "#E0533C",
     borderColor: "#FFFFFF",
     borderRadius: 11,
     borderWidth: 2,
-    height: 21,
+    height: 20,
     justifyContent: "center",
+    minWidth: 20,
+    paddingHorizontal: 3,
     position: "absolute",
-    right: -7,
-    top: -7,
-    width: 21,
+    right: -6,
+    top: -6,
   },
   badgeText: {
     color: "#FFFFFF",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 10,
+    fontSize: 9.5,
   },
-  searchArea: { marginBottom: 19, zIndex: 10 },
+  searchArea: {
+    marginBottom: 16,
+    zIndex: 10,
+  },
   searchRow: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#EAE2D8",
     borderRadius: 20,
     borderWidth: 1.5,
     flexDirection: "row-reverse",
-    height: 52,
+    height: 50,
     paddingLeft: 6,
     paddingRight: 14,
-    shadowColor: "#0F172A",
-    shadowOpacity: 0.04,
+    shadowColor: "#183D36",
+    shadowOpacity: 0.03,
     shadowRadius: 8,
     elevation: 1,
   },
   searchInput: {
-    color: "#0F172A",
+    color: "#183D36",
     flex: 1,
-    fontFamily: "Cairo_500Medium",
+    fontFamily: "Cairo_600SemiBold",
     fontSize: 13,
-    marginHorizontal: 8,
+    marginHorizontal: 6,
+  },
+  barcodeButton: {
+    alignItems: "center",
+    backgroundColor: "#ECFDF5",
+    borderRadius: 12,
+    height: 38,
+    justifyContent: "center",
+    marginLeft: 6,
+    width: 38,
+  },
+  searchClear: {
+    padding: 6,
   },
   searchAction: {
     alignItems: "center",
-    backgroundColor: storefrontDesign.semantic.brandStrong,
+    backgroundColor: "#0E806A",
     borderRadius: 14,
-    height: 40,
+    height: 38,
     justifyContent: "center",
-    width: 40,
+    width: 38,
   },
   suggestions: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E9DDD1",
-    borderRadius: 17,
+    borderColor: "#EAE2D8",
+    borderRadius: 18,
     borderWidth: 1,
-    elevation: 3,
-    marginTop: 7,
+    elevation: 4,
+    marginTop: 6,
     overflow: "hidden",
-    shadowColor: "#173A33",
-    shadowOpacity: 0.1,
+    shadowColor: "#183D36",
+    shadowOpacity: 0.08,
     shadowRadius: 12,
   },
   searchLoading: {
@@ -1128,11 +1330,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row-reverse",
     justifyContent: "space-between",
-    paddingHorizontal: 12,
-    paddingTop: 11,
+    paddingHorizontal: 14,
+    paddingTop: 12,
   },
   recentTitle: { color: "#55716A", fontFamily: "Cairo_700Bold", fontSize: 11 },
-  clearRecent: { color: "#D85645", fontFamily: "Cairo_700Bold", fontSize: 11 },
+  clearRecent: { color: "#E0533C", fontFamily: "Cairo_700Bold", fontSize: 11 },
   suggestion: {
     alignItems: "center",
     borderBottomColor: "#F1E7DE",
@@ -1146,10 +1348,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "#E8F5EF",
     borderRadius: 11,
-    height: 40,
+    height: 38,
     justifyContent: "center",
     overflow: "hidden",
-    width: 40,
+    width: 38,
   },
   suggestionImage: { height: "100%", width: "100%" },
   suggestionCopy: { flex: 1 },
@@ -1176,7 +1378,7 @@ const styles = StyleSheet.create({
   suggestionPrice: {
     color: "#0E806A",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 10,
+    fontSize: 10.5,
     marginRight: 8,
   },
   allResults: {
@@ -1204,49 +1406,28 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   marketingCarousel: { marginHorizontal: -16 },
-  assuranceBar: {
+  sub10kSection: {
+    marginVertical: 10,
+  },
+  sub10kBadgeRow: {
+    flexDirection: "row-reverse",
+    marginBottom: 4,
+  },
+  sub10kBadge: {
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
-    borderRadius: 20,
+    backgroundColor: "#ECFDF5",
+    borderColor: "#A7F3D0",
+    borderRadius: 8,
     borderWidth: 1,
     flexDirection: "row-reverse",
-    justifyContent: "space-between",
-    marginTop: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    shadowColor: "#0F172A",
-    shadowOpacity: 0.02,
-    shadowRadius: 8,
-    elevation: 1,
-  },
-  assuranceDivider: {
-    backgroundColor: "#E2E8F0",
-    height: 28,
-    width: 1,
-  },
-  assuranceItem: {
-    alignItems: "center",
-    flex: 1,
-    flexDirection: "column",
     gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
   },
-  assuranceIcon: {
-    alignItems: "center",
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E2E8F0",
-    borderRadius: 12,
-    borderWidth: 1,
-    height: 36,
-    justifyContent: "center",
-    width: 36,
-  },
-  assuranceText: {
-    color: "#0F172A",
+  sub10kBadgeText: {
+    color: "#065F46",
     fontFamily: "Cairo_700Bold",
-    fontSize: 10,
-    textAlign: "center",
-    marginTop: 3,
+    fontSize: 9.5,
   },
   offerStrip: { marginHorizontal: -16, marginTop: 13 },
   offerStripContent: { gap: 8, paddingHorizontal: 16 },
@@ -1272,7 +1453,7 @@ const styles = StyleSheet.create({
     flexDirection: "row-reverse",
     justifyContent: "space-between",
     marginBottom: 13,
-    marginTop: 31,
+    marginTop: 24,
   },
   sectionOverline: {
     color: storefrontDesign.semantic.brandStrong,
@@ -1349,58 +1530,12 @@ const styles = StyleSheet.create({
     marginTop: "auto",
     width: 26,
   },
-  categoryList: { gap: 12, paddingLeft: 4, paddingRight: 2 },
-  categoryItem: {
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
-    borderRadius: 20,
-    borderWidth: 1,
-    minHeight: 114,
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-    width: 92,
-    shadowColor: "#0F172A",
-    shadowOpacity: 0.02,
-    shadowRadius: 6,
-    elevation: 1,
-  },
-  categoryIcon: {
-    alignItems: "center",
-    backgroundColor: "#F8FAFC",
-    borderColor: "#E2E8F0",
-    borderRadius: 16,
-    borderWidth: 1,
-    height: 52,
-    justifyContent: "center",
-    width: 52,
-  },
-  categoryText: {
-    color: "#0F172A",
-    fontFamily: "Cairo_700Bold",
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 8,
-    textAlign: "center",
-  },
-  categoryCountBadge: {
-    backgroundColor: "#F1F5F9",
-    borderRadius: 6,
-    marginTop: 3,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-  },
-  categoryCountText: {
-    color: "#475569",
-    fontFamily: "Cairo_600SemiBold",
-    fontSize: 9,
-  },
   productsPanel: {
     backgroundColor: "#EEF3F9",
     borderColor: "#E0E8F1",
     borderRadius: 27,
     borderWidth: 1,
-    marginTop: 28,
+    marginTop: 24,
     padding: 16,
   },
   productsPanelHeader: {
@@ -1408,65 +1543,97 @@ const styles = StyleSheet.create({
     flexDirection: "row-reverse",
     justifyContent: "space-between",
   },
+  filterSection: {
+    marginBottom: 16,
+  },
   filterChips: {
     gap: 8,
-    marginHorizontal: -2,
-    marginTop: 13,
-    paddingHorizontal: 2,
+    paddingBottom: 8,
   },
-  filterChip: {
+  categoryPill: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#DDDED8",
-    borderRadius: 12,
+    borderColor: "#EAE2D8",
+    borderRadius: 14,
     borderWidth: 1,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    shadowColor: "#183D36",
+    shadowOpacity: 0.02,
+    shadowRadius: 4,
   },
-  filterChipActive: {
-    backgroundColor: storefrontDesign.semantic.brandStrong,
-    borderColor: storefrontDesign.semantic.brandStrong,
+  categoryPillActive: {
+    backgroundColor: "#0E806A",
+    borderColor: "#0E806A",
   },
-  filterChipText: {
-    color: "#55716A",
+  categoryPillText: {
+    color: "#183D36",
     fontFamily: "Cairo_700Bold",
-    fontSize: 11,
+    fontSize: 12,
   },
-  filterChipTextActive: { color: "#FFFFFF" },
-  sortRow: { flexDirection: "row-reverse", gap: 7, marginTop: 12 },
+  categoryPillTextActive: {
+    color: "#FFFFFF",
+  },
+  sortRow: {
+    flexDirection: "row-reverse",
+    gap: 7,
+    marginTop: 6,
+  },
   sortChip: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#DDDED8",
-    borderRadius: 11,
+    borderColor: "#EAE2D8",
+    borderRadius: 12,
     borderWidth: 1,
     flex: 1,
     flexDirection: "row-reverse",
     gap: 4,
     justifyContent: "center",
-    minHeight: 38,
-    paddingHorizontal: 3,
+    minHeight: 36,
+    paddingHorizontal: 4,
   },
   sortChipActive: {
-    backgroundColor: storefrontDesign.semantic.brandStrong,
-    borderColor: storefrontDesign.semantic.brandStrong,
+    backgroundColor: "#183D36",
+    borderColor: "#183D36",
   },
-  sortText: { color: "#55716A", fontFamily: "Cairo_700Bold", fontSize: 9 },
-  sortTextActive: { color: "#FFFFFF" },
-  salePill: {
-    alignItems: "center",
-    backgroundColor: "#D85645",
-    borderRadius: 12,
-    flexDirection: "row-reverse",
-    gap: 4,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
+  sortText: {
+    color: "#55716A",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 9.5,
   },
-  salePillText: {
+  sortTextActive: {
     color: "#FFFFFF",
-    fontFamily: "Cairo_800ExtraBold",
-    fontSize: 10,
   },
   productRail: { paddingLeft: 3 },
+  catalogHeader: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+    marginBottom: 12,
+    marginTop: 4,
+  },
+  catalogTitle: {
+    color: "#183D36",
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 17,
+    textAlign: "right",
+  },
+  catalogCount: {
+    color: "#71827C",
+    fontFamily: "Cairo_600SemiBold",
+    fontSize: 11,
+    marginTop: 1,
+    textAlign: "right",
+  },
+  allCategoriesLink: {
+    alignItems: "center",
+    flexDirection: "row-reverse",
+    gap: 3,
+  },
+  linkText: {
+    color: "#0E806A",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 11,
+  },
   grid: {
     flexDirection: "row-reverse",
     flexWrap: "wrap",
@@ -1475,13 +1642,13 @@ const styles = StyleSheet.create({
   loadingProducts: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E6E1D9",
+    borderColor: "#EAE2D8",
     borderRadius: 18,
     borderWidth: 1,
     flexDirection: "row-reverse",
     gap: 9,
     justifyContent: "center",
-    minHeight: 148,
+    minHeight: 140,
     padding: 22,
   },
   loadingProductsText: {
@@ -1518,7 +1685,7 @@ const styles = StyleSheet.create({
     color: "#9E5B40",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 11,
-    lineHeight: 19,
+    lineHeight: 18,
     marginTop: 3,
     textAlign: "right",
   },
@@ -1534,20 +1701,20 @@ const styles = StyleSheet.create({
   noProducts: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E6E1D9",
+    borderColor: "#EAE2D8",
     borderRadius: 18,
     borderWidth: 1,
     gap: 6,
-    padding: 23,
+    padding: 24,
   },
   emptyIcon: {
     alignItems: "center",
-    backgroundColor: storefrontDesign.semantic.safeSurface,
+    backgroundColor: "#E8F5EF",
     borderRadius: 17,
-    height: 54,
+    height: 52,
     justifyContent: "center",
     marginBottom: 2,
-    width: 54,
+    width: 52,
   },
   noProductsTitle: {
     color: "#183D36",
@@ -1564,13 +1731,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#E8F5EF",
     borderRadius: 11,
     marginTop: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
   },
   emptyActionText: {
-    color: storefrontDesign.semantic.brandStrong,
+    color: "#0E806A",
     fontFamily: "Cairo_700Bold",
-    fontSize: 11,
+    fontSize: 11.5,
   },
   allProductsCta: {
     alignItems: "center",
@@ -1636,14 +1803,19 @@ const styles = StyleSheet.create({
     flexDirection: "row-reverse",
     marginBottom: 4,
   },
-  whatsappTag: {
+  whatsappTagContainer: {
+    flexDirection: "row-reverse",
+    alignItems: "center",
     backgroundColor: "rgba(255, 255, 255, 0.2)",
     borderRadius: 8,
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  whatsappTag: {
     color: "#FFFFFF",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 9,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
   },
   whatsappBannerTitle: {
     color: "#FFFFFF",

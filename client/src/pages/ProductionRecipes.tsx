@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
+import { formatQuantity } from "@shared/quantityFormat";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { coefficientBatchMultiple, requiredBatchMultiple } from "@shared/batchDivisibility";
@@ -314,7 +315,7 @@ export default function ProductionRecipes() {
                 <ul className="list-disc ps-4 text-xs text-muted-foreground space-y-0.5">
                   {fractionalComps.map((c) => (
                     <li key={c.key}>
-                      «{c.productName}» = <span dir="ltr" className="tabular-nums">{compBaseQty(c).toFixed(4)}</span> بالوحدة الأساس
+                      «{c.productName}» = <span dir="ltr" className="tabular-nums">{formatQuantity(compBaseQty(c).toString())}</span> بالوحدة الأساس
                       {" — "}اجعلها عدداً صحيحاً لتعمل كل الدفعات.
                     </li>
                   ))}
@@ -363,8 +364,8 @@ export default function ProductionRecipes() {
                 <ul className="space-y-1">
                   {comps.map((c) => (
                     <li key={c.key} className="text-sm px-3 py-2 rounded bg-muted/50">
-                      <span dir="ltr">{c.qty} {c.units.find((u) => u.productUnitId === c.productUnitId)?.unitName ?? ""}</span> {c.productName}{" "}
-                      <span className="text-xs text-muted-foreground" dir="ltr">= {fmt(compBaseQty(c).toString())} أساس</span>
+                      <span dir="ltr">{formatQuantity(c.qty)} {c.units.find((u) => u.productUnitId === c.productUnitId)?.unitName ?? ""}</span> {c.productName}{" "}
+                      <span className="text-xs text-muted-foreground" dir="ltr">= {formatQuantity(compBaseQty(c).toString())} أساس</span>
                     </li>
                   ))}
                   {comps.length === 0 && <li className="text-xs text-muted-foreground text-center">—</li>}

@@ -95,8 +95,7 @@ describe("super app effective authority", () => {
       branchId: 3,
       permissionsOverride: {
         reports: "NONE", sales: "NONE", pos: "NONE", collections: "NONE",
-        inventory: "NONE", products: "NONE", workorders: "NONE", tasks: "NONE",
-        treasury: "NONE", purchases: "NONE", suppliers: "NONE",
+        inventory: "NONE", products: "NONE", workorders: "NONE", treasury: "NONE", purchases: "NONE", suppliers: "NONE",
       },
     });
     expect(Object.values(capabilities).every((value) => value === false)).toBe(true);
@@ -105,7 +104,7 @@ describe("super app effective authority", () => {
       lowStockCount: 7,
       overdueAR: { count: 2, total: "900.00" },
       salesPulse: { yesterday: "100.00", avg7d: "80.00", direction: "up", changePct: 25 },
-      morningBrief: { arRemindersDue: 4, promisedToday: 3, overdueWorkOrders: 2, myOpenTasks: 1, overdueTasks: 6 },
+      morningBrief: { arRemindersDue: 4, promisedToday: 3, overdueWorkOrders: 2 },
     }, capabilities);
     expect(selected).toEqual({
       lowStockCount: null,
@@ -115,8 +114,6 @@ describe("super app effective authority", () => {
         arRemindersDue: null,
         promisedToday: null,
         overdueWorkOrders: null,
-        myOpenTasks: null,
-        overdueTasks: null,
       },
     });
   });

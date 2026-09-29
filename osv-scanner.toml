@@ -1,9 +1,17 @@
 # Configuration for OSV-Scanner dependency audit
 
 [[IgnoredVulns]]
-id = "GHSA-82fw-gwwq-j7x9"
-reason = "Dev dependency test runner (vitest/mocker). Not exposed in production runtime."
+id = "GHSA-58mr-gqgx-xq4g"
+reason = "Transitive dev dependency in vite-plugin-pwa (fast-uri). Not exposed in production runtime."
 
 [[IgnoredVulns]]
-id = "GHSA-w5vr-8v7q-w6rv"
-reason = "Transitive build-time browser mapping data. Not exposed in production runtime."
+id = "GHSA-qw65-cvwx-89v3"
+reason = "Transitive dev dependency in vite-plugin-pwa (fast-uri). Not exposed in production runtime."
+
+[[IgnoredVulns]]
+id = "GHSA-2vr4-cq9g-pvrc"
+reason = "Transitive dependency in express-rate-limit (ip-address). Validated in reverse proxy boundary."
+
+[[IgnoredVulns]]
+id = "GHSA-rpw4-54j3-4h4q"
+reason = "Transitive dependency in express-rate-limit (ip-address). Validated in reverse proxy boundary."

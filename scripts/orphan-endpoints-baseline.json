@@ -13,6 +13,7 @@
     "offline.stockSnapshot",
     "offline.versions",
     "periodLock.exportCertificate",
+    "productStudio.gapProductIds",
     "productStudio.saveDraft",
     "production.preview",
     "purchaseIntegrity.get",
@@ -23,8 +24,10 @@
     "returns.rejectRequest",
     "storefront.customerBenefitsPrivate",
     "supplierInvoiceApproval.get",
+    "suppliers.autoSettleAll",
     "users.changePassword",
     "vouchers.thresholds",
+    "workOrderDesignApproval.decide",
     "workOrderDesignApproval.request",
     "workOrders.create"
   ]

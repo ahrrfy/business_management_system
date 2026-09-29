@@ -335,9 +335,7 @@ export async function createWorkOrderInTx(
     });
   }
   if (input.baseVariantId != null) {
-    const recipeScope = materials.length === 0
-      ? await recipeMaterialScopeIds(tx, input.baseVariantId)
-      : [];
+    const recipeScope = await recipeMaterialScopeIds(tx, input.baseVariantId);
     const scopeIds = Array.from(
       new Set([
         input.baseVariantId,
@@ -379,6 +377,13 @@ export async function createWorkOrderInTx(
     }
     baseIsService = base.isService === true;
     baseConsumesInventory = !baseIsService;
+
+    // إذا كان الصنف الأساس خدمة: فالخدمة لا تستهلك نفسها كمخزون مادي وتستثنى حتماً من المواد
+    if (baseIsService) {
+      materials = materials.filter(
+        (material) => material.variantId !== input.baseVariantId,
+      );
+    }
 
     const selectedUnits = input.baseProductUnitId != null
       ? await tx

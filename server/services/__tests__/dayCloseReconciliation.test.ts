@@ -175,6 +175,69 @@ describe("getDayCloseReconciliation — التفكيك والثوابت", () => 
     const res = await report(1);
     expect(res.balancedCount).toBe(1);
     expect(res.driftCount).toBe(0);
+
+    // التحقق من قائمة الحركات المفصلة
+    expect(l.movements).toBeDefined();
+    expect(l.movements.length).toBe(7);
+    const saleMov = l.movements.find((m) => m.categoryType === "SALE");
+    expect(saleMov?.amount).toBe("50000.00");
+    const collMov = l.movements.find((m) => m.categoryType === "COLLECTION");
+    expect(collMov?.documentNumber).toBe("RV-1-20260722-00001");
+    const expMov = l.movements.find((m) => m.categoryType === "EXPENSE");
+    expect(expMov?.documentNumber).toBe("PV-1-20260722-00001");
+  });
+
+  it("V.E.R.I.F.Y: تفاصيل الحركات تُظهر من أين جاء الإيراد ولمن صُرف المصروف بدقة كاملة", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
+
+    // إنشاء عميل ومورد
+    await db().insert(s.customers).values({ id: 101, name: "شركة النور للطباعة", phone: "07700000001" });
+    await db().insert(s.suppliers).values({ id: 201, name: "مكتب المأمون للتجهيزات", phone: "07700000002" });
+
+    // 1) مصروف مع جهة صرف وفئة صريحة
+    await db().insert(s.expenseCategories).values({ id: 301, name: "أحبار ومطبوعات", bucket: "SUPPLIES" });
+
+    await db().insert(s.receipts).values({
+      id: 991, shiftId, branchId: 1, direction: "OUT", amount: "155750.00", paymentMethod: "CASH", cashBucket: "DRAWER",
+      status: "COMPLETED", approvalStatus: "APPROVED", createdBy: CASHIER1,
+      voucherNumber: "PV-1-20260927-00720", partyType: "SUPPLIER", partyId: 201,
+      description: "شراء أحبار للمطبعة",
+    });
+    await db().insert(s.expenses).values({
+      id: 881, branchId: 1, shiftId, expenseDate: DATE, category: "SUPPLIES", expenseCategoryId: 301,
+      amount: "155750.00", paymentMethod: "CASH", cashBucket: "DRAWER", source: "CASH",
+      payee: "مكتب المأمون للتجهيزات", description: "شراء أحبار للمطبعة", receiptId: 991,
+    });
+
+    // 2) تحصيل إيراد من عميل صريح
+    await insertReceipt({
+      shiftId, branchId: 1, direction: "IN", amount: "102000.00",
+      voucherNumber: "RV-1-20260927-00720", partyType: "CUSTOMER", partyId: 101,
+      description: "تسديد دفعة حساب نقداً",
+    });
+
+    const l = line(await report(1), shiftId);
+    expect(l.operatingOut).toBe("155750.00");
+    expect(l.expensesCash).toBe("155750.00");
+    expect(l.cashIn).toBe("102000.00");
+    expect(l.collectionsCash).toBe("102000.00");
+
+    // التحقق من تفاصيل الحركات: لمن صرف ومن أين جاء
+    const expItem = l.movements.find((m) => m.categoryType === "EXPENSE");
+    expect(expItem).toBeDefined();
+    expect(expItem?.payee).toBe("مكتب المأمون للتجهيزات");
+    expect(expItem?.partyName).toBe("مكتب المأمون للتجهيزات");
+    expect(expItem?.description).toBe("شراء أحبار للمطبعة");
+    expect(expItem?.classification).toBe("أحبار ومطبوعات");
+    expect(expItem?.documentNumber).toBe("PV-1-20260927-00720");
+    expect(expItem?.amount).toBe("155750.00");
+
+    const inItem = l.movements.find((m) => m.categoryType === "COLLECTION");
+    expect(inItem).toBeDefined();
+    expect(inItem?.partyName).toBe("شركة النور للطباعة");
+    expect(inItem?.description).toBe("تسديد دفعة حساب نقداً");
+    expect(inItem?.documentNumber).toBe("RV-1-20260927-00720");
+    expect(inItem?.amount).toBe("102000.00");
   });
 
   it("I3: تسليم الخزينة لا يُطرَح من المتوقَّع (لا فائض وهميّ)", async () => {
