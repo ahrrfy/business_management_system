@@ -105,12 +105,12 @@ export function StorefrontMilestoneBar({
                 <Truck aria-hidden className="size-4" />
               )}
             </div>
-            <p className="truncate text-xs font-black text-slate-800 dark:text-slate-100">
+            <p className="text-xs font-black text-slate-800 dark:text-slate-100 leading-snug line-clamp-2 sm:line-clamp-1">
               {statusText}
             </p>
           </div>
 
-          <div className="flex items-center gap-3 text-[11px] font-black text-slate-500 dark:text-slate-400">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-[10px] sm:text-[11px] font-black text-slate-500 dark:text-slate-400">
             <div className="flex items-center gap-1">
               {lowerUnlocked ? (
                 <CheckCircle2 aria-hidden className="size-3.5 text-emerald-600 dark:text-emerald-400" />

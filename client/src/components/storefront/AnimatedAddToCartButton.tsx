@@ -47,8 +47,8 @@ export function AnimatedAddToCartButton({
   useEffect(() => {
     const updateDimensions = () => {
       if (buttonRef.current) {
-        const width = buttonRef.current.offsetWidth || (size === "xs" ? 110 : size === "sm" ? 140 : 280);
-        const half = Math.ceil(width / 2) + (size === "xs" ? 25 : size === "sm" ? 35 : 50);
+        const width = buttonRef.current.offsetWidth || (size === "xs" ? 95 : size === "sm" ? 120 : 280);
+        const half = Math.ceil(width / 2) + (size === "xs" ? 20 : size === "sm" ? 25 : 50);
         buttonRef.current.style.setProperty("--from-left", `-${half}px`);
         buttonRef.current.style.setProperty("--to-exit", `${half}px`);
         buttonRef.current.style.setProperty("--to-centre", "0px");
@@ -159,12 +159,12 @@ export function AnimatedAddToCartButton({
             {state === "added" ? (
               <>
                 <Check aria-hidden className={iconSizeClass} />
-                <span>{addedLabel}</span>
+                <span className="truncate max-w-full">{addedLabel}</span>
               </>
             ) : (
               <>
                 {icon ?? <Plus aria-hidden className={iconSizeClass} />}
-                <span>{label}</span>
+                <span className="truncate max-w-full">{label}</span>
               </>
             )}
           </span>

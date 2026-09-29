@@ -61,7 +61,7 @@ function CuratedProductCard({
 
   return (
     <div
-      className={`store-product-card group relative flex w-[164px] shrink-0 flex-col overflow-hidden rounded-2xl border bg-white transition-all duration-300 sm:w-[184px] lg:w-[196px] dark:bg-slate-900 ${
+      className={`store-product-card group relative flex w-[152px] shrink-0 flex-col overflow-hidden rounded-2xl border bg-white transition-all duration-300 sm:w-[184px] lg:w-[196px] dark:bg-slate-900 ${
         showAdded
           ? "border-emerald-400 ring-2 ring-emerald-400/20 shadow-lg shadow-emerald-500/10"
           : "border-slate-200/80 hover:-translate-y-1 hover:border-blue-300 hover:shadow-lg dark:border-slate-800"
@@ -90,7 +90,7 @@ function CuratedProductCard({
         </div>
 
         {onSale && pct > 0 && (
-          <span className="absolute right-2 top-2 rounded-md bg-orange-600 px-2 py-0.5 text-[10px] font-black text-white shadow-sm">
+          <span className="absolute right-2 top-2 rounded-md bg-orange-600 px-2 py-0.5 text-[10px] font-black text-white shadow-sm whitespace-nowrap">
             خصم {pct}٪
           </span>
         )}
@@ -103,15 +103,15 @@ function CuratedProductCard({
       </button>
 
       {/* محتوى البطاقة بارتفاعات عمودية ثابتة ومحاذاة خط الأزرار */}
-      <div className="flex flex-1 flex-col p-3">
+      <div className="flex flex-1 flex-col p-2.5 sm:p-3">
         {/* وسم التصنيف أو الماركة البديلة */}
         <div className="flex h-4 items-center">
           {p.hasAlternatives ? (
-            <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300 whitespace-nowrap">
               <Layers aria-hidden className="size-2.5" /> ماركات متعددة
             </span>
           ) : (
-            <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500">
+            <span className="truncate text-[9px] font-bold text-slate-400 dark:text-slate-500">
               {p.unitName}
             </span>
           )}
@@ -131,19 +131,19 @@ function CuratedProductCard({
         </div>
 
         {/* الأسعار ومقدار التخفيض */}
-        <div className="mt-2 flex h-10 flex-col justify-center">
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-sm font-black text-blue-900 dark:text-blue-300">
+        <div className="mt-1.5 flex min-h-10 flex-col justify-center">
+          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+            <span className="text-xs sm:text-sm font-black whitespace-nowrap text-blue-900 dark:text-blue-300">
               {priceLabel(p.salePrice ?? p.price)}
             </span>
             {onSale && (
-              <span className="text-[10px] text-slate-400 line-through">
+              <span className="text-[9px] sm:text-[10px] text-slate-400 line-through whitespace-nowrap">
                 {money(p.price)}
               </span>
             )}
           </div>
           {onSale && pct > 0 ? (
-            <span className="text-[9px] font-black text-emerald-600 dark:text-emerald-400">
+            <span className="text-[8.5px] sm:text-[9px] font-black text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
               توفير {pct}٪
             </span>
           ) : (
@@ -151,9 +151,9 @@ function CuratedProductCard({
           )}
         </div>
 
-        {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً بارتفاع h-10 */}
+        {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً بارتفاع h-9 sm:h-10 */}
         {!p.isCustomizable && cartQuantity > 0 && onUpdateQuantity ? (
-          <div className="animate-spring-pop mt-auto flex h-10 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
+          <div className="animate-spring-pop mt-auto flex h-9 sm:h-10 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
             <button
               type="button"
               onClick={(e) => {
@@ -166,9 +166,9 @@ function CuratedProductCard({
               <Minus aria-hidden className="size-3 stroke-[2.5]" />
             </button>
 
-            <div className="flex items-center gap-1 font-mono text-[11px] font-black tabular-nums">
-              <span>{formatQuantity(cartQuantity)}</span>
-              <span className="text-[9px] font-bold text-emerald-700 dark:text-emerald-400">
+            <div className="flex min-w-0 flex-1 items-center justify-center gap-1 px-0.5 font-mono text-[11px] font-black tabular-nums">
+              <span className="shrink-0">{formatQuantity(cartQuantity)}</span>
+              <span className="truncate text-[8.5px] sm:text-[9px] font-bold text-emerald-700 dark:text-emerald-400">
                 {p.unitName ? p.unitName : "بالسلة"}
               </span>
             </div>

@@ -75,6 +75,10 @@ export function StorefrontProductCard({
     onAdd(p, event);
   };
 
+  const cardButtonLabel = (actionLabel ?? "أضف إلى السلة").length > 20
+    ? "غير متاح إلكترونياً"
+    : (actionLabel ?? "أضف إلى السلة");
+
   return (
     <article
       className={`store-product-card group relative flex h-full flex-col overflow-hidden rounded-2xl border bg-white transition-all duration-300 dark:bg-slate-900 ${
@@ -96,30 +100,30 @@ export function StorefrontProductCard({
           {mediaComponent}
 
           {!p.inStock && (
-            <span className="absolute inset-x-0 bottom-0 bg-slate-950/80 py-2 text-center text-[11px] font-black text-white backdrop-blur-xs">
+            <span className="absolute inset-x-0 bottom-0 bg-slate-950/80 py-1.5 text-center text-[10px] sm:text-[11px] font-black text-white backdrop-blur-xs">
               غير متوفر حالياً
             </span>
           )}
         </button>
 
         {/* شريط الشارات والإجراءات العلوي الموحد — تخطيط مرن مانع للتراكب والتزاحم */}
-        <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex items-start justify-between gap-1">
+        <div className="pointer-events-none absolute inset-x-1.5 sm:inset-x-2 top-1.5 sm:top-2 z-10 flex items-start justify-between gap-1">
           {/* شارات الحالة والعروض — تبدأ من اليمين في RTL وتتقلص بذكاء */}
-          <div className="pointer-events-auto flex flex-col items-start gap-1 max-w-[calc(100%-38px)]">
+          <div className="pointer-events-auto flex flex-col items-start gap-0.5 sm:gap-1 max-w-[calc(100%-34px)]">
             {onSale && pct > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-[#e65100] px-1.5 py-0.5 text-[10px] font-black text-white shadow-xs">
+              <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-[#e65100] px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
                 <Flame aria-hidden className="size-2.5" />
                 <span>خصم {pct}٪</span>
               </span>
             )}
             {p.isBundle && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-black text-white shadow-xs">
+              <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-blue-600 px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
                 <Package aria-hidden className="size-2.5" />
                 <span>بكج</span>
               </span>
             )}
             {p.stockLeft != null && p.stockLeft <= 3 && p.stockLeft > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-rose-600 px-1.5 py-0.5 text-[10px] font-black text-white shadow-xs">
+              <span className="inline-flex items-center gap-0.5 sm:gap-1 rounded-md bg-rose-600 px-1 sm:px-1.5 py-0.5 text-[9px] sm:text-[10px] font-black text-white shadow-xs whitespace-nowrap">
                 <span>بقي {formatQuantity(p.stockLeft)}</span>
               </span>
             )}
@@ -136,7 +140,7 @@ export function StorefrontProductCard({
                   : `إضافة ${productTitle} إلى المفضلة`
               }
               aria-pressed={isWishlisted}
-              className={`store-action-button flex !size-8 !min-h-8 !min-w-8 items-center justify-center rounded-full bg-white/95 shadow-xs ring-1 ring-slate-200/80 backdrop-blur-sm transition-all hover:scale-110 active:scale-95 before:absolute before:-inset-1.5 before:content-[''] dark:bg-slate-800/95 dark:ring-slate-700 ${
+              className={`store-action-button flex !size-7 sm:!size-8 !min-h-7 sm:!min-h-8 !min-w-7 sm:!min-w-8 items-center justify-center rounded-full bg-white/95 shadow-xs ring-1 ring-slate-200/80 backdrop-blur-sm transition-all hover:scale-110 active:scale-95 before:absolute before:-inset-1.5 before:content-[''] dark:bg-slate-800/95 dark:ring-slate-700 ${
                 isWishlisted
                   ? "text-rose-600"
                   : "text-slate-500 hover:text-rose-500 dark:text-slate-400"
@@ -145,7 +149,7 @@ export function StorefrontProductCard({
               <Heart
                 key={`wishlist-${p.productId}-${heartPulseNonce}`}
                 aria-hidden
-                className={`size-3.5 ${isWishlisted ? "fill-current" : ""} ${
+                className={`size-3 sm:size-3.5 ${isWishlisted ? "fill-current" : ""} ${
                   heartPulseTarget === `product-${p.productId}`
                     ? "animate__animated animate__heartBeat animate__faster"
                     : ""
@@ -192,16 +196,16 @@ export function StorefrontProductCard({
       </div>
 
       {/* تفاصيل ومعلومات المنتج بارتفاعات عمودية محكمة لتوحيد خط الأزرار الأفقي */}
-      <div className="flex flex-1 flex-col p-3 sm:p-4">
+      <div className="flex flex-1 flex-col p-2.5 sm:p-4">
         {/* الماركة أو الوسم — ارتفاع مقفل */}
         <div className="flex h-4 items-center">
-          <span className="truncate text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+          <span className="truncate text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
             {p.brand ?? "المكتبة العربية"}
           </span>
         </div>
 
         {/* عنوان المنتج — معروض دائماً وبخط واضح */}
-        <div className="mt-1 flex min-h-[2.5rem] items-start">
+        <div className="mt-0.5 sm:mt-1 flex min-h-[2.25rem] sm:min-h-[2.5rem] items-start">
           <button
             type="button"
             onClick={() => onOpen(p.productId)}
@@ -213,49 +217,49 @@ export function StorefrontProductCard({
           </button>
         </div>
 
-        {/* الأسعار ومقدار التوفير — ارتفاع مقفل موحد */}
-        <div className="mt-2 flex min-h-[2.5rem] flex-col justify-center">
-          <div className="flex flex-wrap items-baseline gap-1.5">
-            <span className="text-sm sm:text-base font-black tracking-tight text-[#0E806A] dark:text-emerald-400">
+        {/* الأسعار ومقدار التوفير — ارتفاع مقفل موحد ومانع للتراكب */}
+        <div className="mt-1.5 sm:mt-2 flex min-h-[2.5rem] flex-col justify-center">
+          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+            <span className="text-xs sm:text-base font-black tracking-tight text-[#0E806A] whitespace-nowrap dark:text-emerald-400">
               {currentPrice != null ? `${fmtInt(Number(currentPrice))} د.ع` : "غير محدد"}
             </span>
             {onSale && p.price != null && (
-              <span className="text-[10px] font-semibold text-slate-400 line-through">
+              <span className="text-[9px] sm:text-[10px] font-semibold text-slate-400 line-through whitespace-nowrap">
                 {fmtInt(Number(p.price))} د.ع
               </span>
             )}
           </div>
           {onSale && savings > 0 ? (
             <div className="mt-0.5">
-              <span className="inline-block rounded-md bg-emerald-50 px-1.5 py-0.5 text-[9px] font-black text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+              <span className="inline-block rounded-md bg-emerald-50 px-1 sm:px-1.5 py-0.5 text-[8.5px] sm:text-[9px] font-black text-emerald-800 whitespace-nowrap dark:bg-emerald-950/50 dark:text-emerald-300">
                 وفرت {fmtInt(savings)} د.ع
               </span>
             </div>
           ) : (
-            <div className="mt-0.5 h-4" />
+            <div className="mt-0.5 h-3.5 sm:h-4" />
           )}
         </div>
 
-        {/* شريط الإلحاح والندرة الاجتماعية — ارتفاع مقفل موحد */}
-        <div className="mt-2.5 flex h-5 items-center justify-between gap-2 text-[11px] font-bold">
+        {/* شريط الإلحاح والندرة الاجتماعية — ارتفاع مرن مانع للتراكب */}
+        <div className="mt-1.5 sm:mt-2.5 flex min-h-5 items-center justify-between gap-1 text-[10px] sm:text-[11px] font-bold">
           {p.stockLeft != null && p.stockLeft > 0 && p.stockLeft <= 5 ? (
-            <span className="flex items-center gap-1 font-extrabold text-orange-600 dark:text-orange-400">
-              <Flame aria-hidden className="size-3" />
-              بقي {formatQuantity(p.stockLeft)} فقط!
+            <span className="flex items-center gap-1 font-extrabold text-orange-600 truncate dark:text-orange-400">
+              <Flame aria-hidden className="size-2.5 sm:size-3 shrink-0" />
+              <span className="truncate">بقي {formatQuantity(p.stockLeft)} فقط!</span>
             </span>
           ) : p.soldCount >= 3 ? (
-            <span className="flex items-center gap-1 text-blue-700 dark:text-blue-400">
-              <TrendingUp aria-hidden className="size-3" />
-              الأكثر طلباً
+            <span className="flex items-center gap-1 text-blue-700 truncate dark:text-blue-400">
+              <TrendingUp aria-hidden className="size-2.5 sm:size-3 shrink-0" />
+              <span className="truncate">الأكثر طلباً</span>
             </span>
           ) : (
-            <span className="text-slate-400 dark:text-slate-500">{p.unitName}</span>
+            <span className="truncate text-slate-400 dark:text-slate-500">{p.unitName}</span>
           )}
         </div>
 
-        {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً بارتفاع h-11 */}
+        {/* زر الإضافة السريع للسلة أو وحدة التحكم بالكمية المتحولة — متطابق أفقياً ومرن للهواتف */}
         {!p.isCustomizable && cartQuantity > 0 && onUpdateQuantity ? (
-          <div className="animate-spring-pop mt-auto flex h-11 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-2 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
+          <div className="animate-spring-pop mt-auto flex h-9 sm:h-11 w-full items-center justify-between rounded-xl border border-emerald-600/30 bg-emerald-50 px-1.5 sm:px-2 text-emerald-900 shadow-sm dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">
             <button
               type="button"
               onClick={(e) => {
@@ -263,15 +267,15 @@ export function StorefrontProductCard({
                 onUpdateQuantity(p.productId, -1);
               }}
               aria-label={`تقليل كمية ${p.productName}`}
-              className="flex size-8 items-center justify-center rounded-lg bg-white text-emerald-700 shadow-xs transition hover:bg-emerald-100/60 active:scale-90 dark:bg-slate-800 dark:text-emerald-400"
+              className="flex size-7 sm:size-8 shrink-0 items-center justify-center rounded-lg bg-white text-emerald-700 shadow-xs transition hover:bg-emerald-100/60 active:scale-90 dark:bg-slate-800 dark:text-emerald-400"
             >
-              <Minus aria-hidden className="size-3.5 stroke-[2.5]" />
+              <Minus aria-hidden className="size-3 sm:size-3.5 stroke-[2.5]" />
             </button>
 
-            <div className="flex items-center gap-1.5 px-2 font-mono text-xs font-black tabular-nums">
-              <span className="text-sm">{formatQuantity(cartQuantity)}</span>
-              <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
-                {p.unitName ? p.unitName : "في السلة"}
+            <div className="flex min-w-0 flex-1 items-center justify-center gap-1 px-1 font-mono text-xs font-black tabular-nums">
+              <span className="text-xs sm:text-sm shrink-0">{formatQuantity(cartQuantity)}</span>
+              <span className="truncate text-[8.5px] sm:text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
+                {p.unitName ? p.unitName : "بالسلة"}
               </span>
             </div>
 
@@ -283,9 +287,9 @@ export function StorefrontProductCard({
               }}
               disabled={p.stockLeft != null && cartQuantity >= p.stockLeft}
               aria-label={`زيادة كمية ${p.productName}`}
-              className="flex size-8 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-xs transition hover:bg-emerald-500 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex size-7 sm:size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-xs transition hover:bg-emerald-500 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <Plus aria-hidden className="size-3.5 stroke-[2.5]" />
+              <Plus aria-hidden className="size-3 sm:size-3.5 stroke-[2.5]" />
             </button>
           </div>
         ) : (
@@ -293,7 +297,7 @@ export function StorefrontProductCard({
             <AnimatedAddToCartButton
               size="sm"
               disabled={!orderable}
-              label={actionLabel ?? "أضف إلى السلة"}
+              label={cardButtonLabel}
               addedLabel="تمت الإضافة"
               icon={p.isCustomizable ? <AlertTriangle aria-hidden className="size-3.5" /> : undefined}
               onAdd={(btnEl) => {

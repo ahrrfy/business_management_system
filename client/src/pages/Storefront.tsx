@@ -1037,19 +1037,19 @@ function CategoryChipStrip({
   };
 
   return (
-    <div className="mx-auto flex max-w-[1500px] items-center gap-2 px-3 lg:px-6">
+    <div className="mx-auto flex max-w-[1500px] items-center gap-1.5 sm:gap-2 px-2 sm:px-3 lg:px-6">
       <button
         type="button"
         onClick={() => move(1)}
         aria-label="مرر الأقسام إلى اليسار"
-        className="flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
       >
         <ArrowRight aria-hidden className="size-3.5 rotate-180" />
       </button>
 
       <div
         dir="rtl"
-        className="relative flex min-w-0 flex-1 cursor-grab touch-pan-x overflow-hidden py-2.5 active:cursor-grabbing select-none [mask-image:linear-gradient(to_right,transparent,black_28px,black_calc(100%-28px),transparent)]"
+        className="relative flex min-w-0 flex-1 cursor-grab touch-pan-x overflow-hidden py-2 sm:py-2.5 active:cursor-grabbing select-none [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)] sm:[mask-image:linear-gradient(to_right,transparent,black_28px,black_calc(100%-28px),transparent)]"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -1062,14 +1062,14 @@ function CategoryChipStrip({
       >
         <div
           ref={trackRef}
-          className="flex shrink-0 items-center gap-2 will-change-transform"
+          className="flex shrink-0 items-center gap-1.5 sm:gap-2 will-change-transform"
           style={{ transform: "translate3d(0, 0, 0)" }}
         >
           {Array.from({ length: repeatCount }).map((_, setIndex) => (
             <div
               key={setIndex}
               ref={setIndex === 0 ? set0Ref : setIndex === 1 ? set1Ref : undefined}
-              className="flex shrink-0 items-center gap-2"
+              className="flex shrink-0 items-center gap-1.5 sm:gap-2"
               aria-hidden={setIndex > 0 ? "true" : undefined}
             >
               {allChips.map((chip) => {
@@ -1088,7 +1088,7 @@ function CategoryChipStrip({
                       if (dragStartRef.current.moved) return;
                       onPick(chip.id);
                     }}
-                    className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-colors duration-200 hover:-translate-y-0.5 active:scale-95 ${
+                    className={`shrink-0 rounded-full border px-3 sm:px-3.5 py-1 sm:py-1.5 text-xs font-black transition-colors duration-200 hover:-translate-y-0.5 active:scale-95 ${
                       isSelected ? activeClass : inactiveClass
                     }`}
                   >
@@ -1105,7 +1105,7 @@ function CategoryChipStrip({
         type="button"
         onClick={() => move(-1)}
         aria-label="مرر الأقسام إلى اليمين"
-        className="flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+        className="hidden sm:flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
       >
         <ArrowRight aria-hidden className="size-3.5" />
       </button>
@@ -2559,7 +2559,7 @@ function StorefrontContent() {
         </div>
       )}
 
-      <main id="store-main" tabIndex={-1} className="mx-auto w-full max-w-[1500px] overflow-x-clip px-4 py-6 pb-28 outline-none lg:px-8">
+      <main id="store-main" tabIndex={-1} className="mx-auto w-full max-w-[1500px] overflow-x-clip px-2.5 py-4 pb-28 outline-none sm:px-4 sm:py-6 lg:px-8">
         <h1 className="sr-only">مكتبة العربية للتسوق والتوصيل في العراق</h1>
         {announcement && <div className="mb-5 flex items-center gap-2 border border-[#ead8c8] bg-[#fff8f2] px-4 py-3 text-sm font-bold text-[#754f2c]"><BadgePercent aria-hidden className="size-4 shrink-0" /><span>{announcement}</span></div>}
         {shareFeedback && <div role={shareFeedback.tone === "err" ? "alert" : "status"} className={`animate__animated animate__fadeIn mb-5 border px-4 py-3 text-center text-xs font-bold ${SHARE_FEEDBACK_TONE_CLASS[shareFeedback.tone]}`}>{shareFeedback.text}</div>}
@@ -2581,7 +2581,7 @@ function StorefrontContent() {
           </div>
         )}
 
-        <section id="store-results" className="mt-4 sm:mt-6 scroll-mt-36 rounded-3xl bg-white p-5 shadow-xs ring-1 ring-slate-200/70 sm:p-7 dark:bg-slate-900 dark:ring-slate-800">
+        <section id="store-results" className="mt-4 sm:mt-6 scroll-mt-36 rounded-2xl sm:rounded-3xl bg-white p-3 sm:p-5 lg:p-7 shadow-xs ring-1 ring-slate-200/70 dark:bg-slate-900 dark:ring-slate-800">
           <div className="mb-5 flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end sm:justify-between dark:border-slate-800">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.15em] text-[#0E806A] dark:text-emerald-400">
@@ -2675,7 +2675,7 @@ function StorefrontContent() {
             </div>
           </div>
           {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {filteredItems.flatMap((p, idx) => {
                 const card = (
                   <StorefrontProductCard
@@ -3049,15 +3049,19 @@ function StorefrontContent() {
               )}
               <div className="flex flex-col gap-3">
                 {cartLines.map((l) => (
-                  <div key={l.cartKey} className="flex items-center gap-3 rounded-xl bg-white p-2.5 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
-                    <ProductImage url={l.imageUrl} alt={l.name} className="size-16 shrink-0 rounded-xl" />
-                    <div className="min-w-0 flex-1">
-                      <p className="line-clamp-2 text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{l.name}</p>
-                      {summarizeStorefrontCustomization(l.customization) && <p className="mt-1 line-clamp-2 text-[10px] font-bold leading-relaxed text-[#a16b2a]">تخصيص: {summarizeStorefrontCustomization(l.customization)}</p>}
-                      <p className="mt-1 text-sm font-extrabold text-emerald-600 dark:text-emerald-400">{money(l.price)} د.ع</p>
-                      <p className="mt-1 text-xs font-bold text-[#59636a]">{l.stockLimit != null ? `المتوفر: ${formatQuantity(l.stockLimit)}` : "متوفر للطلب"}</p>
+                  <div key={l.cartKey} className="flex flex-col gap-2.5 rounded-xl bg-white p-2.5 ring-1 ring-slate-100 sm:flex-row sm:items-center sm:gap-3 dark:bg-slate-900 dark:ring-slate-800">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <ProductImage url={l.imageUrl} alt={l.name} className="size-14 sm:size-16 shrink-0 rounded-xl" />
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-2 text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{l.name}</p>
+                        {summarizeStorefrontCustomization(l.customization) && <p className="mt-1 line-clamp-2 text-[10px] font-bold leading-relaxed text-[#a16b2a]">تخصيص: {summarizeStorefrontCustomization(l.customization)}</p>}
+                        <div className="mt-1 flex items-center justify-between sm:justify-start sm:gap-3">
+                          <p className="text-sm font-extrabold text-emerald-600 whitespace-nowrap dark:text-emerald-400">{money(l.price)} د.ع</p>
+                          <p className="text-[11px] sm:text-xs font-bold text-[#59636a] whitespace-nowrap">{l.stockLimit != null ? `المتوفر: ${formatQuantity(l.stockLimit)}` : "متوفر للطلب"}</p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex flex-col items-center gap-1.5">
+                    <div className="flex items-center justify-between border-t border-slate-100 pt-2 sm:border-0 sm:pt-0 sm:flex-col sm:items-center sm:gap-1.5 dark:border-slate-800">
                       <div className="flex items-center gap-2">
                         <button type="button" onClick={() => setQty(l.cartKey, l.qty - 1)} aria-label={`إنقاص كمية ${l.name}`} className="flex size-11 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300">
                           <Minus aria-hidden className="size-3.5" />
