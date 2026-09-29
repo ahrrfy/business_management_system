@@ -1,9 +1,11 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import { AnimatedEntrance } from "@/components/animated-entrance";
+import { useCart } from "@/lib/cart-context";
 import {
   formatIqd,
   productDiscountPercent,
@@ -20,6 +22,7 @@ type ProductCardProps = {
   quickAddLabel?: boolean;
   onQuickView?: (product: Product) => void;
   onAddedToCart?: () => void;
+  onQuickAdd?: (product: Product) => void;
   animationDelay?: number;
 };
 
@@ -30,8 +33,11 @@ export function ProductCard({
   fullWidth = false,
   quickAddLabel = false,
   onQuickView,
+  onAddedToCart,
+  onQuickAdd,
   animationDelay = 0,
 }: ProductCardProps) {
+  const { addProduct } = useCart();
   const { isSaved, toggle } = useWishlist();
   const discount = productDiscountPercent(product);
   const isRail = variant === "rail";
@@ -40,6 +46,19 @@ export function ProductCard({
     product.soldCount && product.soldCount > 0
       ? `طُلب ${product.soldCount}+ مرة`
       : null;
+
+  const handleActionButtonPress = () => {
+    if (product.isCustomizable) {
+      openProduct();
+      return;
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(
+      () => undefined,
+    );
+    addProduct(product, 1);
+    onAddedToCart?.();
+    onQuickAdd?.(product);
+  };
 
   return (
     <AnimatedEntrance
@@ -168,16 +187,16 @@ export function ProductCard({
           accessibilityHint={
             product.isCustomizable
               ? "يفتح تفاصيل الطلب الخاص"
-              : "يفتح خيارات اللون ووحدة البيع قبل الإضافة"
+              : "خلّيها بالسلة — إضافة سريعة لمسواكك بنقرة وحدة"
           }
           accessibilityLabel={
             product.isCustomizable
               ? `عرض تفاصيل ${product.title}`
-              : `اختيار خيارات ${product.title}`
+              : `خلّيها بالسلة: ${product.title}`
           }
           accessibilityRole="button"
           activeOpacity={0.84}
-          onPress={openProduct}
+          onPress={handleActionButtonPress}
           style={[
             styles.buyButton,
             isRail || quickAddLabel
@@ -187,13 +206,13 @@ export function ProductCard({
         >
           {isRail || quickAddLabel || product.isCustomizable ? (
             <Text style={styles.buyText}>
-              {product.isCustomizable ? "تفاصيل" : "أضف"}
+              {product.isCustomizable ? "تفاصيل" : (quickAddLabel ?? "خلّيها بالسلة")}
             </Text>
           ) : (
             <MaterialIcons
               color={storefrontDesign.primitive.white}
-              name="shopping-cart"
-              size={18}
+              name="add"
+              size={20}
             />
           )}
           {(isRail || quickAddLabel || product.isCustomizable) && (
@@ -369,22 +388,28 @@ const styles = StyleSheet.create({
   },
   buyButton: {
     alignItems: "center",
-    backgroundColor: "#0E806A",
-    borderRadius: 12,
+    backgroundColor: "#059669",
+    borderRadius: 999,
     flexDirection: "row-reverse",
-    gap: 4,
-    height: 34,
+    gap: 5,
+    height: 36,
     justifyContent: "center",
-    shadowColor: "#0E806A",
-    shadowOpacity: 0.20,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowColor: "#059669",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  buyButtonCompact: { marginRight: 6, width: 36 },
-  buyButtonWide: { marginRight: 6, paddingHorizontal: 12 },
+  buyButtonCompact: {
+    borderRadius: 999,
+    height: 36,
+    marginRight: 6,
+    width: 36,
+  },
+  buyButtonWide: { borderRadius: 999, marginRight: 6, paddingHorizontal: 14 },
   buyText: {
     color: "#FFFFFF",
     fontFamily: "Cairo_700Bold",
-    fontSize: 11,
+    fontSize: 11.5,
   },
 });

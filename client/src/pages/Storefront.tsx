@@ -1153,7 +1153,7 @@ type BannerItem = StoreBannerCreative;
 function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
   return (
     <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-xl shadow-sm">
-      <BannerFrame banner={banner} slot="INLINE" />
+      <BannerFrame banner={banner} slot="HERO" />
     </div>
   );
 }
@@ -2434,8 +2434,8 @@ function StorefrontContent() {
         <StorefrontMilestoneBar cartSubtotal={cartSubtotal} freeShippingThresholdBaghdad={settingsQ.data?.freeShippingThreshold} freeShippingThresholdGovernorates={settingsQ.data?.freeShippingThresholdGovernorates} className="mb-6" />
 
         {!search && categoryId == null && !showWishlist && feedStrips.length > 0 && (
-          <div className="mb-6 rounded-2xl bg-slate-900 p-3 shadow-md sm:p-4">
-            <BannerCarousel banners={feedStrips} slot="INLINE" />
+          <div className="mb-8 w-[100vw] relative left-[50%] right-[50%] -ml-[50vw] -mr-[50vw] overflow-hidden">
+            <BannerCarousel banners={feedStrips} slot="HERO" />
           </div>
         )}
 
@@ -2443,10 +2443,10 @@ function StorefrontContent() {
           <div className="mb-5 flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end sm:justify-between dark:border-slate-800">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.15em] text-[#0E806A] dark:text-emerald-400">
-                كتالوج المتجر
+                كل اللي تحتاجه، وأكثر!
               </p>
               <h2 className="mt-1 text-2xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100">
-                {showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}
+                {showWishlist ? "قائمة أعجبتني" : "المسواك الأكثر طلباً بالعراق"}
               </h2>
               <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">
                 {search

@@ -1,5 +1,5 @@
 const PRODUCT_PATH = /^\/product\/\d+$/;
-const ALLOWED_PATHS = new Set(["/", "/search", "/categories", "/cart", "/orders"]);
+const ALLOWED_PATHS = new Set(["/", "/search", "/categories", "/cart", "/orders", "/deals", "/perks"]);
 
 /**
  * يقبل روابط التطبيق الداخلية فقط. لا تسمح رسائل الحملات بفتح متصفح أو deep link خارجي.
