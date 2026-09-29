@@ -894,29 +894,39 @@ describe("Tier 1: Feature Coverage (Features 1 to 19)", () => {
     expect(inv?.id).toBe(invoiceId);
   });
 
-  it("F18: Return Policy Expiration Approval Trigger — Invoices older than policy window (14 days) require manager review", async () => {
-    const shift1 = await openShift(CASHIER1_ID, 1);
-    // Sale made 20 days ago
+  it("F18: Open Return Window — Invoices of any age (no time limit) execute direct return by cashier without time restrictions", async () => {
+    const shift1 = await openShift(CASHIER1_ID, 1, "50000.00");
+    // Sale made 60 days ago
     const { invoiceId, itemId } = await createSaleInvoice({
       shiftId: shift1,
       actor: cashier1Actor,
       quantity: 1,
       paidAmount: "5000.00",
-      daysAgo: 20,
+      daysAgo: 60,
     });
 
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
     const ageDays = (Date.now() - new Date(inv.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-    expect(ageDays).toBeGreaterThan(14);
+    expect(ageDays).toBeGreaterThan(50);
 
-    // Routed through control request queue
     const cashier1Caller = createCaller({ id: CASHIER1_ID, branchId: 1, role: "cashier" });
-    const req = await cashier1Caller.returns.request({
+    // Cashier executes direct return without any time expiration barrier
+    const directRet = await cashier1Caller.returns.create({
       invoiceId,
       lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-      reason: "فاتورة متجاوزة لسياسة الـ 14 يوما تتطلب موافقة المدير الاستثنائية",
+      directExecution: true,
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "5000.00",
+        shiftId: shift1,
+        reason: "مرتجع لفاتورة قديمة بدون مهلة محددة",
+        disposition: "RESTOCK",
+      },
+      reason: "إرجاع مباشر بدون شرط مهلة زمنية",
     });
-    expect(req).toBeDefined();
+    expect(directRet).toBeDefined();
+    expect(directRet.mode).toBe("EXECUTED");
   });
 
   it("F19: High-Value Damaged Goods Approval Trigger — Return of damaged high-value goods requires manager approval", async () => {
@@ -1131,52 +1141,62 @@ describe("Tier 2: Boundary & Corner Cases", () => {
     }
   });
 
-  it("B5: Return Window Limits — Return at day 13 is routine; return past day 14 triggers policy boundary", async () => {
+  it("B5: No Return Window Limits — Direct return permitted seamlessly across all invoice ages (day 1, day 30, day 90+)", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1, "50000.00");
 
-    // Invoice at 13 days old (within 14 days policy window)
-    const { invoiceId: inv13, itemId: item13 } = await createSaleInvoice({
+    // Invoice at 30 days old
+    const { invoiceId: inv30, itemId: item30 } = await createSaleInvoice({
       shiftId: shift1,
       actor: cashier1Actor,
       quantity: 1,
       paidAmount: "5000.00",
-      daysAgo: 13,
+      daysAgo: 30,
     });
 
-    const ret13 = await returnSaleDirect(
+    const ret30 = await returnSaleDirect(
       {
-        invoiceId: inv13,
-        lines: [{ invoiceItemId: item13, baseQuantity: 1 }],
+        invoiceId: inv30,
+        lines: [{ invoiceItemId: item30, baseQuantity: 1 }],
         resolution: {
           kind: "IMMEDIATE_REFUND",
           method: "CASH",
           amount: "5000.00",
           shiftId: shift1,
-          reason: "إرجاع في اليوم 13 ضمن المهلة",
+          reason: "إرجاع بعد 30 يوماً بدون قيد زمني",
           disposition: "RESTOCK",
         },
-        operatorReason: "ضمن سياسة الإرجاع",
+        operatorReason: "دون شرط مهلة محددة",
       },
       cashier1Actor,
     );
-    expect(ret13.returnedTotal).toBe("5000.00");
+    expect(ret30.returnedTotal).toBe("5000.00");
 
-    // Invoice at 16 days old (exceeds 14 days policy window)
-    const { invoiceId: inv16, itemId: item16 } = await createSaleInvoice({
+    // Invoice at 90 days old
+    const { invoiceId: inv90, itemId: item90 } = await createSaleInvoice({
       shiftId: shift1,
       actor: cashier1Actor,
       quantity: 1,
       paidAmount: "5000.00",
-      daysAgo: 16,
+      daysAgo: 90,
     });
 
-    const caller = createCaller({ id: CASHIER1_ID, branchId: 1, role: "cashier" });
-    const req = await caller.returns.request({
-      invoiceId: inv16,
-      lines: [{ invoiceItemId: item16, baseQuantity: 1 }],
-      reason: "مرتجع متجاوز لـ 14 يوماً يتطلب موافقة المدير",
-    });
-    expect(req).toBeDefined();
+    const ret90 = await returnSaleDirect(
+      {
+        invoiceId: inv90,
+        lines: [{ invoiceItemId: item90, baseQuantity: 1 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND",
+          method: "CASH",
+          amount: "5000.00",
+          shiftId: shift1,
+          reason: "إرجاع بعد 90 يوماً بدون قيد زمني",
+          disposition: "RESTOCK",
+        },
+        operatorReason: "دون شرط مهلة محددة للفاتورة",
+      },
+      cashier1Actor,
+    );
+    expect(ret90.returnedTotal).toBe("5000.00");
   });
 });
 
@@ -1411,49 +1431,36 @@ describe("Tier 4: Real-World Application Scenarios (TEST_INFRA.md 1 to 7)", () =
     expect(outReceipts).toHaveLength(0);
   });
 
-  it("Scenario 4: Customer attempts return exceeding policy window; routed to manager approval and executed (F1, F15, F18)", async () => {
+  it("Scenario 4: Customer returns invoice of any age (e.g. 45 days old); executed directly by cashier without time barrier (F1, F15, F18)", async () => {
     const shift1 = await openShift(CASHIER1_ID, 1, "50000.00");
-    // Invoice 25 days old
+    // Invoice 45 days old
     const { invoiceId, itemId } = await createSaleInvoice({
       shiftId: shift1,
       actor: cashier1Actor,
       quantity: 1,
       paidAmount: "5000.00",
-      daysAgo: 25,
+      daysAgo: 45,
     });
 
     const cashierCaller = createCaller({ id: CASHIER1_ID, branchId: 1, role: "cashier" });
 
-    // Cashier submits request for manager review
-    const reqResult = await cashierCaller.returns.request({
+    // Cashier executes direct return immediately with no manager approval needed for invoice age
+    const directResult = await cashierCaller.returns.create({
       invoiceId,
       lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-      reason: "سيناريو 4: تجاوز مهلة الإرجاع يتطلب موافقة المدير",
-    });
-    expect(reqResult).toBeDefined();
-
-    // Manager approves request
-    const pending = (
-      await db()
-        .select()
-        .from(s.returnRequests)
-        .where(eq(s.returnRequests.invoiceId, invoiceId))
-    )[0];
-
-    const mgrCaller = createCaller({ id: MGR_ID, branchId: 1, role: "manager" });
-    const mgrShift = await openShift(MGR_ID, 1, "50000.00");
-    const approvalRes = await mgrCaller.returns.approveRequest({
-      requestId: Number(pending.id),
+      directExecution: true,
       resolution: {
         kind: "IMMEDIATE_REFUND",
         method: "CASH",
         amount: "5000.00",
-        shiftId: mgrShift,
-        reason: "موافقة استثنائية من المدير لتجاوز المهلة",
+        shiftId: shift1,
+        reason: "سيناريو 4: استرجاع فاتورة قديمة بدون تقييد بمهلة زمنية",
         disposition: "RESTOCK",
       },
+      reason: "مرتجع مباشر بدون قيد زمني",
     });
-    expect(approvalRes).toBeDefined();
+    expect(directResult).toBeDefined();
+    expect(directResult.mode).toBe("EXECUTED");
   });
 
   it("Scenario 5: Return with mixed restock and damaged items; stock and COGS correctly differentiated (F1, F13, F14, F19)", async () => {
