@@ -28,10 +28,10 @@ const ROOTS = [
   path.join(REPO_ROOT, "client", "src"),
 ];
 
-// الشكل الخطِر: إسنادٌ يحلّ فرعاً من scopedBranchId أو input.branchId وينتهي بافتراضٍ رقميّ صامت.
-const RE = /=\s*[^;]*\b(scopedBranchId|input\??\.branchId)\b[^;]*\?\?\s*[01]\b/;
-// النمط العميليّ: `me.data?.branchId ?? 1` وأخواته (أيّ قراءةِ branchId من حالةٍ تنتهي بافتراضٍ رقميّ).
-const RE_CLIENT = /=\s*[^;]*\bbranchId\b[^;]*\?\?\s*[01]\b/;
+// الشكل الخطِر: إسنادٌ أو خاصية تحلّ فرعاً من scopedBranchId أو input.branchId وتفترض رقماً صامتاً (?? 0/1 أو || 0/1).
+const RE = /(?:=\s*[^;]*\b(scopedBranchId|input\??\.branchId)\b[^;]*(\?\?|\|\|)\s*[01]\b|\bbranchId\s*:\s*[^;]*\b(scopedBranchId|input\??\.branchId)\b[^;]*(\?\?|\|\|)\s*1\b)/;
+// النمط العميليّ: إسنادٌ متغير، أو خاصية كائن (branchId:)، أو قراءة من حالة (me.data/state/selected) تنتهي بسقوطٍ صامت (?? 1 أو || 1).
+const RE_CLIENT = /(?:=\s*[^;]*\bbranchId\b[^;]*(\?\?|\|\|)\s*[01]\b|(?:\bbranchId\s*:|\b(?:me\.data\??|state|selected\??)\.branchId\b)[^;]*(\?\?|\|\|)\s*1\b)/;
 // اصطلاح آمن مُستثنى: `Number(... ?? 0) || undefined` ⇒ القيمة النهائية undefined = كل الفروع لا الفرع ١
 // (النموذج الصحيح في reorderAlerts/reportsRouter). وجود `|| undefined/null` يعني أن الـ?? 0 ليست نهائية.
 const SAFE_IDIOM = /\|\|\s*(undefined|null)\b/;
@@ -58,7 +58,6 @@ const BASELINE = new Set([
   "QuotationNew.tsx|const defaultBranchId = me.data?.branchId ?? 1;",
   "Reception.tsx|() => Number(me.data?.branchId ?? pickedBranch ?? 1),",
   "PurchaseReturnNew.tsx|const defaultBranchId = me.data?.branchId ?? 1;",
-  "SalesInvoiceNew.tsx|const defaultBranchId = me.data?.branchId ?? 1;",
 ]);
 
 function normSig(base, trimmedLine) {
@@ -89,12 +88,24 @@ for (const root of ROOTS) {
     lines.forEach((line, i) => {
       const trimmed = line.trim();
       if (trimmed.startsWith("//") || trimmed.startsWith("*")) return; // تعليق
+
+      // معالجة الأسطر الممتدّة: إذا انتهى السطر أو بدأ بعامل ?? أو ||
+      let testSubject = trimmed;
+      if (/(\?\?|\|\|)\s*$/.test(trimmed) && i + 1 < lines.length) {
+        testSubject = `${trimmed} ${lines[i + 1].trim()}`;
+      } else if (/^(\?\?|\|\|)/.test(trimmed) && i > 0) {
+        testSubject = `${lines[i - 1].trim()} ${trimmed}`;
+      }
+
       const isClient = file.includes(`${path.sep}client${path.sep}`);
-      if (!(isClient ? RE_CLIENT : RE).test(line)) return;
-      if (SAFE_IDIOM.test(line)) return; // `... || undefined` = كل الفروع لا الفرع الافتراضي
+      const re = isClient ? RE_CLIENT : RE;
+      if (!re.test(testSubject)) return;
+      if (SAFE_IDIOM.test(testSubject)) return; // `... || undefined` = كل الفروع لا الفرع الافتراضي
+
       const sig = normSig(base, trimmed);
-      if (BASELINE.has(sig)) return;
-      violations.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: اشتقاق فرعٍ عامل بافتراضٍ صامت (?? 0/1) — استعمل نمط G3: admin⇒null، غيره⇒فرعه، وإلا FORBIDDEN (لا ?? 1)`);
+      const sigWindow = normSig(base, testSubject);
+      if (BASELINE.has(sig) || BASELINE.has(sigWindow)) return;
+      violations.push(`${path.relative(REPO_ROOT, file)}:${i + 1}: اشتقاق فرعٍ عامل بافتراضٍ صامت (?? 0/1 أو || 0/1) — استعمل نمط G3: admin⇒null، غيره⇒فرعه، وإلا FORBIDDEN (لا ?? 1)`);
     });
   }
 }

@@ -5,7 +5,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
-import { canCrossBranches } from "../lib/branchAuthority";
+import { canCrossBranches, resolveActorBranchId } from "../lib/branchAuthority";
 import { REFUND_RAILS } from "@shared/refundRail";
 import {
   auditLogs,
@@ -2420,13 +2420,14 @@ export const workOrderRouter = router({
         returnBase: z.number().int().min(0),
         wasteBase: z.number().int().min(0),
       })).max(200).optional(),
+      branchId: z.number().int().positive().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await cancelWorkOrder(
         input.workOrderId,
         {
           userId: ctx.user.id,
-          branchId: ctx.user.branchId ?? 1,
+          branchId: resolveActorBranchId(ctx, input.branchId),
           role: ctx.user.role,
           permissionsOverride: ctx.user.permissionsOverride,
         },

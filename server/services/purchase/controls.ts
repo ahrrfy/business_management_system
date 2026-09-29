@@ -548,6 +548,7 @@ export async function decidePurchaseOrderControl(
       actor: (resolvedActor = await resolveApprovalActor(tx, actor)),
       trigger: purchaseOrderControlTrigger(request.kind, input.approve),
       subject: `أمر الشراء ${po.poNumber}`,
+      retainLegacy: true,
       legacy: () => {
         if (
           actor.userId === Number(request.requestedBy) ||

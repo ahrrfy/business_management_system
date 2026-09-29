@@ -282,19 +282,14 @@ export function PurchaseReturnPortal({
       const res = await purchaseReturnMutation.mutateAsync({
         supplierId: selectedSupplierId,
         reference: purchaseRef.trim() || undefined,
-        items: purchaseCart.map((i) => {
-          const factor = Math.max(1, Number(i.conversionFactor) || 1);
-          const baseQty = Math.round(i.quantity * factor);
-          const totalLineCost = Number(i.unitPrice) * i.quantity;
-          const baseUnitCost = (totalLineCost / baseQty).toFixed(2);
-          return {
-            variantId: i.variantId,
-            productName: i.productName,
-            barcode: i.barcode,
-            quantity: baseQty,
-            unitCost: baseUnitCost,
-          };
-        }),
+        items: purchaseCart.map((i) => ({
+          variantId: i.variantId,
+          productUnitId: i.productUnitId,
+          productName: i.productName,
+          barcode: i.barcode,
+          quantity: i.quantity,
+          unitCost: i.unitPrice,
+        })),
         settlement: {
           method: purchaseSettlement,
           totalAmount: String(purchaseTotal),

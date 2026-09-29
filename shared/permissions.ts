@@ -86,6 +86,45 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
 ];
 
+/**
+ * جميع مفاتيح الوحدات المسموح بها في النظام (بما فيها customers للترحيل المتوافق).
+ * يُستخدَم لتقييد حقل permissionsOverride ومنع حقن مفاتيح عشوائية (VULN-RBAC-03).
+ */
+export const ALL_PERMISSION_MODULE_KEYS = [
+  "crm",
+  "campaigns",
+  "collections",
+  "pos",
+  "sales",
+  "purchases",
+  "inventory",
+  "workorders",
+  "channels",
+  "tasks",
+  "store",
+  "treasury",
+  "suppliers",
+  "products",
+  "productStudio",
+  "expenses",
+  "reports",
+  "assets",
+  "hr",
+  "commissions",
+  "consignments",
+  "reservations",
+  "digital_cards",
+  "gifts",
+  "catalogAnomalies",
+  "courier",
+  "announcements",
+  "users",
+  "settings",
+  "customers",
+] as const;
+
+export type PermissionModuleKey = (typeof ALL_PERMISSION_MODULE_KEYS)[number];
+
 export type PermissionMap = Record<string, AccessLevel>;
 
 export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {

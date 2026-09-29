@@ -1,5 +1,5 @@
 import { PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG, PASSWORD_REGEX, USERNAME_MAX_LEN } from "@shared/const";
-import { ALL_ROLES, type RoleKey } from "@shared/permissions";
+import { ALL_ROLES, ALL_PERMISSION_MODULE_KEYS, type RoleKey } from "@shared/permissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -26,8 +26,25 @@ import { adminProcedure, protectedProcedure, router, usersAdminProcedure } from 
 
 // تحفظ tuple الـenum أنواع RoleKey الحرفية ⇒ z.infer ينتج RoleKey لا string ⇒ يُغني عن as any.
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
-const ACCESS = z.enum(["FULL", "READ", "NONE"]);
-const PERM_OVERRIDE = z.record(z.string(), ACCESS).nullish();
+export const VALID_MODULE_KEYS = new Set<string>(ALL_PERMISSION_MODULE_KEYS);
+export const ACCESS = z.enum(["FULL", "READ", "NONE"]);
+export const PERM_OVERRIDE = z
+  .record(z.string(), ACCESS)
+  .superRefine((val, ctx) => {
+    if (!val) return;
+    for (const key of Object.keys(val)) {
+      if (!VALID_MODULE_KEYS.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `مفتاح وحدة غير مصرّح به في permissionsOverride: ${key}`,
+          path: [key],
+        });
+      }
+    }
+  })
+  .nullish();
+
+export const permOverrideSchema = PERM_OVERRIDE;
 
 // معرّفا الدخول. عند الإنشاء: الواجهة ترسل undefined للحقل الفارغ (مع اشتراط أحدهما عبر refine).
 // عند التعديل: "" ⇒ مسح المعرّف صراحةً (الخدمة تضمن بقاء معرّف واحد على الأقل)، وغيابه ⇒ بلا تغيير.
