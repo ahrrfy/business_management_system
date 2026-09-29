@@ -978,7 +978,7 @@ export default function HomeScreen() {
               {homeCategoryId
                 ? categories.find((c) => String(c.id) === homeCategoryId)?.name ??
                   "منتجات القسم"
-                : "كتالوج المنتجات"}
+                : "كل المنتجات"}
             </Text>
             <Text style={styles.catalogCount}>
               {loading
@@ -1112,7 +1112,7 @@ export default function HomeScreen() {
       </ScrollView>
 
       {/* شريط السلة العائم الذكي — Smart Floating Cart Bar */}
-      <FloatingCartBar onOpenSideCart={() => setSideCartVisible(true)} />
+      <FloatingCartBar />
     </ScreenContainer>
   );
 }
@@ -1852,5 +1852,36 @@ const styles = StyleSheet.create({
     color: "#7C5CFC",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 12,
+  },
+  occasionsSection: {
+    marginTop: 10,
+  },
+  occasionsList: {
+    gap: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
+  occasionItem: {
+    alignItems: "center",
+    width: 68,
+  },
+  occasionCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+    marginBottom: 6,
+  },
+  occasionLabel: {
+    color: "#334155",
+    fontFamily: "Cairo_700Bold",
+    fontSize: 10,
+    textAlign: "center",
   },
 });
