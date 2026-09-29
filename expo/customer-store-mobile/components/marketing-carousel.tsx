@@ -12,29 +12,79 @@ import {
   View,
 } from "react-native";
 
+import { marketingCarouselGeometry } from "@/lib/marketing-carousel-layout";
 import type { StorefrontBanner, StorefrontOffer } from "@/lib/storefront-api";
 import { storefrontDesign } from "@/lib/storefront-design";
 
 type SlideTone = "evergreen" | "citrus" | "berry";
 
-type Slide = {
+export type Slide = {
   id: string;
   kicker: string;
   title: string;
   subtitle: string;
   cta: string;
   imageUrl?: string | null;
+  imageSource?: any;
   tone: SlideTone;
   source: StorefrontBanner | null;
+  isFullBanner?: boolean;
 };
 
 const GAP = 12;
-const AUTOPLAY_DELAY_MS = 5600;
+export const AUTOPLAY_DELAY_MS = 4500;
 
 function toAssetUrl(value: string | null | undefined) {
   if (!value) return null;
   return value.startsWith("/") ? `https://alarabiya.online${value}` : value;
 }
+
+export const FALLBACK_BANNERS: Slide[] = [
+  {
+    id: "banner-school",
+    kicker: "موسم المدارس والجامعات",
+    title: "أقوى عروض العودة للدراسة - خصومات 60%",
+    subtitle: "قرطاسية فاخرة وحقائب ودفاتر وأدوات هندسية متكاملة.",
+    cta: "تسوق العروض",
+    imageSource: require("@/assets/images/banner_back_to_school.jpg"),
+    tone: "evergreen",
+    source: null,
+    isFullBanner: true,
+  },
+  {
+    id: "banner-corporate",
+    kicker: "تجهيز المكاتب والشركات",
+    title: "تجهيزات الشركات والمؤسسات — خصومات الجملة 45%",
+    subtitle: "مذكرات جلدية، طابعات ليزر، وأقلام حبر فاخرة بأسعار الجملة.",
+    cta: "طلب عرض أسعار",
+    imageSource: require("@/assets/images/banner_office_corp.jpg"),
+    tone: "citrus",
+    source: null,
+    isFullBanner: true,
+  },
+  {
+    id: "banner-art",
+    kicker: "الفنون والطباعة الرقمية",
+    title: "مهرجان الفنون والطباعة — تخفيضات حتى 50%",
+    subtitle: "ألوان احترافية، كراسات رسم، وطباعة هدايا وتخرج مخصصة.",
+    cta: "استكشف الفنون",
+    imageSource: require("@/assets/images/banner_art_printing.jpg"),
+    tone: "berry",
+    source: null,
+    isFullBanner: true,
+  },
+  {
+    id: "banner-flyer",
+    kicker: "المجلة الأسبوعية الرسمية",
+    title: "مجلة عروض وتخفيضات الأسبوع الكبرى",
+    subtitle: "أكثر من 150 منتجاً مخفضاً وتوصيل سريع لكافة المحافظات.",
+    cta: "تصفح المجلة",
+    imageSource: require("@/assets/images/promo_flyer_deals.jpg"),
+    tone: "citrus",
+    source: null,
+    isFullBanner: true,
+  },
+];
 
 function offerSlide(offer: StorefrontOffer, index: number): Slide {
   const amount = Number(offer.discountAmount);
@@ -54,6 +104,7 @@ function offerSlide(offer: StorefrontOffer, index: number): Slide {
     cta: "استكشف المنتجات",
     tone: (["evergreen", "citrus", "berry"] as SlideTone[])[index % 3],
     source: null,
+    isFullBanner: false,
   };
 }
 
@@ -75,8 +126,7 @@ export function MarketingCarousel({
   onPress: (banner: StorefrontBanner | null) => void;
 }) {
   const { width } = useWindowDimensions();
-  const cardWidth = Math.min(Math.max(width - 32, 304), 520);
-  const horizontalInset = Math.max(16, (width - cardWidth) / 2);
+  const { cardWidth, sideInset: horizontalInset } = marketingCarouselGeometry(width);
   const snapInterval = cardWidth + GAP;
   const slides = useMemo<Slide[]>(() => {
     const heroBanners = banners.filter((banner) => banner.placement === "HERO");
@@ -90,22 +140,14 @@ export function MarketingCarousel({
         imageUrl: toAssetUrl(banner.mobileImageUrl ?? banner.imageUrl),
         tone: (["evergreen", "citrus", "berry"] as SlideTone[])[index % 3],
         source: banner,
+        isFullBanner: Boolean(banner.mobileImageUrl ?? banner.imageUrl),
       }));
     }
-    if (offers.length) return offers.slice(0, 4).map(offerSlide);
 
-    return [
-      {
-        id: "library-welcome",
-        kicker: "المكتبة العربية · كل يوم",
-        title: "رتّب احتياجاتك في طلب واحد",
-        subtitle: "قرطاسية، طباعة وتجهيزات عملية للأفراد والجهات.",
-        cta: "ابدأ من المنتجات",
-        tone: "evergreen",
-        source: null,
-      },
-    ];
-  }, [banners, offers]);
+    // Prioritize 4 local high-definition commercial ad banners displayed full-width
+    // in pure commercial retail style without distracting overlay text
+    return FALLBACK_BANNERS;
+  }, [banners]);
 
   const listRef = useRef<FlatList<Slide>>(null);
   const activeIndexRef = useRef(0);
@@ -169,7 +211,7 @@ export function MarketingCarousel({
   );
 
   return (
-    <View>
+    <View style={styles.wrapper}>
       <FlatList
         ref={listRef}
         data={slides}
@@ -197,19 +239,33 @@ export function MarketingCarousel({
         }}
         renderItem={({ item }) => (
           <TouchableOpacity
-            activeOpacity={0.94}
+            accessibilityLabel={item.title}
+            accessibilityRole="button"
+            activeOpacity={0.92}
             onPress={() => onPress(item.source)}
             style={[
-              styles.card,
-              item.tone === "citrus"
-                ? styles.citrus
-                : item.tone === "berry"
-                  ? styles.berry
-                  : styles.evergreen,
-              { width: cardWidth },
+              item.isFullBanner
+                ? [styles.fullBannerCard, { width: cardWidth }]
+                : [
+                    styles.card,
+                    item.tone === "citrus"
+                      ? styles.citrus
+                      : item.tone === "berry"
+                        ? styles.berry
+                        : styles.evergreen,
+                    { width: cardWidth },
+                  ],
             ]}
           >
-            {item.imageUrl ? (
+            {item.isFullBanner ? (
+              <Image
+                cachePolicy="memory-disk"
+                contentFit="cover"
+                source={item.imageSource ?? item.imageUrl}
+                style={styles.fullBannerImage}
+                transition={150}
+              />
+            ) : item.imageUrl ? (
               <>
                 <Image
                   cachePolicy="memory-disk"
@@ -219,81 +275,134 @@ export function MarketingCarousel({
                   transition={0}
                 />
                 <View style={styles.imageScrim} />
+                <View style={styles.copy}>
+                  <View
+                    style={[
+                      styles.kicker,
+                      item.tone === "citrus" && styles.citrusKicker,
+                    ]}
+                  >
+                    <View style={styles.kickerDot} />
+                    <Text
+                      style={[
+                        styles.kickerText,
+                        item.tone === "citrus" && styles.citrusKickerText,
+                      ]}
+                    >
+                      {item.kicker}
+                    </Text>
+                  </View>
+                  <Text
+                    numberOfLines={2}
+                    style={[
+                      styles.title,
+                      item.tone === "citrus" && styles.citrusTitle,
+                    ]}
+                  >
+                    {item.title}
+                  </Text>
+                  <Text
+                    numberOfLines={2}
+                    style={[
+                      styles.subtitle,
+                      item.tone === "citrus" && styles.citrusSubtitle,
+                    ]}
+                  >
+                    {item.subtitle}
+                  </Text>
+                  <View style={styles.cta}>
+                    <Text style={styles.ctaText}>{item.cta}</Text>
+                    <MaterialIcons
+                      color={storefrontDesign.semantic.brandStrong}
+                      name="arrow-back"
+                      size={18}
+                    />
+                  </View>
+                </View>
               </>
             ) : (
-              <View pointerEvents="none" style={styles.paperArt}>
-                <View style={styles.artCircle} />
-                <View style={styles.artBackSheet} />
-                <View style={styles.artSheet}>
-                  <MaterialIcons
-                    color={
-                      item.tone === "citrus"
-                        ? storefrontDesign.semantic.brandStrong
-                        : storefrontDesign.primitive.white
-                    }
-                    name={decorativeIcon(item.tone)}
-                    size={54}
-                  />
-                  <View style={styles.artRule} />
-                  <View style={[styles.artRule, styles.artRuleShort]} />
+              <>
+                <View pointerEvents="none" style={styles.paperArt}>
+                  <View style={styles.artCircle} />
+                  <View style={styles.artBackSheet} />
+                  <View style={styles.artSheet}>
+                    <MaterialIcons
+                      color={
+                        item.tone === "citrus"
+                          ? storefrontDesign.semantic.brandStrong
+                          : storefrontDesign.primitive.white
+                      }
+                      name={decorativeIcon(item.tone)}
+                      size={54}
+                    />
+                    <View style={styles.artRule} />
+                    <View style={[styles.artRule, styles.artRuleShort]} />
+                  </View>
                 </View>
-              </View>
+                <View style={styles.copy}>
+                  <View
+                    style={[
+                      styles.kicker,
+                      item.tone === "citrus" && styles.citrusKicker,
+                    ]}
+                  >
+                    <View style={styles.kickerDot} />
+                    <Text
+                      style={[
+                        styles.kickerText,
+                        item.tone === "citrus" && styles.citrusKickerText,
+                      ]}
+                    >
+                      {item.kicker}
+                    </Text>
+                  </View>
+                  <Text
+                    numberOfLines={2}
+                    style={[
+                      styles.title,
+                      item.tone === "citrus" && styles.citrusTitle,
+                    ]}
+                  >
+                    {item.title}
+                  </Text>
+                  <Text
+                    numberOfLines={2}
+                    style={[
+                      styles.subtitle,
+                      item.tone === "citrus" && styles.citrusSubtitle,
+                    ]}
+                  >
+                    {item.subtitle}
+                  </Text>
+                  <View style={styles.cta}>
+                    <Text style={styles.ctaText}>{item.cta}</Text>
+                    <MaterialIcons
+                      color={storefrontDesign.semantic.brandStrong}
+                      name="arrow-back"
+                      size={18}
+                    />
+                  </View>
+                </View>
+              </>
             )}
-            <View style={styles.copy}>
-              <View
-                style={[
-                  styles.kicker,
-                  item.tone === "citrus" && styles.citrusKicker,
-                ]}
-              >
-                <View style={styles.kickerDot} />
-                <Text
-                  style={[
-                    styles.kickerText,
-                    item.tone === "citrus" && styles.citrusKickerText,
-                  ]}
-                >
-                  {item.kicker}
-                </Text>
-              </View>
-              <Text
-                numberOfLines={2}
-                style={[
-                  styles.title,
-                  item.tone === "citrus" && styles.citrusTitle,
-                ]}
-              >
-                {item.title}
-              </Text>
-              <Text
-                numberOfLines={2}
-                style={[
-                  styles.subtitle,
-                  item.tone === "citrus" && styles.citrusSubtitle,
-                ]}
-              >
-                {item.subtitle}
-              </Text>
-              <View style={styles.cta}>
-                <Text style={styles.ctaText}>{item.cta}</Text>
-                <MaterialIcons
-                  color={storefrontDesign.semantic.brandStrong}
-                  name="arrow-back"
-                  size={18}
-                />
-              </View>
-            </View>
           </TouchableOpacity>
         )}
       />
       {slides.length > 1 && (
         <View style={styles.pagination}>
-          {slides.map((slide, index) => (
-            <View
-              key={slide.id}
-              style={[styles.dot, index === activeIndex && styles.activeDot]}
-            />
-          ))}
+          <View style={styles.counterBadge}>
+            <Text style={styles.counterText}>
+              {`${activeIndex + 1} من ${slides.length}`}
+            </Text>
+          </View>
+          <View style={styles.dotsRow}>
+            {slides.map((slide, index) => (
+              <View
+                key={slide.id}
+                style={[styles.dot, index === activeIndex && styles.activeDot]}
+              />
+            ))}
+          </View>
         </View>
       )}
     </View>
@@ -301,10 +410,31 @@ export function MarketingCarousel({
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    marginVertical: 4,
+  },
   content: { gap: GAP },
+  fullBannerCard: {
+    height: 195,
+    borderRadius: 20,
+    backgroundColor: "#0A111E",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    overflow: "hidden",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    elevation: 5,
+  },
+  fullBannerImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 20,
+  },
   card: {
     borderRadius: 24,
-    height: 250,
+    height: 230,
     overflow: "hidden",
     shadowColor: "#0F172A",
     shadowOffset: { width: 0, height: 10 },
@@ -364,8 +494,8 @@ const styles = StyleSheet.create({
   title: {
     color: "#FFFFFF",
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 24,
-    lineHeight: 35,
+    fontSize: 22,
+    lineHeight: 32,
     marginTop: 8,
     textAlign: "right",
   },
@@ -451,14 +581,30 @@ const styles = StyleSheet.create({
   artRuleShort: { marginTop: 6, width: 32 },
   pagination: {
     alignItems: "center",
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    marginTop: 10,
+  },
+  dotsRow: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 6,
-    justifyContent: "center",
-    marginTop: 12,
+  },
+  counterBadge: {
+    backgroundColor: "#F1F5F9",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  counterText: {
+    fontFamily: "Cairo_700Bold",
+    fontSize: 10,
+    color: "#64748B",
   },
   dot: { backgroundColor: "#CBD5E1", borderRadius: 10, height: 5, width: 5 },
   activeDot: {
-    backgroundColor: storefrontDesign.semantic.brand,
+    backgroundColor: "#059669",
     borderRadius: 99,
     height: 5,
     width: 22,

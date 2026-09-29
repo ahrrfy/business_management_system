@@ -548,7 +548,7 @@ export default function CheckoutScreen() {
               <View style={styles.codRow}>
                 <MaterialIcons color="#0C5A4B" name="payments" size={18} />
                 <Text style={styles.codText}>
-                  طريقة الدفع: نقداً عند الاستلام
+                  طريقة الدفع: سدد نقد عند الباب (كاش)
                 </Text>
               </View>
             </View>
@@ -568,7 +568,7 @@ export default function CheckoutScreen() {
           )}
           <TouchableOpacity
             accessibilityLabel={
-              activeQuote ? "إرسال الطلب للمراجعة" : "مراجعة السعر النهائي"
+              activeQuote ? "أكد طلبك وهسة نجهزه الك" : "مراجعة السعر النهائي"
             }
             accessibilityRole="button"
             accessibilityState={{ disabled: submitting, busy: submitting }}
@@ -581,7 +581,7 @@ export default function CheckoutScreen() {
               {submitting
                 ? "جار تحديث الطلب…"
                 : activeQuote
-                ? "إرسال الطلب للمراجعة"
+                ? "أكد طلبك وهسة نجهزه الك"
                 : "مراجعة السعر النهائي"}
             </Text>
             {submitting ? (
