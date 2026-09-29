@@ -35,11 +35,11 @@ export function StorefrontFloatingCart({
               {cartCount}
             </span>
           </div>
-          <div>
-            <p className="text-[10px] sm:text-[11px] font-medium text-emerald-100">
-              {cartCount === 1 ? "منتج واحد" : cartCount === 2 ? "منتجان" : `${cartCount} منتجات`}
+          <div className="min-w-0">
+            <p className="truncate text-[10px] sm:text-[11px] font-medium text-emerald-100">
+              {cartCount === 1 ? "منتج واحد" : cartCount === 2 ? "منتجان" : cartCount <= 10 ? `${cartCount} منتجات` : `${cartCount} منتج`}
             </p>
-            <p className="text-xs sm:text-sm font-black tracking-tight text-white">
+            <p className="text-xs sm:text-sm font-black tracking-tight text-white whitespace-nowrap">
               {fmtInt(cartSubtotal)} د.ع
             </p>
           </div>
@@ -49,7 +49,7 @@ export function StorefrontFloatingCart({
         <button
           type="button"
           onClick={onOpenCart}
-          className="store-action-button flex h-9 sm:h-10 items-center gap-1.5 rounded-xl bg-white px-3.5 sm:px-4 text-xs font-black text-[#0E806A] shadow-xs transition-all hover:bg-emerald-50 active:scale-95"
+          className="store-action-button flex h-9 sm:h-10 shrink-0 items-center gap-1.5 rounded-xl bg-white px-3.5 sm:px-4 text-xs font-black text-[#0E806A] shadow-xs transition-all hover:bg-emerald-50 active:scale-95 whitespace-nowrap"
         >
           <span>إتمام الطلب</span>
           <ArrowLeft aria-hidden className="size-3.5 sm:size-4" />

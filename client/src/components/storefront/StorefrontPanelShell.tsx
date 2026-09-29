@@ -37,7 +37,7 @@ export function StorefrontPanelShell({
             <DialogPrimitive.Title className="text-base font-extrabold text-slate-900 dark:text-white">{title}</DialogPrimitive.Title>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            <div className="mx-auto w-full max-w-2xl px-4 py-4 sm:px-6" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>{children}</div>
+            <div className="mx-auto w-full max-w-2xl px-3 py-4 sm:px-6" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>{children}</div>
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

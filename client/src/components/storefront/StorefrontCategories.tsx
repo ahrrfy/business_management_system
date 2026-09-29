@@ -63,26 +63,26 @@ export function StorefrontCategories({
     <section
       id={id}
       aria-labelledby="store-category-title"
-      className={`rounded-3xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7 dark:border-slate-800 dark:bg-slate-900 ${className}`}
+      className={`rounded-3xl border border-slate-200/80 bg-white p-3.5 shadow-sm sm:p-7 dark:border-slate-800 dark:bg-slate-900 ${className}`}
     >
-      <div className="mb-5 flex items-end justify-between">
+      <div className="mb-4 sm:mb-5 flex items-end justify-between">
         <div>
-          <span className="text-[11px] font-black uppercase tracking-wider text-orange-600 dark:text-orange-400">
+          <span className="text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-orange-600 dark:text-orange-400">
             تصفح حسب اهتمامك
           </span>
           <h2
             id="store-category-title"
-            className="mt-1 text-2xl font-black tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl"
+            className="mt-0.5 sm:mt-1 text-xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100"
           >
             الأقسام الرئيسية
           </h2>
         </div>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
           {categories.length} أقسام متاحة
         </span>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         {categories.slice(0, 12).map((cat, index) => {
           const theme = CATEGORY_THEMES[index % CATEGORY_THEMES.length];
           const isSelected = selectedId === cat.id;
@@ -93,7 +93,7 @@ export function StorefrontCategories({
               key={cat.id}
               type="button"
               onClick={() => onSelectCategory(cat.id)}
-              className={`group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-gradient-to-br p-4 text-right transition-all duration-300 hover:-translate-y-1 hover:shadow-lg active:scale-95 ${
+              className={`group relative flex flex-col justify-between overflow-hidden rounded-2xl border bg-gradient-to-br p-3 sm:p-4 text-right transition-all duration-300 hover:-translate-y-1 hover:shadow-lg active:scale-95 ${
                 isSelected
                   ? "border-blue-600 bg-blue-50/90 shadow-md ring-2 ring-blue-600/20 dark:bg-blue-950/40"
                   : `${theme.bg} ${theme.border} ${theme.hoverGlow}`
@@ -105,25 +105,25 @@ export function StorefrontCategories({
                 className="pointer-events-none absolute -left-4 -top-4 size-16 rounded-full bg-white/40 blur-sm dark:bg-white/5"
               />
 
-              <div className="mb-6 flex items-center justify-between">
+              <div className="mb-3 sm:mb-6 flex items-center justify-between">
                 <div
-                  className={`flex size-10 items-center justify-center rounded-xl shadow-sm transition-transform duration-300 group-hover:scale-110 ${theme.iconBg}`}
+                  className={`flex size-8 sm:size-10 items-center justify-center rounded-xl shadow-sm transition-transform duration-300 group-hover:scale-110 ${theme.iconBg}`}
                 >
                   {theme.icon}
                 </div>
                 {count > 0 && (
-                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-black text-slate-600 shadow-2xs backdrop-blur-xs dark:bg-slate-800/80 dark:text-slate-300">
+                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[9px] sm:text-[10px] font-black text-slate-600 shadow-2xs backdrop-blur-xs dark:bg-slate-800/80 dark:text-slate-300 whitespace-nowrap">
                     {count} منتج
                   </span>
                 )}
               </div>
 
               <div>
-                <span className="block text-sm font-black text-slate-800 transition-colors group-hover:text-blue-700 dark:text-slate-100 dark:group-hover:text-blue-400">
+                <span className="block text-xs sm:text-sm font-black text-slate-800 line-clamp-2 transition-colors group-hover:text-blue-700 dark:text-slate-100 dark:group-hover:text-blue-400">
                   {cat.name}
                 </span>
-                <span className="mt-1 block text-[11px] font-semibold text-slate-400 dark:text-slate-500">
-                  تصفح المنتجات ←
+                <span className="mt-1 block text-[10px] sm:text-[11px] font-semibold text-slate-400 dark:text-slate-500">
+                  تصفح المنتجات
                 </span>
               </div>
             </button>

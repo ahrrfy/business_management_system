@@ -30,7 +30,7 @@ export function StorefrontShippingBar({
       role="region"
       aria-label="شريط تقدم الشحن المجاني"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="flex items-center gap-2">
           <div
             className={`flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors duration-300 ${
@@ -78,9 +78,9 @@ export function StorefrontShippingBar({
           <button
             type="button"
             onClick={onOpenCart}
-            className="text-[11px] font-black text-blue-700 underline underline-offset-4 transition hover:text-orange-600 dark:text-blue-400"
+            className="text-[11px] font-black text-blue-700 underline underline-offset-4 transition hover:text-orange-600 dark:text-blue-400 self-end sm:self-auto"
           >
-            عرض السلة ({fmtInt(cartSubtotal)} د.ع) ←
+            عرض السلة ({fmtInt(cartSubtotal)} د.ع)
           </button>
         )}
       </div>
