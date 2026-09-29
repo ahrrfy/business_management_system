@@ -13,6 +13,7 @@ import { ShiftFundingDecisionDialogs } from "@/components/shifts/ShiftFundingDec
 import { ShiftInvoicesDialog } from "@/components/shifts/ShiftInvoicesDialog";
 import {
   adaptShiftCashReconciliation,
+  FinancialCellProvenanceHover,
 } from "@/components/financial";
 import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
@@ -35,8 +36,8 @@ import {
   Receipt,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { Link } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearch } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
@@ -70,10 +71,21 @@ type Row = RouterOutputs["shifts"]["list"]["rows"][number];
 type ShiftInvoiceRow = RouterOutputs["sales"]["list"][number];
 
 export default function Shifts() {
+  const searchStr = useSearch();
+  const initialStatus = useMemo<"" | "OPEN" | "CLOSED">(() => {
+    try {
+      const sp = new URLSearchParams(searchStr);
+      const s = sp.get("status")?.toUpperCase();
+      if (s === "OPEN" || s === "CLOSED") return s;
+      if (s === "ALL") return "";
+    } catch {}
+    return "OPEN";
+  }, [searchStr]);
+
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query.trim(), 250);
   const [branchId, setBranchId] = useState<number | "">("");
-  const [status, setStatus] = useState<"" | "OPEN" | "CLOSED">("");
+  const [status, setStatus] = useState<"" | "OPEN" | "CLOSED">(initialStatus);
   const [shiftType, setShiftType] = useState<
     "" | "RETAIL" | "RECEPTION" | "PRINT_SERVICES"
   >("");
@@ -84,6 +96,18 @@ export default function Shifts() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(searchStr);
+      const s = sp.get("status")?.toUpperCase();
+      if (s === "OPEN" || s === "CLOSED") {
+        setStatus(s);
+      } else if (s === "ALL") {
+        setStatus("");
+      }
+    } catch {}
+  }, [searchStr]);
   const [printing, setPrinting] = useState<number | null>(null);
   const [copying, setCopying] = useState<number | null>(null);
   const [closingShiftId, setClosingShiftId] = useState<number | null>(null);
@@ -408,18 +432,18 @@ export default function Shifts() {
 
   const activeFilterCount = [
     branchId,
-    status,
+    status !== "OPEN" ? (status || "ALL") : "",
     shiftType,
     varianceState,
     dateFrom,
     dateTo,
   ].filter((value) => value !== "").length;
-  const anyFilter = query.trim() !== "" || activeFilterCount > 0;
+  const anyFilter = query.trim() !== "" || activeFilterCount > 0 || status !== "";
 
   function resetFilters() {
     setQuery("");
     setBranchId("");
-    setStatus("");
+    setStatus("OPEN");
     setShiftType("");
     setVarianceState("");
     setDateFrom("");
@@ -634,9 +658,9 @@ export default function Shifts() {
                       )
                     }
                   >
-                    <option value="">الكل</option>
-                    <option value="OPEN">مفتوحة</option>
+                    <option value="OPEN">مفتوحة (جارية)</option>
                     <option value="CLOSED">مغلقة</option>
+                    <option value="">كل الورديات</option>
                   </AppSelect>
                 </FilterField>
                 <FilterField label="نوع الوردية">
@@ -823,7 +847,7 @@ export default function Shifts() {
             /* الترقيم خادميّ (limit/offset + total) ⇒ شريطٌ واحد داخل الجدول بدل شريطٍ يدويّ تحته. */
             serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, total, isFetching: list.isFetching }}
             emptyState="لا ورديات بعد. تُفتح الورديات من نقطة البيع."
-            emptyFilteredState="لا ورديات مطابقة. غيّر الفلتر."
+            emptyFilteredState={status === "OPEN" ? "لا توجد ورديات مفتوحة حالياً. يمكنك تغيير فلتر الحالة لعرض كل الورديات أو الورديات المغلقة." : "لا ورديات مطابقة. غيّر الفلتر."}
             columns={[
               {
                 id: "id",
@@ -873,21 +897,39 @@ export default function Shifts() {
                 header: "الافتتاحي",
                 accessorFn: (r) => fmt(r.openingBalance),
                 meta: { kind: "money" },
-                cell: ({ row }) => fmt(row.original.openingBalance),
+                cell: ({ row }) => (
+                  <FinancialCellProvenanceHover data={(row.original as any).provenance}>
+                    <span className="tabular-nums font-bold text-end block w-full hover:underline cursor-pointer">
+                      {fmt(row.original.openingBalance)}
+                    </span>
+                  </FinancialCellProvenanceHover>
+                ),
               },
               {
                 id: "expectedCash",
                 header: "المتوقع",
                 accessorFn: (r) => (r.expectedCash != null ? fmt(r.expectedCash) : "—"),
                 meta: { kind: "money" },
-                cell: ({ row }) => (row.original.expectedCash != null ? fmt(row.original.expectedCash) : "—"),
+                cell: ({ row }) => (
+                  <FinancialCellProvenanceHover data={(row.original as any).provenance}>
+                    <span className="tabular-nums font-bold text-end block w-full hover:underline cursor-pointer">
+                      {row.original.expectedCash != null ? fmt(row.original.expectedCash) : "—"}
+                    </span>
+                  </FinancialCellProvenanceHover>
+                ),
               },
               {
                 id: "countedCash",
                 header: "المعدود",
                 accessorFn: (r) => (r.countedCash != null ? fmt(r.countedCash) : "—"),
                 meta: { kind: "money" },
-                cell: ({ row }) => (row.original.countedCash != null ? fmt(row.original.countedCash) : "—"),
+                cell: ({ row }) => (
+                  <FinancialCellProvenanceHover data={(row.original as any).countedProvenance ?? (row.original as any).provenance}>
+                    <span className="tabular-nums font-bold text-end block w-full hover:underline cursor-pointer">
+                      {row.original.countedCash != null ? fmt(row.original.countedCash) : "—"}
+                    </span>
+                  </FinancialCellProvenanceHover>
+                ),
               },
               {
                 id: "variance",
@@ -895,9 +937,11 @@ export default function Shifts() {
                 accessorFn: (r) => (r.variance != null ? fmt(r.variance) : "—"),
                 meta: { kind: "money" },
                 cell: ({ row }) => (
-                  <span className={`font-semibold ${varianceCls(row.original.variance)}`}>
-                    {row.original.variance != null ? fmt(row.original.variance) : "—"}
-                  </span>
+                  <FinancialCellProvenanceHover data={(row.original as any).provenance}>
+                    <span className={`tabular-nums font-semibold text-end block w-full hover:underline cursor-pointer ${varianceCls(row.original.variance)}`}>
+                      {row.original.variance != null ? fmt(row.original.variance) : "—"}
+                    </span>
+                  </FinancialCellProvenanceHover>
                 ),
               },
               {

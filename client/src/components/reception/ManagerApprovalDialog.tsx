@@ -1,16 +1,18 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 /** حوار اعتماد المدير (بريد + كلمة مرور) — يُتحقَّق خادمياً عبر verifyManagerApproval.
  *  الافتراضيّ نصّ تجاوز الخصم (>١٠٪)؛ ويُعاد استعماله بعنوانٍ/وصفٍ مخصّصين لأيّ اعتماد
  *  مديريّ آخر (مثل ردّ العربون النقديّ عبر وردية) بتمرير title/description. */
-export function ManagerApprovalDialog({ pct, title, description, onApprove, onCancel }: {
+export function ManagerApprovalDialog({ pct, title, description, onApprove, onCancel, zIndexClass }: {
   pct?: number;
   title?: string;
   description?: string;
   onApprove: (email: string, password: string) => void;
   onCancel: () => void;
+  zIndexClass?: string;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,7 +21,7 @@ export function ManagerApprovalDialog({ pct, title, description, onApprove, onCa
     description ??
     "الخصم فوق ١٠٪ يحتاج مديراً (تُفحص البيانات على الخادم لحظة إتمام الطلب وتُسجَّل باسمه).";
   return (
-    <div className="fixed inset-0 z-[95] grid place-items-center bg-black/50 p-4" dir="rtl" onClick={onCancel}>
+    <div className={cn("fixed inset-0 grid place-items-center bg-black/50 p-4", zIndexClass ?? "z-[95]")} dir="rtl" onClick={onCancel}>
       <div className="w-full max-w-xs space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-sm font-extrabold">{heading}</h3>
         <p className="text-[11px] leading-relaxed text-muted-foreground">

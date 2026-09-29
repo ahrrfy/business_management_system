@@ -865,7 +865,7 @@ describe("cancelSale — حارس التوصيل الموحّد", () => {
     )[0];
     expect(invoice.status).not.toBe("CANCELLED");
     expect(consignment.status).toBe("DISPATCHED");
-    expect(consignment.parcelStatus).toBe("ASSIGNED");
+    expect(consignment.parcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(consignment.moneyStatus).toBe("UNSETTLED");
     expect(await stockOf(1, 1)).toBe(9);
     const cancellationReturns = await db()

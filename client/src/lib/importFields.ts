@@ -10,7 +10,7 @@
 // وإلا رفض الخادم دفعة tRPC كاملة بـBAD_REQUEST متجاوزاً skipFailed (النوع phone حدّه ٢٠ تلقائياً).
 
 import type { ImportField, ImportMeta } from "./import";
-import type { CustomerImportRow, SupplierImportRow, ProductImportRow } from "./importTypes";
+import type { CustomerImportRow, SupplierImportRow, ProductImportRow, AssetImportRow } from "./importTypes";
 
 /* ============================ عملاء ============================ */
 
@@ -486,3 +486,148 @@ export const PRODUCT_IMPORT_META: ImportMeta = {
   // barcode/unit: فحص تكرار الباركود للملف كاملاً (مرآة كشف الخادم الذي يعمل داخل النداء الواحد فقط).
   skuConflictKeys: { sku: "sku", fallback: "barcode", owner: "productName", barcode: "barcode", unit: "unitName" },
 };
+
+/* ============================ أصول ثابتة ============================ */
+
+export const ASSET_FIELDS: ImportField<AssetImportRow>[] = [
+  {
+    key: "name",
+    label: "اسم الأصل",
+    type: "string",
+    required: true,
+    aliases: ["اسم الأصل", "الأصل", "name", "asset name", "الاسم"],
+    maxLen: 255,
+    example: "طابعة ليزر HP",
+  },
+  {
+    key: "category",
+    label: "الفئة",
+    type: "enum",
+    required: true,
+    enumValues: [
+      "أراضي وعقارات",
+      "مباني وإنشاءات",
+      "أجهزة حاسوب",
+      "شاشات وعرض",
+      "أثاث مكتبي",
+      "مركبات ونقل",
+      "معدات طباعة",
+      "أجهزة تقنية",
+    ],
+    aliases: ["فئة الأصل", "الفئة", "category", "نوع الأصل"],
+    enumMap: {
+      "مباني وإنشاءات": "buildings",
+      "مباني": "buildings",
+      "buildings": "buildings",
+      "أراضي وعقارات": "land",
+      "أراضي": "land",
+      "اراضي": "land",
+      "land": "land",
+      "أجهزة حاسوب": "computers",
+      "حاسوب": "computers",
+      "كمبيوتر": "computers",
+      "computers": "computers",
+      "شاشات وعرض": "display",
+      "شاشات": "display",
+      "شاشة": "display",
+      "display": "display",
+      "أثاث مكتبي": "furniture",
+      "أثاث": "furniture",
+      "أثاث ومفروشات": "furniture",
+      "furniture": "furniture",
+      "مركبات ونقل": "vehicles",
+      "مركبات": "vehicles",
+      "سيارات": "vehicles",
+      "وسائط نقل": "vehicles",
+      "vehicles": "vehicles",
+      "معدات طباعة": "printing",
+      "طباعة": "printing",
+      "طابعات": "printing",
+      "printing": "printing",
+      "أجهزة تقنية": "devices",
+      "أجهزة": "devices",
+      "devices": "devices",
+      "آلات ومعدات": "devices",
+      "أدوات ومعدات صغيرة": "devices",
+      "أدوات": "devices",
+      "أخرى": "devices",
+      "اخرى": "devices",
+      "other": "devices",
+    },
+    example: "أجهزة حاسوب",
+  },
+  {
+    key: "purchaseDate",
+    label: "تاريخ الاقتناء",
+    type: "date",
+    required: true,
+    aliases: ["تاريخ الاقتناء", "تاريخ الشراء", "purchase date", "date"],
+    example: "2024-01-01",
+  },
+  {
+    key: "purchaseValue",
+    label: "قيمة الشراء / التكلفة",
+    type: "money",
+    required: true,
+    aliases: ["قيمة الشراء", "التكلفة", "سعر الشراء", "cost", "purchase value", "المبلغ"],
+    example: "1500000",
+  },
+  {
+    key: "accumulatedDepreciation",
+    label: "مجمع الإهلاك الافتتاحي",
+    type: "money",
+    aliases: ["الإهلاك المتراكم", "مجمع الإهلاك", "الإهلاك الافتتاحي", "إهلاك سابق", "accumulated depreciation"],
+    example: "300000",
+  },
+  {
+    key: "usefulLifeYears",
+    label: "العمر الإنتاجي (بالسنوات)",
+    type: "integer",
+    required: true,
+    aliases: ["العمر الإنتاجي", "السنوات", "useful life", "life", "العمر"],
+    example: "5",
+  },
+  {
+    key: "salvageValue",
+    label: "قيمة الخردة المتبقية",
+    type: "money",
+    aliases: ["قيمة الخردة", "الخردة", "salvage value"],
+    example: "0",
+  },
+  {
+    key: "serial",
+    label: "الرقم التسلسلي",
+    type: "string",
+    aliases: ["الرقم التسلسلي", "السيريال", "serial", "serial number"],
+    maxLen: 100,
+    example: "SN-98234-A",
+  },
+  {
+    key: "model",
+    label: "الموديل / الطراز",
+    type: "string",
+    aliases: ["الموديل", "الطراز", "model"],
+    maxLen: 100,
+    example: "LaserJet Pro M404n",
+  },
+  {
+    key: "location",
+    label: "الموقع / الغرفة",
+    type: "string",
+    aliases: ["الموقع", "مكان التواجد", "location", "room"],
+    maxLen: 255,
+    example: "مكتب الإدارة - الطابق الثاني",
+  },
+  {
+    key: "notes",
+    label: "ملاحظات",
+    type: "string",
+    aliases: ["ملاحظات", "البيان", "notes"],
+    maxLen: 1000,
+  },
+];
+
+export const ASSET_IMPORT_META: ImportMeta = {
+  supportsServerOptions: true,
+};
+

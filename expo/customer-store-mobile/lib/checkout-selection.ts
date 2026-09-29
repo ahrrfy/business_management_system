@@ -2,6 +2,7 @@ import {
   productOnlineOrderingIssue,
   selectionDescription,
 } from "@/lib/product-selection";
+import { formatLatinNumber } from "./storefront-api";
 import type { CartLine } from "@/shared/storefront";
 
 export function checkoutRequestLines(lines: readonly CartLine[]) {
@@ -40,7 +41,7 @@ export function checkoutQuoteFingerprint(lines: readonly CartLine[]) {
  */
 function selectionNotesText(lines: readonly CartLine[]) {
   const body = lines
-    .map((line, index) => `${index + 1}) ${line.product.title} × ${line.quantity}: ${selectionDescription(line.selectionDetails)}`.replace(/[\r\n\t]+/g, " "))
+    .map((line, index) => `${index + 1}) ${line.product.title} × ${formatLatinNumber(line.quantity)}: ${selectionDescription(line.selectionDetails)}`.replace(/[\r\n\t]+/g, " "))
     .join("\n");
   return `[تفاصيل الاختيارات]\n${body}`;
 }

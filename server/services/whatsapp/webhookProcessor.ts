@@ -24,8 +24,6 @@ import {
   conversationMessages,
   conversations,
   customers,
-  taskEvents,
-  tasks,
   waHubSettings,
   waOutbox,
   waWebhookEvents,
@@ -34,7 +32,6 @@ import { extractInsertId } from "../../lib/insertId";
 import { phoneMatchSuffix } from "../../lib/similarMatch";
 import { logger } from "../../logger";
 import { addMessage, upsertConversation } from "../conversationService";
-import { maybeCreateTaskForInbound } from "../tasks/autoCreate";
 import { requireDb, withTx } from "../tx";
 import { syncBroadcastRecipientFromOutbox } from "./broadcastDispatch";
 import { resolveWaSender } from "./contactResolver";
@@ -313,31 +310,7 @@ async function maybeSendWelcomeReply(params: {
 
 // ── CSAT — التقاط ردّ الزرّ التفاعلي (T4.2 §د) ───────────────────────────────────────────────────
 
-/**
- * يلتقط ردّ CSAT (زرّ تفاعليّ بمعرّف `csat:{taskId}:{1..5}` — أطلقه tasks/lifecycle.resolveTask)
- * ويُحدّث `tasks.csatScore` + حدث CSAT. عامّ يقبل ١..٥ أياً كان المُرسَل فعلاً (الإرسال يقتصر على
- * ٣ أزرار — حدّ Cloud API — لكن الالتقاط لا يفترض ذلك). idempotent: لا يكتب فوق تقييم مُسجَّل
- * مسبقاً (إعادة إرسال webhook/ضغط مزدوج). محميّة بذاتها — لا رسالة IN عادية تُفقَد بسببها (تبقى
- * الرسالة العادية بجسم عنوان الزرّ تُدرَج كالمعتاد من `addMessage` في المستدعي).
- */
-async function maybeCaptureCsat(buttonId: string | undefined): Promise<void> {
-  if (!buttonId) return;
-  const m = /^csat:(\d+):([1-5])$/.exec(buttonId);
-  if (!m) return;
-  try {
-    const taskId = Number(m[1]);
-    const score = Number(m[2]);
-    const db = requireDb();
-    const existing = (await db.select({ id: tasks.id, csatScore: tasks.csatScore }).from(tasks).where(eq(tasks.id, taskId)).limit(1))[0];
-    if (!existing || existing.csatScore != null) return; // لا مهمّة مطابقة، أو مُقيَّمة مسبقاً.
-    await withTx(async (tx) => {
-      await tx.update(tasks).set({ csatScore: score }).where(eq(tasks.id, taskId));
-      await tx.insert(taskEvents).values({ taskId, eventType: "CSAT", note: `تقييم العميل عبر واتساب: ${score}/٥` });
-    });
-  } catch (e) {
-    logger.warn({ err: e instanceof Error ? e.message : String(e), buttonId }, "wa-webhook: تعذّر التقاط تقييم CSAT — تُجوهل");
-  }
-}
+
 
 // ── الرسائل الواردة (messages[]) ──────────────────────────────────────────────────────────────
 
@@ -397,21 +370,6 @@ async function processInboundMessages(value: WaWebhookValue, branchId: number): 
       // مفاتيح OFF افتراضياً ومحميّة بذاتها (try/catch داخلي في كل دالة) — لا تُفشِل الاستقبال أبداً.
       await maybeSendWelcomeReply({ conversationId: conv.id, isNew: conv.isNew, branchId, toPhoneE164: from, customerId: linkedCustomerId });
       await maybeSendAfterHoursReply({ conversationId: conv.id, branchId, toPhoneE164: from, customerId: linkedCustomerId });
-      await maybeCaptureCsat(msg.interactive?.button_reply?.id);
-
-      try {
-        await withTx((tx) =>
-          maybeCreateTaskForInbound(tx, {
-            conversationId: conv.id,
-            branchId,
-            customerId: linkedCustomerId,
-            messageBody: desc.body,
-            sourceChannel: "WHATSAPP",
-          }),
-        );
-      } catch (e) {
-        logger.warn({ err: e instanceof Error ? e.message : String(e) }, "wa-webhook: تعذّر إنشاء مهمة تلقائية من الوارد — تُجوهل");
-      }
     }
 
     if (desc.mediaId) {

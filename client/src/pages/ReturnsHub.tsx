@@ -122,8 +122,8 @@ export default function ReturnsHub() {
 
   const handleSalesSuccess = (data: PrintSalesReturnData) => {
     const now = new Date();
-    const dateStr = now.toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" });
-    const timeStr = now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" });
+    const dateStr = now.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "long", day: "numeric" });
+    const timeStr = now.toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" });
 
     setRecentOps((prev) => [
       {
@@ -143,8 +143,8 @@ export default function ReturnsHub() {
 
   const handlePurchaseSuccess = (data: PrintPurchaseReturnData) => {
     const now = new Date();
-    const dateStr = now.toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" });
-    const timeStr = now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" });
+    const dateStr = now.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "long", day: "numeric" });
+    const timeStr = now.toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" });
 
     setRecentOps((prev) => [
       {

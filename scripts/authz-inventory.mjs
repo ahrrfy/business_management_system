@@ -394,27 +394,6 @@ const PROCEDURES = {
     roles: ["manager", "accountant"],
     branch: "required",
   },
-  tasksReadProcedure: {
-    authority: "module-map",
-    module: "tasks",
-    level: "READ",
-    roles: [],
-    branch: "scoped",
-  },
-  tasksWriteProcedure: {
-    authority: "module-gate",
-    module: "tasks",
-    level: "FULL",
-    roles: ["cashier", "manager", "sales_rep", "print_operator"],
-    branch: "required",
-  },
-  tasksManagerProcedure: {
-    authority: "module-gate",
-    module: "tasks",
-    level: "FULL",
-    roles: ["manager"],
-    branch: "required",
-  },
   storeReadProcedure: {
     authority: "module-map",
     module: "store",
@@ -814,7 +793,6 @@ const MODULE_DOMAIN = {
   reports: "reports",
   store: "store",
   courier: "delivery",
-  tasks: "tasks",
   channels: "channels",
   hr: "hr",
   commissions: "commissions",
@@ -895,7 +873,6 @@ const ROUTER_DOMAIN = {
   commissionsRouter: "commissions",
   consignmentRouter: "consignment",
   reportsRouter: "reports",
-  tasksRouter: "tasks",
   crmRouter: "crm",
   treasuryRouter: "treasury",
 };

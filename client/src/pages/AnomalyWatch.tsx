@@ -15,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 import { selectCls } from "@/lib/ui/formStyles";
 
@@ -352,7 +352,7 @@ export default function AnomalyWatch() {
                     numCol("date", "التاريخ", (r) => r.invoiceDate),
                     txtCol("user", "الكاشير", (r) => r.userName),
                     txtCol("product", "المنتج", (r) => r.productName),
-                    numCol("qty", "الكمية", (r) => fmtAr(r.quantity)),
+                    numCol("qty", "الكمية", (r) => formatQuantity(r.quantity)),
                     moneyCol("net", "صافي السطر", (r) => fmtAr(r.lineTotal)),
                     moneyCol("cost", "كلفته", (r) => fmtAr(r.lineCost)),
                     moneyCol("loss", "الخسارة", (r) => <span className="text-money-negative font-medium">{fmtAr(r.lossValue)}</span>),
@@ -479,7 +479,7 @@ export default function AnomalyWatch() {
               columns={[
                 txtCol("user", "المُنشئ", (r) => r.userName),
                 numCol("notes", "سندات السحب/الاستبدال", (r) => strong(r.flagged, r.noteCount)),
-                numCol("qty", "الوحدات المسحوبة", (r) => fmtAr(r.totalQty)),
+                numCol("qty", "الوحدات المسحوبة", (r) => formatQuantity(r.totalQty)),
                 moneyCol("value", "قيمة الحصص", (r) => <span className="text-muted-foreground">{fmtAr(r.totalValue)}</span>),
                 flagCol(),
               ]}

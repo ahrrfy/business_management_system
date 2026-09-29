@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -118,7 +119,7 @@ export default function PeriodLockPage() {
                 <label className="text-sm font-medium">
                   أول شهر مطلوب إقفاله
                 </label>
-                <input
+                <Input
                   type="month"
                   value={bootstrapMonth}
                   onChange={(event) => setBootstrapMonth(event.target.value)}

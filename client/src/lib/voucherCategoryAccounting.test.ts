@@ -34,10 +34,13 @@ describe("voucher category accounting UI contract", () => {
     expect(categoriesPage).toContain("معالجة سندات OTHER التاريخية غير المصنفة");
     expect(categoriesPage).toContain("usedReceiptCount");
     expect(categoriesPage).toContain("voucherCategoryRoleOptionsFor(direction)");
+    expect(categoriesPage).toContain("مزامنة فئات المصروفات");
+    expect(categoriesPage).toContain("قاعدة الفئات ثنائية الاتجاه (قبض وصرف)");
     expect(voucherForm).toContain("فئة محاسبية معيّنة إلزامية لسندات «أخرى»");
     expect(voucherForm).toMatch(
       /disabled=\{\s*!isVoucherCategoryRoleCompatible\(/,
     );
     expect(voucherForm).toContain("تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ");
+    expect(voucherForm).toContain("توجيه محاسبي للطرف (أخرى)");
   });
 });

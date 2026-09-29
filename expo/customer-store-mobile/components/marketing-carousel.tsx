@@ -436,7 +436,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     height: 230,
     overflow: "hidden",
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.12,
     shadowRadius: 18,
@@ -525,7 +525,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   ctaText: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_700Bold",
     fontSize: 11,
   },

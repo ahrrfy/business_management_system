@@ -8,23 +8,14 @@ import { setWorkOrderDesign } from "../workOrder/design";
 import {
   decideWorkOrderDesignApproval,
   getCurrentWorkOrderDesignApproval,
-  getWorkOrderDesignApprovalByTask,
   requestWorkOrderDesignApproval,
 } from "../workOrder/designApproval";
 import { markWorkOrderReady, startWorkOrder } from "../workOrder/lifecycle";
-import {
-  cancelTask,
-  claimTask,
-  reopenTask,
-  resolveTask,
-} from "../tasks/lifecycle";
 
 const TABLES = [
   "workOrderEvents",
   "workOrderDesignApprovals",
   "workOrderDesignRevisions",
-  "taskEvents",
-  "tasks",
   "serviceTypes",
   "idempotencyKeys",
   "accountingEntries",
@@ -367,29 +358,6 @@ describe("اعتماد تصميم أمر الشغل المتخصص", () => {
     ).rejects.toThrow(/تغيّر محتوى التصميم/);
   });
 
-  it("يمنع resolve/cancel/reopen العام ويجعل المسار المتخصص هو المخرج الوحيد", async () => {
-    const woId = await order("design-general-task-paths");
-    const approval = await request(woId, "request-general-paths");
-    const taskId = Number(approval.taskId);
-
-    await expect(cancelTask(taskId, "إغلاق يدوي", MANAGER)).rejects.toThrow(
-      /المسار.*المتخصص|قرار اعتماد التصميم/,
-    );
-    await claimTask(taskId, MANAGER);
-    await expect(resolveTask(taskId, MANAGER, "وافق العميل")).rejects.toThrow(
-      /المسار.*المتخصص|قرار اعتماد التصميم/,
-    );
-
-    await approve(Number(approval.id), "decision-specialized");
-    const task = (
-      await db().select().from(s.tasks).where(eq(s.tasks.id, taskId))
-    )[0];
-    expect(task.taskStatus).toBe("RESOLVED");
-    await expect(
-      reopenTask(taskId, MANAGER, "إعادة فتح يدوية"),
-    ).rejects.toThrow(/المسار.*المتخصص|قرار اعتماد التصميم/);
-  });
-
   /**
    * ⭐ **العقدُ انقلب** (قرار المالك ١/٩/٢٦): كان هذا الاختبار يحرس أنّ البدء **محجوز** حتى
    * يُعتمد التصميم. صار يحرس نقيضَه: لا اعتمادَ يقف بين الفنّي وشغله. وإبقاءُ التوثيق مهمّ —
@@ -464,12 +432,6 @@ describe("اعتماد تصميم أمر الشغل المتخصص", () => {
     ).rejects.toThrow(/حمولة مختلفة|نسخة/);
     await expect(
       getCurrentWorkOrderDesignApproval(woId, OTHER_BRANCH_MANAGER),
-    ).rejects.toThrow(/فرع/);
-    await expect(
-      getWorkOrderDesignApprovalByTask(
-        Number(first.approval.taskId),
-        OTHER_BRANCH_MANAGER,
-      ),
     ).rejects.toThrow(/فرع/);
 
     const decisionInput = {

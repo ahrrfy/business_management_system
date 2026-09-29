@@ -3,7 +3,6 @@ import {
   decideWorkOrderDesignApproval,
   DESIGN_APPROVAL_EVIDENCE_TYPES,
   getCurrentWorkOrderDesignApproval,
-  getWorkOrderDesignApprovalByTask,
   requestWorkOrderDesignApproval,
 } from "../services/workOrder/designApproval";
 import {
@@ -49,12 +48,6 @@ export const workOrderDesignApprovalRouter = router({
         input.workOrderId,
         actorFromContext(ctx),
       ),
-    ),
-
-  getByTask: workordersReadProcedure
-    .input(z.object({ taskId: z.number().int().positive() }))
-    .query(({ input, ctx }) =>
-      getWorkOrderDesignApprovalByTask(input.taskId, actorFromContext(ctx)),
     ),
 
   decide: workordersManagerProcedure

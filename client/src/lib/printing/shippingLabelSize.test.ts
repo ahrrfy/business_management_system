@@ -85,4 +85,29 @@ describe("HTML ملصق الشحن بقياس متغيّر", () => {
     expect(html).toContain("×2");
     expect(html).toContain("مندوب الكرخ");
   });
+
+  it("سعة الأصناف تتكيف ديناميكياً مع الارتفاع المتاح ولا تُقفل على صنفين", async () => {
+    const multiItemOrder = {
+      ...order,
+      items: [
+        { productName: "صنف 1", unitName: "قطعة", quantity: "1" },
+        { productName: "صنف 2", unitName: "قطعة", quantity: "1" },
+        { productName: "صنف 3", unitName: "قطعة", quantity: "1" },
+        { productName: "صنف 4", unitName: "قطعة", quantity: "1" },
+        { productName: "صنف 5", unitName: "قطعة", quantity: "1" },
+      ],
+    };
+
+    // قياس 100×150 يستوعب كافة الأصناف الخمسة مباشرة دون اختصار
+    const html150 = await shippingLabelHtml(multiItemOrder, { widthMm: 100, heightMm: 150 });
+    expect(html150).toContain("صنف 1");
+    expect(html150).toContain("صنف 5");
+    expect(html150).not.toContain("صنف إضافي في الفاتورة المرفقة");
+
+    // قياس 80×120 يستوعب حتى 6 أصناف
+    const html120 = await shippingLabelHtml(multiItemOrder, { widthMm: 80, heightMm: 120 });
+    expect(html120).toContain("صنف 1");
+    expect(html120).toContain("صنف 5");
+    expect(html120).not.toContain("صنف إضافي في الفاتورة المرفقة");
+  });
 });

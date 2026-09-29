@@ -35,7 +35,7 @@ const TABLES = [
   "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
   "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
   "workOrderControlRequests", "workOrderEvents", "workOrderDesignApprovals",
-  "workOrderDesignRevisions", "taskEvents", "tasks", "serviceTypes",
+  "workOrderDesignRevisions", "serviceTypes",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "shifts", "customers", "branches", "users",
@@ -215,6 +215,7 @@ describe("الإرجاع من أيّ حالة عبور — مخرجٌ للطرد
   it("الإرجاع من ASSIGNED يبقى كما كان — بلا سببٍ إلزاميّ (لم يخرج أصلاً)", async () => {
     const woId = await readyDeliveryOrder("g-6");
     await dispatch(woId, "gd-6");
+    await setParcel("ASSIGNED");
 
     await expect(returnConsignment(await consignmentId(), { ...MANAGER, clientRequestId: "ret-assigned" }))
       .resolves.toMatchObject({ reversed: true });

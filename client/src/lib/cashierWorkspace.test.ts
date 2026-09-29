@@ -40,9 +40,9 @@ describe("cashierProfileActions", () => {
   });
 
   it.each([
-    ["retail_cashier", ["invoices", "sales_returns", "my_tasks"]],
-    ["print_cashier", ["invoices", "price_checker", "my_tasks"]],
-    ["reception_clerk", ["work_orders", "invoices", "my_tasks"]],
+    ["retail_cashier", ["invoices", "sales_returns"]],
+    ["print_cashier", ["invoices", "price_checker"]],
+    ["reception_clerk", ["work_orders", "invoices"]],
   ] as const)("يحترم إجراءات profile للقسم %s", (key, expected) => {
     expect(remainingIds(sectionProfile(key))).toEqual(expected);
   });
@@ -54,7 +54,6 @@ describe("cashierProfileActions", () => {
         sales: "NONE",
         pos: "FULL",
         workorders: "NONE",
-        tasks: "NONE",
       },
     });
     expect(remainingIds(profile)).toEqual(["invoices", "price_checker"]);

@@ -8,19 +8,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Package, Search } from "lucide-react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
+import { formatQuantity } from "@shared/quantityFormat";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import type { Currency, InvoiceLine, InvoiceType, PriceSource, PriceTier } from "./types";
 
@@ -48,7 +42,9 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   // تجمع سلعاً وخدماتٍ). createSale يخصم مواد الخدمة ويحتسب COGS ذرّياً.
   const isAdvancedSale = invoiceType === "SALE";
   const [searchQ, setSearchQ] = useState("");
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  // حفظ الأصناف المحددة في Map للحفاظ التام والدقيق على تسلسل الاختيار (Insertion Order)
+  // وصون الأصناف المختارة عبر عمليات البحث والفلترة المختلفة.
+  const [selectedMap, setSelectedMap] = useState<Map<number, Row>>(new Map());
   // الشمولية: لا سقف ثابت. نبدأ بصفحة ونزيد الحدّ كلّما مرّر المستخدم للأسفل (تحميل كسول
   // غير محدود) فتظهر كل المطابقات بالتمرير بدل قصّها عند رقم. PAGE حجم الدفعة.
   const PAGE = 300;
@@ -88,103 +84,99 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   const rows: Row[] = useMemo(() => {
     if (isPurchase) {
       return (purQ.data ?? []).map((r) => ({
-        productUnitId: r.productUnitId,
-        productId: r.productId,
-        variantId: r.variantId,
+        productUnitId: r.productUnitId, productId: r.productId, variantId: r.variantId,
         name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
-        sku: r.sku,
-        barcode: null,
-        unitName: r.unitName,
-        conversionFactor: r.conversionFactor,
-        stockBase: r.stockBase ?? 0,
-        stockBranchId: branchId,
-        reservedBase: 0,
-        availableBase: r.stockBase ?? 0,
-        isService: false,
-        isBundle: false,
-        allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
-        // PUR-UNIT-01 (٤/٩/٢٦): سعر شراء الوحدة **تقديريّاً** = تكلفة الأساس × المعامل
-        // (نفس ProductSearchBar). `costBase` يبقى مرجعُ الأساس بلا ضربٍ.
-        // Codex #980: الفرع الدولاريّ يقسم على سعر التثبيت؛ بلا تثبيتٍ ⇒ حقلٌ فارغ.
+        sku: r.sku, barcode: null, unitName: r.unitName, conversionFactor: r.conversionFactor,
+        stockBase: r.stockBase ?? 0, stockBranchId: branchId, reservedBase: 0, availableBase: r.stockBase ?? 0,
+        isService: false, isBundle: false, allowBackorder: false,
         price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor, isPurchase ? purchaseCurrency : "IQD", isPurchase ? purchaseAgreedRate : null),
         costBase: r.costPriceBase,
       }));
     }
     return (posQ.data ?? []).map((r) => ({
-      productUnitId: r.productUnitId,
-      productId: r.productId,
-      variantId: r.variantId,
+      productUnitId: r.productUnitId, productId: r.productId, variantId: r.variantId,
       name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
-      sku: r.sku,
-      barcode: r.barcode ?? null,
+      sku: r.sku, barcode: r.barcode ?? null,
       unitName: r.isBundle === true && Number(r.conversionFactor) === 1 ? "بكج" : r.unitName,
-      conversionFactor: r.conversionFactor,
-      stockBase: r.stockBase ?? 0,
-      stockBranchId: r.branchId,
-      reservedBase: r.reservedBase ?? 0,
-      availableBase: r.availableBase ?? (r.stockBase ?? 0),
-      isService: r.isService || r.isPrintService,
-      isBundle: r.isBundle === true,
-      allowBackorder: r.allowBackorder === true,
-      price: r.price ?? "0",
-      priceSource: r.isContractPrice ? "CONTRACT" : "TIER",
-      // التكلفة من الخادم للمخوَّل برؤيتها (مدير/أدمن)، وnull لغيره (كاشير) — الحجب في الراوتر.
-      costBase: r.costPriceBase ?? "0",
+      conversionFactor: r.conversionFactor, stockBase: r.stockBase ?? 0, stockBranchId: r.branchId,
+      reservedBase: r.reservedBase ?? 0, availableBase: r.availableBase ?? (r.stockBase ?? 0),
+      isService: r.isService || r.isPrintService, isBundle: r.isBundle === true,
+      allowBackorder: r.allowBackorder === true, price: r.price ?? "0",
+      priceSource: r.isContractPrice ? "CONTRACT" : "TIER", costBase: r.costPriceBase ?? "0",
     }));
   }, [isPurchase, posQ.data, purQ.data, purchaseCurrency, purchaseAgreedRate]);
+
+  // تحديث بيانات الأصناف المحددة من أحدث نتائج rows مع الحفاظ الصارم على ترتيب الإدخال
+  useEffect(() => {
+    setSelectedMap((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Map<number, Row>();
+      prev.forEach((oldRow, id) => {
+        const freshRow = rows.find((r) => r.productUnitId === id);
+        if (freshRow && freshRow !== oldRow) {
+          next.set(id, freshRow);
+          changed = true;
+        } else {
+          next.set(id, oldRow);
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [rows]);
 
   const salePricingPending = open && !isPurchase && posQ.isFetching;
   useEffect(() => {
     // اختيارٌ من سياق عميل/فئة سابق لا يجوز أن يبقى قابلاً للتأكيد بعد التبديل.
-    setSelected(new Set());
+    setSelectedMap(new Map());
   }, [branchId, tier, customerId, invoiceType]);
 
-  const toggle = (id: number) => {
+  const toggle = (row: Row) => {
     if (salePricingPending) return;
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+    setSelectedMap((prev) => {
+      const next = new Map(prev);
+      if (next.has(row.productUnitId)) next.delete(row.productUnitId);
+      else next.set(row.productUnitId, row);
       return next;
     });
   };
 
   const selectAll = () => {
-    if (!salePricingPending) setSelected(new Set(rows.map((r) => r.productUnitId)));
+    if (salePricingPending) return;
+    setSelectedMap((prev) => {
+      const next = new Map(prev);
+      for (const r of rows) {
+        if (!next.has(r.productUnitId)) next.set(r.productUnitId, r);
+      }
+      return next;
+    });
   };
-  const clearAll = () => setSelected(new Set());
+  const clearAll = () => setSelectedMap(new Map());
+
+  // خريطة سريعة O(1) لرقم تسلسل التحديد لكل صنف لعرضه في شارة مرئية واضحة للمستخدم
+  const selectedOrderMap = useMemo(() => {
+    const map = new Map<number, number>();
+    let order = 1;
+    selectedMap.forEach((_, id) => {
+      map.set(id, order++);
+    });
+    return map;
+  }, [selectedMap]);
 
   const handleConfirm = () => {
     if (salePricingPending) return;
-    const lines: InvoiceLine[] = rows
-      .filter((r) => selected.has(r.productUnitId))
-      .map((r) => ({
-        productId: r.productId,
-        variantId: r.variantId,
-        productUnitId: r.productUnitId,
-        name: r.name,
-        sku: r.sku,
-        barcode: r.barcode,
-        unit: r.unitName,
-        qty: 1,
-        conversionFactor: r.conversionFactor,
-        stockBase: r.stockBase,
-        stockBranchId: r.stockBranchId,
-        reservedBase: r.reservedBase,
-        availableBase: r.availableBase,
-        isService: r.isService,
-        isBundle: r.isBundle,
-        allowBackorder: r.allowBackorder,
-        price: r.price || "0",
-        referencePrice: r.price || "0",
-        priceSource: r.priceSource,
-        costBase: r.costBase || "0",
-        discount: "0",
-        discountType: "percent",
-        note: "",
-      }));
+    // إضافة الأصناف بالتسلسل الزمني الدقيق الذي اختاره المستخدم (Array.from(selectedMap.values()))
+    const lines: InvoiceLine[] = Array.from(selectedMap.values()).map((r) => ({
+      productId: r.productId, variantId: r.variantId, productUnitId: r.productUnitId,
+      name: r.name, sku: r.sku, barcode: r.barcode, unit: r.unitName, qty: 1,
+      conversionFactor: r.conversionFactor, stockBase: r.stockBase, stockBranchId: r.stockBranchId,
+      reservedBase: r.reservedBase, availableBase: r.availableBase, isService: r.isService,
+      isBundle: r.isBundle, allowBackorder: r.allowBackorder, price: r.price || "0",
+      referencePrice: r.price || "0", priceSource: r.priceSource, costBase: r.costBase || "0",
+      discount: "0", discountType: "percent", note: "",
+    }));
     onAddItems(lines);
-    setSelected(new Set());
+    setSelectedMap(new Map());
     setSearchQ("");
     setLimit(PAGE);
     onClose();
@@ -207,7 +199,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       open={open}
       onOpenChange={(v) => {
         if (!v) {
-          setSelected(new Set());
+          setSelectedMap(new Map());
           setSearchQ("");
           setLimit(PAGE);
           onClose();
@@ -255,29 +247,41 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
           )}
           {!initialLoading &&
             rows.map((p) => {
-              const isSelected = selected.has(p.productUnitId);
+              const isSelected = selectedMap.has(p.productUnitId);
+              const orderNum = selectedOrderMap.get(p.productUnitId);
               return (
                 <div
                   key={p.productUnitId}
-                  onClick={() => toggle(p.productUnitId)}
+                  onClick={() => toggle(p)}
                   aria-disabled={salePricingPending}
                   className={cn(
                     "flex cursor-pointer items-center gap-3 rounded-lg border-b px-3 py-2 transition",
                     salePricingPending && "cursor-not-allowed opacity-60",
-                    isSelected ? "bg-primary/10" : "hover:bg-muted/60"
+                    isSelected ? "bg-primary/10 border-primary/20" : "hover:bg-muted/60"
                   )}
                 >
-                  <Checkbox
-                    checked={isSelected}
-                    disabled={salePricingPending}
-                    onCheckedChange={() => toggle(p.productUnitId)}
-                    // العلّة (١٤/٧): الصفّ كلّه onClick=toggle والمربّع onCheckedChange=toggle ⇒ النقر
-                    // على المربّع نفسه كان يبدّل مرّتين (يبطل نفسه) فلا يُحدَّد شيء. نوقف الانتشار
-                    // ⇒ نقرة المربّع = تبديل واحد، ونقرة بقية الصفّ تبقى تعمل، والمسافة/التبويب أيضاً.
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`اختيار ${p.name}`}
-                    className="shrink-0"
-                  />
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Checkbox
+                      checked={isSelected}
+                      disabled={salePricingPending}
+                      onCheckedChange={() => toggle(p)}
+                      // العلّة (١٤/٧): الصفّ كلّه onClick=toggle والمربّع onCheckedChange=toggle ⇒ النقر
+                      // على المربّع نفسه كان يبدّل مرّتين (يبطل نفسه) فلا يُحدَّد شيء. نوقف الانتشار
+                      // ⇒ نقرة المربّع = تبديل واحد، ونقرة بقية الصفّ تبقى تعمل، والمسافة/التبويب أيضاً.
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`اختيار ${p.name}`}
+                      className="shrink-0"
+                    />
+                    {isSelected && orderNum !== undefined && (
+                      <span
+                        className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-black text-primary-foreground shadow-xs animate-in zoom-in-50 duration-150"
+                        title={`ترتيب الإضافة: #${orderNum}`}
+                        aria-label={`ترتيب الاختيار ${orderNum}`}
+                      >
+                        {orderNum}
+                      </span>
+                    )}
+                  </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold">
                       {p.name}
@@ -298,12 +302,12 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                       {p.isService ? (
                         <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
                       ) : p.isBundle ? (
-                        <span>المتاح كبكج كامل: {fmtNum(p.availableBase)}</span>
+                        <span>المتاح كبكج كامل: {formatQuantity(p.availableBase)}</span>
                       ) : (
                         <>
-                          <span>فعلي: {fmtNum(p.stockBase)}</span>
-                          {p.reservedBase > 0 && <span className="text-[var(--sem-warn)]">محجوز: {fmtNum(p.reservedBase)}</span>}
-                          <span className={p.availableBase < 5 ? "text-[var(--sem-neg)]" : ""}>متاح للبيع: {fmtNum(p.availableBase)}</span>
+                          <span>فعلي: {formatQuantity(p.stockBase)}</span>
+                          {p.reservedBase > 0 && <span className="text-[var(--sem-warn)]">محجوز: {formatQuantity(p.reservedBase)}</span>}
+                          <span className={p.availableBase < 5 ? "text-[var(--sem-neg)]" : ""}>متاح للبيع: {formatQuantity(p.availableBase)}</span>
                         </>
                       )}
                     </div>
@@ -337,15 +341,22 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         </div>
 
         <DialogFooter className="flex items-center justify-between border-t bg-muted px-5 py-3">
-          <div className="text-sm font-bold">
-            تم تحديد <span className="text-base font-extrabold text-primary">{selected.size}</span> منتج
+          <div className="flex flex-col text-sm">
+            <div className="font-bold">
+              تم تحديد <span className="text-base font-extrabold text-primary">{selectedMap.size}</span> منتج
+            </div>
+            {selectedMap.size > 1 && (
+              <span className="text-[11px] text-muted-foreground">
+                ستُضاف إلى الجدول بتسلسل التحديد ({selectedMap.size} أصناف)
+              </span>
+            )}
           </div>
           <div className="flex gap-2">
             <Button type="button" variant="outline" onClick={onClose}>
               إلغاء
             </Button>
-            <Button type="button" disabled={selected.size === 0 || salePricingPending} onClick={handleConfirm}>
-              <Check aria-hidden className="size-4" /> إضافة {selected.size > 0 ? `(${selected.size})` : ""} للسلة
+            <Button type="button" disabled={selectedMap.size === 0 || salePricingPending} onClick={handleConfirm}>
+              <Check aria-hidden className="size-4" /> إضافة {selectedMap.size > 0 ? `(${selectedMap.size})` : ""} للسلة
             </Button>
           </div>
         </DialogFooter>

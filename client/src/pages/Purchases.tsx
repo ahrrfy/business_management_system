@@ -5,7 +5,7 @@ import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
 import { PurchaseCancellationDialog } from "@/components/purchases/PurchaseCancellationDialog";
 import { PurchaseDetailDrawer } from "@/components/purchases/PurchaseDetailDrawer";
-import { CopyInline } from "@/components/CopyButton";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import { ActorCell } from "@/components/data-table/ActorCell";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -602,44 +602,40 @@ export default function Purchases() {
             emptyText="لا أوامر شراء مطابقة."
             columns={[
               {
-                id: "poNumber",
-                header: "رقم الأمر",
-                accessorFn: (p) => p.poNumber,
-                meta: { kind: "code" },
+                id: "supplierAndOrder",
+                header: "المورد / رقم الأمر",
+                accessorFn: (p) =>
+                  [p.supplierName, p.poNumber].filter(Boolean).join(" · "),
+                meta: { width: "stacked" },
                 cell: ({ row }) => (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setDrawerPoId(row.original.id)}
-                      className="font-mono font-medium text-primary hover:underline cursor-pointer text-right"
-                      title="معاينة تفاصيل وبنود أمر الشراء"
-                    >
-                      {row.original.poNumber}
-                    </button>
-                    <CopyInline value={row.original.poNumber} />
-                  </div>
+                  <StackedEntityCell
+                    primary={
+                      row.original.supplierName &&
+                      row.original.supplierId &&
+                      canOpenSupplierStatement ? (
+                        <Link
+                          href={`/suppliers-statement?id=${row.original.supplierId}`}
+                          className="text-primary hover:underline"
+                          title={
+                            row.original.supplierName
+                              ? `${row.original.supplierName} (فتح كشف حساب المورّد)`
+                              : "فتح كشف حساب المورّد"
+                          }
+                        >
+                          {row.original.supplierName}
+                        </Link>
+                      ) : (
+                        (row.original.supplierName ?? "—")
+                      )
+                    }
+                    primaryTitle={row.original.supplierName ?? undefined}
+                    secondary={row.original.poNumber}
+                    secondaryTitle="معاينة تفاصيل وبنود أمر الشراء"
+                    onSecondaryClick={() => setDrawerPoId(row.original.id)}
+                    copyValue={row.original.poNumber}
+                    copyTitle="نسخ رقم أمر الشراء"
+                  />
                 ),
-              },
-              {
-                id: "supplier",
-                header: "المورد",
-                accessorFn: (p) => p.supplierName ?? "—",
-                meta: { width: "wide" },
-                cell: ({ row }) =>
-                  /* ٢٤/٨ (تدقيق): اسم المورّد رابطٌ لكشف حسابه — بلا حاجةٍ لفتح ⋯. */
-                  row.original.supplierName &&
-                  row.original.supplierId &&
-                  canOpenSupplierStatement ? (
-                    <Link
-                      href={`/suppliers-statement?id=${row.original.supplierId}`}
-                      className="text-primary hover:underline"
-                      title="فتح كشف حساب المورّد"
-                    >
-                      {row.original.supplierName}
-                    </Link>
-                  ) : (
-                    (row.original.supplierName ?? "—")
-                  ),
               },
               // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (نمط Invoices.tsx).
               ...(showBranchCol
@@ -676,21 +672,30 @@ export default function Purchases() {
                     ? `${fmt(p.usdTotal)} $`
                     : `${fmt(p.total)} د.ع`,
                 meta: { kind: "money" },
-                cell: ({ row }) =>
-                  row.original.agreedCurrency === "USD"
-                    ? `${fmt(row.original.usdTotal)} $`
-                    : `${fmt(row.original.total)} د.ع`,
-              },
-              {
-                id: "agreedRate",
-                header: "سعر التثبيت",
-                accessorFn: (p) =>
-                  p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—",
-                meta: { kind: "money" },
-                cell: ({ row }) =>
-                  row.original.agreedCurrency === "USD"
-                    ? fmt(row.original.agreedRate)
-                    : "—",
+                cell: ({ row }) => {
+                  const isUsd = row.original.agreedCurrency === "USD";
+                  if (isUsd) {
+                    return (
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="font-semibold tabular-nums" dir="ltr">
+                          {fmt(row.original.usdTotal)} $
+                        </span>
+                        <span
+                          className="text-[11px] text-muted-foreground tabular-nums"
+                          title={`سعر تثبيت الصرف: ${fmt(row.original.agreedRate)} د.ع/$`}
+                        >
+                          بسعر {fmt(row.original.agreedRate)}
+                        </span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span className="tabular-nums">{fmt(row.original.total)} د.ع</span>
+                      <span className="text-[10px] text-muted-foreground">عملة محلية</span>
+                    </div>
+                  );
+                },
               },
               {
                 id: "remaining",
@@ -742,10 +747,10 @@ export default function Purchases() {
                 },
               },
               {
-                id: "settlementType",
-                header: "التسوية",
+                id: "status",
+                header: "الحالة والتسوية",
                 accessorFn: (p) =>
-                  SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType,
+                  `${PO_STATUS[p.status] ?? p.status} - ${SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType}`,
                 meta: { kind: "status" },
                 cell: ({ row }) => {
                   const total = D(row.original.total ?? 0);
@@ -757,38 +762,32 @@ export default function Purchases() {
                     total.gt(0) &&
                     effectivePaid.gte(total);
                   return (
-                    <div className="space-y-1">
+                    <div className="flex flex-col items-center gap-1">
                       <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[row.original.settlementType] ?? "badge-status-pending"}`}
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[row.original.status] ?? "badge-status-pending"}`}
                       >
-                        {SETTLEMENT_TYPE[row.original.settlementType] ??
-                          row.original.settlementType}
+                        {PO_STATUS[row.original.status] ?? row.original.status}
                       </span>
-                      {isFullyPaid ? (
-                        <div
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-money-positive"
-                          title="مسدد بالكامل — لا توجد ذمة متبقية على هذا الأمر"
+                      <div className="flex flex-wrap items-center justify-center gap-1">
+                        <span
+                          className={`inline-block rounded-full px-1.5 py-0.5 text-[10px] ${SETTLEMENT_CLASS[row.original.settlementType] ?? "badge-status-pending"}`}
                         >
-                          <CheckCircle2 aria-hidden className="size-3" />
-                          مسدد بالكامل
-                        </div>
-                      ) : null}
+                          {SETTLEMENT_TYPE[row.original.settlementType] ??
+                            row.original.settlementType}
+                        </span>
+                        {isFullyPaid && (
+                          <div
+                            className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-money-positive"
+                            title="مسدد بالكامل — لا توجد ذمة متبقية على هذا الأمر"
+                          >
+                            <CheckCircle2 aria-hidden className="size-3" />
+                            مسدد بالكامل
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 },
-              },
-              {
-                id: "status",
-                header: "الحالة",
-                accessorFn: (p) => PO_STATUS[p.status] ?? p.status,
-                meta: { kind: "status" },
-                cell: ({ row }) => (
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[row.original.status] ?? "badge-status-pending"}`}
-                  >
-                    {PO_STATUS[row.original.status] ?? row.original.status}
-                  </span>
-                ),
               },
               {
                 id: "createdBy",

@@ -1,4 +1,4 @@
-import { fmt } from "@/lib/money";
+import { fmt, fmtQty } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { printDoc, type PrintDoc } from "@/lib/printing/print";
 import type { PrintItemBlock } from "@/lib/printing/render";
@@ -59,7 +59,7 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
 
   const itemBlocks: PrintItemBlock[] = data.items.map((i) => ({
     name: i.name,
-    quantityPrice: `${i.quantity} × ${fmt(i.unitPrice)} د.ع`,
+    quantityPrice: `${fmtQty(i.quantity)} × ${fmt(i.unitPrice)} د.ع`,
     total: `${fmt(String(Number(i.quantity) * Number(i.unitPrice)))} د.ع`,
   }));
 
@@ -107,7 +107,7 @@ export async function printPurchaseReturnVoucher(data: PrintPurchaseReturnData) 
 
   const itemBlocks: PrintItemBlock[] = data.items.map((i) => ({
     name: i.name,
-    quantityPrice: `${i.quantity} × ${fmt(i.unitCost)} د.ع`,
+    quantityPrice: `${fmtQty(i.quantity)} × ${fmt(i.unitCost)} د.ع`,
     total: `${fmt(String(Number(i.quantity) * Number(i.unitCost)))} د.ع`,
   }));
 

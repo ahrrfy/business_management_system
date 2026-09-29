@@ -12,6 +12,8 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { StatementReconcile } from "@/components/StatementReconcile";
+import { FinancialCellProvenanceHover } from "@/components/financial";
+import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -26,6 +28,7 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { paymentMethodCompact, isUnifiedPaymentMethod } from "@shared/terms";
 import { notify } from "@/lib/notify";
 import { AccountLedgerDrilldownDialog, type DrilldownTarget } from "@/components/financial/AccountLedgerDrilldownDialog";
@@ -86,18 +89,19 @@ function stmtMoneyCol<T>(
     sortingFn: (a, b) => D(get(a.original)).cmp(D(get(b.original))),
     cell: ({ row }) => {
       const val = display ? display(row.original) : fmt(get(row.original));
-      if (onClick) {
-        return (
-          <button
-            type="button"
-            onClick={() => onClick(row.original)}
-            className={`${cls ?? ""} hover:underline cursor-pointer text-end block w-full`}
-          >
-            {val}
-          </button>
-        );
-      }
-      return <span className={cls}>{val}</span>;
+      const prov = (row.original as { provenance?: FinancialCellProvenancePayload }).provenance;
+      const content = onClick ? (
+        <button
+          type="button"
+          onClick={() => onClick(row.original)}
+          className={`${cls ?? ""} hover:underline cursor-pointer text-end block w-full`}
+        >
+          {val}
+        </button>
+      ) : (
+        <span className={`${cls ?? ""} text-end block w-full hover:underline cursor-pointer`}>{val}</span>
+      );
+      return <FinancialCellProvenanceHover data={prov}>{content}</FinancialCellProvenanceHover>;
     },
   };
 }
@@ -393,7 +397,7 @@ export default function CustomerStatement() {
   const openInvoicesCount = useMemo(() => {
     return (stmt.data?.invoices ?? []).filter((i) => {
       const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
-      const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
+      const active = !isDeadInvoice(i.status);
       return active && remaining.gt(0);
     }).length;
   }, [stmt.data?.invoices]);
@@ -407,7 +411,7 @@ export default function CustomerStatement() {
 
   const shownInvoices = useMemo(() => (stmt.data?.invoices ?? []).filter((i) => {
     const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
-    const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
+    const active = !isDeadInvoice(i.status);
     if (invoiceFilter === "DEPOSIT_DUE") return active && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER") && D(i.paidAmount).gt(0) && remaining.gt(0);
     if (invoiceFilter === "OUTSTANDING") return active && remaining.gt(0);
     if (invoiceFilter === "SETTLED") return active && remaining.lte(0);

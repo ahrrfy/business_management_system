@@ -29,7 +29,7 @@ const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
   "deliveryRemittances", "deliveryConsignments", "deliveryParties",
   "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions",
-  "taskEvents", "tasks", "workOrderEvents", "idempotencyKeys", "auditLogs", "accountingEntries",
+  "workOrderEvents", "idempotencyKeys", "auditLogs", "accountingEntries",
   "receipts", "inventoryMovements", "workOrderMaterials", "workOrderImages", "workOrders",
   "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "serviceTypes", "shifts", "customers", "branches", "users",

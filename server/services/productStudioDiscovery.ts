@@ -386,3 +386,86 @@ export async function getTopGapCategories(actor: ProductStudioActor, limit = 10)
     gapTotal: Number(r.noImages ?? 0) + Number(r.singleImage ?? 0) + Number(r.variantsIncomplete ?? 0),
   }));
 }
+
+/**
+ * جلبُ كافة معرّفات المنتجات المطابقة لفلاتر الكشف (دون تقطيع الصفحة) — أساسٌ لإطلاق
+ * حملةٍ فورية لكامل الفجوة (مثل 2684 منتجاً بلا صورة) بنقرةٍ واحدة.
+ */
+export async function getGapProductIds(
+  actor: ProductStudioActor,
+  input: Omit<DiscoveryFilters, "limit" | "cursor"> & { maxLimit?: number },
+): Promise<number[]> {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const db = requireDb();
+  const maxLimit = Math.max(1, Math.min(input.maxLimit ?? 10_000, 20_000));
+
+  const conditions = [eq(products.isActive, true), eq(products.isService, false)];
+  if (input.categoryIds && input.categoryIds.length > 0) {
+    conditions.push(
+      sql`${products.categoryId} in (
+        with recursive category_tree (id) as (
+          select unnested.id from (select id from ${categories} where id in (${sql.join(input.categoryIds.map((n) => sql`${Number(n)}`), sql`, `)})) as unnested
+          union all
+          select ${categories.id} from ${categories}
+          inner join category_tree on ${categories.parentId} = category_tree.id
+        )
+        select id from category_tree
+      )`,
+    );
+  }
+  if (input.isBundle === true) conditions.push(eq(products.isBundle, true));
+  if (input.isBundle === false) conditions.push(eq(products.isBundle, false));
+  if (input.search && input.search.trim()) {
+    const rawSearch = input.search.trim();
+    const like = `%${rawSearch}%`;
+    conditions.push(
+      sql`(${products.name} like ${like} or ${products.searchNorm} like ${like} or exists (
+        select 1 from ${productVariants} pv
+        left join ${productUnits} pu on pu.variantId = pv.id
+        left join ${productUnitBarcodes} pub on pub.productUnitId = pu.id
+        where pv.productId = ${products.id}
+        and (pv.sku = ${rawSearch} or pu.barcode = ${rawSearch} or pub.barcode = ${rawSearch})
+      ))`,
+    );
+  }
+
+  const stateFilter = input.states && input.states.length > 0
+    ? input.states
+    : (IMAGE_HEALTH_STATES.filter((s) => s !== "HEALTHY") as ImageHealthState[]);
+
+  const approvedImagesSql = approvedImageCountSql();
+  const variantCountSql = activeVariantCountSql();
+  const variantsWithImagesSql = variantsWithOwnImageCountSql();
+  const health = healthCaseSql();
+
+  const inner = db
+    .select({
+      id: products.id,
+      name: products.name,
+      approvedImages: approvedImagesSql.as("approvedImages"),
+      variantsMissing: sql<number>`greatest(0, (${variantCountSql}) - (${variantsWithImagesSql}))`.as("variantsMissing"),
+      health: health.as("health"),
+    })
+    .from(products)
+    .where(and(...conditions))
+    .as("d");
+
+  const sort: DiscoverySort = input.sort ?? "MISSING_MOST";
+  const orderBy = sort === "NAME_ASC"
+    ? [asc(inner.name), asc(inner.id)]
+    : sort === "APPROVED_ASC"
+      ? [asc(inner.approvedImages), asc(inner.name), asc(inner.id)]
+      : sort === "VARIANTS_MISSING_MOST"
+        ? [desc(inner.variantsMissing), asc(inner.name), asc(inner.id)]
+        : [desc(inner.variantsMissing), asc(inner.approvedImages), asc(inner.name), asc(inner.id)];
+
+  const rows = await db
+    .select({ id: inner.id })
+    .from(inner)
+    .where(inArray(inner.health, stateFilter))
+    .orderBy(...orderBy)
+    .limit(maxLimit);
+
+  return rows.map((r) => Number(r.id));
+}
+

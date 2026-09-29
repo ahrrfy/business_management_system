@@ -1,7 +1,6 @@
-// أدوات داخلية: ترقيم الأمر، تحميله تحت قفل صفّ، وعزل الفرع/المحطة — لا تُصدَّر من نقطة الدخول العامة.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
-import { deliveryConsignments, serviceTypes, tasks, workOrders } from "../../../drizzle/schema";
+import { and, eq, notInArray } from "drizzle-orm";
+import { deliveryConsignments, workOrders } from "../../../drizzle/schema";
 import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
 
@@ -122,31 +121,11 @@ async function assertNoLiveConsignment(
  * `WAITING_CUSTOMER` **تحجز أيضاً**: انتظارُ ردّ العميل هو عينُ سبب الحجز، لا استثناءٌ منه.
  */
 async function assertNoBlockingTask(
-  tx: any,
-  workOrderId: number,
-  action: "start" | "ready",
+  _tx: any,
+  _workOrderId: number,
+  _action: "start" | "ready",
 ) {
-  const rows = await tx
-    .select({ id: tasks.id, number: tasks.taskNumber, title: tasks.title })
-    .from(tasks)
-    .innerJoin(serviceTypes, eq(serviceTypes.id, tasks.serviceTypeId))
-    .where(
-      and(
-        eq(tasks.linkedWorkOrderId, workOrderId),
-        inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
-        eq(serviceTypes.blocksExecution, true),
-      ),
-    )
-    .limit(1);
-  const blocking = rows[0];
-  if (!blocking) return;
-  const what = action === "start"
-    ? "لا يبدأ التنفيذ قبل إغلاق"
-    : "لا يُوسَم الأمر جاهزاً قبل إغلاق";
-  throw new TRPCError({
-    code: "PRECONDITION_FAILED",
-    message: `${what} «${blocking.title}» (${blocking.number}) — سجّل موافقة العميل من بطاقة التصميم، أو أغلق المهمّة بسببٍ من شاشة المهام.`,
-  });
+  // no-op: tasks unit eradicated
 }
 
 export { nextWorkOrderNumber, loadWorkOrder, workOrderInvoiceSourceId, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment, assertNoBlockingTask };

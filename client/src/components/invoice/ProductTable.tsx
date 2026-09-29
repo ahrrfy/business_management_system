@@ -18,6 +18,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { calcLineTotal, calcMargin, calcUnitCost, fmtNum } from "./totals";
+import { formatQuantity } from "@shared/quantityFormat";
 import { ProductSearchBar } from "./ProductSearchBar";
 import type { PricingIntentEpoch } from "./productSearchResolution";
 import { getLineStockState } from "./stockAvailability";
@@ -437,23 +438,23 @@ export function ProductTable({
                       )}
                       {!isPurchase && stock.isKnown && !stock.isOut && stock.isShort && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
-                          {stock.availableInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availableInUnit} فقط`}
+                          {stock.availableInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${formatQuantity(stock.availableInUnit)} فقط`}
                         </span>
                       )}
                       {!isPurchase && stock.overbookedBase > 0 && (
                         <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">
-                          زيادة حجز {fmtNum(stock.overbookedBase)} وحدة أساس
+                          زيادة حجز {formatQuantity(stock.overbookedBase)} وحدة أساس
                         </span>
                       )}
                     </div>
                     {!isPurchase && stock.isKnown && !stock.isService && (
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
                         <span>{branchLabel(item.stockBranchId ?? branchId)}</span>
-                        <span>فعلي {fmtNum(stock.onHandBase)}</span>
+                        <span>فعلي {formatQuantity(stock.onHandBase)}</span>
                         <span className={stock.reservedBase > 0 ? "font-bold text-[var(--sem-warn)]" : ""}>
-                          محجوز {fmtNum(stock.reservedBase)}
+                          محجوز {formatQuantity(stock.reservedBase)}
                         </span>
-                        <span className="font-bold">متاح للبيع {fmtNum(stock.availableBase)}</span>
+                        <span className="font-bold">متاح للبيع {formatQuantity(stock.availableBase)}</span>
                       </div>
                     )}
                     {allocations.length > 0 && (
@@ -463,7 +464,7 @@ export function ProductTable({
                             key={allocation.reservationId}
                             className="rounded border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]"
                           >
-                            حجز باسم {allocation.customerName} · {fmtNum(allocation.remainingBase)} وحدة أساس
+                            حجز باسم {allocation.customerName} · {formatQuantity(allocation.remainingBase)} وحدة أساس
                           </span>
                         ))}
                       </div>
@@ -514,9 +515,9 @@ export function ProductTable({
                         dir="ltr"
                       >
                         {isPurchase
-                          ? fmtNum(item.stockBase)
+                          ? formatQuantity(item.stockBase)
                           : stock.isKnown
-                            ? fmtNum(stock.availableInUnit)
+                            ? formatQuantity(stock.availableInUnit)
                             : "…"}
                       </span>
                     )}

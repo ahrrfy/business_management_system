@@ -316,7 +316,7 @@ const styles = StyleSheet.create({
   filter: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 999,
     borderWidth: 1,
     flexDirection: "row-reverse",
@@ -324,7 +324,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 9,
   },
-  active: { backgroundColor: "#059669", borderColor: "#059669" },
+  active: { backgroundColor: "#0E806A", borderColor: "#0E806A" },
   filterText: { color: "#38534C", fontFamily: "Cairo_700Bold", fontSize: 11 },
   activeText: { color: "#FFFFFF" },
   filterCount: {

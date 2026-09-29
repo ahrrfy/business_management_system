@@ -18,7 +18,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
-import { fmt, round2, D } from "@/lib/money";
+import { fmt, formatQuantity, round2, D } from "@/lib/money";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -347,7 +347,7 @@ export function HeldOrdersDrawer({
                             • {line.itemNameSnapshot || "خدمة طباعة"}
                           </span>
                           <span>
-                            {line.quantity} × {fmt(line.unitPrice)}
+                            {formatQuantity(line.quantity)} × {fmt(line.unitPrice)}
                           </span>
                         </div>
                       ))}
@@ -367,7 +367,7 @@ export function HeldOrdersDrawer({
                     <div className="flex items-center justify-between text-2xs text-muted-foreground border-t border-border/40 pt-2 mb-3">
                       <span>الإجمالي: {fmt(o.total)} د.ع</span>
                       <span>المدفوع: {fmt(o.paidAmount)} د.ع</span>
-                      <span>{new Date(o.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}</span>
+                      <span>{fmtTime(o.createdAt)}</span>
                     </div>
 
                     {/* أزرار الإجراءات السريعة */}

@@ -11,6 +11,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
@@ -26,6 +27,7 @@ import { D } from "@/lib/money";
 import { Link } from "wouter";
 import { moduleAccessAllowed } from "@shared/permissions";
 import { MissedDailyCountExceptionPanel } from "@/components/cash/MissedDailyCountExceptionPanel";
+import { DayCloseCellDetailsHover } from "@/components/treasury/DayCloseCellDetailsHover";
 
 type DC = RouterOutputs["reports"]["dayCloseReconciliation"];
 
@@ -417,7 +419,7 @@ export default function DayCloseReport() {
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">تاريخ اليوم</label>
-            <input
+            <Input
               type="date"
               className={selectCls}
               value={date}
@@ -670,30 +672,46 @@ function useShiftColumns(dc: DC) {
     { id: "user", header: "الكاشير", accessorFn: (sh) => sh.userName ?? "—", meta: { kind: "actor" } },
     {
       id: "opening", header: "افتتاحي", accessorFn: (sh) => Number(sh.opening),
-      cell: ({ row }) => fmtAr(row.original.opening),
+      cell: ({ row }) => (
+        <DayCloseCellDetailsHover shift={row.original} field="opening">
+          <span className="tabular-nums cursor-help border-b border-dotted border-muted-foreground/30 hover:border-foreground transition-colors">
+            {fmtAr(row.original.opening)}
+          </span>
+        </DayCloseCellDetailsHover>
+      ),
       footer: () => fmtAr(dc.totals.opening), meta: { kind: "money" },
     },
     {
       id: "cashIn", header: "داخل نقدي", accessorFn: (sh) => Number(sh.cashIn),
       cell: ({ row }) => (
-        <span className="text-money-positive" title={`مبيعات ${fmtAr(row.original.salesCash)} · تحصيلات ${fmtAr(row.original.collectionsCash)} · أخرى ${fmtAr(row.original.otherIn)}`}>
-          {fmtAr(row.original.cashIn)}
-        </span>
+        <DayCloseCellDetailsHover shift={row.original} field="cashIn">
+          <span className="text-money-positive font-semibold tabular-nums cursor-help border-b border-dotted border-[var(--sem-pos)]/40 hover:border-[var(--sem-pos)] transition-colors">
+            {fmtAr(row.original.cashIn)}
+          </span>
+        </DayCloseCellDetailsHover>
       ),
       footer: () => <span className="text-money-positive">{fmtAr(dc.totals.cashIn)}</span>, meta: { kind: "money" },
     },
     {
       id: "operatingOut", header: "خارج تشغيلي", accessorFn: (sh) => Number(sh.operatingOut),
       cell: ({ row }) => (
-        <span className="text-money-negative" title={`مرتجعات ${fmtAr(row.original.returnsCash)} · مصروفات ${fmtAr(row.original.expensesCash)} · سحب أثناء الوردية ${fmtAr(row.original.cashDrops)} · أخرى ${fmtAr(row.original.otherOut)}`}>
-          {fmtAr(row.original.operatingOut)}
-        </span>
+        <DayCloseCellDetailsHover shift={row.original} field="operatingOut">
+          <span className="text-money-negative font-semibold tabular-nums cursor-help border-b border-dotted border-destructive/40 hover:border-destructive transition-colors">
+            {fmtAr(row.original.operatingOut)}
+          </span>
+        </DayCloseCellDetailsHover>
       ),
       footer: () => <span className="text-money-negative">{fmtAr(dc.totals.operatingOut)}</span>, meta: { kind: "money" },
     },
     {
       id: "expected", header: "المتوقَّع", accessorFn: (sh) => Number(sh.expected),
-      cell: ({ row }) => <span className="font-semibold text-[var(--sem-info)]">{fmtAr(row.original.expected)}</span>,
+      cell: ({ row }) => (
+        <DayCloseCellDetailsHover shift={row.original} field="expected">
+          <span className="font-semibold text-[var(--sem-info)] tabular-nums cursor-help border-b border-dotted border-[var(--sem-info)]/40 hover:border-[var(--sem-info)] transition-colors">
+            {fmtAr(row.original.expected)}
+          </span>
+        </DayCloseCellDetailsHover>
+      ),
       footer: () => (
         <span className="text-[var(--sem-info)]" title={dc.totals.openCount > 0 ? `المغلقة: ${fmtAr(dc.totals.closedExpected)} · الجارية: ${fmtAr(dc.totals.openRunningExpected)}` : undefined}>
           {fmtAr(dc.totals.expected)}
@@ -703,10 +721,16 @@ function useShiftColumns(dc: DC) {
     },
     {
       id: "counted", header: "المعدود", accessorFn: (sh) => (sh.counted == null ? -1 : Number(sh.counted)),
-      cell: ({ row }) => row.original.counted == null ? (
-        <span className="text-xs text-muted-foreground">جارية (لم تُغلق)</span>
-      ) : (
-        <span className="font-semibold">{fmtAr(row.original.counted)}</span>
+      cell: ({ row }) => (
+        <DayCloseCellDetailsHover shift={row.original} field="counted">
+          {row.original.counted == null ? (
+            <span className="text-xs text-muted-foreground cursor-help border-b border-dotted border-muted-foreground/30">جارية (لم تُغلق)</span>
+          ) : (
+            <span className="font-semibold tabular-nums cursor-help border-b border-dotted border-muted-foreground/30 hover:border-foreground transition-colors">
+              {fmtAr(row.original.counted)}
+            </span>
+          )}
+        </DayCloseCellDetailsHover>
       ),
       footer: () => <span title="المغلقة فقط">{fmtAr(dc.totals.counted)}</span>, meta: { kind: "money" },
     },
@@ -716,13 +740,17 @@ function useShiftColumns(dc: DC) {
         const sh = row.original;
         const drift = sh.drift == null ? null : Number(sh.drift);
         const cls = drift == null ? "text-muted-foreground" : drift === 0 ? "text-money-positive" : drift > 0 ? "text-stock-low" : "text-money-negative";
-        return sh.drift == null ? (
-          <span className="text-[11px] text-muted-foreground">—</span>
-        ) : (
-          <span className={`inline-flex items-center justify-end gap-1 font-semibold ${cls}`}>
-            {drift === 0 ? <CheckCircle2 aria-hidden className="size-3.5" /> : <AlertTriangle aria-hidden className="size-3.5" />}
-            {fmtAr(sh.drift)}
-          </span>
+        return (
+          <DayCloseCellDetailsHover shift={sh} field="drift">
+            {sh.drift == null ? (
+              <span className="text-[11px] text-muted-foreground cursor-help">—</span>
+            ) : (
+              <span className={`inline-flex items-center justify-end gap-1 font-semibold tabular-nums cursor-help border-b border-dotted border-current/30 hover:border-current transition-colors ${cls}`}>
+                {drift === 0 ? <CheckCircle2 aria-hidden className="size-3.5" /> : <AlertTriangle aria-hidden className="size-3.5" />}
+                {fmtAr(sh.drift)}
+              </span>
+            )}
+          </DayCloseCellDetailsHover>
         );
       },
       footer: () => {
@@ -734,7 +762,13 @@ function useShiftColumns(dc: DC) {
     },
     {
       id: "handoversCash", header: "خرج إلى العهدة", accessorFn: (sh) => Number(sh.handoversCash),
-      cell: ({ row }) => <span className="text-muted-foreground">{row.original.handoversCash === "0.00" ? "—" : fmtAr(row.original.handoversCash)}</span>,
+      cell: ({ row }) => (
+        <DayCloseCellDetailsHover shift={row.original} field="handoversCash">
+          <span className="text-muted-foreground tabular-nums cursor-help border-b border-dotted border-muted-foreground/30 hover:border-foreground transition-colors">
+            {row.original.handoversCash === "0.00" ? "—" : fmtAr(row.original.handoversCash)}
+          </span>
+        </DayCloseCellDetailsHover>
+      ),
       footer: () => <span className="text-muted-foreground">{fmtAr(dc.totals.handoversCash)}</span>, meta: { kind: "money" },
     },
   ], [dc]);

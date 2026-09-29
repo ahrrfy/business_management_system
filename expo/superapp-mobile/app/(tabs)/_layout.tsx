@@ -11,21 +11,24 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
   const access = useWorkspaceAccess();
-  const preview = access.mode === "preview";
-  const ownerCenter = preview || (access.mode === "ready" && access.today?.navigation.ownerCenter === true);
-  const personal = preview || access.mode === "signedOut" || access.mode === "error" || (access.mode === "ready" && access.today?.navigation.personal === true);
-  const work = preview || (access.mode === "ready" && access.today?.navigation.work === true);
+  const ownerCenter = access.mode === "ready" && access.today?.navigation.ownerCenter === true;
+  const personal = access.mode === "ready" && access.today?.navigation.personal === true;
+  const work = access.mode === "ready" && (access.today?.navigation.work === true || ownerCenter);
 
   useEffect(() => {
+    if (access.mode === "signedOut" || access.mode === "error") {
+      router.replace("/sign-in");
+      return;
+    }
     const current = segments.at(-1);
     if (current === "(tabs)" && !ownerCenter) {
-      router.replace(personal ? "/(tabs)/my-day" : "/(tabs)/account");
+      router.replace(personal ? "/(tabs)/my-day" : work ? "/(tabs)/work" : "/(tabs)/account");
     } else if (current === "my-day" && !personal) {
-      router.replace(ownerCenter ? "/(tabs)" : "/(tabs)/account");
+      router.replace(ownerCenter ? "/(tabs)" : work ? "/(tabs)/work" : "/(tabs)/account");
     } else if (current === "work" && !work) {
       router.replace(personal ? "/(tabs)/my-day" : ownerCenter ? "/(tabs)" : "/(tabs)/account");
     }
-  }, [ownerCenter, personal, segments, work]);
+  }, [access.mode, ownerCenter, personal, segments, work]);
 
   return (
     <Tabs
@@ -35,15 +38,15 @@ export default function TabLayout() {
         tabBarActiveTintColor: colors.brand,
         tabBarInactiveTintColor: colors.mutedInk,
         tabBarHideOnKeyboard: true,
-        tabBarItemStyle: { minHeight: 52, paddingVertical: 4 },
-        tabBarLabelStyle: { fontFamily: "Cairo_600SemiBold", fontSize: 12 },
+        tabBarItemStyle: { alignItems: "center", justifyContent: "center", paddingVertical: 1 },
+        tabBarLabelStyle: { fontFamily: "Cairo_600SemiBold", fontSize: 10, lineHeight: 14 },
         tabBarStyle: {
           backgroundColor: colors.surface,
           borderTopColor: colors.outline,
           direction: "rtl",
-          height: Platform.OS === "web" ? 74 : 68 + insets.bottom,
-          paddingBottom: Platform.OS === "web" ? 9 : Math.max(insets.bottom, 8),
-          paddingTop: 7,
+          height: Platform.OS === "web" ? 68 : 64 + insets.bottom,
+          paddingBottom: Platform.OS === "web" ? 6 : Math.max(insets.bottom, 6),
+          paddingTop: 6,
         },
       }}
     >
@@ -67,8 +70,8 @@ export default function TabLayout() {
         name="work"
         options={{
           href: work ? undefined : null,
-          title: "العمل",
-          tabBarIcon: ({ focused }) => <AppTabsIcon focused={focused} name="checkmark-circle-outline" />,
+          title: "العمليات",
+          tabBarIcon: ({ focused }) => <AppTabsIcon focused={focused} name="grid-outline" />,
         }}
       />
       <Tabs.Screen

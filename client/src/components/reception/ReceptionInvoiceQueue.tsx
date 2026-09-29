@@ -43,7 +43,7 @@ import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { cn } from "@/lib/utils";
-import { fmtDate } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
@@ -302,9 +302,7 @@ export function ReceptionInvoiceQueue({
                       )}
                     </td>
                     <td className="px-2 py-2 text-muted-foreground" dir="ltr">
-                      {r.invoiceDate
-                        ? `${fmtDate(new Date(r.invoiceDate))} ${new Date(r.invoiceDate).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`
-                        : "—"}
+                      {r.invoiceDate ? fmtDateTime(r.invoiceDate) : "—"}
                     </td>
                     <td className="px-2 py-2">
                       <div className="max-w-36 truncate font-semibold">
@@ -1005,11 +1003,27 @@ function InvoiceDispatchDialog({
 
         {/* شفافية محاسبية صريحة: الأجرة ليست جزءاً ممّا يحصّله المندوب لنا. */}
         <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-          يحصّل المندوب{" "}
-          <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span>{" "}
-          د.ع
-          لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
-          {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
+          {remaining === 0 ? (
+            <>
+              الفاتورة <strong className="text-[var(--sem-pos)]">مدفوعة مسبقاً بالكامل</strong> (متبقي البضاعة: 0 د.ع).
+              {feeCollection === "COURIER" ? (
+                <> المطلوب من الزبون عند الاستلام: <strong className="font-bold tabular-nums text-foreground" dir="ltr">{fmt(round2(D(fee || 0)).toFixed(2))} د.ع</strong> (أجرة التوصيل فقط للمندوب).</>
+              ) : (
+                <> لا مبالغ مطلوبة من الزبون عند الاستلام.</>
+              )}
+            </>
+          ) : (
+            <>
+              يحصّل المندوب{" "}
+              <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span>{" "}
+              د.ع
+              لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
+              {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
+              {feeCollection === "COURIER" && Number(fee || 0) > 0 && (
+                <> إجمالي ما يدفعه الزبون للمندوب: <strong className="font-bold tabular-nums text-foreground" dir="ltr">{fmt(round2(D(remaining).plus(D(fee || 0))).toFixed(2))} د.ع</strong> شامل التوصيل.</>
+              )}
+            </>
+          )}
         </p>
 
         {partialNotice && (

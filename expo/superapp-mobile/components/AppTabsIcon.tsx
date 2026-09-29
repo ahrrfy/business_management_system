@@ -5,7 +5,12 @@ import { Animated, Platform, StyleSheet } from "react-native";
 import { useReducedMotion } from "@/components/AnimatedReveal";
 import { colors } from "@/constants/theme";
 
-type IconName = "home-outline" | "calendar-outline" | "checkmark-circle-outline" | "person-outline";
+type IconName =
+  | "home-outline"
+  | "calendar-outline"
+  | "checkmark-circle-outline"
+  | "person-outline"
+  | "grid-outline";
 
 export function AppTabsIcon({ name, focused }: { name: IconName; focused: boolean }) {
   const reducedMotion = useReducedMotion();

@@ -12,7 +12,7 @@ import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { branches, payrollObligations, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
-import { getDashboardMetrics, getMyTaskBriefCounts } from "./reports/dashboard";
+import { getDashboardMetrics } from "./reports/dashboard";
 import { createAppNotification } from "./appNotificationService";
 import { baghdadToday } from "./businessDay";
 
@@ -65,20 +65,14 @@ export async function notifyUpcomingPayrollDue(
   );
 }
 
-/** عدّادا المهام (نظام المهام الموحّد S2) — myOpenTasks شخصيّ بحت (لا يمرّ بـ`metricsFor`
- *  المُخزَّنة مؤقّتاً)، overdueTasks يأتي من نفس نتيجة `getDashboardMetrics` المُخزَّنة (تشغيليّ،
- *  نطاق كل الفروع مثل overdueWorkOrders). كلاهما اختياريّان في التوقيع (مطابقة توافقية لأي
- *  استدعاء لا يزوّدهما — لا مستدعٍ حالياً غير هذا الملف). */
 type MorningBriefCounts = {
   arRemindersDue: number;
   promisedToday: number;
   overdueWorkOrders: number;
-  myOpenTasks?: number;
-  overdueTasks?: number;
 };
 
 /** الصياغة العربية للجسم — أعداد فقط (يظهر في شريط إشعارات النظام، بلا أسماء عملاء). */
-function buildBody(counts: MorningBriefCounts, total: number, myOverdueTasks = 0): string {
+function buildBody(counts: MorningBriefCounts, total: number): string {
   const parts: string[] = [];
   if (counts.arRemindersDue > 0) {
     const promiseNote = counts.promisedToday > 0 ? ` (منها ${counts.promisedToday} موعود اليوم)` : "";
@@ -87,25 +81,16 @@ function buildBody(counts: MorningBriefCounts, total: number, myOverdueTasks = 0
     parts.push(`${counts.promisedToday} موعود اليوم`);
   }
   if (counts.overdueWorkOrders > 0) parts.push(`${counts.overdueWorkOrders} أمر شغل متأخّر`);
-  if (counts.myOpenTasks) {
-    const overdueNote = myOverdueTasks > 0 ? ` (منها ${myOverdueTasks} متأخرة)` : "";
-    parts.push(`${counts.myOpenTasks} مهمة مفتوحة${overdueNote}`);
-  }
-  const otherOverdueTasks = Math.max(0, (counts.overdueTasks ?? 0) - myOverdueTasks);
-  if (otherOverdueTasks > 0) parts.push(`${otherOverdueTasks} مهمة متأخّرة أخرى`);
   return `${total} بند للمتابعة${parts.length > 0 ? ": " + parts.join("، ") : ""}`;
 }
 
 /** الرابط الأنسب للإشعار حسب ما هو مُستحقّ فعلاً (gap-audit ٥/٧ item 10) — كان مُثبَّتاً على
  *  /dashboard دائماً رغم أنّ محتوى الإشعار غالباً تذكير ذمم أو أمر شغل متأخّر تحديداً؛ الآن يوجّه
  *  المستخدم مباشرةً لشاشة العمل ذات الصلة بدل تحويلة إضافية عبر لوحة التحكم.
- *  الأولوية: تذكيرات AR/وعد اليوم (الأكثر إلحاحاً مالياً) > أوامر شغل متأخّرة > مهام (S2) > /dashboard. */
+ *  الأولوية: تذكيرات AR/وعد اليوم (الأكثر إلحاحاً مالياً) > أوامر شغل متأخّرة > /dashboard. */
 function pickMorningBriefUrl(counts: MorningBriefCounts, branchId: number): string {
   if (counts.arRemindersDue > 0 || counts.promisedToday > 0) return "/reports/ar-reminders";
   if (counts.overdueWorkOrders > 0) return `/work-orders?branch=${branchId}`;
-  if (counts.overdueTasks && counts.myOpenTasks) return "/dashboard";
-  if (counts.overdueTasks) return `/tasks?tab=list&branchId=${branchId}&overdue=1`;
-  if (counts.myOpenTasks) return "/tasks?tab=mine";
   return "/dashboard";
 }
 
@@ -195,14 +180,8 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
         continue;
       }
       const m = await metricsFor(actionBranchId);
-      // myOpenTasks شخصيّ ⇒ خارج الـcache المشترك (لا يُدمَج داخل m.morningBrief كي لا يُلوَّث
-      // الكائن المُخزَّن مؤقّتاً بين مستخدمين مختلفين) — استعلامٌ خفيف مستقلّ لكل مستخدم.
-      const myTasks = await getMyTaskBriefCounts(userId, actionBranchId);
-      const myOpenTasks = myTasks.open;
-      const counts: MorningBriefCounts = { ...m.morningBrief, myOpenTasks };
-      // promisedToday جزء من arRemindersDue، والمهام المتأخّرة المسندة للمستخدم تقاطع بين عدّادي المهام.
-      const uniqueTasks = myOpenTasks + (counts.overdueTasks ?? 0) - myTasks.overdueInScope;
-      const total = counts.arRemindersDue + counts.overdueWorkOrders + uniqueTasks;
+      const counts: MorningBriefCounts = { ...m.morningBrief };
+      const total = counts.arRemindersDue + counts.overdueWorkOrders;
       if (total === 0) {
         result.skippedEmpty++;
         continue;
@@ -212,7 +191,7 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
         kind: "SYSTEM",
         family: "ADMIN",
         title: "برنامج اليوم — الرؤية العربية",
-        body: buildBody(counts, total, myTasks.overdueInScope),
+        body: buildBody(counts, total),
         route: pickMorningBriefUrl(counts, actionBranchId),
         eventKey: `morning-brief:${claimDay}:${userId}`,
         entityType: "morningBrief",

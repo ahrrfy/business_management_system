@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CopyInline } from "@/components/CopyButton";
 import { fmt } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import {
   Receipt,
@@ -80,10 +81,7 @@ export function ReturnsLedgerView() {
       {
         id: "date",
         header: "تاريخ القيد",
-        cell: ({ row }) => {
-          const d = row.original.entryDate ? new Date(row.original.entryDate) : null;
-          return d ? d.toLocaleDateString("ar-IQ") : "—";
-        },
+        cell: ({ row }) => fmtDate(row.original.entryDate),
       },
       {
         id: "notes",
@@ -106,7 +104,7 @@ export function ReturnsLedgerView() {
 
     printReportDoc({
       title: "سجل قيود المرتجعات المالية والمحاسبية",
-      docDate: new Date().toLocaleDateString("ar-IQ"),
+      docDate: fmtDate(new Date()),
       headerExtra: [
         { label: "إجمالي العمليات", value: `${rows.length} عملية` },
         { label: "حالة التقرير", value: "مستخرج من دفتر اليومية" },
@@ -123,7 +121,7 @@ export function ReturnsLedgerView() {
         invoice: r.invoiceNumber ?? "—",
         customer: r.customerName ?? "زبون عابر",
         performer: r.performedByName ?? "—",
-        date: r.entryDate ? new Date(r.entryDate).toLocaleDateString("ar-IQ") : "—",
+        date: fmtDate(r.entryDate),
         amount: fmt(r.amount),
       })),
       summary: [

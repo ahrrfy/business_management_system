@@ -168,7 +168,7 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
     let max = c.header.length;
     for (const row of spec.rows) {
       const v = cellValue(row, c);
-      const len = (typeof v === "number" ? v.toLocaleString() : v).length;
+      const len = (typeof v === "number" ? v.toLocaleString("en-US") : v).length;
       if (len > max) max = len;
     }
     ws.getColumn(i + 1).width = Math.min(Math.max(max + 2, 12), 32);

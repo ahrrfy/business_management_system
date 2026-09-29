@@ -216,13 +216,7 @@ async function computeManagementAlerts(opts: {
                   AND ${woLiveCn} THEN 1 ELSE 0 END) AS cnt,
         SUM(CASE WHEN wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS')
                   AND wo.assignedTo IS NULL THEN 1 ELSE 0 END) AS unassigned,
-        SUM(CASE WHEN wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS') AND EXISTS (
-              SELECT 1 FROM tasks t
-              INNER JOIN serviceTypes st ON st.id = t.serviceTypeId
-              WHERE t.linkedWorkOrderId = wo.id
-                AND t.taskStatus IN ('NEW','IN_PROGRESS','WAITING_CUSTOMER')
-                AND st.blocksExecution = 1
-            ) THEN 1 ELSE 0 END) AS awaitingApproval,
+        0 AS awaitingApproval,
         SUM(CASE WHEN wo.workOrderStatus = 'READY'
                   AND wo.workStartedAt IS NOT NULL AND wo.workSeconds IS NOT NULL
                   AND DATE_ADD(wo.workStartedAt, INTERVAL wo.workSeconds SECOND)
@@ -411,10 +405,6 @@ async function computeManagementAlerts(opts: {
     const unassigned = Number(wo.unassigned ?? 0);
     if (unassigned > 0) {
       alerts.push({ key: "wo-unassigned", severity: "critical", title: "أوامر شغل بلا منفّذ", count: unassigned, amount: null, href: "/work-orders", actionLabel: "أسنِدها الآن" });
-    }
-    const awaitingApproval = Number(wo.awaitingApproval ?? 0);
-    if (awaitingApproval > 0) {
-      alerts.push({ key: "wo-awaiting-approval", severity: "warning", title: "أوامر محجوزة بانتظار موافقة العميل", count: awaitingApproval, amount: null, href: "/tasks", actionLabel: "تابع الموافقات" });
     }
     const awaitingPickup = Number(wo.awaitingPickup ?? 0);
     if (awaitingPickup > 0) {

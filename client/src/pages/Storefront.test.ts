@@ -96,10 +96,10 @@ describe("storefront customization", () => {
 });
 
 describe("storefront reservation deadline", () => {
-  it("يعرض لقطة المهلة بتوقيت بغداد بوضوح", () => {
+  it("يعرض لقطة المهلة بتوقيت بغداد بوضوح وبالأرقام اللاتينية", () => {
     const formatted = formatStorefrontReservationDeadline("2026-08-18T12:30:00.000Z");
-    expect(formatted).toContain("٢٠٢٦");
-    expect(formatted).toContain("٣:٣٠");
+    expect(formatted).toContain("2026");
+    expect(formatted).toContain("3:30");
   });
 });
 

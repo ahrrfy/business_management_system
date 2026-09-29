@@ -14,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import {
@@ -224,17 +224,17 @@ export function CartTable({
                           <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
                             {stock.availInUnit === 0
                               ? "لا يكفي لوحدة"
-                              : `المتاح ${stock.availInUnit} فقط`}
+                              : `المتاح ${formatQuantity(stock.availInUnit)} فقط`}
                           </span>
                         )}
                       </div>
                       {!isCustom && !l.row.isService && (
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
-                          <span>فعلي {fmt(l.row.stockBase ?? 0)}</span>
+                          <span>فعلي {formatQuantity(l.row.stockBase ?? 0)}</span>
                           <span className={(l.row.reservedBase ?? 0) > 0 ? "font-bold text-[var(--sem-warn)]" : ""}>
-                            محجوز {fmt(l.row.reservedBase ?? 0)}
+                            محجوز {formatQuantity(l.row.reservedBase ?? 0)}
                           </span>
-                          <span className="font-bold">متاح {fmt(l.row.availableBase ?? l.row.stockBase ?? 0)}</span>
+                          <span className="font-bold">متاح {formatQuantity(l.row.availableBase ?? l.row.stockBase ?? 0)}</span>
                         </div>
                       )}
                       {allocations.length > 0 && (
@@ -244,7 +244,7 @@ export function CartTable({
                               key={allocation.reservationId}
                               className="rounded border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]"
                             >
-                              حجز باسم {allocation.customerName} · {fmt(allocation.remainingBase)} وحدة أساس
+                              حجز باسم {allocation.customerName} · {formatQuantity(allocation.remainingBase)} وحدة أساس
                             </span>
                           ))}
                         </div>
@@ -371,7 +371,7 @@ export function CartTable({
                       )}
                       dir="ltr"
                     >
-                      {isCustom || l.digital ? "—" : l.row.isService ? "∞" : stock.availInUnit}
+                      {isCustom || l.digital ? "—" : l.row.isService ? "∞" : formatQuantity(stock.availInUnit)}
                     </td>
                     <td className="px-1 py-1">
                       {l.digital ? (

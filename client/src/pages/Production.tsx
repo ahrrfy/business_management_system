@@ -3,6 +3,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { FilterField } from "@/components/list/FilterField";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
@@ -14,7 +15,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fmtDateTime } from "@/lib/date";
 import { type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { fmt, fmtInt } from "@/lib/money";
+import { fmt, fmtInt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -110,7 +111,7 @@ export default function Production() {
       rows: all.map((r) => ({
         docNumber: String(r.docNumber ?? ""),
         branchName: String(r.branchName ?? ""),
-        outputQty: fmtInt(r.outputQty),
+        outputQty: formatQuantity(r.outputQty),
         totalCost: fmt(r.totalCost),
         status: statusLabel(r.status),
         createdAt: fmtDateTime(r.createdAt),
@@ -131,7 +132,7 @@ export default function Production() {
     {
       id: "outputQty", header: "كمية المخرجات",
       accessorFn: (r) => Number(r.outputQty),
-      cell: ({ row }) => fmtInt(row.original.outputQty),
+      cell: ({ row }) => formatQuantity(row.original.outputQty),
       meta: { kind: "number" },
     },
     {
@@ -232,10 +233,10 @@ export default function Production() {
                   </FilterField>
                 )}
                 <FilterField label="من">
-                  <input type="date" className={dateCls} value={f.from} onChange={(e) => patchFilters({ from: e.target.value })} />
+                  <Input type="date" className={dateCls} value={f.from} onChange={(e) => patchFilters({ from: e.target.value })} />
                 </FilterField>
                 <FilterField label="إلى">
-                  <input type="date" className={dateCls} value={f.to} onChange={(e) => patchFilters({ to: e.target.value })} />
+                  <Input type="date" className={dateCls} value={f.to} onChange={(e) => patchFilters({ to: e.target.value })} />
                 </FilterField>
               </div>
             }

@@ -11,9 +11,12 @@ import {
   createAsset,
   disposalLog,
   disposeAsset,
+  fixedAssetRegisterReport,
   getAsset,
   handoverCustody,
+  importAssets,
   postMonthlyDepreciation,
+  transferAssetBranch,
   updateAsset,
 } from "../assetsService";
 import { computeDepreciation } from "../assets/depreciation";
@@ -1500,3 +1503,358 @@ describe("createAsset — حرّاس العهدة عند الإنشاء (تدق�
     expect(Number(custody[0].employeeId)).toBe(1);
   });
 });
+
+describe("createAsset — دعم الأراضي والمباني وسحوبات الخزينة الكبرى (IAS 16)", () => {
+  it("إضافة أصل من فئة المباني (buildings) ينجح وتُحسب أقساط إهلاكه", async () => {
+    const asset = await mkPendingAsset({
+      name: "مبنى الإدارة والمطبعة",
+      category: "buildings",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "250000000",
+      salvageValue: "0",
+      usefulLifeYears: 25,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "شركة الرافدين للمقاولات",
+      acquisitionEvidenceReference: "DEED-BUILD-2024",
+    });
+    expect(asset).toBeDefined();
+    expect(asset?.category).toBe("buildings");
+    expect(asset?.usefulLifeYears).toBe(25);
+    expect(asset?.annualDep).toBe(10000000);
+  });
+
+  it("إضافة أصل من فئة الأراضي (land) ينجح بعمر إنتاجي 0 وبلا إهلاك", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض 300 متر مربع",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "1000000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "مكتبة + هدى",
+      acquisitionEvidenceReference: "CONTRACT-1",
+    });
+    expect(asset).toBeDefined();
+    expect(asset?.category).toBe("land");
+    expect(asset?.usefulLifeYears).toBe(0);
+    expect(asset?.annualDep).toBe(0);
+    expect(asset?.bookValue).toBe(1000000000);
+  });
+
+  it("اقتناء المالك لأصل بمبلغ يفوق رصيد الخزينة المتاح يثبت الأصل والالتزام مع بقاء السند معلقاً (paymentPending: true)", async () => {
+    assetRequestSequence += 1;
+    const asset = await createAsset(
+      {
+        name: "عقار واستثمار تجاري",
+        category: "buildings",
+        purchaseDate: "2024-01-01",
+        purchaseValue: "1000000000",
+        salvageValue: "0",
+        usefulLifeYears: 50,
+        depreciationMethod: "sl",
+        branchId: 1,
+        acquisitionBeneficiaryName: "المالك البائع",
+        acquisitionEvidenceReference: "DEED-BIG-VAL",
+        clientRequestId: `asset-big-val-${assetRequestSequence}`,
+      },
+      OWNER,
+    );
+    expect(asset).toBeDefined();
+    expect(asset?.isActive).toBe(true);
+    expect(asset?.paymentPending).toBe(true);
+  });
+
+  it("تعديل بيانات أصل من فئة الأراضي (land) بعمر إنتاجي 0 ينجح دون استثناء", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض تجارية بالكرادة",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "500000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "المالك السابق",
+      acquisitionEvidenceReference: "DEED-KARRADA-2024",
+    });
+    expect(asset).toBeDefined();
+
+    const updated = await updateAsset(
+      asset!.id,
+      {
+        name: "ارض تجارية بالكرادة - معدل",
+        category: "land",
+        purchaseDate: "2024-01-01",
+        purchaseValue: "500000000",
+        salvageValue: "0",
+        usefulLifeYears: 0,
+        depreciationMethod: "sl",
+        branchId: 1,
+        location: "الكرادة داخل",
+      },
+      OWNER,
+    );
+    expect(updated).toBeDefined();
+    expect(updated?.name).toBe("ارض تجارية بالكرادة - معدل");
+    expect(updated?.category).toBe("land");
+    expect(updated?.usefulLifeYears).toBe(0);
+    expect(updated?.annualDep).toBe(0);
+  });
+
+  it("تعديل أصل أراضي بعمر إنتاجي أكبر من صفر يرمي استثناء صريحاً", async () => {
+    const asset = await mkPendingAsset({
+      name: "ارض زراعية بالدورة",
+      category: "land",
+      purchaseDate: "2024-01-01",
+      purchaseValue: "300000000",
+      salvageValue: "0",
+      usefulLifeYears: 0,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionBeneficiaryName: "المالك البائع",
+      acquisitionEvidenceReference: "DEED-DORA-2024",
+    });
+    expect(asset).toBeDefined();
+
+    await expect(
+      updateAsset(
+        asset!.id,
+        {
+          name: "ارض زراعية بالدورة",
+          category: "land",
+          purchaseDate: "2024-01-01",
+          purchaseValue: "300000000",
+          salvageValue: "0",
+          usefulLifeYears: 10,
+          depreciationMethod: "sl",
+          branchId: 1,
+        },
+        OWNER,
+      ),
+    ).rejects.toThrow("الأراضي لا تخضع للإهلاك ويجب أن يكون عمرها الإنتاجي 0");
+  });
+});
+
+describe("الأصول الافتتاحية والمحرك المحاسبي المتقدم (IAS 16 Integration)", () => {
+  it("ترحيل الإهلاك الشهري لأصل افتتاحي يحسب قسط الشهر الفعلي بدقة دون تجميد", async () => {
+    // إنشاء أصل افتتاحي بمجمع إهلاك سابق
+    const asset = await mkPendingAsset({
+      name: "طابعة رولاند فليكس افتتاحية",
+      category: "printing",
+      purchaseDate: "2026-08-01",
+      purchaseValue: "12000000", // 12 مليون د.ع
+      salvageValue: "0",
+      usefulLifeYears: 5, // 2.4 مليون سنوياً = 200,000 شهرياً
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionType: "OPENING",
+      accumulatedDepreciation: "4000000", // 4 ملايين سابقة للنظام
+      acquisitionBeneficiaryName: "رأس المال الافتتاحي",
+      acquisitionEvidenceReference: "OPENING-REG-2026-08",
+    });
+
+    expect(asset).toBeDefined();
+    expect(asset?.status).toBe("active");
+    expect(asset?.openingDepreciation).toBe("4000000.00");
+    expect(asset?.accumulatedDepreciation).toBe("4000000.00");
+
+    // تشغيل الإهلاك الشهري لشهر أغسطس 2026
+    const res = await postMonthlyDepreciation(2026, 8, OWNER);
+    expect(res.assetsPosted).toBeGreaterThanOrEqual(1);
+
+    const refreshed = await getAsset(asset!.id, ADMIN_SCOPE);
+    expect(refreshed).toBeDefined();
+    // مجمع الإهلاك زاد بقسط شهر واحد (~200,000 د.ع)
+    const totalAccum = Number(refreshed?.accumulatedDepreciation ?? 0);
+    expect(totalAccum).toBeGreaterThan(4000000);
+    expect(totalAccum).toBeLessThanOrEqual(4250000);
+    expect(refreshed?.openingDepreciation).toBe("4000000.00");
+  });
+
+  it("استبعاد أصل افتتاحي يحسب صافي القيمة الدفترية ويلغي مجمع الإهلاك بالكامل", async () => {
+    const asset = await mkPendingAsset({
+      name: "جهاز ليزر مكتبي افتتاحي",
+      category: "devices",
+      purchaseDate: "2026-01-01",
+      purchaseValue: "5000000",
+      salvageValue: "0",
+      usefulLifeYears: 5,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionType: "OPENING",
+      accumulatedDepreciation: "2000000",
+      acquisitionBeneficiaryName: "رأس المال",
+      acquisitionEvidenceReference: "OPENING-LASER-01",
+    });
+
+    // استبعاد الأصل ببيع بقيمة 3,500,000 د.ع
+    // القيمة الدفترية = 5,000,000 - 2,000,000 - إهلاك المدة (~3,000,000 أو أقل)
+    // العائد 3,500,000 => ربح استبعاد موجب
+    const disposed = await disposeAsset(
+      asset!.id,
+      {
+        kind: "disposed",
+        date: "2026-09-01",
+        value: "3500000",
+        reason: "بيع أصل افتتاحي قديم وتحديث المعدات",
+      },
+      OWNER,
+    );
+
+    expect(disposed).toBeDefined();
+    expect(disposed?.status).toBe("disposed");
+  });
+
+  it("تقرير سجل الأصول الثابتة (IAS 16) يفصل التكلفة عن الإهلاك الافتتاحي والنظامي وصافي القيمة الدفترية", async () => {
+    const asset = await mkPendingAsset({
+      name: "ماكينة كبس وتجليد حراري",
+      category: "printing",
+      purchaseDate: "2025-01-01",
+      purchaseValue: "8000000",
+      salvageValue: "0",
+      usefulLifeYears: 4,
+      depreciationMethod: "sl",
+      branchId: 1,
+      acquisitionType: "OPENING",
+      accumulatedDepreciation: "3000000",
+      acquisitionBeneficiaryName: "رأس المال",
+      acquisitionEvidenceReference: "BINDING-MACHINE-01",
+    });
+
+    const report = await fixedAssetRegisterReport(undefined, ADMIN_SCOPE);
+    expect(report.kpis.totalCount).toBeGreaterThanOrEqual(1);
+    expect(Number(report.kpis.totalCost)).toBeGreaterThan(0);
+    expect(Number(report.kpis.totalOpeningDepreciation)).toBeGreaterThanOrEqual(3000000);
+
+    const row = report.rows.find((r) => r.id === asset!.id);
+    expect(row).toBeDefined();
+    expect(row?.cost).toBe("8000000.00");
+    expect(row?.openingDepreciation).toBe("3000000.00");
+    expect(Number(row?.accumulatedDepreciation)).toBeGreaterThanOrEqual(3000000);
+    expect(Number(row?.netBookValue)).toBeLessThanOrEqual(5000000);
+  });
+
+  it("الاستيراد الجماعي للأصول الافتتاحية: التحقق المسبق (dryRun) ثم الاعتماد الذري مع قيد مجمع", async () => {
+    const importRows = [
+      {
+        rowNumber: 1,
+        name: "طابعة ليزرية للمكتبة A",
+        category: "computers" as const,
+        branchId: 1,
+        purchaseDate: "2025-06-01",
+        purchaseValue: "1500000",
+        usefulLifeYears: 3,
+        depreciationMethod: "sl" as const,
+        accumulatedDepreciation: "500000",
+      },
+      {
+        rowNumber: 2,
+        name: "مكيف سبليت 2 طن",
+        category: "furniture" as const,
+        branchId: 1,
+        purchaseDate: "2024-01-01",
+        purchaseValue: "2500000",
+        usefulLifeYears: 5,
+        depreciationMethod: "sl" as const,
+        accumulatedDepreciation: "1000000",
+      },
+    ];
+
+    // 1. جولة dryRun (فحص فقط دون إنشاء في القاعدة)
+    const dryRunSummary = await importAssets(
+      importRows,
+      { dryRun: true },
+      OWNER,
+      ADMIN_SCOPE,
+    );
+
+    expect(dryRunSummary.total).toBe(2);
+    expect(dryRunSummary.created).toBe(0);
+    expect(dryRunSummary.failed).toBe(0);
+    expect(dryRunSummary.committed).toBe(false);
+    expect(dryRunSummary.totalCost).toBe("4000000.00");
+    expect(dryRunSummary.totalOpeningDepreciation).toBe("1500000.00");
+    expect(dryRunSummary.totalNetBookValue).toBe("2500000.00");
+
+    // 2. التنفيذ الفعلي الذري
+    const commitSummary = await importAssets(
+      importRows,
+      { dryRun: false },
+      OWNER,
+      ADMIN_SCOPE,
+    );
+
+    expect(commitSummary.total).toBe(2);
+    expect(commitSummary.created).toBe(2);
+    expect(commitSummary.failed).toBe(0);
+    expect(commitSummary.committed).toBe(true);
+
+    // التأكد من تسجيل الأصول في السجل
+    const list = await fixedAssetRegisterReport(undefined, ADMIN_SCOPE);
+    const item1 = list.rows.find((r) => r.name === "طابعة ليزرية للمكتبة A");
+    const item2 = list.rows.find((r) => r.name === "مكيف سبليت 2 طن");
+    expect(item1).toBeDefined();
+    expect(item2).toBeDefined();
+    expect(item1?.openingDepreciation).toBe("500000.00");
+    expect(item2?.openingDepreciation).toBe("1000000.00");
+  });
+
+  it("مناقلة أصل بين الفروع: تحديث فرع الأصل وإغلاق العهدة السابقة وفتح عهدة جديدة لموظف في الفرع الهدف", async () => {
+    // إدخال موظف في فرع 2
+    await db().insert(s.employees).values({
+      id: 3,
+      firstName: "موظف",
+      lastName: "فرع المبيعات",
+      email: "e3@test.local",
+      branchId: 2,
+      isActive: true,
+    });
+
+    const asset = await mkPendingAsset({
+      name: "شاشة عرض تفاعلية",
+      category: "computers",
+      purchaseDate: "2025-01-01",
+      purchaseValue: "2000000",
+      usefulLifeYears: 5,
+      branchId: 1,
+      custodianId: 1,
+      acquisitionType: "OPENING",
+      accumulatedDepreciation: "200000",
+      acquisitionBeneficiaryName: "رأس المال",
+      acquisitionEvidenceReference: "DISPLAY-TRANSFER-01",
+    });
+
+    expect(asset?.branchId).toBe(1);
+    expect(asset?.custodianId).toBe(1);
+
+    // تنفيذ المناقلة إلى الفرع 2 مع موظف 3
+    const transferred = await transferAssetBranch(
+      {
+        assetId: asset!.id,
+        targetBranchId: 2,
+        targetCustodianId: 3,
+        location: "صالة مبيعات الفرع الثاني",
+        reason: "تزويد فرع المبيعات بشاشة عرض للعروض الترويجية",
+      },
+      OWNER,
+    );
+
+    expect(transferred?.branchId).toBe(2);
+    expect(transferred?.custodianId).toBe(3);
+    expect(transferred?.location).toBe("صالة مبيعات الفرع الثاني");
+
+    // التحقق من سجل العهدة
+    const oldCustody = transferred?.custody.find((c) => c.employeeId === 1);
+    const newCustody = transferred?.custody.find((c) => c.employeeId === 3);
+
+    expect(oldCustody?.toDate).toBeTruthy();
+    expect(newCustody?.toDate).toBeNull();
+  });
+});
+
+
+
+

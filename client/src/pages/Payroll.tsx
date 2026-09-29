@@ -235,6 +235,7 @@ export default function Payroll() {
   // لتمريره لقسيمة الراتب المطبوعة (كان يُطبع «—» دائماً بسبب branchName: null الثابتة).
   const employeesQ = trpc.employees.list.useQuery({ includeInactive: true, limit: 200 }, { enabled: ownerAccess });
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: ownerAccess });
+  const legalSettingsQ = trpc.payroll.legalSettings.useQuery(undefined, { enabled: ownerAccess });
   const empBranch = useMemo(
     () => new Map((employeesQ.data?.rows ?? []).map((e) => [Number(e.id), e.branchName ?? null])),
     [employeesQ.data],
@@ -555,6 +556,19 @@ export default function Payroll() {
           </div>
         }
       />
+
+      {/* تنبيه استباقي للمكونات القانونية والضمان */}
+      {legalSettingsQ.data && !legalSettingsQ.data.socialSecurityEnabled && !legalSettingsQ.data.incomeTaxEnabled && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-4 py-2.5 text-xs text-[var(--sem-warn)]">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 shrink-0" />
+            <span>المكوّنات القانونية (الضمان الاجتماعي وضريبة الدخل) معطّلة افتراضياً. يمكنك مراجعتها وضبطها بالتنسيق مع المحاسب القانوني.</span>
+          </div>
+          <Link href="/hr?tab=payroll-legal" className="font-semibold underline underline-offset-2 hover:opacity-80 shrink-0">
+            مراجعة الإعدادات القانونية
+          </Link>
+        </div>
+      )}
 
       {/* المؤشّرات */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

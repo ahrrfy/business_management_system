@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { fmt, D, positiveDiff } from "@/lib/money";
+import { fmt, D, formatQuantity, positiveDiff } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -80,7 +80,7 @@ export function PurchaseOrderDrilldownView({ poId }: { poId: number }) {
               {po.items.map((item: any, idx: number) => (
                 <div key={item.id ?? idx} className="p-2 text-xs grid grid-cols-12 gap-2 items-center">
                   <span className="col-span-6 font-medium">{item.productName ?? `صنف #${item.productId}`}</span>
-                  <span className="col-span-2 text-center tabular-nums">{item.quantity}</span>
+                  <span className="col-span-2 text-center tabular-nums">{formatQuantity(item.quantity)}</span>
                   <span className="col-span-2 text-end tabular-nums" dir="ltr">{fmt(item.unitCost)}</span>
                   <span className="col-span-2 text-end tabular-nums font-semibold" dir="ltr">{fmt(item.subtotal)}</span>
                 </div>
