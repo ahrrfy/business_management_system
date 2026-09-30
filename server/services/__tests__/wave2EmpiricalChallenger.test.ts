@@ -240,12 +240,13 @@ describe("Adversarial Empirical Verification — Wave 2 (GAP-03 & GAP-04)", () =
       await d.insert(s.employeePenalties).values({
         employeeId: emp!.id,
         branchId: 1,
-        penaltyType: "DEDUCTION",
-        daysToDeduct: "1.00",
-        amountToDeduct: "150000.00",
+        penaltyType: "SALARY_DEDUCTION",
+        decisionNumber: "PEN-2026-001",
+        decisionDate: "2026-08-01",
+        deductionDays: "1.00",
+        deductionAmount: "150000.00",
         reason: "مخالفة انضباطية جسيمة",
         status: "APPROVED",
-        effectiveDate: "2026-08-01",
         createdById: 1,
         approvedById: 2,
       });
