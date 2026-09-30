@@ -438,6 +438,6 @@ describe("حوكمة صرف مصاريف الشحن من درج نقدية ال�
         },
         cashierActor,
       ),
-    ).rejects.toThrow(/افتح وردية/);
+    ).rejects.toThrow(/فتح وردية/);
   });
 });
