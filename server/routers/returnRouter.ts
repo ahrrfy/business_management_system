@@ -979,7 +979,9 @@ export const returnRouter = router({
         // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
         blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
           ? isWalkIn
-            ? "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
+            ? caps.hasUnremittedDelivery
+              ? "الطلب مرتبط بشحنة توصيل لم يورَّد نقدها بعد؛ سيتم عكس عهدة التوصيل آلياً دون إخراج نقد من الدرج."
+              : "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
             : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
           : null,
       }));
@@ -1108,7 +1110,8 @@ export const returnRouter = router({
               required: true as const,
               kind: "IMMEDIATE_REFUND" as const,
               method: "CASH" as const,
-              exactAmountRequired: true as const,
+              exactAmountRequired: !caps.hasUnremittedDelivery,
+              deliveryCustodyReversal: caps.hasUnremittedDelivery,
               reasonRequired: true as const,
               dispositions: ["RESTOCK", "DAMAGED"] as const,
             }
