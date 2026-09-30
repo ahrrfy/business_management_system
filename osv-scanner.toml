@@ -23,3 +23,8 @@ reason = "Transitive dependency in express-rate-limit (ip-address). Validated in
 [[IgnoredVulns]]
 id = "GHSA-j6r3-76f7-8jcv"
 reason = "Transitive dependency in express-rate-limit (ip-address). Validated in reverse proxy boundary."
+
+[[IgnoredVulns]]
+id = "GHSA-gfhx-hw2g-v5hg"
+reason = "Transitive build/dev dependency (serialize-javascript). Not exposed in production runtime."
+
