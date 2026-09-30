@@ -54,7 +54,7 @@ beforeEach(async () => {
 
 describe("حارس المسيّر المُقفَل على الحضور", () => {
   it("المسودة لا تحجب الحضور؛ الاعتماد يحجبه لنفس الشهر؛ الشهر الآخر يبقى مسموحاً", async () => {
-    const emp = await createEmployee({ firstName: "علي", lastName: "العبيدي", payType: "monthly", salary: "900000", allowances: "0" });
+    const emp = await createEmployee({ firstName: "علي", lastName: "العبيدي", payType: "monthly", salary: "900000", allowances: "0", branchId: 1 });
 
     // مسيّر مسودة لشهر ٢٠٢٦-٠٦ ⇒ تسجيل الحضور ما زال مسموحاً.
     const run = await generatePayroll("2026-06", ACTOR);
@@ -83,7 +83,7 @@ describe("حارس المسيّر المُقفَل على الحضور", () => {
    * الحالة الأكثر حساسية: تعديل حضورٍ بعد الدفع يُفسد أساساً مُصرَفاً فعلياً لا مجرّد مُلتزَم.
    */
   it("المسيّر المدفوع يبقى حاجزاً على تعديل حضور شهره", async () => {
-    const emp = await createEmployee({ firstName: "زينب", lastName: "الحيدري", payType: "monthly", salary: "900000", allowances: "0" });
+    const emp = await createEmployee({ firstName: "زينب", lastName: "الحيدري", payType: "monthly", salary: "900000", allowances: "0", branchId: 1 });
     await db().insert(s.receipts).values({
       branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "5000000.00",
       paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
@@ -110,7 +110,7 @@ describe("حارس المسيّر المُقفَل على الحضور", () => {
    * الدفتر (المبيعات/المشتريات/السندات…) تعامله مُقفلاً نهائياً — يُفسد أساس تقاريرَ سابقة بصمت.
    */
   it("إقفال الفترة المالية العامّة يحجب الحضور حتى بلا مسيّر رواتب أصلاً لذلك الشهر", async () => {
-    const emp = await createEmployee({ firstName: "هدى", lastName: "السامرائي", payType: "monthly", salary: "900000", allowances: "0" });
+    const emp = await createEmployee({ firstName: "هدى", lastName: "السامرائي", payType: "monthly", salary: "900000", allowances: "0", branchId: 1 });
 
     // لا مسيّر رواتب لشهر ٢٠٢٦-٠٦ إطلاقاً — الحارس القديم كان يمرّر هذا بلا اعتراض.
     await db().transaction(async (tx) => {

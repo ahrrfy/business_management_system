@@ -102,6 +102,8 @@ export interface AttendanceFilters {
    * هذا الملف) — فمدير فرعٍ يقرأ رواتب موظفي الفرع الآخر ويكتب لهم حضوراً (تدقيق ١٧/٨).
    */
   scopedBranchId?: number | null;
+  /** تصفية اختيارية بالفرع (للأدمن/المالك). */
+  branchId?: number | null;
   /** معرّف موظف بعينه. */
   employeeId?: number;
   /** الشهر بصيغة "YYYY-MM" — يُطابَق على attendanceDate بـ LIKE 'YYYY-MM%'. */
@@ -128,8 +130,9 @@ export interface AttendanceFilters {
  */
 function buildAttendanceConds(filters?: AttendanceFilters): SQL[] {
   const conds: SQL[] = [];
-  // عزل الفرع أوّلاً: كل استعلامات هذا الملف تصل الحضورَ بالموظف، وفرعُ الموظف هو الحاجز.
-  if (filters?.scopedBranchId != null) conds.push(eq(employees.branchId, filters.scopedBranchId));
+  // عزل وتصفية الفرع: التصفية تتم على فرع الحضور الفعلي المسجل في attendance.branchId (GAP-07)
+  if (filters?.scopedBranchId != null) conds.push(eq(attendance.branchId, filters.scopedBranchId));
+  else if (filters?.branchId != null) conds.push(eq(attendance.branchId, filters.branchId));
   if (filters?.employeeId) conds.push(eq(attendance.employeeId, filters.employeeId));
   // المدى يتقدّم على الشهر (وقد يُرسَلان معاً من شاشةٍ قديمة) — ولا يُجمَعان فيتضاربا.
   if (filters?.dateFrom || filters?.dateTo) {
@@ -356,9 +359,9 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
       ? [filters.period]
       : [];
   const scanConds: SQL[] = [];
-  // عزل الفرع هنا أيضاً: هذا مسارُ شروطٍ **ثانٍ** يبني نفسه ولا يمرّ بـbuildAttendanceConds،
-  // فبدونه كان عدّاد «اللقطات القديمة» وأشهرُها يعدّان صفوف الشركة كلّها لمدير فرعٍ واحد.
-  if (filters?.scopedBranchId != null) scanConds.push(eq(employees.branchId, filters.scopedBranchId));
+  // عزل وتصفية الفرع هنا أيضاً: التصفية تتم على فرع الحضور الفعلي في attendance.branchId (GAP-07)
+  if (filters?.scopedBranchId != null) scanConds.push(eq(attendance.branchId, filters.scopedBranchId));
+  else if (filters?.branchId != null) scanConds.push(eq(attendance.branchId, filters.branchId));
   if (periods.length) {
     // **كلّ** شهرٍ يمثّله المدى لا شهرَ نهايته وحده (Codex P2): «آخر ٧ أيام» في مطلع الشهر
     // يعبر شهرين، فقصرُ المسح على الأخير كان يُظهر صفوفاً مشطوبةً وعدّاداً صفراً ⇒ يختفي الزرّ.
@@ -605,6 +608,8 @@ export async function updateAttendanceSettings(
 
 export interface RecordAttendanceInput {
   employeeId: number;
+  /** فرع الحضور (اختياري: إن لم يُرسَل يُشتق من scopedBranchId أو فرع الموظف). */
+  branchId?: number | null;
   attendanceDate: string; // YYYY-MM-DD
   hours: string | number;
   checkIn?: string | null;
@@ -647,13 +652,12 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
     if (!emp) throw new Error("الموظف غير موجود");
     /*
-     * عزل الفرع على **الكتابة** (قرار المالك ١٢/٨، تدقيق ١٧/٨): ساعات الحضور تتحوّل أجراً
-     * مباشرةً، فتسجيلُ مدير فرعٍ حضوراً لموظف فرعٍ آخر كتابةُ مالٍ خارج سلطته. كانت الوحدة
-     * بلا أيّ حاجز فرع، فيكفي معرّفُ موظفٍ من الفرع الآخر (تُسرّبه formOptions) لكتابة أجره.
-     * الطيّ التلقائي من الجهاز لا يمرّر scopedBranchId (لا فاعل بشريّ) فلا يتأثّر.
+     * عزل وحفظ الفرع (GAP-07): يدعم النظام تسجيل حضور موظف لتغطية فرع آخر،
+     * ويُسجَّل الحضور بفرع الحضور الفعلي دون رفض عابر للفروع.
      */
-    if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
-      throw new Error("لا يمكن تسجيل حضور لموظف من فرعٍ آخر");
+    const branchId = input.scopedBranchId ?? input.branchId ?? emp.branchId;
+    if (branchId == null) {
+      throw new Error("لا يمكن تسجيل الحضور: لم يتم تحديد فرع الحضور ولا يملك الموظف فرعاً مسنداً");
     }
     // لا يُسجَّل حضور لموظف منتهي الخدمة (الحضور بعد الإنهاء يولّد أجراً وهمياً عند توليد المسيّر).
     if (emp.employmentStatus === "terminated") {
@@ -724,6 +728,7 @@ export async function recordAttendance(input: RecordAttendanceInput) {
 
     const values = {
       employeeId: input.employeeId,
+      branchId,
       attendanceDate: input.attendanceDate,
       checkIn: checkInAt,
       checkOut: checkOutAt,
