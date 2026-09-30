@@ -52,7 +52,7 @@ function extractProcedures(file, varName) {
     const nextExport = src.indexOf("export const ", startIdx + 15);
     const routerSlice = nextExport !== -1 ? src.slice(startIdx, nextExport) : src.slice(startIdx);
     const procs = new Set();
-    for (const m of routerSlice.matchAll(/^\s{2,4}(\w+):\s*(?:[\w.]*[Pp]rocedure\b|router\(|t\.procedure\b)/gm)) {
+    for (const m of routerSlice.matchAll(/^\s{2,4}(\w+):\s*(?:[\w.]*[Pp]rocedure\b|router\(|t\.procedure\b|hrRead\b|hrWrite\b|ownerHrRead\b|ownerHrWrite\b|settingsWrite\b)/gm)) {
       procs.add(m[1]);
     }
     return [...procs];
@@ -60,7 +60,7 @@ function extractProcedures(file, varName) {
 
   const procs = new Set();
   // اسمٌ: <بانٍ>Procedure  |  اسمٌ: router(  |  اسمٌ: publicProcedure/protectedProcedure
-  for (const m of src.matchAll(/^\s{2,4}(\w+):\s*(?:[\w.]*[Pp]rocedure\b|router\(|t\.procedure\b)/gm)) {
+  for (const m of src.matchAll(/^\s{2,4}(\w+):\s*(?:[\w.]*[Pp]rocedure\b|router\(|t\.procedure\b|hrRead\b|hrWrite\b|ownerHrRead\b|ownerHrWrite\b|settingsWrite\b)/gm)) {
     procs.add(m[1]);
   }
   return [...procs];
