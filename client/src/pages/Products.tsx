@@ -6,6 +6,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
@@ -557,10 +558,10 @@ export default function Products() {
               {
                 id: "variant",
                 header: "المتغيّر",
-                accessorFn: (r) => r.variantName ?? r.color ?? r.sku ?? "—",
+                accessorFn: (r) => variantDescriptor(r) || "—",
                 cell: ({ row }) => (
                   <span className="text-muted-foreground">
-                    {row.original.variantName ?? row.original.color ?? row.original.sku ?? "—"}
+                    {variantDescriptor(row.original) || "—"}
                   </span>
                 ),
               },
@@ -728,7 +729,7 @@ export default function Products() {
                           onSelect: () =>
                             void printLabel([
                               {
-                                name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+                                name: variantDisplayName(r),
                                 sku: r.sku ?? "",
                                 price: r.price,
                                 barcode: r.barcode ?? "",

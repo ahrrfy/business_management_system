@@ -7,6 +7,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { z } from "zod";
 import {
   accountingEntries,
@@ -891,7 +892,9 @@ export const returnRouter = router({
           isBundle: products.isBundle,
           variantName: productVariants.variantName,
           color: productVariants.color,
+          colorHex: productVariants.colorHex,
           size: productVariants.size,
+          variantKind: productVariants.variantKind,
           sku: productVariants.sku,
           barcode: productUnits.barcode,
           unitName: productUnits.unitName,
@@ -911,10 +914,15 @@ export const returnRouter = router({
         .where(eq(invoiceItems.invoiceId, input.invoiceId));
 
       const items = rows.map((r) => {
-        const variantLabel =
-          r.variantName ??
-          ([r.color, r.size].filter((v): v is string => !!v).join(" / ") ||
-            r.sku);
+        const desc = variantDescriptor({
+          productName: r.productName,
+          variantName: r.variantName,
+          color: r.color,
+          size: r.size,
+          variantKind: r.variantKind,
+          sku: r.sku,
+        });
+        const variantLabel = desc || r.sku || "";
         const remaining = r.baseQuantity - r.returnedBaseQuantity;
         const conversionFactor = Number(r.conversionFactor ?? 1) || 1;
         const baseUnitName = r.isBundle ? "بكج" : "قطعة";
@@ -923,6 +931,10 @@ export const returnRouter = router({
           productName: r.productName,
           isBundle: r.isBundle === true,
           variantLabel,
+          color: r.color ?? null,
+          size: r.size ?? null,
+          colorHex: r.colorHex ?? null,
+          variantKind: r.variantKind ?? null,
           barcode: r.barcode ?? null,
           sku: r.sku ?? null,
           // البكج وحدة تشغيلية قائمة بذاتها. بعض البكجات القديمة ورثت اسم «قطعة» من القالب
@@ -1183,6 +1195,10 @@ export const returnRouter = router({
           isBundle: products.isBundle,
           isService: products.isService,
           variantName: productVariants.variantName,
+          color: productVariants.color,
+          colorHex: productVariants.colorHex,
+          size: productVariants.size,
+          variantKind: productVariants.variantKind,
           sku: productVariants.sku,
           barcode: productUnits.barcode,
           unitName: productUnits.unitName,
@@ -1348,6 +1364,10 @@ export const returnRouter = router({
             productId: products.id,
             productName: products.name,
             variantName: productVariants.variantName,
+            color: productVariants.color,
+            colorHex: productVariants.colorHex,
+            size: productVariants.size,
+            variantKind: productVariants.variantKind,
             sku: productVariants.sku,
             costPrice: productVariants.costPrice,
           })

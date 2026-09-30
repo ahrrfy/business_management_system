@@ -52,10 +52,17 @@ export async function branchNames(db: Db, branchIds: number[]): Promise<Map<numb
   return new Map(rows.map((r) => [Number(r.id), r.name]));
 }
 
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
+
 export interface VariantLabel {
   productName: string;
   variantName: string | null;
+  color?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   sku: string | null;
+  descriptor: string;
+  fullName: string;
 }
 
 export async function variantLabels(db: Db, variantIds: number[]): Promise<Map<number, VariantLabel>> {
@@ -65,13 +72,47 @@ export async function variantLabels(db: Db, variantIds: number[]): Promise<Map<n
       id: productVariants.id,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
     })
     .from(productVariants)
     .leftJoin(products, eq(products.id, productVariants.productId))
     .where(inArray(productVariants.id, variantIds));
   return new Map(
-    rows.map((r) => [Number(r.id), { productName: r.productName ?? "", variantName: r.variantName ?? null, sku: r.sku ?? null }]),
+    rows.map((r) => {
+      const pName = r.productName ?? "";
+      const desc = variantDescriptor({
+        productName: pName,
+        variantName: r.variantName,
+        color: r.color,
+        size: r.size,
+        variantKind: r.variantKind,
+        sku: r.sku,
+      });
+      const full = variantDisplayName({
+        productName: pName,
+        variantName: r.variantName,
+        color: r.color,
+        size: r.size,
+        variantKind: r.variantKind,
+        sku: r.sku,
+      });
+      return [
+        Number(r.id),
+        {
+          productName: pName,
+          variantName: desc || r.variantName || null,
+          color: r.color ?? null,
+          size: r.size ?? null,
+          variantKind: r.variantKind ?? null,
+          sku: r.sku ?? null,
+          descriptor: desc,
+          fullName: full,
+        },
+      ];
+    }),
   );
 }
 

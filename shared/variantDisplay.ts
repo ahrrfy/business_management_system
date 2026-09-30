@@ -10,7 +10,7 @@
 export type VariantKind = "VARIANT" | "ALTERNATIVE";
 
 export interface VariantDisplayParts {
-  productName: string;
+  productName?: string | null;
   variantName?: string | null;
   color?: string | null;
   size?: string | null;
@@ -54,5 +54,5 @@ export function variantDescriptor(p: VariantDisplayParts): string {
 export function variantDisplayName(p: VariantDisplayParts): string {
   const base = clean(p.productName);
   const desc = variantDescriptor(p);
-  return desc ? `${base}${DASH}${desc}` : base;
+  return desc ? (base ? `${base}${DASH}${desc}` : desc) : base;
 }

@@ -31,6 +31,7 @@ import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { costRevaluationApprovalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
@@ -640,7 +641,10 @@ export async function listCostRevaluations(
         id: costRevaluationRequests.id,
         variantId: costRevaluationRequests.variantId,
         sku: productVariants.sku,
+        variantName: productVariants.variantName,
         color: productVariants.color,
+        size: productVariants.size,
+        variantKind: productVariants.variantKind,
         productName: products.name,
         branchId: costRevaluationRequests.branchId,
         branchName: branches.name,
@@ -670,7 +674,7 @@ export async function listCostRevaluations(
     return rows.map((r) => ({
       id: Number(r.id),
       variantId: Number(r.variantId),
-      variantLabel: r.color || r.sku || `#${r.variantId}`,
+      variantLabel: variantDescriptor(r) || r.sku || `#${r.variantId}`,
       productName: r.productName ?? "",
       branchId: Number(r.branchId),
       branchName: r.branchName ?? null,

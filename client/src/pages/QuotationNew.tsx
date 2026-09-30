@@ -22,6 +22,7 @@ import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/b
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { buildQuotationLinePayload } from "@/lib/quotationPayload";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 import {
   InvoiceHeader,
@@ -103,7 +104,12 @@ export default function QuotationNew() {
           productId: Number(item.productId),
           variantId: Number(item.variantId),
           productUnitId: Number(item.productUnitId),
-          name: [item.productName, item.variantName].filter(Boolean).join(" — "),
+          name: variantDisplayName({ ...item, productName: item.productName ?? "" }),
+          variantName: item.variantName,
+          color: item.color,
+          size: item.size,
+          colorHex: item.colorHex,
+          variantKind: item.variantKind,
           sku: item.sku ?? "",
           barcode: item.barcode ?? null,
           unit: item.unitName ?? "",
@@ -154,7 +160,7 @@ export default function QuotationNew() {
           productId: Number(item.productId),
           variantId: Number(item.variantId),
           productUnitId: Number(item.productUnitId),
-          name: [item.productName, item.currentVariantName ?? item.variantLabel].filter(Boolean).join(" — "),
+          name: variantDisplayName({ productName: item.productName, variantName: item.currentVariantName ?? item.variantLabel }),
           sku: item.sku ?? "",
           barcode: null,
           unit: item.currentUnitName ?? item.unitName,

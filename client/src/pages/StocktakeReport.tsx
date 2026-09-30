@@ -20,6 +20,7 @@ import {
   STOCKTAKE_STATUS_LABEL,
 } from "@/lib/printing/stocktakeTemplates";
 import { trpc } from "@/lib/trpc";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { useMemo } from "react";
 import { Link, useParams } from "wouter";
 import { Printer } from "lucide-react";
@@ -130,7 +131,7 @@ type ReasonRow = {
 
 /** اسم المنتج مع متغيّره — نصٌّ واحد يصلح للفرز وللنسخ. */
 const productLabel = (r: ReportRow): string =>
-  `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`;
+  variantDisplayName(r);
 
 const decisionLabelOf = (r: ReportRow, isOpening = false): string => {
   const dn = r.decision;
@@ -266,7 +267,7 @@ export default function StocktakeReport() {
           return (
             <>
               {r.productName}
-              {r.variantName ? ` — ${r.variantName}` : ""}
+              {variantDescriptor(r) ? ` — ${variantDescriptor(r)}` : ""}
               {r.baseUnit ? (
                 <span className="text-xs text-muted-foreground">
                   {" "}
@@ -493,12 +494,12 @@ export default function StocktakeReport() {
       adjustedNetValue: calc.adjNetValue,
       kept: calc.kept.map((r) => ({
         productName: r.productName,
-        variantName: r.variantName,
+        variantName: variantDescriptor(r),
         diff: calc.diffOf(r),
         decisionLabel: `قرار: ${r.decision?.decidedByName ?? "—"}${r.decision?.note ? ` — ${r.decision.note}` : ""}`,
       })),
       matchedNames: calc.matched.map(
-        (r) => `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`,
+        (r) => variantDisplayName(r),
       ),
       byReason: calc.byReason.map((r) => ({
         reasonLabel: r.label,
@@ -570,8 +571,7 @@ export default function StocktakeReport() {
                     {
                       key: "name",
                       header: "المنتج",
-                      map: (r) =>
-                        `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+                      map: (r) => variantDisplayName(r),
                     },
                     { key: "sku", header: "SKU", map: (r) => r.sku ?? "" },
                     {
@@ -763,8 +763,7 @@ export default function StocktakeReport() {
         <p className="text-xs leading-relaxed text-muted-foreground">
           {calc.matched
             .map(
-              (r) =>
-                `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`,
+              (r) => variantDisplayName(r),
             )
             .join(" · ") || "—"}
         </p>

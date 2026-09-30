@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { fmt, formatQuantity } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
+import { variantDisplayName } from "@shared/variantDisplay";
 import {
   buildStockState,
   customLineGrand,
@@ -207,7 +208,7 @@ export function CartTable({
                           {l.digital ? "بطاقة رقمية" : isCustom ? "تخصيص" : "جاهز"}
                         </span>
                         <span className="text-sm font-extrabold">
-                          {isCustom ? l.custom!.title : l.row.productName}
+                          {isCustom ? l.custom!.title : variantDisplayName(l.row)}
                         </span>
                         <span className="text-xs text-muted-foreground" dir="ltr">{l.row.sku}</span>
                         {!isCustom && l.row.allowBackorder && (l.row.availableBase ?? 0) <= 0 && (

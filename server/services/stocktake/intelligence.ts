@@ -23,6 +23,10 @@ export interface CycleSuggestionRow {
   variantId: number;
   productName: string;
   variantName: string | null;
+  color?: string | null;
+  colorHex?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   sku: string;
   abc: "A" | "B" | "C";
   freqDays: number;
@@ -50,6 +54,10 @@ export async function getCycleSuggestions(opts: { branchId?: number | null } = {
       variantId: productVariants.id,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
       costPrice: productVariants.costPrice,
     })
@@ -88,6 +96,10 @@ export async function getCycleSuggestions(opts: { branchId?: number | null } = {
     variantId: Number(v.variantId),
     productName: String(v.productName ?? ""),
     variantName: v.variantName,
+    color: v.color,
+    colorHex: v.colorHex,
+    size: v.size,
+    variantKind: v.variantKind,
     sku: v.sku,
     annualValue: money(outMap.get(Number(v.variantId)) ?? 0).times(money(String(v.costPrice ?? "0"))),
   }));
@@ -110,6 +122,10 @@ export async function getCycleSuggestions(opts: { branchId?: number | null } = {
       variantId: v.variantId,
       productName: v.productName,
       variantName: v.variantName,
+      color: v.color,
+      colorHex: v.colorHex,
+      size: v.size,
+      variantKind: v.variantKind,
       sku: v.sku,
       abc,
       freqDays,
