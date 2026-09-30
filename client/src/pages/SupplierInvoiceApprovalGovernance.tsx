@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { FileWarning } from "lucide-react";
+import { ExternalLink, FileWarning, Info } from "lucide-react";
+import { Link } from "wouter";
+import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { DecideInInboxNotice } from "@/components/purchases/DecideInInboxNotice";
@@ -50,7 +52,21 @@ export default function SupplierInvoiceApprovalGovernance() {
         externalInvoiceNumber: row.externalInvoiceNumber,
         version: Number(row.version),
         status: row.status,
+        supplierId: Number(row.supplierId),
+        supplierName: row.supplierName ?? "مورد غير معروف",
+        supplierPhone: row.supplierPhone ?? null,
+        purchaseOrderId: row.purchaseOrderId ? Number(row.purchaseOrderId) : null,
+        purchaseOrderNumber: row.purchaseOrderNumber ?? null,
+        settlementType: row.settlementType ?? null,
+        createdByName: row.createdByName ?? null,
+        postedByName: row.postedByName ?? null,
+        postedAt: row.postedAt ?? null,
         totalAmount: row.totalAmount,
+        subtotal: row.subtotal ?? null,
+        discountAmount: row.discountAmount ?? null,
+        taxAmount: row.taxAmount ?? null,
+        currency: row.currency ?? "IQD",
+        dueDate: row.dueDate ?? null,
         invoiceDate: row.invoiceDate,
       })),
     [invoicesQuery.data],
@@ -118,6 +134,26 @@ export default function SupplierInvoiceApprovalGovernance() {
         }
       />
       <DecideInInboxNotice />
+      <Card className="bg-muted/20 border-dashed">
+        <CardContent className="p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+          <div className="space-y-1">
+            <div className="font-semibold text-foreground flex items-center gap-1.5">
+              <Info aria-hidden className="size-4 text-primary" />
+              <span>دورة فواتير الموردين المستقلة</span>
+            </div>
+            <p className="text-muted-foreground leading-relaxed">
+              تختص هذه الشاشة بفواتير الموردين المفوترة والمرحلة في الذمم الدائنة. إذا كنت تبحث عن أوامر الشراء قيد التوريد أو الاستلام المخزني، يرجى الانتقال إلى شاشة أوامر الشراء.
+            </p>
+          </div>
+          <Link
+            href="/purchases?tab=orders"
+            className="shrink-0 text-xs font-semibold text-primary hover:underline inline-flex items-center gap-1 bg-background border px-3 py-1.5 rounded-md"
+          >
+            <span>أوامر الشراء</span>
+            <ExternalLink aria-hidden className="size-3.5" />
+          </Link>
+        </CardContent>
+      </Card>
       {me.isLoading ? (
         <LoadingState />
       ) : branchId == null ? (
