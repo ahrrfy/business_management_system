@@ -6,6 +6,11 @@ import { getDb } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { baghdadToday } from "./businessDay";
 import { postEntry } from "./ledgerService";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "./accounting/postingEngine";
 import { money, toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
 
@@ -162,6 +167,17 @@ export async function returnEmployeeCustody(
           ? new Date(`${input.actualReturnDate}T00:00:00Z`)
           : new Date();
 
+        const postingSourceComponents = {
+          roleDebits: { LOSSES: lossAmount },
+          roleCredits: { INVENTORY: lossAmount },
+        };
+        const postingIntent = createPostingIntent(
+          "ADJUST_INVENTORY_LOSS",
+          "ADJUST",
+          [debitLine("LOSSES", lossAmount), creditLine("INVENTORY", lossAmount)],
+          postingSourceComponents,
+        );
+
         accountingEntryId = await postEntry(tx, {
           entryType: "ADJUST",
           branchId,
@@ -170,6 +186,8 @@ export async function returnEmployeeCustody(
           notes: `تعويض عهدة ${finalStatus === "DAMAGED" ? "تالفة" : "مفقودة"}: ${c.itemName} (موظف #${c.employeeId})`,
           createdBy: actor.userId,
           entryDate,
+          postingIntent,
+          postingSourceComponents,
         });
 
         const [advRes] = await tx.insert(employeeAdvances).values({
