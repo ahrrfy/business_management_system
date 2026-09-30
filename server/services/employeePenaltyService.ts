@@ -120,7 +120,8 @@ export async function approveEmployeePenalty(
       .select()
       .from(employeePenalties)
       .where(eq(employeePenalties.id, id))
-      .limit(1);
+      .limit(1)
+      .for("update");
 
     if (!p) {
       throw new TRPCError({
@@ -179,7 +180,8 @@ export async function cancelEmployeePenalty(
       .select()
       .from(employeePenalties)
       .where(eq(employeePenalties.id, id))
-      .limit(1);
+      .limit(1)
+      .for("update");
 
     if (!p) {
       throw new TRPCError({

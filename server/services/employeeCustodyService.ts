@@ -120,7 +120,8 @@ export async function returnEmployeeCustody(
       .select()
       .from(employeeCustody)
       .where(eq(employeeCustody.id, input.id))
-      .limit(1);
+      .limit(1)
+      .for("update");
 
     if (!c) {
       throw new TRPCError({
