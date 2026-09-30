@@ -1,20 +1,24 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import {
   employees,
+  employeeSpotBonuses,
   payrollAccountingEvents,
   payrollObligationAllocations,
   payrollObligations,
   payrollRuns,
   receipts,
+  shifts,
   users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import {
   assertApprovedTreasuryOutAvailable,
+  assertCashOutAvailable,
   authorizeExternalTreasuryDisbursement,
   lockMaterializedCashReceiptSourceForWrite,
 } from "../cash/cashAvailability";
@@ -166,14 +170,72 @@ export async function payRun(
           .map(Number),
       ),
     );
+    const cashBucket = method === "CASH" ? (payment.cashBucket ?? "TREASURY") : null;
+    let shiftRow: typeof shifts.$inferSelect | null = null;
     let approval: Awaited<ReturnType<typeof authorizeExternalTreasuryDisbursement>> | null = null;
     if (branchIds.length > 0 && method === "CASH") {
-      approval = await authorizeExternalTreasuryDisbursement(tx, {
-        actor,
-        makerUserIds: [preview.createdBy],
-        branchIds,
-        operation: "صرف صافي مسيّر الرواتب",
-      });
+      if (cashBucket === "DRAWER") {
+        if (payment.shiftId == null) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر صرف الرواتب من الدرج",
+              why: "معرّف الوردية (shiftId) إلزامي عند صرف الرواتب من درج نقطة البيع",
+              doThis: "اختر وردية مفتوحة حالياً للصرف منها",
+            }),
+          });
+        }
+        const [foundShift] = await tx
+          .select()
+          .from(shifts)
+          .where(eq(shifts.id, Number(payment.shiftId)))
+          .for("update")
+          .limit(1);
+        if (!foundShift) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر صرف الرواتب من الدرج",
+              why: "وردية الصرف المحددة غير مسجلة في قاعدة البيانات",
+              doThis: "تحقّق من رقم الوردية وأعد المحاولة",
+            }),
+          });
+        }
+        if (foundShift.status !== "OPEN") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذّر صرف الرواتب من الدرج",
+              why: "الوردية المحددة مغلقة",
+              doThis: "اختر وردية مفتوحة حالياً للصرف منها",
+            }),
+          });
+        }
+        if (branchIds.some((b) => b !== Number(foundShift.branchId))) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر صرف الرواتب من درج الوردية",
+              why: "المسيّر يضم موظفين من فروع مختلفة عن فرع هذه الوردية",
+              doThis: "اصرف من الخزينة الرئيسية أو أنشئ مسيّراً منفصلاً لكل فرع",
+            }),
+          });
+        }
+        shiftRow = foundShift;
+        await assertPayrollActiveOwnerChecker(
+          tx,
+          actor,
+          [preview.createdBy],
+          "صرف صافي مسيّر الرواتب من الدرج",
+        );
+      } else {
+        approval = await authorizeExternalTreasuryDisbursement(tx, {
+          actor,
+          makerUserIds: [preview.createdBy],
+          branchIds,
+          operation: "صرف صافي مسيّر الرواتب",
+        });
+      }
     } else {
       // صافي صفر صحيح: لا إيصال ولا قيد دفع، لكن لا نتجاوز فصل المهام.
       await assertPayrollActiveOwnerChecker(
@@ -304,20 +366,34 @@ export async function payRun(
       );
     }
     if (method === "CASH") {
-      if (!approval && byBranch.size > 0) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "إثبات اعتماد صرف الرواتب مفقود.",
-        });
-      }
-      for (const [branchId, amount] of Array.from(byBranch.entries()).sort(
-        ([left], [right]) => left - right,
-      )) {
-        await assertApprovedTreasuryOutAvailable(
-          tx,
-          { branchId, amount, operation: "صرف صافي مسيّر الرواتب" },
-          approval!,
-        );
+      if (cashBucket === "DRAWER") {
+        for (const [branchId, amount] of Array.from(byBranch.entries()).sort(
+          ([left], [right]) => left - right,
+        )) {
+          await assertCashOutAvailable(tx, {
+            branchId,
+            shiftId: shiftRow!.id,
+            cashBucket: "DRAWER",
+            amount,
+            operation: "صرف صافي مسيّر الرواتب من الدرج",
+          });
+        }
+      } else {
+        if (!approval && byBranch.size > 0) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "إثبات اعتماد صرف الرواتب مفقود.",
+          });
+        }
+        for (const [branchId, amount] of Array.from(byBranch.entries()).sort(
+          ([left], [right]) => left - right,
+        )) {
+          await assertApprovedTreasuryOutAvailable(
+            tx,
+            { branchId, amount, operation: "صرف صافي مسيّر الرواتب" },
+            approval!,
+          );
+        }
       }
     }
 
@@ -340,8 +416,8 @@ export async function payRun(
         : null;
       const receiptResult = await tx.insert(receipts).values({
         branchId,
-        shiftId: null,
-        cashBucket: method === "CASH" ? "TREASURY" : null,
+        shiftId: cashBucket === "DRAWER" ? shiftRow!.id : null,
+        cashBucket,
         direction: "OUT",
         amount: toDbMoney(amount),
         paymentMethod: method,
@@ -386,6 +462,7 @@ export async function payRun(
         direction: "OUT",
         paymentMethod: method,
         amount,
+        cashBucket,
       });
       const event = await postPayrollAccountingEvent(tx, {
         runId: id,
@@ -430,6 +507,12 @@ export async function payRun(
       .update(payrollRuns)
       .set({ status: "paid", paidAt: new Date(), paidBy: actor.userId })
       .where(eq(payrollRuns.id, id));
+
+    // GAP-03: تحديث حالة المكافآت الفورية المرتبطة بالمسير إلى PAID
+    await tx
+      .update(employeeSpotBonuses)
+      .set({ status: "PAID", paidAt: new Date() })
+      .where(eq(employeeSpotBonuses.payrollRunId, id));
     return false;
   });
   const run = await getRun(id);

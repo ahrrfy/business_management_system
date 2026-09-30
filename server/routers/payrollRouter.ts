@@ -281,6 +281,8 @@ export const payrollRouter = router({
       paymentMethod: payrollPaymentMethod.optional(),
       paymentDate: ymd.nullish(),
       referenceNumber: z.string().trim().max(100).nullish(),
+      shiftId: z.number().int().positive().nullish(),
+      cashBucket: z.enum(["TREASURY", "DRAWER"]).nullish(),
     }))
     .mutation(async ({ input, ctx }) => {
       const run = await svc.payRun(input.id, {
@@ -292,8 +294,10 @@ export const payrollRouter = router({
         paymentMethod: input.paymentMethod,
         paymentDate: input.paymentDate,
         referenceNumber: input.referenceNumber,
+        shiftId: input.shiftId,
+        cashBucket: input.cashBucket,
       });
-      if (!run.replayed) await logAudit(ctx, { action: "payroll.pay", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, totalNet: run?.totalNet } });
+      if (!run.replayed) await logAudit(ctx, { action: "payroll.pay", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, totalNet: run?.totalNet, cashBucket: input.cashBucket, shiftId: input.shiftId } });
       if (!run.replayed && run?.period) await notifyPayrollUsers(input.id, run.period, "paid", ctx.user.name);
       return run;
     }),
