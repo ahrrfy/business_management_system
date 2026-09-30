@@ -22,6 +22,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { paymentMethodCompact } from "@shared/terms";
 import { printWoThermalFromCard, printWoShippingLabel } from "@/components/workOrders/workOrderTypes";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { Package, Printer } from "lucide-react";
 
 /**
@@ -45,9 +46,33 @@ const materialColumns: ColumnDef<WorkOrderMaterialRow, unknown>[] = [
   {
     id: "product",
     header: "المادة",
-    accessorFn: (m) => `${m.productName ?? "—"}${m.variantName ? ` · ${m.variantName}` : ""}`,
+    accessorFn: (m) =>
+      variantDisplayName({
+        productName: m.productName ?? "—",
+        variantName: m.variantName,
+        color: m.color,
+        size: m.size,
+        variantKind: m.variantKind,
+        sku: m.sku,
+      }),
     meta: { width: "wide", wrap: true },
-    cell: ({ row }) => `${row.original.productName ?? "—"}${row.original.variantName ? ` · ${row.original.variantName}` : ""}`,
+    cell: ({ row }) => {
+      const m = row.original;
+      const desc = variantDescriptor({
+        productName: m.productName ?? "—",
+        variantName: m.variantName,
+        color: m.color,
+        size: m.size,
+        variantKind: m.variantKind,
+        sku: m.sku,
+      });
+      return (
+        <span>
+          {m.productName ?? "—"}
+          {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+        </span>
+      );
+    },
   },
   { id: "sku", header: "SKU", accessorFn: (m) => m.sku ?? "—", meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs">{row.original.sku ?? "—"}</span> },
   { id: "baseQuantity", header: "الكمية (أساس)", accessorFn: (m) => formatQuantity(m.baseQuantity), meta: { kind: "number", align: "center" }, sortingFn: (a, b) => Number(a.original.baseQuantity ?? 0) - Number(b.original.baseQuantity ?? 0), cell: ({ row }) => formatQuantity(row.original.baseQuantity) },

@@ -4,11 +4,12 @@
  * كل بندٍ هنا يمثّل وحدةً مستقلّة لا تعرف بالأخريات؛ ما يُختبَر هو أنّ التجميع يراها كلّها،
  * وأنّه يفرّق بين ما يمنع الخروج (أثرٌ قائم) وما يُنبّه فقط (يزول بإجراءٍ إداريّ).
  */
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getEmployeeClearance } from "../hr/offboarding";
+import { setEmploymentStatus, updateEmployee } from "../employeeService";
 
 function db() {
   const d = getDb();
@@ -156,5 +157,39 @@ describe("تصفية خروج الموظّف", () => {
     );
     expect(c.blockingCount).toBe(2);
     expect(c.clearedToExit).toBe(false);
+  });
+
+  it("إنهاء الخدمة يُرفض عند وجود ذمم مفتوحة (GAP-10)", async () => {
+    await db().insert(s.shifts).values({
+      branchId: 1, userId: 2, openingBalance: "50000.00", status: "OPEN", openedAt: new Date(),
+    });
+    await expect(
+      setEmploymentStatus(10, "terminated", { actorRole: "admin", actorIsOwner: true }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+  });
+
+  it("إعادة التفعيل تُعيد تفعيل حساب المستخدم المرتبط (GAP-11)", async () => {
+    // إنهاء خدمة موظف نظيف
+    await setEmploymentStatus(10, "terminated", { actorRole: "admin", actorIsOwner: true });
+    const [u1] = await db().select().from(s.users).where(eq(s.users.id, 2));
+    expect(u1.isActive).toBe(false);
+
+    // إعادة الموظف لرأس العمل
+    await setEmploymentStatus(10, "active", { actorRole: "admin", actorIsOwner: true });
+    const [u2] = await db().select().from(s.users).where(eq(s.users.id, 2));
+    expect(u2.isActive).toBe(true);
+  });
+
+  it("تعديل الموظف يعمل بذريّة withTx وقفل الصف (GAP-22)", async () => {
+    const res = await updateEmployee(10, {
+      firstName: "علي",
+      lastName: "المعدل",
+      payType: "monthly",
+      phone: "07700000000",
+    });
+    expect(res.lastName).toBe("المعدل");
+    expect(res.phone).toBe("07700000000");
   });
 });

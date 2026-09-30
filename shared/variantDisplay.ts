@@ -39,7 +39,13 @@ export function variantDescriptor(p: VariantDisplayParts): string {
   const colorSize = [color, size].filter(Boolean).join(" / ");
 
   if (isAlternativeVariant(p.variantKind)) {
+    if (name && colorSize && name !== colorSize) {
+      return `${name} (${colorSize})`;
+    }
     return name || colorSize || clean(p.sku);
+  }
+  if (name && colorSize && name !== colorSize) {
+    return `${name} (${colorSize})`;
   }
   return colorSize || name;
 }

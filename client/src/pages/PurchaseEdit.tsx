@@ -23,6 +23,7 @@ import {
   isWithinPriceDecimals,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -109,7 +110,14 @@ function stateFromOrder(
       variantId: Number(it.variantId),
       productUnitId: Number(it.productUnitId),
       name:
-        [it.productName, it.variantName].filter(Boolean).join(" — ") || "صنف",
+        variantDisplayName({
+          productName: it.productName ?? "صنف",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }) || "صنف",
       sku: it.sku ?? "",
       barcode: it.barcode ?? null,
       unit: it.unitName ?? "",

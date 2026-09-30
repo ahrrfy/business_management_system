@@ -1446,6 +1446,10 @@ export const saleRouter = router({
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,
+        color: productVariants.color,
+        size: productVariants.size,
+        colorHex: productVariants.colorHex,
+        variantKind: productVariants.variantKind,
         unitName: productUnits.unitName,
       })
       .from(invoiceItems)

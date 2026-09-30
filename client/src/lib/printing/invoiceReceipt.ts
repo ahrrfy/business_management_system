@@ -2,6 +2,7 @@ import { fmtDate, fmtDateTime, fmtTime, type DateInput } from "@/lib/date";
 import { D, round2 } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import type { ReceiptBrowserData } from "./print";
+import { variantDescriptor } from "@shared/variantDisplay";
 
 export interface InvoiceReceiptSource {
   invoiceNumber: string;
@@ -36,6 +37,10 @@ export interface InvoiceReceiptSource {
   items: {
     productName?: string | null;
     variantName?: string | null;
+    color?: string | null;
+    size?: string | null;
+    variantKind?: string | null;
+    sku?: string | null;
     unitName?: string | null;
     quantity: string | number;
     unitPrice: string | number;
@@ -60,17 +65,27 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     cashierName: d.salespersonName ?? null,
     customerName: d.customerName ?? null,
     shiftId: d.shiftId ?? null,
-    items: d.items.map((item) => ({
-      name: [
-        item.productName ?? "منتج",
-        item.variantName || null,
-        item.unitName ? `(${item.unitName})` : null,
-        item.isGift ? "هدية مجاناً" : null,
-      ].filter(Boolean).join(" — "),
-      quantity: D(item.quantity).toNumber(),
-      price: item.unitPrice,
-      total: item.total,
-    })),
+    items: d.items.map((item) => {
+      const desc = variantDescriptor({
+        productName: item.productName ?? "منتج",
+        variantName: item.variantName,
+        color: item.color,
+        size: item.size,
+        variantKind: item.variantKind,
+        sku: item.sku,
+      });
+      return {
+        name: [
+          item.productName ?? "منتج",
+          desc || null,
+          item.unitName ? `(${item.unitName})` : null,
+          item.isGift ? "هدية مجاناً" : null,
+        ].filter(Boolean).join(" — "),
+        quantity: D(item.quantity).toNumber(),
+        price: item.unitPrice,
+        total: item.total,
+      };
+    }),
     subtotal: d.subtotal,
     discount: d.discountAmount ?? null,
     tax: d.taxAmount ?? null,

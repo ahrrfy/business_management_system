@@ -1222,6 +1222,10 @@ export const purchaseRouter = router({
           productName: products.name,
           sku: productVariants.sku,
           variantName: productVariants.variantName,
+          color: productVariants.color,
+          size: productVariants.size,
+          colorHex: productVariants.colorHex,
+          variantKind: productVariants.variantKind,
           unitName: productUnits.unitName,
           // الحقول الثلاثة التالية تُعيد بناء سطر السلّة في شاشة التعديل بنفس شكل سطر الإنشاء
           // (`InvoiceLine`): بلا `productId` لا تجميعَ ولا تنقّلَ للمنتج، وبلا `conversionFactor`

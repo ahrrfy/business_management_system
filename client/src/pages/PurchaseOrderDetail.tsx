@@ -48,14 +48,40 @@ function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
     {
       id: "product",
       header: "الصنف",
-      accessorFn: (it) => (it.productName ?? "—") + (it.variantName ? " — " + it.variantName : ""),
+      accessorFn: (it) =>
+        variantDisplayName({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
       meta: { width: "wide" },
-      cell: ({ row }) => (
-        <>
-          {row.original.productName ?? "—"}
-          {row.original.variantName ? <span className="text-muted-foreground"> — {row.original.variantName}</span> : null}
-        </>
-      ),
+      cell: ({ row }) => {
+        const it = row.original;
+        const desc = variantDescriptor({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        });
+        return (
+          <div className="flex flex-col">
+            <span className="font-semibold text-foreground">
+              {it.productName ?? "—"}
+              {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+            </span>
+            {it.sku ? (
+              <span className="text-[11px] text-muted-foreground font-mono" dir="ltr">
+                {it.sku}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
     },
     { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName ?? "—", cell: ({ row }) => row.original.unitName ?? "—" },
     { id: "quantity", header: "الكمية", accessorFn: (it) => formatQuantity(it.quantity), meta: { kind: "number" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
@@ -227,13 +253,21 @@ export default function PurchaseOrderDetail() {
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
-          canEdit && openForEditing ? (
+          canEdit ? (
             <div className="flex items-center gap-2">
               {openForEditing ? (
                 <Button asChild size="sm" variant="outline">
                   <Link href={`/purchases/${d.id}/edit`}>
                     <Pencil aria-hidden className="size-4" />
                     تعديل
+                  </Link>
+                </Button>
+              ) : null}
+              {d.status === "RECEIVED" ? (
+                <Button asChild size="sm" variant="outline">
+                  <Link href="/purchases/goods-receipt-reversals">
+                    <RotateCcw aria-hidden className="size-4" />
+                    عكس استلام / تصحيح الخطأ
                   </Link>
                 </Button>
               ) : null}
@@ -247,6 +281,20 @@ export default function PurchaseOrderDetail() {
         nextAction={d.nextAction ?? null}
         terminalReason={d.nextActionReason ?? null}
       />
+
+      {d.status === "RECEIVED" && canEdit && (
+        <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
+            <span>
+              أمر الشراء مستلم ومرحّل مخزنياً ومحاسبياً. لتصحيح أي خطأ إدخال أو سهو، استخدم مسار عكس الاستلام الذري لضمان سلامة الدفاتر والمخزون.
+            </span>
+          </div>
+          <Button asChild size="sm" variant="ghost" className="h-7 text-xs">
+            <Link href="/purchases/goods-receipt-reversals">فتح مسار عكس الاستلام</Link>
+          </Button>
+        </div>
+      )}
 
       <Card>
         <CardHeader className="pb-3">

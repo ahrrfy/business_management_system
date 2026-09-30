@@ -20,6 +20,8 @@ import { assertCanDisablePrivilegedUser } from "./userAdminPolicy";
 import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { listEmployeeDeviceLinks } from "./hrDeviceService";
 import { WAGE_FIELD_LABELS, wageProfileDiff, wageProfileOf } from "./hr/wageProfile";
+import { appErrorMessage } from "@shared/errors";
+import { getEmployeeClearance } from "./hr/offboarding";
 import { resolveTargetBranch, type CompanyBranchScope } from "./companyBranchScope";
 import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 import { revokeAllSuperAppExpoPushDevicesForUser } from "./superAppPushService";
@@ -96,8 +98,8 @@ export async function listEmployees(filters?: EmployeeFilters, scope: CompanyBra
   };
 }
 
-export async function getEmployee(id: number, scope: CompanyBranchScope = COMPANY_SCOPE) {
-  const db = requireDb();
+export async function getEmployee(id: number, scope: CompanyBranchScope = COMPANY_SCOPE, tx?: Tx) {
+  const db = tx ?? requireDb();
   const [e] = await db
     .select({ ...getTableColumns(employees), branchName: branches.name })
     .from(employees)
@@ -129,8 +131,8 @@ export async function getEmployee(id: number, scope: CompanyBranchScope = COMPAN
 }
 
 /** Mask employee identifiers outside the authenticated branch as NOT_FOUND. */
-export async function assertEmployeeInScope(id: number, scope: CompanyBranchScope): Promise<void> {
-  const db = requireDb();
+export async function assertEmployeeInScope(id: number, scope: CompanyBranchScope, tx?: Tx): Promise<void> {
+  const db = tx ?? requireDb();
   const [row] = await db
     .select({ id: employees.id })
     .from(employees)
@@ -273,39 +275,40 @@ export async function updateEmployee(
   actor?: { userId: number; role: string },
   scope: CompanyBranchScope = COMPANY_SCOPE,
 ) {
-  const db = requireDb();
-  const [e] = await db.select().from(employees).where(employeeByIdCondition(id, scope)).limit(1);
-  if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+  return withTx(async (tx) => {
+    const [e] = await tx.select().from(employees).where(employeeByIdCondition(id, scope)).for("update").limit(1);
+    if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
 
-  if (input.managerId != null) await assertEmployeeInScope(input.managerId, scope);
-  const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
-  const base = toValues({ ...input, branchId });
-  const keptExempt = input.attendanceExempt === undefined ? !!e.attendanceExempt : !!input.attendanceExempt;
-  const next = {
-    ...base,
-    ...(input.dayRates === undefined ? { dayRates: e.dayRates } : {}),
-    ...(input.workSchedule === undefined ? { workSchedule: e.workSchedule } : {}),
-    attendanceExempt: input.payType === "hourly" ? false : keptExempt,
-  };
+    if (input.managerId != null) await assertEmployeeInScope(input.managerId, scope, tx);
+    const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
+    const base = toValues({ ...input, branchId });
+    const keptExempt = input.attendanceExempt === undefined ? !!e.attendanceExempt : !!input.attendanceExempt;
+    const next = {
+      ...base,
+      ...(input.dayRates === undefined ? { dayRates: e.dayRates } : {}),
+      ...(input.workSchedule === undefined ? { workSchedule: e.workSchedule } : {}),
+      attendanceExempt: input.payType === "hourly" ? false : keptExempt,
+    };
 
-  const fromWage = wageProfileOf(e);
-  const toWage = wageProfileOf(next);
-  const changedWage = wageProfileDiff(fromWage, toWage);
-  if (changedWage.length && actor && actor.role !== "admin") {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message:
-        `تغيير الأجر لا يتمّ من شاشة تعديل الموظف (${changedWage.map((f) => WAGE_FIELD_LABELS[f]).join("، ")}) — ` +
-        "استعمل «الترقيات» (تمرّ باعتماد مديرٍ آخر وتاريخ سريان وسجلّ تاريخيّ).",
-    });
-  }
+    const fromWage = wageProfileOf(e);
+    const toWage = wageProfileOf(next);
+    const changedWage = wageProfileDiff(fromWage, toWage);
+    if (changedWage.length && actor && actor.role !== "admin") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          `تغيير الأجر لا يتمّ من شاشة تعديل الموظف (${changedWage.map((f) => WAGE_FIELD_LABELS[f]).join("، ")}) — ` +
+          "استعمل «الترقيات» (تمرّ باعتماد مديرٍ آخر وتاريخ سريان وسجلّ تاريخيّ).",
+      });
+    }
 
-  await db.update(employees).set(next).where(employeeByIdCondition(id, scope));
-  const updated = await getEmployee(id, scope);
-  return {
-    ...updated!,
-    wageChange: changedWage.length ? { fields: changedWage, from: fromWage, to: toWage } : null,
-  };
+    await tx.update(employees).set(next).where(employeeByIdCondition(id, scope));
+    const updated = await getEmployee(id, scope, tx);
+    return {
+      ...updated!,
+      wageChange: changedWage.length ? { fields: changedWage, from: fromWage, to: toWage } : null,
+    };
+  });
 }
 
 /**
@@ -352,6 +355,22 @@ export async function setEmploymentStatus(
   const effects = await withTx(async (tx) => {
     const [e] = await tx.select().from(employees).where(employeeByIdCondition(id, scope)).for("update").limit(1);
     if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+    if (status === "terminated") {
+      const clearance = await getEmployeeClearance(id, scope);
+      if (!clearance.clearedToExit) {
+        const blockingItems = clearance.items.filter((i) => i.severity === "BLOCKING");
+        const summary = blockingItems.map((i) => i.label).join("، ");
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "لا يمكن إنهاء خدمة الموظف",
+            why: `توجد ذمم وبنود مفتوحة تمنع إنهاء الخدمة (${summary})`,
+            doThis: "سوِّ كافة الذمم المفتوحة (الورديات، العهد، السلف) قبل إنهاء الخدمة",
+          }),
+        });
+      }
+    }
+
     await tx
       .update(employees)
       .set({
@@ -369,6 +388,9 @@ export async function setEmploymentStatus(
      * عمداً: قبل 0207 كان القطع نهائياً فيلزم ربطٌ يدويّ جديد، والآن الصفّ حيٌّ فيلزم رفعُ حدّه.
      */
     if (status !== "terminated") {
+      if (e.userId) {
+        await tx.update(users).set({ isActive: true }).where(eq(users.id, e.userId));
+      }
       const restored = await tx
         .update(hrDeviceUsers)
         .set({ effectiveTo: null })

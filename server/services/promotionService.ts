@@ -34,6 +34,8 @@ import {
 import { companyBranchScope } from "./companyBranchScope";
 import { assertNotLastActiveAdmin } from "./userService";
 import { assertCanDisablePrivilegedUser } from "./userAdminPolicy";
+import { appErrorMessage } from "@shared/errors";
+import { getEmployeeClearance } from "./hr/offboarding";
 import {
   assertTerminationPaymentMethod,
   normalizeTerminationBreakdown,
@@ -754,6 +756,20 @@ export async function completeTermination(id: number, actor: PromotionActor) {
     if (t.status === "completed") throw new Error("إنهاء الخدمة مكتمل مسبقاً");
     if (emp.employmentStatus === "terminated")
       throw new Error("الموظف منتهي الخدمة مسبقاً");
+
+    const clearance = await getEmployeeClearance(candidate.employeeId, scope);
+    if (!clearance.clearedToExit) {
+      const blockingItems = clearance.items.filter((i) => i.severity === "BLOCKING");
+      const summary = blockingItems.map((i) => i.label).join("، ");
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن إكمال إنهاء خدمة الموظف",
+          why: `توجد ذمم وبنود مفتوحة تمنع إنهاء الخدمة (${summary})`,
+          doThis: "سوِّ كافة الذمم المفتوحة (الورديات، العهد، السلف) قبل إنهاء الخدمة",
+        }),
+      });
+    }
 
     // All recognition gates run before disabling the user/device or mutating
     // employment. The employee row lock is also the cross-flow serialization
