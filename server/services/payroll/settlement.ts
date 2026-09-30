@@ -294,11 +294,13 @@ export async function payRun(
         });
       }
       const branchId = Number(obligation.branchIdSnapshot);
+      const rawAmount = money(obligation.remainingAmount);
+      const payableAmount = method === "CASH"
+        ? rawAmount.div(250).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).mul(250)
+        : rawAmount;
       byBranch.set(
         branchId,
-        (byBranch.get(branchId) ?? money(0)).plus(
-          money(obligation.remainingAmount),
-        ),
+        (byBranch.get(branchId) ?? money(0)).plus(payableAmount),
       );
     }
     if (method === "CASH") {
@@ -322,9 +324,20 @@ export async function payRun(
     const occurredAt = new Date(`${paymentYmd}T12:00:00.000Z`);
     for (const row of payable) {
       const obligation = row.obligation;
-      const amount = money(obligation.remainingAmount);
+      const rawAmount = money(obligation.remainingAmount);
+      const isCash = method === "CASH";
+      const amount = isCash
+        ? rawAmount.div(250).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).mul(250)
+        : rawAmount;
+      const variance = amount.minus(rawAmount);
       const branchId = Number(obligation.branchIdSnapshot);
       const employeeName = fullEmployeeName(row as never) || `موظف #${obligation.employeeId}`;
+      const descVariance = isCash && !variance.isZero()
+        ? ` (تقريب نقد 250 د.ع: الفرق ${variance.gt(0) ? "+" : ""}${variance.toString()} د.ع عن المستحق ${rawAmount.toString()})`
+        : "";
+      const noteVariance = isCash && !variance.isZero()
+        ? `تقريب نقد لأقرب 250 د.ع: المستحق=${rawAmount.toString()}، المدفوع=${amount.toString()}، الفارق=${variance.toString()}`
+        : null;
       const receiptResult = await tx.insert(receipts).values({
         branchId,
         shiftId: null,
@@ -342,7 +355,8 @@ export async function payRun(
         partyId: null,
         counterpartyName: employeeName,
         voucherDate: new Date(`${paymentYmd}T00:00:00.000Z`),
-        description: `صافي راتب ${employeeName} — مسيّر ${run.period}`,
+        description: `صافي راتب ${employeeName} — مسيّر ${run.period}${descVariance}`,
+        internalNote: noteVariance,
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(receiptResult);
@@ -402,7 +416,7 @@ export async function payRun(
         obligationId: Number(obligation.id),
         accountingEventId: event.eventId,
         direction: "APPLY",
-        amount: toDbMoney(amount),
+        amount: toDbMoney(obligation.remainingAmount),
         sourceKey: `PAYROLL:ALLOC:${sourceKey}`,
         occurredAt,
         createdBy: actor.userId,
@@ -583,14 +597,14 @@ export async function returnSalaryPayment(
         message: "تخصيص دفع الراتب مفقود؛ لا يمكن عكسه.",
       });
     }
-    const amount = money(allocation.amount);
+    const receiptAmount = money(original.receipt.amount);
     const branchId = Number(original.obligation.branchIdSnapshot);
     const receiptResult = await tx.insert(receipts).values({
       branchId,
       shiftId: null,
       cashBucket: method === "CASH" ? "TREASURY" : null,
       direction: "IN",
-      amount: toDbMoney(amount),
+      amount: toDbMoney(receiptAmount),
       paymentMethod: method,
       referenceNumber,
       cardLastFour: method === "CARD" ? referenceNumber : null,
@@ -611,7 +625,7 @@ export async function returnSalaryPayment(
       kind: "SALARY",
       direction: "IN",
       paymentMethod: method,
-      amount,
+      amount: receiptAmount,
     });
     const sourceKey = `PAYROLL:NET-RETURN:${Number(original.event.id)}`;
     const event = await postPayrollAccountingEvent(tx, {
@@ -626,7 +640,7 @@ export async function returnSalaryPayment(
       sourceHashPayload: {
         kind: "SALARY_PAYMENT_RETURN",
         originalSourceHash: original.event.sourceHash,
-        amount: amount.toFixed(2),
+        amount: receiptAmount.toFixed(2),
         method,
         referenceNumber,
         returnedYmd,
@@ -635,24 +649,25 @@ export async function returnSalaryPayment(
       occurredAt,
       actorUserId: actor.userId,
       entryType: posting.entryType,
-      amount,
+      amount: receiptAmount,
       paymentMethod: method,
       postingIntent: posting.intent,
       postingSourceComponents: posting.source,
       notes: `إعادة راتب مدفوع — مسيّر ${original.run.period} — السبب: ${reason}`,
     });
+    const obligationRestoredAmount = money(allocation.amount);
     await tx.insert(payrollObligationAllocations).values({
       obligationId: Number(original.obligation.id),
       accountingEventId: event.eventId,
       direction: "REVERSE",
-      amount: toDbMoney(amount),
+      amount: toDbMoney(obligationRestoredAmount),
       reversalOfId: Number(allocation.id),
       sourceKey: `PAYROLL:ALLOC:${sourceKey}`,
       occurredAt,
       createdBy: actor.userId,
     });
     const remaining = round2(
-      money(original.obligation.remainingAmount).plus(amount),
+      money(original.obligation.remainingAmount).plus(obligationRestoredAmount),
     );
     if (remaining.gt(money(original.obligation.originalAmount))) {
       throw new TRPCError({

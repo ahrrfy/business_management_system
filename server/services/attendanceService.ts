@@ -11,6 +11,7 @@ import { attendanceHoursViolation } from "@shared/attendanceHours";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
+import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
@@ -401,27 +402,33 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
  *     «ارفع سعر ساعتك ثمّ أعد الاحتساب» زيادةَ أجرٍ بفاعلٍ واحد. admin مُستثنى للتصحيح.
  *  ٣) ABSENT/LEAVE تبقى بأجرٍ صفريّ مهما كان السعر.
  */
-export async function recomputeMonthRates(input: {
-  period: string;
-  employeeId?: number;
-  actor?: { userId: number; role: string };
-  /** عزل الفرع: إعادة التسعير تمسّ صفوفاً ومبالغ ⇒ تُقصَر على فرع الفاعل المُسنَد. */
-  scopedBranchId?: number | null;
-}) {
+export async function recomputeMonthRates(
+  input: {
+    period: string;
+    employeeId?: number;
+    actor?: { userId: number; role: string };
+    /** عزل الفرع: إعادة التسعير تمسّ صفوفاً ومبالغ ⇒ تُقصَر على فرع الفاعل المُسنَد. */
+    scopedBranchId?: number | null;
+    skipRunLockCheck?: boolean;
+  },
+  existingTx?: Tx,
+) {
   const period = String(input.period).slice(0, 7);
-  return withTx(async (tx) => {
-    const [run] = await tx
-      .select({ id: payrollRuns.id, status: payrollRuns.status })
-      .from(payrollRuns)
-      .where(eq(payrollRuns.period, period))
-      .limit(1);
-    if (run) {
-      const label = run.status === "paid" ? "مدفوع" : run.status === "approved" ? "معتمَد" : "مسودّة";
-      throw new Error(
-        run.status === "draft"
-          ? `لا يمكن إعادة الاحتساب: يوجد مسيّر رواتب (مسودّة) لشهر ${period} بُنيت بنوده على المبالغ الحالية — احذف المسودّة، أعد الاحتساب، ثمّ ولّد المسيّر من جديد`
-          : `لا يمكن إعادة الاحتساب: مسيّر رواتب شهر ${period} ${label} — ألغِ اعتماد المسيّر أولاً`,
-      );
+  const runBody = async (tx: Tx) => {
+    if (!input.skipRunLockCheck) {
+      const [run] = await tx
+        .select({ id: payrollRuns.id, status: payrollRuns.status })
+        .from(payrollRuns)
+        .where(eq(payrollRuns.period, period))
+        .limit(1);
+      if (run) {
+        const label = run.status === "paid" ? "مدفوع" : run.status === "approved" ? "معتمَد" : "مسودّة";
+        throw new Error(
+          run.status === "draft"
+            ? `لا يمكن إعادة الاحتساب: يوجد مسيّر رواتب (مسودّة) لشهر ${period} بُنيت بنوده على المبالغ الحالية — احذف المسودّة، أعد الاحتساب، ثمّ ولّد المسيّر من جديد`
+            : `لا يمكن إعادة الاحتساب: مسيّر رواتب شهر ${period} ${label} — ألغِ اعتماد المسيّر أولاً`,
+        );
+      }
     }
     // حارس إقفال الفترة المالية العامّة — راجع الشرح المطابق في recordAttendance أعلاه.
     await assertPeriodOpen(tx, new Date(`${period}-01`));
@@ -472,7 +479,9 @@ export async function recomputeMonthRates(input: {
       updated += 1;
     }
     return { period, scanned: rows.length, updated };
-  });
+  };
+
+  return existingTx ? runBody(existingTx) : withTx(runBody);
 }
 
 /**

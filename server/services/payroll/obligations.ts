@@ -5,6 +5,7 @@ import {
   accountingEntries,
   advanceSettlements,
   employeeAdvances,
+  employeePenalties,
   payrollAccountingEvents,
   payrollItems,
   payrollObligations,
@@ -651,6 +652,11 @@ export async function reopenPayrollAccrualTx(
         ),
       );
   }
+  // GAP-17: تحرير العقوبات المربوطة بالمسير وإعادتها لحالة APPROVED لتلتقطها إعادة التوليد
+  await tx
+    .update(employeePenalties)
+    .set({ payrollRunId: null, status: "APPROVED" })
+    .where(eq(employeePenalties.payrollRunId, runId));
   const nextRevision = revisionNo + 1;
   await tx
     .update(payrollItems)

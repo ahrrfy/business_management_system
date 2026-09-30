@@ -284,6 +284,10 @@ export async function cancelRun(
       occurredAt: new Date(),
     });
     await tx
+      .update(employeePenalties)
+      .set({ payrollRunId: null, status: "APPROVED" })
+      .where(eq(employeePenalties.payrollRunId, id));
+    await tx
       .update(payrollRuns)
       .set({
         cancelledBy: actor.userId,

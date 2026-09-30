@@ -22,6 +22,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { logger } from "../../logger";
 import { processPendingFolds } from "../hrDevices";
 import { suggestDeductionsTx } from "../advances";
+import { recomputeMonthRates } from "../attendanceService";
 import { computeAttendancePay, DEFAULT_WORK_SCHEDULE, type AttendancePayResult, type WorkSchedule } from "../hr/attendancePay";
 import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";
@@ -185,6 +186,9 @@ export async function generatePayroll(period: string, actor: Actor) {
     if (emps.length === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد موظفون لتوليد مسيّر لهم" });
     }
+
+    // GAP-16: تحديث أجور الساعات لشهر الاستحقاق قبل تجميع الحضور لضمان تطبيق أحدث ملف أجر
+    await recomputeMonthRates({ period: p, skipRunLockCheck: true }, tx);
 
     // مجاميع حضور الشهر لموظفي الساعة (amount + hours) — مطابقة بادئة YYYY-MM على عمود التاريخ.
     // تصفية على status IN ('PRESENT','LATE') كحارس عميق: حتى لو دخل أمر مالي صفّ ABSENT/LEAVE
