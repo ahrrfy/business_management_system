@@ -16,7 +16,7 @@ import * as legal from "../services/payrollLegalService";
 import { getPayrollSummary } from "../services/reportsHrService";
 import { getCommissionPayrollReadiness } from "../services/commissions/payrollReadiness";
 import { listCommissionRunApprovalRequests } from "../services/commissions/runApprovals";
-import { managerProcedure, ownerProcedure, protectedProcedure, requireModule, router } from "../trpc";
+import { managerProcedure, ownerProcedure, protectedProcedure, requireModule, router, selfServiceProcedure } from "../trpc";
 import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
@@ -76,7 +76,7 @@ async function notifyPayrollUsers(runId: number, periodValue: string, stage: "ap
 }
 
 export const payrollRouter = router({
-  myPayslip: protectedProcedure
+  myPayslip: selfServiceProcedure
     .input(z.object({ runId: z.number().int().positive() }))
     .query(async ({ ctx, input }) => {
       const db = requireDb();
