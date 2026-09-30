@@ -291,6 +291,7 @@ export async function loadRefundCapsByInvoiceIds(
     exec.execute(sql`
       SELECT cn.invoiceId AS invoiceId,
              CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NOT NULL THEN COALESCE(cn.collectedAmount, 0) ELSE 0 END), 0) AS CHAR) AS remittedAmount,
+             CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NOT NULL THEN COALESCE(cn.collectedAmount, 0) ELSE 0 END), 0) AS CHAR) AS amount,
              CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NULL THEN COALESCE(NULLIF(cn.collectedAmount, '0.00'), cn.codAmount, '0.00') ELSE 0 END), 0) AS CHAR) AS unremittedAmount
       FROM deliveryConsignments cn
       WHERE cn.invoiceId IN (${idList})
@@ -319,8 +320,11 @@ export async function loadRefundCapsByInvoiceIds(
   for (const row of deliveryRows) {
     const invoiceId = Number(row.invoiceId);
     if (Number.isSafeInteger(invoiceId)) {
-      remittedByInvoice.set(invoiceId, row.remittedAmount);
-      unremittedByInvoice.set(invoiceId, row.unremittedAmount);
+      remittedByInvoice.set(
+        invoiceId,
+        (row as any).remittedAmount ?? (row as any).amount,
+      );
+      unremittedByInvoice.set(invoiceId, (row as any).unremittedAmount ?? "0");
     }
   }
 
