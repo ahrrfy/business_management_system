@@ -758,15 +758,20 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       throw new Error("الموظف منتهي الخدمة مسبقاً");
 
     const clearance = await getEmployeeClearance(candidate.employeeId, scope);
-    if (!clearance.clearedToExit) {
-      const blockingItems = clearance.items.filter((i) => i.severity === "BLOCKING");
+    // تصفية البنود الحاجزة: السلف القائمة (OUTSTANDING_ADVANCE) تُعالجها تسوية نهاية الخدمة
+    // مباشرة وذرياً عبر recognizeTerminationSettlementTx وterminationAdvanceAllocations،
+    // بينما الورديات والعهد والأجهزة تظل حواجز ملزمة.
+    const blockingItems = clearance.items.filter(
+      (i) => i.severity === "BLOCKING" && i.key !== "OUTSTANDING_ADVANCE",
+    );
+    if (blockingItems.length > 0) {
       const summary = blockingItems.map((i) => i.label).join("، ");
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: "لا يمكن إكمال إنهاء خدمة الموظف",
           why: `توجد ذمم وبنود مفتوحة تمنع إنهاء الخدمة (${summary})`,
-          doThis: "سوِّ كافة الذمم المفتوحة (الورديات، العهد، السلف) قبل إنهاء الخدمة",
+          doThis: "سوِّ كافة الذمم المفتوحة (الورديات، العهد) قبل إنهاء الخدمة",
         }),
       });
     }
