@@ -49,7 +49,7 @@ async function seedFullAttendance(employeeId: number, skip: string[] = [], restD
     const date = `2026-06-${String(d).padStart(2, "0")}`;
     const dow = names[new Date(`${date}T00:00:00Z`).getUTCDay()];
     if (restDays.includes(dow) || skip.includes(date)) continue;
-    rows.push({ employeeId, attendanceDate: date, status: "PRESENT", hours: "8.00", hourlyRate: "0.00", amount: "0.00", source: "fingerprint" });
+    rows.push({ employeeId, branchId: 1, attendanceDate: date, status: "PRESENT", hours: "8.00", hourlyRate: "0.00", amount: "0.00", source: "fingerprint" });
   }
   if (rows.length) await db().insert(s.attendance).values(rows);
   return rows.length;
@@ -251,4 +251,12 @@ describe("الإعفاء من الحضور — راتب ثابت (قرار ال�
     const rep2 = await getMonthlyAttendanceReport({ period: PERIOD });
     expect(rep2.totals.withoutSchedule).toBe(1); // المُعفى وحده يخرج — لا جدولَ يلزمه
   });
+
+  it("ف٩) GAP-23: تقرير فرع بلا موظفين يُرجع نتيجة صفرية فوراً بلا أخطاء inArray", async () => {
+    const rep = await getMonthlyAttendanceReport({ period: PERIOD, branchId: 999999 });
+    expect(rep.rows).toHaveLength(0);
+    expect(rep.totals.employees).toBe(0);
+    expect(rep.totals.totalDue).toBe("0.00");
+  });
 });
+

@@ -45,7 +45,7 @@ async function seedJune(employeeId: number) {
     const date = `2026-06-${String(d).padStart(2, "0")}`;
     if (DAY_NAMES[new Date(`${date}T00:00:00Z`).getUTCDay()] === "الجمعة") continue;
     rows.push({
-      employeeId, attendanceDate: date, status: "PRESENT",
+      employeeId, branchId: 1, attendanceDate: date, status: "PRESENT",
       checkIn: new Date(`${date}T08:00:00Z`), checkOut: new Date(`${date}T16:00:00Z`),
       hours: "8.00", hourlyRate: "0.00", amount: "0.00", source: "fingerprint",
     });
