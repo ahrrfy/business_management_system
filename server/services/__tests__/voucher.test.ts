@@ -333,7 +333,7 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
         },
         { userId: 3, branchId: 1, role: "cashier" },
       ),
-    ).rejects.toThrow(/افتح وردية/);
+    ).rejects.toThrow(/يُمنع استلام أو صرف أي نقد ورقي دون وجود وردية مفتوحة ونشطة/);
 
     // لا receipt ولا قيد كُتب (rollback ذرّي).
     const recs = await db().select().from(s.receipts);
@@ -424,14 +424,60 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
 });
 
 /**
- * cash-treasury-mode (تدقيق ١٧/٦): إعفاء admin/manager من شرط الوردية النقدي.
- *  - admin بلا وردية ⇒ shiftId=null + cashBucket=TREASURY (مشروع، يَدخل تَسوية الخزينة).
- *  - cashier/warehouse بلا وردية ⇒ يُرفض (محفوظ).
- *  - غير النقدي ⇒ cashBucket=NULL.
+ * R2 Fail-Closed (تدقيق النقد والورديات): إلغاء إعفاء الخزينة الإدارية (admin/manager).
+ *  - يُمنع استلام أو صرف أي نقد ورقي من أي مستخدم (كاشير، مدير، أو أدمن) ما لم تكن لديه وردية مفتوحة.
+ *  - عند وجود وردية مفتوحة للفاعل الإداري ⇒ يربط السند بدرج الوردية (shiftId=shift.id, cashBucket=DRAWER).
+ *  - السندات غير النقدية (CARD, TRANSFER) لا تمس الدرج وتبقى بـ shiftId=null و cashBucket=null.
  */
-describe("إعفاء الخزينة الإدارية (admin/manager) للسندات", () => {
-  it("admin RECEIPT نقدي بلا وردية ⇒ shiftId=null + cashBucket=TREASURY + قيد PAYMENT_IN", async () => {
-    // actor = admin (افتراض seedBase)
+describe("إنفاذ الوردية النقدية الصارمة وإلغاء الإعفاء الإداري (R2 Fail-Closed)", () => {
+  it("admin RECEIPT نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED وبلا أثر مالي (إلغاء الإعفاء)", async () => {
+    // actor = admin (userId: 1, branchId: 1, role: "admin") — بلا وردية مفتوحة
+    await expect(
+      createVoucher(
+        {
+          voucherType: "RECEIPT",
+          branchId: 1,
+          amount: "75.00",
+          paymentMethod: "CASH",
+          partyType: "CUSTOMER",
+          partyId: 1,
+          description: "تَحصيل ميداني من تاجر",
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/يُمنع استلام أو صرف أي نقد ورقي دون وجود وردية مفتوحة ونشطة/);
+
+    // الذرية التامة: لا يُسجَّل إيصال ولا قيد محاسبي
+    const rc = await db().select().from(s.receipts);
+    expect(rc).toHaveLength(0);
+    const ent = await db().select().from(s.accountingEntries);
+    expect(ent).toHaveLength(0);
+  });
+
+  it("manager RECEIPT نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED وبلا أثر مالي", async () => {
+    // managerActor (userId: 2, branchId: 1, role: "manager") — بلا وردية مفتوحة
+    const managerActor = { userId: 2, branchId: 1, role: "manager" };
+    await expect(
+      createVoucher(
+        {
+          voucherType: "RECEIPT",
+          branchId: 1,
+          amount: "75.00",
+          paymentMethod: "CASH",
+          partyType: "CUSTOMER",
+          partyId: 1,
+          description: "تحصيل من مدير بلا وردية",
+        },
+        managerActor,
+      ),
+    ).rejects.toThrow(/يُمنع استلام أو صرف أي نقد ورقي دون وجود وردية مفتوحة ونشطة/);
+
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+
+  it("admin RECEIPT نقدي بوجود وردية مفتوحة ⇒ يربط بالدرج (shiftId=shift.id, cashBucket=DRAWER) وقيد PAYMENT_IN", async () => {
+    const shiftId = await openShift(1, actor.userId);
     const r = await createVoucher(
       {
         voucherType: "RECEIPT",
@@ -440,62 +486,44 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
         paymentMethod: "CASH",
         partyType: "CUSTOMER",
         partyId: 1,
-        description: "تَحصيل ميداني من تاجر",
+        description: "تَحصيل ميداني من تاجر مع وردية مفتوحة",
       },
       actor,
     );
+    expect(r.voucherNumber).toMatch(/^RV-1-\d{8}-00001$/);
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
-    expect(rc.shiftId).toBeNull();
-    expect(rc.cashBucket).toBe("TREASURY");
+    expect(Number(rc.shiftId)).toBe(shiftId);
+    expect(rc.cashBucket).toBe("DRAWER");
+    expect(rc.status).toBe("COMPLETED");
+    expect(rc.approvalStatus).toBe("APPROVED");
+
     const ent = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
-    expect(ent).toHaveLength(1); // الدفتر يَكتب
+    expect(ent).toHaveLength(1);
+    expect(ent[0].amount).toBe("75.00");
   });
 
-  it("PAYMENT نقدي يبقى بلا دلو حتى اعتماد مالك ثانٍ ثم يُسحب من TREASURY", async () => {
-    await fundTreasury();
+  it("manager RECEIPT نقدي بوجود وردية مفتوحة ⇒ يربط بدرج وردية المدير (shiftId=shift.id, cashBucket=DRAWER)", async () => {
+    const managerActor = { userId: 2, branchId: 1, role: "manager" };
+    const shiftId = await openShift(1, managerActor.userId);
     const r = await createVoucher(
       {
-        voucherType: "PAYMENT",
+        voucherType: "RECEIPT",
         branchId: 1,
-        amount: "100.00",
+        amount: "50.00",
         paymentMethod: "CASH",
-        partyType: "OTHER",
-        partyId: null,
-        description: "راتب استثنائي",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "تحصيل مدير مع وردية",
       },
-      actor,
+      managerActor,
     );
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
-    expect(rc.shiftId).toBeNull();
-    expect(rc.cashBucket).toBeNull();
-    expect(rc.approvalStatus).toBe("PENDING_APPROVAL");
-    await approveVoucher(r.receiptId, ownerApprover);
-    const [approved] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
-    expect(approved.shiftId).toBeNull();
-    expect(approved.cashBucket).toBe("TREASURY");
+    expect(Number(rc.shiftId)).toBe(shiftId);
+    expect(rc.cashBucket).toBe("DRAWER");
+    expect(rc.status).toBe("COMPLETED");
   });
 
-  it("warehouse يمكنه إنشاء طلب PAYMENT بلا وردية لكن لا ينفذ صرفاً", async () => {
-    await db().insert(s.users).values({ id: 3, openId: "wh", name: "مستودع", role: "warehouse", loginMethod: "local", branchId: 1 });
-    const pending = await createVoucher(
-        {
-          voucherType: "PAYMENT",
-          branchId: 1,
-          amount: "200.00",
-          paymentMethod: "CASH",
-          partyType: "OTHER",
-          partyId: null,
-          description: "شحنة",
-        },
-        { userId: 3, branchId: 1, role: "warehouse" },
-      );
-    expect(pending.approvalStatus).toBe("PENDING_APPROVAL");
-    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, pending.receiptId));
-    expect(receipt.cashBucket).toBeNull();
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
-  });
-
-  it("قبض البطاقة لا يستهلك إعفاء الخزينة الإدارية — بلا دلوٍ نقديّ أصلاً", async () => {
+  it("قبض البطاقة (CARD) لا يتطلب وردية ولا يمسّ درج الكاشير (shiftId=null, cashBucket=null)", async () => {
     const r = await createVoucher(
       {
         voucherType: "RECEIPT",
@@ -510,7 +538,7 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
       actor,
     );
     const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(r.receiptId)));
-    // لا TREASURY ولا DRAWER: البطاقة لا تَمسّ صندوقاً، فإعفاء الخزينة لا معنى له هنا.
+    // لا TREASURY ولا DRAWER: البطاقة لا تَمسّ صندوقاً نقدياً
     expect(receipt.cashBucket).toBeNull();
     expect(receipt.shiftId).toBeNull();
   });

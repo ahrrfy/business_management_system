@@ -291,10 +291,9 @@ export async function createPrintSaleInTx(
       if (!s[0] || s[0].status !== "OPEN" || Number(s[0].branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
       }
-      // SHIFT-OWN (تدقيق ٢/٧): فرض ملكية الوردية — نفس حارس processBanner/createSale. غيابه كان
-      // يُتيح نسب نقد الطباعة لدرج زميل. المدير/الأدمن معفيان.
+      // SHIFT-OWN (حظر انتحال الورديات - Fail-Closed): فرض ملكية الوردية للجميع بلا استثناء عند وجود دفع نقدي
       const role = actor.role;
-      if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
+      if ((isCashPayment || (role !== "admin" && role !== "manager")) && Number(s[0].userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
     }

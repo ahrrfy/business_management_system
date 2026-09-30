@@ -53,6 +53,34 @@ export function payrollHash(value: unknown): string {
     .digest("hex");
 }
 
+/** نسبة سقف الجزاءات الانضباطية بموجب المادة 57 من قانون العمل العراقي رقم 37 لسنة 2015 (10% من صافي الأجر) */
+export const IRAQI_LABOR_LAW_ARTICLE_57_PENALTY_CAP_RATIO = new Decimal("0.10");
+
+/**
+ * احتساب سقف العقوبة الشهرية بموجب المادة (57) من قانون العمل العراقي (10% من صافي الراتب قبل العقوبة).
+ * إذا كان الأجر المتاح سالباً أو صفراً، فإن السقف صفر.
+ */
+export function computeArticle57PenaltyCap(netSalaryBeforePenalty: Decimal): Decimal {
+  const base = money(netSalaryBeforePenalty);
+  if (base.isNegative() || base.isZero()) {
+    return new Decimal(0);
+  }
+  return round2(base.times(IRAQI_LABOR_LAW_ARTICLE_57_PENALTY_CAP_RATIO));
+}
+
+/**
+ * تسقيف العقوبة الانضباطية بما لا يتجاوز 10% من صافي الراتب المتاح قبل العقوبة،
+ * وبما يضمن عدم سلبية مبلغ العقوبة.
+ */
+export function capPenaltyDeduction(netSalaryBeforePenalty: Decimal, rawPenalty: Decimal): Decimal {
+  const cap = computeArticle57PenaltyCap(netSalaryBeforePenalty);
+  const penalty = round2(money(rawPenalty));
+  if (penalty.isNegative() || penalty.isZero()) {
+    return new Decimal(0);
+  }
+  return Decimal.min(penalty, cap);
+}
+
 export interface PayrollBreakdown {
   earnedWage: Decimal;
   wageReduction: Decimal;
@@ -63,6 +91,7 @@ export interface PayrollBreakdown {
   eosProvision: Decimal;
   net: Decimal;
   expenseTotal: Decimal;
+  penaltyDeduction?: Decimal;
 }
 
 /**
@@ -82,6 +111,7 @@ export function payrollBreakdown(item: {
   socialSecurityEmployer: unknown;
   endOfServiceAccrual: unknown;
   net: unknown;
+  penaltyDeduction?: unknown;
 }): PayrollBreakdown {
   const grossEarned = round2(
     money(item.gross as never)
@@ -98,11 +128,18 @@ export function payrollBreakdown(item: {
     money(item.socialSecurityEmployer as never),
   );
   const eosProvision = round2(money(item.endOfServiceAccrual as never));
+  const penalty = round2(
+    money(((item as { penaltyDeduction?: unknown }).penaltyDeduction ?? 0) as never),
+  );
   const storedDeductions = round2(money(item.deductions as never));
   const classifiedDeductions = round2(
-    wageReduction.plus(advance).plus(incomeTax).plus(socialSecurityEmployee),
+    wageReduction
+      .plus(advance)
+      .plus(incomeTax)
+      .plus(socialSecurityEmployee)
+      .plus(penalty),
   );
-  const earnedWage = round2(grossEarned.minus(wageReduction));
+  const earnedWage = round2(grossEarned.minus(wageReduction).minus(penalty));
   const net = round2(
     earnedWage.minus(advance).minus(incomeTax).minus(socialSecurityEmployee),
   );
@@ -118,6 +155,7 @@ export function payrollBreakdown(item: {
       eosProvision,
       earnedWage,
       net,
+      penalty,
     ].some((value) => value.isNegative())
   ) {
     throw new TRPCError({
@@ -150,6 +188,7 @@ export function payrollBreakdown(item: {
     expenseTotal: round2(
       earnedWage.plus(socialSecurityEmployer).plus(eosProvision),
     ),
+    penaltyDeduction: penalty,
   };
 }
 
@@ -157,8 +196,15 @@ export function payrollBreakdown(item: {
  *  قد يكون الاستقطاع أكبر فعلاً (سلفة)؛ نتركه كما هو ليعكس الواقع، والواجهة تعرضه بدقّة).
  *  commissions (٦/٧/٢٦): العمولة تُلتقط من تشغيلة العمولات المعتمدة لنفس الشهر عند التوليد —
  *  موجبة دائماً (السالب لا يخصم من الراتب؛ يبقى مرحَّلاً في سلسلة التشغيلات). */
-export function computeNet(gross: Decimal, overtime: Decimal, commission: Decimal, deductions: Decimal): Decimal {
-  return round2(gross.plus(overtime).plus(commission).minus(deductions));
+export function computeNet(
+  gross: Decimal,
+  overtime: Decimal,
+  commission: Decimal,
+  deductions: Decimal,
+  clampNonNegative: boolean = false,
+): Decimal {
+  const val = round2(gross.plus(overtime).plus(commission).minus(deductions));
+  return clampNonNegative ? Decimal.max(0, val) : val;
 }
 
 /** يجمع بنود المسيّر (داخل tx) ويحدّث رأس المسيّر بالمجاميع وعدد الموظفين. */

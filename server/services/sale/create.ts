@@ -301,11 +301,11 @@ export async function createSaleInTx(
           message: "الوردية مغلقة — لا يمكن ترحيل بيع إليها بعد الإقفال. حوّل العملية إلى مراجعة التسوية اللاحقة.",
         });
       }
-      // SHIFT-OWN (تدقيق ٢/٧): فرض ملكية الوردية — كما في processPayment. غياب هذا الفحص كان
-      // يُتيح لكاشير تمرير shiftId لوردية زميلٍ في نفس الفرع فيُنسَب نقده لدرج الزميل (عجز مزوّر عند
-      // إغلاق الضحية + غطاء اختلاس). المدير/الأدمن معفيان (يسجّلون على أي وردية للتسوية).
+      // SHIFT-OWN (حظر انتحال الورديات - Fail-Closed): فرض ملكية الوردية للجميع بلا استثناء عند وجود حركة نقدية
+      // يُمنع أي مستخدم (بما في ذلك المدير والأدمن) من تسجيل بيع نقدي على وردية مستخدم آخر.
+      const hasCashMovement = isCashPayment || writesFeeHeldCash;
       const role = actor.role;
-      if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
+      if ((hasCashMovement || (role !== "admin" && role !== "manager")) && Number(s[0].userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
     }
