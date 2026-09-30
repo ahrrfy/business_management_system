@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   purchaseReturnReversals,
   purchaseReturns,
@@ -14,6 +15,7 @@ import {
   supplierInvoiceMatchRuns,
   supplierInvoices,
   suppliers,
+  users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
@@ -42,11 +44,16 @@ import { supplierInvoiceApprovalTrigger } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { payloadHashMatches } from "../idempotency";
 
+const supplierInvoiceCreator = alias(users, "supplierInvoiceCreator");
+const supplierInvoicePoster = alias(users, "supplierInvoicePoster");
+const supplierInvoicePo = alias(purchaseOrders, "supplierInvoicePo");
+
 export type SupplierInvoiceEvidenceType = SupplierInvoiceDraftEvidenceType;
 
 export interface CreateSupplierInvoiceInput
   extends SupplierInvoiceDraftDocumentInput, SupplierInvoiceDraftIdentity {
   clientRequestId: string;
+  legacyPurchaseOrderId?: number | null;
 }
 
 export interface RequestSupplierInvoiceApprovalInput {
@@ -620,11 +627,18 @@ export async function createSupplierInvoiceInTx(
         });
       }
     }
+    const linkedOrderId =
+      snapshots[0]?.order?.id != null
+        ? Number(snapshots[0].order.id)
+        : input.legacyPurchaseOrderId != null
+          ? Number(input.legacyPurchaseOrderId)
+          : null;
     const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
     const inserted = await tx.insert(supplierInvoices).values({
       invoiceNumber,
       clientRequestId,
       origin: "NATIVE",
+      legacyPurchaseOrderId: linkedOrderId,
       supplierId: input.supplierId,
       externalInvoiceNumber,
       externalNumberNorm,
@@ -1330,19 +1344,104 @@ export async function getSupplierInvoice(
 ) {
   return withTx(
     async (tx) => {
-      const invoice = (
-        await tx
-          .select()
-          .from(supplierInvoices)
-          .where(eq(supplierInvoices.id, supplierInvoiceId))
-          .limit(1)
-      )[0];
+      const invoiceRows = await tx
+        .select({
+          id: supplierInvoices.id,
+          invoiceNumber: supplierInvoices.invoiceNumber,
+          clientRequestId: supplierInvoices.clientRequestId,
+          origin: supplierInvoices.origin,
+          liabilityClass: supplierInvoices.liabilityClass,
+          paymentGate: supplierInvoices.paymentGate,
+          paymentGateReason: supplierInvoices.paymentGateReason,
+          legacyPurchaseOrderId: supplierInvoices.legacyPurchaseOrderId,
+          supplierId: supplierInvoices.supplierId,
+          supplierName: suppliers.name,
+          supplierPhone: suppliers.phone,
+          externalInvoiceNumber: supplierInvoices.externalInvoiceNumber,
+          branchId: supplierInvoices.branchId,
+          status: supplierInvoices.status,
+          version: supplierInvoices.version,
+          draftState: supplierInvoices.draftState,
+          invoiceDate: supplierInvoices.invoiceDate,
+          dueDate: supplierInvoices.dueDate,
+          currency: supplierInvoices.currency,
+          agreedRate: supplierInvoices.agreedRate,
+          subtotal: supplierInvoices.subtotal,
+          taxAmount: supplierInvoices.taxAmount,
+          discountAmount: supplierInvoices.discountAmount,
+          totalAmount: supplierInvoices.totalAmount,
+          legacySettledAmount: supplierInvoices.legacySettledAmount,
+          usdTotal: supplierInvoices.usdTotal,
+          evidenceType: supplierInvoices.evidenceType,
+          evidenceReference: supplierInvoices.evidenceReference,
+          holdReason: supplierInvoices.holdReason,
+          postingEntryId: supplierInvoices.postingEntryId,
+          reversalEntryId: supplierInvoices.reversalEntryId,
+          createdBy: supplierInvoices.createdBy,
+          createdByName: supplierInvoiceCreator.name,
+          postedBy: supplierInvoices.postedBy,
+          postedByName: supplierInvoicePoster.name,
+          postedAt: supplierInvoices.postedAt,
+          reversedBy: supplierInvoices.reversedBy,
+          reversedAt: supplierInvoices.reversedAt,
+          reversalReason: supplierInvoices.reversalReason,
+          createdAt: supplierInvoices.createdAt,
+          updatedAt: supplierInvoices.updatedAt,
+          legacyPoNumber: supplierInvoicePo.poNumber,
+          legacySettlementType: supplierInvoicePo.settlementType,
+        })
+        .from(supplierInvoices)
+        .leftJoin(suppliers, eq(supplierInvoices.supplierId, suppliers.id))
+        .leftJoin(supplierInvoiceCreator, eq(supplierInvoices.createdBy, supplierInvoiceCreator.id))
+        .leftJoin(supplierInvoicePoster, eq(supplierInvoices.postedBy, supplierInvoicePoster.id))
+        .leftJoin(supplierInvoicePo, eq(supplierInvoices.legacyPurchaseOrderId, supplierInvoicePo.id))
+        .where(eq(supplierInvoices.id, supplierInvoiceId))
+        .limit(1);
+
+      const invoice = invoiceRows[0];
       if (!invoice)
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "فاتورة المورد غير موجودة",
         });
       assertPurchaseBranch(invoice, actor);
+
+      let purchaseOrderId = invoice.legacyPurchaseOrderId ?? null;
+      let purchaseOrderNumber = invoice.legacyPoNumber ?? null;
+      let settlementType = invoice.legacySettlementType ?? null;
+
+      if (!purchaseOrderNumber) {
+        const lineOrder = (
+          await tx
+            .select({
+              poId: purchaseOrders.id,
+              poNumber: purchaseOrders.poNumber,
+              settlementType: purchaseOrders.settlementType,
+            })
+            .from(supplierInvoiceLines)
+            .innerJoin(
+              purchaseOrderRevisionItems,
+              eq(supplierInvoiceLines.purchaseOrderRevisionItemId, purchaseOrderRevisionItems.id),
+            )
+            .innerJoin(
+              purchaseOrderRevisions,
+              eq(purchaseOrderRevisionItems.revisionId, purchaseOrderRevisions.id),
+            )
+            .innerJoin(
+              purchaseOrders,
+              eq(purchaseOrderRevisions.purchaseOrderId, purchaseOrders.id),
+            )
+            .where(eq(supplierInvoiceLines.supplierInvoiceId, supplierInvoiceId))
+            .limit(1)
+        )[0];
+
+        if (lineOrder) {
+          purchaseOrderId = Number(lineOrder.poId);
+          purchaseOrderNumber = lineOrder.poNumber;
+          settlementType = lineOrder.settlementType;
+        }
+      }
+
       const lines = await tx
         .select()
         .from(supplierInvoiceLines)
@@ -1356,8 +1455,26 @@ export async function getSupplierInvoice(
         )
         .orderBy(desc(supplierInvoiceMatchRuns.runNo));
       const approvals = await tx
-        .select()
+        .select({
+          id: supplierInvoiceApprovalRequests.id,
+          supplierInvoiceId: supplierInvoiceApprovalRequests.supplierInvoiceId,
+          branchId: supplierInvoiceApprovalRequests.branchId,
+          kind: supplierInvoiceApprovalRequests.kind,
+          status: supplierInvoiceApprovalRequests.status,
+          reason: supplierInvoiceApprovalRequests.reason,
+          evidenceType: supplierInvoiceApprovalRequests.evidenceType,
+          evidenceReference: supplierInvoiceApprovalRequests.evidenceReference,
+          requestedBy: supplierInvoiceApprovalRequests.requestedBy,
+          requestedByName: supplierInvoiceCreator.name,
+          requestedAt: supplierInvoiceApprovalRequests.requestedAt,
+          reviewedBy: supplierInvoiceApprovalRequests.reviewedBy,
+          reviewedByName: supplierInvoicePoster.name,
+          reviewedAt: supplierInvoiceApprovalRequests.reviewedAt,
+          reviewReason: supplierInvoiceApprovalRequests.reviewReason,
+        })
         .from(supplierInvoiceApprovalRequests)
+        .leftJoin(supplierInvoiceCreator, eq(supplierInvoiceApprovalRequests.requestedBy, supplierInvoiceCreator.id))
+        .leftJoin(supplierInvoicePoster, eq(supplierInvoiceApprovalRequests.reviewedBy, supplierInvoicePoster.id))
         .where(
           eq(
             supplierInvoiceApprovalRequests.supplierInvoiceId,
@@ -1365,34 +1482,177 @@ export async function getSupplierInvoice(
           ),
         )
         .orderBy(desc(supplierInvoiceApprovalRequests.requestedAt));
-      return { invoice, lines, matches, approvals };
+
+      return {
+        invoice: {
+          ...invoice,
+          purchaseOrderId,
+          purchaseOrderNumber,
+          settlementType,
+          supplierName: invoice.supplierName ?? "مورد غير معروف",
+        },
+        lines,
+        matches,
+        approvals,
+      };
     },
     { gate: "NONE" },
   );
 }
 
 export async function listSupplierInvoices(
-  input: { branchId: number; supplierId?: number; limit?: number },
+  input: {
+    branchId: number;
+    supplierId?: number;
+    status?: "DRAFT" | "ON_HOLD" | "MATCHED" | "POSTED" | "REVERSED";
+    settlementType?: "CASH" | "CREDIT";
+    q?: string;
+    limit?: number;
+  },
   actor: Actor,
 ) {
   if (actor.role !== "admin" && actor.branchId !== input.branchId)
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك عرض فرع آخر" });
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 200);
   return withTx(
-    (tx) =>
-      tx
-        .select()
+    async (tx) => {
+      const qNorm = input.q?.trim();
+      const searchCond = qNorm
+        ? or(
+            like(supplierInvoices.invoiceNumber, `%${qNorm}%`),
+            like(supplierInvoices.externalInvoiceNumber, `%${qNorm}%`),
+            like(suppliers.name, `%${qNorm}%`),
+            like(supplierInvoicePo.poNumber, `%${qNorm}%`),
+          )
+        : undefined;
+
+      const rows = await tx
+        .select({
+          id: supplierInvoices.id,
+          invoiceNumber: supplierInvoices.invoiceNumber,
+          clientRequestId: supplierInvoices.clientRequestId,
+          origin: supplierInvoices.origin,
+          liabilityClass: supplierInvoices.liabilityClass,
+          paymentGate: supplierInvoices.paymentGate,
+          paymentGateReason: supplierInvoices.paymentGateReason,
+          legacyPurchaseOrderId: supplierInvoices.legacyPurchaseOrderId,
+          supplierId: supplierInvoices.supplierId,
+          supplierName: suppliers.name,
+          supplierPhone: suppliers.phone,
+          externalInvoiceNumber: supplierInvoices.externalInvoiceNumber,
+          branchId: supplierInvoices.branchId,
+          status: supplierInvoices.status,
+          version: supplierInvoices.version,
+          draftState: supplierInvoices.draftState,
+          invoiceDate: supplierInvoices.invoiceDate,
+          dueDate: supplierInvoices.dueDate,
+          currency: supplierInvoices.currency,
+          agreedRate: supplierInvoices.agreedRate,
+          subtotal: supplierInvoices.subtotal,
+          taxAmount: supplierInvoices.taxAmount,
+          discountAmount: supplierInvoices.discountAmount,
+          totalAmount: supplierInvoices.totalAmount,
+          legacySettledAmount: supplierInvoices.legacySettledAmount,
+          usdTotal: supplierInvoices.usdTotal,
+          evidenceType: supplierInvoices.evidenceType,
+          evidenceReference: supplierInvoices.evidenceReference,
+          holdReason: supplierInvoices.holdReason,
+          postingEntryId: supplierInvoices.postingEntryId,
+          reversalEntryId: supplierInvoices.reversalEntryId,
+          createdBy: supplierInvoices.createdBy,
+          createdByName: supplierInvoiceCreator.name,
+          postedBy: supplierInvoices.postedBy,
+          postedByName: supplierInvoicePoster.name,
+          postedAt: supplierInvoices.postedAt,
+          reversedBy: supplierInvoices.reversedBy,
+          reversedAt: supplierInvoices.reversedAt,
+          reversalReason: supplierInvoices.reversalReason,
+          createdAt: supplierInvoices.createdAt,
+          updatedAt: supplierInvoices.updatedAt,
+          legacyPoNumber: supplierInvoicePo.poNumber,
+          legacySettlementType: supplierInvoicePo.settlementType,
+        })
         .from(supplierInvoices)
+        .leftJoin(suppliers, eq(supplierInvoices.supplierId, suppliers.id))
+        .leftJoin(supplierInvoiceCreator, eq(supplierInvoices.createdBy, supplierInvoiceCreator.id))
+        .leftJoin(supplierInvoicePoster, eq(supplierInvoices.postedBy, supplierInvoicePoster.id))
+        .leftJoin(supplierInvoicePo, eq(supplierInvoices.legacyPurchaseOrderId, supplierInvoicePo.id))
         .where(
           and(
             eq(supplierInvoices.branchId, input.branchId),
             input.supplierId == null
               ? undefined
               : eq(supplierInvoices.supplierId, input.supplierId),
+            input.status == null
+              ? undefined
+              : eq(supplierInvoices.status, input.status),
+            searchCond,
           ),
         )
         .orderBy(desc(supplierInvoices.invoiceDate), desc(supplierInvoices.id))
-        .limit(limit),
+        .limit(limit);
+
+      const missingPoInvoiceIds = rows
+        .filter((r) => !r.legacyPoNumber)
+        .map((r) => Number(r.id));
+
+      const poResolutionMap = new Map<number, { poId: number; poNumber: string; settlementType: "CASH" | "CREDIT" }>();
+
+      if (missingPoInvoiceIds.length > 0) {
+        const lineOrders = await tx
+          .select({
+            supplierInvoiceId: supplierInvoiceLines.supplierInvoiceId,
+            poId: purchaseOrders.id,
+            poNumber: purchaseOrders.poNumber,
+            settlementType: purchaseOrders.settlementType,
+          })
+          .from(supplierInvoiceLines)
+          .innerJoin(
+            purchaseOrderRevisionItems,
+            eq(supplierInvoiceLines.purchaseOrderRevisionItemId, purchaseOrderRevisionItems.id),
+          )
+          .innerJoin(
+            purchaseOrderRevisions,
+            eq(purchaseOrderRevisionItems.revisionId, purchaseOrderRevisions.id),
+          )
+          .innerJoin(
+            purchaseOrders,
+            eq(purchaseOrderRevisions.purchaseOrderId, purchaseOrders.id),
+          )
+          .where(inArray(supplierInvoiceLines.supplierInvoiceId, missingPoInvoiceIds));
+
+        for (const lo of lineOrders) {
+          if (!poResolutionMap.has(Number(lo.supplierInvoiceId))) {
+            poResolutionMap.set(Number(lo.supplierInvoiceId), {
+              poId: Number(lo.poId),
+              poNumber: lo.poNumber,
+              settlementType: lo.settlementType,
+            });
+          }
+        }
+      }
+
+      return rows
+        .map((row) => {
+          const resolved = poResolutionMap.get(Number(row.id));
+          const purchaseOrderId = row.legacyPurchaseOrderId ?? resolved?.poId ?? null;
+          const purchaseOrderNumber = row.legacyPoNumber ?? resolved?.poNumber ?? null;
+          const settlementType = row.legacySettlementType ?? resolved?.settlementType ?? null;
+          return {
+            ...row,
+            purchaseOrderId,
+            purchaseOrderNumber,
+            settlementType,
+            supplierName: row.supplierName ?? "مورد غير معروف",
+          };
+        })
+        .filter((row) => {
+          if (input.settlementType && row.settlementType !== input.settlementType) {
+            return false;
+          }
+          return true;
+        });
+    },
     { gate: "NONE" },
   );
 }

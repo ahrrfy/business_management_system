@@ -416,6 +416,7 @@ export async function postApprovedPurchaseInvoiceInTx(
       clientRequestId: supplierInvoiceKey,
       supplierId: Number(revision.supplierId),
       branchId: Number(revision.branchId),
+      legacyPurchaseOrderId: Number(po.id),
       externalInvoiceNumber: `AUTO-${po.poNumber}-R${revision.revisionNo}`,
       invoiceDate,
       dueDate: null,

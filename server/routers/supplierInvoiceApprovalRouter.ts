@@ -22,6 +22,9 @@ export const supplierInvoiceApprovalRouter = router({
       z.object({
         branchId: z.number().int().positive(),
         supplierId: z.number().int().positive().optional(),
+        status: z.enum(["DRAFT", "ON_HOLD", "MATCHED", "POSTED", "REVERSED"]).optional(),
+        settlementType: z.enum(["CASH", "CREDIT"]).optional(),
+        q: z.string().trim().min(1).optional(),
         limit: z.number().int().positive().max(200).optional(),
       }),
     )
