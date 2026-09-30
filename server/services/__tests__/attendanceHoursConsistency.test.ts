@@ -33,7 +33,7 @@ async function seedBase() {
 }
 
 async function emp() {
-  const e = await createEmployee({ firstName: "سعد", lastName: "الجبوري", payType: "monthly", salary: "900000", allowances: "0" });
+  const e = await createEmployee({ firstName: "سعد", lastName: "الجبوري", payType: "monthly", salary: "900000", allowances: "0", branchId: 1 });
   return e!.id;
 }
 

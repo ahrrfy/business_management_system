@@ -197,7 +197,7 @@ describe("صدق العدّاد والقفل والفصل", () => {
 
   it("ص١٢) يومُ غياب بساعاتٍ موجبة يُعرَض بلا أجر ويُوسَم (لا كسبَ وهميّ)", async () => {
     await db().insert(s.attendance).values({
-      employeeId: 1, attendanceDate: "2026-08-03", status: "ABSENT",
+      employeeId: 1, branchId: 1, attendanceDate: "2026-08-03", status: "ABSENT",
       hours: "7.00", hourlyRate: "1905.00", amount: "13335.00", source: "manual",
     });
     const list = await listAttendance({ period: "2026-08" });
@@ -255,7 +255,7 @@ describe("صدق العدّاد والقفل والفصل", () => {
   it("ص١٨) عدّادا البصمة/اليدوي من نفس مسح المبالغ — لقطةٌ زمنية واحدة", async () => {
     await recordAttendance({ employeeId: 1, attendanceDate: "2026-08-01", hours: 7, source: "manual" });
     await db().insert(s.attendance).values({
-      employeeId: 1, attendanceDate: "2026-08-02", status: "PRESENT",
+      employeeId: 1, branchId: 1, attendanceDate: "2026-08-02", status: "PRESENT",
       hours: "6.00", hourlyRate: "1905.00", amount: "11430.00", source: "fingerprint",
     });
     const sum = await attendanceSummary({ period: "2026-08" });
