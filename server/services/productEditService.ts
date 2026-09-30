@@ -38,6 +38,7 @@ import type { PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { rejectLegacyCatalogMediaWrite } from "./catalog/mediaWriteGuard";
+import { PRINT_SERVICE_TYPE } from "./printSaleService";
 
 /* ============================ القراءة (للتعديل) ============================ */
 // نُقلت إلى `./catalog/productEditDocument.ts` (م٦ ق٨ — مستندُ التعديل صار مصدرَ اللقطة). يُعاد تصديرها هنا
@@ -429,6 +430,7 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     const consignmentChanged = wantConsign !== undefined && !!wantConsign !== wasConsign;
     const consignorChanged = wantConsignor !== undefined && (wantConsignor ?? null) !== wasConsignor;
     const serviceChanged = input.isService !== undefined && !!input.isService !== !!p.isService;
+    const willBeService = input.isService ?? !!p.isService;
     // هذه هي القيمة التي سيكتبها UPDATE أدناه فعلاً: إظهار شبكة الطباعة أو التوجيه يفرض نوعها التشغيلي.
     const effectiveShowInPrintPos = input.showInPrintPos ?? !!p.showInPrintPos;
     const effectiveShowInReception = input.showInReception ?? !!p.showInReception;
@@ -436,14 +438,31 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     const effectiveShowInAdvancedSales = input.showInAdvancedSales ?? !!p.showInAdvancedSales;
     // productType اختياري (PATCH): غيابه لا يمسح النوع التاريخي إلى NULL.
     const requestedProductType = input.productType === undefined ? (p.productType ?? null) : input.productType?.trim() || null;
-    const hasServiceRouting = effectiveShowInPrintPos || effectiveShowInReception || effectiveShowInQuotations || effectiveShowInAdvancedSales;
-    const effectiveProductType = hasServiceRouting ? "PRINT_SERVICE" : requestedProductType;
-    const productTypeChanged = effectiveProductType !== (p.productType ?? null);
+
+    // توجيه خدمات الطباعة (م٦ + م٩): فرض productType='PRINT_SERVICE' ينطبق حصراً على الخدمات (willBeService=true)
+    // عند تفعيل شبكة الطباعة أو توجيهات الخدمات أو كونها خدمة طباعة أصلاً.
+    // السلع المخزنية (willBeService=false) لا تُحوَّل قط إلى PRINT_SERVICE بمجرد تفعيل توجيهات البيع،
+    // حتى لا ينقلب تصنيفها المالي ولا تختفي من كاشير الباركود العادي.
+    const hasServiceRouting = willBeService && (
+      effectiveShowInPrintPos ||
+      effectiveShowInReception ||
+      effectiveShowInQuotations ||
+      effectiveShowInAdvancedSales ||
+      p.productType === PRINT_SERVICE_TYPE ||
+      requestedProductType === PRINT_SERVICE_TYPE
+    );
+    const effectiveProductType = hasServiceRouting ? PRINT_SERVICE_TYPE : requestedProductType;
+
+    const operationalProductRoute = (type: string | null | undefined, isSvc: boolean): "PRINT_SERVICE" | "DIGITAL_CARD" | "STANDARD" => {
+      if (type === "DIGITAL_CARD") return "DIGITAL_CARD";
+      if (isSvc && type === PRINT_SERVICE_TYPE) return "PRINT_SERVICE";
+      return "STANDARD";
+    };
+    const productRouteChanged = operationalProductRoute(effectiveProductType, willBeService) !== operationalProductRoute(p.productType, !!p.isService);
 
     // مكوّن البكج هو عقدٌ مخزني: تغيير المنتج لاحقاً إلى خدمة/أمانة يجعل بيع البكج
     // يخصم no-op أو أصلاً غير مملوك. امنع تغيير المعنى عند المصدر بدلاً من ترك كل بكج
     // مرتبط يتعطل وقت البيع. فك الارتباط من تعريفات البكجات أولاً ثم غيّر التصنيف.
-    const willBeService = input.isService ?? !!p.isService;
     const willBeConsignment =
       wantConsign !== undefined ? !!wantConsign : !!p.isConsignment;
     if (
@@ -464,7 +483,7 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         .limit(1);
       if (bundleReference) {
         throw new TRPCError({
-          code: "CONFLICT",
+          code: "BAD_REQUEST",
           message: appErrorMessage({
             what: "لا يمكن تغيير تصنيف منتج مستخدم كمكوّن بكج",
             why: `المتغيّر #${Number(bundleReference.componentVariantId)} مرتبط بالبكج #${Number(bundleReference.bundleVariantId)} كمادة مخزنية مملوكة`,
@@ -478,7 +497,7 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     // معناه بعد بيعه (نوع المسار، مخزني↔خدمة، مملوك↔أمانة، أو تبديل المودِع) يجعل نفس invoiceItem
     // يُعالج بقواعد مختلفة عن قواعد إنشائه. لا يكفي تصفير الرصيد: التاريخ المالي نفسه باقٍ. المنتج
     // الجديد هو حدّ النسخة الصحيح، والقديم يبقى مرجعاً ثابتاً للمستندات السابقة.
-    if (productTypeChanged || serviceChanged || consignmentChanged || consignorChanged) {
+    if (productRouteChanged || serviceChanged || consignmentChanged || consignorChanged) {
       const [historicalLine] = await tx
         .select({ id: invoiceItems.id })
         .from(invoiceItems)
@@ -496,7 +515,7 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
       }
       if (historicalLine || historicalMovement) {
         throw new TRPCError({
-          code: "CONFLICT",
+          code: "BAD_REQUEST",
           message: appErrorMessage({
             what: "لا يمكن تغيير التصنيف المالي لمنتج له تاريخ تشغيلي",
             why: "تغيير نوع المنتج أو الخدمة أو الأمانة أو المودِع سيجعل حركات المخزون أو المبيعات والمرتجعات والإلغاءات القديمة تُفسَّر بقواعد غير التي أُنشئت بها",

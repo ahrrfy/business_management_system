@@ -274,7 +274,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     // م٦: الظهورُ في شبكة الطباعة من `printService` (الإرث) أو من `showInPrintPos` الصريح (تناظر التعديل)؛
     // كلاهما يُزامن `productType='PRINT_SERVICE'` كي لا يظهر بندٌ في الشبكة ثمّ يرفضه `createPrintSale`.
     const showInPrintPos = !!input.printService || !!input.showInPrintPos;
-    const isPrintServiceProduct = showInPrintPos || !!input.showInReception || !!input.showInQuotations || !!input.showInAdvancedSales || input.productType === PRINT_SERVICE_TYPE;
+    const isPrintServiceProduct = isService && (showInPrintPos || !!input.showInReception || !!input.showInQuotations || !!input.showInAdvancedSales || input.productType === PRINT_SERVICE_TYPE);
     const pRes = await tx.insert(products).values({
       name: composedName,
       productType: isPrintServiceProduct ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,

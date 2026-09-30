@@ -180,6 +180,56 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(product.productType).toBe("قرطاسية");
   });
 
+  it("يسمح بتعديل منتج مخزني عادي له تاريخ فواتير وتفعيل توجيهات المبيعات وعروض الأسعار دون اعتباره تغييراً في التصنيف المالي", async () => {
+    await seedInvoiceHistoryForProductOne();
+
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة معدل",
+        showInReception: true,
+        showInQuotations: true,
+        showInAdvancedSales: true,
+        unitTemplate: baseTemplate(),
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product.name).toBe("دفتر ١٠٠ ورقة معدل");
+    expect(product.productType).toBe("قرطاسية");
+    expect(product.isService).toBe(false);
+    expect(product.showInReception).toBe(true);
+    expect(product.showInQuotations).toBe(true);
+    expect(product.showInAdvancedSales).toBe(true);
+  });
+
+  it("يسمح بتعديل منتج مخزني productType له NULL وله تاريخ فواتير مع تفعيل توجيهات المبيعات", async () => {
+    await db().update(s.products).set({ productType: null }).where(eq(s.products.id, 1));
+    await seedInvoiceHistoryForProductOne();
+
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة (نوع فارغ)",
+        productType: null,
+        showInReception: true,
+        showInQuotations: true,
+        showInAdvancedSales: true,
+        unitTemplate: baseTemplate(),
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product.productType).toBeNull();
+    expect(product.showInReception).toBe(true);
+    expect(product.showInQuotations).toBe(true);
+    expect(product.showInAdvancedSales).toBe(true);
+  });
+
   it("يمنع تغيير التصنيف بعد حركة مخزون سابقة حتى إن لم تُصدر فاتورة بعد", async () => {
     await db().insert(s.inventoryMovements).values({
       variantId: 1,
