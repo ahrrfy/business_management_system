@@ -143,12 +143,19 @@ export async function approveSpotBonus(
   });
 }
 
-/** استعلام مكافآت الموظف. */
-export async function listEmployeeSpotBonuses(employeeId: number) {
+/** استعلام مكافآت الموظف مع دعم عزل الفروع. */
+export async function listEmployeeSpotBonuses(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeSpotBonuses.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employeeSpotBonuses.branchId, scopedBranchId));
+  }
   return db
     .select()
     .from(employeeSpotBonuses)
-    .where(eq(employeeSpotBonuses.employeeId, employeeId))
+    .where(and(...conds))
     .orderBy(desc(employeeSpotBonuses.createdAt));
 }

@@ -161,13 +161,20 @@ export async function returnEmployeeCustody(
   });
 }
 
-/** استعلام عهد الموظف. */
-export async function listEmployeeCustody(employeeId: number) {
+/** استعلام عهد الموظف مع دعم عزل الفروع. */
+export async function listEmployeeCustody(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeCustody.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employeeCustody.branchId, scopedBranchId));
+  }
   return db
     .select()
     .from(employeeCustody)
-    .where(eq(employeeCustody.employeeId, employeeId))
+    .where(and(...conds))
     .orderBy(desc(employeeCustody.handoverDate));
 }
 

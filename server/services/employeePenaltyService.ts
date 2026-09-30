@@ -215,13 +215,20 @@ export async function cancelEmployeePenalty(
   });
 }
 
-/** استعلام العقوبات لموظف محدد. */
-export async function listEmployeePenalties(employeeId: number) {
+/** استعلام العقوبات لموظف محدد مع دعم عزل الفروع. */
+export async function listEmployeePenalties(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeePenalties.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employeePenalties.branchId, scopedBranchId));
+  }
   return db
     .select()
     .from(employeePenalties)
-    .where(eq(employeePenalties.employeeId, employeeId))
+    .where(and(...conds))
     .orderBy(desc(employeePenalties.decisionDate));
 }
 

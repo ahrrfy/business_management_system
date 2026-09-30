@@ -69,13 +69,39 @@ export function computeDocumentStatus(
   return "ACTIVE";
 }
 
-/** استعلام مستندات موظف محدد. */
-export async function listEmployeeDocuments(employeeId: number) {
+/** استعلام مستندات موظف محدد مع دعم عزل الفروع. */
+export async function listEmployeeDocuments(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeDocuments.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employees.branchId, scopedBranchId));
+  }
+
   const rows = await db
-    .select()
+    .select({
+      id: employeeDocuments.id,
+      employeeId: employeeDocuments.employeeId,
+      documentType: employeeDocuments.documentType,
+      title: employeeDocuments.title,
+      documentNumber: employeeDocuments.documentNumber,
+      issueDate: employeeDocuments.issueDate,
+      expiryDate: employeeDocuments.expiryDate,
+      fileUrl: employeeDocuments.fileUrl,
+      fileSize: employeeDocuments.fileSize,
+      mimeType: employeeDocuments.mimeType,
+      notes: employeeDocuments.notes,
+      status: employeeDocuments.status,
+      alertDaysBefore: employeeDocuments.alertDaysBefore,
+      createdById: employeeDocuments.createdById,
+      createdAt: employeeDocuments.createdAt,
+      updatedAt: employeeDocuments.updatedAt,
+    })
     .from(employeeDocuments)
-    .where(eq(employeeDocuments.employeeId, employeeId))
+    .innerJoin(employees, eq(employeeDocuments.employeeId, employees.id))
+    .where(and(...conds))
     .orderBy(desc(employeeDocuments.createdAt));
 
   const today = baghdadToday();
@@ -85,13 +111,39 @@ export async function listEmployeeDocuments(employeeId: number) {
   }));
 }
 
-/** استعلام مستند بالمعرّف. */
-export async function getDocumentById(id: number) {
+/** استعلام مستند بالمعرّف مع دعم عزل الفروع. */
+export async function getDocumentById(
+  id: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeDocuments.id, id)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employees.branchId, scopedBranchId));
+  }
+
   const [row] = await db
-    .select()
+    .select({
+      id: employeeDocuments.id,
+      employeeId: employeeDocuments.employeeId,
+      documentType: employeeDocuments.documentType,
+      title: employeeDocuments.title,
+      documentNumber: employeeDocuments.documentNumber,
+      issueDate: employeeDocuments.issueDate,
+      expiryDate: employeeDocuments.expiryDate,
+      fileUrl: employeeDocuments.fileUrl,
+      fileSize: employeeDocuments.fileSize,
+      mimeType: employeeDocuments.mimeType,
+      notes: employeeDocuments.notes,
+      status: employeeDocuments.status,
+      alertDaysBefore: employeeDocuments.alertDaysBefore,
+      createdById: employeeDocuments.createdById,
+      createdAt: employeeDocuments.createdAt,
+      updatedAt: employeeDocuments.updatedAt,
+    })
     .from(employeeDocuments)
-    .where(eq(employeeDocuments.id, id))
+    .innerJoin(employees, eq(employeeDocuments.employeeId, employees.id))
+    .where(and(...conds))
     .limit(1);
 
   if (!row) return null;
@@ -217,13 +269,25 @@ export async function deleteEmployeeDocument(actor: MaybeScopedActor, id: number
   });
 }
 
-/** تنبيهات انتهاء المستندات والإقامات خلال فترة محددة (للوحة تحكم HR). */
-export async function getExpiringDocumentsAlerts(withinDays: number = 30) {
+/** تنبيهات انتهاء المستندات والإقامات خلال فترة محددة (للوحة تحكم HR) مع دعم عزل الفروع. */
+export async function getExpiringDocumentsAlerts(
+  withinDays: number = 30,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
   const todayStr = baghdadToday();
   const targetDate = new Date(`${todayStr}T00:00:00Z`);
   targetDate.setUTCDate(targetDate.getUTCDate() + withinDays);
   const targetDateStr = targetDate.toISOString().slice(0, 10);
+
+  const conds = [
+    eq(employees.isActive, true),
+    sql`${employeeDocuments.expiryDate} IS NOT NULL`,
+    lte(employeeDocuments.expiryDate, targetDateStr),
+  ];
+  if (scopedBranchId != null) {
+    conds.push(eq(employees.branchId, scopedBranchId));
+  }
 
   const docs = await db
     .select({
@@ -239,13 +303,7 @@ export async function getExpiringDocumentsAlerts(withinDays: number = 30) {
     })
     .from(employeeDocuments)
     .innerJoin(employees, eq(employeeDocuments.employeeId, employees.id))
-    .where(
-      and(
-        eq(employees.isActive, true),
-        sql`${employeeDocuments.expiryDate} IS NOT NULL`,
-        lte(employeeDocuments.expiryDate, targetDateStr),
-      ),
-    )
+    .where(and(...conds))
     .orderBy(employeeDocuments.expiryDate);
 
   return docs.map((d) => {

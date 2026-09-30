@@ -364,12 +364,19 @@ export async function disburseEmployeeLoan(
 
 export const disburseLoan = disburseEmployeeLoan;
 
-/** استعلام طلبات سلف الموظف. */
-export async function listEmployeeLoans(employeeId: number) {
+/** استعلام طلبات سلف الموظف مع دعم عزل الفروع. */
+export async function listEmployeeLoans(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeLoanRequests.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employeeLoanRequests.branchId, scopedBranchId));
+  }
   return db
     .select()
     .from(employeeLoanRequests)
-    .where(eq(employeeLoanRequests.employeeId, employeeId))
+    .where(and(...conds))
     .orderBy(desc(employeeLoanRequests.createdAt));
 }
