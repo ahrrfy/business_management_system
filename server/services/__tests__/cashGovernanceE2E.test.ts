@@ -16,6 +16,28 @@ import { createExpense } from "../expenseService";
 import { createCashDrop } from "../cashDropService";
 import { money, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
+import { truncateTables } from "./__testUtils__";
+
+const TABLES_TO_RESET = [
+  "accountingEntries",
+  "receipts",
+  "cashDrops",
+  "expenses",
+  "invoiceItems",
+  "invoices",
+  "voucherCategories",
+  "branchStock",
+  "productPrices",
+  "productUnits",
+  "productVariants",
+  "products",
+  "customers",
+  "suppliers",
+  "shifts",
+  "users",
+  "branches",
+  "idempotencyKeys",
+];
 
 function db() {
   const conn = getDb();
@@ -109,10 +131,11 @@ async function seedBase() {
 }
 
 beforeEach(async () => {
+  await truncateTables(TABLES_TO_RESET);
   await seedBase();
 });
 
-describe("Cash Governance E2E Test Suite", () => {
+describe.sequential("Cash Governance E2E Test Suite", () => {
   // =========================================================================
   // TIER 1: FEATURE COVERAGE (>=5 test cases per core cash feature)
   // =========================================================================

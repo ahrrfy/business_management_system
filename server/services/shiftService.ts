@@ -1250,7 +1250,7 @@ export async function shiftIdForCashTx(
    *  فيختار المُرسِل أيّ درجٍ سيستلم هذا النقد فعلياً.
    *  الشروط: يجب أن تكون الوردية مفتوحة وتنتمي لنفس الفرع. */
   explicitShiftId?: number | null,
-): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
+): Promise<{ shiftId: number; cashBucket: "DRAWER" | "TREASURY" }> {
   // ش-ISOLATION: وردية صريحة — تُجاوز كل منطق البحث الآلي.
   // يُشترط حتماً أن تكون ملكاً للفاعل (locked.userId === actor.userId) — لا يُسمح بإيداع أو قفل نقد في درج مستخدم آخر.
   if (explicitShiftId != null) {
@@ -1310,17 +1310,7 @@ export async function shiftIdForCashTx(
     return { shiftId: Number(locked.id), cashBucket: "DRAWER" };
   }
 
-  const role = actor.role ?? (await resolveActorRoleTx(tx, actor.userId));
-  if (role === "admin" || role === "manager") {
-    // الأدوار الإدارية: إن وُجدت وردية مفتوحة (تغطية كاشير) ⇒ استَعملها (DRAWER)؛
-    // وإلّا shiftId=null + bucket=TREASURY (مشروع، يَظهر في تقرير الخزينة الإدارية).
-    const sid = await openShiftIdTx(tx, actor.userId, branchId, preferredType);
-    return sid
-      ? { shiftId: sid, cashBucket: "DRAWER" }
-      : { shiftId: null, cashBucket: "TREASURY" };
-  }
-
-  // cashier/warehouse/غيرهم: وردية إلزامية (حماية النقد اليتيم الحقيقي).
+  // إنفاذ حظر النقد بلا وردية مفتوحة (Fail-Closed) لكافة المستخدمين بلا استثناء
   const sid = await requireOpenShiftIdTx(
     tx,
     actor.userId,

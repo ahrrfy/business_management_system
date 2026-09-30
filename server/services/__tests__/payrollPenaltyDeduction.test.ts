@@ -47,7 +47,7 @@ async function resetDb() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of TABLES) {
-    await d.execute(sql.raw(`DELETE FROM \`${t}\``));
+    await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
@@ -59,15 +59,13 @@ async function seedBaseData() {
     .values([
       { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
       { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
-    ])
-    .onDuplicateKeyUpdate({ set: { name: sql`values(name)` } });
+    ]);
   await d
     .insert(s.users)
     .values([
       { id: 1, openId: "test-admin", name: "مدير النظام", role: "admin", branchId: 1, isOwner: false },
       { id: 2, openId: "test-owner", name: "المالك المعتمد", role: "manager", branchId: 1, isOwner: true },
-    ])
-    .onDuplicateKeyUpdate({ set: { name: sql`values(name)` } });
+    ]);
   await d.insert(s.receipts).values([
     {
       branchId: 1,
