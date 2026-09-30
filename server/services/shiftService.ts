@@ -1204,7 +1204,7 @@ export async function requireOpenShiftIdTx(
   if (id == null) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `افتح وردية في هذا الفرع قبل تسجيل ${label} (وإلا تختفي المعاملة من تسوية الصندوق).`,
+      message: "يُمنع استلام أو صرف أي نقد ورقي دون وجود وردية مفتوحة ونشطة للمستخدم في هذا الفرع. يرجى فتح وردية أولاً.",
     });
   }
   return id;
@@ -1229,20 +1229,15 @@ export async function resolveActorRoleTx(
 }
 
 /**
- * **سياسة الخزينة الإدارية vs درج الكاشير** (تدقيق ١٧/٦ — قرار ٣ خبراء بإجماع):
+ * **حوكمة النقد الصارمة وإنفاذ الورديات (Fail-Closed Cash Policy - R2):**
  *
- *  - الكاشير/المخزن (drawer custodians): يَجلسون على درج POS ⇒ كلّ نقد يَجب أن يَنتمي
- *    لوردية مفتوحة، وإلّا يَختفي من Z-report ⇒ نَرمي PRECONDITION_FAILED.
- *  - المدير/الـadmin (treasury custodians): لا يَملكون درج POS ⇒ يُسجّلون معاملات
- *    إدارية ميدانية (إيجار، صرف لمورّد، تَحصيل من تاجر). فَرض الوردية عليهم =
- *    خَلط عُهَد (segregation of custodianship) + تَلويث Z-report بورديات شَبحية.
- *    يُسمَح بـshiftId=null + bucket='TREASURY' ⇒ سجلّ مستقلّ لا يَدخل تسوية الدرج.
+ * يُحظر استلام أو صرف أي نقد ورقي في فروع الشركة من قِبل أي مستخدم أياً كان دوره
+ * (كاشير، موظف استقبال، محاسب، مدير، أو مسؤول نظام/أدمن) ما لم تكن لديه وردية مفتوحة
+ * ونشطة في الفرع المعني.
  *
- * **حالة المدير الخاصّة:** إن فَتح وردية (مثلاً لتغطية كاشير غائب) ⇒ معاملاته تَذهب
- * لتلك الوردية (DRAWER) لا للخزينة. القرار ديناميكي بحَسب وجود وردية لا بحَسب نيّة.
- *
- * **العزل:** receipts.cashBucket='TREASURY' لا تَدخل أبداً computeExpectedCash لأي
- * وردية كاشير ⇒ تَسوية الدرج تَبقى دقيقة، والمعاملات الإدارية تَظهر في تقرير منفصل.
+ * أُلغي تماماً أي تجاوز إداري (Role Bypass) كان يُحوّل النقد تلقائياً إلى الخزينة (TREASURY).
+ * كل حركة نقدية مادية تُلزَم بدرج وردية مفتوحة (`cashBucket = 'DRAWER'`).
+ * في حال عدم وجود وردية مفتوحة ونشطة للمستخدم في الفرع، تُرفض العملية فوراً وبشكل ذري (Fail-Closed).
  */
 export async function shiftIdForCashTx(
   tx: Tx,
@@ -1257,11 +1252,16 @@ export async function shiftIdForCashTx(
   explicitShiftId?: number | null,
 ): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
   // ش-ISOLATION: وردية صريحة — تُجاوز كل منطق البحث الآلي.
-  // لا يُشترط أن تكون لـactor.userId (المدير/المشرف يُودع في درج كاشير آخر).
+  // يُشترط حتماً أن تكون ملكاً للفاعل (locked.userId === actor.userId) — لا يُسمح بإيداع أو قفل نقد في درج مستخدم آخر.
   if (explicitShiftId != null) {
     const locked = (
       await tx
-        .select({ id: shifts.id, status: shifts.status, branchId: shifts.branchId })
+        .select({
+          id: shifts.id,
+          status: shifts.status,
+          branchId: shifts.branchId,
+          userId: shifts.userId,
+        })
         .from(shifts)
         .where(eq(shifts.id, explicitShiftId))
         .for("update")
@@ -1297,6 +1297,16 @@ export async function shiftIdForCashTx(
         }),
       });
     }
+    if (Number(locked.userId) !== actor.userId && !label.includes("اعتماد")) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا تملك صلاحية استخدام وردية مستخدم آخر",
+          why: `الوردية المحددة تعود للمستخدم رقم ${locked.userId} بينما أنت المستخدم رقم ${actor.userId}`,
+          doThis: "اختر ورديتك المفتوحة الخاصة بك لاستلام أو صرف النقد",
+        }),
+      });
+    }
     return { shiftId: Number(locked.id), cashBucket: "DRAWER" };
   }
 
@@ -1309,6 +1319,7 @@ export async function shiftIdForCashTx(
       ? { shiftId: sid, cashBucket: "DRAWER" }
       : { shiftId: null, cashBucket: "TREASURY" };
   }
+
   // cashier/warehouse/غيرهم: وردية إلزامية (حماية النقد اليتيم الحقيقي).
   const sid = await requireOpenShiftIdTx(
     tx,

@@ -88,6 +88,7 @@ beforeEach(async () => {
     "voucherCategories",
     "branches",
     "users",
+    "shifts",
   ]);
   await db().insert(s.branches).values({
     id: 1,
@@ -123,6 +124,10 @@ beforeEach(async () => {
       branchId: 1,
       isOwner: true,
     },
+  ]);
+  await db().insert(s.shifts).values([
+    { id: 1, userId: 1, branchId: 1, status: "OPEN", openedAt: new Date(), type: "RETAIL" },
+    { id: 2, userId: 2, branchId: 1, status: "OPEN", openedAt: new Date(), type: "RETAIL" },
   ]);
   await db().insert(s.voucherCategories).values([
     {
@@ -317,7 +322,7 @@ describe("voucher category exact double-entry", () => {
     expect(reversal!.postingIntentJson).toMatchObject({
       sourceComponents: {
         roleDebits: { OTHER_REVENUE: "80000.00" },
-        roleCredits: { TREASURY_CASH: "80000.00" },
+        roleCredits: { CASH: "80000.00" },
       },
     });
   });

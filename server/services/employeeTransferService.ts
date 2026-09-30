@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { branches, employeeTransfers, employees } from "../../drizzle/schema";
@@ -167,12 +167,24 @@ export async function approveEmployeeTransfer(
   });
 }
 
-/** استعلام تنقلات الموظف. */
-export async function listEmployeeTransfers(employeeId: number) {
+/** استعلام تنقلات الموظف مع دعم عزل الفروع. */
+export async function listEmployeeTransfers(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeTransfers.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(
+      or(
+        eq(employeeTransfers.fromBranchId, scopedBranchId),
+        eq(employeeTransfers.toBranchId, scopedBranchId),
+      )!,
+    );
+  }
   return db
     .select()
     .from(employeeTransfers)
-    .where(eq(employeeTransfers.employeeId, employeeId))
+    .where(and(...conds))
     .orderBy(desc(employeeTransfers.effectiveDate));
 }

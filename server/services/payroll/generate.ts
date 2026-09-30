@@ -28,7 +28,7 @@ import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegal
 import { applyDuePromotions } from "../promotionService";
 import { type Actor, withTx } from "../tx";
 import { baghdadToday } from "../businessDay";
-import { assertPeriod, computeNet, countDaysWithin, expandSpans, recomputeRunTotals } from "./helpers";
+import { assertPeriod, capPenaltyDeduction, computeNet, countDaysWithin, expandSpans, recomputeRunTotals } from "./helpers";
 import { getRun } from "./queries";
 import { encodeTerminationWageCoverage } from "./terminationCoverage";
 import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
@@ -570,12 +570,13 @@ export async function generatePayroll(period: string, actor: Actor) {
       // (حين المكوّنات القانونية معطَّلة statutoryDeduction=0 ⇒ الصيغة مطابقة لما كانت — صفر انحدار.)
       const absorbableWage = Decimal.max(0, round2(gross.plus(overtime).plus(commission).minus(leaveDeduction).minus(statutoryDeduction)));
       const empPenalties = penaltiesByEmp.get(Number(e.id));
-      const penaltyDeduction = empPenalties ? empPenalties.total : new Decimal(0);
+      const rawPenalty = empPenalties ? empPenalties.total : new Decimal(0);
+      const penaltyDeduction = capPenaltyDeduction(absorbableWage, rawPenalty);
       const remainingForAdvance = Decimal.max(0, absorbableWage.minus(penaltyDeduction));
       const suggestedAdvance = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
       const advanceDeduction = round2(Decimal.min(suggestedAdvance, remainingForAdvance));
       const deductions = round2(advanceDeduction.plus(leaveDeduction).plus(statutoryDeduction).plus(penaltyDeduction));
-      const net = computeNet(gross, overtime, commission, deductions);
+      const net = Decimal.max(0, computeNet(gross, overtime, commission, deductions));
       await tx.insert(payrollItems).values({
         runId,
         // شفافية الأجر بالحضور: الموظف يرى لماذا نقص أجرُه بالضبط (ساعات/أيام لا مبلغاً غامضاً).
@@ -617,7 +618,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         overtime: toDbMoney(overtime),
         commission: toDbMoney(commission),
         deductions: toDbMoney(deductions),
-        wageReduction: toDbMoney(leaveDeduction),
+        wageReduction: toDbMoney(round2(leaveDeduction.plus(penaltyDeduction))),
         advanceDeduction: toDbMoney(advanceDeduction),
         // المكوّنات القانونية (البند ④، لقطة): حصّتا الموظف (ضمان+ضريبة) مُتضمَّنتان في deductions أعلاه؛
         // حصّة رب العمل واستحقاق نهاية الخدمة عرضٌ/التزامٌ فقط (خارج deductions/net). كلها صفر عند التعطيل.

@@ -1,11 +1,25 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
+import { fullEmployeeName } from "@shared/hr";
 import Decimal from "decimal.js";
-import { employeeAdvances, employeeLoanRequests, employees } from "../../drizzle/schema";
+import {
+  employeeAdvances,
+  employeeLoanRequests,
+  employees,
+  receipts,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { money, round2, toDbMoney } from "./money";
+import { extractInsertId } from "../lib/insertId";
+import { openShiftIdTx } from "./shiftService";
+import { postEntry } from "./ledgerService";
+import {
+  createPostingIntent,
+  signedPostingLines,
+  type PostingSourceComponents,
+} from "./accounting/postingEngine";
 
 function requireDb() {
   const db = getDb();
@@ -183,7 +197,7 @@ export async function reviewEmployeeLoanRequest(
   });
 }
 
-/** صرف السلفة المعتمدة وإنشاء سجل السلفة الفعالة رسمياً. */
+/** صرف السلفة المعتمدة وإنشاء سجل السلفة الفعالة رسمياً وربطها بالإيصال والقيد المحاسبي والوردية. */
 export async function disburseEmployeeLoan(
   actor: MaybeScopedActor,
   id: number,
@@ -193,6 +207,7 @@ export async function disburseEmployeeLoan(
       .select()
       .from(employeeLoanRequests)
       .where(eq(employeeLoanRequests.id, id))
+      .for("update")
       .limit(1);
 
     if (!lr) {
@@ -202,6 +217,17 @@ export async function disburseEmployeeLoan(
           what: "تعذّر صرف السلفة",
           why: "طلب السلفة المطلوب غير موجود في النظام",
           doThis: "تحقّق من رقم الطلب وأعد فتح القائمة",
+        }),
+      });
+    }
+
+    if (lr.status === "DISBURSED") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن صرف السلفة",
+          why: "تم صرف طلب السلفة مسبقاً وإنشاء سجل السلفة الفعالة له",
+          doThis: "تحقّق من سجل السلف الفعالة للموظف في شاشة الموارد البشرية",
         }),
       });
     }
@@ -217,20 +243,113 @@ export async function disburseEmployeeLoan(
       });
     }
 
-    // إنشاء سجل سلفة فعال في employeeAdvances
+    const loanAmount = money(lr.amount);
+    if (loanAmount.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر صرف السلفة",
+          why: "مبلغ السلفة المطلوب صرفها غير صالح أو يساوي صفراً",
+          doThis: "تحقّق من بيانات السلفة المعتمدة",
+        }),
+      });
+    }
+
+    const [emp] = await tx
+      .select({
+        id: employees.id,
+        firstName: employees.firstName,
+        fatherName: employees.fatherName,
+        grandfatherName: employees.grandfatherName,
+        lastName: employees.lastName,
+        branchId: employees.branchId,
+      })
+      .from(employees)
+      .where(eq(employees.id, lr.employeeId))
+      .limit(1);
+
+    const empName = emp ? fullEmployeeName(emp) : `موظف #${lr.employeeId}`;
+
+    const branchId = lr.branchId ?? emp?.branchId ?? actor.branchId;
+    if (!branchId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر صرف السلفة",
+          why: "لم يتم تحديد الفرع المسؤول عن الصرف المالي",
+          doThis: "تأكد من ارتباط الموظف بفرع عمل معتمد",
+        }),
+      });
+    }
+
+    // تحديد الوردية ودلو النقد:
+    // إذا كان للفاعل وردية مفتوحة بالفرع: DRAWER مع shiftId
+    // إذا لم تكن هناك وردية مفتوحة: TREASURY مع shiftId = null
+    const openShiftId = await openShiftIdTx(tx, actor.userId, branchId);
+    const cashBucket: "DRAWER" | "TREASURY" = openShiftId != null ? "DRAWER" : "TREASURY";
+    const shiftId = openShiftId != null ? openShiftId : null;
+
+    // 1. إنشاء إيصال الصرف النقدي في receipts
+    const [receiptRes] = await tx.insert(receipts).values({
+      branchId,
+      shiftId,
+      cashBucket,
+      direction: "OUT",
+      amount: toDbMoney(loanAmount),
+      paymentMethod: "CASH",
+      referenceNumber: `EMP-LOAN:${lr.id}`,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      approvedBy: actor.userId,
+      approvedAt: new Date(),
+      createdBy: actor.userId,
+      partyType: "OTHER",
+      counterpartyName: empName,
+      description: `صرف سلفة موظف #${lr.id} — ${empName}`,
+    });
+    const receiptId = extractInsertId(receiptRes);
+
+    // 2. تسجيل القيد المحاسبي المزدوج في accountingEntries
+    const assetRole = cashBucket === "DRAWER" ? "CASH" : "TREASURY_CASH";
+    const sourceComponents: PostingSourceComponents = {
+      roleDebits: { EMPLOYEE_ADVANCES: loanAmount },
+      roleCredits: { [assetRole]: loanAmount },
+    };
+    const postingIntent = createPostingIntent(
+      "PAYMENT_OUT_EMPLOYEE_ADVANCE",
+      "PAYMENT_OUT",
+      signedPostingLines("EMPLOYEE_ADVANCES", assetRole, loanAmount),
+      sourceComponents,
+    );
+
+    await postEntry(tx, {
+      entryType: "PAYMENT_OUT",
+      branchId,
+      receiptId,
+      amount: loanAmount,
+      paymentMethod: "CASH",
+      postingIntent,
+      postingSourceComponents: sourceComponents,
+      createdBy: actor.userId,
+      notes: `EMPLOYEE_LOAN_DISBURSEMENT: صرف سلفة موظف #${lr.id}`,
+      dedupeKey: `EMPLOYEE_LOAN_DISBURSEMENT:${lr.id}`,
+    });
+
+    // 3. إنشاء سجل السلفة الفعالة في employeeAdvances بربط receiptId
     const [advRes] = await tx.insert(employeeAdvances).values({
       employeeId: lr.employeeId,
-      branchId: lr.branchId,
-      amount: lr.amount,
-      remaining: lr.amount,
-      monthlyDeduction: lr.monthlyDeduction,
+      branchId,
+      amount: toDbMoney(loanAmount),
+      remaining: toDbMoney(loanAmount),
+      monthlyDeduction: lr.monthlyDeduction ? toDbMoney(lr.monthlyDeduction) : null,
       status: "ACTIVE",
+      receiptId,
       note: `سلفة مصروفة بناءً على طلب رقم #${lr.id}${lr.reason ? ` — ${lr.reason}` : ""}`,
       createdBy: actor.userId,
     });
+    const advanceId = extractInsertId(advRes);
 
-    const advanceId = advRes.insertId;
-
+    // 4. تحديث حالة طلب السلفة إلى DISBURSED وربط advanceId
     await tx
       .update(employeeLoanRequests)
       .set({
@@ -239,16 +358,25 @@ export async function disburseEmployeeLoan(
       })
       .where(eq(employeeLoanRequests.id, id));
 
-    return { id, advanceId, status: "DISBURSED" };
+    return { id, advanceId, receiptId, status: "DISBURSED" };
   });
 }
 
-/** استعلام طلبات سلف الموظف. */
-export async function listEmployeeLoans(employeeId: number) {
+export const disburseLoan = disburseEmployeeLoan;
+
+/** استعلام طلبات سلف الموظف مع دعم عزل الفروع. */
+export async function listEmployeeLoans(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeLoanRequests.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employeeLoanRequests.branchId, scopedBranchId));
+  }
   return db
     .select()
     .from(employeeLoanRequests)
-    .where(eq(employeeLoanRequests.employeeId, employeeId))
+    .where(and(...conds))
     .orderBy(desc(employeeLoanRequests.createdAt));
 }

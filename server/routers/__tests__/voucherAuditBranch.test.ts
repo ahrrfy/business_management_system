@@ -54,6 +54,10 @@ async function seed() {
     { id: 2, openId: "vab-admin-branch1", name: "أدمن الفرع ١", role: "admin", branchId: 1, loginMethod: "local" },
   ]);
   await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0.00" });
+  await db().insert(s.shifts).values([
+    { id: 1, userId: 1, branchId: 2, status: "OPEN", openedAt: new Date(), type: "RETAIL" },
+    { id: 2, userId: 2, branchId: 2, status: "OPEN", openedAt: new Date(), type: "RETAIL" },
+  ]);
 }
 
 function context(user: s.User) {

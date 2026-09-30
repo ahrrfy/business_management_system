@@ -149,23 +149,43 @@ export async function approveEmployeeContract(
   });
 }
 
-/** استعلام عقود الموظف. */
-export async function listEmployeeContracts(employeeId: number) {
+/** استعلام عقود الموظف مع دعم عزل الفروع. */
+export async function listEmployeeContracts(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
+  const conds = [eq(employeeContracts.employeeId, employeeId)];
+  if (scopedBranchId != null) {
+    conds.push(eq(employeeContracts.branchId, scopedBranchId));
+  }
   return db
     .select()
     .from(employeeContracts)
-    .where(eq(employeeContracts.employeeId, employeeId))
+    .where(and(...conds))
     .orderBy(desc(employeeContracts.startDate));
 }
 
-/** تنبيهات انتهاء فترة التجربة (خلال 15 يوماً القادمة) لاتخاذ قرار التثبيت أو إنهاء التجربة. */
-export async function getProbationAlerts(withinDays: number = 15) {
+/** تنبيهات انتهاء فترة التجربة (خلال 15 يوماً القادمة) لاتخاذ قرار التثبيت أو إنهاء التجربة مع دعم عزل الفروع. */
+export async function getProbationAlerts(
+  withinDays: number = 15,
+  scopedBranchId?: number | null,
+) {
   const db = requireDb();
   const todayStr = baghdadToday();
   const targetDate = new Date(`${todayStr}T00:00:00Z`);
   targetDate.setUTCDate(targetDate.getUTCDate() + withinDays);
   const targetDateStr = targetDate.toISOString().slice(0, 10);
+
+  const conds = [
+    eq(employees.isActive, true),
+    eq(employeeContracts.status, "ACTIVE"),
+    sql`${employeeContracts.probationEndDate} IS NOT NULL`,
+    lte(employeeContracts.probationEndDate, targetDateStr),
+  ];
+  if (scopedBranchId != null) {
+    conds.push(eq(employeeContracts.branchId, scopedBranchId));
+  }
 
   const rows = await db
     .select({
@@ -179,14 +199,7 @@ export async function getProbationAlerts(withinDays: number = 15) {
     })
     .from(employeeContracts)
     .innerJoin(employees, eq(employeeContracts.employeeId, employees.id))
-    .where(
-      and(
-        eq(employees.isActive, true),
-        eq(employeeContracts.status, "ACTIVE"),
-        sql`${employeeContracts.probationEndDate} IS NOT NULL`,
-        lte(employeeContracts.probationEndDate, targetDateStr),
-      ),
-    )
+    .where(and(...conds))
     .orderBy(employeeContracts.probationEndDate);
 
   return rows.map((r) => {

@@ -353,18 +353,17 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
           }),
         });
       }
-      const role = actor.role;
-      if (role !== "admin" && role !== "manager") {
-        if (Number(s.userId) !== Number(actor.userId)) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: appErrorMessage({
-              what: "لا تَستطيع التسجيل على وردية مستخدم آخر",
-              why: `الوردية رقم ${Number(s.id)} مفتوحةٌ لموظّفٍ آخر، ونقدُها يُحاسَب عليه هو في تسوية درجه`,
-              doThis: "افتح وردية على درجك من الخزينة ← الورديات وحصّل عليها، أو سلّم النقد إلى صاحب الوردية ليقبض هو",
-            }),
-          });
-        }
+      // SHIFT-OWN (حظر انتحال الورديات - Fail-Closed): فرض ملكية الوردية للجميع بلا استثناء
+      // النقد المقبوض يدخل درج الوردية، لذا يُمنع على أي فاعل تسجيل قبض نقدي على وردية موظف آخر.
+      if (Number(s.userId) !== Number(actor.userId)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا تَستطيع التسجيل على وردية مستخدم آخر",
+            why: `الوردية رقم ${Number(s.id)} مفتوحةٌ لموظّفٍ آخر، ونقدُها يُحاسَب عليه هو في تسوية درجه`,
+            doThis: "افتح وردية على درجك من الخزينة ← الورديات وحصّل عليها، أو سلّم النقد إلى صاحب الوردية ليقبض هو",
+          }),
+        });
       }
     }
     // انسب الدفع النقدي لوردية الموظّف المفتوحة إن لم يُمرَّر صراحةً (تسوية الصندوق).

@@ -65,6 +65,11 @@ async function seedBase() {
   ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0.00" });
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "0.00" });
+  await d.insert(s.shifts).values([
+    { id: 1, userId: 1, branchId: 1, status: "OPEN", openedAt: new Date(), type: "RETAIL" },
+    { id: 2, userId: 2, branchId: 1, status: "OPEN", openedAt: new Date(), type: "RETAIL" },
+    { id: 3, userId: 3, branchId: 1, status: "OPEN", openedAt: new Date(), type: "RETAIL" },
+  ]);
   // فئة سَندٍ نموذجية
   await d.insert(s.voucherCategories).values({
     id: 1, name: "إيجار", direction: "OUT", postingRole: "RENT", isActive: true, sortOrder: 10,
@@ -298,10 +303,10 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     }, adminActor);
     expect(r.approvalStatus).toBe("APPROVED");
     const [stored] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
-    expect(stored).toMatchObject({ status: "COMPLETED", approvedBy: null, cashBucket: "TREASURY" });
+    expect(stored).toMatchObject({ status: "COMPLETED", approvedBy: null, cashBucket: "DRAWER" });
   });
 
-  it("قبض OTHER الذي ينشئه المدير ينفذ فوراً في الخزينة الإدارية بلا تعليق (المسار الأول)", async () => {
+  it("قبض OTHER الذي ينشئه المدير ينفذ فوراً في درج الوردية بلا تعليق (المسار الأول)", async () => {
     const r = await createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
       paymentMethod: "CASH", partyType: "OTHER",
@@ -310,7 +315,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
 
     expect(r.approvalStatus).toBe("APPROVED");
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
-    expect(rc).toMatchObject({ status: "COMPLETED", approvedBy: null, cashBucket: "TREASURY" });
+    expect(rc).toMatchObject({ status: "COMPLETED", approvedBy: null, cashBucket: "DRAWER" });
   });
 
   it("يعيد فحص رصيد المورد الحالي عند الاعتماد ويُبقي الطلب معلّقاً إن استُهلك المستحق بعد الإنشاء", async () => {
