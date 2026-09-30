@@ -22,12 +22,9 @@ const hrWrite = branchScopedProcedure.use(requireModule("hr", "FULL"));
 const LEAVE_TYPE_KEYS = LEAVE_TYPES.map((t) => t.key) as [string, ...string[]];
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 
-/** عدد الأيام (شاملاً الطرفين) بين تاريخين "YYYY-MM-DD" — تقويم UTC ثابت. */
+/** عدد أيام العمل (شاملاً الطرفين) بين تاريخين "YYYY-MM-DD" باستثناء الجمعة والسبت (المادة 70). */
 function daysInclusive(from: string, to: string): number {
-  const [fy, fm, fd] = from.split("-").map(Number);
-  const [ty, tm, td] = to.split("-").map(Number);
-  const ms = Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd);
-  return Math.floor(ms / 86_400_000) + 1;
+  return svc.workingDaysInclusive(from, to);
 }
 
 /**

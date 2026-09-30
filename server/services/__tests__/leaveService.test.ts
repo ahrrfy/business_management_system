@@ -13,7 +13,7 @@ import { lockPeriod } from "../periodLockService";
 
 const ACTOR = { userId: 1 };
 
-const TABLES = ["leaveRequests", "financialPeriods", "employees", "auditLogs", "branches", "users"];
+const TABLES = ["leaveRequests", "financialPeriods", "employees", "auditLogs", "branches", "users", "attendance"];
 
 function db() {
   const d = getDb();
@@ -39,9 +39,9 @@ beforeEach(async () => {
 describe("leaveService", () => {
   it("يحسب عدد الأيام في الخادم من نطاق التواريخ (شاملاً الطرفين) ويتجاهل قيمة العميل", async () => {
     const emp = await createEmployee({ firstName: "حسن", lastName: "العزاوي", payType: "monthly", salary: "800000", annualLeaveBalance: 30, branchId: 1 });
-    // العميل يرسل days=999 خطأً/تلاعباً ⇒ الخادم يحسب 5 (1..5 شاملاً الطرفين).
-    const lv = await createLeave({ employeeId: emp!.id, leaveType: "سنوية", fromDate: "2026-06-01", toDate: "2026-06-05", days: 999 });
-    expect(lv.days).toBe(5);
+    // العميل يرسل days=999 خطأً/تلاعباً ⇒ الخادم يحسب 4 أيام عمل (1..4 شاملاً الطرفين، 5 جمعة عطلة).
+    const lv = await createLeave({ employeeId: emp!.id, leaveType: "سنوية", fromDate: "2026-06-01", toDate: "2026-06-04", days: 999 });
+    expect(lv.days).toBe(4);
   });
 
   it("يرفض إجازة متداخلة مع طلب قائم لنفس الموظف", async () => {
@@ -109,6 +109,43 @@ describe("leaveService", () => {
     await decideLeave(lv.id, "approved", ACTOR); // ACTOR (userId 1) مستقلٌّ عن صاحب الطلب
     [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
     expect(Number(e2.annualLeaveBalance)).toBe(27);
+  });
+
+  it("GAP-13: إجازة خميس→أحد = يومان عمل فقط (استثناء الجمعة والسبت وفق المادة 70)", async () => {
+    const emp = await createEmployee({ firstName: "جمال", lastName: "الساعدي", payType: "monthly", salary: "800000", annualLeaveBalance: 30, branchId: 1 });
+    // 2026-06-04 (خميس) إلى 2026-06-07 (أحد) = يومان فقط (الجمعة 5 والسبت 6 عطلة أسبوعية رسمية)
+    const lv = await createLeave({ employeeId: emp!.id, leaveType: "سنوية", fromDate: "2026-06-04", toDate: "2026-06-07" });
+    expect(lv.days).toBe(2);
+  });
+
+  it("GAP-15: اعتماد إجازة ينتج صفوف attendance بحالة LEAVE وإلغاء الإجازة يحذفها", async () => {
+    const emp = await createEmployee({ firstName: "طارق", lastName: "الهاشمي", payType: "monthly", salary: "800000", annualLeaveBalance: 30, branchId: 1 });
+    // إجازة من الإثنين 2026-06-01 إلى الأربعاء 2026-06-03 (3 أيام عمل)
+    const lv = await createLeave({ employeeId: emp!.id, leaveType: "سنوية", fromDate: "2026-06-01", toDate: "2026-06-03" });
+    await decideLeave(lv.id, "approved", ACTOR);
+
+    const attRows = await db()
+      .select()
+      .from(s.attendance)
+      .where(eq(s.attendance.employeeId, emp!.id));
+    expect(attRows).toHaveLength(3);
+    expect(
+      attRows.every(
+        (r) =>
+          r.status === "LEAVE" &&
+          r.source === "leave" &&
+          r.amount === "0.00" &&
+          r.hours === "0.00",
+      ),
+    ).toBe(true);
+
+    // إلغاء الإجازة يحذف صفوف الحضور المولدة
+    await cancelLeave(lv.id, ACTOR);
+    const attRowsAfterCancel = await db()
+      .select()
+      .from(s.attendance)
+      .where(eq(s.attendance.employeeId, emp!.id));
+    expect(attRowsAfterCancel).toHaveLength(0);
   });
 });
 
