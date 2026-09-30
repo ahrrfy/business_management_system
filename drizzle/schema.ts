@@ -8577,6 +8577,7 @@ export const attendance = mysqlTable(
       .references(() => employees.id),
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
+      .default(1)
       .references(() => branches.id),
     attendanceDate: date("attendanceDate", { mode: "string" }).notNull(),
     checkIn: timestamp("checkIn"),
