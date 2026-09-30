@@ -71,6 +71,8 @@ const HEADER_FIELDS: Array<[keyof ProductSnapshotDocument, string, ValueKind]> =
   ["isActive", "حالة المنتج", "bool"],
   ["showInReception", "نقطة خدمة العملاء (الاستقبال)", "bool"],
   ["showInPrintPos", "نقطة الطباعة", "bool"],
+  ["showInQuotations", "عروض الأسعار", "bool"],
+  ["showInAdvancedSales", "فواتير المبيعات المتقدمة", "bool"],
   ["isConsignment", "بضاعة أمانة", "bool"],
 ];
 

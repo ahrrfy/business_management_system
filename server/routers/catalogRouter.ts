@@ -376,6 +376,8 @@ export const catalogRouter = router({
         limit: z.number().int().positive().max(1000).default(200),
         includeReceptionServices: z.boolean().optional(),
         includeAllServices: z.boolean().optional(),
+        includeAdvancedSaleServices: z.boolean().optional(),
+        includeQuotationServices: z.boolean().optional(),
         customerId: z.number().int().positive().nullish(),
       }),
     )
@@ -388,6 +390,8 @@ export const catalogRouter = router({
         {
           includeReceptionServices: input.includeReceptionServices,
           includeAllServices: input.includeAllServices,
+          includeAdvancedSaleServices: input.includeAdvancedSaleServices,
+          includeQuotationServices: input.includeQuotationServices,
           customerId: input.customerId ?? undefined,
         },
       );
@@ -462,6 +466,8 @@ export const catalogRouter = router({
         categoryId: z.number().int().min(0).optional(),
         // ٢٤/٨ — إكمال شريحة PR #755/#757: فلتر رؤية شبكة كاشير الطباعة.
         showInPrintPos: z.boolean().optional(),
+        showInQuotations: z.boolean().optional(),
+        showInAdvancedSales: z.boolean().optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
       }),
@@ -720,9 +726,10 @@ export const catalogRouter = router({
         isService: z.boolean().optional(),
         printService: z.boolean().optional(),
         showInReception: z.boolean().optional(),
-        // م٦ (تناظر الإنشاء/التعديل): ثلاثةُ حقولٍ كانت في شاشة التعديل وحدها — الظهورُ في شبكة الطباعة
-        // مستقلّاً عن `printService`، والتوصيات الآلية، وحالة المنتج. غيابُها يُبقي افتراض المخطّط.
+        // م٦ (تناظر الإنشاء/التعديل): حقول توجيه العرض والرؤية والتوصيات
         showInPrintPos: z.boolean().optional(),
+        showInQuotations: z.boolean().optional(),
+        showInAdvancedSales: z.boolean().optional(),
         allowAutoCartRecommendations: z.boolean().optional(),
         isActive: z.boolean().optional(),
         recipe: z
@@ -1035,6 +1042,8 @@ export const catalogRouter = router({
         // اختياريّان بلا افتراض ⇒ غيابُهما يُبقي القيمة الحالية بلا مسّ (نمط PATCH).
         showInReception: z.boolean().optional(),
         showInPrintPos: z.boolean().optional(),
+        showInQuotations: z.boolean().optional(),
+        showInAdvancedSales: z.boolean().optional(),
         // (٣١/٨) تصحيحُ التصنيف بعد الإنشاء. الحقل كان **غائباً عن هذا المدخل** بينما شاشة
         // `ProductEdit` تعرض تبديل «خِدمة (بلا مَخزون)» وترسله فعلاً ⇒ يُسقطه zod بصمتٍ
         // (الافتراض `strip`)، فالتبديل يبدو عاملاً ولا يفعل شيئاً — «الشاشة تكذب» بعينها.

@@ -117,6 +117,8 @@ export interface UpdateProductVariantsInput {
   // ٢٤/٨ — متابعةُ PR #755: تحرير التوجيه بعد الإنشاء. اختياريّان بلا افتراض — نمط PATCH.
   showInReception?: boolean;
   showInPrintPos?: boolean;
+  showInQuotations?: boolean;
+  showInAdvancedSales?: boolean;
   isConsignment?: boolean;
   consignorId?: number | null;
   unitTemplate: UpdateUnitTemplate[];
@@ -427,11 +429,15 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
     const consignmentChanged = wantConsign !== undefined && !!wantConsign !== wasConsign;
     const consignorChanged = wantConsignor !== undefined && (wantConsignor ?? null) !== wasConsignor;
     const serviceChanged = input.isService !== undefined && !!input.isService !== !!p.isService;
-    // هذه هي القيمة التي سيكتبها UPDATE أدناه فعلاً: إظهار شبكة الطباعة يفرض نوعها التشغيلي.
+    // هذه هي القيمة التي سيكتبها UPDATE أدناه فعلاً: إظهار شبكة الطباعة أو التوجيه يفرض نوعها التشغيلي.
     const effectiveShowInPrintPos = input.showInPrintPos ?? !!p.showInPrintPos;
+    const effectiveShowInReception = input.showInReception ?? !!p.showInReception;
+    const effectiveShowInQuotations = input.showInQuotations ?? !!p.showInQuotations;
+    const effectiveShowInAdvancedSales = input.showInAdvancedSales ?? !!p.showInAdvancedSales;
     // productType اختياري (PATCH): غيابه لا يمسح النوع التاريخي إلى NULL.
     const requestedProductType = input.productType === undefined ? (p.productType ?? null) : input.productType?.trim() || null;
-    const effectiveProductType = effectiveShowInPrintPos ? "PRINT_SERVICE" : requestedProductType;
+    const hasServiceRouting = effectiveShowInPrintPos || effectiveShowInReception || effectiveShowInQuotations || effectiveShowInAdvancedSales;
+    const effectiveProductType = hasServiceRouting ? "PRINT_SERVICE" : requestedProductType;
     const productTypeChanged = effectiveProductType !== (p.productType ?? null);
 
     // مكوّن البكج هو عقدٌ مخزني: تغيير المنتج لاحقاً إلى خدمة/أمانة يجعل بيع البكج
@@ -601,6 +607,8 @@ export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVa
         ...(input.isActive != null ? { isActive: input.isActive } : {}),
         ...(input.showInReception !== undefined ? { showInReception: input.showInReception } : {}),
         ...(input.showInPrintPos !== undefined ? { showInPrintPos: input.showInPrintPos } : {}),
+        ...(input.showInQuotations !== undefined ? { showInQuotations: input.showInQuotations } : {}),
+        ...(input.showInAdvancedSales !== undefined ? { showInAdvancedSales: input.showInAdvancedSales } : {}),
         ...(wantConsign !== undefined ? { isConsignment: wantConsign } : {}),
         ...(wantConsignor !== undefined ? { consignorId: wantConsignor ?? null } : {}),
       })

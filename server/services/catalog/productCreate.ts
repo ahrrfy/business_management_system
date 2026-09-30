@@ -59,6 +59,8 @@ export interface CreateProductInput {
    * شاشة التعديل وحدها فيُولَد المنتج بقيمٍ لا يستطيع إعلانها عند ولادته.
    */
   showInPrintPos?: boolean;
+  showInQuotations?: boolean;
+  showInAdvancedSales?: boolean;
   allowAutoCartRecommendations?: boolean;
   isActive?: boolean;
   // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب: متغيّر واحد، وحدة أساس واحدة، ومكوّنات في `bundleComponents`.
@@ -272,9 +274,10 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     // م٦: الظهورُ في شبكة الطباعة من `printService` (الإرث) أو من `showInPrintPos` الصريح (تناظر التعديل)؛
     // كلاهما يُزامن `productType='PRINT_SERVICE'` كي لا يظهر بندٌ في الشبكة ثمّ يرفضه `createPrintSale`.
     const showInPrintPos = !!input.printService || !!input.showInPrintPos;
+    const isPrintServiceProduct = showInPrintPos || !!input.showInReception || !!input.showInQuotations || !!input.showInAdvancedSales || input.productType === PRINT_SERVICE_TYPE;
     const pRes = await tx.insert(products).values({
       name: composedName,
-      productType: showInPrintPos ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
+      productType: isPrintServiceProduct ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
       brand: input.brand?.trim() || null,
       modelName: input.modelName?.trim() || null,
       description: input.description?.trim() || null,
@@ -294,6 +297,8 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       // `productType='PRINT_SERVICE'` (لبقاء التوافق مع مسارات البيع/التصنيف الأخرى)، وفي
       // الوقتِ نفسه يُشعل `showInPrintPos=TRUE` كي تظهر الخدمةُ فوراً في الشبكة.
       showInPrintPos,
+      showInQuotations: !!input.showInQuotations,
+      showInAdvancedSales: !!input.showInAdvancedSales,
       // م٦: غيابُهما يُبقي افتراض المخطّط (التوصيات مفعَّلة، المنتج فعّال) — نمط PATCH كمسار التعديل.
       ...(input.allowAutoCartRecommendations !== undefined ? { allowAutoCartRecommendations: input.allowAutoCartRecommendations } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),

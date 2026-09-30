@@ -108,9 +108,10 @@ export function ProductSearchBar({
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
-  // فاتورة بيع متقدّمة (١٢/٨/٢٦): تُظهر كل خدمات الطباعة بلا شرط showInReception، لأنّ الفاتورة
-  // الرسمية قد تضمّ سلعاً وخدماتٍ في نفس المستند (شركات/حكومي). createSale يخصم موادها ذرّياً.
+  // فاتورة بيع متقدّمة (١٢/٨/٢٦): تُظهر خدمات الطباعة المفعّل عليها showInAdvancedSales.
+  // وعروض الأسعار تُظهر الخدمات المفعّل عليها showInQuotations.
   const isAdvancedSale = invoiceType === "SALE";
+  const isQuotation = invoiceType === "QUOTATION";
 
   const [query, setQuery] = useState("");
   const [showDrop, setShowDrop] = useState(false);
@@ -141,7 +142,15 @@ export function ProductSearchBar({
   const canSearch = term.length >= 2;
   // Sale-side query
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale, customerId },
+    {
+      branchId,
+      tier,
+      query: term,
+      limit: 50,
+      includeAdvancedSaleServices: isAdvancedSale,
+      includeQuotationServices: isQuotation,
+      customerId,
+    },
     { enabled: !isPurchase && canSearch, staleTime: 0 }
   );
   // Purchase-side query

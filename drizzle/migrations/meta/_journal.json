@@ -2381,6 +2381,13 @@
 			"when": 1788148832000,
 			"tag": "0374_remove_tasks_and_task_events",
 			"breakpoints": true
+		},
+		{
+			"idx": 375,
+			"version": "5",
+			"when": 1788148833000,
+			"tag": "0375_service_quotation_and_advanced_sale_routing",
+			"breakpoints": true
 		}
 	]
 }

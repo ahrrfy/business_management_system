@@ -455,6 +455,8 @@ export default function Products() {
                 { key: "isService", header: "بلا مخزون", map: (r) => yesNo(r.isService) },
                 { key: "showInReception", header: "يظهر في الاستقبال", map: (r) => yesNo(r.showInReception) },
                 { key: "showInPrintPos", header: "يظهر في كاشير الطباعة", map: (r) => yesNo(r.showInPrintPos) },
+                { key: "showInQuotations", header: "يظهر في عروض الأسعار", map: (r) => yesNo(r.showInQuotations) },
+                { key: "showInAdvancedSales", header: "يظهر في المبيعات المتقدمة", map: (r) => yesNo(r.showInAdvancedSales) },
                 { key: "isBundle", header: "بكج/حزمة", map: (r) => yesNo(r.isBundle) },
                 { key: "isConsignment", header: "بضاعة أمانة", map: (r) => yesNo(r.isConsignment) },
                 ...(isElevated

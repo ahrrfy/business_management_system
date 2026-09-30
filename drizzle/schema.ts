@@ -647,6 +647,10 @@ export const products = mysqlTable(
     // مُنشأةٍ بلا هذا النوع (قبل توفّر التبديل، أو مُستوردة، أو عبر مسارٍ آخر) تختفي من
     // الشبكة رغم كونها `isService=true`. الآن الظهور قرارٌ مستقلّ يديره المدير للمنتج.
     showInPrintPos: boolean("showInPrintPos").default(false).notNull(),
+    // توجيه الخدمة لعروض الأسعار: تظهر في بحث عروض الأسعار ويمكن إدراجها في العرض.
+    showInQuotations: boolean("showInQuotations").default(false).notNull(),
+    // توجيه الخدمة لفواتير المبيعات المتقدّمة: تظهر في بحث الفاتورة المتقدّمة وتُخصم من رصيد الناتج أو تُستهلك وصفتها.
+    showInAdvancedSales: boolean("showInAdvancedSales").default(false).notNull(),
     // bundles (٧/٧/٢٦): منتج مركّب (باندل/بكج) — بلا رصيد مخزنيّ خاص به؛ سعره مستقلّ يضعه المدير،
     // وتكلفته تُحسب لحظة البيع من مجموع تكاليف مكوّناته (WAVG الحيّ)، والمخزون يُخصَم من كل مكوّن.
     // النَسْت مَمنوع (مكوّن البكج لا يكون بكجاً) — يُفرض خادمياً في bundleService.

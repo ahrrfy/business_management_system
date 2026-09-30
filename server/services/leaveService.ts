@@ -18,6 +18,8 @@ import {
   sql,
 } from "drizzle-orm";
 import { fullEmployeeName, leaveTypeIsPaid } from "@shared/hr";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
@@ -597,5 +599,44 @@ export function calculateLeaveEncashment(employee: {
     dailyWage,
     unusedDays,
     encashmentAmount,
+  };
+}
+
+/**
+ * استعلام واحتساب بدل الإجازات السنوية لموظف مع عزل الفرع بموجب المادة 77 من قانون العمل العراقي رقم 37 لسنة 2015.
+ */
+export async function getLeaveEncashmentPreview(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
+  const db = requireDb();
+  const [emp] = await db
+    .select({
+      id: employees.id,
+      branchId: employees.branchId,
+      salary: employees.salary,
+      allowances: employees.allowances,
+      annualLeaveBalance: employees.annualLeaveBalance,
+    })
+    .from(employees)
+    .where(eq(employees.id, employeeId))
+    .limit(1);
+
+  if (!emp || (scopedBranchId != null && emp.branchId !== scopedBranchId)) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر احتساب تعويض الإجازات",
+        why: "الموظف المطلوب غير مسجّل في قاعدة البيانات أو غير تابع للفرع المصرّح به",
+        doThis: "تحقّق من معرّف الموظف أو أعد فتح بطاقة الموظف من القائمة",
+      }),
+    });
+  }
+
+  const calc = calculateLeaveEncashment(emp);
+  return {
+    dailyWage: calc.dailyWage.toFixed(2),
+    unusedDays: calc.unusedDays,
+    encashmentAmount: calc.encashmentAmount.toFixed(2),
   };
 }

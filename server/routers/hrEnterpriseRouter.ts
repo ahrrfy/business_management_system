@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
-import { protectedProcedure, requireModule, router } from "../trpc";
+import { branchScopedProcedure, requireModule, router } from "../trpc";
 import type { MaybeScopedActor } from "../services/tx";
 import * as docSvc from "../services/employeeDocumentService";
 import * as penaltySvc from "../services/employeePenaltyService";
@@ -9,18 +9,13 @@ import * as bonusSvc from "../services/employeeSpotBonusService";
 import * as custodySvc from "../services/employeeCustodyService";
 import * as transferSvc from "../services/employeeTransferService";
 import * as loanSvc from "../services/employeeLoanService";
-import { calculateLeaveEncashment } from "../services/leaveService";
-import { getDb } from "../db";
-import { employees } from "../../drizzle/schema";
-import { eq } from "drizzle-orm";
-import { TRPCError } from "@trpc/server";
-import { appErrorMessage } from "@shared/errors";
+import { getLeaveEncashmentPreview } from "../services/leaveService";
 
-const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
-const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
+const hrRead = branchScopedProcedure.use(requireModule("hr", "READ"));
+const hrWrite = branchScopedProcedure.use(requireModule("hr", "FULL"));
 
-function toActor(ctx: { user: { id: number; branchId: number | null; role: string; isOwner?: boolean } }): MaybeScopedActor {
-  return { userId: ctx.user.id, branchId: ctx.user.branchId, role: ctx.user.role, isOwner: ctx.user.isOwner };
+function toActor(ctx: { user: { id: number; branchId: number | null; role: string; isOwner?: boolean }; scopedBranchId?: number | null }): MaybeScopedActor {
+  return { userId: ctx.user.id, branchId: ctx.scopedBranchId ?? ctx.user.branchId, role: ctx.user.role, isOwner: ctx.user.isOwner };
 }
 
 export const hrEnterpriseRouter = router({
@@ -28,11 +23,11 @@ export const hrEnterpriseRouter = router({
   documents: router({
     list: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(({ input }) => docSvc.listEmployeeDocuments(input.employeeId)),
+      .query(({ input, ctx }) => docSvc.listEmployeeDocuments(input.employeeId, ctx.scopedBranchId)),
 
     get: hrRead
       .input(z.object({ id: z.number().int().positive() }))
-      .query(({ input }) => docSvc.getDocumentById(input.id)),
+      .query(({ input, ctx }) => docSvc.getDocumentById(input.id, ctx.scopedBranchId)),
 
     add: hrWrite
       .input(
@@ -94,14 +89,14 @@ export const hrEnterpriseRouter = router({
 
     expiryAlerts: hrRead
       .input(z.object({ withinDays: z.number().int().min(1).max(365).optional() }).optional())
-      .query(({ input }) => docSvc.getExpiringDocumentsAlerts(input?.withinDays ?? 30)),
+      .query(({ input, ctx }) => docSvc.getExpiringDocumentsAlerts(input?.withinDays ?? 30, ctx.scopedBranchId)),
   }),
 
   // —— العقوبات والانضباطيات وقانون العمل ——
   penalties: router({
     list: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(({ input }) => penaltySvc.listEmployeePenalties(input.employeeId)),
+      .query(({ input, ctx }) => penaltySvc.listEmployeePenalties(input.employeeId, ctx.scopedBranchId)),
 
     create: hrWrite
       .input(
@@ -130,7 +125,7 @@ export const hrEnterpriseRouter = router({
   contracts: router({
     list: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(({ input }) => contractSvc.listEmployeeContracts(input.employeeId)),
+      .query(({ input, ctx }) => contractSvc.listEmployeeContracts(input.employeeId, ctx.scopedBranchId)),
 
     create: hrWrite
       .input(
@@ -156,14 +151,14 @@ export const hrEnterpriseRouter = router({
 
     probationAlerts: hrRead
       .input(z.object({ withinDays: z.number().int().min(1).max(90).optional() }).optional())
-      .query(({ input }) => contractSvc.getProbationAlerts(input?.withinDays ?? 15)),
+      .query(({ input, ctx }) => contractSvc.getProbationAlerts(input?.withinDays ?? 15, ctx.scopedBranchId)),
   }),
 
   // —— المكافآت الفورية الاستثنائية ——
   spotBonuses: router({
     list: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(({ input }) => bonusSvc.listEmployeeSpotBonuses(input.employeeId)),
+      .query(({ input, ctx }) => bonusSvc.listEmployeeSpotBonuses(input.employeeId, ctx.scopedBranchId)),
 
     create: hrWrite
       .input(
@@ -186,7 +181,7 @@ export const hrEnterpriseRouter = router({
   transfers: router({
     list: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(({ input }) => transferSvc.listEmployeeTransfers(input.employeeId)),
+      .query(({ input, ctx }) => transferSvc.listEmployeeTransfers(input.employeeId, ctx.scopedBranchId)),
 
     request: hrWrite
       .input(
@@ -213,7 +208,7 @@ export const hrEnterpriseRouter = router({
   loans: router({
     list: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(({ input }) => loanSvc.listEmployeeLoans(input.employeeId)),
+      .query(({ input, ctx }) => loanSvc.listEmployeeLoans(input.employeeId, ctx.scopedBranchId)),
 
     request: hrWrite
       .input(
@@ -246,7 +241,7 @@ export const hrEnterpriseRouter = router({
   custody: router({
     list: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(({ input }) => custodySvc.listEmployeeCustody(input.employeeId)),
+      .query(({ input, ctx }) => custodySvc.listEmployeeCustody(input.employeeId, ctx.scopedBranchId)),
 
     assign: hrWrite
       .input(
@@ -282,36 +277,6 @@ export const hrEnterpriseRouter = router({
   leaveEncashment: router({
     preview: hrRead
       .input(z.object({ employeeId: z.number().int().positive() }))
-      .query(async ({ input }) => {
-        const db = getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
-        const [emp] = await db
-          .select({
-            salary: employees.salary,
-            allowances: employees.allowances,
-            annualLeaveBalance: employees.annualLeaveBalance,
-          })
-          .from(employees)
-          .where(eq(employees.id, input.employeeId))
-          .limit(1);
-
-        if (!emp) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: appErrorMessage({
-              what: "تعذّر احتساب تعويض الإجازات",
-              why: "الموظف المطلوب غير مسجّل في قاعدة البيانات",
-              doThis: "تحقّق من معرّف الموظف أو أعد فتح بطاقة الموظف من القائمة",
-            }),
-          });
-        }
-
-        const calc = calculateLeaveEncashment(emp);
-        return {
-          dailyWage: calc.dailyWage.toFixed(2),
-          unusedDays: calc.unusedDays,
-          encashmentAmount: calc.encashmentAmount.toFixed(2),
-        };
-      }),
+      .query(({ input, ctx }) => getLeaveEncashmentPreview(input.employeeId, ctx.scopedBranchId)),
   }),
 });
