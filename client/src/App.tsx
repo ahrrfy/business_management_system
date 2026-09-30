@@ -120,6 +120,7 @@ const AssetNew = lazy(() => import("@/pages/AssetNew"));
 const AssetEdit = lazy(() => import("@/pages/AssetEdit"));
 const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
 const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
+const HrPayslip = lazy(() => import("@/pages/HrPayslip"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
 const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
 const PlatformAdmin = lazy(() => import("@/pages/PlatformAdmin"));
@@ -518,6 +519,8 @@ export default function App() {
       <Route path="/hr/employees/:id"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeDetail /></RequireRole></Shell></Route>
       {/* تصفية خروج الموظف — قراءةٌ فقط تجمع ذمّته عبر ستّ وحدات قبل إنهاء الخدمة. */}
       <Route path="/hr/offboarding"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeOffboarding /></RequireRole></Shell></Route>
+      {/* قسيمة الراتب الإلكترونية — خدمة ذاتية لكل موظف مسجل الدخول للاطلاع على كشف راتبه وطباعته */}
+      <Route path="/hr/payslip/:runId"><Shell><HrPayslip /></Shell></Route>
       <Route path="/hr/attendance"><Redirect to="/hr?tab=attendance" /></Route>
       <Route path="/hr/payroll"><Redirect to="/hr?tab=payroll" /></Route>
       <Route path="/hr/leaves"><Redirect to="/hr?tab=leaves" /></Route>

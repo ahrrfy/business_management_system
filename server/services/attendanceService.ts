@@ -467,7 +467,12 @@ export async function recomputeMonthRates(
     let updated = 0;
     for (const r of rows) {
       const dateStr = toDateStr(r.attendanceDate);
-      const rate = round2(money(rateForDay(r, dateStr)));
+      const computedRate = round2(money(rateForDay(r, dateStr)));
+      const rate = computedRate.gt(0)
+        ? computedRate
+        : money(r.hourlyRate ?? 0).gt(0)
+          ? money(r.hourlyRate!)
+          : computedRate;
       // ABSENT/LEAVE بلا أجرٍ مهما كان السعر (نفس قاعدة recordAttendance).
       const paid = r.status === "PRESENT" || r.status === "LATE";
       const amount = paid ? round2(money(r.hours ?? 0).times(rate)).toDecimalPlaces(0) : money(0);

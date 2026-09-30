@@ -12,6 +12,7 @@ import { getDb } from "../../db";
 import { baghdadToday } from "../businessDay";
 import { createEmployee } from "../employeeService";
 import { approveRun, generatePayroll, getRun, payRun, returnSalaryPayment } from "../payrollService";
+import { appRouter } from "../../routers";
 
 const ACTOR = { userId: 1, branchId: 1 };
 // طلب الدفع يُنفّذه مالك نشط مختلف عن المُولِّد.
@@ -339,5 +340,30 @@ describe("payrollService — فصل المهام (SOD-01/02)", () => {
     const paid = await payRun(run!.id, APPROVER);
     expect(paid!.status).toBe("paid");
     expect(Number(paid!.paidBy)).toBe(2);
+  });
+});
+
+describe("payrollRouter: GAP-24 myPayslip self-service", () => {
+  it("allows logged in user to fetch their own payslip", async () => {
+    const emp = await createEmployee({
+      firstName: "أحمد",
+      lastName: "الزبيدي",
+      payType: "monthly",
+      salary: "800000",
+      allowances: "100000",
+    });
+    await db().update(s.employees).set({ userId: 3 }).where(eq(s.employees.id, emp!.id));
+    const run = await generatePayroll("2026-06", ACTOR);
+
+    const caller = appRouter.createCaller({
+      user: { id: 3, role: "cashier" } as any,
+      req: {} as any,
+      res: {} as any,
+    });
+
+    const res = await caller.payroll.myPayslip({ runId: run!.id });
+    expect(res.employee.firstName).toBe("أحمد");
+    expect(res.item.runId).toBe(run!.id);
+    expect(Number(res.item.net)).toBe(900000);
   });
 });
