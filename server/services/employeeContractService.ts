@@ -101,6 +101,7 @@ export async function approveEmployeeContract(
       .select()
       .from(employeeContracts)
       .where(eq(employeeContracts.id, id))
+      .for("update")
       .limit(1);
 
     if (!c) {
@@ -110,6 +111,17 @@ export async function approveEmployeeContract(
           what: "تعذّر اعتماد العقد",
           why: "العقد المطلوب غير موجود في سجلات الموظفين",
           doThis: "تحقّق من رقم العقد وأعد المحاولة من قائمة العقود",
+        }),
+      });
+    }
+
+    if (actor.branchId != null && c.branchId != null && c.branchId !== actor.branchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "غير مصرّح باعتماد العقد",
+          why: "العقد يتبع فرعاً آخر خارج نطاق صلاحيتك",
+          doThis: "تحقّق من فرع الموظف أو راجع الإدارة المركزية",
         }),
       });
     }
@@ -136,6 +148,19 @@ export async function approveEmployeeContract(
       });
     }
 
+    // 1) وسم أي عقود نشطة سابقة للموظف كـ RENEWED
+    await tx
+      .update(employeeContracts)
+      .set({ status: "RENEWED" })
+      .where(
+        and(
+          eq(employeeContracts.employeeId, c.employeeId),
+          eq(employeeContracts.status, "ACTIVE"),
+          sql`${employeeContracts.id} != ${id}`,
+        ),
+      );
+
+    // 2) تفعيل العقد الحالي
     await tx
       .update(employeeContracts)
       .set({
@@ -145,7 +170,201 @@ export async function approveEmployeeContract(
       })
       .where(eq(employeeContracts.id, id));
 
+    // 3) مزامنة بطاقة الموظف (الراتب، المسمى الوظيفي، البدلات)
+    const empUpdate: Record<string, any> = {};
+    if (c.basicSalary != null) {
+      empUpdate.salary = toDbMoney(money(c.basicSalary));
+    }
+    if (c.jobTitle != null && c.jobTitle.trim() !== "") {
+      empUpdate.position = c.jobTitle.trim();
+    }
+    if (c.allowances != null) {
+      empUpdate.allowances = toDbMoney(money(c.allowances));
+    }
+    if (Object.keys(empUpdate).length > 0) {
+      await tx
+        .update(employees)
+        .set(empUpdate)
+        .where(eq(employees.id, c.employeeId));
+    }
+
     return { id, status: "ACTIVE" };
+  });
+}
+
+export interface RenewContractInput {
+  id: number;
+  startDate?: string;
+  endDate?: string | null;
+  basicSalary?: string | number | null;
+  allowances?: string | number | null;
+  jobTitle?: string | null;
+  terms?: string | null;
+  contractNumber?: string | null;
+}
+
+/** تجديد عقد عمل سارٍ أو منتهٍ مع إنشاء عقد جديد ومزامنة بطاقة الموظف. */
+export async function renewEmployeeContract(
+  actor: MaybeScopedActor,
+  input: RenewContractInput,
+) {
+  return withTx(async (tx) => {
+    const [old] = await tx
+      .select()
+      .from(employeeContracts)
+      .where(eq(employeeContracts.id, input.id))
+      .for("update")
+      .limit(1);
+
+    if (!old) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تجديد العقد",
+          why: "العقد المطلوب تجديده غير موجود",
+          doThis: "تحقّق من رقم العقد وأعد المحاولة",
+        }),
+      });
+    }
+
+    if (actor.branchId != null && old.branchId != null && old.branchId !== actor.branchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "غير مصرّح بتجديد العقد",
+          why: "العقد يتبع فرعاً آخر خارج نطاق صلاحيتك",
+          doThis: "تحقّق من فرع الموظف أو راجع الإدارة المركزية",
+        }),
+      });
+    }
+
+    if (old.status !== "ACTIVE" && old.status !== "EXPIRED") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن تجديد هذا العقد",
+          why: `حالة العقد الحالية (${old.status}) لا تسمح بالتجديد (يُشترط أن يكون سارياً أو منتهياً)`,
+          doThis: "اختر عقداً سارياً أو منتهي الصلاحية لتجديده",
+        }),
+      });
+    }
+
+    // وسم العقد القديم كمجدد
+    await tx
+      .update(employeeContracts)
+      .set({ status: "RENEWED" })
+      .where(eq(employeeContracts.id, old.id));
+
+    // وسم أي عقود نشطة أخرى لنفس الموظف كـ RENEWED
+    await tx
+      .update(employeeContracts)
+      .set({ status: "RENEWED" })
+      .where(
+        and(
+          eq(employeeContracts.employeeId, old.employeeId),
+          eq(employeeContracts.status, "ACTIVE"),
+          sql`${employeeContracts.id} != ${old.id}`,
+        ),
+      );
+
+    const startDate = input.startDate || old.endDate || baghdadToday();
+    const newBasicSalary = input.basicSalary != null ? toDbMoney(money(input.basicSalary)) : old.basicSalary;
+    const newAllowances = input.allowances != null ? toDbMoney(money(input.allowances)) : old.allowances;
+    const newJobTitle = input.jobTitle?.trim() || old.jobTitle;
+
+    const [res] = await tx.insert(employeeContracts).values({
+      employeeId: old.employeeId,
+      branchId: old.branchId,
+      contractType: old.contractType,
+      contractNumber: input.contractNumber?.trim() || (old.contractNumber ? `${old.contractNumber}-R` : null),
+      startDate,
+      endDate: input.endDate || null,
+      probationEndDate: null,
+      jobTitle: newJobTitle,
+      basicSalary: newBasicSalary,
+      allowances: newAllowances,
+      terms: input.terms?.trim() || old.terms,
+      status: "ACTIVE",
+      createdById: actor.userId,
+      approvedById: actor.userId,
+      approvedAt: sql`NOW()`,
+    });
+
+    const empUpdate: Record<string, any> = {};
+    if (newBasicSalary != null) empUpdate.salary = newBasicSalary;
+    if (newJobTitle != null && newJobTitle.trim() !== "") empUpdate.position = newJobTitle.trim();
+    if (newAllowances != null) empUpdate.allowances = newAllowances;
+
+    if (Object.keys(empUpdate).length > 0) {
+      await tx.update(employees).set(empUpdate).where(eq(employees.id, old.employeeId));
+    }
+
+    return { oldContractId: old.id, newContractId: res.insertId, status: "ACTIVE" };
+  });
+}
+
+/** إنهاء عقد عمل سارٍ مع توثيق سبب وتاريخ الإنهاء. */
+export async function terminateEmployeeContract(
+  actor: MaybeScopedActor,
+  id: number,
+  reason?: string | null,
+) {
+  return withTx(async (tx) => {
+    const [c] = await tx
+      .select()
+      .from(employeeContracts)
+      .where(eq(employeeContracts.id, id))
+      .for("update")
+      .limit(1);
+
+    if (!c) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر إنهاء العقد",
+          why: "العقد المطلوب غير موجود",
+          doThis: "تحقّق من رقم العقد",
+        }),
+      });
+    }
+
+    if (actor.branchId != null && c.branchId != null && c.branchId !== actor.branchId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "غير مصرّح بإنهاء العقد",
+          why: "العقد يتبع فرعاً آخر خارج نطاق صلاحيتك",
+          doThis: "تحقّق من فرع الموظف أو راجع الإدارة المركزية",
+        }),
+      });
+    }
+
+    if (c.status !== "ACTIVE") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن إنهاء هذا العقد",
+          why: `حالة العقد الحالية هي (${c.status}) ولا يمكن إنهاء عقد غير سارٍ`,
+          doThis: "يمكن إنهاء العقود السارية فقط",
+        }),
+      });
+    }
+
+    const todayStr = baghdadToday();
+    const updatedTerms = reason?.trim()
+      ? `${c.terms || ""}\n[تم الإنهاء بتاريخ ${todayStr}: ${reason.trim()}]`.trim()
+      : c.terms;
+
+    await tx
+      .update(employeeContracts)
+      .set({
+        status: "TERMINATED",
+        endDate: todayStr,
+        terms: updatedTerms,
+      })
+      .where(eq(employeeContracts.id, id));
+
+    return { id, status: "TERMINATED" };
   });
 }
 

@@ -149,6 +149,25 @@ export const hrEnterpriseRouter = router({
       .input(z.object({ id: z.number().int().positive() }))
       .mutation(({ input, ctx }) => contractSvc.approveEmployeeContract(toActor(ctx), input.id)),
 
+    renew: hrWrite
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+          basicSalary: nonNegMoneyString.nullish(),
+          allowances: nonNegMoneyString.nullish(),
+          jobTitle: z.string().trim().max(150).nullish(),
+          terms: z.string().nullish(),
+          contractNumber: z.string().trim().max(100).nullish(),
+        }),
+      )
+      .mutation(({ input, ctx }) => contractSvc.renewEmployeeContract(toActor(ctx), input)),
+
+    terminate: hrWrite
+      .input(z.object({ id: z.number().int().positive(), reason: z.string().nullish() }))
+      .mutation(({ input, ctx }) => contractSvc.terminateEmployeeContract(toActor(ctx), input.id, input.reason)),
+
     probationAlerts: hrRead
       .input(z.object({ withinDays: z.number().int().min(1).max(90).optional() }).optional())
       .query(({ input, ctx }) => contractSvc.getProbationAlerts(input?.withinDays ?? 15, ctx.scopedBranchId)),
