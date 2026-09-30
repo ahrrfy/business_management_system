@@ -21,6 +21,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createEmployee } from "../employeeService";
 import { recordAttendance } from "../attendanceService";
+import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 
 const TABLES = [
   "accountingEntries",
@@ -49,6 +50,7 @@ async function reset() {
 
 async function seedBase() {
   const d = db();
+  await ensureFinancialPostingGate(d);
   await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([{ id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1 }]);
 }
@@ -75,7 +77,7 @@ beforeEach(async () => {
   await seedBase();
 });
 
-describe("GAP-21: احتساب دقائق التأخير وخصمها من أجر الحضور", () => {
+describe.sequential("GAP-21: احتساب دقائق التأخير وخصمها من أجر الحضور", () => {
   it("يحسب التأخير ويخصم الساعات والأجر عند تسجيل حضور متأخر (09:45 مع وردية 09:00)", async () => {
     const emp = await createTestEmployee({ salary: "900000" });
 
