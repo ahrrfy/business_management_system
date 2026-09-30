@@ -1,10 +1,13 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { employeeCustody, employees } from "../../drizzle/schema";
+import { employeeAdvances, employeeCustody, employees } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { baghdadToday } from "./businessDay";
+import { postEntry } from "./ledgerService";
+import { money, toDbMoney } from "./money";
+import { extractInsertId } from "../lib/insertId";
 
 function requireDb() {
   const db = getDb();
@@ -42,6 +45,7 @@ export interface ReturnCustodyInput {
   conditionAtReturn?: string | null;
   returnNotes?: string | null;
   status?: "RETURNED" | "DAMAGED" | "LOST";
+  damageAmount?: string | number | null;
 }
 
 /** تسليم عهدة عينية أو أداة عمل لموظف. */
@@ -147,6 +151,40 @@ export async function returnEmployeeCustody(
 
     const finalStatus = input.status ?? "RETURNED";
 
+    let accountingEntryId: number | null = null;
+    let advanceId: number | null = null;
+
+    if (finalStatus === "DAMAGED" || finalStatus === "LOST") {
+      const lossAmount = money(input.damageAmount);
+      if (lossAmount.gt(0)) {
+        const branchId = c.branchId ?? actor.branchId ?? 1;
+        const entryDate = input.actualReturnDate
+          ? new Date(`${input.actualReturnDate}T00:00:00Z`)
+          : new Date();
+
+        accountingEntryId = await postEntry(tx, {
+          entryType: "ADJUST",
+          branchId,
+          dedupeKey: `CUSTODY_LOSS:${c.id}`,
+          amount: lossAmount,
+          notes: `تعويض عهدة ${finalStatus === "DAMAGED" ? "تالفة" : "مفقودة"}: ${c.itemName} (موظف #${c.employeeId})`,
+          createdBy: actor.userId,
+          entryDate,
+        });
+
+        const [advRes] = await tx.insert(employeeAdvances).values({
+          employeeId: c.employeeId,
+          branchId,
+          amount: toDbMoney(lossAmount),
+          remaining: toDbMoney(lossAmount),
+          status: "ACTIVE",
+          note: `استقطاع تعويض عهدة ${finalStatus === "DAMAGED" ? "تالفة" : "مفقودة"}: ${c.itemName} (#${c.id})`,
+          createdBy: actor.userId,
+        });
+        advanceId = extractInsertId(advRes);
+      }
+    }
+
     await tx
       .update(employeeCustody)
       .set({
@@ -158,7 +196,12 @@ export async function returnEmployeeCustody(
       })
       .where(eq(employeeCustody.id, input.id));
 
-    return { id: input.id, status: finalStatus };
+    return {
+      id: input.id,
+      status: finalStatus,
+      accountingEntryId,
+      advanceId,
+    };
   });
 }
 

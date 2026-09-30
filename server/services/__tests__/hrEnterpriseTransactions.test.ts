@@ -1306,6 +1306,101 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       expect(c.status).toBe("LOST");
     });
 
+    it("returnCustody:damaged_with_compensation creates accounting entry and active employee advance (GAP-19)", async () => {
+      const { db } = await seedEmp({ employeeId: 9501, branchId: 101 });
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      const res = await assignEmployeeCustody(actor, {
+        employeeId: 9501,
+        itemType: "TOOL",
+        itemName: "جهاز لحام محمول",
+        handoverDate: "2026-06-01",
+      });
+
+      const ret = await returnEmployeeCustody(actor, {
+        id: res.id,
+        actualReturnDate: "2026-06-11",
+        conditionAtReturn: "احتراق الدائرة الكهربائية",
+        returnNotes: "تلف بسبب تيار كهربائي مرتفع",
+        status: "DAMAGED",
+        damageAmount: "75000",
+      });
+
+      expect(ret.status).toBe("DAMAGED");
+      expect(ret.accountingEntryId).toBeTypeOf("number");
+      expect(ret.advanceId).toBeTypeOf("number");
+
+      // Verify accounting entry
+      const [entry] = await db
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.id, ret.accountingEntryId!));
+      expect(entry).toBeDefined();
+      expect(entry.entryType).toBe("ADJUST");
+      expect(entry.dedupeKey).toBe(`CUSTODY_LOSS:${res.id}`);
+      expect(Number(entry.amount)).toBe(75000);
+      expect(entry.notes).toContain("تعويض عهدة تالفة");
+
+      // Verify employee advance deduction
+      const [adv] = await db
+        .select()
+        .from(s.employeeAdvances)
+        .where(eq(s.employeeAdvances.id, ret.advanceId!));
+      expect(adv).toBeDefined();
+      expect(adv.employeeId).toBe(9501);
+      expect(adv.status).toBe("ACTIVE");
+      expect(Number(adv.amount)).toBe(75000);
+      expect(Number(adv.remaining)).toBe(75000);
+      expect(adv.note).toContain("تعويض عهدة تالفة");
+    });
+
+    it("returnCustody:lost_with_compensation creates accounting entry and active employee advance (GAP-19)", async () => {
+      const { db } = await seedEmp({ employeeId: 9501, branchId: 101 });
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      const res = await assignEmployeeCustody(actor, {
+        employeeId: 9501,
+        itemType: "DEVICE",
+        itemName: "هاتف العمل الذكي",
+        handoverDate: "2026-06-01",
+      });
+
+      const ret = await returnEmployeeCustody(actor, {
+        id: res.id,
+        actualReturnDate: "2026-06-12",
+        returnNotes: "فقدان الجهاز أثناء التوصيل الميداني",
+        status: "LOST",
+        damageAmount: "250000",
+      });
+
+      expect(ret.status).toBe("LOST");
+      expect(ret.accountingEntryId).toBeTypeOf("number");
+      expect(ret.advanceId).toBeTypeOf("number");
+
+      // Verify accounting entry
+      const [entry] = await db
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.id, ret.accountingEntryId!));
+      expect(entry).toBeDefined();
+      expect(entry.entryType).toBe("ADJUST");
+      expect(entry.dedupeKey).toBe(`CUSTODY_LOSS:${res.id}`);
+      expect(Number(entry.amount)).toBe(250000);
+      expect(entry.notes).toContain("تعويض عهدة مفقودة");
+
+      // Verify employee advance deduction
+      const [adv] = await db
+        .select()
+        .from(s.employeeAdvances)
+        .where(eq(s.employeeAdvances.id, ret.advanceId!));
+      expect(adv).toBeDefined();
+      expect(adv.employeeId).toBe(9501);
+      expect(adv.status).toBe("ACTIVE");
+      expect(Number(adv.amount)).toBe(250000);
+      expect(Number(adv.remaining)).toBe(250000);
+      expect(adv.note).toContain("تعويض عهدة مفقودة");
+    });
+
     it("returnCustody:already_settled_guard rejects returning custody that is not HELD", async () => {
       await seedEmp({ employeeId: 9501, branchId: 101 });
       const actor = { userId: 1, role: "admin", branchId: 101 } as any;
