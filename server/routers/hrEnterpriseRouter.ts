@@ -194,6 +194,18 @@ export const hrEnterpriseRouter = router({
     approve: hrWrite
       .input(z.object({ id: z.number().int().positive() }))
       .mutation(({ input, ctx }) => bonusSvc.approveSpotBonus(toActor(ctx), input.id)),
+
+    payCash: hrWrite
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          shiftId: z.number().int().positive().nullish(),
+          cashBucket: z.enum(["TREASURY", "DRAWER"]).optional(),
+        }),
+      )
+      .mutation(({ input, ctx }) =>
+        bonusSvc.paySpotBonusCash(toActor(ctx), input),
+      ),
   }),
 
   // —— التنقلات الإدارية بين الفروع والأقسام ——

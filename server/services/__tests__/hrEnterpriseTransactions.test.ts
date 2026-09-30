@@ -11,6 +11,7 @@ import {
   renewEmployeeContract,
   terminateEmployeeContract,
 } from "../employeeContractService";
+import { paySpotBonusCash } from "../employeeSpotBonusService";
 import { baghdadToday } from "../businessDay";
 
 describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () => {
@@ -473,6 +474,164 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
       expect(termC.status).toBe("TERMINATED");
       expect(termC.endDate).toBe(today);
       expect(termC.terms).toContain("انتهاء المشروع");
+    });
+  });
+
+  describe("employeeSpotBonusService: paySpotBonusCash (GAP-03)", () => {
+    it("pays approved spot bonus from treasury, creates receipt and accounting entry", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.branches).values({ id: 101, name: "فرع الكرادة", code: "KD101" }).onDuplicateKeyUpdate({ set: { name: "فرع الكرادة" } });
+      await db.insert(s.employees).values({
+        id: 996,
+        firstName: "علي",
+        lastName: "الكعبي",
+        branchId: 101,
+        salary: "1000000.00",
+        payType: "monthly",
+      }).onDuplicateKeyUpdate({ set: { firstName: "علي" } });
+
+      await db.insert(s.receipts).values({
+        id: 9960,
+        branchId: 101,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: "5000000.00",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: 1,
+        approvedAt: new Date(),
+        createdBy: 1,
+      }).onDuplicateKeyUpdate({ set: { amount: "5000000.00" } });
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9961,
+        employeeId: 996,
+        branchId: 101,
+        amount: "150000.00",
+        reason: "مكافأة إنجاز متميز",
+        disbursementType: "CASH_TREASURY",
+        status: "APPROVED",
+        createdById: 2,
+        approvedById: 1,
+        approvedAt: new Date(),
+      }).onDuplicateKeyUpdate({ set: { status: "APPROVED", voucherId: null } });
+
+      const result = await paySpotBonusCash(actor, { id: 9961, cashBucket: "TREASURY" });
+      expect(result.status).toBe("PAID");
+      expect(result.receiptId).toBeDefined();
+
+      const [bonusInDb] = await db.select().from(s.employeeSpotBonuses).where(eq(s.employeeSpotBonuses.id, 9961));
+      expect(bonusInDb.status).toBe("PAID");
+      expect(bonusInDb.voucherId).toBe(result.receiptId);
+      expect(bonusInDb.paidAt).toBeDefined();
+
+      const [receiptInDb] = await db.select().from(s.receipts).where(eq(s.receipts.id, result.receiptId));
+      expect(receiptInDb.direction).toBe("OUT");
+      expect(receiptInDb.cashBucket).toBe("TREASURY");
+      expect(Number(receiptInDb.amount)).toBe(150000);
+
+      const [entry] = await db.select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, result.receiptId));
+      expect(entry).toBeDefined();
+      expect(entry.entryType).toBe("PAYMENT_OUT");
+      expect(Number(entry.amount)).toBe(150000);
+    });
+
+    it("pays approved spot bonus from open drawer", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.shifts).values({
+        id: 9962,
+        branchId: 101,
+        userId: 1,
+        status: "OPEN",
+        startedAt: new Date(),
+      }).onDuplicateKeyUpdate({ set: { status: "OPEN" } });
+
+      await db.insert(s.receipts).values({
+        id: 9963,
+        branchId: 101,
+        shiftId: 9962,
+        cashBucket: "DRAWER",
+        direction: "IN",
+        amount: "500000.00",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: 1,
+        approvedAt: new Date(),
+        createdBy: 1,
+      }).onDuplicateKeyUpdate({ set: { amount: "500000.00" } });
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9964,
+        employeeId: 996,
+        branchId: 101,
+        amount: "75000.00",
+        reason: "مكافأة سرعة تنفيذ",
+        disbursementType: "CASH_TREASURY",
+        status: "APPROVED",
+        createdById: 2,
+        approvedById: 1,
+        approvedAt: new Date(),
+      }).onDuplicateKeyUpdate({ set: { status: "APPROVED", voucherId: null } });
+
+      const result = await paySpotBonusCash(actor, { id: 9964, cashBucket: "DRAWER", shiftId: 9962 });
+      expect(result.status).toBe("PAID");
+
+      const [receiptInDb] = await db.select().from(s.receipts).where(eq(s.receipts.id, result.receiptId));
+      expect(receiptInDb.direction).toBe("OUT");
+      expect(receiptInDb.cashBucket).toBe("DRAWER");
+      expect(receiptInDb.shiftId).toBe(9962);
+      expect(Number(receiptInDb.amount)).toBe(75000);
+    });
+
+    it("rejects paying unapproved (DRAFT) spot bonus", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9965,
+        employeeId: 996,
+        branchId: 101,
+        amount: "50000.00",
+        reason: "مسودة مكافأة",
+        disbursementType: "CASH_TREASURY",
+        status: "DRAFT",
+        createdById: 1,
+      }).onDuplicateKeyUpdate({ set: { status: "DRAFT" } });
+
+      await expect(paySpotBonusCash(actor, { id: 9965 })).rejects.toThrow();
+    });
+
+    it("rejects paying spot bonus with PAYROLL_ADDITION disbursement type via cash", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9966,
+        employeeId: 996,
+        branchId: 101,
+        amount: "50000.00",
+        reason: "مكافأة مسير",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: 2,
+        approvedById: 1,
+      }).onDuplicateKeyUpdate({ set: { status: "APPROVED", disbursementType: "PAYROLL_ADDITION" } });
+
+      await expect(paySpotBonusCash(actor, { id: 9966 })).rejects.toThrow();
     });
   });
 });

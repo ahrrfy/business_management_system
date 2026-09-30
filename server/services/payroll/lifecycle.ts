@@ -3,6 +3,7 @@ import { and, eq, getTableColumns, inArray, isNotNull, isNull, sql } from "drizz
 import {
   commissionRuns,
   employeePenalties,
+  employeeSpotBonuses,
   employeeTerminations,
   employees,
   payrollAccountingEvents,
@@ -274,6 +275,10 @@ export async function cancelRun(
         .update(employeePenalties)
         .set({ payrollRunId: null, status: "APPROVED" })
         .where(eq(employeePenalties.payrollRunId, id));
+      await tx
+        .update(employeeSpotBonuses)
+        .set({ payrollRunId: null })
+        .where(eq(employeeSpotBonuses.payrollRunId, id));
       await tx.delete(payrollItems).where(eq(payrollItems.runId, id));
       await tx.delete(payrollRuns).where(eq(payrollRuns.id, id));
       return { id, deleted: true, status: "deleted" as const };
@@ -287,6 +292,10 @@ export async function cancelRun(
       .update(employeePenalties)
       .set({ payrollRunId: null, status: "APPROVED" })
       .where(eq(employeePenalties.payrollRunId, id));
+    await tx
+      .update(employeeSpotBonuses)
+      .set({ payrollRunId: null })
+      .where(eq(employeeSpotBonuses.payrollRunId, id));
     await tx
       .update(payrollRuns)
       .set({
