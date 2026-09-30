@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
+import { withTx } from "../tx";
 import { computeDocumentStatus } from "../employeeDocumentService";
 import { calculateLeaveEncashment } from "../leaveService";
+import { executeTransferInTx, executePendingTransfers } from "../employeeTransferService";
+import { baghdadToday } from "../businessDay";
 
 describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () => {
   describe("employeeDocumentService: computeDocumentStatus", () => {
@@ -105,6 +111,155 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
 
       const excessDeduction = 250000;
       expect(excessDeduction).toBeGreaterThan(maxMonthlyLegalDeduction);
+    });
+  });
+
+  describe("employeeTransferService (GAP-08 & GAP-09)", () => {
+    it("GAP-09: executeTransferInTx atomically updates employees and users.branchId", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      await db
+        .insert(s.branches)
+        .values([
+          { id: 101, name: "فرع البصرة", code: "BSR", type: "SALES" },
+          { id: 102, name: "فرع أربيل", code: "EBL", type: "SALES" },
+        ])
+        .onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
+      await db
+        .insert(s.users)
+        .values({
+          id: 991,
+          openId: "test-transfer-user-991",
+          name: "موظف منقول",
+          role: "cashier",
+          branchId: 101,
+        })
+        .onDuplicateKeyUpdate({ set: { branchId: 101 } });
+      await db
+        .insert(s.employees)
+        .values({
+          id: 991,
+          userId: 991,
+          firstName: "مهند",
+          lastName: "الزبيدي",
+          branchId: 101,
+          department: "المبيعات",
+          position: "كاشير",
+          salary: "600000",
+          payType: "monthly",
+        })
+        .onDuplicateKeyUpdate({
+          set: { branchId: 101, department: "المبيعات", position: "كاشير" },
+        });
+
+      await db
+        .insert(s.employeeTransfers)
+        .values({
+          id: 991,
+          employeeId: 991,
+          fromBranchId: 101,
+          toBranchId: 102,
+          fromDepartment: "المبيعات",
+          toDepartment: "المخازن",
+          fromPosition: "كاشير",
+          toPosition: "أمين مخزن",
+          decisionNumber: "TR-991",
+          transferDate: "2026-06-01",
+          effectiveDate: "2026-06-01",
+          status: "APPROVED",
+          createdById: 1,
+        })
+        .onDuplicateKeyUpdate({ set: { status: "APPROVED" } });
+
+      await withTx(async (tx) => {
+        await executeTransferInTx(tx, {
+          id: 991,
+          employeeId: 991,
+          toBranchId: 102,
+          toDepartment: "المخازن",
+          toPosition: "أمين مخزن",
+        });
+      });
+
+      const [updatedEmp] = await db
+        .select()
+        .from(s.employees)
+        .where(eq(s.employees.id, 991));
+      expect(Number(updatedEmp.branchId)).toBe(102);
+      expect(updatedEmp.department).toBe("المخازن");
+      expect(updatedEmp.position).toBe("أمين مخزن");
+
+      const [updatedUser] = await db
+        .select()
+        .from(s.users)
+        .where(eq(s.users.id, 991));
+      expect(Number(updatedUser.branchId)).toBe(102);
+    });
+
+    it("GAP-08: executePendingTransfers processes approved transfers with effectiveDate <= today", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const today = baghdadToday();
+      await db
+        .insert(s.branches)
+        .values([
+          { id: 101, name: "فرع البصرة", code: "BSR", type: "SALES" },
+          { id: 103, name: "فرع النجف", code: "NJF", type: "SALES" },
+        ])
+        .onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
+      await db
+        .insert(s.employees)
+        .values({
+          id: 992,
+          firstName: "سنان",
+          lastName: "البصري",
+          branchId: 101,
+          department: "الاستقبال",
+          position: "موظف استقبال",
+          salary: "500000",
+          payType: "monthly",
+        })
+        .onDuplicateKeyUpdate({ set: { branchId: 101 } });
+
+      await db
+        .insert(s.employeeTransfers)
+        .values({
+          id: 992,
+          employeeId: 992,
+          fromBranchId: 101,
+          toBranchId: 103,
+          fromDepartment: "الاستقبال",
+          toDepartment: "خدمة العملاء",
+          fromPosition: "موظف استقبال",
+          toPosition: "ممثل خدمة",
+          decisionNumber: "TR-992",
+          transferDate: today,
+          effectiveDate: today,
+          status: "APPROVED",
+          createdById: 1,
+        })
+        .onDuplicateKeyUpdate({
+          set: { status: "APPROVED", effectiveDate: today },
+        });
+
+      const res = await executePendingTransfers();
+      expect(res.executedCount).toBeGreaterThanOrEqual(1);
+      expect(res.transferIds).toContain(992);
+
+      const [trRow] = await db
+        .select()
+        .from(s.employeeTransfers)
+        .where(eq(s.employeeTransfers.id, 992));
+      expect(trRow.status).toBe("EFFECTIVE");
+
+      const [empRow] = await db
+        .select()
+        .from(s.employees)
+        .where(eq(s.employees.id, 992));
+      expect(Number(empRow.branchId)).toBe(103);
+      expect(empRow.department).toBe("خدمة العملاء");
     });
   });
 });

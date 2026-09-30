@@ -202,6 +202,9 @@ export const hrEnterpriseRouter = router({
     approve: hrWrite
       .input(z.object({ id: z.number().int().positive() }))
       .mutation(({ input, ctx }) => transferSvc.approveEmployeeTransfer(toActor(ctx), input.id)),
+
+    executePending: hrWrite
+      .mutation(({ ctx }) => transferSvc.executePendingTransfers(toActor(ctx))),
   }),
 
   // —— طلبات السلف والقروض ——
