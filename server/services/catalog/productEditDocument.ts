@@ -94,6 +94,8 @@ export interface ProductForVariantEdit {
   // ProductEdit يعرضهما تبديلَين مماثلَين لتبديلَي ServiceForm للاتساق.
   showInReception: boolean;
   showInPrintPos: boolean;
+  showInQuotations: boolean;
+  showInAdvancedSales: boolean;
   // بضاعة الأمانة (٢٠/٧): الوسم + المودِع (اسمه للعرض) — للبانر العلوي وإعادة تسمية «التكلفة»→«حصة المودِع».
   isConsignment: boolean;
   consignorId: number | null;
@@ -179,6 +181,8 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
       isActive: !!p.isActive,
       showInReception: !!p.showInReception,
       showInPrintPos: !!p.showInPrintPos,
+      showInQuotations: !!p.showInQuotations,
+      showInAdvancedSales: !!p.showInAdvancedSales,
       ...consignFields,
       unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
       variants: [],
@@ -277,6 +281,8 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
     isActive: !!p.isActive,
     showInReception: !!p.showInReception,
     showInPrintPos: !!p.showInPrintPos,
+    showInQuotations: !!p.showInQuotations,
+    showInAdvancedSales: !!p.showInAdvancedSales,
     ...consignFields,
     unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
     variants: variantRows,

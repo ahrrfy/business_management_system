@@ -59,6 +59,8 @@ describe("المكوّن المشترك — الحقول الثمانية الت
     "isService",
     "showInPrintPos",
     "showInReception",
+    "showInQuotations",
+    "showInAdvancedSales",
     "isActive",
   ])("الحقل «%s» مربوطٌ في المكوّن المشترك", (field) => {
     expect(SHARED).toMatch(new RegExp(`(?:value|checked)=\\{model\\.${field}\\}`));

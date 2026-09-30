@@ -38,9 +38,10 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
-  // فاتورة بيع متقدّمة (١٢/٨/٢٦): كل خدمات الطباعة تُعرض هنا بلا شرط showInReception (المتقدّمة قد
-  // تجمع سلعاً وخدماتٍ). createSale يخصم مواد الخدمة ويحتسب COGS ذرّياً.
+  // فاتورة بيع متقدّمة (١٢/٨/٢٦): خدمات الطباعة المفعّل عليها showInAdvancedSales تُعرض هنا.
+  // وعروض الأسعار تُظهر الخدمات المفعّل عليها showInQuotations.
   const isAdvancedSale = invoiceType === "SALE";
+  const isQuotation = invoiceType === "QUOTATION";
   const [searchQ, setSearchQ] = useState("");
   // حفظ الأصناف المحددة في Map للحفاظ التام والدقيق على تسلسل الاختيار (Insertion Order)
   // وصون الأصناف المختارة عبر عمليات البحث والفلترة المختلفة.
@@ -51,7 +52,15 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   const [limit, setLimit] = useState(PAGE);
 
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: searchQ.trim(), limit, includeAllServices: isAdvancedSale, customerId },
+    {
+      branchId,
+      tier,
+      query: searchQ.trim(),
+      limit,
+      includeAdvancedSaleServices: isAdvancedSale,
+      includeQuotationServices: isQuotation,
+      customerId,
+    },
     { enabled: open && !isPurchase }
   );
   const purQ = trpc.catalog.forPurchase.useQuery(

@@ -38,6 +38,8 @@ export interface AdminProductRow {
   // ٢٤/٨ — إكمال شريحة PR #755/#757: وسم رؤية شبكة كاشير الطباعة يخرج من `products.showInPrintPos`،
   // ويظهر في التصدير الإداريّ ليعرف المدير أيّ منتجاته تظهر هناك دون فتح كل واحد.
   showInPrintPos: boolean;
+  showInQuotations: boolean;
+  showInAdvancedSales: boolean;
   isBundle: boolean;
   isConsignment: boolean;
   consignorId: number | null;
@@ -101,6 +103,8 @@ export interface ListProductsAdminInput {
    *   غياب ⇒ الكلّ (السلوك القائم بلا تراجع)
    */
   showInPrintPos?: boolean;
+  showInQuotations?: boolean;
+  showInAdvancedSales?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -145,6 +149,12 @@ export async function listProductsAdmin(
   if (input.showInPrintPos != null) {
     conds.push(eq(products.showInPrintPos, input.showInPrintPos));
   }
+  if (input.showInQuotations != null) {
+    conds.push(eq(products.showInQuotations, input.showInQuotations));
+  }
+  if (input.showInAdvancedSales != null) {
+    conds.push(eq(products.showInAdvancedSales, input.showInAdvancedSales));
+  }
   const where = conds.length ? and(...conds) : undefined;
 
   // ترتيب حتمي للتقسيم: مفاتيح الحبيبة (variant ثم unit) تذيّل الترتيب دائماً.
@@ -172,6 +182,8 @@ export async function listProductsAdmin(
       isService: products.isService,
       showInReception: products.showInReception,
       showInPrintPos: products.showInPrintPos,
+      showInQuotations: products.showInQuotations,
+      showInAdvancedSales: products.showInAdvancedSales,
       isBundle: products.isBundle,
       isConsignment: products.isConsignment,
       consignorId: products.consignorId,
@@ -296,6 +308,8 @@ export async function listProductsAdmin(
       isService: !!r.isService,
       showInReception: !!r.showInReception,
       showInPrintPos: !!r.showInPrintPos,
+      showInQuotations: !!r.showInQuotations,
+      showInAdvancedSales: !!r.showInAdvancedSales,
       isBundle: !!r.isBundle,
       isConsignment: !!r.isConsignment,
       consignorId: includeSensitivePrices && r.consignorId != null ? Number(r.consignorId) : null,

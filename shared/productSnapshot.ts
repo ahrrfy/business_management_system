@@ -99,6 +99,8 @@ export type ProductSnapshotDocument = {
   isActive: boolean;
   showInReception: boolean;
   showInPrintPos: boolean;
+  showInQuotations: boolean;
+  showInAdvancedSales: boolean;
   isConsignment: boolean;
   consignorId: number | null;
   consignorName: string | null;

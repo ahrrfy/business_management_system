@@ -327,6 +327,18 @@ export function ProductFormFields({
               <span className="text-xs text-muted-foreground">{model.showInReception ? "يظهر" : "مخفيّ"}</span>
             </div>
           </Field>
+          <Field label="عروض الأسعار" hint={model.showInQuotations ? "يَظهر هذا البند في بحث عروض الأسعار." : "لن يَظهر في عروض الأسعار."}>
+            <div className="flex h-9 items-center gap-2">
+              <Switch checked={model.showInQuotations} onCheckedChange={(showInQuotations) => set({ showInQuotations })} />
+              <span className="text-xs text-muted-foreground">{model.showInQuotations ? "يظهر" : "مخفيّ"}</span>
+            </div>
+          </Field>
+          <Field label="فواتير المبيعات المتقدمة" hint={model.showInAdvancedSales ? "يَظهر في فواتير المبيعات المتقدّمة." : "لن يَظهر في فواتير المبيعات المتقدّمة."}>
+            <div className="flex h-9 items-center gap-2">
+              <Switch checked={model.showInAdvancedSales} onCheckedChange={(showInAdvancedSales) => set({ showInAdvancedSales })} />
+              <span className="text-xs text-muted-foreground">{model.showInAdvancedSales ? "يظهر" : "مخفيّ"}</span>
+            </div>
+          </Field>
         </CardContent>
       </Card>
 
