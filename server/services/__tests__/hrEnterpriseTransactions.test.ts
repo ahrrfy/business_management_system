@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
-import { computeDocumentStatus } from "../employeeDocumentService";
+import { computeDocumentStatus, syncDocumentExpiry } from "../employeeDocumentService";
 import { calculateLeaveEncashment } from "../leaveService";
 import {
   requestEmployeeTransfer,
@@ -117,6 +117,58 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
     it("marks documents with null expiry date as ACTIVE", () => {
       const status = computeDocumentStatus(null, 30);
       expect(status).toBe("ACTIVE");
+    });
+  });
+
+  describe("employeeDocumentService: syncDocumentExpiry (GAP-20)", () => {
+    it("transitions documents with past expiry date to EXPIRED and is idempotent", async () => {
+      const { db, employeeId } = await seedEmp({ employeeId: 9102, branchId: 102 });
+
+      // Clean up any existing documents for this employee
+      await db.delete(s.employeeDocuments).where(eq(s.employeeDocuments.employeeId, employeeId));
+
+      const pastExpiryDate = "2020-01-01";
+      const futureExpiryDate = "2030-01-01";
+
+      // Insert an expired document with status ACTIVE
+      const [resExpired] = await db.insert(s.employeeDocuments).values({
+        employeeId,
+        documentType: "PASSPORT",
+        title: "جواز سفر قديم",
+        expiryDate: pastExpiryDate,
+        status: "ACTIVE",
+      });
+
+      // Insert an active document with future expiry date
+      const [resActive] = await db.insert(s.employeeDocuments).values({
+        employeeId,
+        documentType: "WORK_PERMIT",
+        title: "تصريح عمل ساري",
+        expiryDate: futureExpiryDate,
+        status: "ACTIVE",
+      });
+
+      // Run syncDocumentExpiry
+      const syncRes1 = await syncDocumentExpiry();
+      expect(syncRes1.updatedCount).toBeGreaterThanOrEqual(1);
+
+      // Verify the expired document status changed to EXPIRED
+      const [docExpired] = await db
+        .select()
+        .from(s.employeeDocuments)
+        .where(eq(s.employeeDocuments.id, resExpired.insertId));
+      expect(docExpired.status).toBe("EXPIRED");
+
+      // Verify the future document remained ACTIVE
+      const [docActive] = await db
+        .select()
+        .from(s.employeeDocuments)
+        .where(eq(s.employeeDocuments.id, resActive.insertId));
+      expect(docActive.status).toBe("ACTIVE");
+
+      // Running sync again should be idempotent (updatedCount = 0 for this document)
+      const syncRes2 = await syncDocumentExpiry();
+      expect(syncRes2.updatedCount).toBe(0);
     });
   });
 
