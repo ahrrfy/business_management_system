@@ -53,7 +53,6 @@ export type SupplierInvoiceEvidenceType = SupplierInvoiceDraftEvidenceType;
 export interface CreateSupplierInvoiceInput
   extends SupplierInvoiceDraftDocumentInput, SupplierInvoiceDraftIdentity {
   clientRequestId: string;
-  legacyPurchaseOrderId?: number | null;
 }
 
 export interface RequestSupplierInvoiceApprovalInput {
@@ -627,18 +626,11 @@ export async function createSupplierInvoiceInTx(
         });
       }
     }
-    const linkedOrderId =
-      snapshots[0]?.order?.id != null
-        ? Number(snapshots[0].order.id)
-        : input.legacyPurchaseOrderId != null
-          ? Number(input.legacyPurchaseOrderId)
-          : null;
     const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
     const inserted = await tx.insert(supplierInvoices).values({
       invoiceNumber,
       clientRequestId,
       origin: "NATIVE",
-      legacyPurchaseOrderId: linkedOrderId,
       supplierId: input.supplierId,
       externalInvoiceNumber,
       externalNumberNorm,
