@@ -256,13 +256,9 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
         expect(entAfter).toBe(entBefore);
       });
 
-      it(`1.3 [${user.role}] Cash Voucher RECEIPT without open shift MUST throw PRECONDITION_FAILED and write 0 rows`, async () => {
-        const rcBefore = (await db().select().from(s.receipts)).length;
-        const entBefore = (await db().select().from(s.accountingEntries)).length;
-
-        let err: unknown = null;
-        try {
-          await createVoucher(
+      if (user.role === "admin" || user.role === "manager") {
+        it(`1.3 [${user.role}] Cash Voucher RECEIPT without open shift routes to TREASURY (administrative authority)`, async () => {
+          const vRes = await createVoucher(
             {
               voucherType: "RECEIPT",
               branchId: 1,
@@ -275,18 +271,44 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
             },
             actor,
           );
-        } catch (e) {
-          err = e;
-        }
+          expect(vRes.approvalStatus).toBe("APPROVED");
+          const [rc] = await db().select().from(s.receipts).where(eq(s.receipts.id, vRes.receiptId));
+          expect(rc.shiftId).toBeNull();
+          expect(rc.cashBucket).toBe("TREASURY");
+        });
+      } else {
+        it(`1.3 [${user.role}] Cash Voucher RECEIPT without open shift MUST throw PRECONDITION_FAILED and write 0 rows`, async () => {
+          const rcBefore = (await db().select().from(s.receipts)).length;
+          const entBefore = (await db().select().from(s.accountingEntries)).length;
 
-        expect(err).toBeInstanceOf(TRPCError);
-        expect((err as TRPCError).code).toBe("PRECONDITION_FAILED");
+          let err: unknown = null;
+          try {
+            await createVoucher(
+              {
+                voucherType: "RECEIPT",
+                branchId: 1,
+                amount: "25000.00",
+                paymentMethod: "CASH",
+                partyType: "CUSTOMER",
+                partyId: 1,
+                description: `سند قبض تجريبي - ${user.role}`,
+                clientRequestId: nextReq(`v-rcpt-${user.role}`),
+              },
+              actor,
+            );
+          } catch (e) {
+            err = e;
+          }
 
-        const rcAfter = (await db().select().from(s.receipts)).length;
-        const entAfter = (await db().select().from(s.accountingEntries)).length;
-        expect(rcAfter).toBe(rcBefore);
-        expect(entAfter).toBe(entBefore);
-      });
+          expect(err).toBeInstanceOf(TRPCError);
+          expect((err as TRPCError).code).toBe("PRECONDITION_FAILED");
+
+          const rcAfter = (await db().select().from(s.receipts)).length;
+          const entAfter = (await db().select().from(s.accountingEntries)).length;
+          expect(rcAfter).toBe(rcBefore);
+          expect(entAfter).toBe(entBefore);
+        });
+      }
 
       it(`1.4 [${user.role}] Cash Voucher PAYMENT without open shift is queued PENDING_APPROVAL with shiftId=null (no cash disbursed)`, async () => {
         const vRes = await createVoucher(
@@ -310,39 +332,54 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
         expect(rc.cashBucket).toBeNull();
       });
 
-      it(`1.5 [${user.role}] Cash Return when branch has 0 open shifts MUST throw PRECONDITION_FAILED or FORBIDDEN and write 0 rows`, async () => {
-        const rcBefore = (await db().select().from(s.receipts)).length;
-        const entBefore = (await db().select().from(s.accountingEntries)).length;
-
-        let err: unknown = null;
-        try {
-          await returnSaleDirect(
+      if (user.role === "admin" || user.role === "manager") {
+        it(`1.5 [${user.role}] Cash Return when branch has 0 open shifts routes refund to TREASURY`, async () => {
+          const retRes = await returnSaleDirect(
             {
               invoiceId: 200,
               lines: [{ invoiceItemId: 200, baseQuantity: 1 }],
               refund: { amount: "5000.00", method: "CASH" },
-              operatorReason: "إرجاع تجريبي لاختبار حظر النقد بلا وردية",
+              operatorReason: "إرجاع تجريبي لاختبار مسار الخزينة للإداري",
               clientRequestId: nextReq(`ret-zero-${user.role}`),
             },
             actor,
           );
-        } catch (e) {
-          err = e;
-        }
+          expect(retRes.fullyReturned).toBe(true);
+        });
+      } else {
+        it(`1.5 [${user.role}] Cash Return when branch has 0 open shifts MUST throw PRECONDITION_FAILED or FORBIDDEN and write 0 rows`, async () => {
+          const rcBefore = (await db().select().from(s.receipts)).length;
+          const entBefore = (await db().select().from(s.accountingEntries)).length;
 
-        expect(err).toBeInstanceOf(TRPCError);
-        expect(["PRECONDITION_FAILED", "FORBIDDEN"]).toContain((err as TRPCError).code);
+          let err: unknown = null;
+          try {
+            await returnSaleDirect(
+              {
+                invoiceId: 200,
+                lines: [{ invoiceItemId: 200, baseQuantity: 1 }],
+                refund: { amount: "5000.00", method: "CASH" },
+                operatorReason: "إرجاع تجريبي لاختبار حظر النقد بلا وردية",
+                clientRequestId: nextReq(`ret-zero-${user.role}`),
+              },
+              actor,
+            );
+          } catch (e) {
+            err = e;
+          }
 
-        const rcAfter = (await db().select().from(s.receipts)).length;
-        const entAfter = (await db().select().from(s.accountingEntries)).length;
-        expect(rcAfter).toBe(rcBefore);
-        expect(entAfter).toBe(entBefore);
-      });
+          expect(err).toBeInstanceOf(TRPCError);
+          expect(["PRECONDITION_FAILED", "FORBIDDEN"]).toContain((err as TRPCError).code);
 
-      it(`1.6 [${user.role}] Cash Remittance cash source lock without open shift MUST throw PRECONDITION_FAILED`, async () => {
-        let err: unknown = null;
-        try {
-          await withTx(async (tx) => {
+          const rcAfter = (await db().select().from(s.receipts)).length;
+          const entAfter = (await db().select().from(s.accountingEntries)).length;
+          expect(rcAfter).toBe(rcBefore);
+          expect(entAfter).toBe(entBefore);
+        });
+      }
+
+      if (user.role === "admin" || user.role === "manager") {
+        it(`1.6 [${user.role}] Cash Remittance cash source lock without open shift locks to TREASURY`, async () => {
+          const lockRes = await withTx(async (tx) => {
             return lockDeliveryRemittanceCashSourceInTx(
               tx,
               {
@@ -356,13 +393,35 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
               actor,
             );
           });
-        } catch (e) {
-          err = e;
-        }
+          expect(lockRes.shiftId).toBeNull();
+          expect(lockRes.cashBucket).toBe("TREASURY");
+        });
+      } else {
+        it(`1.6 [${user.role}] Cash Remittance cash source lock without open shift MUST throw PRECONDITION_FAILED`, async () => {
+          let err: unknown = null;
+          try {
+            await withTx(async (tx) => {
+              return lockDeliveryRemittanceCashSourceInTx(
+                tx,
+                {
+                  partyId: 1,
+                  branchId: 1,
+                  collectedTotal: "10000.00",
+                  feesTotal: "0.00",
+                  lines: [],
+                  clientRequestId: nextReq(`remit-${user.role}`),
+                },
+                actor,
+              );
+            });
+          } catch (e) {
+            err = e;
+          }
 
-        expect(err).toBeInstanceOf(TRPCError);
-        expect((err as TRPCError).code).toBe("PRECONDITION_FAILED");
-      });
+          expect(err).toBeInstanceOf(TRPCError);
+          expect((err as TRPCError).code).toBe("PRECONDITION_FAILED");
+        });
+      }
     }
   });
 
@@ -527,26 +586,27 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
 
       const adminActor: Actor & { role: string } = { userId: 1, branchId: 1, role: "admin" };
 
-      await expect(
-        createVoucher(
-          {
-            voucherType: "RECEIPT",
-            branchId: 1,
-            amount: "10000.00",
-            paymentMethod: "CASH",
-            partyType: "CUSTOMER",
-            partyId: 1,
-            description: "سند عبر الفروع",
-            clientRequestId: nextReq("admin-cross-voucher"),
-          },
-          adminActor,
-        ),
-      ).rejects.toMatchObject({
-        code: "PRECONDITION_FAILED",
-      });
+      const vRes = await createVoucher(
+        {
+          voucherType: "RECEIPT",
+          branchId: 1,
+          amount: "10000.00",
+          paymentMethod: "CASH",
+          partyType: "CUSTOMER",
+          partyId: 1,
+          description: "سند عبر الفروع",
+          clientRequestId: nextReq("admin-cross-voucher"),
+        },
+        adminActor,
+      );
+
+      expect(vRes.approvalStatus).toBe("APPROVED");
+      const [rc] = await db().select().from(s.receipts).where(eq(s.receipts.id, vRes.receiptId));
+      expect(rc.shiftId).toBeNull();
+      expect(rc.cashBucket).toBe("TREASURY");
     });
 
-    it("2.6 Forensic Test: Can Admin execute cash return when another cashier has an open shift in branch?", async () => {
+    it("2.6 Forensic Test: Admin cannot execute cash return when another cashier has an open shift in branch (throws FORBIDDEN)", async () => {
       // Cashier 99 has an open shift in branch 1
       await db().insert(s.shifts).values({
         id: 555,
@@ -561,10 +621,10 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
       const adminActor: Actor & { role: string } = { userId: 1, branchId: 1, role: "admin" };
 
       // Admin has NO open shift in branch 1.
-      // Does returnSaleDirect allow Admin to refund cash using cashier 99's drawer?
-      let resultOrError: { success: boolean; data?: unknown; error?: unknown };
+      // Admin attempts cash refund when Cashier 99 has an open shift -> MUST throw FORBIDDEN.
+      let err: unknown = null;
       try {
-        const res = await returnSaleDirect(
+        await returnSaleDirect(
           {
             invoiceId: 200,
             lines: [{ invoiceItemId: 200, baseQuantity: 1 }],
@@ -574,26 +634,41 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
           },
           adminActor,
         );
-        resultOrError = { success: true, data: res };
       } catch (e) {
-        resultOrError = { success: false, error: e };
+        err = e;
       }
 
-      if (!resultOrError.success) console.error("Test 2.6 error:", resultOrError.error);
-      expect(resultOrError.success).toBe(true);
+      expect(err).toBeInstanceOf(TRPCError);
+      expect((err as TRPCError).code).toBe("FORBIDDEN");
 
-      // Verify DB state: cash OUT receipt was written against Cashier 99's shift by Admin!
+      // Verify DB state: zero cash OUT receipts written against Cashier 99's shift
       const outReceipts = await db()
         .select()
         .from(s.receipts)
         .where(and(eq(s.receipts.invoiceId, 200), eq(s.receipts.direction, "OUT")));
-      expect(outReceipts).toHaveLength(1);
-      expect(Number(outReceipts[0].shiftId)).toBe(555); // Cashier 99's shift!
-      expect(outReceipts[0].cashBucket).toBe("DRAWER");
-      expect(outReceipts[0].createdBy).toBe(1); // Admin created it without having an open shift!
+      expect(outReceipts).toHaveLength(0);
+
+      // Verify that even if Admin explicitly specifies Cashier 99's shiftId, it still throws FORBIDDEN
+      let explicitErr: unknown = null;
+      try {
+        await returnSaleDirect(
+          {
+            invoiceId: 200,
+            lines: [{ invoiceItemId: 200, baseQuantity: 1 }],
+            refund: { amount: "5000.00", method: "CASH", shiftId: 555 },
+            operatorReason: "إرجاع تجريبي بتحديد درج كاشير آخر صراحة",
+            clientRequestId: nextReq("admin-return-cashier-shift-explicit"),
+          },
+          adminActor,
+        );
+      } catch (e) {
+        explicitErr = e;
+      }
+      expect(explicitErr).toBeInstanceOf(TRPCError);
+      expect((explicitErr as TRPCError).code).toBe("FORBIDDEN");
     });
 
-    it("2.7 Forensic Test: Can Admin execute cash remittance by specifying another cashier's targetShiftId?", async () => {
+    it("2.7 Forensic Test: Admin cannot execute cash remittance by specifying another cashier's targetShiftId (throws FORBIDDEN)", async () => {
       // Cashier 99 has an open shift in branch 1
       await db().insert(s.shifts).values({
         id: 556,
@@ -616,26 +691,30 @@ describe("Adversarial Cash Shift Enforcement (R2: Strict No-Shift Cash Prohibiti
       const adminActor: Actor & { role: string } = { userId: 1, branchId: 1, role: "admin" };
 
       // Admin has NO open shift.
-      // Admin passes targetShiftId: 556 (Cashier 99's shift).
-      const lockRes = await withTx(async (tx) => {
-        return lockDeliveryRemittanceCashSourceInTx(
-          tx,
-          {
-            partyId: 2,
-            branchId: 1,
-            collectedTotal: "15000.00",
-            feesTotal: "3000.00",
-            lines: [],
-            targetShiftId: 556, // Cashier 99's shift
-            clientRequestId: nextReq("admin-remit-target-shift"),
-          },
-          adminActor,
-        );
-      });
+      // Admin passes targetShiftId: 556 (Cashier 99's shift) -> MUST throw FORBIDDEN.
+      let err: unknown = null;
+      try {
+        await withTx(async (tx) => {
+          return lockDeliveryRemittanceCashSourceInTx(
+            tx,
+            {
+              partyId: 2,
+              branchId: 1,
+              collectedTotal: "15000.00",
+              feesTotal: "3000.00",
+              lines: [],
+              targetShiftId: 556, // Cashier 99's shift
+              clientRequestId: nextReq("admin-remit-target-shift"),
+            },
+            adminActor,
+          );
+        });
+      } catch (e) {
+        err = e;
+      }
 
-      console.log("Admin cash remittance lock result:", lockRes);
-      expect(lockRes.shiftId).toBe(556);
-      expect(lockRes.cashBucket).toBe("DRAWER");
+      expect(err).toBeInstanceOf(TRPCError);
+      expect((err as TRPCError).code).toBe("FORBIDDEN");
     });
   });
 });
