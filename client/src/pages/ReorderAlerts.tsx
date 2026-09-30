@@ -35,11 +35,10 @@ import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDescriptor } from "@shared/variantDisplay";
 
-
-function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
-  const parts = [r.variantName, r.color, r.size].filter(Boolean);
-  return parts.length ? parts.join(" / ") : r.sku;
+function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; variantKind?: string | null; sku: string }): string {
+  return variantDescriptor({ productName: "", ...r }) || r.sku;
 }
 
 /** مفتاح صف فريد: نفس المتغيّر قد يظهر لفرعين. */
@@ -645,6 +644,10 @@ type OverrideRow = {
   productName: string;
   sku: string;
   variantName: string | null;
+  color?: string | null;
+  colorHex?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   minStock: number | null;
   reorderPoint: number | null;
   defaultMinStock: number | null;
@@ -749,7 +752,7 @@ function BranchOverridesPanel(props: {
                     <TableRow key={key}>
                       <TableCell className="font-medium">{o.productName}</TableCell>
                       <TableCell className="text-xs">
-                        {o.variantName ?? "—"} <span className="text-muted-foreground font-mono" dir="ltr">({o.sku})</span>
+                        {variantDescriptor(o) || o.variantName || "—"} <span className="text-muted-foreground font-mono" dir="ltr">({o.sku})</span>
                       </TableCell>
                       <TableCell className="text-xs">{o.branchName}</TableCell>
                       <TableCell className="text-left tabular-nums">

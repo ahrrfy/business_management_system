@@ -924,6 +924,9 @@ export async function getStockTransfer(transferId: number, actor: TransferActor)
       productName: products.name,
       variantName: productVariants.variantName,
       color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
       isBundle: products.isBundle,
     })
@@ -941,6 +944,10 @@ export async function getStockTransfer(transferId: number, actor: TransferActor)
           baseQuantityPerBundle: stockTransferLineBundleComponents.componentBaseQuantity,
           productName: products.name,
           variantName: productVariants.variantName,
+          color: productVariants.color,
+          colorHex: productVariants.colorHex,
+          size: productVariants.size,
+          variantKind: productVariants.variantKind,
           sku: productVariants.sku,
         })
         .from(stockTransferLineBundleComponents)

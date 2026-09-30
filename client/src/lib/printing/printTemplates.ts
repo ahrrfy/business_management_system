@@ -9,6 +9,7 @@
 import { workOrderStatusLabel, workOrderStatusPrintColor } from "@shared/workOrderStatus";
 import { BRAND as B, CAIRO_FONT, CO, RECEIPT_PHONES, STOREFRONT_URL, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
 import { fmtQty } from '@shared/quantityFormat';
+import { variantDisplayName } from "@shared/variantDisplay";
 import { fmtDate, fmtDateTime } from '../date';
 import {
   wrapA4Doc, wrapReceiptDoc,
@@ -188,6 +189,9 @@ export interface QuotationPrintData {
   items: {
     productName: string;
     variantName?: string | null;
+    color?: string | null;
+    size?: string | null;
+    variantKind?: string | null;
     description?: string | null;
     unitName?: string | null;
     quantity: string | number;
@@ -224,7 +228,16 @@ export async function printQuotation(d: QuotationPrintData): Promise<void> {
     items: d.items.map((it) => ({
       // الوصف يُلحَق باسم المنتج (لا يستولي على عمود الوحدة). عمود «الوحدة» يبقى للوحدة الفعلية
       // (قطعة/كرتون/…) — كسر الفصل بين العمودين كان يُظهر نصاً طويلاً محلّ الوحدة.
-      productName: [it.productName, it.variantName, it.description].filter(Boolean).join(' — '),
+      productName: [
+        variantDisplayName({
+          productName: it.productName,
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+        }),
+        it.description,
+      ].filter(Boolean).join(' — '),
       unitName: it.unitName ?? null,
       quantity: it.quantity,
       unitPrice: it.unitPrice,

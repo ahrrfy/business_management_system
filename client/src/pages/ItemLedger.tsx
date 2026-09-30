@@ -19,6 +19,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { LoadingState, ErrorState } from "@/components/PageState";
 
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type LedgerRow = RouterOutputs["reports"]["itemLedger"]["rows"][number];
@@ -52,9 +53,9 @@ function variantLabel(r: {
   variantName: string | null;
   color: string | null;
   size: string | null;
+  variantKind?: string | null;
 }): string {
-  const detail = [r.variantName, r.color, r.size].filter(Boolean).join(" / ");
-  return detail ? `${r.productName} — ${detail}` : r.productName;
+  return variantDisplayName(r);
 }
 
 function TypeBadge({ type }: { type: string }) {

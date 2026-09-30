@@ -29,8 +29,10 @@ export const TIER_NAME: Record<LabelTier, string> = {
 /** حقول صفّ الكتالوج التي يحتاجها الملصق (مجموعة فرعية من `PosRow` ⇒ يقبل الصفّ كما هو). */
 export interface LabelSource {
   productName: string;
+  variantName?: string | null;
   color?: string | null;
   size?: string | null;
+  variantKind?: string | null;
   unitName?: string | null;
 }
 
@@ -63,7 +65,7 @@ export interface LabelParts {
 export function labelParts(src: LabelSource): LabelParts {
   const nameTokens = tokenize(src.productName);
   const tags: string[] = [];
-  for (const raw of [src.color, src.size]) {
+  for (const raw of [src.variantName, src.color, src.size]) {
     const tag = raw?.trim();
     if (!tag) continue;
     if (hasPhrase(nameTokens, tag)) continue;

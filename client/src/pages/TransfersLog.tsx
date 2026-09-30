@@ -18,6 +18,7 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { formatQuantity } from "@shared/quantityFormat";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { printTransferDoc } from "@/lib/printing/printTransferDoc";
@@ -198,7 +199,7 @@ export default function TransfersLog() {
       labels.set(
         Number(line.id),
         line.bundleComponents
-          .map((component) => `${formatQuantity(component.baseQuantityPerBundle)} × ${component.productName}${component.variantName ? ` — ${component.variantName}` : ""}`)
+          .map((component) => `${formatQuantity(component.baseQuantityPerBundle)} × ${variantDisplayName(component)}`)
           .join(" + "),
       );
     }
@@ -479,7 +480,7 @@ export default function TransfersLog() {
                       return (
                         <tr key={Number(l.id)} className="border-t align-top">
                           <td className="p-2 px-3">
-                            <div className="font-medium">{l.productName}{l.variantName ? ` — ${l.variantName}` : l.color ? ` — ${l.color}` : ""}</div>
+                            <div className="font-medium">{variantDisplayName(l)}</div>
                             {l.isBundle && (
                               <div className="mt-1 text-[11px] font-medium text-primary">
                                 بكج كامل — {bundleComponentLabelsByLine.get(Number(l.id))}

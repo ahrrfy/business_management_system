@@ -13,6 +13,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 export default function PurchaseReturnsGovernance() {
   const utils = trpc.useUtils();
@@ -87,9 +88,7 @@ export default function PurchaseReturnsGovernance() {
           `مورد #${row.supplierId}`,
         items: row.items.map((item) => ({
           purchaseReturnItemId: Number(item.id),
-          description: [item.productName, item.variantName]
-            .filter(Boolean)
-            .join(" — "),
+          description: variantDisplayName(item),
           remainingBaseQuantity: Number(item.remainingBaseQuantity),
         })),
       })),

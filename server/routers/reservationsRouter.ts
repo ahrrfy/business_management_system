@@ -185,7 +185,9 @@ export const reservationsRouter = router({
           productName: products.name,
           variantName: productVariants.variantName,
           color: productVariants.color,
+          colorHex: productVariants.colorHex,
           size: productVariants.size,
+          variantKind: productVariants.variantKind,
           unitName: productUnits.unitName,
           conversionFactor: productUnits.conversionFactor,
         })

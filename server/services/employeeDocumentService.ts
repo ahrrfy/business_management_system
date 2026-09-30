@@ -1,8 +1,8 @@
-import { and, desc, eq, lte, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, lte, ne, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { employeeDocuments, employees } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { getDb, type DB, type Tx } from "../db";
 import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { baghdadToday } from "./businessDay";
 
@@ -69,11 +69,42 @@ export function computeDocumentStatus(
   return "ACTIVE";
 }
 
+/** مزامنة انتهاء صلاحية المستندات التي تجاوزت تاريخ اليوم بتحديث حالتها إلى EXPIRED. */
+export async function syncDocumentExpiry(
+  tx?: Tx,
+  todayStr: string = baghdadToday(),
+): Promise<{ updatedCount: number }> {
+  const execute = async (runner: Tx | DB) => {
+    const res = await runner
+      .update(employeeDocuments)
+      .set({ status: "EXPIRED" })
+      .where(
+        and(
+          isNotNull(employeeDocuments.expiryDate),
+          lt(employeeDocuments.expiryDate, todayStr),
+          ne(employeeDocuments.status, "EXPIRED"),
+        ),
+      );
+    const affected = Number(
+      (res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ??
+        (res as unknown as { affectedRows?: number })?.affectedRows ??
+        0,
+    );
+    return { updatedCount: affected };
+  };
+
+  if (tx) {
+    return execute(tx);
+  }
+  return withTx(async (t) => execute(t));
+}
+
 /** استعلام مستندات موظف محدد مع دعم عزل الفروع. */
 export async function listEmployeeDocuments(
   employeeId: number,
   scopedBranchId?: number | null,
 ) {
+  await syncDocumentExpiry(undefined, baghdadToday());
   const db = requireDb();
   const conds = [eq(employeeDocuments.employeeId, employeeId)];
   if (scopedBranchId != null) {
@@ -274,6 +305,7 @@ export async function getExpiringDocumentsAlerts(
   withinDays: number = 30,
   scopedBranchId?: number | null,
 ) {
+  await syncDocumentExpiry(undefined, baghdadToday());
   const db = requireDb();
   const todayStr = baghdadToday();
   const targetDate = new Date(`${todayStr}T00:00:00Z`);

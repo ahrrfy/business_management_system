@@ -15,6 +15,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
 import { formatQuantity } from "@shared/quantityFormat";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import type { Currency, InvoiceLine, InvoiceType, PriceSource, PriceTier } from "./types";
 
@@ -73,6 +74,11 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     productId: number;
     variantId: number;
     name: string;
+    variantName?: string | null;
+    color?: string | null;
+    size?: string | null;
+    colorHex?: string | null;
+    variantKind?: string | null;
     sku: string;
     barcode: string | null;
     unitName: string;
@@ -94,7 +100,12 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     if (isPurchase) {
       return (purQ.data ?? []).map((r) => ({
         productUnitId: r.productUnitId, productId: r.productId, variantId: r.variantId,
-        name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
+        name: variantDisplayName(r),
+        variantName: r.variantName,
+        color: r.color,
+        size: r.size,
+        colorHex: r.colorHex,
+        variantKind: r.variantKind,
         sku: r.sku, barcode: null, unitName: r.unitName, conversionFactor: r.conversionFactor,
         stockBase: r.stockBase ?? 0, stockBranchId: branchId, reservedBase: 0, availableBase: r.stockBase ?? 0,
         isService: false, isBundle: false, allowBackorder: false,
@@ -104,7 +115,12 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     }
     return (posQ.data ?? []).map((r) => ({
       productUnitId: r.productUnitId, productId: r.productId, variantId: r.variantId,
-      name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
+      name: variantDisplayName(r),
+      variantName: r.variantName,
+      color: r.color,
+      size: r.size,
+      colorHex: r.colorHex,
+      variantKind: r.variantKind,
       sku: r.sku, barcode: r.barcode ?? null,
       unitName: r.isBundle === true && Number(r.conversionFactor) === 1 ? "بكج" : r.unitName,
       conversionFactor: r.conversionFactor, stockBase: r.stockBase ?? 0, stockBranchId: r.branchId,
@@ -177,7 +193,13 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     // إضافة الأصناف بالتسلسل الزمني الدقيق الذي اختاره المستخدم (Array.from(selectedMap.values()))
     const lines: InvoiceLine[] = Array.from(selectedMap.values()).map((r) => ({
       productId: r.productId, variantId: r.variantId, productUnitId: r.productUnitId,
-      name: r.name, sku: r.sku, barcode: r.barcode, unit: r.unitName, qty: 1,
+      name: r.name,
+      variantName: r.variantName,
+      color: r.color,
+      size: r.size,
+      colorHex: r.colorHex,
+      variantKind: r.variantKind,
+      sku: r.sku, barcode: r.barcode, unit: r.unitName, qty: 1,
       conversionFactor: r.conversionFactor, stockBase: r.stockBase, stockBranchId: r.stockBranchId,
       reservedBase: r.reservedBase, availableBase: r.availableBase, isService: r.isService,
       isBundle: r.isBundle, allowBackorder: r.allowBackorder, price: r.price || "0",

@@ -8575,6 +8575,10 @@ export const attendance = mysqlTable(
     employeeId: bigint("employeeId", { mode: "number" })
       .notNull()
       .references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .default(1)
+      .references(() => branches.id),
     attendanceDate: date("attendanceDate", { mode: "string" }).notNull(),
     checkIn: timestamp("checkIn"),
     checkOut: timestamp("checkOut"),
@@ -8600,6 +8604,7 @@ export const attendance = mysqlTable(
   },
   (table) => ({
     employeeIdx: index("idx_att_employee").on(table.employeeId),
+    branchIdx: index("idx_attendance_branch").on(table.branchId),
     dateIdx: index("idx_att_date").on(table.attendanceDate),
     // طابور التصحيح: الأيام الناقصة قليلة وسط آلاف الصفوف ⇒ فهرس جزئيّ المعنى على العلم+التاريخ.
     reviewIdx: index("idx_att_review").on(

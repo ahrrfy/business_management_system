@@ -3,6 +3,7 @@ import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -67,11 +68,10 @@ function variantLine(r: {
   variantName: string | null;
   color: string | null;
   size: string | null;
+  variantKind?: string | null;
   sku: string;
 }): { primary: string; secondary: string } {
-  const detail = [r.variantName, r.color, r.size].filter(Boolean).join(" / ");
-  const primary = detail ? `${r.productName} — ${detail}` : r.productName;
-  return { primary, secondary: r.sku };
+  return { primary: variantDisplayName(r), secondary: r.sku };
 }
 
 function TypeBadge({ type }: { type: MovementType }) {

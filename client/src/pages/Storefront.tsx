@@ -63,6 +63,7 @@ type TrackData = NonNullable<RouterOutputs["storefront"]["trackOrderByToken"]>;
 import { fmtInt, formatQuantity } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { normalizeArabicSearch, getStorefrontSearchSuggestions } from "@shared/storefrontSearchNormalize";
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
@@ -2882,7 +2883,7 @@ function StorefrontContent() {
                       <div className="mt-3" role="group" aria-label="اختر القياس أو وحدة البيع والكمية">
                         {(detailVariant?.variantName || detailVariant?.color || detailVariant?.size) && (
                           <p className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                            <span>الاختيار: {[detailVariant.variantName, detailVariant.color, detailVariant.size].filter(Boolean).join(" · ")}</span>
+                            <span>الاختيار: {variantDescriptor({ productName: "", ...detailVariant })}</span>
                             {detailVariant.variantKind === "ALTERNATIVE" && <span className="rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:bg-slate-600 dark:text-slate-100">ماركة مختلفة</span>}
                           </p>
                         )}

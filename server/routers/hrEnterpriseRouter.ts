@@ -302,6 +302,7 @@ export const hrEnterpriseRouter = router({
           conditionAtReturn: z.string().trim().max(100).nullish(),
           returnNotes: z.string().nullish(),
           status: z.enum(["RETURNED", "DAMAGED", "LOST"]).optional(),
+          damageAmount: nonNegMoneyString.nullish(),
         }),
       )
       .mutation(({ input, ctx }) => custodySvc.returnEmployeeCustody(toActor(ctx), input)),

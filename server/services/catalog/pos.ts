@@ -28,6 +28,7 @@ export interface PosRow {
   /** لون العرض «#RRGGBB» من بنك الألوان (اختيار صريح؛ null ⇒ يُستنتَج من الاسم). يُغذّي رمز اللون على الملصق. */
   colorHex: string | null;
   size: string | null;
+  variantKind?: string | null;
   sku: string;
   productUnitId: number;
   unitName: string;
@@ -101,6 +102,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       color: productVariants.color,
       colorHex: productVariants.colorHex,
       size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
       productUnitId: productUnits.id,
       unitName: productUnits.unitName,

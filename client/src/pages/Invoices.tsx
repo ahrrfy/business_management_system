@@ -19,6 +19,7 @@ import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { allocateLineTax, derivePaymentTerms } from "@/components/invoice";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { round2 } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -388,7 +389,7 @@ export default function Invoices() {
         paidAmount: d.paidAmount,
         qrPayload: d.qrPayload ?? null,
         items: d.items.map((it, i) => ({
-          productName: it.productName ?? "",
+          productName: variantDisplayName({ ...it, productName: it.productName ?? "" }),
           unitName: it.unitName,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
@@ -450,13 +451,10 @@ export default function Invoices() {
           tier: d.priceTier,
           paymentTerms: derivePaymentTerms(d),
           items: d.items.map((it) => ({
-            productId: it.productId ?? 0,
-            variantId: it.variantId,
-            productUnitId: it.productUnitId,
-            name: it.productName ?? "",
-            sku: it.sku ?? "",
-            barcode: null,
-            unit: it.unitName ?? "",
+            productId: it.productId ?? 0, variantId: it.variantId, productUnitId: it.productUnitId,
+            name: variantDisplayName({ ...it, productName: it.productName ?? "" }),
+            variantName: it.variantName, color: it.color, size: it.size, colorHex: it.colorHex, variantKind: it.variantKind,
+            sku: it.sku ?? "", barcode: null, unit: it.unitName ?? "",
             // qty رقم في InvoiceLine (كمية لا مال) — التحويل عبر Decimal ثم toNumber.
             qty: D(it.quantity).toNumber(),
             // استرجاع معامل التحويل من baseQuantity ÷ quantity (مخزون النظام بالوحدة الأساس).

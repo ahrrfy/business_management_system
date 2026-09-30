@@ -3,6 +3,7 @@
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
 import { receptionChannelLabel } from "@shared/receptionChannel";
 import { FILTER_LABELS } from "@shared/uiContracts";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -890,7 +891,7 @@ function ReservationLinesBlock({ detail }: { detail: ReservationDetail }) {
   return (
     <div className="rounded-md border divide-y text-sm">
       {detail.lines.map((l) => {
-        const variantLabel = l.variantName || [l.color, l.size].filter(Boolean).join(" / ");
+        const variantLabel = variantDescriptor(l);
         return (
           <div key={l.id} className="flex items-center gap-2 p-2">
             <div className="min-w-0 flex-1">

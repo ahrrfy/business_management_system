@@ -376,6 +376,10 @@ export async function decideLeave(
     }
 
     if (decision === "approved") {
+      const leaveBranchId = reqEmp?.branchId ?? actor.scopedBranchId;
+      if (leaveBranchId == null) {
+        throw new Error("لا يمكن تحديد فرع الموظف لتسجيل الحضور");
+      }
       const dates = getLeaveWorkingDates(String(lv.fromDate), String(lv.toDate));
       for (const dateStr of dates) {
         const [existing] = await tx
@@ -391,6 +395,7 @@ export async function decideLeave(
 
         const values = {
           employeeId: lv.employeeId,
+          branchId: leaveBranchId,
           attendanceDate: dateStr,
           status: "LEAVE" as const,
           hours: "0.00",

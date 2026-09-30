@@ -13,6 +13,7 @@ import { fmtDate } from "@/lib/date";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printQuotation } from "@/lib/printing/printTemplates";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { allocateLineTax } from "@/components/invoice";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -106,8 +107,11 @@ export default function Quotations() {
         customerName: d.customerName,
         notes: d.notes,
         items: d.items.map((it, index) => ({
-          productName: it.productName ?? "",
+          productName: variantDisplayName({ ...it, productName: it.productName ?? "" }),
           variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
           unitName: it.unitName,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
