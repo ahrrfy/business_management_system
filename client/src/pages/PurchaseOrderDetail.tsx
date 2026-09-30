@@ -20,9 +20,11 @@ import {
   Landmark,
   Pencil,
   Receipt,
+  RotateCcw,
   Truck,
 } from "lucide-react";
 import { Link, useParams } from "wouter";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
