@@ -2,6 +2,7 @@
 // + الفجوة (كمية الشراء المقترحة لتجهيز ذروة أيلول). تحرير الهدف مباشرةً، إضافة منتج موسميّ بالبحث،
 // تصفية «تحت الهدف فقط»، وتصدير قائمة الشراء إلى Excel. محصورة بالمدير/المخزن (البوّابة خادمية).
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -26,10 +27,9 @@ import { trpc } from "@/lib/trpc";
 import { FileEdit, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-type VariantLike = { variantName: string | null; color: string | null; size: string | null; sku: string };
+type VariantLike = { variantName: string | null; color: string | null; size: string | null; variantKind?: string | null; sku: string };
 function variantLabel(r: VariantLike): string {
-  const parts = [r.variantName, r.color, r.size].filter(Boolean);
-  return parts.length ? parts.join(" / ") : r.sku;
+  return variantDescriptor({ productName: "", ...r }) || r.sku;
 }
 
 export default function SeasonPlanning() {

@@ -33,6 +33,7 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { Camera, CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -53,9 +54,8 @@ const PAGE_SIZE = 50;
 
 type OnHandRow = RouterOutputs["inventory"]["onHand"][number];
 
-function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
-  const parts = [r.variantName, r.color, r.size].filter(Boolean);
-  return parts.length ? parts.join(" / ") : r.sku;
+function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string; variantKind?: string | null }): string {
+  return variantDescriptor({ productName: "", ...r }) || r.sku;
 }
 
 /** جداولُ هذه الشاشة كلٌّ داخل بطاقةٍ تحمل عنوانَه وعدَّه — بلا شريطِ حالةٍ لكلّ جدول. */
@@ -768,7 +768,7 @@ export default function Inventory() {
                   id: "product",
                   header: "المنتج",
                   meta: { width: "wide" },
-                  cell: ({ row }) => `${row.original.productName} — ${row.original.variantName ?? row.original.sku}`,
+                  cell: ({ row }) => variantDisplayName({ ...row.original, productName: row.original.productName ?? "" }),
                 },
                 {
                   id: "change",

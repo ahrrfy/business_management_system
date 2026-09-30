@@ -1,5 +1,5 @@
 // تقرير الرواتب الاستحقاقي — مسيّرات، مكونات قانونية، التزامات مفتوحة، وبصمات المراجعة.
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { type ColumnDef, type SortingFn } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";

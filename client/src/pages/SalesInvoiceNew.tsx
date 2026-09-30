@@ -37,6 +37,7 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { getDeviceCode } from "@/lib/offline/outbox"; import { shouldSendUnitPriceOverride } from "@/lib/quotationPayload";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -182,13 +183,10 @@ export default function SalesInvoice() {
     dispatch({
       type: "ADD_ITEMS",
       items: d.items.map((it): InvoiceLine => ({
-        productId: it.productId ?? 0,
-        variantId: it.variantId,
-        productUnitId: it.productUnitId ?? 0,
-        name: it.productName ?? "",
-        sku: it.sku ?? "",
-        barcode: null,
-        unit: it.unitName ?? "",
+        productId: it.productId ?? 0, variantId: it.variantId, productUnitId: it.productUnitId ?? 0,
+        name: variantDisplayName({ ...it, productName: it.productName ?? "" }),
+        variantName: it.variantName, color: it.color, size: it.size, colorHex: it.colorHex, variantKind: it.variantKind,
+        sku: it.sku ?? "", barcode: null, unit: it.unitName ?? "",
         qty: D(it.quantity).toNumber(),
         conversionFactor: D(it.quantity).gt(0) ? D(it.baseQuantity).div(D(it.quantity)).toString() : "1",
         stockBase: catalogByUnit.get(it.productUnitId ?? 0)?.stockBase ?? 0,

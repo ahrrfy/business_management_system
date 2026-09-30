@@ -220,16 +220,14 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
 
   const itemsByEmp = new Map<number, (typeof allItems)[number]>();
   if (run) {
-    const grouped = new Map<number, typeof allItems>();
     for (const it of allItems) {
       const eid = Number(it.employeeId);
-      const list = grouped.get(eid);
-      if (list) list.push(it);
-      else grouped.set(eid, [it]);
-    }
-    for (const [eid, list] of grouped) {
-      const match = list.find((i) => Number(i.revisionNo) === Number(run.revisionNo)) ?? list[0];
-      if (match) itemsByEmp.set(eid, match);
+      const existing = itemsByEmp.get(eid);
+      if (!existing) {
+        itemsByEmp.set(eid, it);
+      } else if (Number(it.revisionNo) === Number(run.revisionNo)) {
+        itemsByEmp.set(eid, it);
+      }
     }
   }
 
