@@ -6,6 +6,7 @@
  * القراءة hr/READ والكتابة hr/FULL (تُفرض في الموجّه).
  * ========================================================================== */
 import { and, desc, eq, getTableColumns, gte, inArray, like, lte, or, sql, type SQL } from "drizzle-orm";
+import Decimal from "decimal.js";
 import { WEEK_DAYS, fullEmployeeName } from "@shared/hr";
 import { attendanceHoursViolation } from "@shared/attendanceHours";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
@@ -630,6 +631,22 @@ export interface RecordAttendanceInput {
    * يمرّره ⇒ يبقى حارسُ «الانصراف بعد الدخول» صارماً على البشر ولا يفتح باب خطأٍ صامت.
    */
   checkOutDate?: string | null;
+  /** دقائق التأخير المحسوبة أو المحددة يدوياً. */
+  lateMinutes?: number | null;
+  /** دقائق الاستقطاع المالي للتأخير (الافتراضي يساوي دقائق التأخير بعد فترة السماح). */
+  lateDeductionMinutes?: number | null;
+}
+
+/** يُحلل وقت "HH:MM" أو "HH:MM:SS" إلى دقائق منذ منتصف الليل. */
+function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
+  if (!timeStr) return null;
+  const t = timeStr.trim();
+  const match = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(t);
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
 }
 
 /** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null).
@@ -697,7 +714,38 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     const hoursDec = money(input.hours);
     if (hoursDec.isNegative()) throw new Error("الساعات لا يمكن أن تكون سالبة");
 
-    const status = input.status ?? "PRESENT";
+    let status = input.status ?? "PRESENT";
+    let lateMins: number | null = input.lateMinutes ?? null;
+    let lateDedMins: number | null = input.lateDeductionMinutes ?? null;
+
+    if (input.checkIn && (status === "PRESENT" || status === "LATE" || input.status === undefined)) {
+      const checkInMins = parseTimeToMinutes(input.checkIn);
+      if (checkInMins != null) {
+        const dayName = arabicDayName(input.attendanceDate);
+        const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as Record<string, any> | null;
+        const daySched = sched ? sched[dayName] : null;
+        const scheduledStartStr = (typeof daySched?.start === "string" && daySched.start.trim())
+          ? daySched.start.trim()
+          : (typeof daySched?.startTime === "string" && daySched.startTime.trim())
+            ? daySched.startTime.trim()
+            : "09:00";
+        const schedStartMins = parseTimeToMinutes(scheduledStartStr) ?? (9 * 60);
+        const gracePeriodMins = 15;
+
+        if (checkInMins > schedStartMins + gracePeriodMins) {
+          status = "LATE";
+          if (lateMins == null) {
+            lateMins = checkInMins - schedStartMins;
+          }
+          if (lateDedMins == null) {
+            lateDedMins = input.lateDeductionMinutes ?? lateMins;
+          }
+        }
+      }
+    } else if (status === "LATE" && lateDedMins == null && input.lateDeductionMinutes != null) {
+      lateDedMins = input.lateDeductionMinutes;
+    }
+
     // ABSENT/LEAVE لا يولّدان أجراً مهما كانت الساعات. التصفير المزدوج (هنا + WHERE في تجميع المسيّر)
     // يحمي حتى عند تعديل صفّ موجود أو إدخال مباشر بـAPI يضع status=ABSENT مع ساعات (سهو/استيراد بصمة).
     const isPaidStatus = status === "PRESENT" || status === "LATE";
@@ -720,11 +768,30 @@ export async function recordAttendance(input: RecordAttendanceInput) {
 
     const checkInAt = timeToTimestamp(input.attendanceDate, input.checkIn);
     const checkOutAt = timeToTimestamp(input.checkOutDate || input.attendanceDate, input.checkOut);
-    const effectiveHours = isPaidStatus ? hoursDec : money(0);
+
+    const lateHours = (isPaidStatus && lateDedMins != null && lateDedMins > 0)
+      ? money(lateDedMins).div(60)
+      : money(0);
+    const effectiveHours = isPaidStatus
+      ? Decimal.max(0, hoursDec.minus(lateHours))
+      : money(0);
+
     const rate = rateForDay(emp, input.attendanceDate);
     // الأجر بالدينار الصحيح (لا فئات أصغر من الدينار في المتجر): تقريب الناتج إلى عدد صحيح.
     // toDecimalPlaces(0) يستعمل سياسة التقريب العامّة المثبّتة في money.ts (HALF_UP).
     const amount = round2(effectiveHours.times(rate)).toDecimalPlaces(0);
+
+    let notes = input.notes?.trim() || null;
+    if (status === "LATE" && (lateMins != null || lateDedMins != null)) {
+      const displayLateMins = lateMins ?? lateDedMins ?? 0;
+      const displayDedMins = lateDedMins ?? displayLateMins;
+      const tag = `[تأخير: ${displayLateMins} دقيقة - خصم ${displayDedMins} دقيقة]`;
+      if (!notes) {
+        notes = tag;
+      } else if (!notes.includes("[تأخير:")) {
+        notes = `${notes} ${tag}`;
+      }
+    }
 
     const values = {
       employeeId: input.employeeId,
@@ -733,7 +800,7 @@ export async function recordAttendance(input: RecordAttendanceInput) {
       checkIn: checkInAt,
       checkOut: checkOutAt,
       status,
-      notes: input.notes?.trim() || null,
+      notes,
       hours: toDbMoney(effectiveHours),
       hourlyRate: toDbMoney(rate),
       amount: toDbMoney(amount),
@@ -759,7 +826,14 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     }
 
     const [saved] = await tx.select().from(attendance).where(eq(attendance.id, savedId)).limit(1);
-    return { ...saved, attendanceDate: toDateStr(saved.attendanceDate), dayName: arabicDayName(input.attendanceDate) };
+    return {
+      ...saved,
+      attendanceDate: toDateStr(saved.attendanceDate),
+      dayName: arabicDayName(input.attendanceDate),
+      lateMinutes: lateMins,
+      lateDeductionMinutes: lateDedMins,
+      effectiveHours: effectiveHours.toNumber(),
+    };
   });
 }
 
