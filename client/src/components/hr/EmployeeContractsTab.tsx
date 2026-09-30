@@ -25,7 +25,13 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
   const utils = trpc.useUtils();
   const q = trpc.hrEnterprise.contracts.list.useQuery({ employeeId });
   const [open, setOpen] = useState(false);
-
+  const [renewOpen, setRenewOpen] = useState(false);
+  const [terminateOpen, setTerminateOpen] = useState(false);
+  const [selectedContract, setSelectedContract] = useState<any>(null);
+  const [renewEndDate, setRenewEndDate] = useState("");
+  const [renewBasicSalary, setRenewBasicSalary] = useState("");
+  const [renewJobTitle, setRenewJobTitle] = useState("");
+  const [terminateReason, setTerminateReason] = useState("");
   const [contractType, setContractType] = useState<string>("FIXED_TERM");
   const [contractNumber, setContractNumber] = useState("");
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
@@ -50,6 +56,26 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
   const approveMut = trpc.hrEnterprise.contracts.approve.useMutation({
     onSuccess: async () => {
       notify.ok("تم تفعيل واعتماد العقد بنجاح");
+      await utils.hrEnterprise.contracts.list.invalidate({ employeeId });
+    },
+    onError: (err) => notify.err(err),
+  });
+
+  const renewMut = trpc.hrEnterprise.contracts.renew.useMutation({
+    onSuccess: async () => {
+      notify.ok("تم تجديد العقد بنجاح");
+      setRenewOpen(false);
+      setSelectedContract(null);
+      await utils.hrEnterprise.contracts.list.invalidate({ employeeId });
+    },
+    onError: (err) => notify.err(err),
+  });
+
+  const terminateMut = trpc.hrEnterprise.contracts.terminate.useMutation({
+    onSuccess: async () => {
+      notify.ok("تم إنهاء العقد بنجاح");
+      setTerminateOpen(false);
+      setSelectedContract(null);
       await utils.hrEnterprise.contracts.list.invalidate({ employeeId });
     },
     onError: (err) => notify.err(err),
@@ -126,7 +152,7 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
                 <TableHead>نهاية التجربة</TableHead>
                 <TableHead>الراتب الأساسي</TableHead>
                 <TableHead>الحالة</TableHead>
-                <TableHead className="w-24">إجراء</TableHead>
+                <TableHead className="w-36">إجراء</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -152,17 +178,49 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
                   </TableCell>
                   <TableCell>{getStatusBadge(c.status)}</TableCell>
                   <TableCell>
-                    {c.status === "DRAFT" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 text-xs"
-                        disabled={approveMut.isPending}
-                        onClick={() => approveMut.mutate({ id: c.id })}
-                      >
-                        تفعيل
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {c.status === "DRAFT" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          disabled={approveMut.isPending}
+                          onClick={() => approveMut.mutate({ id: c.id })}
+                        >
+                          تفعيل
+                        </Button>
+                      )}
+                      {(c.status === "ACTIVE" || c.status === "EXPIRED") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            setSelectedContract(c);
+                            setRenewEndDate(c.endDate || "");
+                            setRenewBasicSalary(c.basicSalary || "");
+                            setRenewJobTitle(c.jobTitle || "");
+                            setRenewOpen(true);
+                          }}
+                        >
+                          تجديد
+                        </Button>
+                      )}
+                      {c.status === "ACTIVE" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs text-destructive hover:text-destructive"
+                          onClick={() => {
+                            setSelectedContract(c);
+                            setTerminateReason("");
+                            setTerminateOpen(true);
+                          }}
+                        >
+                          إنهاء
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -269,12 +327,66 @@ export function EmployeeContractsTab({ employeeId }: { employeeId: number }) {
               </div>
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                إلغاء
-              </Button>
-              <Button type="submit" disabled={createMut.isPending}>
-                {createMut.isPending ? "جاري الحفظ..." : "تسجيل العقد"}
-              </Button>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
+              <Button type="submit" disabled={createMut.isPending}>{createMut.isPending ? "جاري الحفظ..." : "تسجيل العقد"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={renewOpen} onOpenChange={setRenewOpen}>
+        <DialogContent className="sm:max-w-md">
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            if (!selectedContract) return;
+            renewMut.mutate({
+              id: selectedContract.id,
+              endDate: renewEndDate || undefined,
+              basicSalary: renewBasicSalary || undefined,
+              jobTitle: renewJobTitle.trim() || undefined,
+            });
+          }}>
+            <DialogHeader><DialogTitle>تجديد عقد العمل</DialogTitle></DialogHeader>
+            <div className="space-y-3 py-4 text-sm">
+              <div className="space-y-1.5">
+                <Label htmlFor="renew-end">تاريخ الانتهاء الجديد</Label>
+                <Input id="renew-end" type="date" value={renewEndDate} onChange={(e) => setRenewEndDate(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="renew-salary">الراتب الأساسي الجديد (اختياري)</Label>
+                <MoneyInput id="renew-salary" value={renewBasicSalary} onChange={setRenewBasicSalary} decimals={0} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="renew-title">المسمى الوظيفي الجديد (اختياري)</Label>
+                <Input id="renew-title" value={renewJobTitle} onChange={(e) => setRenewJobTitle(e.target.value)} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRenewOpen(false)}>إلغاء</Button>
+              <Button type="submit" disabled={renewMut.isPending}>{renewMut.isPending ? "جاري التجديد..." : "تأكيد التجديد"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={terminateOpen} onOpenChange={setTerminateOpen}>
+        <DialogContent className="sm:max-w-md">
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            if (!selectedContract) return;
+            terminateMut.mutate({ id: selectedContract.id, reason: terminateReason.trim() || undefined });
+          }}>
+            <DialogHeader><DialogTitle>إنهاء عقد العمل</DialogTitle></DialogHeader>
+            <div className="space-y-3 py-4 text-sm">
+              <p className="text-muted-foreground text-xs">سيتم وسم العقد كـ «منتهي» وتسجيل تاريخ اليوم كتاريخ انتهاء فعلي.</p>
+              <div className="space-y-1.5">
+                <Label htmlFor="terminate-reason">سبب الإنهاء (اختياري)</Label>
+                <Textarea id="terminate-reason" placeholder="سبب إنهاء العقد أو الملاحظات" value={terminateReason} onChange={(e) => setTerminateReason(e.target.value)} rows={2} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setTerminateOpen(false)}>إلغاء</Button>
+              <Button type="submit" variant="destructive" disabled={terminateMut.isPending}>{terminateMut.isPending ? "جاري الإنهاء..." : "تأكيد إنهاء العقد"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

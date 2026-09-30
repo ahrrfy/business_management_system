@@ -429,51 +429,50 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
  *  - عند وجود وردية مفتوحة للفاعل الإداري ⇒ يربط السند بدرج الوردية (shiftId=shift.id, cashBucket=DRAWER).
  *  - السندات غير النقدية (CARD, TRANSFER) لا تمس الدرج وتبقى بـ shiftId=null و cashBucket=null.
  */
-describe("إنفاذ الوردية النقدية الصارمة وإلغاء الإعفاء الإداري (R2 Fail-Closed)", () => {
-  it("admin RECEIPT نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED وبلا أثر مالي (إلغاء الإعفاء)", async () => {
+describe("حوكمة الورديات النقدية ومسار الخزينة الإدارية (TREASURY) للأدوار الإدارية", () => {
+  it("admin RECEIPT نقدي بلا وردية مفتوحة ⇒ يُسجَّل في الخزينة الإدارية (TREASURY)", async () => {
     // actor = admin (userId: 1, branchId: 1, role: "admin") — بلا وردية مفتوحة
-    await expect(
-      createVoucher(
-        {
-          voucherType: "RECEIPT",
-          branchId: 1,
-          amount: "75.00",
-          paymentMethod: "CASH",
-          partyType: "CUSTOMER",
-          partyId: 1,
-          description: "تَحصيل ميداني من تاجر",
-        },
-        actor,
-      ),
-    ).rejects.toThrow(/يُمنع استلام أو صرف أي نقد ورقي دون وجود وردية مفتوحة ونشطة/);
+    const r = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "75.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "تَحصيل ميداني من تاجر",
+      },
+      actor,
+    );
 
-    // الذرية التامة: لا يُسجَّل إيصال ولا قيد محاسبي
-    const rc = await db().select().from(s.receipts);
-    expect(rc).toHaveLength(0);
-    const ent = await db().select().from(s.accountingEntries);
-    expect(ent).toHaveLength(0);
+    expect(r.receiptId).toBeGreaterThan(0);
+    const [rc] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
+    expect(rc.cashBucket).toBe("TREASURY");
+    expect(rc.shiftId).toBeNull();
+    expect(rc.amount).toBe("75.00");
   });
 
-  it("manager RECEIPT نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED وبلا أثر مالي", async () => {
+  it("manager RECEIPT نقدي بلا وردية مفتوحة ⇒ يُسجَّل في الخزينة الإدارية (TREASURY)", async () => {
     // managerActor (userId: 2, branchId: 1, role: "manager") — بلا وردية مفتوحة
     const managerActor = { userId: 2, branchId: 1, role: "manager" };
-    await expect(
-      createVoucher(
-        {
-          voucherType: "RECEIPT",
-          branchId: 1,
-          amount: "75.00",
-          paymentMethod: "CASH",
-          partyType: "CUSTOMER",
-          partyId: 1,
-          description: "تحصيل من مدير بلا وردية",
-        },
-        managerActor,
-      ),
-    ).rejects.toThrow(/يُمنع استلام أو صرف أي نقد ورقي دون وجود وردية مفتوحة ونشطة/);
+    const r = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "75.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "تحصيل من مدير بلا وردية",
+      },
+      managerActor,
+    );
 
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(r.receiptId).toBeGreaterThan(0);
+    const [rc] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
+    expect(rc.cashBucket).toBe("TREASURY");
+    expect(rc.shiftId).toBeNull();
+    expect(rc.amount).toBe("75.00");
   });
 
   it("admin RECEIPT نقدي بوجود وردية مفتوحة ⇒ يربط بالدرج (shiftId=shift.id, cashBucket=DRAWER) وقيد PAYMENT_IN", async () => {

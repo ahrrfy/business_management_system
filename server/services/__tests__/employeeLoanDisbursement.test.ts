@@ -100,6 +100,19 @@ async function seedBaseData() {
     shiftType: "RETAIL",
     openGuard: "1:2:RETAIL",
   });
+
+  // إيداع مبدئي في الخزينة لتغطية المصروفات والصرف المالي
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    cashBucket: "TREASURY",
+    amount: "5000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    counterpartyName: "رصيد افتتاحي للخزينة",
+    createdBy: 1,
+  });
 }
 
 beforeEach(async () => {

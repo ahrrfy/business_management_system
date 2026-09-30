@@ -8,6 +8,7 @@ import { D, fmt, formatQuantity } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { cn } from "@/lib/utils";
 import type { RouterOutputs } from "@/lib/trpc";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 
 export type InvoiceDetailData = NonNullable<RouterOutputs["sales"]["get"]>;
 export type InvoiceReturnRow = NonNullable<InvoiceDetailData["returns"]>[number];
@@ -61,22 +62,40 @@ export function invoiceItemColumns(subtotal: string): ColumnDef<InvoiceItemRow, 
     {
       id: "product",
       header: "المنتج",
-      accessorFn: (it) => `${it.productName ?? "—"}${it.variantName ? ` — ${it.variantName}` : ""}`,
+      accessorFn: (it) =>
+        variantDisplayName({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
       meta: { width: "wide", wrap: true },
       footer: "مجموع البنود",
       cell: ({ row }) => {
         const it = row.original;
+        const desc = variantDescriptor({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        });
         return (
-          <span>
-            {it.productName ?? "—"}
-            {it.variantName ? ` — ${it.variantName}` : ""}{" "}
-            {it.isGift && (
-              <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold">
-                <Gift aria-hidden className="size-3" /> هدية
-              </span>
-            )}{" "}
+          <div className="flex flex-col">
+            <span className="font-semibold text-foreground">
+              {it.productName ?? "—"}
+              {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}{" "}
+              {it.isGift && (
+                <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold">
+                  <Gift aria-hidden className="size-3" /> هدية
+                </span>
+              )}
+            </span>
             {it.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>}
-          </span>
+          </div>
         );
       },
     },

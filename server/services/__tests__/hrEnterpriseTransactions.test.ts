@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
+import { withTx } from "../tx";
 import { computeDocumentStatus } from "../employeeDocumentService";
 import { calculateLeaveEncashment } from "../leaveService";
+import { executeTransferInTx, executePendingTransfers } from "../employeeTransferService";
+import {
+  approveEmployeeContract,
+  renewEmployeeContract,
+  terminateEmployeeContract,
+} from "../employeeContractService";
+import { paySpotBonusCash } from "../employeeSpotBonusService";
+import { baghdadToday } from "../businessDay";
 
 describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () => {
   describe("employeeDocumentService: computeDocumentStatus", () => {
@@ -105,6 +117,521 @@ describe("HR Enterprise Transactions — Atomic Logic & Legal Compliance", () =>
 
       const excessDeduction = 250000;
       expect(excessDeduction).toBeGreaterThan(maxMonthlyLegalDeduction);
+    });
+  });
+
+  describe("employeeTransferService (GAP-08 & GAP-09)", () => {
+    it("GAP-09: executeTransferInTx atomically updates employees and users.branchId", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      await db
+        .insert(s.branches)
+        .values([
+          { id: 101, name: "فرع البصرة", code: "BSR", type: "SALES" },
+          { id: 102, name: "فرع أربيل", code: "EBL", type: "SALES" },
+        ])
+        .onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
+      await db
+        .insert(s.users)
+        .values({
+          id: 991,
+          openId: "test-transfer-user-991",
+          name: "موظف منقول",
+          role: "cashier",
+          branchId: 101,
+        })
+        .onDuplicateKeyUpdate({ set: { branchId: 101 } });
+      await db
+        .insert(s.employees)
+        .values({
+          id: 991,
+          userId: 991,
+          firstName: "مهند",
+          lastName: "الزبيدي",
+          branchId: 101,
+          department: "المبيعات",
+          position: "كاشير",
+          salary: "600000",
+          payType: "monthly",
+        })
+        .onDuplicateKeyUpdate({
+          set: { branchId: 101, department: "المبيعات", position: "كاشير" },
+        });
+
+      await db
+        .insert(s.employeeTransfers)
+        .values({
+          id: 991,
+          employeeId: 991,
+          fromBranchId: 101,
+          toBranchId: 102,
+          fromDepartment: "المبيعات",
+          toDepartment: "المخازن",
+          fromPosition: "كاشير",
+          toPosition: "أمين مخزن",
+          decisionNumber: "TR-991",
+          transferDate: "2026-06-01",
+          effectiveDate: "2026-06-01",
+          status: "APPROVED",
+          createdById: 1,
+        })
+        .onDuplicateKeyUpdate({ set: { status: "APPROVED" } });
+
+      await withTx(async (tx) => {
+        await executeTransferInTx(tx, {
+          id: 991,
+          employeeId: 991,
+          toBranchId: 102,
+          toDepartment: "المخازن",
+          toPosition: "أمين مخزن",
+        });
+      });
+
+      const [updatedEmp] = await db
+        .select()
+        .from(s.employees)
+        .where(eq(s.employees.id, 991));
+      expect(Number(updatedEmp.branchId)).toBe(102);
+      expect(updatedEmp.department).toBe("المخازن");
+      expect(updatedEmp.position).toBe("أمين مخزن");
+
+      const [updatedUser] = await db
+        .select()
+        .from(s.users)
+        .where(eq(s.users.id, 991));
+      expect(Number(updatedUser.branchId)).toBe(102);
+    });
+
+    it("GAP-08: executePendingTransfers processes approved transfers with effectiveDate <= today", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const today = baghdadToday();
+      await db
+        .insert(s.branches)
+        .values([
+          { id: 101, name: "فرع البصرة", code: "BSR", type: "SALES" },
+          { id: 103, name: "فرع النجف", code: "NJF", type: "SALES" },
+        ])
+        .onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
+      await db
+        .insert(s.employees)
+        .values({
+          id: 992,
+          firstName: "سنان",
+          lastName: "البصري",
+          branchId: 101,
+          department: "الاستقبال",
+          position: "موظف استقبال",
+          salary: "500000",
+          payType: "monthly",
+        })
+        .onDuplicateKeyUpdate({ set: { branchId: 101 } });
+
+      await db
+        .insert(s.employeeTransfers)
+        .values({
+          id: 992,
+          employeeId: 992,
+          fromBranchId: 101,
+          toBranchId: 103,
+          fromDepartment: "الاستقبال",
+          toDepartment: "خدمة العملاء",
+          fromPosition: "موظف استقبال",
+          toPosition: "ممثل خدمة",
+          decisionNumber: "TR-992",
+          transferDate: today,
+          effectiveDate: today,
+          status: "APPROVED",
+          createdById: 1,
+        })
+        .onDuplicateKeyUpdate({
+          set: { status: "APPROVED", effectiveDate: today },
+        });
+
+      const res = await executePendingTransfers();
+      expect(res.executedCount).toBeGreaterThanOrEqual(1);
+      expect(res.transferIds).toContain(992);
+
+      const [trRow] = await db
+        .select()
+        .from(s.employeeTransfers)
+        .where(eq(s.employeeTransfers.id, 992));
+      expect(trRow.status).toBe("EFFECTIVE");
+
+      const [empRow] = await db
+        .select()
+        .from(s.employees)
+        .where(eq(s.employees.id, 992));
+      expect(Number(empRow.branchId)).toBe(103);
+      expect(empRow.department).toBe("خدمة العملاء");
+    });
+  });
+
+  describe("employeeContractService: GAP-12 Contract Lifecycle & Sync", () => {
+    it("GAP-12: approveEmployeeContract updates employee salary, position, allowances and marks previous active contract as RENEWED", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const today = baghdadToday();
+
+      await db
+        .insert(s.branches)
+        .values([{ id: 101, name: "فرع البصرة", code: "BSR", type: "SALES" }])
+        .onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
+
+      await db
+        .insert(s.employees)
+        .values({
+          id: 993,
+          firstName: "طارق",
+          lastName: "الزبيدي",
+          branchId: 101,
+          position: "محاسب مبتدئ",
+          salary: "600000.00",
+          allowances: "50000.00",
+          payType: "monthly",
+        })
+        .onDuplicateKeyUpdate({
+          set: { position: "محاسب مبتدئ", salary: "600000.00", allowances: "50000.00" },
+        });
+
+      // Insert prior active contract
+      await db
+        .insert(s.employeeContracts)
+        .values({
+          id: 9931,
+          employeeId: 993,
+          branchId: 101,
+          contractType: "FIXED_TERM",
+          startDate: "2025-01-01",
+          endDate: "2025-12-31",
+          jobTitle: "محاسب مبتدئ",
+          basicSalary: "600000.00",
+          allowances: "50000.00",
+          status: "ACTIVE",
+          createdById: 1,
+        })
+        .onDuplicateKeyUpdate({ set: { status: "ACTIVE" } });
+
+      // Insert new draft contract
+      await db
+        .insert(s.employeeContracts)
+        .values({
+          id: 9932,
+          employeeId: 993,
+          branchId: 101,
+          contractType: "INDEFINITE",
+          startDate: today,
+          jobTitle: "محاسب أول",
+          basicSalary: "950000.00",
+          allowances: "100000.00",
+          status: "DRAFT",
+          createdById: 2,
+        })
+        .onDuplicateKeyUpdate({ set: { status: "DRAFT" } });
+
+      const actor = { userId: 1, role: "admin" } as any;
+      await approveEmployeeContract(actor, 9932);
+
+      // Verify old contract is RENEWED
+      const [oldC] = await db
+        .select()
+        .from(s.employeeContracts)
+        .where(eq(s.employeeContracts.id, 9931));
+      expect(oldC.status).toBe("RENEWED");
+
+      // Verify new contract is ACTIVE
+      const [newC] = await db
+        .select()
+        .from(s.employeeContracts)
+        .where(eq(s.employeeContracts.id, 9932));
+      expect(newC.status).toBe("ACTIVE");
+
+      // Verify employee record synchronized
+      const [emp] = await db
+        .select()
+        .from(s.employees)
+        .where(eq(s.employees.id, 993));
+      expect(emp.position).toBe("محاسب أول");
+      expect(Number(emp.salary)).toBe(950000);
+      expect(Number(emp.allowances)).toBe(100000);
+    });
+
+    it("GAP-12: renewEmployeeContract marks old contract RENEWED, creates active contract and syncs employee", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin" } as any;
+
+      await db
+        .insert(s.employees)
+        .values({
+          id: 994,
+          firstName: "قاسم",
+          lastName: "السعدي",
+          branchId: 101,
+          position: "محاسب",
+          salary: "800000.00",
+          allowances: "100000.00",
+          payType: "monthly",
+        })
+        .onDuplicateKeyUpdate({ set: { salary: "800000.00" } });
+
+      await db
+        .insert(s.employeeContracts)
+        .values({
+          id: 9941,
+          employeeId: 994,
+          branchId: 101,
+          contractType: "FIXED_TERM",
+          startDate: "2025-01-01",
+          endDate: "2025-12-31",
+          jobTitle: "محاسب",
+          basicSalary: "800000.00",
+          allowances: "100000.00",
+          status: "ACTIVE",
+          createdById: 1,
+        })
+        .onDuplicateKeyUpdate({ set: { status: "ACTIVE" } });
+
+      const res = await renewEmployeeContract(actor, {
+        id: 9941,
+        basicSalary: "1100000.00",
+        allowances: "150000.00",
+        jobTitle: "مدير حسابات",
+        contractNumber: "CNT-994-2026",
+      });
+
+      expect(res.oldContractId).toBe(9941);
+      expect(res.status).toBe("ACTIVE");
+
+      const [oldC] = await db
+        .select()
+        .from(s.employeeContracts)
+        .where(eq(s.employeeContracts.id, 9941));
+      expect(oldC.status).toBe("RENEWED");
+
+      const [newC] = await db
+        .select()
+        .from(s.employeeContracts)
+        .where(eq(s.employeeContracts.id, res.newContractId));
+      expect(newC.status).toBe("ACTIVE");
+      expect(newC.contractNumber).toBe("CNT-994-2026");
+
+      const [emp] = await db
+        .select()
+        .from(s.employees)
+        .where(eq(s.employees.id, 994));
+      expect(emp.position).toBe("مدير حسابات");
+      expect(Number(emp.salary)).toBe(1100000);
+      expect(Number(emp.allowances)).toBe(150000);
+    });
+
+    it("GAP-12: terminateEmployeeContract sets status to TERMINATED and records endDate", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin" } as any;
+      const today = baghdadToday();
+
+      await db
+        .insert(s.employees)
+        .values({
+          id: 995,
+          firstName: "ليث",
+          lastName: "العبيدي",
+          branchId: 101,
+          position: "مهندس",
+          salary: "1200000.00",
+          payType: "monthly",
+        })
+        .onDuplicateKeyUpdate({ set: { position: "مهندس" } });
+
+      await db
+        .insert(s.employeeContracts)
+        .values({
+          id: 9951,
+          employeeId: 995,
+          branchId: 101,
+          contractType: "FIXED_TERM",
+          startDate: "2025-01-01",
+          endDate: "2026-12-31",
+          jobTitle: "مهندس",
+          basicSalary: "1200000.00",
+          status: "ACTIVE",
+          createdById: 1,
+        })
+        .onDuplicateKeyUpdate({ set: { status: "ACTIVE" } });
+
+      await terminateEmployeeContract(actor, 9951, "انتهاء المشروع");
+
+      const [termC] = await db
+        .select()
+        .from(s.employeeContracts)
+        .where(eq(s.employeeContracts.id, 9951));
+      expect(termC.status).toBe("TERMINATED");
+      expect(termC.endDate).toBe(today);
+      expect(termC.terms).toContain("انتهاء المشروع");
+    });
+  });
+
+  describe("employeeSpotBonusService: paySpotBonusCash (GAP-03)", () => {
+    it("pays approved spot bonus from treasury, creates receipt and accounting entry", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.branches).values({ id: 101, name: "فرع الكرادة", code: "KD101" }).onDuplicateKeyUpdate({ set: { name: "فرع الكرادة" } });
+      await db.insert(s.employees).values({
+        id: 996,
+        firstName: "علي",
+        lastName: "الكعبي",
+        branchId: 101,
+        salary: "1000000.00",
+        payType: "monthly",
+      }).onDuplicateKeyUpdate({ set: { firstName: "علي" } });
+
+      await db.insert(s.receipts).values({
+        id: 9960,
+        branchId: 101,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: "5000000.00",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: 1,
+        approvedAt: new Date(),
+        createdBy: 1,
+      }).onDuplicateKeyUpdate({ set: { amount: "5000000.00" } });
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9961,
+        employeeId: 996,
+        branchId: 101,
+        amount: "150000.00",
+        reason: "مكافأة إنجاز متميز",
+        disbursementType: "CASH_TREASURY",
+        status: "APPROVED",
+        createdById: 2,
+        approvedById: 1,
+        approvedAt: new Date(),
+      }).onDuplicateKeyUpdate({ set: { status: "APPROVED", voucherId: null } });
+
+      const result = await paySpotBonusCash(actor, { id: 9961, cashBucket: "TREASURY" });
+      expect(result.status).toBe("PAID");
+      expect(result.receiptId).toBeDefined();
+
+      const [bonusInDb] = await db.select().from(s.employeeSpotBonuses).where(eq(s.employeeSpotBonuses.id, 9961));
+      expect(bonusInDb.status).toBe("PAID");
+      expect(bonusInDb.voucherId).toBe(result.receiptId);
+      expect(bonusInDb.paidAt).toBeDefined();
+
+      const [receiptInDb] = await db.select().from(s.receipts).where(eq(s.receipts.id, result.receiptId));
+      expect(receiptInDb.direction).toBe("OUT");
+      expect(receiptInDb.cashBucket).toBe("TREASURY");
+      expect(Number(receiptInDb.amount)).toBe(150000);
+
+      const [entry] = await db.select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, result.receiptId));
+      expect(entry).toBeDefined();
+      expect(entry.entryType).toBe("PAYMENT_OUT");
+      expect(Number(entry.amount)).toBe(150000);
+    });
+
+    it("pays approved spot bonus from open drawer", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.shifts).values({
+        id: 9962,
+        branchId: 101,
+        userId: 1,
+        status: "OPEN",
+        startedAt: new Date(),
+      }).onDuplicateKeyUpdate({ set: { status: "OPEN" } });
+
+      await db.insert(s.receipts).values({
+        id: 9963,
+        branchId: 101,
+        shiftId: 9962,
+        cashBucket: "DRAWER",
+        direction: "IN",
+        amount: "500000.00",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: 1,
+        approvedAt: new Date(),
+        createdBy: 1,
+      }).onDuplicateKeyUpdate({ set: { amount: "500000.00" } });
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9964,
+        employeeId: 996,
+        branchId: 101,
+        amount: "75000.00",
+        reason: "مكافأة سرعة تنفيذ",
+        disbursementType: "CASH_TREASURY",
+        status: "APPROVED",
+        createdById: 2,
+        approvedById: 1,
+        approvedAt: new Date(),
+      }).onDuplicateKeyUpdate({ set: { status: "APPROVED", voucherId: null } });
+
+      const result = await paySpotBonusCash(actor, { id: 9964, cashBucket: "DRAWER", shiftId: 9962 });
+      expect(result.status).toBe("PAID");
+
+      const [receiptInDb] = await db.select().from(s.receipts).where(eq(s.receipts.id, result.receiptId));
+      expect(receiptInDb.direction).toBe("OUT");
+      expect(receiptInDb.cashBucket).toBe("DRAWER");
+      expect(receiptInDb.shiftId).toBe(9962);
+      expect(Number(receiptInDb.amount)).toBe(75000);
+    });
+
+    it("rejects paying unapproved (DRAFT) spot bonus", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9965,
+        employeeId: 996,
+        branchId: 101,
+        amount: "50000.00",
+        reason: "مسودة مكافأة",
+        disbursementType: "CASH_TREASURY",
+        status: "DRAFT",
+        createdById: 1,
+      }).onDuplicateKeyUpdate({ set: { status: "DRAFT" } });
+
+      await expect(paySpotBonusCash(actor, { id: 9965 })).rejects.toThrow();
+    });
+
+    it("rejects paying spot bonus with PAYROLL_ADDITION disbursement type via cash", async () => {
+      const db = getDb();
+      if (!db) return;
+      await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      const actor = { userId: 1, role: "admin", branchId: 101 } as any;
+
+      await db.insert(s.employeeSpotBonuses).values({
+        id: 9966,
+        employeeId: 996,
+        branchId: 101,
+        amount: "50000.00",
+        reason: "مكافأة مسير",
+        disbursementType: "PAYROLL_ADDITION",
+        status: "APPROVED",
+        createdById: 2,
+        approvedById: 1,
+      }).onDuplicateKeyUpdate({ set: { status: "APPROVED", disbursementType: "PAYROLL_ADDITION" } });
+
+      await expect(paySpotBonusCash(actor, { id: 9966 })).rejects.toThrow();
     });
   });
 });

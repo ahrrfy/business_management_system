@@ -23,6 +23,7 @@ import {
   type OfficialDocumentPdfData,
 } from "./officialDocumentPdf";
 import { enqueueAndDispatch, getActiveWaIntegration } from "./whatsapp/outboxService";
+import { variantDisplayName } from "../../shared/variantDisplay";
 
 export interface OfficialDocumentSnapshot {
   documentId: number;
@@ -101,6 +102,11 @@ export async function loadOfficialDocumentSnapshot(
         productName: products.name,
         itemNameSnapshot: invoiceItems.itemNameSnapshot,
         variantName: productVariants.variantName,
+        color: productVariants.color,
+        size: productVariants.size,
+        colorHex: productVariants.colorHex,
+        variantKind: productVariants.variantKind,
+        sku: productVariants.sku,
         unitName: productUnits.unitName,
         quantity: invoiceItems.quantity,
         unitPrice: invoiceItems.unitPrice,
@@ -134,8 +140,14 @@ export async function loadOfficialDocumentSnapshot(
         returnedTotal: row.returnedTotal,
         notes: row.notes,
         items: items.map((item) => ({
-          productName: item.itemNameSnapshot ?? item.productName ?? "",
-          variantName: item.variantName,
+          productName: item.itemNameSnapshot ?? variantDisplayName({
+            productName: item.productName ?? "",
+            variantName: item.variantName,
+            color: item.color,
+            size: item.size,
+            variantKind: item.variantKind,
+            sku: item.sku,
+          }),
           unitName: item.unitName,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -173,6 +185,11 @@ export async function loadOfficialDocumentSnapshot(
     .select({
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      colorHex: productVariants.colorHex,
+      variantKind: productVariants.variantKind,
+      sku: productVariants.sku,
       unitName: productUnits.unitName,
       quantity: quotationItems.quantity,
       unitPrice: quotationItems.unitPrice,
@@ -204,8 +221,14 @@ export async function loadOfficialDocumentSnapshot(
       total: row.total,
       notes: row.notes,
       items: items.map((item) => ({
-        productName: item.productName ?? "",
-        variantName: item.variantName,
+        productName: variantDisplayName({
+          productName: item.productName ?? "",
+          variantName: item.variantName,
+          color: item.color,
+          size: item.size,
+          variantKind: item.variantKind,
+          sku: item.sku,
+        }),
         unitName: item.unitName,
         quantity: item.quantity,
         unitPrice: item.unitPrice,

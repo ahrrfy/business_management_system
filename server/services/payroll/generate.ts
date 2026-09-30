@@ -11,6 +11,7 @@ import {
   commissionRuns,
   employeePenalties,
   employees,
+  employeeSpotBonuses,
   employeeTerminations,
   hrAttendancePunches,
   hrAttendanceSettings,
@@ -22,6 +23,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { logger } from "../../logger";
 import { processPendingFolds } from "../hrDevices";
 import { suggestDeductionsTx } from "../advances";
+import { recomputeMonthRates } from "../attendanceService";
 import { computeAttendancePay, DEFAULT_WORK_SCHEDULE, type AttendancePayResult, type WorkSchedule } from "../hr/attendancePay";
 import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";
@@ -146,13 +148,47 @@ export async function generatePayroll(period: string, actor: Actor) {
       for (const l of cLines) commissionByEmp.set(Number(l.employeeId), money(l.commissionAmount));
     }
 
-    // اكتمال التسوية: موظف له سطر عمولة لكنه خارج قائمة التوليد (فُصل بعد أن باع) يُلحق
-    // ببند أجرٍ صفري كي تُصرف عمولته المستحقة مرّة واحدة ولا تضيع.
+    // GAP-03: استعلام المكافآت الفورية الاستثنائية المعتمدة للإضافة إلى الراتب (PAYROLL_ADDITION)
+    const approvedSpotBonuses = await tx
+      .select({
+        id: employeeSpotBonuses.id,
+        employeeId: employeeSpotBonuses.employeeId,
+        amount: employeeSpotBonuses.amount,
+        reason: employeeSpotBonuses.reason,
+      })
+      .from(employeeSpotBonuses)
+      .where(
+        and(
+          eq(employeeSpotBonuses.status, "APPROVED"),
+          eq(employeeSpotBonuses.disbursementType, "PAYROLL_ADDITION"),
+          isNull(employeeSpotBonuses.payrollRunId),
+        ),
+      )
+      .for("update");
+
+    const spotBonusByEmp = new Map<number, { total: Decimal; ids: number[]; reasons: string[] }>();
+    for (const b of approvedSpotBonuses) {
+      const empId = Number(b.employeeId);
+      const bAmt = money(b.amount);
+      const curr = spotBonusByEmp.get(empId) ?? { total: new Decimal(0), ids: [], reasons: [] };
+      curr.total = curr.total.plus(bAmt);
+      curr.ids.push(Number(b.id));
+      if (b.reason) curr.reasons.push(b.reason);
+      spotBonusByEmp.set(empId, curr);
+    }
+
+    // اكتمال التسوية: موظف له سطر عمولة أو مكافأة فورية لكنه خارج قائمة التوليد (فُصل بعد أن باع أو استحق)
+    // يُلحق ببند أجرٍ صفري كي تُصرف مستحقاته مرّة واحدة ولا تضيع.
     const listedIds = new Set(emps.map((e) => Number(e.id)));
     const zeroGrossIds = new Set<number>();
-    const missingIds = Array.from(commissionByEmp.keys()).filter(
+    const missingCandidateIds = new Set([
+      ...Array.from(commissionByEmp.keys()),
+      ...Array.from(spotBonusByEmp.keys()),
+    ]);
+    const missingIds = Array.from(missingCandidateIds).filter(
       (id) =>
-        money(commissionByEmp.get(id) ?? 0).gt(0) &&
+        (money(commissionByEmp.get(id) ?? 0).gt(0) ||
+          (spotBonusByEmp.get(id)?.total.gt(0) ?? false)) &&
         !listedIds.has(id),
     );
     if (missingIds.length > 0) {
@@ -185,6 +221,9 @@ export async function generatePayroll(period: string, actor: Actor) {
     if (emps.length === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد موظفون لتوليد مسيّر لهم" });
     }
+
+    // GAP-16: تحديث أجور الساعات لشهر الاستحقاق قبل تجميع الحضور لضمان تطبيق أحدث ملف أجر
+    await recomputeMonthRates({ period: p, skipRunLockCheck: true }, tx);
 
     // مجاميع حضور الشهر لموظفي الساعة (amount + hours) — مطابقة بادئة YYYY-MM على عمود التاريخ.
     // تصفية على status IN ('PRESENT','LATE') كحارس عميق: حتى لو دخل أمر مالي صفّ ABSENT/LEAVE
@@ -500,6 +539,12 @@ export async function generatePayroll(period: string, actor: Actor) {
         gross = round2(money(att?.amount ?? 0));
         hours = new Decimal(att?.hours ?? 0).toFixed(2);
       }
+      // GAP-03: إضافة المكافآت الفورية المعتمدة إلى إجمالي الأجر (gross)
+      const empSpotBonus = spotBonusByEmp.get(Number(e.id));
+      const spotBonusTotal = empSpotBonus ? empSpotBonus.total : new Decimal(0);
+      if (spotBonusTotal.gt(0)) {
+        gross = round2(gross.plus(spotBonusTotal));
+      }
       const overtime = autoOvertime;
       const commission = commissionByEmp.get(Number(e.id)) ?? new Decimal(0);
       // خصم الإجازة بلا راتب (الشهريّ فقط — الساعيّ يُخصَم بغياب الحضور): المعدّل اليوميّ = الراتب
@@ -581,14 +626,21 @@ export async function generatePayroll(period: string, actor: Actor) {
         runId,
         // شفافية الأجر بالحضور: الموظف يرى لماذا نقص أجرُه بالضبط (ساعات/أيام لا مبلغاً غامضاً).
         note: (() => {
+          const bonusNote = spotBonusTotal.gt(0)
+            ? `مكافأة فورية: ${toDbMoney(spotBonusTotal)} د.ع`
+            : null;
           const ap = attendancePayByEmp.get(Number(e.id));
-          if (!ap) return leaveNote;
+          if (!ap) {
+            const parts = [leaveNote, bonusNote].filter(Boolean);
+            return parts.length > 0 ? parts.join(" — ").slice(0, 255) : null;
+          }
           const parts = [
             `أجر بالحضور: ${ap.payableHours} من ${ap.scheduledHours} ساعة × ${ap.hourlyRate} د.ع/ساعة`,
           ];
           if (ap.absentDays > 0) parts.push(`غياب ${ap.absentDays} يوم`);
           if (ap.unpaidLeaveDays > 0) parts.push(`إجازة بلا راتب ${ap.unpaidLeaveDays} يوم`);
           if (Number(ap.shortHours) > 0) parts.push(`نقص ${ap.shortHours} ساعة`);
+          if (bonusNote) parts.push(bonusNote);
           // اليوم المفتوح **أوّلُ ما يُقرأ** في السطر: ساعاته مجهولة لا صفر، وتصحيحُه قبل
           // الاعتماد يستردّ أجره. تُسمّى التواريخ لأن «N يوم» وحدها لا تدلّ على ما يُصحَّح.
           if (ap.openDays > 0) {
@@ -644,6 +696,15 @@ export async function generatePayroll(period: string, actor: Actor) {
         .update(employeePenalties)
         .set({ payrollRunId: runId, status: "APPLIED" })
         .where(inArray(employeePenalties.id, allAppliedPenaltyIds));
+    }
+
+    // GAP-03: ربط المكافآت الفورية المستحقة برقم المسيّر
+    const allAppliedBonusIds = Array.from(spotBonusByEmp.values()).flatMap((b) => b.ids);
+    if (allAppliedBonusIds.length > 0) {
+      await tx
+        .update(employeeSpotBonuses)
+        .set({ payrollRunId: runId })
+        .where(inArray(employeeSpotBonuses.id, allAppliedBonusIds));
     }
 
     // حصر البصمات غير المربوطة بموظف في شهر المسيّر (إن وجدت) للتنبيه الرقابي الشفاف

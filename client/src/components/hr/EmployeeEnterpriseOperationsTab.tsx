@@ -131,6 +131,14 @@ export function EmployeeEnterpriseOperationsTab({
     onError: (err) => notify.err(err),
   });
 
+  const payCashBonusMut = trpc.hrEnterprise.spotBonuses.payCash.useMutation({
+    onSuccess: async () => {
+      notify.ok("تم صرف المكافأة الفورية نقداً وإنشاء سند الصرف والقيد المحاسبي");
+      await utils.hrEnterprise.spotBonuses.list.invalidate({ employeeId });
+    },
+    onError: (err) => notify.err(err),
+  });
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -355,8 +363,8 @@ export function EmployeeEnterpriseOperationsTab({
                       </TableCell>
                       <TableCell><span className="text-xs">{b.status}</span></TableCell>
                       <TableCell>
-                        {b.status === "DRAFT" && (
-                          <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1">
+                          {b.status === "DRAFT" && (
                             <Button
                               variant="ghost"
                               size="sm"
@@ -366,8 +374,28 @@ export function EmployeeEnterpriseOperationsTab({
                             >
                               اعتماد
                             </Button>
-                          </div>
-                        )}
+                          )}
+                          {b.status === "APPROVED" && b.disbursementType === "CASH_TREASURY" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs text-emerald-600 hover:text-emerald-700"
+                              disabled={payCashBonusMut.isPending}
+                              onClick={async () => {
+                                const ok = await confirm({
+                                  title: "صرف مكافأة استثنائية",
+                                  description: `هل أنت متأكد من صرف المكافأة #${b.id} نقداً بمبلغ ${iqd(b.amount)} د.ع؟`,
+                                  confirmText: "صرف نقدي",
+                                });
+                                if (ok) {
+                                  payCashBonusMut.mutate({ id: b.id });
+                                }
+                              }}
+                            >
+                              صرف نقدي
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}

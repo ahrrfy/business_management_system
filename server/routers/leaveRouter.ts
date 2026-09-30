@@ -7,7 +7,8 @@ import { z } from "zod";
 import { LEAVE_TYPES } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/leaveService";
-import { branchScopedProcedure, requireModule, router } from "../trpc";
+import * as leaveAccrualSvc from "../services/hr/leaveAccrual";
+import { branchScopedProcedure, ownerProcedure, requireModule, router } from "../trpc";
 
 /*
  * عزل الفرع (قرار المالك ١٢/٨) — `branchScopedProcedure` يحقن `ctx.scopedBranchId`:
@@ -18,16 +19,14 @@ import { branchScopedProcedure, requireModule, router } from "../trpc";
  */
 const hrRead = branchScopedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = branchScopedProcedure.use(requireModule("hr", "FULL"));
+const ownerHrWrite = ownerProcedure.use(requireModule("hr", "FULL"));
 
 const LEAVE_TYPE_KEYS = LEAVE_TYPES.map((t) => t.key) as [string, ...string[]];
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 
-/** عدد الأيام (شاملاً الطرفين) بين تاريخين "YYYY-MM-DD" — تقويم UTC ثابت. */
+/** عدد أيام العمل (شاملاً الطرفين) بين تاريخين "YYYY-MM-DD" باستثناء الجمعة والسبت (المادة 70). */
 function daysInclusive(from: string, to: string): number {
-  const [fy, fm, fd] = from.split("-").map(Number);
-  const [ty, tm, td] = to.split("-").map(Number);
-  const ms = Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd);
-  return Math.floor(ms / 86_400_000) + 1;
+  return svc.workingDaysInclusive(from, to);
 }
 
 /**
@@ -206,5 +205,16 @@ export const leaveRouter = router({
         newValue: { status: "rejected", restored: true },
       });
       return lv;
+    }),
+
+  accrueMonth: ownerHrWrite
+    .input(z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = {
+        userId: ctx.user.id,
+        role: ctx.user.role,
+        branchId: ctx.user.branchId ?? null,
+      };
+      return leaveAccrualSvc.accrueMonthlyLeave(actor, input);
     }),
 });

@@ -31,6 +31,7 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { estimatedPurchaseUnitPrice } from "@/components/invoice/purchasePrice";
 
 type RequisitionRow = RouterOutputs["purchases"]["requisitions"][number];
@@ -679,10 +680,13 @@ export default function PurchaseRequisitions() {
                           key={row.productUnitId}
                           value={row.productUnitId}
                         >
-                          {row.productName}
-                          {row.variantName
-                            ? ` — ${row.variantName}`
-                            : ""} · {row.unitName}
+                          {variantDisplayName({
+                            productName: row.productName,
+                            variantName: row.variantName,
+                            color: row.color,
+                            size: row.size,
+                            sku: row.sku,
+                          })} · {row.unitName}
                         </option>
                       ))}
                     </AppSelect>
@@ -711,7 +715,13 @@ export default function PurchaseRequisitions() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="font-semibold">
                           {catalogRow
-                            ? `${catalogRow.productName}${catalogRow.variantName ? ` — ${catalogRow.variantName}` : ""} · ${catalogRow.unitName}`
+                            ? `${variantDisplayName({
+                                productName: catalogRow.productName,
+                                variantName: catalogRow.variantName,
+                                color: catalogRow.color,
+                                size: catalogRow.size,
+                                sku: catalogRow.sku,
+                              })} · ${catalogRow.unitName}`
                             : `متغير #${item.variantId} · وحدة #${item.productUnitId}`}
                         </div>
                         {editingAllowed ? (

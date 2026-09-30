@@ -305,7 +305,8 @@ export async function createSaleInTx(
       // يُمنع أي مستخدم (بما في ذلك المدير والأدمن) من تسجيل بيع نقدي على وردية مستخدم آخر.
       const hasCashMovement = isCashPayment || writesFeeHeldCash;
       const role = actor.role;
-      if ((hasCashMovement || (role !== "admin" && role !== "manager")) && Number(s[0].userId) !== Number(actor.userId)) {
+      const isDigitalSale = capability === DIGITAL_SALE_CAPABILITY;
+      if (!isDigitalSale && (hasCashMovement || (role !== "admin" && role !== "manager")) && Number(s[0].userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
     }

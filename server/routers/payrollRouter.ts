@@ -5,8 +5,8 @@
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { employees, payrollItems } from "../../drizzle/schema";
+import { and, eq } from "drizzle-orm";
+import { employees, payrollItems, payrollRuns } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { createAppNotification } from "../services/appNotificationService";
 import { actorSuffix } from "@shared/notificationActorLabel";
@@ -16,9 +16,10 @@ import * as legal from "../services/payrollLegalService";
 import { getPayrollSummary } from "../services/reportsHrService";
 import { getCommissionPayrollReadiness } from "../services/commissions/payrollReadiness";
 import { listCommissionRunApprovalRequests } from "../services/commissions/runApprovals";
-import { managerProcedure, ownerProcedure, protectedProcedure, requireModule, router } from "../trpc";
+import { managerProcedure, ownerProcedure, protectedProcedure, requireModule, router, selfServiceProcedure } from "../trpc";
 import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import { requireDb } from "../services/tx";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -66,7 +67,7 @@ async function notifyPayrollUsers(runId: number, periodValue: string, stage: "ap
       kind: "PAYROLL_READY",
       title: stage === "paid" ? "تم صرف الراتب" : "كشف الراتب جاهز",
       body: `الفترة ${periodValue}${actorSuffix(actorName)}`,
-      route: "/hr?tab=payroll",
+      route: `/hr/payslip/${runId}`,
       eventKey: `payroll:${runId}:${row.employeeId}:${stage}`,
       entityType: "payrollRun",
       entityId: runId,
@@ -75,6 +76,89 @@ async function notifyPayrollUsers(runId: number, periodValue: string, stage: "ap
 }
 
 export const payrollRouter = router({
+  myPayslip: selfServiceProcedure
+    .input(z.object({ runId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      const db = requireDb();
+      const [emp] = await db
+        .select({
+          id: employees.id,
+          firstName: employees.firstName,
+          lastName: employees.lastName,
+          position: employees.position,
+          department: employees.department,
+          branchId: employees.branchId,
+        })
+        .from(employees)
+        .where(eq(employees.userId, ctx.user.id))
+        .limit(1);
+
+      if (!emp) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر الوصول إلى قسيمة الراتب",
+            why: "حساب المستخدم الحالي غير مربوط بملف موظف في النظام",
+            doThis: "يرجى مراجعة مسؤول الموارد البشرية لربط حسابك بسجلك الوظيفي",
+          }),
+        });
+      }
+
+      const [row] = await db
+        .select({
+          id: payrollItems.id,
+          runId: payrollRuns.id,
+          period: payrollRuns.period,
+          runStatus: payrollRuns.status,
+          accrualDate: payrollRuns.accrualDate,
+          paidAt: payrollRuns.paidAt,
+          revisionNo: payrollRuns.revisionNo,
+          legalPolicyHash: payrollRuns.legalPolicyHash,
+          approvalSnapshotHash: payrollRuns.approvalSnapshotHash,
+          snapshotHash: payrollItems.snapshotHash,
+          payType: payrollItems.payType,
+          hours: payrollItems.hours,
+          gross: payrollItems.gross,
+          allowances: payrollItems.allowances,
+          overtime: payrollItems.overtime,
+          commission: payrollItems.commission,
+          deductions: payrollItems.deductions,
+          advanceDeduction: payrollItems.advanceDeduction,
+          socialSecurityEmployee: payrollItems.socialSecurityEmployee,
+          socialSecurityEmployer: payrollItems.socialSecurityEmployer,
+          endOfServiceAccrual: payrollItems.endOfServiceAccrual,
+          incomeTax: payrollItems.incomeTax,
+          net: payrollItems.net,
+          note: payrollItems.note,
+          branchIdSnapshot: payrollItems.branchIdSnapshot,
+        })
+        .from(payrollItems)
+        .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
+        .where(
+          and(
+            eq(payrollItems.runId, input.runId),
+            eq(payrollItems.employeeId, emp.id),
+          ),
+        )
+        .limit(1);
+
+      if (!row) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "قسيمة الراتب غير متوفرة",
+            why: "لم يُعثر على بند راتب يخصك ضمن مسيّر الرواتب المحدد",
+            doThis: "تأكد من اختيار مسيّر الفترة المعتمدة أو راجع قسم الموارد البشرية",
+          }),
+        });
+      }
+
+      return {
+        employee: emp,
+        item: row,
+      };
+    }),
+
   list: ownerHrRead.query(() => svc.listRuns()),
 
   get: ownerHrRead
@@ -197,6 +281,8 @@ export const payrollRouter = router({
       paymentMethod: payrollPaymentMethod.optional(),
       paymentDate: ymd.nullish(),
       referenceNumber: z.string().trim().max(100).nullish(),
+      shiftId: z.number().int().positive().nullish(),
+      cashBucket: z.enum(["TREASURY", "DRAWER"]).nullish(),
     }))
     .mutation(async ({ input, ctx }) => {
       const run = await svc.payRun(input.id, {
@@ -208,8 +294,10 @@ export const payrollRouter = router({
         paymentMethod: input.paymentMethod,
         paymentDate: input.paymentDate,
         referenceNumber: input.referenceNumber,
+        shiftId: input.shiftId,
+        cashBucket: input.cashBucket,
       });
-      if (!run.replayed) await logAudit(ctx, { action: "payroll.pay", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, totalNet: run?.totalNet } });
+      if (!run.replayed) await logAudit(ctx, { action: "payroll.pay", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, totalNet: run?.totalNet, cashBucket: input.cashBucket, shiftId: input.shiftId } });
       if (!run.replayed && run?.period) await notifyPayrollUsers(input.id, run.period, "paid", ctx.user.name);
       return run;
     }),

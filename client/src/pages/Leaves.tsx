@@ -17,7 +17,7 @@ import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
 import { LEAVE_STATUSES, LEAVE_TYPES, leaveStatusLabel } from "@shared/hr";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { selectClsSm } from "@/lib/ui/formStyles";
@@ -56,6 +56,8 @@ export default function Leaves() {
   const [type, setType] = useState("");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const [accrueOpen, setAccrueOpen] = useState(false);
+  const [accrueMonth, setAccrueMonth] = useState(() => today().slice(0, 7));
 
   // فلاتر القائمة (منفصلة عن نموذج الطلب الجديد أدناه — تتشارك الاسم لولا هذا الفصل).
   const [empFilter, setEmpFilter] = useState("");
@@ -170,6 +172,17 @@ export default function Leaves() {
   const cancel = trpc.leaves.cancel.useMutation({
     onSuccess: async () => {
       notify.ok("أُلغيت الإجازة واستُرِدّ الرصيد");
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const accrueMonthMut = trpc.leaves.accrueMonth.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        `تم تدوير واحتساب رصيد الإجازات لشهر ${res.month} بنجاح (${res.employeesAccrued} موظفاً، إجمالي ${res.totalDaysAccrued} يوماً)`,
+      );
+      setAccrueOpen(false);
       await refresh();
     },
     onError: (e) => notify.err(e),
@@ -329,7 +342,14 @@ export default function Leaves() {
       <PageHeader
         title="الإجازات"
         description="طلبات الإجازات وأرصدتها — سنوية، مرضية، أمومة، بدون راتب."
-        actions={<Button onClick={() => setOpen(true)}><Plus className="size-4" /> طلب إجازة جديد</Button>}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setAccrueOpen(true)}>
+              <CalendarDays className="size-4" /> تدوير الإجازات الشهرية
+            </Button>
+            <Button onClick={() => setOpen(true)}><Plus className="size-4" /> طلب إجازة جديد</Button>
+          </div>
+        }
       />
 
       {/* المؤشّرات */}
@@ -500,6 +520,48 @@ export default function Leaves() {
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
             <Button disabled={create.isPending || !employeeId || days <= 0} onClick={submit}>
               {create.isPending ? "جارٍ…" : "تقديم الطلب"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* نافذة تدوير واحتساب الإجازات الشهرية — المادة 67 */}
+      <Dialog open={accrueOpen} onOpenChange={setAccrueOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>تدوير واحتساب الإجازات الشهرية (المادة 67)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              وفق المادة 67 من قانون العمل رقم 37 لسنة 2015، يستحق العامل إجازة سنوية مدفوعة الأجر قدرها (20) يوماً عن كل سنة خدمة (بمعدل 1.67 يوماً شهرياً).
+            </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="accrue-month">شهر الاستحقاق (YYYY-MM)</Label>
+              <Input
+                id="accrue-month"
+                type="month"
+                value={accrueMonth}
+                onChange={(e) => setAccrueMonth(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAccrueOpen(false)}>إلغاء</Button>
+            <Button
+              disabled={accrueMonthMut.isPending || !accrueMonth}
+              onClick={async () => {
+                const ok = await confirm({
+                  variant: "warning",
+                  title: "تأكيد تدوير الإجازات الشهرية",
+                  description: `هل أنت متأكد من تدوير واحتساب رصيد الإجازات السنوية لجميع الموظفين النشطين لشهر ${accrueMonth} بمعدل 1.67 يوماً؟ هذه العملية غير قابلة للتكرار لنفس الشهر.`,
+                  confirmText: "تنفيذ التدوير",
+                });
+                if (ok) {
+                  accrueMonthMut.mutate({ month: accrueMonth });
+                }
+              }}
+            >
+              {accrueMonthMut.isPending ? "جاري التدوير..." : "تنفيذ التدوير"}
             </Button>
           </DialogFooter>
         </DialogContent>

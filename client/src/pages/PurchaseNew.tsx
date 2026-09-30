@@ -28,6 +28,7 @@ import {
   priceDecimalsFor,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -168,7 +169,13 @@ export default function PurchaseNew() {
           productId: Number(row.productId),
           variantId: Number(row.variantId),
           productUnitId: Number(row.productUnitId),
-          name: `${row.productName}${row.variantName ? ` — ${row.variantName}` : ""}`,
+          name: variantDisplayName({
+            productName: row.productName,
+            variantName: row.variantName,
+            color: row.color,
+            size: row.size,
+            sku: row.sku,
+          }),
           sku: row.sku ?? "",
           barcode: row.barcode ?? null,
           unit: row.unitName ?? "",
@@ -258,7 +265,13 @@ export default function PurchaseNew() {
         productId: Number(row.productId),
         variantId: Number(row.variantId),
         productUnitId: Number(row.productUnitId),
-        name: `${row.productName}${row.variantName ? ` — ${row.variantName}` : ""}`,
+        name: variantDisplayName({
+          productName: row.productName,
+          variantName: row.variantName,
+          color: row.color,
+          size: row.size,
+          sku: row.sku,
+        }),
         sku: row.sku ?? "",
         barcode: null,
         unit: row.unitName ?? "",

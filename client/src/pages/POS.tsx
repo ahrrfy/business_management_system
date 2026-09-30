@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
 import { applyCustomerIdentity, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
@@ -861,7 +862,14 @@ export default function POS() {
     return {
       tabId: activeTab.id,
       lines: cart.map((c) => ({
-        name: c.row.productName, unit: c.row.unitName,
+        name: variantDisplayName({
+          productName: c.row.productName,
+          variantName: c.row.variantName,
+          color: c.row.color,
+          size: c.row.size,
+          sku: c.row.sku,
+        }),
+        unit: c.row.unitName,
         qty: c.qty, price: effectivePrice(c),
         disc: c.disc, total: itemTotal(c),
       })),

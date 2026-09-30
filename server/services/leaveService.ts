@@ -20,7 +20,7 @@ import {
 import { fullEmployeeName, leaveTypeIsPaid } from "@shared/hr";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
+import { attendance, employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -32,13 +32,32 @@ import { withIdempotency } from "./idempotency";
 import Decimal from "decimal.js";
 import { money, round2 } from "./money";
 
-/** عدد الأيام شاملاً الطرفين من تاريخين "YYYY-MM-DD" — يُحسب بتقويم UTC ثابت (مستقلّ عن منطقة الخادم). */
-function daysInclusive(from: string, to: string): number {
+/** قائمة تواريخ أيام العمل بين تاريخين "YYYY-MM-DD" (شاملاً الطرفين) بتقويم UTC ثابت باستثناء الجمعة والسبت وفق المادة (70) من قانون العمل العراقي. */
+export function getLeaveWorkingDates(from: string, to: string): string[] {
   const [fy, fm, fd] = from.split("-").map(Number);
   const [ty, tm, td] = to.split("-").map(Number);
-  const ms = Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd);
-  return Math.floor(ms / 86_400_000) + 1;
+  const start = new Date(Date.UTC(fy, fm - 1, fd));
+  const end = new Date(Date.UTC(ty, tm - 1, td));
+  if (end < start) return [];
+  const dates: string[] = [];
+  const cur = new Date(start);
+  while (cur <= end) {
+    const day = cur.getUTCDay(); // 0 = Sun, ..., 5 = Fri, 6 = Sat
+    if (day !== 5 && day !== 6) {
+      dates.push(cur.toISOString().slice(0, 10));
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return dates;
 }
+
+/** عدد أيام العمل شاملاً الطرفين من تاريخين "YYYY-MM-DD" باستثناء الجمعة (5) والسبت (6) وفق المادة (70) من قانون العمل العراقي. */
+export function workingDaysInclusive(from: string, to: string): number {
+  return getLeaveWorkingDates(from, to).length;
+}
+
+/** للتوافق مع المستدعين القدامى — يحسب أيام العمل وفق المادة 70 */
+export const daysInclusive = workingDaysInclusive;
 
 export interface LeaveFilters {
   employeeId?: number;
@@ -356,6 +375,43 @@ export async function decideLeave(
         .where(eq(employees.id, lv.employeeId));
     }
 
+    if (decision === "approved") {
+      const dates = getLeaveWorkingDates(String(lv.fromDate), String(lv.toDate));
+      for (const dateStr of dates) {
+        const [existing] = await tx
+          .select({ id: attendance.id })
+          .from(attendance)
+          .where(
+            and(
+              eq(attendance.employeeId, lv.employeeId),
+              eq(attendance.attendanceDate, dateStr),
+            ),
+          )
+          .limit(1);
+
+        const values = {
+          employeeId: lv.employeeId,
+          attendanceDate: dateStr,
+          status: "LEAVE" as const,
+          hours: "0.00",
+          hourlyRate: "0.00",
+          amount: "0.00",
+          source: "leave",
+          notes: `إجازة ${lv.leaveType} معتمدة #${lv.id}`,
+          needsReview: false,
+        };
+
+        if (existing) {
+          await tx
+            .update(attendance)
+            .set(values)
+            .where(eq(attendance.id, existing.id));
+        } else {
+          await tx.insert(attendance).values(values);
+        }
+      }
+    }
+
     await tx
       .update(leaveRequests)
       .set({ status: decision, decidedBy: actor.userId, decidedAt: new Date() })
@@ -452,6 +508,19 @@ export async function cancelLeave(id: number, actor: { userId: number; scopedBra
           sickLeaveBalance: sql`${employees.sickLeaveBalance} + ${lv.days}`,
         })
         .where(eq(employees.id, lv.employeeId));
+    }
+
+    const dates = getLeaveWorkingDates(String(lv.fromDate), String(lv.toDate));
+    if (dates.length > 0) {
+      await tx
+        .delete(attendance)
+        .where(
+          and(
+            eq(attendance.employeeId, lv.employeeId),
+            inArray(attendance.attendanceDate, dates),
+            eq(attendance.source, "leave"),
+          ),
+        );
     }
 
     await tx

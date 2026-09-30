@@ -380,8 +380,9 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
       branchId: 1,
     });
 
+    const cashierShift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift);
     const shift = await openShiftFor(4, 1);
-    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
 
     await expect(
       returnSaleDirect(
@@ -452,8 +453,9 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
       branchId: 1,
     });
 
+    const cashierShift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift);
     const shift = await openShiftFor(6, 1);
-    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
 
     await expect(
       returnSaleDirect(
@@ -480,7 +482,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     });
 
     const shift = await openShiftFor(2, 1);
-    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+    const { invoiceId, itemId } = await sellOneCash(shift);
 
     await expect(
       returnSaleDirect(
@@ -507,7 +509,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     });
 
     const shift = await openShiftFor(2, 1);
-    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+    const { invoiceId, itemId } = await sellOneCash(shift);
 
     const result = await returnSaleDirect(
       {
@@ -526,7 +528,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
 
   it("وجود طلب تحكّم معلّق (salesControlRequests: PENDING) ⇒ يُرفض التنفيذ بـ CONFLICT ذرياً", async () => {
     const shift = await openShiftFor(2, 1);
-    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+    const { invoiceId, itemId } = await sellOneCash(shift);
 
     await db().insert(s.salesControlRequests).values({
       requestKey: "req-key-pending-test",
@@ -557,7 +559,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
 
   it("وجود طلب إرجاع تقليدي معلّق (returnRequests: PENDING_APPROVAL) ⇒ يُرفض بـ CONFLICT ذرياً", async () => {
     const shift = await openShiftFor(2, 1);
-    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+    const { invoiceId, itemId } = await sellOneCash(shift);
 
     await db().insert(s.returnRequests).values({
       invoiceId,

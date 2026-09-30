@@ -22,6 +22,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmtAr, formatQuantity, positiveDiff } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
@@ -532,9 +533,33 @@ export default function WorkOrderDetail() {
     {
       id: "material",
       header: "المادة",
-      accessorFn: (m) => `${m.productName}${m.variantName ? ` — ${m.variantName}` : ""}`,
+      accessorFn: (m) =>
+        variantDisplayName({
+          productName: m.productName ?? "—",
+          variantName: m.variantName,
+          color: m.color,
+          size: m.size,
+          variantKind: m.variantKind,
+          sku: m.sku,
+        }),
       meta: { width: "wide" },
-      cell: ({ row }) => <>{row.original.productName}{row.original.variantName ? ` — ${row.original.variantName}` : ""}</>,
+      cell: ({ row }) => {
+        const m = row.original;
+        const desc = variantDescriptor({
+          productName: m.productName ?? "—",
+          variantName: m.variantName,
+          color: m.color,
+          size: m.size,
+          variantKind: m.variantKind,
+          sku: m.sku,
+        });
+        return (
+          <span>
+            {m.productName ?? "—"}
+            {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+          </span>
+        );
+      },
       // تسمية الذيل تظهر فقط مع أعمدة الكلفة — بلا كلفةٍ لا إجماليَّ يُذيَّل به الجدول.
       footer: showCost ? () => "إجمالي كلفة المواد" : undefined,
     },
@@ -859,7 +884,14 @@ export default function WorkOrderDetail() {
           initial={data.materials.map((m) => ({
             variantId: Number(m.variantId),
             baseQuantity: Number(m.baseQuantity),
-            productName: m.productName + (m.variantName ? ` — ${m.variantName}` : ""),
+            productName: variantDisplayName({
+              productName: m.productName ?? "",
+              variantName: m.variantName,
+              color: m.color,
+              size: m.size,
+              variantKind: m.variantKind,
+              sku: m.sku,
+            }),
             sku: m.sku ?? "",
           }))}
           onSaved={async () => { setEditingMaterials(false); await refresh(); }}
@@ -1241,7 +1273,14 @@ export default function WorkOrderDetail() {
           data.status === "IN_PROGRESS" || data.status === "READY"
             ? (data.materials ?? []).map((m) => ({
                 id: Number(m.id),
-                name: [m.productName, m.variantName].filter(Boolean).join(" — ") || m.sku || `#${m.variantId}`,
+                name: variantDisplayName({
+                  productName: m.productName ?? "",
+                  variantName: m.variantName,
+                  color: m.color,
+                  size: m.size,
+                  variantKind: m.variantKind,
+                  sku: m.sku,
+                }) || m.sku || `#${m.variantId}`,
                 baseQuantity: Number(m.baseQuantity),
                 unitCost: m.unitCost ?? null,
               }))

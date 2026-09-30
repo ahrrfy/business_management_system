@@ -466,12 +466,12 @@ export async function returnSaleInTx(
         branchForRefund,
         explicitShiftId,
       );
-      if (resolved.userId !== actor.userId) {
+      if (actor.role === "cashier" && resolved.userId !== actor.userId) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
             what: "تعذّر صرف الاسترداد النقدي من درج وردية أخرى",
-            why: "لا يمكن صرف النقد من درج وردية مستخدم آخر",
+            why: "كاشير الصرف مقيّد بدرج ورديته المفتوحة ولا يمكنه صرف النقد من درج كاشير آخر",
             doThis:
               "اختر درج ورديتك المفتوحة الخاصة بك لصرف الاسترداد النقدي",
           }),

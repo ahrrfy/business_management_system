@@ -20,6 +20,7 @@ import {
   signedPostingLines,
   type PostingSourceComponents,
 } from "./accounting/postingEngine";
+import { assertCashOutAvailable } from "./cash/cashAvailability";
 
 function requireDb() {
   const db = getDb();
@@ -288,6 +289,15 @@ export async function disburseEmployeeLoan(
     const openShiftId = await openShiftIdTx(tx, actor.userId, branchId);
     const cashBucket: "DRAWER" | "TREASURY" = openShiftId != null ? "DRAWER" : "TREASURY";
     const shiftId = openShiftId != null ? openShiftId : null;
+
+    // حراسة توفر النقد المادي ومنع الصرف من رصيد سالب أو يوم نقد مغلق
+    await assertCashOutAvailable(tx, {
+      branchId,
+      cashBucket,
+      shiftId,
+      amount: toDbMoney(loanAmount),
+      operation: "صرف سلفة موظف",
+    });
 
     // 1. إنشاء إيصال الصرف النقدي في receipts
     const [receiptRes] = await tx.insert(receipts).values({

@@ -985,6 +985,10 @@ export const workOrderRouter = router({
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,
+        color: productVariants.color,
+        size: productVariants.size,
+        colorHex: productVariants.colorHex,
+        variantKind: productVariants.variantKind,
       })
       .from(workOrderMaterials)
       .leftJoin(productVariants, eq(workOrderMaterials.variantId, productVariants.id))

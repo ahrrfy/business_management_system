@@ -193,16 +193,16 @@ async function seedTwoEmployeeDraft(period = "2026-07") {
       employeeId: 10,
       branchIdSnapshot: 1,
       payType: "monthly",
-      gross: "600.00",
-      net: "600.00",
+      gross: "750.00",
+      net: "750.00",
     },
     {
       runId,
       employeeId: 11,
       branchIdSnapshot: 1,
       payType: "monthly",
-      gross: "400.00",
-      net: "400.00",
+      gross: "250.00",
+      net: "250.00",
     },
   ]);
   return runId;
@@ -346,7 +346,7 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     expect(salaryReceipts[0]).toMatchObject({
       branchId: 1,
       direction: "OUT",
-      amount: "900.00",
+      amount: "1000.00",
     });
 
     await returnSalaryPayment(
@@ -806,7 +806,7 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       Object.fromEntries(
         returnedObligations.map((row) => [Number(row.employeeId), `${row.remainingAmount}:${row.status}`]),
       ),
-    ).toEqual({ 10: "600.00:OPEN", 11: "0.00:SETTLED" });
+    ).toEqual({ 10: "750.00:OPEN", 11: "0.00:SETTLED" });
     const returnedView = await getRun(runId);
     expect(
       returnedView!.employeePaymentSnapshots.map((payment) => ({
@@ -817,8 +817,8 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       })),
     ).toEqual(
       expect.arrayContaining([
-        { employeeId: 10, amount: "600.00", paymentDate: "2026-08-01", active: false },
-        { employeeId: 11, amount: "400.00", paymentDate: "2026-08-01", active: true },
+        { employeeId: 10, amount: "750.00", paymentDate: "2026-08-01", active: false },
+        { employeeId: 11, amount: "250.00", paymentDate: "2026-08-01", active: true },
       ]),
     );
 
@@ -880,8 +880,8 @@ describe("payroll accrual lifecycle — DB invariants", () => {
       })),
     ).toEqual(
       expect.arrayContaining([
-        { employeeId: 10, amount: "600.00", paymentDate: "2026-08-03" },
-        { employeeId: 11, amount: "400.00", paymentDate: "2026-08-01" },
+        { employeeId: 10, amount: "750.00", paymentDate: "2026-08-03" },
+        { employeeId: 11, amount: "250.00", paymentDate: "2026-08-01" },
       ]),
     );
     const salaryLedger = await getPayrollFinancialLedger({ period: "2026-08" });
@@ -899,7 +899,7 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     ).toHaveLength(1);
     expect(
       salaryMovements.find((row) => row.movementType === "SALARY_PAYMENT_RETURN"),
-    ).toMatchObject({ active: true, amount: "600.00" });
+    ).toMatchObject({ active: true, amount: "750.00" });
 
     await payRun(runId, PAYER, { paymentMethod: "CASH", paymentDate: "2026-08-03" });
     const repeatedPayments = await runner
