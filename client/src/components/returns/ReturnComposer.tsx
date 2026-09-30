@@ -146,6 +146,7 @@ export function ReturnComposer({
 
   const inv = detail.data;
   const isWalkIn = !!inv?.walkInResolutionPolicy;
+  const isDeliveryReversal = !!inv?.walkInResolutionPolicy?.deliveryCustodyReversal;
   const items = inv?.items ?? [];
   const itemsById = useMemo(
     () => new Map((inv?.items ?? []).map((item) => [item.invoiceItemId, item])),
@@ -209,12 +210,14 @@ export function ReturnComposer({
    * المرتجع الدقيقة المحسوبة (ومنها باقي تقريب IQD عند الإرجاع المُكمِل) ولا يمكن تحريرها.
    */
   const suggestedRefund = useMemo(
-    () => isWalkIn ? returnValue : (customerOwedBack.lt(railCap) ? customerOwedBack : railCap),
-    [isWalkIn, returnValue, customerOwedBack, railCap],
+    () => isDeliveryReversal ? D(0) : isWalkIn ? returnValue : (customerOwedBack.lt(railCap) ? customerOwedBack : railCap),
+    [isDeliveryReversal, isWalkIn, returnValue, customerOwedBack, railCap],
   );
-  const refundAmount = isWalkIn
-    ? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "")
-    : manualAmount ?? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "");
+  const refundAmount = isDeliveryReversal
+    ? "0.00"
+    : isWalkIn
+      ? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "")
+      : manualAmount ?? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "");
   const refundD = /^\d+(\.\d+)?$/.test(refundAmount.trim()) ? D(refundAmount.trim()) : D(0);
   const overCap = refundD.gt(railCap);
 
@@ -417,7 +420,7 @@ export function ReturnComposer({
    * زرّ التأكيد كلّياً لأنّ كلا الرافدين «محجوب» حين يكون وعاء المقبوض صفراً — فيُقرأ ذلك
    * «النظام يجبرني على اختيار درجٍ لردّ نقودٍ لم تُقبض».
    */
-  const noRefundNeeded = !isWalkIn && refundD.lte(0);
+  const noRefundNeeded = (!isWalkIn && refundD.lte(0)) || isDeliveryReversal;
 
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
@@ -435,7 +438,7 @@ export function ReturnComposer({
     if (pending && !approvingRequestId) {
       return `على هذه الفاتورة طلبٌ معلّق #${pending.id} — احسمه أولاً (اعتماداً أو رفضاً) قبل إرسال طلبٍ جديد.`;
     }
-    if (!approvingRequestId && me.data?.role === "cashier") {
+    if (!approvingRequestId && me.data?.role === "cashier" && !isDeliveryReversal) {
       const cashierHasShift = inv?.refundShifts?.some((s) => s.isMine || Number(s.userId) === Number(me.data?.id));
       if (!cashierHasShift) {
         return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع.";
@@ -474,8 +477,8 @@ export function ReturnComposer({
       ? {
           kind: "IMMEDIATE_REFUND" as const,
           method: "CASH" as const,
-          amount: round2(returnValue).toFixed(2),
-          ...(shiftId != null ? { shiftId } : {}),
+          amount: isDeliveryReversal ? "0.00" : round2(returnValue).toFixed(2),
+          ...(shiftId != null && !isDeliveryReversal ? { shiftId } : {}),
           reason: reason.trim(),
           disposition: restock ? "RESTOCK" as const : "DAMAGED" as const,
         }
@@ -483,11 +486,13 @@ export function ReturnComposer({
 
     const railLabel = pickedRail ? REFUND_RAIL_LABEL[pickedRail] : REFUND_RAIL_LABEL.DRAWER;
     const cashSource = usesTreasury ? "من خزينة الفرع" : "من الدرج المحدّد";
-    const moneySentence = resolution
-      ? `يستلم الزبون العابر ${fmt(resolution.amount)} د.ع نقداً كاملاً ${cashSource}`
-      : refund
-        ? `يستلم الزبون ${fmt(refund.amount)} د.ع عبر ${railLabel}`
-      : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
+    const moneySentence = isDeliveryReversal
+      ? "بلا إخراج نقد من الدرج (عكس عهدة التوصيل آلياً)"
+      : resolution
+        ? `يستلم الزبون العابر ${fmt(resolution.amount)} د.ع نقداً كاملاً ${cashSource}`
+        : refund
+          ? `يستلم الزبون ${fmt(refund.amount)} د.ع عبر ${railLabel}`
+        : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
     const stockSentence = restock ? "والبضاعة تعود للرفّ" : "والبضاعة تالفة لا تعود للمخزون";
     const quantities = selectedLines.map((line) => {
       const item = itemsById.get(line.invoiceItemId);
@@ -577,8 +582,16 @@ export function ReturnComposer({
     const over = D(inv?.paidAmount ?? "0").minus(netAfter);
     const fullCustomerOwedBack = over.gt(0) ? over : D(0);
     const fullRailCap = fullReturnValue.lte(D(activeOption?.cap ?? "0")) ? fullReturnValue : D(activeOption?.cap ?? "0");
-    const fullSuggestedRefund = isWalkIn ? fullReturnValue : (fullCustomerOwedBack.lt(fullRailCap) ? fullCustomerOwedBack : fullRailCap);
-    const fullRefundAmount = fullSuggestedRefund.gt(0) ? fullSuggestedRefund.toFixed(2) : "0.00";
+    const fullSuggestedRefund = isDeliveryReversal
+      ? D(0)
+      : isWalkIn
+        ? fullReturnValue
+        : (fullCustomerOwedBack.lt(fullRailCap) ? fullCustomerOwedBack : fullRailCap);
+    const fullRefundAmount = isDeliveryReversal
+      ? "0.00"
+      : fullSuggestedRefund.gt(0)
+        ? fullSuggestedRefund.toFixed(2)
+        : "0.00";
     const fullRefundD = D(fullRefundAmount);
 
     if (!noRefundNeeded && fullRefundD.gt(0) && railState?.blockReason) {
@@ -604,8 +617,8 @@ export function ReturnComposer({
       ? {
           kind: "IMMEDIATE_REFUND" as const,
           method: "CASH" as const,
-          amount: round2(fullReturnValue).toFixed(2),
-          ...(shiftId != null ? { shiftId } : {}),
+          amount: isDeliveryReversal ? "0.00" : round2(fullReturnValue).toFixed(2),
+          ...(shiftId != null && !isDeliveryReversal ? { shiftId } : {}),
           reason: effectiveReason,
           disposition: restock ? ("RESTOCK" as const) : ("DAMAGED" as const),
         }
@@ -614,11 +627,13 @@ export function ReturnComposer({
     const totalPieces = linesToSubmit.reduce((s, l) => s + l.baseQuantity, 0);
     const railLabel = pickedRail ? REFUND_RAIL_LABEL[pickedRail] : REFUND_RAIL_LABEL.DRAWER;
     const cashSource = usesTreasury ? "من خزينة الفرع" : "من الدرج المفتوح";
-    const moneySentence = fullResolution
-      ? `استرداد ${fmt(fullResolution.amount)} د.ع نقداً ${cashSource}`
-      : fullRefund
-        ? `استرداد ${fmt(fullRefund.amount)} د.ع عبر ${railLabel}`
-        : "بلا إرجاع نقد (تسوية ذمة العميل)";
+    const moneySentence = isDeliveryReversal
+      ? "بلا إخراج نقد من الدرج (عكس عهدة التوصيل آلياً)"
+      : fullResolution
+        ? `استرداد ${fmt(fullResolution.amount)} د.ع نقداً ${cashSource}`
+        : fullRefund
+          ? `استرداد ${fmt(fullRefund.amount)} د.ع عبر ${railLabel}`
+          : "بلا إرجاع نقد (تسوية ذمة العميل)";
 
     const confirmed = await confirm({
       variant: (approvingRequestId || executesImmediately) ? "danger" : "warning",
@@ -994,7 +1009,11 @@ export function ReturnComposer({
                         قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح {fmt(railCap.toFixed(2))}
                       </div>
                     </div>
-                    {isWalkIn ? (
+                    {isDeliveryReversal ? (
+                      <div className="rounded-md border border-[var(--sem-pos)]/35 bg-[var(--sem-pos-bg)] px-2.5 py-1.5 text-xs font-bold text-[var(--sem-pos)]">
+                        عكس عهدة التوصيل آلياً (بلا إخراج نقد من الدرج)
+                      </div>
+                    ) : isWalkIn ? (
                       <div className="rounded-md border border-[var(--sem-info)]/35 bg-[var(--sem-info-bg)] px-2.5 py-1.5 text-xs font-bold text-[var(--sem-info)]">
                         مبلغ ثابت بعد التقريب (زبون عابر)
                       </div>
