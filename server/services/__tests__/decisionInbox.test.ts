@@ -30,7 +30,7 @@ function db() {
 }
 
 const TABLES = [
-  "idempotencyKeys", "auditLogs", "appNotifications", "accountingEntries", "receipts", "expenses", "inventoryMovements",
+  "idempotencyKeys", "auditLogs", "appNotifications", "accountingEntries", "receipts", "expenses", "expenseCategories", "inventoryMovements",
   "stockAdjustmentRequests", "purchaseOrderEvents", "purchaseOrderControlRequests",
   "purchaseOrderRequisitionAllocations", "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "purchaseOrderItems", "purchaseOrders", "purchaseIntegrityCaseEvents", "purchaseIntegrityCases",
@@ -437,6 +437,99 @@ describe("decisions.inbox — الصف يعرض ما يقرر عليه", () => {
     expect(res.outcome).toBe("REJECTED");
     const [after] = await db().select({ status: s.expenses.status }).from(s.expenses).where(eq(s.expenses.id, expense.id));
     expect(after!.status).toBe("REJECTED");
+  });
+
+  it("يعرض الفئة التشغيلية المدارة ومركز التكلفة في صف القرار مع الرجوع للدلو عند غيابها", async () => {
+    const [cat] = await db().insert(s.expenseCategories).values({
+      name: "وقود ومحروقات",
+      bucket: "TRANSPORT",
+      description: "بنزين وكاز لسيارات الحركة",
+      isActive: true,
+      isBucketDefault: false,
+      sortOrder: 1,
+    }).$returningId();
+
+    const [receipt1] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "45000.00", paymentMethod: "CASH", cashBucket: null, shiftId: null,
+      status: "PENDING", approvalStatus: "PENDING_APPROVAL", description: "بنزين سيارة التوصيل", createdBy: CASHIER,
+    }).$returningId();
+
+    const [expense1] = await db().insert(s.expenses).values({
+      branchId: 1, expenseDate: new Date("2026-09-02"), category: "TRANSPORT", expenseCategoryId: cat.id,
+      costCenter: "سيارة التوصيل", amount: "45000.00", paymentMethod: "CASH",
+      cashBucket: null, source: "CASH", description: "بنزين سيارة التوصيل", payee: "محطة الوقود", receiptId: receipt1.id,
+      status: "PENDING_APPROVAL", createdBy: CASHIER,
+    }).$returningId();
+
+    const owner = await caller(OWNER);
+    const row1 = (await owner.decisions.inbox()).rows.find((r) => r.kind === "expense.approve" && r.id === expense1.id);
+    expect(row1).toBeDefined();
+    // الفئة التشغيلية المدارة تظهر بدلاً من الدلو الخام
+    expect(row1!.title).toContain("وقود ومحروقات");
+    expect(row1!.title).not.toContain("مواصلات/شحن");
+    expect(row1!.subkind).toBe("وقود ومحروقات");
+    // مركز التكلفة يظهر في العنوان وفي تفاصيل البطاقة (summaryItems)
+    expect(row1!.title).toContain("سيارة التوصيل");
+    expect(row1!.summaryItems.some((item) => item.label === "مركز التكلفة: سيارة التوصيل")).toBe(true);
+    expect(row1!.trigger).toBe("MONEY_OUT");
+
+    // فحص الرجوع التلقائي للدلو المحاسبي عند غياب الفئة المدارة
+    const [receipt2] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "25000.00", paymentMethod: "CASH", cashBucket: null, shiftId: null,
+      status: "PENDING", approvalStatus: "PENDING_APPROVAL", description: "أجرة شحن", createdBy: CASHIER,
+    }).$returningId();
+
+    const [expense2] = await db().insert(s.expenses).values({
+      branchId: 1, expenseDate: new Date("2026-09-02"), category: "TRANSPORT", expenseCategoryId: null,
+      amount: "25000.00", paymentMethod: "CASH",
+      cashBucket: null, source: "CASH", description: "أجرة شحن", payee: "شركة النقل", receiptId: receipt2.id,
+      status: "PENDING_APPROVAL", createdBy: CASHIER,
+    }).$returningId();
+
+    const row2 = (await owner.decisions.inbox()).rows.find((r) => r.kind === "expense.approve" && r.id === expense2.id);
+    expect(row2).toBeDefined();
+    expect(row2!.title).toBe("مصروف مواصلات/شحن · CASH");
+    expect(row2!.subkind).toBe("مواصلات/شحن");
+    expect(row2!.summaryItems.some((item) => item.label.startsWith("مركز التكلفة:"))).toBe(false);
+
+    // فحص ظهور مركز التكلفة عند غياب الفئة المدارة مع تشذيب الفراغات الزائدة
+    const [receipt3] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "30000.00", paymentMethod: "CASH", cashBucket: null, shiftId: null,
+      status: "PENDING", approvalStatus: "PENDING_APPROVAL", description: "شحن بضاعة", createdBy: CASHIER,
+    }).$returningId();
+
+    const [expense3] = await db().insert(s.expenses).values({
+      branchId: 1, expenseDate: new Date("2026-09-02"), category: "TRANSPORT", expenseCategoryId: null,
+      costCenter: "  سيارة النقل  ", amount: "30000.00", paymentMethod: "CASH",
+      cashBucket: null, source: "CASH", description: "شحن بضاعة", payee: "سائق الشحن", receiptId: receipt3.id,
+      status: "PENDING_APPROVAL", createdBy: CASHIER,
+    }).$returningId();
+
+    const row3 = (await owner.decisions.inbox()).rows.find((r) => r.kind === "expense.approve" && r.id === expense3.id);
+    expect(row3).toBeDefined();
+    expect(row3!.title).toBe("مصروف مواصلات/شحن · سيارة النقل · CASH");
+    expect(row3!.subkind).toBe("مواصلات/شحن");
+    expect(row3!.summaryItems.some((item) => item.label === "مركز التكلفة: سيارة النقل")).toBe(true);
+
+    // فحص تشذيب مركز التكلفة الفارغ بمسافات والرجوع للوصف الافتراضي وتشذيب المرجع
+    const [receipt4] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "15000.00", paymentMethod: "CASH", cashBucket: null, shiftId: null,
+      status: "PENDING", approvalStatus: "PENDING_APPROVAL", description: "   ", createdBy: CASHIER,
+    }).$returningId();
+
+    const [expense4] = await db().insert(s.expenses).values({
+      branchId: 1, expenseDate: new Date("2026-09-02"), category: "TRANSPORT", expenseCategoryId: null,
+      costCenter: "   ", amount: "15000.00", paymentMethod: "CASH", referenceNumber: "  REF-99  ",
+      cashBucket: null, source: "CASH", description: "   ", payee: "سائق", receiptId: receipt4.id,
+      status: "PENDING_APPROVAL", createdBy: CASHIER,
+    }).$returningId();
+
+    const row4 = (await owner.decisions.inbox()).rows.find((r) => r.kind === "expense.approve" && r.id === expense4.id);
+    expect(row4).toBeDefined();
+    expect(row4!.title).toBe("مصروف مواصلات/شحن · CASH");
+    expect(row4!.summaryItems.some((item) => item.label.startsWith("مركز التكلفة:"))).toBe(false);
+    expect(row4!.summaryItems.some((item) => item.label === "بلا وصف")).toBe(true);
+    expect(row4!.summaryItems.some((item) => item.label === "المرجع: REF-99")).toBe(true);
   });
 });
 

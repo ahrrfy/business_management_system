@@ -21,6 +21,7 @@ export default defineConfig({
       "client/src/pages/Storefront.test.ts",
       "server/services/__tests__/storefrontRanking.test.ts",
       "shared/expenseLabels.test.ts",
+      "client/src/components/expenses/expenseView.test.ts",
       "shared/digitalSale.test.ts",
       "client/src/lib/printing/digitalReceiptLines.test.ts",
       "shared/cashReceiptSourceDocument.test.ts",
