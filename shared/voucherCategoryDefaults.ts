@@ -194,6 +194,20 @@ const OUT_DEFAULTS: readonly DefaultVoucherCategory[] = [
     sortOrder: 145,
   },
   {
+    name: "رد مبالغ استثمار",
+    direction: "OUT",
+    postingRole: "OTHER_LIABILITY",
+    description: "تسديد مبالغ المستثمرين وتخفيض الالتزام الاستثماري (لا مصروف تشغيلي)",
+    sortOrder: 146,
+  },
+  {
+    name: "توزيع أرباح وعوائد استثمار",
+    direction: "OUT",
+    postingRole: "OTHER_EXPENSE",
+    description: "دفع أرباح المستثمرين المقررة وتوثيق عوائد الاستثمار",
+    sortOrder: 148,
+  },
+  {
     name: "خسائر وتلف",
     direction: "OUT",
     postingRole: "LOSSES",
@@ -262,6 +276,13 @@ const IN_DEFAULTS: readonly DefaultVoucherCategory[] = [
     postingRole: "OTHER_LIABILITY",
     description: "مبلغ محتجز لصالح الغير له مسار خروجٍ دائماً",
     sortOrder: 240,
+  },
+  {
+    name: "استلام مبالغ استثمار",
+    direction: "IN",
+    postingRole: "OTHER_LIABILITY",
+    description: "إيداع مبالغ المستثمرين المستلمة وتوثيق الالتزام المالي",
+    sortOrder: 245,
   },
   {
     name: "إيراد تأجير معدات أو خدمات",
