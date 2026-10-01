@@ -14,6 +14,7 @@ import {
   accrualCorrectionRequests,
   accrualObligations,
   cashVarianceCases,
+  expenseCategories,
   expenses,
   receipts,
   users,
@@ -142,6 +143,8 @@ export const expenseSource: DecisionSource = {
       .select({
         id: expenses.id,
         category: expenses.category,
+        expenseCategoryName: expenseCategories.name,
+        costCenter: expenses.costCenter,
         amount: expenses.amount,
         paymentMethod: expenses.paymentMethod,
         description: expenses.description,
@@ -155,6 +158,10 @@ export const expenseSource: DecisionSource = {
       })
       .from(expenses)
       .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
+      .leftJoin(
+        expenseCategories,
+        eq(expenses.expenseCategoryId, expenseCategories.id),
+      )
       .leftJoin(users, eq(users.id, expenses.createdBy))
       .where(
         and(
@@ -178,13 +185,15 @@ export const expenseSource: DecisionSource = {
       .orderBy(sql`${expenses.createdAt} ASC`)
       .limit(200);
     const names = await branchNames(db, ids(rows.map((r) => r.branchId)));
-    return rows.map((r) =>
-      buildRow(
+    return rows.map((r) => {
+      const categoryLabel = r.expenseCategoryName?.trim() || expenseBucketLabel(r.category);
+      const costCenterPart = r.costCenter?.trim() ? ` · ${r.costCenter.trim()}` : "";
+      return buildRow(
         {
           kind: "expense.approve",
           id: Number(r.id),
-          title: `مصروف ${expenseBucketLabel(r.category)} · ${r.paymentMethod}`,
-          subkind: expenseBucketLabel(r.category),
+          title: `مصروف ${categoryLabel}${costCenterPart} · ${r.paymentMethod}`,
+          subkind: categoryLabel,
           party: r.payee,
           amount: r.amount,
           branchId: Number(r.branchId),
@@ -193,15 +202,16 @@ export const expenseSource: DecisionSource = {
           requestedByName: r.createdByName ?? null,
           requestedAt: r.createdAt,
           summaryItems: [
-            { label: r.description ?? "بلا وصف", unitPrice: r.amount },
-            ...(r.referenceNumber ? [{ label: `المرجع: ${r.referenceNumber}` }] : []),
+            { label: r.description?.trim() || "بلا وصف", unitPrice: r.amount },
+            ...(r.costCenter?.trim() ? [{ label: `مركز التكلفة: ${r.costCenter.trim()}` }] : []),
+            ...(r.referenceNumber?.trim() ? [{ label: `المرجع: ${r.referenceNumber.trim()}` }] : []),
           ],
-          reason: r.description,
+          reason: r.description?.trim() || null,
           trigger: "MONEY_OUT",
         },
         scope.now,
-      ),
-    );
+      );
+    });
   },
   freshness: (id) =>
     freshnessFrom(

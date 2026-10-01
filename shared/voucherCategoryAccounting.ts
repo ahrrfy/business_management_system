@@ -105,6 +105,9 @@ export const IRAQI_DEFAULT_VOUCHER_CATEGORY_ROLE: Readonly<
   "مصاريف بنكية": "OPERATING_EXPENSE",
   "إيرادات متفرّقة": "OTHER_REVENUE",
   "فوائد بنكية": "OTHER_REVENUE",
+  "رد مبالغ استثمار": "OTHER_LIABILITY",
+  "توزيع أرباح وعوائد استثمار": "OTHER_EXPENSE",
+  "استلام مبالغ استثمار": "OTHER_LIABILITY",
 });
 
 /**
@@ -119,3 +122,43 @@ export const UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES = Object.freeze([
   "ردّ مَردودات/استرداد",
   "أخرى",
 ] as const);
+
+/**
+ * شرح التوجيه المحاسبي للفئة حسب اتجاه السند الفعلي (IN أو OUT).
+ * يُميّز فئات الاستثمار (رد رأس المال / الأرباح / الاستلام) عن الفئات العامة
+ * التي قد تتشارك معها في الدور المحاسبي (مثل أمانات وتأمينات ومصروفات أخرى).
+ */
+export function voucherCategoryAccountingGuidance(
+  voucherDirection: "IN" | "OUT",
+  category: {
+    name: string;
+    postingRole: string | null | undefined;
+  },
+): string {
+  if (!category.postingRole) return "غير مهيأة محاسبياً";
+  const role = category.postingRole;
+  const isInvestment = category.name.includes("استثمار");
+
+  if (voucherDirection === "OUT") {
+    if (role === "OTHER_LIABILITY") {
+      return isInvestment
+        ? "تخفيض التزام المستثمر (مدين) مقابل الصندوق/البنك (دائن) دون احتساب كمصروف تشغيلي."
+        : "تخفيض الالتزام المالي أو الأمانة (مدين) مقابل حساب النقد المعتمد (دائن).";
+    }
+    if (role === "OTHER_EXPENSE") {
+      return isInvestment || category.name.includes("أرباح")
+        ? "إثبات توزيع أرباح وعوائد الاستثمار (مدين) مقابل الصندوق/البنك (دائن)."
+        : "إثبات المصروف (مدين) مقابل حساب النقد المعتمد (دائن).";
+    }
+    return `مدين: ${voucherCategoryRoleLabel(role)} / دائن: حساب النقد المعتمد.`;
+  }
+
+  // voucherDirection === "IN"
+  if (role === "OTHER_LIABILITY") {
+    return isInvestment
+      ? "إيداع مبالغ الاستثمار بالصندوق/البنك (مدين) مقابل إثبات الالتزام المالي للمستثمر (دائن)."
+      : "إيداع المبالغ بحساب النقد المعتمد (مدين) مقابل إثبات الالتزام المالي أو الأمانة (دائن).";
+  }
+  return `مدين: حساب النقد المعتمد / دائن: ${voucherCategoryRoleLabel(role)}.`;
+}
+
