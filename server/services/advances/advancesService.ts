@@ -35,6 +35,7 @@ import {
   employeeAdvanceSourceHash,
   type SystemPaymentRequest,
 } from "../voucher/create";
+import { autoSyncEmployeeAdvanceToDraftPayrollTx } from "../payroll/syncAdvances";
 
 export * from "../payroll/advanceRepayment";
 
@@ -49,7 +50,7 @@ export function advanceThresholds() {
 export interface ListAdvancesFilters {
   employeeId?: number;
   branchId?: number;
-  status?: "ACTIVE" | "SETTLED" | "CANCELLED";
+  status?: "ACTIVE" | "SETTLED" | "CANCELLED" | "PENDING_APPROVAL";
 }
 
 export async function listAdvances(filters?: ListAdvancesFilters) {
@@ -60,8 +61,10 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
   const conds = [];
   if (filters?.employeeId) conds.push(eq(employeeAdvances.employeeId, filters.employeeId));
   if (filters?.branchId != null) conds.push(eq(employeeAdvances.branchId, filters.branchId));
-  if (filters?.status) conds.push(eq(employeeAdvances.status, filters.status));
-  const rows = await db
+  if (filters?.status && filters.status !== "PENDING_APPROVAL") conds.push(eq(employeeAdvances.status, filters.status));
+
+  // 1. السلف المثبتة في جدول employeeAdvances
+  const rows = filters?.status === "PENDING_APPROVAL" ? [] : await db
     .select({
       id: employeeAdvances.id,
       employeeId: employeeAdvances.employeeId,
@@ -89,7 +92,93 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
     .leftJoin(receipts, eq(employeeAdvances.receiptId, receipts.id))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(employeeAdvances.id));
-  return rows.map((r) => ({ ...r, employeeName: fullEmployeeName(r) }));
+
+  // 2. طلبات السلف المعلّقة في receipts بانتظار الاعتماد — تظهر حتى لا تضيع السلف صمتاً
+  const pendingRows: typeof rows = [];
+  if (!filters?.status || filters.status === "ACTIVE" || filters.status === "PENDING_APPROVAL") {
+    const pendingReceipts = await db
+      .select({
+        id: receipts.id,
+        branchId: receipts.branchId,
+        amount: receipts.amount,
+        voucherNumber: receipts.voucherNumber,
+        createdBy: receipts.createdBy,
+        createdAt: receipts.createdAt,
+        internalNote: receipts.internalNote,
+        referenceNumber: receipts.referenceNumber,
+        branchName: branches.name,
+      })
+      .from(receipts)
+      .leftJoin(branches, eq(receipts.branchId, branches.id))
+      .where(
+        and(
+          sql`${receipts.referenceNumber} LIKE 'EMP-ADV-%'`,
+          eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+          sql`${receipts.status} NOT IN ('REVERSED', 'REJECTED')`,
+          filters?.branchId != null ? eq(receipts.branchId, filters.branchId) : undefined,
+        ),
+      );
+
+    for (const pr of pendingReceipts) {
+      let reqEmployeeId: number | null = null;
+      let reqMonthly: string | null = null;
+      let reqNote: string | null = null;
+      try {
+        if (pr.internalNote) {
+          const parsed = JSON.parse(pr.internalNote);
+          if (parsed && typeof parsed === "object") {
+            reqEmployeeId = parsed.employeeId ? Number(parsed.employeeId) : null;
+            reqMonthly = parsed.monthlyDeduction ? String(parsed.monthlyDeduction) : null;
+            reqNote = parsed.note ? String(parsed.note) : null;
+          }
+        }
+      } catch {
+        const match = pr.referenceNumber?.match(/^EMP-ADV-(\d+)-/);
+        if (match) reqEmployeeId = Number(match[1]);
+      }
+
+      if (!reqEmployeeId) continue;
+      if (filters?.employeeId && reqEmployeeId !== filters.employeeId) continue;
+
+      const [emp] = await db
+        .select({
+          firstName: employees.firstName,
+          fatherName: employees.fatherName,
+          grandfatherName: employees.grandfatherName,
+          lastName: employees.lastName,
+          position: employees.position,
+          employmentStatus: employees.employmentStatus,
+        })
+        .from(employees)
+        .where(eq(employees.id, reqEmployeeId))
+        .limit(1);
+
+      pendingRows.push({
+        id: Number(pr.id),
+        employeeId: reqEmployeeId,
+        branchId: Number(pr.branchId ?? 1),
+        amount: String(pr.amount),
+        remaining: String(pr.amount),
+        monthlyDeduction: reqMonthly,
+        status: "PENDING_APPROVAL" as never,
+        receiptId: Number(pr.id),
+        note: reqNote,
+        createdBy: pr.createdBy ?? 0,
+        grantedAt: pr.createdAt,
+        firstName: emp?.firstName ?? null,
+        fatherName: emp?.fatherName ?? null,
+        grandfatherName: emp?.grandfatherName ?? null,
+        lastName: emp?.lastName ?? null,
+        position: emp?.position ?? null,
+        employmentStatus: emp?.employmentStatus ?? null,
+        branchName: pr.branchName,
+        voucherNumber: pr.voucherNumber,
+      });
+    }
+  }
+
+  const allRows = [...pendingRows, ...rows];
+  return allRows.map((r) => ({ ...r, employeeName: fullEmployeeName(r) }));
 }
 
 /** رصيد السلف المتبقّي على موظف = مجموع remaining لسلفه النشطة. */
@@ -293,7 +382,9 @@ export async function activateAdvanceForApprovedVoucherTx(
     note: request.note,
     createdBy: receipt.createdBy!,
   });
-  return extractInsertId(result);
+  const advanceId = extractInsertId(result);
+  await autoSyncEmployeeAdvanceToDraftPayrollTx(tx, request.employeeId);
+  return advanceId;
 }
 
 export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
@@ -441,8 +532,9 @@ export interface SuggestedDeduction {
 }
 
 /**
- * اقتراح استقطاع الشهر لكل موظف: من **أقدم** سلفة نشطة فقط (سلفة تلو الأخرى حتى تسويتها)،
- * suggested = min(monthlyDeduction ?? remaining، remaining). يُستدعى داخل معاملة توليد المسيّر.
+ * اقتراح استقطاع الشهر لكل موظف من **جميع** سلفه النشطة:
+ * suggested = مجموع min(monthlyDeduction ?? remaining، remaining) لجميع سلف الموظف النشطة.
+ * يُستدعى داخل معاملة توليد المسيّر ومزامنة المسودة قبل الاعتماد.
  */
 export async function suggestDeductionsTx(tx: Tx, employeeIds: number[]): Promise<Map<number, SuggestedDeduction>> {
   const out = new Map<number, SuggestedDeduction>();
@@ -454,13 +546,18 @@ export async function suggestDeductionsTx(tx: Tx, employeeIds: number[]): Promis
     .orderBy(asc(employeeAdvances.id));
   for (const adv of rows) {
     const empId = Number(adv.employeeId);
-    if (out.has(empId)) continue; // الأقدم أولاً — سلفة واحدة لكل شهر.
     const remaining = money(adv.remaining);
     if (remaining.lte(0)) continue;
     const monthly = adv.monthlyDeduction != null ? money(adv.monthlyDeduction) : null;
-    const suggested = round2(Decimal.min(monthly ?? remaining, remaining));
-    if (suggested.lte(0)) continue;
-    out.set(empId, { advanceId: Number(adv.id), suggested });
+    const dueForThisAdv = round2(Decimal.min(monthly ?? remaining, remaining));
+    if (dueForThisAdv.lte(0)) continue;
+
+    const existing = out.get(empId);
+    if (existing) {
+      existing.suggested = round2(existing.suggested.plus(dueForThisAdv));
+    } else {
+      out.set(empId, { advanceId: Number(adv.id), suggested: dueForThisAdv });
+    }
   }
   return out;
 }
@@ -481,9 +578,7 @@ export async function suggestDeductionsForPeriod(employeeIds: number[]): Promise
 
 /**
  * تُستدعى من payRun داخل معاملة الدفع: لكل بند advanceDeduction > 0 تُنقص أرصدة سلف
- * الموظف النشطة **بالأقدم أولاً** (قفل .for("update"))؛ بلوغ الصفر ⇒ SETTLED.
- * إن عجزت السلف النشطة عن استيعاب المبلغ (أُلغيت سلفة بين التوليد والدفع) ⇒ CONFLICT
- * يُدحرج معاملة الدفع كلها — أعد المسيّر لمسودة وولّده من جديد ليتّسق الاستقطاع.
+ * الموظف النشطة بتوزيع عادل على الأقساط الشهرية ثم الأقدم أولاً؛ بلوغ الصفر ⇒ SETTLED.
  */
 export async function settleAdvancesOnPayTx(
   tx: Tx,
@@ -499,18 +594,28 @@ export async function settleAdvancesOnPayTx(
       .where(and(eq(employeeAdvances.employeeId, item.employeeId), eq(employeeAdvances.status, "ACTIVE")))
       .orderBy(asc(employeeAdvances.id))
       .for("update");
+
+    const currentRem = new Map<number, Decimal>();
+    for (const adv of advs) currentRem.set(Number(adv.id), money(adv.remaining));
+
+    // مرحلة 1: استقطاع القسط المستحق لكل سلفة
     for (const adv of advs) {
       if (left.lte(0)) break;
-      const remaining = money(adv.remaining);
-      if (remaining.lte(0)) continue;
-      const take = Decimal.min(remaining, left);
-      const newRemaining = round2(remaining.minus(take));
+      const rem = currentRem.get(Number(adv.id)) ?? money(0);
+      if (rem.lte(0)) continue;
+      const installment = adv.monthlyDeduction != null ? money(adv.monthlyDeduction) : rem;
+      const due = round2(Decimal.min(installment, rem));
+      const take = round2(Decimal.min(due, left));
+      if (take.lte(0)) continue;
+
+      const after = round2(rem.minus(take));
+      currentRem.set(Number(adv.id), after);
       left = round2(left.minus(take));
+
       await tx
         .update(employeeAdvances)
-        .set({ remaining: toDbMoney(newRemaining), status: newRemaining.lte(0) ? "SETTLED" : "ACTIVE" })
+        .set({ remaining: toDbMoney(after), status: after.lte(0) ? "SETTLED" : "ACTIVE" })
         .where(eq(employeeAdvances.id, Number(adv.id)));
-      // تسجيل التسوية مربوطةً بالمسيّر (تدقيق ١٧/٧) ⇒ استعادةٌ دقيقة عند حذف المسيّر تمنع الخصم المضاعف.
       await tx.insert(advanceSettlements).values({
         runId,
         advanceId: Number(adv.id),
@@ -518,6 +623,33 @@ export async function settleAdvancesOnPayTx(
         amount: toDbMoney(take),
       });
     }
+
+    // مرحلة 2: في حال وجود فائض، استيفاؤه من أقدم السلف المتبقية
+    if (left.gt(0)) {
+      for (const adv of advs) {
+        if (left.lte(0)) break;
+        const rem = currentRem.get(Number(adv.id)) ?? money(0);
+        if (rem.lte(0)) continue;
+        const take = round2(Decimal.min(rem, left));
+        if (take.lte(0)) continue;
+
+        const after = round2(rem.minus(take));
+        currentRem.set(Number(adv.id), after);
+        left = round2(left.minus(take));
+
+        await tx
+          .update(employeeAdvances)
+          .set({ remaining: toDbMoney(after), status: after.lte(0) ? "SETTLED" : "ACTIVE" })
+          .where(eq(employeeAdvances.id, Number(adv.id)));
+        await tx.insert(advanceSettlements).values({
+          runId,
+          advanceId: Number(adv.id),
+          employeeId: item.employeeId,
+          amount: toDbMoney(take),
+        });
+      }
+    }
+
     if (left.gt(0)) {
       throw new TRPCError({
         code: "CONFLICT",
