@@ -22,7 +22,7 @@
 // السحب النقديّ أثناء الوردية (cash drop, referenceNumber LIKE 'CD-%' — cashDropService): يقع
 //   **أثناء** الوردية فيُدرَج في computeExpectedCash (يُنقِص المتوقَّع) والنقد المعدود يُنقِص بالمثل ⇒
 //   الفرق لا يتأثّر. يُصنَّف في دلو cashDrops (ضمن الخارج التشغيليّ)، خلافاً لتسليم الإغلاق CH.
-import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, notLike, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lt, ne, notExists, notInArray, notLike, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   branches,
@@ -31,6 +31,7 @@ import {
   expenseCategories,
   expenses,
   invoices,
+  payrollAccountingEvents,
   receipts,
   shifts,
   suppliers,
@@ -428,6 +429,14 @@ export async function getDayCloseReconciliation(opts: {
         notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "TEST-TREASURY%"),
         notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "TREASURY-SEED%"),
       ),
+    ),
+    // استبعاد صرف الرواتب والتحويلات القانونية (تسويات الخزينة المرتبطة بأحداث الرواتب)
+    // حتى لا تُحسب كعمليات تشغيلية مباشرة تفرّغ النقد المتوقع للأدراج.
+    notExists(
+      db
+        .select({ one: sql`1` })
+        .from(payrollAccountingEvents)
+        .where(eq(payrollAccountingEvents.receiptId, receipts.id)),
     ),
   ];
   if (opts.branchId != null) {

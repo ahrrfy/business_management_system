@@ -771,5 +771,288 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.receiptCount).toBe(0);
     expect(res.directOperations.cashIn).toBe("0.00");
   });
+
+  it("R3 (Regression): استبعاد سندات صرف الرواتب والتحويلات القانونية النقدية من العمليات المباشرة وحماية المتوقع من أن يصبح سالباً", async () => {
+    // تمويل الخزينة لتغطية افتتاح الوردية وصرف الرواتب
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "50000000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-PAYROLL-FUND", createdBy: ADMIN,
+    });
+
+    // ١) وردية كاشير اعتيادية: رصيد افتتاحي 10,000,000 + مبيعات 27,300
+    const shift = await openShift({ branchId: 1, openingBalance: "10000000" }, { userId: CASHIER1, branchId: 1 });
+    const inv = await seedInvoice(1);
+    await insertReceipt({ shiftId: shift.shiftId, branchId: 1, direction: "IN", amount: "27300.00", invoiceId: inv });
+    await closeShift({ shiftId: shift.shiftId, countedCash: "10027300.00" }, { userId: CASHIER1, branchId: 1 });
+
+    // ٢) عمليات مباشرة مشروعة بالتزامن مع صرف الرواتب:
+    // تحصيل مباشر (RV) بمبلغ 2,779,500 د.ع
+    await db().insert(s.receipts).values({
+      id: 70001, branchId: 1, direction: "IN", amount: "2779500.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      voucherNumber: "RV-1-20261001-LEGIT", partyType: "CUSTOMER", description: "تحصيل مباشر مشروع",
+      createdBy: ADMIN,
+    });
+    // مصروف تشغيلي مباشر مشروع (PV) بمبلغ 150,000 د.ع
+    await db().insert(s.receipts).values({
+      id: 70002, branchId: 1, direction: "OUT", amount: "150000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      voucherNumber: "PV-1-20261001-LEGIT", description: "مصروف صيانة مباشر",
+      createdBy: ADMIN,
+    });
+
+    // ٣) محاكاة دقيقة لحالة الإنتاج: صرف رواتب وتحويلات قانونية نقدية من الخزينة (26,167,825 د.ع إجمالي)
+    // بـ referenceNumber = null (وفق assertPayrollPaymentEvidence عند الدفع النقدي)
+    const payrollReceipts = [
+      { id: 70101, amount: "20000000.00", desc: "صافي رواتب نقدية من الخزينة", kind: "SALARY_PAYMENT" as const },
+      { id: 70102, amount: "2167825.00", desc: "تحويل ضريبة الدخل نقداً", kind: "TAX_REMITTANCE" as const },
+      { id: 70103, amount: "3000000.00", desc: "تحويل الضمان الاجتماعي نقداً", kind: "SOCIAL_SECURITY_REMITTANCE" as const },
+      { id: 70104, amount: "1000000.00", desc: "تسوية مكافأة نهاية الخدمة نقداً", kind: "EOS_SETTLEMENT" as const },
+    ];
+
+    for (const pr of payrollReceipts) {
+      await db().insert(s.receipts).values({
+        id: pr.id,
+        branchId: 1,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        direction: "OUT",
+        amount: pr.amount,
+        paymentMethod: "CASH",
+        referenceNumber: null, // لا يوجد رقم مرجع للدفع النقدي
+        voucherNumber: null,
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: ADMIN,
+        approvedAt: new Date(),
+        description: pr.desc,
+        createdBy: ADMIN,
+      });
+
+      await db().insert(s.accountingEntries).values({
+        id: pr.id,
+        entryType: "PAYMENT_OUT",
+        branchId: 1,
+        amount: pr.amount,
+        entryDate: new Date(),
+      });
+
+      await db().insert(s.payrollAccountingEvents).values({
+        id: pr.id,
+        branchIdSnapshot: 1,
+        revisionNo: 0,
+        eventKind: pr.kind,
+        accountingEntryId: pr.id,
+        receiptId: pr.id,
+        sourceKey: `PAYROLL:TEST:${pr.kind}:${pr.id}`,
+        sourceHash: "a".repeat(64),
+        occurredAt: new Date(),
+        createdBy: ADMIN,
+      });
+    }
+
+    const res = await report(1);
+
+    // أ) التحقق الحاسم من استبعاد كافة سندات صرف الرواتب والتحويلات القانونية من directOperations
+    expect(res.directOperations.receiptCount).toBe(2); // فقط التحصيل المشروع RV ومصروف الصيانة PV
+    expect(res.directOperations.collectionsCash).toBe("2779500.00");
+    expect(res.directOperations.expensesCash).toBe("150000.00");
+    expect(res.directOperations.cashIn).toBe("2779500.00");
+    // الخارج التشغيلي المباشر يحوي فقط الـ 150,000 المشروعة، ولا يحتوي الـ 26,167,825 د.ع للرواتب
+    expect(res.directOperations.operatingOut).toBe("150000.00");
+    expect(res.directOperations.netCash).toBe("2629500.00"); // 2,779,500 - 150,000 = +2,629,500 د.ع
+
+    // ب) حماية رصيد المتوقع والنقد الفعلي من الانهيار بالسالب
+    // المتوقع = الوردية (10,027,300) + صافي المباشر (2,629,500) = 12,656,800 د.ع (موجب ومطابق تماماً!)
+    expect(res.totals.shiftExpected).toBe("10027300.00");
+    expect(res.totals.directNetCash).toBe("2629500.00");
+    expect(res.totals.expected).toBe("12656800.00");
+    expect(res.totals.closedExpected).toBe("12656800.00");
+    expect(res.totals.physicalDrawerCash).toBe("12656800.00");
+
+    // ج) الحفاظ على العمليات المشروعة في المجاميع الكلية
+    expect(res.totals.collectionsCash).toBe("2779500.00");
+    expect(res.totals.salesCash).toBe("27300.00");
+    expect(res.totals.expensesCash).toBe("150000.00");
+  });
+
+  it("R3 (Regression): استبعاد عكوس ومردودات الرواتب (SALARY_PAYMENT_RETURN / REMITTANCE_RETURN / EOS_SETTLEMENT_REVERSAL) من التدفقات المباشرة", async () => {
+    // ١) إنشاء أحداث أصلية تُعكَس (لتوافق قيد chk_payroll_event_reversal_shape)
+    const baseEvents = [
+      { id: 70211, kind: "SALARY_PAYMENT" as const },
+      { id: 70212, kind: "TAX_REMITTANCE" as const },
+      { id: 70213, kind: "EOS_SETTLEMENT" as const },
+    ];
+    for (const be of baseEvents) {
+      await db().insert(s.accountingEntries).values({
+        id: be.id,
+        entryType: "PAYMENT_OUT",
+        branchId: 1,
+        amount: "500000.00",
+        entryDate: new Date(),
+      });
+      await db().insert(s.payrollAccountingEvents).values({
+        id: be.id,
+        branchIdSnapshot: 1,
+        revisionNo: 0,
+        eventKind: be.kind,
+        accountingEntryId: be.id,
+        sourceKey: `PAYROLL:TEST:BASE:${be.id}`,
+        sourceHash: "0".repeat(64),
+        occurredAt: new Date(),
+        createdBy: ADMIN,
+      });
+    }
+
+    // ٢) سندات مردودات وعكوس رواتب نقدية واردة للخزينة
+    const returnEvents = [
+      { id: 70201, amount: "500000.00", kind: "SALARY_PAYMENT_RETURN" as const, reversalOfId: 70211 },
+      { id: 70202, amount: "200000.00", kind: "REMITTANCE_RETURN" as const, reversalOfId: 70212 },
+      { id: 70203, amount: "300000.00", kind: "EOS_SETTLEMENT_REVERSAL" as const, reversalOfId: 70213 },
+    ];
+
+    for (const re of returnEvents) {
+      await db().insert(s.receipts).values({
+        id: re.id,
+        branchId: 1,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: re.amount,
+        paymentMethod: "CASH",
+        referenceNumber: null,
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: ADMIN,
+        approvedAt: new Date(),
+        description: `مردود/عكس نقدي حدث ${re.kind}`,
+        createdBy: ADMIN,
+      });
+
+      await db().insert(s.accountingEntries).values({
+        id: re.id,
+        entryType: "PAYMENT_IN",
+        branchId: 1,
+        amount: re.amount,
+        entryDate: new Date(),
+      });
+
+      await db().insert(s.payrollAccountingEvents).values({
+        id: re.id,
+        branchIdSnapshot: 1,
+        revisionNo: 0,
+        eventKind: re.kind,
+        accountingEntryId: re.id,
+        receiptId: re.id,
+        reversalOfId: re.reversalOfId,
+        sourceKey: `PAYROLL:TEST:RET:${re.kind}:${re.id}`,
+        sourceHash: "b".repeat(64),
+        occurredAt: new Date(),
+        createdBy: ADMIN,
+      });
+    }
+
+    // حركة بيع مباشرة مشروعة بالتزامن
+    const inv = await seedInvoice(1);
+    await db().insert(s.receipts).values({
+      id: 70204, branchId: 1, direction: "IN", amount: "400000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      invoiceId: inv, createdBy: ADMIN,
+    });
+
+    const res = await report(1);
+
+    // العكوس والمردودات لا تُحسب كإيراد مباشر ولا ترفع المتوقع كذباً
+    expect(res.directOperations.receiptCount).toBe(1); // فقط البيع المباشر المشروع
+    expect(res.directOperations.salesCash).toBe("400000.00");
+    expect(res.directOperations.cashIn).toBe("400000.00");
+    expect(res.directOperations.otherIn).toBe("0.00");
+    expect(res.totals.cashIn).toBe("400000.00");
+    expect(res.totals.expected).toBe("400000.00");
+  });
+
+  it("R3 (Adversarial): شمولية الاستبعاد لرواتب ذات مرجع صريح وبقاء السندات المباشرة عديمة المرجع مشمولة", async () => {
+    // ١) سند تسوية نهاية خدمة يحمل referenceNumber صريح (TERM-SETTLEMENT-99-1) مرتبط بحدث رواتب
+    await db().insert(s.receipts).values({
+      id: 70301,
+      branchId: 1,
+      shiftId: null,
+      cashBucket: "TREASURY",
+      direction: "OUT",
+      amount: "1500000.00",
+      paymentMethod: "CASH",
+      referenceNumber: "TERM-SETTLEMENT-99-1",
+      voucherNumber: null,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      approvedBy: ADMIN,
+      approvedAt: new Date(),
+      description: "صرف نهاية خدمة بمرجع صريح",
+      createdBy: ADMIN,
+    });
+    await db().insert(s.accountingEntries).values({
+      id: 70301,
+      entryType: "PAYMENT_OUT",
+      branchId: 1,
+      amount: "1500000.00",
+      entryDate: new Date(),
+    });
+    await db().insert(s.payrollAccountingEvents).values({
+      id: 70301,
+      branchIdSnapshot: 1,
+      revisionNo: 0,
+      eventKind: "EOS_SETTLEMENT",
+      accountingEntryId: 70301,
+      receiptId: 70301,
+      sourceKey: "PAYROLL:TEST:EOS:70301",
+      sourceHash: "c".repeat(64),
+      occurredAt: new Date(),
+      createdBy: ADMIN,
+    });
+
+    // ٢) سند قبض مباشر مشروع (RV) لكن referenceNumber = null
+    await db().insert(s.receipts).values({
+      id: 70302,
+      branchId: 1,
+      direction: "IN",
+      amount: "250000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      referenceNumber: null,
+      voucherNumber: "RV-NOREF-1",
+      partyType: "CUSTOMER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      createdBy: ADMIN,
+      description: "قبض مباشر بدون مرجع خارجي",
+    });
+
+    // ٣) سند صرف مباشر مشروع (PV) لكن referenceNumber = null
+    await db().insert(s.receipts).values({
+      id: 70303,
+      branchId: 1,
+      direction: "OUT",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      referenceNumber: null,
+      voucherNumber: "PV-NOREF-1",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      createdBy: ADMIN,
+      description: "صرف مباشر بدون مرجع خارجي",
+    });
+
+    const res = await report(1);
+
+    // الراتب بمرجع صريح مستبعد حتماً
+    // السندات المشروعة غير المرتبطة بأحداث الرواتب مشمولة بالكامل حتى لو كان referenceNumber = null
+    expect(res.directOperations.receiptCount).toBe(2);
+    expect(res.directOperations.collectionsCash).toBe("250000.00");
+    expect(res.directOperations.expensesCash).toBe("50000.00");
+    expect(res.directOperations.netCash).toBe("200000.00");
+    expect(res.totals.expected).toBe("200000.00");
+  });
 });
 
