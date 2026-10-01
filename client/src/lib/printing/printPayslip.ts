@@ -19,6 +19,7 @@ import {
   pageHeader,
   tafqitLine,
   wrapA4Doc,
+  wrapMultiA4Doc,
   type CompanySettings,
 } from "./docHtml";
 import { esc, fmt, openPrintWindow } from "./brand";
@@ -76,7 +77,10 @@ function line(label: string, value: string | null | undefined, kind: "earn" | "d
   return { bandLabel: label, amount: fmt(absolute), _n: absolute, _kind: kind };
 }
 
-export function printPayslip(d: PayslipData): boolean {
+/**
+ * يولّد محتوى صفحة HTML لقسيمة راتب الموظف الواحدة، متضمناً الرأس والبطاقات والجدول والتواقيع.
+ */
+export function renderPayslipHtml(d: PayslipData): string {
   const header = pageHeader(
     {
       title: "كشف راتب",
@@ -201,9 +205,29 @@ export function printPayslip(d: PayslipData): boolean {
   </div>
   <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">هذا الكشف بيان احتساب واستحقاق — لا يثبت قبض الموظف ما لم تظهر حالة «مدفوع» وتاريخ الصرف.</div>`;
 
-  const body = `${pageBodyOpen()}${header}${cards}${table}${noteBox}${grand}${tafqit}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
+  return `${pageBodyOpen()}${header}${cards}${table}${noteBox}${grand}${tafqit}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
     d.settings,
     { rightText: `REF PR-${d.runId}/${d.period}/EMP-${d.employeeId}` },
   )}`;
-  return openPrintWindow(wrapA4Doc(`كشف راتب ${d.employeeName} — ${d.period}`, body));
 }
+
+export function printPayslip(d: PayslipData): boolean {
+  return openPrintWindow(wrapA4Doc(`كشف راتب ${d.employeeName} — ${d.period}`, renderPayslipHtml(d)));
+}
+
+/**
+ * طباعة/تصدير قسائم الرواتب لمجموعة من الموظفين في ملف ومستند واحد متعدد الصفحات A4.
+ */
+export function printBatchPayslips(
+  slips: PayslipData[],
+  meta?: { title?: string; period?: string },
+): boolean {
+  if (slips.length === 0) return false;
+  const period = meta?.period ?? slips[0]?.period ?? "";
+  const title = meta?.title ?? `قسائم رواتب ${period} — ${slips.length} موظف`;
+  const pagesHtml = slips.map((d) => renderPayslipHtml(d));
+  return openPrintWindow(wrapMultiA4Doc(title, pagesHtml, {
+    badgeLabel: `مسيّر رواتب ${period} (${slips.length} موظف)`
+  }));
+}
+

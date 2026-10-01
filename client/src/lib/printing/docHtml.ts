@@ -179,6 +179,175 @@ ${CAIRO_FONT}
 </body></html>`;
 }
 
+/**
+ * غلاف HTML لمستند A4 متعدد الصفحات (مثل كشوفات الرواتب المجمعة للموظفين).
+ * كل صفحة في `pagesContent` تُغلَّف بـ `<div class="page">` مستقلّة مع فاصل صفحات إلزامي.
+ */
+export function wrapMultiA4Doc(
+  title: string,
+  pagesContent: string[],
+  options: { orientation?: "portrait" | "landscape"; badgeLabel?: string } = {},
+): string {
+  const landscape = options.orientation === "landscape";
+  const pageWidth = landscape ? PAGE_H : PAGE_W;
+  const pageHeight = landscape ? PAGE_W : PAGE_H;
+  const badge = options.badgeLabel ?? `معاينة المستند الرسمي A4 — ${pagesContent.length} صفحة`;
+
+  const pagesHtml = pagesContent
+    .map(
+      (body, idx) => `
+<div class="page" data-page-index="${idx + 1}">
+  <div class="page-inset"></div>
+  ${body}
+</div>`,
+    )
+    .join("\n");
+
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<title>${esc(title)}</title>
+${CAIRO_FONT}
+<style>
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
+  html,body{font-family:'Cairo',sans-serif;background:#EAE9E4;color:#000;direction:rtl}
+  @page{size:A4 ${landscape ? "landscape" : "portrait"};margin:0}
+  body{margin:0;padding:0;font-family:'Cairo',sans-serif}
+  .page{width:${pageWidth}px;min-height:${pageHeight}px;background:#fff;position:relative;
+    margin:20px auto;font-family:'Cairo',sans-serif;color:#000;direction:rtl;font-size:11.5px;line-height:1.55;
+    display:flex;flex-direction:column;box-shadow:0 4px 18px rgba(0,0,0,0.12);}
+  .page:last-child{margin-bottom:30px;}
+  .page-inset{position:absolute;top:${SAFETY_INSET}px;right:${SAFETY_INSET}px;bottom:${SAFETY_INSET}px;left:${SAFETY_INSET}px;border:1px solid ${B.borderMist};pointer-events:none;z-index:2;}
+  .page-body{position:relative;z-index:1;padding:32px 42px 0;flex:1 0 auto;}
+  .page-footer{margin-top:auto;padding:14px 42px 24px;z-index:1;position:relative;}
+  table{border-collapse:collapse}
+  thead{display:table-header-group} tfoot{display:table-footer-group}
+  tr,td,th{page-break-inside:avoid;break-inside:avoid}
+  @media print {
+    *{box-shadow:none !important}
+    body{background:#fff !important}
+    .page-inset{display:none !important}
+    .doc-toolbar{display:none !important}
+    .page{margin:0 !important;box-shadow:none !important;page-break-after:always !important;break-after:page !important;}
+    .page:last-child{page-break-after:auto !important;break-after:auto !important;}
+  }
+  .doc-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 9999;
+    background: #1C1F1D;
+    color: #fff;
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    font-family: 'Cairo', sans-serif;
+  }
+  .doc-toolbar-info {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .doc-toolbar-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .doc-toolbar-badge {
+    font-size: 11px;
+    color: #CFE7DE;
+    background: rgba(207,231,222,0.12);
+    padding: 3px 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(207,231,222,0.25);
+  }
+  .doc-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .doc-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: inherit;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+  .doc-btn:active {
+    transform: scale(0.97);
+  }
+  .doc-btn-primary {
+    background: #0D6B52;
+    color: #fff;
+  }
+  .doc-btn-primary:hover {
+    background: #094F3C;
+  }
+  .doc-btn-save {
+    background: #2563EB;
+    color: #fff;
+  }
+  .doc-btn-save:hover {
+    background: #1D4ED8;
+  }
+  .doc-btn-close {
+    background: rgba(255,255,255,0.12);
+    color: #E2E2DD;
+  }
+  .doc-btn-close:hover {
+    background: rgba(255,255,255,0.22);
+  }
+</style>
+</head>
+<body>
+<div class="doc-toolbar" dir="rtl">
+  <div class="doc-toolbar-info">
+    <span class="doc-toolbar-title">${esc(title)}</span>
+    <span class="doc-toolbar-badge">${esc(badge)}</span>
+  </div>
+  <div class="doc-toolbar-actions">
+    <button class="doc-btn doc-btn-primary" onclick="window.print()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+      <span>طباعة المستند</span>
+    </button>
+    <button class="doc-btn doc-btn-save" onclick="window.print()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+      <span>حفظ كملف PDF</span>
+    </button>
+    <button class="doc-btn doc-btn-close" onclick="window.close()">
+      <span>إغلاق المعاينة</span>
+    </button>
+  </div>
+</div>
+${pagesHtml}
+<script>
+  (function () {
+    var images = Array.from(document.images).map(function (image) {
+      return image.complete
+        ? Promise.resolve()
+        : new Promise(function (resolve) {
+            image.addEventListener('load', resolve, { once: true });
+            image.addEventListener('error', resolve, { once: true });
+          });
+    });
+    var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
+    Promise.all([fonts].concat(images)).then(function () {
+      window.setTimeout(function () {
+        window.focus();
+        window.print();
+      }, 150);
+    });
+  })();
+</script>
+</body></html>`;
+}
+
 /** مغلّف HTML لإيصال حراري 80mm (كما كان — لا تغيير في وحدة نقطة البيع). */
 export function wrapReceiptDoc(title: string, bodyContent: string): string {
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
