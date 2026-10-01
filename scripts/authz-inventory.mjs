@@ -342,6 +342,13 @@ const PROCEDURES = {
     roles: ["admin"],
     branch: false,
   },
+  journalWriteProcedure: {
+    authority: "module-gate",
+    module: "reports",
+    level: "FULL",
+    roles: ["manager", "accountant"],
+    branch: "required",
+  },
   customersReadProcedure: {
     authority: "module-map",
     module: "crm",

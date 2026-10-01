@@ -2663,7 +2663,7 @@ export const ALL_POSTING_PROFILES: readonly PostingProfile[] = Object.freeze(
   Object.keys(PROFILE_POLICIES).sort() as PostingProfile[],
 );
 
-function stableJson(value: unknown): string {
+export function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   const record = value as Record<string, unknown>;
