@@ -1,3 +1,4 @@
+import { appErrorMessage } from "@shared/errors";
 // نظام المهام الموحّد — راوتر tRPC (S2). نمط workOrderRouter.ts: قراءة/كتابة تنفيذية/كتابة مديرية،
 // كل الكتابات مُدقَّقة عبر logAudit.
 import { TRPCError } from "@trpc/server";
@@ -100,7 +101,7 @@ export const tasksRouter = router({
       // لا يُنشئ مهمّة خارج فرعه المُسنَد (كان `|| manager` يُعفيه).
       const elevated = ctx.user.role === "admin";
       if (!elevated && Number(ctx.user.branchId) !== input.branchId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إنشاء مهمة لفرع آخر" });
+        throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "خطأ", why: "لا تستطيع إنشاء مهمة لفرع آخر", doThis: "حاول مرة أخرى أو تواصل مع الدعم الفني" }) });
       }
       const res = await createTask(input, { userId: ctx.user.id, branchId: input.branchId, role: ctx.user.role, name: ctx.user.name });
       await logAudit(ctx, {

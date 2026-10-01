@@ -1,3 +1,4 @@
+import { appErrorMessage } from "@shared/errors";
 // أدوات داخلية لنظام المهام: ترقيم المهمة، تحميلها تحت قفل صفّ، وعزل الفرع/الموظف — نمط
 // server/services/workOrder/helpers.ts حرفياً (لا تُصدَّر من نقطة الدخول العامة index.ts).
 import { TRPCError } from "@trpc/server";
@@ -27,7 +28,7 @@ export async function nextTaskNumber(tx: Tx, branchId: number): Promise<string> 
 /** يحمّل المهمة تحت قفل صفّ (FOR UPDATE) — يرمي NOT_FOUND إن غابت. */
 export async function loadTask(tx: Tx, id: number) {
   const rows = await tx.select().from(tasks).where(eq(tasks.id, id)).for("update").limit(1);
-  if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "المهمة غير موجودة" });
+  if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "خطأ", why: "المهمة غير موجودة", doThis: "حاول مرة أخرى أو تواصل مع الدعم الفني" }) });
   return rows[0];
 }
 
@@ -37,7 +38,7 @@ export function assertTaskBranch(task: { branchId: number | string }, actor: Act
   const elevated = actor.role === "admin";
   if (elevated) return;
   if (Number(task.branchId) !== actor.branchId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "المهمة لا تخصّ فرعك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "خطأ", why: "المهمة لا تخصّ فرعك", doThis: "حاول مرة أخرى أو تواصل مع الدعم الفني" }) });
   }
 }
 
@@ -55,7 +56,7 @@ export function assertTaskActorScope(
   const isAssignee = task.assignedTo != null && Number(task.assignedTo) === actor.userId;
   const isCreator = task.createdBy != null && Number(task.createdBy) === actor.userId;
   if (!isAssignee && !isCreator) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة لا تخصّك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "خطأ", why: "هذه المهمة لا تخصّك", doThis: "حاول مرة أخرى أو تواصل مع الدعم الفني" }) });
   }
 }
 
@@ -88,6 +89,6 @@ export function assertTaskAssigneeOrElevated(
   const elevated = actor.role === "admin" || actor.role === "manager" || (opts?.allowSystem && actor.role === "system");
   if (elevated) return;
   if (task.assignedTo == null || Number(task.assignedTo) !== actor.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة مُسنَدة لموظف آخر" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "خطأ", why: "هذه المهمة مُسنَدة لموظف آخر", doThis: "حاول مرة أخرى أو تواصل مع الدعم الفني" }) });
   }
 }
