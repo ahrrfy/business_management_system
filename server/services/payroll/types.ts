@@ -11,6 +11,8 @@ export interface PayrollPaymentInput {
   paymentMethod?: PayrollPaymentMethod;
   paymentDate?: string | null;
   referenceNumber?: string | null;
+  shiftId?: number | null;
+  cashBucket?: "TREASURY" | "DRAWER" | null;
 }
 
 export interface PayrollReturnInput {

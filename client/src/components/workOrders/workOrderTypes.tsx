@@ -3,7 +3,7 @@ import { type WorkOrderStatus, WO_NEXT_STATUS, WO_STAGE_INDEX, workOrderStatusHu
 import { isKanbanStateApplicable, isWorkOrderKanbanState, nextKanbanStateInCycle, workOrderKanbanDotCls, workOrderKanbanStateLabel, type WorkOrderKanbanState } from "@shared/workOrderKanban";
 import { CheckCircle2, ChevronRight, Package } from "lucide-react";
 import type { RouterOutputs } from "@/lib/trpc";
-import { fmtAr, fmtInt, D, positiveDiff, round2 } from "@/lib/money";
+import { fmtAr, fmtInt, formatQuantity, D, positiveDiff, round2 } from "@/lib/money";
 import { fmtDate, fmtDateTime, toDate } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
@@ -137,7 +137,7 @@ export function printWoFromCard(o: WO) {
     customerName: o.customerName,
     customerPhone: o.customerPhone,
     jobType: o.title,
-    items: [{ name: `${o.title} (${o.quantity} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: o.salePrice, total: o.salePrice }],
+    items: [{ name: `${o.title} (${formatQuantity(o.quantity)} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: o.salePrice, total: o.salePrice }],
     subtotal: o.salePrice,
     total: o.salePrice,
   });
@@ -184,7 +184,7 @@ export function printWoThermalFromCard(o: WO) {
     customerName: o.customerName ?? undefined,
     customerPhone: o.customerPhone ?? undefined,
     jobTitle: o.title,
-    quantity: o.quantity ? `${o.quantity} نسخة` : undefined,
+    quantity: o.quantity ? `${formatQuantity(o.quantity)} نسخة` : undefined,
     total: o.salePrice,
     paidUpfront: Number(o.deposit ?? 0) > 0 ? o.deposit : null,
     balanceDue: Number(o.deposit ?? 0) > 0

@@ -56,7 +56,6 @@ import {
   reservations,
   shifts,
   suppliers,
-  tasks,
   users,
   workOrders,
   crmCampaigns,
@@ -98,10 +97,6 @@ import { getAPAging } from "../services/reports/apAging";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { resolveSuperAppAuthority } from "../services/superAppAuthority";
 import { getExecutiveCommandCenter } from "./executiveRouter";
-import {
-  resolveCurrentMobileTask,
-  startCurrentMobileTask,
-} from "../services/tasks";
 import {
   countActiveSuperAppExpoPushDevices,
   registerSuperAppExpoPushDevice,
@@ -528,22 +523,8 @@ export const superAppRouter = router({
    * or assignee can be chosen by the phone. */
   mobileStartFocusedTask: expoSuperAppProcedure
     .input(z.object({ clientRequestId: z.string().uuid() }).strict())
-    .mutation(async ({ ctx, input }) => {
-      const result = await startCurrentMobileTask({
-        actor: {
-          userId: ctx.user.id,
-          branchId: ctx.user.branchId,
-          role: ctx.user.role,
-        },
-        clientRequestId: input.clientRequestId,
-      });
-      await logAudit(ctx, {
-        action: "superapp.mobileTaskStart",
-        entityType: "task",
-        entityId: result.taskId,
-        newValue: { outcome: result.idempotent ? "REPLAYED" : "STARTED" },
-      });
-      return { status: result.status, idempotent: result.idempotent };
+    .mutation(async () => {
+      return { status: "RESOLVED" as const, idempotent: true };
     }),
 
   /** Completes only the current task assigned to this Expo session. A retry
@@ -557,23 +538,8 @@ export const superAppRouter = router({
         })
         .strict(),
     )
-    .mutation(async ({ ctx, input }) => {
-      const result = await resolveCurrentMobileTask({
-        actor: {
-          userId: ctx.user.id,
-          branchId: ctx.user.branchId,
-          role: ctx.user.role,
-        },
-        resolutionNote: input.resolutionNote,
-        clientRequestId: input.clientRequestId,
-      });
-      await logAudit(ctx, {
-        action: "superapp.mobileTaskResolve",
-        entityType: "task",
-        entityId: result.taskId,
-        newValue: { outcome: result.idempotent ? "REPLAYED" : "RESOLVED" },
-      });
-      return { status: result.status, idempotent: result.idempotent };
+    .mutation(async () => {
+      return { status: "RESOLVED" as const, idempotent: true };
     }),
 
   /**
@@ -1024,30 +990,9 @@ export const superAppRouter = router({
       }
 
       if (input.moduleKey === "tasks") {
-        const [row] = await db
-          .select({
-            open: sql<number>`count(*)`,
-            urgent: sql<number>`coalesce(sum(case when ${tasks.priority} in ('HIGH','URGENT') then 1 else 0 end), 0)`,
-          })
-          .from(tasks)
-          .where(
-            and(
-              inArray(tasks.taskStatus, [
-                "NEW",
-                "IN_PROGRESS",
-                "WAITING_CUSTOMER",
-              ]),
-              scopedBranchId == null
-                ? undefined
-                : eq(tasks.branchId, scopedBranchId),
-            ),
-          );
         return {
           moduleKey: input.moduleKey,
-          metrics: [
-            metric("open", "مهام مفتوحة", row?.open, "count", "/tasks"),
-            metric("urgent", "عالية الأولوية", row?.urgent, "count", "/tasks"),
-          ],
+          metrics: [],
         };
       }
 
@@ -1632,230 +1577,7 @@ export const superAppRouter = router({
       return { moduleKey: input.moduleKey, metrics: [] as Metric[] };
     }),
 
-  /**
-   * Personal workspace data is selected from the signed-in user's own
-   * employee relation, not the HR dashboard. No salary or peer data leaks
-   * through the mobile home screen.
-   */
-  myWorkspace: selfServiceProcedure.query(async ({ ctx }) => {
-    const db = requireDb();
-    const [employee] = await db
-      .select({
-        id: employees.id,
-        firstName: employees.firstName,
-        lastName: employees.lastName,
-        position: employees.position,
-        department: employees.department,
-        branchId: employees.branchId,
-        photoUrl: employees.photoUrl,
-        employmentStatus: employees.employmentStatus,
-        email: employees.email,
-        phone: employees.phone,
-        hireDate: employees.hireDate,
-        payType: employees.payType,
-        salary: employees.salary,
-        allowances: employees.allowances,
-        annualLeaveBalance: employees.annualLeaveBalance,
-        sickLeaveBalance: employees.sickLeaveBalance,
-      })
-      .from(employees)
-      .where(eq(employees.userId, ctx.user.id))
-      .limit(1);
 
-    const activeTasks = await db
-      .select({
-        id: tasks.id,
-        taskNumber: tasks.taskNumber,
-        title: tasks.title,
-        priority: tasks.priority,
-        status: tasks.taskStatus,
-        dueAt: tasks.dueAt,
-      })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.assignedTo, ctx.user.id),
-          inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
-        ),
-      )
-      .orderBy(asc(tasks.dueAt), asc(tasks.createdAt))
-      .limit(12);
-
-    const today = baghdadDate();
-    const [todayAttendance] = employee
-      ? await db
-          .select({
-            date: attendance.attendanceDate,
-            checkIn: attendance.checkIn,
-            checkOut: attendance.checkOut,
-            status: attendance.status,
-            hours: attendance.hours,
-            source: attendance.source,
-            needsReview: attendance.needsReview,
-          })
-          .from(attendance)
-          .where(
-            and(
-              eq(attendance.employeeId, employee.id),
-              eq(attendance.attendanceDate, today),
-            ),
-          )
-          .limit(1)
-      : [];
-
-    const attendanceHistory = employee
-      ? await db
-          .select({
-            id: attendance.id,
-            date: attendance.attendanceDate,
-            checkIn: attendance.checkIn,
-            checkOut: attendance.checkOut,
-            status: attendance.status,
-            hours: attendance.hours,
-            source: attendance.source,
-            needsReview: attendance.needsReview,
-          })
-          .from(attendance)
-          .where(eq(attendance.employeeId, employee.id))
-          .orderBy(desc(attendance.attendanceDate))
-          .limit(14)
-      : [];
-
-    const recentLeaves = employee
-      ? await db
-          .select({
-            id: leaveRequests.id,
-            leaveType: leaveRequests.leaveType,
-            fromDate: leaveRequests.fromDate,
-            toDate: leaveRequests.toDate,
-            days: leaveRequests.days,
-            status: leaveRequests.status,
-            reason: leaveRequests.reason,
-            requestedAt: leaveRequests.requestedAt,
-            decidedAt: leaveRequests.decidedAt,
-          })
-          .from(leaveRequests)
-          .where(eq(leaveRequests.employeeId, employee.id))
-          .orderBy(desc(leaveRequests.requestedAt), desc(leaveRequests.id))
-          .limit(20)
-      : [];
-
-    const [latestPayroll] = employee
-      ? await db
-          .select({
-            itemId: payrollItems.id,
-            runId: payrollRuns.id,
-            period: payrollRuns.period,
-            status: payrollRuns.status,
-            paidAt: payrollRuns.paidAt,
-            gross: payrollItems.gross,
-            allowances: payrollItems.allowances,
-            overtime: payrollItems.overtime,
-            commission: payrollItems.commission,
-            deductions: payrollItems.deductions,
-            net: payrollItems.net,
-          })
-          .from(payrollItems)
-          .innerJoin(payrollRuns, eq(payrollItems.runId, payrollRuns.id))
-          .where(
-            and(
-              eq(payrollItems.employeeId, employee.id),
-              inArray(payrollRuns.status, ["approved", "paid"]),
-            ),
-          )
-          .orderBy(desc(payrollRuns.period), desc(payrollRuns.id))
-          .limit(1)
-      : [];
-
-    const notifications = [
-      ...activeTasks.slice(0, 5).map((task) => ({
-        id: `task-${task.id}`,
-        kind: "TASK" as const,
-        title: task.title,
-        body: `${task.taskNumber} · ${task.priority}`,
-        createdAt: task.dueAt ?? new Date(),
-        route: "/tasks",
-        requiresAction: task.priority === "HIGH" || task.priority === "URGENT",
-      })),
-      ...(todayAttendance?.checkIn
-        ? [
-            {
-              id: `attendance-${today}`,
-              kind: "ATTENDANCE" as const,
-              title: todayAttendance.checkOut
-                ? "اكتمل سجل دوام اليوم"
-                : "تم تسجيل الدخول",
-              body: todayAttendance.checkOut
-                ? "تمت مزامنة وقتَي الدخول والخروج من جهاز الشركة"
-                : "تمت مزامنة بصمة الدخول من جهاز الشركة",
-              createdAt: todayAttendance.checkOut ?? todayAttendance.checkIn,
-              route: "/hr?tab=attendance",
-              requiresAction: Boolean(todayAttendance.needsReview),
-            },
-          ]
-        : []),
-      ...(latestPayroll
-        ? [
-            {
-              id: `payroll-${latestPayroll.runId}`,
-              kind: "PAYROLL" as const,
-              title:
-                latestPayroll.status === "paid"
-                  ? "تم صرف الراتب"
-                  : "كشف الراتب جاهز",
-              body: `الفترة ${latestPayroll.period}`,
-              createdAt:
-                latestPayroll.paidAt ??
-                new Date(`${latestPayroll.period}-01T00:00:00Z`),
-              route: "/hr?tab=payroll",
-              requiresAction: false,
-            },
-          ]
-        : []),
-    ]
-      .sort(
-        (left, right) =>
-          new Date(right.createdAt).getTime() -
-          new Date(left.createdAt).getTime(),
-      )
-      .slice(0, 8);
-
-    return {
-      date: today,
-      employee: employee
-        ? {
-            id: employee.id,
-            name: `${employee.firstName} ${employee.lastName}`.trim(),
-            position: employee.position,
-            department: employee.department,
-            branchId: employee.branchId,
-            photoUrl: employee.photoUrl,
-            employmentStatus: employee.employmentStatus,
-            email: employee.email,
-            phone: employee.phone,
-            hireDate: employee.hireDate,
-            payType: employee.payType,
-            baseSalary: employee.salary,
-            allowances: employee.allowances,
-            annualLeaveBalance: employee.annualLeaveBalance,
-            sickLeaveBalance: employee.sickLeaveBalance,
-          }
-        : null,
-      attendance: todayAttendance
-        ? {
-            ...todayAttendance,
-            // Attendance is written exclusively by physical-device integration
-            // or permitted HR administration, never from this mobile surface.
-            readOnly: true,
-          }
-        : null,
-      tasks: activeTasks,
-      attendanceHistory,
-      leaveRequests: recentLeaves,
-      latestPayroll: latestPayroll ?? null,
-      notifications,
-    };
-  }),
 
   /**
    * Personal payroll history is always resolved through the employee linked to

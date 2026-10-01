@@ -51,8 +51,8 @@ const accountInput = z.discriminatedUnion("mode", [
 ]);
 
 /** يبني actor الموحّد من سياق الطلب. */
-function toActor(ctx: { user: { id: number; branchId: number | null; role: string } }) {
-  return { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role };
+function toActor(ctx: { user: { id: number; branchId: number | null; role: string; isOwner?: boolean } }): import("../services/tx").MaybeScopedActor {
+  return { userId: ctx.user.id, branchId: ctx.user.branchId, role: ctx.user.role, isOwner: ctx.user.isOwner };
 }
 
 const moneyStrOpt = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة").optional();

@@ -31,6 +31,9 @@ import { escLike } from "../lib/sqlLike";
 import {
   ARABIC_NORMALIZATION_PAIRS,
   normalizeArabicSearch,
+  tokenizeSearchTerms,
+  scoreStorefrontSearchRelevance,
+  MAX_STOREFRONT_SEARCH_TOKENS,
 } from "../../shared/storefrontSearchNormalize";
 import { decodeDataUrl, productImageUrl, withPublicProductImageWidth } from "../imageRoute";
 import type { PublicProductImageWidth } from "../lib/imageStore";
@@ -50,6 +53,7 @@ import {
   STOREFRONT_DERIVED_RANKING_LIMITS,
   StorefrontDerivedRankingCache,
   buildStorefrontRankingCacheKey,
+  chooseCandidateProductIds,
 } from "./storefrontDerivedCache";
 
 const RETAIL = "RETAIL" as const;
@@ -308,6 +312,7 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
       isFeatured: products.isFeatured,
       productName: products.name,
       storeTitle: products.storeTitle,
+      brand: products.brand,
       // EXISTS يستعمل idx_pimg_product، ويحافظ على ترتيب «له صورة» بلا JOIN يضاعف
       // صفوف الوحدات عند وجود صورة رئيسية مستقلة لكل بديل.
       hasImage: sql<number>`exists (
@@ -371,53 +376,7 @@ const storefrontCacheDisabled = (): boolean => process.env.NODE_ENV === "test";
 
 const companyScope = (): string => String(getCurrentCompanyId() ?? 0);
 
-function chooseCandidateProductIds(
-  rows: Array<{
-    productId: number;
-    conversionFactor: string;
-    isFeatured: boolean | null;
-    productName: string;
-    hasImage: number;
-    availableQty: number;
-  }>,
-  cap: number,
-  availabilityFilter: StorefrontAvailability,
-): number[] {
-  const productsById = new Map<number, {
-    id: number;
-    inStock: boolean;
-    featured: boolean;
-    hasImage: boolean;
-    name: string;
-  }>();
-  for (const row of rows) {
-    const id = Number(row.productId);
-    const inStock = row.availableQty >= Number(row.conversionFactor);
-    const current = productsById.get(id);
-    if (current) {
-      current.inStock ||= inStock;
-      current.hasImage ||= Boolean(row.hasImage);
-    } else {
-      productsById.set(id, {
-        id,
-        inStock,
-        featured: row.isFeatured === true,
-        hasImage: Boolean(row.hasImage),
-        name: row.productName,
-      });
-    }
-  }
-  return Array.from(productsById.values())
-    .filter((product) => availabilityFilter === "ALL" || product.inStock)
-    .sort((a, b) =>
-      Number(b.inStock) - Number(a.inStock)
-      || Number(b.featured) - Number(a.featured)
-      || Number(b.hasImage) - Number(a.hasImage)
-      || a.name.localeCompare(b.name, "ar")
-      || a.id - b.id)
-    .slice(0, cap)
-    .map((product) => product.id);
-}
+export { chooseCandidateProductIds };
 
 const storefrontRankingCache = new StorefrontDerivedRankingCache(STOREFRONT_DERIVED_RANKING_LIMITS);
 
@@ -443,13 +402,14 @@ async function loadRankedStorefrontProductIds(
     availability: StorefrontAvailability;
     categoryIds?: readonly number[] | null;
     search?: string | null;
+    seed?: string | null;
   },
   cacheResult = true,
 ): Promise<readonly number[]> {
   const load = async () => {
     const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
     const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
-    return chooseCandidateProductIds(hydratedCandidates, candidateRows.length, input.availability);
+    return chooseCandidateProductIds(hydratedCandidates, candidateRows.length, input.availability, input.search, input.seed);
   };
   if (!cacheResult || storefrontCacheDisabled()) return load();
   const key = `${companyScope()}:${buildStorefrontRankingCacheKey({ branchId, ...input })}`;
@@ -845,6 +805,8 @@ export async function storefrontCatalog(opts: {
   /** آخر productId رآه الزائر في نفس المرشحات؛ null/undefined = الصفحة الأولى. */
   cursor?: number | null;
   availability?: StorefrontAvailability;
+  /** بذرة عشوائية حتمية لجلسة الزائر لتغيير تشكيلة المنتجات في كل زيارة أو تحديث للصفحة. */
+  seed?: string | null;
 }): Promise<StorefrontCatalogPage> {
   const db = getDb();
   if (!db) return { items: [], hasMore: false, nextCursor: null };
@@ -885,29 +847,36 @@ export async function storefrontCatalog(opts: {
       //
       // الأزواج ثابتةٌ لا مدخلَ من المستخدم ⇒ لا حقن؛ القيمة المُطبَّعة مربوطةٌ بالوسائط.
       // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث.
-      const normalizedTerm = normalizeArabicSearch(s);
-      const p = `%${escLike(normalizedTerm)}%`;
-      const barcodePattern = `%${escLike(s)}%`;
-      // بناءُ عبارة تطبيعٍ على العمود بنفس ترتيب `normalizeArabicSearch`:
-      //   REPLACE المُتَتَابع للأزواج → `REGEXP_REPLACE` لطيّ الفراغات → `TRIM` → `LOWER`
-      // MySQL 8 REGEXP_REPLACE + POSIX class `[[:space:]]` أوسع من `\\s` (يشمل U+00A0/NBSP وسواه).
-      // توسيعُ أزواج التطبيع مستقبلاً يمرّ من ملفٍ واحد ويسري تلقائياً هنا.
-      const arabicLike = (col: SQL | AnyColumn, pattern: string) => {
-        let expr: SQL = sql`${col}`;
-        for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
-          expr = sql`REPLACE(${expr}, ${from}, ${to})`;
+      const tokens = tokenizeSearchTerms(s).slice(0, MAX_STOREFRONT_SEARCH_TOKENS);
+      if (tokens.length > 0) {
+        // بناءُ عبارة تطبيعٍ على العمود بنفس ترتيب `normalizeArabicSearch`:
+        //   REPLACE المُتَتَابع للأزواج → `REGEXP_REPLACE` لطيّ الفراغات → `TRIM` → `LOWER`
+        // MySQL 8 REGEXP_REPLACE + POSIX class `[[:space:]]` أوسع من `\\s` (يشمل U+00A0/NBSP وسواه).
+        // توسيعُ أزواج التطبيع مستقبلاً يمرّ من ملفٍ واحد ويسري تلقائياً هنا.
+        const arabicLike = (col: SQL | AnyColumn, pattern: string) => {
+          let expr: SQL = sql`${col}`;
+          for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
+            expr = sql`REPLACE(${expr}, ${from}, ${to})`;
+          }
+          return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
+        };
+
+        for (const token of tokens) {
+          const p = `%${escLike(token)}%`;
+          const barcodePattern = `%${escLike(token)}%`;
+          const tokenCond = or(
+            arabicLike(products.name, p),
+            arabicLike(products.storeTitle, p),
+            arabicLike(products.brand, p),
+            sql`${productUnits.barcode} LIKE ${barcodePattern} ESCAPE '!'`,
+          );
+          if (tokenCond) conds.push(tokenCond);
         }
-        return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
-      };
-      // storeTitle: عنوان القناة (عرضٌ في المتجر) — كان مغيَّباً عن البحث فتنعدمُ قابليّةُ اكتشاف
-      // منتجٍ ذي عنوانٍ متجريٍّ مختلفٍ عن اسمه الداخليّ. `LIKE` على NULL = NULL ⇒ يُعامَل كاذباً في OR.
-      const searchCond = or(
-        arabicLike(products.name, p),
-        arabicLike(products.storeTitle, p),
-        arabicLike(products.brand, p),
-        sql`${productUnits.barcode} LIKE ${barcodePattern} ESCAPE '!'`,
-      );
-      if (searchCond) conds.push(searchCond);
+      } else {
+        // نصّ بحث غير فارغ لم ينتج عنه أي رمز أو كلمة صالحة (رموز ترقيم أو فواصل مجردة):
+        // نعيد صفراً من النتائج ليتطابق الخادم مع قائمة الاقتراحات بدلاً من عرض الكتالوج كاملاً.
+        conds.push(sql`false`);
+      }
     }
   }
   // نرتّب على مستوى المنتج أولاً (بعد حساب ATP)، ثم نأخذ الصفحة. لا نطبّق limit على صفوف
@@ -918,6 +887,7 @@ export async function storefrontCatalog(opts: {
   // تتعلّق بـ`limit`/`cursor` إطلاقاً — فكلّ صفحةٍ تالية كانت تُعيد دفع ثمن الأولى كاملاً،
   // وزوّارٌ متزامنون على نفس المرشّحات يدفعونه كلٌّ على حدة. المفتاح يحمل **كلّ** ما يغيّر
   // النتيجة (الشركة/الفرع/الفئة/البحث/مرشّح التوفّر) ولا شيء سواه.
+  const seedKey = (opts.seed ?? "").trim();
   const loadOrderedIds = (): Promise<readonly number[]> => loadRankedStorefrontProductIds(
     db,
     branchId,
@@ -926,17 +896,17 @@ export async function storefrontCatalog(opts: {
       availability: availabilityFilter,
       categoryIds: opts.categoryId == null ? null : [opts.categoryId],
       search: s,
+      seed: opts.seed,
     },
     false,
   );
-  // النصّ يُطبَّع بحالة الأحرف كي لا تصير «Pen»/«pen»/«PEN» ثلاثةَ مداخل لنتيجةٍ واحدة
-  // (مطابقة MySQL غير حسّاسة للحالة أصلاً).
-  const searchKey = s.toLowerCase();
+  // النصّ يُطبَّع بالتطبيع المشترك كي تتقاسم الصيغ المتكافئة نفس الكاش
+  const searchKey = normalizeArabicSearch(s);
   const productIdsKey = opts.productIds?.length ? [...opts.productIds].sort((a, b) => a - b).join(",") : "";
   const orderedIds = storefrontCacheDisabled()
     ? await loadOrderedIds()
-    : await (searchKey || productIdsKey ? candidateSearchCache : candidateOrderCache).get(
-      `${companyScope()}:${branchId}:${opts.categoryId ?? ""}:${availabilityFilter}:${searchKey}:${productIdsKey}`,
+    : await (searchKey || productIdsKey || seedKey ? candidateSearchCache : candidateOrderCache).get(
+      `${companyScope()}:${branchId}:${opts.categoryId ?? ""}:${availabilityFilter}:${searchKey}:${productIdsKey}:${seedKey}`,
         async () => Array.from(await loadOrderedIds()),
       );
   const cursor = opts.cursor ?? null;

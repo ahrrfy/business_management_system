@@ -26,7 +26,7 @@ const caller = (ctx: any = adminCtx) => appRouter.createCaller(ctx);
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "expenses", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks", "workOrderEvents",
+  "workOrderDesignApprovals", "workOrderDesignRevisions", "workOrderEvents",
   "shifts", "workOrderImages", "workOrderItems", "workOrderMaterials", "workOrders", "serviceTypes", "customers", "suppliers", "branches", "users",
 ];
 function db() { const d = getDb(); if (!d) throw new Error("no DB"); return d; }

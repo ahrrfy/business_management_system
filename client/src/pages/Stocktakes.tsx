@@ -32,6 +32,7 @@ import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Check, AlertTriangle } from "lucide-react";
 import { selectClsSm } from "@/lib/ui/formStyles";
+import { variantDescriptor } from "@shared/variantDisplay";
 
 /* ───────────────────────── ثوابت العرض ───────────────────────── */
 
@@ -692,7 +693,7 @@ function CyclePlanCard({
               <div className="min-w-0 flex-1">
                 <p className="truncate font-semibold">
                   {r.productName}{" "}
-                  {r.variantName ? <span className="font-normal text-muted-foreground">{r.variantName}</span> : null}
+                  {variantDescriptor(r) ? <span className="font-normal text-muted-foreground">{variantDescriptor(r)}</span> : null}
                   <span className="mr-1 font-mono text-[11px] font-normal text-muted-foreground" dir="ltr">
                     {r.sku}
                   </span>

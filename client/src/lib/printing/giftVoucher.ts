@@ -18,6 +18,7 @@ import {
 } from "./docHtml";
 import { esc, openPrintWindow } from "./brand";
 import { qrCodeSvg } from "./qr";
+import { fmtQty } from "@shared/quantityFormat";
 
 export interface GiftVoucherLineForPrint {
   productName: string;
@@ -77,7 +78,7 @@ export async function printGiftVoucherA4(d: GiftVoucherPrintData): Promise<boole
       { key: "unit", label: "الوحدة", width: 90 },
       { key: "qty", label: "الكمية", width: 90, emphasize: true },
     ],
-    d.lines.map((l) => ({ name: l.productName, sku: l.sku || "—", unit: l.unit, qty: String(l.quantity) })),
+    d.lines.map((l) => ({ name: l.productName, sku: l.sku || "—", unit: l.unit, qty: fmtQty(l.quantity) })),
     {},
   );
 

@@ -2,6 +2,7 @@
 // + الفجوة (كمية الشراء المقترحة لتجهيز ذروة أيلول). تحرير الهدف مباشرةً، إضافة منتج موسميّ بالبحث،
 // تصفية «تحت الهدف فقط»، وتصدير قائمة الشراء إلى Excel. محصورة بالمدير/المخزن (البوّابة خادمية).
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -20,16 +21,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { FileEdit, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-type VariantLike = { variantName: string | null; color: string | null; size: string | null; sku: string };
+type VariantLike = { variantName: string | null; color: string | null; size: string | null; variantKind?: string | null; sku: string };
 function variantLabel(r: VariantLike): string {
-  const parts = [r.variantName, r.color, r.size].filter(Boolean);
-  return parts.length ? parts.join(" / ") : r.sku;
+  return variantDescriptor({ productName: "", ...r }) || r.sku;
 }
 
 export default function SeasonPlanning() {
@@ -138,9 +138,9 @@ export default function SeasonPlanning() {
       columns: [
         { key: "productName", header: "المنتج" },
         { key: "variant", header: "المتغيّر / SKU", map: (r) => `${variantLabel(r)} (${r.sku})` },
-        { key: "totalStock", header: "المخزون الكلّيّ", map: (r) => r.totalStock },
-        { key: "seasonTarget", header: "هدف الموسم", map: (r) => r.seasonTarget },
-        { key: "gap", header: "الفجوة (شراء مقترح)", map: (r) => r.gap },
+        { key: "totalStock", header: "المخزون الكلّيّ", map: (r) => formatQuantity(r.totalStock) },
+        { key: "seasonTarget", header: "هدف الموسم", map: (r) => formatQuantity(r.seasonTarget) },
+        { key: "gap", header: "الفجوة (شراء مقترح)", map: (r) => formatQuantity(r.gap) },
       ],
     });
   }
@@ -174,14 +174,14 @@ export default function SeasonPlanning() {
     {
       id: "totalStock",
       header: "المخزون الكلّيّ",
-      accessorFn: (r) => fmtInt(r.totalStock),
+      accessorFn: (r) => formatQuantity(r.totalStock),
       meta: { kind: "number" },
-      cell: ({ row }) => <span className="font-semibold">{fmtInt(row.original.totalStock)}</span>,
+      cell: ({ row }) => <span className="font-semibold">{formatQuantity(row.original.totalStock)}</span>,
     },
     {
       id: "seasonTarget",
       header: "هدف الموسم",
-      accessorFn: (r) => fmtInt(r.seasonTarget),
+      accessorFn: (r) => formatQuantity(r.seasonTarget),
       meta: { kind: "number" },
       cell: ({ row }) =>
         editing === row.original.variantId ? (
@@ -195,15 +195,15 @@ export default function SeasonPlanning() {
             autoFocus
           />
         ) : (
-          fmtInt(row.original.seasonTarget)
+          formatQuantity(row.original.seasonTarget)
         ),
     },
     {
       id: "gap",
       header: "الفجوة (شراء مقترح)",
-      accessorFn: (r) => fmtInt(r.gap),
+      accessorFn: (r) => formatQuantity(r.gap),
       meta: { kind: "number" },
-      cell: ({ row }) => <span className="font-semibold text-primary">{fmtInt(row.original.gap)}</span>,
+      cell: ({ row }) => <span className="font-semibold text-primary">{formatQuantity(row.original.gap)}</span>,
     },
     ...(canWrite
       ? ([
@@ -349,7 +349,7 @@ export default function SeasonPlanning() {
                           ({variantLabel(c)} — <span className="font-mono" dir="ltr">{c.sku}</span>)
                         </span>
                       </td>
-                      <td className="p-2 text-left tabular-nums">{fmtInt(c.totalStock)}</td>
+                      <td className="p-2 text-left tabular-nums">{formatQuantity(c.totalStock)}</td>
                       <td className="p-2 text-left">
                         <Input
                           dir="ltr"

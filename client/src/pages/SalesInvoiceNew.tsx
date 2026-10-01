@@ -24,7 +24,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { D, round2, toBase, fmt } from "@/lib/money";
+import { D, round2, toBase, fmt, formatQuantity } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card } from "@/components/ui/card";
@@ -37,6 +37,7 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { getDeviceCode } from "@/lib/offline/outbox"; import { shouldSendUnitPriceOverride } from "@/lib/quotationPayload";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -92,7 +93,9 @@ function toYmdUtc(v: unknown): string {
 
 export default function SalesInvoice() {
   const [, navigate] = useLocation();
-  const me = trpc.auth.me.useQuery(); const utils = trpc.useUtils(); const defaultBranchId = me.data?.branchId || 1;
+  const me = trpc.auth.me.useQuery();
+  const utils = trpc.useUtils();
+  const defaultBranchId = me.data?.branchId ? Number(me.data.branchId) : 0;
 
   const [state, dispatch] = useReducer(
     invoiceReducer,
@@ -180,13 +183,10 @@ export default function SalesInvoice() {
     dispatch({
       type: "ADD_ITEMS",
       items: d.items.map((it): InvoiceLine => ({
-        productId: it.productId ?? 0,
-        variantId: it.variantId,
-        productUnitId: it.productUnitId ?? 0,
-        name: it.productName ?? "",
-        sku: it.sku ?? "",
-        barcode: null,
-        unit: it.unitName ?? "",
+        productId: it.productId ?? 0, variantId: it.variantId, productUnitId: it.productUnitId ?? 0,
+        name: variantDisplayName({ ...it, productName: it.productName ?? "" }),
+        variantName: it.variantName, color: it.color, size: it.size, colorHex: it.colorHex, variantKind: it.variantKind,
+        sku: it.sku ?? "", barcode: null, unit: it.unitName ?? "",
         qty: D(it.quantity).toNumber(),
         conversionFactor: D(it.quantity).gt(0) ? D(it.baseQuantity).div(D(it.quantity)).toString() : "1",
         stockBase: catalogByUnit.get(it.productUnitId ?? 0)?.stockBase ?? 0,
@@ -675,6 +675,7 @@ export default function SalesInvoice() {
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
     if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
+    if (!state.branchId) return "اختر الفرع.";
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     const digitalError = validateDigitalInvoiceCheckout(state.items, {
       isCorrection, hasOpenShift: !!currentShift.data,
@@ -696,7 +697,7 @@ export default function SalesInvoice() {
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
-        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
+        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${formatQuantity(l.qty)} × ${l.conversionFactor}).`;
     }
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
     // في وضع التصحيح: الدفع مقترح فقط ويُثبت عند الاعتماد؛ بوابة الإثبات أدناه للبيع الجديد.

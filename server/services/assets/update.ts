@@ -48,7 +48,11 @@ export async function updateAsset(
   input: UpdateAssetInput,
   actor: Actor,
 ) {
-  if (!(input.usefulLifeYears > 0)) {
+  if (input.category === "land") {
+    if (input.usefulLifeYears !== 0) {
+      throw new Error("الأراضي لا تخضع للإهلاك ويجب أن يكون عمرها الإنتاجي 0");
+    }
+  } else if (!(input.usefulLifeYears > 0)) {
     throw new Error("العمر الإنتاجي يجب أن يكون أكبر من صفر");
   }
   const scope = companyBranchScope(actor);
@@ -109,8 +113,8 @@ export async function updateAsset(
         brand: input.brand ?? null,
         serial: input.serial ?? null,
         location: input.location ?? null,
-        salvageValue: toDbMoney(input.salvageValue ?? "0"),
-        usefulLifeYears: input.usefulLifeYears,
+        salvageValue: toDbMoney(input.category === "land" ? "0" : (input.salvageValue ?? "0")),
+        usefulLifeYears: input.category === "land" ? 0 : input.usefulLifeYears,
         depreciationMethod: input.depreciationMethod ?? "sl",
         condition: input.condition ?? null,
         warrantyEnd: input.warrantyEnd ?? null,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import Decimal from "decimal.js";
-import { D, moneyInput } from "./money";
+import { D, moneyInput, toAccessibleMoney } from "./money";
 
 /**
  * انحدارٌ حقيقيّ أمسكته مراجعةٌ عدائية (٢/٩/٢٦): شرطُ معاينةٍ في `CustomerNew` استُبدل من
@@ -52,5 +52,18 @@ describe("moneyInput — مُدخَلٌ ماليٌّ قيد الكتابة", () 
 
   it("تُرجع Decimal لا سلسلةً ولا رقماً — فتُسلسَل للإرسال بلا انجراف", () => {
     expect(moneyInput("1500")).toBeInstanceOf(Decimal);
+  });
+});
+
+describe("toAccessibleMoney — قراءة نفاذية صوتية للمبالغ بلا فواصل وبلا تلعثم", () => {
+  it("يحول المبالغ الصحيحة إلى نطق عربي فصيح متصل", () => {
+    expect(toAccessibleMoney("204500")).toBe("204500 دينار عراقي");
+    expect(toAccessibleMoney(95000)).toBe("95000 دينار عراقي");
+  });
+
+  it("يتعامل مع القيم السالبة والكسور والفارغة بدقة", () => {
+    expect(toAccessibleMoney("-5000")).toBe("سالب 5000 دينار عراقي");
+    expect(toAccessibleMoney(null)).toBe("لا يوجد مبلغ");
+    expect(toAccessibleMoney("")).toBe("لا يوجد مبلغ");
   });
 });

@@ -305,6 +305,65 @@ export type SessionContext = {
   nativeClientId: NativeClientId | null;
 };
 
+/**
+ * يفحص هل يُسمح بالجلسات القديمة (التي لا تحوي sid في الـJWT) وفق متغيّرات البيئة.
+ * VULN-RBAC-04: يمكن حظر الجلسات القديمة بضبط ALLOW_LEGACY_SESSIONS=false أو DISABLE_LEGACY_SESSIONS=true.
+ */
+export function isLegacySessionAllowed(
+  hasSid: boolean,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  if (!hasSid && (env.ALLOW_LEGACY_SESSIONS === "false" || env.DISABLE_LEGACY_SESSIONS === "true")) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * يتحقق من أهلية وصلاحية المستخدم للجلسة (الحالة، الفعالية، انتهاء الصلاحية وتطابق إصدار التوكن).
+ */
+export function validateUserForSession(
+  user: {
+    isActive?: boolean | null;
+    status?: string | null;
+    accessExpiresAt?: Date | null;
+    tokenVersion?: number | null;
+  } | null | undefined,
+  tokenVersion?: number | null,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!user || !user.isActive) return false;
+  if (user.status != null && user.status !== "ACTIVE") return false;
+  if (user.accessExpiresAt && user.accessExpiresAt.getTime() <= nowMs) return false;
+  if (
+    user.tokenVersion != null &&
+    tokenVersion != null &&
+    user.tokenVersion !== tokenVersion
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export const isSessionUserValid = validateUserForSession;
+
+/**
+ * يتحقق مما إذا كان وقت إصدار التوكن يسبق أو يطابق وقت إبطال الجلسات.
+ * AUTH-02: أي توكن iat <= validFromSec (بالثواني) يعتبر مبطلاً.
+ */
+export function isSessionRevokedByTimestamp(
+  iat: number,
+  validFromSecOrDate?: number | Date | string | null,
+): boolean {
+  const validFromSec =
+    typeof validFromSecOrDate === "number"
+      ? validFromSecOrDate
+      : validFromSecOrDate
+        ? Math.floor(new Date(validFromSecOrDate).getTime() / 1000)
+        : 0;
+  return iat <= validFromSec;
+}
+
 /** يحلّل جلسة الطلب كاملةً: المستخدم + معرّف الجلسة الفردية (إن وُجد). المصدر الموحّد
  *  الذي يبنى عليه getUserFromRequest (للمسارات التي لا تحتاج sessionId). */
 export async function getSessionContext(req: Request): Promise<SessionContext> {
@@ -321,6 +380,10 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   // جولة DB على كل طلبٍ مُصادَق، وهو المسار الأسخن في كامل النظام). توكن legacy بلا sid
   // لا يُطلق الاستعلام الثاني إطلاقاً (لا صفّ يخصّه أساساً).
   const hasSid = typeof session.sid === "number";
+  if (!isLegacySessionAllowed(hasSid)) {
+    return { user: null, sessionId: null, nativeClientId: null };
+  }
+
   const [rows, srows] = await Promise.all([
     db.select().from(users).where(eq(users.id, session.uid)).limit(1),
     hasSid
@@ -333,14 +396,8 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   ]);
 
   const user = rows[0];
-  if (!user || !user.isActive)
+  if (!validateUserForSession(user, (session as any).tokenVersion))
     return { user: null, sessionId: null, nativeClientId: null };
-
-  // انتهاء الحساب المؤقّت (0226): يُفحَص هنا لا في الشاشات، فيسقط الوصول من **أوّل طلب**
-  // حتى لو بقيت الجلسة مفتوحة بين يدي صاحبها. `null` = حسابٌ دائم ⇒ لا أثر على القائم.
-  if (user.accessExpiresAt && user.accessExpiresAt.getTime() <= Date.now()) {
-    return { user: null, sessionId: null, nativeClientId: null };
-  }
 
   // إبطال الجلسات (AUTH-02): أيّ توكن iat <= sessionsValidFrom (بالثواني) يُرفض —
   // بما فيه ما صُكّ في **نفس ثانية** الإبطال (يسدّ النافذة العمياء دون الثانية). صاحب
@@ -348,7 +405,7 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   const validFromSec = user.sessionsValidFrom
     ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
     : 0;
-  if (session.iat <= validFromSec)
+  if (isSessionRevokedByTimestamp(session.iat, validFromSec))
     return { user: null, sessionId: null, nativeClientId: null };
 
   // إبطال فردي (AUTH-03): توكن يحمل sid ⇒ يجب أن يقابل سطراً حيّاً (غير مُبطَل/منتهٍ)
@@ -422,6 +479,15 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
             "session.touch_last_seen_failed",
           ),
         );
+    }
+  } else {
+    // VULN-RBAC-04: جلسات legacy (بلا sid) تخضع للتحقق الإضافي من عدم تطابق إصدار التوكن
+    if (
+      (user as any).tokenVersion != null &&
+      (session as any).tokenVersion != null &&
+      (session as any).tokenVersion !== (user as any).tokenVersion
+    ) {
+      return { user: null, sessionId: null, nativeClientId: null };
     }
   }
 

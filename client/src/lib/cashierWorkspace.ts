@@ -4,7 +4,6 @@ export type CashierActionIcon =
   | "station"
   | "invoice"
   | "returns"
-  | "tasks"
   | "workorders"
   | "price";
 
@@ -49,11 +48,6 @@ const ACTION_META: Readonly<
     icon: "returns",
     requiresBranch: true,
   },
-  my_tasks: {
-    description: "المهام المسندة إليك وما ينتظر متابعتك",
-    icon: "tasks",
-    requiresBranch: true,
-  },
   work_orders: {
     description: "أوامر الشغل ومراحل التنفيذ المصرح بها",
     icon: "workorders",
@@ -77,7 +71,7 @@ export function cashierProfileActions(
     .map((item) => {
       const meta = ACTION_META[item.id] ?? {
         description: "مدخل عمل مصرح به لهذا الحساب",
-        icon: "tasks" as const,
+        icon: "station" as const,
         requiresBranch: true,
       };
       return Object.freeze({

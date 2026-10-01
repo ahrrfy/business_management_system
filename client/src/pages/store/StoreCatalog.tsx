@@ -10,7 +10,7 @@ import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { fmt, fmtInt } from "@/lib/money";
+import { fmt, fmtInt, formatQuantity } from "@/lib/money";
 
 type Filter = "all" | "featured" | "hidden" | "noImage";
 const PAGE = 40;
@@ -175,13 +175,13 @@ export default function StoreCatalog() {
                             <p className="text-[10px] text-muted-foreground">SKU: {variant.sku}</p>
                           </div>
                           <button onClick={() => setStockFor({ variantId: variant.variantId, name: `${p.name} — ${variant.label}`, stockBase: variant.stockBase })} disabled={!variant.isActive} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-bold hover:bg-accent disabled:opacity-50" title="إنشاء طلب تسوية لهذا المتغيّر تحديداً">
-                            <Boxes aria-hidden className="size-3" /> {fmtInt(variant.stockBase)} أساس
+                            <Boxes aria-hidden className="size-3" /> {formatQuantity(variant.stockBase)} أساس
                           </button>
                         </div>
                         <div className="mt-2 flex flex-wrap gap-1">
                           {saleUnits.length === 0 ? <span className="text-[10px] text-[var(--sem-neg)]">لا وحدة بيع متجر نشطة</span> : saleUnits.map((unit) => (
                             <span key={unit.productUnitId} className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${unit.inStock && variant.isActive ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-muted text-muted-foreground"}`} title={`المعامل: ${unit.conversionFactor} من الوحدة الأساس`}>
-                              {unit.unitName}: {!variant.isActive ? "المتغيّر معطّل" : unit.inStock ? `${fmtInt(unit.availableUnits)} متاح` : READINESS_LABELS[unit.readinessReasons[0] ?? "OUT_OF_STOCK"]}
+                              {unit.unitName}: {!variant.isActive ? "المتغيّر معطّل" : unit.inStock ? `${formatQuantity(unit.availableUnits)} متاح` : READINESS_LABELS[unit.readinessReasons[0] ?? "OUT_OF_STOCK"]}
                             </span>
                           ))}
                         </div>
@@ -223,7 +223,7 @@ function StockDialog({ target, onClose, onDone }: { target: { variantId: number;
         <span className="mb-1 block font-medium text-muted-foreground">الكمية المستهدفة (بالوحدة الأساس)</span>
         <input type="number" min={0} step={1} value={qty} onChange={(e) => setQty(e.target.value)} autoFocus className="w-full rounded-lg border border-border bg-background px-3 py-2 text-lg font-bold tabular-nums outline-none focus:ring-2 focus:ring-primary/30" />
       </label>
-      <p className="mt-1 text-[11px] text-muted-foreground">الحالي: {fmtInt(target.stockBase)} — يُسجَّل الفرق كتسوية مخزون (قيد محاسبي ذرّي).</p>
+      <p className="mt-1 text-[11px] text-muted-foreground">الحالي: {formatQuantity(target.stockBase)} — يُسجَّل الفرق كتسوية مخزون (قيد محاسبي ذرّي).</p>
       <div className="mt-4 flex justify-end gap-2">
         <button onClick={onClose} className="rounded-xl border border-border px-4 py-2 text-sm font-medium hover:bg-accent">إلغاء</button>
         <button onClick={() => setM.mutate({ variantId: target.variantId, targetQuantity: n })} disabled={invalid || setM.isPending} className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">

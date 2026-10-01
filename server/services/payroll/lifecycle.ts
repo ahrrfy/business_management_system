@@ -2,6 +2,8 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, getTableColumns, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   commissionRuns,
+  employeePenalties,
+  employeeSpotBonuses,
   employeeTerminations,
   employees,
   payrollAccountingEvents,
@@ -280,6 +282,14 @@ export async function cancelRun(
           message: "هذه مسودة معادة من اعتماد سابق؛ تبقى محفوظة للأثر التدقيقي ولا تُحذف.",
         });
       }
+      await tx
+        .update(employeePenalties)
+        .set({ payrollRunId: null, status: "APPROVED" })
+        .where(eq(employeePenalties.payrollRunId, id));
+      await tx
+        .update(employeeSpotBonuses)
+        .set({ payrollRunId: null })
+        .where(eq(employeeSpotBonuses.payrollRunId, id));
       await tx.delete(payrollItems).where(eq(payrollItems.runId, id));
       await tx.delete(payrollRuns).where(eq(payrollRuns.id, id));
       return { id, deleted: true, status: "deleted" as const };
@@ -289,6 +299,14 @@ export async function cancelRun(
       actorUserId: actor.userId,
       occurredAt: new Date(),
     });
+    await tx
+      .update(employeePenalties)
+      .set({ payrollRunId: null, status: "APPROVED" })
+      .where(eq(employeePenalties.payrollRunId, id));
+    await tx
+      .update(employeeSpotBonuses)
+      .set({ payrollRunId: null })
+      .where(eq(employeeSpotBonuses.payrollRunId, id));
     await tx
       .update(payrollRuns)
       .set({

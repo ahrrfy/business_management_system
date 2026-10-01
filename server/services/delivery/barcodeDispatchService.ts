@@ -80,7 +80,7 @@ export async function dispatchByBarcode(
     });
   }
   const lookup = prepareDeliveryBarcodeLookup(rawCode);
-  const { code: cleanCode, systemCode, trackingCode, documentCode, namespace, numericId } = lookup;
+  const { code: cleanCode, systemCode, trackingCode, strippedTrackingCode, documentCode, namespace, numericId } = lookup;
 
   const [party] = await db
     .select()
@@ -183,6 +183,7 @@ export async function dispatchByBarcode(
             matchRank: sql<number>`CASE
               WHEN ${deliveryConsignments.consignmentNumber} IN (${cleanCode}, ${systemCode}) THEN 100
               WHEN ${deliveryConsignments.externalTrackingRef} = ${trackingCode} THEN 50
+              WHEN ${strippedTrackingCode != null} AND TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode ?? ""} THEN 40
               ELSE 10 END`,
           })
           .from(deliveryConsignments)
@@ -196,7 +197,12 @@ export async function dispatchByBarcode(
                     trackingCode
                       ? and(
                           eq(deliveryConsignments.partyId, Number(input.partyId)),
-                          eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                          or(
+                            eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                            strippedTrackingCode
+                              ? sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode}`
+                              : sql`0=1`,
+                          ),
                         )
                       : sql`0=1`,
                   )
@@ -205,7 +211,12 @@ export async function dispatchByBarcode(
                     trackingCode
                       ? and(
                           eq(deliveryConsignments.partyId, Number(input.partyId)),
-                          eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                          or(
+                            eq(deliveryConsignments.externalTrackingRef, trackingCode),
+                            strippedTrackingCode
+                              ? sql`TRIM(LEADING '0' FROM ${deliveryConsignments.externalTrackingRef}) = ${strippedTrackingCode}`
+                              : sql`0=1`,
+                          ),
                         )
                       : sql`0=1`,
                   ),

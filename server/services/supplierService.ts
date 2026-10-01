@@ -15,7 +15,6 @@ import {
   purchaseOrderItems,
   purchaseOrders,
   suppliers,
-  tasks,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escapeLike } from "../lib/sqlLike";
@@ -353,9 +352,6 @@ export async function deleteSupplier(supplierId: number, _actor: Actor) {
 
     const [conv] = await tx.select({ id: conversations.id }).from(conversations).where(eq(conversations.supplierId, supplierId)).limit(1);
     if (conv) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له محادثات مرتبطة — عطِّله بدلاً من الحذف" });
-
-    const [task] = await tx.select({ id: tasks.id }).from(tasks).where(eq(tasks.supplierId, supplierId)).limit(1);
-    if (task) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له مهامّ مرتبطة — عطِّله بدلاً من الحذف" });
 
     // قفل الفترة (اتساقاً مع مسار التصحيح upsertOpeningEntry): لا يُحذَف قيد OPENING مؤرَّخ داخل فترة
     // مُقفَلة (يُغيّر أرقامها بأثر رجعيّ) — يُرفض حتى تُفتح الفترة (admin). لا قيد ⇒ لا شيء يُحذَف.

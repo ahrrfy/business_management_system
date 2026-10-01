@@ -15,13 +15,14 @@ import { PageHeader } from "@/components/PageHeader";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
+import { fmtDate } from "@/lib/date";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, Edit3, Plus, RotateCcw, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, CheckCircle2, Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
 import { ListToolbar, RowActions } from "@/components/list";
 import {
   isVoucherCategoryRoleCompatible,
@@ -279,6 +280,36 @@ export default function VoucherCategories() {
     },
     onError: (e) => notify.err(e),
   });
+  const syncExpenses = trpc.voucherCategories.syncFromExpenseCategories.useMutation({
+    onSuccess: async (res) => {
+      await utils.voucherCategories.list.invalidate();
+      if (!res.inserted.length && !res.mapped.length) {
+        notify.ok(`فئات المصروفات متطابقة مسبقاً (${res.total} فئة)`);
+        return;
+      }
+      notify.ok(
+        `تمت مزامنة فئات المصروفات: +${res.inserted.length} جديدة، ${res.mapped.length} عُيّن حسابها`,
+      );
+    },
+    onError: (e) => notify.err(e),
+  });
+  const syncRevenue = trpc.voucherCategories.syncFromRevenueCategories.useMutation({
+    onSuccess: async (res) => {
+      await utils.voucherCategories.list.invalidate();
+      const parts: string[] = [];
+      if (res.inserted.length) parts.push(`+${res.inserted.length} إيرادات جديدة`);
+      if (res.mapped.length) parts.push(`${res.mapped.length} عُيّن حسابها`);
+      if (res.deleted.length) parts.push(`${res.deleted.length} فئات منتجات حُذفت`);
+      if (res.deactivated.length) parts.push(`${res.deactivated.length} فئات منتجات عُطّلت`);
+
+      if (parts.length === 0) {
+        notify.ok(`فئات الإيرادات المحاسبية مطابقة ومكتملة مسبقاً (${res.total} فئة)`);
+        return;
+      }
+      notify.ok(`تمت معالجة فئات الإيرادات: ${parts.join("، ")}`);
+    },
+    onError: (e) => notify.err(e),
+  });
   const merge = trpc.voucherCategories.merge.useMutation({
     onSuccess: async () => {
       await utils.voucherCategories.list.invalidate();
@@ -362,6 +393,30 @@ export default function VoucherCategories() {
     });
     if (!ok) return;
     restoreDefaults.mutate();
+  }
+
+  async function confirmSyncExpenses() {
+    const ok = await confirm({
+      variant: "info",
+      title: "مزامنة فئات المصروفات مع فئات السندات",
+      description:
+        "سيتم استيراد كافة فئات المصروفات التشغيلية النشطة من إدارة المصروفات إلى فئات السندات وربطها بحساباتها المقابلة المعتمدة، لتظهر في سندات الصرف. هل تريد المتابعة؟",
+      confirmText: "مزامنة الآن",
+    });
+    if (!ok) return;
+    syncExpenses.mutate();
+  }
+
+  async function confirmSyncRevenue() {
+    const ok = await confirm({
+      variant: "info",
+      title: "مزامنة فئات الإيرادات والأنشطة المحاسبية وتطهير فئات السندات",
+      description:
+        "سيتم تأمين كافة فئات الإيرادات التشغيلية والخدمية والتمويلية القياسية (الطباعة، الفلكس، مبيعات القرطاسية والهدايا العامة، التوصيل، التصميم، الصيانة، تحصيل السلف واستثمار المشاركة)، وتطهير القائمة واستبعاد أي تصنيفات منتجات أو كتب لحصر السندات في المعاملات المالية البحتة. هل تريد المتابعة؟",
+      confirmText: "مزامنة وتطهير الآن",
+    });
+    if (!ok) return;
+    syncRevenue.mutate();
   }
 
   async function toggleActive(r: Row) {
@@ -479,6 +534,28 @@ export default function VoucherCategories() {
             )}
             {canManage && (
               <Button
+                variant="outline"
+                size="sm"
+                disabled={syncExpenses.isPending}
+                onClick={() => void confirmSyncExpenses()}
+              >
+                <ArrowDownToLine aria-hidden className="size-4 ms-1" />
+                {syncExpenses.isPending ? "جارٍ المزامنة…" : "مزامنة فئات المصروفات"}
+              </Button>
+            )}
+            {canManage && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncRevenue.isPending}
+                onClick={() => void confirmSyncRevenue()}
+              >
+                <ArrowUpToLine aria-hidden className="size-4 ms-1" />
+                {syncRevenue.isPending ? "جارٍ المزامنة والتطهير…" : "مزامنة فئات الإيرادات والأنشطة"}
+              </Button>
+            )}
+            {canManage && (
+              <Button
                 onClick={() => {
                   resetForm();
                   setShowForm(true);
@@ -554,11 +631,7 @@ export default function VoucherCategories() {
                             {receipt.voucherNumber ?? `#${receiptId}`}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            {receipt.voucherDate
-                              ? new Date(
-                                  receipt.voucherDate,
-                                ).toLocaleDateString("ar-IQ")
-                              : "—"}
+                            {fmtDate(receipt.voucherDate)}
                           </div>
                         </td>
                         <td className="p-2">
@@ -675,6 +748,17 @@ export default function VoucherCategories() {
                 <option value="OUT">صرف فقط</option>
               </AppSelect>
             </div>
+            {direction === "BOTH" && (
+              <div className="md:col-span-2 rounded-md border border-border/70 bg-muted/40 p-2.5 text-xs text-muted-foreground space-y-1">
+                <p className="font-medium text-foreground flex items-center gap-1.5">
+                  <Info aria-hidden className="size-3.5 text-primary shrink-0" />
+                  قاعدة الفئات ثنائية الاتجاه (قبض وصرف):
+                </p>
+                <p>
+                  محاسبياً، تقتصر الفئات المشتركة على حسابات حقوق الملكية والالتزامات الوسيطة التي تقبل التغذية والسحب (جاري المالك، القروض المستلمة والمسددة، الأمانات والتأمينات). المصروفات التشغيلية وإيرادات المبيعات لا تكون ثنائية صوناً لسلامة القيد المزدوج ودورة المخزون.
+                </p>
+              </div>
+            )}
             <div className="space-y-1 md:col-span-2">
               <Label>الحساب المحاسبي المقابل *</Label>
               <AppSelect

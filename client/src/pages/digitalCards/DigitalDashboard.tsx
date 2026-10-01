@@ -7,6 +7,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { fmtAr } from "@/lib/money";
 import { RowActions } from "@/components/list/RowActions";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -132,17 +133,15 @@ export default function DigitalDashboard() {
             )}
             {range === "custom" && (
               <>
-                <input
+                <Input
                   type="date"
-                  dir="ltr"
                   value={customFrom}
                   onChange={(e) => setCustomFrom(e.target.value)}
                   className={selectCls}
                   aria-label="من تاريخ"
                 />
-                <input
+                <Input
                   type="date"
-                  dir="ltr"
                   value={customTo}
                   onChange={(e) => setCustomTo(e.target.value)}
                   className={selectCls}

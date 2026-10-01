@@ -4,10 +4,11 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Gift, Paperclip } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { cn } from "@/lib/utils";
 import type { RouterOutputs } from "@/lib/trpc";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 
 export type InvoiceDetailData = NonNullable<RouterOutputs["sales"]["get"]>;
 export type InvoiceReturnRow = NonNullable<InvoiceDetailData["returns"]>[number];
@@ -61,22 +62,40 @@ export function invoiceItemColumns(subtotal: string): ColumnDef<InvoiceItemRow, 
     {
       id: "product",
       header: "المنتج",
-      accessorFn: (it) => `${it.productName ?? "—"}${it.variantName ? ` — ${it.variantName}` : ""}`,
+      accessorFn: (it) =>
+        variantDisplayName({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
       meta: { width: "wide", wrap: true },
       footer: "مجموع البنود",
       cell: ({ row }) => {
         const it = row.original;
+        const desc = variantDescriptor({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        });
         return (
-          <span>
-            {it.productName ?? "—"}
-            {it.variantName ? ` — ${it.variantName}` : ""}{" "}
-            {it.isGift && (
-              <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold">
-                <Gift aria-hidden className="size-3" /> هدية
-              </span>
-            )}{" "}
+          <div className="flex flex-col">
+            <span className="font-semibold text-foreground">
+              {it.productName ?? "—"}
+              {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}{" "}
+              {it.isGift && (
+                <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold">
+                  <Gift aria-hidden className="size-3" /> هدية
+                </span>
+              )}
+            </span>
             {it.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>}
-          </span>
+          </div>
         );
       },
     },
@@ -89,9 +108,9 @@ export function invoiceItemColumns(subtotal: string): ColumnDef<InvoiceItemRow, 
     {
       id: "quantity",
       header: "الكمية",
-      accessorFn: (it) => it.quantity,
+      accessorFn: (it) => formatQuantity(it.quantity),
       meta: { kind: "number", align: "center" },
-      cell: ({ row }) => row.original.quantity,
+      cell: ({ row }) => formatQuantity(row.original.quantity),
     },
     {
       id: "unitPrice",
@@ -113,14 +132,14 @@ export function invoiceItemColumns(subtotal: string): ColumnDef<InvoiceItemRow, 
     {
       id: "returned",
       header: "مرتجع",
-      accessorFn: (it) => `${it.returnedBaseQuantity}/${it.baseQuantity}`,
+      accessorFn: (it) => `${formatQuantity(it.returnedBaseQuantity)}/${formatQuantity(it.baseQuantity)}`,
       meta: { kind: "number", align: "center" },
       cell: ({ row }) => {
         const it = row.original;
         const returned = Number(it.returnedBaseQuantity) > 0;
         return (
           <span className={`text-xs ${returned ? "text-[var(--sem-warn)] font-medium" : "text-muted-foreground"}`}>
-            {it.returnedBaseQuantity}/{it.baseQuantity}
+            {formatQuantity(it.returnedBaseQuantity)}/{formatQuantity(it.baseQuantity)}
           </span>
         );
       },

@@ -26,6 +26,5 @@
   "client/src/pages/store/StoreDashboard.tsx": 1,
   "client/src/pages/store/StoreProductReviewManager.tsx": 1,
   "client/src/pages/store/StoreSettingsPanel.tsx": 1,
-  "client/src/pages/TasksHub.tsx": 1,
   "client/src/pages/WorkOrderStation.tsx": 2
 }

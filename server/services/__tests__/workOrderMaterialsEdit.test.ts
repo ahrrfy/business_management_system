@@ -32,7 +32,6 @@ const TABLES = [
   "idempotencyKeys",
   "accountingEntries", "receipts", "inventoryMovements",
   "workOrderControlRequests", "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions",
-  "taskEvents", "tasks",
   "workOrderMaterials", "workOrderImages", "workOrders",
   "serviceTypes",
   "branchStock", "shifts", "customers",

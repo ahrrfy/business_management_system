@@ -23,6 +23,7 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { formatQuantity } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { newClientRequestId } from "@/lib/countQueue";
 
@@ -232,7 +233,7 @@ export function WorkOrderMaterialsEditor({
                     <span>{r.productName}</span>
                     <span className="text-[11px] text-muted-foreground" dir="ltr">{r.sku} · {r.unitName}</span>
                   </span>
-                  <Badge variant="outline" dir="ltr">{r.stockBase} متوفّر</Badge>
+                  <Badge variant="outline" dir="ltr">{formatQuantity(r.stockBase)} متوفّر</Badge>
                 </button>
               ))}
             </div>
@@ -289,11 +290,11 @@ export function WorkOrderMaterialsEditor({
               {diff.map((d) => (
                 <li key={d.variantId} className="tabular-nums">
                   {d.from === 0 ? (
-                    <span className="flex items-center gap-1"><Plus aria-hidden className="size-3" />{d.name} ({d.to})</span>
+                    <span className="flex items-center gap-1"><Plus aria-hidden className="size-3" />{d.name} ({formatQuantity(d.to)})</span>
                   ) : d.to === 0 ? (
-                    <span className="text-destructive">حذف {d.name} ({d.from})</span>
+                    <span className="text-destructive">حذف {d.name} ({formatQuantity(d.from)})</span>
                   ) : (
-                    <span>{d.name}: {d.from} ← {d.to}</span>
+                    <span>{d.name}: {formatQuantity(d.from)} ← {formatQuantity(d.to)}</span>
                   )}
                 </li>
               ))}

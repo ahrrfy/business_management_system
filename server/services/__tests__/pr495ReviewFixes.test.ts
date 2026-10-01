@@ -122,7 +122,7 @@ describe("R1 — عزل الفرع في إرجاع الإرسالية", () => {
     expect(still.status).toBe("DISPATCHED");
     expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
 
-    const ok = await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r1-ok" } as never);
+    const ok = await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r1-ok", returnReason: "رفض العميل" } as never);
     expect(ok.reversed).toBe(true);
   });
 });
@@ -149,7 +149,7 @@ describe("R2 — أمانة أجرة التوصيل لا تُصرف قبل ال�
     ))).length;
     expect(outsBefore).toBe(0); // لا صرف قبل ثبوت التسليم
 
-    const res = await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r2-ret" } as never);
+    const res = await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r2-ret", returnReason: "رفض العميل" } as never);
     expect((res as { feeAlreadyPaidToCourier?: boolean }).feeAlreadyPaidToCourier).toBe(false);
 
     // سند واحد فقط يردّ الأمانة للزبون، ولا يوجد أي صرف سابق للمندوب.
@@ -198,7 +198,7 @@ describe("R2 — أمانة أجرة التوصيل لا تُصرف قبل ال�
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
     expect(cn.feeSettledAt).toBeNull();
 
-    await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r2-u-ret" } as never);
+    await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r2-u-ret", returnReason: "رفض العميل" } as never);
     const feeOut = (await db().select().from(s.receipts).where(and(
       eq(s.receipts.invoiceId, invoiceId),
       eq(s.receipts.direction, "OUT"),

@@ -14,6 +14,7 @@ import { hasModuleAccess, moduleAccessAllowed, type AccessLevel } from "@shared/
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
+import { resolveActorBranchId } from "../lib/branchAuthority";
 import { maskCustomerSensitive, maskSupplierSensitive } from "../lib/redact";
 import {
   contact360,
@@ -80,11 +81,13 @@ const personsRouter = router({
         role: z.string().max(60).nullish(),
         isPrimary: z.boolean().optional(),
         notes: z.string().max(255).nullish(),
+        branchId: z.number().int().positive().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
       if (input.supplierId != null) assertSupplierModuleAccess(ctx, "FULL");
-      const res = await createContactPerson(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const branchId = resolveActorBranchId(ctx, input.branchId);
+      const res = await createContactPerson(input, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, {
         action: "contactPerson.create",
         entityType: "contactPerson",
@@ -103,6 +106,7 @@ const personsRouter = router({
         role: z.string().max(60).nullish(),
         isPrimary: z.boolean().optional(),
         notes: z.string().max(255).nullish(),
+        branchId: z.number().int().positive().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -110,17 +114,19 @@ const personsRouter = router({
       // نظير contact360/findDuplicates اللذين يفحصان بالنوع الصريح).
       const owner = await getContactPersonOwner(input.id);
       if (owner?.supplierId != null) assertSupplierModuleAccess(ctx, "FULL");
-      const res = await updateContactPerson(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const branchId = resolveActorBranchId(ctx, input.branchId);
+      const res = await updateContactPerson(input, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, { action: "contactPerson.update", entityType: "contactPerson", entityId: input.id, newValue: input });
       return res;
     }),
 
   setInactive: crmWriteProcedure
-    .input(z.object({ id: z.number().int().positive() }))
+    .input(z.object({ id: z.number().int().positive(), branchId: z.number().int().positive().optional() }))
     .mutation(async ({ input, ctx }) => {
       const owner = await getContactPersonOwner(input.id);
       if (owner?.supplierId != null) assertSupplierModuleAccess(ctx, "FULL");
-      const res = await setContactPersonInactive(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const branchId = resolveActorBranchId(ctx, input.branchId);
+      const res = await setContactPersonInactive(input.id, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, { action: "contactPerson.setInactive", entityType: "contactPerson", entityId: input.id });
       return res;
     }),
@@ -128,9 +134,10 @@ const personsRouter = router({
 
 const waConsentRouter = router({
   set: crmWriteProcedure
-    .input(z.object({ customerId: z.number().int().positive(), consent: waConsentValue }))
+    .input(z.object({ customerId: z.number().int().positive(), consent: waConsentValue, branchId: z.number().int().positive().optional() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await setWaConsent(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      const branchId = resolveActorBranchId(ctx, input.branchId);
+      const res = await setWaConsent(input, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, {
         action: "customer.waConsent.set",
         entityType: "customer",

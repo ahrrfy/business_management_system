@@ -29,7 +29,7 @@ async function reset() {
   await truncateTables([
     "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
     "workOrderDesignApprovals", "workOrderDesignRevisions", "workOrderEvents", "auditLogs",
-    "taskEvents", "tasks", "serviceTypes",
+    "serviceTypes",
     "workOrderMaterials", "workOrderItems", "workOrderImages", "workOrders",
     "branchStock", "productPrices", "productUnits", "productVariants", "products",
     "shifts", "customers", "branches", "users",

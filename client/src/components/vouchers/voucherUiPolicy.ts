@@ -136,8 +136,8 @@ export function voucherCashUiPolicy(input: {
   }
   const needsShift = !input.hasOpenShift && !input.shiftLoading;
   return {
-    hardBlock: needsShift && !input.isElevated,
-    treasuryNotice: needsShift && input.isElevated,
+    hardBlock: needsShift,
+    treasuryNotice: false,
   };
 }
 

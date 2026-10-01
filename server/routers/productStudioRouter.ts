@@ -2,10 +2,10 @@ import { z } from "zod";
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { barcodeString, barcodeStorageString } from "../lib/schemas";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, linkStudioBarcode, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
-import { discoverImageGaps, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
+import { discoverImageGaps, getGapProductIds, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
 
 function actor(ctx: {
   user: {
@@ -46,6 +46,9 @@ export const productStudioRouter = router({
   productUnits: productStudioReadProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ ctx, input }) => getStudioProductUnits(actor(ctx), input.productId)),
+  variantMatrix: productStudioReadProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ ctx, input }) => getStudioProductVariantMatrix(actor(ctx), input.productId)),
   // إدارةُ صور المنتج القائمة — للمدير (طلب المالك ٢٦/٨: التحكم الكامل بالصور).
   managerImages: productStudioManagerProcedure
     .input(z.object({ productId: z.number().int().positive() }))
@@ -76,6 +79,18 @@ export const productStudioRouter = router({
       }),
     )
     .query(({ ctx, input }) => discoverImageGaps(actor(ctx), input)),
+  gapProductIds: productStudioManagerProcedure
+    .input(
+      z.object({
+        states: z.array(z.enum(IMAGE_HEALTH_STATES)).max(15).optional(),
+        categoryIds: z.array(z.number().int().positive()).max(200).optional(),
+        isBundle: z.boolean().optional(),
+        search: z.string().trim().max(80).optional(),
+        maxLimit: z.number().int().min(1).max(20_000).optional(),
+        sort: z.enum(["MISSING_MOST", "NAME_ASC", "APPROVED_ASC", "VARIANTS_MISSING_MOST"]).optional(),
+      }),
+    )
+    .query(({ ctx, input }) => getGapProductIds(actor(ctx), input)),
   topGapCategories: productStudioManagerProcedure
     .input(z.object({ limit: z.number().int().min(1).max(50).optional() }))
     .query(({ ctx, input }) => getTopGapCategories(actor(ctx), input.limit)),
@@ -112,6 +127,7 @@ export const productStudioRouter = router({
    * قراءةٌ ضيّقة تُعوّض غياب `campaigns` عن الأدوار غير الإدارية بلا تسريب حملاتٍ لا تعنيه.
    */
   myCampaigns: productStudioReadProcedure.query(({ ctx }) => listMyStudioCampaigns(actor(ctx))),
+  nextPhotographerTask: productStudioWriteProcedure.mutation(({ ctx }) => getNextPhotographerTask(actor(ctx))),
   createCampaign: productStudioManagerProcedure
     .input(
       z.object({
@@ -163,7 +179,15 @@ export const productStudioRouter = router({
     }))
     .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx), input)),
   previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
-  createCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx), input.campaignId)),
+  createCampaignBacklog: productStudioManagerProcedure
+    .input(z.object({ campaignId }))
+    .mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx), input.campaignId)),
+  drainCampaignBacklog: productStudioManagerProcedure
+    .input(z.object({ campaignId, autoDistribute: z.boolean().optional() }))
+    .mutation(({ ctx, input }) => drainStudioCampaignBacklog(actor(ctx), input.campaignId, { autoDistribute: input.autoDistribute })),
+  distributeCampaignTasks: productStudioManagerProcedure
+    .input(z.object({ campaignId, assigneeIds: z.array(z.number().int().positive()).max(50).optional() }))
+    .mutation(({ ctx, input }) => distributeCampaignTasks(actor(ctx), input)),
   campaignAnalytics: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignAnalytics(actor(ctx), input.campaignId)),
   campaignBoard: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignBoard(actor(ctx), input.campaignId)),
   createTemporaryPhotographer: productStudioManagerProcedure

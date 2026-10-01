@@ -35,7 +35,6 @@ const MANAGER_ONLY: Gate[] = [
   { name: "storeManager", module: "store", level: "FULL", allowed: ["manager"] },
   { name: "customersManager", module: "crm", level: "FULL", allowed: ["manager"] },
   { name: "expensesManager", module: "expenses", level: "FULL", allowed: ["manager"] },
-  { name: "tasksManager", module: "tasks", level: "FULL", allowed: ["manager"] },
   { name: "salesManager", module: "sales", level: "FULL", allowed: ["manager"] },
   { name: "inventoryManager", module: "inventory", level: "FULL", allowed: ["manager"] },
   { name: "productsManager", module: "products", level: "FULL", allowed: ["manager"] },

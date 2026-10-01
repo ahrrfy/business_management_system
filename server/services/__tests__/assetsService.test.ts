@@ -70,3 +70,56 @@ describe("computeDepreciation — ثوابت السلامة", () => {
     for (const row of r.schedule) expect(row.closing).toBeGreaterThanOrEqual(50000);
   });
 });
+
+describe("computeDepreciation — الأصول الافتتاحية السابقة للنظام (IAS 16)", () => {
+  it("أصل افتتاحي بمجمع إهلاك سابق: القيمة الدفترية عند التسجيل = التكلفة − الإهلاك السابق", () => {
+    const openingAsset = {
+      purchaseValue: "10000000",
+      salvageValue: "0",
+      usefulLifeYears: 5,
+      depreciationMethod: "sl" as const,
+      purchaseDate: "2026-09-01",
+      status: "active",
+      openingDepreciation: "4000000",
+      accumulatedDepreciation: "4000000",
+    };
+    const atOpening = computeDepreciation(openingAsset, new Date("2026-09-01"));
+    expect(atOpening.accumulated).toBe(4000000);
+    expect(atOpening.bookValue).toBe(6000000);
+  });
+
+  it("أصل افتتاحي: إهلاك شهر إضافي يُضاف تراكمياً فوق الإهلاك الافتتاحي دون تجميد", () => {
+    const openingAsset = {
+      purchaseValue: "12000000",
+      salvageValue: "0",
+      usefulLifeYears: 5, // 2.4M سنوياً = 200,000 شهرياً
+      depreciationMethod: "sl" as const,
+      purchaseDate: "2026-09-01",
+      status: "active",
+      openingDepreciation: "6000000",
+      accumulatedDepreciation: "6000000",
+    };
+    // بعد شهر واحد (نهاية سبتمبر 2026):
+    const oneMonthLater = computeDepreciation(openingAsset, new Date("2026-10-01"));
+    expect(oneMonthLater.accumulated).toBeGreaterThan(6000000);
+    expect(oneMonthLater.bookValue).toBeLessThan(6000000);
+    expect(oneMonthLater.accumulated + oneMonthLater.bookValue).toBe(12000000);
+  });
+
+  it("أصل افتتاحي بتاريخ شراء قديم: لا ينزل مجمع الإهلاك أبداً عن الرصيد الافتتاحي المسجل", () => {
+    const openingAsset = {
+      purchaseValue: "5000000",
+      salvageValue: "500000",
+      usefulLifeYears: 5,
+      depreciationMethod: "sl" as const,
+      purchaseDate: "2020-01-01",
+      status: "active",
+      openingDepreciation: "3000000",
+      accumulatedDepreciation: "3000000",
+    };
+    const r = computeDepreciation(openingAsset, new Date("2026-09-01"));
+    expect(r.accumulated).toBeGreaterThanOrEqual(3000000);
+    expect(r.bookValue).toBeLessThanOrEqual(2000000);
+  });
+});
+

@@ -1,10 +1,14 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
   exchangeHouses,
   exchangeTransactions,
   goodsReceipts,
+  productVariants,
+  products,
+  purchaseOrderItems,
   purchaseOrders,
   receipts,
   suppliers,
@@ -21,6 +25,14 @@ import {
   supplierApEffectSql,
 } from "../ledger/supplierApEffect";
 import { classifyGrniApEntry } from "@shared/grniDedupe";
+import type {
+  FinancialCellProvenancePayload,
+  ProvenanceDocumentRef,
+  ProvenanceMovementType,
+  ProvenancePartyKind,
+  ProvenanceSubItem,
+} from "@shared/financialProvenance";
+import { computeProvenanceReconciliation } from "@shared/financialProvenance";
 
 /** أعمدة القيد بالاسم المستعار `ae` للاستعمال في استعلامات SQL الخام أدناه. */
 const AE = {
@@ -130,12 +142,92 @@ export async function getAPAging(
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];
-  // REP-04 mirror: شراء الأصول/الرصيد الافتتاحي (OPENING) يقعان في currentBalance خارج دلاء أوامر
-  // الشراء ⇒ unbucketed = currentBalance − unpaidTotal (مُوقَّع، بلا قصّ) يُغلق الفرق فتتّزن الدلاء.
-  return (data as any[]).map((r) => ({
-    ...(r as APAgingRow),
-    unbucketed: toDbMoney(money(r.currentBalance).sub(money(r.unpaidTotal))),
-  }));
+  return (data as any[])
+    .map((r) => {
+      const scopedBalance = money(r.currentBalance);
+      let d0_30 = money(r.d0_30 || 0);
+      let d31_60 = money(r.d31_60 || 0);
+      let d61_90 = money(r.d61_90 || 0);
+      let d91p = money(r.d91p || 0);
+      const rawUnpaid = money(r.unpaidTotal || 0);
+
+      // حارس المبدأ المحاسبي الجوهري (AP Aging):
+      // إذا كان رصيد المورد صفراً أو سالباً (مديناً لنا)، فلا توجد ذمم دائنة مستحقة له
+      if (scopedBalance.lte(0)) {
+        return {
+          ...(r as APAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: "0.00",
+          d31_60: "0.00",
+          d61_90: "0.00",
+          d91p: "0.00",
+          unpaidTotal: "0.00",
+          unbucketed: toDbMoney(scopedBalance),
+          oldestPoDate: null,
+        };
+      }
+
+      // إذا كان إجمالي أوامر الشراء المفتوحة الخام يفوق الرصيد الفعلي الدائن:
+      // الفارق يمثل سدادات غير مخصصة تخفض الذمم وفق قاعدة الأسبقية FIFO
+      if (rawUnpaid.gt(scopedBalance)) {
+        let unallocatedPayment = rawUnpaid.minus(scopedBalance);
+
+        // تخفيض دلو >90
+        const alloc91p = Decimal.min(d91p, unallocatedPayment);
+        d91p = d91p.minus(alloc91p);
+        unallocatedPayment = unallocatedPayment.minus(alloc91p);
+
+        // تخفيض دلو 61-90
+        if (unallocatedPayment.gt(0)) {
+          const alloc61_90 = Decimal.min(d61_90, unallocatedPayment);
+          d61_90 = d61_90.minus(alloc61_90);
+          unallocatedPayment = unallocatedPayment.minus(alloc61_90);
+        }
+
+        // تخفيض دلو 31-60
+        if (unallocatedPayment.gt(0)) {
+          const alloc31_60 = Decimal.min(d31_60, unallocatedPayment);
+          d31_60 = d31_60.minus(alloc31_60);
+          unallocatedPayment = unallocatedPayment.minus(alloc31_60);
+        }
+
+        // تخفيض دلو 0-30
+        if (unallocatedPayment.gt(0)) {
+          const alloc0_30 = Decimal.min(d0_30, unallocatedPayment);
+          d0_30 = d0_30.minus(alloc0_30);
+          unallocatedPayment = unallocatedPayment.minus(alloc0_30);
+        }
+
+        const effectiveUnpaid = scopedBalance;
+        return {
+          ...(r as APAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: toDbMoney(d0_30),
+          d31_60: toDbMoney(d31_60),
+          d61_90: toDbMoney(d61_90),
+          d91p: toDbMoney(d91p),
+          unpaidTotal: toDbMoney(effectiveUnpaid),
+          unbucketed: "0.00",
+        };
+      }
+
+      const effectiveUnpaid = rawUnpaid;
+      const unbucketed = scopedBalance.minus(effectiveUnpaid);
+
+      return {
+        ...(r as APAgingRow),
+        currentBalance: toDbMoney(scopedBalance),
+        d0_30: toDbMoney(d0_30),
+        d31_60: toDbMoney(d31_60),
+        d61_90: toDbMoney(d61_90),
+        d91p: toDbMoney(d91p),
+        unpaidTotal: toDbMoney(effectiveUnpaid),
+        unbucketed: toDbMoney(unbucketed),
+      };
+    })
+    .filter((r) => {
+      return !(money(r.currentBalance).isZero() && money(r.unpaidTotal).isZero());
+    });
 }
 
 export interface SupplierStatementPO {
@@ -149,6 +241,7 @@ export interface SupplierStatementPO {
   settlementType?: "CASH" | "CREDIT";
   createdBy: number | null;
   createdByName: string | null;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 export interface SupplierStatementPayment {
@@ -170,6 +263,7 @@ export interface SupplierStatementPayment {
   exchangeHouseName: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 export interface SupplierStatementUnbilledReceipt {
@@ -378,19 +472,36 @@ export async function getSupplierStatement(
     if (!gl || !gl.recognitionDate) return [];
     if ((from || to) && money(gl.periodTotal).isZero()) return [];
     const total = money(gl.total);
-    const openBalance = money(gl.balance).isPositive()
+    const rawGlBalance = money(gl.balance).isPositive()
       ? money(gl.balance)
       : money(0);
+    const glPaid = total.minus(rawGlBalance);
+    const validGlPaid = glPaid.isPositive() ? glPaid : money(0);
+    const orderPaid = money(po.paidAmount ?? 0);
+    // القيمة الأعلى بين ما سُجِّل على أمر الشراء (كالتسوية التلقائية FIFO) وما هو مقيّد في الدفتر العام
+    const effectivePaid = orderPaid.gt(validGlPaid) ? orderPaid : validGlPaid;
+    // الرصيد المفتوح الفعلي للأمر بعد احتساب السداد الفعلي
+    const effectiveOpenBalance = total.minus(effectivePaid);
+    const openBalance = effectiveOpenBalance.isPositive()
+      ? effectiveOpenBalance
+      : money(0);
+    // المبلغ المسدد على هذا الأمر زيادةً عما هو مربوط في الدفتر العام (مستقطع من الدفعات غير المخصصة)
+    const cappedEffectivePaid = effectivePaid.gt(total) ? total : effectivePaid;
+    const settledBeyondGl = cappedEffectivePaid.gt(validGlPaid)
+      ? cappedEffectivePaid.minus(validGlPaid)
+      : money(0);
+
     return [
       {
         ...po,
         total: toDbMoney(total),
         periodTotal: toDbMoney(gl.periodTotal),
-        // «مسدّد/مخفّض» = إجمالي PURCHASE ناقص رصيد GL المفتوح؛ يشمل المرتجع والإلغاء الصحيحين.
-        paidAmount: toDbMoney(total.minus(openBalance)),
-        // للاستعمال الداخلي فقط (أعمار الذمم أدناه) — لا يدخل الصفّ المُرسَل للواجهة.
+        // «مسدّد/مخفّض» = القيمة الأعلى بين مدفوع أمر الشراء ومدفوع الدفتر العام؛ يضمن ظهور التسوية التلقائية FIFO.
+        paidAmount: toDbMoney(effectivePaid),
+        // للاستعمال الداخلي فقط (أعمار الذمم وحساب الدفعات غير المخصصة) — لا يدخل الصفّ المُرسَل للواجهة.
         _openBalance: openBalance,
         _recognitionDate: gl.recognitionDate,
+        _settledBeyondGl: settledBeyondGl,
       },
     ];
   });
@@ -545,14 +656,23 @@ export async function getSupplierStatement(
   // دفعاتٌ للمورد (PAYMENT_OUT) غير مربوطةٍ بأمر شراءٍ بعينه («دفعة مستقلة») — هذا هو السبب
   // الجذريّ الأكثر شيوعاً لتباعد «المتبقّي» المجموع لكل الأوامر عن «غير مدفوع» الحقيقي: مبلغٌ
   // دخل الحساب فعلاً وخفّض ما ندين به، لكن لم يُخصَّص بعد لفاتورةٍ محدَّدة فيبقى غامضاً في
-  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه.
-  const unallocatedPayments = payments.reduce(
+  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه،
+  // مع استبعاد ما تم تسويته فعلياً على الأوامر (كالتسوية التلقائية FIFO).
+  const rawUnallocatedPayments = payments.reduce(
     (acc, p) =>
       p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null
         ? acc.plus(money(p.amount))
         : acc,
     money(0),
   );
+  const totalSettledBeyondGl = posWithTotals.reduce(
+    (acc, p) => acc.plus(p._settledBeyondGl),
+    money(0),
+  );
+  const remainingUnallocated = rawUnallocatedPayments.minus(totalSettledBeyondGl);
+  const unallocatedPayments = remainingUnallocated.isPositive()
+    ? remainingUnallocated
+    : money(0);
 
   // أذونات الاستلام المخزني المرحّلة ذات الأصل NATIVE غير المفوترة بعد (إفصاح رقابي للمحاسب)
   const unbilledReceiptRows = await db
@@ -586,47 +706,215 @@ export async function getSupplierStatement(
       ),
     );
 
+  const poIds = posWithTotals.map((p) => Number(p.id)).filter((id) => id > 0);
+  const poItemMap = new Map<number, ProvenanceSubItem[]>();
+  if (poIds.length > 0) {
+    const poItemRows = await db
+      .select({
+        purchaseOrderId: purchaseOrderItems.purchaseOrderId,
+        id: purchaseOrderItems.id,
+        name: products.name,
+        quantity: purchaseOrderItems.quantity,
+        unitPrice: purchaseOrderItems.unitPrice,
+        total: purchaseOrderItems.total,
+        usdTotal: purchaseOrderItems.usdTotal,
+      })
+      .from(purchaseOrderItems)
+      .leftJoin(productVariants, eq(productVariants.id, purchaseOrderItems.variantId))
+      .leftJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(purchaseOrderItems.purchaseOrderId, poIds));
+
+    for (const it of poItemRows) {
+      const poId = Number(it.purchaseOrderId);
+      const list = poItemMap.get(poId) ?? [];
+      list.push({
+        id: it.id,
+        label: it.name || "صنف أمر شراء",
+        amount: toDbMoney(money(it.total ?? 0)),
+        quantity: it.quantity != null ? Number(it.quantity) : undefined,
+        unitPrice: it.unitPrice != null ? toDbMoney(money(it.unitPrice)) : undefined,
+        type: "item",
+      });
+      poItemMap.set(poId, list);
+    }
+  }
+
   return {
-    supplier: s,
-    unbilledReceipts: unbilledReceiptRows.map((r) => ({
-      goodsReceiptId: Number(r.goodsReceiptId),
-      receiptNumber: r.receiptNumber,
-      purchaseOrderId: r.purchaseOrderId ? Number(r.purchaseOrderId) : null,
-      poNumber: r.poNumber ?? null,
-      receivedAt: r.receivedAt,
-      totalAmount: String(r.totalAmount ?? "0.00"),
-      notes: r.notes ?? null,
-    })),
-    purchaseOrders: posWithTotals.map((p) => ({
-      id: Number(p.id),
-      poNumber: p.poNumber,
-      orderDate: p.orderDate,
-      expectedDeliveryDate: p.expectedDeliveryDate,
-      total: String(p.total),
-      paidAmount: String(p.paidAmount),
-      status: p.status,
-      createdBy: p.createdBy ? Number(p.createdBy) : null,
-      createdByName: p.createdByName,
-    })),
-    payments: payments.map((p) => ({
-      id: Number(p.id),
-      // entryType جديد: تميّز الواجهة بين دفعة مورد (PAYMENT_OUT)، استرداد من مورد (PAYMENT_IN)،
-      // ومرتجع شراء (RETURN، مخزَّن بإشارة سالبة) — لكي يقرأ المحاسب الكشف بإشارته الصحيحة.
-      entryType: p.entryType,
-      dedupeKey: p.dedupeKey ?? null,
-      purchaseOrderId: p.purchaseOrderId ? Number(p.purchaseOrderId) : null,
-      receiptId: p.receiptId ? Number(p.receiptId) : null,
-      amount: String(p.amount),
-      entryDate: p.entryDate as Date,
-      notes: p.notes,
-      voucherNumber: p.voucherNumber,
-      paymentMethod: p.paymentMethod,
-      referenceNumber: p.referenceNumber,
-      exchangeHouseId: p.exchangeHouseId ? Number(p.exchangeHouseId) : null,
-      exchangeHouseName: p.exchangeHouseName,
-      createdBy: p.createdBy ? Number(p.createdBy) : null,
-      createdByName: p.createdByName,
-    })),
+      supplier: s,
+      unbilledReceipts: unbilledReceiptRows.map((r) => ({
+        goodsReceiptId: Number(r.goodsReceiptId),
+        receiptNumber: r.receiptNumber,
+        purchaseOrderId: r.purchaseOrderId ? Number(r.purchaseOrderId) : null,
+        poNumber: r.poNumber ?? null,
+        receivedAt: r.receivedAt,
+        totalAmount: String(r.totalAmount ?? "0.00"),
+        notes: r.notes ?? null,
+      })),
+      purchaseOrders: posWithTotals.map((p) => {
+        const poTotal = toDbMoney(money(p.total ?? 0));
+        const rawItems = poItemMap.get(Number(p.id)) ?? [];
+        const subItems: ProvenanceSubItem[] = [...rawItems];
+        if (subItems.length === 0) {
+          subItems.push({
+            id: `po-${p.id}`,
+            label: `أمر شراء #${p.poNumber}`,
+            amount: poTotal,
+          });
+        } else {
+          const currentSum = subItems.reduce((acc, it) => acc.plus(money(it.amount)), money(0));
+          const diff = money(poTotal).minus(currentSum);
+          if (!diff.isZero() && diff.abs().lte(100)) {
+            subItems.push({
+              id: `adj-po-${p.id}`,
+              label: "تسوية / مصاريف شحن وكمرك",
+              amount: diff.isNegative() ? `-${toDbMoney(diff.abs())}` : toDbMoney(diff),
+              type: "adjustment",
+            });
+          }
+        }
+
+        const reconciliation = computeProvenanceReconciliation(poTotal, subItems);
+        const poProvenance: FinancialCellProvenancePayload = {
+          movementType: "delivery",
+          title: `أمر شراء #${p.poNumber}`,
+          totalAmount: poTotal,
+          party: {
+            name: s.name,
+            kind: "supplier",
+            id: s.id,
+            phone: s.phone,
+          },
+          documentRef: {
+            docType: "purchase_order",
+            docNumber: p.poNumber,
+            docId: Number(p.id),
+            date: p.orderDate instanceof Date ? p.orderDate.toISOString() : String(p.orderDate),
+          },
+          docRefs: [
+            {
+              docType: "purchase_order",
+              docNumber: p.poNumber,
+              docId: Number(p.id),
+              date: p.orderDate instanceof Date ? p.orderDate.toISOString() : String(p.orderDate),
+            },
+          ],
+          actorName: p.createdByName,
+          actor: p.createdByName ? { name: p.createdByName, id: p.createdBy ? Number(p.createdBy) : null } : null,
+          notes: `حالة أمر الشراء: ${p.status}`,
+          subItems,
+          reconciliation,
+        };
+
+        return {
+          id: Number(p.id),
+          poNumber: p.poNumber,
+          orderDate: p.orderDate,
+          expectedDeliveryDate: p.expectedDeliveryDate,
+          total: String(p.total),
+          paidAmount: String(p.paidAmount),
+          status: p.status,
+          createdBy: p.createdBy ? Number(p.createdBy) : null,
+          createdByName: p.createdByName,
+          provenance: poProvenance,
+        };
+      }),
+      payments: payments.map((p) => {
+        const pAmount = toDbMoney(money(p.amount ?? 0));
+        let movementType: ProvenanceMovementType = "delivery";
+        if (p.entryType === "PAYMENT_IN") {
+          movementType = "collection";
+        } else if (p.entryType === "RETURN") {
+          movementType = "difference";
+        } else if (p.entryType === "PURCHASE" || p.entryType === "ADJUST") {
+          movementType = "expense";
+        }
+
+        const docRefs: ProvenanceDocumentRef[] = [];
+        if (p.voucherNumber) {
+          docRefs.push({
+            docType: "voucher",
+            docNumber: p.voucherNumber,
+            date: p.entryDate instanceof Date ? p.entryDate.toISOString() : String(p.entryDate),
+          });
+        }
+        if (p.purchaseOrderId) {
+          docRefs.push({
+            docType: "purchase_order",
+            docNumber: `PO-${p.purchaseOrderId}`,
+            docId: p.purchaseOrderId,
+            date: p.entryDate instanceof Date ? p.entryDate.toISOString() : String(p.entryDate),
+          });
+        }
+        if (p.receiptId) {
+          docRefs.push({
+            docType: "receipt",
+            docNumber: p.referenceNumber || `REC-${p.receiptId}`,
+            docId: p.receiptId,
+            date: p.entryDate instanceof Date ? p.entryDate.toISOString() : String(p.entryDate),
+          });
+        }
+
+        const subItems: ProvenanceSubItem[] = [
+          {
+            id: `pay-${p.id}`,
+            label:
+              p.notes ||
+              (p.entryType === "PAYMENT_OUT"
+                ? "دفعة سداد مورد"
+                : p.entryType === "PAYMENT_IN"
+                  ? "استرداد دفعة من مورد"
+                  : p.entryType === "RETURN"
+                    ? "مرتجع مشتريات"
+                    : "تسوية حساب مورد"),
+            amount: pAmount,
+          },
+        ];
+
+        const paymentProvenance: FinancialCellProvenancePayload = {
+          movementType,
+          title:
+            p.notes ||
+            (p.entryType === "PAYMENT_OUT"
+              ? "سند صرف مورد"
+              : "حركة حساب مورد"),
+          totalAmount: pAmount,
+          party: {
+            name: s.name,
+            kind: "supplier",
+            id: s.id,
+            phone: s.phone,
+          },
+          documentRef: docRefs[0] ?? null,
+          docRefs,
+          paymentMethod: p.paymentMethod,
+          actorName: p.createdByName,
+          actor: p.createdByName
+            ? { name: p.createdByName, id: p.createdBy ? Number(p.createdBy) : null }
+            : null,
+          notes: p.notes,
+          subItems,
+          reconciliation: computeProvenanceReconciliation(pAmount, subItems),
+        };
+
+        return {
+          id: Number(p.id),
+          entryType: p.entryType,
+          dedupeKey: p.dedupeKey ?? null,
+          purchaseOrderId: p.purchaseOrderId ? Number(p.purchaseOrderId) : null,
+          receiptId: p.receiptId ? Number(p.receiptId) : null,
+          amount: String(p.amount),
+          entryDate: p.entryDate as Date,
+          notes: p.notes,
+          voucherNumber: p.voucherNumber,
+          paymentMethod: p.paymentMethod,
+          referenceNumber: p.referenceNumber,
+          exchangeHouseId: p.exchangeHouseId ? Number(p.exchangeHouseId) : null,
+          exchangeHouseName: p.exchangeHouseName,
+          createdBy: p.createdBy ? Number(p.createdBy) : null,
+          createdByName: p.createdByName,
+          provenance: paymentProvenance,
+        };
+      }),
     summary: {
       totalPurchases: toDbMoney(totalPurchases),
       totalPaid: toDbMoney(totalPaid),

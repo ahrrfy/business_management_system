@@ -30,9 +30,20 @@ const MONEY_FIELDS = [
   // تدقيق ٣/٨: `costPrice` (لم يكن يُلتقَط — `\bcost` لا يطابق `costPrice:` إذ يليه `Price` لا `:`)
   // ⇒ أي حقل تكلفة جديد عارٍ كان يمرّ صامتاً. القائمة تلتقطه الآن؛ المواقع القائمة في BASELINE.
   "costPrice",
+  // تدقيق VULN-GRD-02 (M3): حقول مالية ونسب كانت محجوبة عن الفحص
+  "invoiceDiscount",
+  "taxRatePercent",
+  "allocatedAmount",
+  "customFee",
+  "extraCharge",
+  "deliveryFee",
+  "deliveryWaivedAmount",
+  "deliveryFeeHeld",
+  "bonusAmount",
+  "commissionAmount",
 ];
-// حقول تحمل اسماً مالياً لكنها ليست مبلغاً (نِسَب/أعلام) — تُستثنى.
-const NOT_MONEY = /Percent$|Rate$|Type$|Method$|Enabled$/;
+// حقول تحمل اسماً مالياً لكنها ليست مبلغاً أو نسبة (أعلام/طرق/أنواع) — تُستثنى.
+const NOT_MONEY = /Type$|Method$|Enabled$/;
 
 // خطّ الأساس (تدقيق ١٧/٧): الانتهاكات القائمة المسموح بها مؤقّتاً — basename:field.
 // تُقلَّص بإصلاح الحقل إلى مخطّط مالي (nonNegMoneyString...). لا تُضِف إليها.

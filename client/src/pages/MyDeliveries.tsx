@@ -206,7 +206,7 @@ export default function MyDeliveries() {
           <section className="space-y-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-bold text-muted-foreground">قيد التوصيل ({data!.toDeliver.length})</h2>
-              {data!.toDeliver.length > 0 && (
+              {data!.toDeliver.length > 0 && unreceivedRows.length > 0 && (
                 <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
                   <button
                     type="button"

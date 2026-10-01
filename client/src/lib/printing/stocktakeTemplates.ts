@@ -16,6 +16,8 @@ import {
 import { fmtDate, fmtDateTime } from "../date";
 import { wrapA4Doc, docHeader, docMeta, docTable, docFooter } from "./docHtml";
 import { code128Svg } from "./barcode";
+import { fmtQty } from "@shared/quantityFormat";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 
 // ─── تسميات مشتركة (تُستورد أيضاً في شاشات الجرد) ────────────────────────────
 
@@ -47,9 +49,11 @@ const dOnly = (v?: string | Date | null): string => fmtDate(v);
 
 const dts = (v?: string | Date | null): string => fmtDateTime(v);
 
-/** كمية صحيحة مُشارة (+/−) — للعرض فقط. */
-const signedInt = (n: number): string =>
-  n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(Math.abs(n))}` : "0";
+/** كمية مُشارة (+/−) — للعرض فقط. */
+const signedInt = (n: number | string | null | undefined): string => {
+  const num = Number(n ?? 0);
+  return num > 0 ? `+${fmtQty(num)}` : num < 0 ? `−${fmtQty(Math.abs(num))}` : "0";
+};
 
 /** مبلغ مُشار (+/−) — قيمة decimal نصية محسوبة سلفاً؛ التحويل هنا للعرض فقط. */
 const signedMoney = (v: string | number | null | undefined): string => {
@@ -70,6 +74,9 @@ const secTitle = (t: string): string =>
 export interface StocktakeAdjustedRow {
   productName: string;
   variantName?: string | null;
+  color?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   sku?: string | null;
   baseUnit?: string | null;
   /** الرصيد الدفتري لحظة الاحتساب (bookNow). */
@@ -89,6 +96,9 @@ export interface StocktakeAdjustedRow {
 export interface StocktakeKeptRow {
   productName: string;
   variantName?: string | null;
+  color?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   diff: number;
   decisionLabel: string;
 }
@@ -242,9 +252,9 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
     { key: "decision", label: "القرار", width: "34mm" },
   ];
   const adjRows = d.adjusted.map((r) => ({
-    name: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}${r.baseUnit ? ` (${r.baseUnit})` : ""}${r.sku ? ` · ${r.sku}` : ""}`,
-    book: fmt(r.bookQty),
-    counted: fmt(r.adjustedQty),
+    name: `${variantDisplayName(r)}${r.baseUnit ? ` (${r.baseUnit})` : ""}${r.sku ? ` · ${r.sku}` : ""}`,
+    book: fmtQty(r.bookQty),
+    counted: fmtQty(r.adjustedQty),
     diff: signedInt(r.diff),
     value: signedMoney(r.value),
     reason: r.reasonLabel,
@@ -279,7 +289,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
           { key: "decision", label: "القرار", width: "70mm" },
         ],
         d.kept.map((r) => ({
-          name: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+          name: variantDisplayName(r),
           diff: signedInt(r.diff),
           decision: r.decisionLabel,
         })),
@@ -437,6 +447,9 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
 export interface CountSheetItem {
   productName: string;
   variantName?: string | null;
+  color?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   sku?: string | null;
   barcode?: string | null;
   baseUnit?: string | null;
@@ -485,7 +498,7 @@ export function printCountSheets(d: CountSheetsPrintData): void {
           return `<tr>
         <td style="${td}text-align:center;color:#555;font-size:8px;width:7mm;">${fmt(i + 1)}</td>
         <td style="${td}font-weight:700;">${esc(it.productName)}</td>
-        <td style="${td}color:#333;width:22mm;">${esc(it.variantName ?? "—")}</td>
+        <td style="${td}color:#333;width:22mm;">${esc(variantDescriptor(it) || it.variantName || "—")}</td>
         <td style="${td}width:20mm;"><span style="font-family:monospace;font-size:8px;" dir="ltr">${esc(it.sku ?? "—")}</span></td>
         <td style="${td}text-align:center;width:36mm;">${barCell}</td>
         <td style="${td}text-align:center;width:14mm;font-size:8.5px;">${esc(it.baseUnit ?? "—")}</td>

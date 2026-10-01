@@ -113,9 +113,6 @@ const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
 const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
-// نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
-const TasksHub = lazy(() => import("@/pages/TasksHub"));
-const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
 const AssetDetail = lazy(() => import("@/pages/AssetDetail"));
@@ -123,6 +120,7 @@ const AssetNew = lazy(() => import("@/pages/AssetNew"));
 const AssetEdit = lazy(() => import("@/pages/AssetEdit"));
 const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
 const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
+const HrPayslip = lazy(() => import("@/pages/HrPayslip"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
 const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
 const PlatformAdmin = lazy(() => import("@/pages/PlatformAdmin"));
@@ -407,6 +405,7 @@ export default function App() {
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       {/* بوابة التحقق الرقمي من أصالة المستندات والفواتير عبر QR المشفر — عامة بلا دخول */}
+      <Route path="/verify/:id" component={VerifyDocument} />
       <Route path="/verify" component={VerifyDocument} />
       <Route path="/platform-admin" component={PlatformAdmin} />
       <Route path="/"><RootRoute /></Route>
@@ -458,6 +457,7 @@ export default function App() {
       <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/returns-governance"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/purchase-requisitions"><Redirect to="/purchases?tab=requisitions" /></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
@@ -484,22 +484,6 @@ export default function App() {
       <Route path="/inbox"><Redirect to="/crm?tab=inbox" /></Route>
       <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
       <Route path="/work-orders/:id"><Shell><RequireRole module="workorders" level="READ"><WorkOrderDetail /></RequireRole></Shell></Route>
-      {/* نظام المهام الموحّد (S2/T2.3) — حارس واجهي مرآة tasksReadProcedure (requireModule("tasks","READ"))؛
-          الأدوار المذكورة = كل قوالب الأدوار بقيمة tasks≥READ (استثناء purchasing/courier=NONE). */}
-      <Route path="/tasks">
-        <Shell>
-          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
-            <TasksHub />
-          </RequireRole>
-        </Shell>
-      </Route>
-      <Route path="/tasks/:id">
-        <Shell>
-          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
-            <TaskDetail />
-          </RequireRole>
-        </Shell>
-      </Route>
       {/* ١٩/٨ (طلب المالك): **لكل مفهومٍ شاشةٌ واحدة**. كان `/reservations` يُحوَّل إلى طبقةٍ فوق
           شاشة الكاشير — فلا شاشةَ للحجوزات أصلاً، والبطاقةُ في الرئيسية تعيدك إلى الشاشة نفسها
           المزدحمة. استعادت شاشتَها (المكوّن يدعم الوضعين: `embedded` وغير المضمَّن). */}
@@ -535,6 +519,8 @@ export default function App() {
       <Route path="/hr/employees/:id"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeDetail /></RequireRole></Shell></Route>
       {/* تصفية خروج الموظف — قراءةٌ فقط تجمع ذمّته عبر ستّ وحدات قبل إنهاء الخدمة. */}
       <Route path="/hr/offboarding"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeOffboarding /></RequireRole></Shell></Route>
+      {/* قسيمة الراتب الإلكترونية — خدمة ذاتية لكل موظف مسجل الدخول للاطلاع على كشف راتبه وطباعته */}
+      <Route path="/hr/payslip/:runId"><Shell><HrPayslip /></Shell></Route>
       <Route path="/hr/attendance"><Redirect to="/hr?tab=attendance" /></Route>
       <Route path="/hr/payroll"><Redirect to="/hr?tab=payroll" /></Route>
       <Route path="/hr/leaves"><Redirect to="/hr?tab=leaves" /></Route>
@@ -621,6 +607,9 @@ export default function App() {
       {/* التذكيرات ليست تقارير قراءة — راوتراها على وحدتَي العملاء/الموردين بمستوى FULL. */}
       <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager","accountant"]} module="collections" level="FULL"><ARReminders /></RequireRole></Shell></Route>
       <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]} module="suppliers" level="FULL"><APReminders /></RequireRole></Shell></Route>
+      {/* توافق الروابط المباشرة السابقة للتذكيرات */}
+      <Route path="/ar-reminders"><Redirect to="/reports/ar-reminders" /></Route>
+      <Route path="/ap-reminders"><Redirect to="/reports/ap-reminders" /></Route>
       {/* أُدمجت في محور CRM (CrmHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       {/* تدقيق ١٧/٧: توجيه مباشر لـ/crm — كان يمرّ عبر /customers الذي يُعيد التوجيه لـ/crm?tab=customers
           فيُسقط tab ومعرّف العميل (?id=) ⇒ يهبط المستخدم على قائمة العملاء بدل الكشف/الأعمار. */}

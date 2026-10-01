@@ -78,12 +78,12 @@ async function recipientsFor(row: {
   if (row.eventType === STALE_ESCALATED_EVENT) {
     return { userIds: await branchManagerIds(row.branchId), route: TRANSIT_ROUTE };
   }
-  if (row.assignedUserId != null && (row.topic === "delivery.assigned" || row.topic === "delivery.reassigned")) {
+  if (row.assignedUserId != null && (row.topic === "delivery.assigned" || row.topic === "delivery.reassigned" || row.topic === "delivery.out_for_delivery")) {
     return { userIds: [row.assignedUserId], route: PORTAL_ROUTE };
   }
   const db = getDb();
   if (!db) return { userIds: [], route: PORTAL_ROUTE };
-  const roles = row.topic === "delivery.assigned" || row.topic === "delivery.reassigned"
+  const roles = row.topic === "delivery.assigned" || row.topic === "delivery.reassigned" || row.topic === "delivery.out_for_delivery"
     ? ["DRIVER" as const]
     : row.topic === "delivery.failed"
       ? ["MANAGER" as const]

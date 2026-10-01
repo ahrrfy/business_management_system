@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatIqd } from "@/lib/money";
+import { formatQuantity } from "@shared/quantityFormat";
 import { openWhatsApp, buildPrintPricingMessage } from "@/lib/whatsapp";
 import { trpc, type RouterInputs } from "@/lib/trpc";
 import {
@@ -143,7 +144,7 @@ export default function PrintPricingCalculator() {
       return `${sizeLabel(debounced.paperSize)} · ${COLOR_MODE_AR[debounced.colorMode]} · ${debounced.sides === 2 ? "وجهان" : "وجه واحد"} · ${debounced.copies} نسخة × ${debounced.pagesPerCopy} صفحة`;
     }
     if (result.category === "WIDE" && debounced.category === "WIDE") {
-      return `عريض ${debounced.width}×${debounced.height} م × ${debounced.quantity} قطعة (${result.areaSqm} م²)`;
+      return `عريض ${debounced.width}×${debounced.height} م × ${formatQuantity(debounced.quantity)} قطعة (${result.areaSqm} م²)`;
     }
     return "";
   }, [result, debounced]);

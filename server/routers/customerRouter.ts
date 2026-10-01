@@ -21,11 +21,15 @@ import {
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
+import { resolveActorBranchId } from "../lib/branchAuthority";
 import { positiveMoneyString } from "../lib/schemas";
 import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, customersReceptionCreateProcedure, managerProcedure, router, userHasCrmWriteAccess } from "../trpc";
 import { getCustomerOperations } from "../services/customerOperationsService";
 import { withTx } from "../services/tx";
-import { autoSettleCustomerAccountTx, autoSettleZeroBalanceAccountsTx } from "../services/reconciliation/autoSettlementService";
+import {
+  autoSettleAllAccountsTx,
+  autoSettleCustomerAccountTx,
+} from "../services/reconciliation/autoSettlementService";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
@@ -155,8 +159,10 @@ export const customerRouter = router({
       // "0" = نقديّ فقط (افتراض)، موجب = سقف يُفحَص، "" أو غير مُمرَّر = افتراض.
       // نمرّرها كنصّ لتمييز "" (غير مُقصود) عن "0" (مقصود).
       creditLimit: z.string().regex(/^(\d+(\.\d+)?)?$/).optional(),
+      branchId: z.number().int().positive().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
+      const branchId = resolveActorBranchId(ctx, input.branchId);
       const result = await resolveReceptionCustomerByPhone(
         {
           phone: input.phone,
@@ -166,7 +172,7 @@ export const customerRouter = router({
         },
         {
           userId: ctx.user.id,
-          branchId: ctx.user.branchId ?? 1,
+          branchId,
           role: ctx.user.role,
         },
       );
@@ -219,6 +225,7 @@ export const customerRouter = router({
         openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
         // dup-detect (٦/٧): مفتاح idempotency من النموذج (UUID لكل فتح) — إعادة الإرسال تعيد نفس العميل.
         clientRequestId: z.string().min(8).max(64).optional(),
+        branchId: z.number().int().positive().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -239,7 +246,8 @@ export const customerRouter = router({
         : hasCrmWrite
           ? { ...input, creditLimit: "0" }
           : { ...input, creditLimit: "0", openingBalance: undefined, openingBalanceDirection: undefined };
-      const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const branchId = resolveActorBranchId(ctx, input.branchId);
+      const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId });
       // إعادة تشغيل idempotent = لا كتابة جديدة ⇒ لا نكرّر سجلّ التدقيق.
       if (!r.idempotentReplay) {
         await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: hasCrmWrite && !!input.openingBalance } });
@@ -404,9 +412,9 @@ export const customerRouter = router({
       return withTx((tx) => autoSettleCustomerAccountTx(tx, input.customerId, actor));
     }),
 
-  /** تسوية شاملة للعملاء ذوي الرصيد الصفري الذين لديهم فواتير معلقة مفتوحة. */
-  autoSettleAllZero: customersManagerProcedure
-    .input(z.object({ limit: z.number().int().positive().max(200).default(50) }).optional())
+  /** تسوية شاملة لكافة فواتير العملاء تلقائياً (رصيد صفري أو سدادات غير مخصصة). */
+  autoSettleAll: customersManagerProcedure
+    .input(z.object({ limit: z.number().int().positive().max(500).default(100) }).optional())
     .mutation(async ({ input, ctx }) => {
       const actor = {
         userId: ctx.user.id,
@@ -414,6 +422,6 @@ export const customerRouter = router({
         role: ctx.user.role,
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       };
-      return withTx((tx) => autoSettleZeroBalanceAccountsTx(tx, actor, input?.limit ?? 50));
+      return withTx((tx) => autoSettleAllAccountsTx(tx, actor, input?.limit ?? 100));
     }),
 });

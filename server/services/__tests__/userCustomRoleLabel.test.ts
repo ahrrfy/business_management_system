@@ -151,15 +151,15 @@ describe("userService — تسمية الدور المخصّص (customRoleLabel)
 
 describe("diffFromTemplate — دلالة المفتاح الغائب الموحَّدة (منع افتراضي)", () => {
   it("خريطة مخزَّنة تسبق إضافة وحدة جديدة ⇒ الوحدة الغائبة NONE لا قيمة القالب الحالي", () => {
-    // خريطة «كاشير طباعة» كما خُزّنت قبل دخول وحدة tasks (بلا مفتاح tasks إطلاقاً).
+    // خريطة «كاشير طباعة» كما خُزّنت قبل دخول وحدة digital_cards (بلا مفتاح digital_cards إطلاقاً).
     const stored = { ...ROLE_TEMPLATES.cashier, sales: "NONE" as const, workorders: "NONE" as const };
-    delete (stored as Record<string, unknown>).tasks;
+    delete (stored as Record<string, unknown>).digital_cards;
     const diff = diffFromTemplate("cashier", stored);
-    // قالب cashier الحالي يمنح tasks=FULL ⇒ الغياب يجب أن يُحَلّ فرقاً صريحاً إلى NONE.
-    expect(diff?.tasks).toBe("NONE");
+    // قالب cashier الحالي يمنح digital_cards=FULL ⇒ الغياب يجب أن يُحَلّ فرقاً صريحاً إلى NONE.
+    expect(diff?.digital_cards).toBe("NONE");
     // والخريطة الفعّالة المحلولة تعكس المنع — مطابقةً لما يعرضه محرّر الأدوار (الغائب = «لا وصول»).
     const eff = resolvePermissions("cashier", diff);
-    expect(eff.tasks).toBe("NONE");
+    expect(eff.digital_cards).toBe("NONE");
     // القيم المخزَّنة صراحةً لا تتأثر.
     expect(diff?.sales).toBe("NONE");
     expect(eff.pos).toBe("FULL");

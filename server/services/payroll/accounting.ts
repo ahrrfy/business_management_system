@@ -35,11 +35,15 @@ export type PayrollEventKind =
 
 export function payrollPaymentAssetRole(
   method: PayrollPaymentMethod,
+  cashBucket?: "TREASURY" | "DRAWER" | null,
 ): Extract<
   AccountRole,
-  "TREASURY_CASH" | "CARD_BANK" | "PAYMENT_WALLET"
+  "TREASURY_CASH" | "CASH" | "CARD_BANK" | "PAYMENT_WALLET"
 > {
-  if (method === "CASH") return "TREASURY_CASH";
+  if (method === "CASH") {
+    if (cashBucket === "DRAWER") return "CASH";
+    return "TREASURY_CASH";
+  }
   if (method === "WALLET") return "PAYMENT_WALLET";
   return "CARD_BANK";
 }
@@ -115,13 +119,14 @@ export function payrollSettlementPosting(input: {
   direction: "OUT" | "IN";
   paymentMethod: PayrollPaymentMethod;
   amount: Decimal;
+  cashBucket?: "TREASURY" | "DRAWER" | null;
 }): {
   profile: PostingProfile;
   entryType: Extract<EntryType, "PAYMENT_OUT" | "PAYMENT_IN">;
   intent: PostingIntent;
   source: PostingSourceComponents;
 } {
-  const asset = payrollPaymentAssetRole(input.paymentMethod);
+  const asset = payrollPaymentAssetRole(input.paymentMethod, input.cashBucket);
   const liability: AccountRole =
     input.kind === "SALARY"
       ? "ACCRUED_SALARY"

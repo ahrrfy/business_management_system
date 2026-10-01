@@ -27,13 +27,19 @@ const receptionVisible = sql`(
   (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
   (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInReception} = TRUE)
 )`;
-// رؤية فاتورة البيع المتقدّمة (١٢/٨/٢٦): كل خدمات الطباعة **بلا شرط showInReception** — الفاتورة الرسمية
-// قد تجمع سلعاً وخدماتٍ (شركات/حكومي). createSale يخصم موادها ذرّياً + يحتسب COGS من الوصفة. البطاقات
-// الرقميّة تُستثنى دائماً (منظومتها المستقلّة). isActive على المنتج/المتغيّر/الوحدة يبقى نافذاً.
+// رؤية فاتورة البيع المتقدّمة: كالعادي + خدمات الطباعة المفعَّل عليها showInAdvancedSales.
 const advancedSaleVisible = sql`(
-  ${products.productType} IS NULL OR ${products.productType} <> ${DIGITAL_CARD_TYPE}
+  ${products.productType} IS NULL OR
+  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
+  (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInAdvancedSales} = TRUE)
 )`;
-function posVisibility(mode: "default" | "reception" | "advancedSale") {
+// رؤية عروض الأسعار: كالعادي + خدمات الطباعة المفعَّل عليها showInQuotations.
+const quotationVisible = sql`(
+  ${products.productType} IS NULL OR
+  (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
+  (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInQuotations} = TRUE)
+)`;
+function posVisibility(mode: "default" | "reception" | "advancedSale" | "quotation") {
   const baseConds = [
     eq(products.isActive, true),
     eq(productVariants.isActive, true),
@@ -41,7 +47,13 @@ function posVisibility(mode: "default" | "reception" | "advancedSale") {
   ];
   return and(
     ...baseConds,
-    mode === "advancedSale" ? advancedSaleVisible : mode === "reception" ? receptionVisible : ordinaryCatalogProduct,
+    mode === "quotation"
+      ? quotationVisible
+      : mode === "advancedSale"
+        ? advancedSaleVisible
+        : mode === "reception"
+          ? receptionVisible
+          : ordinaryCatalogProduct,
   );
 }
 

@@ -194,7 +194,7 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
     expect(woBefore.invoiceId).not.toBeNull();
     const [parcelBefore] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.workOrderId, workOrderId));
     expect(parcelBefore).toBeDefined();
-    expect(parcelBefore.parcelStatus).toBe("ASSIGNED");
+    expect(parcelBefore.parcelStatus).toBe("OUT_FOR_DELIVERY");
 
     // التحقق أولاً من أن الحارس يمنع الإلغاء المباشر ما دام الطرد مسنداً للتوصيل
     const directCancelReq = await requestWorkOrderControl({

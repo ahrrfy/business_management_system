@@ -1,11 +1,17 @@
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
+import { logAuditTx } from "../auditService";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
+import {
+  autoSettleCustomerAccountTx,
+  autoSettleSupplierAccountTx,
+} from "../reconciliation/autoSettlementService";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   accountingEntries,
   accrualObligationEvents,
   assetMaintenance,
+  customers,
   digitalWalletTransactions,
   digitalWallets,
   employees,
@@ -489,11 +495,19 @@ export interface ApproveVoucherResult {
  * الاعتمادُ الذاتيّ للمالك يبقى كاملَ الأثر التدقيقيّ: createdBy وapprovedBy يُسجَّلان كما هما.
  * إعادة اعتماد سند APPROVED idempotent: تعيد البصمة بلا أي كتابة أو أثر مالي ثانٍ.
  */
+export interface ApproveVoucherOptions {
+  cashSource?: {
+    mode: "DRAWER" | "TREASURY";
+    shiftId?: number | null;
+  };
+}
+
 export async function approveVoucher(
   receiptId: number,
   actor: Actor,
+  options?: ApproveVoucherOptions,
 ): Promise<ApproveVoucherResult> {
-  return withTx((tx) => approveVoucherTx(tx, receiptId, actor));
+  return withTx((tx) => approveVoucherTx(tx, receiptId, actor, options));
 }
 
 /**
@@ -504,6 +518,7 @@ export async function approveVoucherTx(
   tx: Tx,
   receiptId: number,
   actor: Actor,
+  options?: ApproveVoucherOptions,
 ): Promise<ApproveVoucherResult> {
   const [preview] = await tx
     .select()
@@ -1501,6 +1516,26 @@ export async function approveVoucherTx(
           ? Number(cancellationOriginal.shiftId)
           : null;
       cashBucket = cancellationOriginal.cashBucket as "DRAWER" | "TREASURY";
+    } else if (
+      (systemRequest?.kind === "PURCHASE_SHIPPING" &&
+        systemRequest.fundingSource === "DRAWER") ||
+      options?.cashSource?.mode === "DRAWER"
+    ) {
+      const explicitShift =
+        options?.cashSource?.shiftId ??
+        (systemRequest?.kind === "PURCHASE_SHIPPING"
+          ? systemRequest.shiftId
+          : null);
+      const g = await shiftIdForCashTx(
+        tx,
+        approverActor,
+        branchId,
+        "اعتماد سند صرف شحن من درج الوردية",
+        "RETAIL",
+        explicitShift,
+      );
+      shiftId = g.shiftId;
+      cashBucket = g.cashBucket;
     } else {
       shiftId = null;
       cashBucket = "TREASURY";
@@ -1752,7 +1787,9 @@ export async function approveVoucherTx(
         cashBucket,
         shiftId,
         amount,
-        operation: "اعتماد إلغاء سند قبض من درج الوردية",
+        operation: cancellationOriginal
+          ? "اعتماد إلغاء سند قبض من درج الوردية"
+          : "اعتماد سند صرف شحن من درج الوردية",
       });
     }
   } else if (direction === "OUT") {
@@ -2107,6 +2144,19 @@ export async function approveVoucherTx(
       evidenceReference: systemRequest.sourceEvidenceReference,
       dedupeKey: `ACCRUAL:PAYMENT_SETTLED:${systemAccrualObligation.id}:${receiptId}`,
     });
+    if (systemAccrualObligation.expenseId != null && cashBucket === "DRAWER") {
+      await tx
+        .update(expenses)
+        .set({
+          receiptId,
+          shiftId,
+          cashBucket,
+          paymentMethod: "CASH",
+          source: "CASH",
+          status: "ACTIVE",
+        })
+        .where(eq(expenses.id, Number(systemAccrualObligation.expenseId)));
+    }
   }
   // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
   // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
@@ -2123,18 +2173,75 @@ export async function approveVoucherTx(
     // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
     // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
     if (r.invoiceId != null) {
-      await allocateVoucherToInvoiceTx(tx, {
+      const allocation = await allocateVoucherToInvoiceTx(tx, {
         invoiceId: Number(r.invoiceId),
         amount,
         direction,
         paymentMethod,
+        voucherBranchId: Number(r.branchId),
+        gracefulSettledInvoice: true,
       });
+
+      if (!allocation.allocated) {
+        // EDGE-FIN-01: الفاتورة سُدّدت مسبقاً أو أُلغيت أو لا يمكن استيعاب مبلغ السند عليها بالكامل.
+        // منعاً لتعليق السند في DEADLOCK دائم، يتم فك ربط الفاتورة من السند وقيد المبلغ
+        // بالكامل على رصيد حساب العميل مع توثيق ذلك في الملاحظات الداخلية وسجل التدقيق.
+        const unallocatedNote =
+          allocation.unallocatedReason === "ALREADY_SETTLED"
+            ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} مسددة مسبقاً بالكامل — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
+            : allocation.unallocatedReason === "DEAD_INVOICE"
+              ? `[تنبيه اعتماد: الفاتورة #${r.invoiceId} ملغاة أو مرتجعة أو مستبدلة — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`
+              : allocation.unallocatedReason === "EXCEEDS_REMAINING"
+                ? `[تنبيه اعتماد: مبلغ السند يتجاوز المتبقي على الفاتورة #${r.invoiceId} — فُكّ ربط السند بها وقُيّد المبلغ بالكامل على رصيد العميل]`
+                : `[تنبيه اعتماد: تعذر تخصيص الفاتورة #${r.invoiceId} (${allocation.unallocatedReason}) — فُكّ ربط السند بها وقُيّد المبلغ على رصيد العميل]`;
+
+        const updatedInternalNote = r.internalNote
+          ? `${r.internalNote}\n${unallocatedNote}`
+          : unallocatedNote;
+
+        await tx
+          .update(receipts)
+          .set({
+            invoiceId: null,
+            internalNote: updatedInternalNote,
+          })
+          .where(eq(receipts.id, receiptId));
+
+        await logAuditTx(
+          tx,
+          {
+            userId: actor.userId,
+            branchId,
+          },
+          {
+            action: "voucher.unlink_invoice_on_approval",
+            entityType: "receipt",
+            entityId: receiptId,
+            branchId,
+            oldValue: { invoiceId: Number(r.invoiceId) },
+            newValue: {
+              invoiceId: null,
+              unallocatedReason: allocation.unallocatedReason,
+              amount: toDbMoney(amount),
+            },
+          },
+        );
+      }
     }
     await adjustCustomerBalance(
       tx,
       partyId,
       direction === "IN" ? amount.neg() : amount,
     );
+    if (direction === "IN") {
+      const [c] = await tx
+        .select({ currentBalance: customers.currentBalance })
+        .from(customers)
+        .where(eq(customers.id, partyId));
+      if (c && money(c.currentBalance).lte(0)) {
+        await autoSettleCustomerAccountTx(tx, partyId, actor);
+      }
+    }
     // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
     // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
     // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
@@ -2168,6 +2275,15 @@ export async function approveVoucherTx(
       partyId,
       direction === "OUT" ? amount.neg() : amount,
     );
+    if (direction === "OUT") {
+      const [sRec] = await tx
+        .select({ currentBalance: suppliers.currentBalance })
+        .from(suppliers)
+        .where(eq(suppliers.id, partyId));
+      if (sRec && money(sRec.currentBalance).lte(0)) {
+        await autoSettleSupplierAccountTx(tx, partyId, actor);
+      }
+    }
   } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
     await adjustDeliveryBalance(
       tx,

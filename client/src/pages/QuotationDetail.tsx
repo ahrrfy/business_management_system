@@ -13,7 +13,7 @@ import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { buildQuotationMessage } from "@/lib/whatsapp";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, round2, formatQuantity } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey,
 } from "@shared/permissions";
@@ -61,18 +62,44 @@ function quotationItemColumns(subtotal: string): ColumnDef<QuotationItemRow, unk
     {
       id: "product",
       header: "المنتج",
-      accessorFn: (it) => `${it.productName}${it.variantName ? ` — ${it.variantName}` : ""}`,
+      accessorFn: (it) =>
+        variantDisplayName({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
       meta: { width: "wide", wrap: true },
       footer: "مجموع البنود",
-      cell: ({ row }) => (
-        <span>
-          {row.original.productName}{row.original.variantName ? ` — ${row.original.variantName}` : ""}{" "}
-          {row.original.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{row.original.sku}</span>}
-        </span>
-      ),
+      cell: ({ row }) => {
+        const it = row.original;
+        const desc = variantDescriptor({
+          productName: it.productName ?? "—",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        });
+        return (
+          <div className="flex flex-col">
+            <span className="font-semibold text-foreground">
+              {it.productName ?? "—"}
+              {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+            </span>
+            {it.sku ? (
+              <span className="text-xs text-muted-foreground font-mono" dir="ltr">
+                {it.sku}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
     },
     { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName, cell: ({ row }) => <span className="text-muted-foreground">{row.original.unitName}</span> },
-    { id: "quantity", header: "الكمية", accessorFn: (it) => it.quantity, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.quantity },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => formatQuantity(it.quantity), meta: { kind: "number", align: "center" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
     // `accessorFn` نصُّ العرض (للنسخ) ⇒ `sortingFn` صريحٌ بـDecimal: الفرز الافتراضيّ نصّيّ
     // فيقرأ «1,234» أصغر من «999» ويقلب ترتيب البنود.
     { id: "unitPrice", header: "سعر الوحدة", accessorFn: (it) => fmt(it.unitPrice), meta: { kind: "money" }, sortingFn: (a, b) => D(a.original.unitPrice).cmp(D(b.original.unitPrice)), cell: ({ row }) => fmt(row.original.unitPrice) },
@@ -290,8 +317,14 @@ export default function QuotationDetail() {
       customerName: data.customerName,
       notes: data.notes,
       items: data.items.map((it, index) => ({
-        productName: it.productName ?? "",
-        variantName: it.variantName,
+        productName: variantDisplayName({
+          productName: it.productName ?? "",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
         unitName: it.unitName,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
@@ -571,7 +604,14 @@ export default function QuotationDetail() {
             validUntil: data.validUntil ? String(data.validUntil) : undefined,
             customer: data.customerName,
             items: data.items.map((it) => ({
-              name: `${it.productName ?? ""}${it.variantName ? ` — ${it.variantName}` : ""}`,
+              name: variantDisplayName({
+                productName: it.productName ?? "",
+                variantName: it.variantName,
+                color: it.color,
+                size: it.size,
+                variantKind: it.variantKind,
+                sku: it.sku,
+              }),
               qty: it.quantity,
               unit: it.unitName,
               price: it.unitPrice,
@@ -597,7 +637,14 @@ export default function QuotationDetail() {
             validUntil: data.validUntil ? String(data.validUntil) : undefined,
             customerName: data.customerName,
             items: data.items.map((it) => ({
-              productName: it.productName ?? "",
+              productName: variantDisplayName({
+                productName: it.productName ?? "",
+                variantName: it.variantName,
+                color: it.color,
+                size: it.size,
+                variantKind: it.variantKind,
+                sku: it.sku,
+              }),
               quantity: it.quantity,
               unitName: it.unitName,
               total: it.total,

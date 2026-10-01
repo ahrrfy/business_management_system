@@ -6,11 +6,13 @@
  * القراءة hr/READ والكتابة hr/FULL (تُفرض في الموجّه).
  * ========================================================================== */
 import { and, desc, eq, getTableColumns, gte, inArray, like, lte, or, sql, type SQL } from "drizzle-orm";
+import Decimal from "decimal.js";
 import { WEEK_DAYS, fullEmployeeName } from "@shared/hr";
 import { attendanceHoursViolation } from "@shared/attendanceHours";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
+import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
@@ -101,6 +103,8 @@ export interface AttendanceFilters {
    * هذا الملف) — فمدير فرعٍ يقرأ رواتب موظفي الفرع الآخر ويكتب لهم حضوراً (تدقيق ١٧/٨).
    */
   scopedBranchId?: number | null;
+  /** تصفية اختيارية بالفرع (للأدمن/المالك). */
+  branchId?: number | null;
   /** معرّف موظف بعينه. */
   employeeId?: number;
   /** الشهر بصيغة "YYYY-MM" — يُطابَق على attendanceDate بـ LIKE 'YYYY-MM%'. */
@@ -127,8 +131,9 @@ export interface AttendanceFilters {
  */
 function buildAttendanceConds(filters?: AttendanceFilters): SQL[] {
   const conds: SQL[] = [];
-  // عزل الفرع أوّلاً: كل استعلامات هذا الملف تصل الحضورَ بالموظف، وفرعُ الموظف هو الحاجز.
-  if (filters?.scopedBranchId != null) conds.push(eq(employees.branchId, filters.scopedBranchId));
+  // عزل وتصفية الفرع: التصفية تتم على فرع الحضور الفعلي المسجل في attendance.branchId (GAP-07)
+  if (filters?.scopedBranchId != null) conds.push(eq(attendance.branchId, filters.scopedBranchId));
+  else if (filters?.branchId != null) conds.push(eq(attendance.branchId, filters.branchId));
   if (filters?.employeeId) conds.push(eq(attendance.employeeId, filters.employeeId));
   // المدى يتقدّم على الشهر (وقد يُرسَلان معاً من شاشةٍ قديمة) — ولا يُجمَعان فيتضاربا.
   if (filters?.dateFrom || filters?.dateTo) {
@@ -355,9 +360,9 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
       ? [filters.period]
       : [];
   const scanConds: SQL[] = [];
-  // عزل الفرع هنا أيضاً: هذا مسارُ شروطٍ **ثانٍ** يبني نفسه ولا يمرّ بـbuildAttendanceConds،
-  // فبدونه كان عدّاد «اللقطات القديمة» وأشهرُها يعدّان صفوف الشركة كلّها لمدير فرعٍ واحد.
-  if (filters?.scopedBranchId != null) scanConds.push(eq(employees.branchId, filters.scopedBranchId));
+  // عزل وتصفية الفرع هنا أيضاً: التصفية تتم على فرع الحضور الفعلي في attendance.branchId (GAP-07)
+  if (filters?.scopedBranchId != null) scanConds.push(eq(attendance.branchId, filters.scopedBranchId));
+  else if (filters?.branchId != null) scanConds.push(eq(attendance.branchId, filters.branchId));
   if (periods.length) {
     // **كلّ** شهرٍ يمثّله المدى لا شهرَ نهايته وحده (Codex P2): «آخر ٧ أيام» في مطلع الشهر
     // يعبر شهرين، فقصرُ المسح على الأخير كان يُظهر صفوفاً مشطوبةً وعدّاداً صفراً ⇒ يختفي الزرّ.
@@ -401,27 +406,33 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
  *     «ارفع سعر ساعتك ثمّ أعد الاحتساب» زيادةَ أجرٍ بفاعلٍ واحد. admin مُستثنى للتصحيح.
  *  ٣) ABSENT/LEAVE تبقى بأجرٍ صفريّ مهما كان السعر.
  */
-export async function recomputeMonthRates(input: {
-  period: string;
-  employeeId?: number;
-  actor?: { userId: number; role: string };
-  /** عزل الفرع: إعادة التسعير تمسّ صفوفاً ومبالغ ⇒ تُقصَر على فرع الفاعل المُسنَد. */
-  scopedBranchId?: number | null;
-}) {
+export async function recomputeMonthRates(
+  input: {
+    period: string;
+    employeeId?: number;
+    actor?: { userId: number; role: string };
+    /** عزل الفرع: إعادة التسعير تمسّ صفوفاً ومبالغ ⇒ تُقصَر على فرع الفاعل المُسنَد. */
+    scopedBranchId?: number | null;
+    skipRunLockCheck?: boolean;
+  },
+  existingTx?: Tx,
+) {
   const period = String(input.period).slice(0, 7);
-  return withTx(async (tx) => {
-    const [run] = await tx
-      .select({ id: payrollRuns.id, status: payrollRuns.status })
-      .from(payrollRuns)
-      .where(eq(payrollRuns.period, period))
-      .limit(1);
-    if (run) {
-      const label = run.status === "paid" ? "مدفوع" : run.status === "approved" ? "معتمَد" : "مسودّة";
-      throw new Error(
-        run.status === "draft"
-          ? `لا يمكن إعادة الاحتساب: يوجد مسيّر رواتب (مسودّة) لشهر ${period} بُنيت بنوده على المبالغ الحالية — احذف المسودّة، أعد الاحتساب، ثمّ ولّد المسيّر من جديد`
-          : `لا يمكن إعادة الاحتساب: مسيّر رواتب شهر ${period} ${label} — ألغِ اعتماد المسيّر أولاً`,
-      );
+  const runBody = async (tx: Tx) => {
+    if (!input.skipRunLockCheck) {
+      const [run] = await tx
+        .select({ id: payrollRuns.id, status: payrollRuns.status })
+        .from(payrollRuns)
+        .where(eq(payrollRuns.period, period))
+        .limit(1);
+      if (run) {
+        const label = run.status === "paid" ? "مدفوع" : run.status === "approved" ? "معتمَد" : "مسودّة";
+        throw new Error(
+          run.status === "draft"
+            ? `لا يمكن إعادة الاحتساب: يوجد مسيّر رواتب (مسودّة) لشهر ${period} بُنيت بنوده على المبالغ الحالية — احذف المسودّة، أعد الاحتساب، ثمّ ولّد المسيّر من جديد`
+            : `لا يمكن إعادة الاحتساب: مسيّر رواتب شهر ${period} ${label} — ألغِ اعتماد المسيّر أولاً`,
+        );
+      }
     }
     // حارس إقفال الفترة المالية العامّة — راجع الشرح المطابق في recordAttendance أعلاه.
     await assertPeriodOpen(tx, new Date(`${period}-01`));
@@ -460,7 +471,12 @@ export async function recomputeMonthRates(input: {
     let updated = 0;
     for (const r of rows) {
       const dateStr = toDateStr(r.attendanceDate);
-      const rate = round2(money(rateForDay(r, dateStr)));
+      const computedRate = round2(money(rateForDay(r, dateStr)));
+      const rate = computedRate.gt(0)
+        ? computedRate
+        : money(r.hourlyRate ?? 0).gt(0)
+          ? money(r.hourlyRate!)
+          : computedRate;
       // ABSENT/LEAVE بلا أجرٍ مهما كان السعر (نفس قاعدة recordAttendance).
       const paid = r.status === "PRESENT" || r.status === "LATE";
       const amount = paid ? round2(money(r.hours ?? 0).times(rate)).toDecimalPlaces(0) : money(0);
@@ -472,7 +488,9 @@ export async function recomputeMonthRates(input: {
       updated += 1;
     }
     return { period, scanned: rows.length, updated };
-  });
+  };
+
+  return existingTx ? runBody(existingTx) : withTx(runBody);
 }
 
 /**
@@ -591,6 +609,8 @@ export async function updateAttendanceSettings(
 
 export interface RecordAttendanceInput {
   employeeId: number;
+  /** فرع الحضور (اختياري: إن لم يُرسَل يُشتق من scopedBranchId أو فرع الموظف). */
+  branchId?: number | null;
   attendanceDate: string; // YYYY-MM-DD
   hours: string | number;
   checkIn?: string | null;
@@ -611,6 +631,22 @@ export interface RecordAttendanceInput {
    * يمرّره ⇒ يبقى حارسُ «الانصراف بعد الدخول» صارماً على البشر ولا يفتح باب خطأٍ صامت.
    */
   checkOutDate?: string | null;
+  /** دقائق التأخير المحسوبة أو المحددة يدوياً. */
+  lateMinutes?: number | null;
+  /** دقائق الاستقطاع المالي للتأخير (الافتراضي يساوي دقائق التأخير بعد فترة السماح). */
+  lateDeductionMinutes?: number | null;
+}
+
+/** يُحلل وقت "HH:MM" أو "HH:MM:SS" إلى دقائق منذ منتصف الليل. */
+function parseTimeToMinutes(timeStr: string | null | undefined): number | null {
+  if (!timeStr) return null;
+  const t = timeStr.trim();
+  const match = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(t);
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
 }
 
 /** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null).
@@ -633,13 +669,12 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
     if (!emp) throw new Error("الموظف غير موجود");
     /*
-     * عزل الفرع على **الكتابة** (قرار المالك ١٢/٨، تدقيق ١٧/٨): ساعات الحضور تتحوّل أجراً
-     * مباشرةً، فتسجيلُ مدير فرعٍ حضوراً لموظف فرعٍ آخر كتابةُ مالٍ خارج سلطته. كانت الوحدة
-     * بلا أيّ حاجز فرع، فيكفي معرّفُ موظفٍ من الفرع الآخر (تُسرّبه formOptions) لكتابة أجره.
-     * الطيّ التلقائي من الجهاز لا يمرّر scopedBranchId (لا فاعل بشريّ) فلا يتأثّر.
+     * عزل وحفظ الفرع (GAP-07): يدعم النظام تسجيل حضور موظف لتغطية فرع آخر،
+     * ويُسجَّل الحضور بفرع الحضور الفعلي دون رفض عابر للفروع.
      */
-    if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
-      throw new Error("لا يمكن تسجيل حضور لموظف من فرعٍ آخر");
+    const branchId = input.scopedBranchId ?? input.branchId ?? emp.branchId;
+    if (branchId == null) {
+      throw new Error("لا يمكن تسجيل الحضور: لم يتم تحديد فرع الحضور ولا يملك الموظف فرعاً مسنداً");
     }
     // لا يُسجَّل حضور لموظف منتهي الخدمة (الحضور بعد الإنهاء يولّد أجراً وهمياً عند توليد المسيّر).
     if (emp.employmentStatus === "terminated") {
@@ -679,7 +714,38 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     const hoursDec = money(input.hours);
     if (hoursDec.isNegative()) throw new Error("الساعات لا يمكن أن تكون سالبة");
 
-    const status = input.status ?? "PRESENT";
+    let status = input.status ?? "PRESENT";
+    let lateMins: number | null = input.lateMinutes ?? null;
+    let lateDedMins: number | null = input.lateDeductionMinutes ?? null;
+
+    if (input.checkIn && (status === "PRESENT" || status === "LATE" || input.status === undefined)) {
+      const checkInMins = parseTimeToMinutes(input.checkIn);
+      if (checkInMins != null) {
+        const dayName = arabicDayName(input.attendanceDate);
+        const sched = (emp.workSchedule && typeof emp.workSchedule === "object" ? emp.workSchedule : null) as Record<string, any> | null;
+        const daySched = sched ? sched[dayName] : null;
+        const scheduledStartStr = (typeof daySched?.start === "string" && daySched.start.trim())
+          ? daySched.start.trim()
+          : (typeof daySched?.startTime === "string" && daySched.startTime.trim())
+            ? daySched.startTime.trim()
+            : "09:00";
+        const schedStartMins = parseTimeToMinutes(scheduledStartStr) ?? (9 * 60);
+        const gracePeriodMins = 15;
+
+        if (checkInMins > schedStartMins + gracePeriodMins) {
+          status = "LATE";
+          if (lateMins == null) {
+            lateMins = checkInMins - schedStartMins;
+          }
+          if (lateDedMins == null) {
+            lateDedMins = input.lateDeductionMinutes ?? lateMins;
+          }
+        }
+      }
+    } else if (status === "LATE" && lateDedMins == null && input.lateDeductionMinutes != null) {
+      lateDedMins = input.lateDeductionMinutes;
+    }
+
     // ABSENT/LEAVE لا يولّدان أجراً مهما كانت الساعات. التصفير المزدوج (هنا + WHERE في تجميع المسيّر)
     // يحمي حتى عند تعديل صفّ موجود أو إدخال مباشر بـAPI يضع status=ABSENT مع ساعات (سهو/استيراد بصمة).
     const isPaidStatus = status === "PRESENT" || status === "LATE";
@@ -702,19 +768,39 @@ export async function recordAttendance(input: RecordAttendanceInput) {
 
     const checkInAt = timeToTimestamp(input.attendanceDate, input.checkIn);
     const checkOutAt = timeToTimestamp(input.checkOutDate || input.attendanceDate, input.checkOut);
-    const effectiveHours = isPaidStatus ? hoursDec : money(0);
+
+    const lateHours = (isPaidStatus && lateDedMins != null && lateDedMins > 0)
+      ? money(lateDedMins).div(60)
+      : money(0);
+    const effectiveHours = isPaidStatus
+      ? Decimal.max(0, hoursDec.minus(lateHours))
+      : money(0);
+
     const rate = rateForDay(emp, input.attendanceDate);
     // الأجر بالدينار الصحيح (لا فئات أصغر من الدينار في المتجر): تقريب الناتج إلى عدد صحيح.
     // toDecimalPlaces(0) يستعمل سياسة التقريب العامّة المثبّتة في money.ts (HALF_UP).
     const amount = round2(effectiveHours.times(rate)).toDecimalPlaces(0);
 
+    let notes = input.notes?.trim() || null;
+    if (status === "LATE" && (lateMins != null || lateDedMins != null)) {
+      const displayLateMins = lateMins ?? lateDedMins ?? 0;
+      const displayDedMins = lateDedMins ?? displayLateMins;
+      const tag = `[تأخير: ${displayLateMins} دقيقة - خصم ${displayDedMins} دقيقة]`;
+      if (!notes) {
+        notes = tag;
+      } else if (!notes.includes("[تأخير:")) {
+        notes = `${notes} ${tag}`;
+      }
+    }
+
     const values = {
       employeeId: input.employeeId,
+      branchId,
       attendanceDate: input.attendanceDate,
       checkIn: checkInAt,
       checkOut: checkOutAt,
       status,
-      notes: input.notes?.trim() || null,
+      notes,
       hours: toDbMoney(effectiveHours),
       hourlyRate: toDbMoney(rate),
       amount: toDbMoney(amount),
@@ -740,7 +826,14 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     }
 
     const [saved] = await tx.select().from(attendance).where(eq(attendance.id, savedId)).limit(1);
-    return { ...saved, attendanceDate: toDateStr(saved.attendanceDate), dayName: arabicDayName(input.attendanceDate) };
+    return {
+      ...saved,
+      attendanceDate: toDateStr(saved.attendanceDate),
+      dayName: arabicDayName(input.attendanceDate),
+      lateMinutes: lateMins,
+      lateDeductionMinutes: lateDedMins,
+      effectiveHours: effectiveHours.toNumber(),
+    };
   });
 }
 

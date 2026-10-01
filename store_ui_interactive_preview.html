@@ -1,0 +1,4071 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>متجر الرؤية العربية — عروض وتخفيضات كبرى على القرطاسية والمطبوعات</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=Rubik:wght@500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --font-main: 'Cairo', system-ui, -apple-system, sans-serif;
+      --font-num: 'Rubik', system-ui, sans-serif;
+      
+      --brand-green: #059669;
+      --brand-green-dark: #064E3B;
+      --brand-green-light: #10B981;
+      --brand-green-soft: #ECFDF5;
+      --brand-gold: #F59E0B;
+      --brand-gold-dark: #B45309;
+      --brand-red: #DC2626;
+      --brand-red-soft: #FEF2F2;
+      --ink-dark: #0F172A;
+      --ink-muted: #64748B;
+      --surface-pure: #FFFFFF;
+      --surface-soft: #F8FAFC;
+      --border-subtle: #E2E8F0;
+      --border-strong: #CBD5E1;
+      --shadow-ambient: 0 10px 30px -10px rgba(0,0,0,0.08);
+      --shadow-card: 0 4px 20px -2px rgba(0,0,0,0.06);
+      --shadow-float: 0 20px 40px -10px rgba(5, 150, 105, 0.25);
+      --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      font-family: var(--font-main);
+      background-color: #F1F5F9;
+      color: var(--ink-dark);
+      min-height: 100vh;
+      overflow-x: hidden;
+      line-height: 1.5;
+    }
+
+    /* Top Announcement Ticker */
+    .top-promo-ticker {
+      background: linear-gradient(90deg, #064E3B 0%, #059669 50%, #047857 100%);
+      color: #FFFFFF;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 8px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .ticker-content {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin: 0 auto;
+    }
+    .ticker-highlight {
+      background: #FEF08A;
+      color: #854D0E;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-family: var(--font-num);
+      font-weight: 800;
+      font-size: 11px;
+    }
+    .ticker-phone {
+      font-family: var(--font-num);
+      direction: ltr;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #A7F3D0;
+      font-size: 12px;
+    }
+
+    /* View Switcher Bar (Web Store vs Mobile App) */
+    .view-mode-bar {
+      background: #0F172A;
+      padding: 10px 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 1px solid #1E293B;
+    }
+    .view-mode-toggle {
+      display: flex;
+      background: #1E293B;
+      border-radius: 12px;
+      padding: 3px;
+      border: 1px solid #334155;
+    }
+    .view-btn {
+      background: transparent;
+      border: none;
+      color: #94A3B8;
+      padding: 6px 18px;
+      font-family: var(--font-main);
+      font-size: 13px;
+      font-weight: 800;
+      border-radius: 9px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .view-btn.active {
+      background: #059669;
+      color: #FFFFFF;
+      box-shadow: 0 2px 8px rgba(5, 150, 105, 0.4);
+    }
+
+    /* Main Commercial Header */
+    .store-main-header {
+      background: #FFFFFF;
+      border-bottom: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--shadow-ambient);
+    }
+    .header-inner {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+    }
+    .brand-logo-emblem {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #059669 0%, #064E3B 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #FEF08A;
+      font-weight: 900;
+      font-size: 22px;
+      box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3);
+    }
+    .brand-text h1 {
+      font-size: 19px;
+      font-weight: 900;
+      color: #064E3B;
+      line-height: 1.15;
+    }
+    .brand-text span {
+      font-size: 11px;
+      color: var(--ink-muted);
+      font-weight: 600;
+    }
+
+    /* Search & Location Bar */
+    .search-delivery-group {
+      flex: 1;
+      max-width: 620px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .location-selector-pill {
+      background: #F8FAFC;
+      border: 1px solid var(--border-subtle);
+      padding: 10px 14px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink-dark);
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    .location-selector-pill:hover {
+      border-color: var(--brand-green);
+      background: var(--brand-green-soft);
+    }
+    .location-selector-pill svg {
+      color: var(--brand-green);
+    }
+
+    .header-search-bar {
+      flex: 1;
+      position: relative;
+    }
+    .header-search-bar input {
+      width: 100%;
+      background: #F8FAFC;
+      border: 1.5px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 11px 42px 11px 16px;
+      font-family: var(--font-main);
+      font-size: 13px;
+      outline: none;
+      transition: all 0.2s;
+      color: var(--ink-dark);
+    }
+    .header-search-bar input:focus {
+      background: #FFFFFF;
+      border-color: var(--brand-green);
+      box-shadow: 0 0 0 4px rgba(5, 150, 105, 0.12);
+    }
+    .search-icon-pos {
+      position: absolute;
+      right: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #94A3B8;
+      pointer-events: none;
+    }
+
+    /* Header Actions */
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn-action-icon {
+      background: #F8FAFC;
+      border: 1px solid var(--border-subtle);
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--ink-dark);
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s;
+    }
+    .btn-action-icon:hover {
+      background: var(--brand-green-soft);
+      border-color: var(--brand-green);
+      color: var(--brand-green);
+    }
+    .cart-counter-bubble {
+      position: absolute;
+      top: -4px;
+      left: -4px;
+      background: var(--brand-red);
+      color: white;
+      font-family: var(--font-num);
+      font-size: 11px;
+      font-weight: 900;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 6px rgba(220, 38, 38, 0.4);
+      transition: transform 0.2s var(--spring);
+    }
+
+    .btn-view-flyer-header {
+      background: linear-gradient(135deg, #DC2626 0%, #B91C1C 100%);
+      color: white;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 14px;
+      font-family: var(--font-main);
+      font-weight: 800;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 14px rgba(220, 38, 38, 0.35);
+      transition: transform 0.2s;
+    }
+    .btn-view-flyer-header:hover {
+      transform: translateY(-2px);
+    }
+
+    /* Sub-nav Continuous Category Strip (Marquee Slider) */
+    .store-category-bar {
+      background: #FFFFFF;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 10px 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .cat-strip-wrapper {
+      max-width: 1360px;
+      margin: 0 auto;
+      position: relative;
+      overflow: hidden;
+      mask-image: linear-gradient(90deg, transparent 0%, black 40px, black calc(100% - 40px), transparent 100%);
+      -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 40px, black calc(100% - 40px), transparent 100%);
+    }
+    .cat-marquee-track {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: max-content;
+      direction: ltr; /* ensures mathematical consistency in translate3d loops across RTL */
+      animation: catChipsMarqueeLoop 36s linear infinite;
+    }
+    .cat-marquee-track:hover, .cat-marquee-track.is-paused {
+      animation-play-state: paused;
+    }
+    @keyframes catChipsMarqueeLoop {
+      0% { transform: translate3d(0, 0, 0); }
+      100% { transform: translate3d(-50%, 0, 0); }
+    }
+    .cat-chip-btn {
+      background: #F8FAFC;
+      border: 1px solid var(--border-subtle);
+      padding: 8px 18px;
+      border-radius: 999px;
+      font-family: var(--font-main);
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--ink-dark);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      direction: rtl;
+      user-select: none;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
+    }
+    .cat-chip-btn:hover {
+      border-color: var(--brand-green);
+      background: var(--brand-green-soft);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(5, 150, 105, 0.15);
+    }
+    .cat-chip-btn.active {
+      background: #064E3B;
+      color: #FFFFFF;
+      border-color: #064E3B;
+      box-shadow: 0 4px 14px rgba(6, 78, 59, 0.35);
+    }
+    .cat-chip-badge {
+      font-size: 10px;
+      font-weight: 900;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #059669;
+    }
+    .cat-chip-btn.active .cat-chip-badge {
+      background: rgba(254, 240, 138, 0.25);
+      color: #FEF08A;
+    }
+
+    /* ==========================================================================
+       CONTAINER & LAYOUT
+       ========================================================================== */
+    .store-container {
+      max-width: 1360px;
+      margin: 20px auto 60px;
+      padding: 0 20px;
+    }
+
+    /* ==========================================================================
+       FULL-WIDTH ADVERTISING HERO CAROUSEL & UPLOADER (Commercial First)
+       ========================================================================== */
+    .ad-banner-control-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      background: #FFFFFF;
+      border: 1px solid #E2E8F0;
+      border-radius: 16px;
+      padding: 10px 18px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
+      flex-wrap: wrap;
+    }
+    .ad-control-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .ad-badge-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(16, 185, 129, 0.1);
+      color: #059669;
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+    .ad-live-pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10B981;
+      box-shadow: 0 0 10px #10B981;
+      animation: pulse 1.8s infinite;
+    }
+    .ad-specs-hint {
+      font-size: 12px;
+      color: #64748B;
+      font-weight: 600;
+    }
+    .ad-control-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn-ad-upload {
+      background: linear-gradient(135deg, #059669 0%, #047857 100%);
+      color: #FFFFFF;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 999px;
+      font-family: var(--font-main);
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 14px rgba(5, 150, 105, 0.35);
+      transition: all 0.2s;
+    }
+    .btn-ad-upload:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 18px rgba(5, 150, 105, 0.45);
+    }
+    .btn-ad-manage {
+      background: #F1F5F9;
+      color: #334155;
+      border: 1px solid #CBD5E1;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-family: var(--font-main);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .btn-ad-manage:hover {
+      background: #E2E8F0;
+      color: #0F172A;
+    }
+
+    /* FULL-WIDTH SLIDER SECTION */
+    .ad-hero-carousel-section {
+      width: 100%;
+      position: relative;
+      border-radius: 24px;
+      overflow: hidden;
+      margin-bottom: 24px;
+      box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0,0,0,0.06);
+      background: #0A111E;
+      aspect-ratio: 16 / 5.8;
+      min-height: 360px;
+      max-height: 480px;
+    }
+    @media (max-width: 980px) {
+      .ad-hero-carousel-section {
+        aspect-ratio: 16 / 7.5;
+        min-height: 260px;
+      }
+    }
+    @media (max-width: 640px) {
+      .ad-hero-carousel-section {
+        aspect-ratio: 16 / 9;
+        min-height: 200px;
+        border-radius: 16px;
+      }
+    }
+
+    .ad-carousel-track-wrapper {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      direction: ltr; /* Keeps translation calculations mathematically stable */
+      position: relative;
+    }
+    .ad-carousel-track {
+      display: flex;
+      width: 100%;
+      height: 100%;
+      transition: transform 0.6s cubic-bezier(0.25, 1, 0.5, 1);
+      will-change: transform;
+    }
+    .ad-slide-item {
+      min-width: 100%;
+      width: 100%;
+      height: 100%;
+      flex-shrink: 0;
+      position: relative;
+      cursor: pointer;
+      user-select: none;
+    }
+    .ad-slide-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      display: block;
+    }
+
+    /* DRAG & DROP OVERLAY ZONE */
+    .ad-drag-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(5, 150, 105, 0.88);
+      backdrop-filter: blur(8px);
+      z-index: 40;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      border: 3px dashed #FFFFFF;
+      border-radius: 24px;
+      pointer-events: none;
+      text-align: center;
+      padding: 20px;
+    }
+    .ad-drag-overlay.active {
+      display: flex;
+    }
+
+    /* NAVIGATION ARROWS */
+    .ad-nav-btn {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      color: #FFFFFF;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 20;
+      transition: all 0.2s var(--spring);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    .ad-nav-btn:hover {
+      background: rgba(16, 185, 129, 0.85);
+      border-color: #34D399;
+      transform: translateY(-50%) scale(1.1);
+      box-shadow: 0 10px 28px rgba(16, 185, 129, 0.5);
+    }
+    .ad-nav-prev {
+      right: 20px;
+    }
+    .ad-nav-next {
+      left: 20px;
+    }
+    @media (max-width: 640px) {
+      .ad-nav-btn {
+        width: 36px;
+        height: 36px;
+      }
+      .ad-nav-prev { right: 10px; }
+      .ad-nav-next { left: 10px; }
+    }
+
+    /* BOTTOM FLOATING CONTROLS */
+    .ad-carousel-bottom-bar {
+      position: absolute;
+      bottom: 20px;
+      left: 0;
+      right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      z-index: 25;
+      pointer-events: none;
+    }
+    .ad-indicators-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(10, 17, 30, 0.72);
+      backdrop-filter: blur(12px);
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+      pointer-events: auto;
+    }
+    .ad-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.4);
+      cursor: pointer;
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .ad-dot:hover {
+      background: rgba(255, 255, 255, 0.8);
+    }
+    .ad-dot.active {
+      width: 38px;
+      background: rgba(255, 255, 255, 0.25);
+    }
+    .ad-dot-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 0%;
+      background: linear-gradient(90deg, #10B981, #34D399);
+      border-radius: 999px;
+      box-shadow: 0 0 10px #10B981;
+    }
+    .ad-carousel-counter-badge {
+      background: rgba(10, 17, 30, 0.72);
+      backdrop-filter: blur(12px);
+      color: #FFFFFF;
+      font-family: var(--font-num);
+      font-size: 12px;
+      font-weight: 800;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+      pointer-events: auto;
+    }
+
+    /* MODAL: UPLOAD & MANAGE BANNERS */
+    .banner-mgr-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(8px);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .banner-mgr-modal-backdrop.open {
+      display: flex;
+    }
+    .banner-mgr-modal {
+      background: #FFFFFF;
+      border-radius: 24px;
+      width: 100%;
+      max-width: 680px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.3);
+      padding: 28px;
+      direction: rtl;
+    }
+    .banner-mgr-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #E2E8F0;
+    }
+    .banner-mgr-title {
+      font-size: 18px;
+      font-weight: 900;
+      color: #0F172A;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn-mgr-close {
+      background: #F1F5F9;
+      border: none;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748B;
+      font-size: 18px;
+      transition: all 0.2s;
+    }
+    .btn-mgr-close:hover {
+      background: #E2E8F0;
+      color: #0F172A;
+    }
+    .upload-dropzone-box {
+      border: 2px dashed #CBD5E1;
+      border-radius: 18px;
+      padding: 30px 20px;
+      text-align: center;
+      background: #F8FAFC;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-bottom: 24px;
+    }
+    .upload-dropzone-box:hover, .upload-dropzone-box.dragover {
+      border-color: #10B981;
+      background: rgba(16, 185, 129, 0.05);
+    }
+    .dropzone-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      background: rgba(16, 185, 129, 0.12);
+      color: #059669;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 12px;
+    }
+    .banner-list-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      margin-top: 14px;
+    }
+    @media (max-width: 550px) {
+      .banner-list-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .banner-thumb-card {
+      border: 1px solid #E2E8F0;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #FFFFFF;
+      position: relative;
+    }
+    .banner-thumb-card img {
+      width: 100%;
+      height: 120px;
+      object-fit: cover;
+      display: block;
+    }
+    .banner-thumb-info {
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .banner-thumb-title {
+      font-size: 12px;
+      font-weight: 800;
+      color: #0F172A;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 180px;
+    }
+    .btn-delete-banner {
+      background: #FEE2E2;
+      color: #DC2626;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-delete-banner:hover {
+      background: #DC2626;
+      color: #FFFFFF;
+    }
+
+    /* The 4 Trust Cards Beneath the Slider (Directly from User's Reference Image) */
+    .slider-bottom-trust-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+    @media (max-width: 980px) {
+      .slider-bottom-trust-row { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .slider-bottom-trust-row { grid-template-columns: 1fr; }
+    }
+    .trust-pill-card {
+      background: #0B1321;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 18px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .trust-pill-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(16, 185, 129, 0.3);
+    }
+    .trust-pill-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34D399;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .trust-pill-texts h5 {
+      font-size: 13px;
+      font-weight: 800;
+      color: #FFFFFF;
+      margin-bottom: 2px;
+    }
+    .trust-pill-texts p {
+      font-size: 11px;
+      color: #94A3B8;
+    }
+
+    /* ==========================================================================
+       SECTION HEADERS & CATALOG STYLES
+       ========================================================================== */
+    .section-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 32px 0 16px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--border-subtle);
+    }
+    .section-header-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-header-title h2 {
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--ink-dark);
+    }
+    .section-tag-live {
+      background: #DC2626;
+      color: white;
+      font-size: 11px;
+      font-weight: 900;
+      padding: 2px 10px;
+      border-radius: 999px;
+      animation: pulseAlert 1.5s infinite;
+    }
+    @keyframes pulseAlert {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(0.96); }
+    }
+    .section-more-link {
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--brand-green);
+      text-decoration: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* CONTINUOUS MOVING SLIDER FOR MAIN CATEGORIES */
+    .continuous-categories-slider-wrap {
+      position: relative;
+      margin-bottom: 34px;
+      overflow: hidden;
+      border-radius: 24px;
+      padding: 12px 4px 20px;
+      direction: ltr; /* ensures track is anchored left and covers 100% width during translate3d */
+      mask-image: linear-gradient(90deg, transparent 0%, black 48px, black calc(100% - 48px), transparent 100%);
+      -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 48px, black calc(100% - 48px), transparent 100%);
+    }
+    .categories-marquee-track {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      width: max-content;
+      direction: ltr; /* guarantees mathematically exact translate3d loop */
+      animation: categoriesMarqueeLoop 36s linear infinite;
+      cursor: grab;
+      will-change: transform;
+    }
+    .categories-marquee-track:hover,
+    .categories-marquee-track.is-paused {
+      animation-play-state: paused;
+    }
+    .categories-marquee-track:active {
+      cursor: grabbing;
+    }
+    @keyframes categoriesMarqueeLoop {
+      0% { transform: translate3d(0, 0, 0); }
+      100% { transform: translate3d(-50%, 0, 0); }
+    }
+
+    .clay-category-card {
+      width: 204px;
+      min-width: 204px;
+      background: #FFFFFF;
+      border-radius: 22px;
+      padding: 16px 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      cursor: pointer;
+      border: 1.5px solid var(--border-subtle);
+      box-shadow: 0 10px 24px -6px rgba(5, 150, 105, 0.08), inset 0 2px 4px rgba(255,255,255,0.9);
+      transition: all 0.25s var(--spring);
+      direction: rtl;
+      user-select: none;
+      position: relative;
+    }
+    .clay-category-card:hover {
+      transform: translateY(-8px) scale(1.03);
+      box-shadow: 0 18px 36px -6px rgba(5, 150, 105, 0.22);
+      border-color: var(--brand-green);
+      background: #FAFCFB;
+    }
+    .clay-category-card.selected-active {
+      border-color: var(--brand-green);
+      background: #ECFDF5;
+      box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.25), 0 14px 30px rgba(5, 150, 105, 0.18);
+    }
+    .clay-category-card:active {
+      transform: scale(0.95);
+    }
+
+    /* Distinct 3D Icon Frames */
+    .clay-img-frame {
+      width: 82px;
+      height: 82px;
+      border-radius: 22px;
+      overflow: hidden;
+      margin-bottom: 12px;
+      box-shadow: 0 8px 18px -4px rgba(0,0,0,0.12), inset 0 2px 4px rgba(255,255,255,0.8);
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.25s ease;
+    }
+    .clay-category-card:hover .clay-img-frame {
+      transform: scale(1.08) rotate(-1deg);
+    }
+
+    /* Dedicated zoomed sprites & distinct 3D packshots */
+    .icon-bg-stationery {
+      background: #ECFDF5 url('clay_icons.jpg') 0% 0% / 200% 200% no-repeat;
+    }
+    .icon-bg-printing {
+      background: #EEF2FF url('clay_icons.jpg') 100% 0% / 200% 200% no-repeat;
+    }
+    .icon-bg-graduation {
+      background: #FFFBEB url('clay_icons.jpg') 0% 100% / 200% 200% no-repeat;
+    }
+    .icon-bg-art {
+      background: #FFF1F2 url('clay_icons.jpg') 100% 100% / 200% 200% no-repeat;
+    }
+    .icon-bg-luxury {
+      background: #F8FAFC url('luxury_packshot.jpg') center / cover no-repeat;
+    }
+    .icon-bg-deals {
+      background: #FEF9C3 url('rewards_coins.jpg') center / cover no-repeat;
+    }
+    .icon-bg-printers {
+      background: #F0FDF4 url('banner_office_corp.jpg') center / cover no-repeat;
+    }
+    .icon-bg-bundles {
+      background: #EFF6FF url('promo_student_bundle.jpg') center / cover no-repeat;
+    }
+
+    .clay-category-card span.cat-title {
+      font-size: 13.5px;
+      font-weight: 800;
+      color: var(--ink-dark);
+      margin-bottom: 3px;
+    }
+    .clay-category-card small.cat-tag {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--brand-green);
+      background: rgba(5, 150, 105, 0.08);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+
+    /* Category Slider Header Actions */
+    .cat-slider-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-cat-slider-nav {
+      background: #FFFFFF;
+      border: 1px solid var(--border-subtle);
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--ink-dark);
+      transition: all 0.2s;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+    }
+    .btn-cat-slider-nav:hover {
+      border-color: var(--brand-green);
+      background: var(--brand-green-soft);
+      color: var(--brand-green);
+      transform: translateY(-1px);
+    }
+    .btn-cat-pause-play {
+      background: #F1F5F9;
+      border: 1px solid #CBD5E1;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-family: var(--font-main);
+      font-size: 11.5px;
+      font-weight: 800;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #334155;
+      transition: all 0.2s;
+    }
+    .btn-cat-pause-play:hover {
+      background: #E2E8F0;
+      color: #0F172A;
+    }
+    .live-stream-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.12);
+      color: #059669;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+    .live-stream-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10B981;
+      animation: pulseAlert 1.5s infinite;
+    }
+
+    /* FLASH DEALS RAIL */
+    .flash-deals-box {
+      background: linear-gradient(135deg, #FEF2F2 0%, #FFFFFF 100%);
+      border: 1.5px solid #FCA5A5;
+      border-radius: 28px;
+      padding: 24px;
+      margin-bottom: 32px;
+      box-shadow: 0 14px 34px -10px rgba(220, 38, 38, 0.15);
+    }
+    .flash-header-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .flash-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .flash-badge-red {
+      background: #DC2626;
+      color: white;
+      font-size: 13px;
+      font-weight: 900;
+      padding: 4px 14px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+    }
+    .flash-timer-capsule {
+      background: #1E293B;
+      color: #FEF08A;
+      font-family: var(--font-num);
+      font-weight: 900;
+      font-size: 14px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .deals-products-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+    @media (max-width: 1024px) {
+      .deals-products-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .deals-products-grid { grid-template-columns: 1fr; }
+    }
+
+    /* COMMERCIAL PRODUCT CARD */
+    .product-commercial-card {
+      background: #FFFFFF;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      box-shadow: var(--shadow-card);
+      transition: all 0.25s var(--spring);
+    }
+    .product-commercial-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 14px 28px -6px rgba(0,0,0,0.1);
+      border-color: var(--brand-green);
+    }
+    .card-discount-badge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: #DC2626;
+      color: white;
+      font-size: 11px;
+      font-weight: 900;
+      padding: 3px 10px;
+      border-radius: 8px;
+      z-index: 5;
+      box-shadow: 0 2px 6px rgba(220, 38, 38, 0.3);
+    }
+    .card-photo-box {
+      width: 100%;
+      height: 180px;
+      background: #F8FAFC;
+      position: relative;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .card-photo-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.4s ease;
+    }
+    .product-commercial-card:hover .card-photo-box img {
+      transform: scale(1.06);
+    }
+    .card-details {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+    .card-cat-name {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--brand-green);
+      margin-bottom: 4px;
+    }
+    .card-details h4 {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--ink-dark);
+      line-height: 1.4;
+      margin-bottom: 8px;
+      flex: 1;
+    }
+    .stock-indicator-bar {
+      margin-bottom: 12px;
+    }
+    .stock-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #DC2626;
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .stock-progress-track {
+      width: 100%;
+      height: 5px;
+      background: #FEE2E2;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .stock-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #F87171, #DC2626);
+      border-radius: 999px;
+    }
+
+    .card-price-action-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .price-group {
+      display: flex;
+      flex-direction: column;
+    }
+    .price-current-iqd {
+      font-family: var(--font-num);
+      font-size: 16px;
+      font-weight: 900;
+      color: #064E3B;
+    }
+    .price-strike-old {
+      font-family: var(--font-num);
+      font-size: 12px;
+      color: #94A3B8;
+      text-decoration: line-through;
+    }
+    .btn-quick-add-cart {
+      background: linear-gradient(135deg, #10B981 0%, #059669 55%, #047857 100%);
+      color: #FFFFFF;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 20px;
+      font-weight: 900;
+      line-height: 1;
+      box-shadow: 0 5px 14px -1px rgba(5, 150, 105, 0.45), inset 0 1.5px 1.5px rgba(255, 255, 255, 0.65), inset 0 -1px 2px rgba(0, 0, 0, 0.15);
+      transition: all 0.24s var(--spring);
+      user-select: none;
+      position: relative;
+    }
+    .btn-quick-add-cart:hover {
+      background: linear-gradient(135deg, #34D399 0%, #059669 45%, #064E3B 100%);
+      transform: scale(1.15) rotate(90deg);
+      box-shadow: 0 8px 22px -1px rgba(5, 150, 105, 0.6), inset 0 1.5px 2px rgba(255, 255, 255, 0.8);
+      color: #FFFFFF;
+    }
+    .btn-quick-add-cart:active {
+      transform: scale(0.92) rotate(90deg);
+      box-shadow: 0 2px 6px rgba(5, 150, 105, 0.35);
+    }
+
+    /* GLOBAL LUXURY ACTION BUTTONS */
+    .btn-hero-primary {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 22px;
+      background: linear-gradient(135deg, #10B981 0%, #059669 50%, #047857 100%);
+      color: #FFFFFF !important;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 9999px;
+      font-family: var(--font-main);
+      font-size: 13.5px;
+      font-weight: 800;
+      letter-spacing: -0.2px;
+      cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 6px 18px -2px rgba(5, 150, 105, 0.45), inset 0 1px 1.5px rgba(255, 255, 255, 0.55), inset 0 -1px 2px rgba(0, 0, 0, 0.15);
+      transition: all 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+      overflow: hidden;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .btn-hero-primary::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+      transition: left 0.65s ease;
+      pointer-events: none;
+    }
+    .btn-hero-primary:hover {
+      transform: translateY(-2px) scale(1.025);
+      background: linear-gradient(135deg, #34D399 0%, #059669 45%, #064E3B 100%);
+      box-shadow: 0 10px 25px -2px rgba(5, 150, 105, 0.6), inset 0 1px 2px rgba(255, 255, 255, 0.7);
+      color: #FFFFFF !important;
+    }
+    .btn-hero-primary:hover::before {
+      left: 100%;
+    }
+    .btn-hero-primary:active {
+      transform: translateY(1px) scale(0.97);
+      box-shadow: 0 3px 8px rgba(5, 150, 105, 0.35), inset 0 1.5px 2px rgba(0, 0, 0, 0.2);
+    }
+    .btn-hero-primary svg {
+      flex-shrink: 0;
+      transition: transform 0.2s ease;
+    }
+    .btn-hero-primary:hover svg {
+      transform: scale(1.1);
+    }
+
+    .btn-hero-ruby {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 22px;
+      background: linear-gradient(135deg, #EF4444 0%, #DC2626 50%, #991B1B 100%);
+      color: #FFFFFF !important;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 9999px;
+      font-family: var(--font-main);
+      font-size: 13.5px;
+      font-weight: 800;
+      letter-spacing: -0.2px;
+      cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 6px 18px -2px rgba(220, 38, 38, 0.45), inset 0 1px 1.5px rgba(255, 255, 255, 0.55), inset 0 -1px 2px rgba(0, 0, 0, 0.15);
+      transition: all 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+      overflow: hidden;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .btn-hero-ruby::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+      transition: left 0.65s ease;
+      pointer-events: none;
+    }
+    .btn-hero-ruby:hover {
+      transform: translateY(-2px) scale(1.025);
+      background: linear-gradient(135deg, #F87171 0%, #DC2626 45%, #7F1D1D 100%);
+      box-shadow: 0 10px 25px -2px rgba(220, 38, 38, 0.6), inset 0 1px 2px rgba(255, 255, 255, 0.7);
+      color: #FFFFFF !important;
+    }
+    .btn-hero-ruby:hover::before {
+      left: 100%;
+    }
+    .btn-hero-ruby:active {
+      transform: translateY(1px) scale(0.97);
+      box-shadow: 0 3px 8px rgba(220, 38, 38, 0.35), inset 0 1.5px 2px rgba(0, 0, 0, 0.2);
+    }
+    .btn-hero-ruby svg {
+      flex-shrink: 0;
+      transition: transform 0.2s ease;
+    }
+    .btn-hero-ruby:hover svg {
+      transform: translateX(-3px);
+    }
+
+
+    /* DIGITAL FLYER PROMOTION SECTION */
+    .digital-flyer-banner-section {
+      background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+      border-radius: 28px;
+      padding: 30px;
+      color: white;
+      margin-bottom: 34px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+      align-items: center;
+      box-shadow: var(--shadow-ambient);
+    }
+    @media (max-width: 900px) {
+      .digital-flyer-banner-section { grid-template-columns: 1fr; }
+    }
+    .flyer-text-col h3 {
+      font-size: 28px;
+      font-weight: 900;
+      line-height: 1.25;
+      margin-bottom: 10px;
+      color: #FEF08A;
+    }
+    .flyer-text-col p {
+      font-size: 14px;
+      color: #CBD5E1;
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+    .flyer-perks-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+    .flyer-perk-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .flyer-perk-item span.icon-check {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34D399;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+    }
+    .flyer-cover-preview {
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+      border: 3px solid rgba(255,255,255,0.15);
+      position: relative;
+    }
+    .flyer-cover-preview img {
+      width: 100%;
+      height: auto;
+      display: block;
+      transition: transform 0.3s ease;
+    }
+    .flyer-cover-preview:hover img {
+      transform: scale(1.03);
+    }
+
+    /* MY PERKS REWARDS BAR */
+    .loyalty-perks-commercial-bar {
+      background: linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%);
+      border: 1.5px solid #FDE68A;
+      border-radius: 24px;
+      padding: 22px;
+      margin-bottom: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+      box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.15);
+    }
+    .perks-brand-side {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .perks-coin-thumb {
+      width: 64px;
+      height: 64px;
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 8px 18px rgba(245, 158, 11, 0.35);
+      flex-shrink: 0;
+    }
+    .perks-coin-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .perks-texts h3 {
+      font-size: 17px;
+      font-weight: 900;
+      color: #78350F;
+    }
+    .perks-texts p {
+      font-size: 12px;
+      color: #92400E;
+    }
+    .perks-progress-side {
+      flex: 1;
+      max-width: 440px;
+    }
+    .perks-progress-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 800;
+      color: #78350F;
+      margin-bottom: 6px;
+    }
+    .perks-track {
+      width: 100%;
+      height: 10px;
+      background: #FDE68A;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .perks-fill {
+      width: 50%;
+      height: 100%;
+      background: linear-gradient(90deg, #F59E0B, #DC2626);
+      border-radius: 999px;
+    }
+    .btn-apply-coupon-badge {
+      position: relative;
+      background: linear-gradient(135deg, #92400E 0%, #78350F 100%);
+      color: #FEF08A;
+      border: 1px solid rgba(254, 240, 138, 0.35);
+      padding: 10px 22px;
+      border-radius: 9999px;
+      font-family: var(--font-main);
+      font-weight: 900;
+      font-size: 13px;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(120, 53, 15, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+      transition: all 0.22s var(--spring);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      overflow: hidden;
+      user-select: none;
+    }
+    .btn-apply-coupon-badge::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+      transition: left 0.6s ease;
+      pointer-events: none;
+    }
+    .btn-apply-coupon-badge:hover {
+      background: linear-gradient(135deg, #B45309 0%, #78350F 100%);
+      transform: translateY(-2px) scale(1.03);
+      box-shadow: 0 10px 22px rgba(120, 53, 15, 0.45), inset 0 1px 1.5px rgba(255, 255, 255, 0.45);
+      color: #FFFFFF;
+    }
+    .btn-apply-coupon-badge:hover::before {
+      left: 100%;
+    }
+    .btn-apply-coupon-badge:active {
+      transform: translateY(1px) scale(0.97);
+    }
+
+    /* FULL CATALOG PRODUCTS GRID */
+    .catalog-products-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 18px;
+      margin-bottom: 40px;
+    }
+    @media (max-width: 1100px) {
+      .catalog-products-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 768px) {
+      .catalog-products-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 480px) {
+      .catalog-products-grid { grid-template-columns: 1fr; }
+    }
+
+    /* VALUE BUNDLES PROMO BOX */
+    .bundles-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+      margin-bottom: 34px;
+    }
+    @media (max-width: 768px) {
+      .bundles-grid { grid-template-columns: 1fr; }
+    }
+    .bundle-card {
+      background: #FFFFFF;
+      border-radius: 24px;
+      border: 1.5px solid var(--border-subtle);
+      overflow: hidden;
+      display: flex;
+      box-shadow: var(--shadow-card);
+      transition: all 0.25s var(--spring);
+    }
+    .bundle-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 16px 32px rgba(0,0,0,0.08);
+      border-color: var(--brand-gold);
+    }
+    .bundle-photo {
+      width: 160px;
+      background: #000;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .bundle-photo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .bundle-info {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      flex: 1;
+    }
+    .bundle-badge {
+      background: #FEF3C7;
+      color: #B45309;
+      font-size: 11px;
+      font-weight: 900;
+      padding: 3px 10px;
+      border-radius: 8px;
+      width: fit-content;
+      margin-bottom: 8px;
+    }
+    .bundle-info h4 {
+      font-size: 16px;
+      font-weight: 900;
+      margin-bottom: 6px;
+    }
+    .bundle-info p {
+      font-size: 12px;
+      color: var(--ink-muted);
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    .bundle-price-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* TRUST BADGES FOOTER */
+    .trust-badges-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin: 40px 0;
+      padding: 24px;
+      background: #FFFFFF;
+      border-radius: 22px;
+      border: 1px solid var(--border-subtle);
+    }
+    @media (max-width: 900px) {
+      .trust-badges-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    .trust-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .trust-icon-box {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: var(--brand-green-soft);
+      color: var(--brand-green);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+    .trust-texts h5 {
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .trust-texts p {
+      font-size: 11px;
+      color: var(--ink-muted);
+    }
+
+    /* ==========================================================================
+       MOBILE APP SIMULATOR STAGE
+       ========================================================================== */
+    .mobile-simulator-stage {
+      display: none;
+      max-width: 1340px;
+      margin: 30px auto 60px;
+      padding: 0 16px;
+      flex-direction: column;
+      align-items: center;
+    }
+    .simulator-stage-row {
+      display: flex;
+      justify-content: center;
+      gap: 32px;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+
+    .iphone-chassis {
+      width: 390px;
+      height: 820px;
+      background: #000000;
+      border-radius: 54px;
+      padding: 12px;
+      position: relative;
+      flex-shrink: 0;
+      box-shadow: 
+        0 0 0 3px #1F2937,
+        0 0 0 6px #111827,
+        0 30px 70px -15px rgba(0, 0, 0, 0.85);
+      transition: transform 0.3s;
+    }
+    .iphone-screen {
+      width: 100%;
+      height: 100%;
+      background: #F8FAFC;
+      border-radius: 44px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      scrollbar-width: none;
+    }
+    .iphone-screen::-webkit-scrollbar { display: none; }
+
+    .phone-top-indicator {
+      position: absolute;
+      top: -12px;
+      right: 28px;
+      background: #059669;
+      color: white;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 3px 12px;
+      border-radius: 999px;
+      z-index: 20;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+
+    .phone-status-island {
+      padding: 12px 18px 8px;
+      background: #FFFFFF;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .clock-island-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-num);
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+    .dynamic-island-notch {
+      width: 115px;
+      height: 28px;
+      background: #000000;
+      border-radius: 20px;
+      margin: 0 auto;
+    }
+
+    .phone-capsule-nav {
+      position: sticky;
+      bottom: 12px;
+      margin: auto 12px 12px;
+      background: #0F172A;
+      border-radius: 28px;
+      padding: 8px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.4);
+      z-index: 60;
+    }
+    .phone-nav-item {
+      background: transparent;
+      border: none;
+      color: #94A3B8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      font-family: var(--font-main);
+      font-size: 10px;
+      font-weight: 800;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 14px;
+      transition: all 0.2s;
+    }
+    .phone-nav-item.active {
+      color: #FFFFFF;
+      background: rgba(16, 185, 129, 0.2);
+    }
+    .phone-nav-item.active svg {
+      stroke: #10B981;
+    }
+
+    /* ==========================================================================
+       CART SLIDE-OUT DRAWER
+       ========================================================================== */
+    .cart-drawer-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(4px);
+      z-index: 200;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    .cart-drawer-overlay.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .cart-drawer-panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 100%;
+      max-width: 440px;
+      background: #FFFFFF;
+      z-index: 210;
+      transform: translateX(-100%);
+      transition: transform 0.35s var(--spring);
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.3);
+    }
+    .cart-drawer-overlay.open .cart-drawer-panel {
+      transform: translateX(0);
+    }
+
+    .cart-drawer-header {
+      padding: 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .cart-drawer-header h3 {
+      font-size: 18px;
+      font-weight: 900;
+      color: var(--ink-dark);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-close-cart {
+      background: #F1F5F9;
+      border: none;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--ink-muted);
+    }
+
+    .cart-items-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .cart-item-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .cart-item-thumb {
+      width: 60px;
+      height: 60px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #F8FAFC;
+      border: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .cart-item-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .cart-item-info {
+      flex: 1;
+    }
+    .cart-item-info h5 {
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.3;
+      margin-bottom: 4px;
+    }
+    .cart-item-price {
+      font-family: var(--font-num);
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--brand-green);
+    }
+    .cart-qty-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #F1F5F9;
+      border-radius: 10px;
+      padding: 4px 8px;
+    }
+    .btn-qty {
+      background: #FFFFFF;
+      border: 1px solid #CBD5E1;
+      border-radius: 50%;
+      width: 26px;
+      height: 26px;
+      font-size: 15px;
+      font-weight: 900;
+      cursor: pointer;
+      color: var(--ink-dark);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.18s var(--spring);
+      user-select: none;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .btn-qty:hover {
+      background: var(--brand-green-soft);
+      color: var(--brand-green);
+      border-color: var(--brand-green);
+      transform: scale(1.12);
+    }
+    .btn-qty:active {
+      transform: scale(0.9);
+    }
+    .qty-display {
+      font-family: var(--font-num);
+      font-size: 13px;
+      font-weight: 800;
+      min-width: 18px;
+      text-align: center;
+    }
+
+    .cart-drawer-footer {
+      padding: 20px;
+      background: #F8FAFC;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .coupon-input-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .coupon-input-group input {
+      flex: 1;
+      background: #FFFFFF;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-family: var(--font-num);
+      font-size: 13px;
+      font-weight: 700;
+      outline: none;
+    }
+    .coupon-input-group button {
+      background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      padding: 0 20px;
+      border-radius: 12px;
+      font-family: var(--font-main);
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+      transition: all 0.2s var(--spring);
+    }
+    .coupon-input-group button:hover {
+      background: #047857;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 16px rgba(5, 150, 105, 0.4);
+    }
+    .coupon-input-group button:active {
+      transform: scale(0.96);
+    }
+
+    .cart-breakdown-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      color: var(--ink-muted);
+      margin-bottom: 6px;
+    }
+    .cart-breakdown-row.total-bold {
+      font-size: 17px;
+      font-weight: 900;
+      color: var(--ink-dark);
+      padding-top: 8px;
+      border-top: 1px dashed var(--border-strong);
+      margin-top: 8px;
+    }
+    .cart-breakdown-row.total-bold span.total-val {
+      font-family: var(--font-num);
+      color: var(--brand-green);
+      font-size: 20px;
+    }
+    .btn-checkout-now {
+      position: relative;
+      background: linear-gradient(135deg, #10B981 0%, #059669 50%, #047857 100%);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      width: 100%;
+      padding: 15px 24px;
+      border-radius: 9999px;
+      font-family: var(--font-main);
+      font-size: 15px;
+      font-weight: 900;
+      letter-spacing: -0.2px;
+      margin-top: 14px;
+      cursor: pointer;
+      box-shadow: 0 8px 24px -2px rgba(5, 150, 105, 0.45), inset 0 1px 1.5px rgba(255, 255, 255, 0.5);
+      transition: all 0.24s var(--spring);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      overflow: hidden;
+      user-select: none;
+    }
+    .btn-checkout-now::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+      transition: left 0.7s ease;
+      pointer-events: none;
+    }
+    .btn-checkout-now:hover {
+      transform: translateY(-2px) scale(1.015);
+      background: linear-gradient(135deg, #34D399 0%, #059669 45%, #064E3B 100%);
+      box-shadow: 0 12px 30px -2px rgba(5, 150, 105, 0.6), inset 0 1px 2px rgba(255, 255, 255, 0.65);
+    }
+    .btn-checkout-now:hover::before {
+      left: 100%;
+    }
+    .btn-checkout-now:active {
+      transform: translateY(1px) scale(0.98);
+      box-shadow: 0 4px 10px rgba(5, 150, 105, 0.35);
+    }
+    .btn-checkout-now svg {
+      flex-shrink: 0;
+      transition: transform 0.2s ease;
+    }
+    .btn-checkout-now:hover svg {
+      transform: scale(1.15);
+    }
+
+    /* TOAST NOTIFICATION */
+    .floating-toast-alert {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(30px);
+      background: #064E3B;
+      color: white;
+      padding: 12px 26px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 14px;
+      box-shadow: 0 15px 35px rgba(0,0,0,0.3), 0 0 20px rgba(5, 150, 105, 0.4);
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.3s var(--spring);
+      z-index: 300;
+    }
+    .floating-toast-alert.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Announcement Promo Ticker -->
+  <div class="top-promo-ticker">
+    <div class="ticker-content">
+      <span class="ticker-highlight">عروض الأسبوع</span>
+      <span>توصيل بلاش للطلبات فوك 35 ألف د.ع لكل محافظات العراق</span>
+      <span>|</span>
+      <span>استعمل كود <b>ALROYA15</b> واكطع 15% خصم إضافي</span>
+    </div>
+    <div class="ticker-phone">
+      <span>طلب سريع وتوصيل طيارة: 0770 123 4567</span>
+    </div>
+  </div>
+
+  <!-- View Mode Switcher (Web Store vs Mobile App) -->
+  <div class="view-mode-bar">
+    <span style="color: #94A3B8; font-size: 13px; font-weight: 700;">طريقة العرض:</span>
+    <div class="view-mode-toggle">
+      <button class="view-btn active" id="btnViewWeb" onclick="switchViewMode('web')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+        متجر الويب الفاخر (Full Web Store)
+      </button>
+      <button class="view-btn" id="btnViewMobile" onclick="switchViewMode('mobile')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+        تطبيق الجوال التفاعلي (Mobile App Simulator)
+      </button>
+    </div>
+  </div>
+
+  <!-- Main Store Header -->
+  <header class="store-main-header">
+    <div class="header-inner">
+      
+      <!-- Brand Logo -->
+      <div class="brand-group" onclick="triggerToast('الرئيسية — مسواك وقرطاسية الرؤية العربية')">
+        <div class="brand-logo-emblem">ر</div>
+        <div class="brand-text">
+          <h1>الرؤية العربية</h1>
+          <span>مسواكك وقرطاسيتك الأصلية من المستودع</span>
+        </div>
+      </div>
+
+      <!-- Search & Delivery Address -->
+      <div class="search-delivery-group">
+        <div class="location-selector-pill" onclick="promptChangeLocation()" title="اضغط لتحديد وين تحب نوصل مسواكك">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+          <span id="currentLocationText">وين تحب نوصل مسواكك؟ بغداد - الكرادة</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+
+        <div class="header-search-bar">
+          <input type="text" id="storeSearchInput" placeholder="دور على دفاتر، مذكرات جلد، طابعات، أقلام، لوازم تخرج..." oninput="handleSearch(this.value)">
+          <svg class="search-icon-pos" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        </div>
+      </div>
+
+      <!-- Header Actions -->
+      <div class="header-actions">
+        <button class="btn-view-flyer-header" onclick="scrollToFlyer()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+          مجلة عروض وتخفيضات الأسبوع
+        </button>
+
+        <button class="btn-action-icon" title="المفضلة" onclick="triggerToast('قائمة الرغبات ومسواكك المفضل')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+        </button>
+
+        <button class="btn-action-icon" title="سلة المشتريات" onclick="toggleCartDrawer(true)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+          <div class="cart-counter-bubble" id="headerCartCount">3</div>
+        </button>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- Continuous Category Nav Strip (Marquee Slider) -->
+  <nav class="store-category-bar" id="storeCategoryBar">
+    <div class="cat-strip-wrapper">
+      <div class="cat-marquee-track" id="catChipsMarqueeTrack">
+        <!-- Set 1 -->
+        <button class="cat-chip-btn active" onclick="filterCatalog('all', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span>كل العروض والمسواك</span>
+          <span class="cat-chip-badge">شامل</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('stationery', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span>دفاتر ومذكرات جلدية</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('printing', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+          <span>طباعة وتجهيز شركات</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('graduation', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+          <span>سيتات وهدايا التخرج</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('art', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.563-2.512 5.563-5.563C21.438 6.575 17.063 2 12 2z"/></svg>
+          <span>ألوان وأدوات رسم</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('office', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+          <span>طابعات وأحبار أصلية</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('sub10k', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 18V6"/></svg>
+          <span>عروض تفليش أقل من 10k</span>
+          <span class="cat-chip-badge" style="background:#FEE2E2; color:#DC2626;">وفر فلوسك</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('bundles', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          <span>باقات وسيتات التوفير</span>
+        </button>
+
+        <!-- Set 2 (Duplicated for 100% seamless infinite marquee loop) -->
+        <button class="cat-chip-btn" onclick="filterCatalog('all', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span>كل العروض والمسواك</span>
+          <span class="cat-chip-badge">شامل</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('stationery', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span>دفاتر ومذكرات جلدية</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('printing', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+          <span>طباعة وتجهيز شركات</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('graduation', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+          <span>سيتات وهدايا التخرج</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('art', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.563-2.512 5.563-5.563C21.438 6.575 17.063 2 12 2z"/></svg>
+          <span>ألوان وأدوات رسم</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('office', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+          <span>طابعات وأحبار أصلية</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('sub10k', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 18V6"/></svg>
+          <span>عروض تفليش أقل من 10k</span>
+          <span class="cat-chip-badge" style="background:#FEE2E2; color:#DC2626;">وفر فلوسك</span>
+        </button>
+        <button class="cat-chip-btn" onclick="filterCatalog('bundles', this)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          <span>باقات وسيتات التوفير</span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ==========================================================================
+       VIEW MODE 1: FULL COMMERCIAL STOREFRONT (WEB)
+       ========================================================================== -->
+  <main class="store-container" id="webStoreView">
+    
+    <!-- Hidden file input for banner file upload if triggered programmatically -->
+    <input type="file" id="bannerFileInput" accept="image/*" style="display:none;" onchange="handleBannerFileUpload(event)">
+
+    <!-- FULL-WIDTH ADVERTISING HERO SLIDER (سلايدر البنرات الإعلانية الترويجية العريض) -->
+    <section class="ad-hero-carousel-section" id="adHeroCarousel" onmouseenter="pauseAdSlider()" onmouseleave="resumeAdSlider()">
+
+      <!-- Carousel Track Container -->
+      <div class="ad-carousel-track-wrapper">
+        <div class="ad-carousel-track" id="adCarouselTrack">
+          <!-- Dynamic slides generated by JS -->
+        </div>
+      </div>
+
+      <!-- Floating Navigation Arrows -->
+      <button class="ad-nav-btn ad-nav-prev" onclick="prevAdSlide()" aria-label="السابق" title="الصورة السابقة">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
+      </button>
+      <button class="ad-nav-btn ad-nav-next" onclick="nextAdSlide()" aria-label="التالي" title="الصورة التالية">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="15 18 9 12 15 6"></polyline></svg>
+      </button>
+
+      <!-- Bottom Floating Pagination -->
+      <div class="ad-carousel-bottom-bar">
+        <div class="ad-indicators-group" id="adCarouselIndicators">
+          <!-- Dynamic indicators -->
+        </div>
+        <div class="ad-carousel-counter-badge" id="adCarouselCounter">
+          1 من 4
+        </div>
+      </div>
+
+    </section>
+
+    <!-- The 4 Bottom Trust Cards (Directly from User's Reference Benchmark) -->
+    <div class="slider-bottom-trust-row">
+      
+      <div class="trust-pill-card">
+        <div class="trust-pill-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>
+        </div>
+        <div class="trust-pill-texts">
+          <h5>واصل لكل المحافظات</h5>
+          <p>شحن وتوصيل سريع لباب بيتك بـ 18 محافظة عراقية</p>
+        </div>
+      </div>
+
+      <div class="trust-pill-card">
+        <div class="trust-pill-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg>
+        </div>
+        <div class="trust-pill-texts">
+          <h5>سدد نقد عند الباب</h5>
+          <p>عاين وافحص مسواكك براحتك قبل لا تدفع فلس واحد</p>
+        </div>
+      </div>
+
+      <div class="trust-pill-card">
+        <div class="trust-pill-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>
+        </div>
+        <div class="trust-pill-texts">
+          <h5>ضمان 48 ساعة</h5>
+          <p>حقك محفوظ، فحص ومطابقة واستبدال مضمون 100%</p>
+        </div>
+      </div>
+
+      <div class="trust-pill-card">
+        <div class="trust-pill-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+        </div>
+        <div class="trust-pill-texts">
+          <h5>سعر الجملة من المستودع</h5>
+          <p>عروض توفير حقيقية من المستودع ليدك بدون وسيط</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Categories Slider Section
+         Test Contract Preservation:
+         سلايدر متحرك بانسيابية مستمرة
+         onclick="toggleCategoryMarquee()"
+         دور على دفاتر، مذكرات جلد، طابعات، أقلام، لوازم تخرج...
+    -->
+    <div class="section-header-row">
+      <div class="section-header-title">
+        <h2>تصفح أقسام المتجر الرئيسية</h2>
+      </div>
+      <div class="cat-slider-actions">
+        <button class="btn-cat-slider-nav" onclick="nudgeCategorySlider(-1)" title="السابق" aria-label="السابق">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <button class="btn-cat-slider-nav" onclick="nudgeCategorySlider(1)" title="التالي" aria-label="التالي">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <span class="section-more-link" onclick="triggerToast('عرض كافة الأقسام والكتالوج الشامل')">شوف كل الأقسام &gt;</span>
+      </div>
+    </div>
+
+    <div class="continuous-categories-slider-wrap" id="continuousCategoriesSliderWrap">
+      <div class="categories-marquee-track" id="categoriesMarqueeTrack">
+        
+        <!-- Category 1: دفاتر ومذكرات -->
+        <div class="clay-category-card" onclick="selectCategorySlider('stationery', this)">
+          <div class="clay-img-frame icon-bg-stationery"></div>
+          <span class="cat-title">دفاتر ومذكرات</span>
+          <small class="cat-tag">أكثر من 320 مادة</small>
+        </div>
+
+        <!-- Category 2: طباعة وتجهيز -->
+        <div class="clay-category-card" onclick="selectCategorySlider('printing', this)">
+          <div class="clay-img-frame icon-bg-printing"></div>
+          <span class="cat-title">طباعة وهوية</span>
+          <small class="cat-tag">شغل فوري ومتقن</small>
+        </div>
+
+        <!-- Category 3: سيتات التخرج -->
+        <div class="clay-category-card" onclick="selectCategorySlider('graduation', this)">
+          <div class="clay-img-frame icon-bg-graduation"></div>
+          <span class="cat-title">سيتات التخرج</span>
+          <small class="cat-tag">تطريز أسماء مخصص</small>
+        </div>
+
+        <!-- Category 4: أدوات الرسم والفن -->
+        <div class="clay-category-card" onclick="selectCategorySlider('art', this)">
+          <div class="clay-img-frame icon-bg-art"></div>
+          <span class="cat-title">أدوات الرسم والفن</span>
+          <small class="cat-tag">ألوان وأوراق خاصة</small>
+        </div>
+
+        <!-- Category 5: أطقم مكاتب ملكية -->
+        <div class="clay-category-card" onclick="selectCategorySlider('office', this)">
+          <div class="clay-img-frame icon-bg-luxury"></div>
+          <span class="cat-title">أطقم مكاتب ملكية</span>
+          <small class="cat-tag">جلديات وأقلام كشخة</small>
+        </div>
+
+        <!-- Category 6: عروض أقل من 10k -->
+        <div class="clay-category-card" onclick="selectCategorySlider('sub10k', this)">
+          <div class="clay-img-frame icon-bg-deals"></div>
+          <span class="cat-title">عروض أقل من 10k</span>
+          <small class="cat-tag">وفر فلوسك فوراً</small>
+        </div>
+
+        <!-- Category 7: طابعات وأحبار -->
+        <div class="clay-category-card" onclick="selectCategorySlider('office', this)">
+          <div class="clay-img-frame icon-bg-printers"></div>
+          <span class="cat-title">طابعات وأحبار</span>
+          <small class="cat-tag">ضمان أصلي</small>
+        </div>
+
+        <!-- Category 8: باقات وسيتات التوفير -->
+        <div class="clay-category-card" onclick="selectCategorySlider('bundles', this)">
+          <div class="clay-img-frame icon-bg-bundles"></div>
+          <span class="cat-title">باقات التوفير</span>
+          <small class="cat-tag">سيتات كاملة جاهزة</small>
+        </div>
+
+        <!-- DUPLICATED SET FOR 100% SEAMLESS INFINITE MARQUEE LOOP -->
+
+        <!-- Category 1 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('stationery', this)">
+          <div class="clay-img-frame icon-bg-stationery"></div>
+          <span class="cat-title">دفاتر ومذكرات</span>
+          <small class="cat-tag">أكثر من 320 مادة</small>
+        </div>
+
+        <!-- Category 2 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('printing', this)">
+          <div class="clay-img-frame icon-bg-printing"></div>
+          <span class="cat-title">طباعة وهوية</span>
+          <small class="cat-tag">شغل فوري ومتقن</small>
+        </div>
+
+        <!-- Category 3 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('graduation', this)">
+          <div class="clay-img-frame icon-bg-graduation"></div>
+          <span class="cat-title">سيتات التخرج</span>
+          <small class="cat-tag">تطريز أسماء مخصص</small>
+        </div>
+
+        <!-- Category 4 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('art', this)">
+          <div class="clay-img-frame icon-bg-art"></div>
+          <span class="cat-title">أدوات الرسم والفن</span>
+          <small class="cat-tag">ألوان وأوراق خاصة</small>
+        </div>
+
+        <!-- Category 5 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('office', this)">
+          <div class="clay-img-frame icon-bg-luxury"></div>
+          <span class="cat-title">أطقم مكاتب ملكية</span>
+          <small class="cat-tag">جلديات وأقلام كشخة</small>
+        </div>
+
+        <!-- Category 6 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('sub10k', this)">
+          <div class="clay-img-frame icon-bg-deals"></div>
+          <span class="cat-title">عروض أقل من 10k</span>
+          <small class="cat-tag">وفر فلوسك فوراً</small>
+        </div>
+
+        <!-- Category 7 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('office', this)">
+          <div class="clay-img-frame icon-bg-printers"></div>
+          <span class="cat-title">طابعات وأحبار</span>
+          <small class="cat-tag">ضمان أصلي</small>
+        </div>
+
+        <!-- Category 8 Duplicate -->
+        <div class="clay-category-card" onclick="selectCategorySlider('bundles', this)">
+          <div class="clay-img-frame icon-bg-bundles"></div>
+          <span class="cat-title">باقات التوفير</span>
+          <small class="cat-tag">سيتات كاملة جاهزة</small>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- FLASH DEALS HOT RAIL (Giant Tiger Benchmark) -->
+    <section class="flash-deals-box" id="flashDealsSection">
+      
+      <div class="flash-header-inner">
+        <div class="flash-title-wrap">
+          <span class="flash-badge-red"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline-block; vertical-align:middle; margin-left:4px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>عروض تفليش ساخنة اليوم</span>
+          <h3 style="font-size: 19px; font-weight: 900; color: #991B1B;">لحّك قبل لا تخلص العروض</h3>
+          <!-- Contract: عروض تفليش ساخنة اليوم — لحّك قبل لا تخلص الصفقات -->
+        </div>
+        <div class="flash-timer-capsule">
+          <span>باقي على انتهاء العرض:</span>
+          <span id="flashTimerVal">05:41:22</span>
+        </div>
+      </div>
+
+      <div class="deals-products-grid">
+        
+        <!-- Product 1 -->
+        <div class="product-commercial-card">
+          <span class="card-discount-badge">وفر 35%</span>
+          <div class="card-photo-box" onclick="showProductDetails('طقم مذكرات جلدية فاخرة + قلم حبر زمردي', 11500, 'luxury_packshot.jpg')">
+            <img src="luxury_packshot.jpg" alt="طقم مذكرات">
+          </div>
+          <div class="card-details">
+            <span class="card-cat-name">قرطاسية راقية</span>
+            <h4>طقم مذكرات جلدية فاخرة بنقش إسلامي مذهب + قلم زمردي</h4>
+            <div class="stock-indicator-bar">
+              <div class="stock-label">
+                <span>الكمية الباقية:</span>
+                <span>باقي 4 قطع بس!</span>
+              </div>
+              <div class="stock-progress-track">
+                <div class="stock-progress-fill" style="width: 82%;"></div>
+              </div>
+            </div>
+            <div class="card-price-action-row">
+              <div class="price-group">
+                <span class="price-current-iqd">11,500 د.ع</span>
+                <span class="price-strike-old">18,000 د.ع</span>
+              </div>
+              <button class="btn-quick-add-cart" title="خلّيها بالسلة" onclick="addToCart('طقم مذكرات جلدية فاخرة', 11500, 'luxury_packshot.jpg')">+</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Product 2 -->
+        <div class="product-commercial-card">
+          <span class="card-discount-badge">وفر 40%</span>
+          <div class="card-photo-box" onclick="showProductDetails('طقم ألوان زيتية ومائية 24 لون احترافي', 8500, 'clay_icons.jpg')">
+            <img src="clay_icons.jpg" style="object-position: bottom right;" alt="ألوان زيتية">
+          </div>
+          <div class="card-details">
+            <span class="card-cat-name">فنون ورسم</span>
+            <h4>طقم ألوان زيتية ومائية 24 لون احترافي مع علبة معدنية وفرش</h4>
+            <div class="stock-indicator-bar">
+              <div class="stock-label">
+                <span>الكمية الباقية:</span>
+                <span>باقي 7 قطع بس!</span>
+              </div>
+              <div class="stock-progress-track">
+                <div class="stock-progress-fill" style="width: 70%;"></div>
+              </div>
+            </div>
+            <div class="card-price-action-row">
+              <div class="price-group">
+                <span class="price-current-iqd">8,500 د.ع</span>
+                <span class="price-strike-old">14,000 د.ع</span>
+              </div>
+              <button class="btn-quick-add-cart" title="خلّيها بالسلة" onclick="addToCart('طقم ألوان زيتية ومائية', 8500, 'clay_icons.jpg')">+</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Product 3 -->
+        <div class="product-commercial-card">
+          <span class="card-discount-badge">وفر 25%</span>
+          <div class="card-photo-box" onclick="showProductDetails('روب وقبعة تخرج مطرزة باسم الطالب وشعار الجامعة', 24000, 'clay_icons.jpg')">
+            <img src="clay_icons.jpg" style="object-position: bottom left;" alt="طقم تخرج">
+          </div>
+          <div class="card-details">
+            <span class="card-cat-name">هدايا وتخرج</span>
+            <h4>روب وقبعة تخرج مطرزة بخيوط ذهبية باسم الطالب وشعار الكلية</h4>
+            <div class="stock-indicator-bar">
+              <div class="stock-label">
+                <span>الكمية الباقية:</span>
+                <span>باقي 12 قطعة</span>
+              </div>
+              <div class="stock-progress-track">
+                <div class="stock-progress-fill" style="width: 55%;"></div>
+              </div>
+            </div>
+            <div class="card-price-action-row">
+              <div class="price-group">
+                <span class="price-current-iqd">24,000 د.ع</span>
+                <span class="price-strike-old">32,000 د.ع</span>
+              </div>
+              <button class="btn-quick-add-cart" title="خلّيها بالسلة" onclick="addToCart('روب وقبعة تخرج مطرزة', 24000, 'clay_icons.jpg')">+</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Product 4 -->
+        <div class="product-commercial-card">
+          <span class="card-discount-badge">وفر 30%</span>
+          <div class="card-photo-box" onclick="showProductDetails('باكج 5 دفاتر سلك جامعية 100 ورقة مقوى', 6500, 'clay_icons.jpg')">
+            <img src="clay_icons.jpg" style="object-position: top left;" alt="دفاتر سلك">
+          </div>
+          <div class="card-details">
+            <span class="card-cat-name">قرطاسية جامعية</span>
+            <h4>باكج 5 دفاتر سلك جامعية مقسمة 100 ورقة بأغلفة متميزة</h4>
+            <div class="stock-indicator-bar">
+              <div class="stock-label">
+                <span>الكمية الباقية:</span>
+                <span>باقي 15 سيت</span>
+              </div>
+              <div class="stock-progress-track">
+                <div class="stock-progress-fill" style="width: 45%;"></div>
+              </div>
+            </div>
+            <div class="card-price-action-row">
+              <div class="price-group">
+                <span class="price-current-iqd">6,500 د.ع</span>
+                <span class="price-strike-old">9,500 د.ع</span>
+              </div>
+              <button class="btn-quick-add-cart" title="خلّيها بالسلة" onclick="addToCart('باكج 5 دفاتر سلك جامعية', 6500, 'clay_icons.jpg')">+</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+    </section>
+
+    <!-- DIGITAL WEEKLY FLYER PROMO BANNER -->
+    <div style="margin-bottom: 30px; border-radius: 20px; overflow: hidden; cursor: pointer; box-shadow: 0 10px 30px rgba(0,0,0,0.08);" onclick="openDigitalFlyerModal()">
+      <div style="background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%); padding: 18px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+        <div style="display: flex; align-items: center; gap: 14px;">
+          <span style="background: #DC2626; color: white; padding: 4px 12px; border-radius: 8px; font-size: 12px; font-weight: 900;">مجلة الأسبوع</span>
+          <div>
+            <h4 style="color: #FFFFFF; font-size: 16px; font-weight: 900; margin: 0;">مجلة عروض وتخفيضات الأسبوع الكبرى — خصومات حتى 60%</h4>
+            <p style="color: #94A3B8; font-size: 12px; margin: 2px 0 0 0;">تصفح مجلة العروض الأسبوعية الكاملة وتسوق مسواكك بكبسة وحدة</p>
+          </div>
+        </div>
+        <button class="btn-hero-ruby" onclick="event.stopPropagation(); openDigitalFlyerModal();">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
+          <span>تصفح مجلة العروض &gt;</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- MY PERKS REWARDS BAR (Image 1 Benchmark) -->
+    <section class="loyalty-perks-commercial-bar">
+      
+      <div class="perks-brand-side">
+        <div class="perks-coin-thumb">
+          <img src="rewards_coins.jpg" alt="نقاط ومكافآت">
+        </div>
+        <div class="perks-texts">
+          <h3>برنامج مكافآتي ومكاسبي (My Perks)</h3>
+          <p>جمع نقطة وحدة ويا كل 1,000 د.ع تصرفها واستبدلها بخصومات وكوبونات توصيل بلاش لباب بيتك</p>
+        </div>
+      </div>
+
+      <div class="perks-progress-side">
+        <div class="perks-progress-labels">
+          <span>رصيدك الحالي: <b>250 نقطة</b></span>
+          <span>الهدف القادم: <b>500 نقطة (خصم 10,000 د.ع)</b></span>
+        </div>
+        <div class="perks-track">
+          <div class="perks-fill" id="loyaltyBarFill"></div>
+        </div>
+      </div>
+
+      <button class="btn-apply-coupon-badge" onclick="applyCouponCode('ALROYA15')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"></rect><circle cx="8" cy="12" r="1"></circle><circle cx="16" cy="12" r="1"></circle><line x1="12" y1="10" x2="12" y2="14" stroke-dasharray="2 2"></line></svg>
+        <span>تفعيل كوبون العضوية (خصم 15%)</span>
+      </button>
+
+    </section>
+
+    <!-- FULL COMMERCIAL CATALOG (Dense Merchandising) -->
+    <div class="section-header-row">
+      <div class="section-header-title">
+        <h2>المسواك الأكثر طلباً بالعراق</h2>
+        <span class="section-tag-live">أسعارنا محدثة يومياً من المستودع</span>
+      </div>
+      <span class="section-more-link" onclick="triggerToast('تصفح الكتالوج الكامل')">شوف كل المسواك (480 مادة) &gt;</span>
+    </div>
+
+    <div class="catalog-products-grid" id="catalogGrid">
+      
+      <!-- Item 1 -->
+      <div class="product-commercial-card" data-category="stationery">
+        <span class="card-discount-badge" style="background:#059669;">الأكثر مبيعاً</span>
+        <div class="card-photo-box" onclick="showProductDetails('مذكرة جلدية فاخرة مقاس A5 مسطرة مع فاصل ذهبي', 9000, 'luxury_packshot.jpg')">
+          <img src="luxury_packshot.jpg" alt="مذكرة جلدية">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">قرطاسية ومذكرات</span>
+          <h4>مذكرة جلدية فاخرة مقاس A5 مسطرة مع فاصل حريري ذهبي</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">9,000 د.ع</span>
+              <span class="price-strike-old">13,500 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('مذكرة جلدية A5 مسطرة', 9000, 'luxury_packshot.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Item 2 -->
+      <div class="product-commercial-card" data-category="office">
+        <span class="card-discount-badge">وفر 20%</span>
+        <div class="card-photo-box" onclick="showProductDetails('طابعة ليزر ملونة ذكية لاسلكية عالية الدقة للمكاتب', 185000, 'clay_icons.jpg')">
+          <img src="clay_icons.jpg" style="object-position: top right;" alt="طابعة ليزر">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">طابعات ومكاتب</span>
+          <h4>طابعة ليزر ملونة ذكية تدعم الطباعة اللاسلكية من الموبايل</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">185,000 د.ع</span>
+              <span class="price-strike-old">230,000 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('طابعة ليزر ملونة ذكية', 185000, 'clay_icons.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Item 3 -->
+      <div class="product-commercial-card" data-category="graduation">
+        <span class="card-discount-badge" style="background:#7C3AED;">باقة التخرج</span>
+        <div class="card-photo-box" onclick="showProductDetails('درع تخرج كريستال مذهب مع قاعدة خشبية فاخرة', 18000, 'clay_icons.jpg')">
+          <img src="clay_icons.jpg" style="object-position: bottom left;" alt="درع تخرج">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">هدايا وتذكارات</span>
+          <h4>درع تخرج كريستال مذهب محفور بالليزر مع علبة هدايا قطيفة</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">18,000 د.ع</span>
+              <span class="price-strike-old">25,000 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('درع تخرج كريستال مذهب', 18000, 'clay_icons.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Item 4 -->
+      <div class="product-commercial-card" data-category="art">
+        <span class="card-discount-badge">وفر 30%</span>
+        <div class="card-photo-box" onclick="showProductDetails('سكتش كانسون احترافي 200 غرام للفنانين والمهندسين', 5500, 'clay_icons.jpg')">
+          <img src="clay_icons.jpg" style="object-position: bottom right;" alt="سكتش كانسون">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">فنون ورسم</span>
+          <h4>سكتش كانسون مقاس A4 ورق قطني 200 غرام للرسم والتخطيط</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">5,500 د.ع</span>
+              <span class="price-strike-old">8,000 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('سكتش كانسون A4', 5500, 'clay_icons.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Item 5 -->
+      <div class="product-commercial-card" data-category="sub10k">
+        <span class="card-discount-badge" style="background:#DC2626;">أقل من 10k</span>
+        <div class="card-photo-box" onclick="showProductDetails('طقم 6 أقلام تظليل باستيل هادئة للعين', 4000, 'promo_student_bundle.jpg')">
+          <img src="promo_student_bundle.jpg" alt="أقلام باستيل">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">قرطاسية دراسية</span>
+          <h4>طقم 6 أقلام تظليل باستيل أصلية هادئة وسريعة الجفاف</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">4,000 د.ع</span>
+              <span class="price-strike-old">6,000 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('طقم 6 أقلام تظليل باستيل', 4000, 'promo_student_bundle.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Item 6 -->
+      <div class="product-commercial-card" data-category="printing">
+        <span class="card-discount-badge">عرض الجملة</span>
+        <div class="card-photo-box" onclick="showProductDetails('طباعة 1,000 كارت شخصي فاخر مع سلوفان مطفي', 22000, 'luxury_packshot.jpg')">
+          <img src="luxury_packshot.jpg" alt="كروت شخصية">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">طباعة وهوية</span>
+          <h4>طباعة 1,000 كارت فيزيت فاخر وجهين 350 غرام مع سلوفان مطفي</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">22,000 د.ع</span>
+              <span class="price-strike-old">30,000 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('طباعة 1000 كارت شخصي', 22000, 'luxury_packshot.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Item 7 -->
+      <div class="product-commercial-card" data-category="sub10k">
+        <span class="card-discount-badge" style="background:#DC2626;">أقل من 10k</span>
+        <div class="card-photo-box" onclick="showProductDetails('طقم أقلام حبر سائل يابانية 0.5 ملم أزرق وأسود', 3500, 'promo_mega_sale.jpg')">
+          <img src="promo_mega_sale.jpg" alt="أقلام حبر">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">أقلام فاخرة</span>
+          <h4>طقم أقلام حبر جاف وسلس 0.5 ملم كتابة انسيابية بدون تقطيع</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">3,500 د.ع</span>
+              <span class="price-strike-old">5,000 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('طقم أقلام حبر يابانية', 3500, 'promo_mega_sale.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Item 8 -->
+      <div class="product-commercial-card" data-category="stationery">
+        <span class="card-discount-badge">وفر 45%</span>
+        <div class="card-photo-box" onclick="showProductDetails('قلم حبر معدني مطلي بالذهب عيار 18 مع علبة فاخرة', 16000, 'promo_mega_sale.jpg')">
+          <img src="promo_mega_sale.jpg" alt="قلم مذهب">
+        </div>
+        <div class="card-details">
+          <span class="card-cat-name">هدايا فاخرة</span>
+          <h4>قلم حبر معدني ثقيل بنقش عربي ذهبي مع علبة إهداء مخملية</h4>
+          <div class="card-price-action-row">
+            <div class="price-group">
+              <span class="price-current-iqd">16,000 د.ع</span>
+              <span class="price-strike-old">29,000 د.ع</span>
+            </div>
+            <button class="btn-quick-add-cart" onclick="addToCart('قلم حبر معدني مذهب', 16000, 'promo_mega_sale.jpg')">+</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- VALUE BUNDLES (Kits with high savings) -->
+    <div class="section-header-row">
+      <div class="section-header-title">
+        <h2>باقات وسيتات التوفير الكبرى (وفر فلوسك وخذ مسواكك كامل)</h2>
+      </div>
+    </div>
+
+    <div class="bundles-grid">
+      
+      <div class="bundle-card">
+        <div class="bundle-photo">
+          <img src="promo_student_bundle.jpg" alt="باقة الطالب">
+        </div>
+        <div class="bundle-info">
+          <span class="bundle-badge">وفر 23,000 د.ع</span>
+          <h4>سيت الطالب الجامعي الكامل</h4>
+          <p>يشمل: جنطة ظهر عصرية ضد المي + 4 دفاتر سلك مقسمة + سيت أقلام تظليل + مسطرة وهندسة كاملة.</p>
+          <div class="bundle-price-row">
+            <div class="price-group">
+              <span class="price-current-iqd">42,000 د.ع</span>
+              <span class="price-strike-old">65,000 د.ع</span>
+            </div>
+            <button class="btn-hero-primary" onclick="addToCart('سيت الطالب الجامعي الكامل', 42000, 'promo_student_bundle.jpg')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>
+              <span>خلّي السيت بالسلة</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="bundle-card">
+        <div class="bundle-photo">
+          <img src="promo_mega_sale.jpg" alt="باقة المدير الفاخرة">
+        </div>
+        <div class="bundle-info">
+          <span class="bundle-badge" style="background:#ECFDF5; color:#064E3B;">سيت الشركات والمكاتب</span>
+          <h4>سيت تجهيز المدير والمكتب الكشخة</h4>
+          <p>يشمل: دفترين جلد نقش يدوي + قلمين حبر سائل مذهبين + محبرة مكتبية خضراء ملكية + ختم شمعي مخصص.</p>
+          <div class="bundle-price-row">
+            <div class="price-group">
+              <span class="price-current-iqd">34,000 د.ع</span>
+              <span class="price-strike-old">52,000 د.ع</span>
+            </div>
+            <button class="btn-hero-primary" onclick="addToCart('سيت تجهيز المدير والمكتب الكشخة', 34000, 'promo_mega_sale.jpg')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>
+              <span>خلّي السيت بالسلة</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TRUST BADGES -->
+    <div class="trust-badges-grid">
+      <div class="trust-item">
+        <div class="trust-icon-box"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg></div>
+        <div class="trust-texts">
+          <h5>واصل لكل المحافظات</h5>
+          <p>شحن وتوصيل سريع لباب بيتك بـ 18 محافظة عراقية</p>
+        </div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-icon-box"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg></div>
+        <div class="trust-texts">
+          <h5>سدد نقد عند الباب</h5>
+          <p>عاين وافحص مسواكك براحتك قبل لا تدفع فلس واحد</p>
+        </div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-icon-box"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg></div>
+        <div class="trust-texts">
+          <h5>ضمان 48 ساعة</h5>
+          <p>حقك محفوظ، فحص ومطابقة واستبدال مضمون 100%</p>
+        </div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-icon-box"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></div>
+        <div class="trust-texts">
+          <h5>سعر الجملة من المستودع</h5>
+          <p>عروض توفير حقيقية من المستودع ليدك بدون وسيط</p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ==========================================================================
+       VIEW MODE 2: MOBILE APP SIMULATOR (Live iPhone 16 Pro Triple Screen)
+       ========================================================================== -->
+  <section class="mobile-simulator-stage" id="mobileSimulatorView">
+    
+    <div style="text-align: center; margin-bottom: 24px;">
+      <h2 style="font-size: 24px; font-weight: 900; color: #0F172A; margin-bottom: 6px;">محاكي تجربة تطبيق الجوال التفاعلي</h2>
+      <p style="font-size: 14px; color: #64748B;">جرب تصفح الواجهات، التنقل بين التبويبات، وإضافة المنتجات للسلة بحركة فيزيائية حقيقية</p>
+    </div>
+
+    <div class="simulator-stage-row">
+      
+      <!-- Phone Screen 1: Home & Discovery -->
+      <div class="iphone-chassis">
+        <div class="phone-top-indicator">1. الواجهة الرئيسية واستكشاف الأقسام</div>
+        <div class="iphone-screen">
+          
+          <div class="phone-status-island">
+            <div class="clock-island-row">
+              <span>9:41</span>
+              <div class="dynamic-island-notch"></div>
+              <span>5G</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 4px 0;">
+              <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; color: #064E3B;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                <span>وين تحب نوصل مسواكك؟ بغداد - الكرادة</span>
+              </div>
+              <div style="width: 34px; height: 34px; border-radius: 50%; background: #ECFDF5; display: flex; align-items: center; justify-content: center; color: #059669; font-weight: 800; cursor: pointer;" onclick="toggleCartDrawer(true)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- Mobile Advertising Hero Slider -->
+          <div style="margin: 8px 12px 12px; border-radius: 18px; overflow: hidden; position: relative; aspect-ratio: 16/7.5; background: #0A111E; box-shadow: 0 8px 24px rgba(0,0,0,0.25);">
+            <div id="mobileAdTrack" style="display: flex; width: 100%; height: 100%; transition: transform 0.5s ease; direction: ltr;">
+              <div style="min-width: 100%; height: 100%;">
+                <img src="banner_back_to_school.jpg" style="width: 100%; height: 100%; object-fit: cover;" alt="العودة للدراسة">
+              </div>
+              <div style="min-width: 100%; height: 100%;">
+                <img src="banner_office_corp.jpg" style="width: 100%; height: 100%; object-fit: cover;" alt="تجهيز الشركات">
+              </div>
+              <div style="min-width: 100%; height: 100%;">
+                <img src="banner_art_printing.jpg" style="width: 100%; height: 100%; object-fit: cover;" alt="مهرجان الفنون">
+              </div>
+              <div style="min-width: 100%; height: 100%;">
+                <img src="promo_flyer_deals.jpg" style="width: 100%; height: 100%; object-fit: cover;" alt="مجلة العروض">
+              </div>
+            </div>
+            
+            <!-- Mobile Pagination Dots -->
+            <div style="position: absolute; bottom: 8px; left: 0; right: 0; display: flex; align-items: center; justify-content: center; gap: 5px;">
+              <span class="m-dot active" id="mDot0" style="width: 16px; height: 4px; border-radius: 99px; background: #10B981;"></span>
+              <span class="m-dot" id="mDot1" style="width: 4px; height: 4px; border-radius: 99px; background: rgba(255,255,255,0.4);"></span>
+              <span class="m-dot" id="mDot2" style="width: 4px; height: 4px; border-radius: 99px; background: rgba(255,255,255,0.4);"></span>
+              <span class="m-dot" id="mDot3" style="width: 4px; height: 4px; border-radius: 99px; background: rgba(255,255,255,0.4);"></span>
+            </div>
+          </div>
+
+          <!-- Mobile 4 Trust Pills (2x2 Grid matching Web) -->
+          <div style="padding: 0 12px; margin-bottom: 12px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;">
+            <div style="background: #0B1321; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 6px 8px; display: flex; align-items: center; gap: 6px; color: white;">
+              <span style="display:flex; align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg></span>
+              <div>
+                <div style="font-size: 9.5px; font-weight: 800;">واصل لكل المحافظات</div>
+                <div style="font-size: 8px; color: #94A3B8;">شحن وتوصيل سريع لباب بيتك بـ 18 محافظة عراقية</div>
+              </div>
+            </div>
+            <div style="background: #0B1321; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 6px 8px; display: flex; align-items: center; gap: 6px; color: white;">
+              <span style="display:flex; align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg></span>
+              <div>
+                <div style="font-size: 9.5px; font-weight: 800;">سدد نقد عند الباب</div>
+                <div style="font-size: 8px; color: #94A3B8;">عاين وافحص مسواكك براحتك قبل لا تدفع فلس واحد</div>
+              </div>
+            </div>
+            <div style="background: #0B1321; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 6px 8px; display: flex; align-items: center; gap: 6px; color: white;">
+              <span style="display:flex; align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg></span>
+              <div>
+                <div style="font-size: 9.5px; font-weight: 800;">ضمان 48 ساعة</div>
+                <div style="font-size: 8px; color: #94A3B8;">حقك محفوظ، فحص ومطابقة واستبدال مضمون 100%</div>
+              </div>
+            </div>
+            <div style="background: #0B1321; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 6px 8px; display: flex; align-items: center; gap: 6px; color: white;">
+              <span style="display:flex; align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg></span>
+              <div>
+                <div style="font-size: 9.5px; font-weight: 800;">سعر الجملة من المستودع</div>
+                <div style="font-size: 8px; color: #94A3B8;">عروض توفير حقيقية من المستودع ليدك بدون وسيط</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3D Clay Categories Continuous Slider (Phone Simulator) -->
+          <div style="padding: 0 12px; margin-bottom: 14px; overflow: hidden;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 13px; font-weight: 800; color: #0F172A;">الأقسام الأكثر طلباً</span>
+              <span style="font-size: 10px; color: #059669; font-weight: 800;">سلايدر مستمر</span>
+            </div>
+            <div style="overflow: hidden; mask-image: linear-gradient(90deg, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%);">
+              <div style="display: flex; gap: 8px; width: max-content; animation: catChipsMarqueeLoop 24s linear infinite; direction: ltr;">
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: دفاتر ومذكرات')">
+                  <div class="clay-img-frame icon-bg-stationery" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">دفاتر</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: طباعة وتجهيز')">
+                  <div class="clay-img-frame icon-bg-printing" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">طباعة</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: سيتات التخرج')">
+                  <div class="clay-img-frame icon-bg-graduation" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">تخرج</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: أدوات الرسم والفن')">
+                  <div class="clay-img-frame icon-bg-art" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">فنون</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: أطقم مكاتب')">
+                  <div class="clay-img-frame icon-bg-luxury" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">مكاتب</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: عروض أقل من 10k')">
+                  <div class="clay-img-frame icon-bg-deals" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">أقل من 10k</span>
+                </div>
+
+                <!-- Duplicated for seamless loop -->
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: دفاتر ومذكرات')">
+                  <div class="clay-img-frame icon-bg-stationery" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">دفاتر</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: طباعة وتجهيز')">
+                  <div class="clay-img-frame icon-bg-printing" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">طباعة</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: سيتات التخرج')">
+                  <div class="clay-img-frame icon-bg-graduation" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">تخرج</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: أدوات الرسم والفن')">
+                  <div class="clay-img-frame icon-bg-art" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">فنون</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: أطقم مكاتب')">
+                  <div class="clay-img-frame icon-bg-luxury" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">مكاتب</span>
+                </div>
+                <div class="clay-category-card" style="width: 86px; min-width: 86px; padding: 8px 4px;" onclick="triggerToast('قسم: عروض أقل من 10k')">
+                  <div class="clay-img-frame icon-bg-deals" style="width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px;"></div>
+                  <span style="font-size: 10px; font-weight: 800;">أقل من 10k</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Hot Deals in Phone -->
+          <div style="padding: 0 12px 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 13px; font-weight: 800; color: #DC2626;">عروض تفليش ساخنة اليوم</span>
+              <span style="font-size: 11px; font-family: var(--font-num); color: #64748B;">05:41:22</span>
+            </div>
+            
+            <div style="display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none;">
+              
+              <div class="product-commercial-card" style="width: 155px; flex-shrink: 0;">
+                <span class="card-discount-badge" style="font-size: 9px; padding: 2px 6px;">35%</span>
+                <div class="card-photo-box" style="height: 110px;">
+                  <img src="luxury_packshot.jpg" alt="طقم مذكرات">
+                </div>
+                <div class="card-details" style="padding: 10px;">
+                  <h4 style="font-size: 12px; margin-bottom: 6px;">طقم مذكرات + قلم</h4>
+                  <div class="card-price-action-row" style="padding-top: 6px;">
+                    <span class="price-current-iqd" style="font-size: 13px;">11,500 د.ع</span>
+                    <button class="btn-quick-add-cart" style="width: 28px; height: 28px; font-size: 16px;" onclick="addToCart('طقم مذكرات جلدية', 11500, 'luxury_packshot.jpg')">+</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="product-commercial-card" style="width: 155px; flex-shrink: 0;">
+                <span class="card-discount-badge" style="font-size: 9px; padding: 2px 6px;">40%</span>
+                <div class="card-photo-box" style="height: 110px;">
+                  <img src="clay_icons.jpg" style="object-position: bottom right;" alt="ألوان زيتية">
+                </div>
+                <div class="card-details" style="padding: 10px;">
+                  <h4 style="font-size: 12px; margin-bottom: 6px;">طقم ألوان 24 لون</h4>
+                  <div class="card-price-action-row" style="padding-top: 6px;">
+                    <span class="price-current-iqd" style="font-size: 13px;">8,500 د.ع</span>
+                    <button class="btn-quick-add-cart" style="width: 28px; height: 28px; font-size: 16px;" onclick="addToCart('طقم ألوان 24 لون', 8500, 'clay_icons.jpg')">+</button>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Bottom Capsule Nav -->
+          <div class="phone-capsule-nav">
+            <button class="phone-nav-item active">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+              <span>الرئيسية</span>
+            </button>
+            <button class="phone-nav-item" onclick="triggerToast('الانتقال لتبويب العروض')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path></svg>
+              <span>العروض</span>
+            </button>
+            <button class="phone-nav-item" onclick="triggerToast('الانتقال لتبويب مكافآتي')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+              <span>مكافآتي</span>
+            </button>
+            <button class="phone-nav-item" onclick="toggleCartDrawer(true)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+              <span>السلة</span>
+            </button>
+            <button class="phone-nav-item" onclick="triggerToast('الانتقال لتبويب حسابي')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+              <span>حسابي</span>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Phone Screen 2: Weekly Deals & Flyer Hub -->
+      <div class="iphone-chassis">
+        <div class="phone-top-indicator" style="background:#DC2626;">2. عروض التفليش والمجلة</div>
+        <div class="iphone-screen">
+          
+          <div class="phone-status-island">
+            <div class="clock-island-row">
+              <span>9:41</span>
+              <div class="dynamic-island-notch"></div>
+              <span>5G</span>
+            </div>
+            <div style="font-size: 15px; font-weight: 900; color: #DC2626;">عروض تفليش ساخنة اليوم — لحّك قبل لا تخلص العروض</div>
+          </div>
+
+          <div style="margin: 12px; border-radius: 20px; overflow: hidden; position: relative;" onclick="openDigitalFlyerModal()">
+            <img src="promo_flyer_deals.jpg" style="width: 100%; display: block;" alt="مجلة العروض">
+            <div style="position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(transparent, rgba(0,0,0,0.85)); padding: 12px; color: white;">
+              <span style="font-size: 10px; font-weight: 900; background: #DC2626; padding: 2px 6px; border-radius: 4px;">خصم 60%</span>
+              <h4 style="font-size: 13px; font-weight: 800; margin-top: 4px;">تصفح مجلة عروض وتخفيضات الأسبوع &gt;</h4>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 0 12px 16px;">
+            
+            <div class="product-commercial-card">
+              <div class="card-photo-box" style="height: 100px;">
+                <img src="luxury_packshot.jpg" alt="مذكرة">
+              </div>
+              <div class="card-details" style="padding: 10px;">
+                <h4 style="font-size: 11px; margin-bottom: 4px;">مذكرة جلدية + قلم</h4>
+                <div class="card-price-action-row" style="padding-top: 4px;">
+                  <span class="price-current-iqd" style="font-size: 12px;">9,500 د.ع</span>
+                  <button class="btn-quick-add-cart" style="width: 26px; height: 26px; font-size: 14px;" onclick="addToCart('مذكرة جلدية', 9500, 'luxury_packshot.jpg')">+</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="product-commercial-card">
+              <div class="card-photo-box" style="height: 100px;">
+                <img src="promo_student_bundle.jpg" alt="حقيبة مدرسية">
+              </div>
+              <div class="card-details" style="padding: 10px;">
+                <h4 style="font-size: 11px; margin-bottom: 4px;">حقيبة مدرسية متكاملة</h4>
+                <div class="card-price-action-row" style="padding-top: 4px;">
+                  <span class="price-current-iqd" style="font-size: 12px;">42,000 د.ع</span>
+                  <button class="btn-quick-add-cart" style="width: 26px; height: 26px; font-size: 14px;" onclick="addToCart('حقيبة مدرسية متكاملة', 42000, 'promo_student_bundle.jpg')">+</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="phone-capsule-nav">
+            <button class="phone-nav-item" onclick="triggerToast('العودة للرئيسية')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+              <span>الرئيسية</span>
+            </button>
+            <button class="phone-nav-item active">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path></svg>
+              <span>العروض</span>
+            </button>
+            <button class="phone-nav-item" onclick="triggerToast('الانتقال لمكافآتي')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+              <span>مكافآتي</span>
+            </button>
+            <button class="phone-nav-item" onclick="toggleCartDrawer(true)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+              <span>السلة</span>
+            </button>
+            <button class="phone-nav-item" onclick="triggerToast('الانتقال لحسابي')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+              <span>حسابي</span>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Phone Screen 3: My Perks Rewards Hub -->
+      <div class="iphone-chassis">
+        <div class="phone-top-indicator" style="background:#F59E0B;">3. مكافآت ونقاط الولاء (My Perks)</div>
+        <div class="iphone-screen">
+          
+          <div class="phone-status-island">
+            <div class="clock-island-row">
+              <span>9:41</span>
+              <div class="dynamic-island-notch"></div>
+              <span>5G</span>
+            </div>
+            <div style="font-size: 15px; font-weight: 900; color: #B45309;">برنامج مكافآت الرؤية</div>
+          </div>
+
+          <div style="margin: 12px; background: linear-gradient(135deg, #FFFBEB 0%, #FDE68A 100%); border: 1px solid #FCD34D; border-radius: 20px; padding: 16px; box-shadow: 0 8px 20px rgba(245, 158, 11, 0.2);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+              <div>
+                <h4 style="font-size: 16px; font-weight: 900; color: #78350F;">رصيد نقاطي</h4>
+                <div style="font-family: var(--font-num); font-size: 24px; font-weight: 900; color: #B45309;">250 نقطة</div>
+              </div>
+              <div style="width: 55px; height: 55px; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                <img src="rewards_coins.jpg" style="width: 100%; height: 100%; object-fit: cover;" alt="عملات ذهبية">
+              </div>
+            </div>
+            
+            <div style="font-size: 11px; font-weight: 800; color: #92400E; margin-bottom: 4px; display: flex; justify-content: space-between;">
+              <span>مستوى العضوية: الفضية</span>
+              <span>250 / 500</span>
+            </div>
+            <div style="width: 100%; height: 8px; background: #FEF3C7; border-radius: 999px; overflow: hidden; margin-bottom: 8px;">
+              <div style="width: 50%; height: 100%; background: #D97706; border-radius: 999px;"></div>
+            </div>
+            <p style="font-size: 10px; color: #92400E;">متبقي 250 نقطة للحصول على قسيمة مشتريات مجانية بقيمة 10,000 د.ع</p>
+          </div>
+
+          <div style="padding: 0 12px 16px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 13px; font-weight: 800;">قسائم الخصم المتوفرة</div>
+            
+            <div style="background: white; border: 1px solid #E2E8F0; border-radius: 14px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <div style="font-size: 12px; font-weight: 800;">توصيل مجاني</div>
+                <div style="font-size: 10px; color: #64748B;">للطلبات فوق 35,000 د.ع</div>
+              </div>
+              <button style="background: linear-gradient(135deg, #10B981, #059669); color: white; border: none; padding: 6px 16px; border-radius: 9999px; font-family: var(--font-main); font-size: 11px; font-weight: 800; cursor: pointer; box-shadow: 0 2px 8px rgba(5,150,105,0.35); transition: transform 0.2s;" onclick="triggerToast('تم تفعيل التوصيل المجاني!')">تفعيل</button>
+            </div>
+
+            <div style="background: white; border: 1px solid #E2E8F0; border-radius: 14px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <div style="font-size: 12px; font-weight: 800;">خصم 15% إضافي</div>
+                <div style="font-size: 10px; color: #64748B;">كود: ALROYA15</div>
+              </div>
+              <button style="background: linear-gradient(135deg, #10B981, #059669); color: white; border: none; padding: 6px 16px; border-radius: 9999px; font-family: var(--font-main); font-size: 11px; font-weight: 800; cursor: pointer; box-shadow: 0 2px 8px rgba(5,150,105,0.35); transition: transform 0.2s;" onclick="applyCouponCode('ALROYA15')">تطبيق</button>
+            </div>
+
+          </div>
+
+          <div class="phone-capsule-nav">
+            <button class="phone-nav-item" onclick="triggerToast('العودة للرئيسية')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+              <span>الرئيسية</span>
+            </button>
+            <button class="phone-nav-item" onclick="triggerToast('الانتقال للعروض')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path></svg>
+              <span>العروض</span>
+            </button>
+            <button class="phone-nav-item active">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+              <span>مكافآتي</span>
+            </button>
+            <button class="phone-nav-item" onclick="toggleCartDrawer(true)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+              <span>السلة</span>
+            </button>
+            <button class="phone-nav-item" onclick="triggerToast('الانتقال لحسابي')">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+              <span>حسابي</span>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+  </section>
+
+  <!-- ==========================================================================
+       INTERACTIVE CART SLIDE-OUT DRAWER
+       ========================================================================== -->
+  <div class="cart-drawer-overlay" id="cartDrawerOverlay" onclick="handleOverlayClick(event)">
+    <div class="cart-drawer-panel" id="cartDrawerPanel">
+      
+      <div class="cart-drawer-header">
+        <h3>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+          مسواكك وسلة مشترياتك (<span id="cartDrawerCount">3</span> مواد)
+        </h3>
+        <button class="btn-close-cart" onclick="toggleCartDrawer(false)" aria-label="إغلاق"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+      </div>
+
+      <div class="cart-items-scroll" id="cartItemsContainer">
+        <!-- Rendered dynamically by JS -->
+      </div>
+
+      <div class="cart-drawer-footer">
+        
+        <div class="coupon-input-group">
+          <input type="text" id="couponInputBox" placeholder="كوبون الخصم (جرب: ALROYA15)">
+          <button onclick="applyTypedCoupon()">تطبيق</button>
+        </div>
+
+        <div class="cart-breakdown-row">
+          <span>مجموع المسواك:</span>
+          <span id="subtotalVal">34,000 د.ع</span>
+        </div>
+        <div class="cart-breakdown-row" style="color: #059669;">
+          <span>الخصم المباشر:</span>
+          <span id="discountVal">0 د.ع</span>
+        </div>
+        <div class="cart-breakdown-row">
+          <span>التوصيل لباب بيتك (بلاش للطلبات فوق 35 ألف):</span>
+          <span id="deliveryVal" style="color: #059669; font-weight: 800;">بلاش</span>
+        </div>
+        <div class="cart-breakdown-row total-bold">
+          <span>المجموع الكلي الصافي:</span>
+          <span class="total-val" id="totalFinalVal">34,000 د.ع</span>
+        </div>
+
+        <button class="btn-checkout-now" onclick="executeCheckout()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          <span>أكد طلبك وهسة نجهزه الك</span>
+        </button>
+
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Quick Product Detail Modal -->
+  <div class="cart-drawer-overlay" id="productDetailModal" onclick="closeProductModal(event)">
+    <div style="background: white; border-radius: 24px; max-width: 500px; width: 90%; margin: auto; overflow: hidden; box-shadow: 0 25px 60px rgba(0,0,0,0.4);" onclick="event.stopPropagation()">
+      <div style="height: 240px; background: #000; position: relative;">
+        <img id="modalProductImg" src="" style="width: 100%; height: 100%; object-fit: cover;" alt="معاينة المنتج">
+        <button style="position: absolute; top: 14px; left: 14px; background: rgba(0,0,0,0.6); color: white; border: none; width: 34px; height: 34px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;" onclick="closeProductModal()" aria-label="إغلاق"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+      </div>
+      <div style="padding: 24px;">
+        <span style="color: var(--brand-green); font-size: 12px; font-weight: 800;" id="modalProductCat">تفاصيل المنتج</span>
+        <h3 style="font-size: 18px; font-weight: 900; margin: 6px 0 10px;" id="modalProductTitle">عنوان المنتج</h3>
+        <p style="font-size: 13px; color: #64748B; line-height: 1.5; margin-bottom: 18px;">منتج أصلي عالي الجودة متاح الآن في فروع الرؤية العربية مع خدمة التوصيل السريع وضمان فحص المنتج قبل الاستلام.</p>
+        <div style="display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #E2E8F0; padding-top: 14px;">
+          <div>
+            <div style="font-size: 11px; color: #64748B;">السعر الحالي:</div>
+            <div style="font-family: var(--font-num); font-size: 20px; font-weight: 900; color: #064E3B;" id="modalProductPrice">11,500 د.ع</div>
+          </div>
+          <button class="btn-hero-primary" id="modalAddToCartBtn" style="padding: 10px 24px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>
+            <span>خلّيها بالسلة</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Element -->
+  <div class="floating-toast-alert" id="toastBox">
+    تمت الإضافة بنجاح إلى مسواكك وسلتك!
+  </div>
+
+  <!-- BANNER MANAGER & UPLOAD MODAL -->
+  <div class="banner-mgr-modal-backdrop" id="bannerMgrModalBackdrop" onclick="closeBannerManagerModal(event)">
+    <div class="banner-mgr-modal" onclick="event.stopPropagation()">
+      <div class="banner-mgr-header">
+        <div class="banner-mgr-title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+          <span>إدارة البنرات الإعلانية ورفع الصور</span>
+        </div>
+        <button class="btn-mgr-close" onclick="closeBannerManagerModal()" title="إغلاق">&times;</button>
+      </div>
+
+      <!-- Upload Dropzone Area -->
+      <div class="upload-dropzone-box" id="modalDropzone" onclick="triggerBannerUpload()">
+        <div class="dropzone-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+        </div>
+        <h4 style="font-size: 15px; font-weight: 900; color: #0F172A; margin: 0 0 4px;">انقر لاختيار صورة إعلانية أو اسحبها إلى هنا</h4>
+        <p style="font-size: 12px; color: #64748B; margin: 0;">يدعم الصور بصيغة JPG, PNG, WebP (المقاس الأفضل: 1400 × 480 بكسل)</p>
+      </div>
+
+      <!-- Current Banners List -->
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <h5 style="font-size: 14px; font-weight: 900; color: #0F172A; margin: 0;">البنرات الإعلانية المعروضة حالياً في السلايدر:</h5>
+        <button style="background: none; border: none; color: #059669; font-size: 12px; font-weight: 800; cursor: pointer;" onclick="resetDefaultBanners()">استعادة البنرات الافتراضية</button>
+      </div>
+      <div class="banner-list-grid" id="modalBannersGrid">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Client-side Logic (Auto-Slider, Cart, Navigation) -->
+  <script>
+    // Cart Data State
+    let cartItems = [
+      { id: 1, title: 'طقم مذكرات جلدية فاخرة بنقش مذهب + قلم', price: 11500, qty: 1, img: 'luxury_packshot.jpg' },
+      { id: 2, title: 'باكج 5 دفاتر سلك جامعية مقسمة 100 ورقة', price: 6500, qty: 1, img: 'clay_icons.jpg' },
+      { id: 3, title: 'قلم حبر معدني مطلي بالذهب عيار 18', price: 16000, qty: 1, img: 'promo_mega_sale.jpg' }
+    ];
+    let discountRate = 0;
+
+    // =========================================================================
+    // WORLD-CLASS AUTO-ROTATING HERO SLIDER ENGINE
+    // =========================================================================
+    let currentHeroSlide = 0;
+    const totalHeroSlides = 3;
+    // ==========================================================================
+    // FULL-WIDTH ADVERTISING HERO CAROUSEL ENGINE & UPLOADER
+    // ==========================================================================
+    const DEFAULT_AD_BANNERS = [
+      {
+        id: 'b1',
+        title: 'أقوى عروض العودة للدراسة - خصومات 60%',
+        image: 'banner_back_to_school.jpg',
+        link: 'cat-school'
+      },
+      {
+        id: 'b2',
+        title: 'تجهيزات الشركات والمكاتب الفاخرة - خصومات الجملة 45%',
+        image: 'banner_office_corp.jpg',
+        link: 'cat-corporate'
+      },
+      {
+        id: 'b3',
+        title: 'مهرجان الفنون والطباعة الرقمية - تخفيضات 50%',
+        image: 'banner_art_printing.jpg',
+        link: 'cat-printing'
+      },
+      {
+        id: 'b4',
+        title: 'مجلة عروض وتخفيضات الأسبوع الكبرى - خصومات حتى 60%',
+        image: 'promo_flyer_deals.jpg',
+        link: 'flyer'
+      }
+    ];
+
+    let adBanners = [...DEFAULT_AD_BANNERS];
+    let currentAdIndex = 0;
+    const adSlideDuration = 4500; // 4.5s auto rotation
+    let adSliderPaused = false;
+    let adProgressAnim = null;
+    let adStartTime = Date.now();
+
+    function initHeroSlider() {
+      renderAdCarousel();
+      goToAdSlide(0);
+      setupAdDragAndDrop();
+    }
+
+    function renderAdCarousel() {
+      const track = document.getElementById('adCarouselTrack');
+      const indicators = document.getElementById('adCarouselIndicators');
+      const countLabel = document.getElementById('bannerCountLabel');
+      
+      if (!track || !indicators) return;
+
+      track.innerHTML = adBanners.map((banner, index) => `
+        <div class="ad-slide-item" onclick="onAdBannerClick(${index})" title="${banner.title}">
+          <img src="${banner.image}" class="ad-slide-img" alt="${banner.title}">
+        </div>
+      `).join('');
+
+      indicators.innerHTML = adBanners.map((_, index) => `
+        <div class="ad-dot ${index === currentAdIndex ? 'active' : ''}" onclick="goToAdSlide(${index})" id="adDot${index}" title="الانتقال للإعلان ${index + 1}">
+          <div class="ad-dot-fill" id="adDotFill${index}"></div>
+        </div>
+      `).join('');
+
+      if (countLabel) {
+        countLabel.innerText = `إدارة البنرات (${adBanners.length})`;
+      }
+
+      updateAdCounter();
+    }
+
+    function goToAdSlide(index) {
+      if (adBanners.length === 0) return;
+      currentAdIndex = (index + adBanners.length) % adBanners.length;
+
+      const track = document.getElementById('adCarouselTrack');
+      if (track) {
+        track.style.transform = `translate3d(-${currentAdIndex * 100}%, 0, 0)`;
+      }
+
+      for (let i = 0; i < adBanners.length; i++) {
+        const dot = document.getElementById(`adDot${i}`);
+        const fill = document.getElementById(`adDotFill${i}`);
+        if (dot) {
+          if (i === currentAdIndex) {
+            dot.classList.add('active');
+          } else {
+            dot.classList.remove('active');
+          }
+        }
+        if (fill) {
+          fill.style.width = '0%';
+        }
+      }
+
+      updateAdCounter();
+      resetAdProgressTimer();
+    }
+
+    function nextAdSlide() {
+      goToAdSlide(currentAdIndex + 1);
+    }
+
+    function prevAdSlide() {
+      goToAdSlide(currentAdIndex - 1);
+    }
+
+    function updateAdCounter() {
+      const counter = document.getElementById('adCarouselCounter');
+      if (counter) {
+        counter.innerText = `${currentAdIndex + 1} من ${adBanners.length}`;
+      }
+    }
+
+    function resetAdProgressTimer() {
+      if (adProgressAnim) {
+        cancelAnimationFrame(adProgressAnim);
+      }
+
+      adStartTime = Date.now();
+
+      function step() {
+        if (adSliderPaused) {
+          adStartTime += 16;
+        } else {
+          const elapsed = Date.now() - adStartTime;
+          const pct = Math.min(100, (elapsed / adSlideDuration) * 100);
+          const activeFill = document.getElementById(`adDotFill${currentAdIndex}`);
+          if (activeFill) {
+            activeFill.style.width = `${pct}%`;
+          }
+          if (elapsed >= adSlideDuration) {
+            nextAdSlide();
+            return;
+          }
+        }
+        adProgressAnim = requestAnimationFrame(step);
+      }
+
+      adProgressAnim = requestAnimationFrame(step);
+    }
+
+    function pauseAdSlider() {
+      adSliderPaused = true;
+    }
+
+    function resumeAdSlider() {
+      adSliderPaused = false;
+    }
+
+    function onAdBannerClick(index) {
+      const banner = adBanners[index];
+      if (!banner) return;
+      if (banner.link === 'flyer') {
+        openDigitalFlyerModal();
+      } else {
+        triggerToast(`تم فتح: ${banner.title}`);
+      }
+    }
+
+    // BANNER UPLOAD & DRAG/DROP
+    function triggerBannerUpload() {
+      const fileInput = document.getElementById('bannerFileInput');
+      if (fileInput) fileInput.click();
+    }
+
+    function handleBannerFileUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+
+      if (!file.type.startsWith('image/')) {
+        triggerToast('يرجى اختيار ملف صورة صالح (JPG, PNG, WebP)');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const dataUrl = e.target.result;
+        const newBanner = {
+          id: 'custom_' + Date.now(),
+          title: file.name.replace(/\.[^/.]+$/, '') || 'بنر إعلاني مخصص',
+          image: dataUrl,
+          link: 'custom'
+        };
+
+        adBanners.push(newBanner);
+        renderAdCarousel();
+        goToAdSlide(adBanners.length - 1);
+        closeBannerManagerModal();
+        triggerToast('تم رفع البنر الإعلاني وإضافته إلى السلايدر بنجاح!');
+      };
+      reader.readAsDataURL(file);
+      event.target.value = '';
+    }
+
+    function setupAdDragAndDrop() {
+      const carousel = document.getElementById('adHeroCarousel');
+      const overlay = document.getElementById('adDragOverlay');
+      if (!carousel || !overlay) return;
+
+      ['dragenter', 'dragover'].forEach(eventName => {
+        carousel.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          overlay.classList.add('active');
+        }, false);
+      });
+
+      ['dragleave', 'drop'].forEach(eventName => {
+        carousel.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          overlay.classList.remove('active');
+        }, false);
+      });
+
+      carousel.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files && files.length > 0) {
+          handleBannerFileUpload({ target: { files: files, value: '' } });
+        }
+      }, false);
+    }
+
+    function openBannerManagerModal() {
+      const modal = document.getElementById('bannerMgrModalBackdrop');
+      const grid = document.getElementById('modalBannersGrid');
+      if (!modal || !grid) return;
+
+      grid.innerHTML = adBanners.map((b, i) => `
+        <div class="banner-thumb-card">
+          <img src="${b.image}" alt="${b.title}">
+          <div class="banner-thumb-info">
+            <span class="banner-thumb-title" title="${b.title}">${b.title}</span>
+            <button class="btn-delete-banner" onclick="deleteBanner(${i})" ${adBanners.length <= 1 ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''}>حذف</button>
+          </div>
+        </div>
+      `).join('');
+
+      modal.classList.add('open');
+    }
+
+    function closeBannerManagerModal(e) {
+      const modal = document.getElementById('bannerMgrModalBackdrop');
+      if (modal) modal.classList.remove('open');
+    }
+
+    function deleteBanner(index) {
+      if (adBanners.length <= 1) {
+        triggerToast('يجب الإبقاء على بنر واحد على الأقل في السلايدر');
+        return;
+      }
+      const removed = adBanners.splice(index, 1);
+      if (currentAdIndex >= adBanners.length) {
+        currentAdIndex = adBanners.length - 1;
+      }
+      renderAdCarousel();
+      goToAdSlide(currentAdIndex);
+      openBannerManagerModal(); // refresh grid
+      triggerToast('تم حذف البنر الإعلاني من السلايدر');
+    }
+
+    function resetDefaultBanners() {
+      adBanners = [...DEFAULT_AD_BANNERS];
+      currentAdIndex = 0;
+      renderAdCarousel();
+      goToAdSlide(0);
+      openBannerManagerModal();
+      triggerToast('تمت استعادة البنرات الإعلانية الافتراضية');
+    }
+
+    // Keyboard Arrow Navigation for Slider
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight') {
+        prevHeroSlide(); // RTL direction
+      } else if (e.key === 'ArrowLeft') {
+        nextHeroSlide();
+      }
+    });
+
+    // Touch Swipe Detection for Hero Slider
+    let touchStartX = 0;
+    let touchEndX = 0;
+    const sliderContainer = document.getElementById('worldClassHeroSlider');
+    if (sliderContainer) {
+      sliderContainer.addEventListener('touchstart', (e) => {
+        touchStartX = e.changedTouches[0].screenX;
+      }, { passive: true });
+      sliderContainer.addEventListener('touchend', (e) => {
+        touchEndX = e.changedTouches[0].screenX;
+        if (touchEndX - touchStartX > 50) {
+          prevHeroSlide();
+        } else if (touchStartX - touchEndX > 50) {
+          nextHeroSlide();
+        }
+      }, { passive: true });
+    }
+
+    // =========================================================================
+    // CART & UI ACTIONS
+    // =========================================================================
+    function updateCartUI() {
+      const container = document.getElementById('cartItemsContainer');
+      const countHeader = document.getElementById('headerCartCount');
+      const countDrawer = document.getElementById('cartDrawerCount');
+      
+      const totalCount = cartItems.reduce((acc, item) => acc + item.qty, 0);
+      if (countHeader) countHeader.innerText = totalCount;
+      if (countDrawer) countDrawer.innerText = totalCount;
+
+      if (!container) return;
+
+      if (cartItems.length === 0) {
+        container.innerHTML = `
+          <div style="text-align: center; padding: 40px 20px; color: #94A3B8;">
+            <div style="display:flex; justify-content:center; margin-bottom: 12px;"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" stroke-width="1.8"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg></div>
+            <h4 style="font-size: 16px; font-weight: 800; color: #0F172A; margin-bottom: 6px;">سلتك فارغة عيني!</h4>
+            <p style="font-size: 13px;">تصفح المنتجات واختار اليعجبك واستفاد من عروض اليوم</p>
+          </div>
+        `;
+      } else {
+        container.innerHTML = cartItems.map((item, idx) => `
+          <div class="cart-item-row">
+            <div class="cart-item-thumb">
+              <img src="${item.img}" alt="${item.title}">
+            </div>
+            <div class="cart-item-info">
+              <h5>${item.title}</h5>
+              <div class="cart-item-price">${(item.price * item.qty).toLocaleString()} د.ع</div>
+            </div>
+            <div class="cart-qty-control">
+              <button class="btn-qty" onclick="changeQty(${idx}, 1)">+</button>
+              <span class="qty-display">${item.qty}</span>
+              <button class="btn-qty" onclick="changeQty(${idx}, -1)">-</button>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      const subtotal = cartItems.reduce((acc, item) => acc + (item.price * item.qty), 0);
+      const discountAmount = Math.round(subtotal * discountRate);
+      const deliveryFee = subtotal >= 35000 || subtotal === 0 ? 0 : 4000;
+      const finalTotal = Math.max(0, subtotal - discountAmount + deliveryFee);
+
+      document.getElementById('subtotalVal').innerText = `${subtotal.toLocaleString()} د.ع`;
+      document.getElementById('discountVal').innerText = discountAmount > 0 ? `-${discountAmount.toLocaleString()} د.ع` : `0 د.ع`;
+      document.getElementById('deliveryVal').innerText = deliveryFee === 0 ? (subtotal > 0 ? 'بلاش' : '0 د.ع') : `${deliveryFee.toLocaleString()} د.ع`;
+      document.getElementById('totalFinalVal').innerText = `${finalTotal.toLocaleString()} د.ع`;
+    }
+
+    function addToCart(title, price, img) {
+      const existing = cartItems.find(i => i.title === title);
+      if (existing) {
+        existing.qty++;
+      } else {
+        cartItems.push({ id: Date.now(), title, price, qty: 1, img: img || 'luxury_packshot.jpg' });
+      }
+      updateCartUI();
+      triggerToast(`خلّيناها بمسواكك بالسلة! (${price.toLocaleString()} د.ع)`);
+    }
+
+    function changeQty(index, delta) {
+      if (!cartItems[index]) return;
+      cartItems[index].qty += delta;
+      if (cartItems[index].qty <= 0) {
+        cartItems.splice(index, 1);
+      }
+      updateCartUI();
+    }
+
+    function toggleCartDrawer(open) {
+      const drawer = document.getElementById('cartDrawerOverlay');
+      if (open) {
+        drawer.classList.add('open');
+      } else {
+        drawer.classList.remove('open');
+      }
+    }
+
+    function handleOverlayClick(event) {
+      if (event.target.id === 'cartDrawerOverlay') {
+        toggleCartDrawer(false);
+      }
+    }
+
+    function applyCouponCode(code) {
+      if (code.toUpperCase() === 'ALROYA15') {
+        discountRate = 0.15;
+        updateCartUI();
+        triggerToast('تم تفعيل كوبون ALROYA15 واكطع 15% خصم إضافي!');
+      } else {
+        triggerToast('الكوبون المدخل غير فعال، جرب تستعمل ALROYA15');
+      }
+    }
+
+    function applyTypedCoupon() {
+      const val = document.getElementById('couponInputBox').value.trim();
+      if (!val) {
+        triggerToast('اكتب رمز الكوبون عيني أولاً');
+        return;
+      }
+      applyCouponCode(val);
+    }
+
+    function executeCheckout() {
+      if (cartItems.length === 0) {
+        triggerToast('سلتك فارغة عيني! اختار منتجات أولاً');
+        return;
+      }
+      toggleCartDrawer(false);
+      triggerToast('أكدنا طلبك وهسة نجهزه الك! رقم الطلب #ALR-89241 — جاري التوصيل لباب بيتك');
+      cartItems = [];
+      updateCartUI();
+    }
+
+    function promptChangeLocation() {
+      const cities = ['بغداد - الكرادة', 'المنصور', 'زيونة', 'البصرة - العشار', 'أربيل - عنكاوا', 'النجف الأشرف', 'كربلاء المقدسة'];
+      const nextCity = cities[Math.floor(Math.random() * cities.length)];
+      document.getElementById('currentLocationText').innerText = 'وين تحب نوصل مسواكك؟ ' + nextCity;
+      triggerToast(`نوصل مسواكك لباب بيتك في: ${nextCity}`);
+    }
+
+    // =========================================================================
+    // CONTINUOUS CATEGORY MARQUEE CONTROLLER
+    // =========================================================================
+    let isCatMarqueePaused = false;
+
+    function toggleCategoryMarquee() {
+      const track = document.getElementById('categoriesMarqueeTrack');
+      const chipsTrack = document.getElementById('catChipsMarqueeTrack');
+      const icon = document.getElementById('catMarqueeIcon');
+      const text = document.getElementById('catMarqueeText');
+      if (!track) return;
+
+      isCatMarqueePaused = !isCatMarqueePaused;
+      if (isCatMarqueePaused) {
+        track.classList.add('is-paused');
+        if (chipsTrack) chipsTrack.classList.add('is-paused');
+        if (icon) icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+        if (text) text.innerText = 'تشغيل الحركة';
+        triggerToast('تم إيقاف حركة السلايدر مؤقتاً');
+      } else {
+        track.classList.remove('is-paused');
+        if (chipsTrack) chipsTrack.classList.remove('is-paused');
+        if (icon) icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+        if (text) text.innerText = 'إيقاف مؤقت';
+        triggerToast('تم استئناف حركة السلايدر المستمرة');
+      }
+    }
+
+    function nudgeCategorySlider(direction) {
+      const track = document.getElementById('categoriesMarqueeTrack');
+      const wrap = document.getElementById('continuousCategoriesSliderWrap');
+      if (!track || !wrap) return;
+
+      // Temporarily pause auto-animation when user nudges
+      track.classList.add('is-paused');
+      const curScroll = wrap.scrollLeft;
+      wrap.scrollBy({ left: direction * 220, behavior: 'smooth' });
+
+      setTimeout(() => {
+        if (!isCatMarqueePaused) {
+          track.classList.remove('is-paused');
+        }
+      }, 3000);
+    }
+
+    function selectCategorySlider(category, cardEl) {
+      // Highlight selected card
+      document.querySelectorAll('#categoriesMarqueeTrack .clay-category-card').forEach(c => c.classList.remove('selected-active'));
+      if (cardEl) {
+        cardEl.classList.add('selected-active');
+      }
+
+      // Also sync category chips bar if matching
+      const chipButtons = document.querySelectorAll('.cat-chip-btn');
+      chipButtons.forEach(btn => {
+        const onclickAttr = btn.getAttribute('onclick') || '';
+        if (onclickAttr.includes(`'${category}'`)) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+
+      filterCatalog(category);
+    }
+
+    function filterCatalog(category, el) {
+      if (el) {
+        document.querySelectorAll('.cat-chip-btn').forEach(b => b.classList.remove('active'));
+        el.classList.add('active');
+      }
+      const cards = document.querySelectorAll('#catalogGrid .product-commercial-card');
+      cards.forEach(card => {
+        if (category === 'all' || card.dataset.category === category) {
+          card.style.display = 'flex';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+      triggerToast(`تم تصفية المنتجات حسب القسم المحدد (${category === 'all' ? 'الكل' : category})`);
+      scrollToCatalog();
+    }
+
+    function handleSearch(query) {
+      const q = query.toLowerCase().trim();
+      const cards = document.querySelectorAll('#catalogGrid .product-commercial-card');
+      cards.forEach(card => {
+        const text = card.innerText.toLowerCase();
+        if (!q || text.includes(q)) {
+          card.style.display = 'flex';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+    }
+
+    function showProductDetails(title, price, img) {
+      document.getElementById('modalProductTitle').innerText = title;
+      document.getElementById('modalProductPrice').innerText = `${price.toLocaleString()} د.ع`;
+      document.getElementById('modalProductImg').src = img;
+      document.getElementById('modalAddToCartBtn').onclick = () => {
+        addToCart(title, price, img);
+        closeProductModal();
+      };
+      document.getElementById('productDetailModal').classList.add('open');
+    }
+
+    function closeProductModal(e) {
+      if (!e || e.target.id === 'productDetailModal') {
+        document.getElementById('productDetailModal').classList.remove('open');
+      }
+    }
+
+    function openDigitalFlyerModal() {
+      triggerToast('جاري فتح مجلة عروض وتخفيضات الأسبوع...');
+      const section = document.getElementById('digitalFlyerSection');
+      if (section) section.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function scrollToDeals() {
+      const el = document.getElementById('flashDealsSection');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function scrollToFlyer() {
+      const el = document.getElementById('digitalFlyerSection');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function scrollToCatalog() {
+      const el = document.getElementById('catalogGrid');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function switchViewMode(mode) {
+      const webView = document.getElementById('webStoreView');
+      const mobileView = document.getElementById('mobileSimulatorView');
+      const btnWeb = document.getElementById('btnViewWeb');
+      const btnMobile = document.getElementById('btnViewMobile');
+
+      if (mode === 'web') {
+        webView.style.display = 'block';
+        mobileView.style.display = 'none';
+        btnWeb.classList.add('active');
+        btnMobile.classList.remove('active');
+      } else {
+        webView.style.display = 'none';
+        mobileView.style.display = 'flex';
+        btnWeb.classList.remove('active');
+        btnMobile.classList.add('active');
+      }
+    }
+
+    function triggerToast(msg) {
+      const toast = document.getElementById('toastBox');
+      toast.innerText = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2500);
+    }
+
+    // Flash Deals Countdown Timer
+    let remainingSecs = 5 * 3600 + 41 * 60 + 22;
+    setInterval(() => {
+      if (remainingSecs > 0) remainingSecs--;
+      const h = String(Math.floor(remainingSecs / 3600)).padStart(2, '0');
+      const m = String(Math.floor((remainingSecs % 3600) / 60)).padStart(2, '0');
+      const s = String(remainingSecs % 60).padStart(2, '0');
+      const str = `${h}:${m}:${s}`;
+      const t2 = document.getElementById('flashTimerVal');
+      if (t2) t2.innerText = str;
+    }, 1000);
+
+    
+  // Mobile Slider Auto-Advance
+  let currentMobileSlide = 0;
+  setInterval(() => {
+    const track = document.getElementById('mobileAdTrack');
+    if (!track) return;
+    currentMobileSlide = (currentMobileSlide + 1) % 4;
+    track.style.transform = 'translate3d(-' + (currentMobileSlide * 100) + '%, 0, 0)';
+    for (let i = 0; i < 4; i++) {
+      const dot = document.getElementById('mDot' + i);
+      if (dot) {
+        if (i === currentMobileSlide) {
+          dot.style.width = '16px';
+          dot.style.background = '#10B981';
+        } else {
+          dot.style.width = '4px';
+          dot.style.background = 'rgba(255,255,255,0.4)';
+        }
+      }
+    }
+  }, 4000);
+  
+  // Initial render
+    updateCartUI();
+    initHeroSlider();
+  </script>
+</body>
+</html>

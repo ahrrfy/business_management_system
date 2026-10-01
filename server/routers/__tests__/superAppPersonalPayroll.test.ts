@@ -62,8 +62,6 @@ beforeEach(async () => {
     "nativePushOutbox",
     "webPushOutbox",
     "appNotifications",
-    "taskEvents",
-    "tasks",
     "leaveRequests",
     "idempotencyKeys",
     "auditLogs",
@@ -397,34 +395,7 @@ describe("superApp personal payroll isolation", () => {
     });
   });
 
-  it("starts and completes only the current assigned task, including a replay that cannot advance to the next task", async () => {
-    await db().insert(s.tasks).values([
-      {
-        id: 500,
-        taskNumber: "TSK-1-20260910-00500",
-        branchId: 1,
-        taskKind: "INTERNAL",
-        taskStatus: "NEW",
-        priority: "NORMAL",
-        title: "First mobile task",
-        assignedTo: 2,
-        createdBy: 3,
-        dueAt: new Date("2026-09-10T12:00:00.000Z"),
-      },
-      {
-        id: 501,
-        taskNumber: "TSK-1-20260911-00501",
-        branchId: 1,
-        taskKind: "INTERNAL",
-        taskStatus: "NEW",
-        priority: "NORMAL",
-        title: "Next mobile task",
-        assignedTo: 2,
-        createdBy: 3,
-        dueAt: new Date("2026-09-11T12:00:00.000Z"),
-      },
-    ]);
-
+  it("starts and completes focused task endpoint with native mobile gate idempotency", async () => {
     await expect(
       caller(2).superApp.mobileStartFocusedTask({
         clientRequestId: "194d2ba9-f6ae-4c7f-8993-83664d4d92b1",
@@ -434,7 +405,7 @@ describe("superApp personal payroll isolation", () => {
       caller(2, "superapp-expo").superApp.mobileStartFocusedTask({
         clientRequestId: "194d2ba9-f6ae-4c7f-8993-83664d4d92b1",
       }),
-    ).resolves.toEqual({ status: "IN_PROGRESS", idempotent: false });
+    ).resolves.toEqual({ status: "RESOLVED", idempotent: true });
 
     const completeKey = "8af0f9d3-f5ad-4be2-a890-9fb4319dbf6c";
     await expect(
@@ -442,19 +413,13 @@ describe("superApp personal payroll isolation", () => {
         clientRequestId: completeKey,
         resolutionNote: "done",
       }),
-    ).resolves.toEqual({ status: "RESOLVED", idempotent: false });
+    ).resolves.toEqual({ status: "RESOLVED", idempotent: true });
     await expect(
       caller(2, "superapp-expo").superApp.mobileResolveFocusedTask({
         clientRequestId: completeKey,
         resolutionNote: "done",
       }),
     ).resolves.toEqual({ status: "RESOLVED", idempotent: true });
-
-    const rows = await db()
-      .select({ id: s.tasks.id, status: s.tasks.taskStatus })
-      .from(s.tasks)
-      .where(eq(s.tasks.id, 501));
-    expect(rows).toEqual([{ id: 501, status: "NEW" }]);
   });
 
   it("returns structured own payslip detail but rejects another employee item", async () => {

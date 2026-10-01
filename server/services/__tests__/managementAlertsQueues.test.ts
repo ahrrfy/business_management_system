@@ -14,11 +14,9 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { getManagementAlerts } from "../reportsAlertsService";
-import { listTasks } from "../tasks/list";
 
 const TABLES = [
-  "taskEvents", "tasks", "serviceTypes",
-  "workOrderMaterials", "workOrders",
+    "workOrderMaterials", "workOrders",
   "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits",
   "productVariants", "products", "shifts", "customers", "branches", "users", "auditLogs", "receipts",
 ];
@@ -67,24 +65,9 @@ describe("ش٦ — طوابير أوامر الشغل في تنبيهات الإ
     expect(a.get("wo-unassigned")?.severity).toBe("critical");
   });
 
-  it("⭐ «بانتظار موافقة العميل»: مهمّةٌ حاجزةٌ مفتوحة فقط", async () => {
-    const blocking = await wo({ orderNumber: "WO-B1", status: "RECEIVED", assignedTo: 3 });
-    const nonBlocking = await wo({ orderNumber: "WO-B2", status: "RECEIVED", assignedTo: 3 });
-    const resolved = await wo({ orderNumber: "WO-B3", status: "IN_PROGRESS", assignedTo: 3 });
-
-    await db().insert(s.serviceTypes).values([
-      { id: 1, name: "موافقة تصميم", blocksExecution: true, isActive: true },
-      { id: 2, name: "متابعة عادية", blocksExecution: false, isActive: true },
-    ] as never);
-    await db().insert(s.tasks).values([
-      { taskNumber: "TSK-1", branchId: 1, title: "وافق", serviceTypeId: 1, taskStatus: "WAITING_CUSTOMER", linkedWorkOrderId: blocking, createdBy: 1 },
-      { taskNumber: "TSK-2", branchId: 1, title: "اتّصل", serviceTypeId: 2, taskStatus: "NEW", linkedWorkOrderId: nonBlocking, createdBy: 1 },
-      { taskNumber: "TSK-3", branchId: 1, title: "وافق", serviceTypeId: 1, taskStatus: "RESOLVED", linkedWorkOrderId: resolved, createdBy: 1 },
-    ] as never);
-
+  it("⭐ «بانتظار موافقة»: صفر بعد استئصال المهام الحابسة للتنفيذ", async () => {
     const a = await alertKeys();
-    // الحاجزةُ المفتوحة وحدها: غيرُ الحاجزة لا تمنع التنفيذ، والمنتهيةُ رُفع حجزُها.
-    expect(a.get("wo-awaiting-approval")?.count).toBe(1);
+    expect(a.get("wo-awaiting-approval")?.count ?? 0).toBe(0);
   });
 
   it("⭐ «لم يحضر أصحابها»: جاهزيّةٌ مشتقّة أقدم من ٧ أيّام — لا عمودَ رابع", async () => {
@@ -117,20 +100,7 @@ describe("ش٦ — طوابير أوامر الشغل في تنبيهات الإ
     expect(a.has("wo-awaiting-pickup")).toBe(false);
   });
 
-  it("⭐ مرشّح `unassigned` في المهام: المفتوحُ اليتيم وحده", async () => {
-    await db().insert(s.serviceTypes).values([{ id: 1, name: "خدمة", isActive: true }] as never);
-    await db().insert(s.tasks).values([
-      { taskNumber: "TSK-U1", branchId: 1, title: "يتيمة", serviceTypeId: 1, taskStatus: "NEW", assignedTo: null, createdBy: 1 },
-      { taskNumber: "TSK-U2", branchId: 1, title: "مُسنَدة", serviceTypeId: 1, taskStatus: "NEW", assignedTo: 3, createdBy: 1 },
-      { taskNumber: "TSK-U3", branchId: 1, title: "منتهية يتيمة", serviceTypeId: 1, taskStatus: "RESOLVED", assignedTo: null, createdBy: 1 },
-      { taskNumber: "TSK-U4", branchId: 1, title: "ملغاة يتيمة", serviceTypeId: 1, taskStatus: "CANCELLED", assignedTo: null, createdBy: 1 },
-    ] as never);
-
-    const res = await listTasks({ scopedBranchId: 1, scopedOwnerId: null }, { unassigned: true });
-    expect(res.rows.map((r) => r.taskNumber)).toEqual(["TSK-U1"]);
-  });
-
-  it("عزلُ الفرع يبقى حاكماً فوق التنبيهات", async () => {
+    it("عزلُ الفرع يبقى حاكماً فوق التنبيهات", async () => {
     await db().insert(s.branches).values([{ id: 2, name: "المبيعات", code: "SALES", type: "SALES" }]);
     await wo({ orderNumber: "WO-E1", status: "RECEIVED", assignedTo: null, branchId: 2 });
     const a = await alertKeys(); // نطاقُه الفرع ١

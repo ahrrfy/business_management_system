@@ -209,7 +209,7 @@ describe("أسطر الصفر في كشف الشركة — إثبات تسليم
     }, CASHIER)).rejects.toThrowError(/النقد المعدود/);
 
     // لا أثر: الطرد لم يُختم ولا سند أُنشئ — الرفض سبق الكتابة كلّها.
-    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("ASSIGNED");
+    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
   });
 });
@@ -328,7 +328,7 @@ describe("recordManualDeliveryProof — الإثبات اليدويّ الاست
       evidence: "   ",
       clientRequestId: "manual-2",
     }, CASHIER)).rejects.toThrowError(/دليلاً مكتوباً/);
-    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("ASSIGNED");
+    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("OUT_FOR_DELIVERY");
   });
 });
 
@@ -388,8 +388,8 @@ describe("Slice DFP1 — عجزُ التحصيل ذمّةٌ فوريّة على 
       // shortfallReason: undefined ⇒ يُرفض
     }, CASHIER)).rejects.toThrowError(/سبب مصنَّف/);
 
-    // لا كتابة: الطرد ما زال ASSIGNED، لا قيود، لا فاتورة تحرّكت
-    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("ASSIGNED");
+    // لا كتابة: الطرد ما زال OUT_FOR_DELIVERY، لا قيود، لا فاتورة تحرّكت
+    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(await partyBalance()).toBe(0);
     expect(await balanceOf(1)).toBe(20000);
     expect((await invoiceOf(a.invoiceId)).paidAmount).toBe("0.00");

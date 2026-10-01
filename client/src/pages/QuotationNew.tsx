@@ -15,13 +15,14 @@ import { AlertTriangle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
-import { D } from "@/lib/money";
+import { D, formatQuantity } from "@/lib/money";
 import { PageHeader } from "@/components/PageHeader";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { buildQuotationLinePayload } from "@/lib/quotationPayload";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 import {
   InvoiceHeader,
@@ -103,7 +104,12 @@ export default function QuotationNew() {
           productId: Number(item.productId),
           variantId: Number(item.variantId),
           productUnitId: Number(item.productUnitId),
-          name: [item.productName, item.variantName].filter(Boolean).join(" — "),
+          name: variantDisplayName({ ...item, productName: item.productName ?? "" }),
+          variantName: item.variantName,
+          color: item.color,
+          size: item.size,
+          colorHex: item.colorHex,
+          variantKind: item.variantKind,
           sku: item.sku ?? "",
           barcode: item.barcode ?? null,
           unit: item.unitName ?? "",
@@ -139,7 +145,7 @@ export default function QuotationNew() {
       request.governorate ? `المحافظة: ${request.governorate}` : null,
       `وصف العميل: ${request.customerNote}`,
       staleLines.length
-        ? `بنود تحتاج مراجعة يدوية لأنها لم تعد متاحة بالكتالوج: ${staleLines.map((item) => `${item.productName} × ${item.quantity} ${item.unitName}`).join("، ")}`
+        ? `بنود تحتاج مراجعة يدوية لأنها لم تعد متاحة بالكتالوج: ${staleLines.map((item) => `${item.productName} × ${formatQuantity(item.quantity)} ${item.unitName}`).join("، ")}`
         : null,
     ].filter(Boolean).join("\n");
     dispatch({
@@ -154,7 +160,7 @@ export default function QuotationNew() {
           productId: Number(item.productId),
           variantId: Number(item.variantId),
           productUnitId: Number(item.productUnitId),
-          name: [item.productName, item.currentVariantName ?? item.variantLabel].filter(Boolean).join(" — "),
+          name: variantDisplayName({ productName: item.productName, variantName: item.currentVariantName ?? item.variantLabel }),
           sku: item.sku ?? "",
           barcode: null,
           unit: item.currentUnitName ?? item.unitName,

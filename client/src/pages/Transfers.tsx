@@ -17,7 +17,7 @@ import { TransferCart, computeLineStates, type TransferCartLine } from "@/compon
 import { InferredBranchField, InferredField } from "@/components/form/InferredField";
 import { useSessionContext } from "@/hooks/useSessionContext";
 import { confirm } from "@/lib/confirm";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -145,7 +145,7 @@ export default function Transfers() {
     const frac = cart.findIndex((_, i) => lineStates[i]?.fractional);
     if (frac >= 0) return `المنتج «${cart[frac].name}»: كمية غير صالحة (لا تُقبل كسور الوحدة الأساس).`;
     const over = aggregated.find((x) => x.baseQuantity > x.availableBase);
-    if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${fmtInt(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${fmtInt(over.availableBase)}).`;
+    if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${formatQuantity(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${formatQuantity(over.availableBase)}).`;
     return "";
   }, [cart, lineStates, aggregated, fromName]);
 
@@ -161,7 +161,7 @@ export default function Transfers() {
       !(await confirm({
         variant: "danger",
         title: `سند تحويل ${trf}: من ${fromName} إلى ${toName}`,
-        description: `إرسال السند (${fmtInt(aggregated.length)} منتج، ${fmtInt(totalBase)} وحدة تشغيلية) يخصم السلع أو مكوّنات البكج من رصيد ${fromName} فوراً ويضعها «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
+        description: `إرسال السند (${fmtInt(aggregated.length)} منتج، ${formatQuantity(totalBase)} وحدة تشغيلية) يخصم السلع أو مكوّنات البكج من رصيد ${fromName} فوراً ويضعها «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
         confirmText: "إرسال السند",
       }))
     )
@@ -307,7 +307,7 @@ export default function Transfers() {
             <div className="flex justify-between"><span className="text-muted-foreground">إلى</span><span className="font-medium">{toName}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">أسطر السلة</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(cart.length)}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">أصناف السند</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(aggregated.length)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي وحدات السند</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalBase)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي وحدات السند</span><span className="font-semibold tabular-nums" dir="ltr">{formatQuantity(totalBase)}</span></div>
             {cart.length > aggregated.length && (
               <p className="text-[11px] text-muted-foreground">وحدات متعددة لنفس المنتج تُدمَج في بندٍ واحد بالوحدة الأساس.</p>
             )}

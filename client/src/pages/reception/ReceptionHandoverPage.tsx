@@ -33,6 +33,7 @@ import { getDeviceCode } from "@/lib/offline/outbox";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { cn } from "@/lib/utils";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 
 const PAYMENT_METHODS = [
   { v: "CASH", label: "نقدي", icon: Banknote },
@@ -66,6 +67,7 @@ export default function ReceptionHandoverPage() {
     confirmed: boolean;
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [showDebtApproval, setShowDebtApproval] = useState(false);
   const utils = trpc.useUtils();
 
   const me = trpc.auth.me.useQuery();
@@ -91,7 +93,28 @@ export default function ReceptionHandoverPage() {
         const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
         if (!wo) { notify.err("طلب أو فاتورة غير موجودة: " + orderNumber); return; }
         if (wo.kind === "workOrder") {
-          if (wo.status === "DELIVERED") { notify.info("الطلب " + wo.orderNumber + " مُسلَّم مسبقاً"); return; }
+          if (wo.status === "DELIVERED") {
+            if (wo.linkedInvoice?.isUnsettled) {
+              notify.info(`الطلب #${wo.orderNumber} مسلّم مسبقاً وله متبقٍ غير مستحصل (${fmt(wo.linkedInvoice.remaining)} د.ع) على فاتورة #${wo.linkedInvoice.invoiceNumber}. تم تحويل الشاشة لتحصيله الآن.`);
+              setScanned({
+                id: wo.linkedInvoice.id,
+                kind: "invoice",
+                orderNumber: wo.linkedInvoice.invoiceNumber,
+                title: `تحصيل متبقي طلب ${wo.orderNumber} (فاتورة #${wo.linkedInvoice.invoiceNumber})`,
+                customerName: wo.customerName,
+                customerPhone: wo.customerPhone,
+                salePrice: wo.linkedInvoice.total,
+                deposit: wo.linkedInvoice.paidAmount,
+              });
+              setManualInput("");
+              setMethod("CASH");
+              setReference("");
+              setExternalAttempt(null);
+              return;
+            }
+            notify.info("الطلب " + wo.orderNumber + " مُسلَّم مسبقاً ومسدد بالكامل");
+            return;
+          }
           if (wo.status !== "READY") {
             notify.warn("الطلب غير جاهز للتسليم — حالته: " + wo.status);
             return;
@@ -590,8 +613,38 @@ export default function ReceptionHandoverPage() {
                     ? `سلّم وحصّل ${fmt(remaining.toFixed(2))} د.ع (${paymentMethodLabel(method)})`
                     : "تسليم (مدفوع كاملاً)"}
                 </Button>
+
+                {remaining && remaining.gt(0) && scanned.kind === "workOrder" && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full text-xs font-bold border-[var(--sem-warn)] text-[var(--sem-warn)] hover:bg-[var(--sem-warn-bg)]"
+                    onClick={() => setShowDebtApproval(true)}
+                    disabled={deliverMut.isPending || !shift}
+                  >
+                    إضافة المتبقي ({fmt(remaining.toFixed(2))} د.ع) لذمة العميل (اعتماد مسؤول)
+                  </Button>
+                )}
               </div>
             </Card>
+
+            {showDebtApproval && remaining && (
+              <ManagerApprovalDialog
+                zIndexClass="z-[110]"
+                title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
+                description={`تسليم الطلب #${scanned.orderNumber} مع بقاء ${fmt(remaining.toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
+                onCancel={() => setShowDebtApproval(false)}
+                onApprove={(email, password) => {
+                  setShowDebtApproval(false);
+                  deliverMut.mutate({
+                    workOrderId: scanned.id,
+                    addToCustomerDebt: true,
+                    managerApproval: { email, password },
+                    clientRequestId: crypto.randomUUID(),
+                  });
+                }}
+              />
+            )}
           </div>
         )}
       </div>

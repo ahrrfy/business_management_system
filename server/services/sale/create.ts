@@ -37,6 +37,7 @@ import {
 } from "../salesPromotionService";
 import { consumeCoupon, hashCouponCode, lockCouponForSale } from "../couponService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { autoSettleCustomerAccountTx } from "../reconciliation/autoSettlementService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "../accounting/postingEngine";
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
@@ -300,11 +301,12 @@ export async function createSaleInTx(
           message: "الوردية مغلقة — لا يمكن ترحيل بيع إليها بعد الإقفال. حوّل العملية إلى مراجعة التسوية اللاحقة.",
         });
       }
-      // SHIFT-OWN (تدقيق ٢/٧): فرض ملكية الوردية — كما في processPayment. غياب هذا الفحص كان
-      // يُتيح لكاشير تمرير shiftId لوردية زميلٍ في نفس الفرع فيُنسَب نقده لدرج الزميل (عجز مزوّر عند
-      // إغلاق الضحية + غطاء اختلاس). المدير/الأدمن معفيان (يسجّلون على أي وردية للتسوية).
+      // SHIFT-OWN (حظر انتحال الورديات - Fail-Closed): فرض ملكية الوردية للجميع بلا استثناء عند وجود حركة نقدية
+      // يُمنع أي مستخدم (بما في ذلك المدير والأدمن) من تسجيل بيع نقدي على وردية مستخدم آخر.
+      const hasCashMovement = isCashPayment || writesFeeHeldCash;
       const role = actor.role;
-      if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
+      const isDigitalSale = capability === DIGITAL_SALE_CAPABILITY;
+      if (!isDigitalSale && (hasCashMovement || (role !== "admin" && role !== "manager")) && Number(s[0].userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
     }
@@ -1610,6 +1612,9 @@ export async function createSaleInTx(
     }
     if (input.customerId) {
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
+      if (effectiveTotalD.gt(paidNow)) {
+        await autoSettleCustomerAccountTx(tx, input.customerId, actor);
+      }
     }
     if (input.clientRequestId && requestFingerprint) {
       await recordIdempotencyKey(tx, "sale.create", input.clientRequestId, invoiceId, requestFingerprint);

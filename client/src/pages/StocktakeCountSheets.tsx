@@ -12,6 +12,7 @@ import { fmtInt } from "@/lib/money";
 import { printCountSheets } from "@/lib/printing/stocktakeTemplates";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 import { Printer } from "lucide-react";
@@ -22,6 +23,9 @@ import { Printer } from "lucide-react";
 type SheetItem = {
   productName: string;
   variantName?: string | null;
+  color?: string | null;
+  size?: string | null;
+  variantKind?: string | null;
   sku?: string | null;
   barcode?: string | null;
   baseUnit?: string | null;
@@ -166,7 +170,7 @@ export default function StocktakeCountSheets() {
                       <tr key={idx} className="border-b">
                         <td className="py-2.5 pl-2 text-xs text-muted-foreground">{fmtInt(idx + 1)}</td>
                         <td className="px-2 py-2.5 font-semibold">{it.productName}</td>
-                        <td className="px-2 py-2.5 text-muted-foreground">{it.variantName ?? "—"}</td>
+                        <td className="px-2 py-2.5 text-muted-foreground">{variantDescriptor(it) || it.variantName || "—"}</td>
                         <td className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground" dir="ltr">{it.sku ?? "—"}</td>
                         <td className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground" dir="ltr">{it.barcode ?? "—"}</td>
                         <td className="px-2 py-2.5 text-center text-xs">{it.baseUnit ?? "—"}</td>

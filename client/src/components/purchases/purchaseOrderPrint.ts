@@ -1,4 +1,4 @@
-import { D, fmtAr, round2, toUnitPriceStr } from "@/lib/money";
+import { D, fmtAr, formatQuantity, round2, toUnitPriceStr } from "@/lib/money";
 import { fmtDate, type DateInput } from "@/lib/date";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { calcLineTotal, type InvoiceLine } from "@/components/invoice";
@@ -80,7 +80,7 @@ export function printPurchaseOrderDoc({
       name: l.name,
       unit: l.unit || "—",
       price: fmtPrice(l.price),
-      qty: fmtAr(safeMoney(String(l.qty)).toString()),
+      qty: formatQuantity(l.qty),
       total: fmtAr(lineTotal),
       iqd: showIqdEquivalent
         ? fmtAr(round2(D(lineTotal).times(rate)).toFixed(2))

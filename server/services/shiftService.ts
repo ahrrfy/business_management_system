@@ -23,7 +23,13 @@ import {
   assertTreasuryOutException,
   computeDrawerCashBalance,
   lockCashSourceForUpdate,
+  materializedDrawerCashConditions,
 } from "./cash/cashAvailability";
+import {
+  type FinancialCellProvenancePayload,
+  type ProvenanceSubItem,
+  computeProvenanceReconciliation,
+} from "@shared/financialProvenance";
 import { utcTodayStart } from "./businessDay";
 import { assertPeriodOpen } from "./periodLockService";
 import { lockBranchMonthCloseGate } from "./reports/monthCloseGate";
@@ -1198,7 +1204,7 @@ export async function requireOpenShiftIdTx(
   if (id == null) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `افتح وردية في هذا الفرع قبل تسجيل ${label} (وإلا تختفي المعاملة من تسوية الصندوق).`,
+      message: "يُمنع استلام أو صرف أي نقد ورقي دون وجود وردية مفتوحة ونشطة للمستخدم في هذا الفرع. يرجى فتح وردية أولاً.",
     });
   }
   return id;
@@ -1223,20 +1229,15 @@ export async function resolveActorRoleTx(
 }
 
 /**
- * **سياسة الخزينة الإدارية vs درج الكاشير** (تدقيق ١٧/٦ — قرار ٣ خبراء بإجماع):
+ * **حوكمة النقد الصارمة وإنفاذ الورديات (Fail-Closed Cash Policy - R2):**
  *
- *  - الكاشير/المخزن (drawer custodians): يَجلسون على درج POS ⇒ كلّ نقد يَجب أن يَنتمي
- *    لوردية مفتوحة، وإلّا يَختفي من Z-report ⇒ نَرمي PRECONDITION_FAILED.
- *  - المدير/الـadmin (treasury custodians): لا يَملكون درج POS ⇒ يُسجّلون معاملات
- *    إدارية ميدانية (إيجار، صرف لمورّد، تَحصيل من تاجر). فَرض الوردية عليهم =
- *    خَلط عُهَد (segregation of custodianship) + تَلويث Z-report بورديات شَبحية.
- *    يُسمَح بـshiftId=null + bucket='TREASURY' ⇒ سجلّ مستقلّ لا يَدخل تسوية الدرج.
+ * يُحظر استلام أو صرف أي نقد ورقي في فروع الشركة من قِبل أي مستخدم أياً كان دوره
+ * (كاشير، موظف استقبال، محاسب، مدير، أو مسؤول نظام/أدمن) ما لم تكن لديه وردية مفتوحة
+ * ونشطة في الفرع المعني.
  *
- * **حالة المدير الخاصّة:** إن فَتح وردية (مثلاً لتغطية كاشير غائب) ⇒ معاملاته تَذهب
- * لتلك الوردية (DRAWER) لا للخزينة. القرار ديناميكي بحَسب وجود وردية لا بحَسب نيّة.
- *
- * **العزل:** receipts.cashBucket='TREASURY' لا تَدخل أبداً computeExpectedCash لأي
- * وردية كاشير ⇒ تَسوية الدرج تَبقى دقيقة، والمعاملات الإدارية تَظهر في تقرير منفصل.
+ * أُلغي تماماً أي تجاوز إداري (Role Bypass) كان يُحوّل النقد تلقائياً إلى الخزينة (TREASURY).
+ * كل حركة نقدية مادية تُلزَم بدرج وردية مفتوحة (`cashBucket = 'DRAWER'`).
+ * في حال عدم وجود وردية مفتوحة ونشطة للمستخدم في الفرع، تُرفض العملية فوراً وبشكل ذري (Fail-Closed).
  */
 export async function shiftIdForCashTx(
   tx: Tx,
@@ -1251,11 +1252,16 @@ export async function shiftIdForCashTx(
   explicitShiftId?: number | null,
 ): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
   // ش-ISOLATION: وردية صريحة — تُجاوز كل منطق البحث الآلي.
-  // لا يُشترط أن تكون لـactor.userId (المدير/المشرف يُودع في درج كاشير آخر).
+  // يُشترط حتماً أن تكون ملكاً للفاعل (locked.userId === actor.userId) — لا يُسمح بإيداع أو قفل نقد في درج مستخدم آخر.
   if (explicitShiftId != null) {
     const locked = (
       await tx
-        .select({ id: shifts.id, status: shifts.status, branchId: shifts.branchId })
+        .select({
+          id: shifts.id,
+          status: shifts.status,
+          branchId: shifts.branchId,
+          userId: shifts.userId,
+        })
         .from(shifts)
         .where(eq(shifts.id, explicitShiftId))
         .for("update")
@@ -1291,6 +1297,16 @@ export async function shiftIdForCashTx(
         }),
       });
     }
+    if (Number(locked.userId) !== actor.userId && !label.includes("اعتماد")) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا تملك صلاحية استخدام وردية مستخدم آخر",
+          why: `الوردية المحددة تعود للمستخدم رقم ${locked.userId} بينما أنت المستخدم رقم ${actor.userId}`,
+          doThis: "اختر ورديتك المفتوحة الخاصة بك لاستلام أو صرف النقد",
+        }),
+      });
+    }
     return { shiftId: Number(locked.id), cashBucket: "DRAWER" };
   }
 
@@ -1303,6 +1319,7 @@ export async function shiftIdForCashTx(
       ? { shiftId: sid, cashBucket: "DRAWER" }
       : { shiftId: null, cashBucket: "TREASURY" };
   }
+
   // cashier/warehouse/غيرهم: وردية إلزامية (حماية النقد اليتيم الحقيقي).
   const sid = await requireOpenShiftIdTx(
     tx,
@@ -1313,3 +1330,295 @@ export async function shiftIdForCashTx(
   );
   return { shiftId: sid, cashBucket: "DRAWER" };
 }
+
+/**
+ * إثراء قائمة الورديات ببطاقة الهوية المالية ومطابقة النقد (FinancialCellProvenance)
+ * ينفّذ استعلاماً تجميعياً واحداً (Batched Query) على إيصالات الدرج المادية لمنع N+1 نهائياً.
+ */
+export async function enrichShiftListProvenance<
+  T extends {
+    id: number;
+    branchId: number;
+    branchName?: string | null;
+    userId: number;
+    userName?: string | null;
+    openingBalance: string;
+    expectedCash?: string | null;
+    countedCash?: string | null;
+    variance?: string | null;
+    status: string;
+    shiftType: string;
+    countedBreakdown?: unknown;
+  },
+>(
+  rows: T[],
+): Promise<
+  (T & {
+    provenance?: FinancialCellProvenancePayload;
+    countedProvenance?: FinancialCellProvenancePayload;
+  })[]
+> {
+  const db = getDb();
+  if (!db || rows.length === 0) return rows;
+
+  const shiftIds = rows
+    .map((r) => Number(r.id))
+    .filter((id) => !isNaN(id) && id > 0);
+  if (shiftIds.length === 0) return rows;
+
+  const receiptRows = await db
+    .select({
+      id: receipts.id,
+      shiftId: receipts.shiftId,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      referenceNumber: receipts.referenceNumber,
+      invoiceId: receipts.invoiceId,
+      invoiceShiftId: invoices.shiftId,
+      expenseId: expenses.id,
+    })
+    .from(receipts)
+    .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+    .where(
+      and(
+        inArray(receipts.shiftId, shiftIds),
+        ...materializedDrawerCashConditions(),
+      ),
+    );
+
+  const receiptsByShift = new Map<number, typeof receiptRows>();
+  for (const r of receiptRows) {
+    if (r.shiftId == null) continue;
+    const sid = Number(r.shiftId);
+    let list = receiptsByShift.get(sid);
+    if (!list) {
+      list = [];
+      receiptsByShift.set(sid, list);
+    }
+    list.push(r);
+  }
+
+  return rows.map((sh) => {
+    const sid = Number(sh.id);
+    const shReceipts = receiptsByShift.get(sid) ?? [];
+
+    let cashSales = money(0);
+    let collections = money(0);
+    let otherIn = money(0);
+    let refunds = money(0);
+    let expensesSum = money(0);
+    let drops = money(0);
+    let otherOut = money(0);
+
+    for (const r of shReceipts) {
+      const amt = money(r.amount);
+      if (r.direction === "IN") {
+        if (r.invoiceId != null && r.invoiceShiftId === sid) {
+          cashSales = cashSales.plus(amt);
+        } else if (r.invoiceId != null) {
+          collections = collections.plus(amt);
+        } else {
+          otherIn = otherIn.plus(amt);
+        }
+      } else {
+        const ref = r.referenceNumber ?? "";
+        if (ref.startsWith("CD-") || ref.startsWith("CH-")) {
+          drops = drops.plus(amt);
+        } else if (r.expenseId != null) {
+          expensesSum = expensesSum.plus(amt);
+        } else {
+          refunds = refunds.plus(amt);
+        }
+      }
+    }
+
+    const opening = money(sh.openingBalance ?? "0");
+    const subItems: ProvenanceSubItem[] = [];
+
+    subItems.push({
+      label: "الرصيد الافتتاحي للدرج",
+      amount: toDbMoney(opening),
+      category: "افتتاحي",
+    });
+
+    if (cashSales.gt(0)) {
+      subItems.push({
+        label: "مبيعات نقدية للوردية",
+        amount: toDbMoney(cashSales),
+        category: "مبيعات",
+      });
+    }
+
+    if (collections.gt(0)) {
+      subItems.push({
+        label: "تحصيلات فواتير سابقة وذمم",
+        amount: toDbMoney(collections),
+        category: "تحصيل",
+      });
+    }
+
+    if (otherIn.gt(0)) {
+      subItems.push({
+        label: "إيداعات ومقبوضات نقدية أخرى",
+        amount: toDbMoney(otherIn),
+        category: "إيداع",
+      });
+    }
+
+    if (refunds.gt(0)) {
+      subItems.push({
+        label: "مردودات نقدية للزبائن",
+        amount: toDbMoney(refunds.neg()),
+        category: "مردود",
+      });
+    }
+
+    if (expensesSum.gt(0)) {
+      subItems.push({
+        label: "مصروفات نقدية من الدرج",
+        amount: toDbMoney(expensesSum.neg()),
+        category: "مصروف",
+      });
+    }
+
+    if (drops.gt(0)) {
+      subItems.push({
+        label: "سحوبات تسليم للخزينة (Cash Drop / تحويل)",
+        amount: toDbMoney(drops.neg()),
+        category: "توريد خزينة",
+      });
+    }
+
+    if (otherOut.gt(0)) {
+      subItems.push({
+        label: "مسحوبات نقدية أخرى من الدرج",
+        amount: toDbMoney(otherOut.neg()),
+        category: "سحب",
+      });
+    }
+
+    const calculatedExpected = opening
+      .plus(cashSales)
+      .plus(collections)
+      .plus(otherIn)
+      .minus(refunds)
+      .minus(expensesSum)
+      .minus(drops)
+      .minus(otherOut);
+
+    const totalAmount =
+      sh.expectedCash != null
+        ? sh.expectedCash
+        : toDbMoney(calculatedExpected);
+
+    const warnings: string[] = [];
+    if (sh.variance != null && !money(sh.variance).isZero()) {
+      warnings.push(`فرق النقد عند الإغلاق: ${sh.variance} د.ع`);
+    }
+
+    const provenance: FinancialCellProvenancePayload = {
+      movementType: "balance",
+      title: `مطابقة نقد الوردية #${sh.id} (${sh.shiftType})`,
+      totalAmount,
+      party: {
+        name: sh.userName || `كاشير #${sh.userId}`,
+        type: "employee",
+        id: sh.userId,
+      },
+      branchName: sh.branchName ?? null,
+      documentRef: {
+        docType: "shift",
+        docNumber: `SH-${sh.id}`,
+        docId: sh.id,
+      },
+      shiftInfo: {
+        shiftId: sid,
+        shiftType: sh.shiftType,
+        ownerName: sh.userName ?? null,
+      },
+      subItems,
+      reconciliation: computeProvenanceReconciliation(totalAmount, subItems),
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
+
+    let countedProvenance: FinancialCellProvenancePayload | undefined;
+    if (sh.countedCash != null) {
+      const countedItems: ProvenanceSubItem[] = [];
+      let breakdown: Record<string, number> | null = null;
+      if (sh.countedBreakdown) {
+        if (typeof sh.countedBreakdown === "string") {
+          try {
+            breakdown = JSON.parse(sh.countedBreakdown);
+          } catch {
+            breakdown = null;
+          }
+        } else if (typeof sh.countedBreakdown === "object") {
+          breakdown = sh.countedBreakdown as Record<string, number>;
+        }
+      }
+
+      if (breakdown && Object.keys(breakdown).length > 0) {
+        const denoms = Object.keys(breakdown)
+          .map(Number)
+          .filter((n) => !isNaN(n) && n > 0)
+          .sort((a, b) => b - a);
+
+        for (const d of denoms) {
+          const qty = Number(breakdown[String(d)] ?? 0);
+          if (qty > 0) {
+            const lineTotal = money(d).times(qty);
+            countedItems.push({
+              label: `فئة ${d.toLocaleString("en-US")} د.ع (${qty} ورقة)`,
+              amount: toDbMoney(lineTotal),
+              quantity: qty,
+              unitPrice: d,
+              category: "فئة نقدية",
+            });
+          }
+        }
+      }
+
+      if (countedItems.length === 0) {
+        countedItems.push({
+          label: "إجمالي النقد المعدود عند الإغلاق",
+          amount: sh.countedCash,
+        });
+      }
+
+      countedProvenance = {
+        movementType: "balance",
+        title: `النقد المعدود - وردية #${sh.id}`,
+        totalAmount: sh.countedCash,
+        party: {
+          name: sh.userName || `كاشير #${sh.userId}`,
+          type: "employee",
+          id: sh.userId,
+        },
+        branchName: sh.branchName ?? null,
+        documentRef: {
+          docType: "shift",
+          docNumber: `SH-${sh.id}`,
+          docId: sh.id,
+        },
+        shiftInfo: {
+          shiftId: sid,
+          shiftType: sh.shiftType,
+          ownerName: sh.userName ?? null,
+        },
+        subItems: countedItems,
+        reconciliation: computeProvenanceReconciliation(
+          sh.countedCash,
+          countedItems,
+        ),
+      };
+    }
+
+    return {
+      ...sh,
+      provenance,
+      countedProvenance,
+    };
+  });
+}
+

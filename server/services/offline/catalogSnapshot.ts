@@ -48,7 +48,7 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
   const [prod] = await db
     .select({
       cnt: sql<number>`count(*)`,
-      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}, ${products.allowBackorder}))), 0)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}, ${products.showInQuotations}, ${products.showInAdvancedSales}, ${products.allowBackorder}))), 0)`,
     })
     .from(products);
   const [vars] = await db

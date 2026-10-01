@@ -54,10 +54,15 @@ import { applyMovement, applyValuedInboundMovement } from "./inventoryService";
 import { allocateLineCost } from "./billing";
 import {
   adjustCustomerBalance,
+  adjustDeliveryBalance,
   adjustSupplierBalance,
   computeInvoiceStatus,
   postEntry,
 } from "./ledgerService";
+import {
+  appendDeliveryEvent,
+  appendDeliveryLedgerEntry,
+} from "./delivery/lifecycle";
 import {
   createPostingIntent,
   creditLine,
@@ -149,6 +154,79 @@ export interface ReturnSaleInput {
    * الراوتر ثمّ **لا يُخزَّن في أيّ مستندٍ دائم** — يبقى في `logAudit` وحده وهو best-effort.
    */
   operatorReason?: string | null;
+}
+
+/**
+ * عكس عهدة جهة التوصيل غير المورّدة آلياً عند إرجاع الفاتورة.
+ * لا يخرج نقدٌ من درج الكاشير، بل يُعكس رصيد عهدة المندوب ويُوسم الطرد بالرجوع.
+ */
+async function reverseUnremittedDeliveryConsignment(
+  tx: Tx,
+  cn: {
+    id: number;
+    partyId: number;
+    branchId: number;
+    consignmentNumber: string;
+    codAmount: string;
+    collectedAmount: string | null;
+    parcelStatus: string;
+    moneyStatus: string;
+    custodyRecognizedAt?: Date | null;
+  },
+  invoiceId: number,
+  invoiceNumber: string,
+  actorUserId: number | null,
+  reason?: string | null,
+): Promise<{ reversedCustody: Decimal }> {
+  const hasCustody =
+    cn.custodyRecognizedAt != null || cn.parcelStatus === "DELIVERED";
+  const col = money(cn.collectedAmount ?? "0");
+  const cod = money(cn.codAmount ?? "0");
+  const rawCustody = hasCustody ? (col.gt(0) ? col : cod) : money(0);
+  const reversedCustody = round2(rawCustody);
+
+  if (reversedCustody.gt(0)) {
+    await adjustDeliveryBalance(tx, Number(cn.partyId), reversedCustody.neg());
+
+    await appendDeliveryLedgerEntry(tx, {
+      eventKey: `CN:${cn.id}:COD_RELEASED:RETURN`,
+      partyId: Number(cn.partyId),
+      consignmentId: Number(cn.id),
+      branchId: Number(cn.branchId),
+      entryType: "COD_RELEASED",
+      amount: toDbMoney(reversedCustody),
+      actorUserId,
+      notes: `عكس عهدة التوصيل لمرتجع الفاتورة ${invoiceNumber}`,
+    });
+  }
+
+  await tx
+    .update(deliveryConsignments)
+    .set({
+      status: "RETURNED",
+      parcelStatus: "RETURNED",
+      moneyStatus: "CANCELLED",
+      returnedAt: new Date(),
+      notes: sql`CONCAT(COALESCE(${deliveryConsignments.notes}, ''), ' | مرتجع بيع وعكس عهدة')`,
+    })
+    .where(eq(deliveryConsignments.id, Number(cn.id)));
+
+  await appendDeliveryEvent(tx, {
+    eventKey: `PARCEL_RETURNED:SALE_RETURN:${cn.id}`,
+    consignmentId: Number(cn.id),
+    eventType: "PARCEL_RETURNED",
+    fromParcelStatus: cn.parcelStatus,
+    toParcelStatus: "RETURNED",
+    fromMoneyStatus: cn.moneyStatus,
+    toMoneyStatus: "CANCELLED",
+    actorUserId,
+    payload: {
+      reason: reason ?? "مرتجع بيع - عكس عهدة التوصيل",
+      reversedCustody: reversedCustody.toFixed(2),
+    },
+  });
+
+  return { reversedCustody };
 }
 
 /** جسم عكس المرتجع داخل معاملةٍ قائمة — يُعاد استعماله من correctSale (تصحيح الفاتورة)
@@ -382,6 +460,14 @@ export async function returnSaleInTx(
           partyId: deliveryConsignments.partyId,
           branchId: deliveryConsignments.branchId,
           invoiceId: deliveryConsignments.invoiceId,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          codAmount: deliveryConsignments.codAmount,
+          collectedAmount: deliveryConsignments.collectedAmount,
+          status: deliveryConsignments.status,
+          parcelStatus: deliveryConsignments.parcelStatus,
+          moneyStatus: deliveryConsignments.moneyStatus,
+          remittanceId: deliveryConsignments.remittanceId,
+          custodyRecognizedAt: deliveryConsignments.custodyRecognizedAt,
         })
         .from(deliveryConsignments)
         .where(
@@ -392,6 +478,25 @@ export async function returnSaleInTx(
         )
         .limit(1)
     )[0] ?? null;
+
+  const isUnremittedDelivery =
+    deliveryPreview != null &&
+    deliveryPreview.remittanceId == null &&
+    (["DELIVERED", "PARTIAL"].includes(deliveryPreview.status) ||
+      ["DELIVERED", "PARTIAL"].includes(deliveryPreview.parcelStatus)) &&
+    (money(deliveryPreview.collectedAmount ?? "0").gt(0) ||
+      money(deliveryPreview.codAmount ?? "0").gt(0));
+
+  if (isUnremittedDelivery) {
+    if (refund) {
+      refund.amount = "0.00";
+      refund.shiftId = null;
+    }
+    if (input.resolution) {
+      input.resolution.amount = "0.00";
+      input.resolution.shiftId = null;
+    }
+  }
   /**
    * ⭐ **مصدرُ النقد الخارج: درجٌ مفتوح، وإلّا الخزينةُ للإداريّ** (تدقيق ١/٩/٢٦).
    *
@@ -473,7 +578,7 @@ export async function returnSaleInTx(
             what: "تعذّر صرف الاسترداد النقدي من درج وردية أخرى",
             why: "كاشير الصرف مقيّد بدرج ورديته المفتوحة ولا يمكنه صرف النقد من درج كاشير آخر",
             doThis:
-              "اختر درج ورديتك المفتوحة أو اطلب من مدير الفرع اعتماد وصرف الاسترداد",
+              "اختر درج ورديتك المفتوحة الخاصة بك لصرف الاسترداد النقدي",
           }),
         });
       }
@@ -643,19 +748,31 @@ export async function returnSaleInTx(
   const isWalkInReturn =
     inv.customerId == null && !input.internalCorrectionReversal;
   if (isWalkInReturn) {
-    const resolution = input.resolution;
+    let resolution = input.resolution;
     if (!resolution) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل مرتجع زبونٍ عابر",
-          why: "الفاتورة بلا عميلٍ مسجَّل، ولم يصل معها قرارُ التسوية (resolution) الذي يحدّد ردّ CASH نقداً كاملاً مع سبب المرتجع ومصير البضاعة — وبلا ذلك يبقى مالُ الزبون في الدرج بلا ذمّةٍ تحمله ولا طرفٍ يُنسَب إليه",
-          doThis:
-            "أدخِل الردّ النقديّ الكامل والسبب ومصير البضاعة في شاشة المرتجع؛ وإن كان المطلوب رصيداً أو مساراً آخر فسجّل الزبون عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته",
-        }),
-      });
+      if (isUnremittedDelivery) {
+        resolution = {
+          kind: "IMMEDIATE_REFUND",
+          method: "CASH",
+          amount: "0.00",
+          shiftId: null,
+          reason: "مرتجع شحنة توصيل ملغاة/معادة",
+          disposition: "RESTOCK",
+        };
+        input.resolution = resolution;
+      } else {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: "الفاتورة بلا عميلٍ مسجَّل، ولم يصل معها قرارُ التسوية (resolution) الذي يحدّد ردّ CASH نقداً كاملاً مع سبب المرتجع ومصير البضاعة — وبلا ذلك يبقى مالُ الزبون في الدرج بلا ذمّةٍ تحمله ولا طرفٍ يُنسَب إليه",
+            doThis:
+              "أدخِل الردّ النقديّ الكامل والسبب ومصير البضاعة في شاشة المرتجع؛ وإن كان المطلوب رصيداً أو مساراً آخر فسجّل الزبون عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته",
+          }),
+        });
+      }
     }
-    if (input.refund != null) {
+    if (input.refund != null && !isUnremittedDelivery) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -665,6 +782,10 @@ export async function returnSaleInTx(
             "أدخِل الردّ النقديّ الكامل في تسوية الزبون العابر وحدها، واترك حقل الاسترداد العام فارغاً",
         }),
       });
+    }
+    if (isUnremittedDelivery) {
+      resolution.amount = "0.00";
+      resolution.shiftId = null;
     }
     if (
       resolution.kind !== "IMMEDIATE_REFUND" ||
@@ -921,7 +1042,9 @@ export async function returnSaleInTx(
   async function validateRefundAgainstCaps(
     returnedTotalForRefund: Decimal,
   ): Promise<{ refundCap: Decimal; refundRequest: Decimal }> {
-    const requestedRefund = money(refund?.amount ?? "0");
+    const requestedRefund = isUnremittedDelivery
+      ? money(0)
+      : money(refund?.amount ?? "0");
     if (requestedRefund.lt(0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -946,7 +1069,12 @@ export async function returnSaleInTx(
       );
     }
     // ⭐ الزبون العابر (بلا حساب): ما لا يُردّ لا يجد أين يُقيَّد — الردُّ يساوي قيمة المرتجع بالضبط.
-    if (isWalkInReturn && !requestedRefund.eq(returnedTotalForRefund)) {
+    // استثناء: شحنة التوصيل غير المورّدة تعكس عهدة التوصيل آلياً ويكون الرد النقدي صفراً.
+    if (
+      isWalkInReturn &&
+      !isUnremittedDelivery &&
+      !requestedRefund.eq(returnedTotalForRefund)
+    ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -1083,6 +1211,16 @@ export async function returnSaleInTx(
       },
       actor,
     );
+    if (isUnremittedDelivery && deliveryPreview) {
+      await reverseUnremittedDeliveryConsignment(
+        tx,
+        deliveryPreview,
+        input.invoiceId,
+        inv.invoiceNumber,
+        actor.userId,
+        resolutionReason,
+      );
+    }
     await tx
       .update(invoices)
       .set({
@@ -1090,6 +1228,7 @@ export async function returnSaleInTx(
           money(inv.returnedTotal ?? "0").plus(returnedTotalFull),
         ),
         status: "RETURNED",
+        ...(isUnremittedDelivery ? { paidAmount: "0.00" } : {}),
       })
       .where(eq(invoices.id, input.invoiceId));
     await assertNoLiveConsignmentForReturn();
@@ -2035,8 +2174,22 @@ export async function returnSaleInTx(
   // returnedTotal تراكمي عبر مرتجعات جزئية ⇒ يمنع انحراف AR في reconcile/aging.
   // G7 (١٩/٦/٢٦): clamp ≥ 0 — refundCap نظرياً يضمن `cashRefund ≤ paidAmount`، لكن لو
   // انحرف الحساب لأي سبب (مرتجع قديم مُسجَّل بطريقة مختلفة، حالة حدّية) نمنع paidAmount السالب.
+  if (isUnremittedDelivery && deliveryPreview) {
+    await reverseUnremittedDeliveryConsignment(
+      tx,
+      deliveryPreview,
+      input.invoiceId,
+      inv.invoiceNumber,
+      actor.userId,
+      resolutionReason,
+    );
+  }
   const paidMinusRefund = money(inv.paidAmount).minus(materializedRefund);
-  const newPaid = paidMinusRefund.lt(0) ? money(0) : paidMinusRefund;
+  const newPaid = isUnremittedDelivery
+    ? money(0)
+    : paidMinusRefund.lt(0)
+      ? money(0)
+      : paidMinusRefund;
   const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(returnedTotal);
   // INVOICE-STATUS (تدقيق ٢/٧): الحالة على الصافي بعد المرتجعات ⇒ فاتورة مُرتجَعة جزئياً وسُدّد
   // صافيها تصبح PAID لا PARTIALLY_PAID الأبدية.
@@ -2358,10 +2511,14 @@ export async function returnSaleDirect(
       const isOwner = Boolean(userRow.isOwner);
       const isAdmin = effectiveRole === "admin";
       const hasSalesFull = effectivePermissions.sales === "FULL";
+      const hasReceptionFull =
+        effectiveRole === "print_operator" &&
+        effectivePermissions.workorders === "FULL";
       const isAuthorized =
         isOwner ||
         isAdmin ||
-        (["manager", "cashier"].includes(effectiveRole) && hasSalesFull);
+        (["manager", "cashier"].includes(effectiveRole) && hasSalesFull) ||
+        hasReceptionFull;
 
       if (!isAuthorized) {
         throw new TRPCError({
@@ -2393,7 +2550,10 @@ export async function returnSaleDirect(
         }
       }
 
-      if (effectiveRole === "cashier") {
+      const isCashierOrReception =
+        effectiveRole === "cashier" || effectiveRole === "print_operator";
+
+      if (isCashierOrReception) {
         const [invRow] = await tx
           .select({
             branchId: invoices.branchId,
@@ -2423,19 +2583,20 @@ export async function returnSaleDirect(
           });
         }
 
+        // عزل الفروع: كاشير لا ينفّذ مرتجعاً مباشراً لفاتورة فرع آخر
         if (
           !isOwner &&
           !isAdmin &&
           invRow &&
-          Number(invRow.createdBy) !== Number(actor.userId) &&
-          Number(invRow.workOrderCreatedBy) !== Number(actor.userId)
+          actor.branchId != null &&
+          Number(invRow.branchId) !== Number(actor.branchId)
         ) {
           throw new TRPCError({
             code: "FORBIDDEN",
             message: appErrorMessage({
               what: "تعذّر تنفيذ المرتجع المباشر",
-              why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
-              doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+              why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+              doThis: "سجّل المرتجع من الفرع المصدر أو اطلب من الإدارة إتمامه",
             }),
           });
         }

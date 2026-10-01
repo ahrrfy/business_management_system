@@ -42,6 +42,7 @@ import {
   staffHandoverConsignments,
   staffMarkFailed,
   updateDeliveryParty,
+  predictiveSearchConsignments,
 } from "../services/deliveryService";
 import {
   approveDeliveryCodWriteOff,
@@ -346,6 +347,24 @@ export const deliveryRouter = router({
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
       return listOpenConsignments(input.partyId, ctx.user.role === "admin" ? null : ctx.user.branchId, { limit: input.limit, cursor: input.cursor });
+    }),
+
+  predictiveSearch: deliveryReadProcedure
+    .input(z.object({
+      query: z.string().trim().min(2).max(100),
+      partyId: z.number().int().positive().optional(),
+      limit: z.number().int().positive().max(30).optional(),
+    }))
+    .query(async ({ input, ctx }) => {
+      if (input.partyId) {
+        await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      }
+      return predictiveSearchConsignments({
+        branchId: ctx.scopedBranchId,
+        query: input.query,
+        partyId: input.partyId,
+        limit: input.limit,
+      });
     }),
 
   consignments: deliveryReadProcedure

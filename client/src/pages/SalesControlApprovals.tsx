@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { confirm } from "@/lib/confirm";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
@@ -26,6 +26,7 @@ import { invoiceToShippingLabel } from "@/lib/printing/invoiceShippingLabel";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName } from "@shared/variantDisplay";
 import {
   SALES_CONTROL_STATUS_LABELS,
   SALES_CONTROL_TYPE_LABELS,
@@ -135,8 +136,17 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
             {original.data.items.map((line) => (
               <div key={line.id} className="flex items-start justify-between gap-2 border-b pb-1.5 last:border-0">
                 <div>
-                  <div className="font-medium">{line.productName}{line.variantName ? ` — ${line.variantName}` : ""}</div>
-                  <div className="text-xs text-muted-foreground">{line.quantity} {line.unitName ?? "وحدة"} × {fmt(line.unitPrice)}</div>
+                  <div className="font-medium">
+                    {variantDisplayName({
+                      productName: line.productName ?? "—",
+                      variantName: line.variantName,
+                      color: (line as any).color,
+                      size: (line as any).size,
+                      variantKind: (line as any).variantKind,
+                      sku: (line as any).sku,
+                    })}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{formatQuantity(line.quantity)} {line.unitName ?? "وحدة"} × {fmt(line.unitPrice)}</div>
                 </div>
                 <div dir="ltr" className="shrink-0 font-bold tabular-nums">{fmt(line.total)}</div>
               </div>
@@ -177,7 +187,7 @@ function CorrectionBeforeAfter({ request, approvalAction }: { request: ControlRe
                     {line.change === "changed" && <Badge variant="warning">معدّل</Badge>}
                     {line.isGift && <Badge variant="neutral">هدية</Badge>}
                   </div>
-                  <div className="text-xs text-muted-foreground">{line.quantity} {line.unitName} × {fmt(line.unitPrice)}</div>
+                  <div className="text-xs text-muted-foreground">{formatQuantity(line.quantity)} {line.unitName} × {fmt(line.unitPrice)}</div>
                 </div>
                 <div dir="ltr" className="shrink-0 font-bold tabular-nums">{fmt(line.total)}</div>
               </div>

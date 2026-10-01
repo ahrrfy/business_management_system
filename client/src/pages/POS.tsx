@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
 import { applyCustomerIdentity, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
@@ -861,7 +862,14 @@ export default function POS() {
     return {
       tabId: activeTab.id,
       lines: cart.map((c) => ({
-        name: c.row.productName, unit: c.row.unitName,
+        name: variantDisplayName({
+          productName: c.row.productName,
+          variantName: c.row.variantName,
+          color: c.row.color,
+          size: c.row.size,
+          sku: c.row.sku,
+        }),
+        unit: c.row.unitName,
         qty: c.qty, price: effectivePrice(c),
         disc: c.disc, total: itemTotal(c),
       })),
@@ -1006,9 +1014,11 @@ export default function POS() {
     // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
     // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
     if (!codMode && isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
-        && selectedCustomer.creditLimit != null && Number(selectedCustomer.currentBalance ?? 0) === 0) {
+        && selectedCustomer.creditLimit != null) {
       notify.errBig(
-        "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر وليس لديه تعامل سابق) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
+        Number(selectedCustomer.currentBalance ?? 0) > 0
+          ? `هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) وعليه رصيد سابق (${Number(selectedCustomer.currentBalance).toFixed(2)}) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل`
+          : "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
       );
       return;
     }

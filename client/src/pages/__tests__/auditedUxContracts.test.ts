@@ -113,22 +113,16 @@ describe("audited public UX contracts", () => {
     );
   });
 
-  it("uses unbounded server aggregates for dashboard sales and personal tasks", () => {
+  it("uses unbounded server aggregates for dashboard sales", () => {
     const dashboard = readPage("Dashboard.tsx");
     const metricsBar = dashboard.slice(
       dashboard.indexOf("function MetricsBar("),
       dashboard.indexOf("/* ═══════════ ACTION BUTTON"),
     );
-    const tasksBrief = dashboard.slice(
-      dashboard.indexOf("function TasksBrief("),
-      dashboard.indexOf("/* ═══════════ مساحة عمل الكاشير"),
-    );
 
     expect(metricsBar).toContain("metrics.data?.todaySales");
     expect(metricsBar).toContain("includeTodaySales: true");
     expect(metricsBar).not.toContain("trpc.sales.list.useQuery");
-    expect(tasksBrief).toContain("metrics.data?.morningBrief.myOpenTasks");
-    expect(tasksBrief).not.toContain("trpc.tasks.list.useQuery");
   });
 
   it("starts both receivable and payable action queues in the account branch", () => {
@@ -154,14 +148,6 @@ describe("audited public UX contracts", () => {
     expect(source).toContain(
       'branchId: canCrossBranches && f.branch !== "all"',
     );
-  });
-
-  it("does not offer cross-branch task reads or writes to a branch manager", () => {
-    const source = readPage("TasksHub.tsx");
-
-    expect(source).toContain('const canCrossBranches = role === "admin"');
-    expect(source).toContain("<ListTab isElevated={canCrossBranches}");
-    expect(source).toContain("isElevated={canCrossBranches}");
   });
 
   it("keeps aging and stocktake destination filters within manager branch authority", () => {

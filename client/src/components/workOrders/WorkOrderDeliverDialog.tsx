@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
+import { ShieldCheck } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Button } from "@/components/ui/button";
 import { fmtAr, D, positiveDiff, round2 } from "@/lib/money";
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import type { DeliverTarget } from "./workOrderTypes";
 
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+export interface WorkOrderDeliverExtra {
+  addToCustomerDebt?: boolean;
+  managerApproval?: { email: string; password: string };
+}
 
 export function WorkOrderDeliverDialog({
   order,
@@ -16,12 +24,20 @@ export function WorkOrderDeliverDialog({
 }: {
   order: DeliverTarget | null;
   onClose: () => void;
-  onConfirm: (payment?: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; reference?: string }) => void;
+  onConfirm: (
+    payment?: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; reference?: string },
+    extra?: WorkOrderDeliverExtra,
+  ) => void;
   pending: boolean;
 }) {
   const [amount, setAmount] = useState("");
   const [methodV, setMethodV] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
   const [reference, setReference] = useState("");
+  const [showManagerApproval, setShowManagerApproval] = useState(false);
+  const [managerApproval, setManagerApproval] = useState<{ email: string; password: string } | null>(null);
+  const [addToCustomerDebt, setAddToCustomerDebt] = useState(false);
+  const [error, setError] = useState("");
+
   useEffect(() => {
     if (order) {
       // تعبئة المتبقّي تلقائياً = سعر البيع − العربون المقبوض (لا طرح يدويّ من الموظّف).
@@ -29,63 +45,138 @@ export function WorkOrderDeliverDialog({
       setAmount(dueInit.gt(0) ? dueInit.toFixed(2) : "");
       setMethodV("CASH");
       setReference("");
+      setShowManagerApproval(false);
+      setManagerApproval(null);
+      setAddToCustomerDebt(false);
+      setError("");
     }
   }, [order?.id]); // eslint-disable-line
+
   if (!order) return null;
   const amtD = D(amount);
   const hasDep = D(order.deposit ?? 0).gt(0);
   const due = positiveDiff(order.salePrice, order.deposit ?? 0);
+  const unpaidRemainder = positiveDiff(due.toFixed(2), amtD.toFixed(2));
+  const hasUnpaidRemainder = unpaidRemainder.gt(0);
+
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>تسليم وإصدار فاتورة</DialogTitle>
-          <DialogDescription>
-            الأمر «{order.title}» ({order.orderNumber}) — سعر البيع {fmtAr(order.salePrice)} د.ع.
-            سيُصدر فاتورة فوراً ويُحدَّث المخزون والذمم. هذا إجراء لا رجعة فيه.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-3 py-1">
-          <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
-            <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmtAr(order.salePrice)} د.ع</span></div>
-            {hasDep && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmtAr(order.deposit)} د.ع</span></div>}
-            <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmtAr(due.toFixed(2))} د.ع</span></div>
-          </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium">المبلغ المدفوع الآن (الافتراضي = الرصيد المستحق؛ أقل = آجل)</label>
-            <MoneyInput value={amount} onChange={setAmount} className={dlgInput} placeholder={`0 – ${fmtAr(due.toFixed(2))}`} />
-          </div>
-          {methodV !== "CASH" && (
-            <div className="space-y-1">
-              <label className="text-sm font-medium">مرجع العملية <span className="text-destructive">*</span></label>
-              <input className={dlgInput} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="رقم موافقة البطاقة أو رقم التحويل" />
-              <p className="text-xs text-muted-foreground">لا تُحفظ دفعة إلكترونية بلا مرجع قابل للمطابقة.</p>
+    <>
+      <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>تسليم وإصدار فاتورة</DialogTitle>
+            <DialogDescription>
+              الأمر «{order.title}» ({order.orderNumber}) — سعر البيع {fmtAr(order.salePrice)} د.ع.
+              سيُصدر فاتورة فوراً ويُحدَّث المخزون والذمم. هذا إجراء لا رجعة فيه.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-1">
+            <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
+              <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmtAr(order.salePrice)} د.ع</span></div>
+              {hasDep && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmtAr(order.deposit)} د.ع</span></div>}
+              <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmtAr(due.toFixed(2))} د.ع</span></div>
             </div>
-          )}
-          <div className="space-y-1">
-            <label htmlFor="wo-deliver-method" className="text-sm font-medium">طريقة الدفع</label>
-            {/* تعطيلُ الخيار محفوظ كما هو — سياسة القبض (isPosPaymentMethodEnabled) تبقى مُنفَّذة. */}
-            <AppSelect id="wo-deliver-method" value={methodV} onValueChange={(value) => setMethodV(value as typeof methodV)}>
-              <option value="CASH">نقدي</option>
-              <option value="CARD" disabled={!isPosPaymentMethodEnabled("CARD")}>بطاقة</option>
-              <option value="TRANSFER" disabled={!isPosPaymentMethodEnabled("TRANSFER")}>تحويل</option>
-              <option value="WALLET" disabled={!isPosPaymentMethodEnabled("WALLET")}>محفظة</option>
-            </AppSelect>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">المبلغ المدفوع الآن (الافتراضي = الرصيد المستحق)</label>
+              <MoneyInput value={amount} onChange={setAmount} className={dlgInput} placeholder={`0 – ${fmtAr(due.toFixed(2))}`} />
+            </div>
+            {methodV !== "CASH" && (
+              <div className="space-y-1">
+                <label className="text-sm font-medium">مرجع العملية <span className="text-destructive">*</span></label>
+                <input className={dlgInput} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="رقم موافقة البطاقة أو رقم التحويل" />
+                <p className="text-xs text-muted-foreground">لا تُحفظ دفعة إلكترونية بلا مرجع قابل للمطابقة.</p>
+              </div>
+            )}
+            <div className="space-y-1">
+              <label htmlFor="wo-deliver-method" className="text-sm font-medium">طريقة الدفع</label>
+              {/* تعطيلُ الخيار محفوظ كما هو — سياسة القبض (isPosPaymentMethodEnabled) تبقى مُنفَّذة. */}
+              <AppSelect id="wo-deliver-method" value={methodV} onValueChange={(value) => setMethodV(value as typeof methodV)}>
+                <option value="CASH">نقدي</option>
+                <option value="CARD" disabled={!isPosPaymentMethodEnabled("CARD")}>بطاقة</option>
+                <option value="TRANSFER" disabled={!isPosPaymentMethodEnabled("TRANSFER")}>تحويل</option>
+                <option value="WALLET" disabled={!isPosPaymentMethodEnabled("WALLET")}>محفظة</option>
+              </AppSelect>
+            </div>
+
+            {hasUnpaidRemainder && (
+              <div className="rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-xs space-y-2">
+                <div className="flex items-center justify-between font-bold text-[var(--sem-warn)]">
+                  <span>متبقٍ غير مستحصل:</span>
+                  <span dir="ltr" className="tabular-nums font-mono text-sm">{fmtAr(unpaidRemainder.toFixed(2))} د.ع</span>
+                </div>
+                <p className="text-muted-foreground text-[11px] leading-relaxed">
+                  يُمنع تسليم الطلب بمتبقٍ غير مستحصل إلا بعد استيفاء المبلغ كاملاً أو الحصول على اعتماد المسؤول لتحويله إلى ذمة العميل.
+                </p>
+                {managerApproval ? (
+                  <div className="flex items-center justify-between rounded bg-card/80 p-2 border border-border">
+                    <span className="flex items-center gap-1.5 text-[var(--sem-pos)] font-semibold text-xs">
+                      <ShieldCheck aria-hidden className="size-4 shrink-0" />
+                      تم اعتماد إضافة المتبقي لذمة العميل
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs text-muted-foreground"
+                      onClick={() => { setManagerApproval(null); setAddToCustomerDebt(false); }}
+                    >
+                      إلغاء
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full text-xs font-semibold"
+                    onClick={() => setShowManagerApproval(true)}
+                  >
+                    طلب اعتماد المدير لإضافة المتبقي لذمة العميل
+                  </Button>
+                )}
+              </div>
+            )}
+            {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
-        </div>
-        <DialogFooter>
-          <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={pending}>إلغاء</button>
-          <button className="wob-btn wob-btn-primary" disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
-            onClick={() => {
-              if (!isPosPaymentMethodEnabled(methodV)) return;
-              onConfirm(amtD.gt(0)
-                ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() }
-                : undefined);
-            }}>
-            {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
-          </button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <DialogFooter>
+            <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={pending}>إلغاء</button>
+            <button
+              className="wob-btn wob-btn-primary"
+              disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim()) || (hasUnpaidRemainder && !managerApproval)}
+              onClick={() => {
+                if (!isPosPaymentMethodEnabled(methodV)) return;
+                if (hasUnpaidRemainder && (!addToCustomerDebt || !managerApproval)) {
+                  setError(`لا يمكن تسليم الطلب بمتبقٍ غير مستحصل (${fmtAr(unpaidRemainder.toFixed(2))} د.ع) دون اعتماد المسؤول لإضافته إلى ذمة العميل.`);
+                  return;
+                }
+                setError("");
+                onConfirm(
+                  amtD.gt(0)
+                    ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() }
+                    : undefined,
+                  { addToCustomerDebt, managerApproval: managerApproval ?? undefined },
+                );
+              }}>
+              {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {showManagerApproval && (
+        <ManagerApprovalDialog
+          zIndexClass="z-[110]"
+          title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
+          description={`تسليم الطلب مع بقاء ${fmtAr(unpaidRemainder.toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
+          onCancel={() => setShowManagerApproval(false)}
+          onApprove={(email, password) => {
+            setManagerApproval({ email, password });
+            setAddToCustomerDebt(true);
+            setShowManagerApproval(false);
+            setError("");
+          }}
+        />
+      )}
+    </>
   );
 }

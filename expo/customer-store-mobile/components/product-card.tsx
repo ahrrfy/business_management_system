@@ -1,9 +1,11 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import { AnimatedEntrance } from "@/components/animated-entrance";
+import { useCart } from "@/lib/cart-context";
 import {
   formatIqd,
   productDiscountPercent,
@@ -20,6 +22,7 @@ type ProductCardProps = {
   quickAddLabel?: boolean;
   onQuickView?: (product: Product) => void;
   onAddedToCart?: () => void;
+  onQuickAdd?: (product: Product) => void;
   animationDelay?: number;
 };
 
@@ -30,8 +33,11 @@ export function ProductCard({
   fullWidth = false,
   quickAddLabel = false,
   onQuickView,
+  onAddedToCart,
+  onQuickAdd,
   animationDelay = 0,
 }: ProductCardProps) {
+  const { addProduct } = useCart();
   const { isSaved, toggle } = useWishlist();
   const discount = productDiscountPercent(product);
   const isRail = variant === "rail";
@@ -40,6 +46,19 @@ export function ProductCard({
     product.soldCount && product.soldCount > 0
       ? `طُلب ${product.soldCount}+ مرة`
       : null;
+
+  const handleActionButtonPress = () => {
+    if (product.isCustomizable) {
+      openProduct();
+      return;
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(
+      () => undefined,
+    );
+    addProduct(product, 1);
+    onAddedToCart?.();
+    onQuickAdd?.(product);
+  };
 
   return (
     <AnimatedEntrance
@@ -125,6 +144,7 @@ export function ProductCard({
       <TouchableOpacity
         accessibilityLabel={`${isSaved(product.id) ? "إزالة" : "حفظ"} ${product.title} من المفضلة`}
         activeOpacity={0.86}
+        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
         onPress={() => toggle(product.id)}
         style={styles.favorite}
       >
@@ -142,6 +162,7 @@ export function ProductCard({
         <TouchableOpacity
           accessibilityLabel={`معاينة سريعة ${product.title}`}
           activeOpacity={0.86}
+          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           onPress={() => onQuickView(product)}
           style={styles.quick}
         >
@@ -166,16 +187,16 @@ export function ProductCard({
           accessibilityHint={
             product.isCustomizable
               ? "يفتح تفاصيل الطلب الخاص"
-              : "يفتح خيارات اللون ووحدة البيع قبل الإضافة"
+              : "خلّيها بالسلة — إضافة سريعة لمسواكك بنقرة وحدة"
           }
           accessibilityLabel={
             product.isCustomizable
               ? `عرض تفاصيل ${product.title}`
-              : `اختيار خيارات ${product.title}`
+              : `خلّيها بالسلة: ${product.title}`
           }
           accessibilityRole="button"
           activeOpacity={0.84}
-          onPress={openProduct}
+          onPress={handleActionButtonPress}
           style={[
             styles.buyButton,
             isRail || quickAddLabel
@@ -185,13 +206,13 @@ export function ProductCard({
         >
           {isRail || quickAddLabel || product.isCustomizable ? (
             <Text style={styles.buyText}>
-              {product.isCustomizable ? "تفاصيل" : "أضف"}
+              {product.isCustomizable ? "تفاصيل" : (quickAddLabel ?? "خلّيها بالسلة")}
             </Text>
           ) : (
             <MaterialIcons
               color={storefrontDesign.primitive.white}
-              name="shopping-cart"
-              size={18}
+              name="add"
+              size={20}
             />
           )}
           {(isRail || quickAddLabel || product.isCustomizable) && (
@@ -210,14 +231,14 @@ export function ProductCard({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 20,
     borderWidth: 1,
     marginBottom: 14,
     overflow: "hidden",
-    shadowColor: "#0F172A",
+    shadowColor: "#183D36",
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.04,
     shadowRadius: 14,
     elevation: 2,
   },
@@ -227,7 +248,7 @@ const styles = StyleSheet.create({
   productTap: { flex: 1 },
   cover: {
     alignItems: "center",
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#FAF5EE",
     height: 160,
     justifyContent: "center",
     overflow: "hidden",
@@ -237,14 +258,14 @@ const styles = StyleSheet.create({
   railCover: { height: 180 },
   productImage: { height: "100%", width: "100%" },
   discountBadge: {
-    backgroundColor: "#FF4757",
+    backgroundColor: "#F05D53",
     borderRadius: 999,
     left: 8,
     paddingHorizontal: 8,
     paddingVertical: 3,
     position: "absolute",
     top: 8,
-    shadowColor: "#FF4757",
+    shadowColor: "#F05D53",
     shadowOpacity: 0.25,
     shadowRadius: 4,
     elevation: 2,
@@ -256,8 +277,8 @@ const styles = StyleSheet.create({
   },
   status: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.94)",
-    borderColor: "#E2E8F0",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderColor: "#F1E5DA",
     borderRadius: 999,
     borderWidth: 1,
     bottom: 8,
@@ -269,13 +290,13 @@ const styles = StyleSheet.create({
     right: 8,
   },
   statusDot: {
-    backgroundColor: "#059669",
+    backgroundColor: "#0E806A",
     borderRadius: 20,
     height: 5,
     width: 5,
   },
   statusText: {
-    color: "#065F46",
+    color: "#0E806A",
     fontFamily: "Cairo_700Bold",
     fontSize: 9,
   },
@@ -285,7 +306,7 @@ const styles = StyleSheet.create({
   favorite: {
     alignItems: "center",
     backgroundColor: "rgba(255,255,255,0.92)",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 999,
     borderWidth: 1,
     height: 32,
@@ -294,36 +315,36 @@ const styles = StyleSheet.create({
     right: 8,
     top: 8,
     width: 32,
-    shadowColor: "#000",
+    shadowColor: "#183D36",
     shadowOpacity: 0.04,
     shadowRadius: 4,
   },
   quick: {
     alignItems: "center",
     backgroundColor: "rgba(255,255,255,0.92)",
-    borderColor: "#E2E8F0",
+    borderColor: "#F1E5DA",
     borderRadius: 999,
     borderWidth: 1,
     height: 32,
     justifyContent: "center",
-    left: 8,
     position: "absolute",
+    right: 44,
     top: 8,
     width: 32,
-    shadowColor: "#000",
+    shadowColor: "#183D36",
     shadowOpacity: 0.04,
     shadowRadius: 4,
   },
   copy: { minHeight: 80, paddingHorizontal: 12, paddingTop: 10 },
   title: {
-    color: "#0F172A",
+    color: "#183D36",
     fontFamily: "Cairo_700Bold",
     fontSize: 12.5,
     lineHeight: 19,
     textAlign: "right",
   },
   subtitle: {
-    color: "#64748B",
+    color: "#5A6E68",
     fontFamily: "Cairo_400Regular",
     fontSize: 10,
     marginTop: 2,
@@ -342,7 +363,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     alignItems: "center",
-    borderTopColor: "#F1F5F9",
+    borderTopColor: "#F4EDE4",
     borderTopWidth: 1,
     flexDirection: "row-reverse",
     justifyContent: "space-between",
@@ -352,13 +373,13 @@ const styles = StyleSheet.create({
   },
   priceBlock: { flex: 1 },
   price: {
-    color: "#059669",
+    color: "#0E806A",
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 13.5,
     textAlign: "right",
   },
   oldPrice: {
-    color: "#94A3B8",
+    color: "#8C9E96",
     fontFamily: "Cairo_400Regular",
     fontSize: 9.5,
     marginTop: 1,
@@ -368,21 +389,27 @@ const styles = StyleSheet.create({
   buyButton: {
     alignItems: "center",
     backgroundColor: "#059669",
-    borderRadius: 12,
+    borderRadius: 999,
     flexDirection: "row-reverse",
-    gap: 4,
-    height: 34,
+    gap: 5,
+    height: 36,
     justifyContent: "center",
     shadowColor: "#059669",
-    shadowOpacity: 0.20,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  buyButtonCompact: { marginRight: 6, width: 36 },
-  buyButtonWide: { marginRight: 6, paddingHorizontal: 12 },
+  buyButtonCompact: {
+    borderRadius: 999,
+    height: 36,
+    marginRight: 6,
+    width: 36,
+  },
+  buyButtonWide: { borderRadius: 999, marginRight: 6, paddingHorizontal: 14 },
   buyText: {
     color: "#FFFFFF",
     fontFamily: "Cairo_700Bold",
-    fontSize: 11,
+    fontSize: 11.5,
   },
 });

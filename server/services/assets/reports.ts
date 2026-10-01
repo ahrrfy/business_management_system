@@ -3,7 +3,7 @@ import Decimal from "decimal.js";
 import { and, desc, eq, getTableColumns, inArray, ne } from "drizzle-orm";
 import { assetMaintenance, branches, fixedAssets } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
-import { sumMoney, toDateStr } from "../money";
+import { money, sumMoney, toDateStr, toDbMoney } from "../money";
 import type { CompanyBranchScope } from "../companyBranchScope";
 import { computeDepreciation } from "./depreciation";
 import { listAssets } from "./queries";
@@ -130,4 +130,76 @@ export async function disposalLog(scope: CompanyBranchScope) {
       gain: proceeds !== null ? new Decimal(a.disposalValue ?? "0").minus(new Decimal(dep.bookValue)).toDecimalPlaces(2).toString() : null,
     };
   });
+}
+
+export interface AssetRegisterFilters {
+  category?: string;
+  branchId?: number;
+  status?: string;
+}
+
+/**
+ * تقرير سجل الأصول الثابتة الموحد (Fixed Assets Register) وفق معيار IAS 16.
+ * يفصل التكلفة التاريخية عن الإهلاك الافتتاحي وإهلاك النظام وصافي القيمة الدفترية.
+ */
+export async function fixedAssetRegisterReport(
+  filters: AssetRegisterFilters | undefined,
+  scope: CompanyBranchScope,
+) {
+  const assets = await listAssets({ ...filters, includeDisposed: true }, scope);
+  const activeAssets = assets.filter((a) => a.recognitionStatus !== "CORRECTED");
+
+  let sumCost = new Decimal(0);
+  let sumOpeningDep = new Decimal(0);
+  let sumSystemDep = new Decimal(0);
+  let sumTotalAccum = new Decimal(0);
+  let sumNbv = new Decimal(0);
+
+  const rows = activeAssets.map((a) => {
+    const cost = money(a.purchaseValue);
+    const openingDep = money(a.openingDepreciation ?? "0");
+    const totalAccum = money(a.accumulatedDepreciation ?? "0");
+    const systemDep = Decimal.max(0, totalAccum.sub(openingDep));
+    const nbv = Decimal.max(0, cost.sub(totalAccum));
+
+    sumCost = sumCost.plus(cost);
+    sumOpeningDep = sumOpeningDep.plus(openingDep);
+    sumSystemDep = sumSystemDep.plus(systemDep);
+    sumTotalAccum = sumTotalAccum.plus(totalAccum);
+    sumNbv = sumNbv.plus(nbv);
+
+    return {
+      id: a.id,
+      code: a.code,
+      name: a.name,
+      category: a.category,
+      branchId: a.branchId,
+      branchName: a.branchName ?? "بلا فرع",
+      location: a.location,
+      custodianId: a.custodianId,
+      custodianName: a.custodianName,
+      purchaseDate: String(a.purchaseDate),
+      usefulLifeYears: a.usefulLifeYears,
+      depreciationMethod: a.depreciationMethod,
+      status: a.status,
+      cost: toDbMoney(cost),
+      salvageValue: toDbMoney(money(a.salvageValue ?? "0")),
+      openingDepreciation: toDbMoney(openingDep),
+      systemDepreciation: toDbMoney(systemDep),
+      accumulatedDepreciation: toDbMoney(totalAccum),
+      netBookValue: toDbMoney(nbv),
+    };
+  });
+
+  return {
+    kpis: {
+      totalCount: rows.length,
+      totalCost: toDbMoney(sumCost),
+      totalOpeningDepreciation: toDbMoney(sumOpeningDep),
+      totalSystemDepreciation: toDbMoney(sumSystemDep),
+      totalAccumulatedDepreciation: toDbMoney(sumTotalAccum),
+      totalNetBookValue: toDbMoney(sumNbv),
+    },
+    rows,
+  };
 }

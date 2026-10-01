@@ -29,8 +29,6 @@ const TABLES = [
   "workOrderEvents",
   "workOrderDesignApprovals",
   "workOrderDesignRevisions",
-  "taskEvents",
-  "tasks",
   "workOrderMaterials",
   "workOrderItems",
   "workOrderImages",

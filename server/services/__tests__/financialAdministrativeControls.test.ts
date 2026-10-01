@@ -15,7 +15,7 @@ function db() {
 beforeEach(async () => {
   const connection = db();
   await connection.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of ["idempotencyKeys", "accountingEntries", "receipts", "voucherCategories", "branches", "users"]) {
+  for (const table of ["idempotencyKeys", "accountingEntries", "receipts", "voucherCategories", "branches", "users", "shifts"]) {
     await connection.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   }
   await connection.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -28,6 +28,14 @@ beforeEach(async () => {
     loginMethod: "local",
     branchId: 1,
   });
+  await connection.insert(s.shifts).values({
+    id: 1,
+    userId: 1,
+    branchId: 1,
+    status: "OPEN",
+    openedAt: new Date(),
+    type: "RETAIL",
+  });
   await connection.insert(s.voucherCategories).values({
     id: 11,
     name: "إيرادات إدارية اختبارية",
@@ -37,7 +45,7 @@ beforeEach(async () => {
 });
 
 describe("الضوابط الإدارية لمصدر النقد", () => {
-  it("قبض نقد من طرف حر موثق ينفذ فوراً ويثبت أثره المالي في الخزينة الإدارية (المسار الأول)", async () => {
+  it("قبض نقد من طرف حر موثق ينفذ فوراً ويثبت أثره المالي في درج الوردية (المسار الأول)", async () => {
     const result = await createVoucher({
       voucherType: "RECEIPT",
       branchId: 1,
@@ -56,11 +64,12 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
     const rows = await db().select().from(s.receipts);
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("COMPLETED");
-    expect(rows[0].cashBucket).toBe("TREASURY");
+    expect(rows[0].cashBucket).toBe("DRAWER");
+    expect(rows[0].shiftId).toBe(1);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 
-  it("قبض حر بلا توثيق مسبق ينفذ فوراً في الخزينة طالما حُددت فئته المحاسبية وطرفه (المسار الأول)", async () => {
+  it("قبض حر بلا توثيق مسبق ينفذ فوراً في درج الوردية طالما حُددت فئته المحاسبية وطرفه (المسار الأول)", async () => {
     const result = await createVoucher({
       voucherType: "RECEIPT",
       branchId: 1,
@@ -77,7 +86,8 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
     const rows = await db().select().from(s.receipts);
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("COMPLETED");
-    expect(rows[0].cashBucket).toBe("TREASURY");
+    expect(rows[0].cashBucket).toBe("DRAWER");
+    expect(rows[0].shiftId).toBe(1);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 

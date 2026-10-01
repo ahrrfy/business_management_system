@@ -14,11 +14,12 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ArrowUpRight } from "lucide-react";
 import { exportRows } from "@/lib/export";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { LoadingState, ErrorState } from "@/components/PageState";
 
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type LedgerRow = RouterOutputs["reports"]["itemLedger"]["rows"][number];
@@ -42,9 +43,9 @@ const selectCls =
 
 /** كمية بإشارة للعرض (+/−). الصفر بلا إشارة. */
 function signedDisplay(n: number): string {
-  if (n > 0) return `+${fmtInt(n)}`;
-  if (n < 0) return `−${fmtInt(Math.abs(n))}`;
-  return fmtInt(0);
+  if (n > 0) return `+${formatQuantity(n)}`;
+  if (n < 0) return `−${formatQuantity(Math.abs(n))}`;
+  return formatQuantity(0);
 }
 
 function variantLabel(r: {
@@ -52,9 +53,9 @@ function variantLabel(r: {
   variantName: string | null;
   color: string | null;
   size: string | null;
+  variantKind?: string | null;
 }): string {
-  const detail = [r.variantName, r.color, r.size].filter(Boolean).join(" / ");
-  return detail ? `${r.productName} — ${detail}` : r.productName;
+  return variantDisplayName(r);
 }
 
 function TypeBadge({ type }: { type: string }) {
@@ -150,8 +151,8 @@ export default function ItemLedger() {
 
   const kpis: KpiItem[] = picked
     ? [
-        { label: "رصيد افتتاحي", value: fmtInt(opening), tone: "info" },
-        { label: "رصيد ختامي", value: fmtInt(closing), tone: "positive" },
+        { label: "رصيد افتتاحي", value: formatQuantity(opening), tone: "info" },
+        { label: "رصيد ختامي", value: formatQuantity(closing), tone: "positive" },
         // الإجمالي للنطاق كلّه لا للصفحة المعروضة.
         { label: "عدد الحركات", value: fmtInt(total) },
       ]
@@ -199,8 +200,8 @@ export default function ItemLedger() {
           { label: "SKU", value: variant?.sku ?? "—" },
           { label: "الفرع", value: branchLabel },
           { label: "الفترة", value: periodLabel },
-          { label: "رصيد افتتاحي", value: fmtInt(opening) },
-          { label: "رصيد ختامي", value: fmtInt(closing) },
+          { label: "رصيد افتتاحي", value: formatQuantity(opening) },
+          { label: "رصيد ختامي", value: formatQuantity(closing) },
         ],
         columns: [
           { key: "date", label: "التاريخ" },
@@ -213,12 +214,12 @@ export default function ItemLedger() {
           date: r.date,
           type: MTYPE_LABEL[r.type] ?? r.type,
           qty: signedDisplay(r.signedQty),
-          balance: fmtInt(r.balance),
+          balance: formatQuantity(r.balance),
           ref: r.reference ?? "—",
         })),
         summary: [
-          { label: "رصيد افتتاحي", value: fmtInt(opening) },
-          { label: "رصيد ختامي", value: fmtInt(closing), large: true, bold: true },
+          { label: "رصيد افتتاحي", value: formatQuantity(opening) },
+          { label: "رصيد ختامي", value: formatQuantity(closing), large: true, bold: true },
         ],
       });
     } finally {
@@ -252,8 +253,8 @@ export default function ItemLedger() {
     {
       id: "balance", header: "الرصيد",
       accessorFn: (r) => r.balance,
-      cell: ({ row }) => <span className="font-medium">{fmtInt(row.original.balance)}</span>,
-      footer: () => (rows.length ? fmtInt(closing) : null),
+      cell: ({ row }) => <span className="font-medium">{formatQuantity(row.original.balance)}</span>,
+      footer: () => (rows.length ? formatQuantity(closing) : null),
       meta: { kind: "number", align: "start" },
     },
     {
@@ -302,7 +303,7 @@ export default function ItemLedger() {
                       <div className="font-medium">{variantLabel(v)}</div>
                       <div className="text-xs text-muted-foreground font-mono flex justify-between" dir="ltr">
                         <span>{v.sku}</span>
-                        <span>متاح {fmtInt(v.stockBase)}</span>
+                        <span>متاح {formatQuantity(v.stockBase)}</span>
                       </div>
                     </button>
                   ))}

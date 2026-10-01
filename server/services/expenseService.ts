@@ -16,11 +16,19 @@ import {
   fixedAssets,
   idempotencyKeys,
   productVariants,
+  products,
   purchaseOrders,
   receipts,
   shifts,
   users,
 } from "../../drizzle/schema";
+import type {
+  FinancialCellProvenancePayload,
+  ProvenanceDocumentRef,
+  ProvenancePartyKind,
+  ProvenanceSubItem,
+} from "@shared/financialProvenance";
+import { computeProvenanceReconciliation } from "@shared/financialProvenance";
 import { localDayStart } from "./dateRange";
 import { getDb, type Tx } from "../db";
 import { escLike } from "../lib/sqlLike";
@@ -2704,8 +2712,131 @@ export async function listExpenses(input: ListExpensesInput = {}) {
       .then((rows) => rows[0]),
   ]);
 
+  const enrichedRows = pageResult.rows.map(enrichExpenseRow);
+  const stockExpenseIds = enrichedRows
+    .filter((r) => r.source === "STOCK")
+    .map((r) => Number(r.id))
+    .filter((id) => id > 0);
+
+  const stockItemMap = new Map<number, ProvenanceSubItem[]>();
+  if (stockExpenseIds.length > 0) {
+    const stockRows = await db
+      .select({
+        expenseId: expenseStockItems.expenseId,
+        id: expenseStockItems.id,
+        name: products.name,
+        quantity: expenseStockItems.quantity,
+        unitCost: expenseStockItems.unitCost,
+        lineCost: expenseStockItems.lineCost,
+      })
+      .from(expenseStockItems)
+      .leftJoin(productVariants, eq(productVariants.id, expenseStockItems.variantId))
+      .leftJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(expenseStockItems.expenseId, stockExpenseIds));
+
+    for (const it of stockRows) {
+      const expId = Number(it.expenseId);
+      const list = stockItemMap.get(expId) ?? [];
+      list.push({
+        id: it.id,
+        label: it.name || "مادة مخزنية مستهلكة",
+        amount: toDbMoney(money(it.lineCost ?? 0)),
+        quantity: it.quantity != null ? Number(it.quantity) : undefined,
+        unitPrice: it.unitCost != null ? toDbMoney(money(it.unitCost)) : undefined,
+        type: "stock_item",
+      });
+      stockItemMap.set(expId, list);
+    }
+  }
+
+  const rowsWithProvenance = enrichedRows.map((row) => {
+    const rowAmount = toDbMoney(money(row.amount ?? 0));
+    const expStockItems = stockItemMap.get(Number(row.id));
+
+    let subItems: ProvenanceSubItem[] = [];
+    if (expStockItems && expStockItems.length > 0) {
+      const stockSum = expStockItems.reduce((acc, it) => acc.plus(money(it.amount)), money(0));
+      if (stockSum.sub(money(rowAmount)).abs().lte(0.005)) {
+        subItems = expStockItems;
+      } else {
+        subItems = [
+          {
+            id: `stock-exp-${row.id}`,
+            label: "مصروف مواد مخزنية مستهلكة",
+            amount: rowAmount,
+            note: `إجمالي بنود المواد (${expStockItems.length} صنف): ${toDbMoney(stockSum)} د.ع`,
+          },
+        ];
+      }
+    } else {
+      subItems = [
+        {
+          id: `exp-${row.id}`,
+          label: row.description
+            ? String(row.description)
+            : (row.expenseCategoryName || row.category || "مصروف تشغيلي"),
+          amount: rowAmount,
+          category: row.expenseCategoryName || row.category,
+          type: "item",
+        },
+      ];
+    }
+
+    const docRefs: ProvenanceDocumentRef[] = [];
+    const refNum = row.receiptReferenceNumber || row.referenceNumber;
+    if (refNum) {
+      docRefs.push({
+        docType: "voucher",
+        docNumber: String(refNum),
+        date: row.expenseDate instanceof Date ? row.expenseDate.toISOString() : (row.expenseDate ? String(row.expenseDate) : null),
+      });
+    }
+    docRefs.push({
+      docType: "expense",
+      docNumber: `EXP-${row.id}`,
+      docId: Number(row.id),
+      date: row.expenseDate instanceof Date ? row.expenseDate.toISOString() : (row.expenseDate ? String(row.expenseDate) : null),
+    });
+
+    const partyName = row.receiptCounterpartyName || row.payee;
+    const party = partyName
+      ? {
+          name: String(partyName),
+          kind: "beneficiary" as ProvenancePartyKind,
+        }
+      : null;
+
+    const provenance: FinancialCellProvenancePayload = {
+      movementType: "expense",
+      title: row.description
+        ? String(row.description)
+        : (row.expenseCategoryName
+          ? `مصروف: ${row.expenseCategoryName}`
+          : (row.category ? `مصروف: ${row.category}` : "مصروف تشغيلي")),
+      totalAmount: rowAmount,
+      party,
+      documentRef: docRefs[0] ?? null,
+      docRefs,
+      category: row.expenseCategoryName || row.category || null,
+      classification: row.costCenter ? String(row.costCenter) : null,
+      paymentMethod: row.paymentMethod ? String(row.paymentMethod) : null,
+      cashBucket: row.cashBucket ? String(row.cashBucket) : null,
+      actorName: row.createdByName ? String(row.createdByName) : null,
+      actor: row.createdByName ? { name: String(row.createdByName), id: row.createdBy ? Number(row.createdBy) : null } : null,
+      branchName: row.branchName ? String(row.branchName) : null,
+      notes: row.description ? String(row.description) : null,
+      subItems,
+      reconciliation: computeProvenanceReconciliation(rowAmount, subItems),
+    };
+
+    return {
+      ...row,
+      provenance,
+    };
+  });
+
   return {
-    rows: pageResult.rows.map(enrichExpenseRow),
+    rows: rowsWithProvenance,
     totals: {
       active: totalsRow?.active ?? "0.00",
       pendingApproval: totalsRow?.pendingApproval ?? "0.00",

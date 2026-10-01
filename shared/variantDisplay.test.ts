@@ -39,6 +39,17 @@ describe("variantDisplay — اسم عرض المتغيّر الموحّد (م٣
     ).toBe("دفتر — ٩٦ ورقة");
   });
 
+  it("تنويعة باسم ولون معاً: يجمع بينهما دون إسقاط", () => {
+    expect(
+      variantDisplayName({
+        productName: "حبر فيفيد",
+        variantName: "علبة 500 مل",
+        color: "أصفر",
+        variantKind: "VARIANT",
+      }),
+    ).toBe("حبر فيفيد — علبة 500 مل (أصفر)");
+  });
+
   it("isAlternativeVariant", () => {
     expect(isAlternativeVariant("ALTERNATIVE")).toBe(true);
     expect(isAlternativeVariant("VARIANT")).toBe(false);

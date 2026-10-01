@@ -148,7 +148,7 @@ describe("أداة معالجة بيانات التوصيل القديمة", () 
       sourceType: "WORK_ORDER",
       sourceId: 1,
       status: "DISPATCHED",
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
       moneyStatus: "UNSETTLED",
       courierDeliveredAt: null,
       partyId: 1,
@@ -156,7 +156,7 @@ describe("أداة معالجة بيانات التوصيل القديمة", () 
     expect(Number(first.consignmentId)).toBe(Number(rows[0].id));
     expect(String((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe("0.00");
     expect((await db().select().from(s.deliveryLedgerEntries)).map((entry) => [entry.entryType, String(entry.amount)])).toEqual([["COD_ASSIGNED", "80.00"]]);
-    expect((await db().select().from(s.deliveryEvents)).map((event) => event.eventType)).toEqual(["ASSIGNED"]);
+    expect((await db().select().from(s.deliveryEvents)).map((event) => event.eventType)).toEqual(["OUT_FOR_DELIVERY"]);
     const audit = (await db().select().from(s.auditLogs)).filter((row) => row.action === "delivery.legacy.createConsignment");
     expect(audit).toHaveLength(1);
   });
@@ -201,7 +201,7 @@ describe("أداة معالجة بيانات التوصيل القديمة", () 
     await caller.deliveryLegacyRepair.repair({ ...baseInput, externalTrackingRef: " 00441447 " });
     expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, 2)))[0]).toMatchObject({
       status: "DISPATCHED",
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
       externalTrackingRef: "00441447",
     });
     expect((await db().select().from(s.auditLogs)).find((item) => item.action === "delivery.legacy.prepaidReopened")?.newValue).toMatchObject({ externalTrackingRef: "00441447" });
@@ -389,7 +389,7 @@ describe("أداة معالجة بيانات التوصيل القديمة", () 
     const consignmentId = Number(created.consignmentId);
     expect((await caller.deliveryLegacyRepair.report({})).prepaidClosedWithoutProof.map((row) => row.id)).toContain(consignmentId);
     expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, consignmentId)))[0]).toMatchObject({
-      status: "DISPATCHED", parcelStatus: "ASSIGNED", moneyStatus: "NOT_APPLICABLE", courierDeliveredAt: null,
+      status: "DISPATCHED", parcelStatus: "OUT_FOR_DELIVERY", moneyStatus: "NOT_APPLICABLE", courierDeliveredAt: null,
     });
 
     const proofInput = {
@@ -404,7 +404,7 @@ describe("أداة معالجة بيانات التوصيل القديمة", () 
     });
     expect((await db().select().from(s.deliveryLedgerEntries).where(eq(s.deliveryLedgerEntries.consignmentId, consignmentId))).map((entry) => [entry.entryType, String(entry.amount)])).toEqual([["FEE_EARNED", "5.00"]]);
     expect((await db().select().from(s.deliveryEvents).where(eq(s.deliveryEvents.consignmentId, consignmentId))).map((event) => event.eventType)).toEqual([
-      "ASSIGNED", "DELIVERED",
+      "OUT_FOR_DELIVERY", "DELIVERED",
     ]);
   });
 

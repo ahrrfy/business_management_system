@@ -22,9 +22,22 @@
 // السحب النقديّ أثناء الوردية (cash drop, referenceNumber LIKE 'CD-%' — cashDropService): يقع
 //   **أثناء** الوردية فيُدرَج في computeExpectedCash (يُنقِص المتوقَّع) والنقد المعدود يُنقِص بالمثل ⇒
 //   الفرق لا يتأثّر. يُصنَّف في دلو cashDrops (ضمن الخارج التشغيليّ)، خلافاً لتسليم الإغلاق CH.
-import { and, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { branches, cashCustodyCounts, expenses, receipts, shifts, users } from "../../drizzle/schema";
+import {
+  branches,
+  cashCustodyCounts,
+  customers,
+  expenseCategories,
+  expenses,
+  invoices,
+  receipts,
+  shifts,
+  suppliers,
+  users,
+  voucherCategories,
+  workOrders,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { utcDayRange } from "./businessDay";
 import { materializedDrawerCashConditions } from "./cash/cashAvailability";
@@ -33,6 +46,33 @@ import {
   type CashCustodyVisibilityActor,
 } from "./cash/custodyBlindCount";
 import { money, toDbMoney } from "./money";
+import { expenseBucketLabel } from "../../shared/expenseCategories";
+
+/** تفصيل حركة نقدية واحدة في درج الوردية (لتوضيح مصدر الإيراد ومستفيد المصروف). */
+export interface DayCloseShiftMovementItem {
+  id: number;
+  direction: "IN" | "OUT";
+  categoryType:
+    | "SALE"
+    | "COLLECTION"
+    | "OTHER_IN"
+    | "RETURN"
+    | "EXPENSE"
+    | "CASH_DROP"
+    | "HANDOVER"
+    | "OTHER_OUT";
+  categoryLabel: string;
+  amount: string;
+  referenceNumber: string | null;
+  voucherNumber: string | null;
+  partyName: string | null;      // من أين جاء الإيراد / لمن صُرف المصروف
+  payee: string | null;          // جهة الصرف المحددة
+  description: string | null;    // البيان وسبب الحركة
+  classification: string | null; // فئة المصروف أو نوع البيع
+  documentNumber: string | null; // رقم الفاتورة أو أمر الشغل أو السند
+  createdAt: Date | string;
+  createdByName: string | null;
+}
 
 /** سطر مطابقة وردية واحدة. كل الحقول المالية نصّية decimal(15,2). */
 export interface DayCloseShiftLine {
@@ -68,6 +108,8 @@ export interface DayCloseShiftLine {
   // ── القيم المخزَّنة (تأكيد التطابق مع Z-report) ──
   storedExpectedCash: string | null;
   storedVariance: string | null;
+  // ── تفاصيل الحركات الفردية (من أين جاء الإيراد ولمن صُرف المصروف) ──
+  movements: DayCloseShiftMovementItem[];
 }
 
 export interface DayCloseTotals {
@@ -300,6 +342,214 @@ export async function getDayCloseReconciliation(opts: {
     });
   }
 
+  // جلب تفاصيل الحركات النقدية الفردية لكل وردية لبيان مصدر الإيراد ومستفيد المصروف
+  const partyCustomer = alias(customers, "partyCustomer");
+  const invoiceCustomer = alias(customers, "invoiceCustomer");
+  const receiptUsers = alias(users, "receiptUsers");
+
+  const movementRows = await db
+    .select({
+      id: receipts.id,
+      shiftId: receipts.shiftId,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      referenceNumber: receipts.referenceNumber,
+      voucherNumber: receipts.voucherNumber,
+      partyType: receipts.partyType,
+      partyId: receipts.partyId,
+      counterpartyName: receipts.counterpartyName,
+      description: receipts.description,
+      createdAt: receipts.createdAt,
+      createdBy: receipts.createdBy,
+      createdByName: receiptUsers.name,
+      // Invoices
+      invoiceId: receipts.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceSaleType: invoices.sourceType,
+      // Expenses
+      expenseId: expenses.id,
+      expensePayee: expenses.payee,
+      expenseDescription: expenses.description,
+      expenseCategory: expenses.category,
+      expenseCategoryName: expenseCategories.name,
+      expenseReferenceNumber: expenses.referenceNumber,
+      // Vouchers
+      voucherCategoryName: voucherCategories.name,
+      // Work orders
+      workOrderId: receipts.workOrderId,
+      workOrderNumber: workOrders.orderNumber,
+      workOrderTitle: workOrders.title,
+      // Customers
+      partyCustomerName: partyCustomer.name,
+      invoiceCustomerName: invoiceCustomer.name,
+      // Suppliers
+      supplierName: suppliers.name,
+    })
+    .from(receipts)
+    .leftJoin(receiptUsers, eq(receiptUsers.id, receipts.createdBy))
+    .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+    .leftJoin(expenseCategories, eq(expenseCategories.id, expenses.expenseCategoryId))
+    .leftJoin(voucherCategories, eq(voucherCategories.id, receipts.voucherCategoryId))
+    .leftJoin(invoices, eq(invoices.id, receipts.invoiceId))
+    .leftJoin(invoiceCustomer, eq(invoiceCustomer.id, invoices.customerId))
+    .leftJoin(
+      partyCustomer,
+      and(eq(receipts.partyType, "CUSTOMER"), eq(partyCustomer.id, receipts.partyId)),
+    )
+    .leftJoin(
+      suppliers,
+      and(eq(receipts.partyType, "SUPPLIER"), eq(suppliers.id, receipts.partyId)),
+    )
+    .leftJoin(workOrders, eq(workOrders.id, receipts.workOrderId))
+    .where(isDrawerCash)
+    .orderBy(desc(receipts.createdAt), desc(receipts.id));
+
+  const movementsByShift = new Map<number, DayCloseShiftMovementItem[]>();
+  for (const r of movementRows) {
+    if (r.shiftId == null) continue;
+    const sId = Number(r.shiftId);
+    const ref = r.referenceNumber ?? "";
+    const isHandover = r.direction === "OUT" && ref.startsWith("CH-");
+    const isCashDrop = r.direction === "OUT" && ref.startsWith("CD-");
+    const isExpense =
+      r.direction === "OUT" &&
+      !isHandover &&
+      (r.voucherNumber != null || r.expenseId != null);
+    const isReturn =
+      r.direction === "OUT" &&
+      !isHandover &&
+      r.voucherNumber == null &&
+      r.expenseId == null &&
+      r.invoiceId != null;
+
+    const isSale =
+      r.direction === "IN" &&
+      r.voucherNumber == null &&
+      r.invoiceId != null;
+    const isCollection =
+      r.direction === "IN" && r.voucherNumber != null;
+    const isWorkOrderDeposit =
+      r.direction === "IN" && r.workOrderId != null;
+
+    let categoryType: DayCloseShiftMovementItem["categoryType"];
+    let categoryLabel: string;
+    let payee: string | null = null;
+    let partyName: string | null = null;
+    let description: string | null = null;
+    let classification: string | null = null;
+    let documentNumber: string | null = null;
+
+    if (isHandover) {
+      categoryType = "HANDOVER";
+      categoryLabel = "خرج إلى العهدة";
+      payee = "الخزينة الرئيسية";
+      partyName = "الخزينة الرئيسية";
+      description = r.description || "تسليم نقد الإغلاق إلى الخزينة";
+      documentNumber = r.referenceNumber;
+    } else if (isCashDrop) {
+      categoryType = "CASH_DROP";
+      categoryLabel = "سحب أثناء الوردية";
+      payee = r.counterpartyName || "أمين الصندوق";
+      partyName = r.counterpartyName || "عهدة السحب";
+      description = r.description || "سحب نقد تشغيلي أثناء الوردية";
+      documentNumber = r.referenceNumber;
+    } else if (isExpense) {
+      categoryType = "EXPENSE";
+      categoryLabel = r.voucherNumber ? "سند صرف" : "مصروف تشغيلي";
+      payee =
+        r.expensePayee ||
+        r.counterpartyName ||
+        r.supplierName ||
+        r.partyCustomerName ||
+        "غير محدد";
+      partyName = payee;
+      description = r.expenseDescription || r.description || "مصروف نقدي من الدرج";
+      classification =
+        r.expenseCategoryName ||
+        (r.expenseCategory ? expenseBucketLabel(r.expenseCategory) : null) ||
+        r.voucherCategoryName ||
+        "مصروفات عامة";
+      documentNumber =
+        r.voucherNumber || r.expenseReferenceNumber || r.referenceNumber || null;
+    } else if (isReturn) {
+      categoryType = "RETURN";
+      categoryLabel = "مرتجع مبيعات";
+      partyName = r.invoiceCustomerName || r.partyCustomerName || "زبون نقدي";
+      payee = partyName;
+      description = r.description || "استرداد نقدي لمرتجع مبيعات";
+      classification = "مرتجع فاتورة";
+      documentNumber = r.invoiceNumber || null;
+    } else if (r.direction === "OUT") {
+      categoryType = "OTHER_OUT";
+      categoryLabel = "خارج تشغيلي آخر";
+      payee =
+        r.counterpartyName ||
+        r.partyCustomerName ||
+        r.supplierName ||
+        "جهة غير محددة";
+      partyName = payee;
+      description = r.description || "صرف نقدي من الدرج";
+      classification = "صرف نقدي";
+      documentNumber = r.referenceNumber || null;
+    } else if (isSale) {
+      categoryType = "SALE";
+      categoryLabel = "مبيعات نقدية";
+      partyName = r.invoiceCustomerName || r.partyCustomerName || "زبون نقدي";
+      description =
+        r.description ||
+        (r.invoiceSaleType ? `فاتورة بيع (${r.invoiceSaleType})` : "مبيعات نقدية بالدرج");
+      classification = r.invoiceSaleType || "مبيعات نقطة البيع";
+      documentNumber = r.invoiceNumber || null;
+    } else if (isCollection) {
+      categoryType = "COLLECTION";
+      categoryLabel = "تحصيل / سند قبض";
+      partyName = r.partyCustomerName || r.counterpartyName || "عميل";
+      description = r.description || "سند قبض نقدي بالدرج";
+      classification = r.voucherCategoryName || "تحصيل حساب عميل";
+      documentNumber = r.voucherNumber || null;
+    } else if (isWorkOrderDeposit) {
+      categoryType = "OTHER_IN";
+      categoryLabel = "عربون أمر شغل";
+      partyName = r.partyCustomerName || r.invoiceCustomerName || "عميل أمر الشغل";
+      description =
+        r.description ||
+        (r.workOrderTitle ? `عربون: ${r.workOrderTitle}` : "عربون نقدي لأمر شغل");
+      classification = "أمر شغل";
+      documentNumber = r.workOrderNumber || null;
+    } else {
+      categoryType = "OTHER_IN";
+      categoryLabel = "مقبوضات أخرى";
+      partyName = r.counterpartyName || r.partyCustomerName || "مقبوضات نقدية";
+      description = r.description || "إيراد نقدي متنوع بالدرج";
+      classification = "مقبوضات نقدية";
+      documentNumber = r.referenceNumber || null;
+    }
+
+    const item: DayCloseShiftMovementItem = {
+      id: Number(r.id),
+      direction: r.direction as "IN" | "OUT",
+      categoryType,
+      categoryLabel,
+      amount: r.amount,
+      referenceNumber: r.referenceNumber ?? null,
+      voucherNumber: r.voucherNumber ?? null,
+      partyName,
+      payee,
+      description,
+      classification,
+      documentNumber,
+      createdAt: r.createdAt,
+      createdByName: r.createdByName ?? null,
+    };
+
+    const list = movementsByShift.get(sId);
+    if (!list) {
+      movementsByShift.set(sId, [item]);
+    } else {
+      list.push(item);
+    }
+  }
+
   // مُجمِّعات الإجماليات (decimal).
   let tOpening = money(0), tSales = money(0), tColl = money(0), tOtherIn = money(0), tCashIn = money(0);
   let tReturns = money(0), tExpenses = money(0), tOtherOut = money(0), tOpOut = money(0);
@@ -391,6 +641,7 @@ export async function getDayCloseReconciliation(opts: {
       retainedInDrawer: retained ? toDbMoney(retained) : null,
       storedExpectedCash: sh.expectedCash != null ? toDbMoney(money(sh.expectedCash)) : null,
       storedVariance: sh.variance != null ? toDbMoney(money(sh.variance)) : null,
+      movements: movementsByShift.get(Number(sh.shiftId)) ?? [],
     };
   });
 

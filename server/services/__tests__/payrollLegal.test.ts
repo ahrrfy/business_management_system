@@ -385,9 +385,9 @@ describe("generatePayroll — المكوّنات القانونية (DB)", () =>
 
   it("(و) نهاية الخدمة للساعيّ تُحسب من أجره المكتسَب لا صفراً (Codex P2)", async () => {
     await setLegal({ endOfServiceEnabled: true, endOfServiceDaysPerYear: "21" });
-    const emp = await createEmployee({ firstName: "حيدر", lastName: "الزيدي", payType: "hourly", dayRates: { "الأحد": 5000 } });
+    const emp = await createEmployee({ firstName: "حيدر", lastName: "الزيدي", payType: "hourly", dayRates: { "الأحد": 5000, "الإثنين": 5000 } });
     await db().insert(s.attendance).values({
-      employeeId: emp!.id, attendanceDate: "2026-06-01", status: "PRESENT", hours: "8.00", hourlyRate: "5000.00", amount: "300000.00", source: "manual",
+      employeeId: emp!.id, attendanceDate: "2026-06-01", status: "PRESENT", hours: "60.00", hourlyRate: "5000.00", amount: "300000.00", source: "manual",
     });
     const run = await generatePayroll("2026-06", ACTOR);
     const it = run!.items[0];

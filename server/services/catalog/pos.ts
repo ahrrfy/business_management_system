@@ -28,6 +28,7 @@ export interface PosRow {
   /** لون العرض «#RRGGBB» من بنك الألوان (اختيار صريح؛ null ⇒ يُستنتَج من الاسم). يُغذّي رمز اللون على الملصق. */
   colorHex: string | null;
   size: string | null;
+  variantKind?: string | null;
   sku: string;
   productUnitId: number;
   unitName: string;
@@ -101,6 +102,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       color: productVariants.color,
       colorHex: productVariants.colorHex,
       size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
       productUnitId: productUnits.id,
       unitName: productUnits.unitName,
@@ -445,19 +447,31 @@ export async function listByProductIds(
 
 /** List sellable rows for the POS, optionally filtered by a text query.
  *  includeReceptionServices=true يُظهر خدمات الطباعة المفعَّل عليها showInReception (كاشير الاستقبال).
- *  includeAllServices=true (١٢/٨/٢٦) يُظهر **كل** خدمات الطباعة (بلا شرط showInReception) — لشاشة
- *    فاتورة البيع المتقدّمة. يتقدَّم على includeReceptionServices إن حدَّدَ العميل الاثنين.
+ *  includeAllServices=true / includeAdvancedSaleServices=true يُظهر خدمات الطباعة المفعَّل عليها showInAdvancedSales (فاتورة البيع المتقدّمة).
+ *  includeQuotationServices=true يُظهر خدمات الطباعة المفعَّل عليها showInQuotations (عروض الأسعار).
  *  opts.customerId (بند 12ب): يُطبّق الأسعار التعاقدية النشطة للعميل على الصفوف المطابقة. */
 export async function listForPos(
   branchId: number,
   tier: PriceTier,
   query?: string,
   limit = 200,
-  opts?: { includeReceptionServices?: boolean; includeAllServices?: boolean; customerId?: number | null },
+  opts?: {
+    includeReceptionServices?: boolean;
+    includeAllServices?: boolean;
+    includeAdvancedSaleServices?: boolean;
+    includeQuotationServices?: boolean;
+    customerId?: number | null;
+  },
 ): Promise<PosRow[]> {
   const db = getDb();
   if (!db) return [];
-  const mode = opts?.includeAllServices ? "advancedSale" : opts?.includeReceptionServices ? "reception" : "default";
+  const mode = opts?.includeQuotationServices
+    ? "quotation"
+    : opts?.includeAllServices || opts?.includeAdvancedSaleServices
+      ? "advancedSale"
+      : opts?.includeReceptionServices
+        ? "reception"
+        : "default";
   const active = posVisibility(mode);
   const search = buildCatalogSearchWhere(query);
   const where = search ? and(active, search) : active;

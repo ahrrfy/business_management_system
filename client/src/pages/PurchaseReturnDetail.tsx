@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
-import { fmt } from "@/lib/money";
+import { fmt, formatQuantity } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
@@ -11,6 +11,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { ArrowRight, Printer } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Link, useParams } from "wouter";
@@ -22,14 +23,24 @@ const returnItemColumns: ColumnDef<ReturnItemRow, unknown>[] = [
   {
     id: "product",
     header: "الصنف",
-    accessorFn: (r) => `${r.productNameSnapshot}${r.variantNameSnapshot ? ` — ${r.variantNameSnapshot}` : ""}`,
+    accessorFn: (r) =>
+      variantDisplayName({
+        productName: r.productNameSnapshot ?? "—",
+        variantName: r.variantNameSnapshot,
+      }),
     meta: { width: "wide", wrap: true },
-    cell: ({ row }) => (
-      <span className="font-medium">
-        {row.original.productNameSnapshot}
-        {row.original.variantNameSnapshot ? ` — ${row.original.variantNameSnapshot}` : ""}
-      </span>
-    ),
+    cell: ({ row }) => {
+      const desc = variantDescriptor({
+        productName: row.original.productNameSnapshot ?? "—",
+        variantName: row.original.variantNameSnapshot,
+      });
+      return (
+        <span className="font-medium">
+          {row.original.productNameSnapshot}
+          {desc ? <span className="text-muted-foreground font-normal"> — {desc}</span> : null}
+        </span>
+      );
+    },
   },
   {
     id: "unit",
@@ -41,9 +52,9 @@ const returnItemColumns: ColumnDef<ReturnItemRow, unknown>[] = [
   {
     id: "quantity",
     header: "الكمية",
-    accessorFn: (r) => r.quantity,
+    accessorFn: (r) => formatQuantity(r.quantity),
     meta: { kind: "number" },
-    cell: ({ row }) => row.original.quantity,
+    cell: ({ row }) => formatQuantity(row.original.quantity),
   },
   {
     id: "unitPrice",
@@ -100,7 +111,10 @@ export default function PurchaseReturnDetail() {
         { key: "total", label: "الإجمالي", align: "left" },
       ],
       rows: data.items.map((item) => ({
-        product: `${item.productNameSnapshot}${item.variantNameSnapshot ? ` — ${item.variantNameSnapshot}` : ""}`,
+        product: variantDisplayName({
+          productName: item.productNameSnapshot ?? "—",
+          variantName: item.variantNameSnapshot,
+        }),
         unit: item.unitNameSnapshot || "—",
         quantity: item.quantity,
         unitPrice: fmt(item.unitPrice),

@@ -222,7 +222,7 @@ beforeEach(async () => {
 });
 
 describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", () => {
-  it.each(["ASSIGNED", "FAILED"] as const)(
+  it.each(["OUT_FOR_DELIVERY", "FAILED"] as const)(
     "%s: يلغي الإسناد ويحرر COD بلا لمس الفاتورة أو المخزون أو الإيصالات",
     async (parcelStatus) => {
       await seedInvoice();
@@ -343,7 +343,6 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
   it.each([
     "ACCEPTED",
     "PICKED_UP",
-    "OUT_FOR_DELIVERY",
     "DELIVERED",
     "RETURNED",
     "CANCELLED",
@@ -524,7 +523,7 @@ describe("dispatchInvoiceToDelivery — إعادة تنشيط السجل الم�
       partyId: 2,
       assignedUserId: 4,
       status: "DISPATCHED",
-      parcelStatus: "ASSIGNED",
+      parcelStatus: "OUT_FOR_DELIVERY",
       moneyStatus: "UNSETTLED",
       recipientName: "المستلم الجديد",
       recipientPhone: "07711111111",

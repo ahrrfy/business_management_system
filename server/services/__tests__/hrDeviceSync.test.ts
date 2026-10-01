@@ -12,11 +12,11 @@
 //   ج٦) سائق iclock: تحليل ATTLOG/OPERLOG النصي + دورة أمر getrequest/devicecmd.
 //   ج٧) الربط اللاحق: mapUser يُلحق الموظف بالبصمات الخام السابقة فتُطوى — لا بصمة تضيع لتأخر الربط.
 import { and, eq, isNull } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createAifaceSession } from "../hrDevices/aifaceDriver";
-import { processPendingFolds } from "../hrDevices/attendanceFold";
+import { processPendingFolds, resetAttendanceFoldState } from "../hrDevices/attendanceFold";
 import { completeIclockCommand, enqueueCommand, popIclockCommand } from "../hrDevices/commands";
 import {
   formatIclockCommand,
@@ -40,7 +40,12 @@ function db() {
 
 const SN = "ZXRBTEST0001";
 
+afterEach(async () => {
+  await resetAttendanceFoldState();
+});
+
 beforeEach(async () => {
+  await resetAttendanceFoldState();
   await truncateTables([
     "nativePushOutbox",
     "appNotificationPreferences",
@@ -65,10 +70,10 @@ beforeEach(async () => {
     // (الأربعاء=٥٠٠٠) وهو رقمٌ لم يُدخله أحد؛ إسنادُه للملفّ يجعل الحارس أقوى لا أضعف:
     // يُثبت أنّ الطيّ يسحب السعر من الموظف فعلاً.
     {
-      id: 1, userId: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active",
+      id: 1, userId: 1, firstName: "أحمد", fatherName: "علي", lastName: "الجبوري", payType: "hourly", employmentStatus: "active", branchId: 1,
       dayRates: { الأحد: 5000, الاثنين: 5000, الثلاثاء: 5000, الأربعاء: 5000, الخميس: 5500, الجمعة: 7500, السبت: 6000 },
     },
-    { id: 2, firstName: "زينب", fatherName: "حسن", lastName: "الربيعي", payType: "hourly", employmentStatus: "terminated" },
+    { id: 2, firstName: "زينب", fatherName: "حسن", lastName: "الربيعي", payType: "hourly", employmentStatus: "terminated", branchId: 1 },
   ]);
   await d.insert(s.hrFingerprintDevices).values({
     id: 10,
@@ -92,6 +97,7 @@ async function device() {
 async function recordAttendanceManual() {
   await db().insert(s.attendance).values({
     employeeId: 1,
+    branchId: 1,
     attendanceDate: "2026-07-01",
     status: "PRESENT",
     hours: "4.00",
@@ -674,7 +680,7 @@ describe("الربط اللاحق (ج٧)", () => {
     await upsertDeviceUser(dev, { enrollId: 55, name: "مجهول سابقاً" });
     // موظف مخصّص لهذه الحالة: الموظف ١ مربوط أصلاً بالرقم ٧ في البذرة، و0136 يفرض
     // رقماً واحداً لكل موظف على الجهاز الواحد (رقمان ⇒ يومَا حضور منفصلان وساعات مضاعفة).
-    await db().insert(s.employees).values({ id: 3, firstName: "كرار", lastName: "الساعدي", payType: "hourly", employmentStatus: "active" });
+    await db().insert(s.employees).values({ id: 3, firstName: "كرار", lastName: "الساعدي", payType: "hourly", employmentStatus: "active", branchId: 1 });
     const backfilled = await mapDeviceUserToEmployee(10, 55, 3);
     expect(backfilled).toBe(2);
     pend = await processPendingFolds();

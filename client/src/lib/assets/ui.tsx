@@ -2,7 +2,7 @@
  * عناصر عرض مشتركة لوحدة الأصول: أيقونة الفئة (lucide)، شارة الحالة، بطاقة مؤشّر، وتنسيق المبالغ.
  */
 import { type ReactNode } from "react";
-import { Banknote, Car, Fingerprint, Laptop, Monitor, type LucideIcon, Package, Printer, Sofa } from "lucide-react";
+import { Banknote, Building2, Car, Fingerprint, Landmark, Laptop, Monitor, type LucideIcon, Package, Printer, Sofa } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { assetStatusLabel } from "@shared/assets";
@@ -15,6 +15,8 @@ export const ASSET_CATEGORY_ICON: Record<string, LucideIcon> = {
   vehicles: Car,
   printing: Printer,
   devices: Fingerprint,
+  land: Landmark,
+  buildings: Building2,
 };
 
 export function categoryIcon(category: string): LucideIcon {

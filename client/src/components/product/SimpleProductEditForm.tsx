@@ -11,6 +11,7 @@ import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
 import { type ImageItem } from "@/components/form/ImageUploader";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
+import ProductRecipeSection from "@/components/product/ProductRecipeSection";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
@@ -713,6 +714,8 @@ export default function SimpleProductEditForm({
         onImagesChange={setImages}
         productExists
       />
+
+      <ProductRecipeSection productId={productId} isService={Boolean(product.data?.isService)} />
 
       {/* م٦ ق٨ — السجلّ والاستعادة: بعد استعادةٍ ناجحة نُعيد التعبئة من الخادم (كما بعد الحفظ). */}
       <ProductVersionHistory

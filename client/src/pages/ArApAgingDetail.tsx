@@ -4,13 +4,14 @@
 // عرض + KPIs بالشرائح + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
 import { useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -32,6 +33,7 @@ const BUCKET_CLS: Record<string, string> = {
 const BUCKET_OPTIONS = ["0-30", "31-60", "61-90", "90+"];
 
 export default function ArApAgingDetail() {
+  const [, navigate] = useLocation();
   const [side, setSide] = useState<Side>("AR");
   const [branchId, setBranchId] = useState<number | "">("");
   // فلتر الشريحة العمرية + البحث النصّي — عميليّان بحتان (كل الصفوف مُحمَّلة أصلاً بلا ترقيم خادميّ).
@@ -79,45 +81,49 @@ export default function ArApAgingDetail() {
   const columns = useMemo<ColumnDef<Row, unknown>[]>(
     () => [
       {
-        id: "number",
-        header: isAR ? "رقم الفاتورة" : "رقم أمر الشراء",
-        accessorFn: (r) => r.number,
-        meta: { kind: "code" },
+        id: "partyAndDocument",
+        header: isAR ? "العميل / الفاتورة" : "المورد / أمر الشراء",
+        accessorFn: (r) => [r.partyName, r.number].filter(Boolean).join(" · "),
+        meta: { width: "stacked" },
         cell: ({ row }) => (
-          <Link
-            href={isAR ? `/invoices/${row.original.id}` : `/purchases/${row.original.id}`}
-            className="text-primary underline-offset-2 hover:underline"
-          >
-            {row.original.number}
-          </Link>
+          <StackedEntityCell
+            primary={row.original.partyName}
+            primaryTitle={row.original.partyName}
+            secondary={row.original.number}
+            secondaryTitle={isAR ? "فتح الفاتورة" : "فتح أمر الشراء"}
+            onSecondaryClick={() => {
+              navigate(isAR ? `/invoices/${row.original.id}` : `/purchases/${row.original.id}`);
+            }}
+            copyValue={row.original.number}
+            copyTitle={isAR ? "نسخ رقم الفاتورة" : "نسخ رقم أمر الشراء"}
+          />
         ),
       },
       {
-        id: "partyName",
-        header: isAR ? "العميل" : "المورد",
-        accessorFn: (r) => r.partyName,
-        meta: { width: "wide" },
-        cell: ({ row }) => row.original.partyName,
-      },
-      { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, cell: ({ row }) => row.original.date },
-      // الاستحقاق للذمم المدينة وحدها — كما كان العمود مشروطاً في الجدول الخامّ.
-      ...(isAR
-        ? ([
-            {
-              id: "dueDate",
-              header: "الاستحقاق",
-              accessorFn: (r) => r.dueDate ?? "—",
-              meta: { kind: "date" },
-              cell: ({ row }) => <span className="text-muted-foreground">{row.original.dueDate ?? "—"}</span>,
-            },
-          ] as ColumnDef<Row, unknown>[])
-        : []),
-      {
-        id: "daysOverdue",
-        header: "أيام التأخّر",
-        accessorFn: (r) => r.daysOverdue,
-        meta: { kind: "number" },
-        cell: ({ row }) => row.original.daysOverdue,
+        id: "dateAndDue",
+        header: "التاريخ / الاستحقاق",
+        accessorFn: (r) =>
+          [r.date, r.dueDate, r.daysOverdue ? `تأخر ${r.daysOverdue} يوم` : null].filter(Boolean).join(" · "),
+        meta: { width: "date" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => a.original.date.localeCompare(b.original.date),
+        cell: ({ row }) => (
+          <div className="flex flex-col items-start gap-0.5 text-xs">
+            <span className="font-mono tabular-nums">{row.original.date}</span>
+            <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+              {row.original.dueDate && (
+                <span title="تاريخ الاستحقاق">
+                  استحقاق: <span className="font-mono tabular-nums">{row.original.dueDate}</span>
+                </span>
+              )}
+              {row.original.daysOverdue > 0 && (
+                <span className="font-medium text-money-negative" title="أيام التأخر">
+                  ({row.original.daysOverdue} يوم)
+                </span>
+              )}
+            </div>
+          </div>
+        ),
       },
       {
         id: "bucket",
@@ -138,7 +144,7 @@ export default function ArApAgingDetail() {
         cell: ({ row }) => <span className="font-semibold">{fmtAr(row.original.unpaid)}</span>,
       },
     ],
-    [isAR],
+    [isAR, navigate],
   );
 
   function onExport() {

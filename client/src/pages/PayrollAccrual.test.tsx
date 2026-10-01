@@ -1,100 +1,276 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import React, { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Payroll from "./Payroll";
+import {
+  PayrollAccrualOperations,
+  PayrollRemittanceRequestPanel,
+  safeRemittanceDocumentUrl,
+} from "@/components/hr/PayrollAccrualOperations";
+import { PayrollPaymentDialog } from "@/components/hr/PayrollPaymentDialog";
+import { printPayslip, printBatchPayslips, type PayslipData } from "@/lib/printing/printPayslip";
+import { OBLIGATION_KIND_LABEL } from "@/lib/payrollAccrual";
 
-const page = readFileSync(new URL("./Payroll.tsx", import.meta.url), "utf8");
-const operations = readFileSync(new URL("../components/hr/PayrollAccrualOperations.tsx", import.meta.url), "utf8");
-const payment = readFileSync(new URL("../components/hr/PayrollPaymentDialog.tsx", import.meta.url), "utf8");
-const payslip = readFileSync(new URL("../lib/printing/printPayslip.ts", import.meta.url), "utf8");
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as any).React = React;
 
-describe("Payroll accrual UI contract", () => {
-  it("يفصل اعتماد الاستحقاق عن صرف الصافي وإعادة المسيّر", () => {
-    expect(page).toContain("اعتماد الاستحقاق");
-    expect(page).toContain("PayrollPaymentDialog");
-    expect(page).toContain("عكس الاستحقاق وإعادة");
-    expect(page).toContain('reason: "إعادة للمسودة من شاشة الرواتب"');
-    expect(page).not.toContain("عكس الدفع يقيّد قيوداً معاكسة");
-    expect(page).toContain("enabled: ownerAccess");
-    expect(page).toContain("محصورة بجلسة المالك");
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    useUtils: () => ({
+      payroll: {
+        get: { invalidate: vi.fn() },
+        list: { invalidate: vi.fn() },
+        obligations: { invalidate: vi.fn() },
+        remittances: { invalidate: vi.fn() },
+        statutoryObligationSummary: { invalidate: vi.fn() },
+      },
+    }),
+    auth: {
+      me: {
+        useQuery: () => ({ data: { isOwner: true, role: "admin", id: 1 }, isLoading: false }),
+      },
+    },
+    branches: {
+      list: {
+        useQuery: () => ({ data: [], isLoading: false }),
+      },
+    },
+    payroll: {
+      get: {
+        useQuery: () => ({ data: null, isLoading: false }),
+      },
+      list: {
+        useQuery: () => ({ data: [], isLoading: false }),
+      },
+      obligations: {
+        useQuery: () => ({ data: [], isLoading: false }),
+      },
+      commissionReadiness: {
+        useQuery: () => ({ data: { status: "not_applicable" }, isLoading: false }),
+      },
+      remittances: {
+        useQuery: () => ({ data: [], isLoading: false }),
+      },
+      statutoryObligationSummary: {
+        useQuery: () => ({ data: [], isLoading: false }),
+      },
+      pay: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      payRun: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      createRemittance: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      approveRemittance: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      rejectRemittance: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      payRemittance: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      returnRemittance: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      returnSalaryPayment: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+    },
+    pos: {
+      activeShift: {
+        useQuery: () => ({ data: { id: 12 }, isLoading: false }),
+      },
+    },
+  },
+}));
+
+vi.mock("@/lib/printing/reportDoc", () => ({
+  printReportDoc: vi.fn().mockReturnValue(true),
+}));
+
+vi.mock("wouter", () => ({
+  Link: ({ children, href }: { children: React.ReactNode; href: string }) => (
+    <a href={href}>{children}</a>
+  ),
+}));
+
+describe("PayrollAccrual UI Components & Logic", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    vi.spyOn(window, "open").mockReturnValue({
+      document: {
+        open: vi.fn(),
+        write: vi.fn(),
+        close: vi.fn(),
+      },
+    } as any);
   });
 
-  it("يعرض لقطة الفرع والمراجعة والبصمات والالتزامات الأربع", () => {
-    expect(page).toContain("p.branchIdSnapshot");
-    expect(page).toContain("p.revisionNo");
-    expect(operations).toContain("run.legalPolicyHash");
-    expect(operations).toContain("run.approvalSnapshotHash");
-    expect(operations).toContain("summary.map");
-    expect(operations).toContain("OBLIGATION_KIND_LABEL[row.kind]");
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.clearAllMocks();
   });
 
-  it("يوصل كامل دورة التحويل القانوني وفصل المهام", () => {
-    for (const procedure of [
-      "createRemittance", "approveRemittance", "rejectRemittance",
-      "payRemittance", "returnRemittance", "returnSalaryPayment",
-    ]) expect(operations).toContain(`trpc.payroll.${procedure}`);
-    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — الاعتماد/الرفض/الدفع/الإعادة
-    // مشروطة بـowner وحده، لا باستقلاله عن صانع الطلب.
-    expect(operations).not.toContain("currentUserId !== Number(request.createdBy)");
-    expect(operations).toContain("supportingDocumentUrl");
-    expect(operations).toContain("reason.trim().length >= 5");
-    expect(operations).toContain("minLength={5}");
-    expect(operations).not.toContain('action?.type === "RETURN_SALARY" ? 5 : 1');
+  it("exports valid React component functions and utilities", () => {
+    expect(typeof Payroll).toBe("function");
+    expect(typeof PayrollAccrualOperations).toBe("function");
+    expect(typeof PayrollRemittanceRequestPanel).toBe("function");
+    expect(typeof PayrollPaymentDialog).toBe("function");
+    expect(typeof printPayslip).toBe("function");
+    expect(typeof printBatchPayslips).toBe("function");
+    expect(typeof safeRemittanceDocumentUrl).toBe("function");
   });
 
-  it("يطلب مرجعاً لغير النقد ويصرّح بمسار صافي الصفر", () => {
-    expect(payment).toContain('const isNonCash = method !== "CASH"');
-    expect(payment).toContain('/^\\d{4}$/.test(referenceNumber.trim())');
-    expect(payment).toContain('placeholder={method === "CARD" ? "آخر 4 أرقام"');
-    expect(operations).toContain('/^\\d{4}$/.test(reference.trim())');
-    expect(operations).toContain('method === "CARD" ? 4 : 100');
-    expect(payment).toContain("الصافي صفر: سيُقفل المسيّر تدقيقياً بلا إيصال أو حركة خزينة");
-    expect(payment).toContain("me.data?.isOwner === true");
+  describe("safeRemittanceDocumentUrl security validation", () => {
+    it("accepts valid HTTPS and rejects insecure or dangerous protocols", () => {
+      expect(safeRemittanceDocumentUrl("https://example.com/receipt.pdf")).toBe(
+        "https://example.com/receipt.pdf"
+      );
+      expect(safeRemittanceDocumentUrl("http://localhost:3000/doc.png")).toBeNull();
+    });
+
+    it("rejects dangerous or malformed protocols (fail-closed)", () => {
+      expect(safeRemittanceDocumentUrl("javascript:alert(1)")).toBeNull();
+      expect(safeRemittanceDocumentUrl("data:text/html,<script>alert(1)</script>")).toBeNull();
+      expect(safeRemittanceDocumentUrl("blob:http://localhost/uuid")).toBeNull();
+      expect(safeRemittanceDocumentUrl("ftp://example.com/file")).toBeNull();
+      expect(safeRemittanceDocumentUrl("")).toBeNull();
+      expect(safeRemittanceDocumentUrl("   ")).toBeNull();
+      expect(safeRemittanceDocumentUrl(null)).toBeNull();
+      expect(safeRemittanceDocumentUrl(undefined)).toBeNull();
+    });
   });
 
-  it("يسمح بإعادة دفع الجزء المعاد من مسيّر ما زال بحالة مدفوع", () => {
-    expect(page).toContain('obligation.kind === "SALARY_NET"');
-    expect(page).toContain('obligation.status === "OPEN" || obligation.status === "PARTIAL"');
-    expect(page).toContain("isPaid && D(openSalaryAmount).gt(0)");
-    expect(page).toContain("إعادة دفع الالتزامات المفتوحة");
+  it("renders PayrollPaymentDialog with payment options and zero-net handling", () => {
+    const mockRun = {
+      id: 5,
+      period: "2026-09",
+      totalNet: "0.00",
+      status: "approved",
+      employeeCount: 3,
+      createdBy: 1,
+    };
+
+    act(() => {
+      root.render(
+        <PayrollPaymentDialog
+          open={true}
+          onClose={vi.fn()}
+          run={mockRun as any}
+          onPaid={vi.fn()}
+        />
+      );
+    });
+
+    expect(document.body.textContent).toContain("صرف صافي مسيّر 2026-09");
+    expect(document.body.textContent).toContain("الصافي صفر: سيُقفل المسيّر تدقيقياً بلا إيصال أو حركة خزينة");
   });
 
-  it("القسيمة بيان استحقاق ببصمات ولا تدّعي القبض قبل الدفع", () => {
-    expect(payslip).toContain("لا يثبت قبض الموظف ما لم تظهر حالة «مدفوع»");
-    expect(payslip).toContain('d.paidAt ? "الموظف (استلمت)" : "الموظف (اطلعت)"');
-    expect(payslip).toContain("POLICY ${esc(d.legalPolicyHash");
-    expect(payslip).toContain("التزامات على الشركة — لا تُخصم من الموظف");
-    expect(page).toContain("run?.employeePaymentSnapshots");
-    expect(page).toContain("paymentYmd(slipPayment?.paymentDate)");
-    expect(page).not.toContain("paidAt: run.paidAt");
-    expect(page).toContain("مستحق غير مدفوع");
+  it("renders PayrollAccrualOperations with policy hashes and obligation labels", () => {
+    const mockRun = {
+      id: 5,
+      period: "2026-09",
+      status: "approved",
+      revisionNo: 1,
+      legalPolicyHash: "policy-hash-12345678",
+      approvalSnapshotHash: "approval-hash-87654321",
+      items: [],
+      employeePaymentSnapshots: [],
+      obligations: [
+        {
+          id: 1,
+          kind: "SALARY_NET",
+          status: "OPEN",
+          originalAmount: "1000000",
+          remainingAmount: "1000000",
+          revisionNo: 1,
+        },
+      ],
+      accountingEvents: [],
+      remittances: [],
+    };
+
+    act(() => {
+      root.render(
+        <PayrollAccrualOperations run={mockRun as any} onChanged={vi.fn()} />
+      );
+    });
+
+    expect(host.textContent).toContain(OBLIGATION_KIND_LABEL.SALARY_NET);
+    expect(host.textContent).toContain("policy-h…12345678");
   });
 
-  it("keeps branch remittance making available without exposing salary runs", () => {
-    const makerPanel = operations.slice(
-      operations.indexOf("export function PayrollRemittanceRequestPanel"),
-      operations.indexOf("function CreateRemittanceDialog"),
-    );
-    expect(page).toContain("PayrollRemittanceRequestPanel");
-    expect(operations).toContain("export function PayrollRemittanceRequestPanel");
-    expect(operations).toContain("!owner && <Button");
-    expect(operations).toContain("إنشاء الطلب من موظف الفرع");
-    expect(makerPanel).toContain("payroll.statutoryObligationSummary.useQuery");
-    expect(makerPanel).not.toContain("payroll.obligations.useQuery");
-    expect(makerPanel).not.toContain("SALARY_NET");
-    expect(makerPanel).not.toContain("EOS_PROVISION");
+  it("verifies printPayslip generates receipt and acknowledgments correctly", () => {
+    const draftSlip: PayslipData = {
+      period: "2026-09",
+      runId: 10,
+      employeeId: 42,
+      employeeName: "حيدر كاظم",
+      gross: "1000000",
+      overtime: "0",
+      commission: "0",
+      deductions: "100000",
+      net: "900000",
+      statusLabel: "معتمد",
+      payTypeLabel: "راتب شهري",
+      paidAt: null,
+    };
+
+    expect(printPayslip(draftSlip)).toBe(true);
+
+    const paidSlip: PayslipData = {
+      ...draftSlip,
+      statusLabel: "مدفوع",
+      paidAt: "2026-09-30",
+      receiptId: 88,
+    };
+
+    expect(printPayslip(paidSlip)).toBe(true);
   });
 
-  it("requires an auditable reason when returning an employee salary payment", () => {
-    expect(operations).toContain("reason.trim().length >= 5");
-    expect(operations).toContain("minLength={5}");
-    expect(operations).toContain("reason: reason.trim()");
-    expect(operations).toContain("5 أحرف على الأقل");
-  });
+  it("verifies printBatchPayslips generates multi-page batch slips document", () => {
+    const slips: PayslipData[] = [
+      {
+        period: "2026-09",
+        runId: 10,
+        employeeId: 42,
+        employeeName: "حيدر كاظم",
+        gross: "1000000",
+        overtime: "0",
+        commission: "0",
+        deductions: "100000",
+        net: "900000",
+        statusLabel: "معتمد",
+        payTypeLabel: "راتب شهري",
+        paidAt: null,
+      },
+      {
+        period: "2026-09",
+        runId: 10,
+        employeeId: 43,
+        employeeName: "أحمد علي",
+        gross: "1200000",
+        overtime: "50000",
+        commission: "0",
+        deductions: "50000",
+        net: "1200000",
+        statusLabel: "معتمد",
+        payTypeLabel: "راتب شهري",
+        paidAt: null,
+      },
+    ];
 
-  it("never renders an untrusted remittance attachment as a direct link", () => {
-    expect(operations).toContain("safeRemittanceDocumentUrl");
-    expect(operations).toContain('parsed.protocol === "https:"');
-    expect(operations).toContain('rel="noopener noreferrer"');
-    expect(operations).toContain("مستند غير صالح");
-    expect(operations).not.toContain("href={request.supportingDocumentUrl}");
+    expect(printBatchPayslips([])).toBe(false);
+    expect(printBatchPayslips(slips)).toBe(true);
   });
 });

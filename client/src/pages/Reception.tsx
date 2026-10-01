@@ -57,7 +57,7 @@ import { buildDraftPayload } from "@/components/reception/draftPayloadBuilder";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { captureDigitalReceptionCartLines, toDigitalPrepareLine } from "@/components/pos/digitalBasket";
-import { fmtDate } from "@/lib/date";
+import { fmtDate, fmtTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { cn } from "@/lib/utils";
@@ -1787,7 +1787,7 @@ export default function Reception() {
       const receiptServerMeta = receptionCheckoutReceiptMeta(result, shift?.id);
       const receiptHead = {
         date: fmtDate(printedAt),
-        time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+        time: fmtTime(printedAt),
         cashierName: me.data?.name ?? "موظف الخدمة",
         customerName: receiptCustomerName,
         paymentMethod: PAY_METHOD_LABEL[method],
@@ -2126,7 +2126,7 @@ export default function Reception() {
     void printReceipt({
       receiptNumber,
       date: fmtDate(now),
-      time: now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+      time: fmtTime(now),
       cashierName,
       customerName: contact || null,
       items: [...regularLines, ...printLines].map((c) => ({

@@ -17,6 +17,8 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
+import { formatQuantity } from "@shared/quantityFormat";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { printTransferDoc } from "@/lib/printing/printTransferDoc";
@@ -40,7 +42,7 @@ function StatusBadge({ status, sent, received }: { status: string; sent: number;
   if (status === "IN_TRANSIT") return <Badge className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30">بالطريق</Badge>;
   if (status === "CANCELLED") return <Badge variant="secondary">ملغى</Badge>;
   if (received != null && received < sent)
-    return <Badge className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30">مستلَم بعجز {fmtInt(sent - received)}</Badge>;
+    return <Badge className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30">مستلَم بعجز {formatQuantity(sent - received)}</Badge>;
   return <Badge className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30">مستلَم مطابق</Badge>;
 }
 
@@ -90,7 +92,7 @@ const transferColumns: ColumnDef<TransferRow, unknown>[] = [
        عدداً واحداً — نفرز على المرسَل وحده. */
     sortingFn: (a, b) => Number(a.original.totalSentBase) - Number(b.original.totalSentBase),
     cell: ({ row }) =>
-      `${fmtInt(row.original.totalSentBase)}${row.original.totalReceivedBase != null ? ` / ${fmtInt(row.original.totalReceivedBase)}` : ""}`,
+      `${formatQuantity(row.original.totalSentBase)}${row.original.totalReceivedBase != null ? ` / ${formatQuantity(row.original.totalReceivedBase)}` : ""}`,
   },
   {
     id: "status",
@@ -197,7 +199,7 @@ export default function TransfersLog() {
       labels.set(
         Number(line.id),
         line.bundleComponents
-          .map((component) => `${fmtInt(component.baseQuantityPerBundle)} × ${component.productName}${component.variantName ? ` — ${component.variantName}` : ""}`)
+          .map((component) => `${formatQuantity(component.baseQuantityPerBundle)} × ${variantDisplayName(component)}`)
           .join(" + "),
       );
     }
@@ -228,7 +230,7 @@ export default function TransfersLog() {
       const st = recv[Number(l.id)] ?? { qty: String(l.quantitySent), note: "" };
       const q = st.qty.trim() === "" ? NaN : Number(st.qty);
       if (!Number.isInteger(q) || q < 0) return "كمية غير صالحة";
-      if (q > l.quantitySent) return `تتجاوز المرسَل (${l.quantitySent})`;
+      if (q > l.quantitySent) return `تتجاوز المرسَل (${formatQuantity(l.quantitySent)})`;
       if (q !== l.quantitySent && !st.note.trim()) return "الفرق يتطلّب ملاحظة";
       return "";
     });
@@ -478,7 +480,7 @@ export default function TransfersLog() {
                       return (
                         <tr key={Number(l.id)} className="border-t align-top">
                           <td className="p-2 px-3">
-                            <div className="font-medium">{l.productName}{l.variantName ? ` — ${l.variantName}` : l.color ? ` — ${l.color}` : ""}</div>
+                            <div className="font-medium">{variantDisplayName(l)}</div>
                             {l.isBundle && (
                               <div className="mt-1 text-[11px] font-medium text-primary">
                                 بكج كامل — {bundleComponentLabelsByLine.get(Number(l.id))}
@@ -487,7 +489,7 @@ export default function TransfersLog() {
                             <div className="text-[11px] text-muted-foreground font-mono" dir="ltr">{l.sku}</div>
                           </td>
                           <td className="p-2 text-center tabular-nums" dir="ltr">
-                            {fmtInt(l.quantitySent)}
+                            {formatQuantity(l.quantitySent)}
                             <div className="text-[10px] font-normal text-muted-foreground" dir="rtl">{l.unitLabel}</div>
                           </td>
                           <td className="p-2 text-center">
@@ -504,11 +506,11 @@ export default function TransfersLog() {
                                 {recvErrors[i] && <p className="text-[10px] text-destructive mt-0.5">{recvErrors[i]}</p>}
                               </>
                             ) : (
-                              <span className="tabular-nums" dir="ltr">{l.quantityReceived == null ? "—" : fmtInt(Number(l.quantityReceived))}</span>
+                              <span className="tabular-nums" dir="ltr">{l.quantityReceived == null ? "—" : formatQuantity(l.quantityReceived)}</span>
                             )}
                           </td>
                           <td className="p-2 text-center tabular-nums" dir="ltr">
-                            {diff == null ? "—" : diff === 0 ? <CheckCheck aria-hidden className="size-4 inline text-[var(--sem-pos)]" /> : <span className="text-destructive font-semibold">-{fmtInt(diff)}</span>}
+                            {diff == null ? "—" : diff === 0 ? <CheckCheck aria-hidden className="size-4 inline text-[var(--sem-pos)]" /> : <span className="text-destructive font-semibold">-{formatQuantity(diff)}</span>}
                           </td>
                           <td className="p-2">
                             {canReceive ? (

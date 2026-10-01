@@ -41,7 +41,7 @@ const TABLES = [
   "shifts", "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
   "purchaseOrderRevisionItems", "purchaseOrderRevisions", "purchaseOrderItems", "purchaseOrders",
   "workOrderEvents", "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions",
-  "taskEvents", "tasks", "workOrderMaterials", "workOrderItems", "workOrderImages", "workOrders", "serviceTypes",
+  "workOrderMaterials", "workOrderItems", "workOrderImages", "workOrders", "serviceTypes",
   "onlineOrderItems", "onlineOrders", "attendance", "employees", "importBatches",
   "printJobs", "auditLogs", "customers", "suppliers", "categories",
   "users", "branches", // users.branchId → branches.id ⇒ users must be truncated before branches

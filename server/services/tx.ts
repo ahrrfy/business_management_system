@@ -129,3 +129,11 @@ export type Actor = {
   role?: string;
   isOwner?: boolean;
 };
+
+/** فاعل قد يكون مرتبطاً بفرع أو عاماً للمنشأة (كالمالك أو الإدارة العامة). */
+export type MaybeScopedActor = {
+  userId: number;
+  branchId: number | null;
+  role?: string;
+  isOwner?: boolean;
+};

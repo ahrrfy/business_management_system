@@ -28,7 +28,8 @@ import {
   priceDecimalsFor,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
-import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import { variantDisplayName } from "@shared/variantDisplay";
+import { D, fmtAr, formatQuantity, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
@@ -136,7 +137,7 @@ export default function PurchaseNew() {
 
   /* ─── editor state (reducer) ───────────────────────────────────── */
   const [state, dispatch] = useReducer(invoiceReducer, undefined, () => ({
-    ...createInitialState(INVOICE_TYPE, me.data?.branchId ?? 1),
+    ...createInitialState(INVOICE_TYPE, me.data?.branchId ? Number(me.data.branchId) : 0),
   }));
 
   const requisitionHydratedRef = useRef(false);
@@ -168,7 +169,13 @@ export default function PurchaseNew() {
           productId: Number(row.productId),
           variantId: Number(row.variantId),
           productUnitId: Number(row.productUnitId),
-          name: `${row.productName}${row.variantName ? ` — ${row.variantName}` : ""}`,
+          name: variantDisplayName({
+            productName: row.productName,
+            variantName: row.variantName,
+            color: row.color,
+            size: row.size,
+            sku: row.sku,
+          }),
           sku: row.sku ?? "",
           barcode: row.barcode ?? null,
           unit: row.unitName ?? "",
@@ -224,12 +231,13 @@ export default function PurchaseNew() {
     requisitionUnitIds,
   ]);
 
+  const purchaseBranchId = state.branchId || me.data?.branchId;
   const purchasableCatalog = trpc.catalog.forPurchase.useQuery(
     {
-      branchId: Number(state.branchId || me.data?.branchId || 1),
+      branchId: purchaseBranchId as number,
       limit: 500,
     },
-    { enabled: prefillVariantIds.length > 0 },
+    { enabled: prefillVariantIds.length > 0 && Boolean(purchaseBranchId) },
   );
 
   const prefillHydratedRef = useRef(false);
@@ -257,7 +265,13 @@ export default function PurchaseNew() {
         productId: Number(row.productId),
         variantId: Number(row.variantId),
         productUnitId: Number(row.productUnitId),
-        name: `${row.productName}${row.variantName ? ` — ${row.variantName}` : ""}`,
+        name: variantDisplayName({
+          productName: row.productName,
+          variantName: row.variantName,
+          color: row.color,
+          size: row.size,
+          sku: row.sku,
+        }),
         sku: row.sku ?? "",
         barcode: null,
         unit: row.unitName ?? "",
@@ -467,7 +481,7 @@ export default function PurchaseNew() {
       await utils.purchases.requisitions.invalidate();
       notify.ok("تم حفظ طلب التأمين بنجاح وإسناده لمدير المشتريات للبحث والتفاوض مع الموردين في السوق");
       bypassUnsavedGuard();
-      navigate("/purchase-requisitions");
+      navigate("/purchases?tab=requisitions");
     },
     onError: (e) => notify.err(e),
   });
@@ -561,7 +575,7 @@ export default function PurchaseNew() {
       }
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
-        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
+        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${formatQuantity(l.qty)} × ${l.conversionFactor}).`;
     }
     if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
       return "أدخل سعر الصرف المثبت للفاتورة.";
