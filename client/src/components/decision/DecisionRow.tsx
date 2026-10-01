@@ -115,7 +115,11 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
           {amountText && <div dir="ltr" className="font-bold tabular-nums">{amountText}</div>}
           {action === "APPROVE" && variantLabel && <div>صيغة الاعتماد: {variantLabel}</div>}
           {reason.trim() && <div>{action === "REJECT" ? "السبب" : "الملاحظة"}: {reason.trim()}</div>}
-          {action === "APPROVE" && row.trigger && <div className="text-[var(--sem-warn)]">لحظة الخطر: {APPROVAL_TRIGGER_LABEL_AR[row.trigger]}</div>}
+          {action === "APPROVE" && row.trigger && (
+            <div className="text-[var(--sem-warn)]">
+              لحظة الخطر: {row.trigger === "MONEY_OUT" ? "خروج مال عند الاعتماد" : APPROVAL_TRIGGER_LABEL_AR[row.trigger]}
+            </div>
+          )}
         </div>
       ),
       confirmText: label,
@@ -157,8 +161,11 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded bg-muted px-1.5 py-0.5 text-2xs font-bold text-muted-foreground">{spec?.title ?? row.kind}</span>
               {row.trigger && (
-                <span className="rounded bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-2xs font-bold text-[var(--sem-warn)]">
-                  {APPROVAL_TRIGGER_LABEL_AR[row.trigger]}
+                <span
+                  className="rounded bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-2xs font-bold text-[var(--sem-warn)]"
+                  title={row.trigger === "MONEY_OUT" ? "طبيعة القرار: خروج مال عند الاعتماد" : "طبيعة القرار: محو أثر قائم"}
+                >
+                  {row.trigger === "MONEY_OUT" ? "خروج مال عند الاعتماد" : APPROVAL_TRIGGER_LABEL_AR[row.trigger]}
                 </span>
               )}
               {slaBadge}

@@ -72,7 +72,7 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
         extra: [
           {
             label: "الفئة / مركز التكلفة",
-            value: `${expenseCategoryText(expense)}${expense.costCenter ? ` · ${expense.costCenter}` : ""}`,
+            value: `${expenseCategoryText(expense)}${expense.costCenter?.trim() ? ` · ${expense.costCenter.trim()}` : ""}`,
           },
           { label: "حالة الاعتماد", value: expense.approvalStatus },
           { label: "حالة الاستحقاق", value: expense.settlementStatus },

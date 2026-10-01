@@ -89,4 +89,24 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).toContain("enabled: canGovernHandovers");
     expect(source).not.toContain("enabled: isAdmin || isManager");
   });
+
+  it("يعرض التدفقات النقدية المباشرة (DirectOperationsPanel) ولا يخفي النقد عند عدم وجود ورديات", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain("import { DirectOperationsPanel } from");
+    expect(source).toContain("dc.shifts.length === 0 && dc.directOperations.receiptCount === 0");
+    expect(source).toContain("<DirectOperationsPanel direct={dc.directOperations}");
+    expect(source).toContain("hasDirect ? dc.totals.shiftExpected : dc.totals.closedExpected");
+    expect(source).toContain("حركة نقدية مباشرة (خارج الأدراج)");
+  });
+
+  it("يشمل التدفقات النقدية المباشرة في التصدير والطباعة لمنع تداول تقرير ناقص", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain("dc.directOperations.receiptCount > 0");
+    expect(source).toContain('shiftId: "مباشر"');
+    expect(source).toContain('userName: "الخزينة المباشرة (خارج الأدراج)"');
+    expect(source).toContain("صافي المقبوضات المباشرة (الخزينة)");
+    expect(source).toContain("إجمالي النقد المتوقع الشامل");
+  });
 });

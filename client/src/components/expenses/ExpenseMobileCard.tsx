@@ -49,6 +49,7 @@ export function ExpenseMobileCard({
             </span>
             <span
               className={`rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
+              title={r.status === "PENDING_APPROVAL" ? "الوضع الراهن: طلب معلّق بلا أثر مالي حتى الآن" : undefined}
             >
               {STATUS_LABEL[r.status] ?? r.status}
             </span>
@@ -92,7 +93,7 @@ export function ExpenseMobileCard({
           <dt className="text-muted-foreground">الفئة / المركز</dt>
           <dd>
             {expenseCategoryText(r)}
-            {r.costCenter ? ` · ${r.costCenter}` : ""}
+            {r.costCenter?.trim() ? ` · ${r.costCenter.trim()}` : ""}
           </dd>
         </div>
         <div>

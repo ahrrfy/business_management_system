@@ -28,7 +28,7 @@ export function expenseCategoryText(row: {
   category: string;
   expenseCategoryName?: string | null;
 }): string {
-  return row.expenseCategoryName ?? CATEGORY_LABEL[row.category] ?? row.category;
+  return row.expenseCategoryName?.trim() || CATEGORY_LABEL[row.category] || row.category;
 }
 
 /**
@@ -168,8 +168,8 @@ export function fundingDetail(r: ExpenseRow): string {
   const kind = fundingKindOf(r);
   if (kind === "PENDING")
     return r.paymentMethod === "CASH"
-      ? "طلب اعتماد خزينة — لم يُصرف"
-      : `طلب اعتماد ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod} — لم يُنفذ`;
+      ? "طلب معلق بلا أثر مالي حتى الآن — يصرف من الخزينة عند الاعتماد"
+      : `طلب معلق بلا أثر مالي حتى الآن — ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`;
   if (kind === "ACCRUED_UNPAID")
     return `${r.accrualBeneficiaryName ?? r.payee ?? "مستفيد غير موثق"} · اعتراف محاسبي بلا خروج نقدي`;
   if (kind === "ACCRUED_PAID")

@@ -2093,7 +2093,7 @@ export async function approveVoucherTx(
         ? `إلغاء سند ${cancellationOriginal.voucherNumber}`
         : systemRequest?.kind === "ASSET_ACQUISITION"
           ? `اقتناء أصل نقدي ${systemAsset?.code ?? systemRequest.assetId}`
-          : undefined,
+          : r.description ?? undefined,
       // الاعتراف يعود لتاريخ الاستلام/الصيانة/الحيازة، أمّا التسوية النقدية
       // فهي واقعة مستقلة في تاريخ اعتمادها الفعلي ولا تُرحّل إلى شهر الطلب.
       entryDate: settlesRecognizedAccrual
@@ -2101,7 +2101,10 @@ export async function approveVoucherTx(
         : new Date(
             r.voucherDate ? toDateStr(new Date(r.voucherDate)) : toDateStr(),
           ),
-      createdBy: direction === "IN" ? Number(r.createdBy ?? actor.userId) : actor.userId,
+      createdBy:
+        direction === "IN" || settlesRecognizedAccrual
+          ? Number(r.createdBy ?? actor.userId)
+          : actor.userId,
     });
   }
   if (

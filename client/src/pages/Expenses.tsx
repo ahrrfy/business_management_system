@@ -354,7 +354,7 @@ export default function Expenses() {
     {
       key: "costCenter",
       header: "مركز التكلفة",
-      map: (r) => r.costCenter ?? "",
+      map: (r) => r.costCenter?.trim() || "",
     },
     { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
     { key: "payee", header: "المستفيد", map: (r) => r.payee ?? "" },
@@ -562,7 +562,7 @@ export default function Expenses() {
           identity: `#${Number(r.id)}${r.receiptVoucherNumber ? ` / ${r.receiptVoucherNumber}` : r.receiptId ? ` / R#${r.receiptId}` : ""}`,
           date: `${fmtDate(r.expenseDate as unknown as string)} / ${fmtDateTime(r.createdAt as unknown as string)}`,
           branch: r.branchName ?? "—",
-          category: `${expenseCategoryText(r)}${r.costCenter ? ` / ${r.costCenter}` : ""}`,
+          category: `${expenseCategoryText(r)}${r.costCenter?.trim() ? ` / ${r.costCenter.trim()}` : ""}`,
           description: `${r.description ?? "لا يوجد شرح"}${r.payee ? ` / المستفيد: ${r.payee}` : ""}${r.referenceNumber ? ` / مرجع: ${r.referenceNumber}` : ""}`,
           funding: `${FUNDING_META[fundingKindOf(r)].short} / ${sourceLabel(r)}`,
           shift: fundingDetail(r),
@@ -1394,15 +1394,16 @@ export default function Expenses() {
                                 <div className="mt-1 text-muted-foreground">
                                   {expenseCategoryText(r)}
                                 </div>
-                                {r.costCenter && (
+                                {r.costCenter?.trim() && (
                                   <div className="text-[11px] text-muted-foreground">
-                                    مركز: {r.costCenter}
+                                    مركز: {r.costCenter.trim()}
                                   </div>
                                 )}
                               </td>
                               <td className="p-2 text-xs">
                                 <span
                                   className={`inline-flex rounded-full px-2 py-0.5 text-xs ${FUNDING_META[funding].badge}`}
+                                  title={funding === "PENDING" ? "الوضع الراهن: طلب معلّق بلا أثر مالي حتى الآن" : undefined}
                                 >
                                   {FUNDING_META[funding].short}
                                 </span>
@@ -1480,6 +1481,7 @@ export default function Expenses() {
                               <td className="p-2">
                                 <span
                                   className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
+                                  title={r.status === "PENDING_APPROVAL" ? "الوضع الراهن: طلب معلّق بلا أثر مالي حتى الآن" : undefined}
                                 >
                                   {STATUS_LABEL[r.status] ?? r.status}
                                 </span>

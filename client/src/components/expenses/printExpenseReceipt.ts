@@ -38,10 +38,10 @@ export async function printExpenseReceipt(r: ExpenseRow) {
       `الفئة: ${expenseCategoryText(r)}`,
       `طريقة الدفع: ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`,
       `مصدر التمويل: ${FUNDING_META[fundingKindOf(r)].short} — ${fundingDetail(r)}`,
-      ...(r.description ? [`البيان: ${r.description}`] : []),
-      ...(r.payee ? [`المستفيد: ${r.payee}`] : []),
-      ...(r.costCenter ? [`مركز التكلفة: ${r.costCenter}`] : []),
-      ...(r.referenceNumber ? [`المرجع: ${r.referenceNumber}`] : []),
+      ...(r.description?.trim() ? [`البيان: ${r.description.trim()}`] : []),
+      ...(r.payee?.trim() ? [`المستفيد: ${r.payee.trim()}`] : []),
+      ...(r.costCenter?.trim() ? [`مركز التكلفة: ${r.costCenter.trim()}`] : []),
+      ...(r.referenceNumber?.trim() ? [`المرجع: ${r.referenceNumber.trim()}`] : []),
       ...(r.receiptVoucherNumber
         ? [`رقم السند: ${r.receiptVoucherNumber}`]
         : r.receiptId
