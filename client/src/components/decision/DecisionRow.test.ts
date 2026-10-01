@@ -31,4 +31,10 @@ describe("DecisionRow — عقود الواجهة", () => {
     expect(row).toContain("افتح الشاشة الكاملة");
     expect(row).toContain('row.allowedActions.includes("APPROVE") && !row.approveBlockedReason');
   });
+
+  it("شارة لحظة الخطر وحوار التأكيد يوضحان طبيعة خروج المال عند الاعتماد", () => {
+    expect(row).toContain('row.trigger === "MONEY_OUT" ? "خروج مال عند الاعتماد"');
+    expect(row).toContain('title={row.trigger === "MONEY_OUT" ? "طبيعة القرار: خروج مال عند الاعتماد"');
+    expect(row).toContain('لحظة الخطر: {row.trigger === "MONEY_OUT" ? "خروج مال عند الاعتماد"');
+  });
 });
