@@ -29,6 +29,7 @@ import {
   expenses,
   purchaseOrders,
   receipts,
+  shifts,
   suppliers,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -40,7 +41,7 @@ import type { Tx } from "../../db";
 import { createSystemPaymentRequestTx } from "../voucher/create";
 import { nextVoucherNumber } from "../voucher/helpers";
 import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
-import { shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx } from "../shiftService";
 import { expenseAccrualSettlement } from "../accounting/accrualPosting";
 import { postEntry } from "../ledgerService";
 import { transitionAccrualObligationTx } from "../accounting/accrualObligations";
@@ -344,26 +345,86 @@ export async function settlePurchaseShippingFromShiftTx(
     });
   }
 
-  // حل وتحديد وردية الكاشير المفتوحة في الفرع
-  const resolvedCash = await shiftIdForCashTx(
-    tx,
-    actor,
-    Number(po.branchId),
-    "صرف شحن أمر الشراء من درج الوردية",
-    "RETAIL",
-    input.shiftId ?? null,
-  );
+  const creatorUserId =
+    po.createdBy != null ? Number(po.createdBy) : actor.userId;
 
-  if (resolvedCash.cashBucket !== "DRAWER" || !resolvedCash.shiftId) {
+  // حل وتحديد وردية الكاشير المفتوحة في الفرع
+  const resolvedShiftId =
+    input.shiftId ??
+    (await openShiftIdTx(tx, creatorUserId, Number(po.branchId), "RETAIL")) ??
+    null;
+
+  if (!resolvedShiftId) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
         what: "تعذر صرف أجور الشحن من الدرج",
-        why: "لا توجد وردية مبيعات مفتوحة في هذا الفرع لصرف المبلغ منها",
-        doThis: "افتح وردية مبيعات جديدة في الفرع ثم نفّذ عملية الصرف من نقدية الدرج",
+        why: "لا توجد وردية مبيعات مفتوحة في هذا الفرع",
+        doThis: "افتح وردية مبيعات أولاً ثم أعد استلام أمر الشراء",
       }),
     });
   }
+
+  const [shiftRecord] = await tx
+    .select({
+      id: shifts.id,
+      status: shifts.status,
+      branchId: shifts.branchId,
+      userId: shifts.userId,
+    })
+    .from(shifts)
+    .where(eq(shifts.id, resolvedShiftId))
+    .for("update")
+    .limit(1);
+
+  if (!shiftRecord) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: `الوردية رقم ${resolvedShiftId} غير موجودة`,
+        why: "رقم الوردية المُحدَّدة غير موجود في النظام",
+        doThis: "اختر وردية صحيحة من القائمة ثم أعد المحاولة",
+      }),
+    });
+  }
+
+  if (shiftRecord.status !== "OPEN") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "الوردية المحدَّدة مغلقة ولا تقبل معاملات نقدية",
+        why: `وردية رقم ${resolvedShiftId} حالتها «${shiftRecord.status}» لا «OPEN»`,
+        doThis: "اختر وردية مفتوحة من القائمة لاستلام النقد",
+      }),
+    });
+  }
+
+  if (Number(shiftRecord.branchId) !== Number(po.branchId)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "الوردية المحدَّدة تخصّ فرعاً مختلفاً",
+        why: `الوردية تنتمي للفرع ${shiftRecord.branchId} والعملية تُجرى على الفرع ${po.branchId}`,
+        doThis: "اختر وردية من نفس فرع العملية",
+      }),
+    });
+  }
+
+  if (Number(shiftRecord.userId) !== creatorUserId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "لا يمكن صرف أجور الشحن من وردية موظف آخر",
+        why: `الوردية المحددة تعود للمستخدم رقم ${shiftRecord.userId} بينما منشئ أمر الشراء هو المستخدم رقم ${creatorUserId}`,
+        doThis: "اختر وردية مفتوحة تعود لمنشئ أمر الشراء حصراً",
+      }),
+    });
+  }
+
+  const resolvedCash = {
+    shiftId: Number(shiftRecord.id),
+    cashBucket: "DRAWER" as const,
+  };
 
   // التحقق من توفر النقد في درج الوردية تحت القفل
   await assertCashOutAvailable(tx, {
@@ -417,6 +478,7 @@ export async function settlePurchaseShippingFromShiftTx(
         shiftId: resolvedCash.shiftId,
         cashBucket: "DRAWER",
         paymentMethod: "CASH",
+        createdBy: creatorUserId,
       })
       .where(eq(receipts.id, finalReceiptId));
   } else {
@@ -442,7 +504,7 @@ export async function settlePurchaseShippingFromShiftTx(
       status: "COMPLETED",
       approvalStatus: "APPROVED",
       approvedBy: actor.userId,
-      createdBy: actor.userId,
+      createdBy: creatorUserId,
     });
     finalReceiptId = extractInsertId(rRes);
   }
@@ -461,7 +523,7 @@ export async function settlePurchaseShippingFromShiftTx(
     postingSourceComponents: posting.sourceComponents,
     dedupeKey,
     notes: `صرف مصروف شحن أمر الشراء ${po.poNumber} من درج الوردية #${resolvedCash.shiftId}`,
-    createdBy: actor.userId,
+    createdBy: creatorUserId,
   });
 
   const [settlementEntry] = await tx
@@ -482,7 +544,8 @@ export async function settlePurchaseShippingFromShiftTx(
     expectedStatus: obligation.status as "ACCRUED_UNPAID" | "PAYMENT_PENDING",
     nextStatus: "PAID",
     eventType: "PAYMENT_SETTLED",
-    actorId: actor.userId,
+    actorId: creatorUserId,
+    reviewerId: actor.userId,
     receiptId: finalReceiptId,
     accountingEntryId: Number(settlementEntry.id),
     evidenceReference: obligation.evidenceReference,
