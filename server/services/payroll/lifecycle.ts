@@ -1,5 +1,4 @@
 import { TRPCError } from "@trpc/server";
-import { appErrorMessage } from "@shared/errors";
 import { and, eq, getTableColumns, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   commissionRuns,
@@ -21,7 +20,6 @@ import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
-import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
 
 /** اعتماد الاستحقاق الشهري؛ لا نقد ولا إيصال في هذه المرحلة. */
 export async function approveRun(id: number, actor: Actor) {
@@ -84,24 +82,7 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
-    await syncAllAdvancesForDraftRunTx(tx, id);
-    const [freshRun] = await tx
-      .select()
-      .from(payrollRuns)
-      .where(eq(payrollRuns.id, id))
-      .for("update")
-      .limit(1);
-    if (!freshRun) {
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: appErrorMessage({
-          what: "تعذر العثور على مسيّر الرواتب بعد تحديث السلف",
-          why: "المسيّر المطلوب اعتماده غير موجود في قاعدة البيانات",
-          doThis: "تحقق من معرّف المسيّر وحاول مجدداً من شاشة الرواتب",
-        }),
-      });
-    }
-    const runToApprove = freshRun;
+    const runToApprove = run;
 
     const items = await tx
       .select({
