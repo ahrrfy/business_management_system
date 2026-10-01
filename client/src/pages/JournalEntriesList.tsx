@@ -40,17 +40,29 @@ export default function JournalEntriesList() {
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
   const [selectedJournal, setSelectedJournal] = useState<JournalRow | null>(null);
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const [searchTerm, setSearchTerm] = useState("");
 
   const branchesQ = trpc.branches.list.useQuery();
   const branches = branchesQ.data ?? [];
 
-  const journalsQ = trpc.accounts.listManualJournals.useQuery({
-    branchId: branchId ? Number(branchId) : undefined,
-    from: fromDate || undefined,
-    to: toDate || undefined,
-  });
+  const journalsQ = trpc.accounts.listManualJournals.useQuery(
+    {
+      branchId: branchId ? Number(branchId) : undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      limit: pageSize,
+      offset: page * pageSize,
+      search: searchTerm || undefined,
+    },
+    {
+      placeholderData: (prev) => prev,
+    },
+  );
 
   const rows = journalsQ.data?.rows ?? [];
+  const total = journalsQ.data?.total ?? 0;
 
   const columns = useMemo<ColumnDef<JournalRow, unknown>[]>(
     () => [
@@ -160,7 +172,10 @@ export default function JournalEntriesList() {
               </label>
               <AppSelect
                 value={branchId}
-                onValueChange={setBranchId}
+                onValueChange={(val) => {
+                  setBranchId(val);
+                  setPage(0);
+                }}
                 className="w-full text-right"
               >
                 <option value="">جميع الفروع</option>
@@ -180,7 +195,10 @@ export default function JournalEntriesList() {
               <Input
                 type="date"
                 value={fromDate}
-                onChange={(e) => setFromDate(e.target.value)}
+                onChange={(e) => {
+                  setFromDate(e.target.value);
+                  setPage(0);
+                }}
                 className="w-full text-right"
               />
             </div>
@@ -193,7 +211,10 @@ export default function JournalEntriesList() {
               <Input
                 type="date"
                 value={toDate}
-                onChange={(e) => setToDate(e.target.value)}
+                onChange={(e) => {
+                  setToDate(e.target.value);
+                  setPage(0);
+                }}
                 className="w-full text-right"
               />
             </div>
@@ -205,8 +226,27 @@ export default function JournalEntriesList() {
       <DataTable
         columns={columns}
         data={rows}
-        searchable
-        searchPlaceholder="البحث في بيان القيد أو الرقم أو الفرع..."
+        loading={journalsQ.isLoading}
+        errorState={{
+          isError: journalsQ.isError,
+          message: journalsQ.error?.message,
+          onRetry: () => journalsQ.refetch(),
+        }}
+        serverPagination={{
+          page,
+          pageSize,
+          total,
+          onPageChange: (p) => setPage(p),
+          isFetching: journalsQ.isFetching,
+        }}
+        serverSearch={{
+          value: searchTerm,
+          onChange: (v) => {
+            setSearchTerm(v);
+            setPage(0);
+          },
+        }}
+        searchPlaceholder="البحث في بيان القيد أو رقم القيد..."
         emptyText="لا توجد قيود يومية مسجلة بهذه المعايير."
       />
 

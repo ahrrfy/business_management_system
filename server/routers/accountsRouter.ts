@@ -6,7 +6,7 @@ import {
   createManualJournal,
   listManualJournals,
 } from "../services/accounting/manualJournalService";
-import { reportViewerProcedure, reportsManagerProcedure, router } from "../trpc";
+import { journalWriteProcedure, reportViewerProcedure, router } from "../trpc";
 import { withTx } from "../services/tx";
 import type { RoleKey } from "@shared/permissions";
 
@@ -14,12 +14,12 @@ const manualJournalLineSchema = z.object({
   accountId: z.number().int().positive(),
   debit: z.string().regex(/^\d+(\.\d{1,4})?$/, "مبلغ المدين غير صالح"),
   credit: z.string().regex(/^\d+(\.\d{1,4})?$/, "مبلغ الدائن غير صالح"),
-  notes: z.string().max(500).nullish(),
   customerId: z.number().int().positive().nullish(),
   supplierId: z.number().int().positive().nullish(),
 });
 
 const createManualJournalInputSchema = z.object({
+  clientRequestId: z.string().max(80).optional(),
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ القيد يجب أن يكون بصيغة YYYY-MM-DD"),
   branchId: z.number().int().positive().nullish(),
   notes: z.string().min(5, "يجب كتابة بيان للقيد لا يقل عن 5 أحرف").max(1000),
@@ -43,6 +43,7 @@ export const accountsRouter = router({
           branchId: z.number().int().positive().optional(),
           limit: z.number().int().min(1).max(200).optional(),
           offset: z.number().int().min(0).optional(),
+          search: z.string().max(100).optional(),
         })
         .optional(),
     )
@@ -51,7 +52,7 @@ export const accountsRouter = router({
     }),
 
   /** إنشاء قيد يومية يدوي متوازن مع حوكمة الفترات والترحيل المزدوج */
-  createManualJournal: reportsManagerProcedure
+  createManualJournal: journalWriteProcedure
     .input(createManualJournalInputSchema)
     .mutation(async ({ input, ctx }) => {
       return withTx(async (tx) => {
@@ -59,6 +60,7 @@ export const accountsRouter = router({
         return createManualJournal(
           tx,
           {
+            clientRequestId: input.clientRequestId,
             entryDate: input.entryDate,
             branchId: input.branchId ?? ctx.user.branchId ?? null,
             notes: input.notes,

@@ -32,12 +32,18 @@ import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 
+const FORBIDDEN_MANUAL_JOURNAL_ROLES = new Set([
+  "CASH",
+  "TREASURY_CASH",
+  "INVENTORY",
+  "CASH_IN_TRANSIT",
+]);
+
 interface JournalLineForm {
   id: string;
   accountId: string;
   debit: string;
   credit: string;
-  notes: string;
   customerId: string;
   supplierId: string;
 }
@@ -49,7 +55,6 @@ const emptyLine = (): JournalLineForm => ({
   accountId: "",
   debit: "",
   credit: "",
-  notes: "",
   customerId: "",
   supplierId: "",
 });
@@ -83,6 +88,17 @@ export default function JournalEntryNew() {
     return map;
   }, [accounts]);
 
+  const postableAccounts = useMemo(() => {
+    return accounts.filter((acc) => {
+      if (!acc.isActive) return false;
+      if (!acc.systemRole) return false;
+      if (FORBIDDEN_MANUAL_JOURNAL_ROLES.has(acc.systemRole)) return false;
+      return true;
+    });
+  }, [accounts]);
+
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+
   // الحسابات المالية اللحظية (مدين، دائن، والفرق)
   const totals = useMemo(() => {
     let sumDebit = D(0);
@@ -110,6 +126,7 @@ export default function JournalEntryNew() {
   const createMutation = trpc.accounts.createManualJournal.useMutation({
     onSuccess: (res) => {
       notify.ok(`تم ترحيل قيد اليومية رقم #${res.journalId} بنجاح بمبلغ ${fmtAr(res.amount)} د.ع`);
+      setClientRequestId(crypto.randomUUID());
       navigate("/journal");
     },
     onError: (err) => {
@@ -143,11 +160,21 @@ export default function JournalEntryNew() {
     lines.length >= 2 &&
     lines.every((l) => {
       const accId = Number(l.accountId);
-      const hasAccount = accId > 0;
+      const acc = accountsMap.get(accId);
+      if (!acc || !acc.isActive || !acc.systemRole || FORBIDDEN_MANUAL_JOURNAL_ROLES.has(acc.systemRole)) {
+        return false;
+      }
       const d = moneyInput(l.debit);
       const c = moneyInput(l.credit);
       const hasAmount = (d.gt(0) && c.equals(0)) || (c.gt(0) && d.equals(0));
-      return hasAccount && hasAmount;
+      if (!hasAmount) return false;
+
+      const isAR = acc.systemRole === "AR" || acc.systemRole === "ACCOUNTS_RECEIVABLE";
+      const isAP = acc.systemRole === "AP" || acc.systemRole === "ACCOUNTS_PAYABLE";
+      if (isAR && !l.customerId) return false;
+      if (isAP && !l.supplierId) return false;
+
+      return true;
     });
 
   const handleSubmit = () => {
@@ -164,6 +191,29 @@ export default function JournalEntryNew() {
       return;
     }
 
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      const acc = accountsMap.get(Number(l.accountId));
+      if (!acc || !acc.isActive || !acc.systemRole) {
+        notify.err(`السطر ${i + 1}: يرجى اختيار حساب مالي صالح ومؤهل للترحيل`);
+        return;
+      }
+      if (FORBIDDEN_MANUAL_JOURNAL_ROLES.has(acc.systemRole)) {
+        notify.err(`السطر ${i + 1}: الحساب "${acc.name}" من حسابات الرقابة التشغيلية المحظورة في القيود اليدوية`);
+        return;
+      }
+      const isAR = acc.systemRole === "AR" || acc.systemRole === "ACCOUNTS_RECEIVABLE";
+      const isAP = acc.systemRole === "AP" || acc.systemRole === "ACCOUNTS_PAYABLE";
+      if (isAR && !l.customerId) {
+        notify.err(`السطر ${i + 1}: حساب ذمم العملاء "${acc.name}" يتطلب تحديد العميل لإحكام المطابقة`);
+        return;
+      }
+      if (isAP && !l.supplierId) {
+        notify.err(`السطر ${i + 1}: حساب ذمم الموردين "${acc.name}" يتطلب تحديد المورد لإحكام المطابقة`);
+        return;
+      }
+    }
+
     // تجهيز الأسطر للإرسال
     const payloadLines = lines.map((l) => {
       const accId = Number(l.accountId);
@@ -176,13 +226,13 @@ export default function JournalEntryNew() {
         accountId: accId,
         debit: dVal.toFixed(2),
         credit: cVal.toFixed(2),
-        notes: l.notes.trim() || null,
         customerId: custId,
         supplierId: suppId,
       };
     });
 
     createMutation.mutate({
+      clientRequestId,
       entryDate,
       branchId: branchId ? Number(branchId) : null,
       notes: notes.trim(),
@@ -308,8 +358,8 @@ export default function JournalEntryNew() {
         <CardContent className="space-y-3">
           {lines.map((line, idx) => {
             const selectedAcc = line.accountId ? accountsMap.get(Number(line.accountId)) : null;
-            const isAR = selectedAcc?.systemRole === "ACCOUNTS_RECEIVABLE" || selectedAcc?.type === "ASSET";
-            const isAP = selectedAcc?.systemRole === "ACCOUNTS_PAYABLE" || selectedAcc?.type === "LIABILITY";
+            const isAR = selectedAcc?.systemRole === "AR" || selectedAcc?.systemRole === "ACCOUNTS_RECEIVABLE";
+            const isAP = selectedAcc?.systemRole === "AP" || selectedAcc?.systemRole === "ACCOUNTS_PAYABLE";
 
             return (
               <div
@@ -317,8 +367,8 @@ export default function JournalEntryNew() {
                 className="p-3 border rounded-lg bg-card/60 space-y-3 relative group"
               >
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-3 items-center">
-                  {/* رقم السطر واختيار الحساب */}
-                  <div className="md:col-span-4 space-y-1">
+                  {/* رقم السطر واختيار الحساب المؤهل للترحيل اليدوي */}
+                  <div className="md:col-span-5 space-y-1">
                     <label className="text-xs font-semibold text-muted-foreground">
                       السطر {idx + 1}: الحساب المالي
                       <span className="text-destructive">*</span>
@@ -329,7 +379,7 @@ export default function JournalEntryNew() {
                       className="w-full text-right"
                     >
                       <option value="">-- اختر الحساب من الدليل --</option>
-                      {accounts.map((acc) => (
+                      {postableAccounts.map((acc) => (
                         <option key={acc.id} value={String(acc.id)}>
                           {acc.code} - {acc.name} ({acc.type})
                         </option>
@@ -338,7 +388,7 @@ export default function JournalEntryNew() {
                   </div>
 
                   {/* مبلغ المدين */}
-                  <div className="md:col-span-2 space-y-1">
+                  <div className="md:col-span-3 space-y-1">
                     <label className="text-xs font-semibold text-money-positive">
                       مدين (Debit)
                     </label>
@@ -356,7 +406,7 @@ export default function JournalEntryNew() {
                   </div>
 
                   {/* مبلغ الدائن */}
-                  <div className="md:col-span-2 space-y-1">
+                  <div className="md:col-span-3 space-y-1">
                     <label className="text-xs font-semibold text-blue-600 dark:text-blue-400">
                       دائن (Credit)
                     </label>
@@ -370,19 +420,6 @@ export default function JournalEntryNew() {
                       }}
                       placeholder="0.00"
                       className="text-start font-mono"
-                    />
-                  </div>
-
-                  {/* شرح السطر */}
-                  <div className="md:col-span-3 space-y-1">
-                    <label className="text-xs font-semibold text-muted-foreground">
-                      بيان تفصيلي للسطر (اختياري)
-                    </label>
-                    <Input
-                      value={line.notes}
-                      onChange={(e) => updateLine(idx, { notes: e.target.value })}
-                      placeholder="ملاحظة السطر..."
-                      className="text-right"
                     />
                   </div>
 
@@ -402,20 +439,21 @@ export default function JournalEntryNew() {
                   </div>
                 </div>
 
-                {/* ربط الطرف المساعد إن كان الحساب ذمة عميل أو مورد */}
+                {/* ربط الطرف المساعد الإلزامي لحسابات ذمم العملاء والموردين */}
                 {(isAR || isAP) && (
                   <div className="pt-2 border-t grid grid-cols-1 sm:grid-cols-2 gap-3 bg-muted/20 p-2 rounded">
                     {isAR && (
                       <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">
-                          العميل المرتبط بالذمة (لأستاذ الذمم المدينة المساعد)
+                        <label className="text-xs font-medium text-destructive flex items-center gap-1">
+                          العميل المرتبط بالذمة (إلزامي لدفتر أستاذ العملاء المساعد)
+                          <span>*</span>
                         </label>
                         <AppSelect
                           value={line.customerId}
                           onValueChange={(val) => updateLine(idx, { customerId: val })}
                           className="w-full text-right text-xs"
                         >
-                          <option value="">-- اختياري: حدد العميل للتسوية --</option>
+                          <option value="">-- اختر العميل لإحكام المطابقة --</option>
                           {customers.map((c) => (
                             <option key={c.id} value={String(c.id)}>
                               {c.name} {c.phone ? `(${c.phone})` : ""}
@@ -426,15 +464,16 @@ export default function JournalEntryNew() {
                     )}
                     {isAP && (
                       <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">
-                          المورد المرتبط بالذمة (لأستاذ الذمم الدائنة المساعد)
+                        <label className="text-xs font-medium text-destructive flex items-center gap-1">
+                          المورد المرتبط بالذمة (إلزامي لدفتر أستاذ الموردين المساعد)
+                          <span>*</span>
                         </label>
                         <AppSelect
                           value={line.supplierId}
                           onValueChange={(val) => updateLine(idx, { supplierId: val })}
                           className="w-full text-right text-xs"
                         >
-                          <option value="">-- اختياري: حدد المورد للتسوية --</option>
+                          <option value="">-- اختر المورد لإحكام المطابقة --</option>
                           {suppliers.map((s) => (
                             <option key={s.id} value={String(s.id)}>
                               {s.name}

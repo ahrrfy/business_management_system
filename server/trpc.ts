@@ -759,6 +759,26 @@ export const reportsManagerProcedure = protectedProcedure
   });
 /** اعتماد/رفض الإقفال: بوابة reports:FULL ثم admin و2FA مركزياً. */
 export const reportsAdminProcedure = reportsManagerProcedure.use(requireAdmin);
+
+/** إنشاء القيود اليومية اليدوية والتسويات: مدير أو محاسب ذو reports:FULL. */
+export const journalWriteProcedure = protectedProcedure
+  .use(requireModuleGate(["manager", "accountant"], "reports", "FULL"))
+  .use(async ({ ctx, next }) => {
+    if (ctx.user.role === "admin" || ctx.user.role === "manager" || ctx.user.role === "accountant") {
+      return next({ ctx });
+    }
+    if (ctx.user.branchId == null) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا يمكن تسجيل القيد لعدم وجود فرع مسند",
+          why: "المستخدم الحالي غير مرتبط بفرع نظامي محدد لإسناد أثر القيد.",
+          doThis: "قم بإسناد فرع لحسابك من إدارة الموظفين أو راجع مدير النظام.",
+        }),
+      });
+    }
+    return next({ ctx });
+  });
 // أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.
 export const customersReadProcedure = protectedProcedure.use(requireModule("crm", "READ"));
 // print_operator (٧/٨): مرآة POS_STATION_GATES.RECEPTION بالضبط (shared/permissions.ts) — نفس
