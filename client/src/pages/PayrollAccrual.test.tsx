@@ -9,7 +9,7 @@ import {
   safeRemittanceDocumentUrl,
 } from "@/components/hr/PayrollAccrualOperations";
 import { PayrollPaymentDialog } from "@/components/hr/PayrollPaymentDialog";
-import { printPayslip, type PayslipData } from "@/lib/printing/printPayslip";
+import { printPayslip, printBatchPayslips, type PayslipData } from "@/lib/printing/printPayslip";
 import { OBLIGATION_KIND_LABEL } from "@/lib/payrollAccrual";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -127,6 +127,7 @@ describe("PayrollAccrual UI Components & Logic", () => {
     expect(typeof PayrollRemittanceRequestPanel).toBe("function");
     expect(typeof PayrollPaymentDialog).toBe("function");
     expect(typeof printPayslip).toBe("function");
+    expect(typeof printBatchPayslips).toBe("function");
     expect(typeof safeRemittanceDocumentUrl).toBe("function");
   });
 
@@ -235,5 +236,41 @@ describe("PayrollAccrual UI Components & Logic", () => {
     };
 
     expect(printPayslip(paidSlip)).toBe(true);
+  });
+
+  it("verifies printBatchPayslips generates multi-page batch slips document", () => {
+    const slips: PayslipData[] = [
+      {
+        period: "2026-09",
+        runId: 10,
+        employeeId: 42,
+        employeeName: "حيدر كاظم",
+        gross: "1000000",
+        overtime: "0",
+        commission: "0",
+        deductions: "100000",
+        net: "900000",
+        statusLabel: "معتمد",
+        payTypeLabel: "راتب شهري",
+        paidAt: null,
+      },
+      {
+        period: "2026-09",
+        runId: 10,
+        employeeId: 43,
+        employeeName: "أحمد علي",
+        gross: "1200000",
+        overtime: "50000",
+        commission: "0",
+        deductions: "50000",
+        net: "1200000",
+        statusLabel: "معتمد",
+        payTypeLabel: "راتب شهري",
+        paidAt: null,
+      },
+    ];
+
+    expect(printBatchPayslips([])).toBe(false);
+    expect(printBatchPayslips(slips)).toBe(true);
   });
 });

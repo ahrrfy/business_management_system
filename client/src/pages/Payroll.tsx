@@ -27,7 +27,7 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
 import { PAY_TYPES, payTypeLabel, payrollItemNeedsAttention } from "@shared/hr";
-import { printPayslip } from "@/lib/printing/printPayslip";
+import { printPayslip, printBatchPayslips, type PayslipData } from "@/lib/printing/printPayslip";
 import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/payrollAccrual";
 import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, ShieldCheck, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -339,6 +339,70 @@ export default function Payroll() {
     });
   };
 
+  /** تجهيز بيانات قسيمة الراتب لبند موظف محدد لعرضها أو طباعتها. */
+  const getPayslipData = (item: RunItem): PayslipData | null => {
+    if (!run) return null;
+    const payment = activePaymentByEmployee.get(Number(item.employeeId)) ?? null;
+    const statusLabel = payment
+      ? "مدفوع"
+      : D(item.net).isZero() && (run.status === "approved" || run.status === "paid")
+        ? "مسدد بلا حركة نقدية"
+        : run.status === "draft" ? "مسوّدة" : "مستحق غير مدفوع";
+
+    return {
+      runId: run.id,
+      period: run.period,
+      statusLabel,
+      employeeName: item.employeeName,
+      employeeId: Number(item.employeeId),
+      position: item.position,
+      department: item.department,
+      branchName: item.branchIdSnapshot
+        ? (branchName.get(Number(item.branchIdSnapshot)) ?? `فرع #${item.branchIdSnapshot}`)
+        : (empBranch.get(Number(item.employeeId)) ?? null),
+      revisionNo: Number(item.revisionNo),
+      accrualDate: run.accrualDate,
+      legalPolicyHash: run.legalPolicyHash,
+      approvalSnapshotHash: run.approvalSnapshotHash,
+      itemSnapshotHash: item.snapshotHash,
+      payTypeLabel: payTypeLabel(item.payType),
+      baseSalary: item.payType === "monthly" ? round2(D(item.gross).minus(D(item.allowances))).toFixed(2) : null,
+      hours: item.hours,
+      gross: item.gross,
+      overtime: item.overtime,
+      commission: item.commission,
+      deductions: item.deductions,
+      advanceDeduction: item.advanceDeduction,
+      socialSecurityEmployee: item.socialSecurityEmployee,
+      incomeTax: item.incomeTax,
+      socialSecurityEmployer: item.socialSecurityEmployer,
+      endOfServiceAccrual: item.endOfServiceAccrual,
+      net: item.net,
+      note: item.note,
+      paidAt: item.id === slip?.id ? paymentYmd(slipPayment?.paymentDate) : paymentYmd(payment?.paymentDate),
+      paidAmount: payment?.amount ?? null,
+      paymentMethod: payment ? (PAYMENT_METHOD_AR[payment.paymentMethod] ?? payment.paymentMethod) : null,
+      paymentReference: payment?.referenceNumber ?? null,
+      receiptId: payment?.receiptId ?? null,
+    };
+  };
+
+  /** تصدير وتحميل كافة قسائم الرواتب للموظفين المعروضين في ملف PDF موحد. */
+  const onExportAllPayslips = () => {
+    if (!run || visibleItems.length === 0) return;
+    const slips = visibleItems
+      .map(getPayslipData)
+      .filter((s): s is PayslipData => s !== null);
+    if (!slips.length) return;
+    const ok = printBatchPayslips(slips, {
+      period: run.period,
+      title: `قسائم رواتب ${run.period} — ${slips.length} موظف`,
+    });
+    if (!ok) {
+      notify.err("لم تُفتح نافذة الطباعة — افسح مانع النوافذ المنبثقة في متصفّحك وأعد المحاولة.");
+    }
+  };
+
   // مؤشّرات من رأس المسيّر (الخادم هو المرجع).
   const totals = useMemo(
     () => ({
@@ -508,12 +572,26 @@ export default function Payroll() {
       enableSorting: false,
       meta: { kind: "actions" },
       cell: ({ row }) => (
-        <span className="whitespace-nowrap">
-          <button onClick={() => setSlip(row.original)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
+        <span className="whitespace-nowrap flex items-center gap-2">
+          <button
+            onClick={() => setSlip(row.original)}
+            className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1"
+            title="معاينة قسيمة الراتب"
+          >
             <FileText className="size-3.5" /> القسيمة
           </button>
+          <button
+            onClick={() => {
+              const data = getPayslipData(row.original);
+              if (data) printPayslip(data);
+            }}
+            className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+            title="طباعة وتحميل PDF لقسيمة الموظف"
+          >
+            <Printer className="size-3.5" />
+          </button>
           {isDraft && (
-            <button onClick={() => setEditItem(row.original)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
+            <button onClick={() => setEditItem(row.original)} className="text-xs text-muted-foreground font-medium hover:underline ms-1">
               تعديل
             </button>
           )}
@@ -713,6 +791,15 @@ export default function Payroll() {
             <Button variant="outline" size="sm" disabled={!visibleItems.length} onClick={onExportItems}>
               <FileSpreadsheet className="size-4" /> تصدير Excel
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!visibleItems.length}
+              onClick={onExportAllPayslips}
+              title="تصدير وتحميل قسائم الرواتب لكافة الموظفين المعروضين في ملف PDF موحد"
+            >
+              <FileText className="size-4" /> تصدير قسائم الرواتب (PDF)
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -848,28 +935,15 @@ export default function Payroll() {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setSlip(null)}>إغلاق</Button>
-            <Button onClick={() => slip && run && printPayslip({
-              runId: run.id, period: run.period, statusLabel: slipStatusLabel,
-              employeeName: slip.employeeName, employeeId: Number(slip.employeeId),
-              // لقطة الفرع المثبتة في البند مقدَّمة على فرع الموظف الحالي؛ النقل اللاحق لا يعيد كتابة القسيمة.
-              position: slip.position, department: slip.department,
-              branchName: slip.branchIdSnapshot ? (branchName.get(Number(slip.branchIdSnapshot)) ?? `فرع #${slip.branchIdSnapshot}`) : (empBranch.get(Number(slip.employeeId)) ?? null),
-              revisionNo: Number(slip.revisionNo), accrualDate: run.accrualDate,
-              legalPolicyHash: run.legalPolicyHash, approvalSnapshotHash: run.approvalSnapshotHash,
-              itemSnapshotHash: slip.snapshotHash,
-              payTypeLabel: payTypeLabel(slip.payType),
-              baseSalary: slip.payType === "monthly" ? round2(D(slip.gross).minus(D(slip.allowances))).toFixed(2) : null,
-              hours: slip.hours, gross: slip.gross, overtime: slip.overtime, commission: slip.commission,
-              deductions: slip.deductions, advanceDeduction: slip.advanceDeduction,
-              socialSecurityEmployee: slip.socialSecurityEmployee, incomeTax: slip.incomeTax,
-              socialSecurityEmployer: slip.socialSecurityEmployer, endOfServiceAccrual: slip.endOfServiceAccrual,
-              net: slip.net, note: slip.note,
-              paidAt: paymentYmd(slipPayment?.paymentDate),
-              paidAmount: slipPayment?.amount ?? null,
-              paymentMethod: slipPayment ? (PAYMENT_METHOD_AR[slipPayment.paymentMethod] ?? slipPayment.paymentMethod) : null,
-              paymentReference: slipPayment?.referenceNumber ?? null,
-              receiptId: slipPayment?.receiptId ?? null,
-            })}><Printer className="size-4" /> طباعة كشف الراتب</Button>
+            <Button
+              onClick={() => {
+                const data = slip ? getPayslipData(slip) : null;
+                if (data) printPayslip(data);
+              }}
+              title="طباعة وتحميل كشف الراتب الفردي بصيغة PDF"
+            >
+              <Printer className="size-4" /> طباعة كشف الراتب (PDF)
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
