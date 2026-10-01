@@ -21,10 +21,16 @@ export async function truncateTables(tables: readonly string[] | string[]): Prom
   try {
     await conn.execute("SET FOREIGN_KEY_CHECKS = 0");
     for (const t of tables) {
-      await conn.execute(`DELETE FROM \`${t}\``).catch((e: unknown) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error(`truncateTables: DELETE ${t} failed: ${msg}`);
-      });
+      try {
+        await conn.execute(`DELETE FROM \`${t}\``);
+      } catch {
+        try {
+          await conn.execute(`TRUNCATE TABLE \`${t}\``);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`truncateTables: clear ${t} failed: ${msg}`);
+        }
+      }
     }
     await conn.execute("SET FOREIGN_KEY_CHECKS = 1");
   } finally {
@@ -49,10 +55,16 @@ export async function truncateAllTables(): Promise<void> {
     const tables = rows.map((r) => r.name as string).filter((n) => n !== "__drizzle_migrations");
     await conn.execute("SET FOREIGN_KEY_CHECKS = 0");
     for (const t of tables) {
-      await conn.execute(`DELETE FROM \`${t}\``).catch((e: unknown) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error(`truncateAllTables: DELETE ${t} failed: ${msg}`);
-      });
+      try {
+        await conn.execute(`DELETE FROM \`${t}\``);
+      } catch {
+        try {
+          await conn.execute(`TRUNCATE TABLE \`${t}\``);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`truncateAllTables: clear ${t} failed: ${msg}`);
+        }
+      }
     }
     await conn.execute("SET FOREIGN_KEY_CHECKS = 1");
   } finally {
