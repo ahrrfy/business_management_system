@@ -82,6 +82,8 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
+    const runToApprove = run;
+
     const items = await tx
       .select({
         ...getTableColumns(payrollItems),
@@ -187,7 +189,7 @@ export async function approveRun(id: number, actor: Actor) {
       }
     }
     await approvePayrollAccrualTx(tx, {
-      run,
+      run: runToApprove,
       items,
       actorUserId: actor.userId,
       approvedAt: new Date(),

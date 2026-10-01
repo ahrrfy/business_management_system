@@ -536,7 +536,7 @@ export const payrollRouter = router({
         .object({
           employeeId: z.number().int().positive().optional(),
           branchId: z.number().int().positive().optional(),
-          status: z.enum(["ACTIVE", "SETTLED", "CANCELLED"]).optional(),
+          status: z.enum(["ACTIVE", "SETTLED", "CANCELLED", "PENDING_APPROVAL"]).optional(),
         })
         .optional(),
     )
