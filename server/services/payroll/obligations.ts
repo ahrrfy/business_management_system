@@ -152,13 +152,26 @@ async function settleItemAdvanceTx(
     )
     .orderBy(asc(employeeAdvances.id))
     .for("update");
+  // تتبّع الرصيد المتبقّي لكل سلفة في الذاكرة لتطبيق التوزيع العادل على الأقساط
+  const currentRemaining = new Map<number, Decimal>();
+  for (const adv of advances) {
+    currentRemaining.set(Number(adv.id), money(adv.remaining));
+  }
+
+  // المرحلة الأولى: استقطاع القسط الشهري المستحق لكل سلفة نشطة بعدل ودقة
   for (const advance of advances) {
     if (left.lte(0)) break;
-    const remaining = money(advance.remaining);
-    if (remaining.lte(0)) continue;
-    const amount = round2(Decimal.min(remaining, left));
-    const after = round2(remaining.minus(amount));
-    left = round2(left.minus(amount));
+    const rem = currentRemaining.get(Number(advance.id)) ?? money(0);
+    if (rem.lte(0)) continue;
+    const installment = advance.monthlyDeduction != null ? money(advance.monthlyDeduction) : rem;
+    const due = round2(Decimal.min(installment, rem));
+    const take = round2(Decimal.min(due, left));
+    if (take.lte(0)) continue;
+
+    const after = round2(rem.minus(take));
+    currentRemaining.set(Number(advance.id), after);
+    left = round2(left.minus(take));
+
     await tx
       .update(employeeAdvances)
       .set({
@@ -166,11 +179,12 @@ async function settleItemAdvanceTx(
         status: after.isZero() ? "SETTLED" : "ACTIVE",
       })
       .where(eq(employeeAdvances.id, Number(advance.id)));
+
     await tx.insert(advanceSettlements).values({
       runId: input.runId,
       advanceId: Number(advance.id),
       employeeId: input.employeeId,
-      amount: toDbMoney(amount),
+      amount: toDbMoney(take),
       revisionNo: input.revisionNo,
       direction: "APPLY",
       sourceKey: `PAYROLL:ADV:${input.runId}:${input.revisionNo}:${input.itemId}:${Number(advance.id)}`,
@@ -178,6 +192,42 @@ async function settleItemAdvanceTx(
       occurredAt: input.occurredAt,
     });
   }
+
+  // المرحلة الثانية: في حال وجود فائض استقطاع (تعديل يدوي بالزيادة)، يُستوفى من أقدم السلف المتبقية
+  if (left.gt(0)) {
+    for (const advance of advances) {
+      if (left.lte(0)) break;
+      const rem = currentRemaining.get(Number(advance.id)) ?? money(0);
+      if (rem.lte(0)) continue;
+      const take = round2(Decimal.min(rem, left));
+      if (take.lte(0)) continue;
+
+      const after = round2(rem.minus(take));
+      currentRemaining.set(Number(advance.id), after);
+      left = round2(left.minus(take));
+
+      await tx
+        .update(employeeAdvances)
+        .set({
+          remaining: toDbMoney(after),
+          status: after.isZero() ? "SETTLED" : "ACTIVE",
+        })
+        .where(eq(employeeAdvances.id, Number(advance.id)));
+
+      await tx.insert(advanceSettlements).values({
+        runId: input.runId,
+        advanceId: Number(advance.id),
+        employeeId: input.employeeId,
+        amount: toDbMoney(take),
+        revisionNo: input.revisionNo,
+        direction: "APPLY",
+        sourceKey: `PAYROLL:ADV:${input.runId}:${input.revisionNo}:${input.itemId}:${Number(advance.id)}:extra`,
+        createdBy: input.actorUserId,
+        occurredAt: input.occurredAt,
+      });
+    }
+  }
+
   if (left.gt(0)) {
     throw new TRPCError({
       code: "CONFLICT",

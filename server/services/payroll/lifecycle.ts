@@ -18,6 +18,7 @@ import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
 import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
+import { syncAllAdvancesForDraftRunTx } from "./syncAdvances";
 
 /** اعتماد الاستحقاق الشهري؛ لا نقد ولا إيصال في هذه المرحلة. */
 export async function approveRun(id: number, actor: Actor) {
@@ -80,6 +81,16 @@ export async function approveRun(id: number, actor: Actor) {
         message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير ملتقطة — أعد توليد المسيّر.`,
       });
     }
+    await syncAllAdvancesForDraftRunTx(tx, id);
+    const [freshRun] = await tx
+      .select()
+      .from(payrollRuns)
+      .where(eq(payrollRuns.id, id))
+      .for("update")
+      .limit(1);
+    if (!freshRun) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
+    const runToApprove = freshRun;
+
     const items = await tx
       .select({
         ...getTableColumns(payrollItems),
@@ -185,7 +196,7 @@ export async function approveRun(id: number, actor: Actor) {
       }
     }
     await approvePayrollAccrualTx(tx, {
-      run,
+      run: runToApprove,
       items,
       actorUserId: actor.userId,
       approvedAt: new Date(),

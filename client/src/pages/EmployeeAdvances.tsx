@@ -31,14 +31,21 @@ import { toExcelMoney } from "@/lib/payrollAccrual";
 import { selectClsSm } from "@/lib/ui/formStyles";
 
 
-const STATUS_LABEL: Record<string, string> = { ACTIVE: "نشطة", SETTLED: "مسوّاة", CANCELLED: "ملغاة" };
+const STATUS_LABEL: Record<string, string> = {
+  ACTIVE: "نشطة",
+  PENDING_APPROVAL: "بانتظار الاعتماد",
+  SETTLED: "مسوّاة",
+  CANCELLED: "ملغاة",
+};
 const STATUS_CLS: Record<string, string> = {
   ACTIVE: "badge-status-pending",
+  PENDING_APPROVAL: "badge-stock-low",
   SETTLED: "badge-status-active",
   CANCELLED: "bg-muted text-muted-foreground",
 };
 const STATUS_TITLE: Record<string, string> = {
   ACTIVE: "نشطة — تُخصم تلقائياً من كل مسيّر راتب حتى تصفير المتبقّي",
+  PENDING_APPROVAL: "بانتظار الاعتماد — طلب سلفة مسجَّل بانتظار اعتماد المالك",
   // Codex P2 (٢٤/٨): مسارُ التسوية ليس واحداً — لوحةُ سدادٍ يدويّ (تحت الجدول) تعتمد ⇒
   // remaining=0 وSETTLED دون أيّ خصمٍ من راتب. لا نُلبس مدقّقاً/HR قصّةً مالية ليست بالضرورة صحيحة.
   SETTLED: "مسوّاة — استُوفي المبلغ كاملاً (خصماً من الرواتب أو سداداً مباشراً)",
@@ -72,18 +79,25 @@ export default function EmployeeAdvances() {
     "FULL",
     ["manager"],
   );
-  const [status, setStatus] = useState<"" | "ACTIVE" | "SETTLED" | "CANCELLED">("ACTIVE");
+  const [status, setStatus] = useState<"" | "ACTIVE" | "PENDING_APPROVAL" | "SETTLED" | "CANCELLED">("ACTIVE");
   const [empFilter, setEmpFilter] = useState("");
   const [branchFilter, setBranchFilter] = useState("");
   const [q, setQ] = useState("");
   const [grantOpen, setGrantOpen] = useState(false);
 
   const empOpts = trpc.employees.formOptions.useQuery();
+  const allEmpsQ = trpc.employees.list.useQuery({ limit: 500 });
+  const allEmployees = useMemo(() => {
+    if (allEmpsQ.data?.rows) {
+      return allEmpsQ.data.rows.map((e) => ({ id: e.id, name: e.fullName }));
+    }
+    return empOpts.data?.managers ?? [];
+  }, [allEmpsQ.data?.rows, empOpts.data?.managers]);
   const branchesQ = trpc.branches.list.useQuery();
 
   const listInput = useMemo(
     () => ({
-      status: (status || undefined) as "ACTIVE" | "SETTLED" | "CANCELLED" | undefined,
+      status: (status || undefined) as "ACTIVE" | "PENDING_APPROVAL" | "SETTLED" | "CANCELLED" | undefined,
       employeeId: empFilter ? Number(empFilter) : undefined,
       branchId: branchFilter ? Number(branchFilter) : undefined,
     }),
@@ -291,6 +305,7 @@ export default function EmployeeAdvances() {
                 <AppSelect className="h-9" value={status} onValueChange={(next) => setStatus(next as typeof status)} aria-label="حالة السلفة">
                   <option value="">كل الحالات</option>
                   <option value="ACTIVE">نشطة</option>
+                  <option value="PENDING_APPROVAL">بانتظار الاعتماد</option>
                   <option value="SETTLED">مسوّاة</option>
                   <option value="CANCELLED">ملغاة</option>
                 </AppSelect>
@@ -298,7 +313,7 @@ export default function EmployeeAdvances() {
               <FilterField label="الموظف">
                 <AppSelect className="h-9" value={empFilter} onValueChange={(next) => setEmpFilter(next)} aria-label="الموظف">
                   <option value="">كل الموظفين</option>
-                  {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
+                  {allEmployees.map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
                 </AppSelect>
               </FilterField>
               <FilterField label="الفرع">
