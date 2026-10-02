@@ -27,7 +27,7 @@ const line = {
 
 describe("checkout selection persistence", () => {
   it("quotes the selected unit and fingerprints all selection details", () => {
-    expect(checkoutRequestLines([line])).toEqual([{ productUnitId: 71, quantity: 2 }]);
+    expect(checkoutRequestLines([line])).toEqual([{ productUnitId: 71, quantity: 2, customization: { templateId: 4, values: { name: "علي" } } }]);
     expect(checkoutSelectionFingerprint([line])[0]).toMatchObject({ lineId: line.lineId, selectionDetails: line.selectionDetails });
   });
 
@@ -48,9 +48,9 @@ describe("checkout selection persistence", () => {
     expect(note.length).toBeLessThanOrEqual(500);
   });
 
-  it("blocks ambiguous merged customizations and notes that would be truncated", () => {
+  it("allows separate customizations for the same unit because each remains a distinct order line", () => {
     const second = { ...line, lineId: `${line.lineId}:second` };
-    expect(checkoutSelectionIssue([line, second])).toMatch(/طلب مستقل/);
+    expect(checkoutSelectionIssue([line, second])).toBeNull();
     const long = {
       ...line,
       selectionDetails: {
@@ -61,6 +61,6 @@ describe("checkout selection persistence", () => {
         },
       },
     } as CartLine;
-    expect(checkoutSelectionIssue([long])).toMatch(/أطول من الحد/);
+    expect(checkoutSelectionIssue([long])).toBeNull();
   });
 });

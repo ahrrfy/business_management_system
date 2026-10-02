@@ -218,10 +218,9 @@ export default function CheckoutScreen() {
         latitude,
         longitude,
         notes: checkoutSelectionNotes(lines),
-        lines: activeQuote.lines.map((line) => ({
-          productUnitId: line.productUnitId,
-          quantity: line.quantity,
-          expectedUnitPrice: line.unitPrice,
+        lines: requestLines.map((line, index) => ({
+          ...line,
+          expectedUnitPrice: activeQuote.lines[index]!.unitPrice,
         })),
         expectedGrandTotal: activeQuote.total,
         clientRequestId,

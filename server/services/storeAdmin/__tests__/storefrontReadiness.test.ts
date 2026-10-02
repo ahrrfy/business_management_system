@@ -54,4 +54,11 @@ describe("storefront eligibility contract", () => {
       unit({ retailPrice: null, stockBase: 100 }),
     ])).reasons).toEqual(["NO_RETAIL_PRICE"]);
   });
+
+  it("يبيع الخدمة بلا اشتراط صف مخزون مادي", () => {
+    expect(evaluateStorefrontProductEligibility({
+      ...product([unit({ stockBase: null })]),
+      isService: true,
+    })).toEqual({ publishable: true, available: true, reasons: [] });
+  });
 });

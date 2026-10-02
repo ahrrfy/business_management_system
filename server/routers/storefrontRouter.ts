@@ -61,6 +61,18 @@ const labelSummaryInput = z.object({
   token: z.string().trim().min(12).max(32),
 });
 
+const onlineOrderCustomizationInput = z.object({
+  templateId: z.number().int().positive(),
+  values: z.record(z.string().trim().min(1).max(80), z.string().max(2_000))
+    .refine((values) => Object.keys(values).length <= 50, "حقول التخصيص أكثر من الحد المسموح"),
+});
+
+const onlineOrderLineInput = z.object({
+  productUnitId: z.number().int().positive(),
+  quantity: z.number().int().positive().max(999),
+  customization: onlineOrderCustomizationInput.nullish(),
+});
+
 /**
  * بوابة QR العامة: لا تعتمد على جلسة مستخدم، بل على توقيع HMAC فريد للملصق.
  * نتحقق من الرمز قبل وصول المعالج إلى البيانات كي لا يصبح رقم الطلب وحده وسيلة وصول.
@@ -296,10 +308,7 @@ export const storefrontRouter = router({
   quoteOrder: storefrontPublicReadProcedure
     .input(z.object({
       governorate: z.string().trim().min(1).max(40),
-      lines: z.array(z.object({
-        productUnitId: z.number().int().positive(),
-        quantity: z.number().int().positive().max(999),
-      })).min(1).max(100),
+      lines: z.array(onlineOrderLineInput).min(1).max(100),
     }))
     .query(({ input }) => quoteOnlineOrder(input)),
 
@@ -312,10 +321,7 @@ export const storefrontRouter = router({
       couponCode: z.string().trim().min(1).max(64),
       customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
       governorate: z.string().trim().min(1).max(40),
-      lines: z.array(z.object({
-        productUnitId: z.number().int().positive(),
-        quantity: z.number().int().positive().max(999),
-      })).min(1).max(100),
+      lines: z.array(onlineOrderLineInput).min(1).max(100),
     }))
     .mutation(async ({ input }) => {
       const { customerSessionToken, ...quoteInput } = input;
@@ -367,9 +373,7 @@ export const storefrontRouter = router({
         longitude: z.number().min(-180).max(180).nullish(),
         notes: z.string().max(500).optional(),
         lines: z
-          .array(z.object({
-            productUnitId: z.number().int().positive(),
-            quantity: z.number().int().positive().max(999),
+          .array(onlineOrderLineInput.extend({
             expectedUnitPrice: z.string().regex(/^\d{1,15}(?:\.\d{1,2})?$/),
           }))
           .min(1)

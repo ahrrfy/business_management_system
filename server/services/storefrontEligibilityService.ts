@@ -17,7 +17,6 @@ import {
  */
 export type StorefrontReadinessReason =
   | "PRODUCT_INACTIVE"
-  | "SERVICE_PRODUCT"
   | "PRODUCT_HIDDEN"
   | "CATEGORY_HIDDEN"
   | "NO_ACTIVE_VARIANT"
@@ -100,7 +99,6 @@ export function evaluateStorefrontProductEligibility(
 ): StorefrontEligibilityResult {
   const productReasons: StorefrontReadinessReason[] = [];
   if (!input.isActive) productReasons.push("PRODUCT_INACTIVE");
-  if (input.isService) productReasons.push("SERVICE_PRODUCT");
   if (!input.showInStore) productReasons.push("PRODUCT_HIDDEN");
   if (input.categoryVisible === false) productReasons.push("CATEGORY_HIDDEN");
   if (productReasons.length) {
@@ -129,6 +127,10 @@ export function evaluateStorefrontProductEligibility(
     return { publishable: false, available: false, reasons: ["INVALID_CONVERSION_FACTOR"] };
   }
 
+  if (input.isService) {
+    return { publishable: true, available: true, reasons: [] };
+  }
+
   const unitResults = validUnits.map(evaluateStorefrontUnitEligibility);
   if (unitResults.some((result) => result.available)) {
     return { publishable: true, available: true, reasons: [] };
@@ -145,7 +147,6 @@ export function evaluateStorefrontProductEligibility(
 export function storefrontPublishableCondition() {
   return and(
     eq(products.isActive, true),
-    eq(products.isService, false),
     eq(products.showInStore, true),
     or(
       isNull(products.categoryId),
@@ -161,5 +162,8 @@ export function storefrontPublishableCondition() {
 
 /** المخزون بوحدة الأساس ويجب أن يغطي معامل وحدة البيع نفسها. */
 export function storefrontAvailableCondition() {
-  return sql<boolean>`GREATEST(0, COALESCE(${branchStock.quantity}, 0) - COALESCE(${reservationStock.reservedBase}, 0)) >= ${productUnits.conversionFactor}`;
+  return or(
+    eq(products.isService, true),
+    sql<boolean>`GREATEST(0, COALESCE(${branchStock.quantity}, 0) - COALESCE(${reservationStock.reservedBase}, 0)) >= ${productUnits.conversionFactor}`,
+  )!;
 }

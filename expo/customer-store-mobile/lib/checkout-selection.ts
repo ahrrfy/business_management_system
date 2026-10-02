@@ -12,6 +12,10 @@ export function checkoutRequestLines(lines: readonly CartLine[]) {
       : [{
           productUnitId: line.selectionDetails.productUnitId,
           quantity: line.quantity,
+          customization: line.selectionDetails.customization ? {
+            templateId: line.selectionDetails.customization.templateId,
+            values: Object.fromEntries(line.selectionDetails.customization.values.map((value) => [value.fieldKey, value.value])),
+          } : undefined,
         }],
   );
 }
@@ -46,25 +50,10 @@ function selectionNotesText(lines: readonly CartLine[]) {
   return `[تفاصيل الاختيارات]\n${body}`;
 }
 
-export function checkoutSelectionIssue(lines: readonly CartLine[], maxLength = 500): string | null {
-  const units = new Map<number, { count: number; customized: boolean }>();
+export function checkoutSelectionIssue(lines: readonly CartLine[], _maxLength = 500): string | null {
   for (const line of lines) {
     const onlineOrderingIssue = productOnlineOrderingIssue(line.product);
     if (onlineOrderingIssue) return onlineOrderingIssue;
-    const unitId = line.selectionDetails.productUnitId;
-    const current = units.get(unitId) ?? { count: 0, customized: false };
-    units.set(unitId, {
-      count: current.count + 1,
-      customized: current.customized || Boolean(line.selectionDetails.customization?.values.length),
-    });
-  }
-  for (const state of units.values()) {
-    if (state.count > 1 && state.customized) {
-      return "توجد تخصيصات مختلفة لوحدة المنتج نفسها. أرسل كل تخصيص في طلب مستقل حتى يجهّز الخادم حفظها كسطور منفصلة.";
-    }
-  }
-  if (selectionNotesText(lines).length > maxLength) {
-    return "تفاصيل التخصيص أطول من الحد الذي يحفظه نظام الطلبات. قلّل النص أو قسّم المنتجات على طلبين.";
   }
   return null;
 }

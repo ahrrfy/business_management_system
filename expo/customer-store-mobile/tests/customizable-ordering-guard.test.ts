@@ -6,7 +6,6 @@ import {
   checkoutSelectionIssue,
 } from "@/lib/checkout-selection";
 import {
-  CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE,
   validateProductQuoteSelection,
   validateProductSelection,
 } from "@/lib/product-selection";
@@ -25,7 +24,11 @@ const details: ProductSelectionDetails = {
   unitPrice: "5000",
   unitSalePrice: "4500",
   imageUrl: null,
-  customization: null,
+  customization: {
+    templateId: 4,
+    templateTitle: "الطباعة",
+    values: [{ fieldKey: "name", label: "الاسم المطلوب", value: "علي", displayValue: "علي" }],
+  },
 };
 
 const customizableProduct = {
@@ -44,6 +47,13 @@ const customizableProduct = {
   salePrice: "4500",
   inStock: true,
   isCustomizable: true,
+  customizationTemplate: {
+    id: 4,
+    kind: "PRINT",
+    title: "الطباعة",
+    description: "اكتب التفاصيل",
+    fields: [{ fieldKey: "name", label: "الاسم المطلوب", fieldType: "TEXT", isRequired: true, sortOrder: 1, maxLength: 100, options: [], dependency: null, priceDelta: "0" }],
+  },
   variants: [
     {
       variantId: 21,
@@ -81,39 +91,36 @@ const customizableLine = {
 } satisfies CartLine;
 
 describe("customizable product online-ordering guard", () => {
-  it("rejects a customizable product before a cart line can be built", () => {
+  it("builds a structured selection for a customizable product", () => {
     expect(validateProductSelection(customizableProduct, {
       variantId: 21,
       productUnitId: 71,
-      customizationValues: {},
-    })).toEqual({
-      errors: [CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE],
-      details: null,
-    });
+      customizationValues: { name: "علي" },
+    }).details?.customization).toEqual(details.customization);
   });
 
-  it("rejects direct additions and removes legacy customizable lines on restore", () => {
-    expect(addProductToCart([], customizableLine)).toEqual([]);
-    expect(sanitizeCartLines([customizableLine])).toEqual([]);
+  it("keeps configured customizable lines in the cart and on restore", () => {
+    expect(addProductToCart([], customizableLine)).toHaveLength(1);
+    expect(sanitizeCartLines([customizableLine])).toHaveLength(1);
   });
 
-  it("produces no quote/create payload and blocks the network boundary", () => {
+  it("sends structured customization through the quote/create boundary", () => {
     const networkCall = vi.fn();
     const issue = checkoutSelectionIssue([customizableLine]);
     const requestLines = checkoutRequestLines([customizableLine]);
     if (!issue && requestLines.length === 1) networkCall(requestLines);
 
-    expect(issue).toBe(CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE);
-    expect(requestLines).toEqual([]);
-    expect(networkCall).not.toHaveBeenCalled();
+    expect(issue).toBeNull();
+    expect(requestLines).toEqual([{ productUnitId: 71, quantity: 1, customization: { templateId: 4, values: { name: "علي" } } }]);
+    expect(networkCall).toHaveBeenCalledOnce();
   });
 
-  it("keeps direct checkout closed while allowing the selected unit into a sales quote", () => {
+  it("keeps the same structured unit available for checkout and sales quotes", () => {
     expect(validateProductQuoteSelection(customizableProduct, {
       variantId: 21,
       productUnitId: 71,
-      customizationValues: {},
+      customizationValues: { name: "علي" },
     }).details).toMatchObject({ productUnitId: 71, variantId: 21 });
-    expect(checkoutRequestLines([customizableLine])).toEqual([]);
+    expect(checkoutRequestLines([customizableLine])).toHaveLength(1);
   });
 });

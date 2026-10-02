@@ -428,7 +428,8 @@ async function attachAvailability<TRow extends { variantId: number }>(
       ...row,
       stockQty: state?.onHandBase ?? 0,
       reservedQty: state?.reservedBase ?? 0,
-      availableQty: state?.availableBase ?? 0,
+      // الخدمة لا تستهلك مخزوناً مادياً؛ قيمة كبيرة داخلية فقط كي تمرّ مرشحات التوفّر الحالية.
+      availableQty: state?.isService ? Number.MAX_SAFE_INTEGER : state?.availableBase ?? 0,
       hasStockRow: state?.hasStockRow ?? false,
     };
   });
@@ -728,7 +729,7 @@ async function attachVariantColors(
     let m = byProduct.get(pid);
     if (!m) { m = new Map(); byProduct.set(pid, m); }
     const state = availability.get(Number(r.variantId));
-    const inStock = evaluateStorefrontUnitEligibility({
+    const inStock = state?.isService === true || evaluateStorefrontUnitEligibility({
       isActive: true,
       isStoreSaleUnit: true,
       retailPrice: r.retailPrice ?? null,
@@ -1031,7 +1032,7 @@ async function computeStorefrontCategories(
     const productId = Number(row.productId);
     category.products.add(productId);
     const state = availability.get(Number(row.variantId));
-    if ((state?.availableBase ?? 0) >= Number(row.conversionFactor)) {
+    if (state?.isService === true || (state?.availableBase ?? 0) >= Number(row.conversionFactor)) {
       category.availableProducts.add(productId);
     }
   }

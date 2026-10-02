@@ -13,10 +13,10 @@ export type ProductSelectionInput = {
 
 export const DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH = 500;
 export const CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE =
-  "هذا المنتج يحتاج تخصيصاً يراجعه فريق المكتبة، وهو غير متاح للطلب الإلكتروني مؤقتاً. تواصل مع المكتبة لإتمام الطلب.";
+  "إعداد حقول التخصيص غير مكتمل لهذا المنتج. تواصل مع المكتبة أو حاول لاحقاً.";
 
 export function productOnlineOrderingIssue(product: Product): string | null {
-  return product.isCustomizable
+  return product.isCustomizable && !product.customizationTemplate
     ? CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE
     : null;
 }
@@ -84,10 +84,6 @@ function validateSelection(
     : never = [];
   for (const field of activeCustomizationFields(product, input.customizationValues)) {
     const value = (input.customizationValues[field.fieldKey] ?? "").trim();
-    if (field.fieldType === "FILE") {
-      if (field.isRequired && !forQuote) errors.push(`رفع ملف «${field.label}» غير متاح حتى يجهّز الخادم قناة رفع آمنة.`);
-      continue;
-    }
     if (field.isRequired && !value) {
       errors.push(`حقل «${field.label}» مطلوب.`);
       continue;
@@ -105,11 +101,6 @@ function validateSelection(
     const option = field.options.find((candidate) => candidate.value === value);
     if ((field.fieldType === "SELECT" || field.fieldType === "SWATCH") && !option) {
       errors.push(`اختر قيمة صحيحة لحقل «${field.label}».`);
-      continue;
-    }
-    const priceDelta = Number(field.priceDelta || 0) + Number(option?.priceDelta || 0);
-    if (!forQuote && Number.isFinite(priceDelta) && priceDelta !== 0) {
-      errors.push(`لا يمكن تسعير «${field.label}» بأمان في هذا الإصدار. تواصل مع المكتبة لإكماله.`);
       continue;
     }
     customizationValues.push({

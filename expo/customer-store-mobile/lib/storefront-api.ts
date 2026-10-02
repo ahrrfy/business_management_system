@@ -81,6 +81,7 @@ export type OnlineOrderTracking = {
 export type StorefrontOrderLine = {
   productUnitId: number;
   quantity: number;
+  customization?: { templateId: number; values: Record<string, string> };
   expectedUnitPrice?: string;
 };
 export type StorefrontOrderQuote = {
@@ -101,6 +102,13 @@ export type StorefrontOrderQuote = {
   lines: Array<{
     productUnitId: number;
     quantity: number;
+    customization: {
+      templateId: number;
+      kind: "PRINT" | "GIFT" | "GENERAL";
+      title: string;
+      values: Array<{ fieldKey: string; label: string; value: string; displayValue: string }>;
+      unitPriceDelta: string;
+    } | null;
     retailUnitPrice: string;
     discountPerUnit: string;
     couponDiscountPerUnit: string;
@@ -825,7 +833,7 @@ export function cancelStorefrontOrder(input: SecureTrackingInput) {
 
 export function quoteStorefrontOrder(
   governorate: string,
-  lines: Array<{ productUnitId: number; quantity: number }>,
+  lines: StorefrontOrderLine[],
   couponCode?: string,
   customerSessionToken?: string,
 ) {

@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildCartLine,
   cartLineKey,
-  CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE,
   validateProductSelection,
 } from "@/lib/product-selection";
 import { mapApiProduct, type ApiProduct } from "@/lib/storefront-api";
@@ -163,12 +162,17 @@ describe("product selection contract", () => {
     expect(first.maxQuantity).toBe(3);
   });
 
-  it("fails closed for every customizable product until the server contract supports it", () => {
+  it("accepts a valid customizable selection with structured values", () => {
     const product = mapApiProduct(apiProduct);
-    expect(validateProductSelection(product, {
+    const selection = validateProductSelection(product, {
       variantId: 21,
       productUnitId: 71,
       customizationValues: { name: "علي", color: "gold" },
-    }).errors).toEqual([CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE]);
+    });
+    expect(selection.errors).toEqual([]);
+    expect(selection.details?.customization?.values).toEqual([
+      { fieldKey: "name", label: "الاسم", value: "علي", displayValue: "علي" },
+      { fieldKey: "color", label: "لون الطباعة", value: "gold", displayValue: "ذهبي" },
+    ]);
   });
 });

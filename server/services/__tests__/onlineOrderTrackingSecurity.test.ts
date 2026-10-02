@@ -38,22 +38,29 @@ beforeEach(async () => {
 });
 
 describe("online order tracking ownership", () => {
-  it("يرفض منتجاً قابلاً للتخصيص ما دام عقد الطلب لا يثبت selectionDetails بنيوياً", async () => {
+  it("يثبت تفاصيل التخصيص بنيوياً لكل سطر ولا يدمج تخصيصين مختلفين", async () => {
     await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
-    const lines = [{ productUnitId: 1, quantity: 1 }];
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "تفاصيل الطباعة" });
+    await db().insert(s.productCustomizationFields).values({ templateId: 1, fieldKey: "text", label: "النص المطلوب", fieldType: "TEXTAREA", isRequired: true, priceDelta: "250.00" });
+    const lines = [
+      { productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { text: "شركة الرؤية" } } },
+      { productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { text: "مكتبة العربية" } } },
+    ];
 
-    await expect(quoteOnlineOrder({ governorate: "baghdad", lines })).rejects.toMatchObject({
-      code: "BAD_REQUEST",
-    });
-    await expect(createOnlineOrder({
+    const quote = await quoteOnlineOrder({ governorate: "baghdad", lines });
+    expect(quote.lines).toHaveLength(2);
+    expect(quote.lines[0]).toMatchObject({ unitPrice: "1250.00", customization: { unitPriceDelta: "250.00" } });
+    const created = await createOnlineOrder({
       customerName: "زبون تخصيص",
       customerPhone: "07701234567",
       governorate: "baghdad",
       addressText: "بغداد — الكرادة",
-      clientRequestId: "custom-selection-must-fail-closed",
+      clientRequestId: "custom-selection-structured-lines",
       lines,
-    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
+    });
+    const stored = await db().select().from(s.onlineOrderItems).where(eq(s.onlineOrderItems.onlineOrderId, created.orderId));
+    expect(stored).toHaveLength(2);
+    expect(stored.map((item) => item.customizationSnapshot?.values[0]?.value)).toEqual(["شركة الرؤية", "مكتبة العربية"]);
   });
 
   it("يغلق البحث الإرثي برقم متسلسل + هاتف حتى لو عرف المهاجم القيمتين", async () => {

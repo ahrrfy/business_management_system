@@ -38,6 +38,7 @@ import {
   saveCheckoutAttempt,
   saveStorefrontSnapshot,
   setStorefrontCartQuantity,
+  summarizeStorefrontCustomization,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
   storefrontMediaUrls,
@@ -48,7 +49,6 @@ import {
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   storefrontProductCanBeOrdered,
-  STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE,
   validateStorefrontCheckout,
   type CartLine,
   type CheckoutForm,
@@ -59,8 +59,8 @@ describe("storefront related product actions", () => {
   it("يفصل الإضافة المباشرة عن المنتجات التي تحتاج اختياراً", () => {
     const base = { productId: 1, productName: "دفتر", imageUrl: null, price: "5000", productUnitId: 11, unitName: "قطعة", inStock: true };
     expect(recommendationActionLabel(base)).toBe("أضف إلى السلة");
-    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
-    expect(storefrontProductCanBeOrdered({ ...base, isCustomizable: true })).toBe(false);
+    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe("اختر تفاصيل التخصيص");
+    expect(storefrontProductCanBeOrdered({ ...base, isCustomizable: true })).toBe(true);
     expect(recommendationActionLabel({ ...base, variants: [{ label: "لون", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }, { label: "قياس", units: [{ productUnitId: 12, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }] })).toBe("اختر الخيارات");
     expect(recommendationActionLabel({ ...base, variants: [{ label: "قياس", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }, { productUnitId: 12, price: "9000", salePrice: null, unitName: "علبة", inStock: true }] }] })).toBe("اختر الخيارات");
     expect(recommendationActionLabel({ ...base, inStock: false })).toBe("غير متوفر");
@@ -77,7 +77,7 @@ describe("storefront Turnstile submission gate", () => {
 });
 
 describe("storefront customization", () => {
-  it("keeps customizable products visible but fails closed before cart or checkout", () => {
+  it("keeps customizable products sellable while requiring their structured details", () => {
     expect(getStorefrontCustomizationConfig(false, "PRINT")).toBeNull();
     expect(getStorefrontCustomizationConfig(true, null)).toBeNull();
     expect(getStorefrontCustomizationConfig(true, "PRINT")).toBeNull();
@@ -104,15 +104,15 @@ describe("storefront customization", () => {
     expect(config?.fields[0]?.fieldKey).toBe("service");
     expect(config?.fields[0]?.isRequired).toBe(true);
     const base = new Map<string, CartLine>();
-    const blocked = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { kind: "PRINT", service: "اسم أو عبارة", message: "سارة" } }, "2500");
-    expect(blocked.size).toBe(0);
+    const configured = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { templateId: 10, kind: "PRINT", values: { service: "text", message: "سارة" }, selections: [{ fieldKey: "service", label: "نوع التنفيذ", value: "text", displayValue: "اسم أو عبارة" }, { fieldKey: "message", label: "التفاصيل", value: "سارة", displayValue: "سارة" }] } }, "2500");
+    expect(configured.size).toBe(1);
+    expect(summarizeStorefrontCustomization(Array.from(configured.values())[0]?.customization)).toBe("نوع التنفيذ: اسم أو عبارة • التفاصيل: سارة");
+    expect(addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true }, "2500").size).toBe(0);
     const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).toContain("detailQ.data.isCustomizable ? (");
-    expect(source).toContain(") : customizationConfig ? (");
-    expect(source).toContain("disabled={detailQ.data.isCustomizable ||");
+    expect(source).not.toContain("detailQ.data.isCustomizable ? (");
+    expect(source).not.toContain("disabled={detailQ.data.isCustomizable ||");
     expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
-    expect(source).toContain("cartHasUnsupportedCustomization");
-    expect(source).toContain(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
+    expect(source).not.toContain("cartHasUnsupportedCustomization");
   });
 });
 
