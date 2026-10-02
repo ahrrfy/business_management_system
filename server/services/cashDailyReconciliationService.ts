@@ -63,7 +63,6 @@ interface Evidence {
   openShiftCount: number;
   unmatchedShiftCount: number;
   pendingCustodyCount: number;
-  pendingCustodyCash: string;
   custodyVarianceCount: number;
   treasuryReceiptCount: number;
   treasuryLastReceiptId: number;
@@ -291,7 +290,6 @@ export async function buildDailyCashEvidenceTx(
   const pendingHash = createHash("sha256");
   let pendingCursor = 0;
   let pendingCustodyCount = 0;
-  let pendingCustodyCash = money(0);
   let pendingFirstId = 0;
   let pendingLastId = 0;
   while (true) {
@@ -326,7 +324,6 @@ export async function buildDailyCashEvidenceTx(
       if (pendingFirstId === 0) pendingFirstId = id;
       pendingLastId = id;
       pendingCustodyCount += 1;
-      pendingCustodyCash = pendingCustodyCash.plus(row.amount);
       pendingHash.update(JSON.stringify([id, row.amount, row.referenceNumber]));
       pendingHash.update("\n");
     }
@@ -392,7 +389,6 @@ export async function buildDailyCashEvidenceTx(
     openShiftCount,
     unmatchedShiftCount,
     pendingCustodyCount,
-    pendingCustodyCash: toDbMoney(pendingCustodyCash),
     custodyVarianceCount,
     treasuryReceiptCount,
     treasuryLastReceiptId,

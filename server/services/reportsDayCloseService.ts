@@ -893,37 +893,116 @@ export async function getDayCloseReconciliation(opts: {
         } else {
           // لا نكرّر بناء الأدلة لكل وحدة خاملة: الفروع المؤثرة هي التي تحمل نقد خزينة
           // أو وردية ظاهرة/مفتوحة، مع بقاء المجموع شاملاً لكل النقد التاريخي المتراكم.
-          const [treasuryBranches, openShiftBranches] = await Promise.all([
+          const [treasuryBranches, shiftBranches] = await Promise.all([
             tx.selectDistinct({ id: receipts.branchId }).from(receipts).where(and(
               eq(receipts.cashBucket, "TREASURY"),
               eq(receipts.paymentMethod, "CASH"),
               lt(eventAt, endExclusive),
             )),
-            tx.selectDistinct({ id: shifts.branchId }).from(shifts).where(eq(shifts.status, "OPEN")),
+            tx.selectDistinct({ id: shifts.branchId }).from(shifts).where(lt(shifts.openedAt, endExclusive)),
           ]);
           const ids = new Set<number>(lines.map((line) => line.branchId));
-          for (const row of [...treasuryBranches, ...openShiftBranches]) ids.add(Number(row.id));
+          for (const row of [...treasuryBranches, ...shiftBranches]) ids.add(Number(row.id));
           scopedBranches = Array.from(ids, (id) => ({ id }));
         }
 
         let expectedTreasuryCash = money(0);
         let cashInTransit = money(0);
-        let evidenceOpenShiftCount = 0;
         let isReadyForFinalCount = true;
         for (const branch of scopedBranches) {
           const evidence = await buildDailyCashEvidenceTx(tx, Number(branch.id), opts.date);
           expectedTreasuryCash = expectedTreasuryCash.plus(evidence.expectedTreasuryCash);
-          cashInTransit = cashInTransit.plus(evidence.pendingCustodyCash);
-          evidenceOpenShiftCount += evidence.openShiftCount;
+          const [transitRow] = await tx
+            .select({
+              amount: sql<string>`COALESCE(SUM(${receipts.amount}), 0)`,
+            })
+            .from(receipts)
+            .where(and(
+              eq(receipts.branchId, Number(branch.id)),
+              eq(receipts.direction, "IN"),
+              eq(receipts.cashBucket, "TREASURY"),
+              eq(receipts.paymentMethod, "CASH"),
+              eq(receipts.approvalStatus, "APPROVED"),
+              or(
+                like(receipts.referenceNumber, "CH-%"),
+                like(receipts.referenceNumber, "CD-%"),
+              ),
+              lt(receipts.createdAt, endExclusive),
+              or(
+                eq(receipts.status, "PENDING"),
+                and(
+                  inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+                  gte(eventAt, endExclusive),
+                ),
+              ),
+            ));
+          cashInTransit = cashInTransit.plus(transitRow?.amount ?? 0);
           isReadyForFinalCount &&=
             evidence.openShiftCount === 0 && evidence.unmatchedShiftCount === 0 &&
             evidence.pendingCustodyCount === 0 && evidence.custodyVarianceCount === 0;
         }
 
-        // ورديةٌ مفتوحة من يوم سابق لا تظهر في جدول هذا اليوم؛ لا ننشر رقماً نهائياً ناقصاً.
-        if (evidenceOpenShiftCount !== openCount) return null;
-        const expectedDrawersCash = tRetained.plus(tOpenRunningExpected);
-        isReadyForFinalCount &&= expectedDrawersCash.isZero();
+        // موضع الدرج عند حدّ التقرير لا عند الحالة الحالية للوردية. الوردية التي أُغلقت
+        // في اليوم التالي كانت ما تزال مفتوحة عند القطع، وتسليمٌ لاحق لا يمحو رصيدها تاريخياً.
+        const scopedBranchIds = scopedBranches.map((branch) => Number(branch.id));
+        const cutoffShifts = scopedBranchIds.length === 0
+          ? []
+          : await tx
+              .select({
+                id: shifts.id,
+                openingBalance: shifts.openingBalance,
+                countedCash: shifts.countedCash,
+                closedAt: shifts.closedAt,
+              })
+              .from(shifts)
+              .where(and(
+                inArray(shifts.branchId, scopedBranchIds),
+                lt(shifts.openedAt, endExclusive),
+              ));
+        const cutoffShiftIds = cutoffShifts.map((shift) => Number(shift.id));
+        const cutoffDrawerByShift = new Map<number, {
+          cashIn: string;
+          cashOut: string;
+          handoversCash: string;
+        }>();
+        if (cutoffShiftIds.length > 0) {
+          const cutoffDrawerRows = await tx
+            .select({
+              shiftId: receipts.shiftId,
+              cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
+              cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
+              handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
+            })
+            .from(receipts)
+            .where(and(
+              inArray(receipts.shiftId, cutoffShiftIds),
+              ...materializedDrawerCashConditions(),
+              lt(eventAt, endExclusive),
+            ))
+            .groupBy(receipts.shiftId);
+          for (const row of cutoffDrawerRows) {
+            if (row.shiftId == null) continue;
+            cutoffDrawerByShift.set(Number(row.shiftId), row);
+          }
+        }
+
+        let expectedDrawersCash = money(0);
+        let openAtCutoffCount = 0;
+        let unsettledDrawerCount = 0;
+        for (const shift of cutoffShifts) {
+          const agg = cutoffDrawerByShift.get(Number(shift.id));
+          const closedByCutoff = shift.closedAt != null && new Date(shift.closedAt).getTime() < endExclusive.getTime();
+          if (!closedByCutoff) openAtCutoffCount += 1;
+          const drawerCash = closedByCutoff && shift.countedCash != null
+            ? money(shift.countedCash).minus(agg?.handoversCash ?? 0)
+            : money(shift.openingBalance).plus(agg?.cashIn ?? 0).minus(agg?.cashOut ?? 0);
+          expectedDrawersCash = expectedDrawersCash.plus(drawerCash);
+          if (!drawerCash.isZero() || (closedByCutoff && shift.countedCash == null)) {
+            unsettledDrawerCount += 1;
+          }
+        }
+        isReadyForFinalCount &&=
+          openAtCutoffCount === 0 && unsettledDrawerCount === 0 && cashInTransit.isZero();
         return {
           branchCount: scopedBranches.length,
           expectedTreasuryCash: toDbMoney(expectedTreasuryCash),

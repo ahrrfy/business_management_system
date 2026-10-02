@@ -175,6 +175,30 @@ describe("daily physical treasury reconciliation", () => {
     expect(status.blockers.map((item) => item.code)).toContain("TREASURY_VARIANCE");
   });
 
+  it("does not expose the pending custody amount through blind-count reconciliation evidence", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "87500.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-BLIND-DAILY-EVIDENCE",
+      createdBy: CHECKER,
+      createdAt: TEST_NOW,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("PENDING_CUSTODY");
+    expect(status.evidence).not.toHaveProperty("pendingCustodyCash");
+    expect(status.currentEvidence).not.toHaveProperty("pendingCustodyCash");
+    expect(JSON.stringify(status)).not.toContain("87500.00");
+  });
+
   it("reopens with optimistic concurrency and never lets an old replay reopen a newer certificate", async () => {
     const counted = await recordDailyTreasuryCount(
       {

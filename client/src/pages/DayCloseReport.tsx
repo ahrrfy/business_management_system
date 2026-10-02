@@ -193,8 +193,10 @@ export default function DayCloseReport() {
   const saved = daily?.reconciliation;
   const position = dc?.cashPosition;
   const reconciliationStale = daily?.blockers.some((blocker) => blocker.code === "STALE_EVIDENCE") ?? false;
-  const finalCountUsable = Boolean(position?.isReadyForFinalCount && !reconciliationStale && saved?.countedTreasuryCash != null);
-  const finalVariance = finalCountUsable ? saved?.variance ?? null : null;
+  const finalCountUsable = Boolean(position?.isReadyForFinalCount && !reconciliationStale && saved?.status !== "REOPENED" && saved?.countedTreasuryCash != null);
+  const finalVariance = finalCountUsable && position && saved
+    ? D(saved.countedTreasuryCash).minus(position.expectedCashOnHand).toFixed(2)
+    : null;
   const kpis: KpiItem[] = dc
     ? position
       ? [
@@ -679,8 +681,10 @@ function ReconciliationHero({ dc, daily }: { dc: DC; daily?: RouterOutputs["trea
   const hasDirect = (dc.directOperations?.receiptCount ?? 0) > 0;
   const position = dc.cashPosition;
   const reconciliationStale = daily?.blockers.some((blocker) => blocker.code === "STALE_EVIDENCE") ?? false;
-  const finalCountUsable = Boolean(position?.isReadyForFinalCount && !reconciliationStale && saved?.countedTreasuryCash != null);
-  const finalVariance = finalCountUsable ? saved?.variance ?? null : null;
+  const finalCountUsable = Boolean(position?.isReadyForFinalCount && !reconciliationStale && saved?.status !== "REOPENED" && saved?.countedTreasuryCash != null);
+  const finalVariance = finalCountUsable && position && saved
+    ? D(saved.countedTreasuryCash).minus(position.expectedCashOnHand).toFixed(2)
+    : null;
   const finalMatched = finalVariance != null && D(finalVariance).isZero();
   const positionTitle = position?.branchCount === 1
     ? "الموقف النقدي النهائي للفرع"

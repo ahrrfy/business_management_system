@@ -447,21 +447,76 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     });
     await db().update(s.shifts).set({
       status: "CLOSED",
-      closedAt: new Date(`${DATE}T18:00:00.000Z`),
+      openedAt: new Date(new Date(`${DATE}T09:00:00.000Z`).getTime() - 86_400_000),
+      closedAt: new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() - 86_400_000),
       countedCash: "150000.00",
       expectedCash: "150000.00",
       variance: "0.00",
       reconciliationStatus: "MATCHED",
     }).where(eq(s.shifts.id, shiftId));
+    await db().update(s.receipts).set({
+      createdAt: new Date(new Date(`${DATE}T17:00:00.000Z`).getTime() - 86_400_000),
+      approvedAt: new Date(new Date(`${DATE}T17:00:00.000Z`).getTime() - 86_400_000),
+    }).where(eq(s.receipts.shiftId, shiftId));
+    await db().update(s.receipts).set({
+      createdAt: new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() - 86_400_000),
+      approvedAt: new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() - 86_400_000),
+    }).where(eq(s.receipts.referenceNumber, "CH-LEGACY-PARTIAL"));
 
     const res = await report(1);
-    expect(res.totals.retainedInDrawer).toBe("50000.00");
-    expect(res.totals.physicalDrawerCash).toBe("50000.00");
+    expect(res.shifts).toEqual([]);
+    expect(res.totals.retainedInDrawer).toBe("0.00");
     expect(res.cashPosition).toMatchObject({
       expectedTreasuryCash: "1000000.00",
       expectedDrawersCash: "50000.00",
       cashInTransit: "0.00",
       expectedCashOnHand: "1050000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("يعيد بناء الدرج عند حد اليوم ولا يسقطه بسبب إغلاق وتسليم حدثا في اليوم التالي", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const nextDay = new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() + 86_400_000);
+    await insertReceipt({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "100000.00",
+      referenceNumber: "CH-NEXT-DAY-CUTOFF",
+      approvalStatus: "APPROVED",
+      createdAt: nextDay,
+      approvedAt: nextDay,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "100000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-NEXT-DAY-CUTOFF",
+      createdBy: ADMIN,
+      approvedBy: ADMIN,
+      createdAt: nextDay,
+      approvedAt: nextDay,
+    });
+    await db().update(s.shifts).set({
+      status: "CLOSED",
+      closedAt: nextDay,
+      countedCash: "100000.00",
+      expectedCash: "100000.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    }).where(eq(s.shifts.id, shiftId));
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "900000.00",
+      expectedDrawersCash: "100000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
       isReadyForFinalCount: false,
     });
   });
