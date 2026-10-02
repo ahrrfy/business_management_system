@@ -85,8 +85,13 @@ import {
   validateAiProductDraft,
 } from "../../shared/productContentAi";
 import {
+  CUSTOMIZATION_COPY_MAX_PRODUCTS,
+  CUSTOMIZATION_TARGET_SEARCH_DEFAULT_LIMIT,
+  CUSTOMIZATION_TARGET_SEARCH_MAX_LIMIT,
+  copyProductCustomizationTemplate,
   getProductCustomizationTemplate,
   saveProductCustomizationTemplate,
+  searchProductCustomizationTargets,
   setProductCustomizationTemplateActive,
 } from "../services/productCustomizationService";
 
@@ -166,12 +171,31 @@ const customizationFieldSchema = z.object({
 });
 const customizationTemplateSchema = z.object({
   productId: z.number().int().positive(),
+  expectedTemplateId: z.number().int().positive().nullable(),
   kind: z.enum(["PRINT", "GIFT", "GENERAL"]),
   title: z.string().min(1).max(160),
   description: z.string().max(2000).nullish(),
   isActive: z.boolean().optional(),
   fields: z.array(customizationFieldSchema).max(50),
 });
+const copyCustomizationTemplateSchema = z.discriminatedUnion("scope", [
+  z.object({
+    sourceProductId: z.number().int().positive(),
+    sourceTemplate: customizationTemplateSchema.optional(),
+    scope: z.literal("PRODUCTS"),
+    productIds: z.array(z.number().int().positive()).min(1).max(CUSTOMIZATION_COPY_MAX_PRODUCTS),
+    overwriteExisting: z.boolean().default(false),
+  }),
+  z.object({
+    sourceProductId: z.number().int().positive(),
+    sourceTemplate: customizationTemplateSchema.optional(),
+    scope: z.literal("CATEGORY"),
+    categoryId: z.number().int().positive(),
+    expectedMatched: z.number().int().min(0),
+    expectedExisting: z.number().int().min(0),
+    overwriteExisting: z.boolean().default(false),
+  }),
+]);
 // (٤/٩) الباركود يُطبَّع على حدّ الـAPI (`barcodeString`/`optionalBarcodeString`): كان `z.string()` عارياً
 // فيُحفَظ «10095 » بمسافته ثم لا يُمسَح أبداً — المطابقة مساواةٌ SQL خامّة.
 const barcodeAliasSchema = z.object({
@@ -1041,11 +1065,48 @@ export const catalogRouter = router({
       return result;
     }),
 
+  /** بحث مبسّط لاختيار المنتجات أو معاينة حجم الفئة قبل نسخ قالب التخصيص. */
+  searchCustomizationTargets: productsManagerProcedure
+    .input(z.object({
+      q: z.string().max(120).optional(),
+      categoryId: z.number().int().positive().nullish(),
+      excludeProductId: z.number().int().positive().optional(),
+      limit: z.number().int().min(1).max(CUSTOMIZATION_TARGET_SEARCH_MAX_LIMIT).default(CUSTOMIZATION_TARGET_SEARCH_DEFAULT_LIMIT),
+    }))
+    .query(({ input }) => searchProductCustomizationTargets(input)),
+
+  /** ينسخ القالب المحفوظ إلى منتجات مختارة أو فئة كاملة مع حماية القوالب الموجودة افتراضياً. */
+  copyCustomizationTemplate: productsManagerProcedure
+    .input(copyCustomizationTemplateSchema)
+    .mutation(async ({ input, ctx }) => {
+      const result = await copyProductCustomizationTemplate(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "product.customizationTemplate.copy",
+        entityType: "productCustomizationTemplate",
+        entityId: input.sourceProductId,
+        newValue: {
+          scope: input.scope,
+          categoryId: input.scope === "CATEGORY" ? input.categoryId : null,
+          requestedProductIds: input.scope === "PRODUCTS" ? input.productIds : null,
+          overwriteExisting: input.overwriteExisting,
+          matched: result.matched,
+          copied: result.copied,
+          skipped: result.skipped,
+        },
+      });
+      return result;
+    }),
+
   /** إيقاف/تفعيل قالب التخصيص دون حذف تاريخه. */
   setCustomizationTemplateActive: productsManagerProcedure
     .input(
       z.object({
         productId: z.number().int().positive(),
+        expectedTemplateId: z.number().int().positive(),
         isActive: z.boolean(),
       }),
     )
@@ -1058,6 +1119,7 @@ export const catalogRouter = router({
           branchId: ctx.user.branchId ?? 1,
           role: ctx.user.role,
         },
+        input.expectedTemplateId,
       );
       await logAudit(ctx, {
         action: input.isActive
