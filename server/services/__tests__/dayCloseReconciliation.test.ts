@@ -429,6 +429,75 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     });
   });
 
+  it("يحجب الموقف النقدي إذا كانت عهدة عد أعمى من وردية يوم سابق ما تزال معلقة", async () => {
+    const priorDay = new Date(new Date(`${DATE}T10:00:00.000Z`).getTime() - 86_400_000);
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    await db().update(s.shifts).set({ openedAt: priorDay }).where(eq(s.shifts.id, shiftId));
+    await insertReceipt({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "40000.00",
+      referenceNumber: "CH-PRIOR-BLIND-POSITION",
+      approvalStatus: "APPROVED",
+      createdAt: priorDay,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "40000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-PRIOR-BLIND-POSITION",
+      createdBy: CASHIER1,
+      createdAt: priorDay,
+    });
+
+    const res = await getDayCloseReconciliation({
+      date: DATE,
+      branchId: 1,
+      actor: { userId: MANAGER1, branchId: 1, role: "manager" },
+    });
+    expect(res.shifts).toEqual([]);
+    expect(res.withheldBlindCountShiftCount).toBe(0);
+    expect(res.cashPosition).toBeNull();
+  });
+
+  it("يبقي التحويل النقدي بين الفروع ضمن النقد بالطريق حتى الاستلام", async () => {
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-1-POSITION-IN-TRANSIT",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "125000.00",
+      status: "IN_TRANSIT",
+      sentBy: ADMIN,
+      sentAt: new Date(`${DATE}T12:00:00.000Z`),
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "125000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-1-POSITION-IN-TRANSIT",
+      createdBy: ADMIN,
+      createdAt: new Date(`${DATE}T12:00:00.000Z`),
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "875000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "125000.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
   it("لا يُسقط نقداً متبقياً في درج وردية مغلقة تاريخية ولا يسمح باعتباره جرداً نهائياً", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const invoiceId = await seedInvoice(1);

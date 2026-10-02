@@ -124,8 +124,12 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(service).toMatch(/expectedTreasuryCash\s*\.plus\(expectedDrawersCash\)/);
     expect(service).toContain("closedByCutoff");
     expect(service).toContain("lt(eventAt, endExclusive)");
+    expect(service).toContain("leftJoin(cutoffDrawerReceipts");
+    expect(service).not.toContain("inArray(receipts.shiftId, cutoffShiftIds)");
     expect(source).toContain('blocker.code === "STALE_EVIDENCE"');
     expect(source).toContain('saved?.status !== "REOPENED"');
     expect(source).toContain("D(saved.countedTreasuryCash).minus(position.expectedCashOnHand).toFixed(2)");
+    expect(source).toContain("drift: finalCountUsable ? Number(finalVariance)");
+    expect(source).toContain("drift: finalCountUsable ? fmtAr(finalVariance!)");
   });
 });

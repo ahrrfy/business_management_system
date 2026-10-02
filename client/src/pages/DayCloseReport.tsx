@@ -406,7 +406,7 @@ export default function DayCloseReport() {
         operatingOut: 0,
         expected: Number(dc.cashPosition.expectedCashOnHand),
         counted: finalCountUsable ? Number(saved!.countedTreasuryCash) : "",
-        drift: finalCountUsable ? Number(saved!.variance) : "",
+        drift: finalCountUsable ? Number(finalVariance) : "",
         handoversCash: 0,
         retainedInDrawer: "",
       });
@@ -479,7 +479,7 @@ export default function DayCloseReport() {
         status: dc.cashPosition.isReadyForFinalCount ? "جاهزة للجرد النهائي" : "غير جاهزة للإقفال",
         expected: fmtAr(dc.cashPosition.expectedCashOnHand),
         counted: finalCountUsable ? fmtAr(saved!.countedTreasuryCash) : "—",
-        drift: finalCountUsable ? fmtAr(saved!.variance) : "—",
+        drift: finalCountUsable ? fmtAr(finalVariance!) : "—",
         handovers: "—",
       });
     }

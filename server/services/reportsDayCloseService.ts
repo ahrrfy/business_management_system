@@ -26,6 +26,7 @@ import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lt, ne, notExists
 import { alias } from "drizzle-orm/mysql-core";
 import {
   branches,
+  cashTransfers,
   cashCustodyCounts,
   customers,
   expenseCategories,
@@ -306,9 +307,9 @@ export async function getDayCloseReconciliation(opts: {
     .where(and(...shiftConds))
     .orderBy(shifts.branchId, shifts.openedAt, shifts.id);
 
-  const allShiftIds = shiftRows.map((r) => Number(r.shiftId));
   const protectedShiftIds = new Set<number>();
-  if (opts.actor && allShiftIds.length > 0) {
+  let withholdCashPosition = false;
+  if (opts.actor) {
     const sourceReceipt = alias(receipts, "blindCountSourceReceipt");
     const pendingReceipt = alias(receipts, "blindCountPendingReceipt");
     const firstCount = alias(cashCustodyCounts, "blindCountFirstCount");
@@ -334,10 +335,10 @@ export async function getDayCloseReconciliation(opts: {
         ),
       )
       .leftJoin(firstCount, eq(firstCount.treasuryReceiptId, pendingReceipt.id))
-      .leftJoin(sourceShift, eq(sourceShift.id, sourceReceipt.shiftId))
+      .innerJoin(sourceShift, eq(sourceShift.id, sourceReceipt.shiftId))
       .where(
         and(
-          inArray(sourceReceipt.shiftId, allShiftIds),
+          ...(opts.branchId != null ? [eq(sourceReceipt.branchId, opts.branchId)] : []),
           eq(sourceReceipt.direction, "OUT"),
           eq(sourceReceipt.paymentMethod, "CASH"),
           eq(sourceReceipt.cashBucket, "DRAWER"),
@@ -347,6 +348,7 @@ export async function getDayCloseReconciliation(opts: {
             like(sourceReceipt.referenceNumber, "CH-%"),
             like(sourceReceipt.referenceNumber, "CD-%"),
           ),
+          lt(pendingReceipt.createdAt, endExclusive),
           isNull(firstCount.id),
         ),
       );
@@ -363,6 +365,7 @@ export async function getDayCloseReconciliation(opts: {
         })
       ) {
         protectedShiftIds.add(Number(row.shiftId));
+        withholdCashPosition = true;
       }
     }
   }
@@ -884,7 +887,7 @@ export async function getDayCloseReconciliation(opts: {
     receiptCount: directCount,
   };
 
-  const cashPosition = withheldBlindCountShiftCount > 0
+  const cashPosition = withholdCashPosition
     ? null
     : await withTx(async (tx) => {
         let scopedBranches: Array<{ id: number }>;
@@ -937,6 +940,24 @@ export async function getDayCloseReconciliation(opts: {
               ),
             ));
           cashInTransit = cashInTransit.plus(transitRow?.amount ?? 0);
+          const [transferTransitRow] = await tx
+            .select({
+              amount: sql<string>`COALESCE(SUM(${cashTransfers.amount}), 0)`,
+            })
+            .from(cashTransfers)
+            .where(and(
+              eq(cashTransfers.fromBranchId, Number(branch.id)),
+              lt(cashTransfers.sentAt, endExclusive),
+              or(
+                isNull(cashTransfers.receivedAt),
+                gte(cashTransfers.receivedAt, endExclusive),
+              ),
+              or(
+                isNull(cashTransfers.cancelledAt),
+                gte(cashTransfers.cancelledAt, endExclusive),
+              ),
+            ));
+          cashInTransit = cashInTransit.plus(transferTransitRow?.amount ?? 0);
           isReadyForFinalCount &&=
             evidence.openShiftCount === 0 && evidence.unmatchedShiftCount === 0 &&
             evidence.pendingCustodyCount === 0 && evidence.custodyVarianceCount === 0;
@@ -945,62 +966,46 @@ export async function getDayCloseReconciliation(opts: {
         // موضع الدرج عند حدّ التقرير لا عند الحالة الحالية للوردية. الوردية التي أُغلقت
         // في اليوم التالي كانت ما تزال مفتوحة عند القطع، وتسليمٌ لاحق لا يمحو رصيدها تاريخياً.
         const scopedBranchIds = scopedBranches.map((branch) => Number(branch.id));
-        const cutoffShifts = scopedBranchIds.length === 0
-          ? []
+        const cutoffDrawerReceipts = tx
+          .select({
+            shiftId: receipts.shiftId,
+            cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`.as("cashIn"),
+            cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`.as("cashOut"),
+            handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`.as("handoversCash"),
+          })
+          .from(receipts)
+          .where(and(
+            ...(scopedBranchIds.length > 0 ? [inArray(receipts.branchId, scopedBranchIds)] : []),
+            ...materializedDrawerCashConditions(),
+            lt(eventAt, endExclusive),
+          ))
+          .groupBy(receipts.shiftId)
+          .as("cutoffDrawerReceipts");
+        const closedByCutoff = sql`${shifts.closedAt} IS NOT NULL AND ${shifts.closedAt} < ${endExclusive}`;
+        const drawerAtCutoff = sql`CASE
+          WHEN ${closedByCutoff} AND ${shifts.countedCash} IS NOT NULL
+            THEN ${shifts.countedCash} - COALESCE(${cutoffDrawerReceipts.handoversCash}, 0)
+          ELSE ${shifts.openingBalance}
+            + COALESCE(${cutoffDrawerReceipts.cashIn}, 0)
+            - COALESCE(${cutoffDrawerReceipts.cashOut}, 0)
+          END`;
+        const [cutoffPosition] = scopedBranchIds.length === 0
+          ? [{ expectedDrawersCash: "0.00", openAtCutoffCount: 0, unsettledDrawerCount: 0 }]
           : await tx
               .select({
-                id: shifts.id,
-                openingBalance: shifts.openingBalance,
-                countedCash: shifts.countedCash,
-                closedAt: shifts.closedAt,
+                expectedDrawersCash: sql<string>`COALESCE(SUM(${drawerAtCutoff}), 0)`,
+                openAtCutoffCount: sql<number>`COALESCE(SUM(CASE WHEN NOT (${closedByCutoff}) THEN 1 ELSE 0 END), 0)`,
+                unsettledDrawerCount: sql<number>`COALESCE(SUM(CASE WHEN ${drawerAtCutoff} <> 0 OR (${closedByCutoff} AND ${shifts.countedCash} IS NULL) THEN 1 ELSE 0 END), 0)`,
               })
               .from(shifts)
+              .leftJoin(cutoffDrawerReceipts, eq(cutoffDrawerReceipts.shiftId, shifts.id))
               .where(and(
                 inArray(shifts.branchId, scopedBranchIds),
                 lt(shifts.openedAt, endExclusive),
               ));
-        const cutoffShiftIds = cutoffShifts.map((shift) => Number(shift.id));
-        const cutoffDrawerByShift = new Map<number, {
-          cashIn: string;
-          cashOut: string;
-          handoversCash: string;
-        }>();
-        if (cutoffShiftIds.length > 0) {
-          const cutoffDrawerRows = await tx
-            .select({
-              shiftId: receipts.shiftId,
-              cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
-              cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
-              handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
-            })
-            .from(receipts)
-            .where(and(
-              inArray(receipts.shiftId, cutoffShiftIds),
-              ...materializedDrawerCashConditions(),
-              lt(eventAt, endExclusive),
-            ))
-            .groupBy(receipts.shiftId);
-          for (const row of cutoffDrawerRows) {
-            if (row.shiftId == null) continue;
-            cutoffDrawerByShift.set(Number(row.shiftId), row);
-          }
-        }
-
-        let expectedDrawersCash = money(0);
-        let openAtCutoffCount = 0;
-        let unsettledDrawerCount = 0;
-        for (const shift of cutoffShifts) {
-          const agg = cutoffDrawerByShift.get(Number(shift.id));
-          const closedByCutoff = shift.closedAt != null && new Date(shift.closedAt).getTime() < endExclusive.getTime();
-          if (!closedByCutoff) openAtCutoffCount += 1;
-          const drawerCash = closedByCutoff && shift.countedCash != null
-            ? money(shift.countedCash).minus(agg?.handoversCash ?? 0)
-            : money(shift.openingBalance).plus(agg?.cashIn ?? 0).minus(agg?.cashOut ?? 0);
-          expectedDrawersCash = expectedDrawersCash.plus(drawerCash);
-          if (!drawerCash.isZero() || (closedByCutoff && shift.countedCash == null)) {
-            unsettledDrawerCount += 1;
-          }
-        }
+        const expectedDrawersCash = money(cutoffPosition?.expectedDrawersCash ?? 0);
+        const openAtCutoffCount = Number(cutoffPosition?.openAtCutoffCount ?? 0);
+        const unsettledDrawerCount = Number(cutoffPosition?.unsettledDrawerCount ?? 0);
         isReadyForFinalCount &&=
           openAtCutoffCount === 0 && unsettledDrawerCount === 0 && cashInTransit.isZero();
         return {
