@@ -28,6 +28,8 @@ interface EditableLineItem {
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  hasCustomization: boolean;
+  customizationSummary: string | null;
 }
 
 export function EditOnlineOrderDialog({
@@ -83,6 +85,8 @@ export function EditOnlineOrderDialog({
           unitPrice: uPrice,
           quantity: qty,
           lineTotal: uPrice * qty,
+          hasCustomization: it.hasCustomization,
+          customizationSummary: it.customizationSummary ?? null,
         };
       });
       setItems(initialItems);
@@ -121,6 +125,8 @@ export function EditOnlineOrderDialog({
 
   const finalDeliveryFee = isFreeDelivery ? 0 : baseDeliveryFee;
   const hasCoupon = Boolean(detailQ.data?.couponCode);
+  const hasCustomization = items.some((item) => item.hasCustomization);
+  const itemsLocked = hasCoupon || hasCustomization;
   const couponDiscount = Number(detailQ.data?.couponDiscount ?? 0);
   // subtotal is sum of items line totals, which already reflect any coupon discount.
   // Grand total is subtotal + delivery fee.
@@ -198,6 +204,8 @@ export function EditOnlineOrderDialog({
           unitPrice: target.price,
           quantity: 1,
           lineTotal: target.price,
+          hasCustomization: false,
+          customizationSummary: null,
         },
       ]);
     }
@@ -224,7 +232,7 @@ export function EditOnlineOrderDialog({
       governorate,
       shippingAddress: shippingAddress.trim() || null,
       notes: notes.trim() || null,
-      items: hasCoupon
+      items: itemsLocked
         ? undefined
         : items.map((it) => ({
             productUnitId: it.productUnitId,
@@ -335,6 +343,12 @@ export function EditOnlineOrderDialog({
                   </div>
                 </div>
               )}
+              {hasCustomization && (
+                <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-sm text-blue-700 dark:text-blue-300">
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                  <span>هذا الطلب يحوي تفاصيل تخصيص محفوظة لكل صنف. يمكنك تعديل بيانات المستلم فقط؛ تعديل الأصناف يتطلب إنشاء طلب جديد كي لا تضيع تعليمات الزبون.</span>
+                </div>
+              )}
 
               {/* Items List Table */}
               <div className="overflow-x-auto rounded-lg border bg-background">
@@ -356,6 +370,7 @@ export function EditOnlineOrderDialog({
                           <div className="text-xs text-muted-foreground">
                             {[it.variantLabel, it.unitName].filter(Boolean).join(" — ")}
                           </div>
+                          {it.customizationSummary && <div className="mt-1 text-xs font-semibold text-blue-700 dark:text-blue-300">تخصيص: {it.customizationSummary}</div>}
                         </td>
                         <td className="p-2.5 whitespace-nowrap">{fmtInt(it.unitPrice)} د.ع</td>
                         <td className="p-2.5 text-center whitespace-nowrap">
@@ -366,7 +381,7 @@ export function EditOnlineOrderDialog({
                               size="sm"
                               className="size-6 p-0 h-6"
                               onClick={() => handleQuantityChange(idx, it.quantity - 1)}
-                              disabled={hasCoupon || it.quantity <= 1}
+                              disabled={itemsLocked || it.quantity <= 1}
                             >
                               -
                             </Button>
@@ -377,7 +392,7 @@ export function EditOnlineOrderDialog({
                               size="sm"
                               className="size-6 p-0 h-6"
                               onClick={() => handleQuantityChange(idx, it.quantity + 1)}
-                              disabled={hasCoupon}
+                              disabled={itemsLocked}
                             >
                               +
                             </Button>
@@ -391,8 +406,8 @@ export function EditOnlineOrderDialog({
                             size="sm"
                             className="size-8 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
                             onClick={() => handleRemoveItem(idx)}
-                            disabled={hasCoupon || items.length <= 1}
-                            title={hasCoupon ? "لا يمكن حذف أصناف لطلب يحمل كوبون" : "حذف الصنف من الطلب"}
+                            disabled={itemsLocked || items.length <= 1}
+                            title={itemsLocked ? "لا يمكن تعديل أصناف طلب يحمل كوبوناً أو تخصيصاً" : "حذف الصنف من الطلب"}
                           >
                             <Trash2 className="size-4" />
                           </Button>
@@ -404,7 +419,7 @@ export function EditOnlineOrderDialog({
               </div>
 
               {/* Add Product Search */}
-              {!hasCoupon && (
+              {!itemsLocked && (
                 <div className="pt-2 border-t space-y-2">
                   <Label className="text-xs font-semibold text-muted-foreground">
                     إضافة صنف جديد للطلب من الكتالوج

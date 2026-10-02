@@ -3,6 +3,7 @@ import type {
   Product,
   ProductSelectionDetails,
   StorefrontCustomizationField,
+  StorefrontUnitOption,
 } from "@/shared/storefront";
 
 export type ProductSelectionInput = {
@@ -11,14 +12,33 @@ export type ProductSelectionInput = {
   customizationValues: Record<string, string>;
 };
 
-export const DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH = 500;
+export const DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH = 2_000;
 export const CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE =
-  "هذا المنتج يحتاج تخصيصاً يراجعه فريق المكتبة، وهو غير متاح للطلب الإلكتروني مؤقتاً. تواصل مع المكتبة لإتمام الطلب.";
+  "إعداد حقول التخصيص غير مكتمل لهذا المنتج. تواصل مع المكتبة أو حاول لاحقاً.";
+
+const CENTS_PER_IQD = BigInt(100);
+
+function moneyToCents(value: string | null | undefined): bigint | null {
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(value ?? "");
+  if (!match) return null;
+  return (BigInt(match[1]) * CENTS_PER_IQD) + BigInt((match[2] ?? "").padEnd(2, "0"));
+}
+
+function centsToMoney(value: bigint): string {
+  const whole = value / CENTS_PER_IQD;
+  const fraction = (value % CENTS_PER_IQD).toString().padStart(2, "0");
+  return `${whole}.${fraction}`;
+}
 
 export function productOnlineOrderingIssue(product: Product): string | null {
-  return product.isCustomizable
-    ? CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE
-    : null;
+  if (!product.isCustomizable) return null;
+  const template = product.customizationTemplate;
+  if (!template || !product.customizationKind) {
+    return CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE;
+  }
+  return template.kind === "GENERAL" || template.kind === product.customizationKind
+    ? null
+    : CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE;
 }
 
 function dependencyMatches(
@@ -38,9 +58,46 @@ export function activeCustomizationFields(
   product: Product,
   values: Record<string, string>,
 ) {
-  return [...(product.customizationTemplate?.fields ?? [])]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .filter((field) => dependencyMatches(field, values));
+  const fields = [...(product.customizationTemplate?.fields ?? [])].sort((left, right) => left.sortOrder - right.sortOrder);
+  const byKey = new Map(fields.map((field) => [field.fieldKey, field]));
+  const resolved = new Map<string, boolean>();
+  const resolving = new Set<string>();
+  const isActive = (fieldKey: string): boolean => {
+    if (resolved.has(fieldKey)) return resolved.get(fieldKey)!;
+    const field = byKey.get(fieldKey);
+    if (!field || resolving.has(fieldKey)) return false;
+    resolving.add(fieldKey);
+    const active = !field.dependency || (isActive(field.dependency.fieldKey) && dependencyMatches(field, values));
+    resolving.delete(fieldKey);
+    resolved.set(fieldKey, active);
+    return active;
+  };
+  return fields.filter((field) => isActive(field.fieldKey));
+}
+
+export function pruneInactiveCustomizationValues(product: Product, values: Record<string, string>) {
+  const activeKeys = new Set(activeCustomizationFields(product, values).map((field) => field.fieldKey));
+  return Object.fromEntries(Object.entries(values).filter(([fieldKey]) => activeKeys.has(fieldKey)));
+}
+
+export function customizationAdjustedUnitPrices(
+  product: Product,
+  unit: Pick<StorefrontUnitOption, "price" | "salePrice">,
+  values: Record<string, string>,
+) {
+  let delta = BigInt(0);
+  for (const field of activeCustomizationFields(product, values)) {
+    const value = (values[field.fieldKey] ?? "").trim();
+    if (!value) continue;
+    const option = field.options.find((candidate) => candidate.value === value);
+    delta += moneyToCents(field.priceDelta) ?? BigInt(0);
+    delta += moneyToCents(option?.priceDelta) ?? BigInt(0);
+  }
+  const addDelta = (price: string | null) => {
+    const cents = moneyToCents(price);
+    return cents == null ? price : centsToMoney(cents + delta);
+  };
+  return { price: addDelta(unit.price), salePrice: addDelta(unit.salePrice) };
 }
 
 export function validateProductSelection(
@@ -84,10 +141,6 @@ function validateSelection(
     : never = [];
   for (const field of activeCustomizationFields(product, input.customizationValues)) {
     const value = (input.customizationValues[field.fieldKey] ?? "").trim();
-    if (field.fieldType === "FILE") {
-      if (field.isRequired && !forQuote) errors.push(`رفع ملف «${field.label}» غير متاح حتى يجهّز الخادم قناة رفع آمنة.`);
-      continue;
-    }
     if (field.isRequired && !value) {
       errors.push(`حقل «${field.label}» مطلوب.`);
       continue;
@@ -107,11 +160,6 @@ function validateSelection(
       errors.push(`اختر قيمة صحيحة لحقل «${field.label}».`);
       continue;
     }
-    const priceDelta = Number(field.priceDelta || 0) + Number(option?.priceDelta || 0);
-    if (!forQuote && Number.isFinite(priceDelta) && priceDelta !== 0) {
-      errors.push(`لا يمكن تسعير «${field.label}» بأمان في هذا الإصدار. تواصل مع المكتبة لإكماله.`);
-      continue;
-    }
     customizationValues.push({
       fieldKey: field.fieldKey,
       label: field.label,
@@ -121,6 +169,7 @@ function validateSelection(
   }
 
   if (!variant || !unit || errors.length) return { errors, details: null };
+  const adjustedPrices = customizationAdjustedUnitPrices(product, unit, input.customizationValues);
   return {
     errors,
     details: {
@@ -129,8 +178,8 @@ function validateSelection(
       variantKind: variant.variantKind,
       productUnitId: unit.productUnitId,
       unitName: unit.unitName,
-      unitPrice: unit.price,
-      unitSalePrice: unit.salePrice,
+      unitPrice: adjustedPrices.price,
+      unitSalePrice: adjustedPrices.salePrice,
       imageUrl: variant.imageUrl ?? product.imageUrl ?? null,
       customization: product.customizationTemplate
         ? {

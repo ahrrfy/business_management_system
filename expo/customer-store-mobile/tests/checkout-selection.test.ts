@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkoutQuoteFingerprint, checkoutRequestLines, checkoutSelectionFingerprint, checkoutSelectionIssue, checkoutSelectionNotes } from "@/lib/checkout-selection";
+import { checkoutQuoteFingerprint, checkoutRequestLines, checkoutSelectionFingerprint, checkoutSelectionIssue } from "@/lib/checkout-selection";
 import type { CartLine } from "@/shared/storefront";
 
 const line = {
@@ -27,7 +27,7 @@ const line = {
 
 describe("checkout selection persistence", () => {
   it("quotes the selected unit and fingerprints all selection details", () => {
-    expect(checkoutRequestLines([line])).toEqual([{ productUnitId: 71, quantity: 2 }]);
+    expect(checkoutRequestLines([line])).toEqual([{ productUnitId: 71, quantity: 2, customization: { templateId: 4, values: { name: "علي" } } }]);
     expect(checkoutSelectionFingerprint([line])[0]).toMatchObject({ lineId: line.lineId, selectionDetails: line.selectionDetails });
   });
 
@@ -40,17 +40,25 @@ describe("checkout selection persistence", () => {
     } as CartLine])).not.toBe(quotedCart);
   });
 
-  it("provides a bounded fulfillment note until the server accepts structured details", () => {
-    const note = checkoutSelectionNotes([line]);
-    expect(note).toContain("أحمر — A5");
-    expect(note).toContain("الاسم: علي");
-    expect(note).toContain("× 2");
-    expect(note.length).toBeLessThanOrEqual(500);
-  });
-
-  it("blocks ambiguous merged customizations and notes that would be truncated", () => {
+  it("allows separate customizations for the same unit because each remains a distinct order line", () => {
     const second = { ...line, lineId: `${line.lineId}:second` };
-    expect(checkoutSelectionIssue([line, second])).toMatch(/طلب مستقل/);
+    expect(checkoutSelectionIssue([line, second])).toBeNull();
+    expect(checkoutRequestLines([line, second])).toEqual([{
+      productUnitId: 71,
+      quantity: 4,
+      customization: { templateId: 4, values: { name: "علي" } },
+    }]);
+    const distinct = {
+      ...second,
+      selectionDetails: {
+        ...second.selectionDetails,
+        customization: {
+          ...second.selectionDetails.customization!,
+          values: [{ fieldKey: "name", label: "الاسم", value: "سارة", displayValue: "سارة" }],
+        },
+      },
+    } as CartLine;
+    expect(checkoutRequestLines([line, distinct])).toHaveLength(2);
     const long = {
       ...line,
       selectionDetails: {
@@ -61,6 +69,6 @@ describe("checkout selection persistence", () => {
         },
       },
     } as CartLine;
-    expect(checkoutSelectionIssue([long])).toMatch(/أطول من الحد/);
+    expect(checkoutSelectionIssue([long])).toBeNull();
   });
 });

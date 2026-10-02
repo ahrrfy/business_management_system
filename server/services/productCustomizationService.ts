@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   productCustomizationFields,
   productCustomizationTemplates,
@@ -66,6 +67,99 @@ function normalizeOptions(options: ProductCustomizationOption[] | undefined): Pr
     .filter((option) => option.value && option.label);
 }
 
+function assertUniqueOptionValues(options: ProductCustomizationOption[], label: string, what: string): void {
+  const seen = new Set<string>();
+  for (const option of options) {
+    const value = String(option.value ?? "").trim();
+    if (!value) continue;
+    if (seen.has(value)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what,
+          why: `قيمة الخيار «${value}» مكررة في الحقل «${label}»`,
+          doThis: "اجعل قيمة كل خيار فريدة ثم أعد المحاولة",
+        }),
+      });
+    }
+    seen.add(value);
+  }
+}
+
+function assertOptionValuesFitMaxLength(
+  options: ProductCustomizationOption[],
+  maxLength: number | null | undefined,
+  label: string,
+  what: string,
+): void {
+  if (maxLength == null) return;
+  const oversized = options.find((option) => String(option.value ?? "").length > maxLength);
+  if (!oversized) return;
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: appErrorMessage({
+      what,
+      why: `قيمة الخيار «${oversized.value}» أطول من الحد الأقصى للحقل «${label}»`,
+      doThis: "ارفع الحد الأقصى للحقل أو قصّر قيمة الخيار ثم أعد المحاولة",
+    }),
+  });
+}
+
+function assertValidDependencyGraph(
+  fields: Array<{ fieldKey: string; label: string; dependency: ProductCustomizationDependency | null }>,
+  what: string,
+): void {
+  const byKey = new Map(fields.map((field) => [field.fieldKey, field]));
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+  const visit = (field: (typeof fields)[number]): void => {
+    if (visited.has(field.fieldKey)) return;
+    if (visiting.has(field.fieldKey)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what,
+          why: `تبعيات الحقول تحتوي دورة عند الحقل «${field.label}»`,
+          doThis: "اجعل تبعيات الحقول متسلسلة بلا اعتماد دائري ثم أعد المحاولة",
+        }),
+      });
+    }
+    visiting.add(field.fieldKey);
+    if (field.dependency) {
+      const parent = byKey.get(field.dependency.fieldKey);
+      if (!parent) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what,
+            why: `تبعية الحقل «${field.label}» تشير إلى حقل غير موجود أو غير نشط`,
+            doThis: "اختر حقل تبعية نشطاً من القالب ثم أعد المحاولة",
+          }),
+        });
+      }
+      visit(parent);
+    }
+    visiting.delete(field.fieldKey);
+    visited.add(field.fieldKey);
+  };
+  for (const field of fields) visit(field);
+}
+
+function normalizePriceDelta(value: string | undefined, subject: string, what = "تعذّر حفظ قالب التخصيص"): string {
+  const normalized = String(value ?? "0").trim();
+  if (!/^\d{1,13}(?:\.\d{1,2})?$/.test(normalized)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what,
+        why: `فرق السعر في ${subject} يجب أن يكون مبلغاً غير سالب، بمنزلتين عشريتين على الأكثر، وضمن سعة النظام`,
+        doThis: "صحّح فرق السعر ثم أعد الحفظ",
+      }),
+    });
+  }
+  return normalized;
+}
+
 function normalizeDependency(dependency: ProductCustomizationDependency | null | undefined): ProductCustomizationDependency | null {
   if (!dependency) return null;
   const value = Array.isArray(dependency.value)
@@ -91,7 +185,11 @@ function validateTemplateInput(input: CustomizationTemplateInput): Array<Customi
     if (keys.has(fieldKey)) throw new TRPCError({ code: "BAD_REQUEST", message: `مفتاح الحقل مكرر: ${fieldKey}.` });
     keys.add(fieldKey);
     if (!label) throw new TRPCError({ code: "BAD_REQUEST", message: `اسم الحقل مطلوب: ${fieldKey}.` });
-    const options = normalizeOptions(field.options);
+    const options = normalizeOptions(field.options).map((option) => ({
+      ...option,
+      priceDelta: normalizePriceDelta(option.priceDelta, `خيار «${option.label}» في حقل «${label}»`),
+    }));
+    assertUniqueOptionValues(options, label, "تعذّر حفظ قالب التخصيص");
     const dependency = normalizeDependency(field.dependency);
     if (["SELECT", "SWATCH"].includes(field.fieldType) && options.length === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `الحقل ${label} يحتاج خياراً واحداً على الأقل.` });
@@ -102,6 +200,7 @@ function validateTemplateInput(input: CustomizationTemplateInput): Array<Customi
     if (field.maxLength != null && (!Number.isInteger(field.maxLength) || field.maxLength < 1 || field.maxLength > 10_000)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `الحد الأقصى للنص في ${label} غير صالح.` });
     }
+    assertOptionValuesFitMaxLength(options, field.maxLength, label, "تعذّر حفظ قالب التخصيص");
     return {
       ...field,
       fieldKey,
@@ -109,16 +208,15 @@ function validateTemplateInput(input: CustomizationTemplateInput): Array<Customi
       sortOrder: Number.isInteger(field.sortOrder) ? field.sortOrder : (index + 1) * 10,
       options,
       dependency,
-      priceDelta: String(field.priceDelta ?? "0"),
+      priceDelta: normalizePriceDelta(field.priceDelta, `الحقل «${label}»`),
       isRequired: !!field.isRequired,
       isActive: field.isActive !== false,
     };
   });
 
-  for (const field of fields) {
-    if (field.dependency && !keys.has(field.dependency.fieldKey)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `تبعية الحقل ${field.label} تشير إلى حقل غير موجود.` });
-    }
+  assertValidDependencyGraph(fields, "تعذّر حفظ قالب التخصيص");
+  if (input.isActive !== false) {
+    assertValidDependencyGraph(fields.filter((field) => field.isActive !== false), "تعذّر حفظ قالب التخصيص");
   }
   return fields;
 }
@@ -214,10 +312,32 @@ export async function saveProductCustomizationTemplate(input: CustomizationTempl
 }
 
 export async function setProductCustomizationTemplateActive(productId: number, isActive: boolean, _actor: Actor) {
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة." });
-  const template = (await db.select({ id: productCustomizationTemplates.id }).from(productCustomizationTemplates).where(eq(productCustomizationTemplates.productId, productId)).limit(1))[0];
-  if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "لا يوجد قالب تخصيص لهذا المنتج." });
-  await db.update(productCustomizationTemplates).set({ isActive }).where(eq(productCustomizationTemplates.id, Number(template.id)));
-  return { productId, isActive };
+  return withTx(async (tx) => {
+    const template = (await tx.select({ id: productCustomizationTemplates.id }).from(productCustomizationTemplates).where(eq(productCustomizationTemplates.productId, productId)).limit(1))[0];
+    if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "لا يوجد قالب تخصيص لهذا المنتج." });
+    if (isActive) {
+      const fields = await tx.select({
+        fieldKey: productCustomizationFields.fieldKey,
+        label: productCustomizationFields.label,
+        maxLength: productCustomizationFields.maxLength,
+        options: productCustomizationFields.optionsJson,
+        dependency: productCustomizationFields.dependencyJson,
+        priceDelta: productCustomizationFields.priceDelta,
+      }).from(productCustomizationFields).where(and(
+        eq(productCustomizationFields.templateId, Number(template.id)),
+        eq(productCustomizationFields.isActive, true),
+      ));
+      assertValidDependencyGraph(fields, "تعذّر تفعيل قالب التخصيص");
+      for (const field of fields) {
+        normalizePriceDelta(String(field.priceDelta ?? "0"), `الحقل «${field.label}»`, "تعذّر تفعيل قالب التخصيص");
+        assertUniqueOptionValues(field.options ?? [], field.label, "تعذّر تفعيل قالب التخصيص");
+        assertOptionValuesFitMaxLength(field.options ?? [], field.maxLength, field.label, "تعذّر تفعيل قالب التخصيص");
+        for (const option of field.options ?? []) {
+          normalizePriceDelta(option.priceDelta, `خيار «${option.label}» في حقل «${field.label}»`, "تعذّر تفعيل قالب التخصيص");
+        }
+      }
+    }
+    await tx.update(productCustomizationTemplates).set({ isActive }).where(eq(productCustomizationTemplates.id, Number(template.id)));
+    return { productId, isActive };
+  }, { gate: "NONE" });
 }

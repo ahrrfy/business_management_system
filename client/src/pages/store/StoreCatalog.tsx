@@ -174,14 +174,20 @@ export default function StoreCatalog() {
                             <p className="truncate text-xs font-bold">{variant.label}</p>
                             <p className="text-[10px] text-muted-foreground">SKU: {variant.sku}</p>
                           </div>
-                          <button onClick={() => setStockFor({ variantId: variant.variantId, name: `${p.name} — ${variant.label}`, stockBase: variant.stockBase })} disabled={!variant.isActive} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-bold hover:bg-accent disabled:opacity-50" title="إنشاء طلب تسوية لهذا المتغيّر تحديداً">
-                            <Boxes aria-hidden className="size-3" /> {formatQuantity(variant.stockBase)} أساس
-                          </button>
+                          {p.isService ? (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-bold text-muted-foreground">
+                              خدمة بلا مخزون
+                            </span>
+                          ) : (
+                            <button onClick={() => setStockFor({ variantId: variant.variantId, name: `${p.name} — ${variant.label}`, stockBase: variant.stockBase })} disabled={!variant.isActive} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-bold hover:bg-accent disabled:opacity-50" title="إنشاء طلب تسوية لهذا المتغيّر تحديداً">
+                              <Boxes aria-hidden className="size-3" /> {formatQuantity(variant.stockBase)} أساس
+                            </button>
+                          )}
                         </div>
                         <div className="mt-2 flex flex-wrap gap-1">
                           {saleUnits.length === 0 ? <span className="text-[10px] text-[var(--sem-neg)]">لا وحدة بيع متجر نشطة</span> : saleUnits.map((unit) => (
                             <span key={unit.productUnitId} className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${unit.inStock && variant.isActive ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-muted text-muted-foreground"}`} title={`المعامل: ${unit.conversionFactor} من الوحدة الأساس`}>
-                              {unit.unitName}: {!variant.isActive ? "المتغيّر معطّل" : unit.inStock ? `${formatQuantity(unit.availableUnits)} متاح` : READINESS_LABELS[unit.readinessReasons[0] ?? "OUT_OF_STOCK"]}
+                              {unit.unitName}: {!variant.isActive ? "المتغيّر معطّل" : p.isService ? "خدمة متاحة" : unit.inStock ? `${formatQuantity(unit.availableUnits)} متاح` : READINESS_LABELS[unit.readinessReasons[0] ?? "OUT_OF_STOCK"]}
                             </span>
                           ))}
                         </div>

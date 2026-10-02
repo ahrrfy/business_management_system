@@ -8076,6 +8076,19 @@ export const couponReservations = mysqlTable(
 
 export type CouponReservation = typeof couponReservations.$inferSelect;
 
+export type OnlineOrderCustomizationSnapshot = {
+  templateId: number;
+  kind: "PRINT" | "GIFT" | "GENERAL";
+  title: string;
+  values: Array<{
+    fieldKey: string;
+    label: string;
+    value: string;
+    displayValue: string;
+  }>;
+  unitPriceDelta: string;
+};
+
 export const onlineOrderItems = mysqlTable(
   "onlineOrderItems",
   {
@@ -8093,6 +8106,8 @@ export const onlineOrderItems = mysqlTable(
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
+    /** لقطة إنتاج ثابتة؛ لا تتغيّر إذا عدّل المدير قالب المنتج لاحقاً. */
+    customizationSnapshot: json("customizationSnapshot").$type<OnlineOrderCustomizationSnapshot | null>(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({

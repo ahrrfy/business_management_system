@@ -10,6 +10,9 @@ import {
   trackOnlineOrderByGuestToken,
   trackOnlineOrderForCustomer,
 } from "../onlineOrderService";
+import { getOnlineOrder } from "../storeAdmin/orderFulfillmentService";
+import { saveProductCustomizationTemplate, setProductCustomizationTemplateActive } from "../productCustomizationService";
+import { onlineOrderLinesInput } from "../../routers/storefrontRouter";
 import { truncateAllTables } from "./__testUtils__";
 
 function db() {
@@ -38,22 +41,305 @@ beforeEach(async () => {
 });
 
 describe("online order tracking ownership", () => {
-  it("يرفض منتجاً قابلاً للتخصيص ما دام عقد الطلب لا يثبت selectionDetails بنيوياً", async () => {
-    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
-    const lines = [{ productUnitId: 1, quantity: 1 }];
+  it("يثبت تفاصيل التخصيص بنيوياً لكل سطر ولا يدمج تخصيصين مختلفين", async () => {
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "تفاصيل الطباعة" });
+    await db().insert(s.productCustomizationFields).values([
+      { templateId: 1, fieldKey: "text", label: "النص المطلوب", fieldType: "TEXTAREA", isRequired: true, sortOrder: 10, priceDelta: "250.00" },
+      { templateId: 1, fieldKey: "color", label: "اللون", fieldType: "TEXT", isRequired: true, sortOrder: 20, priceDelta: "0.00" },
+    ]);
+    const lines = [
+      { productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { text: "شركة الرؤية", color: "أزرق" } } },
+      { productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { text: "مكتبة العربية", color: "أحمر" } } },
+    ];
 
-    await expect(quoteOnlineOrder({ governorate: "baghdad", lines })).rejects.toMatchObject({
-      code: "BAD_REQUEST",
+    const quote = await quoteOnlineOrder({ governorate: "baghdad", lines });
+    expect(quote.lines).toHaveLength(2);
+    expect(quote.lines[0]).toMatchObject({ unitPrice: "1250.00", customization: { unitPriceDelta: "250.00" } });
+    const created = await createOnlineOrder({
+      customerName: "زبون تخصيص",
+      customerPhone: "07701234567",
+      governorate: "baghdad",
+      addressText: "بغداد — الكرادة",
+      clientRequestId: "custom-selection-structured-lines",
+      lines,
     });
+    const stored = await db().select().from(s.onlineOrderItems).where(eq(s.onlineOrderItems.onlineOrderId, created.orderId));
+    expect(stored).toHaveLength(2);
+    expect(stored.map((item) => item.customizationSnapshot?.values.find((value) => value.fieldKey === "text")?.value)).toEqual(["شركة الرؤية", "مكتبة العربية"]);
     await expect(createOnlineOrder({
       customerName: "زبون تخصيص",
       customerPhone: "07701234567",
       governorate: "baghdad",
       addressText: "بغداد — الكرادة",
-      clientRequestId: "custom-selection-must-fail-closed",
+      clientRequestId: "custom-selection-structured-lines",
       lines,
-    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
+    })).resolves.toMatchObject({ orderId: created.orderId });
+  });
+
+  it("يبقي علامة التخصيص صريحة حتى عندما تكون خلاصة الحقول فارغة", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "تخصيص اختياري" });
+    const created = await createOnlineOrder({
+      customerName: "زبون تخصيص اختياري",
+      customerPhone: "07701234567",
+      governorate: "baghdad",
+      addressText: "بغداد — الكرادة",
+      clientRequestId: "empty-customization-summary",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: {} } }],
+    });
+    const detail = await getOnlineOrder(created.orderId, null);
+    expect(detail?.items[0]).toMatchObject({ hasCustomization: true, customizationSummary: null });
+  });
+
+  it("يرفض فروق أسعار تخصيص غير مالية أو سالبة أو خارج سعة العمود", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    const field = {
+      fieldKey: "printType",
+      label: "نوع الطباعة",
+      fieldType: "SELECT" as const,
+      options: [{ value: "normal", label: "عادي", priceDelta: "0" }],
+    };
+    for (const priceDelta of ["abc", "-1", "0.001", "10000000000000"]) {
+      await expect(saveProductCustomizationTemplate({
+        productId: 1,
+        kind: "PRINT",
+        title: "تفاصيل الطباعة",
+        fields: [{ ...field, priceDelta }],
+      }, actor)).rejects.toThrow(/فرق السعر/);
+    }
+    await expect(saveProductCustomizationTemplate({
+      productId: 1,
+      kind: "PRINT",
+      title: "تفاصيل الطباعة",
+      fields: [{ ...field, options: [{ value: "normal", label: "عادي", priceDelta: "-5" }] }],
+    }, actor)).rejects.toThrow(/فرق السعر/);
+  });
+
+  it("يمنع إعادة تفعيل قالب موروث بفروق أسعار غير صالحة ويعيد خطأ إعداد مضبوطاً", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "style",
+      label: "النمط",
+      fieldType: "SELECT",
+      isRequired: true,
+      optionsJson: [{ value: "legacy", label: "قديم", priceDelta: "-5" }],
+      priceDelta: "0.00",
+    });
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/فرق السعر/);
+    expect((await db().select({ isActive: s.productCustomizationTemplates.isActive }).from(s.productCustomizationTemplates).where(eq(s.productCustomizationTemplates.id, 1)))[0]?.isActive).toBe(false);
+
+    await db().update(s.productCustomizationTemplates).set({ isActive: true }).where(eq(s.productCustomizationTemplates.id, 1));
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { style: "legacy" } } }],
+    })).rejects.toThrow(/إعداد فرق السعر/);
+  });
+
+  it("يرفض قيم الخيارات المكررة بعد التطبيع عند الحفظ وإعادة التفعيل", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    const duplicateOptions = [
+      { value: "same", label: "الأول", priceDelta: "0" },
+      { value: " same ", label: "الثاني", priceDelta: "5" },
+    ];
+    await expect(saveProductCustomizationTemplate({
+      productId: 1,
+      kind: "GENERAL",
+      title: "خيارات مكررة",
+      fields: [{ fieldKey: "style", label: "النمط", fieldType: "SELECT", options: duplicateOptions }],
+    }, actor)).rejects.toThrow(/مكررة/);
+
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "style",
+      label: "النمط",
+      fieldType: "SELECT",
+      optionsJson: duplicateOptions,
+      priceDelta: "0.00",
+    });
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/مكررة/);
+  });
+
+  it("يرفض دورات تبعية الحقول عند الحفظ وإعادة تفعيل قالب موروث", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    const cyclicFields = [
+      { fieldKey: "first", label: "الأول", fieldType: "TEXT" as const, dependency: { fieldKey: "second", operator: "equals" as const, value: "نعم" } },
+      { fieldKey: "second", label: "الثاني", fieldType: "TEXT" as const, dependency: { fieldKey: "first", operator: "equals" as const, value: "نعم" } },
+    ];
+    await expect(saveProductCustomizationTemplate({
+      productId: 1,
+      kind: "GENERAL",
+      title: "تبعية دائرية",
+      fields: cyclicFields,
+    }, actor)).rejects.toThrow(/دورة/);
+
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values(cyclicFields.map((field, index) => ({
+      templateId: 1,
+      fieldKey: field.fieldKey,
+      label: field.label,
+      fieldType: field.fieldType,
+      sortOrder: (index + 1) * 10,
+      dependencyJson: field.dependency,
+      priceDelta: "0.00",
+    })));
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/دورة/);
+  });
+
+  it("يرفض خياراً أطول من الحد الأقصى للحقل عند الحفظ وإعادة التفعيل", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    const options = [{ value: "long", label: "طويل", priceDelta: "0" }];
+    await expect(saveProductCustomizationTemplate({
+      productId: 1,
+      kind: "GENERAL",
+      title: "خيار غير صالح",
+      fields: [{ fieldKey: "style", label: "النمط", fieldType: "SELECT", maxLength: 3, options }],
+    }, actor)).rejects.toThrow(/أطول من الحد الأقصى/);
+
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "style",
+      label: "النمط",
+      fieldType: "SELECT",
+      maxLength: 3,
+      optionsJson: options,
+      priceDelta: "0.00",
+    });
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/أطول من الحد الأقصى/);
+  });
+
+  it("يرفض الحجم الإجمالي لتخصيص السلة قبل تنفيذ التسعير", async () => {
+    const lines = Array.from({ length: 100 }, () => ({
+      productUnitId: 1,
+      quantity: 1,
+      customization: { templateId: 1, values: { details: "س".repeat(3_000) } },
+    }));
+    const parsed = onlineOrderLinesInput.safeParse(lines);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "تفاصيل التخصيص في الطلب أكبر من الحد المسموح" }),
+    ]));
+  });
+
+  it("يقبل طول الحقل المضبوط حتى عشرة آلاف ثم يفرض حد القالب نفسه", async () => {
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "نص طويل" });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "details",
+      label: "التفاصيل",
+      fieldType: "TEXTAREA",
+      isRequired: true,
+      maxLength: 5_000,
+      priceDelta: "0.00",
+    });
+    const accepted = "س".repeat(2_500);
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { details: accepted } } }],
+    })).resolves.toMatchObject({ lines: [{ unitPrice: "1000.00" }] });
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { details: "س".repeat(5_001) } } }],
+    })).rejects.toThrow(/تجاوز الحد/);
+  });
+
+  it("يرفض القالب غير المتوافق والقيم المرسلة لحقول مخفية", async () => {
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GIFT", title: "قالب غير متوافق" });
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: {} } }],
+    })).rejects.toThrow(/نوع قالب التخصيص/);
+
+    await db().update(s.productCustomizationTemplates).set({ kind: "PRINT" }).where(eq(s.productCustomizationTemplates.id, 1));
+    await db().insert(s.productCustomizationFields).values([
+      {
+        templateId: 1,
+        fieldKey: "mode",
+        label: "طريقة التنفيذ",
+        fieldType: "SELECT",
+        isRequired: true,
+        sortOrder: 10,
+        optionsJson: [
+          { value: "text", label: "نص", priceDelta: "0" },
+          { value: "file", label: "ملف", priceDelta: "0" },
+        ],
+        priceDelta: "0.00",
+      },
+      {
+        templateId: 1,
+        fieldKey: "message",
+        label: "النص",
+        fieldType: "TEXT",
+        isRequired: false,
+        sortOrder: 20,
+        dependencyJson: { fieldKey: "mode", operator: "equals", value: "text" },
+        priceDelta: "0.00",
+      },
+      {
+        templateId: 1,
+        fieldKey: "signature",
+        label: "التوقيع",
+        fieldType: "TEXT",
+        isRequired: false,
+        sortOrder: 30,
+        dependencyJson: { fieldKey: "message", operator: "notEquals", value: "blocked" },
+        priceDelta: "0.00",
+      },
+    ]);
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{
+        productUnitId: 1,
+        quantity: 1,
+        customization: { templateId: 1, values: { mode: "file", message: "قيمة مخفية" } },
+      }],
+    })).rejects.toThrow(/شرط ظهوره/);
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{
+        productUnitId: 1,
+        quantity: 1,
+        customization: { templateId: 1, values: { mode: "file", signature: "قيمة مخفية بالتبعية" } },
+      }],
+    })).rejects.toThrow(/شرط ظهوره/);
+  });
+
+  it("يرفض تجاوز سعة المال في مجموع التخصيص والسعر النهائي وإجمالي السطر", async () => {
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "تخصيص مرتفع" });
+    await db().insert(s.productCustomizationFields).values([
+      { id: 1, templateId: 1, fieldKey: "first", label: "الأول", fieldType: "TEXT", isRequired: true, sortOrder: 10, priceDelta: "9999999999999.99" },
+      { id: 2, templateId: 1, fieldKey: "second", label: "الثاني", fieldType: "TEXT", isRequired: true, sortOrder: 20, priceDelta: "1.00" },
+    ]);
+    const customization = { templateId: 1, values: { first: "أ", second: "ب" } };
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization }],
+    })).rejects.toThrow(/مجموع فروق أسعار/);
+
+    await db().update(s.productCustomizationFields).set({ priceDelta: "0.00" }).where(eq(s.productCustomizationFields.id, 2));
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization }],
+    })).rejects.toThrow(/السعر النهائي بعد التخصيص/);
+
+    await db().update(s.productCustomizationFields).set({ priceDelta: "0.00" }).where(eq(s.productCustomizationFields.id, 1));
+    await db().update(s.productPrices).set({ price: "6000000000000.00" }).where(eq(s.productPrices.productUnitId, 1));
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 2, customization }],
+    })).rejects.toThrow(/إجمالي هذا السطر/);
   });
 
   it("يغلق البحث الإرثي برقم متسلسل + هاتف حتى لو عرف المهاجم القيمتين", async () => {
@@ -154,5 +440,8 @@ describe("online order tracking ownership", () => {
     expect(source).not.toContain("trackOrder: publicProcedure");
     expect(source).toContain("trackOrderPrivate: storefrontPublicWriteProcedure");
     expect(source).toContain("trackOrderByToken: storefrontPublicWriteProcedure");
+    expect(source).toContain("z.string().max(10_000)");
+    expect(source).toContain(".superRefine(enforceStorefrontCustomizationPayloadSize)");
+    expect(source).toContain("couponCode: z.string().trim().min(1).max(64).optional()");
   });
 });

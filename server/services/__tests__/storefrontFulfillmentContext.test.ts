@@ -66,6 +66,21 @@ describe("storefront fulfillment context", () => {
     expect(await db().select().from(s.storeSettings)).toHaveLength(0);
   });
 
+  it("يعد الخدمة ذات الوحدة والسعر جاهزة بلا اشتراط صف مخزون", async () => {
+    await db().update(s.products).set({ isService: true }).where(eq(s.products.id, 1));
+    await expect(
+      updateStoreSettings({ fulfillmentBranchId: 2, isOpen: true }, 1),
+    ).resolves.toMatchObject({ isOpen: true, fulfillmentBranchId: 2 });
+    await expect(getPublicStoreSettings()).resolves.toMatchObject({
+      isOpen: true,
+      configurationReady: true,
+    });
+    const readiness = (await loadStorefrontReadiness({ branchId: 2, productIds: [1] })).get(1);
+    expect(readiness).toMatchObject({ isService: true, inStock: true });
+    expect(readiness?.variants[0]).toMatchObject({ inStock: true, readinessReasons: [] });
+    expect(readiness?.variants[0]?.units[0]).toMatchObject({ inStock: true, readinessReasons: [] });
+  });
+
   it("يوحّد الكتالوج العام والإعدادات على الفرع المعيّن ويمنع تعطيله", async () => {
     await db()
       .update(s.branchStock)

@@ -37,7 +37,7 @@ export function QuickProductView({ product, onClose }: { product: Product | null
             {discount != null && <Text style={styles.oldPrice}>{formatIqd(product.price)}</Text>}
           </View>
         </View>
-        {product.isCustomizable && <View accessibilityLiveRegion="polite" accessibilityRole="alert" style={styles.unavailable}><MaterialIcons color="#8A5A15" name="info-outline" size={18} /><Text style={styles.unavailableText}>هذا منتج بطلب خاص، وغير متاح للطلب الإلكتروني مؤقتاً.</Text></View>}
+        {product.isCustomizable && <View accessibilityLiveRegion="polite" style={styles.unavailable}><MaterialIcons color="#8A5A15" name="edit-note" size={18} /><Text style={styles.unavailableText}>منتج قابل للتخصيص — افتح التفاصيل واكتب ما يريده الزبون.</Text></View>}
         <View style={styles.actions}>
           <TouchableOpacity accessibilityHint={product.isCustomizable ? "يفتح تفاصيل حالة توفر الطلب" : "يفتح صفحة اختيار البديل ووحدة البيع"} accessibilityRole="button" activeOpacity={0.88} onPress={chooseOptions} style={styles.add}><MaterialIcons color="#FFFFFF" name={product.isCustomizable ? "info-outline" : "tune"} size={19} /><Text style={styles.addText}>{product.isCustomizable ? "عرض التفاصيل" : "اختر المواصفات"}</Text></TouchableOpacity>
           <TouchableOpacity activeOpacity={0.82} onPress={() => { onClose(); router.push(`/product/${product.id}` as never); }} style={styles.details}><Text style={styles.detailsText}>التفاصيل</Text><MaterialIcons color="#0E806A" name="arrow-back" size={18} /></TouchableOpacity>
