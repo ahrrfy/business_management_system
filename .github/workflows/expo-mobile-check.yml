@@ -60,9 +60,6 @@ jobs:
       - name: Install dependencies (frozen)
         run: pnpm install --frozen-lockfile --ignore-workspace
 
-      - name: Verify no known dependency vulnerability
-        run: pnpm audit --prod --audit-level moderate
-
       - name: Verify image-size stays out of the Metro graph
         run: pnpm check:image-size-security
 
@@ -113,9 +110,6 @@ jobs:
 
       - name: Install dependencies (frozen)
         run: pnpm install --frozen-lockfile --ignore-workspace
-
-      - name: Verify no known dependency vulnerability
-        run: pnpm audit --audit-level moderate
 
       - name: Verify secure app configuration
         run: pnpm check:app-config

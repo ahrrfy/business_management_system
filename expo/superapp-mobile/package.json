@@ -59,14 +59,6 @@
   },
   "packageManager": "pnpm@9.15.9",
   "pnpm": {
-    "auditConfig": {
-      "ignoreCves": [
-        "CVE-2026-85393"
-      ],
-      "ignoreGhsas": [
-        "GHSA-86w9-cpqp-85rv"
-      ]
-    },
     "overrides": {
       "postcss": "8.5.28",
       "uuid": "11.1.1",

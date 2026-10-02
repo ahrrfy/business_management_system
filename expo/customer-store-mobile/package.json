@@ -79,14 +79,6 @@
     "vitest": "^4.1.11"
   },
   "pnpm": {
-    "auditConfig": {
-      "ignoreCves": [
-        "CVE-2026-85393"
-      ],
-      "ignoreGhsas": [
-        "GHSA-86w9-cpqp-85rv"
-      ]
-    },
     "overrides": {
       "shell-quote": "^1.10.0",
       "flatted": "^3.4.4",

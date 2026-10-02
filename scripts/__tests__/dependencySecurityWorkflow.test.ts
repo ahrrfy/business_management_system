@@ -15,15 +15,12 @@ describe("dependency security coverage", () => {
     expect(workflow).toContain("--config=osv-scanner.toml");
   });
 
-  it("يفحص تطبيق الزبائن فوراً في مسار Expo", () => {
-    const workflow = read(".github/workflows/expo-mobile-check.yml");
-    const customerJob = workflow.slice(
-      workflow.indexOf("customer-store-check:"),
-      workflow.indexOf("superapp-check:"),
-    );
+  it("يبقي فحص الثغرات مركزياً في OSV بلا اعتماد على npm audit المتقاعد", () => {
+    const mobileWorkflow = read(".github/workflows/expo-mobile-check.yml");
+    const securityWorkflow = read(".github/workflows/security.yml");
 
-    expect(customerJob).toContain("Verify no known dependency vulnerability");
-    expect(customerJob).toContain("pnpm audit --prod --audit-level moderate");
+    expect(mobileWorkflow).not.toContain("pnpm audit");
+    expect(securityWorkflow).toContain("osv-scanner scan");
   });
 
   it("يثبت الإصدارات العابرة الآمنة ويبرر الاستثناء الوحيد غير القابل للإصلاح", () => {
@@ -40,7 +37,6 @@ describe("dependency security coverage", () => {
       read("expo/customer-store-mobile/package.json"),
     ) as {
       pnpm?: {
-        auditConfig?: { ignoreCves?: string[]; ignoreGhsas?: string[] };
         overrides?: Record<string, string>;
       };
     };
@@ -53,18 +49,10 @@ describe("dependency security coverage", () => {
     expect(overrides["brace-expansion@2.1.4"]).toBe("2.1.7");
     expect(overrides["brace-expansion@5.0.9"]).toBe("5.0.12");
 
-    expect(packageJson.pnpm?.auditConfig?.ignoreCves).toContain(
-      "CVE-2026-85393",
-    );
-    expect(packageJson.pnpm?.auditConfig?.ignoreGhsas).toContain(
-      "GHSA-86w9-cpqp-85rv",
-    );
-
     const superappPackageJson = JSON.parse(
       read("expo/superapp-mobile/package.json"),
     ) as {
       pnpm?: {
-        auditConfig?: { ignoreCves?: string[]; ignoreGhsas?: string[] };
         overrides?: Record<string, string>;
       };
     };
@@ -73,13 +61,6 @@ describe("dependency security coverage", () => {
     expect(superappOverrides["brace-expansion@1.1.18"]).toBe("1.1.21");
     expect(superappOverrides["brace-expansion@2.1.4"]).toBe("2.1.7");
     expect(superappOverrides["brace-expansion@5.0.9"]).toBe("5.0.12");
-
-    expect(superappPackageJson.pnpm?.auditConfig?.ignoreCves).toContain(
-      "CVE-2026-85393",
-    );
-    expect(superappPackageJson.pnpm?.auditConfig?.ignoreGhsas).toContain(
-      "GHSA-86w9-cpqp-85rv",
-    );
 
     const osvConfig = read("osv-scanner.toml");
     expect(osvConfig).toContain('id = "GHSA-86w9-cpqp-85rv"');
