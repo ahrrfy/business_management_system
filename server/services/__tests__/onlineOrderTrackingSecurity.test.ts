@@ -12,6 +12,7 @@ import {
 } from "../onlineOrderService";
 import { getOnlineOrder } from "../storeAdmin/orderFulfillmentService";
 import { saveProductCustomizationTemplate, setProductCustomizationTemplateActive } from "../productCustomizationService";
+import { onlineOrderLinesInput } from "../../routers/storefrontRouter";
 import { truncateAllTables } from "./__testUtils__";
 
 function db() {
@@ -163,6 +164,70 @@ describe("online order tracking ownership", () => {
       priceDelta: "0.00",
     });
     await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/مكررة/);
+  });
+
+  it("يرفض دورات تبعية الحقول عند الحفظ وإعادة تفعيل قالب موروث", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    const cyclicFields = [
+      { fieldKey: "first", label: "الأول", fieldType: "TEXT" as const, dependency: { fieldKey: "second", operator: "equals" as const, value: "نعم" } },
+      { fieldKey: "second", label: "الثاني", fieldType: "TEXT" as const, dependency: { fieldKey: "first", operator: "equals" as const, value: "نعم" } },
+    ];
+    await expect(saveProductCustomizationTemplate({
+      productId: 1,
+      kind: "GENERAL",
+      title: "تبعية دائرية",
+      fields: cyclicFields,
+    }, actor)).rejects.toThrow(/دورة/);
+
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values(cyclicFields.map((field, index) => ({
+      templateId: 1,
+      fieldKey: field.fieldKey,
+      label: field.label,
+      fieldType: field.fieldType,
+      sortOrder: (index + 1) * 10,
+      dependencyJson: field.dependency,
+      priceDelta: "0.00",
+    })));
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/دورة/);
+  });
+
+  it("يرفض خياراً أطول من الحد الأقصى للحقل عند الحفظ وإعادة التفعيل", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    const options = [{ value: "long", label: "طويل", priceDelta: "0" }];
+    await expect(saveProductCustomizationTemplate({
+      productId: 1,
+      kind: "GENERAL",
+      title: "خيار غير صالح",
+      fields: [{ fieldKey: "style", label: "النمط", fieldType: "SELECT", maxLength: 3, options }],
+    }, actor)).rejects.toThrow(/أطول من الحد الأقصى/);
+
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "style",
+      label: "النمط",
+      fieldType: "SELECT",
+      maxLength: 3,
+      optionsJson: options,
+      priceDelta: "0.00",
+    });
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/أطول من الحد الأقصى/);
+  });
+
+  it("يرفض الحجم الإجمالي لتخصيص السلة قبل تنفيذ التسعير", async () => {
+    const lines = Array.from({ length: 100 }, () => ({
+      productUnitId: 1,
+      quantity: 1,
+      customization: { templateId: 1, values: { details: "س".repeat(3_000) } },
+    }));
+    const parsed = onlineOrderLinesInput.safeParse(lines);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "تفاصيل التخصيص في الطلب أكبر من الحد المسموح" }),
+    ]));
   });
 
   it("يقبل طول الحقل المضبوط حتى عشرة آلاف ثم يفرض حد القالب نفسه", async () => {
@@ -376,6 +441,7 @@ describe("online order tracking ownership", () => {
     expect(source).toContain("trackOrderPrivate: storefrontPublicWriteProcedure");
     expect(source).toContain("trackOrderByToken: storefrontPublicWriteProcedure");
     expect(source).toContain("z.string().max(10_000)");
+    expect(source).toContain(".superRefine(enforceStorefrontCustomizationPayloadSize)");
     expect(source).toContain("couponCode: z.string().trim().min(1).max(64).optional()");
   });
 });
