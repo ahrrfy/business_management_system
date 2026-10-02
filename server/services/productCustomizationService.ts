@@ -67,6 +67,25 @@ function normalizeOptions(options: ProductCustomizationOption[] | undefined): Pr
     .filter((option) => option.value && option.label);
 }
 
+function assertUniqueOptionValues(options: ProductCustomizationOption[], label: string, what: string): void {
+  const seen = new Set<string>();
+  for (const option of options) {
+    const value = String(option.value ?? "").trim();
+    if (!value) continue;
+    if (seen.has(value)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what,
+          why: `قيمة الخيار «${value}» مكررة في الحقل «${label}»`,
+          doThis: "اجعل قيمة كل خيار فريدة ثم أعد المحاولة",
+        }),
+      });
+    }
+    seen.add(value);
+  }
+}
+
 function normalizePriceDelta(value: string | undefined, subject: string, what = "تعذّر حفظ قالب التخصيص"): string {
   const normalized = String(value ?? "0").trim();
   if (!/^\d{1,13}(?:\.\d{1,2})?$/.test(normalized)) {
@@ -111,6 +130,7 @@ function validateTemplateInput(input: CustomizationTemplateInput): Array<Customi
       ...option,
       priceDelta: normalizePriceDelta(option.priceDelta, `خيار «${option.label}» في حقل «${label}»`),
     }));
+    assertUniqueOptionValues(options, label, "تعذّر حفظ قالب التخصيص");
     const dependency = normalizeDependency(field.dependency);
     if (["SELECT", "SWATCH"].includes(field.fieldType) && options.length === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `الحقل ${label} يحتاج خياراً واحداً على الأقل.` });
@@ -247,6 +267,7 @@ export async function setProductCustomizationTemplateActive(productId: number, i
       ));
       for (const field of fields) {
         normalizePriceDelta(String(field.priceDelta ?? "0"), `الحقل «${field.label}»`, "تعذّر تفعيل قالب التخصيص");
+        assertUniqueOptionValues(field.options ?? [], field.label, "تعذّر تفعيل قالب التخصيص");
         for (const option of field.options ?? []) {
           normalizePriceDelta(option.priceDelta, `خيار «${option.label}» في حقل «${field.label}»`, "تعذّر تفعيل قالب التخصيص");
         }

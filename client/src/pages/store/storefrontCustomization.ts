@@ -6,6 +6,8 @@ type CustomizationDependency = {
 
 type CustomizationField = { fieldKey: string; dependency: CustomizationDependency };
 
+export const DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH = 2_000;
+
 export function serializeStorefrontCustomizationIdentity(
   customization?: { templateId: number; values?: Record<string, string> },
 ): string {

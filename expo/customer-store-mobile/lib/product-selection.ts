@@ -12,7 +12,7 @@ export type ProductSelectionInput = {
   customizationValues: Record<string, string>;
 };
 
-export const DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH = 500;
+export const DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH = 2_000;
 export const CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE =
   "إعداد حقول التخصيص غير مكتمل لهذا المنتج. تواصل مع المكتبة أو حاول لاحقاً.";
 
@@ -58,9 +58,26 @@ export function activeCustomizationFields(
   product: Product,
   values: Record<string, string>,
 ) {
-  return [...(product.customizationTemplate?.fields ?? [])]
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .filter((field) => dependencyMatches(field, values));
+  const fields = [...(product.customizationTemplate?.fields ?? [])].sort((left, right) => left.sortOrder - right.sortOrder);
+  const byKey = new Map(fields.map((field) => [field.fieldKey, field]));
+  const resolved = new Map<string, boolean>();
+  const resolving = new Set<string>();
+  const isActive = (fieldKey: string): boolean => {
+    if (resolved.has(fieldKey)) return resolved.get(fieldKey)!;
+    const field = byKey.get(fieldKey);
+    if (!field || resolving.has(fieldKey)) return false;
+    resolving.add(fieldKey);
+    const active = !field.dependency || (isActive(field.dependency.fieldKey) && dependencyMatches(field, values));
+    resolving.delete(fieldKey);
+    resolved.set(fieldKey, active);
+    return active;
+  };
+  return fields.filter((field) => isActive(field.fieldKey));
+}
+
+export function pruneInactiveCustomizationValues(product: Product, values: Record<string, string>) {
+  const activeKeys = new Set(activeCustomizationFields(product, values).map((field) => field.fieldKey));
+  return Object.fromEntries(Object.entries(values).filter(([fieldKey]) => activeKeys.has(fieldKey)));
 }
 
 export function customizationAdjustedUnitPrices(

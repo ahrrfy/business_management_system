@@ -23,6 +23,7 @@ import {
   CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE,
   DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH,
   productOnlineOrderingIssue,
+  pruneInactiveCustomizationValues,
   selectionDescription,
   validateProductQuoteSelection,
   validateProductSelection,
@@ -498,7 +499,7 @@ export default function ProductDetailScreen() {
                 field={field}
                 key={field.fieldKey}
                 onChange={(value) => {
-                  setCustomizationValues((current) => ({
+                  setCustomizationValues((current) => pruneInactiveCustomizationValues(product, {
                     ...current,
                     [field.fieldKey]: value,
                   }));

@@ -139,6 +139,32 @@ describe("online order tracking ownership", () => {
     })).rejects.toThrow(/إعداد فرق السعر/);
   });
 
+  it("يرفض قيم الخيارات المكررة بعد التطبيع عند الحفظ وإعادة التفعيل", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    const duplicateOptions = [
+      { value: "same", label: "الأول", priceDelta: "0" },
+      { value: " same ", label: "الثاني", priceDelta: "5" },
+    ];
+    await expect(saveProductCustomizationTemplate({
+      productId: 1,
+      kind: "GENERAL",
+      title: "خيارات مكررة",
+      fields: [{ fieldKey: "style", label: "النمط", fieldType: "SELECT", options: duplicateOptions }],
+    }, actor)).rejects.toThrow(/مكررة/);
+
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "style",
+      label: "النمط",
+      fieldType: "SELECT",
+      optionsJson: duplicateOptions,
+      priceDelta: "0.00",
+    });
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/مكررة/);
+  });
+
   it("يقبل طول الحقل المضبوط حتى عشرة آلاف ثم يفرض حد القالب نفسه", async () => {
     await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
     await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "نص طويل" });

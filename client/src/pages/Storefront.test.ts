@@ -55,7 +55,7 @@ import {
   type CheckoutForm,
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
-import { storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
+import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
   it("يفصل الإضافة المباشرة عن المنتجات التي تحتاج اختياراً", () => {
@@ -125,6 +125,8 @@ describe("storefront customization", () => {
     expect(source).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
     expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
     expect(source).not.toContain("cartHasUnsupportedCustomization");
+    expect(DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH).toBe(2_000);
+    expect(source).toContain("field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH");
   });
 
   it("hides dependent customization fields transitively", () => {

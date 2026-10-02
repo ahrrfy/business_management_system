@@ -68,7 +68,7 @@ import { normalizeArabicSearch, getStorefrontSearchSuggestions } from "@shared/s
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 import { BannerCarousel } from "@/components/store/BannerCarousel";
-import { serializeStorefrontCustomizationIdentity, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
+import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, serializeStorefrontCustomizationIdentity, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
@@ -193,9 +193,9 @@ function CustomizationFieldControl({
     );
   }
   if (field.fieldType === "TEXTAREA") {
-    return <textarea id={controlId} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? undefined} rows={3} placeholder={field.label} className={`${common} resize-none placeholder:text-[#6c747b]`} />;
+    return <textarea id={controlId} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH} rows={3} placeholder={field.label} className={`${common} resize-none placeholder:text-[#6c747b]`} />;
   }
-  return <input id={controlId} type={field.fieldType === "NUMBER" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? undefined} inputMode={field.fieldType === "NUMBER" ? "numeric" : undefined} placeholder={field.fieldType === "FILE" ? "اسم الملف أو مرجع التصميم" : field.label} className={`${common} placeholder:text-[#6c747b]`} />;
+  return <input id={controlId} type={field.fieldType === "NUMBER" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH} inputMode={field.fieldType === "NUMBER" ? "numeric" : undefined} placeholder={field.fieldType === "FILE" ? "اسم الملف أو مرجع التصميم" : field.label} className={`${common} placeholder:text-[#6c747b]`} />;
 }
 
 function customizationCartKey(productUnitId: number, customization?: StorefrontCustomization): string {
@@ -1846,7 +1846,7 @@ function StorefrontContent() {
       if (["SELECT", "SWATCH"].includes(field.fieldType) && value && !field.options.some((option) => option.value === value)) {
         return `اختر قيمة صحيحة للحقل «${field.label}»`;
       }
-      if (field.maxLength && value.length > field.maxLength) return `الحقل «${field.label}» يتجاوز الحد المسموح`;
+      if (value.length > (field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH)) return `الحقل «${field.label}» يتجاوز الحد المسموح`;
     }
     return null;
   }, [customizationConfig, visibleCustomizationFields, customizationValues]);
