@@ -328,12 +328,22 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
 
+    // R1: إرجاع جزء من الفاتورة ينجح ويسوي التوصيل تلقائياً
+    const ret = await returnSale(
+      { invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true },
+      MANAGER,
+    );
+    expect(ret.returnedTotal).toBe("3000.00");
+
+    // محاولة إرجاع الإرسالية من شاشة التوصيل تُرفض لأن الفاتورة أُرجع منها سلفاً (منع العكس المزدوج للمخزون)
     await expect(
-      returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true }, MANAGER),
-    ).rejects.toThrowError(/إرسالية التوصيل/);
-    await expect(
+<<<<<<< HEAD
+      returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1" } as never),
+    ).rejects.toThrowError(/الفاتورة أُرجع منها سلفاً/);
+=======
       returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1", returnReason: "رفض العميل" } as never),
     ).resolves.toBeTruthy();
+>>>>>>> origin/main
     void shift;
   });
 });
@@ -351,15 +361,29 @@ describe("M8 — قرار المالك: مرتجعُ فاتورةٍ بيد ال�
     const invoiceId = r.regularSale!.invoiceId;
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
 
-    await expect(
-      returnSale({ invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true }, MANAGER),
-    ).rejects.toThrowError(/إرسالية التوصيل/);
+    // R1: مرتجع المبيعات ينجح ويسوي الإرسالية تلقائياً
+    const retResult = await returnSale(
+      { invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }], restock: true },
+      MANAGER,
+    );
+    expect(retResult.returnedTotal).toBe("3000.00");
 
-    // لا نقد في عهدة المندوب قبل التسليم، ولا يُسمح بمرتجع مبيعات يتجاوز دورة الطرد.
     const party = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
     expect(Number(party.currentBalance)).toBe(0);
+
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
     expect(Number(cn.codAmount)).toBe(10000);
+    expect(Number(cn.counterSettledAmount)).toBe(3000);
+
+    // R2: قيد تحرير التعرّض COD_RELEASED بمبلغ 3,000
+    const releasedLedger = await db().select().from(s.deliveryLedgerEntries)
+      .where(and(
+        eq(s.deliveryLedgerEntries.consignmentId, cn.id),
+        eq(s.deliveryLedgerEntries.entryType, "COD_RELEASED"),
+      ));
+    expect(releasedLedger).toHaveLength(1);
+    expect(Number(releasedLedger[0].amount)).toBe(3000);
+
     const relief = await db().select().from(s.accountingEntries)
       .where(and(
         eq(s.accountingEntries.entryType, "DELIVERY_REMIT"),
