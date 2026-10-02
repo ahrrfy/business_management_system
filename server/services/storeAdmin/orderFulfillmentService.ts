@@ -189,6 +189,8 @@ export interface OnlineOrderDetailItem {
   quantity: string;
   unitPrice: string;
   total: string;
+  hasCustomization: boolean;
+  customizationSummary: string | null;
 }
 export interface OnlineOrderDetail extends OnlineOrderRow {
   branchId: number;
@@ -255,6 +257,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
       quantity: onlineOrderItems.quantity,
       unitPrice: onlineOrderItems.unitPrice,
       total: onlineOrderItems.total,
+      customizationSnapshot: onlineOrderItems.customizationSnapshot,
     })
     .from(onlineOrderItems)
     .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
@@ -300,6 +303,10 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
       quantity: String(i.quantity),
       unitPrice: String(i.unitPrice),
       total: String(i.total),
+      hasCustomization: i.customizationSnapshot != null,
+      customizationSummary: i.customizationSnapshot?.values
+        .map((value) => `${value.label}: ${value.displayValue}`)
+        .join(" • ") || null,
     })),
   };
 }
@@ -525,6 +532,24 @@ export async function updateOnlineOrder(
 
     // 6. Handle items update if items array provided
     if (input.items !== undefined) {
+      const customizedItem = (await tx
+        .select({ id: onlineOrderItems.id })
+        .from(onlineOrderItems)
+        .where(and(
+          eq(onlineOrderItems.onlineOrderId, Number(order.id)),
+          sql`${onlineOrderItems.customizationSnapshot} is not null`,
+        ))
+        .limit(1))[0];
+      if (customizedItem) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لا يمكن استبدال أصناف الطلب المخصص",
+            why: "الطلب يحوي تعليمات تخصيص محفوظة لكل بند، واستبدال البنود سيمحو ما طلبه الزبون",
+            doThis: "عدّل بيانات المستلم فقط، أو ألغ الطلب وأنشئ طلباً جديداً بتفاصيل التخصيص الصحيحة",
+          }),
+        });
+      }
       if (order.couponCode != null) {
         throw new TRPCError({
           code: "BAD_REQUEST",

@@ -2395,6 +2395,13 @@
 			"when": 1788148834000,
 			"tag": "0376_add_branch_id_to_attendance",
 			"breakpoints": true
+		},
+		{
+			"idx": 377,
+			"version": "5",
+			"when": 1788148835000,
+			"tag": "0377_storefront_customizable_order_items",
+			"breakpoints": true
 		}
 	]
 }

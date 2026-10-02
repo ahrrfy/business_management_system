@@ -68,6 +68,7 @@ import { normalizeArabicSearch, getStorefrontSearchSuggestions } from "@shared/s
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 import { BannerCarousel } from "@/components/store/BannerCarousel";
+import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, serializeStorefrontCustomizationIdentity, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
@@ -116,10 +117,10 @@ export type StorefrontCustomizationTemplate = {
 };
 
 export type StorefrontCustomization = {
-  kind: StorefrontCustomizationKind;
-  values?: Record<string, string>;
-  service?: string;
-  serviceLabel?: string;
+  templateId: number; kind: StorefrontCustomizationKind;
+  values?: Record<string, string>; selections?: Array<{ fieldKey: string; label: string; value: string; displayValue: string }>;
+  priceDelta?: string;
+  service?: string; serviceLabel?: string;
   packaging?: "standard" | "gift";
   recipient?: string;
   message?: string;
@@ -127,6 +128,7 @@ export type StorefrontCustomization = {
 };
 
 export type StorefrontCustomizationConfig = {
+  id: number;
   kind: StorefrontCustomizationKind;
   title: string;
   description: string | null;
@@ -141,22 +143,12 @@ export function getStorefrontCustomizationConfig(
   if (!isCustomizable || !customizationKind || !template) return null;
   if (template.kind !== customizationKind && template.kind !== "GENERAL") return null;
   return {
+    id: template.id,
     kind: customizationKind,
     title: template.title,
     description: template.description,
     fields: template.fields.filter((field) => field.isActive !== false).sort((a, b) => a.sortOrder - b.sortOrder),
   };
-}
-
-function dependencyMatches(
-  dependency: StorefrontCustomizationField["dependency"],
-  values: Record<string, string>,
-): boolean {
-  if (!dependency) return true;
-  const current = values[dependency.fieldKey] ?? "";
-  const expected = Array.isArray(dependency.value) ? dependency.value : [dependency.value];
-  const matches = expected.includes(current);
-  return dependency.operator === "notEquals" ? !matches : matches;
 }
 
 function CustomizationFieldControl({
@@ -201,21 +193,20 @@ function CustomizationFieldControl({
     );
   }
   if (field.fieldType === "TEXTAREA") {
-    return <textarea id={controlId} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? undefined} rows={3} placeholder={field.label} className={`${common} resize-none placeholder:text-[#6c747b]`} />;
+    return <textarea id={controlId} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH} rows={3} placeholder={field.label} className={`${common} resize-none placeholder:text-[#6c747b]`} />;
   }
-  return <input id={controlId} type={field.fieldType === "NUMBER" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? undefined} inputMode={field.fieldType === "NUMBER" ? "numeric" : undefined} placeholder={field.fieldType === "FILE" ? "اسم الملف أو مرجع التصميم" : field.label} className={`${common} placeholder:text-[#6c747b]`} />;
-}
-
-function serializeCustomization(customization?: StorefrontCustomization): string {
-  return customization ? JSON.stringify(customization) : "";
+  return <input id={controlId} type={field.fieldType === "NUMBER" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH} inputMode={field.fieldType === "NUMBER" ? "numeric" : undefined} placeholder={field.fieldType === "FILE" ? "اسم الملف أو مرجع التصميم" : field.label} className={`${common} placeholder:text-[#6c747b]`} />;
 }
 
 function customizationCartKey(productUnitId: number, customization?: StorefrontCustomization): string {
-  return `${productUnitId}:${serializeCustomization(customization)}`;
+  return `${productUnitId}:${serializeStorefrontCustomizationIdentity(customization)}`;
 }
 
 export function summarizeStorefrontCustomization(customization?: StorefrontCustomization): string | null {
   if (!customization) return null;
+  if (customization.selections?.length) {
+    return customization.selections.map((selection) => `${selection.label}: ${selection.displayValue}`).join(" • ");
+  }
   return [customization.service, customization.packaging === "gift" ? "تغليف هدية" : null, customization.recipient ? `إلى: ${customization.recipient}` : null, customization.message ? `رسالة: ${customization.message}` : null, customization.uploadName ? `ملف: ${customization.uploadName}` : null].filter(Boolean).join(" • ") || null;
 }
 
@@ -270,12 +261,13 @@ export function reconcileStorefrontCartPricing(
       ? []
       : [...(snapshot.storeUnits ?? []), ...(snapshot.variants ?? []).flatMap((variant) => variant.units)];
     const unit = units.find((candidate) => candidate.productUnitId === line.productUnitId);
-    const currentPrice = unit?.salePrice ?? unit?.price ?? null;
-    if (currentPrice == null) {
+    const currentBasePrice = unit?.salePrice ?? unit?.price ?? null;
+    if (currentBasePrice == null) {
       cart.delete(line.cartKey);
       unavailable += 1;
       continue;
     }
+    const currentPrice = (Number(currentBasePrice) + Number(line.customization?.priceDelta ?? 0)).toFixed(2);
     if (Number(currentPrice).toFixed(2) !== Number(line.price).toFixed(2)) {
       cart.set(line.cartKey, { ...line, price: Number(currentPrice).toFixed(2) });
       priceChanged += 1;
@@ -289,11 +281,12 @@ export function reconcileStorefrontCartQuote(
   quotedLines: Array<{ productUnitId: number; quantity: number; unitPrice: string }>,
 ): { cart: Map<string, CartLine>; priceChanged: number; unresolved: number } {
   const cart = new Map(current);
-  const quotedByUnit = new Map(quotedLines.map((line) => [line.productUnitId, line]));
   let priceChanged = 0;
   let unresolved = 0;
-  for (const line of Array.from(current.values())) {
-    const quoted = quotedByUnit.get(line.productUnitId);
+  const currentLines = Array.from(current.values());
+  for (let index = 0; index < currentLines.length; index += 1) {
+    const line = currentLines[index]!;
+    const quoted = quotedLines[index];
     if (!quoted || quoted.quantity !== line.qty) {
       unresolved += 1;
       continue;
@@ -371,10 +364,10 @@ export type StorefrontCheckoutAttempt = {
   createdAt: number;
 };
 
-function loadCart(): Map<string, CartLine> {
+export function loadCart(storage: Pick<Storage, "getItem"> = localStorage): Map<string, CartLine> {
   const m = new Map<string, CartLine>();
   try {
-    const raw = localStorage.getItem(CART_STORAGE_KEY);
+    const raw = storage.getItem(CART_STORAGE_KEY);
     if (!raw) return m;
     const arr = JSON.parse(raw) as unknown;
     if (!Array.isArray(arr)) return m;
@@ -383,11 +376,14 @@ function loadCart(): Map<string, CartLine> {
         const stockLimit = typeof rawLine.stockLimit === "number" && Number.isFinite(rawLine.stockLimit)
           ? Math.max(1, Math.min(Math.floor(rawLine.stockLimit), 999))
           : null;
+        const cartKey = customizationCartKey(rawLine.productUnitId, rawLine.customization);
+        const previous = m.get(cartKey);
+        const effectiveLimit = previous?.stockLimit == null ? stockLimit : stockLimit == null ? previous.stockLimit : Math.min(previous.stockLimit, stockLimit);
         const line = {
           ...rawLine,
-          stockLimit,
-          qty: Math.min(Math.max(1, Math.floor(rawLine.qty)), stockLimit ?? 999),
-          cartKey: typeof rawLine.cartKey === "string" && rawLine.cartKey ? rawLine.cartKey : customizationCartKey(rawLine.productUnitId, rawLine.customization),
+          stockLimit: effectiveLimit,
+          qty: Math.min((previous?.qty ?? 0) + Math.max(1, Math.floor(rawLine.qty)), effectiveLimit ?? 999),
+          cartKey,
         } as CartLine;
         m.set(line.cartKey, line);
       }
@@ -481,7 +477,7 @@ export function saveCheckoutAttempt(
 export function storefrontCheckoutFingerprint(cart: Map<string, CartLine>, form: CheckoutForm, couponCode: string | null = null): string {
   const lines = Array.from(cart.values())
     .sort((a, b) => a.cartKey.localeCompare(b.cartKey))
-    .map((line) => [line.cartKey, line.productUnitId, line.qty, Number(line.price).toFixed(2), serializeCustomization(line.customization)]);
+    .map((line) => [line.cartKey, line.productUnitId, line.qty, Number(line.price).toFixed(2), serializeStorefrontCustomizationIdentity(line.customization)]);
   return JSON.stringify({
     lines,
     name: form.name.trim(),
@@ -529,7 +525,7 @@ export function addStorefrontCartLine(
   product: StorefrontCartProduct,
   effectivePrice: string,
 ): Map<string, CartLine> {
-  if (!storefrontProductCanBeOrdered(product) || product.customization) return new Map(current);
+  if (!storefrontProductCanBeOrdered(product) || (product.isCustomizable && !product.customization)) return new Map(current);
   const next = new Map(current);
   const cartKey = customizationCartKey(product.productUnitId, product.customization);
   const existing = next.get(cartKey);
@@ -567,7 +563,7 @@ export function addStorefrontCartLines(
 ): Map<string, CartLine> {
   let next = new Map(current);
   for (const selection of selections) {
-    if (!storefrontProductCanBeOrdered(selection) || selection.customization || !Number.isInteger(selection.quantity) || selection.quantity <= 0) continue;
+    if (!storefrontProductCanBeOrdered(selection) || (selection.isCustomizable && !selection.customization) || !Number.isInteger(selection.quantity) || selection.quantity <= 0) continue;
     const line = addStorefrontCartLine(next, selection, selection.effectivePrice);
     const cartKey = customizationCartKey(selection.productUnitId, selection.customization);
     const added = line.get(cartKey)!;
@@ -1143,11 +1139,9 @@ type StorefrontProductForCartAction = {
 
 type RelatedProduct = StorefrontProductForCartAction;
 
-export const STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE = "غير متاح للطلب الإلكتروني مؤقتاً";
-
 // Contract: disabled={!storefrontProductCanBeOrdered(p)}
 export function storefrontProductCanBeOrdered(product: { inStock?: boolean; isCustomizable?: boolean }): boolean {
-  return product.inStock !== false && product.isCustomizable !== true;
+  return product.inStock !== false;
 }
 
 export function recommendationNeedsSelection(product: RelatedProduct): boolean {
@@ -1162,7 +1156,7 @@ export function recommendationNeedsSelection(product: RelatedProduct): boolean {
 }
 
 export function recommendationActionLabel(product: RelatedProduct): string {
-  if (product.isCustomizable) return STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE;
+  if (product.isCustomizable) return "اختر تفاصيل التخصيص";
   return recommendationNeedsSelection(product) ? "اختر الخيارات" : product.inStock === false ? "غير متوفر" : "أضف إلى السلة";
 }
 
@@ -1410,7 +1404,7 @@ function StorefrontContent() {
   // اختيار متعدد للمتغيرات في ورقة المنتج. المفتاح هو وحدة البيع، لا معرّف المتغير،
   // كي لا تختلط وحدات مختلفة للون نفسه داخل السلة أو عند التسعير الخادمي.
   const [variantQuantities, setVariantQuantities] = useState<Map<number, number>>(new Map());
-  const [customizationDraft, setCustomizationDraft] = useState<StorefrontCustomization>({ kind: "PRINT" });
+  const [customizationDraft, setCustomizationDraft] = useState<StorefrontCustomization>({ templateId: 0, kind: "PRINT" });
   const [panel, setPanel] = useState<Panel>(null);
   const [wishlistIds, setWishlistIds] = useState<Set<number>>(loadStorefrontWishlist);
   const [showWishlist, setShowWishlist] = useState(false);
@@ -1582,24 +1576,26 @@ function StorefrontContent() {
     recommendationClickM.mutate({ sourceProductId: selectedId, recommendedProductId });
   };
   const storefrontQuoteLines = useMemo(
-    () => Array.from(cart.values()).map((line) => ({ productUnitId: line.productUnitId, quantity: line.qty })),
+    () => Array.from(cart.values()).map((line) => ({ productUnitId: line.productUnitId, quantity: line.qty,
+      customization: line.customization ? { templateId: line.customization.templateId, values: line.customization.values ?? {} } : undefined })),
     [cart],
   );
   const storefrontQuoteInput = useMemo(() => ({
     governorate: form.governorate,
     lines: storefrontQuoteLines,
   }), [form.governorate, storefrontQuoteLines]);
+  const privateQuoteRequired = Boolean(appliedCouponCode) || storefrontQuoteLines.some((line) => line.customization != null);
   const publicQuoteQ = trpc.storefront.quoteOrder.useQuery(storefrontQuoteInput, {
-    enabled: panel === "checkout" && cart.size > 0 && !appliedCouponCode,
+    enabled: panel === "checkout" && cart.size > 0 && !privateQuoteRequired,
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
   const privateQuoteM = trpc.storefront.quoteOrderPrivate.useMutation();
-  const privateQuoteInput = useMemo(() => appliedCouponCode ? ({
-    couponCode: appliedCouponCode,
+  const privateQuoteInput = useMemo(() => privateQuoteRequired ? ({
+    ...(appliedCouponCode ? { couponCode: appliedCouponCode } : {}),
     governorate: form.governorate,
     lines: storefrontQuoteLines,
-  }) : null, [appliedCouponCode, form.governorate, storefrontQuoteLines]);
+  }) : null, [appliedCouponCode, form.governorate, privateQuoteRequired, storefrontQuoteLines]);
   useEffect(() => {
     if (panel !== "checkout" || cart.size === 0 || !privateQuoteInput) {
       privateQuoteM.reset();
@@ -1611,10 +1607,10 @@ function StorefrontContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart.size, panel, privateQuoteInput]);
   const quoteQ = {
-    data: appliedCouponCode ? privateQuoteM.data : publicQuoteQ.data,
-    isFetching: appliedCouponCode ? privateQuoteM.isPending : publicQuoteQ.isFetching,
-    isError: appliedCouponCode ? privateQuoteM.isError : publicQuoteQ.isError,
-    error: appliedCouponCode ? privateQuoteM.error : publicQuoteQ.error,
+    data: privateQuoteRequired ? privateQuoteM.data : publicQuoteQ.data,
+    isFetching: privateQuoteRequired ? privateQuoteM.isPending : publicQuoteQ.isFetching,
+    isError: privateQuoteRequired ? privateQuoteM.isError : publicQuoteQ.isError,
+    error: privateQuoteRequired ? privateQuoteM.error : publicQuoteQ.error,
   };
   const trackConversion = trpc.storefront.trackConversion.useMutation();
 
@@ -1729,10 +1725,12 @@ function StorefrontContent() {
             lines: Array.from(cartRef.current.values()).map((line) => ({
               productUnitId: line.productUnitId,
               quantity: line.qty,
+              customization: line.customization ? { templateId: line.customization.templateId, values: line.customization.values ?? {} } : undefined,
             })),
           };
-          const quoted = appliedCouponCode
-            ? await privateQuoteM.mutateAsync({ ...currentQuoteInput, couponCode: appliedCouponCode })
+          const currentRequiresPrivateQuote = Boolean(appliedCouponCode) || currentQuoteInput.lines.some((line) => line.customization != null);
+          const quoted = currentRequiresPrivateQuote
+            ? await privateQuoteM.mutateAsync({ ...currentQuoteInput, ...(appliedCouponCode ? { couponCode: appliedCouponCode } : {}) })
             : await utils.storefront.quoteOrder.fetch(currentQuoteInput);
           const refreshedQuote = reconcileStorefrontCartQuote(cartRef.current, quoted.lines);
           const totalChanged = failedAttempt == null ||
@@ -1835,10 +1833,11 @@ function StorefrontContent() {
     [detailQ.data, previewCustomizationTemplate],
   );
   const customizationValues = customizationDraft.values ?? {};
-  const visibleCustomizationFields = useMemo(
-    () => (customizationConfig?.fields ?? []).filter((field) => dependencyMatches(field.dependency, customizationValues)),
-    [customizationConfig, customizationValues],
-  );
+  const visibleCustomizationFields = useMemo(() => {
+    const fields = customizationConfig?.fields ?? [];
+    const visibleKeys = storefrontVisibleCustomizationFieldKeys(fields, customizationValues);
+    return fields.filter((field) => visibleKeys.has(field.fieldKey));
+  }, [customizationConfig, customizationValues]);
   const customizationValidation = useMemo(() => {
     if (!customizationConfig) return null;
     for (const field of visibleCustomizationFields) {
@@ -1847,17 +1846,16 @@ function StorefrontContent() {
       if (["SELECT", "SWATCH"].includes(field.fieldType) && value && !field.options.some((option) => option.value === value)) {
         return `اختر قيمة صحيحة للحقل «${field.label}»`;
       }
-      if (field.maxLength && value.length > field.maxLength) return `الحقل «${field.label}» يتجاوز الحد المسموح`;
+      if (value.length > (field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH)) return `الحقل «${field.label}» يتجاوز الحد المسموح`;
     }
     return null;
   }, [customizationConfig, visibleCustomizationFields, customizationValues]);
   function updateCustomizationField(field: StorefrontCustomizationField, value: string) {
     setCustomizationDraft((previous) => {
       const values = { ...(previous.values ?? {}), [field.fieldKey]: value };
-      for (const candidate of customizationConfig?.fields ?? []) {
-        if (candidate.fieldKey !== field.fieldKey && !dependencyMatches(candidate.dependency, values)) delete values[candidate.fieldKey];
-      }
-      const next: StorefrontCustomization = { ...previous, kind: customizationConfig?.kind ?? previous.kind, values };
+      const visibleKeys = storefrontVisibleCustomizationFieldKeys(customizationConfig?.fields ?? [], values);
+      for (const key of Object.keys(values)) if (!visibleKeys.has(key)) delete values[key];
+      const next: StorefrontCustomization = { ...previous, templateId: customizationConfig?.id ?? previous.templateId, kind: customizationConfig?.kind ?? previous.kind, values };
       if (field.fieldKey === "service") {
         next.service = value;
         next.serviceLabel = field.options.find((option) => option.value === value)?.label;
@@ -1871,16 +1869,28 @@ function StorefrontContent() {
   }
   function selectedCustomization(): StorefrontCustomization | undefined {
     if (!customizationConfig) return undefined;
-    const value = { ...customizationDraft, kind: customizationConfig.kind, values: { ...(customizationDraft.values ?? {}) } };
-    const hasDetail = Object.values(value.values ?? {}).some((item) => Boolean(item?.trim()));
-    return hasDetail ? value : undefined;
+    const values = Object.fromEntries(visibleCustomizationFields.flatMap((field) => {
+      const value = customizationValues[field.fieldKey]?.trim() ?? "";
+      return value ? [[field.fieldKey, value]] : [];
+    }));
+    const selections = visibleCustomizationFields.flatMap((field) => {
+      const value = values[field.fieldKey]?.trim() ?? "";
+      if (!value) return [];
+      return [{ fieldKey: field.fieldKey, label: field.label, value, displayValue: field.options.find((option) => option.value === value)?.label ?? value }];
+    });
+    const priceDelta = visibleCustomizationFields.reduce((sum, field) => {
+      const value = values[field.fieldKey]?.trim() ?? "";
+      if (!value) return sum;
+      return sum + Number(field.priceDelta || 0) + Number(field.options.find((option) => option.value === value)?.priceDelta ?? 0);
+    }, 0);
+    return { ...customizationDraft, templateId: customizationConfig.id, kind: customizationConfig.kind, values, selections, priceDelta: priceDelta.toFixed(2) };
   }
 
   useEffect(() => {
     setSelectedStoreUnitId(null);
     setSelectedVariantId(null);
     setVariantQuantities(new Map());
-    setCustomizationDraft({ kind: "PRINT", values: {} });
+    setCustomizationDraft({ templateId: 0, kind: "PRINT", values: {} });
   }, [selectedId]);
 
   useEffect(() => {
@@ -2120,7 +2130,7 @@ function StorefrontContent() {
     if (info) setQty(info.cartKey, info.qty + delta);
   };
   const lastAddedItem = useMemo(() => cartLines[cartLines.length - 1] ?? null, [cartLines]);
-  const cartHasUnsupportedCustomization = cartLines.some((line) => line.isCustomizable || Boolean(line.customization));
+  const cartHasCustomization = cartLines.some((line) => Boolean(line.customization));
   const cartCount = cartLines.reduce((s, l) => s + l.qty, 0);
   const cartSubtotal = cartLines.reduce((s, l) => s + Number(l.price) * l.qty, 0);
   const deliveryFee = deliveryFeeFor(form.governorate);
@@ -2162,7 +2172,7 @@ function StorefrontContent() {
     salePrice?: string | null; imageUrl: string | null; unitName: string; variantLabel?: string; inStock?: boolean; isCustomizable?: boolean; customization?: StorefrontCustomization; stockLimit?: number | null;
   }, sourceElement?: HTMLElement | null) {
     const eff = p.salePrice ?? p.price;
-    if (eff == null || !storefrontProductCanBeOrdered(p) || p.customization) return;
+    if (eff == null || !storefrontProductCanBeOrdered(p) || (p.isCustomizable && !p.customization)) return;
     const cartKey = customizationCartKey(p.productUnitId, p.customization);
     const currentLine = cartRef.current.get(cartKey);
     if (p.stockLimit != null && (currentLine?.qty ?? 0) >= p.stockLimit) {
@@ -2245,15 +2255,16 @@ function StorefrontContent() {
     });
   }
   function addSelectedVariants(sourceElement?: HTMLElement | null) {
-    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || customizationValidation) return;
+    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return;
     const selections: StorefrontCartSelection[] = [];
     const customization = selectedCustomization();
     for (const variant of detailQ.data.variants ?? []) {
       // كل وحدة بيع لها مخزون وسعر مستقلان: نضيف كل لون/قياس/تعبئة اختار الزبون كخط مستقل.
       for (const unit of variant.units) {
         const quantity = variantQuantities.get(unit.productUnitId) ?? 0;
-        const effectivePrice = unit.salePrice ?? unit.price;
-        if (!unit.inStock || !effectivePrice || quantity <= 0) continue;
+        const basePrice = unit.salePrice ?? unit.price;
+        if (!unit.inStock || !basePrice || quantity <= 0) continue;
+        const effectivePrice = (Number(basePrice) + Number(customization?.priceDelta ?? 0)).toFixed(2);
         selections.push({
           productUnitId: unit.productUnitId,
           productId: detailQ.data.productId,
@@ -2261,6 +2272,7 @@ function StorefrontContent() {
           imageUrl: variant.imageUrl ?? detailQ.data.imageUrl,
           unitName: unit.unitName,
           variantLabel: variant.label,
+          isCustomizable: detailQ.data.isCustomizable,
           customization,
           effectivePrice,
           quantity,
@@ -2276,9 +2288,11 @@ function StorefrontContent() {
     triggerCartFlight(sourceElement, detailMedia.fallbackUrl);
   }
   function addSelectedUnit(sourceElement?: HTMLElement | null) {
-    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || !detailUnit || !detailUnit.inStock || customizationValidation) return;
-    const effectivePrice = detailUnit.salePrice ?? detailUnit.price;
-    if (!effectivePrice) return;
+    if (!detailQ.data || !storefrontProductCanBeOrdered(detailQ.data) || !detailUnit || !detailUnit.inStock || customizationValidation || (detailQ.data.isCustomizable && !customizationConfig)) return;
+    const basePrice = detailUnit.salePrice ?? detailUnit.price;
+    if (!basePrice) return;
+    const customization = selectedCustomization();
+    const effectivePrice = (Number(basePrice) + Number(customization?.priceDelta ?? 0)).toFixed(2);
     const quantity = Math.max(1, variantQuantities.get(detailUnit.productUnitId) ?? 1);
     const selection: StorefrontCartSelection = {
       productUnitId: detailUnit.productUnitId,
@@ -2287,7 +2301,8 @@ function StorefrontContent() {
       imageUrl: detailVariant?.imageUrl ?? detailQ.data.imageUrl,
       unitName: detailUnit.unitName,
       variantLabel: detailVariant?.label,
-      customization: selectedCustomization(),
+      isCustomizable: detailQ.data.isCustomizable,
+      customization,
       effectivePrice,
       quantity,
       stockLimit: detailUnit.stockLeft,
@@ -2317,10 +2332,6 @@ function StorefrontContent() {
 
   function openCheckout() {
     if (!storeOpen || !orderingEnabled) return; // بوابتا المتجر والطلب ظاهرتان للزبون.
-    if (cartHasUnsupportedCustomization) {
-      setCartStatus(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
-      return;
-    }
     if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
     setTurnstileToken(null);
     setTurnstileResetKey((key) => key + 1);
@@ -2355,10 +2366,6 @@ function StorefrontContent() {
     const address = form.address.trim();
     if (cartLines.length === 0) {
       setCheckoutSafetyError("السلة فارغة؛ أضف منتجاً قبل تأكيد الطلب.");
-      return;
-    }
-    if (cartHasUnsupportedCustomization) {
-      setCheckoutSafetyError(`${STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE}؛ احذف المنتج المخصص من السلة للمتابعة.`);
       return;
     }
     if (!quoteReady) {
@@ -2396,11 +2403,6 @@ function StorefrontContent() {
     checkoutAttemptRef.current = attempt;
     setCheckoutAttempt(attempt);
     orderInFlightRef.current = true;
-    const customizationNotes = cartLines
-      .filter((line) => line.customization)
-      .map((line) => `تخصيص ${line.name}: ${summarizeStorefrontCustomization(line.customization)}`)
-      .join("\n");
-    const orderNotes = [form.notes.trim(), customizationNotes].filter(Boolean).join("\n");
     createOrder.mutate({
       couponCode: couponForCheckout || undefined,
       customerName: name,
@@ -2409,11 +2411,12 @@ function StorefrontContent() {
       addressText: address,
       latitude: form.latitude ?? undefined,
       longitude: form.longitude ?? undefined,
-      notes: orderNotes || undefined,
-      lines: cartLines.map((l) => ({
+      notes: form.notes.trim() || undefined,
+      lines: cartLines.map((l, index) => ({
         productUnitId: l.productUnitId,
         quantity: l.qty,
-        expectedUnitPrice: quoteQ.data?.lines.find((quoted) => quoted.productUnitId === l.productUnitId)?.unitPrice ?? Number(l.price).toFixed(2),
+        customization: l.customization ? { templateId: l.customization.templateId, values: l.customization.values ?? {} } : undefined,
+        expectedUnitPrice: quoteQ.data?.lines[index]?.unitPrice ?? Number(l.price).toFixed(2),
       })),
       expectedGrandTotal: attempt.expectedGrandTotal,
       clientRequestId: attempt.clientRequestId,
@@ -2837,7 +2840,7 @@ function StorefrontContent() {
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     {detailQ.data.categoryId != null && detailQ.data.category && <button type="button" onClick={() => { setSelectedId(null); selectCategory(detailQ.data!.categoryId!); }} className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#c5e8dc] bg-[#e9f7f2] px-3 py-1.5 text-[11px] font-black text-[#276c5d] transition hover:border-[#1e4a63] hover:bg-[#d9f1e8]" aria-label={`تصفح منتجات فئة ${detailQ.data.category}`}><Store aria-hidden className="size-3.5" /> تصفح منتجات «{detailQ.data.category}» <ArrowRight aria-hidden className="size-3.5 rotate-180" /></button>}
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailUnit?.unitName ?? detailQ.data.unitName}</p>
-                    {!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0) > 1 && (
+                    {(detailQ.data.variants?.length ?? 0) > 1 && (
                       <div className="mt-3" role="group" aria-labelledby="storefront-variant-options-title">
                         <p id="storefront-variant-options-title" className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">{detailQ.data.hasAlternatives ? "اختر الماركة أو النوع والكمية" : "اختر اللون أو القياس والكمية"}</p>
                         <p className="mb-2 text-[11px] text-slate-500">{detailQ.data.hasAlternatives ? "تُباع تحت اسمٍ واحد ماركاتٌ/أنواعٌ مختلفة، لكلٍّ مخزونه وسعره — اختر ما يناسبك." : "يمكنك اختيار أكثر من لون أو قياس، ولكل اختيار كمية مستقلة."}</p>
@@ -2879,7 +2882,7 @@ function StorefrontContent() {
                         </div>
                       </div>
                     )}
-                    {!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 0 && (
+                    {(detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 0 && (
                       <div className="mt-3" role="group" aria-label="اختر القياس أو وحدة البيع والكمية">
                         {(detailVariant?.variantName || detailVariant?.color || detailVariant?.size) && (
                           <p className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">
@@ -2915,9 +2918,9 @@ function StorefrontContent() {
                         <StorefrontColorSwatches colors={detailQ.data.colors} max={12} size={16} />
                       </div>
                     )}
-                    {detailQ.data.isCustomizable ? (
+                    {detailQ.data.isCustomizable && !customizationConfig ? (
                       <div role="status" className="mt-3 rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm font-bold text-[var(--sem-warn)]">
-                        {STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE}
+                        إعداد حقول التخصيص غير مكتمل لهذا المنتج. تواصل معنا أو حاول لاحقاً.
                       </div>
                     ) : customizationConfig ? (
                       <section className="mt-3 rounded-2xl border border-[#f0d991] bg-[#fff8df] p-3" aria-label="خيارات تخصيص المنتج">
@@ -2983,15 +2986,17 @@ function StorefrontContent() {
                       if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants(btnEl);
                       else addSelectedUnit(btnEl);
                     }}
-                    disabled={detailQ.data.isCustomizable || !!customizationValidation || ((detailQ.data?.variants?.length ?? 0) > 1
+                    disabled={(detailQ.data.isCustomizable && !customizationConfig) || !!customizationValidation || ((detailQ.data?.variants?.length ?? 0) > 1
                       ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
                       : !detailUnit?.inStock || detailUnit.price == null)}
-                    label={detailQ.data.isCustomizable
-                      ? STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE
+                    label={detailQ.data.isCustomizable && !customizationConfig
+                      ? "إعداد التخصيص غير مكتمل"
+                      : detailQ.data.isCustomizable
+                      ? "أضف المنتج المخصص إلى السلة"
                       : (detailQ.data?.variants?.length ?? 0) > 1
                       ? "أضف الاختيارات إلى السلة"
                       : detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
-                    icon={detailQ.data.isCustomizable ? <AlertTriangle aria-hidden className="size-4" /> : undefined}
+                    icon={detailQ.data.isCustomizable && !customizationConfig ? <AlertTriangle aria-hidden className="size-4" /> : undefined}
                     cartCount={getProductCartQty(detailQ.data.productId)}
                     showCartCount={true}
                   />
@@ -3043,11 +3048,6 @@ function StorefrontContent() {
             </div>
           ) : (
             <>
-              {cartHasUnsupportedCustomization && (
-                <div role="alert" className="mb-3 rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm font-bold text-[var(--sem-warn)]">
-                  {STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE}؛ احذف المنتج المخصص من السلة للمتابعة إلى الدفع.
-                </div>
-              )}
               <div className="flex flex-col gap-3">
                 {cartLines.map((l) => (
                   <div key={l.cartKey} className="flex flex-col gap-2.5 rounded-xl bg-white p-2.5 ring-1 ring-slate-100 sm:flex-row sm:items-center sm:gap-3 dark:bg-slate-900 dark:ring-slate-800">
@@ -3106,16 +3106,14 @@ function StorefrontContent() {
               />
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => { setPanel(null); setShowWishlist(false); scrollToResults(); }} className="flex items-center justify-center gap-1.5 rounded-xl border border-[#1e4a63]/30 bg-[#f5f8fa] py-3 text-xs font-black text-[#1e4a63] transition hover:bg-[#eaf1f4]"><Plus aria-hidden className="size-4" /> أضف المزيد</button>
-                <button type="button" onClick={shareCart} disabled={cartHasUnsupportedCustomization} className={`store-action-button flex items-center justify-center gap-1.5 rounded-xl border border-[#e65f4a]/30 bg-[#fff6f2] py-3 text-xs font-black text-[#a4513f] transition hover:bg-[#ffede7] disabled:cursor-not-allowed disabled:opacity-50 ${sharePulseTarget === "cart" ? "store-action-button--active" : ""}`}><Share2 key={`share-cart-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === "cart" ? "animate__animated animate__pulse animate__faster" : ""}`} /> مشاركة السلة</button>
+                <button type="button" onClick={shareCart} disabled={cartHasCustomization} title={cartHasCustomization ? "رابط السلة لا ينقل تفاصيل التخصيص" : undefined} className={`store-action-button flex items-center justify-center gap-1.5 rounded-xl border border-[#e65f4a]/30 bg-[#fff6f2] py-3 text-xs font-black text-[#a4513f] transition hover:bg-[#ffede7] disabled:cursor-not-allowed disabled:opacity-50 ${sharePulseTarget === "cart" ? "store-action-button--active" : ""}`}><Share2 key={`share-cart-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === "cart" ? "animate__animated animate__pulse animate__faster" : ""}`} /> مشاركة السلة</button>
               </div>
               <button
                 onClick={openCheckout}
-                disabled={!storeOpen || !orderingEnabled || cartHasUnsupportedCustomization}
+                disabled={!storeOpen || !orderingEnabled}
                 className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-sm shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
               >
-                {cartHasUnsupportedCustomization ? (
-                  STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE
-                ) : storeOpen && orderingEnabled ? (
+                {storeOpen && orderingEnabled ? (
                   <>
                     متابعة إلى الدفع عند الاستلام
                     <ArrowRight aria-hidden className="size-4 rotate-180" />
@@ -3130,7 +3128,7 @@ function StorefrontContent() {
                   "المتجر مغلق مؤقتاً — تعذّر إتمام الطلب"
                 )}
               </button>
-              {settingsQ.data?.whatsappNumber && !cartHasUnsupportedCustomization && (
+              {settingsQ.data?.whatsappNumber && (
                 <button
                   onClick={() =>
                     openWhatsApp(

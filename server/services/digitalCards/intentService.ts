@@ -291,17 +291,14 @@ export async function prepare(
     return { intentId: Number(existing.id), replay: true, expiresAt: existing.expiresAt };
   }
 
-  // فواتير البيع كانت تؤكد عملية البطاقة الخارجية قبل إنشاء النيّة وحجز المخزون.
-  // أي رفض لاحق (سعر/مخزون/اعتماد) يترك قبضاً مؤكداً بلا فاتورة ولا مسار عكس آلي.
-  // أبقِ replay/الإنقاذ للنيات التاريخية أعلاه، لكن لا تنشئ مخاطرة جديدة حتى يصبح
-  // الربط مرحلتين: PREPARED -> external payment -> READY_TO_ISSUE.
-  if (input.paymentMethod === "CARD") {
+  if (input.paymentMethod === "CARD" && input.externalPaymentAttemptId == null) {
     throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: intentOperationError(
-        "دفع البطاقة موقوف حتى يكتمل الربط الذري بين القبض والإصدار",
-        "استخدم النقد ولا تؤكد أي قبض خارجي لهذه السلة",
-      ),
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إعداد بيع الكروت بالبطاقة",
+        why: "لم يتم تقديم محاولة دفع خارجية مؤكدة",
+        doThis: "أكّد دفع البطاقة لدى المزوّد أولاً قبل بدء إصدار الكروت",
+      }),
     });
   }
 

@@ -61,6 +61,39 @@ const labelSummaryInput = z.object({
   token: z.string().trim().min(12).max(32),
 });
 
+const onlineOrderCustomizationInput = z.object({
+  templateId: z.number().int().positive(),
+  // الحد الأعلى نفسه الذي تسمح به إدارة القالب؛ الحد الأدق لكل حقل يُفرض بعد تحميل القالب.
+  values: z.record(z.string().trim().min(1).max(80), z.string().max(10_000))
+    .refine((values) => Object.keys(values).length <= 50, "حقول التخصيص أكثر من الحد المسموح"),
+});
+
+const STOREFRONT_CUSTOMIZATION_PAYLOAD_MAX_BYTES = 512 * 1024;
+
+function enforceStorefrontCustomizationPayloadSize(
+  lines: Array<{ customization?: z.infer<typeof onlineOrderCustomizationInput> | null }>,
+  ctx: z.RefinementCtx,
+): void {
+  const customizationPayload = lines.map((line) => line.customization ?? null);
+  if (Buffer.byteLength(JSON.stringify(customizationPayload), "utf8") > STOREFRONT_CUSTOMIZATION_PAYLOAD_MAX_BYTES) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "تفاصيل التخصيص في الطلب أكبر من الحد المسموح",
+    });
+  }
+}
+
+const onlineOrderLineInput = z.object({
+  productUnitId: z.number().int().positive(),
+  quantity: z.number().int().positive().max(999),
+  customization: onlineOrderCustomizationInput.nullish(),
+});
+
+export const onlineOrderLinesInput = z.array(onlineOrderLineInput)
+  .min(1)
+  .max(100)
+  .superRefine(enforceStorefrontCustomizationPayloadSize);
+
 /**
  * بوابة QR العامة: لا تعتمد على جلسة مستخدم، بل على توقيع HMAC فريد للملصق.
  * نتحقق من الرمز قبل وصول المعالج إلى البيانات كي لا يصبح رقم الطلب وحده وسيلة وصول.
@@ -296,26 +329,20 @@ export const storefrontRouter = router({
   quoteOrder: storefrontPublicReadProcedure
     .input(z.object({
       governorate: z.string().trim().min(1).max(40),
-      lines: z.array(z.object({
-        productUnitId: z.number().int().positive(),
-        quantity: z.number().int().positive().max(999),
-      })).min(1).max(100),
+      lines: onlineOrderLinesInput,
     }))
     .query(({ input }) => quoteOnlineOrder(input)),
 
   /**
-   * تسعير قسيمة عبر POST: رمز القسيمة/جلسة العميل يبقيان في body ولا يظهران في nginx URL.
+   * تسعير آمن عبر POST: التخصيص ورمز القسيمة/جلسة العميل تبقى في body ولا تظهر في nginx URL.
    * الجلسة اختيارية للقسيمة العامة، وإلزامية عملياً للشخصية لأن الخدمة تفشل مغلقة عند غياب المالك.
    */
   quoteOrderPrivate: storefrontPublicWriteProcedure
     .input(z.object({
-      couponCode: z.string().trim().min(1).max(64),
+      couponCode: z.string().trim().min(1).max(64).optional(),
       customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
       governorate: z.string().trim().min(1).max(40),
-      lines: z.array(z.object({
-        productUnitId: z.number().int().positive(),
-        quantity: z.number().int().positive().max(999),
-      })).min(1).max(100),
+      lines: onlineOrderLinesInput,
     }))
     .mutation(async ({ input }) => {
       const { customerSessionToken, ...quoteInput } = input;
@@ -367,13 +394,12 @@ export const storefrontRouter = router({
         longitude: z.number().min(-180).max(180).nullish(),
         notes: z.string().max(500).optional(),
         lines: z
-          .array(z.object({
-            productUnitId: z.number().int().positive(),
-            quantity: z.number().int().positive().max(999),
+          .array(onlineOrderLineInput.extend({
             expectedUnitPrice: z.string().regex(/^\d{1,15}(?:\.\d{1,2})?$/),
           }))
           .min(1)
-          .max(100),
+          .max(100)
+          .superRefine(enforceStorefrontCustomizationPayloadSize),
         expectedGrandTotal: z.string().regex(/^\d{1,18}(?:\.\d{1,2})?$/),
         clientRequestId: z.string().trim().min(8).max(80),
         turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH),

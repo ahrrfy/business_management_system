@@ -48,6 +48,7 @@ export interface StorefrontReadinessVariant {
 
 export interface StorefrontProductReadiness {
   productId: number;
+  isService: boolean;
   publishable: boolean;
   inStock: boolean;
   readinessReasons: StorefrontReadinessReason[];
@@ -70,6 +71,7 @@ export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): 
         variantId: productVariants.id,
         productUnitId: productUnits.id,
         conversionFactor: productUnits.conversionFactor,
+        isService: products.isService,
       })
       .from(productUnits)
       .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -82,7 +84,6 @@ export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): 
       .where(and(
         eq(products.isActive, true),
         eq(products.showInStore, true),
-        eq(products.isService, false),
         eq(productVariants.isActive, true),
         eq(productUnits.isActive, true),
         eq(productUnits.isStoreSaleUnit, true),
@@ -99,10 +100,11 @@ export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): 
     const availability = await loadVariantAvailability(
       db,
       branchId,
-      candidates.map((row) => Number(row.variantId)),
+      candidates.filter((row) => row.isService !== true).map((row) => Number(row.variantId)),
     );
     for (const candidate of candidates) {
       const factor = Number(candidate.conversionFactor);
+      if (Number.isFinite(factor) && factor > 0 && candidate.isService === true) return true;
       const available = availability.get(Number(candidate.variantId));
       if (Number.isFinite(factor) && factor > 0 && available && available.availableBase >= factor) {
         return true;
@@ -188,7 +190,9 @@ export async function loadStorefrontReadiness(input: {
   const availability = await loadVariantAvailability(
     db,
     input.branchId,
-    rows.flatMap((row) => row.variantId == null ? [] : [Number(row.variantId)]),
+    rows.flatMap((row) => row.variantId == null || row.isService === true
+      ? []
+      : [Number(row.variantId)]),
   );
   const grouped = new Map<number, MutableProduct>();
   for (const row of rows) {
@@ -231,6 +235,7 @@ export async function loadStorefrontReadiness(input: {
     const stockBase = availabilityRow?.hasStockRow ? availabilityRow.onHandBase : null;
     const availableBase = availabilityRow?.availableBase ?? 0;
     const eligibility = evaluateStorefrontUnitEligibility({
+      isService: product.isService,
       isActive: row.unitActive === true,
       isStoreSaleUnit: !!row.isStoreSaleUnit,
       retailPrice: row.retailPrice ?? null,
@@ -247,7 +252,9 @@ export async function loadStorefrontReadiness(input: {
       retailPrice: row.retailPrice ?? null,
       stockBase: stockBase ?? 0,
       hasStockRow: stockBase != null,
-      availableUnits: Number.isFinite(factor) && factor > 0
+      availableUnits: product.isService
+        ? 0
+        : Number.isFinite(factor) && factor > 0
         ? Math.max(0, Math.floor(availableBase / factor))
         : 0,
       availableBase,
@@ -262,7 +269,7 @@ export async function loadStorefrontReadiness(input: {
     const variants = Array.from(product.variants.values()).map((variant): StorefrontReadinessVariant => {
       const variantEligibility = evaluateStorefrontProductEligibility({
         isActive: true,
-        isService: false,
+        isService: product.isService,
         showInStore: true,
         categoryVisible: true,
         variants: [{
@@ -317,6 +324,7 @@ export async function loadStorefrontReadiness(input: {
       ?? null;
     result.set(product.productId, {
       productId: product.productId,
+      isService: product.isService,
       publishable: eligibility.publishable,
       inStock: eligibility.available,
       readinessReasons: eligibility.reasons,

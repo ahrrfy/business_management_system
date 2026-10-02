@@ -31,6 +31,7 @@ import {
   collectStorefrontFailures,
   formatStorefrontReservationDeadline,
   getStorefrontCustomizationConfig,
+  loadCart,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
@@ -38,6 +39,7 @@ import {
   saveCheckoutAttempt,
   saveStorefrontSnapshot,
   setStorefrontCartQuantity,
+  summarizeStorefrontCustomization,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
   storefrontMediaUrls,
@@ -48,19 +50,19 @@ import {
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   storefrontProductCanBeOrdered,
-  STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE,
   validateStorefrontCheckout,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
   it("يفصل الإضافة المباشرة عن المنتجات التي تحتاج اختياراً", () => {
     const base = { productId: 1, productName: "دفتر", imageUrl: null, price: "5000", productUnitId: 11, unitName: "قطعة", inStock: true };
     expect(recommendationActionLabel(base)).toBe("أضف إلى السلة");
-    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
-    expect(storefrontProductCanBeOrdered({ ...base, isCustomizable: true })).toBe(false);
+    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe("اختر تفاصيل التخصيص");
+    expect(storefrontProductCanBeOrdered({ ...base, isCustomizable: true })).toBe(true);
     expect(recommendationActionLabel({ ...base, variants: [{ label: "لون", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }, { label: "قياس", units: [{ productUnitId: 12, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }] })).toBe("اختر الخيارات");
     expect(recommendationActionLabel({ ...base, variants: [{ label: "قياس", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }, { productUnitId: 12, price: "9000", salePrice: null, unitName: "علبة", inStock: true }] }] })).toBe("اختر الخيارات");
     expect(recommendationActionLabel({ ...base, inStock: false })).toBe("غير متوفر");
@@ -77,7 +79,7 @@ describe("storefront Turnstile submission gate", () => {
 });
 
 describe("storefront customization", () => {
-  it("keeps customizable products visible but fails closed before cart or checkout", () => {
+  it("keeps customizable products sellable while requiring their structured details", () => {
     expect(getStorefrontCustomizationConfig(false, "PRINT")).toBeNull();
     expect(getStorefrontCustomizationConfig(true, null)).toBeNull();
     expect(getStorefrontCustomizationConfig(true, "PRINT")).toBeNull();
@@ -104,15 +106,36 @@ describe("storefront customization", () => {
     expect(config?.fields[0]?.fieldKey).toBe("service");
     expect(config?.fields[0]?.isRequired).toBe(true);
     const base = new Map<string, CartLine>();
-    const blocked = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { kind: "PRINT", service: "اسم أو عبارة", message: "سارة" } }, "2500");
-    expect(blocked.size).toBe(0);
+    const configured = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { templateId: 10, kind: "PRINT", values: { service: "text", message: "سارة" }, selections: [{ fieldKey: "service", label: "نوع التنفيذ", value: "text", displayValue: "اسم أو عبارة" }, { fieldKey: "message", label: "التفاصيل", value: "سارة", displayValue: "سارة" }] } }, "2500");
+    expect(configured.size).toBe(1);
+    expect(summarizeStorefrontCustomization(Array.from(configured.values())[0]?.customization)).toBe("نوع التنفيذ: اسم أو عبارة • التفاصيل: سارة");
+    const refreshed = addStorefrontCartLine(configured, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { templateId: 10, kind: "PRINT", values: { message: "سارة", service: "text" }, selections: [{ fieldKey: "message", label: "النص", value: "سارة", displayValue: "سارة" }], priceDelta: "250.00" } }, "2750");
+    expect(refreshed.size).toBe(1);
+    expect(Array.from(refreshed.values())[0]).toMatchObject({ qty: 2, price: "2750" });
+    const restored = loadCart({ getItem: () => JSON.stringify([
+      { ...Array.from(configured.values())[0], cartKey: "legacy-old" },
+      { ...Array.from(refreshed.values())[0], cartKey: "legacy-new", qty: 1 },
+    ]) });
+    expect(restored.size).toBe(1);
+    expect(Array.from(restored.values())[0]?.qty).toBe(2);
+    expect(addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true }, "2500").size).toBe(0);
     const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).toContain("detailQ.data.isCustomizable ? (");
-    expect(source).toContain(") : customizationConfig ? (");
-    expect(source).toContain("disabled={detailQ.data.isCustomizable ||");
+    expect(source).not.toContain("detailQ.data.isCustomizable ? (");
+    expect(source).not.toContain("disabled={detailQ.data.isCustomizable ||");
+    expect(source).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
     expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
-    expect(source).toContain("cartHasUnsupportedCustomization");
-    expect(source).toContain(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
+    expect(source).not.toContain("cartHasUnsupportedCustomization");
+    expect(DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH).toBe(2_000);
+    expect(source).toContain("field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH");
+  });
+
+  it("hides dependent customization fields transitively", () => {
+    const fields = [
+      { fieldKey: "mode", dependency: null },
+      { fieldKey: "message", dependency: { fieldKey: "mode", operator: "equals" as const, value: "text" } },
+      { fieldKey: "signature", dependency: { fieldKey: "message", operator: "notEquals" as const, value: "blocked" } },
+    ];
+    expect(Array.from(storefrontVisibleCustomizationFieldKeys(fields, { mode: "file", message: "stale", signature: "hidden" }))).toEqual(["mode"]);
   });
 });
 
@@ -621,6 +644,7 @@ describe("storefront guest tracking ownership", () => {
     expect(source).toContain("trackOrderByToken.useMutation");
     expect(source).not.toContain("trackOrder.fetch");
     expect(source).toContain("quoteOrderPrivate.useMutation");
+    expect(source).toContain("storefrontQuoteLines.some((line) => line.customization != null)");
   });
 });
 

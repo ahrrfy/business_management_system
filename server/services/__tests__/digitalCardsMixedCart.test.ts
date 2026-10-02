@@ -502,7 +502,7 @@ describe("digital catalog preflight", () => {
 });
 
 describe("durable mixed digital/ordinary checkout", () => {
-  it("يرفض إنشاء فاتورة رقمية جديدة عبر CARD قبل أي نية أو حجز", async () => {
+  it("يرفض إنشاء فاتورة رقمية جديدة عبر CARD بلا محاولة دفع خارجية مؤكدة", async () => {
     const seeded = await fixture();
     const [offering] = await db()
       .select()
@@ -555,7 +555,7 @@ describe("durable mixed digital/ordinary checkout", () => {
           cashier,
         ),
       ),
-    ).rejects.toThrow(/الربط الذري|موقوف/);
+    ).rejects.toThrow(/دفع البطاقة|محاولة دفع خارجية/);
 
     await expect(
       withTx((tx) =>
@@ -580,9 +580,69 @@ describe("durable mixed digital/ordinary checkout", () => {
           cashier,
         ),
       ),
-    ).rejects.toThrow(/الربط الذري|موقوف/);
+    ).rejects.toThrow(/دفع البطاقة|محاولة دفع خارجية/);
 
     expect(await db().select().from(s.digitalSaleIntents)).toHaveLength(before.length);
+  });
+
+  it("ينشئ نيّة CARD بنجاح عند تقديم محاولة دفع خارجية مؤكدة مطابقة للمبلغ", async () => {
+    const seeded = await fixture();
+    const [current] = await db()
+      .select()
+      .from(s.digitalCurrentPrices)
+      .where(eq(s.digitalCurrentPrices.offeringId, seeded.offeringId));
+    const attemptId = extractInsertId(
+      await db()
+        .insert(s.externalPaymentAttempts)
+        .values({
+          branchId: 1,
+          channel: "POS",
+          paymentMethod: "CARD",
+          amount: "10850.00",
+          providerCode: "CARD",
+          accountReference: "BRANCH:1:CARD",
+          deviceId: "pos-card-device",
+          externalReference: "CARD-REF-SUCCESS",
+          normalizedReference: "CARD-REF-SUCCESS",
+          state: "CONFIRMED",
+          requestId: "card-attempt-prepare-success",
+          createdBy: 1,
+          confirmedBy: 1,
+          confirmedAt: new Date(),
+        }),
+    );
+    const requestId = "pos-card-prepare-success";
+    const prepared = await withTx((tx) =>
+      intentService.prepare(
+        tx,
+        {
+          clientRequestId: requestId,
+          branchId: 1,
+          shiftId: 1,
+          paymentMethod: "CARD",
+          externalPaymentAttemptId: attemptId,
+          externalPaymentDeviceId: "pos-card-device",
+          cartFingerprint: requestId,
+          lines: [
+            {
+              lineKey: "pos-card-line-1",
+              offeringId: seeded.offeringId,
+              priceVersionId: Number(current.priceVersionId),
+              expectedSellPrice: "10850.00",
+              providerReference: "CARD-REF-1",
+            },
+          ],
+        },
+        cashier,
+      ),
+    );
+    expect(prepared.intentId).toBeGreaterThan(0);
+    const [savedIntent] = await db()
+      .select()
+      .from(s.digitalSaleIntents)
+      .where(eq(s.digitalSaleIntents.id, prepared.intentId));
+    expect(savedIntent.paymentMethod).toBe("CARD");
+    expect(Number(savedIntent.externalPaymentAttemptId)).toBe(attemptId);
   });
 
   it("يعيد getIntent صافي السطر الرقمي بعد الخصم لا سعر القائمة", async () => {
