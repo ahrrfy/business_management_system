@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: '0 6 * * 1'  # كل اثنين 6 ص UTC
+    - cron: "0 6 * * 1" # كل اثنين 6 ص UTC
 
 # نفس علاج ازدحام المشغّلات في ci.yml (٧/٨/٢٦): دفعةٌ جديدة على PR تُلغي تشغيلها السابق،
 # وmain لا يُلغى أبداً (سجلّ فحصٍ مكتمل لكل التزام). التشغيل المجدول يبقى بمجموعته الخاصة.
@@ -23,8 +23,8 @@ jobs:
       - uses: actions/checkout@v7
       # Dependency vulnerability audit via OSV-Scanner (Google, maintained) against the
       # OSV database. Replaces `pnpm audit`, whose legacy npm endpoint npm retired
-      # (HTTP 410, see #192). Scans pnpm-lock.yaml directly (no install needed) and
-      # fails the job when vulnerabilities are found.
+      # (HTTP 410, see #192). Scans every independently resolved lockfile directly
+      # (no install needed) and fails the job when vulnerabilities are found.
       - name: Install osv-scanner (pinned v2.3.8 + checksum-verified)
         shell: bash
         run: |
@@ -39,4 +39,12 @@ jobs:
           chmod +x osv-scanner
       - name: Audit dependencies against OSV database
         shell: bash
-        run: ./osv-scanner scan --lockfile=pnpm-lock.yaml
+        run: |
+          set -euo pipefail
+          for lockfile in \
+            pnpm-lock.yaml \
+            expo/customer-store-mobile/pnpm-lock.yaml \
+            expo/superapp-mobile/pnpm-lock.yaml
+          do
+            ./osv-scanner scan --config=osv-scanner.toml --lockfile="$lockfile"
+          done

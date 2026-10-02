@@ -15,14 +15,19 @@ on:
 permissions: {}
 
 concurrency:
-  group: ci-failure-diagnostics-${{ github.event.workflow_run.id || inputs.run_id }}
+  group: ci-failure-diagnostics-${{ github.event.workflow_run.name || 'manual' }}-${{ github.event.workflow_run.head_branch || inputs.run_id }}
   cancel-in-progress: false
 
 jobs:
   diagnose:
-    # تجاهل الإلغاء الموروث من سياسة concurrency؛ شخّص الفشل الفعلي أو التشغيل اليدوي فقط.
+    # الفروع التطويرية تملك Checks/PR؛ Issue المستودع مخصّصة لتعطّل الفرع الافتراضي فقط.
+    # النجاح مطلوب هنا أيضاً كي نغلق القضية المفتوحة آلياً عند تعافي المسار.
     if: >-
-      (github.event_name == 'workflow_run' && contains(fromJSON('["failure","timed_out","action_required"]'), github.event.workflow_run.conclusion)) ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+       contains(fromJSON('["success","failure","timed_out","action_required"]'), github.event.workflow_run.conclusion)) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -49,8 +54,102 @@ jobs:
               run_id: runId,
             });
 
+            const repositoryFullName = `${context.repo.owner}/${context.repo.repo}`;
+            const defaultBranch = context.payload.repository?.default_branch;
+            if (
+              run.event !== "push" ||
+              run.head_repository?.full_name !== repositoryFullName ||
+              run.head_branch !== defaultBranch
+            ) {
+              core.setFailed("يُسمح بتشخيص تشغيل push من الفرع الافتراضي في هذا المستودع فقط.");
+              return;
+            }
+
+            const runOrder = [Number(run.run_number), Number(run.run_attempt ?? 1)];
+            const { data: workflowRuns } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: run.workflow_id,
+              branch: defaultBranch,
+              event: "push",
+              status: "completed",
+              per_page: 100,
+            });
+            const isNewer = (candidate) => {
+              if (!["success", "failure", "timed_out", "action_required"].includes(candidate.conclusion)) {
+                return false;
+              }
+              const candidateOrder = [
+                Number(candidate.run_number),
+                Number(candidate.run_attempt ?? 1),
+              ];
+              return candidateOrder[0] > runOrder[0] ||
+                (candidateOrder[0] === runOrder[0] && candidateOrder[1] > runOrder[1]);
+            };
+            if (workflowRuns.workflow_runs.some(isNewer)) {
+              core.info("يوجد تشغيل مكتمل أحدث؛ لن يغيّر التشغيل القديم حالة القضية.");
+              return;
+            }
+
+            const clean = (value, limit = 160) => String(value ?? "")
+              .replace(/[\r\n\t]/g, " ")
+              .replace(/[<>`]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, limit) || "غير مسمّى";
+
+            const diagnosticKey = Buffer.from(
+              JSON.stringify([run.name, run.head_branch]),
+            ).toString("base64url");
+            const marker = `<!-- ci-failure-diagnostic:key:${diagnosticKey} -->`;
+            const orderMarker = `<!-- ci-failure-diagnostic:order:${runOrder[0]}:${runOrder[1]} -->`;
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              sort: "updated",
+              direction: "desc",
+              per_page: 100,
+            });
+            const currentIssue = existing.find(
+              (issue) => !issue.pull_request && issue.body?.includes(marker),
+            );
+            const recordedOrder = currentIssue?.body?.match(
+              /<!-- ci-failure-diagnostic:order:(\d+):(\d+) -->/,
+            );
+            if (
+              recordedOrder &&
+              (Number(recordedOrder[1]) > runOrder[0] ||
+                (Number(recordedOrder[1]) === runOrder[0] &&
+                  Number(recordedOrder[2]) > runOrder[1]))
+            ) {
+              core.info("القضية تسجّل تشغيلاً أحدث؛ جرى تجاهل النتيجة القديمة.");
+              return;
+            }
+
+            if (run.conclusion === "success") {
+              if (!currentIssue || currentIssue.state !== "open") {
+                core.info("لا توجد قضية تشخيصية مفتوحة لهذا المسار.");
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: currentIssue.number,
+                body: `أُغلقت آلياً بعد نجاح التشغيل ${run.html_url}.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: currentIssue.number,
+                state: "closed",
+                state_reason: "completed",
+              });
+              return;
+            }
+
             if (!["failure", "timed_out", "action_required"].includes(run.conclusion)) {
-              core.info("التشغيل ليس فشلاً قابلاً للتشخيص؛ لا يوجد Issue لإنشائه.");
+              core.info("التشغيل ليس فشلاً قابلاً للتشخيص ولا نجاحاً يغلق قضية.");
               return;
             }
 
@@ -61,13 +160,6 @@ jobs:
               filter: "latest",
               per_page: 100,
             });
-
-            const clean = (value, limit = 160) => String(value ?? "")
-              .replace(/[\r\n\t]/g, " ")
-              .replace(/[<>`]/g, "")
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(0, limit) || "غير مسمّى";
 
             const failedJobs = jobsPage.jobs
               .filter((job) => job.conclusion && !["success", "skipped", "cancelled"].includes(job.conclusion))
@@ -83,24 +175,13 @@ jobs:
                 };
               });
 
-            const marker = `<!-- ci-failure-diagnostic:run-${run.id} -->`;
-            const { data: existing } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              per_page: 100,
-            });
-            if (existing.some((issue) => issue.body?.includes(marker))) {
-              core.info("يوجد Issue تشخيصي بالفعل لهذا التشغيل.");
-              return;
-            }
-
             const rows = failedJobs.length
               ? failedJobs.map((job) => `| ${job.name} | ${job.conclusion} | ${job.steps} |`).join("\n")
               : "| لم تتوفر بيانات الوظائف الفاشلة | راجع رابط التشغيل | — |";
 
             const body = [
               marker,
+              orderMarker,
               "## تشخيص CI تلقائي وآمن",
               "",
               `حدث فشل في تشغيل **${clean(run.name)}** رقم **${run.id}**. هذا التقرير يعتمد على بيانات GitHub الوصفية فقط؛ لا يجلب سجلات قد تحمل أسراراً، ولا يشغّل كود الفرع الفاشل.`,
@@ -118,9 +199,23 @@ jobs:
               "لا ينشئ هذا المسار فرعاً أو commit أو Pull Request، ولا يدمج، ولا ينشر، ولا يشغّل migrations، ولا يقرأ أو يطبع الأسرار. راجع سبب الفشل ثم نفّذ إصلاحاً منفصلاً مع جميع بوابات CI والمراجعة البشرية.",
             ].join("\n");
 
+            const title = `CI Diagnostic: ${clean(run.name, 90)} (${clean(run.head_branch, 80)})`;
+            if (currentIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: currentIssue.number,
+                title,
+                body,
+                state: "open",
+              });
+              core.info(`حُدّثت القضية التشخيصية #${currentIssue.number}.`);
+              return;
+            }
+
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `CI Diagnostic: ${clean(run.name, 90)} #${run.id}`,
+              title,
               body,
             });
