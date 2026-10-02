@@ -337,13 +337,8 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
 
     // محاولة إرجاع الإرسالية من شاشة التوصيل تُرفض لأن الفاتورة أُرجع منها سلفاً (منع العكس المزدوج للمخزون)
     await expect(
-<<<<<<< HEAD
-      returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1" } as never),
-    ).rejects.toThrowError(/الفاتورة أُرجع منها سلفاً/);
-=======
       returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1", returnReason: "رفض العميل" } as never),
-    ).resolves.toBeTruthy();
->>>>>>> origin/main
+    ).rejects.toThrowError(/الفاتورة أُرجع منها سلفاً/);
     void shift;
   });
 });

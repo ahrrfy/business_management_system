@@ -170,7 +170,7 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
     expect(stock.quantity).toBe(100);
   });
 
-  it("R2: إرجاع لفاتورة مسلّمة (DELIVERED) بنقد معلق (UNSETTLED) يسوّي حالة المال إلى SETTLED", async () => {
+  it("R2: إرجاع لفاتورة مسلّمة (DELIVERED) بنقد معلق (UNSETTLED) يعكس العهدة ويُحوّل الإرسالية إلى RETURNED و CANCELLED", async () => {
     const shift = await openReception();
     const sale = await checkoutReception({
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
@@ -200,11 +200,10 @@ describe("تسوية إرساليات التوصيل التلقائية عند �
     expect(ret.fullyReturned).toBe(true);
 
     const cnAfter = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, initialCn.id)))[0];
-    expect(cnAfter.parcelStatus).toBe("DELIVERED"); // الطرد سُلّم تاريخياً
-    expect(cnAfter.status).toBe("DELIVERED");
-    expect(cnAfter.moneyStatus).toBe("SETTLED"); // تسوية المال
-    expect(cnAfter.settledAt).not.toBeNull();
-    expect(Number(cnAfter.counterSettledAmount)).toBe(10000);
+    expect(cnAfter.parcelStatus).toBe("RETURNED");
+    expect(cnAfter.status).toBe("RETURNED");
+    expect(cnAfter.moneyStatus).toBe("CANCELLED");
+    expect(cnAfter.returnedAt).not.toBeNull();
 
     const summaryAfter = await getDeliveryFinancialSummary(1);
     expect(Number(summaryAfter.codOutstanding)).toBe(0);
