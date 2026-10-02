@@ -2846,7 +2846,7 @@ function StorefrontContent() {
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     {detailQ.data.categoryId != null && detailQ.data.category && <button type="button" onClick={() => { setSelectedId(null); selectCategory(detailQ.data!.categoryId!); }} className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#c5e8dc] bg-[#e9f7f2] px-3 py-1.5 text-[11px] font-black text-[#276c5d] transition hover:border-[#1e4a63] hover:bg-[#d9f1e8]" aria-label={`تصفح منتجات فئة ${detailQ.data.category}`}><Store aria-hidden className="size-3.5" /> تصفح منتجات «{detailQ.data.category}» <ArrowRight aria-hidden className="size-3.5 rotate-180" /></button>}
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailUnit?.unitName ?? detailQ.data.unitName}</p>
-                    {!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0) > 1 && (
+                    {(detailQ.data.variants?.length ?? 0) > 1 && (
                       <div className="mt-3" role="group" aria-labelledby="storefront-variant-options-title">
                         <p id="storefront-variant-options-title" className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">{detailQ.data.hasAlternatives ? "اختر الماركة أو النوع والكمية" : "اختر اللون أو القياس والكمية"}</p>
                         <p className="mb-2 text-[11px] text-slate-500">{detailQ.data.hasAlternatives ? "تُباع تحت اسمٍ واحد ماركاتٌ/أنواعٌ مختلفة، لكلٍّ مخزونه وسعره — اختر ما يناسبك." : "يمكنك اختيار أكثر من لون أو قياس، ولكل اختيار كمية مستقلة."}</p>
@@ -2888,7 +2888,7 @@ function StorefrontContent() {
                         </div>
                       </div>
                     )}
-                    {!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 0 && (
+                    {(detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 0 && (
                       <div className="mt-3" role="group" aria-label="اختر القياس أو وحدة البيع والكمية">
                         {(detailVariant?.variantName || detailVariant?.color || detailVariant?.size) && (
                           <p className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">

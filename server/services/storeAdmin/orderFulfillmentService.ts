@@ -189,6 +189,7 @@ export interface OnlineOrderDetailItem {
   quantity: string;
   unitPrice: string;
   total: string;
+  hasCustomization: boolean;
   customizationSummary: string | null;
 }
 export interface OnlineOrderDetail extends OnlineOrderRow {
@@ -302,6 +303,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
       quantity: String(i.quantity),
       unitPrice: String(i.unitPrice),
       total: String(i.total),
+      hasCustomization: i.customizationSnapshot != null,
       customizationSummary: i.customizationSnapshot?.values
         .map((value) => `${value.label}: ${value.displayValue}`)
         .join(" • ") || null,

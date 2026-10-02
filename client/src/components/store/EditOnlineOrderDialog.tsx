@@ -28,6 +28,7 @@ interface EditableLineItem {
   unitPrice: number;
   quantity: number;
   lineTotal: number;
+  hasCustomization: boolean;
   customizationSummary: string | null;
 }
 
@@ -84,6 +85,7 @@ export function EditOnlineOrderDialog({
           unitPrice: uPrice,
           quantity: qty,
           lineTotal: uPrice * qty,
+          hasCustomization: it.hasCustomization,
           customizationSummary: it.customizationSummary ?? null,
         };
       });
@@ -123,7 +125,7 @@ export function EditOnlineOrderDialog({
 
   const finalDeliveryFee = isFreeDelivery ? 0 : baseDeliveryFee;
   const hasCoupon = Boolean(detailQ.data?.couponCode);
-  const hasCustomization = items.some((item) => Boolean(item.customizationSummary));
+  const hasCustomization = items.some((item) => item.hasCustomization);
   const itemsLocked = hasCoupon || hasCustomization;
   const couponDiscount = Number(detailQ.data?.couponDiscount ?? 0);
   // subtotal is sum of items line totals, which already reflect any coupon discount.
@@ -202,6 +204,7 @@ export function EditOnlineOrderDialog({
           unitPrice: target.price,
           quantity: 1,
           lineTotal: target.price,
+          hasCustomization: false,
           customizationSummary: null,
         },
       ]);

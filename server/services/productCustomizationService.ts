@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   productCustomizationFields,
   productCustomizationTemplates,
@@ -66,6 +67,21 @@ function normalizeOptions(options: ProductCustomizationOption[] | undefined): Pr
     .filter((option) => option.value && option.label);
 }
 
+function normalizePriceDelta(value: string | undefined, subject: string): string {
+  const normalized = String(value ?? "0").trim();
+  if (!/^\d{1,13}(?:\.\d{1,2})?$/.test(normalized)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حفظ قالب التخصيص",
+        why: `فرق السعر في ${subject} يجب أن يكون مبلغاً غير سالب، بمنزلتين عشريتين على الأكثر، وضمن سعة النظام`,
+        doThis: "صحّح فرق السعر ثم أعد الحفظ",
+      }),
+    });
+  }
+  return normalized;
+}
+
 function normalizeDependency(dependency: ProductCustomizationDependency | null | undefined): ProductCustomizationDependency | null {
   if (!dependency) return null;
   const value = Array.isArray(dependency.value)
@@ -91,7 +107,10 @@ function validateTemplateInput(input: CustomizationTemplateInput): Array<Customi
     if (keys.has(fieldKey)) throw new TRPCError({ code: "BAD_REQUEST", message: `مفتاح الحقل مكرر: ${fieldKey}.` });
     keys.add(fieldKey);
     if (!label) throw new TRPCError({ code: "BAD_REQUEST", message: `اسم الحقل مطلوب: ${fieldKey}.` });
-    const options = normalizeOptions(field.options);
+    const options = normalizeOptions(field.options).map((option) => ({
+      ...option,
+      priceDelta: normalizePriceDelta(option.priceDelta, `خيار «${option.label}» في حقل «${label}»`),
+    }));
     const dependency = normalizeDependency(field.dependency);
     if (["SELECT", "SWATCH"].includes(field.fieldType) && options.length === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `الحقل ${label} يحتاج خياراً واحداً على الأقل.` });
@@ -109,7 +128,7 @@ function validateTemplateInput(input: CustomizationTemplateInput): Array<Customi
       sortOrder: Number.isInteger(field.sortOrder) ? field.sortOrder : (index + 1) * 10,
       options,
       dependency,
-      priceDelta: String(field.priceDelta ?? "0"),
+      priceDelta: normalizePriceDelta(field.priceDelta, `الحقل «${label}»`),
       isRequired: !!field.isRequired,
       isActive: field.isActive !== false,
     };

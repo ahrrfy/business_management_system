@@ -111,6 +111,7 @@ describe("storefront customization", () => {
     const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
     expect(source).not.toContain("detailQ.data.isCustomizable ? (");
     expect(source).not.toContain("disabled={detailQ.data.isCustomizable ||");
+    expect(source).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
     expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
     expect(source).not.toContain("cartHasUnsupportedCustomization");
   });

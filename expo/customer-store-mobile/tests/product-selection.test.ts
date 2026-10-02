@@ -40,7 +40,7 @@ const apiProduct: ApiProduct = {
         maxLength: 20,
         options: [],
         dependency: null,
-        priceDelta: "0",
+        priceDelta: "250.00",
       },
       {
         fieldKey: "color",
@@ -49,7 +49,7 @@ const apiProduct: ApiProduct = {
         isRequired: true,
         sortOrder: 2,
         maxLength: null,
-        options: [{ value: "gold", label: "ذهبي", priceDelta: "0" }],
+        options: [{ value: "gold", label: "ذهبي", priceDelta: "75.00" }],
         dependency: { fieldKey: "name", operator: "notEquals", value: "" },
         priceDelta: "0",
       },
@@ -174,5 +174,36 @@ describe("product selection contract", () => {
       { fieldKey: "name", label: "الاسم", value: "علي", displayValue: "علي" },
       { fieldKey: "color", label: "لون الطباعة", value: "gold", displayValue: "ذهبي" },
     ]);
+    expect(selection.details).toMatchObject({ unitPrice: "5325.00", unitSalePrice: "4825.00" });
+  });
+
+  it("accepts a required file reference as structured text", () => {
+    const product = mapApiProduct({
+      ...apiProduct,
+      customizationTemplate: {
+        ...apiProduct.customizationTemplate!,
+        fields: [{
+          fieldKey: "design",
+          label: "ملف التصميم",
+          fieldType: "FILE",
+          isRequired: true,
+          sortOrder: 1,
+          maxLength: 500,
+          options: [],
+          dependency: null,
+          priceDelta: "0",
+        }],
+      },
+    });
+    const selection = validateProductSelection(product, {
+      variantId: 21,
+      productUnitId: 71,
+      customizationValues: { design: "https://files.example/design.pdf" },
+    });
+    expect(selection.errors).toEqual([]);
+    expect(selection.details?.customization?.values[0]).toMatchObject({
+      fieldKey: "design",
+      displayValue: "https://files.example/design.pdf",
+    });
   });
 });

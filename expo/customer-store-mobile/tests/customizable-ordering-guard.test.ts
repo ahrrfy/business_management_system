@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { addProductToCart, sanitizeCartLines } from "@/lib/cart-context";
 import {
@@ -122,5 +124,12 @@ describe("customizable product online-ordering guard", () => {
       customizationValues: { name: "علي" },
     }).details).toMatchObject({ productUnitId: 71, variantId: 21 });
     expect(checkoutRequestLines([customizableLine])).toHaveLength(1);
+  });
+
+  it("renders a writable reference input for FILE customization fields", () => {
+    const source = readFileSync(fileURLToPath(new URL("../app/product/[id].tsx", import.meta.url).toString()), "utf8");
+    expect(source).toContain('field.fieldType === "FILE"');
+    expect(source).toContain('placeholder="اكتب رابط الملف أو اسمه أو مرجعه"');
+    expect(source).toContain("onChangeText={onChange}");
   });
 });

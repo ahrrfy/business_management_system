@@ -130,7 +130,7 @@ export default function CheckoutScreen() {
       setError("أدخل الاسم ورقم هاتف عراقي صحيحاً وعنوان التوصيل بصورة صحيحة.");
       return false;
     }
-    if (requestLines.length !== lines.length || requestLines.length === 0) {
+    if (requestLines.length === 0) {
       setError(
         "تعذر التحقق من عناصر السلة. عد إلى السلة وحدّث المنتجات ثم حاول مرة أخرى.",
       );

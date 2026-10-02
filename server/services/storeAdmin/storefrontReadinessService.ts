@@ -70,6 +70,7 @@ export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): 
         variantId: productVariants.id,
         productUnitId: productUnits.id,
         conversionFactor: productUnits.conversionFactor,
+        isService: products.isService,
       })
       .from(productUnits)
       .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -82,7 +83,6 @@ export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): 
       .where(and(
         eq(products.isActive, true),
         eq(products.showInStore, true),
-        eq(products.isService, false),
         eq(productVariants.isActive, true),
         eq(productUnits.isActive, true),
         eq(productUnits.isStoreSaleUnit, true),
@@ -99,10 +99,11 @@ export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): 
     const availability = await loadVariantAvailability(
       db,
       branchId,
-      candidates.map((row) => Number(row.variantId)),
+      candidates.filter((row) => row.isService !== true).map((row) => Number(row.variantId)),
     );
     for (const candidate of candidates) {
       const factor = Number(candidate.conversionFactor);
+      if (Number.isFinite(factor) && factor > 0 && candidate.isService === true) return true;
       const available = availability.get(Number(candidate.variantId));
       if (Number.isFinite(factor) && factor > 0 && available && available.availableBase >= factor) {
         return true;

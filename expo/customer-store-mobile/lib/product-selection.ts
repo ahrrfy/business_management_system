@@ -3,6 +3,7 @@ import type {
   Product,
   ProductSelectionDetails,
   StorefrontCustomizationField,
+  StorefrontUnitOption,
 } from "@/shared/storefront";
 
 export type ProductSelectionInput = {
@@ -14,6 +15,20 @@ export type ProductSelectionInput = {
 export const DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH = 500;
 export const CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE =
   "إعداد حقول التخصيص غير مكتمل لهذا المنتج. تواصل مع المكتبة أو حاول لاحقاً.";
+
+const CENTS_PER_IQD = BigInt(100);
+
+function moneyToCents(value: string | null | undefined): bigint | null {
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(value ?? "");
+  if (!match) return null;
+  return (BigInt(match[1]) * CENTS_PER_IQD) + BigInt((match[2] ?? "").padEnd(2, "0"));
+}
+
+function centsToMoney(value: bigint): string {
+  const whole = value / CENTS_PER_IQD;
+  const fraction = (value % CENTS_PER_IQD).toString().padStart(2, "0");
+  return `${whole}.${fraction}`;
+}
 
 export function productOnlineOrderingIssue(product: Product): string | null {
   return product.isCustomizable && !product.customizationTemplate
@@ -41,6 +56,26 @@ export function activeCustomizationFields(
   return [...(product.customizationTemplate?.fields ?? [])]
     .sort((left, right) => left.sortOrder - right.sortOrder)
     .filter((field) => dependencyMatches(field, values));
+}
+
+export function customizationAdjustedUnitPrices(
+  product: Product,
+  unit: Pick<StorefrontUnitOption, "price" | "salePrice">,
+  values: Record<string, string>,
+) {
+  let delta = BigInt(0);
+  for (const field of activeCustomizationFields(product, values)) {
+    const value = (values[field.fieldKey] ?? "").trim();
+    if (!value) continue;
+    const option = field.options.find((candidate) => candidate.value === value);
+    delta += moneyToCents(field.priceDelta) ?? BigInt(0);
+    delta += moneyToCents(option?.priceDelta) ?? BigInt(0);
+  }
+  const addDelta = (price: string | null) => {
+    const cents = moneyToCents(price);
+    return cents == null ? price : centsToMoney(cents + delta);
+  };
+  return { price: addDelta(unit.price), salePrice: addDelta(unit.salePrice) };
 }
 
 export function validateProductSelection(
@@ -112,6 +147,7 @@ function validateSelection(
   }
 
   if (!variant || !unit || errors.length) return { errors, details: null };
+  const adjustedPrices = customizationAdjustedUnitPrices(product, unit, input.customizationValues);
   return {
     errors,
     details: {
@@ -120,8 +156,8 @@ function validateSelection(
       variantKind: variant.variantKind,
       productUnitId: unit.productUnitId,
       unitName: unit.unitName,
-      unitPrice: unit.price,
-      unitSalePrice: unit.salePrice,
+      unitPrice: adjustedPrices.price,
+      unitSalePrice: adjustedPrices.salePrice,
       imageUrl: variant.imageUrl ?? product.imageUrl ?? null,
       customization: product.customizationTemplate
         ? {

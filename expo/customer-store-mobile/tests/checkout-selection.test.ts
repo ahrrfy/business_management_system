@@ -51,6 +51,22 @@ describe("checkout selection persistence", () => {
   it("allows separate customizations for the same unit because each remains a distinct order line", () => {
     const second = { ...line, lineId: `${line.lineId}:second` };
     expect(checkoutSelectionIssue([line, second])).toBeNull();
+    expect(checkoutRequestLines([line, second])).toEqual([{
+      productUnitId: 71,
+      quantity: 4,
+      customization: { templateId: 4, values: { name: "علي" } },
+    }]);
+    const distinct = {
+      ...second,
+      selectionDetails: {
+        ...second.selectionDetails,
+        customization: {
+          ...second.selectionDetails.customization!,
+          values: [{ fieldKey: "name", label: "الاسم", value: "سارة", displayValue: "سارة" }],
+        },
+      },
+    } as CartLine;
+    expect(checkoutRequestLines([line, distinct])).toHaveLength(2);
     const long = {
       ...line,
       selectionDetails: {

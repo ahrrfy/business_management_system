@@ -483,10 +483,10 @@ async function loadOwnedReplay(
   const storedLineQuantities = new Map<string, number>();
   for (const line of existingLines) {
     const unitId = Number(line.productUnitId);
-    const storedCustomization = line.customizationSnapshot == null ? undefined : {
+    const storedCustomization = line.customizationSnapshot == null ? undefined : normalizeCustomizationInput({
       templateId: line.customizationSnapshot.templateId,
       values: Object.fromEntries(line.customizationSnapshot.values.map((value) => [value.fieldKey, value.value])),
-    };
+    });
     const identity = onlineOrderLineIdentity({ productUnitId: unitId, customization: storedCustomization });
     storedLineQuantities.set(
       identity,
