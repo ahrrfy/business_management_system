@@ -15,6 +15,7 @@ import ProductRecipeSection from "@/components/product/ProductRecipeSection";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
+import { BarcodePdfButton } from "@/components/product/BarcodePdfButton";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { UnitPriceHistory } from "@/components/product/UnitPriceHistory";
 import { ProductVersionHistory } from "@/components/product/ProductVersionHistory";
@@ -584,6 +585,15 @@ export default function SimpleProductEditForm({
                       aria-describedby={bcTitle ? `simpleedit-bc-help-${u.id}` : undefined}
                     />
                     <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("200") })} title="توليد باركود EAN-13 داخليّ (نطاق GS1 المخصَّص للاستخدام الداخلي)" />
+                    <BarcodePdfButton
+                      barcode={u.barcode}
+                      productName={finalName}
+                      unitName={u.name}
+                      retailPrice={u.retail}
+                      brand={brand}
+                      modelName={modelName}
+                      sku={sku}
+                    />
                     {info.symbology.label && (
                       <Badge variant={symBadgeVariant} className="text-[10px] whitespace-nowrap px-1.5 py-0" title={`نوع الترميز: ${info.symbology.label}`}>
                         {info.symbology.label}

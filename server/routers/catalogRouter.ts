@@ -22,6 +22,7 @@ import {
   setProductActive,
   updateProduct,
 } from "../services/catalogService";
+import { generateBarcodePdf, generateBarcodeBatchPdf } from "../services/barcodePdfService";
 import {
   getProductForVariantEdit,
   updateProductWithVariants,
@@ -569,6 +570,63 @@ export const catalogRouter = router({
   checkBarcodes: productsManagerProcedure
     .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
     .query(({ input }) => checkBarcodesTaken(input.codes)),
+
+  // توليد PDF الباركود المتجهي عالي الدقة (300+ DPI) لملصقات المنتجات وعلب التصنيع
+  generateBarcodePdf: productsReadProcedure
+    .input(
+      z.object({
+        barcode: z.string().min(1, "رمز الباركود مطلوب"),
+        productName: z.string().optional().nullable(),
+        unitName: z.string().optional().nullable(),
+        retailPrice: z.union([z.string(), z.number()]).optional().nullable(),
+        brand: z.string().optional().nullable(),
+        modelName: z.string().optional().nullable(),
+        sku: z.string().optional().nullable(),
+        preset: z.enum(["50x30", "50x25", "60x40", "artwork", "a4"]).optional(),
+        widthMm: z.number().min(10).max(300).optional(),
+        heightMm: z.number().min(10).max(300).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const result = await generateBarcodePdf(input);
+      return {
+        base64: result.base64,
+        filename: result.filename,
+      };
+    }),
+
+  // توليد PDF متّجهي عالي الدقة لدفعة ملصقات (Batch) لقائمة طباعة الملصقات
+  generateBarcodeBatchPdf: productsReadProcedure
+    .input(
+      z.object({
+        items: z
+          .array(
+            z.object({
+              barcode: z.string().min(1, "رمز الباركود مطلوب"),
+              productName: z.string().optional().nullable(),
+              unitName: z.string().optional().nullable(),
+              retailPrice: z.union([z.string(), z.number()]).optional().nullable(),
+              brand: z.string().optional().nullable(),
+              modelName: z.string().optional().nullable(),
+              sku: z.string().optional().nullable(),
+              count: z.number().int().min(1).max(500),
+            }),
+          )
+          .min(1, "يجب تحديد ملصق واحد على الأقل")
+          .max(500),
+        layout: z.enum(["individual_pages", "a4_grid"]).optional(),
+        widthMm: z.number().min(10).max(300).optional(),
+        heightMm: z.number().min(10).max(300).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const result = await generateBarcodeBatchPdf(input);
+      return {
+        base64: result.base64,
+        filename: result.filename,
+        totalLabels: result.totalLabels,
+      };
+    }),
 
   // product-content-ai: يولّد مسودة محتوى فقط من حقائق مرسلة ومتحقق منها؛ لا يكتب المنتجات مباشرة.
   // productId اختياريّ (وضع التعديل): الخدمة تحمّل صور المنتج المعتمَدة بنفسها وتُغذّي Gemini vision.

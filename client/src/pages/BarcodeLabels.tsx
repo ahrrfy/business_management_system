@@ -32,6 +32,9 @@ import { Check, Info, Layers, Tag, TriangleAlert, X } from "lucide-react";
 import { Link } from "wouter";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
+import { BarcodePdfButton } from "@/components/product/BarcodePdfButton";
+import { PreviewBarcodePdfButton } from "@/components/printing/PreviewBarcodePdfButton";
+import { BatchBarcodePdfButton } from "@/components/printing/BatchBarcodePdfButton";
 
 const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
 const PREVIEW_ZOOM = 2.4; // تكبير المعاينة بصرياً للوضوح (المقاس الفعليّ صغير)
@@ -776,7 +779,10 @@ export default function BarcodeLabels() {
 
         {/* معاينة حيّة بنفس تصميم الطباعة تماماً (HTML/SVG مباشر بلا تحويل لصورة) */}
         <Card>
-          <CardHeader><CardTitle className="text-base">معاينة حيّة</CardTitle></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+            <CardTitle className="text-base">معاينة حيّة</CardTitle>
+            <PreviewBarcodePdfButton item={previewItem} size={size} />
+          </CardHeader>
           <CardContent>
             <div className="flex items-start gap-4 flex-wrap">
               {/* dir="ltr" + position:relative ⇒ يُثبَّت iframe في الزاوية العليا اليسرى للحاوية حتى داخل
@@ -955,6 +961,13 @@ export default function BarcodeLabels() {
                       <td className="p-2">
                         <div className="flex items-center gap-2 flex-wrap">
                           <CopyInline value={q.barcode} />
+                          <BarcodePdfButton
+                            barcode={q.barcode}
+                            productName={q.productName}
+                            unitName={q.unitName}
+                            retailPrice={q.price ?? undefined}
+                            sku={q.sku}
+                          />
                           {!q.saved && (
                             <Button variant="outline" size="sm" disabled={assign.isPending} onClick={() => saveBarcode(q)}>
                               حفظ الباركود
@@ -1029,6 +1042,11 @@ export default function BarcodeLabels() {
             <Button onClick={printLabels} disabled={queue.length === 0 || isRepricing}>
               {isRepricing ? "جارٍ تحديث الأسعار…" : `طباعة ${totalLabels} ملصق`}
             </Button>
+            <BatchBarcodePdfButton
+              items={queue}
+              size={size}
+              disabled={queue.length === 0 || isRepricing}
+            />
             <Button variant="outline" onClick={setAllCountsToStock} disabled={queue.length === 0}>
               عدد الكلّ = المخزون
             </Button>

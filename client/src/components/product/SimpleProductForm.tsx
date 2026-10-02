@@ -14,6 +14,7 @@ import { formatQuantity } from "@shared/quantityFormat";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { RecordForm } from "@/components/form/RecordForm";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
+import { BarcodePdfButton } from "@/components/product/BarcodePdfButton";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
@@ -563,6 +564,15 @@ export default function SimpleProductForm() {
                       aria-describedby={bcTitle ? `simple-bc-help-${u.id}` : undefined}
                     />
                     <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("200") })} title="توليد باركود EAN-13 داخليّ (نطاق GS1 المخصَّص للاستخدام الداخلي)" />
+                    <BarcodePdfButton
+                      barcode={u.barcode}
+                      productName={finalName}
+                      unitName={u.name}
+                      retailPrice={u.retail}
+                      brand={brand}
+                      modelName={modelName}
+                      sku={sku}
+                    />
                     {info.symbology.label && (
                       <Badge variant={symBadgeVariant} className="text-[10px] whitespace-nowrap px-1.5 py-0" title={`نوع الترميز: ${info.symbology.label}`}>
                         {info.symbology.label}
