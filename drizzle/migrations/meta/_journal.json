@@ -2402,6 +2402,13 @@
 			"when": 1788148835000,
 			"tag": "0377_storefront_customizable_order_items",
 			"breakpoints": true
+		},
+		{
+			"idx": 378,
+			"version": "5",
+			"when": 1788148836000,
+			"tag": "0378_storefront_customization_defaults",
+			"breakpoints": true
 		}
 	]
 }
