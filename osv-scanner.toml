@@ -1,3 +1,11 @@
 [[IgnoredVulns]]
 id = "GHSA-86w9-cpqp-85rv"
 reason = "node-forge is pulled only by Expo CLI tooling, is not bundled in the native app runtime, and has no patched release yet"
+
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+reason = "braces is pulled only by Metro, Jest, and Tailwind build tooling with developer-controlled patterns, is not bundled in the mobile runtime, and has no patched release yet"
+
+[[IgnoredVulns]]
+id = "GHSA-ch52-4w7c-c8xp"
+reason = "http-cache-semantics is pulled only by the @expo/ngrok development dependency, is not used for production or cross-user caching, and has no patched release yet"
