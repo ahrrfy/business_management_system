@@ -67,13 +67,13 @@ function normalizeOptions(options: ProductCustomizationOption[] | undefined): Pr
     .filter((option) => option.value && option.label);
 }
 
-function normalizePriceDelta(value: string | undefined, subject: string): string {
+function normalizePriceDelta(value: string | undefined, subject: string, what = "تعذّر حفظ قالب التخصيص"): string {
   const normalized = String(value ?? "0").trim();
   if (!/^\d{1,13}(?:\.\d{1,2})?$/.test(normalized)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: appErrorMessage({
-        what: "تعذّر حفظ قالب التخصيص",
+        what,
         why: `فرق السعر في ${subject} يجب أن يكون مبلغاً غير سالب، بمنزلتين عشريتين على الأكثر، وضمن سعة النظام`,
         doThis: "صحّح فرق السعر ثم أعد الحفظ",
       }),
@@ -233,10 +233,26 @@ export async function saveProductCustomizationTemplate(input: CustomizationTempl
 }
 
 export async function setProductCustomizationTemplateActive(productId: number, isActive: boolean, _actor: Actor) {
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة." });
-  const template = (await db.select({ id: productCustomizationTemplates.id }).from(productCustomizationTemplates).where(eq(productCustomizationTemplates.productId, productId)).limit(1))[0];
-  if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "لا يوجد قالب تخصيص لهذا المنتج." });
-  await db.update(productCustomizationTemplates).set({ isActive }).where(eq(productCustomizationTemplates.id, Number(template.id)));
-  return { productId, isActive };
+  return withTx(async (tx) => {
+    const template = (await tx.select({ id: productCustomizationTemplates.id }).from(productCustomizationTemplates).where(eq(productCustomizationTemplates.productId, productId)).limit(1))[0];
+    if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "لا يوجد قالب تخصيص لهذا المنتج." });
+    if (isActive) {
+      const fields = await tx.select({
+        label: productCustomizationFields.label,
+        options: productCustomizationFields.optionsJson,
+        priceDelta: productCustomizationFields.priceDelta,
+      }).from(productCustomizationFields).where(and(
+        eq(productCustomizationFields.templateId, Number(template.id)),
+        eq(productCustomizationFields.isActive, true),
+      ));
+      for (const field of fields) {
+        normalizePriceDelta(String(field.priceDelta ?? "0"), `الحقل «${field.label}»`, "تعذّر تفعيل قالب التخصيص");
+        for (const option of field.options ?? []) {
+          normalizePriceDelta(option.priceDelta, `خيار «${option.label}» في حقل «${field.label}»`, "تعذّر تفعيل قالب التخصيص");
+        }
+      }
+    }
+    await tx.update(productCustomizationTemplates).set({ isActive }).where(eq(productCustomizationTemplates.id, Number(template.id)));
+    return { productId, isActive };
+  }, { gate: "NONE" });
 }

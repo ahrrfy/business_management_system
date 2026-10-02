@@ -68,6 +68,7 @@ import { normalizeArabicSearch, getStorefrontSearchSuggestions } from "@shared/s
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 import { BannerCarousel } from "@/components/store/BannerCarousel";
+import { serializeStorefrontCustomizationIdentity, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
@@ -150,17 +151,6 @@ export function getStorefrontCustomizationConfig(
   };
 }
 
-function dependencyMatches(
-  dependency: StorefrontCustomizationField["dependency"],
-  values: Record<string, string>,
-): boolean {
-  if (!dependency) return true;
-  const current = values[dependency.fieldKey] ?? "";
-  const expected = Array.isArray(dependency.value) ? dependency.value : [dependency.value];
-  const matches = expected.includes(current);
-  return dependency.operator === "notEquals" ? !matches : matches;
-}
-
 function CustomizationFieldControl({
   field,
   value,
@@ -208,12 +198,8 @@ function CustomizationFieldControl({
   return <input id={controlId} type={field.fieldType === "NUMBER" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} maxLength={field.maxLength ?? undefined} inputMode={field.fieldType === "NUMBER" ? "numeric" : undefined} placeholder={field.fieldType === "FILE" ? "اسم الملف أو مرجع التصميم" : field.label} className={`${common} placeholder:text-[#6c747b]`} />;
 }
 
-function serializeCustomization(customization?: StorefrontCustomization): string {
-  return customization ? JSON.stringify(customization) : "";
-}
-
 function customizationCartKey(productUnitId: number, customization?: StorefrontCustomization): string {
-  return `${productUnitId}:${serializeCustomization(customization)}`;
+  return `${productUnitId}:${serializeStorefrontCustomizationIdentity(customization)}`;
 }
 
 export function summarizeStorefrontCustomization(customization?: StorefrontCustomization): string | null {
@@ -378,10 +364,10 @@ export type StorefrontCheckoutAttempt = {
   createdAt: number;
 };
 
-function loadCart(): Map<string, CartLine> {
+export function loadCart(storage: Pick<Storage, "getItem"> = localStorage): Map<string, CartLine> {
   const m = new Map<string, CartLine>();
   try {
-    const raw = localStorage.getItem(CART_STORAGE_KEY);
+    const raw = storage.getItem(CART_STORAGE_KEY);
     if (!raw) return m;
     const arr = JSON.parse(raw) as unknown;
     if (!Array.isArray(arr)) return m;
@@ -390,11 +376,14 @@ function loadCart(): Map<string, CartLine> {
         const stockLimit = typeof rawLine.stockLimit === "number" && Number.isFinite(rawLine.stockLimit)
           ? Math.max(1, Math.min(Math.floor(rawLine.stockLimit), 999))
           : null;
+        const cartKey = customizationCartKey(rawLine.productUnitId, rawLine.customization);
+        const previous = m.get(cartKey);
+        const effectiveLimit = previous?.stockLimit == null ? stockLimit : stockLimit == null ? previous.stockLimit : Math.min(previous.stockLimit, stockLimit);
         const line = {
           ...rawLine,
-          stockLimit,
-          qty: Math.min(Math.max(1, Math.floor(rawLine.qty)), stockLimit ?? 999),
-          cartKey: typeof rawLine.cartKey === "string" && rawLine.cartKey ? rawLine.cartKey : customizationCartKey(rawLine.productUnitId, rawLine.customization),
+          stockLimit: effectiveLimit,
+          qty: Math.min((previous?.qty ?? 0) + Math.max(1, Math.floor(rawLine.qty)), effectiveLimit ?? 999),
+          cartKey,
         } as CartLine;
         m.set(line.cartKey, line);
       }
@@ -488,7 +477,7 @@ export function saveCheckoutAttempt(
 export function storefrontCheckoutFingerprint(cart: Map<string, CartLine>, form: CheckoutForm, couponCode: string | null = null): string {
   const lines = Array.from(cart.values())
     .sort((a, b) => a.cartKey.localeCompare(b.cartKey))
-    .map((line) => [line.cartKey, line.productUnitId, line.qty, Number(line.price).toFixed(2), serializeCustomization(line.customization)]);
+    .map((line) => [line.cartKey, line.productUnitId, line.qty, Number(line.price).toFixed(2), serializeStorefrontCustomizationIdentity(line.customization)]);
   return JSON.stringify({
     lines,
     name: form.name.trim(),
@@ -1844,10 +1833,11 @@ function StorefrontContent() {
     [detailQ.data, previewCustomizationTemplate],
   );
   const customizationValues = customizationDraft.values ?? {};
-  const visibleCustomizationFields = useMemo(
-    () => (customizationConfig?.fields ?? []).filter((field) => dependencyMatches(field.dependency, customizationValues)),
-    [customizationConfig, customizationValues],
-  );
+  const visibleCustomizationFields = useMemo(() => {
+    const fields = customizationConfig?.fields ?? [];
+    const visibleKeys = storefrontVisibleCustomizationFieldKeys(fields, customizationValues);
+    return fields.filter((field) => visibleKeys.has(field.fieldKey));
+  }, [customizationConfig, customizationValues]);
   const customizationValidation = useMemo(() => {
     if (!customizationConfig) return null;
     for (const field of visibleCustomizationFields) {
@@ -1863,9 +1853,8 @@ function StorefrontContent() {
   function updateCustomizationField(field: StorefrontCustomizationField, value: string) {
     setCustomizationDraft((previous) => {
       const values = { ...(previous.values ?? {}), [field.fieldKey]: value };
-      for (const candidate of customizationConfig?.fields ?? []) {
-        if (candidate.fieldKey !== field.fieldKey && !dependencyMatches(candidate.dependency, values)) delete values[candidate.fieldKey];
-      }
+      const visibleKeys = storefrontVisibleCustomizationFieldKeys(customizationConfig?.fields ?? [], values);
+      for (const key of Object.keys(values)) if (!visibleKeys.has(key)) delete values[key];
       const next: StorefrontCustomization = { ...previous, templateId: customizationConfig?.id ?? previous.templateId, kind: customizationConfig?.kind ?? previous.kind, values };
       if (field.fieldKey === "service") {
         next.service = value;
@@ -1880,7 +1869,10 @@ function StorefrontContent() {
   }
   function selectedCustomization(): StorefrontCustomization | undefined {
     if (!customizationConfig) return undefined;
-    const values = Object.fromEntries(Object.entries(customizationDraft.values ?? {}).filter(([, item]) => Boolean(item?.trim())));
+    const values = Object.fromEntries(visibleCustomizationFields.flatMap((field) => {
+      const value = customizationValues[field.fieldKey]?.trim() ?? "";
+      return value ? [[field.fieldKey, value]] : [];
+    }));
     const selections = visibleCustomizationFields.flatMap((field) => {
       const value = values[field.fieldKey]?.trim() ?? "";
       if (!value) return [];

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkoutQuoteFingerprint, checkoutRequestLines, checkoutSelectionFingerprint, checkoutSelectionIssue, checkoutSelectionNotes } from "@/lib/checkout-selection";
+import { checkoutQuoteFingerprint, checkoutRequestLines, checkoutSelectionFingerprint, checkoutSelectionIssue } from "@/lib/checkout-selection";
 import type { CartLine } from "@/shared/storefront";
 
 const line = {
@@ -38,14 +38,6 @@ describe("checkout selection persistence", () => {
       ...line,
       selectionDetails: { ...line.selectionDetails, productUnitId: 72, unitName: "درزن" },
     } as CartLine])).not.toBe(quotedCart);
-  });
-
-  it("provides a bounded fulfillment note until the server accepts structured details", () => {
-    const note = checkoutSelectionNotes([line]);
-    expect(note).toContain("أحمر — A5");
-    expect(note).toContain("الاسم: علي");
-    expect(note).toContain("× 2");
-    expect(note.length).toBeLessThanOrEqual(500);
   });
 
   it("allows separate customizations for the same unit because each remains a distinct order line", () => {

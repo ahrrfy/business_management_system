@@ -11,7 +11,7 @@ import {
   trackOnlineOrderForCustomer,
 } from "../onlineOrderService";
 import { getOnlineOrder } from "../storeAdmin/orderFulfillmentService";
-import { saveProductCustomizationTemplate } from "../productCustomizationService";
+import { saveProductCustomizationTemplate, setProductCustomizationTemplateActive } from "../productCustomizationService";
 import { truncateAllTables } from "./__testUtils__";
 
 function db() {
@@ -116,6 +116,29 @@ describe("online order tracking ownership", () => {
     }, actor)).rejects.toThrow(/فرق السعر/);
   });
 
+  it("يمنع إعادة تفعيل قالب موروث بفروق أسعار غير صالحة ويعيد خطأ إعداد مضبوطاً", async () => {
+    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GENERAL", title: "قالب موروث", isActive: false });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "style",
+      label: "النمط",
+      fieldType: "SELECT",
+      isRequired: true,
+      optionsJson: [{ value: "legacy", label: "قديم", priceDelta: "-5" }],
+      priceDelta: "0.00",
+    });
+    const actor = { userId: 1, branchId: 1, role: "admin" };
+    await expect(setProductCustomizationTemplateActive(1, true, actor)).rejects.toThrow(/فرق السعر/);
+    expect((await db().select({ isActive: s.productCustomizationTemplates.isActive }).from(s.productCustomizationTemplates).where(eq(s.productCustomizationTemplates.id, 1)))[0]?.isActive).toBe(false);
+
+    await db().update(s.productCustomizationTemplates).set({ isActive: true }).where(eq(s.productCustomizationTemplates.id, 1));
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { style: "legacy" } } }],
+    })).rejects.toThrow(/إعداد فرق السعر/);
+  });
+
   it("يقبل طول الحقل المضبوط حتى عشرة آلاف ثم يفرض حد القالب نفسه", async () => {
     await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
     await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "نص طويل" });
@@ -172,6 +195,16 @@ describe("online order tracking ownership", () => {
         dependencyJson: { fieldKey: "mode", operator: "equals", value: "text" },
         priceDelta: "0.00",
       },
+      {
+        templateId: 1,
+        fieldKey: "signature",
+        label: "التوقيع",
+        fieldType: "TEXT",
+        isRequired: false,
+        sortOrder: 30,
+        dependencyJson: { fieldKey: "message", operator: "notEquals", value: "blocked" },
+        priceDelta: "0.00",
+      },
     ]);
     await expect(quoteOnlineOrder({
       governorate: "baghdad",
@@ -179,6 +212,14 @@ describe("online order tracking ownership", () => {
         productUnitId: 1,
         quantity: 1,
         customization: { templateId: 1, values: { mode: "file", message: "قيمة مخفية" } },
+      }],
+    })).rejects.toThrow(/شرط ظهوره/);
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{
+        productUnitId: 1,
+        quantity: 1,
+        customization: { templateId: 1, values: { mode: "file", signature: "قيمة مخفية بالتبعية" } },
       }],
     })).rejects.toThrow(/شرط ظهوره/);
   });

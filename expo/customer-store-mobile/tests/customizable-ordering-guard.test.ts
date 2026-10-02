@@ -119,6 +119,8 @@ describe("customizable product online-ordering guard", () => {
     expect(issue).toBeNull();
     expect(requestLines).toEqual([{ productUnitId: 71, quantity: 1, customization: { templateId: 4, values: { name: "علي" } } }]);
     expect(networkCall).toHaveBeenCalledOnce();
+    const checkoutSource = readFileSync(fileURLToPath(new URL("../app/checkout.tsx", import.meta.url).toString()), "utf8");
+    expect(checkoutSource).not.toContain("checkoutSelectionNotes");
   });
 
   it("keeps the same structured unit available for checkout and sales quotes", () => {

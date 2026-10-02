@@ -1,8 +1,6 @@
 import {
   productOnlineOrderingIssue,
-  selectionDescription,
 } from "@/lib/product-selection";
-import { formatLatinNumber } from "./storefront-api";
 import type { CartLine } from "@/shared/storefront";
 
 export function checkoutRequestLines(lines: readonly CartLine[]) {
@@ -50,26 +48,10 @@ export function checkoutQuoteFingerprint(lines: readonly CartLine[]) {
   });
 }
 
-/**
- * قناة توافق مؤقتة مع عقد createOrder الحالي: يحفظ الموظف وصف الاختيار في ملاحظات الطلب.
- * لا تُستعمل للتسعير أبداً، وتستبدل بحقل structured selectionDetails عند إضافته خادمياً.
- */
-function selectionNotesText(lines: readonly CartLine[]) {
-  const body = lines
-    .map((line, index) => `${index + 1}) ${line.product.title} × ${formatLatinNumber(line.quantity)}: ${selectionDescription(line.selectionDetails)}`.replace(/[\r\n\t]+/g, " "))
-    .join("\n");
-  return `[تفاصيل الاختيارات]\n${body}`;
-}
-
 export function checkoutSelectionIssue(lines: readonly CartLine[], _maxLength = 500): string | null {
   for (const line of lines) {
     const onlineOrderingIssue = productOnlineOrderingIssue(line.product);
     if (onlineOrderingIssue) return onlineOrderingIssue;
   }
   return null;
-}
-
-export function checkoutSelectionNotes(lines: readonly CartLine[], maxLength = 500) {
-  const note = selectionNotesText(lines);
-  return note.length <= maxLength ? note : `${note.slice(0, Math.max(0, maxLength - 1))}…`;
 }

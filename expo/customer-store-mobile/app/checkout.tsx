@@ -28,7 +28,6 @@ import {
   checkoutRequestLines,
   checkoutSelectionFingerprint,
   checkoutSelectionIssue,
-  checkoutSelectionNotes,
 } from "@/lib/checkout-selection";
 import { selectionDescription } from "@/lib/product-selection";
 import {
@@ -217,7 +216,6 @@ export default function CheckoutScreen() {
         addressText: address.trim(),
         latitude,
         longitude,
-        notes: checkoutSelectionNotes(lines),
         lines: requestLines.map((line, index) => ({
           ...line,
           expectedUnitPrice: activeQuote.lines[index]!.unitPrice,

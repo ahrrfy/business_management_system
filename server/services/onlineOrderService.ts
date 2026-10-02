@@ -692,6 +692,30 @@ function customizationDependencyMatches(
   return dependency.operator === "notEquals" ? !matches : matches;
 }
 
+function visibleCustomizationFieldKeys(
+  fields: ReadonlyArray<{ fieldKey: string; dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null }>,
+  values: Record<string, string>,
+): Set<string> {
+  const byKey = new Map(fields.map((field) => [field.fieldKey, field]));
+  const resolved = new Map<string, boolean>();
+  const resolving = new Set<string>();
+  const isVisible = (fieldKey: string): boolean => {
+    if (resolved.has(fieldKey)) return resolved.get(fieldKey)!;
+    const field = byKey.get(fieldKey);
+    if (!field || resolving.has(fieldKey)) return false;
+    resolving.add(fieldKey);
+    const visible = field.dependency == null || (isVisible(field.dependency.fieldKey) && customizationDependencyMatches(field.dependency, values));
+    resolving.delete(fieldKey);
+    resolved.set(fieldKey, visible);
+    return visible;
+  };
+  return new Set(fields.filter((field) => isVisible(field.fieldKey)).map((field) => field.fieldKey));
+}
+
+function validCustomizationPriceDelta(value: unknown): boolean {
+  return /^\d{1,13}(?:\.\d{1,2})?$/.test(String(value ?? "0").trim());
+}
+
 async function resolveOnlineOrderCustomization(
   tx: Tx,
   product: {
@@ -749,9 +773,10 @@ async function resolveOnlineOrderCustomization(
   if (Object.entries(customization.values).some(([key, value]) => value !== "" && !knownKeys.has(key))) {
     throw customizationInputError("BAD_REQUEST", `تعذّر تخصيص «${product.productName}»`, "وصل حقل تخصيص غير موجود في القالب الحالي", "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الظاهرة فقط");
   }
+  const visibleFieldKeys = visibleCustomizationFieldKeys(fields, customization.values);
   const hiddenSubmittedField = fields.find((field) =>
     Boolean((customization.values[field.fieldKey] ?? "").trim())
-    && !customizationDependencyMatches(field.dependency ?? null, customization.values));
+    && !visibleFieldKeys.has(field.fieldKey));
   if (hiddenSubmittedField) {
     throw customizationInputError(
       "BAD_REQUEST",
@@ -763,7 +788,7 @@ async function resolveOnlineOrderCustomization(
   let priceDelta = money(0);
   const values: OnlineOrderCustomizationSnapshot["values"] = [];
   for (const field of fields) {
-    if (!customizationDependencyMatches(field.dependency ?? null, customization.values)) continue;
+    if (!visibleFieldKeys.has(field.fieldKey)) continue;
     const value = (customization.values[field.fieldKey] ?? "").trim();
     if (field.isRequired && !value) {
       throw customizationInputError("BAD_REQUEST", `حقل «${field.label}» مطلوب`, `تفاصيل تخصيص «${product.productName}» لم تتضمن هذا الحقل الإلزامي`, "أكمل الحقل في صفحة المنتج ثم أعد إضافة الصنف");
@@ -780,11 +805,16 @@ async function resolveOnlineOrderCustomization(
     if (field.fieldType === "NUMBER" && (!Number.isFinite(Number(value)) || value.length > 40)) {
       throw customizationInputError("BAD_REQUEST", `قيمة «${field.label}» غير صالحة`, "هذا الحقل يقبل رقماً فقط", "اكتب رقماً صالحاً في الحقل ثم أعد المحاولة");
     }
+    if (!validCustomizationPriceDelta(field.priceDelta) || !validCustomizationPriceDelta(selectedOption?.priceDelta)) {
+      throw customizationInputError(
+        "CONFLICT",
+        `تعذّر تسعير تخصيص «${product.productName}»`,
+        "إعداد فرق السعر في قالب التخصيص غير صالح",
+        "تواصل معنا لتصحيح أسعار خيارات التخصيص قبل إتمام الطلب",
+      );
+    }
     const fieldDelta = money(field.priceDelta ?? 0);
     const optionDelta = money(selectedOption?.priceDelta ?? 0);
-    if (!fieldDelta.isFinite() || fieldDelta.lt(0) || !optionDelta.isFinite() || optionDelta.lt(0)) {
-      throw new Error(`Invalid customization price delta for template ${template.id}`);
-    }
     priceDelta = priceDelta.plus(fieldDelta).plus(optionDelta);
     if (!priceDelta.isFinite() || priceDelta.gt(MAX_ONLINE_ORDER_MONEY)) {
       throw customizationInputError(

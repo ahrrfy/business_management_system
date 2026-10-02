@@ -31,6 +31,7 @@ import {
   collectStorefrontFailures,
   formatStorefrontReservationDeadline,
   getStorefrontCustomizationConfig,
+  loadCart,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
@@ -54,6 +55,7 @@ import {
   type CheckoutForm,
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
   it("يفصل الإضافة المباشرة عن المنتجات التي تحتاج اختياراً", () => {
@@ -107,6 +109,15 @@ describe("storefront customization", () => {
     const configured = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { templateId: 10, kind: "PRINT", values: { service: "text", message: "سارة" }, selections: [{ fieldKey: "service", label: "نوع التنفيذ", value: "text", displayValue: "اسم أو عبارة" }, { fieldKey: "message", label: "التفاصيل", value: "سارة", displayValue: "سارة" }] } }, "2500");
     expect(configured.size).toBe(1);
     expect(summarizeStorefrontCustomization(Array.from(configured.values())[0]?.customization)).toBe("نوع التنفيذ: اسم أو عبارة • التفاصيل: سارة");
+    const refreshed = addStorefrontCartLine(configured, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { templateId: 10, kind: "PRINT", values: { message: "سارة", service: "text" }, selections: [{ fieldKey: "message", label: "النص", value: "سارة", displayValue: "سارة" }], priceDelta: "250.00" } }, "2750");
+    expect(refreshed.size).toBe(1);
+    expect(Array.from(refreshed.values())[0]).toMatchObject({ qty: 2, price: "2750" });
+    const restored = loadCart({ getItem: () => JSON.stringify([
+      { ...Array.from(configured.values())[0], cartKey: "legacy-old" },
+      { ...Array.from(refreshed.values())[0], cartKey: "legacy-new", qty: 1 },
+    ]) });
+    expect(restored.size).toBe(1);
+    expect(Array.from(restored.values())[0]?.qty).toBe(2);
     expect(addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true }, "2500").size).toBe(0);
     const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
     expect(source).not.toContain("detailQ.data.isCustomizable ? (");
@@ -114,6 +125,15 @@ describe("storefront customization", () => {
     expect(source).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
     expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
     expect(source).not.toContain("cartHasUnsupportedCustomization");
+  });
+
+  it("hides dependent customization fields transitively", () => {
+    const fields = [
+      { fieldKey: "mode", dependency: null },
+      { fieldKey: "message", dependency: { fieldKey: "mode", operator: "equals" as const, value: "text" } },
+      { fieldKey: "signature", dependency: { fieldKey: "message", operator: "notEquals" as const, value: "blocked" } },
+    ];
+    expect(Array.from(storefrontVisibleCustomizationFieldKeys(fields, { mode: "file", message: "stale", signature: "hidden" }))).toEqual(["mode"]);
   });
 });
 
