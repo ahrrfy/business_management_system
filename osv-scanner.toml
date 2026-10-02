@@ -1,30 +1,3 @@
-# Configuration for OSV-Scanner dependency audit
-
 [[IgnoredVulns]]
-id = "GHSA-6j4f-fj2g-mc7p"
-reason = "Transitive build/dev dependency (brace-expansion). Not exposed in production runtime."
-
-[[IgnoredVulns]]
-id = "GHSA-q2hr-2g5m-vwhr"
-reason = "Transitive build/dev dependency (brace-expansion). Not exposed in production runtime."
-
-[[IgnoredVulns]]
-id = "GHSA-qhr7-859c-m2p7"
-reason = "Transitive build/dev dependency (brace-expansion). Not exposed in production runtime."
-
-[[IgnoredVulns]]
-id = "GHSA-hrr3-gc8f-f4qj"
-reason = "Transitive dev dependency in vite-plugin-pwa (fast-uri). Not exposed in production runtime."
-
-[[IgnoredVulns]]
-id = "GHSA-h3mg-xc3c-68pw"
-reason = "Transitive dependency in express-rate-limit (ip-address). Validated in reverse proxy boundary."
-
-[[IgnoredVulns]]
-id = "GHSA-j6r3-76f7-8jcv"
-reason = "Transitive dependency in express-rate-limit (ip-address). Validated in reverse proxy boundary."
-
-[[IgnoredVulns]]
-id = "GHSA-gfhx-hw2g-v5hg"
-reason = "Transitive build/dev dependency (serialize-javascript). Not exposed in production runtime."
-
+id = "GHSA-86w9-cpqp-85rv"
+reason = "node-forge is pulled only by Expo CLI tooling, is not bundled in the native app runtime, and has no patched release yet"

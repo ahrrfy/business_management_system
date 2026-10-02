@@ -9,13 +9,29 @@ const workflowPath = resolve(
 const workflow = readFileSync(workflowPath, "utf8");
 
 describe("CI failure diagnostics workflow policy", () => {
-  it("يجمع تشخيصاً للفشل الفعلي فقط مع إدخال يدوي محكوم", () => {
+  it("يعالج التشغيل المكتمل للفرع الافتراضي فقط مع إدخال يدوي محكوم", () => {
     expect(workflow).toContain("workflow_run:");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("types: [completed]");
-    expect(workflow).toContain('"failure","timed_out","action_required"');
+    expect(workflow).toContain(
+      "github.event.workflow_run.head_branch == github.event.repository.default_branch",
+    );
+    expect(workflow).toContain(
+      '"success","failure","timed_out","action_required"',
+    );
     expect(workflow).not.toContain("workflow_run.conclusion != 'success'");
     expect(workflow).toContain("run_id:");
+  });
+
+  it("يستخدم هوية مستقرة لكل workflow وفرع ويغلق القضية عند عودة CI إلى الأخضر", () => {
+    expect(workflow).toContain("ci-failure-diagnostic:key:");
+    expect(workflow).toContain('.toString("base64url")');
+    expect(workflow).toContain("github.paginate");
+    expect(workflow).toContain("github.rest.issues.update");
+    expect(workflow).toContain('state: "closed"');
+    expect(workflow).toContain('state_reason: "completed"');
+    expect(workflow).toContain("github.rest.issues.create");
+    expect(workflow).not.toContain("ci-failure-diagnostic:run-${run.id}");
   });
 
   it("يحصر الصلاحيات في قراءة Actions وإنشاء Issue تشخيصي", () => {

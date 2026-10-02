@@ -340,6 +340,7 @@ export default defineConfig({
       "scripts/provision-worker-runtime-policy.test.ts",
       "scripts/__tests__/hrBridgeIntentLock.test.ts",
       "scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts",
+      "scripts/__tests__/dependencySecurityWorkflow.test.ts",
       "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
       "scripts/__tests__/rawSelectGuard.test.ts",
       // م٢ ق١١ — مُشتقّ الخطوة التالية (`shared/nextAction.ts`) على الخادم + رقاقة العرض.
