@@ -7,14 +7,13 @@ type DC = RouterOutputs["reports"]["dayCloseReconciliation"];
 
 interface DirectOperationsPanelProps {
   direct: DC["directOperations"];
-  totals: DC["totals"];
 }
 
 /**
  * لوحة العمليات والتدفقات النقدية المباشرة (خارج أدراج الورديات).
  * توثق سندات القبض RV والمبيعات وسندات الصرف PV المباشرة لمنع الفائض الصامت.
  */
-export function DirectOperationsPanel({ direct, totals }: DirectOperationsPanelProps) {
+export function DirectOperationsPanel({ direct }: DirectOperationsPanelProps) {
   if (!direct || direct.receiptCount === 0) return null;
 
   return (
@@ -112,7 +111,7 @@ export function DirectOperationsPanel({ direct, totals }: DirectOperationsPanelP
               {fmtAr(direct.netCash)}
             </p>
             <p className="mt-2 text-[11px] text-muted-foreground border-t pt-1.5">
-              يُضاف إلى نقد الأدراج لحساب إجمالي نقد اليوم الفعلي ({fmtAr(totals?.expected ?? direct.netCash)} د.ع).
+              هذا صافي حركة الخزينة المباشرة خلال اليوم. يدخل تلقائياً في رصيد الخزينة التراكمي، ولا يُضاف يدوياً إلى نقد الأدراج.
             </p>
           </div>
         </div>

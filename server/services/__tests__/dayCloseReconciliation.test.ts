@@ -375,7 +375,98 @@ describe("dayCloseReconciliation — الحوكمة عبر الراوتر (I6)",
 });
 
 describe("مطابقة النقد المباشر والخزينة — منع الفائض الصامت (Zero Silent Cash Leakage)", () => {
-  it("R1+R2: إدراج سند قبض مباشر (RV) بمبلغ 3,540,950 د.ع يرفع المتوقَّع ويطابق النقد الفعلي 13,568,250 د.ع بلا فائض صامت", async () => {
+  it("يعرض الرصيد المرحّل حتى في يوم بلا حركة ولا وردية", async () => {
+    const res = await report(1);
+
+    expect(res.shifts).toEqual([]);
+    expect(res.directOperations.receiptCount).toBe(0);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: true,
+    });
+  });
+
+  it("يجمع الموقف النقدي النهائي لكل الفروع في العرض الافتراضي", async () => {
+    const res = await report();
+
+    expect(res.cashPosition).toMatchObject({
+      branchCount: 2,
+      expectedTreasuryCash: "2000000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "2000000.00",
+      isReadyForFinalCount: true,
+    });
+  });
+
+  it("يحفظ معادلة الموقع أثناء الوردية: خزينة + درج مفتوح + عهدة بالطريق", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const invoiceId = await seedInvoice(1);
+    await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "50000.00", invoiceId, approvalStatus: "APPROVED" });
+    await insertReceipt({ shiftId, branchId: 1, direction: "OUT", amount: "40000.00", referenceNumber: "CD-1-POSITION", approvalStatus: "APPROVED" });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "40000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-1-POSITION",
+      createdBy: CASHIER1,
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "900000.00",
+      expectedDrawersCash: "110000.00",
+      cashInTransit: "40000.00",
+      expectedCashOnHand: "1050000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("لا يُسقط نقداً متبقياً في درج وردية مغلقة تاريخية ولا يسمح باعتباره جرداً نهائياً", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const invoiceId = await seedInvoice(1);
+    await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "50000.00", invoiceId, approvalStatus: "APPROVED" });
+    await insertReceipt({ shiftId, branchId: 1, direction: "OUT", amount: "100000.00", referenceNumber: "CH-LEGACY-PARTIAL", approvalStatus: "APPROVED" });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "100000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-LEGACY-PARTIAL",
+      createdBy: ADMIN,
+    });
+    await db().update(s.shifts).set({
+      status: "CLOSED",
+      closedAt: new Date(`${DATE}T18:00:00.000Z`),
+      countedCash: "150000.00",
+      expectedCash: "150000.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    }).where(eq(s.shifts.id, shiftId));
+
+    const res = await report(1);
+    expect(res.totals.retainedInDrawer).toBe("50000.00");
+    expect(res.totals.physicalDrawerCash).toBe("50000.00");
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      expectedDrawersCash: "50000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1050000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("R1+R2: يفصل حركة اليوم عن موضع النقد النهائي بعد إقفال الوردية", async () => {
     // تمويل الخزينة لتغطية عهدة افتتاح الوردية (مستبعد من الإيرادات المباشرة عبر بادئة TEST-TREASURY)
     await db().insert(s.receipts).values({
       branchId: 1,
@@ -418,15 +509,25 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.netCash).toBe("3540950.00");
     expect(res.directOperations.receiptCount).toBe(1);
 
-    // التحقق من المجاميع الكاملة: تشمل الوردية + التدفق المباشر
+    // حركة اليوم تشرح ما وقع، لكنها ليست الرصيد النقدي التراكمي الموجود في الفرع.
     expect(res.totals.shiftExpected).toBe("10027300.00");
     expect(res.totals.directNetCash).toBe("3540950.00");
     expect(res.totals.collectionsCash).toBe("3540950.00");
     expect(res.totals.cashIn).toBe("3568250.00"); // 27,300 مبيعات وردية + 3,540,950 تحصيل مباشر
-    // المتوقَّع الشامل = 10,027,300 + 3,540,950 = 13,568,250 د.ع (يطابق النقد الفعلي تماماً!)
+    // صافي حركة اليوم = 10,027,300 + 3,540,950 = 13,568,250 د.ع.
     expect(res.totals.expected).toBe("13568250.00");
-    expect(res.totals.closedExpected).toBe("13568250.00");
-    expect(res.totals.physicalDrawerCash).toBe("13568250.00");
+    expect(res.totals.closedExpected).toBe("10027300.00");
+    expect(res.totals.physicalDrawerCash).toBe("0.00");
+
+    // الرصيد النهائي تراكمي: مليون مرحّل + 20 مليون تمويل - 10 ملايين عهدة
+    // + 10,027,300 إغلاق وردية + 3,540,950 تحصيل مباشر.
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "24568250.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "24568250.00",
+      isReadyForFinalCount: true,
+    });
 
     // ثوابت الجمع الشاملة
     expect(Number(res.totals.salesCash) + Number(res.totals.collectionsCash) + Number(res.totals.otherIn)).toBe(Number(res.totals.cashIn));
@@ -455,7 +556,14 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.totals.collectionsCash).toBe("3540950.00");
     expect(res.totals.cashIn).toBe("3540950.00");
     expect(res.totals.expected).toBe("3540950.00");
-    expect(res.totals.physicalDrawerCash).toBe("3540950.00");
+    expect(res.totals.physicalDrawerCash).toBe("0.00");
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "4540950.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "4540950.00",
+      isReadyForFinalCount: true,
+    });
   });
 
   it("R2: تفكيك الحركات المباشرة المتعددة (بيع، تحصيل، مرتجع، مصروف) مع حفظ التوازن", async () => {
@@ -493,6 +601,12 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.expensesCash).toBe("100000.00");
     expect(res.directOperations.operatingOut).toBe("150000.00");
     expect(res.directOperations.netCash).toBe("550000.00");
+    expect(res.directMovements).toMatchObject({
+      count: 4,
+      in: "700000.00",
+      out: "150000.00",
+      net: "550000.00",
+    });
 
     expect(Number(res.totals.salesCash) + Number(res.totals.collectionsCash) + Number(res.totals.otherIn)).toBe(Number(res.totals.cashIn));
     expect(Number(res.totals.returnsCash) + Number(res.totals.expensesCash) + Number(res.totals.otherOut)).toBe(Number(res.totals.operatingOut));
@@ -682,10 +796,14 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     // تقرير اليوم يرى حركة 600,000 المعتمدة اليوم، ويستبعد 900,000 المعتمدة غداً
     expect(resToday.directOperations.collectionsCash).toBe("600000.00");
     expect(resToday.totals.collectionsCash).toBe("600000.00");
+    expect(resToday.directMovements).toMatchObject({ count: 1, net: "600000.00" });
+    expect(resToday.directMovements.details[0]?.time.slice(0, 10)).toBe(DATE);
 
     // تقرير الغد يرى حركة 900,000
     const resTomorrow = await getDayCloseReconciliation({ date: nextDateStr, branchId: 1 });
     expect(resTomorrow.directOperations.collectionsCash).toBe("900000.00");
+    expect(resTomorrow.directMovements).toMatchObject({ count: 1, net: "900000.00" });
+    expect(resTomorrow.directMovements.details[0]?.time.slice(0, 10)).toBe(nextDateStr);
   });
 
   it("R2 (Adversarial): عدم استبعاد سندات القبض/الصرف الرسمية بسبب تطابق مرجعي مصادف (CT-/TF- with voucherNumber)", async () => {
@@ -868,8 +986,8 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.totals.shiftExpected).toBe("10027300.00");
     expect(res.totals.directNetCash).toBe("2629500.00");
     expect(res.totals.expected).toBe("12656800.00");
-    expect(res.totals.closedExpected).toBe("12656800.00");
-    expect(res.totals.physicalDrawerCash).toBe("12656800.00");
+    expect(res.totals.closedExpected).toBe("10027300.00");
+    expect(res.totals.physicalDrawerCash).toBe("0.00");
 
     // ج) الحفاظ على العمليات المشروعة في المجاميع الكلية
     expect(res.totals.collectionsCash).toBe("2779500.00");

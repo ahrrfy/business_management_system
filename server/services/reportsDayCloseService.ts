@@ -49,6 +49,8 @@ import {
 } from "./cash/custodyBlindCount";
 import { money, toDbMoney } from "./money";
 import { expenseBucketLabel } from "../../shared/expenseCategories";
+import { buildDailyCashEvidenceTx } from "./cashDailyReconciliationService";
+import { withTx } from "./tx";
 
 /** تفصيل حركة نقدية واحدة في درج الوردية (لتوضيح مصدر الإيراد ومستفيد المصروف). */
 export interface DayCloseShiftMovementItem {
@@ -149,6 +151,7 @@ export interface DayCloseTotals {
   retainedInDrawer: string;
   closedExpected: string;
   openRunningExpected: string;
+  /** النقد الموجود الآن في الأدراج فقط: المتبقّي من المغلقة + الجاري في المفتوحة. */
   physicalDrawerCash: string;
   // تفكيك المقبوضات/المصروفات المباشرة (الخزينة/خارج الورديات)
   directSalesCash: string;
@@ -195,6 +198,15 @@ export interface DayCloseReconciliationResult {
       avgRatePct: string;
     }>;
   };
+  /** موضع النقد النهائي، لا حجم الحركة خلال اليوم. يُحجب إن تعذّر إثبات رقم كامل. */
+  cashPosition: {
+    branchCount: number;
+    expectedTreasuryCash: string;
+    expectedDrawersCash: string;
+    cashInTransit: string;
+    expectedCashOnHand: string;
+    isReadyForFinalCount: boolean;
+  } | null;
 }
 
 interface ReceiptAgg {
@@ -253,6 +265,7 @@ export async function getDayCloseReconciliation(opts: {
     balancedCount: 0, driftCount: 0, overCount: 0, shortCount: 0,
     directMovements: { count: 0, net: '0.00', in: '0.00', out: '0.00', details: [] },
     receptionExtras: { fundedDrafts: { count: 0, heldNet: "0.00" }, discountByUser: [] },
+    cashPosition: null,
   };
 
   const db = getDb();
@@ -479,10 +492,6 @@ export async function getDayCloseReconciliation(opts: {
   const directOtherOut = directCashOut.minus(directReturns).minus(directExpenses);
   const directOperatingOut = directCashOut;
   const directNetCash = directCashIn.minus(directOperatingOut);
-
-  if (visibleShiftRows.length === 0 && directCount === 0) {
-    return { ...base, withheldBlindCountShiftCount };
-  }
 
   // جلب تفاصيل الحركات النقدية الفردية لكل وردية لبيان مصدر الإيراد ومستفيد المصروف
   const movementsByShift = new Map<number, DayCloseShiftMovementItem[]>();
@@ -801,7 +810,7 @@ export async function getDayCloseReconciliation(opts: {
   const directMovementsRes = await db
     .select({
       id: receipts.id,
-      createdAt: receipts.createdAt,
+      eventAt: sql<Date>`${eventAt}`.as("eventAt"),
       direction: receipts.direction,
       amount: receipts.amount,
       referenceNumber: receipts.referenceNumber,
@@ -812,17 +821,8 @@ export async function getDayCloseReconciliation(opts: {
     })
     .from(receipts)
     .leftJoin(users, eq(users.id, receipts.createdBy))
-    .where(
-      and(
-        eq(receipts.cashBucket, 'TREASURY'),
-        eq(receipts.paymentMethod, 'CASH'),
-        inArray(receipts.status, ['COMPLETED']),
-        gte(receipts.createdAt, start),
-        lt(receipts.createdAt, endExclusive),
-        opts.branchId != null ? eq(receipts.branchId, opts.branchId) : undefined
-      )
-    )
-    .orderBy(receipts.createdAt);
+    .where(and(...directConds))
+    .orderBy(eventAt, receipts.id);
 
   const [fundedRes, discRes] = await Promise.all([
     db.execute(sql`
@@ -884,6 +884,56 @@ export async function getDayCloseReconciliation(opts: {
     receiptCount: directCount,
   };
 
+  const cashPosition = withheldBlindCountShiftCount > 0
+    ? null
+    : await withTx(async (tx) => {
+        let scopedBranches: Array<{ id: number }>;
+        if (opts.branchId != null) {
+          scopedBranches = [{ id: opts.branchId }];
+        } else {
+          // لا نكرّر بناء الأدلة لكل وحدة خاملة: الفروع المؤثرة هي التي تحمل نقد خزينة
+          // أو وردية ظاهرة/مفتوحة، مع بقاء المجموع شاملاً لكل النقد التاريخي المتراكم.
+          const [treasuryBranches, openShiftBranches] = await Promise.all([
+            tx.selectDistinct({ id: receipts.branchId }).from(receipts).where(and(
+              eq(receipts.cashBucket, "TREASURY"),
+              eq(receipts.paymentMethod, "CASH"),
+              lt(eventAt, endExclusive),
+            )),
+            tx.selectDistinct({ id: shifts.branchId }).from(shifts).where(eq(shifts.status, "OPEN")),
+          ]);
+          const ids = new Set<number>(lines.map((line) => line.branchId));
+          for (const row of [...treasuryBranches, ...openShiftBranches]) ids.add(Number(row.id));
+          scopedBranches = Array.from(ids, (id) => ({ id }));
+        }
+
+        let expectedTreasuryCash = money(0);
+        let cashInTransit = money(0);
+        let evidenceOpenShiftCount = 0;
+        let isReadyForFinalCount = true;
+        for (const branch of scopedBranches) {
+          const evidence = await buildDailyCashEvidenceTx(tx, Number(branch.id), opts.date);
+          expectedTreasuryCash = expectedTreasuryCash.plus(evidence.expectedTreasuryCash);
+          cashInTransit = cashInTransit.plus(evidence.pendingCustodyCash);
+          evidenceOpenShiftCount += evidence.openShiftCount;
+          isReadyForFinalCount &&=
+            evidence.openShiftCount === 0 && evidence.unmatchedShiftCount === 0 &&
+            evidence.pendingCustodyCount === 0 && evidence.custodyVarianceCount === 0;
+        }
+
+        // ورديةٌ مفتوحة من يوم سابق لا تظهر في جدول هذا اليوم؛ لا ننشر رقماً نهائياً ناقصاً.
+        if (evidenceOpenShiftCount !== openCount) return null;
+        const expectedDrawersCash = tRetained.plus(tOpenRunningExpected);
+        isReadyForFinalCount &&= expectedDrawersCash.isZero();
+        return {
+          branchCount: scopedBranches.length,
+          expectedTreasuryCash: toDbMoney(expectedTreasuryCash),
+          expectedDrawersCash: toDbMoney(expectedDrawersCash),
+          cashInTransit: toDbMoney(cashInTransit),
+          expectedCashOnHand: toDbMoney(expectedTreasuryCash.plus(expectedDrawersCash).plus(cashInTransit)),
+          isReadyForFinalCount,
+        };
+      }, { gate: "NONE" });
+
   return {
     date: opts.date,
     branchId: opts.branchId ?? null,
@@ -899,7 +949,7 @@ export async function getDayCloseReconciliation(opts: {
         else tOut = tOut.plus(amt);
         return {
           id: r.id,
-          time: r.createdAt.toISOString(),
+          time: new Date(r.eventAt).toISOString(),
           userName: r.userName,
           direction: r.direction as 'IN' | 'OUT',
           amount: toDbMoney(amt),
@@ -921,6 +971,7 @@ export async function getDayCloseReconciliation(opts: {
       },
       discountByUser,
     },
+    cashPosition,
     totals: {
       shiftCount: lines.length,
       openCount,
@@ -940,9 +991,9 @@ export async function getDayCloseReconciliation(opts: {
       counted: toDbMoney(tCounted),
       drift: toDbMoney(tDrift),
       retainedInDrawer: toDbMoney(tRetained),
-      closedExpected: toDbMoney(tClosedExpected.plus(directNetCash)),
+      closedExpected: toDbMoney(tClosedExpected),
       openRunningExpected: toDbMoney(tOpenRunningExpected),
-      physicalDrawerCash: toDbMoney(tCounted.plus(tOpenRunningExpected).plus(directNetCash)),
+      physicalDrawerCash: toDbMoney(tRetained.plus(tOpenRunningExpected)),
       directSalesCash: toDbMoney(directSales),
       directCollectionsCash: toDbMoney(directCollections),
       directOtherIn: toDbMoney(directOtherIn),
