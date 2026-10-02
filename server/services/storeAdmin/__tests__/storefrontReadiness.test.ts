@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { evaluateStorefrontProductEligibility } from "../../storefrontEligibilityService";
+import {
+  evaluateStorefrontProductEligibility,
+  evaluateStorefrontUnitEligibility,
+} from "../../storefrontEligibilityService";
 
 const unit = (over: Partial<{
   isActive: boolean;
@@ -53,5 +56,16 @@ describe("storefront eligibility contract", () => {
     expect(evaluateStorefrontProductEligibility(product([
       unit({ retailPrice: null, stockBase: 100 }),
     ])).reasons).toEqual(["NO_RETAIL_PRICE"]);
+  });
+
+  it("يبيع الخدمة بلا اشتراط صف مخزون مادي", () => {
+    expect(evaluateStorefrontProductEligibility({
+      ...product([unit({ stockBase: null })]),
+      isService: true,
+    })).toEqual({ publishable: true, available: true, reasons: [] });
+    expect(evaluateStorefrontUnitEligibility({
+      ...unit({ stockBase: null }),
+      isService: true,
+    })).toEqual({ publishable: true, available: true, reasons: [] });
   });
 });

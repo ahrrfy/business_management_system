@@ -246,6 +246,8 @@ export function snapshotToUpdateInput(doc: ProductSnapshotDocument, reason: stri
     isActive: doc.isActive,
     showInReception: doc.showInReception,
     showInPrintPos: doc.showInPrintPos,
+    showInQuotations: doc.showInQuotations,
+    showInAdvancedSales: doc.showInAdvancedSales,
     isConsignment: doc.isConsignment,
     consignorId: doc.consignorId,
     unitTemplate: doc.unitTemplate.map((u) => ({

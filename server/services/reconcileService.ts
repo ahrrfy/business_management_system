@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import {
@@ -24,6 +25,7 @@ import { deriveCashInHandFromLedger } from "@shared/partyExposure";
 import {
   ACCOUNT_ROLES,
   ALL_POSTING_PROFILES,
+  stableJson,
   verifyPostingIntentEvidence,
   type JournalLine,
 } from "./accounting/postingEngine";
@@ -264,6 +266,51 @@ async function runDoubleEntryReconciliation(
     // تحققُه المستقل يكون عند الكتابة + مطابقة الأرصدة التشغيلية. هنا نحافظ على مقارنة
     // legacy فقط، وننسخ صافي أسطر intent إلى جانب expected كي لا نخلق drift زائفاً.
     if (row.postingProfile || row.postingIntentJson || row.postingIntentHash) {
+      if (row.postingProfile === "MANUAL_JOURNAL") {
+        try {
+          if (!row.postingIntentJson || !row.postingIntentHash) {
+            throw new Error("Missing posting evidence for MANUAL_JOURNAL");
+          }
+          let intentRaw: any = row.postingIntentJson;
+          if (typeof intentRaw === "string") {
+            intentRaw = JSON.parse(intentRaw);
+          }
+          const canonicalString = stableJson(intentRaw);
+          const computedHash = createHash("sha256").update(canonicalString, "utf8").digest("hex");
+          if (computedHash !== row.postingIntentHash) {
+            throw new Error("postingIntentHash mismatch for MANUAL_JOURNAL");
+          }
+          const lines: Array<{ role: string; debit: string; credit: string }> = Array.isArray(intentRaw.lines)
+            ? intentRaw.lines
+            : [];
+          observedProfiles.add("MANUAL_JOURNAL");
+          for (const line of lines) {
+            addNet(
+              expectedByRole,
+              line.role,
+              String(line.debit ?? "0"),
+              String(line.credit ?? "0"),
+            );
+          }
+          if (head) {
+            const actualForHead = actualLinesByJournal.get(Number(head.id)) ?? [];
+            if (
+              head.status !== (lines.length === 0 ? "MEMO" : "POSTED") ||
+              head.postingProfile !== "MANUAL_JOURNAL" ||
+              canonicalLineMultiset(journalLinesOf(lines as any)) !==
+                canonicalLineMultiset(actualForHead)
+            ) {
+              sourceMismatchCount += 1;
+            }
+          } else {
+            sourceMismatchCount += 1;
+          }
+        } catch {
+          unreconstructableCount += 1;
+        }
+        continue;
+      }
+
       try {
         const intent = verifyPostingIntentEvidence({
           expectedEntryType: row.entryType,

@@ -13,7 +13,11 @@ import { AssetStatusBadge, CategoryIcon, iqd } from "@/lib/assets/ui";
 import { assetSettlementPresentation } from "@/lib/assetAccrualStatus";
 import { ASSET_CATEGORIES, ASSET_STATUSES, assetCategoryLabel, assetStatusLabel } from "@shared/assets";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { useMemo } from "react";
+import { ImportDialog } from "@/components/import/ImportDialog";
+import { ASSET_FIELDS, ASSET_IMPORT_META } from "@/lib/importFields";
+import type { AssetImportRow } from "@/lib/importTypes";
+import { notify } from "@/lib/notify";
+import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { selectClsSm } from "@/lib/ui/formStyles";
 
@@ -77,6 +81,20 @@ const assetColumns: ColumnDef<AssetRow, unknown>[] = [
   { id: "purchaseDate", header: "تاريخ الشراء", accessorFn: (r) => r.purchaseDate, meta: { kind: "date" }, cell: ({ row }) => row.original.purchaseDate },
   { id: "purchaseValue", header: "قيمة الشراء", accessorFn: (r) => iqd(r.purchaseValue), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.purchaseValue) },
   {
+    id: "openingDepreciation",
+    header: "إهلاك ما قبل النظام",
+    accessorFn: (r) => iqd((r as any).openingDepreciation ?? 0),
+    meta: { kind: "money" },
+    cell: ({ row }) => <span className="tabular-nums" dir="ltr">{iqd((row.original as any).openingDepreciation ?? 0)}</span>,
+  },
+  {
+    id: "accumulated",
+    header: "مجمع الإهلاك",
+    accessorFn: (r) => iqd(r.accumulated ?? 0),
+    meta: { kind: "money" },
+    cell: ({ row }) => <span className="tabular-nums" dir="ltr">{iqd(row.original.accumulated ?? 0)}</span>,
+  },
+  {
     id: "bookValue",
     header: "القيمة الدفترية",
     accessorFn: (r) => iqd(r.bookValue),
@@ -138,8 +156,15 @@ export default function AssetRegister() {
     ["manager"],
   );
   const [f, setF, resetF] = useUrlFilters({ q: "", category: "", branchId: "", status: "", includeDisposed: "" });
+  const [importOpen, setImportOpen] = useState(false);
+  const utils = trpc.useUtils();
+  const importMut = trpc.assets.import.useMutation();
 
   const opts = trpc.assets.formOptions.useQuery();
+  const report = trpc.assets.registerReport.useQuery({
+    category: (f.category || undefined) as never,
+    branchId: f.branchId ? Number(f.branchId) : undefined,
+  });
   const list = trpc.assets.list.useQuery({
     category: (f.category || undefined) as never,
     branchId: f.branchId ? Number(f.branchId) : undefined,
@@ -163,8 +188,43 @@ export default function AssetRegister() {
     <div className="space-y-4">
       <PageHeader
         title="سجلّ الأصول"
-        description="قائمة الأصول الثابتة — القيم الدفترية، العُهد، الحالة والتسويات."
+        description="قائمة الأصول الثابتة وفق المعيار الدولي IAS 16 — التكلفة، إهلاك ما قبل النظام، إهلاك النظام، ومجمع الإهلاك."
       />
+
+      {report.data?.kpis && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <Card className="p-3 bg-card/60">
+            <div className="text-muted-foreground text-xs mb-1">إجمالي التكلفة التاريخية</div>
+            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalCost)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            </div>
+          </Card>
+          <Card className="p-3 bg-card/60">
+            <div className="text-muted-foreground text-xs mb-1">إهلاك ما قبل النظام</div>
+            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalOpeningDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            </div>
+          </Card>
+          <Card className="p-3 bg-card/60">
+            <div className="text-muted-foreground text-xs mb-1">إهلاك النظام المرحل</div>
+            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalSystemDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            </div>
+          </Card>
+          <Card className="p-3 bg-card/60">
+            <div className="text-muted-foreground text-xs mb-1">إجمالي مجمع الإهلاك</div>
+            <div className="text-base font-bold tabular-nums text-foreground" dir="ltr">
+              {iqd(report.data.kpis.totalAccumulatedDepreciation)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            </div>
+          </Card>
+          <Card className="p-3 bg-card/60">
+            <div className="text-muted-foreground text-xs mb-1">صافي القيمة الدفترية</div>
+            <div className="text-base font-bold tabular-nums text-primary" dir="ltr">
+              {iqd(report.data.kpis.totalNetBookValue)} <span className="text-xs font-normal text-muted-foreground">د.ع</span>
+            </div>
+          </Card>
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -218,11 +278,15 @@ export default function AssetRegister() {
                 { key: "custodianName", header: "العهدة", map: (r) => r.custodianName ?? "" },
                 { key: "purchaseDate", header: "تاريخ الشراء", map: (r) => String(r.purchaseDate) },
                 { key: "purchaseValue", header: "قيمة الشراء", map: (r) => Number(r.purchaseValue) },
+                { key: "openingDepreciation", header: "إهلاك ما قبل النظام", map: (r) => Number((r as any).openingDepreciation ?? 0) },
+                { key: "accumulated", header: "مجمع الإهلاك", map: (r) => Number(r.accumulated ?? 0) },
                 { key: "bookValue", header: "القيمة الدفترية", map: (r) => r.bookValue },
                 { key: "status", header: "الحالة", map: (r) => assetStatusLabel(r.status) },
                 { key: "settlementStatus", header: "تسوية الاقتناء", map: (r) => assetSettlementPresentation(r.settlementStatus).label },
               ],
             }}
+            onImport={canWrite ? () => setImportOpen(true) : undefined}
+            importLabel="استيراد أصول"
             add={canWrite ? { href: "/assets/new", label: "أصل جديد" } : undefined}
           />
         </CardHeader>
@@ -248,6 +312,36 @@ export default function AssetRegister() {
           />
         </CardContent>
       </Card>
+
+      <ImportDialog<AssetImportRow>
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="استيراد أصول ثابتة من Excel/CSV"
+        entityName="أصل"
+        fields={ASSET_FIELDS}
+        meta={ASSET_IMPORT_META}
+        onImport={async (rows, ctx) => {
+          const res = await importMut.mutateAsync({
+            rows: rows.map((r) => ({
+              ...r,
+              rowNumber: r.rowNumber,
+            })),
+            options: {
+              dryRun: ctx.options?.dryRun ?? false,
+              skipFailed: ctx.options?.skipFailed ?? false,
+            },
+          });
+          return res;
+        }}
+        onDone={(s) => {
+          if (s.created > 0) {
+            notify.ok(`تم استيراد ${s.created} أصلاً بنجاح مع قيد افتتاحي مجمع`);
+            utils.assets.list.invalidate();
+            utils.assets.registerReport.invalidate();
+            utils.assets.dashboard.invalidate();
+          }
+        }}
+      />
     </div>
   );
 }

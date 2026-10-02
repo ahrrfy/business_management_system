@@ -30,10 +30,10 @@ describe("نافذة تنفيذ الكروت — سبب فشل التثبيت ا
     expect(dialog).toContain("الصافي المحصّل {fmtAr(it.chargeAmount)}");
   });
 
-  it("يمنع POS من قبض CARD لسلة رقمية قبل إنشاء النية والحجز", () => {
-    expect(pos).toContain('if (activeTab.method !== "CASH")');
-    expect(pos).toContain("لم يبدأ النظام أي قبض خارجي");
-    expect(pos).toContain('!(cartHasDigital && activeTab.method !== "CASH")');
+  it("يدعم POS قبض CARD لسلة رقمية بربط محاولة الدفع المؤكدة مع النية", () => {
+    expect(pos).toContain('if (activeTab.method !== "CASH" && activeTab.method !== "CARD")');
+    expect(pos).toContain("externalPaymentAttemptId: activeTab.externalPayment!.attemptId!");
+    expect(pos).toContain('!(cartHasDigital && activeTab.method !== "CASH" && activeTab.method !== "CARD")');
   });
 });
 

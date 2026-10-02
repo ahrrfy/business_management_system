@@ -192,8 +192,8 @@ export const EXPENSE_FUNDING_META: Readonly<
   Record<ExpenseFundingView, ExpenseFundingMeta>
 > = Object.freeze({
   PENDING: {
-    label: "طلبات اعتماد غير منفذة",
-    short: "بلا أثر مالي",
+    label: "طلبات اعتماد معلقة (بلا أثر مالي حتى الآن)",
+    short: "معلق بلا أثر مالي",
     badge: "badge-status-pending",
   },
   DRAWER: {

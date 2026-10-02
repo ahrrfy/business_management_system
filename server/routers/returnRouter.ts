@@ -7,6 +7,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { variantDescriptor } from "@shared/variantDisplay";
 import { z } from "zod";
 import {
   accountingEntries,
@@ -42,7 +43,7 @@ import {
 } from "../services/accounting/postingEngine";
 import { money, toDbMoney } from "../services/money";
 import { assertCashOutAvailable } from "../services/cash/cashAvailability";
-import { getDb } from "../db";
+import { getDb, type Tx } from "../db";
 import { logAudit } from "../services/auditService";
 import {
   postPurchaseReturnCartCardRefund,
@@ -65,6 +66,7 @@ import {
 } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
 import {
+  returnsProcedure,
   router,
   salesCashierProcedure,
   salesManagerProcedure,
@@ -76,7 +78,7 @@ import {
   forensicTraceInvoices,
   universalBarcodeScan,
 } from "../services/returns/forensicTraceService";
-import { applyMovement } from "../services/inventoryService";
+import { applyMovement, convertToBaseQuantity } from "../services/inventoryService";
 import { assertPeriodOpen } from "../services/periodLockService";
 import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
 import {
@@ -129,9 +131,76 @@ function getScopedOwnerId(
   return Number(user.id);
 }
 
+/**
+ * حلّ وتحويل كمية بند المرتجع إلى كمية الأساس الصحيحة مع تدقيق الوحدة ومعامل التحويل.
+ *
+ * الأولويات:
+ * 1. إن مرّر العميل productUnitId صريحاً ⇒ يُحقَّق منه ويُحوّل عبر convertToBaseQuantity.
+ * 2. إن غاب productUnitId ووُجد fallbackProductUnitId (من بند الفاتورة الأصلية) ⇒ يُستعمَل للتحويل.
+ * 3. إن غاب كلاهما ⇒ يُستعلَم عن وحدة الأساس للمتغيّر (isBaseUnit = true) ويُحوّل عبرها.
+ * 4. للأصناف التاريخية التي لا وحدات لها إطلاقاً ⇒ يعود بالكمية كما هي بمعامل 1.
+ */
+async function resolveReturnBaseQuantity(
+  tx: Tx,
+  item: {
+    variantId: number;
+    productUnitId?: number | null;
+    quantity: number;
+  },
+  fallbackProductUnitId?: number | null,
+): Promise<{ baseQuantity: number; conversionFactor: number }> {
+  const effectiveUnitId = item.productUnitId ?? fallbackProductUnitId;
+
+  if (effectiveUnitId != null) {
+    const res = await convertToBaseQuantity(
+      tx,
+      effectiveUnitId,
+      item.quantity,
+      item.variantId,
+    );
+    return {
+      baseQuantity: res.baseQuantity,
+      conversionFactor: Number(res.conversionFactor) || 1,
+    };
+  }
+
+  // البحث عن وحدة الأساس للمتغيّر
+  const [baseUnit] = await tx
+    .select({
+      id: productUnits.id,
+      factor: productUnits.conversionFactor,
+    })
+    .from(productUnits)
+    .where(
+      and(
+        eq(productUnits.variantId, item.variantId),
+        eq(productUnits.isBaseUnit, true),
+      ),
+    )
+    .limit(1);
+
+  if (baseUnit) {
+    const res = await convertToBaseQuantity(
+      tx,
+      baseUnit.id,
+      item.quantity,
+      item.variantId,
+    );
+    return {
+      baseQuantity: res.baseQuantity,
+      conversionFactor: Number(res.conversionFactor) || 1,
+    };
+  }
+
+  // ملاذ آمن أخير للأصناف القديمة بلا سجلات في productUnits
+  return {
+    baseQuantity: item.quantity,
+    conversionFactor: 1,
+  };
+}
 // المرتجعات تعكس مخزوناً ونقداً ⇒ كاشير بوردية مفتوحة أو مدير فأعلى.
 export const returnRouter = router({
-  create: salesCashierProcedure
+  create: returnsProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -246,37 +315,23 @@ export const returnRouter = router({
         });
       }
 
-      // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يرجع فاتورة زميله في الفرع نفسه،
-      // لكنه يرجع فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
-      const scopedOwnerId = getScopedOwnerId(ctx.user);
-      if (
-        scopedOwnerId != null &&
-        Number(invRow.createdBy) !== scopedOwnerId &&
-        Number(invRow.workOrderCreatedBy) !== scopedOwnerId
-      ) {
+      /**
+       * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
+       *
+       * فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) لا من مسار المرتجع.
+       */
+      if (invRow.sourceType === "WORKORDER") {
         throw new TRPCError({
-          code: "FORBIDDEN",
+          code: "PRECONDITION_FAILED",
           message: appErrorMessage({
             what: "تعذّر تسجيل المرتجع",
-            why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
-            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+            why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+            doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
           }),
         });
       }
 
       if (shouldExecuteDirect) {
-        /**
-         * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
-         *
-         * فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) لا من مسار المرتجع.
-         */
-        if (invRow.sourceType === "WORKORDER") {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
-          });
-        }
         const executed =
           ctx.user.isOwner === true
             ? await returnSaleAsOwner(
@@ -769,7 +824,7 @@ export const returnRouter = router({
       return rows.map((r) => ({ id: Number(r.id), name: r.name }));
     }),
 
-  getInvoice: salesCashierProcedure
+  getInvoice: returnsProcedure
     .input(z.object({ invoiceId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -781,6 +836,7 @@ export const returnRouter = router({
             invoiceNumber: invoices.invoiceNumber,
             status: invoices.status,
             branchId: invoices.branchId,
+            sourceType: invoices.sourceType,
             /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
             createdBy: invoices.createdBy,
             workOrderCreatedBy: workOrders.createdBy,
@@ -817,20 +873,14 @@ export const returnRouter = router({
         });
       }
 
-      // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يقرأ تفاصيل فاتورة زميله في الفرع نفسه،
-      // لكنه يقرأ فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
-      const scopedOwnerId = getScopedOwnerId(ctx.user);
-      if (
-        scopedOwnerId != null &&
-        Number(inv.createdBy) !== scopedOwnerId &&
-        Number(inv.workOrderCreatedBy) !== scopedOwnerId
-      ) {
+      // عزل أوامر الشغل: فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع
+      if (inv.sourceType === "WORKORDER") {
         throw new TRPCError({
-          code: "FORBIDDEN",
+          code: "PRECONDITION_FAILED",
           message: appErrorMessage({
-            what: "تعذّر قراءة تفاصيل الفاتورة للمرتجع",
-            why: "لا يملك الكاشير صلاحية الوصول إلى فاتورة أنشأها موظف آخر",
-            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع إتمام المرتجع",
+            what: "تعذّر تحميل تفاصيل الفاتورة للمرتجع",
+            why: "فاتورة أمر الشغل لا تقبل المرتجع المباشر من مسار المبيعات",
+            doThis: "توجّه إلى شاشة أمر الشغل ونفّذ عكس التسليم من هناك",
           }),
         });
       }
@@ -842,7 +892,9 @@ export const returnRouter = router({
           isBundle: products.isBundle,
           variantName: productVariants.variantName,
           color: productVariants.color,
+          colorHex: productVariants.colorHex,
           size: productVariants.size,
+          variantKind: productVariants.variantKind,
           sku: productVariants.sku,
           barcode: productUnits.barcode,
           unitName: productUnits.unitName,
@@ -862,10 +914,15 @@ export const returnRouter = router({
         .where(eq(invoiceItems.invoiceId, input.invoiceId));
 
       const items = rows.map((r) => {
-        const variantLabel =
-          r.variantName ??
-          ([r.color, r.size].filter((v): v is string => !!v).join(" / ") ||
-            r.sku);
+        const desc = variantDescriptor({
+          productName: r.productName,
+          variantName: r.variantName,
+          color: r.color,
+          size: r.size,
+          variantKind: r.variantKind,
+          sku: r.sku,
+        });
+        const variantLabel = desc || r.sku || "";
         const remaining = r.baseQuantity - r.returnedBaseQuantity;
         const conversionFactor = Number(r.conversionFactor ?? 1) || 1;
         const baseUnitName = r.isBundle ? "بكج" : "قطعة";
@@ -874,6 +931,10 @@ export const returnRouter = router({
           productName: r.productName,
           isBundle: r.isBundle === true,
           variantLabel,
+          color: r.color ?? null,
+          size: r.size ?? null,
+          colorHex: r.colorHex ?? null,
+          variantKind: r.variantKind ?? null,
           barcode: r.barcode ?? null,
           sku: r.sku ?? null,
           // البكج وحدة تشغيلية قائمة بذاتها. بعض البكجات القديمة ورثت اسم «قطعة» من القالب
@@ -918,7 +979,9 @@ export const returnRouter = router({
         // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
         blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
           ? isWalkIn
-            ? "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
+            ? caps.hasUnremittedDelivery
+              ? "الطلب مرتبط بشحنة توصيل لم يورَّد نقدها بعد؛ سيتم عكس عهدة التوصيل آلياً دون إخراج نقد من الدرج."
+              : "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
             : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
           : null,
       }));
@@ -1047,7 +1110,8 @@ export const returnRouter = router({
               required: true as const,
               kind: "IMMEDIATE_REFUND" as const,
               method: "CASH" as const,
-              exactAmountRequired: true as const,
+              exactAmountRequired: !caps.hasUnremittedDelivery,
+              deliveryCustodyReversal: caps.hasUnremittedDelivery,
               reasonRequired: true as const,
               dispositions: ["RESTOCK", "DAMAGED"] as const,
             }
@@ -1134,6 +1198,10 @@ export const returnRouter = router({
           isBundle: products.isBundle,
           isService: products.isService,
           variantName: productVariants.variantName,
+          color: productVariants.color,
+          colorHex: productVariants.colorHex,
+          size: productVariants.size,
+          variantKind: productVariants.variantKind,
           sku: productVariants.sku,
           barcode: productUnits.barcode,
           unitName: productUnits.unitName,
@@ -1299,6 +1367,10 @@ export const returnRouter = router({
             productId: products.id,
             productName: products.name,
             variantName: productVariants.variantName,
+            color: productVariants.color,
+            colorHex: productVariants.colorHex,
+            size: productVariants.size,
+            variantKind: productVariants.variantKind,
             sku: productVariants.sku,
             costPrice: productVariants.costPrice,
           })
@@ -1535,13 +1607,15 @@ export const returnRouter = router({
               ? "استبدال مباشر بضاعة"
               : "إرجاع بضاعة بدون فاتورة");
 
-          // ١) حركات المخزون للمرتجع (زيادة المخزون إذا كان RESTOCK)
+          // ١) حركات المخزون للمرتجع (زيادة المخزون إذا كان RESTOCK) بالوحدة الأساس
           for (const itm of input.returnItems) {
             if (itm.disposition === "RESTOCK") {
+              const { baseQuantity: effectiveBaseQty } =
+                await resolveReturnBaseQuantity(tx, itm);
               await applyMovement(tx, {
                 variantId: itm.variantId,
                 branchId: actorBranchId,
-                baseQuantity: itm.quantity,
+                baseQuantity: effectiveBaseQty,
                 movementType: "RETURN",
                 referenceType:
                   input.mode === "DIRECT_EXCHANGE"
@@ -1553,17 +1627,19 @@ export const returnRouter = router({
             }
           }
 
-          // ٢) حركات المخزون للبديل الجديد (خصم المخزون OUT) في حالة الاستبدال المباشر
+          // ٢) حركات المخزون للبديل الجديد (خصم المخزون OUT) بالوحدة الأساس في حالة الاستبدال المباشر
           if (
             input.mode === "DIRECT_EXCHANGE" &&
             input.exchangeItems &&
             input.exchangeItems.length > 0
           ) {
             for (const itm of input.exchangeItems) {
+              const { baseQuantity: effectiveBaseQty } =
+                await resolveReturnBaseQuantity(tx, itm);
               await applyMovement(tx, {
                 variantId: itm.variantId,
                 branchId: actorBranchId,
-                baseQuantity: itm.quantity,
+                baseQuantity: effectiveBaseQty,
                 movementType: "OUT",
                 referenceType: "EXCHANGE_ISSUE",
                 notes: `صرف بضاعة بديلة مقابل استبدال [${voucherCode}] — ${returnReason} (${customerName})`,
@@ -1608,7 +1684,7 @@ export const returnRouter = router({
             differenceAmount: input.settlement.differenceAmount,
             customerName,
             customerPhone,
-            dateStr: now.toLocaleDateString("ar-IQ", {
+            dateStr: now.toLocaleDateString("ar-IQ-u-nu-latn", {
               year: "numeric",
               month: "long",
               day: "numeric",
@@ -1758,6 +1834,7 @@ export const returnRouter = router({
           // ٠) التحقق من الفاتورة الأصلية إن أدخلت وفرض الحوكمة المالية الصارمة
           let matchedInvoice: typeof invoices.$inferSelect | null = null;
           let invoiceItemRows: Array<typeof invoiceItems.$inferSelect> = [];
+          const resolvedBaseQtyByItem = new Map<any, number>();
           if (input.invoiceNumber?.trim()) {
             const [found] = await tx
               .select()
@@ -1835,33 +1912,68 @@ export const returnRouter = router({
               }
             }
 
-            // 3) التحقق من بنود الفاتورة وكمياتها
+            // 3) التحقق من بنود الفاتورة وكمياتها بالوحدة الأساس وحساب معاملات التحويل
             invoiceItemRows = await tx
               .select()
               .from(invoiceItems)
               .where(eq(invoiceItems.invoiceId, matchedInvoice.id))
               .for("update");
 
+            // تتبع تراكم الكميات المرتجعة لكل بند في السلة نفسها لمنع الالتفاف بتكرار البند
+            const accumulatedReturnedByItemId = new Map<number, number>();
+
             for (const itm of input.items) {
               const targetItem = itm.invoiceItemId
-                ? invoiceItemRows.find((ii) => ii.id === itm.invoiceItemId)
+                ? invoiceItemRows.find(
+                    (ii) =>
+                      ii.id === itm.invoiceItemId &&
+                      ii.variantId === itm.variantId,
+                  )
                 : invoiceItemRows.find((ii) => ii.variantId === itm.variantId);
 
-              if (targetItem) {
-                const remainingQty =
-                  (targetItem.baseQuantity ?? 0) -
-                  (targetItem.returnedBaseQuantity ?? 0);
-                if (itm.quantity > remainingQty) {
-                  throw new TRPCError({
-                    code: "BAD_REQUEST",
-                    message: appErrorMessage({
-                      what: `كمية الصنف «${itm.productName}» تتجاوز المتبقي في الفاتورة`,
-                      why: `الكمية المطلوب إرجاعها (${itm.quantity}) أكبر من الكمية المتبقية غير المرتجعة (${remainingQty}) من أصل (${targetItem.baseQuantity}) تم بيعها`,
-                      doThis: `قلل الكمية المرتجعة لهذا الصنف إلى ${remainingQty} أو أقل`,
-                    }),
-                  });
-                }
+              if (!targetItem) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "العنصر غير موجود في الفاتورة المرجعية",
+                    why: `الصنف «${itm.productName}» (معرّف ${itm.variantId}) غير مدرج ضمن بنود الفاتورة المرجعية «${matchedInvoice.invoiceNumber}»`,
+                    doThis:
+                      "تأكد من بنود الفاتورة المحددة أو نفذ المرتجع بدون رقم فاتورة كمرتجع عابر",
+                  }),
+                });
               }
+
+              const { baseQuantity: effectiveBaseQty, conversionFactor } =
+                await resolveReturnBaseQuantity(
+                  tx,
+                  itm,
+                  targetItem.productUnitId,
+                );
+
+              // حفظ الكمية المحسوبة لإعادة استخدامها في حركات المخزون وتحديث الفاتورة
+              resolvedBaseQtyByItem.set(itm, effectiveBaseQty);
+
+              const priorReturned =
+                accumulatedReturnedByItemId.get(targetItem.id) ??
+                (targetItem.returnedBaseQuantity ?? 0);
+              const remainingBaseQty =
+                (targetItem.baseQuantity ?? 0) - priorReturned;
+
+              if (effectiveBaseQty > remainingBaseQty) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: `كمية الصنف «${itm.productName}» تتجاوز المتبقي في الفاتورة`,
+                    why: `الكمية المطلوب إرجاعها بالوحدة الأساس (${effectiveBaseQty}${conversionFactor > 1 ? ` = ${itm.quantity} × معامل ${conversionFactor}` : ""}) أكبر من الكمية المتبقية غير المرتجعة (${remainingBaseQty}) من أصل (${targetItem.baseQuantity}) تم بيعها`,
+                    doThis: `قلل الكمية المرتجعة لهذا الصنف إلى ما يعادل ${remainingBaseQty} بالوحدة الأساس أو أقل`,
+                  }),
+                });
+              }
+
+              accumulatedReturnedByItemId.set(
+                targetItem.id,
+                priorReturned + effectiveBaseQty,
+              );
             }
           }
 
@@ -1974,10 +2086,15 @@ export const returnRouter = router({
                 });
               }
 
-              // عند الإرجاع للرف، نرجع كل مكوّن بحسب كميته
+              // عند الإرجاع للرف، نرجع كل مكوّن بحسب كميته المضاعفة بكمية الأساس للبند
               if (input.disposition === "RESTOCK") {
+                const effectiveBaseQty =
+                  resolvedBaseQtyByItem.get(itm) ??
+                  (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
+
                 for (const comp of components) {
-                  const compBaseQty = comp.componentBaseQuantity * itm.quantity;
+                  const compBaseQty =
+                    comp.componentBaseQuantity * effectiveBaseQty;
                   await applyMovement(tx, {
                     variantId: comp.componentVariantId,
                     branchId: actorBranchId,
@@ -1992,10 +2109,14 @@ export const returnRouter = router({
             } else {
               // صنف مخزني عادي STOCKED
               if (input.disposition === "RESTOCK") {
+                const effectiveBaseQty =
+                  resolvedBaseQtyByItem.get(itm) ??
+                  (await resolveReturnBaseQuantity(tx, itm)).baseQuantity;
+
                 await applyMovement(tx, {
                   variantId: itm.variantId,
                   branchId: actorBranchId,
-                  baseQuantity: itm.quantity,
+                  baseQuantity: effectiveBaseQty,
                   movementType: "RETURN",
                   referenceType: "SALES_RETURN",
                   notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
@@ -2211,28 +2332,71 @@ export const returnRouter = router({
             postingSourceComponents: salesReturnSource,
           });
 
-          // ٤) تحديث بيانات الفاتورة الأصلية وبنودها إن وُجدت
+          // ٤) تحديث بيانات الفاتورة الأصلية وبنودها بالكميات الأساس المحسوبة
           if (matchedInvoice) {
+            const deltaByInvoiceItemId = new Map<
+              number,
+              {
+                targetItem: typeof invoiceItems.$inferSelect;
+                totalEffectiveBaseQty: number;
+                totalRestockBaseQty: number;
+              }
+            >();
+
             for (const itm of input.items) {
               const targetItem = itm.invoiceItemId
-                ? invoiceItemRows.find((ii) => ii.id === itm.invoiceItemId)
+                ? invoiceItemRows.find(
+                    (ii) =>
+                      ii.id === itm.invoiceItemId &&
+                      ii.variantId === itm.variantId,
+                  )
                 : invoiceItemRows.find((ii) => ii.variantId === itm.variantId);
 
               if (targetItem) {
-                await tx
-                  .update(invoiceItems)
-                  .set({
-                    returnedBaseQuantity:
-                      (targetItem.returnedBaseQuantity ?? 0) + itm.quantity,
-                    ...(input.disposition === "RESTOCK"
-                      ? {
-                          returnedRestockedBaseQuantity:
-                            (targetItem.returnedRestockedBaseQuantity ?? 0) +
-                            itm.quantity,
-                        }
-                      : {}),
-                  })
-                  .where(eq(invoiceItems.id, targetItem.id));
+                const effectiveBaseQty =
+                  resolvedBaseQtyByItem.get(itm) ??
+                  (
+                    await resolveReturnBaseQuantity(
+                      tx,
+                      itm,
+                      targetItem.productUnitId,
+                    )
+                  ).baseQuantity;
+
+                const delta = deltaByInvoiceItemId.get(targetItem.id) ?? {
+                  targetItem,
+                  totalEffectiveBaseQty: 0,
+                  totalRestockBaseQty: 0,
+                };
+                delta.totalEffectiveBaseQty += effectiveBaseQty;
+                if (input.disposition === "RESTOCK") {
+                  delta.totalRestockBaseQty += effectiveBaseQty;
+                }
+                deltaByInvoiceItemId.set(targetItem.id, delta);
+              }
+            }
+
+            for (const delta of Array.from(deltaByInvoiceItemId.values())) {
+              await tx
+                .update(invoiceItems)
+                .set({
+                  returnedBaseQuantity: sql`COALESCE(${invoiceItems.returnedBaseQuantity}, 0) + ${delta.totalEffectiveBaseQty}`,
+                  ...(input.disposition === "RESTOCK"
+                    ? {
+                        returnedRestockedBaseQuantity: sql`COALESCE(${invoiceItems.returnedRestockedBaseQuantity}, 0) + ${delta.totalRestockBaseQty}`,
+                      }
+                    : {}),
+                })
+                .where(eq(invoiceItems.id, delta.targetItem.id));
+
+              // تحديث النسخة المحفوظة في الذاكرة لصون الاتساق الداخلي للمعاملة
+              delta.targetItem.returnedBaseQuantity =
+                (delta.targetItem.returnedBaseQuantity ?? 0) +
+                delta.totalEffectiveBaseQty;
+              if (input.disposition === "RESTOCK") {
+                delta.targetItem.returnedRestockedBaseQuantity =
+                  (delta.targetItem.returnedRestockedBaseQuantity ?? 0) +
+                  delta.totalRestockBaseQty;
               }
             }
 
@@ -2304,12 +2468,12 @@ export const returnRouter = router({
               unitPrice: i.unitPrice,
               barcode: i.barcode,
             })),
-            dateStr: now.toLocaleDateString("ar-IQ", {
+            dateStr: now.toLocaleDateString("ar-IQ-u-nu-latn", {
               year: "numeric",
               month: "long",
               day: "numeric",
             }),
-            timeStr: now.toLocaleTimeString("ar-IQ", {
+            timeStr: now.toLocaleTimeString("ar-IQ-u-nu-latn", {
               hour: "2-digit",
               minute: "2-digit",
             }),
@@ -2406,12 +2570,15 @@ export const returnRouter = router({
             });
           }
 
-          // ١) خصم الأصناف من مخزون الفرع (حركة OUT / PURCHASE_RETURN)
+          // ١) خصم الأصناف من مخزون الفرع (حركة OUT / PURCHASE_RETURN) بالوحدة الأساس
           for (const itm of input.items) {
+            const { baseQuantity: effectiveBaseQty } =
+              await resolveReturnBaseQuantity(tx, itm);
+
             await applyMovement(tx, {
               variantId: itm.variantId,
               branchId: actorBranchId,
-              baseQuantity: itm.quantity,
+              baseQuantity: effectiveBaseQty,
               movementType: "OUT",
               referenceType: "PURCHASE_RETURN",
               notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${itm.productName} للمورد (${supplier.name})`,
@@ -2586,12 +2753,12 @@ export const returnRouter = router({
               unitCost: i.unitCost,
               barcode: i.barcode,
             })),
-            dateStr: now.toLocaleDateString("ar-IQ", {
+            dateStr: now.toLocaleDateString("ar-IQ-u-nu-latn", {
               year: "numeric",
               month: "long",
               day: "numeric",
             }),
-            timeStr: now.toLocaleTimeString("ar-IQ", {
+            timeStr: now.toLocaleTimeString("ar-IQ-u-nu-latn", {
               hour: "2-digit",
               minute: "2-digit",
             }),

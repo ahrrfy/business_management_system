@@ -26,6 +26,7 @@
  * ملاحظة موقع: `shared/` كي يبنيه الخادم في حرّاسه وتبنيه الشاشة في حجبها الاستباقيّ بالصيغة
  * نفسها — فلا ينجرف نصّان لمعنًى واحد كما انجرفت قواميس حالة الفاتورة قبل توحيدها.
  */
+import { TRPCError } from "@trpc/server";
 
 /** زرٌّ ينفّذ `doThis`. `href` مسارٌ **داخل النظام** (يبدأ بـ`/`) كي يفتحه wouter لا المتصفّح. */
 export type AppErrorAction = {
@@ -104,12 +105,26 @@ export function toLatinDigits(text: string): string {
   return text.replace(ARABIC_INDIC_DIGITS_G, (d) => ARABIC_INDIC_TO_LATIN[d] ?? d);
 }
 
+/**
+ * خطأ انتهاك عقد رسالة الخطأ — يُرمى بصيغة TRPCError({ code: "BAD_REQUEST" }) حصراً
+ * لمنع ترفيعه تلقائياً بواسطة tRPC إلى INTERNAL_SERVER_ERROR (HTTP 500) وحجب سبب الرفض عن المستخدم.
+ */
+export class AppContractError extends TRPCError {
+  constructor(message: string) {
+    super({
+      code: "BAD_REQUEST",
+      message,
+    });
+    this.name = "AppContractError";
+  }
+}
+
 function assertPresent(value: string, fieldLabel: string): string {
   // ⚠️ الترتيب مقصود: **طبِّع ثمّ اقصّ ثمّ افحص الفراغ**. الفحصُ قبل قصّ الفواصل كان يُمرّر
   // جزءاً يصير فارغاً بعده — `why: "."` كان ينتج «تعذّر — . افعل.» رغم وعد «بلا تسامح».
   const normalized = stripTrailingSeparator(toLatinDigits(normalizePart(value ?? "")));
   if (normalized === "") {
-    throw new Error(`appError: الجزء «${fieldLabel}» مطلوب ولا يصحّ أن يكون فارغاً`);
+    throw new AppContractError(`appError: الجزء «${fieldLabel}» مطلوب ولا يصحّ أن يكون فارغاً`);
   }
   return normalized;
 }
@@ -130,7 +145,7 @@ export function appError(parts: AppErrorParts): AppError {
 
   // «لماذا» مُعادةً بصياغةٍ أخرى ليست مخرجاً: الموظّف يقرأ السبب مرّتين ويبقى واقفاً.
   if (doThis === why) {
-    throw new Error("appError: «ماذا تفعل الآن» يكرّر «لماذا» — الرسالة بلا مخرجٍ عمليّ");
+    throw new AppContractError("appError: «ماذا تفعل الآن» يكرّر «لماذا» — الرسالة بلا مخرجٍ عمليّ");
   }
 
   let action: AppErrorAction | undefined;
@@ -141,8 +156,8 @@ export function appError(parts: AppErrorParts): AppError {
     // بشرطةٍ مائلة ويقود إلى الإنترنت — وكذلك `/\evil.com` في بعض المتصفّحات. زرُّ رسالة
     // خطأٍ يجب أن ينقل داخل النظام حصراً.
     if (href !== undefined && (!href.startsWith("/") || /^\/[/\\]/.test(href))) {
-      throw new Error(
-        `appError: وجهة الزرّ «${href}» ليست مساراً داخل النظام — يجب أن تبدأ بـ«/» ولا تتبعها «/» أو «\»`,
+      throw new AppContractError(
+        `appError: وجهة الزرّ «${href}» ليست مساراً داخل النظام — يجب أن تبدأ بـ«/» ولا تتبعها «/» أو «\\»`,
       );
     }
     action = href === undefined ? { label } : { label, href };

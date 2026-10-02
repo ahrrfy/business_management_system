@@ -681,10 +681,18 @@ const snap = JSON.parse(
 );
 
 // شكل المرجع: table -> Set(column)
+// جداول أُسقطت صراحةً بهجرات لاحقة لآخر snapshot (0118):
+// 0372: استئصال ذري لوحدة المهام والتذاكر الخاملة
+const EXPLICITLY_DROPPED_TABLES = new Set([
+  "tasks",
+  "taskEvents",
+]);
+
 const expected = {};
 for (const [tname, tdef] of Object.entries(snap.tables ?? {})) {
   // قد يأتي الاسم بصيغة schema.table في بعض اللهجات؛ MySQL يستعمل الاسم المجرّد.
   const bare = tname.includes(".") ? tname.split(".").pop() : tname;
+  if (EXPLICITLY_DROPPED_TABLES.has(bare)) continue;
   expected[bare] = new Set(Object.keys(tdef.columns ?? {}));
 }
 

@@ -22,6 +22,7 @@ import {
   setProductActive,
   updateProduct,
 } from "../services/catalogService";
+import { generateBarcodePdf, generateBarcodeBatchPdf } from "../services/barcodePdfService";
 import {
   getProductForVariantEdit,
   updateProductWithVariants,
@@ -376,6 +377,8 @@ export const catalogRouter = router({
         limit: z.number().int().positive().max(1000).default(200),
         includeReceptionServices: z.boolean().optional(),
         includeAllServices: z.boolean().optional(),
+        includeAdvancedSaleServices: z.boolean().optional(),
+        includeQuotationServices: z.boolean().optional(),
         customerId: z.number().int().positive().nullish(),
       }),
     )
@@ -388,6 +391,8 @@ export const catalogRouter = router({
         {
           includeReceptionServices: input.includeReceptionServices,
           includeAllServices: input.includeAllServices,
+          includeAdvancedSaleServices: input.includeAdvancedSaleServices,
+          includeQuotationServices: input.includeQuotationServices,
           customerId: input.customerId ?? undefined,
         },
       );
@@ -462,6 +467,8 @@ export const catalogRouter = router({
         categoryId: z.number().int().min(0).optional(),
         // ٢٤/٨ — إكمال شريحة PR #755/#757: فلتر رؤية شبكة كاشير الطباعة.
         showInPrintPos: z.boolean().optional(),
+        showInQuotations: z.boolean().optional(),
+        showInAdvancedSales: z.boolean().optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
       }),
@@ -563,6 +570,63 @@ export const catalogRouter = router({
   checkBarcodes: productsManagerProcedure
     .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
     .query(({ input }) => checkBarcodesTaken(input.codes)),
+
+  // توليد PDF الباركود المتجهي عالي الدقة (300+ DPI) لملصقات المنتجات وعلب التصنيع
+  generateBarcodePdf: productsReadProcedure
+    .input(
+      z.object({
+        barcode: z.string().min(1, "رمز الباركود مطلوب"),
+        productName: z.string().optional().nullable(),
+        unitName: z.string().optional().nullable(),
+        retailPrice: z.union([z.string(), z.number()]).optional().nullable(),
+        brand: z.string().optional().nullable(),
+        modelName: z.string().optional().nullable(),
+        sku: z.string().optional().nullable(),
+        preset: z.enum(["50x30", "50x25", "60x40", "artwork", "a4"]).optional(),
+        widthMm: z.number().min(10).max(300).optional(),
+        heightMm: z.number().min(10).max(300).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const result = await generateBarcodePdf(input);
+      return {
+        base64: result.base64,
+        filename: result.filename,
+      };
+    }),
+
+  // توليد PDF متّجهي عالي الدقة لدفعة ملصقات (Batch) لقائمة طباعة الملصقات
+  generateBarcodeBatchPdf: productsReadProcedure
+    .input(
+      z.object({
+        items: z
+          .array(
+            z.object({
+              barcode: z.string().min(1, "رمز الباركود مطلوب"),
+              productName: z.string().optional().nullable(),
+              unitName: z.string().optional().nullable(),
+              retailPrice: z.union([z.string(), z.number()]).optional().nullable(),
+              brand: z.string().optional().nullable(),
+              modelName: z.string().optional().nullable(),
+              sku: z.string().optional().nullable(),
+              count: z.number().int().min(1).max(500),
+            }),
+          )
+          .min(1, "يجب تحديد ملصق واحد على الأقل")
+          .max(500),
+        layout: z.enum(["individual_pages", "a4_grid"]).optional(),
+        widthMm: z.number().min(10).max(300).optional(),
+        heightMm: z.number().min(10).max(300).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const result = await generateBarcodeBatchPdf(input);
+      return {
+        base64: result.base64,
+        filename: result.filename,
+        totalLabels: result.totalLabels,
+      };
+    }),
 
   // product-content-ai: يولّد مسودة محتوى فقط من حقائق مرسلة ومتحقق منها؛ لا يكتب المنتجات مباشرة.
   // productId اختياريّ (وضع التعديل): الخدمة تحمّل صور المنتج المعتمَدة بنفسها وتُغذّي Gemini vision.
@@ -720,9 +784,10 @@ export const catalogRouter = router({
         isService: z.boolean().optional(),
         printService: z.boolean().optional(),
         showInReception: z.boolean().optional(),
-        // م٦ (تناظر الإنشاء/التعديل): ثلاثةُ حقولٍ كانت في شاشة التعديل وحدها — الظهورُ في شبكة الطباعة
-        // مستقلّاً عن `printService`، والتوصيات الآلية، وحالة المنتج. غيابُها يُبقي افتراض المخطّط.
+        // م٦ (تناظر الإنشاء/التعديل): حقول توجيه العرض والرؤية والتوصيات
         showInPrintPos: z.boolean().optional(),
+        showInQuotations: z.boolean().optional(),
+        showInAdvancedSales: z.boolean().optional(),
         allowAutoCartRecommendations: z.boolean().optional(),
         isActive: z.boolean().optional(),
         recipe: z
@@ -1035,6 +1100,8 @@ export const catalogRouter = router({
         // اختياريّان بلا افتراض ⇒ غيابُهما يُبقي القيمة الحالية بلا مسّ (نمط PATCH).
         showInReception: z.boolean().optional(),
         showInPrintPos: z.boolean().optional(),
+        showInQuotations: z.boolean().optional(),
+        showInAdvancedSales: z.boolean().optional(),
         // (٣١/٨) تصحيحُ التصنيف بعد الإنشاء. الحقل كان **غائباً عن هذا المدخل** بينما شاشة
         // `ProductEdit` تعرض تبديل «خِدمة (بلا مَخزون)» وترسله فعلاً ⇒ يُسقطه zod بصمتٍ
         // (الافتراض `strip`)، فالتبديل يبدو عاملاً ولا يفعل شيئاً — «الشاشة تكذب» بعينها.

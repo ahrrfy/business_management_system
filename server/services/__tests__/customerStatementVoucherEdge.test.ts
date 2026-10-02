@@ -37,8 +37,7 @@ const FROM = "2021-01-01";
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "voucherCategories",
-  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks",
-  "invoiceItems", "invoices", "workOrderImages", "workOrderMaterials", "workOrders",
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "invoiceItems", "invoices", "workOrderImages", "workOrderMaterials", "workOrders",
   "serviceTypes", "shifts", "customers", "branches", "users",
 ];
 

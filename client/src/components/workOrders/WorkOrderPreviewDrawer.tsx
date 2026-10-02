@@ -28,6 +28,7 @@ import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
+import { formatQuantity } from "@/lib/money";
 import { fmtAr, fmtInt, D, positiveDiff } from "@/lib/money";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
@@ -295,7 +296,7 @@ export function WorkOrderPreviewDrawer({
                 customerPhone: d.customerPhone,
                 jobType: d.title,
                 specs: d.customizationText,
-                items: [{ name: `${d.title} (${d.quantity} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: d.salePrice, total: d.salePrice }],
+                items: [{ name: `${d.title} (${formatQuantity(d.quantity)} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: d.salePrice, total: d.salePrice }],
                 subtotal: d.salePrice,
                 total: d.salePrice,
               })}><Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> طباعة A4</button>
@@ -311,7 +312,7 @@ export function WorkOrderPreviewDrawer({
                   customerName: d.customerName ?? undefined,
                   customerPhone: d.customerPhone ?? undefined,
                   jobTitle: d.title,
-                  quantity: d.quantity ? `${d.quantity} نسخة` : undefined,
+                  quantity: d.quantity ? `${formatQuantity(d.quantity)} نسخة` : undefined,
                   specs: d.customizationText ?? undefined,
                   total: d.salePrice,
                 })}

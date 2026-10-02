@@ -24,7 +24,9 @@ export interface SeasonPlanRow {
   sku: string;
   variantName: string | null;
   color: string | null;
+  colorHex: string | null;
   size: string | null;
+  variantKind: string | null;
   /** المخزون الكلّيّ بالوحدة الأساس عبر كل الفروع (قد يكون سالباً — خدمات allowNegative/وضع الافتتاح). */
   totalStock: number;
   seasonTarget: number;
@@ -56,7 +58,9 @@ export async function listSeasonPlan(input: ListSeasonPlanInput = {}): Promise<S
       sku: productVariants.sku,
       variantName: productVariants.variantName,
       color: productVariants.color,
+      colorHex: productVariants.colorHex,
       size: productVariants.size,
+      variantKind: productVariants.variantKind,
       seasonTarget: productVariants.seasonTarget,
       totalStock: totalStockSum,
     })
@@ -77,7 +81,9 @@ export async function listSeasonPlan(input: ListSeasonPlanInput = {}): Promise<S
       productVariants.sku,
       productVariants.variantName,
       productVariants.color,
+      productVariants.colorHex,
       productVariants.size,
+      productVariants.variantKind,
       productVariants.seasonTarget,
     )
     // «قائمة الشراء» فقط ⇒ المخزون الكلّيّ < الهدف (فجوة موجبة). HAVING لأن الشرط على مُجمَّع.
@@ -107,7 +113,9 @@ export async function listSeasonPlan(input: ListSeasonPlanInput = {}): Promise<S
       sku: r.sku,
       variantName: r.variantName,
       color: r.color,
+      colorHex: r.colorHex,
       size: r.size,
+      variantKind: r.variantKind,
       totalStock: stock,
       seasonTarget,
       // كميات أعداد صحيحة (لا أموال) ⇒ حساب int مباشر مشروع (§٥).
@@ -147,7 +155,9 @@ export interface SeasonCandidate {
   sku: string;
   variantName: string | null;
   color: string | null;
+  colorHex: string | null;
   size: string | null;
+  variantKind: string | null;
   /** هدفه الموسميّ الحاليّ (0 = غير موسميّ بعد) — يُظهر في المنتقي أنه مُضاف سلفاً. */
   seasonTarget: number;
   totalStock: number;
@@ -172,7 +182,9 @@ export async function searchSeasonCandidates(q: string, limit = 20): Promise<Sea
       sku: productVariants.sku,
       variantName: productVariants.variantName,
       color: productVariants.color,
+      colorHex: productVariants.colorHex,
       size: productVariants.size,
+      variantKind: productVariants.variantKind,
       seasonTarget: productVariants.seasonTarget,
       totalStock: totalStockSum,
     })
@@ -192,7 +204,9 @@ export async function searchSeasonCandidates(q: string, limit = 20): Promise<Sea
       productVariants.sku,
       productVariants.variantName,
       productVariants.color,
+      productVariants.colorHex,
       productVariants.size,
+      productVariants.variantKind,
       productVariants.seasonTarget,
     )
     .orderBy(asc(products.name), asc(productVariants.sku))
@@ -203,7 +217,9 @@ export async function searchSeasonCandidates(q: string, limit = 20): Promise<Sea
     sku: r.sku,
     variantName: r.variantName,
     color: r.color,
+    colorHex: r.colorHex,
     size: r.size,
+    variantKind: r.variantKind,
     seasonTarget: Number(r.seasonTarget ?? 0),
     totalStock: Number(r.totalStock ?? 0),
   }));

@@ -57,26 +57,83 @@ export interface InvoiceTotals {
 /** subtotal = Σ line totals; tax on (subtotal − invoiceDiscount), rounded once; total = taxable + tax. */
 export function computeInvoiceTotals(i: InvoiceTotalsInput): InvoiceTotals {
   // سياسة #14: لا خصم/ضريبة سالبة على رأس الفاتورة (تُنشئ خصماً خفياً أو ضريبةً عكسية).
-  const subtotal = round2(sumMoney(i.lineTotals));
+  let subtotal: Decimal;
+  try {
+    subtotal = round2(sumMoney(i.lineTotals));
+  } catch (cause) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "إجمالي أسطر الفاتورة غير صالح",
+        why: "تحتوي أسطر الفاتورة على قيم مالية تالفة أو غير قابلة للحساب",
+        doThis: "تحقّق من أسعار وكميات بنود الفاتورة قبل إعادة المحاولة",
+      }),
+      cause,
+    });
+  }
+
   // قرّب الخصم مرة واحدة عند الإدخال (يمنع انجراف 0.01 بين total و subtotal−discount+tax).
-  const rawDiscount = round2(money(i.invoiceDiscount ?? "0"));
+  let rawDiscount: Decimal;
+  try {
+    rawDiscount = round2(money(i.invoiceDiscount ?? "0"));
+  } catch (cause) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "خصم الفاتورة غير صالح",
+        why: `القيمة «${String(i.invoiceDiscount)}» ليست مبلغاً مالياً صالحاً`,
+        doThis: "أدخل مبلغ خصم صحيحاً بالدينار (أرقام غير سالبة وبمنزلتين كحدّ أقصى) أو اترك الحقل فارغاً",
+      }),
+      cause,
+    });
+  }
   if (rawDiscount.lt(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "خصم الفاتورة لا يصحّ أن يكون سالباً" });
   }
-  const rawTax = money(i.taxRatePercent ?? "0");
+
+  let rawTax: Decimal;
+  try {
+    rawTax = money(i.taxRatePercent ?? "0");
+  } catch (cause) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "نسبة الضريبة غير صالحة",
+        why: `القيمة «${String(i.taxRatePercent)}» ليست نسبة مئوية صالحة`,
+        doThis: "أدخل نسبة ضريبة صحيحة بين ٠ و١٠٠٪ أو اترك الحقل فارغاً",
+      }),
+      cause,
+    });
+  }
   if (rawTax.lt(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة لا يصحّ أن تكون سالبة" });
   }
   if (rawTax.gt(100)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة يجب أن تكون بين ٠ و١٠٠" });
   }
+
   const discount = clampMoney(rawDiscount, subtotal);
   const taxable = subtotal.minus(discount);
   const tax = round2(taxable.times(rawTax).dividedBy(100));
-  const rawFee = round2(money(i.deliveryFee ?? "0"));
+
+  let rawFee: Decimal;
+  try {
+    rawFee = round2(money(i.deliveryFee ?? "0"));
+  } catch (cause) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "أجرة التوصيل غير صالحة",
+        why: `القيمة «${String(i.deliveryFee)}» ليست مبلغاً مالياً صالحاً`,
+        doThis: "أدخل مبلغ أجرة توصيل صحيحاً أو اتركه فارغاً",
+      }),
+      cause,
+    });
+  }
   if (rawFee.lt(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
   }
+
   return {
     subtotal: subtotal.toFixed(2),
     discountAmount: discount.toFixed(2),

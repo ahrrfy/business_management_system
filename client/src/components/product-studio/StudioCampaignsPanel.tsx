@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
-import { Megaphone, PlayCircle, PauseCircle, CheckCircle2, XCircle, ChevronRight, Sparkles } from "lucide-react";
+import { Megaphone, PlayCircle, PauseCircle, CheckCircle2, XCircle, ChevronRight, Sparkles, Users, Zap, Loader2 } from "lucide-react";
 import { STUDIO_CAMPAIGN_STATUS_AR, STUDIO_CAMPAIGN_STATUS_VARIANT, STUDIO_CAMPAIGN_EDITABLE, type StudioCampaignStatus } from "@shared/studioCampaignStatus";
 import { defaultStudioScope, STUDIO_EMPTY_HINTS, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
 
@@ -87,6 +87,34 @@ export function StudioCampaignsPanel({
     onError: (error: any) => notify.err(error),
   });
 
+  const drainCampaignBacklog = trpc.productStudio.drainCampaignBacklog.useMutation({
+    onSuccess: async (data) => {
+      notify.ok(`تم توليد وتحديث طابور الحملة (${data.totalCreated} مهمة مولدة، المتبقي ${data.remaining})`);
+      if (!offline) {
+        await Promise.all([
+          utils.productStudio.campaigns.invalidate(),
+          utils.productStudio.tasks.invalidate(),
+          utils.productStudio.dashboard.invalidate(),
+        ]);
+      }
+    },
+    onError: (error: any) => notify.err(error),
+  });
+
+  const distributeCampaignTasks = trpc.productStudio.distributeCampaignTasks.useMutation({
+    onSuccess: async (data) => {
+      notify.ok(`تم توزيع ${data.distributedCount} مهمة بالتساوي على مصوري الحملة`);
+      if (!offline) {
+        await Promise.all([
+          utils.productStudio.campaigns.invalidate(),
+          utils.productStudio.tasks.invalidate(),
+          utils.productStudio.dashboard.invalidate(),
+        ]);
+      }
+    },
+    onError: (error: any) => notify.err(error),
+  });
+
   const createCampaign = trpc.productStudio.createCampaign.useMutation({
     onSuccess: async (data) => {
       notify.ok("تم إنشاء الحملة بنجاح");
@@ -95,9 +123,9 @@ export function StudioCampaignsPanel({
       setCampaignCategoryIds([]);
       if (data.status === "ACTIVE") {
         try {
-          const backlog = await createCampaignBacklog.mutateAsync({ campaignId: Number(data.campaignId) });
-          if (backlog.createdCount > 0) {
-            notify.ok(`تم توليد ${backlog.createdCount} مهمة في طابور الحملة`);
+          const drain = await drainCampaignBacklog.mutateAsync({ campaignId: Number(data.campaignId) });
+          if (drain.totalCreated > 0) {
+            notify.ok(`تم توليد وتوزيع ${drain.totalCreated} مهمة في طابور الحملة`);
           }
         } catch (e: any) {
           notify.err(e);
@@ -382,15 +410,45 @@ export function StudioCampaignsPanel({
                 </Button>
               )}
               {selectedCampaign.status === "ACTIVE" && (
-                <Button
-                  variant="outline" className="min-h-11"
-                  disabled={offline || createCampaignBacklog.isPending}
-                  onClick={() => createCampaignBacklog.mutate({ campaignId: Number(selectedCampaign.id) })}
-                  title="مسح نطاق الحملة وتوليد مهام المنتجات الناقصة التي لم تدخل الطابور بعد"
-                >
-                  <Sparkles aria-hidden className="size-4" />
-                  {createCampaignBacklog.isPending ? "جارٍ التوليد…" : "توليد / تحديث طابور الحملة"}
-                </Button>
+                <>
+                  <Button
+                    variant="default" className="min-h-11 gap-1.5"
+                    disabled={offline || drainCampaignBacklog.isPending}
+                    onClick={() => drainCampaignBacklog.mutate({ campaignId: Number(selectedCampaign.id) })}
+                    title="توليد كامل مهام الحملة آلياً وتوزيعها بالتساوي على المصورين حتى الصفر"
+                  >
+                    {drainCampaignBacklog.isPending ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Zap className="size-4" />
+                    )}
+                    {drainCampaignBacklog.isPending ? "جارٍ استنزاف وتوليد الطابور…" : "توليد كامل الطابور آلياً"}
+                  </Button>
+
+                  <Button
+                    variant="outline" className="min-h-11 gap-1.5"
+                    disabled={offline || distributeCampaignTasks.isPending}
+                    onClick={() => distributeCampaignTasks.mutate({ campaignId: Number(selectedCampaign.id) })}
+                    title="إعادة توزيع كافة المهام غير المسندة بالتساوي على مصوري الحملة"
+                  >
+                    {distributeCampaignTasks.isPending ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Users className="size-4" />
+                    )}
+                    توزيع المهام بالتساوي
+                  </Button>
+
+                  <Button
+                    variant="outline" className="min-h-11"
+                    disabled={offline || createCampaignBacklog.isPending}
+                    onClick={() => createCampaignBacklog.mutate({ campaignId: Number(selectedCampaign.id) })}
+                    title="مسح نطاق الحملة وتوليد دفعة واحدة من المهام الناقصة"
+                  >
+                    <Sparkles aria-hidden className="size-4" />
+                    {createCampaignBacklog.isPending ? "جارٍ التوليد…" : "توليد دفعة (500)"}
+                  </Button>
+                </>
               )}
               {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE" || selectedCampaign.status === "PAUSED") && (
                 <Button

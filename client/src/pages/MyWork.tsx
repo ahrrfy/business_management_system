@@ -23,7 +23,6 @@ import {
   ClipboardList,
   ExternalLink,
   Inbox as InboxIcon,
-  ListTodo,
   Megaphone,
   RefreshCw,
 } from "lucide-react";
@@ -62,7 +61,7 @@ const CHIP_BASE =
 const chipCls = (active: boolean) =>
   `${CHIP_BASE} ${active ? "border-transparent bg-primary text-primary-foreground" : "hover:bg-muted"}`;
 
-export type MyWorkTab = "decisions" | "tasks" | "updates";
+export type MyWorkTab = "decisions" | "updates";
 
 const MY_WORK_TABS: ReadonlyArray<{
   value: MyWorkTab;
@@ -75,12 +74,6 @@ const MY_WORK_TABS: ReadonlyArray<{
     label: "قرارات",
     description: "اعتمادات تنتظر حسمك",
     icon: CheckCircle2,
-  },
-  {
-    value: "tasks",
-    label: "مهامي",
-    description: "المهام المسندة إليك",
-    icon: ListTodo,
   },
   {
     value: "updates",
@@ -181,21 +174,6 @@ function useBrowserHash(locationKey: string): string {
   return hash;
 }
 
-function taskStatusLabel(status: string): string {
-  if (status === "NEW") return "جديدة";
-  if (status === "IN_PROGRESS") return "قيد التنفيذ";
-  if (status === "WAITING_CUSTOMER") return "بانتظار العميل";
-  return status;
-}
-
-function taskPriorityLabel(priority: string): string {
-  if (priority === "LOW") return "منخفضة";
-  if (priority === "HIGH") return "عالية";
-  if (priority === "URGENT") return "عاجلة";
-  if (priority === "NORMAL") return "عادية";
-  return priority;
-}
-
 export default function MyWork() {
   const [pathname, navigate] = useLocation();
   const search = useSearch();
@@ -203,7 +181,6 @@ export default function MyWork() {
   const tabState = resolveMyWorkTab(search, hash);
   const activeTab = tabState.tab;
   const decisionsActive = activeTab === "decisions";
-  const tasksActive = activeTab === "tasks";
   const updatesActive = activeTab === "updates";
   const announcementsRef = React.useRef<HTMLDivElement>(null);
 
@@ -229,10 +206,6 @@ export default function MyWork() {
     { limit: 20, unreadOnly },
     { enabled: updatesActive, staleTime: 30_000 },
   );
-  const workspace = trpc.superApp.myWorkspace.useQuery(undefined, {
-    enabled: tasksActive,
-    staleTime: 60_000,
-  });
   const announcements = trpc.announcements.mine.useQuery(
     { limit: 20 },
     { enabled: updatesActive, staleTime: 30_000 },
@@ -318,9 +291,7 @@ export default function MyWork() {
   });
   const activeIsFetching = decisionsActive
     ? inbox.isFetching
-    : tasksActive
-      ? workspace.isFetching
-      : notifications.isFetching || announcements.isFetching;
+    : notifications.isFetching || announcements.isFetching;
 
   function selectTab(tab: MyWorkTab) {
     if (
@@ -335,10 +306,6 @@ export default function MyWork() {
   function refetchActiveTab() {
     if (decisionsActive) {
       void inbox.refetch();
-      return;
-    }
-    if (tasksActive) {
-      void workspace.refetch();
       return;
     }
     void Promise.all([notifications.refetch(), announcements.refetch()]);
@@ -606,144 +573,6 @@ export default function MyWork() {
               حُمِّل {inbox.data?.rows?.length ?? 0} من {total} — احسم ما يظهر
               ليظهر الباقي.
             </p>
-          )}
-        </section>
-      )}
-
-      {tasksActive && (
-        <section
-          id="my-work-panel-tasks"
-          role="tabpanel"
-          aria-labelledby="my-work-tab-tasks"
-          className="space-y-4"
-        >
-          {workspace.isLoading && (
-            <Card>
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                {ACTION_LABELS.loading}
-              </CardContent>
-            </Card>
-          )}
-          {workspace.isError && (
-            <Card>
-              <CardContent className="py-8 text-center text-sm text-[var(--sem-danger)]">
-                تعذّر تحميل مهامك: {workspace.error.message}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ms-2"
-                  onClick={() => void workspace.refetch()}
-                >
-                  {ACTION_LABELS.retry}
-                </Button>
-              </CardContent>
-            </Card>
-          )}
-          {workspace.data && (
-            <>
-              {workspace.data.employee && (
-                <Card className="gap-0 py-0">
-                  <CardContent className="flex flex-wrap items-center gap-x-3 gap-y-1 py-4">
-                    <InboxIcon
-                      aria-hidden
-                      className="size-4 text-muted-foreground"
-                    />
-                    <p className="text-sm font-extrabold">
-                      {workspace.data.employee.name}
-                    </p>
-                    {(workspace.data.employee.position ||
-                      workspace.data.employee.department) && (
-                      <p className="text-2xs text-muted-foreground">
-                        {[
-                          workspace.data.employee.position,
-                          workspace.data.employee.department,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
-
-              <Card className="gap-0 py-0">
-                <CardContent className="py-4">
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <h2 className="flex items-center gap-2 text-sm font-extrabold">
-                      <ListTodo aria-hidden className="size-4" /> المهام النشطة
-                      المسندة إليّ
-                    </h2>
-                    <Button
-                      asChild
-                      size="sm"
-                      variant="outline"
-                      className="ms-auto"
-                    >
-                      <Link href="/tasks?tab=mine">عرض كل مهامي</Link>
-                    </Button>
-                  </div>
-                  {workspace.data.tasks.length === 0 ? (
-                    <div className="py-8 text-center">
-                      <CheckCircle2
-                        aria-hidden
-                        className="mx-auto mb-2 size-8 text-[var(--sem-pos)]"
-                      />
-                      <p className="text-sm font-bold">
-                        لا توجد مهام نشطة مسندة إليك
-                      </p>
-                    </div>
-                  ) : (
-                    <ul className="divide-y rounded-md border">
-                      {workspace.data.tasks.map((task) => (
-                        <li key={task.id}>
-                          <Link
-                            href={`/tasks/${task.id}`}
-                            className="flex min-h-16 items-start gap-3 p-3 transition-colors hover:bg-muted/50"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span
-                                  className="font-mono text-2xs text-muted-foreground"
-                                  dir="ltr"
-                                >
-                                  {task.taskNumber}
-                                </span>
-                                <Badge variant="outline">
-                                  {taskStatusLabel(task.status)}
-                                </Badge>
-                                <Badge
-                                  variant={
-                                    task.priority === "URGENT"
-                                      ? "danger"
-                                      : task.priority === "HIGH"
-                                        ? "warning"
-                                        : "neutral"
-                                  }
-                                >
-                                  {taskPriorityLabel(task.priority)}
-                                </Badge>
-                              </div>
-                              <p className="mt-1 text-sm font-bold">
-                                {task.title}
-                              </p>
-                              {task.dueAt && (
-                                <p className="mt-1 text-2xs text-muted-foreground">
-                                  الاستحقاق: {fmtDateTime(task.dueAt)}
-                                </p>
-                              )}
-                            </div>
-                            <ExternalLink
-                              aria-hidden
-                              className="mt-1 size-3.5 shrink-0 text-muted-foreground"
-                            />
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </CardContent>
-              </Card>
-            </>
           )}
         </section>
       )}

@@ -17,7 +17,7 @@ function daysAgo(days: number): string {
 beforeEach(async () => {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of ["tasks", "arReminders", "customerNotes", "invoices", "customers", "branches", "users"]) {
+  for (const table of ["arReminders", "customerNotes", "invoices", "customers", "branches", "users"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -54,16 +54,6 @@ beforeEach(async () => {
     promisedDate: daysAgo(1),
     createdBy: 1,
   });
-  await d.insert(s.tasks).values({
-    taskNumber: "TASK-OPS-1",
-    branchId: 1,
-    taskKind: "FOLLOW_UP",
-    taskStatus: "NEW",
-    priority: "HIGH",
-    title: "متابعة العميل",
-    customerId: 1,
-    createdBy: 1,
-  });
 });
 
 describe("getCustomerOperations", () => {
@@ -87,7 +77,7 @@ describe("getCustomerOperations", () => {
     expect(overdue).toMatchObject({
       collectionStatus: "PROMISE_BROKEN",
       overdueAmount: "1000.00",
-      openTasks: 1,
+      openTasks: 0,
     });
   });
 

@@ -1,14 +1,30 @@
-// تقارير مالية للقراءة فقط:
-//  - getARAging: شيخوخة الذمم المدينة لكل العملاء، بدلاء 0-30/31-60/61-90/90+.
-//  - getCustomerStatement: كشف حساب عميل (فواتير + دفعات + ملخّص).
-import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import Decimal from "decimal.js";
 import { alias } from "drizzle-orm/mysql-core";
 import { openBalanceExpr, openBalanceOf } from "@shared/predicates/openBalance";
-import { accountingEntries, customers, invoices, orderPayments, receipts, users } from "../../../drizzle/schema";
+import {
+  accountingEntries,
+  customers,
+  invoiceItems,
+  invoices,
+  orderPayments,
+  productVariants,
+  products,
+  receipts,
+  users,
+} from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import { isPreInvoiceHoldReceiptCond } from "../reception/holdReceipts";
 import { nextDayStr, type StatementPeriod } from "./shared";
+import type {
+  FinancialCellProvenancePayload,
+  ProvenanceDocumentRef,
+  ProvenanceMovementType,
+  ProvenancePartyKind,
+  ProvenanceSubItem,
+} from "@shared/financialProvenance";
+import { computeProvenanceReconciliation } from "@shared/financialProvenance";
 
 export interface ARAgingRow {
   customerId: number;
@@ -63,7 +79,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       ) cb ON cb.customerId = c.id`
     : sql``;
   const currentBalanceExpr = opts.branchId
-    ? sql`COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0))`
+    ? sql`CASE WHEN c.currentBalance <= 0 THEN c.currentBalance ELSE COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0)) END`
     : sql`c.currentBalance`;
   const branchGroup = opts.branchId ? sql`, cb.balance` : sql``;
   const balanceHaving = opts.branchId
@@ -106,17 +122,97 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];
-  // REP-04: الدلاء تُعمَّر من الفواتير المستحقّة فقط؛ الرصيد الافتتاحي (OPENING) والسندات المستقلّة
-  // تقع خارجها ⇒ unbucketed = currentBalance − unpaidTotal (مُوقَّع، بلا قصّ) يُغلق الفرق فتتّزن
-  // الدلاء مع الرصيد الجاري. بدقّة decimal (§٥).
-  return (data as any[]).map((r) => {
-    const scopedBalance = money(r.currentBalance);
-    return {
-      ...(r as ARAgingRow),
-      currentBalance: toDbMoney(scopedBalance),
-      unbucketed: toDbMoney(scopedBalance.sub(money(r.unpaidTotal))),
-    };
-  });
+  return (data as any[])
+    .map((r) => {
+      const scopedBalance = money(r.currentBalance);
+      let d0_30 = money(r.d0_30 || 0);
+      let d31_60 = money(r.d31_60 || 0);
+      let d61_90 = money(r.d61_90 || 0);
+      let d91p = money(r.d91p || 0);
+      const rawUnpaid = money(r.unpaidTotal || 0);
+
+      // حارس المبدأ المحاسبي الجوهري (DoD §٥):
+      // إذا كان رصيد العميل صفراً أو سالباً (دائن)، فلا توجد ذمم مدينة مستحقة على العميل إطلاقاً
+      // وكل الفواتير المفتوحة في الدفتر تخضع للتسوية التلقائية كمسددة
+      if (scopedBalance.lte(0)) {
+        return {
+          ...(r as ARAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: "0.00",
+          d31_60: "0.00",
+          d61_90: "0.00",
+          d91p: "0.00",
+          unpaidTotal: "0.00",
+          unbucketed: toDbMoney(scopedBalance),
+          oldestInvoiceDate: null,
+        };
+      }
+
+      // إذا كان إجمالي الفواتير المفتوحة الخام يفوق الرصيد الفعلي المدين:
+      // الفارق يمثل سدادات غير مخصصة تخفض الذمم وفق قاعدة الأسبقية المحاسبية FIFO
+      // (الأقدم يُسدد أولاً: >90 ثم 61-90 ثم 31-60 ثم 0-30)
+      if (rawUnpaid.gt(scopedBalance)) {
+        let unallocatedPayment = rawUnpaid.minus(scopedBalance);
+
+        // تخفيض دلو >90
+        const alloc91p = Decimal.min(d91p, unallocatedPayment);
+        d91p = d91p.minus(alloc91p);
+        unallocatedPayment = unallocatedPayment.minus(alloc91p);
+
+        // تخفيض دلو 61-90
+        if (unallocatedPayment.gt(0)) {
+          const alloc61_90 = Decimal.min(d61_90, unallocatedPayment);
+          d61_90 = d61_90.minus(alloc61_90);
+          unallocatedPayment = unallocatedPayment.minus(alloc61_90);
+        }
+
+        // تخفيض دلو 31-60
+        if (unallocatedPayment.gt(0)) {
+          const alloc31_60 = Decimal.min(d31_60, unallocatedPayment);
+          d31_60 = d31_60.minus(alloc31_60);
+          unallocatedPayment = unallocatedPayment.minus(alloc31_60);
+        }
+
+        // تخفيض دلو 0-30
+        if (unallocatedPayment.gt(0)) {
+          const alloc0_30 = Decimal.min(d0_30, unallocatedPayment);
+          d0_30 = d0_30.minus(alloc0_30);
+          unallocatedPayment = unallocatedPayment.minus(alloc0_30);
+        }
+
+        const effectiveUnpaid = scopedBalance;
+        return {
+          ...(r as ARAgingRow),
+          currentBalance: toDbMoney(scopedBalance),
+          d0_30: toDbMoney(d0_30),
+          d31_60: toDbMoney(d31_60),
+          d61_90: toDbMoney(d61_90),
+          d91p: toDbMoney(d91p),
+          unpaidTotal: toDbMoney(effectiveUnpaid),
+          unbucketed: "0.00",
+        };
+      }
+
+      // الحالة الطبيعية: rawUnpaid <= scopedBalance
+      // الفارق (scopedBalance - rawUnpaid) رصيد افتتاحي/غير مفوتر موجب
+      const effectiveUnpaid = rawUnpaid;
+      const unbucketed = scopedBalance.minus(effectiveUnpaid);
+
+      return {
+        ...(r as ARAgingRow),
+        currentBalance: toDbMoney(scopedBalance),
+        d0_30: toDbMoney(d0_30),
+        d31_60: toDbMoney(d31_60),
+        d61_90: toDbMoney(d61_90),
+        d91p: toDbMoney(d91p),
+        unpaidTotal: toDbMoney(effectiveUnpaid),
+        unbucketed: toDbMoney(unbucketed),
+      };
+    })
+    .filter((r) => {
+      // استبعاد الحسابات الصفرية تماماً (الرصيد الجاري صفر والذمة المستحقة صفر)
+      return !(money(r.currentBalance).isZero() && money(r.unpaidTotal).isZero());
+    });
 }
 
 export interface CustomerStatementInvoice {
@@ -133,6 +229,7 @@ export interface CustomerStatementInvoice {
   sourceType: string;
   createdBy: number | null;
   createdByName: string | null;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 export interface CustomerStatementPayment {
@@ -149,6 +246,7 @@ export interface CustomerStatementPayment {
   description: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 export interface CustomerStatementResult {
@@ -330,6 +428,10 @@ export async function getCustomerStatement(
       sourceType: invoices.sourceType,
       createdBy: invoices.createdBy,
       createdByName: sql<string | null>`COALESCE(${invoiceActor.name}, ${invoiceActor.username})`,
+      discountAmount: invoices.discountAmount,
+      taxAmount: invoices.taxAmount,
+      deliveryFee: invoices.deliveryFee,
+      cashRoundingAdjustment: invoices.cashRoundingAdjustment,
     })
     .from(invoices)
     .leftJoin(invoiceActor, eq(invoiceActor.id, invoices.createdBy))
@@ -478,80 +580,312 @@ export async function getCustomerStatement(
       .map((i) => openBalanceOf(i, "COLLECTIBLE"))
   );
 
+  const invoiceIds = invs.map((i) => Number(i.id)).filter((id) => id > 0);
+  const invoiceItemMap = new Map<number, ProvenanceSubItem[]>();
+  if (invoiceIds.length > 0) {
+    const itemRows = await db
+      .select({
+        invoiceId: invoiceItems.invoiceId,
+        id: invoiceItems.id,
+        name: sql<string>`COALESCE(${invoiceItems.itemNameSnapshot}, ${products.name})`,
+        quantity: invoiceItems.quantity,
+        unitPrice: invoiceItems.unitPrice,
+        total: invoiceItems.total,
+      })
+      .from(invoiceItems)
+      .leftJoin(productVariants, eq(productVariants.id, invoiceItems.variantId))
+      .leftJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(invoiceItems.invoiceId, invoiceIds));
+
+    for (const it of itemRows) {
+      const invId = Number(it.invoiceId);
+      const list = invoiceItemMap.get(invId) ?? [];
+      list.push({
+        id: it.id,
+        label: it.name || "بند فاتورة",
+        amount: toDbMoney(money(it.total ?? 0)),
+        quantity: it.quantity != null ? Number(it.quantity) : undefined,
+        unitPrice: it.unitPrice != null ? toDbMoney(money(it.unitPrice)) : undefined,
+        type: "item",
+      });
+      invoiceItemMap.set(invId, list);
+    }
+  }
+
+  const buildPaymentProvenance = (p: {
+    id: number;
+    invoiceId: number | null;
+    direction: "IN" | "OUT";
+    amount: string;
+    paymentMethod: string;
+    status: string;
+    createdAt: Date;
+    isStandalone: boolean;
+    voucherNumber: string | null;
+    description: string | null;
+    createdBy: number | null;
+    createdByName: string | null;
+  }): FinancialCellProvenancePayload => {
+    const pAmount = toDbMoney(money(p.amount ?? 0));
+    const isRet = p.paymentMethod === "RETURN";
+    const isCod = p.paymentMethod === "COD";
+    const isOpening = p.paymentMethod === "OPENING_ADJ";
+
+    let movementType: ProvenanceMovementType = "collection";
+    if (p.direction === "OUT") {
+      movementType = "delivery";
+    } else if (isRet) {
+      movementType = "difference";
+    } else if (isOpening) {
+      movementType = "balance";
+    }
+
+    const docRefs: ProvenanceDocumentRef[] = [];
+    if (p.voucherNumber) {
+      docRefs.push({
+        docType: "voucher",
+        docNumber: p.voucherNumber,
+        date: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+      });
+    }
+    if (p.invoiceId) {
+      docRefs.push({
+        docType: "invoice",
+        docNumber: `INV-${p.invoiceId}`,
+        docId: p.invoiceId,
+        date: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+      });
+    }
+    if (p.id > 0) {
+      docRefs.push({
+        docType: "receipt",
+        docNumber: `REC-${p.id}`,
+        docId: p.id,
+        date: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+      });
+    }
+
+    const subItems: ProvenanceSubItem[] = [
+      {
+        id: `pay-${p.id}`,
+        label: p.description || (isRet ? "مرتجع مبيعات" : isCod ? "تحصيل مندوب توصيل" : "سداد دفعة عميل"),
+        amount: pAmount,
+        type: isRet ? "adjustment" : "item",
+      },
+    ];
+
+    return {
+      movementType,
+      title: p.description || (p.isStandalone ? "سند قبض مستقل" : "دفعة سداد"),
+      totalAmount: pAmount,
+      party: {
+        name: c.name,
+        kind: "customer",
+        id: c.id,
+        phone: c.phone,
+      },
+      documentRef: docRefs[0] ?? null,
+      docRefs,
+      paymentMethod: p.paymentMethod,
+      actorName: p.createdByName,
+      actor: p.createdByName ? { name: p.createdByName, id: p.createdBy } : null,
+      notes: p.description,
+      subItems,
+      reconciliation: computeProvenanceReconciliation(pAmount, subItems),
+    };
+  };
+
   return {
     customer: c,
-    invoices: invs.map((i) => ({
-      id: Number(i.id),
-      invoiceNumber: i.invoiceNumber,
-      invoiceDate: i.invoiceDate,
-      dueDate: i.dueDate,
-      total: String(i.total),
-      paidAmount: String(i.paidAmount),
-      returnedTotal: String(i.returnedTotal ?? "0"),
-      status: i.status,
-      sourceType: i.sourceType,
-      createdBy: i.createdBy ? Number(i.createdBy) : null,
-      createdByName: i.createdByName,
-    })),
+    invoices: invs.map((i) => {
+      const invTotal = toDbMoney(money(i.total ?? 0));
+      const rawItems = invoiceItemMap.get(Number(i.id)) ?? [];
+      const subItems: ProvenanceSubItem[] = [...rawItems];
+
+      if (i.discountAmount && money(i.discountAmount).gt(0)) {
+        subItems.push({
+          id: `disc-${i.id}`,
+          label: "خصم تجاري / ترويجي",
+          amount: `-${toDbMoney(money(i.discountAmount))}`,
+          type: "discount",
+        });
+      }
+      if (i.taxAmount && money(i.taxAmount).gt(0)) {
+        subItems.push({
+          id: `tax-${i.id}`,
+          label: "ضريبة",
+          amount: toDbMoney(money(i.taxAmount)),
+          type: "tax",
+        });
+      }
+      if (i.deliveryFee && money(i.deliveryFee).gt(0)) {
+        subItems.push({
+          id: `deliv-${i.id}`,
+          label: "أجرة توصيل",
+          amount: toDbMoney(money(i.deliveryFee)),
+          type: "shipping",
+        });
+      }
+      if (i.cashRoundingAdjustment && !money(i.cashRoundingAdjustment).isZero()) {
+        const isNeg = money(i.cashRoundingAdjustment).isNegative();
+        subItems.push({
+          id: `round-${i.id}`,
+          label: "تقريب نقدي د.ع",
+          amount: isNeg
+            ? `-${toDbMoney(money(i.cashRoundingAdjustment).abs())}`
+            : toDbMoney(money(i.cashRoundingAdjustment)),
+          type: "rounding",
+        });
+      }
+
+      if (subItems.length === 0) {
+        subItems.push({
+          id: `inv-${i.id}`,
+          label: `فاتورة مبيعات #${i.invoiceNumber}`,
+          amount: invTotal,
+        });
+      } else {
+        const currentSum = subItems.reduce((acc, it) => acc.plus(money(it.amount)), money(0));
+        const diff = money(invTotal).minus(currentSum);
+        if (!diff.isZero() && diff.abs().lte(100)) {
+          subItems.push({
+            id: `adj-${i.id}`,
+            label: "تسوية فروق / تقريب",
+            amount: diff.isNegative() ? `-${toDbMoney(diff.abs())}` : toDbMoney(diff),
+            type: "adjustment",
+          });
+        }
+      }
+
+      const reconciliation = computeProvenanceReconciliation(invTotal, subItems);
+
+      const invoiceProvenance: FinancialCellProvenancePayload = {
+        movementType: "revenue",
+        title: `فاتورة مبيعات #${i.invoiceNumber}`,
+        totalAmount: invTotal,
+        party: {
+          name: c.name,
+          kind: "customer",
+          id: c.id,
+          phone: c.phone,
+        },
+        documentRef: {
+          docType: "invoice",
+          docNumber: i.invoiceNumber,
+          docId: Number(i.id),
+          date: i.invoiceDate instanceof Date ? i.invoiceDate.toISOString() : String(i.invoiceDate),
+        },
+        docRefs: [
+          {
+            docType: "invoice",
+            docNumber: i.invoiceNumber,
+            docId: Number(i.id),
+            date: i.invoiceDate instanceof Date ? i.invoiceDate.toISOString() : String(i.invoiceDate),
+          },
+        ],
+        actorName: i.createdByName,
+        actor: i.createdByName ? { name: i.createdByName, id: i.createdBy ? Number(i.createdBy) : null } : null,
+        notes: `حالة الفاتورة: ${i.status}`,
+        subItems,
+        reconciliation,
+      };
+
+      return {
+        id: Number(i.id),
+        invoiceNumber: i.invoiceNumber,
+        invoiceDate: i.invoiceDate,
+        dueDate: i.dueDate,
+        total: String(i.total),
+        paidAmount: String(i.paidAmount),
+        returnedTotal: String(i.returnedTotal ?? "0"),
+        status: i.status,
+        sourceType: i.sourceType,
+        createdBy: i.createdBy ? Number(i.createdBy) : null,
+        createdByName: i.createdByName,
+        provenance: invoiceProvenance,
+      };
+    }),
     payments: [
-      ...payments.map((p) => ({
-        id: Number(p.id),
-        invoiceId: p.invoiceId ? Number(p.invoiceId) : null,
-        direction: p.direction as "IN" | "OUT",
-        amount: String(p.amount),
-        paymentMethod: String(p.paymentMethod),
-        status: String(p.status),
-        createdAt: p.createdAt,
-        isStandalone: p.invoiceId == null,
-        voucherNumber: p.voucherNumber ? String(p.voucherNumber) : null,
-        description: p.description ? String(p.description) : null,
-        createdBy: p.createdBy ? Number(p.createdBy) : null,
-        createdByName: p.createdByName,
-      })),
-      ...codPayments.map((e) => ({
-        id: -Number(e.id),
-        invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
-        direction: "IN" as const,
-        amount: String(e.amount),
-        paymentMethod: "COD",
-        status: "COMPLETED",
-        createdAt: e.createdAt,
-        isStandalone: false,
-        voucherNumber: null,
-        description: e.notes ? String(e.notes) : "تحصيل مندوب التوصيل",
-        createdBy: e.createdBy ? Number(e.createdBy) : null,
-        createdByName: e.createdByName,
-      })),
-      ...returnPayments.map((e) => ({
-        id: -1_000_000_000 - Number(e.id),
-        invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
-        direction: "IN" as const,
-        amount: money(e.amount).abs().toFixed(2),
-        paymentMethod: "RETURN",
-        status: "COMPLETED",
-        createdAt: e.createdAt,
-        isStandalone: false,
-        voucherNumber: null,
-        description: e.notes ? String(e.notes) : "مرتجع مبيعات",
-        createdBy: e.createdBy ? Number(e.createdBy) : null,
-        createdByName: e.createdByName,
-      })),
-      // تصحيح رصيد افتتاحيّ داخل الفترة: الإشارة بدلالة أعمار AR نفسها (موجب يزيد ما علينا
-      // تحصيله = أثر PAYMENT_OUT، وسالب يخفّضه = أثر PAYMENT_IN) فيتّسق الرصيد الجاري للكشف.
-      ...openingAdjustments.map((e) => ({
-        id: -2_000_000_000 - Number(e.id),
-        invoiceId: null as number | null,
-        direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
-        amount: money(e.amount).abs().toFixed(2),
-        paymentMethod: "OPENING_ADJ",
-        status: "COMPLETED",
-        createdAt: e.createdAt,
-        isStandalone: true,
-        voucherNumber: null,
-        description: e.notes ? String(e.notes) : "تصحيح رصيد افتتاحي",
-        createdBy: e.createdBy ? Number(e.createdBy) : null,
-        createdByName: e.createdByName,
-      })),
+      ...payments.map((p) => {
+        const item = {
+          id: Number(p.id),
+          invoiceId: p.invoiceId ? Number(p.invoiceId) : null,
+          direction: p.direction as "IN" | "OUT",
+          amount: String(p.amount),
+          paymentMethod: String(p.paymentMethod),
+          status: String(p.status),
+          createdAt: p.createdAt,
+          isStandalone: p.invoiceId == null,
+          voucherNumber: p.voucherNumber ? String(p.voucherNumber) : null,
+          description: p.description ? String(p.description) : null,
+          createdBy: p.createdBy ? Number(p.createdBy) : null,
+          createdByName: p.createdByName,
+        };
+        return {
+          ...item,
+          provenance: buildPaymentProvenance(item),
+        };
+      }),
+      ...codPayments.map((e) => {
+        const item = {
+          id: -Number(e.id),
+          invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
+          direction: "IN" as const,
+          amount: String(e.amount),
+          paymentMethod: "COD",
+          status: "COMPLETED",
+          createdAt: e.createdAt,
+          isStandalone: false,
+          voucherNumber: null,
+          description: e.notes ? String(e.notes) : "تحصيل مندوب التوصيل",
+          createdBy: e.createdBy ? Number(e.createdBy) : null,
+          createdByName: e.createdByName,
+        };
+        return {
+          ...item,
+          provenance: buildPaymentProvenance(item),
+        };
+      }),
+      ...returnPayments.map((e) => {
+        const item = {
+          id: -1_000_000_000 - Number(e.id),
+          invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
+          direction: "IN" as const,
+          amount: money(e.amount).abs().toFixed(2),
+          paymentMethod: "RETURN",
+          status: "COMPLETED",
+          createdAt: e.createdAt,
+          isStandalone: false,
+          voucherNumber: null,
+          description: e.notes ? String(e.notes) : "مرتجع مبيعات",
+          createdBy: e.createdBy ? Number(e.createdBy) : null,
+          createdByName: e.createdByName,
+        };
+        return {
+          ...item,
+          provenance: buildPaymentProvenance(item),
+        };
+      }),
+      ...openingAdjustments.map((e) => {
+        const item = {
+          id: -2_000_000_000 - Number(e.id),
+          invoiceId: null as number | null,
+          direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
+          amount: money(e.amount).abs().toFixed(2),
+          paymentMethod: "OPENING_ADJ",
+          status: "COMPLETED",
+          createdAt: e.createdAt,
+          isStandalone: true,
+          voucherNumber: null,
+          description: e.notes ? String(e.notes) : "تصحيح رصيد افتتاحي",
+          createdBy: e.createdBy ? Number(e.createdBy) : null,
+          createdByName: e.createdByName,
+        };
+        return {
+          ...item,
+          provenance: buildPaymentProvenance(item),
+        };
+      }),
     ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     summary: {
       totalSales: toDbMoney(totalSales),

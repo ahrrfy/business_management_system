@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Plus, Printer, ShoppingCart, Users, X, Search } from "lucide-react";
+import { AlertCircle, FileSpreadsheet, Plus, Printer, ReceiptText, ShoppingCart, Users, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -143,6 +143,8 @@ export default function ServiceForm() {
   const [allowBackorder, setAllowBackorder] = useState(false);
   const [showInPrintPos, setShowInPrintPos] = useState(true);
   const [showInReception, setShowInReception] = useState(false);
+  const [showInQuotations, setShowInQuotations] = useState(false);
+  const [showInAdvancedSales, setShowInAdvancedSales] = useState(true);
   const [consumesMaterials, setConsumesMaterials] = useState(false);
   const [lineSeq, setLineSeq] = useState(2);
   const [lines, setLines] = useState<RecipeLine[]>([{ key: 1, variantId: "", qty: "1", picked: null }]);
@@ -233,7 +235,10 @@ export default function ServiceForm() {
       // خاصّةٌ بالناتج المخزنيّ وحده — الخدمة بلا رصيد فلا معنى لبيعٍ بالطلب عليها.
       allowBackorder: isStockedOutput && allowBackorder,
       printService: showInPrintPos,
+      showInPrintPos,
       showInReception,
+      showInQuotations,
+      showInAdvancedSales,
       recipe,
       variants: [
         {
@@ -341,11 +346,43 @@ export default function ServiceForm() {
               </span>
             </span>
           </label>
-          <div className="rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-3 py-2 text-[11px] text-[var(--sem-pos)]">
-            {isStockedOutput
-              ? "في البيع المتقدّم يُخصم الناتج المخزني نفسه وتُحتسب كلفته بالمتوسط المرجّح."
-              : "في البيع المتقدّم يمكن جمع الخدمة مع السلع، وتُستهلك مواد الوصفة ذرّياً عند البيع."}
-          </div>
+          <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
+            <Switch checked={showInQuotations} onCheckedChange={setShowInQuotations} className="mt-0.5" />
+            <span className="flex items-center gap-2 text-sm">
+              <FileSpreadsheet aria-hidden className="size-4 text-amber-600" />
+              <span>
+                <b>عروض الأسعار</b>
+                <span className="block text-xs text-muted-foreground">
+                  {showInQuotations
+                    ? "يَظهر هذا البند في بحث عروض الأسعار ويمكن إدراجه في عروض الأسعار للعملاء."
+                    : "لن يَظهر في عروض الأسعار."}
+                </span>
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
+            <Switch checked={showInAdvancedSales} onCheckedChange={setShowInAdvancedSales} className="mt-0.5" />
+            <span className="flex items-center gap-2 text-sm">
+              <ReceiptText aria-hidden className="size-4 text-emerald-600" />
+              <span>
+                <b>فواتير المبيعات المتقدمة</b>
+                <span className="block text-xs text-muted-foreground">
+                  {showInAdvancedSales
+                    ? isStockedOutput
+                      ? "يَظهر في فواتير المبيعات المتقدّمة ويُخصم من رصيد الناتج المخزني."
+                      : "يَظهر في فواتير المبيعات المتقدّمة وتُستهلك مواد الوصفة ذرّياً عند البيع."
+                    : "لن يَظهر في فواتير المبيعات المتقدّمة."}
+                </span>
+              </span>
+            </span>
+          </label>
+          {showInAdvancedSales && (
+            <div className="rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-3 py-2 text-[11px] text-[var(--sem-pos)]">
+              {isStockedOutput
+                ? "في البيع المتقدّم تُخصم الناتج المخزني نفسه وتُحتسب كلفته بالمتوسط المرجّح."
+                : "في البيع المتقدّم يمكن جمع الخدمة مع السلع، وتُستهلك مواد الوصفة ذرّياً عند البيع."}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -466,6 +503,9 @@ export default function ServiceForm() {
             <Badge variant="secondary" className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">يُباع بالطلب</Badge>
           )}
           {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
+          {showInReception && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">الاستقبال</Badge>}
+          {showInQuotations && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">عروض الأسعار</Badge>}
+          {showInAdvancedSales && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">المبيعات المتقدمة</Badge>}
           {consumesMaterials && anyMaterialPicked && (
             <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
               {toArabicDigits(lines.filter((l) => l.variantId !== "").length)} مادة

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  activeCustomizationFields,
   buildCartLine,
   cartLineKey,
-  CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE,
+  DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH,
+  productOnlineOrderingIssue,
+  pruneInactiveCustomizationValues,
   validateProductSelection,
 } from "@/lib/product-selection";
 import { mapApiProduct, type ApiProduct } from "@/lib/storefront-api";
@@ -41,7 +44,7 @@ const apiProduct: ApiProduct = {
         maxLength: 20,
         options: [],
         dependency: null,
-        priceDelta: "0",
+        priceDelta: "250.00",
       },
       {
         fieldKey: "color",
@@ -50,7 +53,7 @@ const apiProduct: ApiProduct = {
         isRequired: true,
         sortOrder: 2,
         maxLength: null,
-        options: [{ value: "gold", label: "ذهبي", priceDelta: "0" }],
+        options: [{ value: "gold", label: "ذهبي", priceDelta: "75.00" }],
         dependency: { fieldKey: "name", operator: "notEquals", value: "" },
         priceDelta: "0",
       },
@@ -163,12 +166,100 @@ describe("product selection contract", () => {
     expect(first.maxQuantity).toBe(3);
   });
 
-  it("fails closed for every customizable product until the server contract supports it", () => {
+  it("accepts a valid customizable selection with structured values", () => {
     const product = mapApiProduct(apiProduct);
+    const selection = validateProductSelection(product, {
+      variantId: 21,
+      productUnitId: 71,
+      customizationValues: { name: "علي", color: "gold" },
+    });
+    expect(selection.errors).toEqual([]);
+    expect(selection.details?.customization?.values).toEqual([
+      { fieldKey: "name", label: "الاسم", value: "علي", displayValue: "علي" },
+      { fieldKey: "color", label: "لون الطباعة", value: "gold", displayValue: "ذهبي" },
+    ]);
+    expect(selection.details).toMatchObject({ unitPrice: "5325.00", unitSalePrice: "4825.00" });
+  });
+
+  it("accepts a required file reference as structured text", () => {
+    const product = mapApiProduct({
+      ...apiProduct,
+      customizationTemplate: {
+        ...apiProduct.customizationTemplate!,
+        fields: [{
+          fieldKey: "design",
+          label: "ملف التصميم",
+          fieldType: "FILE",
+          isRequired: true,
+          sortOrder: 1,
+          maxLength: 500,
+          options: [],
+          dependency: null,
+          priceDelta: "0",
+        }],
+      },
+    });
+    const selection = validateProductSelection(product, {
+      variantId: 21,
+      productUnitId: 71,
+      customizationValues: { design: "https://files.example/design.pdf" },
+    });
+    expect(selection.errors).toEqual([]);
+    expect(selection.details?.customization?.values[0]).toMatchObject({
+      fieldKey: "design",
+      displayValue: "https://files.example/design.pdf",
+    });
+  });
+
+  it("resolves dependency chains and removes every transitively hidden value", () => {
+    const product = mapApiProduct({
+      ...apiProduct,
+      customizationTemplate: {
+        ...apiProduct.customizationTemplate!,
+        fields: [
+          { fieldKey: "mode", label: "الطريقة", fieldType: "SELECT", isRequired: true, sortOrder: 1, maxLength: null, options: [{ value: "text", label: "نص", priceDelta: "0" }, { value: "file", label: "ملف", priceDelta: "0" }], dependency: null, priceDelta: "0" },
+          { fieldKey: "message", label: "النص", fieldType: "TEXT", isRequired: false, sortOrder: 2, maxLength: null, options: [], dependency: { fieldKey: "mode", operator: "equals", value: "text" }, priceDelta: "0" },
+          { fieldKey: "signature", label: "التوقيع", fieldType: "TEXT", isRequired: false, sortOrder: 3, maxLength: null, options: [], dependency: { fieldKey: "message", operator: "notEquals", value: "blocked" }, priceDelta: "0" },
+        ],
+      },
+    });
+    const values = { mode: "file", message: "stale", signature: "hidden" };
+    expect(activeCustomizationFields(product, values).map((field) => field.fieldKey)).toEqual(["mode"]);
+    expect(pruneInactiveCustomizationValues(product, values)).toEqual({ mode: "file" });
+    expect(validateProductSelection(product, { variantId: 21, productUnitId: 71, customizationValues: values }).details?.customization?.values).toEqual([
+      { fieldKey: "mode", label: "الطريقة", value: "file", displayValue: "ملف" },
+    ]);
+  });
+
+  it("uses the server default length limit when the template leaves it empty", () => {
+    const product = mapApiProduct({
+      ...apiProduct,
+      customizationTemplate: {
+        ...apiProduct.customizationTemplate!,
+        fields: [{ ...apiProduct.customizationTemplate!.fields[0]!, maxLength: null }],
+      },
+    });
+    expect(DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH).toBe(2_000);
+    expect(validateProductSelection(product, {
+      variantId: 21,
+      productUnitId: 71,
+      customizationValues: { name: "س".repeat(2_001) },
+    }).errors).toContain("حقل «الاسم» يتجاوز 2000 حرفاً.");
+  });
+
+  it("rejects a customization template whose kind does not match the product", () => {
+    const product = mapApiProduct({
+      ...apiProduct,
+      customizationTemplate: {
+        ...apiProduct.customizationTemplate!,
+        kind: "GIFT",
+      },
+    });
+    expect(productOnlineOrderingIssue(product)).toBeTruthy();
     expect(validateProductSelection(product, {
       variantId: 21,
       productUnitId: 71,
       customizationValues: { name: "علي", color: "gold" },
-    }).errors).toEqual([CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE]);
+    }).details).toBeNull();
   });
 });

@@ -37,7 +37,7 @@ import {
 import { getDb, type Tx } from "../db";
 import { hashPassword, verifyPassword } from "../auth/password";
 import { escapeLike } from "../lib/sqlLike";
-import { withTx, type Actor } from "./tx";
+import { withTx, type Actor, type MaybeScopedActor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { getUserUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { logAuditTx } from "./auditService";
@@ -238,7 +238,7 @@ export function generateStrongPassword(): string {
 }
 
 /** إنشاء مستخدم جديد (غلاف ذرّي مستقلّ). */
-export async function createUser(input: CreateUserInput, actor: Actor) {
+export async function createUser(input: CreateUserInput, actor: MaybeScopedActor) {
   return withTx((tx) => createUserTx(tx, input, actor));
 }
 
@@ -247,7 +247,7 @@ export async function createUser(input: CreateUserInput, actor: Actor) {
  * في معاملة ذرّية واحدة (مثل «أضف موظفاً + أنشئ حسابه» معاً ⇒ أي فشل يُرجِع الكل).
  * نفس منطق createUser تماماً لكن بلا withTx خاص.
  */
-export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor) {
+export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: MaybeScopedActor) {
   {
     const name = input.name?.trim();
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
@@ -308,7 +308,7 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor
 }
 
 /** تعديل مستخدم. */
-export async function updateUser(input: UpdateUserInput, actor: Actor) {
+export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor) {
   return withTx(async (tx) => {
     const existing = (
       await tx.select().from(users).where(eq(users.id, input.userId)).for("update").limit(1)

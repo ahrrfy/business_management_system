@@ -41,7 +41,6 @@ const TABLES = [
   "pushNotificationLog",
   "pushSubscriptions",
   "arReminders",
-  "tasks",
   "workOrders",
   "receipts",
   "invoiceItems",
@@ -239,29 +238,6 @@ describe("runMorningBriefPush", () => {
     const [notice] = await db().select().from(s.appNotifications);
     expect(notice.body).toMatch(/^1 بند للمتابعة/);
     expect(notice.body).toContain("1 تذكير (منها 1 موعود اليوم)");
-  });
-
-  it("لا يحتسب المهمة المتأخرة المسندة للمستخدم مرتين في الإجمالي", async () => {
-    const d = db();
-    await subscribeUserToPush(SUB, 1);
-    await d.insert(s.tasks).values({
-      taskNumber: "TASK-OVERDUE-MINE",
-      branchId: 1,
-      taskKind: "FOLLOW_UP",
-      taskStatus: "IN_PROGRESS",
-      priority: "HIGH",
-      title: "متابعة متأخرة",
-      assignedTo: 1,
-      createdBy: 1,
-      dueAt: new Date(Date.now() - 60 * 60 * 1000),
-    });
-
-    const r = await runMorningBriefPush();
-
-    expect(r.sent).toBe(1);
-    const [notice] = await db().select().from(s.appNotifications);
-    expect(notice.body).toMatch(/^1 بند للمتابعة/);
-    expect(notice.body).toContain("1 مهمة مفتوحة (منها 1 متأخرة)");
   });
 
   it("idempotency: إعادة التشغيل نفس اليوم لا يُرسل ثانيةً", async () => {

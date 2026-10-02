@@ -28,7 +28,6 @@ import {
   checkoutRequestLines,
   checkoutSelectionFingerprint,
   checkoutSelectionIssue,
-  checkoutSelectionNotes,
 } from "@/lib/checkout-selection";
 import { selectionDescription } from "@/lib/product-selection";
 import {
@@ -130,7 +129,7 @@ export default function CheckoutScreen() {
       setError("أدخل الاسم ورقم هاتف عراقي صحيحاً وعنوان التوصيل بصورة صحيحة.");
       return false;
     }
-    if (requestLines.length !== lines.length || requestLines.length === 0) {
+    if (requestLines.length === 0) {
       setError(
         "تعذر التحقق من عناصر السلة. عد إلى السلة وحدّث المنتجات ثم حاول مرة أخرى.",
       );
@@ -217,11 +216,9 @@ export default function CheckoutScreen() {
         addressText: address.trim(),
         latitude,
         longitude,
-        notes: checkoutSelectionNotes(lines),
-        lines: activeQuote.lines.map((line) => ({
-          productUnitId: line.productUnitId,
-          quantity: line.quantity,
-          expectedUnitPrice: line.unitPrice,
+        lines: requestLines.map((line, index) => ({
+          ...line,
+          expectedUnitPrice: activeQuote.lines[index]!.unitPrice,
         })),
         expectedGrandTotal: activeQuote.total,
         clientRequestId,
@@ -548,7 +545,7 @@ export default function CheckoutScreen() {
               <View style={styles.codRow}>
                 <MaterialIcons color="#0C5A4B" name="payments" size={18} />
                 <Text style={styles.codText}>
-                  طريقة الدفع: نقداً عند الاستلام
+                  طريقة الدفع: سدد نقد عند الباب (كاش)
                 </Text>
               </View>
             </View>
@@ -568,7 +565,7 @@ export default function CheckoutScreen() {
           )}
           <TouchableOpacity
             accessibilityLabel={
-              activeQuote ? "إرسال الطلب للمراجعة" : "مراجعة السعر النهائي"
+              activeQuote ? "أكد طلبك وهسة نجهزه الك" : "مراجعة السعر النهائي"
             }
             accessibilityRole="button"
             accessibilityState={{ disabled: submitting, busy: submitting }}
@@ -581,7 +578,7 @@ export default function CheckoutScreen() {
               {submitting
                 ? "جار تحديث الطلب…"
                 : activeQuote
-                ? "إرسال الطلب للمراجعة"
+                ? "أكد طلبك وهسة نجهزه الك"
                 : "مراجعة السعر النهائي"}
             </Text>
             {submitting ? (

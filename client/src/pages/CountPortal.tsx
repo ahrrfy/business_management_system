@@ -17,7 +17,7 @@ import { trpc } from "@/lib/trpc";
 import type { RouterOutputs } from "@/lib/trpc";
 import { notify, errMsg } from "@/lib/notify";
 import { isNetworkError } from "@/lib/netError";
-import { fmtInt } from "@/lib/money";
+import { fmtInt, formatQuantity } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
@@ -1077,7 +1077,7 @@ export default function CountPortal() {
                   dir="ltr"
                 >
                   {queued && <Hourglass aria-hidden className="size-3" />}
-                  <Check aria-hidden className="size-3" /> {fmtInt(shownQty)} {baseUnitName(i)}
+                  <Check aria-hidden className="size-3" /> {formatQuantity(shownQty)} {baseUnitName(i)}
                 </span>
               ) : canCount ? (
                 <span className="shrink-0 text-xs font-semibold text-primary">عدّ ←</span>

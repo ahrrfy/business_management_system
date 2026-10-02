@@ -13,6 +13,7 @@
 import { useState, useEffect } from "react";
 import { code128Svg } from "@/lib/printing/barcode";
 import { qrCodeSvg } from "@/lib/printing/qr";
+import { resolveQrUrl } from "@/lib/printing/render";
 import type { BarcodeSet } from "@shared/barcodeTypes";
 
 interface Props {
@@ -48,7 +49,8 @@ export function BarcodeDisplay({
     let cancelled = false;
     setQrSvg(null);
     setQrError(false);
-    qrCodeSvg(barcodeSet.qrPayload, { size: qrPx, margin: 1 })
+    const targetUrl = resolveQrUrl(barcodeSet.qrPayload);
+    qrCodeSvg(targetUrl, { size: qrPx, margin: 1 })
       .then((svg) => { if (!cancelled) setQrSvg(svg); })
       .catch(() => { if (!cancelled) setQrError(true); });
     return () => { cancelled = true; };

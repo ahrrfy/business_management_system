@@ -11,7 +11,7 @@
  *  - تعدّد السلف: الأقدم أولاً، واحدة تلو الأخرى.
  * (عزل الفرع: المسيّر مركزي لكل الشركة بلا عزل فرع في payrollService — لا اختبار عزل هنا عمداً.)
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -25,7 +25,7 @@ import {
   type GrantAdvanceInput,
 } from "../advances";
 import { createEmployee } from "../employeeService";
-import { approveRun, cancelRun, generatePayroll, payRun, returnSalaryPayment, updateItem } from "../payrollService";
+import { approveRun, cancelRun, generatePayroll, getRun, payRun, returnSalaryPayment, updateItem } from "../payrollService";
 import { approveVoucher } from "../voucherService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" };
@@ -470,19 +470,20 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     await expect(approveRun(run!.id, APPROVER)).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
-  it("تعدّد السلف: الأقدم أولاً واحدة تلو الأخرى", async () => {
+  it("تعدّد السلف: استقطاع عادل لجميع السلف النشطة (أصل الأولى + قسط الثانية) بلا ضياع للمال", async () => {
     const emp = await seedEmployee();
     const a1 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "100000" }, ACTOR);
     const a2 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "200000", monthlyDeduction: "50000" }, ACTOR);
 
-    // الشهر الأول: من الأقدم (a1، بلا خصم شهري ⇒ كامل رصيدها).
-    await fullPayCycle("2026-06");
+    // الشهر الأول: تُستقطع السلفة الأولى بالكامل (100,000) مع قسط السلفة الثانية (50,000) = 150,000 د.ع
+    const paidRun = await fullPayCycle("2026-06");
+    expect(Number(paidRun!.items[0].advanceDeduction)).toBe(150000);
     const [r1] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(a1.id)));
     const [r2] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(a2.id)));
     expect(r1.status).toBe("SETTLED");
-    expect(Number(r2.remaining)).toBe(200000); // لم تُمسّ
+    expect(Number(r2.remaining)).toBe(150000); // خُصم قسط 50,000 من السلفة الثانية
 
-    // الشهر الثاني: الاقتراح ينتقل للسلفة التالية (a2 بخصمها الشهري).
+    // الشهر الثاني: يستمر استقطاع قسط السلفة الثانية (50000).
     const run2 = await generatePayroll("2026-07", ACTOR);
     expect(Number(run2!.items[0].advanceDeduction)).toBe(50000);
 
@@ -490,5 +491,70 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     expect(list.length).toBe(1);
     expect(Number(list[0].id)).toBe(Number(a2.id));
     expect(list[0].voucherNumber).toMatch(/^PV-/);
+  });
+
+  it("تعدّد السلف القصيرة (4 سلف نقدية لموظف واحد): تُستقطع وتُسوّى كلّها دفعة واحدة بلا إغفال", async () => {
+    const emp = await seedEmployee();
+    // 4 سلف نقدية كالسحب المتكرر: 50,000 + 25,000 + 10,000 + 15,000 = 100,000 د.ع
+    const a1 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "50000" }, ACTOR);
+    const a2 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "25000" }, ACTOR);
+    const a3 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "10000" }, ACTOR);
+    const a4 = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "15000" }, ACTOR);
+
+    const paidRun = await fullPayCycle("2026-06");
+    expect(Number(paidRun!.items[0].advanceDeduction)).toBe(100000);
+    expect(Number(paidRun!.items[0].net)).toBe(900000); // راتب 1,000,000 - 100,000 سلف
+
+    const advRows = await db().select().from(s.employeeAdvances).where(inArray(s.employeeAdvances.id, [
+      Number(a1.id), Number(a2.id), Number(a3.id), Number(a4.id),
+    ]));
+    expect(advRows).toHaveLength(4);
+    for (const r of advRows) {
+      expect(r.status).toBe("SETTLED");
+      expect(Number(r.remaining)).toBe(0);
+    }
+  });
+
+  it("السلفة الممنوحة بعد توليد مسودة المسيّر تُزامن تلقائياً وتُستقطع بالكامل عند الاعتماد", async () => {
+    const emp = await seedEmployee();
+    // 1. توليد مسودة مسيّر قبل منح السلفة
+    const draftRun = await generatePayroll("2026-06", ACTOR);
+    expect(Number(draftRun!.items[0].advanceDeduction)).toBe(0);
+    expect(Number(draftRun!.items[0].net)).toBe(1000000);
+
+    // 2. منح سلفة للموظف أثناء وجود المسودة
+    const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "80000" }, ACTOR);
+
+    // 3. اعتماد المسيّر — المزامنة التلقائية تلتقط السلفة فوراً دون الحاجة لحذف المسودة أو إعادة التوليد
+    await approveRun(draftRun!.id, APPROVER);
+    const runAfterApproval = await getRun(draftRun!.id);
+    expect(Number(runAfterApproval!.items[0].advanceDeduction)).toBe(80000);
+    expect(Number(runAfterApproval!.items[0].net)).toBe(920000);
+    expect(Number(runAfterApproval!.totalDeductions)).toBe(80000);
+    expect(Number(runAfterApproval!.totalNet)).toBe(920000);
+
+    // 4. دفع المسيّر وتسوية السلفة
+    await payRun(draftRun!.id, APPROVER);
+    const [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
+    expect(row.status).toBe("SETTLED");
+    expect(Number(row.remaining)).toBe(0);
+  });
+
+  it("طلبات السلف بانتظار الاعتماد تظهر في listAdvances مع شارة PENDING_APPROVAL ولا تختفي", async () => {
+    const emp = await seedEmployee();
+    // إنشاء طلب سلفة مباشرة دون اعتماد السند ليبقى في PENDING_APPROVAL
+    const requested = await grantAdvanceService(
+      { employeeId: emp.id, branchId: 1, amount: "60000", note: "سلفة نقدية طارئة", clientRequestId: "test-pending-1" },
+      ACTOR,
+    );
+    expect(requested.status).toBe("PENDING_APPROVAL");
+
+    const list = await listAdvances({ employeeId: emp.id });
+    expect(list.length).toBeGreaterThanOrEqual(1);
+    const pending = list.find((item) => item.status === "PENDING_APPROVAL");
+    expect(pending).toBeDefined();
+    expect(Number(pending!.amount)).toBe(60000);
+    expect(pending!.employeeId).toBe(emp.id);
+    expect(pending!.voucherNumber).toMatch(/^PV-/);
   });
 });

@@ -12,7 +12,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { exportRows } from "@/lib/export";
 import { fmtDate, fmtDateTime } from "@/lib/date";
-import { D, round2, fmt, fmtInt } from "@/lib/money";
+import { D, round2, fmt, fmtInt, formatQuantity } from "@/lib/money";
 import {
   printStocktakeReport,
   STOCKTAKE_REASON_LABEL,
@@ -20,6 +20,7 @@ import {
   STOCKTAKE_STATUS_LABEL,
 } from "@/lib/printing/stocktakeTemplates";
 import { trpc } from "@/lib/trpc";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { useMemo } from "react";
 import { Link, useParams } from "wouter";
 import { Printer } from "lucide-react";
@@ -83,8 +84,10 @@ type ReportData = {
 const dOnly = (v?: string | Date | null): string => fmtDate(v);
 const dts = (v?: string | Date | null): string => fmtDateTime(v);
 
-const signedInt = (n: number): string =>
-  n > 0 ? `+${fmtInt(n)}` : n < 0 ? `−${fmtInt(Math.abs(n))}` : "0";
+const signedInt = (n: number | string | null | undefined): string => {
+  const num = Number(n ?? 0);
+  return num > 0 ? `+${formatQuantity(num)}` : num < 0 ? `−${formatQuantity(Math.abs(num))}` : "0";
+};
 
 /** مبلغ مُشار بدقّة decimal (عرض فقط). */
 const signedMoney = (v: string | number | null | undefined): string => {
@@ -128,7 +131,7 @@ type ReasonRow = {
 
 /** اسم المنتج مع متغيّره — نصٌّ واحد يصلح للفرز وللنسخ. */
 const productLabel = (r: ReportRow): string =>
-  `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`;
+  variantDisplayName(r);
 
 const decisionLabelOf = (r: ReportRow, isOpening = false): string => {
   const dn = r.decision;
@@ -264,7 +267,7 @@ export default function StocktakeReport() {
           return (
             <>
               {r.productName}
-              {r.variantName ? ` — ${r.variantName}` : ""}
+              {variantDescriptor(r) ? ` — ${variantDescriptor(r)}` : ""}
               {r.baseUnit ? (
                 <span className="text-xs text-muted-foreground">
                   {" "}
@@ -281,18 +284,18 @@ export default function StocktakeReport() {
       {
         id: "book",
         header: isOpening ? "الرصيد السابق" : "الدفتري",
-        accessorFn: (r) => fmtInt(bookOf(r)),
+        accessorFn: (r) => formatQuantity(bookOf(r)),
         meta: { kind: "number" },
         sortingFn: (a, b) => bookOf(a.original) - bookOf(b.original),
-        cell: ({ row }) => fmtInt(bookOf(row.original)),
+        cell: ({ row }) => formatQuantity(bookOf(row.original)),
       },
       {
         id: "final",
         header: isOpening ? "الرصيد المعتمد" : "المعدود المصحَّح",
-        accessorFn: (r) => fmtInt(finalOf(r)),
+        accessorFn: (r) => formatQuantity(finalOf(r)),
         meta: { kind: "number" },
         sortingFn: (a, b) => finalOf(a.original) - finalOf(b.original),
-        cell: ({ row }) => fmtInt(finalOf(row.original)),
+        cell: ({ row }) => formatQuantity(finalOf(row.original)),
       },
       {
         id: "diff",
@@ -491,12 +494,12 @@ export default function StocktakeReport() {
       adjustedNetValue: calc.adjNetValue,
       kept: calc.kept.map((r) => ({
         productName: r.productName,
-        variantName: r.variantName,
+        variantName: variantDescriptor(r),
         diff: calc.diffOf(r),
         decisionLabel: `قرار: ${r.decision?.decidedByName ?? "—"}${r.decision?.note ? ` — ${r.decision.note}` : ""}`,
       })),
       matchedNames: calc.matched.map(
-        (r) => `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`,
+        (r) => variantDisplayName(r),
       ),
       byReason: calc.byReason.map((r) => ({
         reasonLabel: r.label,
@@ -568,8 +571,7 @@ export default function StocktakeReport() {
                     {
                       key: "name",
                       header: "المنتج",
-                      map: (r) =>
-                        `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+                      map: (r) => variantDisplayName(r),
                     },
                     { key: "sku", header: "SKU", map: (r) => r.sku ?? "" },
                     {
@@ -761,8 +763,7 @@ export default function StocktakeReport() {
         <p className="text-xs leading-relaxed text-muted-foreground">
           {calc.matched
             .map(
-              (r) =>
-                `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`,
+              (r) => variantDisplayName(r),
             )
             .join(" · ") || "—"}
         </p>

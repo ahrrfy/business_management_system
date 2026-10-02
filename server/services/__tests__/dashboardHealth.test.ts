@@ -13,8 +13,7 @@ beforeEach(async () => {
     "productVariants",
     "invoices",
     "workOrders",
-    "tasks",
-  ]);
+    ]);
 });
 
 describe("dashboard source health", () => {

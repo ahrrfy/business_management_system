@@ -4,6 +4,7 @@
 // حقل «كلفة ساعة العمل» ماذا-لو: تغييره يُعيد الاستعلام فيعيد حساب الربح/الهامش فوراً.
 import { useEffect, useMemo, useState } from "react";
 import { DataTable } from "@/components/data-table/DataTable";
+import { StackedEntityCell } from "@/components/data-table/StackedEntityCell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
@@ -16,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ErrorState } from "@/components/PageState";
 import { Label } from "@/components/ui/label";
-import { fmtAr } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -142,28 +143,42 @@ export default function WorkOrderProfitability() {
    */
   const profitColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
     {
-      id: "deliveredAt", header: "تاريخ التسليم",
-      accessorFn: (r) => r.deliveredAt,
+      id: "orderAndDate",
+      header: "أمر الشغل / تاريخ التسليم",
+      accessorFn: (r) => [r.orderNumber, r.deliveredAt].filter(Boolean).join(" · "),
+      meta: { width: "stacked" },
       footer: () => (totals ? `الإجمالي (${fmtAr(String(totals.count))} أمر)` : null),
-      meta: { kind: "date" },
-    },
-    {
-      id: "orderNumber", header: "رقم الأمر",
-      accessorFn: (r) => r.orderNumber,
       cell: ({ row }) => (
-        <Link href={`/work-orders/${row.original.id}`} className="text-primary underline-offset-2 hover:underline">
-          {row.original.orderNumber}
-        </Link>
+        <StackedEntityCell
+          primary={
+            <Link href={`/work-orders/${row.original.id}`} className="text-primary underline-offset-2 hover:underline">
+              {row.original.orderNumber}
+            </Link>
+          }
+          primaryTitle={row.original.orderNumber}
+          secondary={row.original.deliveredAt}
+          secondaryTitle="تاريخ التسليم"
+          copyValue={row.original.orderNumber}
+          copyTitle="نسخ رقم أمر الشغل"
+        />
       ),
-      meta: { kind: "code" },
     },
     {
-      id: "title", header: "العمل",
-      accessorFn: (r) => r.title,
-      cell: ({ row }) => <span className="block max-w-56 truncate" title={row.original.title}>{row.original.title}</span>,
-      meta: { kind: "text" },
+      id: "jobAndCustomer",
+      header: "العمل / العميل",
+      accessorFn: (r) => [r.title, r.customerName].filter(Boolean).join(" · "),
+      meta: { width: "wide" },
+      cell: ({ row }) => (
+        <StackedEntityCell
+          primary={row.original.title}
+          primaryTitle={row.original.title}
+          secondary={row.original.customerName ?? "—"}
+          secondaryTitle="اسم العميل"
+          secondaryIsCode={false}
+          secondaryDir="auto"
+        />
+      ),
     },
-    { id: "customerName", header: "العميل", accessorFn: (r) => r.customerName ?? "—", meta: { kind: "text", wrap: true } },
     {
       id: "invoice", header: "الفاتورة",
       accessorFn: (r) => r.invoiceNumber ?? (r.invoiceId ? String(r.invoiceId) : "—"),
@@ -203,24 +218,41 @@ export default function WorkOrderProfitability() {
       meta: { kind: "money" },
     },
     {
-      id: "profit", header: "الربح",
-      accessorFn: (r) => Number(r.profit),
-      cell: ({ row }) => (
-        <span className={row.original.profit.startsWith("-") ? "text-destructive font-medium" : "font-medium"}>
-          {fmtAr(row.original.profit)}
-        </span>
-      ),
-      footer: () => totals ? (
-        <span className={totals.profit.startsWith("-") ? "text-destructive" : ""}>{fmtAr(totals.profit)}</span>
-      ) : null,
+      id: "profitAndMargin",
+      header: "صافي الربح / الهامش",
+      accessorFn: (r) => `${fmtAr(r.profit)} (${r.marginPct == null ? "—" : `${fmtAr(r.marginPct)}%`})`,
       meta: { kind: "money" },
-    },
-    {
-      id: "marginPct", header: "الهامش %",
-      accessorFn: (r) => (r.marginPct == null ? -1 : Number(r.marginPct)),
-      cell: ({ row }) => row.original.marginPct == null ? "—" : `${fmtAr(row.original.marginPct)}%`,
-      footer: () => (totals ? (totals.marginPct == null ? "—" : `${fmtAr(totals.marginPct)}%`) : null),
-      meta: { kind: "number" },
+      sortDescFirst: true,
+      sortingFn: (a, b) => D(a.original.profit || 0).cmp(D(b.original.profit || 0)),
+      footer: () =>
+        totals ? (
+          <div className="flex flex-col items-end gap-0.5 text-xs">
+            <span className={totals.profit.startsWith("-") ? "text-destructive font-semibold" : "font-semibold"}>
+              {fmtAr(totals.profit)}
+            </span>
+            {totals.marginPct != null && (
+              <span className="text-[10px] text-muted-foreground font-mono">
+                {fmtAr(totals.marginPct)}%
+              </span>
+            )}
+          </div>
+        ) : null,
+      cell: ({ row }) => {
+        const isNeg = row.original.profit.startsWith("-");
+        return (
+          <div className="flex flex-col items-end gap-0.5">
+            <span
+              className={`font-semibold tabular-nums ${isNeg ? "text-destructive" : "text-money-positive"}`}
+              dir="ltr"
+            >
+              {fmtAr(row.original.profit)}
+            </span>
+            <span className="text-[11px] text-muted-foreground tabular-nums font-mono" dir="ltr" title="هامش الربح">
+              {row.original.marginPct == null ? "—" : `${fmtAr(row.original.marginPct)}%`}
+            </span>
+          </div>
+        );
+      },
     },
   ], [totals]);
 

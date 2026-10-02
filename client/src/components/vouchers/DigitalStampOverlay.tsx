@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, ShieldCheck } from "lucide-react";
 import { useEffect } from "react";
+import { fmtDate, fmtTime } from "@/lib/date";
 
 export interface DigitalStampOverlayProps {
   isOpen: boolean;
@@ -149,7 +150,7 @@ export function DigitalStampOverlay({
             )}
 
             <div style={{ fontSize: 9.5, color: "#64748b", marginTop: 4 }}>
-              {new Date().toLocaleDateString("ar-IQ")} • {new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}
+              {fmtDate(new Date())} • {fmtTime(new Date())}
             </div>
           </motion.div>
         </motion.div>

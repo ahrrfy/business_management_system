@@ -14,12 +14,23 @@ import { createHmac } from "crypto";
 import Decimal from "decimal.js";
 import { docBarcode } from "@shared/documentNumber";
 import { money, round2 } from "./money";
+import { getDb } from "../db";
+import { eq, or } from "drizzle-orm";
+import {
+  onlineOrders,
+  invoices,
+  workOrders,
+  purchaseOrders,
+  customers,
+  suppliers,
+} from "../../drizzle/schema";
 import type {
   BarcodeSet,
   InvoicePayloadFields,
   WorkOrderPayloadFields,
   PurchaseOrderPayloadFields,
   CustomerPayloadFields,
+  OnlineOrderPayloadFields,
   VerifyResult,
   DocType,
 } from "../../shared/barcodeTypes";
@@ -58,38 +69,329 @@ export function verifyOnlineOrderLabelToken(orderNumber: string, token: string):
   return onlineOrderLabelToken(orderNumber) === token.trim().toLowerCase();
 }
 
-/** يُفكّك payload ويتحقق من التوقيع */
-export function verifyPayload(qrPayload: string): VerifyResult {
-  try {
-    let raw = (qrPayload || "").trim();
-    // إن كان المدخل رابطاً كاملاً يحمل ?payload= أو ?p= نستخرج المعامل منه
-    if (raw.includes("payload=") || raw.includes("p=")) {
-      try {
-        const u = new URL(raw, "http://localhost");
-        raw = u.searchParams.get("payload") || u.searchParams.get("p") || raw;
-      } catch { /* تجاهل */ }
+/**
+ * يستخرج رمز التحقق من أي مدخل:
+ * 1. معرّف مباشر: ORD-100009، INV-10023، 100009
+ * 2. رابط كامل: https://srv1548487.hstgr.cloud/verify?ref=ORD-100009
+ * 3. رابط بمسار: /verify/ORD-100009
+ * 4. وسيط استعلام: ?payload=...، ?p=...، ?ref=...، ?id=...، ?number=...
+ */
+export function extractVerificationCode(input: string): string {
+  if (!input) return "";
+  let raw = input.trim();
+  if (raw.length > 1000) return "";
+
+  if (raw.includes("://") || raw.startsWith("/") || raw.includes("?") || raw.includes("&")) {
+    try {
+      const u = new URL(raw, "http://localhost");
+      const param =
+        u.searchParams.get("ref") ||
+        u.searchParams.get("payload") ||
+        u.searchParams.get("p") ||
+        u.searchParams.get("id") ||
+        u.searchParams.get("number");
+
+      if (param && param.trim()) {
+        return param.trim();
+      }
+
+      const pathname = u.pathname;
+      const verifyMatch = pathname.match(/\/verify\/([^/?#]+)/i);
+      if (verifyMatch && verifyMatch[1]) {
+        return decodeURIComponent(verifyMatch[1]).trim();
+      }
+    } catch {
+      // متابعة للتحليل البديل بـ regex
     }
-    const parts = raw.split("|");
-    if (parts.length < 6) return { valid: false };
+  }
 
-    const [docType, number, date, amount, branchIdStr, receivedSig] = parts;
-    const dataFields = [docType, number, date, amount, branchIdStr];
-    const expectedSig = sign(dataFields);
+  const queryMatch = raw.match(/[?&](?:ref|payload|p|id|number)=([^&#]+)/i);
+  if (queryMatch && queryMatch[1]) {
+    try {
+      return decodeURIComponent(queryMatch[1]).trim();
+    } catch {
+      return queryMatch[1].trim();
+    }
+  }
 
-    if (receivedSig !== expectedSig) return { valid: false };
+  const pathMatch = raw.match(/\/verify\/([^/?#]+)/i);
+  if (pathMatch && pathMatch[1]) {
+    try {
+      return decodeURIComponent(pathMatch[1]).trim();
+    } catch {
+      return pathMatch[1].trim();
+    }
+  }
 
+  return raw;
+}
+
+type AppDatabase = NonNullable<ReturnType<typeof getDb>>;
+
+async function lookupOnlineOrderByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
+  const isNumeric = /^\d+$/.test(cleanCode);
+  const numVal = isNumeric ? Number(cleanCode) : null;
+
+  const conditions = [
+    eq(onlineOrders.orderNumber, cleanCode),
+    eq(onlineOrders.orderNumber, `ORD-${cleanCode}`),
+  ];
+  if (numVal !== null) {
+    conditions.push(eq(onlineOrders.id, numVal));
+  }
+
+  const rows = await db
+    .select({
+      orderNumber: onlineOrders.orderNumber,
+      orderDate: onlineOrders.orderDate,
+      total: onlineOrders.total,
+      branchId: onlineOrders.branchId,
+      status: onlineOrders.status,
+      customerName: customers.name,
+    })
+    .from(onlineOrders)
+    .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+    .where(or(...conditions))
+    .limit(1);
+
+  if (rows && rows.length > 0) {
+    const row = rows[0];
     return {
       valid: true,
-      docType: docType as DocType,
-      number,
-      date,
-      amount,
-      branchId: parseInt(branchIdStr, 10),
+      docType: "ORD",
+      number: row.orderNumber,
+      date: toIsoDate(row.orderDate),
+      amount: String(row.total),
+      branchId: row.branchId !== null && row.branchId !== undefined ? Number(row.branchId) : undefined,
+      status: row.status ?? undefined,
+      customerName: row.customerName || undefined,
     };
+  }
+  return null;
+}
+
+async function lookupInvoiceByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
+  const isNumeric = /^\d+$/.test(cleanCode);
+  const numVal = isNumeric ? Number(cleanCode) : null;
+
+  const conditions = [
+    eq(invoices.invoiceNumber, cleanCode),
+    eq(invoices.invoiceNumber, `INV-${cleanCode}`),
+  ];
+  if (cleanCode.startsWith("INV-")) {
+    conditions.push(eq(invoices.invoiceNumber, cleanCode.slice(4)));
+  }
+  if (numVal !== null) {
+    conditions.push(eq(invoices.id, numVal));
+  }
+
+  const rows = await db
+    .select({
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceDate: invoices.invoiceDate,
+      total: invoices.total,
+      branchId: invoices.branchId,
+      status: invoices.status,
+      customerName: customers.name,
+    })
+    .from(invoices)
+    .leftJoin(customers, eq(invoices.customerId, customers.id))
+    .where(or(...conditions))
+    .limit(1);
+
+  if (rows && rows.length > 0) {
+    const row = rows[0];
+    return {
+      valid: true,
+      docType: "INV",
+      number: row.invoiceNumber,
+      date: toIsoDate(row.invoiceDate),
+      amount: String(row.total),
+      branchId: row.branchId !== null && row.branchId !== undefined ? Number(row.branchId) : undefined,
+      status: row.status ?? undefined,
+      customerName: row.customerName || undefined,
+    };
+  }
+  return null;
+}
+
+async function lookupWorkOrderByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
+  const isNumeric = /^\d+$/.test(cleanCode);
+  const numVal = isNumeric ? Number(cleanCode) : null;
+
+  const conditions = [
+    eq(workOrders.orderNumber, cleanCode),
+    eq(workOrders.orderNumber, `WO-${cleanCode}`),
+  ];
+  if (cleanCode.startsWith("WO-")) {
+    conditions.push(eq(workOrders.orderNumber, cleanCode.slice(3)));
+  }
+  if (numVal !== null) {
+    conditions.push(eq(workOrders.id, numVal));
+  }
+
+  const rows = await db
+    .select({
+      orderNumber: workOrders.orderNumber,
+      createdAt: workOrders.createdAt,
+      salePrice: workOrders.salePrice,
+      branchId: workOrders.branchId,
+      status: workOrders.status,
+      contactName: workOrders.contactName,
+      customerName: customers.name,
+    })
+    .from(workOrders)
+    .leftJoin(customers, eq(workOrders.customerId, customers.id))
+    .where(or(...conditions))
+    .limit(1);
+
+  if (rows && rows.length > 0) {
+    const row = rows[0];
+    return {
+      valid: true,
+      docType: "WO",
+      number: row.orderNumber,
+      date: toIsoDate(row.createdAt),
+      amount: String(row.salePrice ?? "0"),
+      branchId: row.branchId !== null && row.branchId !== undefined ? Number(row.branchId) : undefined,
+      status: row.status ?? undefined,
+      customerName: row.customerName || row.contactName || undefined,
+    };
+  }
+  return null;
+}
+
+async function lookupPurchaseOrderByCode(db: AppDatabase, cleanCode: string): Promise<VerifyResult | null> {
+  const isNumeric = /^\d+$/.test(cleanCode);
+  const numVal = isNumeric ? Number(cleanCode) : null;
+
+  const conditions = [
+    eq(purchaseOrders.poNumber, cleanCode),
+    eq(purchaseOrders.poNumber, `PO-${cleanCode}`),
+  ];
+  if (cleanCode.startsWith("PO-")) {
+    conditions.push(eq(purchaseOrders.poNumber, cleanCode.slice(3)));
+  }
+  if (numVal !== null) {
+    conditions.push(eq(purchaseOrders.id, numVal));
+  }
+
+  const rows = await db
+    .select({
+      poNumber: purchaseOrders.poNumber,
+      orderDate: purchaseOrders.orderDate,
+      total: purchaseOrders.total,
+      branchId: purchaseOrders.branchId,
+      status: purchaseOrders.status,
+      supplierName: suppliers.name,
+    })
+    .from(purchaseOrders)
+    .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+    .where(or(...conditions))
+    .limit(1);
+
+  if (rows && rows.length > 0) {
+    const row = rows[0];
+    return {
+      valid: true,
+      docType: "PO",
+      number: row.poNumber,
+      date: toIsoDate(row.orderDate),
+      amount: String(row.total),
+      branchId: row.branchId !== null && row.branchId !== undefined ? Number(row.branchId) : undefined,
+      status: row.status ?? undefined,
+      customerName: row.supplierName || undefined,
+    };
+  }
+  return null;
+}
+
+/**
+ * المحرك المزدوج للتحقق (Dual Verification Engine):
+ * 1. المسار السريع: التحقق بالـ HMAC التشفيري (بدون استعلام DB — فوري وصالح دون اتصال).
+ * 2. المسار الرديف: البحث في قاعدة البيانات لمطابقة أرقام المستندات (ORD-*, INV-*, WO-*, PO-*، ومعرّفات النظام).
+ */
+export async function verifyPayload(qrPayload: string): Promise<VerifyResult> {
+  try {
+    if (!qrPayload || qrPayload.length > 1000) return { valid: false };
+
+    const cleanCode = extractVerificationCode(qrPayload);
+    if (!cleanCode || cleanCode.length > 1000) return { valid: false };
+
+    // 1. المسار التشفيري: فحص صيغة الـ HMAC الموقَّعة (6 أجزاء مفصولة بـ |)
+    const parts = cleanCode.split("|");
+    if (parts.length >= 6) {
+      const [docType, number, date, amount, branchIdStr, receivedSig] = parts;
+      const dataFields = [docType, number, date, amount, branchIdStr];
+      const expectedSig = sign(dataFields);
+
+      if (receivedSig === expectedSig) {
+        return {
+          valid: true,
+          docType: docType as DocType,
+          number,
+          date,
+          amount,
+          branchId: parseInt(branchIdStr, 10),
+        };
+      }
+    }
+
+    // 2. المسار الرديف: استعلام قاعدة البيانات عند غياب التوقيع التشفيري أو عدم اكتمال الحقول
+    const db = getDb();
+    if (!db) {
+      // توافق كامل مع اختبارات الوحدة بدون اتصال DB
+      return { valid: false };
+    }
+
+    try {
+      // أ) طلبات المتجر الإلكتروني (مثل ORD-100009)
+      if (/^ORD-/i.test(cleanCode)) {
+        const res = await lookupOnlineOrderByCode(db, cleanCode);
+        if (res) return res;
+      }
+
+      // ب) فواتير المبيعات (مثل INV-10023 أو INV-1-20260806-00068)
+      if (/^INV-/i.test(cleanCode)) {
+        const res = await lookupInvoiceByCode(db, cleanCode);
+        if (res) return res;
+      }
+
+      // ج) أوامر الشغل وطلبات الخدمة (مثل WO-10001 أو WO-10023)
+      if (/^WO-/i.test(cleanCode)) {
+        const res = await lookupWorkOrderByCode(db, cleanCode);
+        if (res) return res;
+      }
+
+      // د) أوامر الشراء (مثل PO-2026-001 أو PO-10001)
+      if (/^PO-/i.test(cleanCode)) {
+        const res = await lookupPurchaseOrderByCode(db, cleanCode);
+        if (res) return res;
+      }
+
+      // هـ) معرّفات عددية أو نصوص بلا بادئة معروفة: فحص حسب الأولوية
+      const onlineRes = await lookupOnlineOrderByCode(db, cleanCode);
+      if (onlineRes) return onlineRes;
+
+      const invRes = await lookupInvoiceByCode(db, cleanCode);
+      if (invRes) return invRes;
+
+      const woRes = await lookupWorkOrderByCode(db, cleanCode);
+      if (woRes) return woRes;
+
+      const poRes = await lookupPurchaseOrderByCode(db, cleanCode);
+      if (poRes) return poRes;
+    } catch {
+      // أي خطأ استعلام في DB يُعيد valid: false بأمان
+      return { valid: false };
+    }
+
+    return { valid: false };
   } catch {
     return { valid: false };
   }
 }
+
 
 // -------------------------------------------------------------------
 // Factory Methods — إنشاء BarcodeSet لكل نوع مستند
@@ -179,3 +481,23 @@ export function customerBarcodeSet(customer: CustomerPayloadFields): BarcodeSet 
     displayLabel: `${customer.name}\nCUST-${paddedId}`,
   };
 }
+
+export function onlineOrderBarcodeSet(order: OnlineOrderPayloadFields): BarcodeSet {
+  const isoDate = toIsoDate(order.orderDate || new Date());
+  const amountInt = order.total
+    ? money(order.total).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber()
+    : 0;
+  const branchId = order.branchId != null ? order.branchId : 0;
+  const dataFields = ["ORD", order.orderNumber, isoDate, String(amountInt), String(branchId)];
+  const sig = sign(dataFields);
+
+  return {
+    barcode128: order.orderNumber,
+    qrPayload: [...dataFields, sig].join("|"),
+    displayLabel: [
+      `طلب متجر: ${order.orderNumber}`,
+      `${toDisplayDate(isoDate)} — ${formatAmount(order.total || "0")}`,
+    ].join("\n"),
+  };
+}
+

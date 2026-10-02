@@ -81,6 +81,7 @@ export type OnlineOrderTracking = {
 export type StorefrontOrderLine = {
   productUnitId: number;
   quantity: number;
+  customization?: { templateId: number; values: Record<string, string> };
   expectedUnitPrice?: string;
 };
 export type StorefrontOrderQuote = {
@@ -101,6 +102,13 @@ export type StorefrontOrderQuote = {
   lines: Array<{
     productUnitId: number;
     quantity: number;
+    customization: {
+      templateId: number;
+      kind: "PRINT" | "GIFT" | "GENERAL";
+      title: string;
+      values: Array<{ fieldKey: string; label: string; value: string; displayValue: string }>;
+      unitPriceDelta: string;
+    } | null;
     retailUnitPrice: string;
     discountPerUnit: string;
     couponDiscountPerUnit: string;
@@ -825,26 +833,20 @@ export function cancelStorefrontOrder(input: SecureTrackingInput) {
 
 export function quoteStorefrontOrder(
   governorate: string,
-  lines: Array<{ productUnitId: number; quantity: number }>,
+  lines: StorefrontOrderLine[],
   couponCode?: string,
   customerSessionToken?: string,
 ) {
   const normalizedCoupon = couponCode?.trim();
-  if (normalizedCoupon) {
-    return storefrontMutation<StorefrontOrderQuote>(
-      "storefront.quoteOrderPrivate",
-      {
-        governorate,
-        lines,
-        couponCode: normalizedCoupon,
-        customerSessionToken: customerSessionToken || undefined,
-      },
-    );
-  }
-  return storefrontQuery<StorefrontOrderQuote>(
-    "storefront.quoteOrder",
-    { governorate, lines },
-    { retries: 0 },
+  // تفاصيل التخصيص بيانات زبون، لذلك يبقى التسعير كله في جسم POST لا في رابط GET المسجّل.
+  return storefrontMutation<StorefrontOrderQuote>(
+    "storefront.quoteOrderPrivate",
+    {
+      governorate,
+      lines,
+      couponCode: normalizedCoupon || undefined,
+      customerSessionToken: customerSessionToken || undefined,
+    },
   );
 }
 

@@ -240,9 +240,9 @@ describe("parseVariantPaste", () => {
 });
 
 describe("أدوات العرض", () => {
-  it("toArabicDigits يحوّل الأرقام", () => {
-    expect(toArabicDigits(2026)).toBe("٢٠٢٦");
-    expect(toArabicDigits("12 صنف")).toBe("١٢ صنف");
+  it("toArabicDigits يُبقي الأرقام لاتينية (1234)", () => {
+    expect(toArabicDigits(2026)).toBe("2026");
+    expect(toArabicDigits("12 صنف")).toBe("12 صنف");
   });
   it("onlyDigits يُبقي الأرقام فقط", () => {
     expect(onlyDigits("12a3 ب4")).toBe("1234");

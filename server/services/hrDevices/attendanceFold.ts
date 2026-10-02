@@ -489,3 +489,18 @@ export async function stopAndDrainAttendanceFolds(): Promise<void> {
     await run.catch(() => undefined);
   }
 }
+
+/** يُصفّر حالة الطيّ ويُلغي أيّ مؤقّت معلّق وينتظر الطيّ الجاري — للاختبارات وتطهير العزل. */
+export async function resetAttendanceFoldState(): Promise<void> {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  while (activeFoldRun) {
+    const run = activeFoldRun;
+    await run.catch(() => undefined);
+  }
+  foldRequestsAccepting = true;
+  rerunRequested = false;
+  foldRetryStreak = 0;
+}

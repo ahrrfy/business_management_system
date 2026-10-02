@@ -14,6 +14,8 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
+import { formatQuantity } from "@shared/quantityFormat";
+import { variantDisplayName } from "@shared/variantDisplay";
 import type { Currency, InvoiceLine, InvoiceType, PriceSource, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
@@ -59,6 +61,11 @@ interface NormalizedRow {
   variantId: number;
   productUnitId: number;
   name: string;
+  variantName?: string | null;
+  color?: string | null;
+  size?: string | null;
+  colorHex?: string | null;
+  variantKind?: string | null;
   sku: string;
   barcode: string | null;
   unitName: string;
@@ -107,9 +114,10 @@ export function ProductSearchBar({
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
-  // فاتورة بيع متقدّمة (١٢/٨/٢٦): تُظهر كل خدمات الطباعة بلا شرط showInReception، لأنّ الفاتورة
-  // الرسمية قد تضمّ سلعاً وخدماتٍ في نفس المستند (شركات/حكومي). createSale يخصم موادها ذرّياً.
+  // فاتورة بيع متقدّمة (١٢/٨/٢٦): تُظهر خدمات الطباعة المفعّل عليها showInAdvancedSales.
+  // وعروض الأسعار تُظهر الخدمات المفعّل عليها showInQuotations.
   const isAdvancedSale = invoiceType === "SALE";
+  const isQuotation = invoiceType === "QUOTATION";
 
   const [query, setQuery] = useState("");
   const [showDrop, setShowDrop] = useState(false);
@@ -140,7 +148,15 @@ export function ProductSearchBar({
   const canSearch = term.length >= 2;
   // Sale-side query
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale, customerId },
+    {
+      branchId,
+      tier,
+      query: term,
+      limit: 50,
+      includeAdvancedSaleServices: isAdvancedSale,
+      includeQuotationServices: isQuotation,
+      customerId,
+    },
     { enabled: !isPurchase && canSearch, staleTime: 0 }
   );
   // Purchase-side query
@@ -163,7 +179,12 @@ export function ProductSearchBar({
         productId: r.productId,
         variantId: r.variantId,
         productUnitId: r.productUnitId,
-        name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
+        name: variantDisplayName(r),
+        variantName: r.variantName,
+        color: r.color,
+        size: r.size,
+        colorHex: r.colorHex,
+        variantKind: r.variantKind,
         sku: r.sku,
         barcode: null,
         unitName: r.unitName,
@@ -189,7 +210,12 @@ export function ProductSearchBar({
       productId: r.productId,
       variantId: r.variantId,
       productUnitId: r.productUnitId,
-      name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
+      name: variantDisplayName(r),
+      variantName: r.variantName,
+      color: r.color,
+      size: r.size,
+      colorHex: r.colorHex,
+      variantKind: r.variantKind,
       sku: r.sku,
       barcode: r.barcode ?? null,
       unitName: r.isBundle === true && Number(r.conversionFactor) === 1 ? "بكج" : r.unitName,
@@ -230,6 +256,11 @@ export function ProductSearchBar({
       variantId: r.variantId,
       productUnitId: r.productUnitId,
       name: r.name,
+      variantName: r.variantName,
+      color: r.color,
+      size: r.size,
+      colorHex: r.colorHex,
+      variantKind: r.variantKind,
       sku: r.sku,
       barcode: r.barcode,
       unit: r.unitName,
@@ -301,7 +332,12 @@ export function ProductSearchBar({
               productId: purchaseRow.productId,
               variantId: purchaseRow.variantId,
               productUnitId: purchaseRow.productUnitId,
-              name: purchaseRow.productName + (purchaseRow.variantName ? ` — ${purchaseRow.variantName}` : ""),
+              name: variantDisplayName(purchaseRow),
+              variantName: purchaseRow.variantName,
+              color: purchaseRow.color,
+              size: purchaseRow.size,
+              colorHex: purchaseRow.colorHex,
+              variantKind: purchaseRow.variantKind,
               sku: purchaseRow.sku,
               barcode: row.barcode ?? null,
               unitName: purchaseRow.unitName,
@@ -328,7 +364,12 @@ export function ProductSearchBar({
             productId: row.productId,
             variantId: row.variantId,
             productUnitId: row.productUnitId,
-            name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
+            name: variantDisplayName(row),
+            variantName: row.variantName,
+            color: row.color,
+            size: row.size,
+            colorHex: row.colorHex,
+            variantKind: row.variantKind,
             sku: row.sku,
             barcode: row.barcode ?? null,
             unitName: row.isBundle === true && Number(row.conversionFactor) === 1 ? "بكج" : row.unitName,
@@ -357,7 +398,12 @@ export function ProductSearchBar({
             productId: retItem.productId,
             variantId: retItem.variantId,
             productUnitId: Number(retItem.productUnitId || 0),
-            name: retItem.productName + (retItem.variantName ? ` — ${retItem.variantName}` : ""),
+            name: variantDisplayName(retItem),
+            variantName: retItem.variantName,
+            color: (retItem as any).color,
+            size: (retItem as any).size,
+            colorHex: (retItem as any).colorHex,
+            variantKind: (retItem as any).variantKind,
             sku: retItem.sku || "",
             barcode: retItem.barcode ?? code,
             unitName: retItem.unitName || "قطعة",
@@ -579,20 +625,20 @@ export function ProductSearchBar({
                     {p.isService ? (
                       <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
                     ) : p.isBundle ? (
-                      <span>المتاح كبكج كامل: {fmtNum(p.availableBase)}</span>
+                      <span>المتاح كبكج كامل: {formatQuantity(p.availableBase)}</span>
                     ) : (
                       <>
-                        <span>فعلي: {fmtNum(p.stockBase)}</span>
+                        <span>فعلي: {formatQuantity(p.stockBase)}</span>
                         <span>•</span>
-                        <span className={stockBadgeColor(p.availableBase)}>متاح للبيع: {fmtNum(p.availableBase)}</span>
+                        <span className={stockBadgeColor(p.availableBase)}>متاح للبيع: {formatQuantity(p.availableBase)}</span>
                         {p.reservedBase > 0 && (
                           <>
                             <span>•</span>
-                            <span className="text-[var(--sem-warn)]">محجوز: {fmtNum(p.reservedBase)}</span>
+                            <span className="text-[var(--sem-warn)]">محجوز: {formatQuantity(p.reservedBase)}</span>
                             {p.reservedBase > p.stockBase && (
                               <>
                                 <span>•</span>
-                                <span>زيادة حجز: {fmtNum(p.reservedBase - p.stockBase)}</span>
+                                <span>زيادة حجز: {formatQuantity(p.reservedBase - p.stockBase)}</span>
                               </>
                             )}
                           </>

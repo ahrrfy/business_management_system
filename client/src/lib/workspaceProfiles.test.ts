@@ -45,7 +45,7 @@ describe("resolveWorkspaceProfile", () => {
       ["cashier", ["retail_pos", "print_pos", "reception_pos", "invoices"]],
       [
         "print_operator",
-        ["work_orders", "my_tasks", "product_studio", "inbox"],
+        ["work_orders", "product_studio", "inbox"],
       ],
       ["warehouse", ["inventory", "my_stocktakes", "transfers", "backorders"]],
       ["purchasing", ["purchases", "purchase_new", "suppliers", "reorder"]],
@@ -67,19 +67,19 @@ describe("resolveWorkspaceProfile", () => {
       "retail_cashier",
       "cashier_retail",
       "RETAIL",
-      ["retail_pos", "invoices", "sales_returns", "my_tasks"],
+      ["retail_pos", "invoices", "sales_returns"],
     ],
     [
       "print_cashier",
       "cashier_print",
       "PRINT_SERVICES",
-      ["print_pos", "invoices", "price_checker", "my_tasks"],
+      ["print_pos", "invoices", "price_checker"],
     ],
     [
       "reception_clerk",
       "reception",
       "RECEPTION",
-      ["reception_pos", "work_orders", "invoices", "my_tasks"],
+      ["reception_pos", "work_orders", "invoices"],
     ],
   ] as const)(
     "يفصل محطة %s ولا يسرّب إليها محطة أخرى",
@@ -221,11 +221,8 @@ describe("resolveWorkspaceProfile", () => {
     ).toEqual([]);
   });
 
-  it("يضيف مهام المندوب بمنحة صريحة فقط", () => {
+  it("يثبت مدخل المندوب الأساسي", () => {
     expect(ids({ role: "courier" })).toEqual(["my_deliveries"]);
-    expect(
-      ids({ role: "courier", permissionsOverride: { tasks: "READ" } }),
-    ).toEqual(["my_deliveries", "my_tasks"]);
   });
 
   it("يبني المساحة العامة من أول أربعة مداخل ناجحة بالترتيب المتفق عليه", () => {
@@ -233,7 +230,6 @@ describe("resolveWorkspaceProfile", () => {
     expect(base.id).toBe("general");
     expect(base.primaryNav.map((item) => item.id)).toEqual([
       "my_work",
-      "my_tasks",
       "invoices",
       "inventory",
     ]);
@@ -247,8 +243,8 @@ describe("resolveWorkspaceProfile", () => {
     expect(printGranted.primaryNav.map((item) => item.id)).toEqual([
       "print_pos",
       "my_work",
-      "my_tasks",
       "invoices",
+      "inventory",
     ]);
   });
 
@@ -265,7 +261,7 @@ describe("resolveWorkspaceProfile", () => {
       { role: "purchasing" },
       { role: "sales_rep" },
       { role: "auditor" },
-      { role: "courier", permissionsOverride: { tasks: "READ" } },
+      { role: "courier" },
       { role: "user" },
     ] satisfies Array<{
       role: RoleKey;

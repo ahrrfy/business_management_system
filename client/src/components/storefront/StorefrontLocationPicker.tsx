@@ -151,12 +151,12 @@ export function StorefrontLocationPicker({ latitude, longitude, onChange, disabl
           <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
             حدد موقعك ليسهل على مندوب التوصيل الوصول لباب منزلك مباشرة دون تأخير:
           </p>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
             <button
               type="button"
               onClick={handleGetGpsLocation}
               disabled={locating || disabled}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+              className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
             >
               {locating ? <Loader2 className="size-3.5 animate-spin" /> : <MapPin className="size-3.5" />}
               <span>{locating ? "جارٍ تحديد موقعك…" : "موقعي الحالي (GPS)"}</span>
@@ -165,7 +165,7 @@ export function StorefrontLocationPicker({ latitude, longitude, onChange, disabl
               type="button"
               onClick={() => !disabled && setShowMapModal(true)}
               disabled={disabled}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 disabled:opacity-50"
+              className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 disabled:opacity-50"
             >
               <span>لصق رابط خريطة أو إحداثيات</span>
             </button>

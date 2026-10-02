@@ -860,7 +860,7 @@ const SALES: Record<string, DecisionSpec> = {
     title: "بت اعتماد تصميم",
     why: "موافقة العميل على التصميم هي ما يمنع اعادة العمل على حساب المطبعة. والدليل الزامي هنا لان الخلاف لاحقا يكون على من وافق ومتى، لا على التصميم نفسه.",
     decidesOn: [
-      "امر الشغل والمهمة",
+      "امر الشغل",
       "نسخة التصميم المعروضة",
       "نوع دليل الموافقة ومرجعه",
       "من صمم ومن يراجع",
@@ -869,7 +869,7 @@ const SALES: Record<string, DecisionSpec> = {
     approver: "MANAGER",
     withdrawable: false,
     procedure: { router: "workOrderDesignApproval", name: "decide" },
-    href: (id) => `/tasks/${id}`,
+    href: (id) => `/work-orders/${id}`,
   }),
 };
 

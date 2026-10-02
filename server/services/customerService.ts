@@ -20,7 +20,6 @@ import {
   invoices,
   onlineOrders,
   quotations,
-  tasks,
   waBroadcastRecipients,
   workOrders,
 } from "../../drizzle/schema";
@@ -587,7 +586,6 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
       [coupons, coupons.customerId, "كوبونات مخصّصة"],
       [deliveryConsignments, deliveryConsignments.endCustomerId, "إرساليات توصيل"],
       [conversations, conversations.customerId, "محادثات"],
-      [tasks, tasks.customerId, "مهامّ"],
       [waBroadcastRecipients, waBroadcastRecipients.customerId, "قوائم بثّ تسويقيّ"],
     ];
     for (const [table, col, label] of checks) {

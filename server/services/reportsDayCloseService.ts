@@ -22,17 +22,59 @@
 // السحب النقديّ أثناء الوردية (cash drop, referenceNumber LIKE 'CD-%' — cashDropService): يقع
 //   **أثناء** الوردية فيُدرَج في computeExpectedCash (يُنقِص المتوقَّع) والنقد المعدود يُنقِص بالمثل ⇒
 //   الفرق لا يتأثّر. يُصنَّف في دلو cashDrops (ضمن الخارج التشغيليّ)، خلافاً لتسليم الإغلاق CH.
-import { and, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lt, ne, notExists, notInArray, notLike, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { branches, cashCustodyCounts, expenses, receipts, shifts, users } from "../../drizzle/schema";
+import {
+  branches,
+  cashCustodyCounts,
+  customers,
+  expenseCategories,
+  expenses,
+  invoices,
+  payrollAccountingEvents,
+  receipts,
+  shifts,
+  suppliers,
+  users,
+  voucherCategories,
+  workOrders,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { utcDayRange } from "./businessDay";
-import { materializedDrawerCashConditions } from "./cash/cashAvailability";
+import { MATERIALIZED_RECEIPT_STATUSES, materializedDrawerCashConditions } from "./cash/cashAvailability";
+import { cashEventAtSql } from "./cash/cashEventAt";
 import {
   isPotentialCashCustodyRecipient,
   type CashCustodyVisibilityActor,
 } from "./cash/custodyBlindCount";
 import { money, toDbMoney } from "./money";
+import { expenseBucketLabel } from "../../shared/expenseCategories";
+
+/** تفصيل حركة نقدية واحدة في درج الوردية (لتوضيح مصدر الإيراد ومستفيد المصروف). */
+export interface DayCloseShiftMovementItem {
+  id: number;
+  direction: "IN" | "OUT";
+  categoryType:
+    | "SALE"
+    | "COLLECTION"
+    | "OTHER_IN"
+    | "RETURN"
+    | "EXPENSE"
+    | "CASH_DROP"
+    | "HANDOVER"
+    | "OTHER_OUT";
+  categoryLabel: string;
+  amount: string;
+  referenceNumber: string | null;
+  voucherNumber: string | null;
+  partyName: string | null;      // من أين جاء الإيراد / لمن صُرف المصروف
+  payee: string | null;          // جهة الصرف المحددة
+  description: string | null;    // البيان وسبب الحركة
+  classification: string | null; // فئة المصروف أو نوع البيع
+  documentNumber: string | null; // رقم الفاتورة أو أمر الشغل أو السند
+  createdAt: Date | string;
+  createdByName: string | null;
+}
 
 /** سطر مطابقة وردية واحدة. كل الحقول المالية نصّية decimal(15,2). */
 export interface DayCloseShiftLine {
@@ -68,6 +110,22 @@ export interface DayCloseShiftLine {
   // ── القيم المخزَّنة (تأكيد التطابق مع Z-report) ──
   storedExpectedCash: string | null;
   storedVariance: string | null;
+  // ── تفاصيل الحركات الفردية (من أين جاء الإيراد ولمن صُرف المصروف) ──
+  movements: DayCloseShiftMovementItem[];
+}
+
+/** ملخص حركات النقد المباشرة (الخزينة أو خارج الورديات المفتوحة). */
+export interface DayCloseDirectSummary {
+  salesCash: string;
+  collectionsCash: string;
+  otherIn: string;
+  cashIn: string;
+  returnsCash: string;
+  expensesCash: string;
+  otherOut: string;
+  operatingOut: string;
+  netCash: string;
+  receiptCount: number;
 }
 
 export interface DayCloseTotals {
@@ -92,6 +150,22 @@ export interface DayCloseTotals {
   closedExpected: string;
   openRunningExpected: string;
   physicalDrawerCash: string;
+  // تفكيك المقبوضات/المصروفات المباشرة (الخزينة/خارج الورديات)
+  directSalesCash: string;
+  directCollectionsCash: string;
+  directOtherIn: string;
+  directCashIn: string;
+  directReturnsCash: string;
+  directExpensesCash: string;
+  directOtherOut: string;
+  directOperatingOut: string;
+  directNetCash: string;
+  // مبالغ الورديات وحدها
+  shiftSalesCash: string;
+  shiftCollectionsCash: string;
+  shiftCashIn: string;
+  shiftOperatingOut: string;
+  shiftExpected: string;
 }
 
 export interface DayCloseReconciliationResult {
@@ -100,12 +174,14 @@ export interface DayCloseReconciliationResult {
   shifts: DayCloseShiftLine[];
   /** ورديات محجوبة عن مستلم محتمل حتى يثبّت أول عدّ أعمى للعهدة. */
   withheldBlindCountShiftCount: number;
+  directOperations: DayCloseDirectSummary;
   totals: DayCloseTotals;
   balancedCount: number; // ورديات مغلقة فرقها = صفر
   driftCount: number;    // ورديات مغلقة فرقها ≠ صفر
   overCount: number;     // فائض (drift > 0)
   shortCount: number;    // عجز (drift < 0)
   /** ش٦ — بنود الاستقبال في إقفال اليوم: عرابين معلّقة (لقطة حاضرة لا يوم) + خصم كل موظف. */
+  directMovements: { count: number; net: string; in: string; out: string; details: Array<{ id: number; time: string; userName: string | null; direction: 'IN' | 'OUT'; amount: string; description: string; }>; };
   receptionExtras: {
     /** مسوّدات OPEN مموّلة الآن — مالُ زبائن محتجزٌ بلا مستندٍ نهائيّ (عرابين غير مُسلَّمة). */
     fundedDrafts: { count: number; heldNet: string };
@@ -142,20 +218,40 @@ export async function getDayCloseReconciliation(opts: {
   branchId?: number;
   actor?: CashCustodyVisibilityActor;
 }): Promise<DayCloseReconciliationResult> {
+  const emptyDirectSummary: DayCloseDirectSummary = {
+    salesCash: "0.00",
+    collectionsCash: "0.00",
+    otherIn: "0.00",
+    cashIn: "0.00",
+    returnsCash: "0.00",
+    expensesCash: "0.00",
+    otherOut: "0.00",
+    operatingOut: "0.00",
+    netCash: "0.00",
+    receiptCount: 0,
+  };
+
   const emptyTotals: DayCloseTotals = {
     shiftCount: 0, openCount: 0, closedCount: 0,
     opening: "0.00", salesCash: "0.00", collectionsCash: "0.00", otherIn: "0.00", cashIn: "0.00",
     returnsCash: "0.00", expensesCash: "0.00", otherOut: "0.00", operatingOut: "0.00",
     handoversCash: "0.00", cashDrops: "0.00", expected: "0.00", counted: "0.00", drift: "0.00",
     retainedInDrawer: "0.00", closedExpected: "0.00", openRunningExpected: "0.00", physicalDrawerCash: "0.00",
+    directSalesCash: "0.00", directCollectionsCash: "0.00", directOtherIn: "0.00", directCashIn: "0.00",
+    directReturnsCash: "0.00", directExpensesCash: "0.00", directOtherOut: "0.00", directOperatingOut: "0.00",
+    directNetCash: "0.00",
+    shiftSalesCash: "0.00", shiftCollectionsCash: "0.00", shiftCashIn: "0.00",
+    shiftOperatingOut: "0.00", shiftExpected: "0.00",
   };
   const base: DayCloseReconciliationResult = {
     date: opts.date,
     branchId: opts.branchId ?? null,
     shifts: [],
     withheldBlindCountShiftCount: 0,
+    directOperations: emptyDirectSummary,
     totals: emptyTotals,
     balancedCount: 0, driftCount: 0, overCount: 0, shortCount: 0,
+    directMovements: { count: 0, net: '0.00', in: '0.00', out: '0.00', details: [] },
     receptionExtras: { fundedDrafts: { count: 0, heldNet: "0.00" }, discountByUser: [] },
   };
 
@@ -164,6 +260,13 @@ export async function getDayCloseReconciliation(opts: {
 
   // نطاق اليوم التجاريّ [start, endExclusive) على openedAt (اتّساقاً مع بقية تقارير الخزينة).
   const { start, endExclusive } = utcDayRange(opts.date, opts.date);
+
+  const eventAt = cashEventAtSql({
+    approvedBy: receipts.approvedBy,
+    createdBy: receipts.createdBy,
+    approvedAt: receipts.approvedAt,
+    createdAt: receipts.createdAt,
+  });
 
   const shiftConds = [gte(shifts.openedAt, start), lt(shifts.openedAt, endExclusive)];
   if (opts.branchId != null) shiftConds.push(eq(shifts.branchId, opts.branchId));
@@ -190,11 +293,9 @@ export async function getDayCloseReconciliation(opts: {
     .where(and(...shiftConds))
     .orderBy(shifts.branchId, shifts.openedAt, shifts.id);
 
-  if (shiftRows.length === 0) return base;
-
   const allShiftIds = shiftRows.map((r) => Number(r.shiftId));
   const protectedShiftIds = new Set<number>();
-  if (opts.actor) {
+  if (opts.actor && allShiftIds.length > 0) {
     const sourceReceipt = alias(receipts, "blindCountSourceReceipt");
     const pendingReceipt = alias(receipts, "blindCountPendingReceipt");
     const firstCount = alias(cashCustodyCounts, "blindCountFirstCount");
@@ -259,9 +360,6 @@ export async function getDayCloseReconciliation(opts: {
     (row) => !protectedShiftIds.has(Number(row.shiftId)),
   );
   const withheldBlindCountShiftCount = shiftRows.length - visibleShiftRows.length;
-  if (visibleShiftRows.length === 0) {
-    return { ...base, withheldBlindCountShiftCount };
-  }
   const shiftIds = visibleShiftRows.map((r) => Number(r.shiftId));
 
   // تفكيك مقبوضات/مدفوعات الدرج النقدية لكل وردية عبر SUM(CASE …). البِنى متنافية بالإنشاء:
@@ -272,33 +370,330 @@ export async function getDayCloseReconciliation(opts: {
   // المسار ز (١٦/٨): كانت الشروط تُكتب هنا يدوياً بلا حالةٍ ولا اعتماد ⇒ إيصالٌ معلَّق أو
   // غير معتمَد يدخل «المتوقَّع» في التقرير ولا يدخله في حارس الوردية ⇒ فرقٌ يُتَّهم به الكاشير.
   // المصدر صار واحداً بالبناء: materializedDrawerCashConditions.
-  const isDrawerCash = and(inArray(receipts.shiftId, shiftIds), ...materializedDrawerCashConditions());
-  const aggRows = await db
+  const aggByShift = new Map<number, ReceiptAgg>();
+  if (shiftIds.length > 0) {
+    const isDrawerCash = and(inArray(receipts.shiftId, shiftIds), ...materializedDrawerCashConditions());
+    const aggRows = await db
+      .select({
+        shiftId: receipts.shiftId,
+        cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        salesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+        collectionsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+        handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        cashDropsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR UPPER(TRIM(${receipts.referenceNumber})) NOT LIKE 'CH-%') AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
+        returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR UPPER(TRIM(${receipts.referenceNumber})) NOT LIKE 'CH-%') AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+      })
+      .from(receipts)
+      .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+      .where(isDrawerCash)
+      .groupBy(receipts.shiftId);
+
+    for (const r of aggRows) {
+      aggByShift.set(Number(r.shiftId), {
+        cashIn: r.cashIn, cashOut: r.cashOut, salesCash: r.salesCash,
+        collectionsCash: r.collectionsCash, handoversCash: r.handoversCash,
+        cashDropsCash: r.cashDropsCash,
+        expensesCash: r.expensesCash, returnsCash: r.returnsCash,
+      });
+    }
+  }
+
+  // ── مقبوضات ومدفوعات النقد المباشرة / الخزينة (خارج أدراج الورديات) ──
+  // تشمل أي تدفق نقدي مشروع (سند قبض RV، تحصيل، مبيعات مباشرة، سند صرف PV)
+  // لا ينتمي لدرج وردية معروضة، لمنع أي فائض أو تسرب صامت في مطابقة إقفال اليوم.
+  const directConds = [
+    eq(receipts.paymentMethod, "CASH"),
+    inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+    eq(receipts.approvalStatus, "APPROVED"),
+    gte(eventAt, start),
+    lt(eventAt, endExclusive),
+    or(
+      eq(receipts.cashBucket, "TREASURY"),
+      and(
+        isNull(receipts.shiftId),
+        or(isNull(receipts.cashBucket), ne(receipts.cashBucket, "DRAWER")),
+      ),
+    ),
+    or(
+      isNotNull(receipts.voucherNumber),
+      isNotNull(receipts.invoiceId),
+      isNull(receipts.referenceNumber),
+      and(
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CH-%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CD-%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "SF-%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "STF-%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CT-%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CANCEL-CT-%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "TF-%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "TEST-TREASURY%"),
+        notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "TREASURY-SEED%"),
+      ),
+    ),
+    // استبعاد صرف الرواتب والتحويلات القانونية (تسويات الخزينة المرتبطة بأحداث الرواتب)
+    // حتى لا تُحسب كعمليات تشغيلية مباشرة تفرّغ النقد المتوقع للأدراج.
+    notExists(
+      db
+        .select({ one: sql`1` })
+        .from(payrollAccountingEvents)
+        .where(eq(payrollAccountingEvents.receiptId, receipts.id)),
+    ),
+  ];
+  if (opts.branchId != null) {
+    directConds.push(eq(receipts.branchId, opts.branchId));
+  }
+  if (protectedShiftIds.size > 0) {
+    directConds.push(
+      or(
+        isNull(receipts.shiftId),
+        notInArray(receipts.shiftId, Array.from(protectedShiftIds)),
+      ),
+    );
+  }
+
+  const directAggRows = await db
     .select({
-      shiftId: receipts.shiftId,
+      count: sql<number>`COUNT(*)`,
       cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
       cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
       salesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
       collectionsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
-      handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.referenceNumber} LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
-      cashDropsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.referenceNumber} LIKE 'CD-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
-      expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CH-%') AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
-      returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CH-%') AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+      expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
+      returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
     })
     .from(receipts)
     .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
-    .where(isDrawerCash)
-    .groupBy(receipts.shiftId);
+    .where(and(...directConds));
 
-  const aggByShift = new Map<number, ReceiptAgg>();
-  for (const r of aggRows) {
-    aggByShift.set(Number(r.shiftId), {
-      cashIn: r.cashIn, cashOut: r.cashOut, salesCash: r.salesCash,
-      collectionsCash: r.collectionsCash, handoversCash: r.handoversCash,
-      cashDropsCash: r.cashDropsCash,
-      expensesCash: r.expensesCash, returnsCash: r.returnsCash,
-    });
+  const directAgg = directAggRows[0];
+  const directCount = Number(directAgg?.count ?? 0);
+  const directCashIn = money(directAgg?.cashIn ?? 0);
+  const directCashOut = money(directAgg?.cashOut ?? 0);
+  const directSales = money(directAgg?.salesCash ?? 0);
+  const directCollections = money(directAgg?.collectionsCash ?? 0);
+  const directOtherIn = directCashIn.minus(directSales).minus(directCollections);
+  const directReturns = money(directAgg?.returnsCash ?? 0);
+  const directExpenses = money(directAgg?.expensesCash ?? 0);
+  const directOtherOut = directCashOut.minus(directReturns).minus(directExpenses);
+  const directOperatingOut = directCashOut;
+  const directNetCash = directCashIn.minus(directOperatingOut);
+
+  if (visibleShiftRows.length === 0 && directCount === 0) {
+    return { ...base, withheldBlindCountShiftCount };
   }
+
+  // جلب تفاصيل الحركات النقدية الفردية لكل وردية لبيان مصدر الإيراد ومستفيد المصروف
+  const movementsByShift = new Map<number, DayCloseShiftMovementItem[]>();
+  if (shiftIds.length > 0) {
+    const isDrawerCash = and(inArray(receipts.shiftId, shiftIds), ...materializedDrawerCashConditions());
+    const partyCustomer = alias(customers, "partyCustomer");
+    const invoiceCustomer = alias(customers, "invoiceCustomer");
+    const receiptUsers = alias(users, "receiptUsers");
+
+    const movementRows = await db
+      .select({
+        id: receipts.id,
+        shiftId: receipts.shiftId,
+        direction: receipts.direction,
+        amount: receipts.amount,
+        referenceNumber: receipts.referenceNumber,
+        voucherNumber: receipts.voucherNumber,
+        partyType: receipts.partyType,
+        partyId: receipts.partyId,
+        counterpartyName: receipts.counterpartyName,
+        description: receipts.description,
+        createdAt: receipts.createdAt,
+        createdBy: receipts.createdBy,
+        createdByName: receiptUsers.name,
+        // Invoices
+        invoiceId: receipts.invoiceId,
+        invoiceNumber: invoices.invoiceNumber,
+        invoiceSaleType: invoices.sourceType,
+        // Expenses
+        expenseId: expenses.id,
+        expensePayee: expenses.payee,
+        expenseDescription: expenses.description,
+        expenseCategory: expenses.category,
+        expenseCategoryName: expenseCategories.name,
+        expenseReferenceNumber: expenses.referenceNumber,
+        // Vouchers
+        voucherCategoryName: voucherCategories.name,
+        // Work orders
+        workOrderId: receipts.workOrderId,
+        workOrderNumber: workOrders.orderNumber,
+        workOrderTitle: workOrders.title,
+        // Customers
+        partyCustomerName: partyCustomer.name,
+        invoiceCustomerName: invoiceCustomer.name,
+        // Suppliers
+        supplierName: suppliers.name,
+      })
+      .from(receipts)
+      .leftJoin(receiptUsers, eq(receiptUsers.id, receipts.createdBy))
+      .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+      .leftJoin(expenseCategories, eq(expenseCategories.id, expenses.expenseCategoryId))
+      .leftJoin(voucherCategories, eq(voucherCategories.id, receipts.voucherCategoryId))
+      .leftJoin(invoices, eq(invoices.id, receipts.invoiceId))
+      .leftJoin(invoiceCustomer, eq(invoiceCustomer.id, invoices.customerId))
+      .leftJoin(
+        partyCustomer,
+        and(eq(receipts.partyType, "CUSTOMER"), eq(partyCustomer.id, receipts.partyId)),
+      )
+      .leftJoin(
+        suppliers,
+        and(eq(receipts.partyType, "SUPPLIER"), eq(suppliers.id, receipts.partyId)),
+      )
+      .leftJoin(workOrders, eq(workOrders.id, receipts.workOrderId))
+      .where(isDrawerCash)
+      .orderBy(desc(receipts.createdAt), desc(receipts.id));
+
+    for (const r of movementRows) {
+    if (r.shiftId == null) continue;
+    const sId = Number(r.shiftId);
+    const ref = (r.referenceNumber ?? "").trim().toUpperCase();
+    const isHandover = r.direction === "OUT" && ref.startsWith("CH-");
+    const isCashDrop = r.direction === "OUT" && ref.startsWith("CD-");
+    const isExpense =
+      r.direction === "OUT" &&
+      !isHandover &&
+      (r.voucherNumber != null || r.expenseId != null);
+    const isReturn =
+      r.direction === "OUT" &&
+      !isHandover &&
+      r.voucherNumber == null &&
+      r.expenseId == null &&
+      r.invoiceId != null;
+
+    const isSale =
+      r.direction === "IN" &&
+      r.voucherNumber == null &&
+      r.invoiceId != null;
+    const isCollection =
+      r.direction === "IN" && r.voucherNumber != null;
+    const isWorkOrderDeposit =
+      r.direction === "IN" && r.workOrderId != null;
+
+    let categoryType: DayCloseShiftMovementItem["categoryType"];
+    let categoryLabel: string;
+    let payee: string | null = null;
+    let partyName: string | null = null;
+    let description: string | null = null;
+    let classification: string | null = null;
+    let documentNumber: string | null = null;
+
+    if (isHandover) {
+      categoryType = "HANDOVER";
+      categoryLabel = "خرج إلى العهدة";
+      payee = "الخزينة الرئيسية";
+      partyName = "الخزينة الرئيسية";
+      description = r.description || "تسليم نقد الإغلاق إلى الخزينة";
+      documentNumber = r.referenceNumber;
+    } else if (isCashDrop) {
+      categoryType = "CASH_DROP";
+      categoryLabel = "سحب أثناء الوردية";
+      payee = r.counterpartyName || "أمين الصندوق";
+      partyName = r.counterpartyName || "عهدة السحب";
+      description = r.description || "سحب نقد تشغيلي أثناء الوردية";
+      documentNumber = r.referenceNumber;
+    } else if (isExpense) {
+      categoryType = "EXPENSE";
+      categoryLabel = r.voucherNumber ? "سند صرف" : "مصروف تشغيلي";
+      payee =
+        r.expensePayee ||
+        r.counterpartyName ||
+        r.supplierName ||
+        r.partyCustomerName ||
+        "غير محدد";
+      partyName = payee;
+      description = r.expenseDescription || r.description || "مصروف نقدي من الدرج";
+      classification =
+        r.expenseCategoryName ||
+        (r.expenseCategory ? expenseBucketLabel(r.expenseCategory) : null) ||
+        r.voucherCategoryName ||
+        "مصروفات عامة";
+      documentNumber =
+        r.voucherNumber || r.expenseReferenceNumber || r.referenceNumber || null;
+    } else if (isReturn) {
+      categoryType = "RETURN";
+      categoryLabel = "مرتجع مبيعات";
+      partyName = r.invoiceCustomerName || r.partyCustomerName || "زبون نقدي";
+      payee = partyName;
+      description = r.description || "استرداد نقدي لمرتجع مبيعات";
+      classification = "مرتجع فاتورة";
+      documentNumber = r.invoiceNumber || null;
+    } else if (r.direction === "OUT") {
+      categoryType = "OTHER_OUT";
+      categoryLabel = "خارج تشغيلي آخر";
+      payee =
+        r.counterpartyName ||
+        r.partyCustomerName ||
+        r.supplierName ||
+        "جهة غير محددة";
+      partyName = payee;
+      description = r.description || "صرف نقدي من الدرج";
+      classification = "صرف نقدي";
+      documentNumber = r.referenceNumber || null;
+    } else if (isSale) {
+      categoryType = "SALE";
+      categoryLabel = "مبيعات نقدية";
+      partyName = r.invoiceCustomerName || r.partyCustomerName || "زبون نقدي";
+      description =
+        r.description ||
+        (r.invoiceSaleType ? `فاتورة بيع (${r.invoiceSaleType})` : "مبيعات نقدية بالدرج");
+      classification = r.invoiceSaleType || "مبيعات نقطة البيع";
+      documentNumber = r.invoiceNumber || null;
+    } else if (isCollection) {
+      categoryType = "COLLECTION";
+      categoryLabel = "تحصيل / سند قبض";
+      partyName = r.partyCustomerName || r.counterpartyName || "عميل";
+      description = r.description || "سند قبض نقدي بالدرج";
+      classification = r.voucherCategoryName || "تحصيل حساب عميل";
+      documentNumber = r.voucherNumber || null;
+    } else if (isWorkOrderDeposit) {
+      categoryType = "OTHER_IN";
+      categoryLabel = "عربون أمر شغل";
+      partyName = r.partyCustomerName || r.invoiceCustomerName || "عميل أمر الشغل";
+      description =
+        r.description ||
+        (r.workOrderTitle ? `عربون: ${r.workOrderTitle}` : "عربون نقدي لأمر شغل");
+      classification = "أمر شغل";
+      documentNumber = r.workOrderNumber || null;
+    } else {
+      categoryType = "OTHER_IN";
+      categoryLabel = "مقبوضات أخرى";
+      partyName = r.counterpartyName || r.partyCustomerName || "مقبوضات نقدية";
+      description = r.description || "إيراد نقدي متنوع بالدرج";
+      classification = "مقبوضات نقدية";
+      documentNumber = r.referenceNumber || null;
+    }
+
+    const item: DayCloseShiftMovementItem = {
+      id: Number(r.id),
+      direction: r.direction as "IN" | "OUT",
+      categoryType,
+      categoryLabel,
+      amount: r.amount,
+      referenceNumber: r.referenceNumber ?? null,
+      voucherNumber: r.voucherNumber ?? null,
+      partyName,
+      payee,
+      description,
+      classification,
+      documentNumber,
+      createdAt: r.createdAt,
+      createdByName: r.createdByName ?? null,
+    };
+
+    const list = movementsByShift.get(sId);
+    if (!list) {
+      movementsByShift.set(sId, [item]);
+    } else {
+      list.push(item);
+    }
+  }
+}
 
   // مُجمِّعات الإجماليات (decimal).
   let tOpening = money(0), tSales = money(0), tColl = money(0), tOtherIn = money(0), tCashIn = money(0);
@@ -391,6 +786,7 @@ export async function getDayCloseReconciliation(opts: {
       retainedInDrawer: retained ? toDbMoney(retained) : null,
       storedExpectedCash: sh.expectedCash != null ? toDbMoney(money(sh.expectedCash)) : null,
       storedVariance: sh.variance != null ? toDbMoney(money(sh.variance)) : null,
+      movements: movementsByShift.get(Number(sh.shiftId)) ?? [],
     };
   });
 
@@ -402,6 +798,32 @@ export async function getDayCloseReconciliation(opts: {
   };
   const branchDraftCond = opts.branchId != null ? sql`AND d.branchId = ${opts.branchId}` : sql``;
   const branchInvCond = opts.branchId != null ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  const directMovementsRes = await db
+    .select({
+      id: receipts.id,
+      createdAt: receipts.createdAt,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      referenceNumber: receipts.referenceNumber,
+      description: receipts.description,
+      status: receipts.status,
+      userId: receipts.createdBy,
+      userName: users.name,
+    })
+    .from(receipts)
+    .leftJoin(users, eq(users.id, receipts.createdBy))
+    .where(
+      and(
+        eq(receipts.cashBucket, 'TREASURY'),
+        eq(receipts.paymentMethod, 'CASH'),
+        inArray(receipts.status, ['COMPLETED']),
+        gte(receipts.createdAt, start),
+        lt(receipts.createdAt, endExclusive),
+        opts.branchId != null ? eq(receipts.branchId, opts.branchId) : undefined
+      )
+    )
+    .orderBy(receipts.createdAt);
+
   const [fundedRes, discRes] = await Promise.all([
     db.execute(sql`
       SELECT COUNT(*) AS c, CAST(COALESCE(SUM(h.heldNet), 0) AS CHAR) AS t
@@ -449,11 +871,49 @@ export async function getDayCloseReconciliation(opts: {
     };
   });
 
+  const directOperations: DayCloseDirectSummary = {
+    salesCash: toDbMoney(directSales),
+    collectionsCash: toDbMoney(directCollections),
+    otherIn: toDbMoney(directOtherIn),
+    cashIn: toDbMoney(directCashIn),
+    returnsCash: toDbMoney(directReturns),
+    expensesCash: toDbMoney(directExpenses),
+    otherOut: toDbMoney(directOtherOut),
+    operatingOut: toDbMoney(directOperatingOut),
+    netCash: toDbMoney(directNetCash),
+    receiptCount: directCount,
+  };
+
   return {
     date: opts.date,
     branchId: opts.branchId ?? null,
     shifts: lines,
     withheldBlindCountShiftCount,
+    directOperations,
+    directMovements: (() => {
+      let tIn = money(0);
+      let tOut = money(0);
+      const details = directMovementsRes.map((r) => {
+        const amt = money(r.amount);
+        if (r.direction === 'IN') tIn = tIn.plus(amt);
+        else tOut = tOut.plus(amt);
+        return {
+          id: r.id,
+          time: r.createdAt.toISOString(),
+          userName: r.userName,
+          direction: r.direction as 'IN' | 'OUT',
+          amount: toDbMoney(amt),
+          description: r.description || r.referenceNumber || ''
+        };
+      });
+      return {
+        count: details.length,
+        net: toDbMoney(tIn.minus(tOut)),
+        in: toDbMoney(tIn),
+        out: toDbMoney(tOut),
+        details
+      };
+    })(),
     receptionExtras: {
       fundedDrafts: {
         count: Number(fundedRow?.c ?? 0),
@@ -466,23 +926,37 @@ export async function getDayCloseReconciliation(opts: {
       openCount,
       closedCount,
       opening: toDbMoney(tOpening),
-      salesCash: toDbMoney(tSales),
-      collectionsCash: toDbMoney(tColl),
-      otherIn: toDbMoney(tOtherIn),
-      cashIn: toDbMoney(tCashIn),
-      returnsCash: toDbMoney(tReturns),
-      expensesCash: toDbMoney(tExpenses),
-      otherOut: toDbMoney(tOtherOut),
-      operatingOut: toDbMoney(tOpOut),
+      salesCash: toDbMoney(tSales.plus(directSales)),
+      collectionsCash: toDbMoney(tColl.plus(directCollections)),
+      otherIn: toDbMoney(tOtherIn.plus(directOtherIn)),
+      cashIn: toDbMoney(tCashIn.plus(directCashIn)),
+      returnsCash: toDbMoney(tReturns.plus(directReturns)),
+      expensesCash: toDbMoney(tExpenses.plus(directExpenses)),
+      otherOut: toDbMoney(tOtherOut.plus(directOtherOut)),
+      operatingOut: toDbMoney(tOpOut.plus(directOperatingOut)),
       handoversCash: toDbMoney(tHandovers),
       cashDrops: toDbMoney(tCashDrops),
-      expected: toDbMoney(tExpected),
+      expected: toDbMoney(tExpected.plus(directNetCash)),
       counted: toDbMoney(tCounted),
       drift: toDbMoney(tDrift),
       retainedInDrawer: toDbMoney(tRetained),
-      closedExpected: toDbMoney(tClosedExpected),
+      closedExpected: toDbMoney(tClosedExpected.plus(directNetCash)),
       openRunningExpected: toDbMoney(tOpenRunningExpected),
-      physicalDrawerCash: toDbMoney(tCounted.plus(tOpenRunningExpected)),
+      physicalDrawerCash: toDbMoney(tCounted.plus(tOpenRunningExpected).plus(directNetCash)),
+      directSalesCash: toDbMoney(directSales),
+      directCollectionsCash: toDbMoney(directCollections),
+      directOtherIn: toDbMoney(directOtherIn),
+      directCashIn: toDbMoney(directCashIn),
+      directReturnsCash: toDbMoney(directReturns),
+      directExpensesCash: toDbMoney(directExpenses),
+      directOtherOut: toDbMoney(directOtherOut),
+      directOperatingOut: toDbMoney(directOperatingOut),
+      directNetCash: toDbMoney(directNetCash),
+      shiftSalesCash: toDbMoney(tSales),
+      shiftCollectionsCash: toDbMoney(tColl),
+      shiftCashIn: toDbMoney(tCashIn),
+      shiftOperatingOut: toDbMoney(tOpOut),
+      shiftExpected: toDbMoney(tExpected),
     },
     balancedCount,
     driftCount,

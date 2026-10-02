@@ -31,6 +31,10 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { Check, Info, Layers, Tag, TriangleAlert, X } from "lucide-react";
 import { Link } from "wouter";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
+import { BarcodePdfButton } from "@/components/product/BarcodePdfButton";
+import { PreviewBarcodePdfButton } from "@/components/printing/PreviewBarcodePdfButton";
+import { BatchBarcodePdfButton } from "@/components/printing/BatchBarcodePdfButton";
 
 const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
 const PREVIEW_ZOOM = 2.4; // تكبير المعاينة بصرياً للوضوح (المقاس الفعليّ صغير)
@@ -41,6 +45,8 @@ type QueueItem = {
   productId: number;
   productUnitId: number;
   productName: string;
+  variantName?: string | null;
+  variantKind?: string | null;
   // اللون/القياس: كانا مُهمَلين فتخرج ملصقات ألوان المنتج الواحد **متطابقةً نصّياً**
   // (أزرق وأحمر بنفس السطر تماماً). يُدمجان في اسم الملصق عبر `labelName`.
   color: string | null;
@@ -75,6 +81,8 @@ function queueItemFromRow(row: PosRow, key: number, rowTier: LabelTier): QueueIt
     productId: row.productId,
     productUnitId: row.productUnitId,
     productName: row.productName,
+    variantName: row.variantName,
+    variantKind: row.variantKind,
     color: row.color,
     colorHex: row.colorHex,
     size: row.size,
@@ -115,6 +123,8 @@ function renderItemFor(q: QueueItem, tier: LabelTier): LabelRenderItem {
   return toLabelItem(
     {
       productName: q.productName,
+      variantName: q.variantName,
+      variantKind: q.variantKind,
       color: q.color,
       colorHex: q.colorHex,
       size: q.size,
@@ -769,7 +779,10 @@ export default function BarcodeLabels() {
 
         {/* معاينة حيّة بنفس تصميم الطباعة تماماً (HTML/SVG مباشر بلا تحويل لصورة) */}
         <Card>
-          <CardHeader><CardTitle className="text-base">معاينة حيّة</CardTitle></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+            <CardTitle className="text-base">معاينة حيّة</CardTitle>
+            <PreviewBarcodePdfButton item={previewItem} size={size} />
+          </CardHeader>
           <CardContent>
             <div className="flex items-start gap-4 flex-wrap">
               {/* dir="ltr" + position:relative ⇒ يُثبَّت iframe في الزاوية العليا اليسرى للحاوية حتى داخل
@@ -887,7 +900,7 @@ export default function BarcodeLabels() {
                       onClick={() => addRow(row)}
                     >
                       {/* نفس `labelName` ⇒ ما تراه في المنسدلة هو ما يُطبع (بحارس تكرار اللون نفسه). */}
-                      {labelName({ productName: row.productName, color: row.color, size: row.size })}
+                      {labelName({ productName: row.productName, variantName: row.variantName, color: row.color, size: row.size, variantKind: row.variantKind })}
                       <span className="text-muted-foreground"> ({row.unitName})</span>
                       <span className="text-xs text-muted-foreground font-mono" dir="ltr"> — {row.sku}{row.barcode ? ` · ${row.barcode}` : " · بلا باركود"}</span>
                     </button>
@@ -940,14 +953,21 @@ export default function BarcodeLabels() {
                   return (
                     <tr key={q.key} className="border-t align-middle">
                       <td className="p-2">
-                        <div>{q.productName}</div>
+                        <div className="font-medium">{variantDisplayName(q)}</div>
                         <div className="text-xs text-muted-foreground">
-                          {[q.color, q.size, q.unitName].filter(Boolean).join(" · ")}
+                          {[variantDescriptor(q), q.unitName].filter(Boolean).join(" · ")}
                         </div>
                       </td>
                       <td className="p-2">
                         <div className="flex items-center gap-2 flex-wrap">
                           <CopyInline value={q.barcode} />
+                          <BarcodePdfButton
+                            barcode={q.barcode}
+                            productName={q.productName}
+                            unitName={q.unitName}
+                            retailPrice={q.price ?? undefined}
+                            sku={q.sku}
+                          />
                           {!q.saved && (
                             <Button variant="outline" size="sm" disabled={assign.isPending} onClick={() => saveBarcode(q)}>
                               حفظ الباركود
@@ -1022,6 +1042,11 @@ export default function BarcodeLabels() {
             <Button onClick={printLabels} disabled={queue.length === 0 || isRepricing}>
               {isRepricing ? "جارٍ تحديث الأسعار…" : `طباعة ${totalLabels} ملصق`}
             </Button>
+            <BatchBarcodePdfButton
+              items={queue}
+              size={size}
+              disabled={queue.length === 0 || isRepricing}
+            />
             <Button variant="outline" onClick={setAllCountsToStock} disabled={queue.length === 0}>
               عدد الكلّ = المخزون
             </Button>

@@ -74,6 +74,8 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
             depreciationMethod: (a.depreciationMethod as "sl" | "db") ?? "sl",
             purchaseDate: a.purchaseDate as unknown as string,
             status: a.status,
+            openingDepreciation: a.openingDepreciation,
+            accumulatedDepreciation: a.accumulatedDepreciation,
           },
           asOf,
         ).accumulated,
@@ -81,19 +83,33 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
       const stored = money(a.accumulatedDepreciation ?? "0");
       const monthDep = target.sub(stored);
       if (monthDep.lte(0)) return new Decimal(0); // مُكتمِل الإهلاك أو قبل تاريخ الشراء
+
+      const life = a.usefulLifeYears || 1;
+      const depreciable = Decimal.max(0, money(a.purchaseValue).sub(money(a.salvageValue ?? "0")));
+      const monthlyShare = life > 0 ? depreciable.div(life * 12).toDecimalPlaces(0, Decimal.ROUND_HALF_UP) : new Decimal(0);
+      const remainingHeadroom = Decimal.max(0, depreciable.sub(stored));
+      // صمام أمان محاسبي: للأصول الافتتاحية السابقة للنظام، لا يجوز لقسط شهر واحد أن يتجاوز حصة الشهر
+      // الفعلي لكي لا تُحمَّل قائمة الدخل بمصروفات تخص فترات ما قبل تأسيس النظام.
+      let effectiveMonthDep = monthDep;
+      if (money(a.openingDepreciation ?? "0").gt(0) && monthlyShare.gt(0)) {
+        effectiveMonthDep = Decimal.min(monthDep, monthlyShare, remainingHeadroom);
+      } else {
+        effectiveMonthDep = Decimal.min(monthDep, remainingHeadroom);
+      }
+      if (effectiveMonthDep.lte(0)) return new Decimal(0);
       await postEntry(tx, {
         entryType: "ADJUST",
         branchId: a.branchId != null ? Number(a.branchId) : actor.branchId || null,
-        cost: monthDep,
-        profit: monthDep.neg(), // مصروف: revenue(0) − cost = ربح سالب ⇒ يَجتاز reconcileLedgerProfit
-        amount: monthDep,
+        cost: effectiveMonthDep,
+        profit: effectiveMonthDep.neg(), // مصروف: revenue(0) − cost = ربح سالب ⇒ يَجتاز reconcileLedgerProfit
+        amount: effectiveMonthDep,
         postingIntent: createPostingIntent(
           "ADJUST_DEPRECIATION",
           "ADJUST",
           signedPostingLines(
             "DEPRECIATION_EXPENSE",
             "ACCUMULATED_DEPRECIATION",
-            monthDep,
+            effectiveMonthDep,
           ),
         ),
         entryDate,
@@ -102,9 +118,9 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
       });
       await tx
         .update(fixedAssets)
-        .set({ accumulatedDepreciation: toDbMoney(stored.add(monthDep)) })
+        .set({ accumulatedDepreciation: toDbMoney(stored.add(effectiveMonthDep)) })
         .where(eq(fixedAssets.id, id));
-      return monthDep;
+      return effectiveMonthDep;
     }).catch((e: any) => {
       // idempotency ثانوي: الشهر مُرحَّل سابقاً ⇒ القيد الفريد على dedupeKey يَرفض ⇒ تخطٍّ آمن.
       if (isDupEntry(e)) return new Decimal(0);

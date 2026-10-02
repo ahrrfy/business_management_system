@@ -825,6 +825,20 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
       role: saleCreator.role,
       isOwner: saleCreator.isOwner,
     };
+  } else {
+    const [saleCreator] = await tx
+      .select({ role: users.role, isOwner: users.isOwner })
+      .from(users)
+      .where(eq(users.id, Number(intent.createdBy)))
+      .limit(1);
+    if (saleCreator) {
+      actor = {
+        userId: Number(intent.createdBy),
+        branchId: Number(intent.branchId),
+        role: saleCreator.role,
+        isOwner: saleCreator.isOwner,
+      };
+    }
   }
   return finalize(
     tx,

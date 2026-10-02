@@ -10,6 +10,8 @@ export const VOUCHER_CATEGORY_POSTING_ROLES = [
   "CAPITAL",
   "OWNER_CURRENT",
   "LOAN_PAYABLE",
+  "LOAN_RECEIVABLE",
+  "INVESTMENT_PAYABLE",
   "OTHER_LIABILITY",
   "SALARIES",
   "RENT",
@@ -36,7 +38,9 @@ export const VOUCHER_CATEGORY_POSTING_ROLE_OPTIONS: readonly VoucherCategoryPost
     { role: "OTHER_REVENUE", label: "إيراد — إيرادات أخرى", directions: ["IN"] },
     { role: "CAPITAL", label: "حقوق ملكية — رأس المال", directions: ["IN"] },
     { role: "OWNER_CURRENT", label: "حقوق ملكية — الحساب الجاري للمالك", directions: ["IN", "OUT"] },
-    { role: "LOAN_PAYABLE", label: "التزام — قروض مستحقة", directions: ["IN", "OUT"] },
+    { role: "LOAN_PAYABLE", label: "التزام — قروض مستحقة (مستلمة)", directions: ["IN", "OUT"] },
+    { role: "LOAN_RECEIVABLE", label: "أصل — قروض وسلف حسنة للغير", directions: ["IN", "OUT"] },
+    { role: "INVESTMENT_PAYABLE", label: "التزام ومشاركة — أموال تشغيل واستثمار", directions: ["IN", "OUT"] },
     { role: "OTHER_LIABILITY", label: "التزام — التزامات وأمانات أخرى", directions: ["IN", "OUT"] },
     { role: "SALARIES", label: "مصروف — الرواتب والأجور", directions: ["OUT"] },
     { role: "RENT", label: "مصروف — الإيجار", directions: ["OUT"] },
@@ -101,6 +105,9 @@ export const IRAQI_DEFAULT_VOUCHER_CATEGORY_ROLE: Readonly<
   "مصاريف بنكية": "OPERATING_EXPENSE",
   "إيرادات متفرّقة": "OTHER_REVENUE",
   "فوائد بنكية": "OTHER_REVENUE",
+  "رد مبالغ استثمار": "OTHER_LIABILITY",
+  "توزيع أرباح وعوائد استثمار": "OTHER_EXPENSE",
+  "استلام مبالغ استثمار": "OTHER_LIABILITY",
 });
 
 /**
@@ -115,3 +122,43 @@ export const UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES = Object.freeze([
   "ردّ مَردودات/استرداد",
   "أخرى",
 ] as const);
+
+/**
+ * شرح التوجيه المحاسبي للفئة حسب اتجاه السند الفعلي (IN أو OUT).
+ * يُميّز فئات الاستثمار (رد رأس المال / الأرباح / الاستلام) عن الفئات العامة
+ * التي قد تتشارك معها في الدور المحاسبي (مثل أمانات وتأمينات ومصروفات أخرى).
+ */
+export function voucherCategoryAccountingGuidance(
+  voucherDirection: "IN" | "OUT",
+  category: {
+    name: string;
+    postingRole: string | null | undefined;
+  },
+): string {
+  if (!category.postingRole) return "غير مهيأة محاسبياً";
+  const role = category.postingRole;
+  const isInvestment = category.name.includes("استثمار");
+
+  if (voucherDirection === "OUT") {
+    if (role === "OTHER_LIABILITY") {
+      return isInvestment
+        ? "تخفيض التزام المستثمر (مدين) مقابل الصندوق/البنك (دائن) دون احتساب كمصروف تشغيلي."
+        : "تخفيض الالتزام المالي أو الأمانة (مدين) مقابل حساب النقد المعتمد (دائن).";
+    }
+    if (role === "OTHER_EXPENSE") {
+      return isInvestment || category.name.includes("أرباح")
+        ? "إثبات توزيع أرباح وعوائد الاستثمار (مدين) مقابل الصندوق/البنك (دائن)."
+        : "إثبات المصروف (مدين) مقابل حساب النقد المعتمد (دائن).";
+    }
+    return `مدين: ${voucherCategoryRoleLabel(role)} / دائن: حساب النقد المعتمد.`;
+  }
+
+  // voucherDirection === "IN"
+  if (role === "OTHER_LIABILITY") {
+    return isInvestment
+      ? "إيداع مبالغ الاستثمار بالصندوق/البنك (مدين) مقابل إثبات الالتزام المالي للمستثمر (دائن)."
+      : "إيداع المبالغ بحساب النقد المعتمد (مدين) مقابل إثبات الالتزام المالي أو الأمانة (دائن).";
+  }
+  return `مدين: حساب النقد المعتمد / دائن: ${voucherCategoryRoleLabel(role)}.`;
+}
+

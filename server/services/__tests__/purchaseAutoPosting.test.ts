@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { decidePurchaseOrderControl } from "../purchase/controls";
@@ -34,17 +34,20 @@ const TABLES = [
   "journalLines",
   "journalEntries",
   "doubleEntrySettings",
+  "accrualCorrectionRequests",
   "accrualObligationEvents",
   "accrualObligations",
   "accountingEntries",
   "expenses",
   "receipts",
+  "shifts",
   "financialPeriods",
   "inventoryMovements",
   "purchaseOrderItems",
   "purchaseOrders",
   "purchaseControlSettings",
   "branchStock",
+  "productPrices",
   "productUnits",
   "productVariants",
   "products",
@@ -159,6 +162,9 @@ async function artifactCounts() {
 beforeEach(async () => {
   await truncateTables(TABLES);
   await seed();
+});
+afterEach(async () => {
+  await truncateTables(TABLES);
 });
 
 describe("اعتماد أمر الشراء يرحّل الفاتورة والاستلام آلياً", () => {

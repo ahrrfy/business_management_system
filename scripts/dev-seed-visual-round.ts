@@ -101,26 +101,12 @@ async function main() {
      WHERE id = ${dId}
   `);
 
-  // ⑤ مهمّةٌ حاجزةٌ مفتوحة على أمرٍ نشط.
-  const st = (await db.select().from(s.serviceTypes).where(eq(s.serviceTypes.name, "موافقة تصميم")).limit(1))[0];
-  if (st) {
-    const e = await createWorkOrder({
-      branchId: 1, customerId: custId, title: "بروشور A5 — بانتظار موافقة العميل", quantity: 200,
-      salePrice: "60000.00", deposit: "0", materials: [], receptionChannel: "INSTAGRAM",
-      clientRequestId: "vr-awaiting",
-    } as never, SARA);
-    const eId = Number((e as { workOrderId: number }).workOrderId);
-    const existingTask = (await db.select().from(s.tasks).where(eq(s.tasks.linkedWorkOrderId, eId)).limit(1))[0];
-    if (!existingTask) {
-      await db.insert(s.tasks).values({
-        taskNumber: `TSK-VR-${eId}`, branchId: 1, title: "موافقة العميل على التصميم",
-        serviceTypeId: Number(st.id), taskStatus: "WAITING_CUSTOMER",
-        linkedWorkOrderId: eId, customerId: custId, createdBy: 3,
-      } as never);
-    }
-  } else {
-    console.log("تنبيه: نوع الخدمة «موافقة تصميم» غير مبذور — تخطّيتُ السيناريو ⑤.");
-  }
+  // ⑤ أمر إضافي
+  await createWorkOrder({
+    branchId: 1, customerId: custId, title: "بروشور A5", quantity: 200,
+    salePrice: "60000.00", deposit: "0", materials: [], receptionChannel: "INSTAGRAM",
+    clientRequestId: "vr-brochure",
+  } as never, SARA);
 
   const rows = await db.select({
     id: s.workOrders.id, n: s.workOrders.orderNumber, title: s.workOrders.title,

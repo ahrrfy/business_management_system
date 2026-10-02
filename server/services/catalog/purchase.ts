@@ -25,6 +25,8 @@ export interface PurchaseRow {
   variantName: string | null;
   color: string | null;
   size: string | null;
+  colorHex?: string | null;
+  variantKind?: string | null;
   sku: string;
   productUnitId: number;
   unitName: string;
@@ -48,7 +50,9 @@ export async function listForPurchase(branchId: number, query?: string, limit = 
       variantId: productVariants.id,
       variantName: productVariants.variantName,
       color: productVariants.color,
+      colorHex: productVariants.colorHex,
       size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
       productUnitId: productUnits.id,
       unitName: productUnits.unitName,

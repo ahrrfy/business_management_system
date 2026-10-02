@@ -28,6 +28,11 @@ export interface InvoiceLine {
   /** Stable key for ADD_ITEM dedupe. */
   productUnitId: number;
   name: string;
+  variantName?: string | null;
+  color?: string | null;
+  size?: string | null;
+  colorHex?: string | null;
+  variantKind?: string | null;
   sku: string;
   barcode: string | null;
   /** Unit label (قطعة/درزن/...). */

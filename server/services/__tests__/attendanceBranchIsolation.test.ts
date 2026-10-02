@@ -87,11 +87,44 @@ describe("القراءة — لا تتعدّى الفرع المُسنَد", () 
   });
 });
 
-describe("الكتابة — أخطر من القراءة (الساعات تتحوّل أجراً)", () => {
-  it("تسجيل حضورٍ لموظف فرعٍ آخر يُرفَض", async () => {
-    await expect(
-      recordAttendance({ employeeId: otherEmp, attendanceDate: "2026-07-06", hours: "8", status: "PRESENT", scopedBranchId: MAIN }),
-    ).rejects.toThrow(/فرعٍ آخر/);
+describe("الكتابة — دعم تغطية الفروع وحفظ فرع الحضور (GAP-07)", () => {
+  it("تسجيل حضورٍ لموظف فرعٍ آخر ينجح ويُسجَّل بفرع التغطية", async () => {
+    const res = await recordAttendance({
+      employeeId: otherEmp,
+      attendanceDate: "2026-07-06",
+      hours: "8",
+      status: "PRESENT",
+      scopedBranchId: MAIN,
+    });
+    expect(res).toBeTruthy();
+    expect(Number(res.branchId)).toBe(MAIN);
+  });
+
+  it("تصفية الحضور بـ scopedBranchId تحصر النتائج بفرع الحضور الفعلي", async () => {
+    await recordAttendance({
+      employeeId: otherEmp,
+      attendanceDate: "2026-07-06",
+      hours: "8",
+      status: "PRESENT",
+      scopedBranchId: MAIN,
+    });
+    // بالفرع الرئيسي (مكان التغطية): يظهر حضور موظف الفرع الآخر
+    const mainList = await listAttendance({
+      period: "2026-07",
+      scopedBranchId: MAIN,
+      dateFrom: "2026-07-06",
+      dateTo: "2026-07-06",
+    });
+    expect(mainList.rows.some((r) => r.employeeId === otherEmp)).toBe(true);
+
+    // بفرع المبيعات (فرع الموظف الأصلي): لا يظهر حضور هذا اليوم لأنه سُجّل بالفرع الرئيسي
+    const otherList = await listAttendance({
+      period: "2026-07",
+      scopedBranchId: OTHER,
+      dateFrom: "2026-07-06",
+      dateTo: "2026-07-06",
+    });
+    expect(otherList.rows.some((r) => r.employeeId === otherEmp)).toBe(false);
   });
 
   it("تسجيل حضورٍ لموظف الفرع نفسه يمرّ", async () => {

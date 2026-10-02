@@ -33,6 +33,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { ErrorState } from "@/components/PageState";
 import { STOCKTAKE_REASON_LABEL } from "@/lib/printing/stocktakeTemplates";
 import { useState, type ReactNode } from "react";
@@ -436,10 +437,10 @@ export default function StocktakeReview() {
   const INTEGRITY_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
 
   /** اسم المنتج مع بديله ورمزه — نصٌّ واحد للنسخ وعرضٌ مركّب للقراءة. */
-  const integrityNameCell = (row: { productName: string; variantName?: string | null; sku: string }) => (
+  const integrityNameCell = (row: { productName: string; variantName?: string | null; color?: string | null; size?: string | null; variantKind?: string | null; sku: string }) => (
     <>
       {row.productName}
-      {row.variantName ? " — " + row.variantName : ""}
+      {variantDescriptor(row) ? " — " + variantDescriptor(row) : ""}
       <span className="ms-1 font-mono text-[10px] text-muted-foreground" dir="ltr">
         {row.sku}
       </span>
@@ -450,7 +451,7 @@ export default function StocktakeReview() {
     {
       id: "product",
       header: "المنتج",
-      accessorFn: (r) => r.productName + (r.variantName ? " — " + r.variantName : "") + " · " + r.sku,
+      accessorFn: (r) => variantDisplayName(r) + " · " + r.sku,
       meta: { width: "wide", wrap: true },
       cell: ({ row }) => <span className="font-semibold">{integrityNameCell(row.original)}</span>,
     },
@@ -472,7 +473,7 @@ export default function StocktakeReview() {
     {
       id: "product",
       header: "المنتج",
-      accessorFn: (r) => r.productName + (r.variantName ? " — " + r.variantName : "") + " · " + r.sku,
+      accessorFn: (r) => variantDisplayName(r) + " · " + r.sku,
       meta: { width: "wide", wrap: true },
       cell: ({ row }) => <span className="font-semibold">{integrityNameCell(row.original)}</span>,
     },
@@ -1494,9 +1495,9 @@ export default function StocktakeReview() {
                     <td className="p-2.5">
                       <p className="font-bold">
                         {r.productName}{" "}
-                        {r.variantName && (
+                        {variantDescriptor(r) && (
                           <span className="font-normal text-muted-foreground">
-                            {r.variantName}
+                            {variantDescriptor(r)}
                           </span>
                         )}
                       </p>
@@ -1704,9 +1705,7 @@ export default function StocktakeReview() {
                             onClick={() => {
                               setReopenFor({
                                 variantId: r.variantId,
-                                label: r.variantName
-                                  ? `${r.productName} — ${r.variantName}`
-                                  : r.productName,
+                                label: variantDisplayName(r),
                               });
                               setReopenReason("");
                             }}
@@ -1954,10 +1953,7 @@ export default function StocktakeReview() {
                 <>
                   المنتج{" "}
                   <b className="text-foreground">
-                    {conflictRow.productName}
-                    {conflictRow.variantName
-                      ? ` — ${conflictRow.variantName}`
-                      : ""}
+                    {variantDisplayName(conflictRow)}
                   </b>{" "}
                   عُدّ مرتين بكميتين مختلفتين. اعتمد أحد العدَّين أو اطلب عدّاً
                   ثالثاً حاسماً — العدّان يبقيان موثّقَين في السجلّ أياً كان

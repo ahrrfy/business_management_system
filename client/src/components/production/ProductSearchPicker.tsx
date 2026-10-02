@@ -3,6 +3,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState, useRef, useEffect } from "react";
 import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { cn } from "@/lib/utils";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 export type PurchaseRow = RouterOutputs["catalog"]["forPurchase"][number];
 
@@ -113,7 +114,6 @@ export function ProductSearchPicker({
               </div>
             )}
             {variants.map((v, idx) => {
-              const detail = [v.variantName, v.color, v.size].filter(Boolean).join(" / ");
               const isSelected = idx === selectedIndex;
               const stockNum = Number(v.stockBase);
               return (
@@ -128,7 +128,7 @@ export function ProductSearchPicker({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-foreground">
-                      {detail ? `${v.productName} — ${detail}` : v.productName}
+                      {variantDisplayName(v)}
                     </span>
                     <span
                       className={cn(

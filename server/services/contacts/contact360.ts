@@ -2,11 +2,9 @@
 // مالية) عبر joins/استعلامات محدودة. الحجب حسب الدور (currentBalance/creditLimit) يُطبَّق في
 // الراوتر (maskCustomerSensitive/maskSupplierSensitive) — نفس نمط customerRouter.get القائم.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, notInArray } from "drizzle-orm";
-import { contactPersons, conversations, customers, invoices, suppliers, tasks } from "../../../drizzle/schema";
+import { and, desc, eq } from "drizzle-orm";
+import { contactPersons, conversations, customers, invoices, suppliers } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
-
-const CLOSED_TASK_STATUSES = ["RESOLVED", "CANCELLED"] as const;
 
 export interface Contact360Input {
   kind: "customer" | "supplier";
@@ -39,21 +37,14 @@ async function customer360(id: number, scopedBranchId: number | null) {
     .orderBy(desc(invoices.id))
     .limit(5);
 
-  const taskConds = [eq(tasks.customerId, id), notInArray(tasks.taskStatus, [...CLOSED_TASK_STATUSES])];
-  if (scopedBranchId != null) taskConds.push(eq(tasks.branchId, scopedBranchId));
-  const openTasks = await db
-    .select({
-      id: tasks.id,
-      taskNumber: tasks.taskNumber,
-      title: tasks.title,
-      taskStatus: tasks.taskStatus,
-      priority: tasks.priority,
-      dueAt: tasks.dueAt,
-    })
-    .from(tasks)
-    .where(and(...taskConds))
-    .orderBy(desc(tasks.id))
-    .limit(20);
+  const openTasks: Array<{
+    id: number;
+    taskNumber: string;
+    title: string;
+    taskStatus: string;
+    priority: string;
+    dueAt: Date | null;
+  }> = [];
 
   const convConds = [eq(conversations.customerId, id)];
   if (scopedBranchId != null) convConds.push(eq(conversations.branchId, scopedBranchId));

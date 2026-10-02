@@ -6,6 +6,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { variantDescriptor, variantDisplayName } from "@shared/variantDisplay";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
@@ -34,7 +35,7 @@ import { notify } from "@/lib/notify";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlternativeStockCard } from "@/components/stocktake/AlternativeStockBreakdown";
@@ -455,6 +456,8 @@ export default function Products() {
                 { key: "isService", header: "بلا مخزون", map: (r) => yesNo(r.isService) },
                 { key: "showInReception", header: "يظهر في الاستقبال", map: (r) => yesNo(r.showInReception) },
                 { key: "showInPrintPos", header: "يظهر في كاشير الطباعة", map: (r) => yesNo(r.showInPrintPos) },
+                { key: "showInQuotations", header: "يظهر في عروض الأسعار", map: (r) => yesNo(r.showInQuotations) },
+                { key: "showInAdvancedSales", header: "يظهر في المبيعات المتقدمة", map: (r) => yesNo(r.showInAdvancedSales) },
                 { key: "isBundle", header: "بكج/حزمة", map: (r) => yesNo(r.isBundle) },
                 { key: "isConsignment", header: "بضاعة أمانة", map: (r) => yesNo(r.isConsignment) },
                 ...(isElevated
@@ -555,10 +558,10 @@ export default function Products() {
               {
                 id: "variant",
                 header: "المتغيّر",
-                accessorFn: (r) => r.variantName ?? r.color ?? r.sku ?? "—",
+                accessorFn: (r) => variantDescriptor(r) || "—",
                 cell: ({ row }) => (
                   <span className="text-muted-foreground">
-                    {row.original.variantName ?? row.original.color ?? row.original.sku ?? "—"}
+                    {variantDescriptor(row.original) || "—"}
                   </span>
                 ),
               },
@@ -616,7 +619,7 @@ export default function Products() {
               {
                 id: "stockBase",
                 header: "الرصيد الفعلي",
-                accessorFn: (r) => r.stockBase,
+                accessorFn: (r) => formatQuantity(r.stockBase),
                 meta: { kind: "number" },
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
@@ -624,10 +627,10 @@ export default function Products() {
                   const unitQty = isBase ? row.original.stockBase : Math.trunc(row.original.stockBase / factor) || 0;
                   return (
                     <div className="flex flex-col items-end">
-                      <span className="font-medium tabular-nums">{unitQty} {row.original.unitName}</span>
+                      <span className="font-medium tabular-nums">{formatQuantity(unitQty)} {row.original.unitName}</span>
                       {!isBase && (
                         <span className="text-[10px] text-muted-foreground tabular-nums">
-                          ({row.original.stockBase} بالأساس)
+                          ({formatQuantity(row.original.stockBase)} بالأساس)
                         </span>
                       )}
                     </div>
@@ -637,7 +640,7 @@ export default function Products() {
               {
                 id: "reservedBase",
                 header: "المحجوز والمخصص",
-                accessorFn: (r) => r.reservedBase,
+                accessorFn: (r) => formatQuantity(r.reservedBase),
                 meta: { kind: "number" },
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
@@ -645,10 +648,10 @@ export default function Products() {
                   const resQty = isBase ? row.original.reservedBase : Math.trunc(row.original.reservedBase / factor) || 0;
                   return (
                     <div className="flex flex-col items-end">
-                      <span className="font-medium tabular-nums">{resQty} {row.original.unitName}</span>
+                      <span className="font-medium tabular-nums">{formatQuantity(resQty)} {row.original.unitName}</span>
                       {!isBase && (
                         <span className="text-[10px] text-muted-foreground tabular-nums">
-                          ({row.original.reservedBase} بالأساس)
+                          ({formatQuantity(row.original.reservedBase)} بالأساس)
                         </span>
                       )}
                     </div>
@@ -658,7 +661,7 @@ export default function Products() {
               {
                 id: "availableBase",
                 header: "المتاح للبيع",
-                accessorFn: (r) => r.availableBase,
+                accessorFn: (r) => formatQuantity(r.availableBase),
                 meta: { kind: "number" },
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
@@ -667,12 +670,12 @@ export default function Products() {
                   return (
                     <div className="flex flex-col items-end">
                       <span className="font-medium tabular-nums">
-                        {availQty} {row.original.unitName}
+                        {formatQuantity(availQty)} {row.original.unitName}
                         {row.original.bundleCapacity && <BundleCapacityNote capacity={row.original.bundleCapacity} />}
                       </span>
                       {!isBase && (
                         <span className="text-[10px] text-muted-foreground tabular-nums">
-                          ({row.original.availableBase} بالأساس)
+                          ({formatQuantity(row.original.availableBase)} بالأساس)
                         </span>
                       )}
                     </div>
@@ -726,7 +729,7 @@ export default function Products() {
                           onSelect: () =>
                             void printLabel([
                               {
-                                name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+                                name: variantDisplayName(r),
                                 sku: r.sku ?? "",
                                 price: r.price,
                                 barcode: r.barcode ?? "",

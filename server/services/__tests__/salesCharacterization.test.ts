@@ -349,7 +349,7 @@ describe("createSale characterization — S0 pre-refactor baseline", () => {
 
   describe("price override", () => {
     it("uses unitPriceOverride when provided (with approval)", async () => {
-      await insertShift();
+      await insertShift({ userId: 2 });
       const result = await createSale({
         branchId: 1, shiftId: 1, sourceType: "POS",
         lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "75" }],

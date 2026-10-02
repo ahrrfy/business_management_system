@@ -1,4 +1,5 @@
 import { printDoc } from "./print";
+import { fmtQty } from "@shared/quantityFormat";
 import { CAIRO_FONT, CO, esc, fmt, openPrintWindow, logoUrl } from "./brand";
 import { fmtDateTime } from "../date";
 import { formatArabicMoneyWords } from "./tafqit";
@@ -18,7 +19,7 @@ export interface OnlineOrderPrintData {
   deliveryWaivedAmount?: string;
   total: string;
   createdAt: Date | string;
-  items: { productName: string; variantLabel: string; imageUrl: string | null; unitName: string; quantity: string; unitPrice: string; total: string }[];
+  items: { productName: string; variantLabel: string; imageUrl: string | null; unitName: string; quantity: string; unitPrice: string; total: string; customizationSummary?: string | null }[];
   notes?: string | null;
   isReprint?: boolean;
   reprintedAt?: Date | string;
@@ -53,8 +54,8 @@ export function buildOnlineOrderThermalDoc(d: OnlineOrderPrintData) {
     ].filter(Boolean),
     columns: ["المنتج والمواصفات", "الكمية", "المبلغ"],
     rows: d.items.map((item) => [
-      `${item.productName}${item.variantLabel ? ` — ${item.variantLabel}` : ""}${item.unitName ? ` (${item.unitName})` : ""}`,
-      `×${fmt(item.quantity)}`,
+      `${item.productName}${item.variantLabel ? ` — ${item.variantLabel}` : ""}${item.unitName ? ` (${item.unitName})` : ""}${item.customizationSummary ? `\nتخصيص: ${item.customizationSummary}` : ""}`,
+      `×${fmtQty(item.quantity)}`,
       `${fmt(item.total)} د.ع`,
     ]),
     totals: [
@@ -93,13 +94,13 @@ export function printOnlineOrderPreparationA4(d: OnlineOrderPrintData): void {
     return `<article class="item">
       <div class="num">${index + 1}</div>
       ${image ? `<img src="${esc(image)}" alt="${esc(item.productName)}" />` : `<div class="no-image">لا توجد صورة</div>`}
-      <div class="info"><h3>${esc(item.productName)}</h3>${item.variantLabel ? `<p class="variant">${esc(item.variantLabel)}</p>` : ""}<p>الوحدة: ${esc(item.unitName || "قطعة")}</p></div>
-      <div class="qty">×${esc(fmt(item.quantity))}</div>
+      <div class="info"><h3>${esc(item.productName)}</h3>${item.variantLabel ? `<p class="variant">${esc(item.variantLabel)}</p>` : ""}<p>الوحدة: ${esc(item.unitName || "قطعة")}</p>${item.customizationSummary ? `<p class="customization"><b>التخصيص:</b> ${esc(item.customizationSummary)}</p>` : ""}</div>
+      <div class="qty">×${esc(fmtQty(item.quantity))}</div>
     </article>`;
   }).join("");
   const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ورقة تجهيز ${esc(d.orderNumber)}</title>${CAIRO_FONT}
   <style>
-    @page{size:A4 portrait;margin:10mm}*{box-sizing:border-box}body{font-family:'Cairo',sans-serif;color:#111;margin:0;font-size:12px}.head{border-bottom:3px solid #087f5b;padding-bottom:6mm;display:flex;justify-content:space-between;gap:8mm}.brand{font-size:20px;font-weight:900}.sub{color:#555;font-size:11px}.title{text-align:left}.title h1{margin:0;font-size:22px}.title p{margin:2px 0;font-weight:800}.boxes{display:grid;grid-template-columns:1fr 1fr;gap:4mm;margin:6mm 0}.box{border:1px solid #bfc8c3;border-radius:3mm;padding:4mm}.box b{display:block;color:#087f5b;margin-bottom:1mm}.customer{font-size:14px;font-weight:800}.items-title{font-size:16px;font-weight:900;margin:5mm 0 3mm}.item{display:grid;grid-template-columns:8mm 25mm 1fr 22mm;gap:4mm;align-items:center;border:1.5px solid #222;border-radius:3mm;padding:3mm;margin-bottom:3mm;break-inside:avoid}.item img,.no-image{width:25mm;height:25mm;object-fit:cover;border-radius:2mm;background:#f1f3f2}.no-image{display:grid;place-items:center;text-align:center;font-size:9px;color:#777}.num{font-size:16px;font-weight:900;text-align:center}.info h3{margin:0;font-size:14px}.info p{margin:1mm 0 0;color:#444}.variant{font-weight:900;color:#087f5b}.qty{font-size:24px;font-weight:900;text-align:center;border-right:1px dashed #aaa;padding-right:3mm}.foot{display:flex;justify-content:space-between;border-top:2px solid #111;margin-top:6mm;padding-top:4mm;font-weight:800}.cod{font-size:18px;color:#087f5b}@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+    @page{size:A4 portrait;margin:10mm}*{box-sizing:border-box}body{font-family:'Cairo',sans-serif;color:#111;margin:0;font-size:12px}.head{border-bottom:3px solid #087f5b;padding-bottom:6mm;display:flex;justify-content:space-between;gap:8mm}.brand{font-size:20px;font-weight:900}.sub{color:#555;font-size:11px}.title{text-align:left}.title h1{margin:0;font-size:22px}.title p{margin:2px 0;font-weight:800}.boxes{display:grid;grid-template-columns:1fr 1fr;gap:4mm;margin:6mm 0}.box{border:1px solid #bfc8c3;border-radius:3mm;padding:4mm}.box b{display:block;color:#087f5b;margin-bottom:1mm}.customer{font-size:14px;font-weight:800}.items-title{font-size:16px;font-weight:900;margin:5mm 0 3mm}.item{display:grid;grid-template-columns:8mm 25mm 1fr 22mm;gap:4mm;align-items:center;border:1.5px solid #222;border-radius:3mm;padding:3mm;margin-bottom:3mm;break-inside:avoid}.item img,.no-image{width:25mm;height:25mm;object-fit:cover;border-radius:2mm;background:#f1f3f2}.no-image{display:grid;place-items:center;text-align:center;font-size:9px;color:#777}.num{font-size:16px;font-weight:900;text-align:center}.info h3{margin:0;font-size:14px}.info p{margin:1mm 0 0;color:#444}.variant{font-weight:900;color:#087f5b}.customization{border:1px solid #9fc8bb;border-radius:2mm;background:#eef8f4;padding:2mm;color:#173f35!important}.qty{font-size:24px;font-weight:900;text-align:center;border-right:1px dashed #aaa;padding-right:3mm}.foot{display:flex;justify-content:space-between;border-top:2px solid #111;margin-top:6mm;padding-top:4mm;font-weight:800}.cod{font-size:18px;color:#087f5b}@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
   </style></head><body><header class="head"><div><div class="brand">${esc(CO.short)}</div><div class="sub">${esc(CO.address)} · ${esc(CO.phones[1]?.n ?? CO.phones[0]?.n ?? "")}</div></div><div class="title"><h1>ورقة تجهيز الطلب</h1><p dir="ltr">${esc(d.orderNumber)}</p><p>${esc(fmtDateTime(d.createdAt))}</p></div></header>
   <section class="boxes"><div class="box"><b>بيانات المستلم</b><div class="customer">${esc(d.customerName ?? "—")}</div><div dir="ltr">${esc(d.customerPhone ?? "—")}</div></div><div class="box"><b>عنوان التسليم</b><div>${esc([d.governorate, d.addressText].filter(Boolean).join(" — ") || "—")}</div>${d.latitude && d.longitude ? `<div style="margin-top:2mm;font-size:11px;font-weight:bold;color:#087f5b">الموقع على الخريطة: <a href="https://maps.google.com/?q=${encodeURIComponent(`${d.latitude},${d.longitude}`)}" target="_blank" style="color:#087f5b;text-decoration:underline">فتح خرائط Google (${esc(d.latitude)}, ${esc(d.longitude)})</a></div>` : ""}</div></section>
   <h2 class="items-title">المنتجات المطلوب تجهيزها (${d.items.length})</h2>${products}<footer class="foot"><span>الحالة: ${esc(d.status)}</span><span class="cod">المبلغ عند الاستلام: ${esc(fmt(d.total))} د.ع ${d.deliveryFree ? "(شحن مجاني)" : ""}</span></footer>

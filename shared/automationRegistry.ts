@@ -328,6 +328,21 @@ export const AUTOMATION_REGISTRY: Record<TransitionKey, AutomationMode> = {
     because:
       "إلغاءُ إسنادٍ متعذّر بدل إعادة إسناده — حكمٌ بأنّ الطلب انتهى (زبونٌ لا يُجيب) لا أنّ الجهة أخفقت؛ يحرّر التعرّض بـ`COD_RELEASED` بقرارٍ مكتوب.",
   },
+  "deliveryParcel:OUT_FOR_DELIVERY->CANCELLED": {
+    kind: "MANUAL",
+    because:
+      "إلغاءُ إسناد طردٍ خرج مع المندوب قبل تحصيله (`cancellation.cancelDeliveryAssignment`) بقرارٍ ماليّ صريح لتحرير العهدة وإعادة الفاتورة.",
+  },
+  "deliveryParcel:OUT_FOR_DELIVERY->RETURNED": {
+    kind: "MANUAL",
+    because:
+      "إرجاعُ طردٍ خرج مع المندوب (`returns.returnConsignment`) بعد تعذّر تسليمه واستلام البضاعة مادياً وفحصها في الفرع.",
+  },
+  "deliveryParcel:FAILED->OUT_FOR_DELIVERY": {
+    kind: "MANUAL",
+    because:
+      "إعادةُ إسناد طردٍ متعذّر ليخرج مباشرةً في جولة توصيل جديدة مع سائق أو جهة أخرى (`parties.reassignDeliveryConsignment`).",
+  },
 
   // ───────────────── نقدُ الطرد (deliveryConsignments.moneyStatus) — م١ PR-4 ─────────────────
   // محورُ المال آليٌّ كالفاتورة: الحالةُ تُشتقّ من مبالغ التوريد/السداد، والقرارُ البشريّ الوحيد

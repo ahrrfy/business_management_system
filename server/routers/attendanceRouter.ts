@@ -32,6 +32,7 @@ export const attendanceRouter = router({
       z
         .object({
           employeeId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
           period: periodStr.optional(),
           // مدى تواريخ صريح — الشاشة تفتح على اليوم بقرار المالك، والشهر خيارٌ لا افتراض.
           dateFrom: dateStr.optional(),
@@ -97,6 +98,7 @@ export const attendanceRouter = router({
       z
         .object({
           employeeId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
           period: periodStr.optional(),
           dateFrom: dateStr.optional(),
           dateTo: dateStr.optional(),
@@ -160,6 +162,7 @@ export const attendanceRouter = router({
     .input(
       z.object({
         employeeId: z.number().int().positive(),
+        branchId: z.number().int().positive().optional(),
         attendanceDate: dateStr,
         hours: z.number().min(0).max(24),
         checkIn: timeStr.nullish(),
@@ -173,6 +176,7 @@ export const attendanceRouter = router({
     .mutation(async ({ input, ctx }) => {
       const row = await svc.recordAttendance({
         employeeId: input.employeeId,
+        branchId: input.branchId,
         attendanceDate: input.attendanceDate,
         hours: input.hours,
         checkIn: input.checkIn ?? null,
@@ -191,6 +195,7 @@ export const attendanceRouter = router({
         entityId: row?.id,
         newValue: {
           employeeId: input.employeeId,
+          branchId: row?.branchId,
           date: input.attendanceDate,
           hours: input.hours,
           amount: row?.amount,

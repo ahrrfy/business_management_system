@@ -6,6 +6,7 @@ import { docBarcode } from "@shared/documentNumber";
 import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
+import { fmtQty } from "@shared/quantityFormat";
 
 const W = 576;
 const PAD = 12;
@@ -183,7 +184,7 @@ export async function workOrderToCanvas(
     ctx.font = "700 20px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText("الكمية:", W - PAD, y);
     ctx.font = "600 20px Cairo, sans-serif"; ctx.textAlign = "left";
-    ctx.fillText(String(d.quantity), PAD, y);
+    ctx.fillText(fmtQty(d.quantity), PAD, y);
     y += 30;
   }
 

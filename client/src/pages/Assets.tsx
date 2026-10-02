@@ -15,6 +15,9 @@ import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { assetCategoryLabel } from "@shared/assets";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { AlertTriangle, ArrowLeft, Banknote, CalendarClock, Coins, Package, ThumbsUp, TrendingDown, Users, Wrench } from "lucide-react";
+import { ImportDialog } from "@/components/import/ImportDialog";
+import { ASSET_FIELDS, ASSET_IMPORT_META } from "@/lib/importFields";
+import type { AssetImportRow } from "@/lib/importTypes";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -72,7 +75,9 @@ export default function Assets() {
   // والربح مبالَغ كل فترة (حتى يقع التصرّف فيَنسف كامل المتراكم في شهر واحد عبر DEPR:id:DISP catch-up).
   // إضافة زرّ تشغيل يدوي يُكمل الشريحة الرأسية للـendpoint القائم والمُختبَر (idempotent).
   const [depPeriod, setDepPeriod] = useState<string>(previousMonthYm());
+  const [importOpen, setImportOpen] = useState(false);
   const utils = trpc.useUtils();
+  const importMut = trpc.assets.import.useMutation();
   const postDep = trpc.assets.postDepreciation.useMutation({
     onSuccess: (r) => {
       notify.ok(`تمّ ترحيل إهلاك ${r.period}: ${r.assetsPosted} أصلاً، إجمالي ${iqd(r.totalDepreciation)} د.ع`);
@@ -110,7 +115,12 @@ export default function Assets() {
           <div className="flex items-center gap-2">
             <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
             {canWrite && (
-              <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>
+              <>
+                <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+                  استيراد أصول
+                </Button>
+                <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>
+              </>
             )}
           </div>
         }
@@ -232,6 +242,36 @@ export default function Assets() {
       <div className="flex justify-end">
         <Link href="/assets/register" className="text-sm text-muted-foreground flex items-center gap-1">عرض كل الأصول <ArrowLeft className="size-3.5" /></Link>
       </div>
+
+      <ImportDialog<AssetImportRow>
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="استيراد أصول ثابتة من Excel/CSV"
+        entityName="أصل"
+        fields={ASSET_FIELDS}
+        meta={ASSET_IMPORT_META}
+        onImport={async (rows, ctx) => {
+          const res = await importMut.mutateAsync({
+            rows: rows.map((r) => ({
+              ...r,
+              rowNumber: r.rowNumber,
+            })),
+            options: {
+              dryRun: ctx.options?.dryRun ?? false,
+              skipFailed: ctx.options?.skipFailed ?? false,
+            },
+          });
+          return res;
+        }}
+        onDone={(s) => {
+          if (s.created > 0) {
+            notify.ok(`تم استيراد ${s.created} أصلاً بنجاح مع قيد افتتاحي مجمع`);
+            utils.assets.dashboard.invalidate();
+            utils.assets.list.invalidate();
+            utils.assets.registerReport.invalidate();
+          }
+        }}
+      />
     </div>
   );
 }

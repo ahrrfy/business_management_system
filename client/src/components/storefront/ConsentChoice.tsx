@@ -136,7 +136,11 @@ export function ConsentChoice() {
       {!consent && !preferencesOpen && (
         <aside className="storefront-consent fixed inset-x-3 z-[70] mx-auto max-w-3xl rounded-2xl border border-[#ead8c8] bg-white p-4 text-right shadow-xl" style={{ bottom: "max(.75rem, env(safe-area-inset-bottom))" }} aria-labelledby="storefront-consent-title">
           <div className="flex items-start gap-3"><ShieldCheck aria-hidden className="mt-0.5 size-5 shrink-0 text-[#1e4a63]" /><div><h2 id="storefront-consent-title" className="text-sm font-black text-[#1e4a63]">نحترم خصوصيتك</h2><p className="mt-1 text-xs font-semibold leading-6 text-slate-500">نستخدم الضروري فقط افتراضياً. التحليلات والتسويق اختياريان ويمكن تغييرهما في أي وقت.</p></div></div>
-          <div className="mt-3 flex flex-wrap justify-end gap-2"><button type="button" onClick={allowNecessaryOnly} className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">الضرورية فقط</button><button type="button" onClick={openPreferences} className="flex min-h-11 items-center gap-1 rounded-lg border border-[#1e4a63]/30 px-3 py-2 text-xs font-black text-[#1e4a63] hover:bg-slate-50"><Settings2 aria-hidden className="size-3.5" /> تخصيص</button><button type="button" onClick={allowAll} className="min-h-11 rounded-lg bg-[#b43d31] px-3 py-2 text-xs font-black text-white hover:bg-[#922f28]">السماح بالاختيارات</button></div>
+          <div className="mt-3 flex flex-col-reverse sm:flex-row justify-end gap-2">
+            <button type="button" onClick={openPreferences} className="flex min-h-11 items-center justify-center gap-1 rounded-lg border border-[#1e4a63]/30 px-3 py-2 text-xs font-black text-[#1e4a63] hover:bg-slate-50"><Settings2 aria-hidden className="size-3.5" /> تخصيص</button>
+            <button type="button" onClick={allowNecessaryOnly} className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">الضرورية فقط</button>
+            <button type="button" onClick={allowAll} className="min-h-11 rounded-lg bg-[#b43d31] px-3 py-2 text-xs font-black text-white hover:bg-[#922f28]">السماح بالاختيارات</button>
+          </div>
         </aside>
       )}
       {consent && <button type="button" onClick={openPreferences} className="storefront-consent fixed left-3 z-[60] min-h-11 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-black text-[#1e4a63] shadow-md hover:bg-slate-50" style={{ bottom: "max(.75rem, env(safe-area-inset-bottom))" }}>الخصوصية</button>}

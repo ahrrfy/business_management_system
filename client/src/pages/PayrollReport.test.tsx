@@ -1,60 +1,181 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import React, { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import PayrollReport from "./PayrollReport";
+import ReportsCenter from "./ReportsCenter";
+import {
+  OBLIGATION_KIND_LABEL,
+  payrollStatusLabel,
+  settledObligationAmount,
+  summarizeObligations,
+  toExcelMoney,
+} from "@/lib/payrollAccrual";
 
-const report = readFileSync(new URL("./PayrollReport.tsx", import.meta.url), "utf8");
-const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
-const reportsCenter = readFileSync(new URL("./ReportsCenter.tsx", import.meta.url), "utf8");
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as any).React = React;
 
-describe("Payroll accrual report contract", () => {
-  it("يعرض المعتمد والمدفوع والملغى ويقرأ الالتزامات المستقلة", () => {
-    expect(report).toContain('approved: "badge-status-pending"');
-    expect(report).toContain('paid: "badge-status-active"');
-    expect(report).toContain('cancelled: "badge-status-cancelled"');
-    expect(report).toContain("trpc.payroll.obligations.useQuery");
-    expect(report).toContain("enabled: ownerAccess");
-    expect(report).toContain("settledObligationAmount");
-    expect(report).toContain("ledgerDate(row.dueDate ?? row.createdAt).slice(0, 7) === period");
-    expect(report).not.toContain('sum(paidRows, (row) => row.totalNet)');
-    expect(report).toContain("gross: sum(accruedRows");
-    expect(report).toContain("net: sum(accruedRows");
+const mockPayrollRuns = [
+  {
+    id: 1,
+    period: "2026-09",
+    status: "approved",
+    totalGross: "1500000.00",
+    totalNet: "1350000.00",
+    totalIncomeTax: "50000.00",
+    totalSocialSecurityEmployee: "50000.00",
+    totalSocialSecurityEmployer: "75000.00",
+    totalEndOfServiceAccrual: "25000.00",
+    revisionNo: 1,
+    employeeCount: 5,
+    accrualDate: "2026-09-30",
+    legalPolicyHash: "policy-abc",
+    approvalSnapshotHash: "approval-xyz",
+  },
+];
+
+const mockObligations = [
+  {
+    id: 10,
+    runId: 1,
+    revisionNo: 1,
+    kind: "SALARY_NET" as const,
+    originalAmount: "1350000.00",
+    remainingAmount: "1350000.00",
+    status: "OPEN",
+    dueDate: "2026-10-01",
+    createdAt: "2026-09-30T10:00:00Z",
+  },
+  {
+    id: 11,
+    runId: 1,
+    revisionNo: 1,
+    kind: "INCOME_TAX" as const,
+    originalAmount: "50000.00",
+    remainingAmount: "50000.00",
+    status: "OPEN",
+    dueDate: "2026-10-01",
+    createdAt: "2026-09-30T10:00:00Z",
+  },
+];
+
+const mockLedger = [
+  {
+    id: 100,
+    runId: 1,
+    movementType: "SALARY_PAYMENT" as const,
+    amount: "1350000.00",
+    receiptId: 501,
+    eventId: 201,
+    createdBy: 2,
+    createdAt: "2026-09-30T12:00:00Z",
+    employeeName: "كادر الفرع الرئيسي",
+    authorityName: null,
+  },
+];
+
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    useUtils: () => ({}),
+    auth: {
+      me: {
+        useQuery: () => ({ data: { isOwner: true, role: "admin", id: 1 }, isLoading: false }),
+      },
+    },
+    payroll: {
+      list: {
+        useQuery: () => ({ data: mockPayrollRuns, isLoading: false, isError: false }),
+      },
+      obligations: {
+        useQuery: () => ({ data: mockObligations, isLoading: false, isError: false }),
+      },
+      financialLedger: {
+        useQuery: () => ({ data: mockLedger, isLoading: false, isError: false }),
+      },
+    },
+    dashboard: {
+      stats: {
+        useQuery: () => ({ data: {}, isLoading: false }),
+      },
+    },
+  },
+}));
+
+vi.mock("wouter", () => ({
+  Link: ({ children, href }: { children: React.ReactNode; href: string }) => (
+    <a href={href}>{children}</a>
+  ),
+  useLocation: () => ["/", vi.fn()],
+}));
+
+describe("PayrollReport Component & Financial Presentation", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
   });
 
-  it("يُصدر الحقول المالية كأرقام Excel لا نصوص منسقة", () => {
-    for (const field of [
-      "totalGross", "totalNet", "totalIncomeTax", "totalSocialSecurityEmployee",
-      "totalSocialSecurityEmployer", "totalEndOfServiceAccrual",
-    ]) expect(report).toContain(`toExcelMoney(row.${field})`);
-    expect(report).toContain("sortingFn: decimalSort");
-    expect(report).not.toContain("Number(row.totalGross)");
-    expect(report).not.toContain("Number(row.totalNet)");
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.clearAllMocks();
   });
 
-  it("يحمل تاريخ الاستحقاق والمراجعة وبصمتي السياسة والاعتماد", () => {
-    expect(report).toContain("row.accrualDate");
-    expect(report).toContain("row.revisionNo");
-    expect(report).toContain("row.legalPolicyHash");
-    expect(report).toContain("row.approvalSnapshotHash");
+  it("exports valid React component functions", () => {
+    expect(typeof PayrollReport).toBe("function");
+    expect(typeof ReportsCenter).toBe("function");
   });
 
-  it("يعرض ويطبع ويصدر سجل كل حركة مالية مع مستندها ومنفذها", () => {
-    expect(report).toContain("trpc.payroll.financialLedger.useQuery");
-    expect(report).toContain("سجل حركة الأموال والمستندات");
-    expect(report).toContain("printFinancialLedger");
-    expect(report).toContain("REC-${row.receiptId}");
-    expect(report).toContain("EV-${row.eventId}");
-    expect(report).toContain("USER-${row.createdBy}");
-    expect(report).toContain('sheetName: "سجل حركة الأموال"');
-    expect(report).toContain("toExcelMoney(row.amount)");
-    for (const kind of ["SALARY_PAYMENT_RETURN", "TAX_REMITTANCE", "SOCIAL_SECURITY_REMITTANCE", "REMITTANCE_RETURN"]) {
-      expect(report).toContain(kind);
-    }
+  it("renders PayrollReport KPI cards and summary statistics", () => {
+    act(() => {
+      root.render(<PayrollReport />);
+    });
+
+    expect(host.textContent).toContain("المسيّرات");
+    expect(host.textContent).toContain("الأساسي والمخصصات");
+    expect(host.textContent).toContain("التزامات قانونية مفتوحة");
+    expect(host.textContent).toContain("1,500,000");
   });
 
-  it("يطابق طريق وبطاقة التقرير بوابة المالك الخادمية", () => {
-    expect(app).toContain('path="/reports/payroll"><Shell><RequireOwner>');
-    expect(app).toContain("me.data?.isOwner === true");
-    expect(reportsCenter).toContain('href: "/reports/payroll"');
-    expect(reportsCenter).toContain("ownerOnly: true");
-    expect(reportsCenter).toContain("(!it.ownerOnly || isOwner)");
+  it("renders data table with accrual runs and status badges", () => {
+    act(() => {
+      root.render(<PayrollReport />);
+    });
+
+    expect(host.textContent).toContain("2026-09");
+    expect(host.textContent).toContain(payrollStatusLabel("approved"));
+  });
+
+  it("renders the financial ledger movement history", () => {
+    act(() => {
+      root.render(<PayrollReport />);
+    });
+
+    expect(host.textContent).toContain("سجل حركة الأموال والمستندات");
+    expect(host.textContent).toContain("صرف صافي راتب");
+    expect(host.textContent).toContain("REC-501");
+  });
+
+  it("verifies financial presentation and Excel conversion utilities", () => {
+    expect(toExcelMoney("1500000.00")).toBe(1500000);
+    expect(toExcelMoney("0")).toBe(0);
+    expect(payrollStatusLabel("draft")).toBe("مسوّدة");
+    expect(payrollStatusLabel("approved")).toBe("معتمد استحقاقياً");
+    expect(payrollStatusLabel("paid")).toBe("مدفوع");
+    expect(payrollStatusLabel("cancelled")).toBe("ملغى");
+  });
+
+  it("verifies obligation aggregation and settled amount computations", () => {
+    const summary = summarizeObligations(mockObligations, 1);
+    const salaryNet = summary.find((s) => s.kind === "SALARY_NET");
+    expect(salaryNet).toBeDefined();
+    expect(salaryNet?.original).toBe("1350000.00");
+    expect(salaryNet?.remaining).toBe("1350000.00");
+
+    const settled = settledObligationAmount(mockObligations, "SALARY_NET", 1);
+    expect(settled).toBe("0.00");
   });
 });

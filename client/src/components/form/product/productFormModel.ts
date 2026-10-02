@@ -61,6 +61,8 @@ export type ProductFormModel = {
   isActive: boolean;
   showInReception: boolean;
   showInPrintPos: boolean;
+  showInQuotations: boolean;
+  showInAdvancedSales: boolean;
   consignment: ConsignmentValue;
   units: ClientUnit[];
   /** التسلسلُ التالي لمعرّف وحدةٍ محلّية. */
@@ -91,6 +93,8 @@ export function emptyProductFormModel(): ProductFormModel {
     isActive: true,
     showInReception: false,
     showInPrintPos: false,
+    showInQuotations: false,
+    showInAdvancedSales: false,
     consignment: { isConsignment: false, consignorId: null },
     units: [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, retail: "", wholesale: "", government: "" }],
     nextUnitId: 2,
@@ -162,6 +166,8 @@ export function productFormModelFromDocument(d: ProductEditDocument): ProductFor
     isActive: d.isActive,
     showInReception: d.showInReception,
     showInPrintPos: d.showInPrintPos,
+    showInQuotations: d.showInQuotations,
+    showInAdvancedSales: d.showInAdvancedSales,
     consignment: { isConsignment: d.isConsignment, consignorId: d.consignorId, consignorName: d.consignorName },
     units,
     nextUnitId: units.length + 1,
@@ -291,6 +297,8 @@ export function buildCreateProductPayload(m: ProductFormModel, branches: Readonl
     allowBackorder: m.isService || m.consignment.isConsignment ? false : m.allowBackorder,
     showInReception: m.showInReception,
     showInPrintPos: m.showInPrintPos,
+    showInQuotations: m.showInQuotations,
+    showInAdvancedSales: m.showInAdvancedSales,
     allowAutoCartRecommendations: m.allowAutoCartRecommendations,
     isActive: m.isActive,
     isConsignment: m.isService ? false : m.consignment.isConsignment,
@@ -352,6 +360,8 @@ export function buildUpdateProductPayload(m: ProductFormModel, productId: number
     isActive: m.isActive,
     showInReception: m.showInReception,
     showInPrintPos: m.showInPrintPos,
+    showInQuotations: m.showInQuotations,
+    showInAdvancedSales: m.showInAdvancedSales,
     isConsignment: m.isService ? false : m.consignment.isConsignment,
     consignorId: m.isService || !m.consignment.isConsignment ? null : m.consignment.consignorId,
     unitTemplate: m.units.map((u) => ({

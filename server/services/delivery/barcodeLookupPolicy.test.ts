@@ -24,4 +24,23 @@ describe("resolveUniqueDeliveryBarcodeTarget", () => {
       { kind: "INVOICE", id: 77, matchRank: 100 },
     ])).toThrow(/يطابق أكثر من سجل/);
   });
+
+  it("يجهّز كود التتبع مع نواته بعد إسقاط الأصفار البادئة (0, 00, 000)", () => {
+    expect(prepareDeliveryBarcodeLookup("0404221")).toMatchObject({
+      trackingCode: "0404221",
+      strippedTrackingCode: "404221",
+      namespace: "NUMERIC",
+    });
+    expect(prepareDeliveryBarcodeLookup("00404221")).toMatchObject({
+      trackingCode: "00404221",
+      strippedTrackingCode: "404221",
+      namespace: "NUMERIC",
+    });
+    expect(prepareDeliveryBarcodeLookup("404221")).toMatchObject({
+      trackingCode: "404221",
+      strippedTrackingCode: "404221",
+      namespace: "NUMERIC",
+    });
+  });
 });
+

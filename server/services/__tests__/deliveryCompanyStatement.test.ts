@@ -172,7 +172,7 @@ describe("كشف شركة التوصيل — الدليل البديل عن بو
 
     const cn = (await db().select().from(s.deliveryConsignments)
       .where(eq(s.deliveryConsignments.id, a.consignmentId)))[0];
-    expect(cn.parcelStatus).toBe("ASSIGNED");
+    expect(cn.parcelStatus).toBe("OUT_FOR_DELIVERY");
     expect(cn.courierDeliveredAt).toBeNull();
     expect(cn.collectedAmount).toBe("0.00");
     expect(cn.moneyStatus).toBe("UNSETTLED");

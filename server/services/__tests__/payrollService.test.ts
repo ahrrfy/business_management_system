@@ -11,7 +11,8 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { baghdadToday } from "../businessDay";
 import { createEmployee } from "../employeeService";
-import { approveRun, generatePayroll, getRun, payRun, returnSalaryPayment } from "../payrollService";
+import { approveRun, cancelRun, generatePayroll, getRun, payRun, returnSalaryPayment } from "../payrollService";
+import { appRouter } from "../../routers";
 
 const ACTOR = { userId: 1, branchId: 1 };
 // طلب الدفع يُنفّذه مالك نشط مختلف عن المُولِّد.
@@ -30,6 +31,8 @@ const TABLES = [
   "auditLogs",
   "branches",
   "users",
+  "shifts",
+  "employeeSpotBonuses",
 ];
 
 function db() {
@@ -341,3 +344,200 @@ describe("payrollService — فصل المهام (SOD-01/02)", () => {
     expect(Number(paid!.paidBy)).toBe(2);
   });
 });
+
+describe("payrollRouter: GAP-24 myPayslip self-service", () => {
+  it("allows logged in user to fetch their own payslip", async () => {
+    const emp = await createEmployee({
+      firstName: "أحمد",
+      lastName: "الزبيدي",
+      payType: "monthly",
+      salary: "800000",
+      allowances: "100000",
+    });
+    await db().update(s.employees).set({ userId: 3 }).where(eq(s.employees.id, emp!.id));
+    const run = await generatePayroll("2026-06", ACTOR);
+
+    const caller = appRouter.createCaller({
+      user: { id: 3, role: "cashier" } as any,
+      req: {} as any,
+      res: {} as any,
+    });
+
+    const res = await caller.payroll.myPayslip({ runId: run!.id });
+    expect(res.employee.firstName).toBe("أحمد");
+    expect(res.item.runId).toBe(run!.id);
+    expect(Number(res.item.net)).toBe(900000);
+  });
+});
+
+describe("payrollService: GAP-04 Drawer vs Treasury settlement", () => {
+  it("pays payroll run using drawer cash when shift is OPEN", async () => {
+    const emp = await createEmployee({
+      firstName: "حيدر",
+      lastName: "اللامي",
+      payType: "monthly",
+      salary: "600000",
+      allowances: "0",
+    });
+    await db().update(s.employees).set({ branchId: 1 }).where(eq(s.employees.id, emp!.id));
+
+    await db().insert(s.shifts).values({
+      id: 501,
+      branchId: 1,
+      userId: 2,
+      status: "OPEN",
+      startedAt: new Date(),
+    }).onDuplicateKeyUpdate({ set: { status: "OPEN" } });
+
+    await db().insert(s.receipts).values({
+      id: 5011,
+      branchId: 1,
+      shiftId: 501,
+      cashBucket: "DRAWER",
+      direction: "IN",
+      amount: "2000000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      approvedBy: 2,
+      approvedAt: new Date(),
+      createdBy: 2,
+    }).onDuplicateKeyUpdate({ set: { amount: "2000000.00" } });
+
+    const run = await generatePayroll("2026-07", ACTOR);
+    await approveRun(run!.id, APPROVER);
+
+    const paid = await payRun(run!.id, APPROVER, {
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      shiftId: 501,
+    });
+    expect(paid!.status).toBe("paid");
+
+    const [receipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(and(eq(s.receipts.shiftId, 501), eq(s.receipts.direction, "OUT")));
+    expect(receipt).toBeDefined();
+    expect(receipt.cashBucket).toBe("DRAWER");
+    expect(receipt.shiftId).toBe(501);
+
+    const [entry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), eq(s.accountingEntries.receiptId, receipt.id)));
+    expect(entry).toBeDefined();
+    expect(Number(entry.amount)).toBe(600000);
+  });
+
+  it("rejects drawer payout when shiftId is missing", async () => {
+    const emp = await createEmployee({
+      firstName: "كرار",
+      lastName: "الساعدي",
+      payType: "monthly",
+      salary: "400000",
+      allowances: "0",
+    });
+    await db().update(s.employees).set({ branchId: 1 }).where(eq(s.employees.id, emp!.id));
+    const run = await generatePayroll("2026-08", ACTOR);
+    await approveRun(run!.id, APPROVER);
+
+    await expect(
+      payRun(run!.id, APPROVER, {
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("rejects drawer payout when shift is CLOSED", async () => {
+    const emp = await createEmployee({
+      firstName: "ياسر",
+      lastName: "الشمري",
+      payType: "monthly",
+      salary: "400000",
+      allowances: "0",
+    });
+    await db().update(s.employees).set({ branchId: 1 }).where(eq(s.employees.id, emp!.id));
+
+    await db().insert(s.shifts).values({
+      id: 502,
+      branchId: 1,
+      userId: 2,
+      status: "CLOSED",
+      startedAt: new Date(),
+      closedAt: new Date(),
+    }).onDuplicateKeyUpdate({ set: { status: "CLOSED" } });
+
+    const run = await generatePayroll("2026-09", ACTOR);
+    await approveRun(run!.id, APPROVER);
+
+    await expect(
+      payRun(run!.id, APPROVER, {
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        shiftId: 502,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+});
+
+describe("payrollService: GAP-03 Spot bonuses inclusion in payroll run", () => {
+  it("includes approved spot bonus with PAYROLL_ADDITION into payroll run gross pay and marks PAID on settlement", async () => {
+    const emp = await createEmployee({
+      firstName: "حسين",
+      lastName: "المالكي",
+      payType: "monthly",
+      salary: "1000000",
+      allowances: "0",
+    });
+    await db().update(s.employees).set({ branchId: 1 }).where(eq(s.employees.id, emp!.id));
+
+    const [ins] = await db().insert(s.employeeSpotBonuses).values({
+      employeeId: emp!.id,
+      branchId: 1,
+      amount: "200000.00",
+      reason: "مكافأة تميز فني",
+      disbursementType: "PAYROLL_ADDITION",
+      status: "APPROVED",
+      createdById: 2,
+      approvedById: 1,
+      approvedAt: new Date(),
+    });
+    const bonusId = Number(ins.insertId);
+
+    const run = await generatePayroll("2026-08", ACTOR);
+    expect(run).toBeDefined();
+
+    const [bonusInDb] = await db().select().from(s.employeeSpotBonuses).where(eq(s.employeeSpotBonuses.id, bonusId));
+    expect(bonusInDb.payrollRunId).toBe(run!.id);
+
+    const [item] = await db().select().from(s.payrollItems).where(eq(s.payrollItems.employeeId, emp!.id));
+    expect(Number(item.gross)).toBe(1200000);
+    expect(Number(item.net)).toBe(1200000);
+    expect(item.note).toContain("مكافأة فورية");
+
+    await approveRun(run!.id, APPROVER);
+
+    await db().insert(s.receipts).values({
+      id: 5031,
+      branchId: 1,
+      cashBucket: "TREASURY",
+      direction: "IN",
+      amount: "5000000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      approvedBy: 2,
+      approvedAt: new Date(),
+      createdBy: 2,
+    }).onDuplicateKeyUpdate({ set: { amount: "5000000.00" } });
+
+    await payRun(run!.id, APPROVER, { paymentMethod: "CASH", cashBucket: "TREASURY" });
+
+    const [settledBonus] = await db().select().from(s.employeeSpotBonuses).where(eq(s.employeeSpotBonuses.id, bonusId));
+    expect(settledBonus.status).toBe("PAID");
+    expect(settledBonus.paidAt).toBeDefined();
+  });
+});
+

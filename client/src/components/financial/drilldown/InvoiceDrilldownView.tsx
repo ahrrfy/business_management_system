@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { fmt, D } from "@/lib/money";
+import { fmt, D, formatQuantity } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
 import { sourceTypeLabel } from "@/lib/labels";
@@ -92,7 +92,7 @@ export function InvoiceDrilldownView({ invoiceId }: { invoiceId: number }) {
                 <div className="flex-1 min-w-0">
                   <p className="font-medium truncate">{it.productName ?? "بند خدمة / منتج"}</p>
                   <p className="text-[11px] text-muted-foreground">
-                    الكمية: <span className="font-mono">{it.quantity}</span> ×{" "}
+                    الكمية: <span className="font-mono">{formatQuantity(it.quantity)}</span> ×{" "}
                     <span className="font-mono" dir="ltr">{fmt(it.unitPrice)}</span> د.ع
                   </p>
                 </div>

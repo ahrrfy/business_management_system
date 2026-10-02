@@ -15,6 +15,7 @@ import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { notify } from "@/lib/notify";
 import { fmtInt } from "@/lib/money";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 
 const PAGE = 250;
 
@@ -25,12 +26,12 @@ const remainingColumns: ColumnDef<RemainingRow, unknown>[] = [
   {
     id: "product",
     header: "المنتج",
-    accessorFn: (r) => `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+    accessorFn: (r) => variantDisplayName(r),
     meta: { width: "wide" },
     cell: ({ row }) => (
       <>
         <p className="font-bold">{row.original.productName}</p>
-        {row.original.variantName && <p className="text-xs text-muted-foreground">{row.original.variantName}</p>}
+        {variantDescriptor(row.original) && <p className="text-xs text-muted-foreground">{variantDescriptor(row.original)}</p>}
       </>
     ),
   },
@@ -191,7 +192,7 @@ export default function StocktakeRemaining() {
       ],
       rows: printableItems.map((r) => ({
         check: "□",
-        product: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+        product: variantDisplayName(r),
         sku: r.sku,
         barcode: r.barcode ?? "—",
         unit: r.baseUnit ?? "—",

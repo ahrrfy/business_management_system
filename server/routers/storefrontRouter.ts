@@ -53,12 +53,46 @@ import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOr
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
 import { lookupShelfPrice } from "../services/shelfPriceService";
+import { recordShelfLookupEvent } from "../services/shelfAnalyticsService";
 import { barcodeString } from "../lib/schemas";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
   token: z.string().trim().min(12).max(32),
 });
+
+const onlineOrderCustomizationInput = z.object({
+  templateId: z.number().int().positive(),
+  // الحد الأعلى نفسه الذي تسمح به إدارة القالب؛ الحد الأدق لكل حقل يُفرض بعد تحميل القالب.
+  values: z.record(z.string().trim().min(1).max(80), z.string().max(10_000))
+    .refine((values) => Object.keys(values).length <= 50, "حقول التخصيص أكثر من الحد المسموح"),
+});
+
+const STOREFRONT_CUSTOMIZATION_PAYLOAD_MAX_BYTES = 512 * 1024;
+
+function enforceStorefrontCustomizationPayloadSize(
+  lines: Array<{ customization?: z.infer<typeof onlineOrderCustomizationInput> | null }>,
+  ctx: z.RefinementCtx,
+): void {
+  const customizationPayload = lines.map((line) => line.customization ?? null);
+  if (Buffer.byteLength(JSON.stringify(customizationPayload), "utf8") > STOREFRONT_CUSTOMIZATION_PAYLOAD_MAX_BYTES) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "تفاصيل التخصيص في الطلب أكبر من الحد المسموح",
+    });
+  }
+}
+
+const onlineOrderLineInput = z.object({
+  productUnitId: z.number().int().positive(),
+  quantity: z.number().int().positive().max(999),
+  customization: onlineOrderCustomizationInput.nullish(),
+});
+
+export const onlineOrderLinesInput = z.array(onlineOrderLineInput)
+  .min(1)
+  .max(100)
+  .superRefine(enforceStorefrontCustomizationPayloadSize);
 
 /**
  * بوابة QR العامة: لا تعتمد على جلسة مستخدم، بل على توقيع HMAC فريد للملصق.
@@ -173,6 +207,8 @@ export const storefrontRouter = router({
         cursor: z.number().int().positive().nullish(),
         // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
         availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
+        // بذرة عشوائية لتنويع ظهور المنتجات عند كل دخول أو تحديث للصفحة
+        seed: z.string().max(64).nullish(),
       })
     )
     .query(({ input }) =>
@@ -183,6 +219,7 @@ export const storefrontRouter = router({
         limit: input.limit,
         cursor: input.cursor ?? null,
         availability: input.availability,
+        seed: input.seed,
       })
     ),
 
@@ -248,13 +285,40 @@ export const storefrontRouter = router({
   /**
    * استعلام سعر الرف بالباركود (QR Shelf Price Lookup):
    * وصول عام محمي بالـ Rate Limiting، لا يكشف تكلفة أو كميات مخزون أو أسعار جملة.
+   * يسجل كل استعلام آلياً لحصر أعداد المستفيدين وتحليلات المعرض.
    */
   shelfLookup: storefrontPublicReadProcedure
     .input(z.object({
       barcode: barcodeString,
       branchId: z.number().int().positive().optional(),
+      visitorId: z.string().trim().max(64).optional(),
+      deviceType: z.enum(["ios", "android", "desktop", "unknown"]).optional(),
     }))
-    .query(({ input }) => lookupShelfPrice(input.barcode, input.branchId)),
+    .query(async ({ input, ctx }) => {
+      const result = await lookupShelfPrice(input.barcode, input.branchId);
+
+      const ua = String(ctx.req.headers["user-agent"] ?? "");
+      let detectedDevice = input.deviceType;
+      if (!detectedDevice) {
+        if (/iphone|ipad|ipod/i.test(ua)) detectedDevice = "ios";
+        else if (/android/i.test(ua)) detectedDevice = "android";
+        else detectedDevice = "desktop";
+      }
+
+      recordShelfLookupEvent({
+        visitorId: input.visitorId || (ctx.req.ip ? `vis_${ctx.req.ip.replace(/[^a-zA-Z0-9]/g, "").slice(0, 16)}` : "vis_anon"),
+        barcode: input.barcode,
+        branchId: input.branchId,
+        productId: result.found ? result.productId : null,
+        productName: result.found ? result.productName : null,
+        found: result.found,
+        deviceType: detectedDevice,
+        ip: ctx.req.ip,
+        userAgent: ua,
+      }).catch(() => {});
+
+      return result;
+    }),
 
   /** توصيات السلة التي ضبطها المدير؛ لا تعيد التكلفة أو كمية المخزون. */
   cartRecommendations: storefrontPublicReadProcedure
@@ -265,26 +329,20 @@ export const storefrontRouter = router({
   quoteOrder: storefrontPublicReadProcedure
     .input(z.object({
       governorate: z.string().trim().min(1).max(40),
-      lines: z.array(z.object({
-        productUnitId: z.number().int().positive(),
-        quantity: z.number().int().positive().max(999),
-      })).min(1).max(100),
+      lines: onlineOrderLinesInput,
     }))
     .query(({ input }) => quoteOnlineOrder(input)),
 
   /**
-   * تسعير قسيمة عبر POST: رمز القسيمة/جلسة العميل يبقيان في body ولا يظهران في nginx URL.
+   * تسعير آمن عبر POST: التخصيص ورمز القسيمة/جلسة العميل تبقى في body ولا تظهر في nginx URL.
    * الجلسة اختيارية للقسيمة العامة، وإلزامية عملياً للشخصية لأن الخدمة تفشل مغلقة عند غياب المالك.
    */
   quoteOrderPrivate: storefrontPublicWriteProcedure
     .input(z.object({
-      couponCode: z.string().trim().min(1).max(64),
+      couponCode: z.string().trim().min(1).max(64).optional(),
       customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
       governorate: z.string().trim().min(1).max(40),
-      lines: z.array(z.object({
-        productUnitId: z.number().int().positive(),
-        quantity: z.number().int().positive().max(999),
-      })).min(1).max(100),
+      lines: onlineOrderLinesInput,
     }))
     .mutation(async ({ input }) => {
       const { customerSessionToken, ...quoteInput } = input;
@@ -336,13 +394,12 @@ export const storefrontRouter = router({
         longitude: z.number().min(-180).max(180).nullish(),
         notes: z.string().max(500).optional(),
         lines: z
-          .array(z.object({
-            productUnitId: z.number().int().positive(),
-            quantity: z.number().int().positive().max(999),
+          .array(onlineOrderLineInput.extend({
             expectedUnitPrice: z.string().regex(/^\d{1,15}(?:\.\d{1,2})?$/),
           }))
           .min(1)
-          .max(100),
+          .max(100)
+          .superRefine(enforceStorefrontCustomizationPayloadSize),
         expectedGrandTotal: z.string().regex(/^\d{1,18}(?:\.\d{1,2})?$/),
         clientRequestId: z.string().trim().min(8).max(80),
         turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH),

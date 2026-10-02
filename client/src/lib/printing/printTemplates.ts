@@ -8,6 +8,8 @@
  */
 import { workOrderStatusLabel, workOrderStatusPrintColor } from "@shared/workOrderStatus";
 import { BRAND as B, CAIRO_FONT, CO, RECEIPT_PHONES, STOREFRONT_URL, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
+import { fmtQty } from '@shared/quantityFormat';
+import { variantDisplayName } from "@shared/variantDisplay";
 import { fmtDate, fmtDateTime } from '../date';
 import {
   wrapA4Doc, wrapReceiptDoc,
@@ -31,6 +33,7 @@ export type {
 } from './printTemplatesV2';
 import { qrCodeSvg, qrSvgSync } from './qr';
 import { code128Svg } from './barcode';
+import { resolveQrUrl } from './render';
 import { docBarcode } from '@shared/documentNumber';
 import { buildDigitalBlocks, type DigitalReceiptDetail } from './digitalReceiptLines';
 import { type LabelRenderItem, type LabelRenderOpts } from './labelRaster';
@@ -107,6 +110,10 @@ export interface InvoicePrintData {
   taxRate?: number | null;
   total: string | number;
   paidAmount?: string | number | null;
+  /** رابط QR جاهز للتحقق الرقمي (اختياري، مثلاً https://.../verify?ref=...). */
+  qrUrl?: string | null;
+  /** حمولة QR المشفرة من الخادم أو معرّف المستند (اختياري) — تُحوَّل تلقائياً إلى رابط عبر resolveQrUrl. */
+  qrPayload?: string | null;
 }
 
 export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
@@ -114,13 +121,12 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
   // companyTaxId/notes) لم تعُد تظهر بالترويسة الجديدة (الأرقام القانونية تُقرأ من إعدادات الشركة).
   const date = fmtDate(d.invoiceDate ?? new Date());
 
-  const qrPayload = [
-    CO.sub,
-    `رقم الفاتورة: ${d.invoiceNumber}`,
-    `التاريخ: ${date}`,
-    `الإجمالي: ${fmtC(d.total)}`,
-  ].join('\n');
-  const qrSvg = await qrCodeSvg(qrPayload, { size: 88, margin: 1 }).catch(() => '');
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const qrTarget = d.qrUrl?.trim()
+    || (d.qrPayload?.trim()
+      ? resolveQrUrl(d.qrPayload.trim())
+      : (origin ? `${origin}/verify?ref=${encodeURIComponent(d.invoiceNumber)}` : `/verify?ref=${encodeURIComponent(d.invoiceNumber)}`));
+  const qrSvg = await qrCodeSvg(qrTarget, { size: 88, margin: 1 }).catch(() => '');
 
   const remainingNum = Math.max(Number(d.total) - Number(d.paidAmount ?? 0), 0);
   const statusLabel = remainingNum <= 0.001
@@ -183,6 +189,9 @@ export interface QuotationPrintData {
   items: {
     productName: string;
     variantName?: string | null;
+    color?: string | null;
+    size?: string | null;
+    variantKind?: string | null;
     description?: string | null;
     unitName?: string | null;
     quantity: string | number;
@@ -195,18 +204,19 @@ export interface QuotationPrintData {
   taxAmount?: string | number | null;
   taxRate?: number | null;
   total: string | number;
+  qrUrl?: string | null;
+  qrPayload?: string | null;
 }
 
 export async function printQuotation(d: QuotationPrintData): Promise<void> {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printQuotationV2 بالتصميم المرجعي (٦ أعمدة منتج/وحدة/كمية/سعر/ضريبة/إجمالي،
   // شروط في صندوق أخضر داخلي، توقيعا العميل والممثّل التجاري). description القديم يُلحَق باسم المنتج.
-  const qrPayload = [
-    CO.sub,
-    `عرض سعر: ${d.quoteNumber}`,
-    ...(d.quoteDate ? [`التاريخ: ${d.quoteDate}`] : []),
-    `الإجمالي: ${fmtC(d.total)}`,
-  ].join('\n');
-  const qrSvg = await qrCodeSvg(qrPayload, { size: 88, margin: 1 }).catch(() => '');
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const qrTarget = d.qrUrl?.trim()
+    || (d.qrPayload?.trim()
+      ? resolveQrUrl(d.qrPayload.trim())
+      : (origin ? `${origin}/verify?ref=${encodeURIComponent(d.quoteNumber)}` : `/verify?ref=${encodeURIComponent(d.quoteNumber)}`));
+  const qrSvg = await qrCodeSvg(qrTarget, { size: 88, margin: 1 }).catch(() => '');
   printQuotationV2({
     qrSvg: qrSvg || null,
     quoteNumber: d.quoteNumber,
@@ -218,7 +228,16 @@ export async function printQuotation(d: QuotationPrintData): Promise<void> {
     items: d.items.map((it) => ({
       // الوصف يُلحَق باسم المنتج (لا يستولي على عمود الوحدة). عمود «الوحدة» يبقى للوحدة الفعلية
       // (قطعة/كرتون/…) — كسر الفصل بين العمودين كان يُظهر نصاً طويلاً محلّ الوحدة.
-      productName: [it.productName, it.variantName, it.description].filter(Boolean).join(' — '),
+      productName: [
+        variantDisplayName({
+          productName: it.productName,
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+        }),
+        it.description,
+      ].filter(Boolean).join(' — '),
       unitName: it.unitName ?? null,
       quantity: it.quantity,
       unitPrice: it.unitPrice,
@@ -271,7 +290,7 @@ export function printPO(d: POPrintData): void {
   const rows = d.items.map(it => ({
     name: it.productName,
     unit: it.unitName ?? '',
-    qty: fmt(it.quantity),
+    qty: fmtQty(it.quantity),
     price: fmt(it.unitPrice),
     amount: fmt(it.total),
   }));
@@ -576,19 +595,20 @@ export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
 
 export interface ARAgingPrintData {
   date: string;
-  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; }[];
-  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; };
+  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; }[];
+  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; };
 }
 
 export function printARAging(d: ARAgingPrintData): void {
   const cols = [
     { key: 'name', label: 'العميل' },
-    { key: 'd0_30', label: '0–30 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd31_60', label: '31–60 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd61_90', label: '61–90 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd91p', label: 'أكثر من 90', width: '18mm', align: 'left' as const },
-    { key: 'unpaid', label: 'إجمالي غير المسدّد', width: '22mm', align: 'left' as const, bold: true },
-    { key: 'balance', label: 'الرصيد الحالي', width: '20mm', align: 'left' as const },
+    { key: 'd0_30', label: '0–30 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd31_60', label: '31–60 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd61_90', label: '61–90 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd91p', label: 'أكثر من 90', width: '17mm', align: 'left' as const },
+    { key: 'unpaid', label: 'غير المسدّد', width: '20mm', align: 'left' as const, bold: true },
+    { key: 'unbucketed', label: 'غير مفوتر/افتتاحي', width: '22mm', align: 'left' as const },
+    { key: 'balance', label: 'الرصيد الحالي', width: '20mm', align: 'left' as const, bold: true },
   ];
   const rows = d.rows.map(r => ({
     name: r.name,
@@ -597,6 +617,7 @@ export function printARAging(d: ARAgingPrintData): void {
     d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
     d91p: r.d91p ? fmt(r.d91p) : '—',
     unpaid: fmt(r.unpaidTotal),
+    unbucketed: r.unbucketed != null ? (r.unbucketed !== 0 ? fmt(r.unbucketed) : '—') : (r.currentBalance - r.unpaidTotal !== 0 ? fmt(r.currentBalance - r.unpaidTotal) : '—'),
     balance: fmt(r.currentBalance),
   }));
 
@@ -608,14 +629,16 @@ export function printARAging(d: ARAgingPrintData): void {
     { label: '>90', val: t.d91p, color: '#DC2626' },
   ];
 
+  const unbucketedTotal = t.unbucketed ?? (t.currentBalance - t.unpaidTotal);
   const totalsRow = `<div style="display:flex;background:${B.green};color:#fff;border-radius:0 0 4px 4px;
     padding:2.5mm 3mm;font-size:10px;font-weight:700;margin-top:-4mm;margin-bottom:4mm;">
     <span style="flex:1;">الإجمالي</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d0_30)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d31_60)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d61_90)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d91p)}</span>
-    <span style="width:22mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d0_30)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d31_60)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d61_90)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d91p)}</span>
+    <span style="width:20mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:22mm;text-align:left;">${fmt(unbucketedTotal)}</span>
     <span style="width:20mm;text-align:left;">${fmt(t.currentBalance)}</span>
   </div>`;
 
@@ -636,19 +659,20 @@ export function printARAging(d: ARAgingPrintData): void {
 
 export interface APAgingPrintData {
   date: string;
-  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; }[];
-  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; currentBalance: number; };
+  rows: { name: string; d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; }[];
+  totals: { d0_30: number; d31_60: number; d61_90: number; d91p: number; unpaidTotal: number; unbucketed?: number; currentBalance: number; };
 }
 
 export function printAPAging(d: APAgingPrintData): void {
   const cols = [
     { key: 'name', label: 'المورد' },
-    { key: 'd0_30', label: '0–30 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd31_60', label: '31–60 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd61_90', label: '61–90 يوم', width: '18mm', align: 'left' as const },
-    { key: 'd91p', label: 'أكثر من 90', width: '18mm', align: 'left' as const },
-    { key: 'unpaid', label: 'إجمالي مستحق', width: '22mm', align: 'left' as const, bold: true },
-    { key: 'balance', label: 'الرصيد', width: '20mm', align: 'left' as const },
+    { key: 'd0_30', label: '0–30 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd31_60', label: '31–60 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd61_90', label: '61–90 يوم', width: '17mm', align: 'left' as const },
+    { key: 'd91p', label: 'أكثر من 90', width: '17mm', align: 'left' as const },
+    { key: 'unpaid', label: 'إجمالي مستحق', width: '20mm', align: 'left' as const, bold: true },
+    { key: 'unbucketed', label: 'غير مفوتر/افتتاحي', width: '22mm', align: 'left' as const },
+    { key: 'balance', label: 'الرصيد', width: '20mm', align: 'left' as const, bold: true },
   ];
   const rows = d.rows.map(r => ({
     name: r.name,
@@ -657,6 +681,7 @@ export function printAPAging(d: APAgingPrintData): void {
     d61_90: r.d61_90 ? fmt(r.d61_90) : '—',
     d91p: r.d91p ? fmt(r.d91p) : '—',
     unpaid: fmt(r.unpaidTotal),
+    unbucketed: r.unbucketed != null ? (r.unbucketed !== 0 ? fmt(r.unbucketed) : '—') : (r.currentBalance - r.unpaidTotal !== 0 ? fmt(r.currentBalance - r.unpaidTotal) : '—'),
     balance: fmt(r.currentBalance),
   }));
 
@@ -668,14 +693,16 @@ export function printAPAging(d: APAgingPrintData): void {
     { label: '>90', val: t.d91p, color: '#DC2626' },
   ];
 
+  const unbucketedTotal = t.unbucketed ?? (t.currentBalance - t.unpaidTotal);
   const totalsRow = `<div style="display:flex;background:#DC2626;color:#fff;border-radius:0 0 4px 4px;
     padding:2.5mm 3mm;font-size:10px;font-weight:700;margin-top:-4mm;margin-bottom:4mm;">
     <span style="flex:1;">الإجمالي</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d0_30)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d31_60)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d61_90)}</span>
-    <span style="width:18mm;text-align:left;">${fmt(t.d91p)}</span>
-    <span style="width:22mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d0_30)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d31_60)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d61_90)}</span>
+    <span style="width:17mm;text-align:left;">${fmt(t.d91p)}</span>
+    <span style="width:20mm;text-align:left;font-size:11px;">${fmt(t.unpaidTotal)}</span>
+    <span style="width:22mm;text-align:left;">${fmt(unbucketedTotal)}</span>
     <span style="width:20mm;text-align:left;">${fmt(t.currentBalance)}</span>
   </div>`;
 
@@ -934,7 +961,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
   const itemRows = d.items.map(it => `
     <tr>
       <td style="padding:1.5mm 1mm;font-weight:900;font-size:11.5px;color:#000;line-height:1.25;border:1px solid #000;">${esc(it.name)}</td>
-      <td style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;direction:ltr;">${it.quantity}</td>
+      <td style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;direction:ltr;">${fmtQty(it.quantity)}</td>
       <td style="text-align:left;padding:1.5mm 1mm;font-weight:800;font-size:11.5px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.price)}</td>
       <td style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:12px;color:#000;direction:ltr;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid #000;">${fmt(it.total)}</td>
     </tr>
@@ -967,8 +994,48 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
     const dl = d.delivery!;
     const fee = Number(dl.fee || 0);
     const shop = dl.feeCollection === "SHOP";
-    const pays = Number(d.total || 0) + (shop ? 0 : fee);
     const who = dl.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : shop ? "على المكتبة — مجاناً للزبون" : "يقبضها المندوب من الزبون";
+    const remainingMerchandise = Math.max(0, Number(d.total || 0) - Number(d.paid || 0));
+    const courierFee = dl.feeCollection === "COURIER" ? fee : 0;
+    const totalToCollect = remainingMerchandise + courierFee;
+
+    let customerDueRow = "";
+    if (totalToCollect === 0) {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">المطلوب من الزبون</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">0 د.ع (مدفوع بالكامل)</td>
+        </tr>`;
+    } else if (remainingMerchandise === 0 && courierFee > 0) {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون (أجرة التوصيل فقط)</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(courierFee)} د.ع</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="border:1px solid #000;padding:1mm 1.5mm;text-align:center;font-weight:800;font-size:10px;background:#f5f5f5;">
+            البضاعة مدفوعة مسبقاً بالكامل
+          </td>
+        </tr>`;
+    } else if (courierFee > 0) {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون شاملاً التوصيل</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(totalToCollect)} د.ع</td>
+        </tr>
+        <tr>
+          <td colspan="2" style="border:1px solid #000;padding:0.8mm 1.5mm;text-align:center;font-weight:700;font-size:9.5px;color:#333;">
+            (متبقي البضاعة: ${fmt(remainingMerchandise)} + أجرة التوصيل: ${fmt(courierFee)})
+          </td>
+        </tr>`;
+    } else {
+      customerDueRow = `
+        <tr style="background:#000;color:#fff;font-weight:900;">
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون (متبقي البضاعة)</td>
+          <td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(remainingMerchandise)} د.ع</td>
+        </tr>`;
+    }
+
     return `
     <table style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
       <thead><tr style="background:#000;color:#fff;"><th colspan="2" style="padding:1.2mm;font-weight:900;border:1px solid #000;">بيانات التوصيل</th></tr></thead>
@@ -976,7 +1043,7 @@ export function buildBrowserReceiptHtml(d: ReceiptBrowserData): string {
         <tr><td style="width:35%;font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">الجهة</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.partyName)}</td></tr>
         ${dl.address ? `<tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">العنوان</td><td style="font-weight:800;border:1px solid #000;padding:1mm 1.5mm;">${esc(dl.address)}</td></tr>` : ''}
         <tr><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">أجرة التوصيل</td><td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">${shop ? "مجاناً" : fmt(fee)} (${who})</td></tr>
-        ${shop ? '' : `<tr style="background:#000;color:#fff;font-weight:900;"><td style="border:1px solid #000;padding:1.2mm 1.5mm;">يدفع الزبون شاملاً التوصيل</td><td style="border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmt(pays)} د.ع</td></tr>`}
+        ${customerDueRow}
       </tbody>
     </table>`;
   })() : '';
@@ -1106,12 +1173,13 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     d.status        ? ['الحالة', statusLabel]              : null,
   ].filter(Boolean) as [string, string][];
 
-  const infoHtml = infoRows.map(([l, v]) =>
-    `<div style="display:flex;justify-content:space-between;font-size:10px;padding:0.7mm 0;border-bottom:1px dashed #ddd;">
-       <span style="font-weight:700;">${l}:</span>
-       <span style="text-align:left;">${v}</span>
-     </div>`
-  ).join('');
+  const infoTableRows = infoRows.map(([l, v]) => {
+    const isPhone = l.includes('الهاتف') || /^[0-9+\s-]+$/.test(v);
+    return `<tr>
+      <td style="width:36%;font-weight:900;padding:1mm 1.5mm;border:1px solid #000;font-size:10px;">${l}</td>
+      <td style="font-weight:800;padding:1mm 1.5mm;border:1px solid #000;font-size:10px;text-align:${isPhone ? 'left' : 'right'};direction:${isPhone ? 'ltr' : 'rtl'};unicode-bidi:isolate;">${v}</td>
+    </tr>`;
+  }).join('');
 
   const specsHtml = d.specs
     ? `<div style="font-size:9.5px;color:#333;margin:1.5mm 0;padding:1.5mm;background:#f5f5f5;border-radius:2px;white-space:pre-wrap;word-break:break-all;">${esc(d.specs)}</div>`
@@ -1130,6 +1198,12 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   ).join('');
 
   const body = `
+  <style>
+  table.receipt-grid{width:100%;border-collapse:collapse;border:1.5px solid #000;margin:3px 0;table-layout:fixed}
+  table.receipt-grid th{border:1px solid #000;font-size:11.5px;font-weight:900;padding:3px 2px;background:#000;color:#fff}
+  table.receipt-grid td{padding:3px 2px;font-size:11px;font-weight:800;vertical-align:top;border:1px solid #000}
+  </style>
+
   <div style="text-align:center;margin-bottom:3mm;">
     ${logo ? `<img src="${logo}" style="height:40px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ''}
     <div style="font-size:14px;font-weight:900;">مكتبة العربية</div>
@@ -1142,35 +1216,53 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     <span style="font-size:13px;font-weight:900;">طلب خدمة / المطبعة</span>
   </div>
 
-  <div style="margin:2mm 0;">${infoHtml}</div>
+  <table class="receipt-grid" style="width:100%;font-size:10.5px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <tbody>${infoTableRows}</tbody>
+  </table>
 
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
+  <!-- جدول بنود العمل المنظم: الخدمة / البند، الكمية، المبلغ -->
+  <table class="receipt-grid" style="width:100%;font-size:11px;border-collapse:collapse;color:#000;table-layout:fixed;border:1.5px solid #000;margin:2mm 0;">
+    <thead>
+      <tr style="background:#000;color:#fff;">
+        <th style="text-align:right;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:52%;">الخدمة / البند</th>
+        <th style="text-align:center;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:18%;">الكمية</th>
+        <th style="text-align:left;padding:1.5mm 1mm;font-weight:900;font-size:11.5px;border:1px solid #000;width:30%;">المبلغ</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding:1.5mm 1mm;font-weight:800;border:1px solid #000;text-align:right;vertical-align:top;">
+          <div style="font-weight:900;font-size:11.5px;">${esc(d.jobTitle || 'طلب خدمة')}</div>
+          ${specsHtml ? `<div style="font-size:9.5px;color:#333;margin-top:1mm;white-space:pre-wrap;word-break:break-all;">${esc(d.specs)}</div>` : ''}
+        </td>
+        <td style="padding:1.5mm 1mm;font-weight:800;border:1px solid #000;text-align:center;vertical-align:top;font-variant-numeric:tabular-nums;">
+          ${d.quantity != null && String(d.quantity).trim() ? esc(fmtQty(d.quantity)) : '1'}
+        </td>
+        <td style="padding:1.5mm 1mm;font-weight:900;border:1px solid #000;text-align:left;direction:ltr;vertical-align:top;font-variant-numeric:tabular-nums;white-space:nowrap;">
+          ${fmtC(d.total)}
+        </td>
+      </tr>
+    </tbody>
+  </table>
 
-  ${d.jobTitle ? `
-  <div style="font-size:10px;font-weight:700;margin-bottom:0.5mm;">نوع العمل:</div>
-  <div style="font-size:10px;margin-bottom:1mm;">${esc(d.jobTitle)}</div>` : ''}
-
-  ${d.quantity != null && String(d.quantity).trim() ? `
-  <div style="display:flex;justify-content:space-between;font-size:10px;padding:0.5mm 0;">
-    <span style="font-weight:700;">الكمية:</span><span>${esc(String(d.quantity))}</span>
-  </div>` : ''}
-
-  ${specsHtml}
-
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-
-  <div style="display:flex;justify-content:space-between;align-items:center;padding:2mm 0;border-top:1.5px solid #000;border-bottom:1.5px solid #000;margin:1mm 0;">
-    <span style="font-size:12px;font-weight:900;">الإجمالي:</span>
-    <span style="font-size:13px;font-weight:900;">${fmtC(d.total)}</span>
-  </div>
-
-  ${d.paidUpfront != null && Number(d.paidUpfront) > 0 ? `
-  <div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700;padding:0.5mm 0;">
-    <span>مدفوع مقدماً:</span><span>${fmtC(d.paidUpfront)}</span>
-  </div>
-  <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:900;padding:1mm 0;border-bottom:1.5px solid #000;margin-bottom:1mm;">
-    <span>المتبقّي عند الاستلام:</span><span>${fmtC(d.balanceDue ?? Math.max(0, Number(d.total) - Number(d.paidUpfront)))}</span>
-  </div>` : ''}
+  <!-- جدول الإجماليات والدفعات -->
+  <table class="receipt-grid" style="width:100%;font-size:11px;border-collapse:collapse;border:1.5px solid #000;margin:2mm 0;color:#000;">
+    <tbody>
+      <tr style="background:#000;color:#fff;font-weight:900;">
+        <td style="border:1px solid #000;padding:1.5mm;font-size:12px;font-weight:900;">الإجمالي</td>
+        <td style="border:1px solid #000;padding:1.5mm;direction:ltr;text-align:left;font-size:13px;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmtC(d.total)}</td>
+      </tr>
+      ${d.paidUpfront != null && Number(d.paidUpfront) > 0 ? `
+      <tr>
+        <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;">مدفوع مقدماً</td>
+        <td style="font-weight:900;border:1px solid #000;padding:1mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.paidUpfront)}</td>
+      </tr>
+      <tr style="border:2px solid #000;">
+        <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;">المتبقّي عند الاستلام</td>
+        <td style="font-weight:900;border:1px solid #000;padding:1.2mm 1.5mm;direction:ltr;text-align:left;font-variant-numeric:tabular-nums;">${fmtC(d.balanceDue ?? Math.max(0, Number(d.total) - Number(d.paidUpfront)))}</td>
+      </tr>` : ''}
+    </tbody>
+  </table>
 
   ${notesHtml}
 

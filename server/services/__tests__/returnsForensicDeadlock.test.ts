@@ -64,7 +64,11 @@ beforeEach(async () => {
   await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
   await d.insert(s.productPrices).values({ productUnitId: 1, priceTier: "RETAIL", price: "1000.00" });
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
-  await d.insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, openingBalance: "10000", status: "OPEN" });
+  await d.insert(s.shifts).values([
+    { id: 1, branchId: 1, userId: 1, openingBalance: "10000", status: "OPEN" },
+    { id: 4, branchId: 1, userId: 4, openingBalance: "10000", status: "OPEN" },
+    { id: 5, branchId: 1, userId: 5, openingBalance: "10000", status: "OPEN" },
+  ]);
 });
 
 /** البيع الذي يجريه المدير نفسه — `invoices.createdBy = 1`. */
@@ -139,7 +143,7 @@ describe("تدقيق جنائيّ: «المرتجع وهميّ ويبتلع ال
   it("الأدمن هو البائع: لا اعتماد ولا رفض من أحد — والسحبُ هو المخرج الذي يُحرّر الفاتورة", async () => {
     // المالك يبيع بحسابه (أدمن) — وهو الواقع في مكتبةٍ يديرها صاحبها.
     const created = await createSale({
-      branchId: 1, shiftId: 1, sourceType: "POS", customerId: 1,
+      branchId: 1, shiftId: 4, sourceType: "POS", customerId: 1,
       lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
       payment: { amount: "5000.00", method: "CASH" },
     }, OWNER_ADMIN);
@@ -195,7 +199,7 @@ describe("تدقيق جنائيّ: «المرتجع وهميّ ويبتلع ال
    */
   it("⭐ المالك ينفّذ المرتجع فوراً: المخزون يعود والقيد يُكتب والفاتورة تُقفَل مرتجعة", async () => {
     const created = await createSale({
-      branchId: 1, shiftId: 1, sourceType: "POS", customerId: 1,
+      branchId: 1, shiftId: 5, sourceType: "POS", customerId: 1,
       lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
       payment: { amount: "5000.00", method: "CASH" },
     }, OWNER);

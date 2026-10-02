@@ -120,6 +120,13 @@ describe("voucher owner-disbursement UI policy", () => {
       shiftLoading: false,
       isElevated: false,
     })).toEqual({ hardBlock: true, treasuryNotice: false });
+    expect(voucherCashUiPolicy({
+      direction: "IN",
+      paymentMethod: "CASH",
+      hasOpenShift: false,
+      shiftLoading: false,
+      isElevated: true,
+    })).toEqual({ hardBlock: true, treasuryNotice: false });
   });
 
   it("presents OUT creation as a request and keeps IN creation immediate", () => {

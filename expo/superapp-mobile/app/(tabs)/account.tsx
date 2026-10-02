@@ -113,7 +113,53 @@ export default function AccountScreen() {
   const accountRole = employee?.position || employee?.department || "حساب مؤسسي";
   const trustedDevice = connectionReady && transport?.session === "present" &&
     deviceProof?.kind === "available" && deviceProof.keyExists;
+  const isOwnerOrManager = access.mode === "ready" && access.today?.navigation.ownerCenter === true;
   const menuSections = [
+    ...(isOwnerOrManager
+      ? [
+          {
+            title: "إدارة المؤسسة والعمليات الشاملة",
+            items: [
+              {
+                icon: "wallet-outline" as const,
+                title: "الخزينة والسيولة والورديات",
+                detail: "متابعة النقدية والصناديق في الفروع",
+                action: () => router.push("/operations/treasury" as any),
+              },
+              {
+                icon: "receipt-outline" as const,
+                title: "سجل الفواتير والمبيعات",
+                detail: "فواتير المبيعات الحية والمدفوعات",
+                action: () => router.push("/operations/invoices" as any),
+              },
+              {
+                icon: "cube-outline" as const,
+                title: "جرد وبحث المخزون",
+                detail: "مطابقة الكميات وتنبيهات النواقص",
+                action: () => router.push("/operations/inventory" as any),
+              },
+              {
+                icon: "business-outline" as const,
+                title: "المشتريات وحسابات الموردين",
+                detail: "أوامر الشراء والذمم الدائنة للموردين",
+                action: () => router.push("/operations/purchases" as any),
+              },
+              {
+                icon: "people-outline" as const,
+                title: "دليل العملاء والذمم المدينة",
+                detail: "أرصدة العملاء والاتصال السريع",
+                action: () => router.push("/operations/customers" as any),
+              },
+              {
+                icon: "shield-checkmark-outline" as const,
+                title: "صندوق الاعتمادات والقرارات",
+                detail: "مراجعة واعتماد طلبات التشغيل بالبصمة",
+                action: () => router.push("/operations/approvals" as any),
+              },
+            ],
+          },
+        ]
+      : []),
     {
       title: "بيانات العمل",
       items: [

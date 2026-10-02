@@ -19,9 +19,11 @@ import { useCart } from "@/lib/cart-context";
 import {
   activeCustomizationFields,
   cartLineKey,
+  customizationAdjustedUnitPrices,
   CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE,
   DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH,
   productOnlineOrderingIssue,
+  pruneInactiveCustomizationValues,
   selectionDescription,
   validateProductQuoteSelection,
   validateProductSelection,
@@ -117,10 +119,17 @@ export default function ProductDetailScreen() {
       </ScreenContainer>
     );
 
+  const adjustedSelectedPrices = selectedUnit
+    ? customizationAdjustedUnitPrices(
+        product,
+        selectedUnit,
+        customizationValues,
+      )
+    : { price: product.price ?? null, salePrice: product.salePrice ?? null };
   const priceProduct = {
     ...product,
-    price: selectedUnit?.price ?? product.price,
-    salePrice: selectedUnit?.salePrice ?? product.salePrice,
+    price: adjustedSelectedPrices.price,
+    salePrice: adjustedSelectedPrices.salePrice,
   };
   const discount = productDiscountPercent(priceProduct);
   const onlineOrderingIssue = productOnlineOrderingIssue(product);
@@ -314,15 +323,15 @@ export default function ProductDetailScreen() {
           <View style={styles.priceRow}>
             <Text style={styles.price}>
               {formatIqd(
-                selectedUnit?.salePrice ??
-                  selectedUnit?.price ??
+                adjustedSelectedPrices.salePrice ??
+                  adjustedSelectedPrices.price ??
                   product.salePrice ??
                   product.price,
               )}
             </Text>
             {discount != null && (
               <Text style={styles.oldPrice}>
-                {formatIqd(selectedUnit?.price ?? product.price)}
+                {formatIqd(adjustedSelectedPrices.price ?? product.price)}
               </Text>
             )}
           </View>
@@ -347,63 +356,72 @@ export default function ProductDetailScreen() {
           </View>
         )}
         <View style={styles.card}>
-            <Text style={styles.sectionTitle}>
-              {product.hasAlternatives ? "اختر البديل" : "اختر اللون أو القياس"}
-            </Text>
-            <View style={styles.choices}>
-              {(product.variants ?? []).map((variant) => (
-                <TouchableOpacity
-                  accessibilityLabel={`${variant.label}${variant.inStock ? "" : "، نافد"}`}
-                  accessibilityRole="radio"
-                  accessibilityState={{
-                    checked: selectedVariantId === variant.variantId,
-                    disabled: !variant.inStock,
-                  }}
-                    disabled={!variant.inStock && !onlineOrderingIssue}
-                  key={variant.variantId}
-                  onPress={() => {
-                    setSelectedVariantId(variant.variantId);
-                    setSelectedUnitId(
-                      variant.units.find((unit) => unit.inStock)
-                        ?.productUnitId ?? null,
-                    );
-                    setSelectedImage(0);
-                    setSelectionErrors([]);
-                  }}
+          <Text style={styles.sectionTitle}>
+            {product.hasAlternatives ? "اختر البديل" : "اختر اللون أو القياس"}
+          </Text>
+          <View style={styles.choices}>
+            {(product.variants ?? []).map((variant) => (
+              <TouchableOpacity
+                accessibilityLabel={`${variant.label}${variant.inStock ? "" : "، نافد"}`}
+                accessibilityRole="radio"
+                accessibilityState={{
+                  checked: selectedVariantId === variant.variantId,
+                  disabled: !variant.inStock,
+                }}
+                disabled={!variant.inStock && !onlineOrderingIssue}
+                key={variant.variantId}
+                onPress={() => {
+                  setSelectedVariantId(variant.variantId);
+                  setSelectedUnitId(
+                    variant.units.find((unit) => unit.inStock)?.productUnitId ??
+                      null,
+                  );
+                  setSelectedImage(0);
+                  setSelectionErrors([]);
+                }}
+                style={[
+                  styles.choice,
+                  selectedVariantId === variant.variantId &&
+                    styles.choiceActive,
+                  !variant.inStock && styles.choiceDisabled,
+                ]}
+              >
+                {variant.colorHex && (
+                  <View
+                    style={[
+                      styles.swatch,
+                      { backgroundColor: variant.colorHex },
+                    ]}
+                  />
+                )}
+                <Text
                   style={[
-                    styles.choice,
+                    styles.choiceText,
                     selectedVariantId === variant.variantId &&
-                      styles.choiceActive,
-                    !variant.inStock && styles.choiceDisabled,
+                      styles.choiceTextActive,
                   ]}
                 >
-                  {variant.colorHex && (
-                    <View
-                      style={[
-                        styles.swatch,
-                        { backgroundColor: variant.colorHex },
-                      ]}
-                    />
-                  )}
-                  <Text
-                    style={[
-                      styles.choiceText,
-                      selectedVariantId === variant.variantId &&
-                        styles.choiceTextActive,
-                    ]}
-                  >
-                    {variant.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            {selectedVariant && (
-              <>
-                <Text style={styles.unitTitle}>وحدة البيع</Text>
-                <View style={styles.choices}>
-                  {selectedVariant.units.map((unit) => (
+                  {variant.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {selectedVariant && (
+            <>
+              <Text style={styles.unitTitle}>وحدة البيع</Text>
+              <View style={styles.choices}>
+                {selectedVariant.units.map((unit) => {
+                  const adjustedUnitPrices = customizationAdjustedUnitPrices(
+                    product,
+                    unit,
+                    customizationValues,
+                  );
+                  const displayedUnitPrice =
+                    adjustedUnitPrices.salePrice ?? adjustedUnitPrices.price;
+
+                  return (
                     <TouchableOpacity
-                      accessibilityLabel={`${unit.unitName} بسعر ${formatIqd(unit.salePrice ?? unit.price)}${unit.inStock ? "" : "، نافدة"}`}
+                      accessibilityLabel={`${unit.unitName} بسعر ${formatIqd(displayedUnitPrice)}${unit.inStock ? "" : "، نافدة"}`}
                       accessibilityRole="radio"
                       accessibilityState={{
                         checked: selectedUnitId === unit.productUnitId,
@@ -451,18 +469,19 @@ export default function ProductDetailScreen() {
                             styles.unitPriceActive,
                         ]}
                       >
-                        {formatIqd(unit.salePrice ?? unit.price)}
+                        {formatIqd(displayedUnitPrice)}
                       </Text>
                     </TouchableOpacity>
-                  ))}
-                </View>
-              </>
-            )}
-            {selectedUnit?.stockLeft != null && selectedUnit.stockLeft <= 5 && (
-              <Text accessibilityLiveRegion="polite" style={styles.stock}>
-                المتبقي المعلن: {formatLatinNumber(selectedUnit.stockLeft)} فقط.
-              </Text>
-            )}
+                  );
+                })}
+              </View>
+            </>
+          )}
+          {selectedUnit?.stockLeft != null && selectedUnit.stockLeft <= 5 && (
+            <Text accessibilityLiveRegion="polite" style={styles.stock}>
+              المتبقي المعلن: {formatLatinNumber(selectedUnit.stockLeft)} فقط.
+            </Text>
+          )}
         </View>
 
         {product.customizationTemplate && (
@@ -480,7 +499,7 @@ export default function ProductDetailScreen() {
                 field={field}
                 key={field.fieldKey}
                 onChange={(value) => {
-                  setCustomizationValues((current) => ({
+                  setCustomizationValues((current) => pruneInactiveCustomizationValues(product, {
                     ...current,
                     [field.fieldKey]: value,
                   }));
@@ -544,7 +563,11 @@ export default function ProductDetailScreen() {
               onPress={addDozenToCart}
               style={styles.wholesaleButton}
             >
-              <MaterialIcons color="#92400E" name="add-shopping-cart" size={18} />
+              <MaterialIcons
+                color="#92400E"
+                name="add-shopping-cart"
+                size={18}
+              />
               <Text style={styles.wholesaleButtonText}>
                 أضف درزن (12 قطعة) بسعر الجملة
               </Text>
@@ -557,7 +580,7 @@ export default function ProductDetailScreen() {
               accessibilityHint="يحفظ البديل والوحدة وبيانات التخصيص المختارة"
               accessibilityLabel={
                 quantity
-                  ? `أضف نسخة أخرى، الكمية الحالية ${quantity}`
+                  ? `أضف نسخة أخرى، الكمية الحالية ${formatLatinNumber(quantity)}`
                   : "أضف الاختيار إلى السلة"
               }
               accessibilityRole="button"
@@ -569,7 +592,9 @@ export default function ProductDetailScreen() {
               ]}
             >
               <Text style={styles.addButtonText}>
-                {quantity ? `أضف أخرى • في السلة ${quantity}` : "أضف للسلة"}
+                {quantity
+                  ? `أضف أخرى • في السلة ${formatLatinNumber(quantity)}`
+                  : "أضف للسلة"}
               </Text>
               <MaterialIcons
                 color="#FFFFFF"
@@ -628,11 +653,27 @@ function CustomizationFieldInput({
         {field.isRequired ? " *" : ""}
       </Text>
       {field.fieldType === "FILE" ? (
-        <View style={styles.fileUnavailable}>
-          <MaterialIcons color="#A56B10" name="upload-file" size={19} />
-          <Text style={styles.fileUnavailableText}>
-            رفع الملفات غير متاح حتى تجهّز المكتبة قناة رفع آمنة.
-          </Text>
+        <View>
+          <TextInput
+            accessibilityLabel={field.label}
+            autoCapitalize="none"
+            maxLength={
+              field.maxLength ?? DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH
+            }
+            onChangeText={onChange}
+            placeholder="اكتب رابط الملف أو اسمه أو مرجعه"
+            placeholderTextColor="#81908A"
+            style={styles.input}
+            textAlign="right"
+            value={value}
+          />
+          <View style={styles.fileUnavailable}>
+            <MaterialIcons color="#A56B10" name="upload-file" size={19} />
+            <Text style={styles.fileUnavailableText}>
+              اكتب رابط الملف أو مرجعه الآن؛ الرفع المباشر سيُتاح بعد تجهيز قناة
+              آمنة.
+            </Text>
+          </View>
         </View>
       ) : field.fieldType === "SELECT" || field.fieldType === "SWATCH" ? (
         <View style={styles.choices}>

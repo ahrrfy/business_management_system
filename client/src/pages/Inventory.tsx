@@ -22,7 +22,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { D, fmt, fmtInt } from "@/lib/money";
+import { D, fmt, fmtInt, formatQuantity } from "@/lib/money";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
@@ -33,6 +33,7 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
 import { Camera, CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -53,9 +54,8 @@ const PAGE_SIZE = 50;
 
 type OnHandRow = RouterOutputs["inventory"]["onHand"][number];
 
-function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
-  const parts = [r.variantName, r.color, r.size].filter(Boolean);
-  return parts.length ? parts.join(" / ") : r.sku;
+function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string; variantKind?: string | null }): string {
+  return variantDescriptor({ productName: "", ...r }) || r.sku;
 }
 
 /** جداولُ هذه الشاشة كلٌّ داخل بطاقةٍ تحمل عنوانَه وعدَّه — بلا شريطِ حالةٍ لكلّ جدول. */
@@ -316,7 +316,7 @@ export default function Inventory() {
     setErr("");
     adjustKeyRef.current = null; // جلسةُ تحريرٍ جديدة ⇒ مفتاحٌ جديد عند أوّل نقرِ حفظ.
     setEditing(r.variantId);
-    setTarget(String(r.quantity));
+    setTarget(formatQuantity(r.quantity, { useGrouping: false }));
     setNotes("");
     setReason("");
     setAttachmentUrl(null);
@@ -452,7 +452,7 @@ export default function Inventory() {
     {
       id: "quantity",
       header: "الرصيد",
-      accessorFn: (r) => fmtInt(r.quantity),
+      accessorFn: (r) => formatQuantity(r.quantity),
       meta: { kind: "number", align: "center" },
       cell: ({ row }) =>
         editing === row.original.variantId ? (
@@ -464,15 +464,15 @@ export default function Inventory() {
             autoFocus
           />
         ) : (
-          <span className="font-semibold">{fmtInt(row.original.quantity)}</span>
+          <span className="font-semibold">{formatQuantity(row.original.quantity)}</span>
         ),
     },
     {
       id: "minStock",
       header: "الحد الأدنى",
-      accessorFn: (r) => fmtInt(r.minStock ?? 0),
+      accessorFn: (r) => formatQuantity(r.minStock ?? 0),
       meta: { kind: "number", align: "center" },
-      cell: ({ row }) => <span className="text-muted-foreground">{fmtInt(row.original.minStock ?? 0)}</span>,
+      cell: ({ row }) => <span className="text-muted-foreground">{formatQuantity(row.original.minStock ?? 0)}</span>,
     },
     {
       id: "isLow",
@@ -768,14 +768,14 @@ export default function Inventory() {
                   id: "product",
                   header: "المنتج",
                   meta: { width: "wide" },
-                  cell: ({ row }) => `${row.original.productName} — ${row.original.variantName ?? row.original.sku}`,
+                  cell: ({ row }) => variantDisplayName({ ...row.original, productName: row.original.productName ?? "" }),
                 },
                 {
                   id: "change",
                   header: "التغيير",
                   meta: { align: "center" },
                   cell: ({ row }) =>
-                    `من ${fmtInt(Number(row.original.currentQuantity ?? 0))} إلى ${fmtInt(row.original.targetQuantity)}`,
+                    `من ${formatQuantity(row.original.currentQuantity ?? 0)} إلى ${formatQuantity(row.original.targetQuantity)}`,
                 },
                 {
                   id: "reason",
@@ -904,7 +904,7 @@ export default function Inventory() {
                   meta: { kind: "number", align: "center" },
                   cell: ({ row }) => `${fmt(row.original.oldCost)} ← ${fmt(row.original.newCost)}`,
                 },
-                { id: "qty", header: "الكمية", meta: { kind: "number", align: "center" }, cell: ({ row }) => fmtInt(row.original.expectedQuantity) },
+                { id: "qty", header: "الكمية", meta: { kind: "number", align: "center" }, cell: ({ row }) => formatQuantity(row.original.expectedQuantity) },
                 {
                   id: "delta",
                   header: "أثر القيمة",
@@ -1059,7 +1059,7 @@ export default function Inventory() {
                 ),
               },
               { id: "type", header: "النوع", cell: ({ row }) => <span className="text-xs">{MTYPE[row.original.movementType] ?? row.original.movementType}</span> },
-              { id: "qty", header: "الكمية (أساس)", meta: { kind: "number", align: "center" }, cell: ({ row }) => fmtInt(row.original.quantity) },
+              { id: "qty", header: "الكمية (أساس)", meta: { kind: "number", align: "center" }, cell: ({ row }) => formatQuantity(row.original.quantity) },
               {
                 id: "ref",
                 header: "المرجع",

@@ -28,11 +28,14 @@ import {
   deliveryZones,
   onlineOrderItems,
   onlineOrders,
+  productCustomizationFields,
+  productCustomizationTemplates,
   productPrices,
   productUnits,
   productVariants,
   products,
   storeSettings as storeSettingsTable,
+  type OnlineOrderCustomizationSnapshot,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import { deliveryFeeFor, governorateById, isBaghdadGovernorate } from "@shared/governorates";
@@ -68,6 +71,8 @@ const WHOLESALE = "WHOLESALE" as const;
 export const STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY = 12;
 const GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
 const GUEST_TRACKING_DOMAIN = "STORE_GUEST_TRACKING_V1";
+const MAX_CUSTOMIZATION_VALUE_LENGTH = 10_000;
+const MAX_ONLINE_ORDER_MONEY = money("9999999999999.99");
 
 function guestTrackingSecret(): string {
   const secret = process.env.BARCODE_SECRET || (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
@@ -136,8 +141,14 @@ function todayYmdBaghdad(): string {
 export interface OnlineOrderLineInput {
   productUnitId: number;
   quantity: number;
+  customization?: OnlineOrderCustomizationInput | null;
   /** السعر الذي ظهر للزبون عند التأكيد؛ لا يُستعمل للتسعير بل كـoptimistic contract. */
   expectedUnitPrice?: string | null;
+}
+
+export interface OnlineOrderCustomizationInput {
+  templateId: number;
+  values: Record<string, string>;
 }
 
 export const MAX_ONLINE_ORDER_DISTINCT_UNITS = 30;
@@ -149,10 +160,15 @@ function normalizeExpectedUnitPrice(
 ): string | null | undefined {
   if (value == null) return value;
   try {
-    if (!/^\d{1,15}(?:\.\d{1,2})?$/.test(value))
+    if (!/^\d{1,13}(?:\.\d{1,2})?$/.test(value))
       throw new Error("invalid price shape");
     const parsed = money(value);
-    if (!parsed.isFinite() || parsed.lt(0) || parsed.decimalPlaces() > 2)
+    if (
+      !parsed.isFinite()
+      || parsed.lt(0)
+      || parsed.gt(MAX_ONLINE_ORDER_MONEY)
+      || parsed.decimalPlaces() > 2
+    )
       throw new Error("invalid price");
     return toDbMoney(parsed);
   } catch {
@@ -168,6 +184,46 @@ function normalizeExpectedUnitPrice(
   }
 }
 
+function normalizeCustomizationInput(
+  customization: OnlineOrderCustomizationInput | null | undefined,
+): OnlineOrderCustomizationInput | undefined {
+  if (customization == null) return undefined;
+  if (!Number.isSafeInteger(customization.templateId) || customization.templateId <= 0) {
+    throw customizationInputError("BAD_REQUEST", "تعذّر تجهيز التخصيص", "معرّف قالب التخصيص غير صالح", "حدّث صفحة المنتج وأدخل التفاصيل مجدداً");
+  }
+  const entries = Object.entries(customization.values ?? {});
+  if (entries.length > 50) {
+    throw customizationInputError("BAD_REQUEST", "تعذّر تجهيز التخصيص", "عدد حقول التخصيص تجاوز الحد المسموح", "حدّث صفحة المنتج واستخدم الحقول الظاهرة فقط");
+  }
+  const values: Record<string, string> = {};
+  for (const [rawKey, rawValue] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+    const fieldKey = rawKey.trim();
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(fieldKey) || typeof rawValue !== "string" || rawValue.length > MAX_CUSTOMIZATION_VALUE_LENGTH) {
+      throw customizationInputError("BAD_REQUEST", "تعذّر تجهيز التخصيص", "أحد حقول التخصيص وصل بصيغة غير صالحة", "حدّث صفحة المنتج وأدخل التفاصيل مجدداً");
+    }
+    const value = rawValue.trim();
+    if (value) values[fieldKey] = value;
+  }
+  return { templateId: customization.templateId, values };
+}
+
+function customizationIdentity(customization: OnlineOrderCustomizationInput | undefined): string {
+  return customization == null ? "" : JSON.stringify(customization);
+}
+
+function customizationInputError(
+  code: "BAD_REQUEST" | "CONFLICT",
+  what: string,
+  why: string,
+  doThis: string,
+): TRPCError {
+  return new TRPCError({ code, message: appErrorMessage({ what, why, doThis }) });
+}
+
+function onlineOrderLineIdentity(line: Pick<OnlineOrderLineInput, "productUnitId" | "customization">): string {
+  return `${line.productUnitId}:${customizationIdentity(line.customization ?? undefined)}`;
+}
+
 /**
  * عقد سلة علني موحّد للـquote والإنشاء: يدمج تكرار productUnitId قبل أي SQL، ويبقي كل لون
  * (وحدة/متغيّر مختلف) سطراً مستقلاً. الحدود تُطبّق بعد الدمج كي لا تتجاوزها دفعات مكررة.
@@ -176,7 +232,7 @@ export function normalizeOnlineOrderLines(
   lines: ReadonlyArray<
     Pick<
       OnlineOrderLineInput,
-      "productUnitId" | "quantity" | "expectedUnitPrice"
+      "productUnitId" | "quantity" | "expectedUnitPrice" | "customization"
     >
   >,
 ): OnlineOrderLineInput[] {
@@ -190,7 +246,7 @@ export function normalizeOnlineOrderLines(
       }),
     });
   const normalized: OnlineOrderLineInput[] = [];
-  const byUnit = new Map<number, OnlineOrderLineInput>();
+  const bySelection = new Map<string, OnlineOrderLineInput>();
   let totalQuantity = 0;
 
   for (const line of lines) {
@@ -215,9 +271,11 @@ export function normalizeOnlineOrderLines(
     const expectedUnitPrice = normalizeExpectedUnitPrice(
       line.expectedUnitPrice,
     );
-    const current = byUnit.get(productUnitId);
+    const customization = normalizeCustomizationInput(line.customization);
+    const selectionKey = onlineOrderLineIdentity({ productUnitId, customization });
+    const current = bySelection.get(selectionKey);
     if (!current) {
-      if (byUnit.size >= MAX_ONLINE_ORDER_DISTINCT_UNITS) {
+      if (bySelection.size >= MAX_ONLINE_ORDER_DISTINCT_UNITS) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -228,8 +286,8 @@ export function normalizeOnlineOrderLines(
           }),
         });
       }
-      const added = { productUnitId, quantity, expectedUnitPrice };
-      byUnit.set(productUnitId, added);
+      const added = { productUnitId, quantity, expectedUnitPrice, customization };
+      bySelection.set(selectionKey, added);
       normalized.push(added);
     } else {
       if (
@@ -252,7 +310,7 @@ export function normalizeOnlineOrderLines(
         current.expectedUnitPrice = expectedUnitPrice;
       }
     }
-    const mergedQuantity = byUnit.get(productUnitId)!.quantity;
+    const mergedQuantity = bySelection.get(selectionKey)!.quantity;
     if (mergedQuantity > MAX_ONLINE_ORDER_QUANTITY_PER_UNIT) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -343,7 +401,7 @@ async function loadOwnedReplay(
   input: CreateOnlineOrderInput,
   phone: string,
   requestedShippingAddress: string,
-  requestedLineQuantities: ReadonlyMap<number, number>,
+  requestedLineQuantities: ReadonlyMap<string, number>,
   lock = false,
 ): Promise<CreateOnlineOrderResult | null> {
   if (!input.clientRequestId) return null;
@@ -422,24 +480,30 @@ async function loadOwnedReplay(
     .select({
       productUnitId: onlineOrderItems.productUnitId,
       quantity: onlineOrderItems.quantity,
+      customizationSnapshot: onlineOrderItems.customizationSnapshot,
     })
     .from(onlineOrderItems)
     .where(eq(onlineOrderItems.onlineOrderId, Number(existing.id)));
   const existingLines = lock
     ? await linesQuery.for("update")
     : await linesQuery;
-  const storedLineQuantities = new Map<number, number>();
+  const storedLineQuantities = new Map<string, number>();
   for (const line of existingLines) {
     const unitId = Number(line.productUnitId);
+    const storedCustomization = line.customizationSnapshot == null ? undefined : normalizeCustomizationInput({
+      templateId: line.customizationSnapshot.templateId,
+      values: Object.fromEntries(line.customizationSnapshot.values.map((value) => [value.fieldKey, value.value])),
+    });
+    const identity = onlineOrderLineIdentity({ productUnitId: unitId, customization: storedCustomization });
     storedLineQuantities.set(
-      unitId,
-      (storedLineQuantities.get(unitId) ?? 0) + Number(line.quantity),
+      identity,
+      (storedLineQuantities.get(identity) ?? 0) + Number(line.quantity),
     );
   }
   const sameLines =
     storedLineQuantities.size === requestedLineQuantities.size &&
     Array.from(requestedLineQuantities.entries()).every(
-      ([unitId, quantity]) => storedLineQuantities.get(unitId) === quantity,
+      ([identity, quantity]) => storedLineQuantities.get(identity) === quantity,
     );
   const requestedCouponCode = input.couponCode
     ? normalizeCouponCode(input.couponCode)
@@ -610,10 +674,174 @@ export interface PricedOnlineOrderLine {
   quantity: number;
   baseQuantity: number;
   retailUnitPrice: string;
+  customizationPriceDelta: string;
+  customizationSnapshot: OnlineOrderCustomizationSnapshot | null;
   discountPerUnit: string;
   unitPrice: string;
   lineTotal: string;
   couponDiscountPerUnit?: string;
+}
+
+function customizationDependencyMatches(
+  dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null,
+  values: Record<string, string>,
+): boolean {
+  if (!dependency) return true;
+  const expected = Array.isArray(dependency.value) ? dependency.value : [dependency.value];
+  const matches = expected.includes(values[dependency.fieldKey] ?? "");
+  return dependency.operator === "notEquals" ? !matches : matches;
+}
+
+function visibleCustomizationFieldKeys(
+  fields: ReadonlyArray<{ fieldKey: string; dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null }>,
+  values: Record<string, string>,
+): Set<string> {
+  const byKey = new Map(fields.map((field) => [field.fieldKey, field]));
+  const resolved = new Map<string, boolean>();
+  const resolving = new Set<string>();
+  const isVisible = (fieldKey: string): boolean => {
+    if (resolved.has(fieldKey)) return resolved.get(fieldKey)!;
+    const field = byKey.get(fieldKey);
+    if (!field || resolving.has(fieldKey)) return false;
+    resolving.add(fieldKey);
+    const visible = field.dependency == null || (isVisible(field.dependency.fieldKey) && customizationDependencyMatches(field.dependency, values));
+    resolving.delete(fieldKey);
+    resolved.set(fieldKey, visible);
+    return visible;
+  };
+  return new Set(fields.filter((field) => isVisible(field.fieldKey)).map((field) => field.fieldKey));
+}
+
+function validCustomizationPriceDelta(value: unknown): boolean {
+  return /^\d{1,13}(?:\.\d{1,2})?$/.test(String(value ?? "0").trim());
+}
+
+async function resolveOnlineOrderCustomization(
+  tx: Tx,
+  product: {
+    productId: number;
+    productName: string;
+    productType: string | null;
+    isCustomizable: boolean | null;
+  },
+  customization: OnlineOrderCustomizationInput | null | undefined,
+): Promise<{ snapshot: OnlineOrderCustomizationSnapshot | null; priceDelta: ReturnType<typeof money> }> {
+  if (product.isCustomizable !== true) {
+    if (customization != null) {
+      throw customizationInputError("BAD_REQUEST", `تعذّر تخصيص «${product.productName}»`, "هذا الصنف غير مهيأ لاستقبال تفاصيل تخصيص", "احذف تفاصيل التخصيص أو افتح المنتج الصحيح من المتجر");
+    }
+    return { snapshot: null, priceDelta: money(0) };
+  }
+  if (customization == null) {
+    throw customizationInputError("BAD_REQUEST", `تفاصيل «${product.productName}» ناقصة`, "الصنف قابل للتخصيص ولم تصل معه تفاصيل الزبون", "افتح صفحة المنتج وأكمل حقول التخصيص قبل إضافته إلى الطلب");
+  }
+  const template = (await tx.select({
+    id: productCustomizationTemplates.id,
+    kind: productCustomizationTemplates.kind,
+    title: productCustomizationTemplates.title,
+  }).from(productCustomizationTemplates).where(and(
+    eq(productCustomizationTemplates.productId, product.productId),
+    eq(productCustomizationTemplates.id, customization.templateId),
+    eq(productCustomizationTemplates.isActive, true),
+  )).limit(1))[0];
+  if (!template) {
+    throw customizationInputError("CONFLICT", `تغيّر تخصيص «${product.productName}»`, "قالب التخصيص الذي استُعمل في السلة لم يعد القالب النشط", "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الحالية ثم أعد التأكيد");
+  }
+  const expectedKind = product.productType === "PRINT_SERVICE" ? "PRINT" : "GIFT";
+  if (template.kind !== "GENERAL" && template.kind !== expectedKind) {
+    throw customizationInputError(
+      "CONFLICT",
+      `تغيّر تخصيص «${product.productName}»`,
+      "نوع قالب التخصيص لا يطابق نوع المنتج الحالي",
+      "حدّث صفحة المنتج، وإن بقيت المشكلة فتواصل معنا لتصحيح إعداد القالب",
+    );
+  }
+  const fields = await tx.select({
+    fieldKey: productCustomizationFields.fieldKey,
+    label: productCustomizationFields.label,
+    fieldType: productCustomizationFields.fieldType,
+    isRequired: productCustomizationFields.isRequired,
+    maxLength: productCustomizationFields.maxLength,
+    options: productCustomizationFields.optionsJson,
+    dependency: productCustomizationFields.dependencyJson,
+    priceDelta: productCustomizationFields.priceDelta,
+  }).from(productCustomizationFields).where(and(
+    eq(productCustomizationFields.templateId, Number(template.id)),
+    eq(productCustomizationFields.isActive, true),
+  )).orderBy(asc(productCustomizationFields.sortOrder), asc(productCustomizationFields.id));
+  const knownKeys = new Set(fields.map((field) => field.fieldKey));
+  if (Object.entries(customization.values).some(([key, value]) => value !== "" && !knownKeys.has(key))) {
+    throw customizationInputError("BAD_REQUEST", `تعذّر تخصيص «${product.productName}»`, "وصل حقل تخصيص غير موجود في القالب الحالي", "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الظاهرة فقط");
+  }
+  const visibleFieldKeys = visibleCustomizationFieldKeys(fields, customization.values);
+  const hiddenSubmittedField = fields.find((field) =>
+    Boolean((customization.values[field.fieldKey] ?? "").trim())
+    && !visibleFieldKeys.has(field.fieldKey));
+  if (hiddenSubmittedField) {
+    throw customizationInputError(
+      "BAD_REQUEST",
+      `تعذّر تخصيص «${product.productName}»`,
+      `وصلت قيمة لحقل «${hiddenSubmittedField.label}» رغم أن شرط ظهوره غير متحقق`,
+      "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الظاهرة فقط",
+    );
+  }
+  let priceDelta = money(0);
+  const values: OnlineOrderCustomizationSnapshot["values"] = [];
+  for (const field of fields) {
+    if (!visibleFieldKeys.has(field.fieldKey)) continue;
+    const value = (customization.values[field.fieldKey] ?? "").trim();
+    if (field.isRequired && !value) {
+      throw customizationInputError("BAD_REQUEST", `حقل «${field.label}» مطلوب`, `تفاصيل تخصيص «${product.productName}» لم تتضمن هذا الحقل الإلزامي`, "أكمل الحقل في صفحة المنتج ثم أعد إضافة الصنف");
+    }
+    if (!value) continue;
+    if (value.length > (field.maxLength ?? 2_000)) {
+      throw customizationInputError("BAD_REQUEST", `قيمة «${field.label}» طويلة`, "النص المدخل تجاوز الحد المضبوط لهذا الحقل", "اختصر النص إلى الحد الظاهر في الحقل ثم أعد المحاولة");
+    }
+    const options = field.options ?? [];
+    const selectedOption = options.find((option) => option.value === value);
+    if ((field.fieldType === "SELECT" || field.fieldType === "SWATCH") && !selectedOption) {
+      throw customizationInputError("BAD_REQUEST", `خيار «${field.label}» غير صالح`, "القيمة المرسلة ليست من خيارات القالب الحالي", "حدّث صفحة المنتج واختر قيمة من القائمة الظاهرة");
+    }
+    if (field.fieldType === "NUMBER" && (!Number.isFinite(Number(value)) || value.length > 40)) {
+      throw customizationInputError("BAD_REQUEST", `قيمة «${field.label}» غير صالحة`, "هذا الحقل يقبل رقماً فقط", "اكتب رقماً صالحاً في الحقل ثم أعد المحاولة");
+    }
+    if (!validCustomizationPriceDelta(field.priceDelta) || !validCustomizationPriceDelta(selectedOption?.priceDelta)) {
+      throw customizationInputError(
+        "CONFLICT",
+        `تعذّر تسعير تخصيص «${product.productName}»`,
+        "إعداد فرق السعر في قالب التخصيص غير صالح",
+        "تواصل معنا لتصحيح أسعار خيارات التخصيص قبل إتمام الطلب",
+      );
+    }
+    const fieldDelta = money(field.priceDelta ?? 0);
+    const optionDelta = money(selectedOption?.priceDelta ?? 0);
+    priceDelta = priceDelta.plus(fieldDelta).plus(optionDelta);
+    if (!priceDelta.isFinite() || priceDelta.gt(MAX_ONLINE_ORDER_MONEY)) {
+      throw customizationInputError(
+        "CONFLICT",
+        `تعذّر تسعير تخصيص «${product.productName}»`,
+        "مجموع فروق أسعار القالب تجاوز السعة المالية المسموحة",
+        "تواصل معنا لتصحيح أسعار خيارات التخصيص قبل إتمام الطلب",
+      );
+    }
+    values.push({
+      fieldKey: field.fieldKey,
+      label: field.label,
+      value,
+      displayValue: selectedOption?.label ?? value,
+    });
+  }
+  const roundedDelta = round2(priceDelta);
+  return {
+    snapshot: {
+      templateId: Number(template.id),
+      kind: template.kind,
+      title: template.title,
+      values,
+      unitPriceDelta: roundedDelta.toFixed(2),
+    },
+    priceDelta: roundedDelta,
+  };
 }
 
 export type StorefrontPricingBenefitType =
@@ -653,7 +881,7 @@ export interface StorefrontWholesaleProgress {
 export interface OnlineOrderQuoteInput {
   couponCode?: string | null;
   governorate: string;
-  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>;
+  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity" | "customization">>;
   /** يحقنها الراوتر بعد تحقق جلسة Firebase؛ تمكّن القسائم الشخصية وحدّ العميل. */
   authenticatedCustomer?: { customerId: number; phone: string } | null;
 }
@@ -671,6 +899,7 @@ export interface OnlineOrderQuoteResult {
   lines: Array<{
     productUnitId: number;
     quantity: number;
+    customization: OnlineOrderCustomizationSnapshot | null;
     retailUnitPrice: string;
     discountPerUnit: string;
     unitPrice: string;
@@ -693,7 +922,7 @@ export interface OnlineOrderQuoteResult {
 export async function priceOnlineOrderLines(
   tx: Tx,
   branchId: number,
-  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
+  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity" | "customization">>,
   options: { lock: boolean; coupon?: LockedCoupon | null },
 ): Promise<PricedOnlineOrderLines> {
   const unitIds = Array.from(
@@ -704,6 +933,7 @@ export async function priceOnlineOrderLines(
     .select({
       productId: products.id,
       productName: products.name,
+      productType: products.productType,
       categoryId: products.categoryId,
       productUnitId: productUnits.id,
       variantId: productVariants.id,
@@ -746,6 +976,7 @@ export async function priceOnlineOrderLines(
   const todayYmd = todayYmdBaghdad();
   const candidates: Array<
     PricedOnlineOrderLine & {
+      baseRetailUnitPrice: string;
       automaticDiscountPerUnit: string;
       automaticPromotionName: string | null;
       couponDiscountCandidatePerUnit: string;
@@ -763,7 +994,6 @@ export async function priceOnlineOrderLines(
       !row.showInStore ||
       (row.categoryId != null &&
         (!row.categoryActive || !row.categoryShowInStore)) ||
-      row.isService ||
       !row.variantActive ||
       !row.unitActive ||
       !row.unitAvailableInStore ||
@@ -779,21 +1009,12 @@ export async function priceOnlineOrderLines(
         }),
       });
     }
-    // عقد الطلب الحالي يثبت productUnitId/quantity فقط ويدمج تكرار الوحدة. قبول منتج مخصص
-    // هنا سيحوّل خيارات الطباعة/الهدية إلى notes غير مسعّرة وغير مرتبطة بالسطر، ويمكن لعميل
-    // معدّل حذفها أو دمج تخصيصين مختلفين. نفشل مغلقاً إلى أن يُضاف selectionDetails بنيوي
-    // مُتحقق منه ومُخزّن لكل onlineOrderItem، ولا نعامل النص الحر كعقد إنتاج.
-    if (row.isCustomizable === true) {
-      throw new TRPCError({
-        code: options.lock ? "CONFLICT" : "BAD_REQUEST",
-        message: appErrorMessage({
-          what: `تعذّر طلب «${row.productName}» عبر المتجر`,
-          why: "هذا الصنف يحتاج اختياراتِ تخصيص (مقاس أو تصميم أو نصّ طباعة) لا يستقبلها الطلب الإلكتروني بعد، وطلبُه بلا اختياراتك يُنتج شيئاً غير الذي تريد",
-          doThis:
-            "احذفه من السلّة وأكمِل بقيّة الطلب، وتواصل معنا لإتمام الصنف المخصَّص باختياراتك",
-        }),
-      });
-    }
+    const resolvedCustomization = await resolveOnlineOrderCustomization(tx, {
+      productId: Number(row.productId),
+      productName: row.productName,
+      productType: row.productType ?? null,
+      isCustomizable: row.isCustomizable,
+    }, line.customization);
     const base = money(quantity).times(row.conversionFactor ?? 1);
     if (!base.isInteger() || !base.gt(0)) {
       throw new TRPCError({
@@ -811,6 +1032,15 @@ export async function priceOnlineOrderLines(
       });
     }
     const retail = round2(row.price);
+    const retailWithCustomization = round2(retail.plus(resolvedCustomization.priceDelta));
+    if (!retailWithCustomization.isFinite() || retailWithCustomization.gt(MAX_ONLINE_ORDER_MONEY)) {
+      throw customizationInputError(
+        "CONFLICT",
+        `تعذّر تسعير تخصيص «${row.productName}»`,
+        "السعر النهائي بعد التخصيص تجاوز السعة المالية المسموحة",
+        "تواصل معنا لتصحيح سعر المنتج أو فروق التخصيص قبل إتمام الطلب",
+      );
+    }
     const productId = Number(row.productId);
     const variantId = Number(row.variantId);
     const categoryId = row.categoryId == null ? null : Number(row.categoryId);
@@ -857,7 +1087,10 @@ export async function priceOnlineOrderLines(
       productUnitId: Number(row.productUnitId),
       quantity,
       baseQuantity: base.toNumber(),
-      retailUnitPrice: retail.toFixed(2),
+      baseRetailUnitPrice: retail.toFixed(2),
+      retailUnitPrice: retailWithCustomization.toFixed(2),
+      customizationPriceDelta: resolvedCustomization.priceDelta.toFixed(2),
+      customizationSnapshot: resolvedCustomization.snapshot,
       automaticDiscountPerUnit: round2(automaticDiscount).toFixed(2),
       automaticPromotionName: promo?.promotionName ?? null,
       couponDiscountCandidatePerUnit: round2(couponDiscount).toFixed(2),
@@ -866,8 +1099,8 @@ export async function priceOnlineOrderLines(
       // تُملأ بعد مقارنة مرشحي الجملة/العرض/الكوبون على مستوى السلة كاملة.
       discountPerUnit: "0.00",
       couponDiscountPerUnit: "0.00",
-      unitPrice: retail.toFixed(2),
-      lineTotal: round2(retail.times(quantity)).toFixed(2),
+      unitPrice: retailWithCustomization.toFixed(2),
+      lineTotal: round2(retailWithCustomization.times(quantity)).toFixed(2),
     });
   }
   const baseQuantityByProduct = new Map<number, number>();
@@ -885,7 +1118,7 @@ export async function priceOnlineOrderLines(
       const hasDiscountedWholesalePrice = productItems.some(
         (item) =>
           item.wholesaleUnitPrice != null &&
-          money(item.wholesaleUnitPrice).lt(money(item.retailUnitPrice)),
+          money(item.wholesaleUnitPrice).lt(money(item.baseRetailUnitPrice)),
       );
       if (
         currentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY ||
@@ -911,7 +1144,7 @@ export async function priceOnlineOrderLines(
   for (const item of candidates) {
     const parentBaseQuantity = baseQuantityByProduct.get(item.productId) ?? 0;
     const wholesaleDifference = item.wholesaleUnitPrice
-      ? money(item.retailUnitPrice).minus(item.wholesaleUnitPrice)
+      ? money(item.baseRetailUnitPrice).minus(item.wholesaleUnitPrice)
       : money(0);
     const wholesalePerUnit = wholesaleDifference.gt(0)
       ? wholesaleDifference
@@ -960,6 +1193,16 @@ export async function priceOnlineOrderLines(
     return compared !== 0 ? compared : b.priority - a.priority;
   });
   const selected = candidatesByBenefit[0];
+  if (selected && round2(selected.discount).gt(MAX_ONLINE_ORDER_MONEY)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسعير الطلب",
+        why: "إجمالي المنفعة السعرية تجاوز سعة الطلب الواحد",
+        doThis: "قسّم الأصناف على طلبين أو أكثر ثم أعد المحاولة",
+      }),
+    });
+  }
   const benefit: StorefrontPricingBenefit = selected
     ? {
         type: selected.type,
@@ -982,7 +1225,7 @@ export async function priceOnlineOrderLines(
     const wholesaleDifference =
       parentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY &&
       item.wholesaleUnitPrice
-        ? money(item.retailUnitPrice).minus(item.wholesaleUnitPrice)
+        ? money(item.baseRetailUnitPrice).minus(item.wholesaleUnitPrice)
         : money(0);
     const wholesalePerUnit = wholesaleDifference.gt(0)
       ? wholesaleDifference
@@ -999,6 +1242,17 @@ export async function priceOnlineOrderLines(
     const unitPrice = round2(
       priceAfterBenefit.lt(0) ? money(0) : priceAfterBenefit,
     );
+    const lineTotal = round2(unitPrice.times(item.quantity));
+    if (!lineTotal.isFinite() || lineTotal.gt(MAX_ONLINE_ORDER_MONEY)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تسعير «${item.productName}»`,
+          why: "إجمالي هذا السطر تجاوز السعة المالية المسموحة للطلب",
+          doThis: "خفّض الكمية أو قسّمها على طلبين ثم أعد المحاولة",
+        }),
+      });
+    }
     return {
       productId: item.productId,
       categoryId: item.categoryId,
@@ -1009,13 +1263,15 @@ export async function priceOnlineOrderLines(
       quantity: item.quantity,
       baseQuantity: item.baseQuantity,
       retailUnitPrice: item.retailUnitPrice,
+      customizationPriceDelta: item.customizationPriceDelta,
+      customizationSnapshot: item.customizationSnapshot,
       discountPerUnit: round2(selectedDiscount).toFixed(2),
       couponDiscountPerUnit:
         benefit.type === "COUPON"
           ? round2(selectedDiscount).toFixed(2)
           : "0.00",
       unitPrice: unitPrice.toFixed(2),
-      lineTotal: round2(unitPrice.times(item.quantity)).toFixed(2),
+      lineTotal: lineTotal.toFixed(2),
     } satisfies PricedOnlineOrderLine;
   });
   return {
@@ -1070,6 +1326,16 @@ export async function totalOnlineOrderQuote(
   >
 > {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
+  if (!subtotal.isFinite() || subtotal.gt(MAX_ONLINE_ORDER_MONEY)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسعير الطلب",
+        why: "إجمالي الأصناف تجاوز السعة المالية المسموحة للطلب الواحد",
+        doThis: "قسّم الأصناف على طلبين أو أكثر ثم أعد المحاولة",
+      }),
+    });
+  }
   const eligibilitySubtotal = deliveryEligibilitySubtotal == null
     ? subtotal
     : round2(money(deliveryEligibilitySubtotal));
@@ -1086,6 +1352,17 @@ export async function totalOnlineOrderQuote(
   const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
   const deliveryFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
   if (deliveryFree) customerDeliveryFee = round2(money(0));
+  const total = round2(subtotal.plus(customerDeliveryFee));
+  if (!total.isFinite() || total.gt(MAX_ONLINE_ORDER_MONEY)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسعير الطلب",
+        why: "الإجمالي مع أجرة التوصيل تجاوز السعة المالية المسموحة للطلب الواحد",
+        doThis: "قسّم الأصناف على طلبين أو أكثر ثم أعد المحاولة",
+      }),
+    });
+  }
   return {
     subtotal: subtotal.toFixed(2),
     deliveryFee: customerDeliveryFee.toFixed(2),
@@ -1095,7 +1372,7 @@ export async function totalOnlineOrderQuote(
     freeShippingRemaining: freeThreshold
       ? (eligibilitySubtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(eligibilitySubtotal)).toFixed(2)
       : null,
-    total: round2(subtotal.plus(customerDeliveryFee)).toFixed(2),
+    total: total.toFixed(2),
   };
 }
 
@@ -1197,6 +1474,7 @@ export async function quoteOnlineOrder(
         lines: pricing.items.map((item) => ({
           productUnitId: item.productUnitId,
           quantity: item.quantity,
+          customization: item.customizationSnapshot,
           retailUnitPrice: item.retailUnitPrice,
           discountPerUnit: item.discountPerUnit,
           couponDiscountPerUnit: item.couponDiscountPerUnit ?? "0.00",
@@ -1278,9 +1556,9 @@ function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {
           "اكتب المنطقة وأقرب نقطةٍ دالّة في حقل «العنوان» ثمّ أعد تأكيد الطلب",
       }),
     });
-  const requestedLineQuantities = new Map<number, number>();
+  const requestedLineQuantities = new Map<string, number>();
   for (const line of normalizedLines) {
-    requestedLineQuantities.set(line.productUnitId, line.quantity);
+    requestedLineQuantities.set(onlineOrderLineIdentity(line), line.quantity);
   }
   const requestedShippingAddress =
     input.notes && input.notes.trim()
@@ -1727,6 +2005,7 @@ async function createOnlineOrderAttempt(
           baseQuantity: it.baseQuantity,
           unitPrice: it.unitPrice,
           total: it.lineTotal,
+          customizationSnapshot: it.customizationSnapshot,
         })),
       );
     }

@@ -155,7 +155,7 @@ describe("listOpenConsignments — ترقيم keyset", () => {
     expect(page.nextCursor).not.toBeNull();
   });
 
-  it("company statement candidates preserve leading-zero tracking refs and exclude INDIVIDUAL rows", async () => {
+  it("open consignment candidates preserve leading-zero tracking refs for both company and individual parties", async () => {
     await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
     await db().insert(s.users).values({ id: 1, openId: "u", name: "u", role: "admin", loginMethod: "local", branchId: 1 });
     await db().insert(s.deliveryParties).values([
@@ -209,7 +209,11 @@ describe("listOpenConsignments — ترقيم keyset", () => {
     ]);
 
     const individualPage = await listOpenConsignments(2, 1);
-    expect(individualPage.rows).toEqual([]);
+    expect(individualPage.rows.map(({ parcelStatus, externalTrackingRef }) => ({ parcelStatus, externalTrackingRef }))).toEqual([
+      { parcelStatus: "ACCEPTED", externalTrackingRef: "000041" },
+      { parcelStatus: "PICKED_UP", externalTrackingRef: "001230" },
+      { parcelStatus: "OUT_FOR_DELIVERY", externalTrackingRef: "000009" },
+    ]);
   });
 });
 

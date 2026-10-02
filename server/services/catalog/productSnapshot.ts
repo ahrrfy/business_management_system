@@ -58,6 +58,8 @@ export function buildProductSnapshot(doc: ProductForVariantEdit): ProductSnapsho
     isActive: doc.isActive,
     showInReception: doc.showInReception,
     showInPrintPos: doc.showInPrintPos,
+    showInQuotations: doc.showInQuotations,
+    showInAdvancedSales: doc.showInAdvancedSales,
     isConsignment: doc.isConsignment,
     consignorId: doc.consignorId,
     consignorName: doc.consignorName,

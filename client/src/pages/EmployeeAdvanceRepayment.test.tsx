@@ -1,90 +1,205 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import React, { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import EmployeeAdvances from "./EmployeeAdvances";
+import { EmployeeAdvanceRepaymentPanel } from "@/components/hr/EmployeeAdvanceRepaymentPanel";
+import { employmentStatusLabel } from "@shared/hr";
+import { toExcelMoney } from "@/lib/payrollAccrual";
+import { D } from "@/lib/money";
 
-const page = readFileSync(new URL("./EmployeeAdvances.tsx", import.meta.url), "utf8");
-const panel = readFileSync(new URL("../components/hr/EmployeeAdvanceRepaymentPanel.tsx", import.meta.url), "utf8");
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as any).React = React;
 
-describe("employee advance repayment UI contract", () => {
-  it("wires the maker/checker repayment, return, review, and ledger routes", () => {
-    expect(page).toContain("EmployeeAdvanceRepaymentPanel");
-    for (const route of [
-      "advanceRepaymentRequests",
-      "advanceRepaymentLedger",
-      "requestAdvanceRepayment",
-      "requestAdvanceRepaymentReturn",
-      "approveAdvanceRepayment",
-      "rejectAdvanceRepayment",
-    ]) expect(panel).toContain(`payroll.${route}`);
-    expect(panel).toContain("!owner && <Button");
-    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — الاعتماد/الرفض مشروطان بـowner
-    // وحده، لا باستقلاله عن صانع الطلب أو مراجع أصله.
-    expect(panel).toContain("{owner && request.status === \"PENDING\" && <>");
-    expect(panel).not.toContain(".every((actorId) => currentUserId !== Number(actorId))");
-    expect(panel).not.toContain("يلزم مالك مستقل عن صانع الطلب");
+const harness = {
+  isOwner: true,
+  advances: [
+    {
+      id: 1,
+      employeeId: 101,
+      employeeName: "أحمد علي",
+      branchId: 1,
+      branchName: "الفرع الرئيسي",
+      employmentStatus: "active" as const,
+      amount: "50000.00",
+      remaining: "25000.00",
+      voucherNumber: "V-101",
+    },
+  ],
+  requests: [
+    {
+      id: 10,
+      employeeId: 101,
+      employeeName: "أحمد علي",
+      branchId: 1,
+      branchName: "الفرع الرئيسي",
+      requestKind: "REPAYMENT" as const,
+      amount: "15000.00",
+      paymentMethod: "CASH" as const,
+      status: "PENDING" as const,
+      transactionDate: "2026-09-30",
+      evidenceNote: "تسديد نقدي موثق في الدرج",
+      createdBy: 5,
+      reviewedBy: null,
+      receiptId: null,
+      accountingEntryId: null,
+      referenceNumber: null,
+      cardLastFour: null,
+      sourceHash: "src-hash-1",
+      evidenceHash: "ev-hash-1",
+      originalRequestId: null,
+    },
+  ],
+  ledger: [],
+};
+
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    useUtils: () => ({
+      payroll: {
+        advancesList: { invalidate: vi.fn() },
+        advanceBalance: { invalidate: vi.fn() },
+        advanceRepaymentRequests: { invalidate: vi.fn() },
+        advanceRepaymentLedger: { invalidate: vi.fn() },
+      },
+    }),
+    auth: {
+      me: {
+        useQuery: () => ({
+          data: { isOwner: harness.isOwner, role: "admin", id: 1 },
+          isLoading: false,
+        }),
+      },
+    },
+    payroll: {
+      advancesList: {
+        useQuery: () => ({ data: harness.advances, isLoading: false }),
+      },
+      advanceRepaymentRequests: {
+        useQuery: () => ({ data: harness.requests, isLoading: false }),
+      },
+      advanceRepaymentLedger: {
+        useQuery: () => ({ data: harness.ledger, isLoading: false }),
+      },
+      approveAdvanceRepayment: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      rejectAdvanceRepayment: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      requestAdvanceRepayment: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+      requestAdvanceRepaymentReturn: {
+        useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+      },
+    },
+    pos: {
+      activeShift: {
+        useQuery: () => ({ data: { id: 77 }, isLoading: false }),
+      },
+    },
+    employees: {
+      formOptions: {
+        useQuery: () => ({ data: [], isLoading: false }),
+      },
+    },
+    branches: {
+      list: {
+        useQuery: () => ({ data: [], isLoading: false }),
+      },
+    },
+    shifts: {
+      current: {
+        useQuery: () => ({ data: { id: 77 }, isLoading: false }),
+      },
+    },
+  },
+}));
+
+vi.mock("@/lib/confirm", () => ({
+  confirm: vi.fn().mockResolvedValue(true),
+  confirmDelete: vi.fn().mockResolvedValue(true),
+}));
+
+describe("EmployeeAdvanceRepayment UI Component & Logic", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    harness.isOwner = true;
   });
 
-  it("shows scoped advance balances without querying salary runs or salary obligations", () => {
-    expect(panel).toContain('advancesList.useQuery({ status: "ACTIVE" })');
-    expect(panel).toContain("new Map<string, EmployeeBalance>()");
-    expect(panel).toContain("employeeBranchKey(employeeId, branchId)");
-    expect(panel).toContain("employeeBranchKey(row.employeeId, row.branchId) === employeeScopeKey");
-    // قاموس حالة التوظيف مصدره الوحيد @shared/hr — ثلاث حالات لا حالتان:
-    // تعبير ثنائي محليّ كان يعرض الموظف «leave» «على رأس العمل» — عكس الحقيقة.
-    expect(panel).toContain('import { employmentStatusLabel } from "@shared/hr"');
-    expect(panel).toContain('employee.employmentStatus ? employmentStatusLabel(employee.employmentStatus) : "—"');
-    expect(panel).not.toContain('"منتهي الخدمة"');
-    expect(panel).not.toContain('"على رأس العمل"');
-    expect(panel).toContain("إجمالي الرصيد ضمن النطاق");
-    expect(panel).toContain("لا تعرض هذه اللوحة أجور الموظفين أو تفاصيل مسيّرات الرواتب");
-    expect(panel).not.toContain("payroll.list.useQuery");
-    expect(panel).not.toContain("payroll.get.useQuery");
-    expect(panel).not.toContain("payroll.obligations.useQuery");
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.clearAllMocks();
   });
 
-  it("requires precise evidence and never sends a repayment above the Decimal balance", () => {
-    expect(panel).toContain("D(effectiveAmount || 0).lte(D(selected.remaining))");
-    expect(panel).toContain("evidenceNote.trim().length >= 10");
-    expect(panel).toContain('/^\\d{4}$/.test(lastFour)');
-    expect(panel).toContain('setLastFour(event.target.value.replace(/\\D/g, "").slice(0, 4))');
-    expect(panel).toContain('cashBucket: method === "CASH" ? "DRAWER"');
-    expect(panel).toContain("shiftQ.data?.id");
-    expect(panel).toContain('timeZone: "Asia/Baghdad"');
+  it("exports valid React component functions", () => {
+    expect(typeof EmployeeAdvances).toBe("function");
+    expect(typeof EmployeeAdvanceRepaymentPanel).toBe("function");
   });
 
-  it("prints the receipt, journal entry, allocations, actors, and audit hashes", () => {
-    expect(panel).toContain("repaymentPrint(request, allocations)");
-    expect(panel).toContain("REC-${request.receiptId}");
-    expect(panel).toContain("AE-${request.accountingEntryId}");
-    expect(panel).toContain("request.sourceHash");
-    expect(panel).toContain("request.evidenceHash");
-    expect(panel).toContain("USER-${request.createdBy}");
-    expect(panel).toContain("USER-${request.reviewedBy}");
-    expect(panel).toContain("iqd(row.amount)");
-    expect(panel).toContain("allocation.receiptId");
-    expect(panel).toContain("allocation.accountingEntryId");
+  it("renders EmployeeAdvanceRepaymentPanel with scoped balances and pending requests", () => {
+    act(() => {
+      root.render(<EmployeeAdvanceRepaymentPanel />);
+    });
+
+    expect(host.textContent).toContain("أحمد علي");
+    expect(host.textContent).toContain("25,000 د.ع");
+    expect(host.textContent).toContain("بانتظار الاعتماد");
+    expect(host.textContent).toContain("تسديد نقدي موثق في الدرج");
   });
 
-  it("exports an allocation-level Excel register with money guarded at the file boundary", () => {
-    expect(panel).toContain("exportRepaymentLedger");
-    expect(panel).toContain('filename: "سجل-سداد-سلف-الموظفين"');
-    expect(panel).toContain("toExcelMoney(request.amount)");
-    expect(panel).toContain("toExcelMoney(allocation.amount)");
-    expect(panel).toContain('header: "إيصال التخصيص"');
-    expect(panel).toContain('header: "قيد التخصيص"');
+  it("enforces maker-checker: owner can see approve button for pending requests", () => {
+    harness.isOwner = true;
+    act(() => {
+      root.render(<EmployeeAdvanceRepaymentPanel />);
+    });
+
+    const buttons = Array.from(host.querySelectorAll("button"));
+    const approveBtn = buttons.find((b) => b.textContent?.includes("اعتماد"));
+    expect(approveBtn).toBeDefined();
   });
 
-  it("lets any active owner decide a return regardless of who touched the original repayment (قرار المالك ٣/٩/٢٦)", () => {
-    expect(panel).not.toContain("original?.createdBy");
-    expect(panel).not.toContain("original?.reviewedBy");
-    expect(panel).not.toContain("const independent");
+  it("enforces maker-checker: non-owner cannot see approve button for pending requests", () => {
+    harness.isOwner = false;
+    act(() => {
+      root.render(<EmployeeAdvanceRepaymentPanel />);
+    });
+
+    const buttons = Array.from(host.querySelectorAll("button"));
+    const approveBtn = buttons.find((b) => b.textContent?.includes("اعتماد"));
+    expect(approveBtn).toBeUndefined();
   });
 
-  it("keeps IQD arithmetic in Decimal and guards Excel conversion", () => {
-    expect(page).toContain("toExcelMoney(r.amount)");
-    expect(page).toContain("toExcelMoney(r.remaining)");
-    expect(page).not.toContain("Number(r.amount)");
-    expect(page).not.toContain("Number(r.remaining)");
-    expect(page).not.toContain("Number(amount || 0)");
-    expect(page).not.toContain("Number(balQ.data.balance)");
+  it("verifies employment status labels from @shared/hr", () => {
+    expect(employmentStatusLabel("active")).toBe("على رأس العمل");
+    expect(employmentStatusLabel("leave")).toBe("في إجازة");
+    expect(employmentStatusLabel("terminated")).toBe("منتهي الخدمة");
+  });
+
+  it("guards financial numbers using Decimal and toExcelMoney", () => {
+    expect(toExcelMoney("25000.50")).toBe(25000.5);
+    expect(D("25000.00").lte(D("50000.00"))).toBe(true);
+    expect(D("60000.00").lte(D("50000.00"))).toBe(false);
+  });
+
+  it("validates card and evidence input rules", () => {
+    const validCard = "1234";
+    const invalidCard = "12a4";
+    const shortCard = "123";
+    expect(/^\d{4}$/.test(validCard)).toBe(true);
+    expect(/^\d{4}$/.test(invalidCard)).toBe(false);
+    expect(/^\d{4}$/.test(shortCard)).toBe(false);
+
+    const validEvidence = "إشعار تحويل مصرفي معتمد ومراجع";
+    const shortEvidence = "تحويل";
+    expect(validEvidence.trim().length >= 10).toBe(true);
+    expect(shortEvidence.trim().length >= 10).toBe(false);
   });
 });

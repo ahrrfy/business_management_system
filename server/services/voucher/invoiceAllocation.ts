@@ -27,6 +27,7 @@
  * الذي يقبض مبلغاً يغطّي عدّة فواتير يترك الربط فارغاً (اختياريّ) أو يقسّمه — والرسالة تقول له ذلك.
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { eq, sql } from "drizzle-orm";
 import type Decimal from "decimal.js";
 import { invoices } from "../../../drizzle/schema";
@@ -43,6 +44,23 @@ export interface VoucherInvoiceAllocationInput {
   direction: "IN" | "OUT";
   /** طريقة السند — تُكتب على الفاتورة فقط إن كانت فارغة (لا تدهس عربوناً سابقاً). */
   paymentMethod?: string | null;
+  /** معرف الفرع التابع له السند — لمنع سداد فواتير الفروع الأخرى بدون مقاصة معتمدة (VULN-FIN-02). */
+  voucherBranchId?: number | null;
+  /** إذن تجاوز صريح للمقاصة بين الفروع عبر بروتوكول نظامي معتمد. */
+  allowInterBranchClearing?: boolean;
+  /**
+   * وضع الاعتماد المرن (EDGE-FIN-01):
+   * إذا كانت الفاتورة مسددة مسبقاً أو ملغاة أو لا تكفي لاستيعاب كامل المبلغ،
+   * لا يرمي خطأً يعطل الاعتماد بل يعيد { allocated: false } لفك ربط الفاتورة وقيد المبلغ على حساب العميل.
+   */
+  gracefulSettledInvoice?: boolean;
+}
+
+export interface VoucherInvoiceAllocationResult {
+  paidAmount: string;
+  status: string;
+  allocated: boolean;
+  unallocatedReason?: "DEAD_INVOICE" | "ALREADY_SETTLED" | "EXCEEDS_REMAINING" | "EXCEEDS_PAID";
 }
 
 /**
@@ -52,12 +70,30 @@ export interface VoucherInvoiceAllocationInput {
 export async function allocateVoucherToInvoiceTx(
   tx: Tx,
   input: VoucherInvoiceAllocationInput,
-): Promise<{ paidAmount: string; status: string }> {
+): Promise<VoucherInvoiceAllocationResult> {
   const inv = (
     await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1)
   )[0];
   if (!inv) {
     throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة المرتبطة غير موجودة" });
+  }
+
+  // تحقق مطابقة الفرع (VULN-FIN-02): منع سداد فاتورة فرع آخر بسند قبض محلي
+  // يُستثنى الإنقاص (عكس/إلغاء سند قائم) أو عند طلب مقاصة صريحة معتمدة
+  if (
+    input.voucherBranchId != null &&
+    Number(inv.branchId) !== Number(input.voucherBranchId) &&
+    input.direction === "IN" &&
+    !input.allowInterBranchClearing
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "لا يمكن سداد فاتورة فرع آخر بسند قبض محلي",
+        why: `الفاتورة #${inv.id} تتبع الفرع (${inv.branchId}) ولا يمكن سدادها بسند صادر من الفرع (${input.voucherBranchId})`,
+        doThis: "سدّد الفاتورة من فرعها الأصلي أو استخدم مقاصة تسوية بين الفروع المعتمدة",
+      }),
+    });
   }
 
   // اتجاه الأثر: القبض يزيد المدفوع، والردّ/الإلغاء ينقصه.
@@ -71,6 +107,14 @@ export async function allocateVoucherToInvoiceTx(
   // حالة الفاتورة — وإلّا احتُجز مالٌ مخصَّصٌ لفاتورةٍ ماتت بلا أيّ مخرج (نقضٌ للمبدأ الحاكم:
   // كل مالٍ محتجَز يلزمه مسار خروجٍ ممكنٌ دائماً).
   if (isCredit && isDeadInvoice(inv)) {
+    if (input.gracefulSettledInvoice) {
+      return {
+        paidAmount: inv.paidAmount,
+        status: inv.status,
+        allocated: false,
+        unallocatedReason: "DEAD_INVOICE",
+      };
+    }
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "لا يمكن تخصيص السند لفاتورة ملغاة أو مرتجعة أو مستبدَلة بمصحّحة",
@@ -80,6 +124,14 @@ export async function allocateVoucherToInvoiceTx(
   if (isCredit) {
     const remaining = net.minus(paid);
     if (input.amount.gt(remaining)) {
+      if (input.gracefulSettledInvoice) {
+        return {
+          paidAmount: inv.paidAmount,
+          status: inv.status,
+          allocated: false,
+          unallocatedReason: remaining.lte(0) ? "ALREADY_SETTLED" : "EXCEEDS_REMAINING",
+        };
+      }
       throw new TRPCError({
         code: "BAD_REQUEST",
         message:
@@ -91,6 +143,14 @@ export async function allocateVoucherToInvoiceTx(
   } else {
     // الإنقاص لا يُنزل المدفوع تحت الصفر (دفاعٌ متعمّق ضدّ عكسٍ مزدوج).
     if (input.amount.gt(paid)) {
+      if (input.gracefulSettledInvoice) {
+        return {
+          paidAmount: inv.paidAmount,
+          status: inv.status,
+          allocated: false,
+          unallocatedReason: "EXCEEDS_PAID",
+        };
+      }
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `المبلغ (${input.amount.toFixed(2)}) يتجاوز المدفوع على الفاتورة (${paid.toFixed(2)}).`,
@@ -131,5 +191,5 @@ export async function allocateVoucherToInvoiceTx(
     })
     .where(eq(invoices.id, input.invoiceId));
 
-  return { paidAmount: toDbMoney(newPaid), status };
+  return { paidAmount: toDbMoney(newPaid), status, allocated: true };
 }

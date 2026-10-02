@@ -2339,6 +2339,70 @@
 			"when": 1788148824000,
 			"tag": "0366_store_thematic_collections",
 			"breakpoints": true
+		},
+		{
+			"idx": 367,
+			"version": "5",
+			"when": 1788148825000,
+			"tag": "0367_shelf_lookup_logs",
+			"breakpoints": true
+		},
+		{
+			"idx": 368,
+			"version": "5",
+			"when": 1788148826000,
+			"tag": "0368_purge_fake_shelf_lookup_logs",
+			"breakpoints": true
+		},
+		{
+			"idx": 369,
+			"version": "5",
+			"when": 1788148827000,
+			"tag": "0369_fixed_assets_category_land_buildings",
+			"breakpoints": true
+		},
+		{
+			"idx": 371,
+			"version": "5",
+			"when": 1788148829000,
+			"tag": "0371_fixed_assets_opening_depreciation",
+			"breakpoints": true
+		},
+		{
+			"idx": 373,
+			"version": "5",
+			"when": 1788148831000,
+			"tag": "0373_hr_missing_enterprise_transactions",
+			"breakpoints": true
+		},
+		{
+			"idx": 374,
+			"version": "5",
+			"when": 1788148832000,
+			"tag": "0374_remove_tasks_and_task_events",
+			"breakpoints": true
+		},
+		{
+			"idx": 375,
+			"version": "5",
+			"when": 1788148833000,
+			"tag": "0375_service_quotation_and_advanced_sale_routing",
+			"breakpoints": true
+		},
+		{
+			"idx": 376,
+			"version": "5",
+			"when": 1788148834000,
+			"tag": "0376_add_branch_id_to_attendance",
+			"breakpoints": true
+		},
+		{
+			"idx": 377,
+			"version": "5",
+			"when": 1788148835000,
+			"tag": "0377_storefront_customizable_order_items",
+			"breakpoints": true
 		}
 	]
 }
+

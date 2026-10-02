@@ -61,7 +61,7 @@ import {
 const TABLES = [
   "workOrderEvents", "workOrderControlRequests",
   "workOrderDesignApprovals", "workOrderDesignRevisions",
-  "taskEvents", "tasks", "serviceTypes", "auditLogs",
+  "serviceTypes", "auditLogs",
   "orderPayments", "receptionDraftLines", "receptionDrafts",
   "idempotencyKeys", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrderImages", "workOrders",

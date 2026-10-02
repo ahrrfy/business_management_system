@@ -460,11 +460,11 @@ export default function Attendance() {
                 {range === "custom" && (
                   <>
                     <FilterField label="من تاريخ">
-                      <input type="date" className={selectClsSm} dir="ltr" value={f.customFrom} max={f.customTo || undefined}
+                      <Input type="date" className={selectClsSm} value={f.customFrom} max={f.customTo || undefined}
                         onChange={(e) => setF({ customFrom: e.target.value })} aria-label="من تاريخ" />
                     </FilterField>
                     <FilterField label="إلى تاريخ">
-                      <input type="date" className={selectClsSm} dir="ltr" value={f.customTo} min={f.customFrom || undefined}
+                      <Input type="date" className={selectClsSm} value={f.customTo} min={f.customFrom || undefined}
                         onChange={(e) => setF({ customTo: e.target.value })} aria-label="إلى تاريخ" />
                     </FilterField>
                   </>

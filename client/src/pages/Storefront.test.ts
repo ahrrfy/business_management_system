@@ -1,5 +1,26 @@
-import { loadGuestTrackingOrders, rememberGuestTrackingOrder } from '@/lib/storefrontGuestTracking';
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    storefront: {
+      catalog: { useInfiniteQuery: () => ({}) },
+      product: { useQuery: () => ({}) },
+      labelSummary: { useQuery: () => ({}) },
+      related: { useQuery: () => ({}) },
+      cartRecommendations: { useQuery: () => ({}) },
+      quoteOrder: { useQuery: () => ({}) },
+      categories: { useQuery: () => ({}) },
+      offers: { useQuery: () => ({}) },
+      banners: { useQuery: () => ({}) },
+      settings: { useQuery: () => ({}) },
+      trackRecommendationClick: { useMutation: () => ({}) },
+      createCartShare: { useMutation: () => ({}) },
+      trackOrderByToken: { useMutation: () => ({}) },
+    },
+  },
+}));
+
+import { loadGuestTrackingOrders, rememberGuestTrackingOrder } from '@/lib/storefrontGuestTracking';
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
@@ -10,6 +31,7 @@ import {
   collectStorefrontFailures,
   formatStorefrontReservationDeadline,
   getStorefrontCustomizationConfig,
+  loadCart,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
@@ -17,6 +39,7 @@ import {
   saveCheckoutAttempt,
   saveStorefrontSnapshot,
   setStorefrontCartQuantity,
+  summarizeStorefrontCustomization,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
   storefrontMediaUrls,
@@ -27,19 +50,19 @@ import {
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   storefrontProductCanBeOrdered,
-  STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE,
   validateStorefrontCheckout,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH, storefrontVisibleCustomizationFieldKeys } from "./store/storefrontCustomization";
 
 describe("storefront related product actions", () => {
   it("يفصل الإضافة المباشرة عن المنتجات التي تحتاج اختياراً", () => {
     const base = { productId: 1, productName: "دفتر", imageUrl: null, price: "5000", productUnitId: 11, unitName: "قطعة", inStock: true };
     expect(recommendationActionLabel(base)).toBe("أضف إلى السلة");
-    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
-    expect(storefrontProductCanBeOrdered({ ...base, isCustomizable: true })).toBe(false);
+    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe("اختر تفاصيل التخصيص");
+    expect(storefrontProductCanBeOrdered({ ...base, isCustomizable: true })).toBe(true);
     expect(recommendationActionLabel({ ...base, variants: [{ label: "لون", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }, { label: "قياس", units: [{ productUnitId: 12, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }] })).toBe("اختر الخيارات");
     expect(recommendationActionLabel({ ...base, variants: [{ label: "قياس", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }, { productUnitId: 12, price: "9000", salePrice: null, unitName: "علبة", inStock: true }] }] })).toBe("اختر الخيارات");
     expect(recommendationActionLabel({ ...base, inStock: false })).toBe("غير متوفر");
@@ -56,7 +79,7 @@ describe("storefront Turnstile submission gate", () => {
 });
 
 describe("storefront customization", () => {
-  it("keeps customizable products visible but fails closed before cart or checkout", () => {
+  it("keeps customizable products sellable while requiring their structured details", () => {
     expect(getStorefrontCustomizationConfig(false, "PRINT")).toBeNull();
     expect(getStorefrontCustomizationConfig(true, null)).toBeNull();
     expect(getStorefrontCustomizationConfig(true, "PRINT")).toBeNull();
@@ -83,23 +106,44 @@ describe("storefront customization", () => {
     expect(config?.fields[0]?.fieldKey).toBe("service");
     expect(config?.fields[0]?.isRequired).toBe(true);
     const base = new Map<string, CartLine>();
-    const blocked = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { kind: "PRINT", service: "اسم أو عبارة", message: "سارة" } }, "2500");
-    expect(blocked.size).toBe(0);
+    const configured = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { templateId: 10, kind: "PRINT", values: { service: "text", message: "سارة" }, selections: [{ fieldKey: "service", label: "نوع التنفيذ", value: "text", displayValue: "اسم أو عبارة" }, { fieldKey: "message", label: "التفاصيل", value: "سارة", displayValue: "سارة" }] } }, "2500");
+    expect(configured.size).toBe(1);
+    expect(summarizeStorefrontCustomization(Array.from(configured.values())[0]?.customization)).toBe("نوع التنفيذ: اسم أو عبارة • التفاصيل: سارة");
+    const refreshed = addStorefrontCartLine(configured, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { templateId: 10, kind: "PRINT", values: { message: "سارة", service: "text" }, selections: [{ fieldKey: "message", label: "النص", value: "سارة", displayValue: "سارة" }], priceDelta: "250.00" } }, "2750");
+    expect(refreshed.size).toBe(1);
+    expect(Array.from(refreshed.values())[0]).toMatchObject({ qty: 2, price: "2750" });
+    const restored = loadCart({ getItem: () => JSON.stringify([
+      { ...Array.from(configured.values())[0], cartKey: "legacy-old" },
+      { ...Array.from(refreshed.values())[0], cartKey: "legacy-new", qty: 1 },
+    ]) });
+    expect(restored.size).toBe(1);
+    expect(Array.from(restored.values())[0]?.qty).toBe(2);
+    expect(addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true }, "2500").size).toBe(0);
     const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-    expect(source).toContain("detailQ.data.isCustomizable ? (");
-    expect(source).toContain(") : customizationConfig ? (");
-    expect(source).toContain("disabled={detailQ.data.isCustomizable ||");
+    expect(source).not.toContain("detailQ.data.isCustomizable ? (");
+    expect(source).not.toContain("disabled={detailQ.data.isCustomizable ||");
+    expect(source).not.toContain("!detailQ.data.isCustomizable && (detailQ.data.variants?.length ?? 0)");
     expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
-    expect(source).toContain("cartHasUnsupportedCustomization");
-    expect(source).toContain(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
+    expect(source).not.toContain("cartHasUnsupportedCustomization");
+    expect(DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH).toBe(2_000);
+    expect(source).toContain("field.maxLength ?? DEFAULT_STOREFRONT_CUSTOMIZATION_MAX_LENGTH");
+  });
+
+  it("hides dependent customization fields transitively", () => {
+    const fields = [
+      { fieldKey: "mode", dependency: null },
+      { fieldKey: "message", dependency: { fieldKey: "mode", operator: "equals" as const, value: "text" } },
+      { fieldKey: "signature", dependency: { fieldKey: "message", operator: "notEquals" as const, value: "blocked" } },
+    ];
+    expect(Array.from(storefrontVisibleCustomizationFieldKeys(fields, { mode: "file", message: "stale", signature: "hidden" }))).toEqual(["mode"]);
   });
 });
 
 describe("storefront reservation deadline", () => {
-  it("يعرض لقطة المهلة بتوقيت بغداد بوضوح", () => {
+  it("يعرض لقطة المهلة بتوقيت بغداد بوضوح وبالأرقام اللاتينية", () => {
     const formatted = formatStorefrontReservationDeadline("2026-08-18T12:30:00.000Z");
-    expect(formatted).toContain("٢٠٢٦");
-    expect(formatted).toContain("٣:٣٠");
+    expect(formatted).toContain("2026");
+    expect(formatted).toContain("3:30");
   });
 });
 
@@ -470,6 +514,63 @@ describe("getStorefrontSearchSuggestions", () => {
     expect(() => getStorefrontSearchSuggestions(items as never, "قلم")).not.toThrow();
     expect(getStorefrontSearchSuggestions(items as never, "قلم")).toHaveLength(1);
   });
+
+  it("matches multiple tokens across the product name in any order (R1)", () => {
+    const items = [
+      p(1, "كتاب احياء اول متوسط متميزين"),
+      p(2, "كتاب كيمياء اول متوسط متميزين"),
+      p(3, "دفتر احياء مدرسي"),
+    ];
+
+    expect(getStorefrontSearchSuggestions(items, "احياء متميزين").map((it) => it.productId)).toEqual([1]);
+    expect(getStorefrontSearchSuggestions(items, "متميزين احياء").map((it) => it.productId)).toEqual([1]);
+    expect(getStorefrontSearchSuggestions(items, "متميزين اول").map((it) => it.productId)).toEqual([1, 2]);
+  });
+
+  it("normalizes Eastern Arabic and Western digits symmetrically (R1)", () => {
+    const items = [
+      p(1, "دفتر 100 ورقة"),
+      p(2, "دفتر ٢٠٠ ورقة"),
+    ];
+
+    // بحث بأرقام مشرقية يطابق منتجاً بأرقام غربية
+    expect(getStorefrontSearchSuggestions(items, "دفتر ١٠٠").map((it) => it.productId)).toEqual([1]);
+    // بحث بأرقام غربية يطابق منتجاً بأرقام مشرقية
+    expect(getStorefrontSearchSuggestions(items, "دفتر 200").map((it) => it.productId)).toEqual([2]);
+    // بحث بالرقم وحده
+    expect(getStorefrontSearchSuggestions(items, "100").map((it) => it.productId)).toEqual([1]);
+    expect(getStorefrontSearchSuggestions(items, "٢٠٠").map((it) => it.productId)).toEqual([2]);
+  });
+
+  it("normalizes alif maqsura (ى) and yaa (ي) in suggestions (R1)", () => {
+    const items = [
+      p(1, "مستشفى الأمل"),
+      p(2, "مكتبة الشرق"),
+    ];
+
+    expect(getStorefrontSearchSuggestions(items, "مستشفي").map((it) => it.productId)).toEqual([1]);
+  });
+
+  it("ranks exact matches higher than prefix/infix matches (R3)", () => {
+    const items = [
+      p(1, "دفتر سلك 100 ورقة"),
+      p(2, "دفتر"),
+      p(3, "قلم جاف مع دفتر"),
+    ];
+
+    const result = getStorefrontSearchSuggestions(items, "دفتر").map((it) => it.productId);
+    expect(result).toEqual([2, 1, 3]);
+  });
+
+  it("prioritizes in-stock products over out-of-stock products (R3)", () => {
+    const items = [
+      { productId: 1, productName: "دفتر كشكول فاخر", inStock: false },
+      { productId: 2, productName: "دفتر كشكول عادي", inStock: true },
+    ];
+
+    const result = getStorefrontSearchSuggestions(items, "دفتر كشكول").map((it) => it.productId);
+    expect(result).toEqual([2, 1]);
+  });
 });
 
 describe("storefront checkout validation", () => {
@@ -543,6 +644,7 @@ describe("storefront guest tracking ownership", () => {
     expect(source).toContain("trackOrderByToken.useMutation");
     expect(source).not.toContain("trackOrder.fetch");
     expect(source).toContain("quoteOrderPrivate.useMutation");
+    expect(source).toContain("storefrontQuoteLines.some((line) => line.customization != null)");
   });
 });
 

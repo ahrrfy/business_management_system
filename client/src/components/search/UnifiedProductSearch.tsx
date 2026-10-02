@@ -15,7 +15,7 @@
 import * as React from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, formatQuantity } from "@/lib/money";
 import { UnifiedSearchInput } from "./UnifiedSearchInput";
 import { cn } from "@/lib/utils";
 
@@ -252,7 +252,7 @@ export function UnifiedProductSearch({
                       <>
                         <span>·</span>
                         <span className={getStockColorClass(available)}>
-                          {branchName} · فعلي: {fmtAr(p.stockBase)} · محجوز: {fmtAr(p.reservedBase ?? 0)} · متاح للبيع: {fmtAr(available)}
+                          {branchName} · فعلي: {formatQuantity(p.stockBase)} · محجوز: {formatQuantity(p.reservedBase ?? 0)} · متاح للبيع: {formatQuantity(available)}
                         </span>
                       </>
                     )}

@@ -59,6 +59,7 @@ import {
 import {
   isVoucherCategoryRoleCompatible,
   UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES,
+  voucherCategoryAccountingGuidance,
   voucherCategoryRoleLabel,
 } from "@shared/voucherCategoryAccounting";
 import {
@@ -159,16 +160,16 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const selectedCategoryReady =
     selectedCategory != null &&
     isVoucherCategoryRoleCompatible(
-      selectedCategory.direction,
+      direction,
       selectedCategory.postingRole,
     );
   /** فئات صالحة فعلاً لهذا الاتجاه (نشِطة + حساب مقابل متوافق) — صفرٌ يعني طريقاً مسدوداً. */
   const readyCategoryCount = useMemo(
     () =>
       categoryOptions.filter((c) =>
-        isVoucherCategoryRoleCompatible(c.direction, c.postingRole),
+        isVoucherCategoryRoleCompatible(direction, c.postingRole),
       ).length,
-    [categoryOptions],
+    [categoryOptions, direction],
   );
   // مرآة بوّابة الخادم لفئات السندات (treasuryGlobalProcedure) — إخفاء بصريّ فقط، والإنفاذ خادميّ.
   const canManageCategories =
@@ -842,14 +843,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                     value={Number(c.id)}
                     disabled={
                       !isVoucherCategoryRoleCompatible(
-                        c.direction,
+                        direction,
                         c.postingRole,
                       )
                     }
                   >
                     {c.name}
                     {!isVoucherCategoryRoleCompatible(
-                      c.direction,
+                      direction,
                       c.postingRole,
                     )
                       ? (
@@ -861,6 +862,41 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   </option>
                 ))}
               </AppSelect>
+              {selectedCategory && (
+                <div className="rounded-md border border-border/70 bg-muted/40 p-2.5 text-xs space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Info aria-hidden className="size-3.5 text-primary shrink-0" />
+                      {selectedCategory.name}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-[11px] font-medium px-2 py-0.5 rounded",
+                        selectedCategoryReady
+                          ? "text-primary bg-primary/10"
+                          : "text-[var(--sem-warn)] bg-[var(--sem-warn-bg)] border border-[var(--sem-warn)]/30",
+                      )}
+                    >
+                      {selectedCategoryReady
+                        ? `مهيأة محاسبياً: ${voucherCategoryRoleLabel(selectedCategory.postingRole)}`
+                        : "غير مهيأة محاسبياً"}
+                    </span>
+                  </div>
+                  {selectedCategory.description && (
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      {selectedCategory.description}
+                    </p>
+                  )}
+                  {selectedCategoryReady && (
+                    <div className="pt-1 text-[11px] text-muted-foreground border-t border-border/40 flex flex-wrap items-baseline gap-1.5">
+                      <span className="font-medium text-foreground">التوجيه المحاسبي:</span>
+                      <span>
+                        {voucherCategoryAccountingGuidance(direction, selectedCategory)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
               {/* حقلٌ إلزاميّ بقائمةٍ فارغة = طريقٌ مسدود. حين لا توجد ولا فئةٌ جاهزة لهذا الاتجاه
                   نقول ذلك صراحةً ونعرض المخرجين: إنشاء فئة الآن، أو استعادة الكتالوج الافتراضي. */}
               {partyType === "OTHER" && readyCategoryCount === 0 && !categories.isLoading && (
@@ -912,6 +948,19 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   إدارة الفئات
                 </Link>
               </p>
+              {partyType === "OTHER" && (
+                <div className="rounded-md border border-border/60 bg-muted/40 p-2.5 text-[11px] text-muted-foreground space-y-1">
+                  <p className="font-medium text-foreground flex items-center gap-1.5">
+                    <Info aria-hidden className="size-3.5 text-primary shrink-0" />
+                    توجيه محاسبي للطرف (أخرى):
+                  </p>
+                  <p>
+                    {isReceipt
+                      ? "سند القبض يثبت المقبوضات النقدية والبنكية والإيرادات التشغيلية والخدمية والتمويلية المباشرة (مثل إيرادات الطباعة، القرطاسية، الفلكس، التوصيل، الهدايا، الإيرادات المتفرقة، وإيداعات المالك والقروض). لمبيعات الأصناف ذات الخصم المخزني الآلي من الرفوف، يُنصح باستخدام فواتير المبيعات أو نقاط البيع."
+                      : "سند الصرف يثبت المصروفات التشغيلية المباشرة والمسحوبات وسداد الالتزامات. لسداد فواتير الموردين المعتمدة، يُفضل اختيار الطرف (مورد) لتسوية الذمم آلياً."}
+                  </p>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -1049,8 +1098,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   onChange={(e) => setCounterpartyName(e.target.value)}
                   placeholder={
                     isReceipt
-                      ? "مَثلاً: شركة الإعلان — تَحصيل"
-                      : "مَثلاً: الموظف أحمد محمد / مالك العقار"
+                      ? "مَثلاً: المستثمر / شركة الإعلان — تَحصيل"
+                      : "مَثلاً: المستثمر (مثل: سلمى أحمد) / الموظف أحمد محمد"
                   }
                 />
                 <p className="text-[11px] text-muted-foreground">

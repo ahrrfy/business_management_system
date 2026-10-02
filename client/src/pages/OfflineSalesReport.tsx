@@ -6,6 +6,7 @@
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { FilterField } from "@/components/list";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -319,12 +320,10 @@ export default function OfflineSalesReport() {
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <FilterField label="من تاريخ">
-            <input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm" />
+            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-36" />
           </FilterField>
           <FilterField label="إلى تاريخ">
-            <input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm" />
+            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-36" />
           </FilterField>
           <FilterField label="الفرع" className="w-40">
             <AppSelect value={branchId ? String(branchId) : ""} onValueChange={(v) => setBranchId(v ? Number(v) : "")}>

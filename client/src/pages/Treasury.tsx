@@ -7,7 +7,8 @@ import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { DeliveryCustodyCard } from "@/components/treasury/DeliveryCustodyCard";
 import { PendingHandoversSection, CustodyQueryNotice } from "@/components/treasury/PendingHandoversSection";
 import { FundTreasuryDialog } from "@/components/treasury/FundTreasuryDialog";
-import { FinancialSourceBadge } from "@/components/financial";
+import { FinancialCellProvenanceHover, FinancialSourceBadge } from "@/components/financial";
+import type { FinancialCellProvenancePayload } from "@shared/financialProvenance";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { moduleAccessAllowed } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
@@ -115,6 +116,7 @@ interface MovementRow {
   documentDate: string | null;
   integrityWarnings: string[];
   createdAt: string;
+  provenance?: FinancialCellProvenancePayload;
 }
 
 const MOVEMENT_WARNING_LABEL: Record<string, string> = {
@@ -319,9 +321,11 @@ export default function Treasury() {
               )}
               {row.original.direction === "IN" ? "وارد" : "صادر"}
             </span>
-            <div className="tabular-nums font-bold" dir="ltr">
-              {fmtAr(row.original.amount)}
-            </div>
+            <FinancialCellProvenanceHover data={row.original.provenance}>
+              <div className="tabular-nums font-bold hover:underline cursor-pointer text-end block w-full" dir="ltr">
+                {fmtAr(row.original.amount)}
+              </div>
+            </FinancialCellProvenanceHover>
           </div>
         ),
       },

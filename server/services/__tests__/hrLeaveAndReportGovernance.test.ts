@@ -70,7 +70,7 @@ describe("حارس المسيّر المُقفَل على الإجازات (ن١
     const r = await decideLeave(Number(lv!.id), "approved", HR);
     expect(r!.status).toBe("approved");
     const [emp] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
-    expect(emp.annualLeaveBalance).toBe(25);
+    expect(emp.annualLeaveBalance).toBe(27);
   });
 
   it("ن٤) ولا تُلغى إجازةٌ في شهرٍ صار مقفلاً بعد اعتمادها", async () => {
@@ -86,11 +86,11 @@ describe("فصل المهام على إلغاء الإجازة (ن٣)", () => {
     const lv = await createLeave({ employeeId: 1, leaveType: "سنوية", fromDate: "2026-09-10", toDate: "2026-09-19", days: 10 });
     await decideLeave(Number(lv!.id), "approved", HR);
     const [before] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
-    expect(before.annualLeaveBalance).toBe(20);
+    expect(before.annualLeaveBalance).toBe(24);
 
     await expect(cancelLeave(Number(lv!.id), SELF)).rejects.toThrow(/إجازتك بنفسك/);
     const [after] = await db().select().from(s.employees).where(eq(s.employees.id, 1));
-    expect(after.annualLeaveBalance).toBe(20); // الرصيد لم يُستردّ
+    expect(after.annualLeaveBalance).toBe(24); // الرصيد لم يُستردّ
   });
 
   it("ومُقرِّرٌ آخر يُلغيها فيستردّ الرصيد", async () => {

@@ -74,7 +74,8 @@ type RefundInputRow = {
 function refundCapSnapshot(
   receiptRows: RefundInputRow[],
   applicationRows: RefundInputRow[],
-  collectedAmount: unknown,
+  remittedAmount: unknown,
+  unremittedAmount?: unknown,
 ): RefundCapSnapshot {
   const inByMethod = new Map<RefundMethod, Decimal>();
   const outByMethod = new Map<RefundMethod, Decimal>();
@@ -91,7 +92,10 @@ function refundCapSnapshot(
     if (!m) continue;
     add(inByMethod, m, money(String(r.amount ?? "0")));
   }
-  add(inByMethod, "CASH", money(String(collectedAmount ?? "0")));
+  // النقد المورّد فعلاً إلى الخزينة/الدرج عبر توريد معتمد (remittanceId IS NOT NULL)
+  add(inByMethod, "CASH", money(String(remittedAmount ?? "0")));
+
+  const unremittedCustody = money(String(unremittedAmount ?? "0"));
 
   let totalIn = money(0);
   let totalOut = money(0);
@@ -107,7 +111,15 @@ function refundCapSnapshot(
     capByMethod.set(m, isSurfacedRefundMethod(m) ? pool : Decimal.min(pool, net));
   }
 
-  return { pool, grossIn: totalIn, grossOut: totalOut, netByMethod, capByMethod };
+  return {
+    pool,
+    grossIn: totalIn,
+    grossOut: totalOut,
+    netByMethod,
+    capByMethod,
+    unremittedDeliveryCustody: unremittedCustody,
+    hasUnremittedDelivery: unremittedCustody.gt(0),
+  };
 }
 
 export interface RefundCapSnapshot {
@@ -127,6 +139,10 @@ export interface RefundCapSnapshot {
   netByMethod: Map<RefundMethod, Decimal>;
   /** السقف الأقصى لكل طريقة **قبل** قصّه بقيمة المرتجع الجاري. */
   capByMethod: Map<RefundMethod, Decimal>;
+  /** عهدة المندوب غير المورّدة: طرد تسليم لم يدخل نقده الدرج/الخزينة بعد (remittanceId IS NULL). */
+  unremittedDeliveryCustody: Decimal;
+  /** هل الفاتورة مرتبطة بعهدة توصيل غير مورّدة؟ */
+  hasUnremittedDelivery: boolean;
 }
 
 /**
@@ -188,17 +204,36 @@ export async function loadRefundCaps(
   );
 
   // ③ ما حصّله المندوب وورّده: إيصال التوريد مجمَّعٌ لعدّة فواتير بلا `invoiceId` فلا يراه ①.
-  //    قرار المالك (٦/٨): مالٌ نقديّ وصلنا فعلاً ⇒ يدخل الوعاء برافدٍ نقديّ.
-  const collectedRows = rowsOf(
+  //    قرار المالك (٦/٨): مالٌ نقديّ وصلنا فعلاً ومُورَّد إلى صندوق الشركة ⇒ يدخل الوعاء برافدٍ نقديّ.
+  //    ⚠️ يجب أن يكون مُورَّداً (remittanceId IS NOT NULL)؛ ما لم يُورَّد فهو عهدة مندوب لا نقد درج.
+  const remittedRows = rowsOf(
     await exec.execute(sql`
       SELECT CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS amount
       FROM deliveryConsignments cn
       WHERE cn.invoiceId = ${invoiceId}
         AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
+        AND cn.remittanceId IS NOT NULL
     `),
   );
 
-  return refundCapSnapshot(receiptRows, applicationRows, collectedRows[0]?.amount);
+  // ④ عهدة التوصيل غير المورّدة: ما زالت بذمة المندوب ولم يدخل الدرج منها فلس واحد.
+  const unremittedRows = rowsOf(
+    await exec.execute(sql`
+      SELECT CAST(COALESCE(SUM(COALESCE(NULLIF(cn.collectedAmount, '0.00'), cn.codAmount, '0.00')), 0) AS CHAR) AS amount
+      FROM deliveryConsignments cn
+      WHERE cn.invoiceId = ${invoiceId}
+        AND (cn.parcelStatus = 'DELIVERED' OR cn.consignmentStatus IN ('DELIVERED','PARTIAL'))
+        AND cn.remittanceId IS NULL
+        AND cn.consignmentStatus NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')
+    `),
+  );
+
+  return refundCapSnapshot(
+    receiptRows,
+    applicationRows,
+    remittedRows[0]?.amount,
+    unremittedRows[0]?.amount,
+  );
 }
 
 /**
@@ -255,20 +290,24 @@ export async function loadRefundCapsByInvoiceIds(
     `),
     exec.execute(sql`
       SELECT cn.invoiceId AS invoiceId,
-             CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS amount
+             CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NOT NULL THEN COALESCE(cn.collectedAmount, 0) ELSE 0 END), 0) AS CHAR) AS remittedAmount,
+             CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NOT NULL THEN COALESCE(cn.collectedAmount, 0) ELSE 0 END), 0) AS CHAR) AS amount,
+             CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NULL THEN COALESCE(NULLIF(cn.collectedAmount, '0.00'), cn.codAmount, '0.00') ELSE 0 END), 0) AS CHAR) AS unremittedAmount
       FROM deliveryConsignments cn
       WHERE cn.invoiceId IN (${idList})
-        AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
+        AND (cn.parcelStatus = 'DELIVERED' OR cn.consignmentStatus IN ('DELIVERED','PARTIAL'))
+        AND cn.consignmentStatus NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')
       GROUP BY cn.invoiceId
     `),
   ]);
   const receiptRows = rowsOf(rawRows[0]);
   const applicationRows = rowsOf(rawRows[1]);
-  const collectedRows = rowsOf(rawRows[2]);
+  const deliveryRows = rowsOf(rawRows[2]);
 
   const groupedReceipts = new Map<number, RefundInputRow[]>();
   const groupedApplications = new Map<number, RefundInputRow[]>();
-  const collectedByInvoice = new Map<number, unknown>();
+  const remittedByInvoice = new Map<number, unknown>();
+  const unremittedByInvoice = new Map<number, unknown>();
   const append = (target: Map<number, RefundInputRow[]>, row: any) => {
     const invoiceId = Number(row.invoiceId);
     if (!Number.isSafeInteger(invoiceId)) return;
@@ -278,9 +317,15 @@ export async function loadRefundCapsByInvoiceIds(
   };
   receiptRows.forEach((row) => append(groupedReceipts, row));
   applicationRows.forEach((row) => append(groupedApplications, row));
-  for (const row of collectedRows) {
+  for (const row of deliveryRows) {
     const invoiceId = Number(row.invoiceId);
-    if (Number.isSafeInteger(invoiceId)) collectedByInvoice.set(invoiceId, row.amount);
+    if (Number.isSafeInteger(invoiceId)) {
+      remittedByInvoice.set(
+        invoiceId,
+        (row as any).remittedAmount ?? (row as any).amount,
+      );
+      unremittedByInvoice.set(invoiceId, (row as any).unremittedAmount ?? "0");
+    }
   }
 
   return new Map(invoiceIds.map((invoiceId) => [
@@ -288,7 +333,8 @@ export async function loadRefundCapsByInvoiceIds(
     refundCapSnapshot(
       groupedReceipts.get(invoiceId) ?? [],
       groupedApplications.get(invoiceId) ?? [],
-      collectedByInvoice.get(invoiceId) ?? "0",
+      remittedByInvoice.get(invoiceId) ?? "0",
+      unremittedByInvoice.get(invoiceId) ?? "0",
     ),
   ]));
 }

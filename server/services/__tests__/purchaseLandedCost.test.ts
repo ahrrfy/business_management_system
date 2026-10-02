@@ -11,7 +11,7 @@
 // الجمع بين (٢) و(٤) محظور: لو رُسمِل الشحن **وسُجّل** مصروفاً لاحتُسِب مرّتين فينقص الربح ضعفاً.
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
@@ -31,6 +31,7 @@ import { resubmitRejectedExpensePayment } from "../voucher/approval";
 import { cancelExpense } from "../expenseService";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { toDateStr } from "../money";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const owner = { userId: 2, branchId: 1, role: "manager" as const };
@@ -54,37 +55,53 @@ async function receivePurchase(
   );
 }
 
+const TABLES = [
+  "idempotencyKeys",
+  "auditLogs",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
+  "supplierInvoiceApprovalRequests",
+  "supplierInvoiceMatchAllocations",
+  "supplierInvoiceMatchRuns",
+  "supplierInvoiceLines",
+  "supplierPaymentAllocations",
+  "supplierPayments",
+  "supplierPaymentRequestAllocations",
+  "supplierPaymentRequests",
+  "supplierInvoices",
+  "goodsReceiptAccountingLinks",
+  "goodsReceiptItems",
+  "goodsReceipts",
+  "journalLines",
+  "journalEntries",
+  "doubleEntrySettings",
+  "accrualCorrectionRequests",
+  "accrualObligationEvents",
+  "accrualObligations",
+  "accountingEntries",
+  "expenses",
+  "receipts",
+  "shifts",
+  "financialPeriods",
+  "inventoryMovements",
+  "purchaseOrderItems",
+  "purchaseOrders",
+  "purchaseControlSettings",
+  "branchStock",
+  "productPrices",
+  "productUnits",
+  "productVariants",
+  "products",
+  "suppliers",
+  "branches",
+  "users",
+] as const;
+
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of [
-    "idempotencyKeys",
-    "purchaseOrderEvents",
-    "purchaseOrderControlRequests",
-    "purchaseOrderRequisitionAllocations",
-    "purchaseOrderRevisionItems",
-    "purchaseOrderRevisions",
-    "accrualCorrectionRequests",
-    "accrualObligationEvents",
-    "accrualObligations",
-    "accountingEntries",
-    "expenses",
-    "receipts",
-    "inventoryMovements",
-    "purchaseOrderItems",
-    "purchaseOrders",
-    "branchStock",
-    "productPrices",
-    "productUnits",
-    "productVariants",
-    "products",
-    "suppliers",
-    "branches",
-    "users",
-  ]) {
-    await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  }
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seed() {
@@ -145,6 +162,9 @@ async function seed() {
 beforeEach(async () => {
   await reset();
   await seed();
+});
+afterEach(async () => {
+  await reset();
 });
 
 async function costOf(variantId: number): Promise<string> {

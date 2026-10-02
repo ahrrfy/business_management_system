@@ -1,6 +1,7 @@
 // استلام أمر الشراء (جزئي/كامل): WAVG بسعر المورّد وحده، تراكم الضريبة،
 // قيد PURCHASE + AP للآجل أو clearing للنقدي، واستحقاق شحن عند الاستلام، وطلبات تسوية معلّقة لا تُنفَّذ إلا بعد اعتماد المالك.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
@@ -12,6 +13,7 @@ import {
   purchaseOrderItems,
   purchaseOrders,
   receipts,
+  shifts,
   suppliers,
   users,
 } from "../../../drizzle/schema";
@@ -41,6 +43,8 @@ import {
   createSystemPaymentRequestTx,
   finalizeOwnerSystemVoucherTx,
 } from "../voucher/create";
+import { openShiftIdTx } from "../shiftService";
+import { settlePurchaseShippingFromShiftTx } from "./pay";
 import {
   assertPurchaseBranch,
   pendingPurchaseSupplierPaymentsTx,
@@ -53,6 +57,7 @@ import {
   createAccrualObligationTx,
   transitionAccrualObligationTx,
 } from "../accounting/accrualObligations";
+import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
 
 export function assertUniqueReceiveLines(
   lines: Array<{ purchaseOrderItemId: number }>,
@@ -883,7 +888,107 @@ async function receivePurchaseInTx(
   // النقديّ يُنفّذ حصراً من TREASURY عند الاعتماد؛ وغير النقدي يُحفظ مع دليله ويُسوّى على حساب أداته.
   let shippingPaymentRequestReceiptId: number | null = null;
   if (receivedLanded.gt(0)) {
+    const creatorUserId =
+      po.createdBy != null ? Number(po.createdBy) : actor.userId;
+    const [creatorUser] = await tx
+      .select({
+        id: users.id,
+        branchId: users.branchId,
+        role: users.role,
+        isOwner: users.isOwner,
+      })
+      .from(users)
+      .where(eq(users.id, creatorUserId))
+      .limit(1);
+
+    const creatorActor: Actor = creatorUser
+      ? {
+          userId: Number(creatorUser.id),
+          branchId: Number(po.branchId),
+          role: creatorUser.role,
+          isOwner: Boolean(creatorUser.isOwner),
+        }
+      : {
+          userId: creatorUserId,
+          branchId: Number(po.branchId),
+          role: "cashier",
+        };
+
     const shipMethod = input.shippingPaymentMethod ?? "CASH";
+    let openShiftId: number | null = null;
+    if (input.shippingShiftId != null) {
+      const [explicitShift] = await tx
+        .select({
+          id: shifts.id,
+          status: shifts.status,
+          branchId: shifts.branchId,
+          userId: shifts.userId,
+        })
+        .from(shifts)
+        .where(eq(shifts.id, input.shippingShiftId))
+        .for("update")
+        .limit(1);
+      if (
+        explicitShift &&
+        explicitShift.status === "OPEN" &&
+        Number(explicitShift.branchId) === Number(po.branchId) &&
+        Number(explicitShift.userId) === creatorActor.userId
+      ) {
+        openShiftId = Number(explicitShift.id);
+      }
+    } else {
+      openShiftId = await openShiftIdTx(
+        tx,
+        creatorActor.userId,
+        Number(po.branchId),
+        "RETAIL",
+      );
+    }
+
+    const exceedsPettyCashLimit = receivedLanded.gte(PETTY_CASH_LIMIT_IQD);
+
+    let fundingMode: "DRAWER" | "TREASURY" | "ACCRUAL";
+    let fundingShiftId: number | null = null;
+    let fallbackReason = "";
+    if (input.shippingFundingSource) {
+      fundingMode = input.shippingFundingSource;
+      if (fundingMode === "DRAWER") {
+        fundingShiftId = openShiftId;
+        if (!fundingShiftId) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعذر صرف أجور الشحن من الدرج",
+              why: "لا توجد وردية مبيعات مفتوحة في هذا الفرع",
+              doThis: "افتح وردية مبيعات أولاً ثم أعد استلام أمر الشراء",
+            }),
+          });
+        }
+        if (exceedsPettyCashLimit) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "المبلغ يتجاوز سقف النثرية النقدية للوردية",
+              why: `المبلغ المطلوب (${receivedLanded.toFixed(2)} د.ع) يبلغ أو يتجاوز الحد الأقصى للنثرية (٥٠٠٬٠٠٠ د.ع)`,
+              doThis: "قم بصرف أجور الشحن عبر سند صرف إداري معتمد من الخزينة الرئيسية",
+            }),
+          });
+        }
+      }
+    } else {
+      if (openShiftId != null && !exceedsPettyCashLimit) {
+        fundingMode = "DRAWER";
+        fundingShiftId = openShiftId;
+      } else {
+        fundingMode = "TREASURY";
+        fundingShiftId = null;
+        if (openShiftId == null) {
+          fallbackReason = " — صرف من الخزينة لعدم وجود وردية مفتوحة لمنشئ الفاتورة";
+        } else if (exceedsPettyCashLimit) {
+          fallbackReason = " — صرف من الخزينة لتجاوز أجور الشحن سقف النثرية النقدية للدرج";
+        }
+      }
+    }
     {
       const shippingVoucherReference = `SHIP-${po.poNumber}-${paymentRequestToken}`;
       // الطرف المنسوب إليه المصروف: مورّدٌ مسجَّل إن اختير، وإلّا الاسم الحرّ، وإلّا بديلٌ
@@ -913,19 +1018,19 @@ async function receivePurchaseInTx(
       // expense/ledger قائماً حتى لو رُفضت محاولة الدفع وأُعيد تقديمها.
       const expenseResult = await tx.insert(expenses).values({
         branchId: Number(po.branchId),
-        shiftId: null,
-        cashBucket: null,
+        shiftId: fundingShiftId,
+        cashBucket: fundingMode === "DRAWER" ? "DRAWER" : null,
         expenseDate: new Date(),
         category: "TRANSPORT",
         amount: toDbMoney(receivedLanded),
-        paymentMethod: "ACCRUAL",
-        source: "ACCRUAL",
-        description: `شحن/كمرك أمر الشراء ${po.poNumber}`,
+        paymentMethod: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
+        source: fundingMode === "DRAWER" ? "CASH" : "ACCRUAL",
+        description: `شحن/كمرك أمر الشراء ${po.poNumber}${fallbackReason}`,
         referenceNumber: shippingVoucherReference,
         payee: beneficiaryName,
         receiptId: null,
         status: "ACTIVE",
-        createdBy: actor.userId,
+        createdBy: creatorActor.userId,
       });
       const expenseId = extractInsertId(expenseResult);
       const shippingAccrual = expenseAccrualRecognition(
@@ -936,7 +1041,7 @@ async function receivePurchaseInTx(
       await postEntry(tx, {
         entryType: "ADJUST",
         branchId: Number(po.branchId),
-        createdBy: actor.userId,
+        createdBy: creatorActor.userId,
         purchaseOrderId: input.purchaseOrderId,
         // الاعتراف مستقل عن محاولة السداد الحالية؛ expense.receiptId يحمل
         // رابط الطلب القابل للاستبدال بعد الرفض من دون قيد ثانٍ.
@@ -945,7 +1050,7 @@ async function receivePurchaseInTx(
         postingIntent: shippingAccrual.intent,
         postingSourceComponents: shippingAccrual.sourceComponents,
         dedupeKey: recognitionDedupe,
-        notes: `استحقاق مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
+        notes: `استحقاق مصروف شحن/كمرك — أمر الشراء ${po.poNumber}${fallbackReason}`,
       });
       const [recognitionEntry] = await tx
         .select({ id: accountingEntries.id })
@@ -968,7 +1073,7 @@ async function receivePurchaseInTx(
         evidenceReference: shippingEvidenceReference,
         plannedPaymentMethod: shipMethod,
         clientRequestId: `purchase-shipping-${paymentRequestToken}`,
-        recognizedBy: actor.userId,
+        recognizedBy: creatorActor.userId,
         recognizedAt: new Date(),
         recognitionAccountingEntryId: Number(recognitionEntry.id),
       });
@@ -983,14 +1088,14 @@ async function receivePurchaseInTx(
           partyType: "OTHER",
           partyId: null,
           counterpartyName: beneficiaryName,
-          description: `تسوية مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
+          description: `تسوية مصروف شحن/كمرك — أمر الشراء ${po.poNumber}${fallbackReason}`,
           referenceNumber: shippingVoucherReference,
           checkNumber:
             shipMethod === "TRANSFER" ? shippingPaymentReference : null,
           cardLastFour: shipMethod === "CARD" ? shippingCardLastFour : null,
           clientRequestId: `purchase-shipping-payment-${paymentRequestToken}`,
         },
-        actor,
+        creatorActor,
         {
           kind: "PURCHASE_SHIPPING",
           purchaseOrderId: input.purchaseOrderId,
@@ -1005,6 +1110,8 @@ async function receivePurchaseInTx(
                 : null,
           obligationId: Number(obligation.id),
           obligationSourceHash: obligation.sourceHash,
+          fundingSource: fundingMode === "DRAWER" ? "DRAWER" : "TREASURY",
+          shiftId: fundingShiftId,
           beneficiaryType: obligation.beneficiaryType,
           beneficiaryId:
             obligation.beneficiarySupplierId == null
@@ -1020,12 +1127,27 @@ async function receivePurchaseInTx(
         expectedStatus: "ACCRUED_UNPAID",
         nextStatus: "PAYMENT_PENDING",
         eventType: "PAYMENT_REQUESTED",
-        actorId: actor.userId,
+        actorId: creatorActor.userId,
         receiptId: request.receiptId,
         evidenceReference: shippingEvidenceReference,
         dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
       });
-      await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor);
+      if (fundingMode === "DRAWER") {
+        await settlePurchaseShippingFromShiftTx(
+          tx,
+          {
+            purchaseOrderId: Number(po.id),
+            shiftId: fundingShiftId,
+          },
+          actor,
+        );
+      } else if (fundingMode === "TREASURY" && shipMethod === "CASH") {
+        await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor, {
+          cashSource: {
+            mode: "TREASURY",
+          },
+        });
+      }
     }
   }
 

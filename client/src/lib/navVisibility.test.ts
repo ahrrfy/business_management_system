@@ -15,12 +15,8 @@ function mobileHrefs(
 }
 
 describe("MobileBottomNav — عقود صلاحيات الأدوار", () => {
-  it("لا يعرض للمندوب المهام المحجوبة قالبياً، ويعرضها عند منحها صراحةً", () => {
+  it("لا يعرض للمندوب إلا توصيلاته قالبياً", () => {
     expect(mobileHrefs("courier")).toEqual(["/my-deliveries"]);
-    expect(mobileHrefs("courier", { tasks: "READ" })).toEqual([
-      "/my-deliveries",
-      "/tasks",
-    ]);
   });
 
   it("يحترم المنع الصريح لوحدات أمين المخزن", () => {
@@ -28,7 +24,6 @@ describe("MobileBottomNav — عقود صلاحيات الأدوار", () => {
       mobileHrefs("warehouse", {
         inventory: "NONE",
         purchases: "READ",
-        tasks: "NONE",
       }),
     ).toEqual(["/my-stocktake", "/purchases"]);
   });
@@ -39,7 +34,6 @@ describe("MobileBottomNav — عقود صلاحيات الأدوار", () => {
         pos: "NONE",
         sales: "NONE",
         workorders: "FULL",
-        tasks: "NONE",
       }),
     ).toEqual(["/pos", "/invoices", "/work-orders", "/delivery"]);
   });

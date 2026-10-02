@@ -38,7 +38,10 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
   it("شاشات أوامر الشغل والحجوزات والتسليم بلا إقفالٍ مكتوبٍ يدوياً", () => {
     const pickup = readClient("../delivery/MarkPickedUpDialog.tsx");
     const workOrderNew = readClient("../../pages/WorkOrderNew.tsx");
-    const workOrderDetail = readClient("../../pages/WorkOrderDetail.tsx");
+    const workOrderDetail =
+      readClient("../../pages/WorkOrderDetail.tsx") +
+      "\n" +
+      readClient("../workOrders/WorkOrderDeliveryPaymentCard.tsx");
     const workOrders =
       readClient("../../pages/WorkOrders.tsx") +
       "\n" +

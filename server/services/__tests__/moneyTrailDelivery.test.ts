@@ -258,7 +258,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
     const custBefore = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(Number(custBefore.currentBalance)).toBe(10000); // البيع الآجل رفع ذمّته
 
-    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-ret-1" } as never);
+    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-ret-1", returnReason: "رفض العميل" } as never);
 
     const party = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
     expect(Number(party.currentBalance)).toBe(0); // لم ترتفع قبل التسليم في المرحلة الثانية
@@ -300,7 +300,7 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
       createdBy: 1,
     });
 
-    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-legacy-ret-1" } as never);
+    await returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m4-legacy-ret-1", returnReason: "رفض العميل" } as never);
 
     const party = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
     expect(Number(party.currentBalance)).toBe(0);
@@ -337,8 +337,13 @@ describe("M4/M5 — إرجاع الإرسالية يعكس من الطرفين،
 
     // محاولة إرجاع الإرسالية من شاشة التوصيل تُرفض لأن الفاتورة أُرجع منها سلفاً (منع العكس المزدوج للمخزون)
     await expect(
+<<<<<<< HEAD
       returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1" } as never),
     ).rejects.toThrowError(/الفاتورة أُرجع منها سلفاً/);
+=======
+      returnConsignment(Number(cn.id), { ...MANAGER, clientRequestId: "m5-dbl-1", returnReason: "رفض العميل" } as never),
+    ).resolves.toBeTruthy();
+>>>>>>> origin/main
     void shift;
   });
 });
@@ -492,3 +497,77 @@ describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها �
     }, CASHIER)).rejects.toThrowError(/يتجاوز السقف/);
   });
 });
+
+describe("M10 — حماية صندوق الكاشير عند إرجاع طلب توصيل غير مُورَّد (سدّ ثغرة عهدة التوصيل)", () => {
+  it("طلب توصيل سُلّم بالكشف ولم يُورّد نقده ⇒ المرتجع يعكس عهدة المندوب آلياً ولا يُخرج فلساً واحداً من الدرج", async () => {
+    const shift = await openReception();
+    const r = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون عابر للتوصيل", contactPhone: "07700000099",
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m10-unremitted-loophole",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = r.regularSale!.invoiceId;
+    const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
+
+    // تسليم الطرد عبر كشف المندوب
+    await deliverConsignment(Number(cn.id));
+
+    // تأكيد الحالة: الفاتورة مدفوعة، عهدة المندوب 10,000، والدرج صفر
+    const invDelivered = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
+    expect(invDelivered.status).toBe("PAID");
+    expect(invDelivered.paidAmount).toBe("10000.00");
+    const partyBefore = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
+    expect(Number(partyBefore.currentBalance)).toBe(10000);
+
+    // فحص سقف الاسترداد: السقف النقدي للدرج صفر لأن التوريد لم يحصل
+    const caps = await loadRefundCaps(db(), invoiceId);
+    expect(caps.hasUnremittedDelivery).toBe(true);
+    expect(caps.unremittedDeliveryCustody.toFixed(2)).toBe("10000.00");
+    expect(caps.capByMethod.get("CASH")!.toFixed(2)).toBe("0.00");
+
+    // تنفيذ المرتجع
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    const retRes = await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "0.00",
+        shiftId: null,
+        reason: "رفض العميل الاستلام - إلغاء طلب التوصيل وعكس العهدة",
+        disposition: "RESTOCK",
+      },
+    }, MANAGER);
+    expect(retRes.fullyReturned).toBe(true);
+
+    // ١) رصيد المندوب عُكس وعاد إلى الصفر
+    const partyAfter = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
+    expect(Number(partyAfter.currentBalance)).toBe(0);
+
+    // ٢) حالة الإرسالية تحولت إلى RETURNED والمال إلى CANCELLED
+    const cnAfter = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, Number(cn.id))))[0];
+    expect(cnAfter.status).toBe("RETURNED");
+    expect(cnAfter.parcelStatus).toBe("RETURNED");
+    expect(cnAfter.moneyStatus).toBe("CANCELLED");
+
+    // ٣) الفاتورة أصبحت RETURNED والمقبوض صفر
+    const invAfter = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
+    expect(invAfter.status).toBe("RETURNED");
+    expect(invAfter.paidAmount).toBe("0.00");
+    expect(invAfter.returnedTotal).toBe("10000.00");
+
+    // ٤) حماية الدرج: لم يخرج فلس واحد من الدرج، والوردية تُغلق بفارق صفر
+    const outReceipts = await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, invoiceId),
+      eq(s.receipts.direction, "OUT"),
+    ));
+    expect(outReceipts).toHaveLength(0);
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+});
+

@@ -585,6 +585,10 @@ export async function listStockAdjustmentRequests(scope: {
       rejectionReason: stockAdjustmentRequests.rejectionReason,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
     })
     .from(stockAdjustmentRequests)

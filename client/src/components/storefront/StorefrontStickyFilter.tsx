@@ -55,6 +55,7 @@ export function StorefrontStickyFilter({
     <nav
       aria-label="تصفية الكتالوج السريعة"
       className="fixed top-0 inset-x-0 z-40 animate__animated animate__fadeInDown animate__faster border-b border-slate-200/80 bg-white/90 shadow-md backdrop-blur-xl transition-all dark:border-slate-800/80 dark:bg-slate-950/90"
+      style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
     >
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
         {/* زر العودة لأعلى الصفحة والأقسام */}

@@ -231,6 +231,10 @@ export async function monitorStocktakeSession(
       variantId: stocktakeCounts.variantId,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       baseUnit: productUnits.unitName,
       qty: stocktakeCounts.qty,
       kind: stocktakeCounts.kind,
@@ -259,6 +263,10 @@ export async function monitorStocktakeSession(
       variantId: stocktakeItems.variantId,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       reason: stocktakeItems.recountReason,
       requestedByName: users.name,
     })
@@ -282,6 +290,10 @@ export async function monitorStocktakeSession(
       by2: stocktakeCounts.countedByName,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
     })
     .from(stocktakeCounts)
     .innerJoin(productVariants, eq(stocktakeCounts.variantId, productVariants.id))
@@ -440,6 +452,10 @@ export async function getStocktakeRemainingItems(
       variantId: stocktakeItems.variantId,
       productName: products.name,
       variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
+      variantKind: productVariants.variantKind,
       sku: productVariants.sku,
       barcode: sql<string | null>`(
         SELECT stk_base_unit.barcode FROM ${productUnits} AS stk_base_unit

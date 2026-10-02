@@ -8,6 +8,13 @@ import { getDb, type DB, type Tx } from "../../db";
 import { money, toDbMoney } from "../money";
 import { getVerifiedStatutoryProfileDetails } from "./statutoryAccounting";
 import { appErrorMessage } from "@shared/errors";
+import {
+  type FinancialCellProvenancePayload,
+  type ProvenanceDocumentRef,
+  type ProvenanceParty,
+  type ProvenanceSubItem,
+  computeProvenanceReconciliation,
+} from "@shared/financialProvenance";
 
 type DbExecutor = DB | Tx;
 
@@ -431,6 +438,242 @@ export async function getStatutoryBalanceSheet(input: {
   };
 }
 
+/**
+ * إثراء سطور دفتر اليومية وكشف الحساب النظامي ببطاقة الهوية والحسابات المقابلة (FinancialCellProvenance)
+ * استعلامان تجميعيان فقط (Batched Joins) لكل صفحة: أحدهما للأسطر المقابلة والآخر للمستندات الأصلية.
+ */
+async function enrichJournalLinesProvenance<
+  T extends {
+    journalId: number;
+    sourceId: number | null;
+    sourceKey?: string | null;
+    internalCode: string;
+    role: string;
+    debit: string;
+    credit: string;
+    lineId?: number;
+  },
+>(
+  rows: T[],
+  executor: DbExecutor,
+): Promise<(T & { provenance?: FinancialCellProvenancePayload })[]> {
+  if (rows.length === 0) return rows;
+
+  const journalIds = Array.from(
+    new Set(
+      rows
+        .map((r) => Number(r.journalId))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  );
+  const sourceIds = Array.from(
+    new Set(
+      rows
+        .map((r) => (r.sourceId == null ? null : Number(r.sourceId)))
+        .filter((id): id is number => id != null && Number.isInteger(id) && id > 0),
+    ),
+  );
+
+  const contraRows =
+    journalIds.length === 0
+      ? []
+      : rowsOf<{
+          journalId: number;
+          lineId: number;
+          accountCode: string;
+          accountName: string;
+          statutoryCode: string | null;
+          statutoryName: string | null;
+          role: string;
+          debit: string;
+          credit: string;
+        }>(
+          await executor.execute(sql`
+            SELECT
+              jl.journalId,
+              jl.id AS lineId,
+              a.code AS accountCode,
+              a.name AS accountName,
+              sa.code AS statutoryCode,
+              sa.name AS statutoryName,
+              jl.role,
+              CAST(jl.debit AS CHAR) AS debit,
+              CAST(jl.credit AS CHAR) AS credit
+            FROM journalLines jl
+            INNER JOIN accounts a ON a.id = jl.accountId
+            LEFT JOIN statutoryAccounts sa ON sa.id = jl.statutoryAccountId
+            WHERE jl.journalId IN (${sql.raw(journalIds.join(","))})
+          `),
+        );
+
+  const docRows =
+    sourceIds.length === 0
+      ? []
+      : rowsOf<{
+          id: number;
+          entryType: string;
+          notes: string | null;
+          invoiceNumber: string | null;
+          poNumber: string | null;
+          voucherNumber: string | null;
+          referenceNumber: string | null;
+          customerName: string | null;
+          supplierName: string | null;
+        }>(
+          await executor.execute(sql`
+            SELECT
+              ae.id,
+              ae.entryType,
+              ae.notes,
+              inv.invoiceNumber,
+              po.poNumber,
+              r.voucherNumber,
+              r.referenceNumber,
+              c.name AS customerName,
+              s.name AS supplierName
+            FROM accountingEntries ae
+            LEFT JOIN invoices inv ON inv.id = ae.invoiceId
+            LEFT JOIN purchaseOrders po ON po.id = ae.purchaseOrderId
+            LEFT JOIN receipts r ON r.id = ae.receiptId
+            LEFT JOIN customers c ON c.id = ae.customerId
+            LEFT JOIN suppliers s ON s.id = ae.supplierId
+            WHERE ae.id IN (${sql.raw(sourceIds.join(","))})
+          `),
+        );
+
+  const contraByJournal = new Map<number, typeof contraRows>();
+  for (const c of contraRows) {
+    const jid = Number(c.journalId);
+    let list = contraByJournal.get(jid);
+    if (!list) {
+      list = [];
+      contraByJournal.set(jid, list);
+    }
+    list.push(c);
+  }
+
+  const docById = new Map<number, (typeof docRows)[number]>();
+  for (const d of docRows) {
+    docById.set(Number(d.id), d);
+  }
+
+  return rows.map((row) => {
+    const jid = Number(row.journalId);
+    const allLines = contraByJournal.get(jid) ?? [];
+    const isDebit = money(row.debit).gt(0);
+    const amountVal = isDebit ? row.debit : row.credit;
+
+    let opposingLines = allLines.filter((l) =>
+      isDebit ? money(l.credit).gt(0) : money(l.debit).gt(0),
+    );
+    if (opposingLines.length === 0 && allLines.length > 1) {
+      opposingLines = allLines.filter(
+        (l) => row.lineId == null || Number(l.lineId) !== Number(row.lineId),
+      );
+    }
+
+    const subItems: ProvenanceSubItem[] = opposingLines.map((contra) => {
+      const contraAmt = isDebit ? contra.credit : contra.debit;
+      const accountLabel =
+        contra.accountName || contra.statutoryName || contra.accountCode;
+      return {
+        label: `${accountLabel} (${contra.role})`,
+        amount: toDbMoney(money(contraAmt)),
+        category: "حساب مقابل",
+        note: `كود: ${contra.statutoryCode || contra.accountCode}`,
+        type: "CONTRA_ACCOUNT",
+      };
+    });
+
+    if (subItems.length === 0) {
+      subItems.push({
+        label: `سطر قيد #${jid} (${row.role})`,
+        amount: amountVal,
+        category: "قيد",
+      });
+    }
+
+    const doc = row.sourceId != null ? docById.get(row.sourceId) : null;
+    let docRef: ProvenanceDocumentRef | null = null;
+    if (doc?.invoiceNumber) {
+      docRef = {
+        docType: "invoice",
+        docNumber: doc.invoiceNumber,
+        number: doc.invoiceNumber,
+        label: `فاتورة ${doc.invoiceNumber}`,
+      };
+    } else if (doc?.poNumber) {
+      docRef = {
+        docType: "purchase_order",
+        docNumber: doc.poNumber,
+        number: doc.poNumber,
+        label: `أمر شراء ${doc.poNumber}`,
+      };
+    } else if (doc?.voucherNumber || doc?.referenceNumber) {
+      const num = doc.voucherNumber || doc.referenceNumber;
+      docRef = {
+        docType: "voucher",
+        docNumber: num ?? undefined,
+        number: num ?? undefined,
+        label: `سند ${num}`,
+      };
+    } else {
+      docRef = {
+        docType: "journal_entry",
+        docNumber: `JE-${jid}`,
+        number: `JE-${jid}`,
+        label: `قيد محاسبي JE-${jid}`,
+      };
+    }
+
+    let party: ProvenanceParty | null = null;
+    if (doc?.customerName) {
+      party = {
+        name: doc.customerName,
+        type: "customer",
+      };
+    } else if (doc?.supplierName) {
+      party = {
+        name: doc.supplierName,
+        type: "supplier",
+      };
+    }
+
+    const primaryContra = opposingLines[0];
+    const contraAccount = primaryContra
+      ? {
+          code: primaryContra.statutoryCode || primaryContra.accountCode,
+          name:
+            primaryContra.accountName ||
+            primaryContra.statutoryName ||
+            primaryContra.accountCode,
+        }
+      : null;
+
+    const provenance: FinancialCellProvenancePayload = {
+      movementType: isDebit ? "collection" : "delivery",
+      title: `قيد محاسبي #${jid} - ${row.internalCode} (${row.role})`,
+      totalAmount: amountVal,
+      party,
+      documentRef: docRef,
+      docRefs: docRef ? [docRef] : [],
+      category: "قيد مزدوج",
+      classification: row.role,
+      contraAccount,
+      notes:
+        doc?.notes ||
+        (row.sourceKey ? `مفتاح المصدر: ${row.sourceKey}` : null),
+      subItems,
+      reconciliation: computeProvenanceReconciliation(amountVal, subItems),
+    };
+
+    return {
+      ...row,
+      provenance,
+    };
+  });
+}
+
 type StatutoryAccountLedgerInput = {
   from: string;
   to: string;
@@ -527,7 +770,7 @@ async function queryStatutoryAccountLedger(
     `),
   );
   const hasMore = raw.length > limit;
-  const rows = raw.slice(0, limit).map((row) => {
+  const rawRows = raw.slice(0, limit).map((row) => {
     const signed = openingSigned.add(row.periodSigned ?? 0);
     return {
       ...row,
@@ -541,6 +784,7 @@ async function queryStatutoryAccountLedger(
       creditBalance: toDbMoney(signed.isNegative() ? signed.abs() : money(0)),
     };
   });
+  const rows = await enrichJournalLinesProvenance(rawRows, context.db);
   return {
     available: true as const,
     mode: context.mode,
@@ -649,7 +893,7 @@ async function queryStatutoryGeneralJournal(
     `),
   );
   const hasMore = raw.length > limit;
-  const rows = raw.slice(0, limit).map((row) => ({
+  const rawRows = raw.slice(0, limit).map((row) => ({
     ...row,
     journalId: Number(row.journalId),
     profileId: Number(row.profileId),
@@ -659,6 +903,7 @@ async function queryStatutoryGeneralJournal(
     debit: toDbMoney(money(row.debit ?? 0)),
     credit: toDbMoney(money(row.credit ?? 0)),
   }));
+  const rows = await enrichJournalLinesProvenance(rawRows, context.db);
   return {
     available: true as const,
     mode: context.mode,

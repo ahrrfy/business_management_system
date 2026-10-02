@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 
 type Placement = "HERO" | "SIDE" | "INLINE";
@@ -224,11 +225,11 @@ export default function BannerManager() {
             </label>
             <label className="text-sm">
               <span className="mb-1 block font-medium text-muted-foreground">فعّال من (اختياري)</span>
-              <input type="date" value={form.effectiveFrom} onChange={(e) => setForm({ ...form, effectiveFrom: e.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
+              <Input type="date" value={form.effectiveFrom} onChange={(e) => setForm({ ...form, effectiveFrom: e.target.value })} className="w-full" />
             </label>
             <label className="text-sm">
               <span className="mb-1 block font-medium text-muted-foreground">فعّال إلى (اختياري)</span>
-              <input type="date" value={form.effectiveTo} onChange={(e) => setForm({ ...form, effectiveTo: e.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
+              <Input type="date" value={form.effectiveTo} onChange={(e) => setForm({ ...form, effectiveTo: e.target.value })} className="w-full" />
             </label>
           </div>
           <div className="mt-3">
@@ -240,7 +241,7 @@ export default function BannerManager() {
                 const updateSettings = (patch: Partial<typeof settings>) => setForm({ ...form, imageSettings: { ...form.imageSettings, [image.id]: { ...settings, ...patch } } });
                 return <div key={image.id} className="rounded-xl border border-border bg-muted/20 p-2">
                   <div className="mb-2 flex items-center justify-between text-xs font-bold"><span>الصورة {index + 1}</span><label className="flex items-center gap-1"><input type="checkbox" checked={settings.isActive} onChange={(e) => updateSettings({ isActive: e.target.checked })} /> فعالة</label></div>
-                  <div className="grid grid-cols-2 gap-2"><label className="text-[11px] text-muted-foreground">تظهر من<input type="date" value={settings.effectiveFrom} onChange={(e) => updateSettings({ effectiveFrom: e.target.value })} className="mt-1 w-full rounded border border-border bg-background px-2 py-1" /></label><label className="text-[11px] text-muted-foreground">تتوقف في<input type="date" value={settings.effectiveTo} onChange={(e) => updateSettings({ effectiveTo: e.target.value })} className="mt-1 w-full rounded border border-border bg-background px-2 py-1" /></label></div>
+                  <div className="grid grid-cols-2 gap-2"><label className="text-[11px] text-muted-foreground">تظهر من<Input type="date" value={settings.effectiveFrom} onChange={(e) => updateSettings({ effectiveFrom: e.target.value })} className="mt-1 h-8 w-full" /></label><label className="text-[11px] text-muted-foreground">تتوقف في<Input type="date" value={settings.effectiveTo} onChange={(e) => updateSettings({ effectiveTo: e.target.value })} className="mt-1 h-8 w-full" /></label></div>
                 </div>;
               })}
             </div>}

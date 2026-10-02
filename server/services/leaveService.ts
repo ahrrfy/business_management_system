@@ -18,7 +18,9 @@ import {
   sql,
 } from "drizzle-orm";
 import { fullEmployeeName, leaveTypeIsPaid } from "@shared/hr";
-import { employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
+import { attendance, employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -27,14 +29,35 @@ import { actorSuffix } from "@shared/notificationActorLabel";
 import { createAppNotification } from "./appNotificationService";
 import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
 import { withIdempotency } from "./idempotency";
+import Decimal from "decimal.js";
+import { money, round2 } from "./money";
 
-/** عدد الأيام شاملاً الطرفين من تاريخين "YYYY-MM-DD" — يُحسب بتقويم UTC ثابت (مستقلّ عن منطقة الخادم). */
-function daysInclusive(from: string, to: string): number {
+/** قائمة تواريخ أيام العمل بين تاريخين "YYYY-MM-DD" (شاملاً الطرفين) بتقويم UTC ثابت باستثناء الجمعة والسبت وفق المادة (70) من قانون العمل العراقي. */
+export function getLeaveWorkingDates(from: string, to: string): string[] {
   const [fy, fm, fd] = from.split("-").map(Number);
   const [ty, tm, td] = to.split("-").map(Number);
-  const ms = Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd);
-  return Math.floor(ms / 86_400_000) + 1;
+  const start = new Date(Date.UTC(fy, fm - 1, fd));
+  const end = new Date(Date.UTC(ty, tm - 1, td));
+  if (end < start) return [];
+  const dates: string[] = [];
+  const cur = new Date(start);
+  while (cur <= end) {
+    const day = cur.getUTCDay(); // 0 = Sun, ..., 5 = Fri, 6 = Sat
+    if (day !== 5 && day !== 6) {
+      dates.push(cur.toISOString().slice(0, 10));
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return dates;
 }
+
+/** عدد أيام العمل شاملاً الطرفين من تاريخين "YYYY-MM-DD" باستثناء الجمعة (5) والسبت (6) وفق المادة (70) من قانون العمل العراقي. */
+export function workingDaysInclusive(from: string, to: string): number {
+  return getLeaveWorkingDates(from, to).length;
+}
+
+/** للتوافق مع المستدعين القدامى — يحسب أيام العمل وفق المادة 70 */
+export const daysInclusive = workingDaysInclusive;
 
 export interface LeaveFilters {
   employeeId?: number;
@@ -352,6 +375,48 @@ export async function decideLeave(
         .where(eq(employees.id, lv.employeeId));
     }
 
+    if (decision === "approved") {
+      const leaveBranchId = reqEmp?.branchId ?? actor.scopedBranchId;
+      if (leaveBranchId == null) {
+        throw new Error("لا يمكن تحديد فرع الموظف لتسجيل الحضور");
+      }
+      const dates = getLeaveWorkingDates(String(lv.fromDate), String(lv.toDate));
+      for (const dateStr of dates) {
+        const [existing] = await tx
+          .select({ id: attendance.id })
+          .from(attendance)
+          .where(
+            and(
+              eq(attendance.employeeId, lv.employeeId),
+              eq(attendance.attendanceDate, dateStr),
+            ),
+          )
+          .limit(1);
+
+        const values = {
+          employeeId: lv.employeeId,
+          branchId: leaveBranchId,
+          attendanceDate: dateStr,
+          status: "LEAVE" as const,
+          hours: "0.00",
+          hourlyRate: "0.00",
+          amount: "0.00",
+          source: "leave",
+          notes: `إجازة ${lv.leaveType} معتمدة #${lv.id}`,
+          needsReview: false,
+        };
+
+        if (existing) {
+          await tx
+            .update(attendance)
+            .set(values)
+            .where(eq(attendance.id, existing.id));
+        } else {
+          await tx.insert(attendance).values(values);
+        }
+      }
+    }
+
     await tx
       .update(leaveRequests)
       .set({ status: decision, decidedBy: actor.userId, decidedAt: new Date() })
@@ -448,6 +513,19 @@ export async function cancelLeave(id: number, actor: { userId: number; scopedBra
           sickLeaveBalance: sql`${employees.sickLeaveBalance} + ${lv.days}`,
         })
         .where(eq(employees.id, lv.employeeId));
+    }
+
+    const dates = getLeaveWorkingDates(String(lv.fromDate), String(lv.toDate));
+    if (dates.length > 0) {
+      await tx
+        .delete(attendance)
+        .where(
+          and(
+            eq(attendance.employeeId, lv.employeeId),
+            inArray(attendance.attendanceDate, dates),
+            eq(attendance.source, "leave"),
+          ),
+        );
     }
 
     await tx
@@ -567,4 +645,72 @@ export async function balances(scopedBranchId?: number | null) {
     annualLeaveBalance: r.annualLeaveBalance ?? 0,
     sickLeaveBalance: r.sickLeaveBalance ?? 0,
   }));
+}
+
+/**
+ * احتساب بدل الإجازات السنوية غير المستعملة بموجب المادة 77 من قانون العمل العراقي رقم 37 لسنة 2015.
+ * يستحق العامل أجراً عن أيام الإجازة السنوية التي لم يستعملها عند انتهاء خدمته.
+ * الأجر اليومي = (الراتب الأساس + البدلات) ÷ 30
+ * بدل الإجازة = الأجر اليومي × رصيد الإجازات السنوية المتبقية.
+ */
+export function calculateLeaveEncashment(employee: {
+  salary?: string | number | null;
+  allowances?: string | number | null;
+  annualLeaveBalance?: number | null;
+}): {
+  dailyWage: Decimal;
+  unusedDays: number;
+  encashmentAmount: Decimal;
+} {
+  const salary = money(employee.salary ?? 0);
+  const allowances = money(employee.allowances ?? 0);
+  const grossMonthly = salary.plus(allowances);
+  const dailyWage = round2(grossMonthly.div(30));
+  const unusedDays = Math.max(0, Number(employee.annualLeaveBalance ?? 0));
+  const encashmentAmount = round2(dailyWage.times(unusedDays));
+
+  return {
+    dailyWage,
+    unusedDays,
+    encashmentAmount,
+  };
+}
+
+/**
+ * استعلام واحتساب بدل الإجازات السنوية لموظف مع عزل الفرع بموجب المادة 77 من قانون العمل العراقي رقم 37 لسنة 2015.
+ */
+export async function getLeaveEncashmentPreview(
+  employeeId: number,
+  scopedBranchId?: number | null,
+) {
+  const db = requireDb();
+  const [emp] = await db
+    .select({
+      id: employees.id,
+      branchId: employees.branchId,
+      salary: employees.salary,
+      allowances: employees.allowances,
+      annualLeaveBalance: employees.annualLeaveBalance,
+    })
+    .from(employees)
+    .where(eq(employees.id, employeeId))
+    .limit(1);
+
+  if (!emp || (scopedBranchId != null && emp.branchId !== scopedBranchId)) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر احتساب تعويض الإجازات",
+        why: "الموظف المطلوب غير مسجّل في قاعدة البيانات أو غير تابع للفرع المصرّح به",
+        doThis: "تحقّق من معرّف الموظف أو أعد فتح بطاقة الموظف من القائمة",
+      }),
+    });
+  }
+
+  const calc = calculateLeaveEncashment(emp);
+  return {
+    dailyWage: calc.dailyWage.toFixed(2),
+    unusedDays: calc.unusedDays,
+    encashmentAmount: calc.encashmentAmount.toFixed(2),
+  };
 }

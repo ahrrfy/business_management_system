@@ -3,6 +3,7 @@
 // (~8ك مضغوطة) لشاشة استقبال عالية التردّد رغم استعمالها دالتين فقط. هنا: مكتبة طباعة صرفة، بلا React.
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
+import { fmtDateTime } from "@/lib/date";
 import { printDoc } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
 
@@ -25,6 +26,15 @@ export interface LabelPrintableOrder {
   deliveryCost?: string | null;
   deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   qrUrl?: string | null;
+  items?: Array<{
+    name?: string;
+    productName?: string;
+    title?: string;
+    quantity?: number | string;
+    price?: number | string;
+    unitPrice?: number | string;
+    total?: number | string;
+  }> | null;
 }
 
 /** بوليصة توصيل حرارية (جسر/WebUSB/متصفح) عند الإرسال. */
@@ -33,6 +43,14 @@ export function printDeliverySlip(
   party: { name: string } | undefined,
   r: { consignmentNumber: string; invoiceNumber: string; codAmount: string; deliveryFee: string; externalTrackingRef?: string | null },
 ) {
+  const rows: [string, string, string][] = order.items && order.items.length > 0
+    ? order.items.map((it) => [
+        it.title || it.productName || it.name || "بند الطلب",
+        String(it.quantity ?? 1),
+        fmt(it.total ?? (Number(it.unitPrice ?? it.price ?? 0) * Number(it.quantity ?? 1))),
+      ])
+    : [[order.title || "بند الطلب", String(order.quantity || 1), fmt(order.salePrice || 0)]];
+
   void printDoc({
     kind: "receipt",
     title: "بوليصة توصيل",
@@ -45,6 +63,8 @@ export function printDeliverySlip(
       order.deliveryAddress ? `العنوان: ${order.deliveryAddress}` : "",
       `الفاتورة: ${r.invoiceNumber}`,
     ].filter(Boolean),
+    columns: ["البند", "الكمية", "المبلغ"],
+    rows,
     totals: [
       { label: "مبلغ التحصيل (COD)", value: `${fmt(r.codAmount)} د.ع` },
       { label: "أجرة التوصيل", value: `${fmt(r.deliveryFee)} د.ع` },
@@ -84,7 +104,7 @@ export function printDeliveryManifest(
     subtitle: `${party.name} · ${parcels.length} طرداً`,
     meta: [
       branchName ? `الفرع: ${branchName}` : "",
-      `التاريخ: ${now.toLocaleDateString("ar-IQ")}  ${now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`,
+      `التاريخ: ${fmtDateTime(now)}`,
       party.phone ? `الجهة: ${party.name} — ${party.phone}` : `الجهة: ${party.name}`,
     ].filter(Boolean),
     // سطر لكل طرد داخل الجدول (يستخدم totals كصفوف مفتاح/قيمة عريضة كي يبقى ضمن قالب zreport العام).

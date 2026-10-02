@@ -42,6 +42,7 @@ import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { DataTable } from "@/components/data-table/DataTable";
 import { trpc } from "@/lib/trpc";
+import { variantDisplayName } from "@shared/variantDisplay";
 import {
   hasModuleAccess,
   moduleAccessAllowed,
@@ -326,7 +327,7 @@ export default function InvoiceDetail() {
       ["manager"],
     ) &&
     data.consignmentId != null &&
-    (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "FAILED");
+    (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "OUT_FOR_DELIVERY" || data.consignmentParcelStatus === "FAILED");
   const hasDeliveryLifecycle =
     data.consignmentId != null || data.consignmentStatus != null || data.deliveryPartyId != null;
   // مرآة بصرية للحارس الخادمي: الإرسالية الحديثة لا تصبح آمنة إلا بعد CANCELLED النهائي.
@@ -633,8 +634,16 @@ export default function InvoiceDetail() {
       taxRate: Number(data.taxRatePercent ?? 0),
       total: data.total,
       paidAmount: data.paidAmount,
+      qrPayload: data.qrPayload ?? null,
       items: data.items.map((it, i) => ({
-        productName: it.productName ?? "",
+        productName: variantDisplayName({
+          productName: it.productName ?? "",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
         unitName: it.unitName,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
@@ -662,7 +671,14 @@ export default function InvoiceDetail() {
       customerPhone: data.customerPhone,
       salesRep: data.salespersonName,
       items: data.items.map((it) => ({
-        productName: it.productName ?? "",
+        productName: variantDisplayName({
+          productName: it.productName ?? "",
+          variantName: it.variantName,
+          color: it.color,
+          size: it.size,
+          variantKind: it.variantKind,
+          sku: it.sku,
+        }),
         unitName: it.unitName,
         quantity: it.quantity,
       })),
@@ -710,7 +726,14 @@ export default function InvoiceDetail() {
               invoiceDate: String(data.invoiceDate),
               customerName: data.customerName,
               items: data.items.map((it) => ({
-                productName: it.productName ?? "",
+                productName: variantDisplayName({
+                  productName: it.productName ?? "",
+                  variantName: it.variantName,
+                  color: it.color,
+                  size: it.size,
+                  variantKind: it.variantKind,
+                  sku: it.sku,
+                }),
                 quantity: it.quantity,
                 unitName: it.unitName,
                 total: it.total,
@@ -731,7 +754,14 @@ export default function InvoiceDetail() {
               date: data.invoiceDate,
               customer: data.customerName,
               items: data.items.map((it) => ({
-                name: `${it.productName ?? ""}${it.variantName ? ` — ${it.variantName}` : ""}`,
+                name: variantDisplayName({
+                  productName: it.productName ?? "",
+                  variantName: it.variantName,
+                  color: it.color,
+                  size: it.size,
+                  variantKind: it.variantKind,
+                  sku: it.sku,
+                }),
                 qty: it.quantity,
                 unit: it.unitName,
                 price: it.unitPrice,

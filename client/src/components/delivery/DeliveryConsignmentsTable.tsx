@@ -57,7 +57,7 @@ export function DeliveryConsignmentsTable({
 
   const isReturnable = (c: OpenConsignment) =>
     c.status === "DISPATCHED" &&
-    (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") &&
+    (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED" || c.parcelStatus === "OUT_FOR_DELIVERY" || c.parcelStatus === "ACCEPTED" || c.parcelStatus === "PICKED_UP") &&
     (c.moneyStatus === "NOT_APPLICABLE" || c.moneyStatus === "UNSETTLED") &&
     Number(c.collectedAmount) === 0;
 
