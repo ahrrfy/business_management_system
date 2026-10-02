@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
+import { BarcodePdfButton } from "@/components/product/BarcodePdfButton";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, genEan13 } from "@/lib/variants";
@@ -550,6 +551,13 @@ export default function BundleForm() {
                 )}
               />
               <ScanButton onClick={() => setBarcode(genEan13())} />
+              <BarcodePdfButton
+                barcode={barcode}
+                productName={finalName}
+                unitName="بكج"
+                retailPrice={retail}
+                brand={brand}
+              />
             </div>
             {taken && (
               <div className="mt-1 text-xs text-[var(--sem-warn)]">مُستخدَم في «{taken.takenBy}» — غيّره.</div>
