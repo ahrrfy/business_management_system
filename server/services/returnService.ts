@@ -85,6 +85,7 @@ import {
 } from "./returns/refundCaps";
 import { withTx, type Actor } from "./tx";
 import { reverseInvoiceSaleInTx } from "./reversal/invoiceReversal"; // ق٧: المرتجعُ الكامل يمرّ بمحرّك العكس
+import { reconcileDeliveryOnReturnTx } from "./delivery/returnReconciliation";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
@@ -982,44 +983,6 @@ export async function returnSaleInTx(
     return { refundCap, refundRequest: requestedRefund };
   }
 
-  /**
-   * قرار المالك (٦/٨/٢٦) — **مرتجعٌ لفاتورةٍ بيد مندوب**: لا يُسجَّل والطردُ أو نقدُه ما زال بيد جهة
-   * التوصيل. يُفحص بعد الكتابة داخل المعاملة نفسها (يتراجع كلُّ شيءٍ ذرّياً عند الرفض).
-   */
-  async function assertNoLiveConsignmentForReturn(): Promise<void> {
-    const cnRows = await tx
-      .select({
-        id: deliveryConsignments.id,
-        number: deliveryConsignments.consignmentNumber,
-        partyId: deliveryConsignments.partyId,
-        codAmount: deliveryConsignments.codAmount,
-        collectedAmount: deliveryConsignments.collectedAmount,
-        status: deliveryConsignments.status,
-        parcelStatus: deliveryConsignments.parcelStatus,
-        moneyStatus: deliveryConsignments.moneyStatus,
-      })
-      .from(deliveryConsignments)
-      .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
-      .for("update")
-      .limit(1);
-    const cn = cnRows[0];
-    if (
-      cn &&
-      (!["DELIVERED", "CANCELLED", "RETURNED"].includes(cn.parcelStatus) ||
-        cn.moneyStatus === "UNSETTLED" ||
-        cn.moneyStatus === "PARTIAL")
-    ) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل المرتجع",
-          why: `الفاتورة ما زالت على إرسالية التوصيل ${cn.number}: حالة الطرد «${cn.parcelStatus}» وحالة مالها «${cn.moneyStatus}» — أي أنّ البضاعة أو نقدها ما زال بيد جهة التوصيل، فالمرتجع الآن يعكس بيعاً لم تُغلَق دورتُه`,
-          doThis:
-            "أغلق الإرسالية أوّلاً من شاشة التوصيل: سجّل إرجاع الطرد إن عاد إليك، أو ورّد ما حصّله المندوب — ثمّ أعِد تسجيل المرتجع",
-        }),
-      });
-    }
-  }
 
   /**
    * ═══ ق٧ — **المرتجعُ الكامل يمرّ بمحرّك العكس** (م٢) ═══
@@ -1092,7 +1055,13 @@ export async function returnSaleInTx(
         status: "RETURNED",
       })
       .where(eq(invoices.id, input.invoiceId));
-    await assertNoLiveConsignmentForReturn();
+    await reconcileDeliveryOnReturnTx(tx, {
+      invoiceId: input.invoiceId,
+      returnedTotal: returnedTotalFull,
+      isFullReturn: true,
+      actor,
+      clientRequestId: input.clientRequestId,
+    });
     if (input.clientRequestId) {
       await recordIdempotencyKey(
         tx,
@@ -2065,8 +2034,14 @@ export async function returnSaleInTx(
     );
   }
 
-  // الإرساليةُ الحيّة تمنع المرتجع — الدالّةُ المشتركة أعلاه.
-  await assertNoLiveConsignmentForReturn();
+  // تسوية إرسالية التوصيل النشطة إن وُجدت (R1 & R2).
+  await reconcileDeliveryOnReturnTx(tx, {
+    invoiceId: input.invoiceId,
+    returnedTotal,
+    isFullReturn: fullyReturned,
+    actor,
+    clientRequestId: input.clientRequestId,
+  });
 
   // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).
   if (input.clientRequestId) {

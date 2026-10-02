@@ -28,7 +28,7 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
-import { Card, CardContent } from "@/components/ui/card";
+
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -123,7 +123,7 @@ function BoardCard({ task, onClick }: { task: TaskRow; onClick: () => void }) {
     nextAction: task.taskStatus === "WAITING_CUSTOMER" ? "نحتاج ردّكم للمتابعة وإكمال الطلب." : null,
   });
   return (
-    <div className="rounded-lg border bg-card p-3 hover:border-primary/50 hover:shadow-sm transition-colors">
+    <div className="rounded-md border bg-background p-3 hover:border-primary/50 hover:shadow-sm transition-colors">
       <button type="button" onClick={onClick} className="w-full space-y-2 text-right">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-mono text-muted-foreground truncate" dir="ltr">{task.taskNumber}</span>
@@ -221,8 +221,8 @@ function BoardTab({ onOpen }: { onOpen: (id: number) => void }) {
 
 function TaskTable({ rows, onOpen }: { rows: TaskRow[]; onOpen: (id: number) => void }) {
   return (
-    <Card>
-      <CardContent className="p-0">
+    <div className="rounded-md border bg-background">
+      <div className="p-0">
         <ScrollTableShell bordered={false}>
           <Table>
             <TableHeader>
@@ -292,8 +292,8 @@ function TaskTable({ rows, onOpen }: { rows: TaskRow[]; onOpen: (id: number) => 
             </TableBody>
           </Table>
         </ScrollTableShell>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -508,13 +508,13 @@ function MineTab({ myId, onOpen }: { myId: number | undefined; onOpen: (id: numb
   }
   if (rows.length === 0) {
     return (
-      <Card>
-        <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
+      <div className="rounded-md border bg-background">
+        <div className="flex flex-col items-center gap-2 py-12 text-center">
           <UserRound className="size-10 text-muted-foreground" aria-hidden />
           <p className="text-lg font-semibold">لا مهام مفتوحة مُسنَدة إليك</p>
           <p className="text-sm text-muted-foreground">اسحب مهمة جديدة من تبويب «لوحة» أو «قائمة» لتبدأ العمل عليها.</p>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     );
   }
   return <TaskTable rows={rows} onOpen={onOpen} />;

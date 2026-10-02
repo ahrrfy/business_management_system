@@ -1,3 +1,4 @@
+import { appErrorMessage } from "@shared/errors";
 // قراءة المهام: قائمة مُرقَّمة (keyset) + تفاصيل مهمة + قائمة الموظفين القابلين للإسناد.
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -218,12 +219,12 @@ export async function getTask(ctx: TaskListCtx, taskId: number) {
       .where(eq(tasks.id, taskId))
       .limit(1)
   )[0];
-  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "المهمة غير موجودة" });
+  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "خطأ", why: "المهمة غير موجودة", doThis: "يرجى التحقق والمحاولة مجدداً." }) });
   if (ctx.scopedBranchId != null && Number(row.branchId) !== ctx.scopedBranchId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "المهمة لا تخصّ فرعك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "خطأ", why: "المهمة لا تخصّ فرعك", doThis: "يرجى التحقق والمحاولة مجدداً." }) });
   }
   if (ctx.scopedOwnerId != null && !isTaskVisibleToOwnerScope(row, ctx.scopedOwnerId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة لا تخصّك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "خطأ", why: "هذه المهمة لا تخصّك", doThis: "يرجى التحقق والمحاولة مجدداً." }) });
   }
 
   const events = await db
