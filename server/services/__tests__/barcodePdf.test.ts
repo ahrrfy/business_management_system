@@ -3,6 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import {
   buildBarcodePdfFilename,
   generateBarcodePdf,
+  generateBarcodeBatchPdf,
 } from "../barcodePdfService";
 
 describe("server/services/barcodePdfService", () => {
@@ -103,5 +104,64 @@ describe("server/services/barcodePdfService", () => {
         generateBarcodePdf({ barcode: "" })
       ).rejects.toThrow("لا يوجد باركود لتوليد ملف PDF");
     });
+
+    it("يدعم المقاسات المخصصة بالأبعاد المليمترية widthMm و heightMm", async () => {
+      const result = await generateBarcodePdf({
+        barcode: "2001234567893",
+        productName: "ملصق مقاس 40x25 مم",
+        widthMm: 40,
+        heightMm: 25,
+      });
+
+      const doc = await PDFDocument.load(result.pdfBytes);
+      expect(doc.getPageCount()).toBe(1);
+      const page = doc.getPage(0);
+      const { width, height } = page.getSize();
+      // 40mm ≈ 113.38pt, 25mm ≈ 70.86pt
+      expect(Math.round(width)).toBe(113);
+      expect(Math.round(height)).toBe(71);
+    });
+  });
+
+  describe("generateBarcodeBatchPdf", () => {
+    it("يولّد ملف PDF لدفعة ملصقات بنمط الصفحات الفردية (رول طابعة حرارية)", async () => {
+      const result = await generateBarcodeBatchPdf({
+        items: [
+          { barcode: "2001112223334", productName: "منتج أ", count: 2 },
+          { barcode: "2005556667778", productName: "منتج ب", count: 3 },
+        ],
+        layout: "individual_pages",
+        widthMm: 50,
+        heightMm: 30,
+      });
+
+      expect(result.totalLabels).toBe(5);
+      const doc = await PDFDocument.load(result.pdfBytes);
+      expect(doc.getPageCount()).toBe(5);
+    });
+
+    it("يولّد ملف PDF لدفعة ملصقات بنمط شبكة A4", async () => {
+      const result = await generateBarcodeBatchPdf({
+        items: [
+          { barcode: "2001112223334", productName: "منتج أ", count: 25 },
+        ],
+        layout: "a4_grid",
+      });
+
+      expect(result.totalLabels).toBe(25);
+      const doc = await PDFDocument.load(result.pdfBytes);
+      // 25 ملصقاً في شبكة 24 لكل ورقة = ورقتين (صفحتين)
+      expect(doc.getPageCount()).toBe(2);
+      const page1 = doc.getPage(0);
+      expect(Math.round(page1.getWidth())).toBe(595);
+      expect(Math.round(page1.getHeight())).toBe(842);
+    });
+
+    it("يرمي خطأ صريحاً عند تمرير عناصر فارغة", async () => {
+      await expect(
+        generateBarcodeBatchPdf({ items: [] })
+      ).rejects.toThrow("لا توجد عناصر بباركود صالح لتوليد دفعة الملصقات");
+    });
   });
 });
+

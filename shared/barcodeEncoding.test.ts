@@ -3,6 +3,7 @@ import {
   calculateBarcodeBars,
   eanCheckDigit,
   isValidEan,
+  buildBatchBarcodePdfFilename,
 } from "./barcodeEncoding";
 
 describe("shared/barcodeEncoding", () => {
@@ -50,4 +51,14 @@ describe("shared/barcodeEncoding", () => {
     expect(result.hriFormatted).toBe("ALR0001234");
     expect(result.bars.length).toBeGreaterThan(10);
   });
+
+  it("يبني اسم ملف متوافق لدفعة ملصقات PDF (Batch)", () => {
+    const filename = buildBatchBarcodePdfFilename({
+      totalCount: 48,
+      itemCount: 3,
+      dateStr: "2026-10-02",
+    });
+    expect(filename).toBe("ملصقات باركود - 48 ملصق (3 صنف) - 2026-10-02.pdf");
+  });
 });
+

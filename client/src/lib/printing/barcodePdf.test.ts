@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBarcodePdfFilename } from "@shared/barcodeEncoding";
+import { buildBarcodePdfFilename, buildBatchBarcodePdfFilename } from "./barcodePdf";
 
 describe("client/src/lib/printing/barcodePdf", () => {
   it("يُنتج اسم ملف PDF باسم المنتج والباركود للاستخدام المباشر في التنزيل", () => {
@@ -19,4 +19,14 @@ describe("client/src/lib/printing/barcodePdf", () => {
     });
     expect(filename).toBe("قلم جاف أزرق - 2001112223334.pdf");
   });
+
+  it("يُنتج اسم ملف متوافق لدفعة ملصقات PDF لقائمة الطباعة", () => {
+    const filename = buildBatchBarcodePdfFilename({
+      totalCount: 50,
+      itemCount: 4,
+      dateStr: "2026-10-02",
+    });
+    expect(filename).toBe("ملصقات باركود - 50 ملصق (4 صنف) - 2026-10-02.pdf");
+  });
 });
+

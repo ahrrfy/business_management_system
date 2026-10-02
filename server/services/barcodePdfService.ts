@@ -17,7 +17,7 @@ import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, PDFFont, PDFPage, rgb, StandardFonts } from "pdf-lib";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { calculateBarcodeBars, buildBarcodePdfFilename } from "@shared/barcodeEncoding";
+import { calculateBarcodeBars, buildBarcodePdfFilename, buildBatchBarcodePdfFilename } from "@shared/barcodeEncoding";
 import { COMPANY_IDENTITY as CO } from "@shared/companyIdentity";
 
 export type BarcodePdfPreset = "50x30" | "50x25" | "60x40" | "artwork" | "a4";
@@ -31,6 +31,8 @@ export interface GenerateBarcodePdfInput {
   modelName?: string | null;
   sku?: string | null;
   preset?: BarcodePdfPreset;
+  widthMm?: number;
+  heightMm?: number;
 }
 
 export interface GenerateBarcodePdfResult {
@@ -38,6 +40,32 @@ export interface GenerateBarcodePdfResult {
   base64: string;
   filename: string;
 }
+
+export interface BarcodeBatchItemInput {
+  barcode: string;
+  productName?: string | null;
+  unitName?: string | null;
+  retailPrice?: string | number | null;
+  brand?: string | null;
+  modelName?: string | null;
+  sku?: string | null;
+  count: number;
+}
+
+export interface GenerateBarcodeBatchPdfInput {
+  items: BarcodeBatchItemInput[];
+  layout?: "individual_pages" | "a4_grid";
+  widthMm?: number;
+  heightMm?: number;
+}
+
+export interface GenerateBarcodeBatchPdfResult {
+  pdfBytes: Uint8Array;
+  base64: string;
+  filename: string;
+  totalLabels: number;
+}
+
 
 // ── تحويل المليمتر لنقاط PDF (1 mm = 72 / 25.4 pt) ──
 const MM_TO_PT = 72 / 25.4;
@@ -72,7 +100,7 @@ async function getCairoBytes(): Promise<Uint8Array> {
   throw lastError instanceof Error ? lastError : new Error(`تعذّر تحميل خط Cairo: ${filename}`);
 }
 
-export { buildBarcodePdfFilename };
+export { buildBarcodePdfFilename, buildBatchBarcodePdfFilename };
 
 interface DrawContext {
   cairo: PDFFont;
@@ -333,7 +361,12 @@ export async function generateBarcodePdf(
   let pageW = 50 * MM_TO_PT;
   let pageH = 30 * MM_TO_PT;
 
-  if (preset === "50x25") {
+  if (input.widthMm && input.heightMm && !input.preset) {
+    pageW = Math.max(10, input.widthMm) * MM_TO_PT;
+    pageH = Math.max(10, input.heightMm) * MM_TO_PT;
+    const page = pdf.addPage([pageW, pageH]);
+    renderSingleLabel(page, ctx, input, 0, 0, pageW, pageH, false);
+  } else if (preset === "50x25") {
     pageW = 50 * MM_TO_PT;
     pageH = 25 * MM_TO_PT;
     const page = pdf.addPage([pageW, pageH]);
@@ -372,3 +405,91 @@ export async function generateBarcodePdf(
 
   return { pdfBytes, base64, filename };
 }
+
+/**
+ * توليد PDF متّجهي عالي الدقة لدفعة ملصقات (Batch Export).
+ * مخصص لشاشة طباعة الملصقات لطباعة القائمة دفعة واحدة:
+ * 1. نمط individual_pages: صفحة لكل ملصق بحجم الملصق المختار (لرول طابعات الباركود الحرارية).
+ * 2. نمط a4_grid: شبكة ملصقات منظمة في صفحات A4 (24 ملصق لكل ورقة في شبكة 3×8).
+ */
+export async function generateBarcodeBatchPdf(
+  input: GenerateBarcodeBatchPdfInput
+): Promise<GenerateBarcodeBatchPdfResult> {
+  const validItems = (input.items || []).filter(
+    (item) => item && (item.barcode || "").trim().length > 0 && item.count > 0
+  );
+  if (!validItems.length) {
+    throw new Error("لا توجد عناصر بباركود صالح لتوليد دفعة الملصقات");
+  }
+
+  // توسيع العناصر بحسب عدد النسخ (مع سقف أمان أقصى 1000 ملصق للدفعة)
+  const expanded: BarcodeBatchItemInput[] = [];
+  for (const item of validItems) {
+    const qty = Math.min(Math.max(1, item.count), 200);
+    for (let i = 0; i < qty; i++) {
+      expanded.push(item);
+      if (expanded.length >= 1000) break;
+    }
+    if (expanded.length >= 1000) break;
+  }
+
+  const pdf = await PDFDocument.create();
+  pdf.registerFontkit(fontkit);
+
+  const cairoBytes = await getCairoBytes();
+  const cairo = await pdf.embedFont(cairoBytes, { subset: true });
+  const helv = await pdf.embedFont(StandardFonts.Helvetica);
+  const helvBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  const ctx: DrawContext = { cairo, helv, helvBold };
+
+  const layout = input.layout ?? "individual_pages";
+
+  if (layout === "a4_grid") {
+    // شبكة A4: 3 أعمدة × 8 صفوف = 24 ملصق لكل ورقة A4
+    const a4W = 210 * MM_TO_PT;
+    const a4H = 297 * MM_TO_PT;
+    const cols = 3;
+    const rows = 8;
+    const labelWPt = 50 * MM_TO_PT;
+    const labelHPt = 30 * MM_TO_PT;
+    const totalGridW = cols * labelWPt;
+    const totalGridH = rows * labelHPt;
+    const marginX = (a4W - totalGridW) / 2;
+    const marginY = (a4H - totalGridH) / 2;
+
+    let currentPage: PDFPage | null = null;
+
+    for (let i = 0; i < expanded.length; i++) {
+      const idxOnPage = i % 24;
+      if (idxOnPage === 0) {
+        currentPage = pdf.addPage([a4W, a4H]);
+      }
+      const r = Math.floor(idxOnPage / cols);
+      const c = idxOnPage % cols;
+      const ox = marginX + c * labelWPt;
+      const oy = a4H - marginY - (r + 1) * labelHPt;
+
+      renderSingleLabel(currentPage!, ctx, expanded[i], ox, oy, labelWPt, labelHPt, true);
+    }
+  } else {
+    // رول ملصقات: صفحة منفصلة لكل ملصق
+    const pageW = (input.widthMm && input.widthMm >= 10 ? input.widthMm : 50) * MM_TO_PT;
+    const pageH = (input.heightMm && input.heightMm >= 10 ? input.heightMm : 30) * MM_TO_PT;
+
+    for (const item of expanded) {
+      const page = pdf.addPage([pageW, pageH]);
+      renderSingleLabel(page, ctx, item, 0, 0, pageW, pageH, false);
+    }
+  }
+
+  const pdfBytes = await pdf.save();
+  const base64 = Buffer.from(pdfBytes).toString("base64");
+  const filename = buildBatchBarcodePdfFilename({
+    totalCount: expanded.length,
+    itemCount: validItems.length,
+  });
+
+  return { pdfBytes, base64, filename, totalLabels: expanded.length };
+}
+

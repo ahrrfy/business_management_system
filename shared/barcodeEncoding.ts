@@ -263,3 +263,24 @@ export function buildBarcodePdfFilename(opts: {
   return `${safe || "باركود"}.pdf`;
 }
 
+/**
+ * توليد اسم ملف PDF المقترح لدفعة ملصقات (Batch).
+ */
+export function buildBatchBarcodePdfFilename(opts: {
+  totalCount: number;
+  itemCount?: number;
+  dateStr?: string;
+}): string {
+  const count = opts.totalCount;
+  const items = opts.itemCount;
+  const date = opts.dateStr || new Date().toISOString().slice(0, 10);
+  let base = `ملصقات باركود - ${count} ملصق`;
+  if (items && items > 1) {
+    base += ` (${items} صنف)`;
+  }
+  base += ` - ${date}`;
+  const safe = base.replace(/[\/\\:*?"<>|]/g, "-").replace(/\s+/g, " ").trim();
+  return `${safe}.pdf`;
+}
+
+
