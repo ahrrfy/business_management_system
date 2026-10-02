@@ -622,6 +622,7 @@ describe("storefront guest tracking ownership", () => {
     expect(source).toContain("trackOrderByToken.useMutation");
     expect(source).not.toContain("trackOrder.fetch");
     expect(source).toContain("quoteOrderPrivate.useMutation");
+    expect(source).toContain("storefrontQuoteLines.some((line) => line.customization != null)");
   });
 });
 

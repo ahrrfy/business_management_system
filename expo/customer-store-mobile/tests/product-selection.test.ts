@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCartLine,
   cartLineKey,
+  productOnlineOrderingIssue,
   validateProductSelection,
 } from "@/lib/product-selection";
 import { mapApiProduct, type ApiProduct } from "@/lib/storefront-api";
@@ -205,5 +206,21 @@ describe("product selection contract", () => {
       fieldKey: "design",
       displayValue: "https://files.example/design.pdf",
     });
+  });
+
+  it("rejects a customization template whose kind does not match the product", () => {
+    const product = mapApiProduct({
+      ...apiProduct,
+      customizationTemplate: {
+        ...apiProduct.customizationTemplate!,
+        kind: "GIFT",
+      },
+    });
+    expect(productOnlineOrderingIssue(product)).toBeTruthy();
+    expect(validateProductSelection(product, {
+      variantId: 21,
+      productUnitId: 71,
+      customizationValues: { name: "علي", color: "gold" },
+    }).details).toBeNull();
   });
 });

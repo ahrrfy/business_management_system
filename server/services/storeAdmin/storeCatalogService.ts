@@ -20,6 +20,7 @@ import {
 
 export interface StoreCatalogRow {
   productId: number;
+  isService: boolean;
   name: string;
   categoryName: string | null;
   isActive: boolean;
@@ -116,6 +117,7 @@ export async function listStoreCatalog(
     const onlyVariant = state?.variants.length === 1 ? state.variants[0] : null;
     return {
       productId,
+      isService: state?.isService ?? false,
       name: r.name,
       categoryName: r.categoryName ?? null,
       isActive: r.isActive === true,

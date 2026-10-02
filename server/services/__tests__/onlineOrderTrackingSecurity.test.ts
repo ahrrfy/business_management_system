@@ -41,7 +41,7 @@ beforeEach(async () => {
 
 describe("online order tracking ownership", () => {
   it("يثبت تفاصيل التخصيص بنيوياً لكل سطر ولا يدمج تخصيصين مختلفين", async () => {
-    await db().update(s.products).set({ isCustomizable: true }).where(eq(s.products.id, 1));
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
     await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "تفاصيل الطباعة" });
     await db().insert(s.productCustomizationFields).values([
       { templateId: 1, fieldKey: "text", label: "النص المطلوب", fieldType: "TEXTAREA", isRequired: true, sortOrder: 10, priceDelta: "250.00" },
@@ -114,6 +114,100 @@ describe("online order tracking ownership", () => {
       title: "تفاصيل الطباعة",
       fields: [{ ...field, options: [{ value: "normal", label: "عادي", priceDelta: "-5" }] }],
     }, actor)).rejects.toThrow(/فرق السعر/);
+  });
+
+  it("يقبل طول الحقل المضبوط حتى عشرة آلاف ثم يفرض حد القالب نفسه", async () => {
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "نص طويل" });
+    await db().insert(s.productCustomizationFields).values({
+      templateId: 1,
+      fieldKey: "details",
+      label: "التفاصيل",
+      fieldType: "TEXTAREA",
+      isRequired: true,
+      maxLength: 5_000,
+      priceDelta: "0.00",
+    });
+    const accepted = "س".repeat(2_500);
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { details: accepted } } }],
+    })).resolves.toMatchObject({ lines: [{ unitPrice: "1000.00" }] });
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: { details: "س".repeat(5_001) } } }],
+    })).rejects.toThrow(/تجاوز الحد/);
+  });
+
+  it("يرفض القالب غير المتوافق والقيم المرسلة لحقول مخفية", async () => {
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "GIFT", title: "قالب غير متوافق" });
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization: { templateId: 1, values: {} } }],
+    })).rejects.toThrow(/نوع قالب التخصيص/);
+
+    await db().update(s.productCustomizationTemplates).set({ kind: "PRINT" }).where(eq(s.productCustomizationTemplates.id, 1));
+    await db().insert(s.productCustomizationFields).values([
+      {
+        templateId: 1,
+        fieldKey: "mode",
+        label: "طريقة التنفيذ",
+        fieldType: "SELECT",
+        isRequired: true,
+        sortOrder: 10,
+        optionsJson: [
+          { value: "text", label: "نص", priceDelta: "0" },
+          { value: "file", label: "ملف", priceDelta: "0" },
+        ],
+        priceDelta: "0.00",
+      },
+      {
+        templateId: 1,
+        fieldKey: "message",
+        label: "النص",
+        fieldType: "TEXT",
+        isRequired: false,
+        sortOrder: 20,
+        dependencyJson: { fieldKey: "mode", operator: "equals", value: "text" },
+        priceDelta: "0.00",
+      },
+    ]);
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{
+        productUnitId: 1,
+        quantity: 1,
+        customization: { templateId: 1, values: { mode: "file", message: "قيمة مخفية" } },
+      }],
+    })).rejects.toThrow(/شرط ظهوره/);
+  });
+
+  it("يرفض تجاوز سعة المال في مجموع التخصيص والسعر النهائي وإجمالي السطر", async () => {
+    await db().update(s.products).set({ isCustomizable: true, productType: "PRINT_SERVICE" }).where(eq(s.products.id, 1));
+    await db().insert(s.productCustomizationTemplates).values({ id: 1, productId: 1, kind: "PRINT", title: "تخصيص مرتفع" });
+    await db().insert(s.productCustomizationFields).values([
+      { id: 1, templateId: 1, fieldKey: "first", label: "الأول", fieldType: "TEXT", isRequired: true, sortOrder: 10, priceDelta: "9999999999999.99" },
+      { id: 2, templateId: 1, fieldKey: "second", label: "الثاني", fieldType: "TEXT", isRequired: true, sortOrder: 20, priceDelta: "1.00" },
+    ]);
+    const customization = { templateId: 1, values: { first: "أ", second: "ب" } };
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization }],
+    })).rejects.toThrow(/مجموع فروق أسعار/);
+
+    await db().update(s.productCustomizationFields).set({ priceDelta: "0.00" }).where(eq(s.productCustomizationFields.id, 2));
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1, customization }],
+    })).rejects.toThrow(/السعر النهائي بعد التخصيص/);
+
+    await db().update(s.productCustomizationFields).set({ priceDelta: "0.00" }).where(eq(s.productCustomizationFields.id, 1));
+    await db().update(s.productPrices).set({ price: "6000000000000.00" }).where(eq(s.productPrices.productUnitId, 1));
+    await expect(quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 2, customization }],
+    })).rejects.toThrow(/إجمالي هذا السطر/);
   });
 
   it("يغلق البحث الإرثي برقم متسلسل + هاتف حتى لو عرف المهاجم القيمتين", async () => {
@@ -214,5 +308,7 @@ describe("online order tracking ownership", () => {
     expect(source).not.toContain("trackOrder: publicProcedure");
     expect(source).toContain("trackOrderPrivate: storefrontPublicWriteProcedure");
     expect(source).toContain("trackOrderByToken: storefrontPublicWriteProcedure");
+    expect(source).toContain("z.string().max(10_000)");
+    expect(source).toContain("couponCode: z.string().trim().min(1).max(64).optional()");
   });
 });

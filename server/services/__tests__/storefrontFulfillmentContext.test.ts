@@ -75,6 +75,10 @@ describe("storefront fulfillment context", () => {
       isOpen: true,
       configurationReady: true,
     });
+    const readiness = (await loadStorefrontReadiness({ branchId: 2, productIds: [1] })).get(1);
+    expect(readiness).toMatchObject({ isService: true, inStock: true });
+    expect(readiness?.variants[0]).toMatchObject({ inStock: true, readinessReasons: [] });
+    expect(readiness?.variants[0]?.units[0]).toMatchObject({ inStock: true, readinessReasons: [] });
   });
 
   it("يوحّد الكتالوج العام والإعدادات على الفرع المعيّن ويمنع تعطيله", async () => {

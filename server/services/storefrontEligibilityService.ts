@@ -29,6 +29,8 @@ export type StorefrontReadinessReason =
   | "BELOW_SALE_UNIT_FACTOR";
 
 export interface StorefrontEligibilityUnitInput {
+  /** الخدمة تحتاج وحدةً وسعراً صالحين، لكنها لا تملك صف مخزون مادي. */
+  isService?: boolean;
   isActive: boolean;
   isStoreSaleUnit: boolean;
   retailPrice: string | null;
@@ -79,6 +81,7 @@ export function evaluateStorefrontUnitEligibility(
 
   const publishable = reasons.length === 0;
   if (!publishable) return { publishable: false, available: false, reasons: uniqueReasons(reasons) };
+  if (input.isService) return { publishable: true, available: true, reasons: [] };
 
   const availableBase = input.availableBase ?? input.stockBase;
   if (input.stockBase == null) reasons.push("NO_STOCK_ROW");

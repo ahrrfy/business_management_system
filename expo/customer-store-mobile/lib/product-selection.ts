@@ -31,9 +31,14 @@ function centsToMoney(value: bigint): string {
 }
 
 export function productOnlineOrderingIssue(product: Product): string | null {
-  return product.isCustomizable && !product.customizationTemplate
-    ? CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE
-    : null;
+  if (!product.isCustomizable) return null;
+  const template = product.customizationTemplate;
+  if (!template || !product.customizationKind) {
+    return CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE;
+  }
+  return template.kind === "GENERAL" || template.kind === product.customizationKind
+    ? null
+    : CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE;
 }
 
 function dependencyMatches(

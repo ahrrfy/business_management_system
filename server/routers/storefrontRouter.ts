@@ -63,7 +63,8 @@ const labelSummaryInput = z.object({
 
 const onlineOrderCustomizationInput = z.object({
   templateId: z.number().int().positive(),
-  values: z.record(z.string().trim().min(1).max(80), z.string().max(2_000))
+  // الحد الأعلى نفسه الذي تسمح به إدارة القالب؛ الحد الأدق لكل حقل يُفرض بعد تحميل القالب.
+  values: z.record(z.string().trim().min(1).max(80), z.string().max(10_000))
     .refine((values) => Object.keys(values).length <= 50, "حقول التخصيص أكثر من الحد المسموح"),
 });
 
@@ -313,12 +314,12 @@ export const storefrontRouter = router({
     .query(({ input }) => quoteOnlineOrder(input)),
 
   /**
-   * تسعير قسيمة عبر POST: رمز القسيمة/جلسة العميل يبقيان في body ولا يظهران في nginx URL.
+   * تسعير آمن عبر POST: التخصيص ورمز القسيمة/جلسة العميل تبقى في body ولا تظهر في nginx URL.
    * الجلسة اختيارية للقسيمة العامة، وإلزامية عملياً للشخصية لأن الخدمة تفشل مغلقة عند غياب المالك.
    */
   quoteOrderPrivate: storefrontPublicWriteProcedure
     .input(z.object({
-      couponCode: z.string().trim().min(1).max(64),
+      couponCode: z.string().trim().min(1).max(64).optional(),
       customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
       governorate: z.string().trim().min(1).max(40),
       lines: z.array(onlineOrderLineInput).min(1).max(100),

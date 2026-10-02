@@ -1595,17 +1595,18 @@ function StorefrontContent() {
     governorate: form.governorate,
     lines: storefrontQuoteLines,
   }), [form.governorate, storefrontQuoteLines]);
+  const privateQuoteRequired = Boolean(appliedCouponCode) || storefrontQuoteLines.some((line) => line.customization != null);
   const publicQuoteQ = trpc.storefront.quoteOrder.useQuery(storefrontQuoteInput, {
-    enabled: panel === "checkout" && cart.size > 0 && !appliedCouponCode,
+    enabled: panel === "checkout" && cart.size > 0 && !privateQuoteRequired,
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
   const privateQuoteM = trpc.storefront.quoteOrderPrivate.useMutation();
-  const privateQuoteInput = useMemo(() => appliedCouponCode ? ({
-    couponCode: appliedCouponCode,
+  const privateQuoteInput = useMemo(() => privateQuoteRequired ? ({
+    ...(appliedCouponCode ? { couponCode: appliedCouponCode } : {}),
     governorate: form.governorate,
     lines: storefrontQuoteLines,
-  }) : null, [appliedCouponCode, form.governorate, storefrontQuoteLines]);
+  }) : null, [appliedCouponCode, form.governorate, privateQuoteRequired, storefrontQuoteLines]);
   useEffect(() => {
     if (panel !== "checkout" || cart.size === 0 || !privateQuoteInput) {
       privateQuoteM.reset();
@@ -1617,10 +1618,10 @@ function StorefrontContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart.size, panel, privateQuoteInput]);
   const quoteQ = {
-    data: appliedCouponCode ? privateQuoteM.data : publicQuoteQ.data,
-    isFetching: appliedCouponCode ? privateQuoteM.isPending : publicQuoteQ.isFetching,
-    isError: appliedCouponCode ? privateQuoteM.isError : publicQuoteQ.isError,
-    error: appliedCouponCode ? privateQuoteM.error : publicQuoteQ.error,
+    data: privateQuoteRequired ? privateQuoteM.data : publicQuoteQ.data,
+    isFetching: privateQuoteRequired ? privateQuoteM.isPending : publicQuoteQ.isFetching,
+    isError: privateQuoteRequired ? privateQuoteM.isError : publicQuoteQ.isError,
+    error: privateQuoteRequired ? privateQuoteM.error : publicQuoteQ.error,
   };
   const trackConversion = trpc.storefront.trackConversion.useMutation();
 
@@ -1738,8 +1739,9 @@ function StorefrontContent() {
               customization: line.customization ? { templateId: line.customization.templateId, values: line.customization.values ?? {} } : undefined,
             })),
           };
-          const quoted = appliedCouponCode
-            ? await privateQuoteM.mutateAsync({ ...currentQuoteInput, couponCode: appliedCouponCode })
+          const currentRequiresPrivateQuote = Boolean(appliedCouponCode) || currentQuoteInput.lines.some((line) => line.customization != null);
+          const quoted = currentRequiresPrivateQuote
+            ? await privateQuoteM.mutateAsync({ ...currentQuoteInput, ...(appliedCouponCode ? { couponCode: appliedCouponCode } : {}) })
             : await utils.storefront.quoteOrder.fetch(currentQuoteInput);
           const refreshedQuote = reconcileStorefrontCartQuote(cartRef.current, quoted.lines);
           const totalChanged = failedAttempt == null ||

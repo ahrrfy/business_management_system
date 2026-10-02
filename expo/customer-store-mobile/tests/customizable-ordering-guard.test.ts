@@ -8,6 +8,9 @@ import {
   checkoutSelectionIssue,
 } from "@/lib/checkout-selection";
 import {
+  quoteStorefrontOrder,
+} from "@/lib/storefront-api";
+import {
   validateProductQuoteSelection,
   validateProductSelection,
 } from "@/lib/product-selection";
@@ -49,6 +52,7 @@ const customizableProduct = {
   salePrice: "4500",
   inStock: true,
   isCustomizable: true,
+  customizationKind: "PRINT",
   customizationTemplate: {
     id: 4,
     kind: "PRINT",
@@ -131,5 +135,25 @@ describe("customizable product online-ordering guard", () => {
     expect(source).toContain('field.fieldType === "FILE"');
     expect(source).toContain('placeholder="اكتب رابط الملف أو اسمه أو مرجعه"');
     expect(source).toContain("onChangeText={onChange}");
+  });
+
+  it("sends customization quotes in a POST body instead of the logged URL", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: { data: { json: { lines: [] } } } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await quoteStorefrontOrder("baghdad", checkoutRequestLines([customizableLine]));
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.not.stringContaining("?input="),
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"name":"علي"'),
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

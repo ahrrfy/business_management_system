@@ -71,6 +71,8 @@ const WHOLESALE = "WHOLESALE" as const;
 export const STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY = 12;
 const GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
 const GUEST_TRACKING_DOMAIN = "STORE_GUEST_TRACKING_V1";
+const MAX_CUSTOMIZATION_VALUE_LENGTH = 10_000;
+const MAX_ONLINE_ORDER_MONEY = money("9999999999999.99");
 
 function guestTrackingSecret(): string {
   const secret = process.env.BARCODE_SECRET || (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
@@ -158,10 +160,15 @@ function normalizeExpectedUnitPrice(
 ): string | null | undefined {
   if (value == null) return value;
   try {
-    if (!/^\d{1,15}(?:\.\d{1,2})?$/.test(value))
+    if (!/^\d{1,13}(?:\.\d{1,2})?$/.test(value))
       throw new Error("invalid price shape");
     const parsed = money(value);
-    if (!parsed.isFinite() || parsed.lt(0) || parsed.decimalPlaces() > 2)
+    if (
+      !parsed.isFinite()
+      || parsed.lt(0)
+      || parsed.gt(MAX_ONLINE_ORDER_MONEY)
+      || parsed.decimalPlaces() > 2
+    )
       throw new Error("invalid price");
     return toDbMoney(parsed);
   } catch {
@@ -191,7 +198,7 @@ function normalizeCustomizationInput(
   const values: Record<string, string> = {};
   for (const [rawKey, rawValue] of entries.sort(([left], [right]) => left.localeCompare(right))) {
     const fieldKey = rawKey.trim();
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(fieldKey) || typeof rawValue !== "string" || rawValue.length > 2_000) {
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(fieldKey) || typeof rawValue !== "string" || rawValue.length > MAX_CUSTOMIZATION_VALUE_LENGTH) {
       throw customizationInputError("BAD_REQUEST", "تعذّر تجهيز التخصيص", "أحد حقول التخصيص وصل بصيغة غير صالحة", "حدّث صفحة المنتج وأدخل التفاصيل مجدداً");
     }
     const value = rawValue.trim();
@@ -687,7 +694,12 @@ function customizationDependencyMatches(
 
 async function resolveOnlineOrderCustomization(
   tx: Tx,
-  product: { productId: number; productName: string; isCustomizable: boolean | null },
+  product: {
+    productId: number;
+    productName: string;
+    productType: string | null;
+    isCustomizable: boolean | null;
+  },
   customization: OnlineOrderCustomizationInput | null | undefined,
 ): Promise<{ snapshot: OnlineOrderCustomizationSnapshot | null; priceDelta: ReturnType<typeof money> }> {
   if (product.isCustomizable !== true) {
@@ -711,6 +723,15 @@ async function resolveOnlineOrderCustomization(
   if (!template) {
     throw customizationInputError("CONFLICT", `تغيّر تخصيص «${product.productName}»`, "قالب التخصيص الذي استُعمل في السلة لم يعد القالب النشط", "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الحالية ثم أعد التأكيد");
   }
+  const expectedKind = product.productType === "PRINT_SERVICE" ? "PRINT" : "GIFT";
+  if (template.kind !== "GENERAL" && template.kind !== expectedKind) {
+    throw customizationInputError(
+      "CONFLICT",
+      `تغيّر تخصيص «${product.productName}»`,
+      "نوع قالب التخصيص لا يطابق نوع المنتج الحالي",
+      "حدّث صفحة المنتج، وإن بقيت المشكلة فتواصل معنا لتصحيح إعداد القالب",
+    );
+  }
   const fields = await tx.select({
     fieldKey: productCustomizationFields.fieldKey,
     label: productCustomizationFields.label,
@@ -727,6 +748,17 @@ async function resolveOnlineOrderCustomization(
   const knownKeys = new Set(fields.map((field) => field.fieldKey));
   if (Object.entries(customization.values).some(([key, value]) => value !== "" && !knownKeys.has(key))) {
     throw customizationInputError("BAD_REQUEST", `تعذّر تخصيص «${product.productName}»`, "وصل حقل تخصيص غير موجود في القالب الحالي", "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الظاهرة فقط");
+  }
+  const hiddenSubmittedField = fields.find((field) =>
+    Boolean((customization.values[field.fieldKey] ?? "").trim())
+    && !customizationDependencyMatches(field.dependency ?? null, customization.values));
+  if (hiddenSubmittedField) {
+    throw customizationInputError(
+      "BAD_REQUEST",
+      `تعذّر تخصيص «${product.productName}»`,
+      `وصلت قيمة لحقل «${hiddenSubmittedField.label}» رغم أن شرط ظهوره غير متحقق`,
+      "حدّث صفحة المنتج وأدخل التفاصيل في الحقول الظاهرة فقط",
+    );
   }
   let priceDelta = money(0);
   const values: OnlineOrderCustomizationSnapshot["values"] = [];
@@ -754,6 +786,14 @@ async function resolveOnlineOrderCustomization(
       throw new Error(`Invalid customization price delta for template ${template.id}`);
     }
     priceDelta = priceDelta.plus(fieldDelta).plus(optionDelta);
+    if (!priceDelta.isFinite() || priceDelta.gt(MAX_ONLINE_ORDER_MONEY)) {
+      throw customizationInputError(
+        "CONFLICT",
+        `تعذّر تسعير تخصيص «${product.productName}»`,
+        "مجموع فروق أسعار القالب تجاوز السعة المالية المسموحة",
+        "تواصل معنا لتصحيح أسعار خيارات التخصيص قبل إتمام الطلب",
+      );
+    }
     values.push({
       fieldKey: field.fieldKey,
       label: field.label,
@@ -863,6 +903,7 @@ export async function priceOnlineOrderLines(
     .select({
       productId: products.id,
       productName: products.name,
+      productType: products.productType,
       categoryId: products.categoryId,
       productUnitId: productUnits.id,
       variantId: productVariants.id,
@@ -941,6 +982,7 @@ export async function priceOnlineOrderLines(
     const resolvedCustomization = await resolveOnlineOrderCustomization(tx, {
       productId: Number(row.productId),
       productName: row.productName,
+      productType: row.productType ?? null,
       isCustomizable: row.isCustomizable,
     }, line.customization);
     const base = money(quantity).times(row.conversionFactor ?? 1);
@@ -961,6 +1003,14 @@ export async function priceOnlineOrderLines(
     }
     const retail = round2(row.price);
     const retailWithCustomization = round2(retail.plus(resolvedCustomization.priceDelta));
+    if (!retailWithCustomization.isFinite() || retailWithCustomization.gt(MAX_ONLINE_ORDER_MONEY)) {
+      throw customizationInputError(
+        "CONFLICT",
+        `تعذّر تسعير تخصيص «${row.productName}»`,
+        "السعر النهائي بعد التخصيص تجاوز السعة المالية المسموحة",
+        "تواصل معنا لتصحيح سعر المنتج أو فروق التخصيص قبل إتمام الطلب",
+      );
+    }
     const productId = Number(row.productId);
     const variantId = Number(row.variantId);
     const categoryId = row.categoryId == null ? null : Number(row.categoryId);
@@ -1113,6 +1163,16 @@ export async function priceOnlineOrderLines(
     return compared !== 0 ? compared : b.priority - a.priority;
   });
   const selected = candidatesByBenefit[0];
+  if (selected && round2(selected.discount).gt(MAX_ONLINE_ORDER_MONEY)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسعير الطلب",
+        why: "إجمالي المنفعة السعرية تجاوز سعة الطلب الواحد",
+        doThis: "قسّم الأصناف على طلبين أو أكثر ثم أعد المحاولة",
+      }),
+    });
+  }
   const benefit: StorefrontPricingBenefit = selected
     ? {
         type: selected.type,
@@ -1152,6 +1212,17 @@ export async function priceOnlineOrderLines(
     const unitPrice = round2(
       priceAfterBenefit.lt(0) ? money(0) : priceAfterBenefit,
     );
+    const lineTotal = round2(unitPrice.times(item.quantity));
+    if (!lineTotal.isFinite() || lineTotal.gt(MAX_ONLINE_ORDER_MONEY)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تسعير «${item.productName}»`,
+          why: "إجمالي هذا السطر تجاوز السعة المالية المسموحة للطلب",
+          doThis: "خفّض الكمية أو قسّمها على طلبين ثم أعد المحاولة",
+        }),
+      });
+    }
     return {
       productId: item.productId,
       categoryId: item.categoryId,
@@ -1170,7 +1241,7 @@ export async function priceOnlineOrderLines(
           ? round2(selectedDiscount).toFixed(2)
           : "0.00",
       unitPrice: unitPrice.toFixed(2),
-      lineTotal: round2(unitPrice.times(item.quantity)).toFixed(2),
+      lineTotal: lineTotal.toFixed(2),
     } satisfies PricedOnlineOrderLine;
   });
   return {
@@ -1225,6 +1296,16 @@ export async function totalOnlineOrderQuote(
   >
 > {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
+  if (!subtotal.isFinite() || subtotal.gt(MAX_ONLINE_ORDER_MONEY)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسعير الطلب",
+        why: "إجمالي الأصناف تجاوز السعة المالية المسموحة للطلب الواحد",
+        doThis: "قسّم الأصناف على طلبين أو أكثر ثم أعد المحاولة",
+      }),
+    });
+  }
   const eligibilitySubtotal = deliveryEligibilitySubtotal == null
     ? subtotal
     : round2(money(deliveryEligibilitySubtotal));
@@ -1241,6 +1322,17 @@ export async function totalOnlineOrderQuote(
   const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
   const deliveryFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
   if (deliveryFree) customerDeliveryFee = round2(money(0));
+  const total = round2(subtotal.plus(customerDeliveryFee));
+  if (!total.isFinite() || total.gt(MAX_ONLINE_ORDER_MONEY)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسعير الطلب",
+        why: "الإجمالي مع أجرة التوصيل تجاوز السعة المالية المسموحة للطلب الواحد",
+        doThis: "قسّم الأصناف على طلبين أو أكثر ثم أعد المحاولة",
+      }),
+    });
+  }
   return {
     subtotal: subtotal.toFixed(2),
     deliveryFee: customerDeliveryFee.toFixed(2),
@@ -1250,7 +1342,7 @@ export async function totalOnlineOrderQuote(
     freeShippingRemaining: freeThreshold
       ? (eligibilitySubtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(eligibilitySubtotal)).toFixed(2)
       : null,
-    total: round2(subtotal.plus(customerDeliveryFee)).toFixed(2),
+    total: total.toFixed(2),
   };
 }
 

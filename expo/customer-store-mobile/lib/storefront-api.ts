@@ -838,21 +838,15 @@ export function quoteStorefrontOrder(
   customerSessionToken?: string,
 ) {
   const normalizedCoupon = couponCode?.trim();
-  if (normalizedCoupon) {
-    return storefrontMutation<StorefrontOrderQuote>(
-      "storefront.quoteOrderPrivate",
-      {
-        governorate,
-        lines,
-        couponCode: normalizedCoupon,
-        customerSessionToken: customerSessionToken || undefined,
-      },
-    );
-  }
-  return storefrontQuery<StorefrontOrderQuote>(
-    "storefront.quoteOrder",
-    { governorate, lines },
-    { retries: 0 },
+  // تفاصيل التخصيص بيانات زبون، لذلك يبقى التسعير كله في جسم POST لا في رابط GET المسجّل.
+  return storefrontMutation<StorefrontOrderQuote>(
+    "storefront.quoteOrderPrivate",
+    {
+      governorate,
+      lines,
+      couponCode: normalizedCoupon || undefined,
+      customerSessionToken: customerSessionToken || undefined,
+    },
   );
 }
 
