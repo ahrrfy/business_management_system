@@ -685,7 +685,6 @@ export default function SalesInvoice() {
       shipping: totals.shipping, taxEnabled: state.taxEnabled, totalTax: totals.totalTax,
     });
     if (digitalError) return digitalError;
-    if (hasDigitalItems && state.paymentTerms === "CASH" && state.paymentMethod === "CARD") return "دفع البطاقة للكروت الرقمية موقوف مؤقتاً حتى يكتمل الربط الذري قبل القبض؛ استخدم النقد أو اجعل الفاتورة آجلة كاملة.";
     // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
     // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
     if (state.shippingFree && !D(state.shipping || "0").gt(0)) {
