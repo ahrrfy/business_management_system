@@ -181,6 +181,7 @@ export interface DayCloseReconciliationResult {
   overCount: number;     // فائض (drift > 0)
   shortCount: number;    // عجز (drift < 0)
   /** ش٦ — بنود الاستقبال في إقفال اليوم: عرابين معلّقة (لقطة حاضرة لا يوم) + خصم كل موظف. */
+  directMovements: { count: number; net: string; in: string; out: string; details: Array<{ id: number; time: string; userName: string | null; direction: 'IN' | 'OUT'; amount: string; description: string; }>; };
   receptionExtras: {
     /** مسوّدات OPEN مموّلة الآن — مالُ زبائن محتجزٌ بلا مستندٍ نهائيّ (عرابين غير مُسلَّمة). */
     fundedDrafts: { count: number; heldNet: string };
@@ -250,6 +251,7 @@ export async function getDayCloseReconciliation(opts: {
     directOperations: emptyDirectSummary,
     totals: emptyTotals,
     balancedCount: 0, driftCount: 0, overCount: 0, shortCount: 0,
+    directMovements: { count: 0, net: '0.00', in: '0.00', out: '0.00', details: [] },
     receptionExtras: { fundedDrafts: { count: 0, heldNet: "0.00" }, discountByUser: [] },
   };
 
@@ -796,6 +798,32 @@ export async function getDayCloseReconciliation(opts: {
   };
   const branchDraftCond = opts.branchId != null ? sql`AND d.branchId = ${opts.branchId}` : sql``;
   const branchInvCond = opts.branchId != null ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  const directMovementsRes = await db
+    .select({
+      id: receipts.id,
+      createdAt: receipts.createdAt,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      referenceNumber: receipts.referenceNumber,
+      description: receipts.description,
+      status: receipts.status,
+      userId: receipts.createdBy,
+      userName: users.name,
+    })
+    .from(receipts)
+    .leftJoin(users, eq(users.id, receipts.createdBy))
+    .where(
+      and(
+        eq(receipts.cashBucket, 'TREASURY'),
+        eq(receipts.paymentMethod, 'CASH'),
+        inArray(receipts.status, ['COMPLETED']),
+        gte(receipts.createdAt, start),
+        lt(receipts.createdAt, endExclusive),
+        opts.branchId != null ? eq(receipts.branchId, opts.branchId) : undefined
+      )
+    )
+    .orderBy(receipts.createdAt);
+
   const [fundedRes, discRes] = await Promise.all([
     db.execute(sql`
       SELECT COUNT(*) AS c, CAST(COALESCE(SUM(h.heldNet), 0) AS CHAR) AS t
@@ -862,6 +890,30 @@ export async function getDayCloseReconciliation(opts: {
     shifts: lines,
     withheldBlindCountShiftCount,
     directOperations,
+    directMovements: (() => {
+      let tIn = money(0);
+      let tOut = money(0);
+      const details = directMovementsRes.map((r) => {
+        const amt = money(r.amount);
+        if (r.direction === 'IN') tIn = tIn.plus(amt);
+        else tOut = tOut.plus(amt);
+        return {
+          id: r.id,
+          time: r.createdAt.toISOString(),
+          userName: r.userName,
+          direction: r.direction as 'IN' | 'OUT',
+          amount: toDbMoney(amt),
+          description: r.description || r.referenceNumber || ''
+        };
+      });
+      return {
+        count: details.length,
+        net: toDbMoney(tIn.minus(tOut)),
+        in: toDbMoney(tIn),
+        out: toDbMoney(tOut),
+        details
+      };
+    })(),
     receptionExtras: {
       fundedDrafts: {
         count: Number(fundedRow?.c ?? 0),

@@ -47,6 +47,70 @@ function todayUtc(): string {
 
 /** تسمية عربية لنوع الوردية (درجٌ مستقلّ لكل نوع: تجزئة / استقبال / خدمات طباعة). */
 
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+
+function DirectMovementsCard({ dm }: { dm: NonNullable<DC["directMovements"]> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Card className="border-[var(--sem-info)]/30 bg-blue-50/50 dark:bg-blue-900/10">
+        <CardContent className="flex items-center justify-between p-4 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-[var(--sem-info)] font-semibold">
+              يوجد {dm.count} حركة نقدية مباشرة (خارج الأدراج) بصافي:
+            </span>
+            <span className="font-bold tabular-nums" dir="ltr">{fmtAr(dm.net)} د.ع</span>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setOpen(true)}>التفاصيل</Button>
+        </CardContent>
+      </Card>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>العمليات والتدفقات النقدية المباشرة (خارج أدراج الورديات)</DialogTitle>
+          </DialogHeader>
+          <div className="p-4 space-y-4">
+            <div className="text-sm text-muted-foreground">
+              {dm.count} عمليات
+            </div>
+            <div className="border rounded-md">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>الوقت</TableHead>
+                    <TableHead>الموظف</TableHead>
+                    <TableHead>النوع</TableHead>
+                    <TableHead>البيان</TableHead>
+                    <TableHead className="text-left">المبلغ</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dm.details.map((d) => (
+                    <TableRow key={d.id}>
+                      <TableCell className="tabular-nums" dir="ltr">{new Date(d.time).toLocaleTimeString('en-US')}</TableCell>
+                      <TableCell>{d.userName}</TableCell>
+                      <TableCell>
+                        {d.direction === "IN" ? (
+                          <span className="text-money-positive bg-money-positive/10 px-2 py-0.5 rounded text-xs">مقبوضات</span>
+                        ) : (
+                          <span className="text-money-negative bg-money-negative/10 px-2 py-0.5 rounded text-xs">مدفوعات</span>
+                        )}
+                      </TableCell>
+                      <TableCell>{d.description}</TableCell>
+                      <TableCell className="text-left font-semibold tabular-nums" dir="ltr">{fmtAr(d.amount)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 export default function DayCloseReport() {
   const [date, setDate] = useState<string>(todayUtc);
   const [branchId, setBranchId] = useState<number | "">("");
@@ -550,12 +614,15 @@ export default function DayCloseReport() {
           {dc.directOperations.receiptCount > 0 && (
             <DirectOperationsPanel direct={dc.directOperations} totals={dc.totals} />
           )}
+          {dc.directMovements && dc.directMovements.count > 0 && (
+            <DirectMovementsCard dm={dc.directMovements} />
+          )}
           {dc.shifts.length > 0 ? (
             <ShiftTable dc={dc} />
           ) : (
             <Card>
               <CardContent className="p-6 text-center text-xs text-muted-foreground">
-                لا توجد ورديات كاشير مسجلة في {fmtDate(date)} — كافة التدفقات النقدية أعلاه تمثل مقبوضات/سندات مباشرة بالخزينة.
+                لا توجد ورديات مغلقة في هذا اليوم. يمكنك العودة لتقارير سابقة أو مراجعة الحركات المباشرة.
               </CardContent>
             </Card>
           )}
