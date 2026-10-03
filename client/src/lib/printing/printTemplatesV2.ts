@@ -80,8 +80,8 @@ function balanceDirSupplier(balance: number): string {
  * حلّ وتجهيز كائن باركود المستند للترويسة الرسمية.
  * إن لم يُلغَ صراحةً (false/null)، يُنشأ تلقائياً كرمز آلة قياسي ببادئة النوع (مثل INV-XXXXX).
  */
-function resolveDocBarcode(
-  prefix: 'INV' | 'PO' | 'QUO' | 'WO',
+export function resolveDocBarcode(
+  prefix: string,
   docNum: string,
   barcode?: DocHeaderBarcode | string | boolean | null,
   placement?: 'beside' | 'below',
@@ -993,6 +993,11 @@ export interface VoucherV2Data {
    */
   attachmentImageUrl?: string | null;
 
+  /** باركود رقم السند للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
+
   settings?: CompanySettings;
 }
 
@@ -1015,6 +1020,7 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
       { label: 'التاريخ', value: fmtDate(d.voucherDate) },
     ],
     badge,
+    barcode: resolveDocBarcode('VCH', d.voucherNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
   const cards = infoCards([
@@ -1101,6 +1107,10 @@ export interface WarehouseSlipV2Data {
   }[];
 
   notes?: string | null;
+  /** باركود مرجع الفاتورة للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
   settings?: CompanySettings;
 }
 
@@ -1113,6 +1123,7 @@ export function printWarehouseSlipV2(d: WarehouseSlipV2Data): boolean {
       { label: 'مرجع الفاتورة', value: d.invoiceNumber },
       { label: 'التاريخ', value: date },
     ],
+    barcode: resolveDocBarcode('INV', d.invoiceNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
   const cards = infoCards([

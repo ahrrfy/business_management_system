@@ -11,6 +11,7 @@
  */
 import { BRAND as B, CO, esc, logoUrl, CAIRO_FONT } from './brand';
 import { code128Svg } from './barcode';
+import { docBarcode } from '@shared/documentNumber';
 
 // ─── ثوابت التصميم ────────────────────────────────────────────────────────────
 
@@ -448,8 +449,8 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
     }
   }
 
-  // نحدد الحقل المستهدف للباركود: الحقل الذي يحوي اسمه «رقم» أو الحقل الأول
-  const barcodeTargetIdx = meta.fields.findIndex((f) => f.label.includes('رقم'));
+  // نحدد الحقل المستهدف للباركود: الحقل الذي يحوي اسمه «رقم» أو «مرجع» أو الحقل الأول
+  const barcodeTargetIdx = meta.fields.findIndex((f) => f.label.includes('رقم') || f.label.includes('مرجع'));
   const targetIdx = barcodeTargetIdx >= 0 ? barcodeTargetIdx : 0;
 
   const fields = meta.fields.map((f, idx) => {
@@ -862,18 +863,49 @@ export function a4PageOpen(): string { return pageBodyOpen(); }
 /** aliased للاسم القديم؛ يُغلق `.page-body` (تذييل الصفحة يُدرَج داخل .page مباشرةً). */
 export function a4PageClose(): string { return pageBodyClose(); }
 
-/** توافق خلفي — ترويسة بمعامَلات مسطّحة (title/رقم/تاريخ). */
+/** توافق خلفي — ترويسة بمعامَلات مسطّحة (title/رقم/تاريخ) مع دعم باركود رقم المستند الافتراضي بالنموذج 1. */
 export function docHeader(
   title: string,
   docNum?: string | null,
   docDate?: string | null,
   extra?: { label: string; value: string }[],
+  barcode?: DocHeaderBarcode | string | boolean | null,
+  placement?: 'beside' | 'below',
 ): string {
   const fields: { label: string; value: string }[] = [];
   if (docNum) fields.push({ label: 'رقم المستند', value: docNum });
   if (docDate) fields.push({ label: 'التاريخ', value: docDate });
   if (extra) fields.push(...extra);
-  return `${pageBodyOpen()}${pageHeader({ title, fields })}`;
+
+  let resolvedBarcode: DocHeaderBarcode | string | null = null;
+  const getAutoPrefix = (): string => {
+    if (title.includes('شراء') || title.includes('مشتريات')) return 'PO';
+    if (title.includes('سند') || title.includes('قبض') || title.includes('صرف')) return 'VCH';
+    if (title.includes('مناقلة') || title.includes('تحويل')) return 'TRN';
+    if (title.includes('استبدال')) return 'EXC';
+    if (title.includes('هدية')) return 'GIFT';
+    if (title.includes('طلب')) return 'ORD';
+    if (title.includes('أمانة')) return 'CNS';
+    if (title.includes('شغل')) return 'WO';
+    if (title.includes('عرض')) return 'QUO';
+    return 'INV';
+  };
+
+  if (barcode !== undefined) {
+    if (barcode === false || barcode === null) {
+      resolvedBarcode = null;
+    } else if (typeof barcode === 'object') {
+      resolvedBarcode = { ...barcode, placement: placement ?? barcode.placement ?? 'beside' };
+    } else if (typeof barcode === 'string') {
+      resolvedBarcode = { value: barcode, placement: placement ?? 'beside' };
+    } else if (barcode === true && docNum) {
+      resolvedBarcode = { value: docBarcode(getAutoPrefix(), docNum), placement: placement ?? 'beside' };
+    }
+  } else if (docNum) {
+    resolvedBarcode = { value: docBarcode(getAutoPrefix(), docNum), placement: placement ?? 'beside' };
+  }
+
+  return `${pageBodyOpen()}${pageHeader({ title, fields, barcode: resolvedBarcode })}`;
 }
 
 /** توافق خلفي — بطاقات المعلومات القديمة (title+fields). */

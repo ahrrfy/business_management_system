@@ -15,9 +15,11 @@ import {
   tafqitLine,
   wrapA4Doc,
   type CompanySettings,
+  type DocHeaderBarcode,
 } from "./docHtml";
 import { esc, fmt, openPrintWindow } from "./brand";
 import { formatArabicMoneyWords } from "./tafqit";
+import { resolveDocBarcode } from "./printTemplatesV2";
 
 export interface CommissionStatementV2Data {
   runId: number;
@@ -44,6 +46,8 @@ export interface CommissionStatementV2Data {
   carryOut: string;
   computedAt?: string | null;
   settings?: CompanySettings;
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  barcodePlacement?: 'beside' | 'below';
 }
 
 export function printCommissionStatementV2(d: CommissionStatementV2Data): boolean {
@@ -57,6 +61,7 @@ export function printCommissionStatementV2(d: CommissionStatementV2Data): boolea
         ...(d.computedAt ? [{ label: "تاريخ الاحتساب", value: d.computedAt }] : []),
       ],
       badge: { label: d.statusLabel, color: d.statusLabel === "معتمدة" ? "#0D6B52" : "#B7791F" },
+      barcode: resolveDocBarcode("CR", String(d.runId), d.barcode, d.barcodePlacement),
     },
     d.settings,
   );

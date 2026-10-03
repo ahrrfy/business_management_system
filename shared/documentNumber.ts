@@ -9,14 +9,15 @@
  */
 
 /** بادئات المستندات المعروفة للنظام (نفس مجموعة `scanRouter`). */
-export const DOC_PREFIXES = ["INV", "WO", "PO", "QUO"] as const;
+export const DOC_PREFIXES = ["INV", "WO", "PO", "QUO", "VCH", "TRN", "EXC", "GIFT", "ORD", "CNS"] as const;
 export type DocPrefix = (typeof DOC_PREFIXES)[number];
 
 /** يبني رمز الآلة: `INV-10023`. الرقم التاريخيّ المُبدوء ببادئته يُعاد كما هو بلا تكرارها. */
-export function docBarcode(prefix: DocPrefix, documentNumber: string): string {
+export function docBarcode(prefix: DocPrefix | string, documentNumber: string): string {
   const n = documentNumber.trim();
   if (!n) return n;
-  return n.toUpperCase().startsWith(`${prefix}-`) ? n : `${prefix}-${n}`;
+  const p = prefix.toUpperCase();
+  return n.toUpperCase().startsWith(`${p}-`) ? n : `${p}-${n}`;
 }
 
 /**
@@ -28,6 +29,6 @@ export function docBarcode(prefix: DocPrefix, documentNumber: string): string {
  */
 export function stripDocPrefix(raw: string): string {
   const s = raw.trim();
-  const m = /^(INV|WO|PO|QUO)-(\d+)$/i.exec(s);
+  const m = /^(INV|WO|PO|QUO|VCH|TRN|EXC|GIFT|ORD|CNS)-(\d+)$/i.exec(s);
   return m ? m[2] : s;
 }
