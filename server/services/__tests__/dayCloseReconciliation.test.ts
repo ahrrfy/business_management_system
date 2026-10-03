@@ -466,15 +466,6 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
   });
 
   it("يبقي التحويل النقدي بين الفروع ضمن النقد بالطريق حتى الاستلام", async () => {
-    await db().insert(s.cashTransfers).values({
-      transferNumber: "CT-1-POSITION-IN-TRANSIT",
-      fromBranchId: 1,
-      toBranchId: 2,
-      amount: "125000.00",
-      status: "IN_TRANSIT",
-      sentBy: ADMIN,
-      sentAt: new Date(`${DATE}T12:00:00.000Z`),
-    });
     await db().insert(s.receipts).values({
       branchId: 1,
       direction: "OUT",
@@ -487,6 +478,18 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       createdBy: ADMIN,
       createdAt: new Date(`${DATE}T12:00:00.000Z`),
     });
+    const sentReceipt = (await db().select({ id: s.receipts.id }).from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, "CT-1-POSITION-IN-TRANSIT")).limit(1))[0]!;
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-1-POSITION-IN-TRANSIT",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "125000.00",
+      status: "IN_TRANSIT",
+      sentBy: ADMIN,
+      sentReceiptId: Number(sentReceipt.id),
+      sentAt: new Date(`${DATE}T12:00:00.000Z`),
+    });
 
     const res = await report(1);
     expect(res.cashPosition).toMatchObject({
@@ -496,6 +499,66 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       expectedCashOnHand: "1000000.00",
       isReadyForFinalCount: false,
     });
+  });
+
+  it("يشتق عبور تحويل الفروع من لحظات الإيصالات المرتبطة لا حقول دورة الحالة", async () => {
+    const beforeCutoff = new Date(`${DATE}T12:00:00.000Z`);
+    const afterCutoff = new Date(new Date(`${DATE}T12:00:00.000Z`).getTime() + 86_400_000);
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "CT-1-EVENT-CUTOFF", createdBy: ADMIN, createdAt: beforeCutoff,
+    });
+    const sentReceipt = (await db().select({ id: s.receipts.id }).from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, "CT-1-EVENT-CUTOFF")).limit(1))[0]!;
+    await db().insert(s.receipts).values({
+      branchId: 2, direction: "IN", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "CT-1-EVENT-CUTOFF", createdBy: ADMIN, createdAt: afterCutoff,
+    });
+    const linkedReceipts = await db().select({ id: s.receipts.id, branchId: s.receipts.branchId })
+      .from(s.receipts).where(eq(s.receipts.referenceNumber, "CT-1-EVENT-CUTOFF"));
+    const receivedReceipt = linkedReceipts.find((row) => Number(row.branchId) === 2)!;
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-1-EVENT-CUTOFF",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "RECEIVED",
+      sentBy: ADMIN,
+      receivedBy: MANAGER2,
+      sentReceiptId: Number(sentReceipt.id),
+      receivedReceiptId: Number(receivedReceipt.id),
+      // حقلا الحالة كلاهما قبل القطع عمداً؛ الدليل المالي المرتبط وحده بعد القطع.
+      sentAt: beforeCutoff,
+      receivedAt: beforeCutoff,
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "920000.00",
+      cashInTransit: "80000.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("يحجب الرقم النهائي عند وجود نقد مادي غير منسوب إلى خزينة أو وردية", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: null,
+      direction: "IN",
+      amount: "12345.00",
+      paymentMethod: "CASH",
+      cashBucket: null,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "LEGACY-UNSCOPED-CASH",
+      createdBy: ADMIN,
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toBeNull();
   });
 
   it("لا يُسقط نقداً متبقياً في درج وردية مغلقة تاريخية ولا يسمح باعتباره جرداً نهائياً", async () => {

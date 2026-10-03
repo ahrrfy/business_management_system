@@ -132,4 +132,25 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).toContain("drift: finalCountUsable ? Number(finalVariance)");
     expect(source).toContain("drift: finalCountUsable ? fmtAr(finalVariance!)");
   });
+
+  it("يعتمد نطاق الفرع الذي فرضه الخادم للعنوان والجرد", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain('const effectiveBranchId: number | "" = branchId === "" ? dc?.branchId ?? "" : branchId');
+    expect(source).toContain('{ branchId: Number(effectiveBranchId || 0), businessDate: date }');
+    expect(source).toContain('{ enabled: effectiveBranchId !== "" }');
+    expect(source).toContain('const branchLabel = effectiveBranchId');
+    expect(source).toContain('const dailyPanel = effectiveBranchId === ""');
+  });
+
+  it("يبني التقرير المالي من لقطة واحدة ولا يعيد مسح دليل كل فرع", () => {
+    const service = readDayCloseService();
+
+    expect(service).toContain("return withTx(async (db) => {");
+    expect(service).not.toContain("buildDailyCashEvidenceTx");
+    expect(service).toContain('alias(receipts, "dayCloseTransferSentReceipt")');
+    expect(service).toContain("sentReceiptId");
+    expect(service).toContain("orphanCash");
+    expect(service).toContain("leftJoin(sourceShift");
+  });
 });

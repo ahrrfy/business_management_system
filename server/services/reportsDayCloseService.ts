@@ -50,7 +50,6 @@ import {
 } from "./cash/custodyBlindCount";
 import { money, toDbMoney } from "./money";
 import { expenseBucketLabel } from "../../shared/expenseCategories";
-import { buildDailyCashEvidenceTx } from "./cashDailyReconciliationService";
 import { withTx } from "./tx";
 
 /** تفصيل حركة نقدية واحدة في درج الوردية (لتوضيح مصدر الإيراد ومستفيد المصروف). */
@@ -269,8 +268,12 @@ export async function getDayCloseReconciliation(opts: {
     cashPosition: null,
   };
 
-  const db = getDb();
-  if (!db) return base;
+  const connection = getDb();
+  if (!connection) return base;
+
+  // كل أرقام التقرير تُقرأ من لقطةٍ واحدة؛ وإلا قد تجمع الاستعلامات المتعددة
+  // حالاتٍ ماليةً من لحظات مختلفة أثناء ترحيل متزامن.
+  return withTx(async (db) => {
 
   // نطاق اليوم التجاريّ [start, endExclusive) على openedAt (اتّساقاً مع بقية تقارير الخزينة).
   const { start, endExclusive } = utcDayRange(opts.date, opts.date);
@@ -335,7 +338,7 @@ export async function getDayCloseReconciliation(opts: {
         ),
       )
       .leftJoin(firstCount, eq(firstCount.treasuryReceiptId, pendingReceipt.id))
-      .innerJoin(sourceShift, eq(sourceShift.id, sourceReceipt.shiftId))
+      .leftJoin(sourceShift, eq(sourceShift.id, sourceReceipt.shiftId))
       .where(
         and(
           ...(opts.branchId != null ? [eq(sourceReceipt.branchId, opts.branchId)] : []),
@@ -355,7 +358,6 @@ export async function getDayCloseReconciliation(opts: {
 
     for (const row of pendingBlindRows) {
       if (
-        row.shiftId != null &&
         isPotentialCashCustodyRecipient(opts.actor, {
           branchId: row.branchId == null ? null : Number(row.branchId),
           handedOverByUserId:
@@ -364,7 +366,7 @@ export async function getDayCloseReconciliation(opts: {
             row.shiftOwnerUserId == null ? null : Number(row.shiftOwnerUserId),
         })
       ) {
-        protectedShiftIds.add(Number(row.shiftId));
+        if (row.shiftId != null) protectedShiftIds.add(Number(row.shiftId));
         withholdCashPosition = true;
       }
     }
@@ -889,7 +891,7 @@ export async function getDayCloseReconciliation(opts: {
 
   const cashPosition = withholdCashPosition
     ? null
-    : await withTx(async (tx) => {
+    : await (async () => {
         let scopedBranches: Array<{ id: number }>;
         if (opts.branchId != null) {
           scopedBranches = [{ id: opts.branchId }];
@@ -897,76 +899,117 @@ export async function getDayCloseReconciliation(opts: {
           // لا نكرّر بناء الأدلة لكل وحدة خاملة: الفروع المؤثرة هي التي تحمل نقد خزينة
           // أو وردية ظاهرة/مفتوحة، مع بقاء المجموع شاملاً لكل النقد التاريخي المتراكم.
           const [treasuryBranches, shiftBranches] = await Promise.all([
-            tx.selectDistinct({ id: receipts.branchId }).from(receipts).where(and(
+            db.selectDistinct({ id: receipts.branchId }).from(receipts).where(and(
               eq(receipts.cashBucket, "TREASURY"),
               eq(receipts.paymentMethod, "CASH"),
               lt(eventAt, endExclusive),
             )),
-            tx.selectDistinct({ id: shifts.branchId }).from(shifts).where(lt(shifts.openedAt, endExclusive)),
+            db.selectDistinct({ id: shifts.branchId }).from(shifts).where(lt(shifts.openedAt, endExclusive)),
           ]);
           const ids = new Set<number>(lines.map((line) => line.branchId));
           for (const row of [...treasuryBranches, ...shiftBranches]) ids.add(Number(row.id));
           scopedBranches = Array.from(ids, (id) => ({ id }));
         }
 
-        let expectedTreasuryCash = money(0);
-        let cashInTransit = money(0);
-        let isReadyForFinalCount = true;
-        for (const branch of scopedBranches) {
-          const evidence = await buildDailyCashEvidenceTx(tx, Number(branch.id), opts.date);
-          expectedTreasuryCash = expectedTreasuryCash.plus(evidence.expectedTreasuryCash);
-          const [transitRow] = await tx
-            .select({
-              amount: sql<string>`COALESCE(SUM(${receipts.amount}), 0)`,
-            })
-            .from(receipts)
-            .where(and(
-              eq(receipts.branchId, Number(branch.id)),
-              eq(receipts.direction, "IN"),
-              eq(receipts.cashBucket, "TREASURY"),
-              eq(receipts.paymentMethod, "CASH"),
-              eq(receipts.approvalStatus, "APPROVED"),
-              or(
-                like(receipts.referenceNumber, "CH-%"),
-                like(receipts.referenceNumber, "CD-%"),
+        const scopedBranchIds = scopedBranches.map((branch) => Number(branch.id));
+        const scopeReceipt = scopedBranchIds.length > 0
+          ? [inArray(receipts.branchId, scopedBranchIds)]
+          : [];
+
+        // استعلامات موضع محدودة ومجمّعة؛ لا نعيد بناء بصمات دليل اليوم لكل فرع عند
+        // عرض «كل الفروع»، فذلك يمسح التاريخ الكامل مرات متكررة بلا حاجة للتقرير.
+        const [treasuryRow] = await db
+          .select({
+            amount: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)`,
+          })
+          .from(receipts)
+          .where(and(
+            ...scopeReceipt,
+            eq(receipts.cashBucket, "TREASURY"),
+            eq(receipts.paymentMethod, "CASH"),
+            eq(receipts.approvalStatus, "APPROVED"),
+            inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            lt(eventAt, endExclusive),
+          ));
+        const expectedTreasuryCash = money(treasuryRow?.amount ?? 0);
+
+        const [custodyTransitRow] = await db
+          .select({ amount: sql<string>`COALESCE(SUM(${receipts.amount}), 0)` })
+          .from(receipts)
+          .where(and(
+            ...scopeReceipt,
+            eq(receipts.direction, "IN"),
+            eq(receipts.cashBucket, "TREASURY"),
+            eq(receipts.paymentMethod, "CASH"),
+            eq(receipts.approvalStatus, "APPROVED"),
+            or(like(receipts.referenceNumber, "CH-%"), like(receipts.referenceNumber, "CD-%")),
+            lt(receipts.createdAt, endExclusive),
+            or(
+              eq(receipts.status, "PENDING"),
+              and(
+                inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+                gte(eventAt, endExclusive),
               ),
-              lt(receipts.createdAt, endExclusive),
-              or(
-                eq(receipts.status, "PENDING"),
-                and(
-                  inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
-                  gte(eventAt, endExclusive),
+            ),
+          ));
+
+        const sentReceipt = alias(receipts, "dayCloseTransferSentReceipt");
+        const receivedReceipt = alias(receipts, "dayCloseTransferReceivedReceipt");
+        const reversalReceipt = alias(receipts, "dayCloseTransferReversalReceipt");
+        const sentEventAt = cashEventAtSql({
+          approvedBy: sentReceipt.approvedBy,
+          createdBy: sentReceipt.createdBy,
+          approvedAt: sentReceipt.approvedAt,
+          createdAt: sentReceipt.createdAt,
+        });
+        const receivedEventAt = cashEventAtSql({
+          approvedBy: receivedReceipt.approvedBy,
+          createdBy: receivedReceipt.createdBy,
+          approvedAt: receivedReceipt.approvedAt,
+          createdAt: receivedReceipt.createdAt,
+        });
+        const reversalEventAt = cashEventAtSql({
+          approvedBy: reversalReceipt.approvedBy,
+          createdBy: reversalReceipt.createdBy,
+          approvedAt: reversalReceipt.approvedAt,
+          createdAt: reversalReceipt.createdAt,
+        });
+        const materializedLinkedReceipt = (receipt: typeof sentReceipt) => and(
+          eq(receipt.paymentMethod, "CASH"),
+          eq(receipt.cashBucket, "TREASURY"),
+          eq(receipt.approvalStatus, "APPROVED"),
+          inArray(receipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+        );
+        const [transferTransitRow] = scopedBranchIds.length === 0
+          ? [{ amount: "0.00" }]
+          : await db
+              .select({ amount: sql<string>`COALESCE(SUM(${cashTransfers.amount}), 0)` })
+              .from(cashTransfers)
+              .innerJoin(sentReceipt, eq(sentReceipt.id, cashTransfers.sentReceiptId))
+              .leftJoin(receivedReceipt, eq(receivedReceipt.id, cashTransfers.receivedReceiptId))
+              .leftJoin(reversalReceipt, eq(reversalReceipt.id, cashTransfers.reversalReceiptId))
+              .where(and(
+                inArray(cashTransfers.fromBranchId, scopedBranchIds),
+                materializedLinkedReceipt(sentReceipt),
+                lt(sentEventAt, endExclusive),
+                or(
+                  isNull(receivedReceipt.id),
+                  ne(receivedReceipt.approvalStatus, "APPROVED"),
+                  notInArray(receivedReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+                  gte(receivedEventAt, endExclusive),
                 ),
-              ),
-            ));
-          cashInTransit = cashInTransit.plus(transitRow?.amount ?? 0);
-          const [transferTransitRow] = await tx
-            .select({
-              amount: sql<string>`COALESCE(SUM(${cashTransfers.amount}), 0)`,
-            })
-            .from(cashTransfers)
-            .where(and(
-              eq(cashTransfers.fromBranchId, Number(branch.id)),
-              lt(cashTransfers.sentAt, endExclusive),
-              or(
-                isNull(cashTransfers.receivedAt),
-                gte(cashTransfers.receivedAt, endExclusive),
-              ),
-              or(
-                isNull(cashTransfers.cancelledAt),
-                gte(cashTransfers.cancelledAt, endExclusive),
-              ),
-            ));
-          cashInTransit = cashInTransit.plus(transferTransitRow?.amount ?? 0);
-          isReadyForFinalCount &&=
-            evidence.openShiftCount === 0 && evidence.unmatchedShiftCount === 0 &&
-            evidence.pendingCustodyCount === 0 && evidence.custodyVarianceCount === 0;
-        }
+                or(
+                  isNull(reversalReceipt.id),
+                  ne(reversalReceipt.approvalStatus, "APPROVED"),
+                  notInArray(reversalReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+                  gte(reversalEventAt, endExclusive),
+                ),
+              ));
+        const cashInTransit = money(custodyTransitRow?.amount ?? 0).plus(transferTransitRow?.amount ?? 0);
 
         // موضع الدرج عند حدّ التقرير لا عند الحالة الحالية للوردية. الوردية التي أُغلقت
         // في اليوم التالي كانت ما تزال مفتوحة عند القطع، وتسليمٌ لاحق لا يمحو رصيدها تاريخياً.
-        const scopedBranchIds = scopedBranches.map((branch) => Number(branch.id));
-        const cutoffDrawerReceipts = tx
+        const cutoffDrawerReceipts = db
           .select({
             shiftId: receipts.shiftId,
             cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`.as("cashIn"),
@@ -991,7 +1034,7 @@ export async function getDayCloseReconciliation(opts: {
           END`;
         const [cutoffPosition] = scopedBranchIds.length === 0
           ? [{ expectedDrawersCash: "0.00", openAtCutoffCount: 0, unsettledDrawerCount: 0 }]
-          : await tx
+          : await db
               .select({
                 expectedDrawersCash: sql<string>`COALESCE(SUM(${drawerAtCutoff}), 0)`,
                 openAtCutoffCount: sql<number>`COALESCE(SUM(CASE WHEN NOT (${closedByCutoff}) THEN 1 ELSE 0 END), 0)`,
@@ -1006,8 +1049,48 @@ export async function getDayCloseReconciliation(opts: {
         const expectedDrawersCash = money(cutoffPosition?.expectedDrawersCash ?? 0);
         const openAtCutoffCount = Number(cutoffPosition?.openAtCutoffCount ?? 0);
         const unsettledDrawerCount = Number(cutoffPosition?.unsettledDrawerCount ?? 0);
-        isReadyForFinalCount &&=
-          openAtCutoffCount === 0 && unsettledDrawerCount === 0 && cashInTransit.isZero();
+        const [unmatchedDay] = scopedBranchIds.length === 0
+          ? [{ count: 0 }]
+          : await db
+              .select({
+                count: sql<number>`COALESCE(SUM(CASE WHEN
+                  ${shifts.closedAt} IS NULL OR ${shifts.closedAt} >= ${endExclusive}
+                  OR ${shifts.reconciliationStatus} <> 'MATCHED'
+                  OR ${shifts.variance} IS NULL OR ${shifts.variance} <> 0
+                  OR ${shifts.expectedCash} IS NULL OR ${shifts.countedCash} IS NULL
+                  OR ${shifts.expectedCash} <> ${shifts.countedCash}
+                  THEN 1 ELSE 0 END), 0)`,
+              })
+              .from(shifts)
+              .where(and(
+                inArray(shifts.branchId, scopedBranchIds),
+                gte(shifts.openedAt, start),
+                lt(shifts.openedAt, endExclusive),
+              ));
+
+        // أي نقد مادي غير منسوب لخزينة أو لوردية لا يدخل المعادلة، ولذلك لا يجوز
+        // نشر رقم نهائي ناقص حتى تُعالج السجلات اليتيمة في تقرير المعالجة.
+        const [orphanCash] = await db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(receipts)
+          .where(and(
+            ...scopeReceipt,
+            eq(receipts.paymentMethod, "CASH"),
+            eq(receipts.approvalStatus, "APPROVED"),
+            inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            lt(eventAt, endExclusive),
+            or(
+              isNull(receipts.cashBucket),
+              and(eq(receipts.cashBucket, "DRAWER"), isNull(receipts.shiftId)),
+            ),
+          ));
+        if (Number(orphanCash?.count ?? 0) > 0) return null;
+
+        const isReadyForFinalCount =
+          openAtCutoffCount === 0 &&
+          unsettledDrawerCount === 0 &&
+          Number(unmatchedDay?.count ?? 0) === 0 &&
+          cashInTransit.isZero();
         return {
           branchCount: scopedBranches.length,
           expectedTreasuryCash: toDbMoney(expectedTreasuryCash),
@@ -1016,7 +1099,7 @@ export async function getDayCloseReconciliation(opts: {
           expectedCashOnHand: toDbMoney(expectedTreasuryCash.plus(expectedDrawersCash).plus(cashInTransit)),
           isReadyForFinalCount,
         };
-      }, { gate: "NONE" });
+      })();
 
   return {
     date: opts.date,
@@ -1098,4 +1181,5 @@ export async function getDayCloseReconciliation(opts: {
     overCount,
     shortCount,
   };
+  }, { gate: "NONE" });
 }

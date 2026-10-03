@@ -128,9 +128,12 @@ export default function DayCloseReport() {
     branchId: branchId ? Number(branchId) : undefined,
   });
   const dc: DC | undefined = q.data;
+  // الراوتر يفرض فرع المدير حتى لو ترك محدّد «كل الفروع» فارغاً. اعتمد النطاق
+  // الموثّق في نتيجة الخادم للعنوان والجرد، لا قيمة المحدّد غير الموثوقة.
+  const effectiveBranchId: number | "" = branchId === "" ? dc?.branchId ?? "" : branchId;
   const dailyQ = trpc.treasury.dailyCashReconciliation.useQuery(
-    { branchId: Number(branchId || 0), businessDate: date },
-    { enabled: branchId !== "" },
+    { branchId: Number(effectiveBranchId || 0), businessDate: date },
+    { enabled: effectiveBranchId !== "" },
   );
   const userRole = me.data?.role ?? "";
   const canManageDaily = moduleAccessAllowed(
@@ -149,7 +152,7 @@ export default function DayCloseReport() {
     setCloseRequestId(newClientRequestId());
     setReopenRequestId(newClientRequestId());
     setReopenReason("");
-  }, [branchId, date]);
+  }, [effectiveBranchId, date]);
   const recordDailyM = trpc.treasury.recordDailyTreasuryCount.useMutation({
     onSuccess: (result) => {
       if (result.status === "MATCHED") notify.ok("سُجّل جرد الخزينة", "الرصيد الفعلي مطابق لرصيد النظام.");
@@ -178,8 +181,8 @@ export default function DayCloseReport() {
     onError: (error) => notify.err(error),
   });
 
-  const branchLabel = branchId
-    ? branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)
+  const branchLabel = effectiveBranchId
+    ? branches.data?.find((b) => b.id === effectiveBranchId)?.name ?? String(effectiveBranchId)
     : "كل الفروع";
 
   const driftTone = (drift: string | null): "positive" | "negative" | "warning" | "default" => {
@@ -212,7 +215,7 @@ export default function DayCloseReport() {
           { label: "فرق الورديات", value: fmtAr(dc.totals.drift), tone: driftTone(dc.totals.drift), hint: "التقرير النهائي محجوب حتى اكتمال الأدلة" },
         ]
     : [];
-  const dailyPanel = branchId === "" ? (
+  const dailyPanel = effectiveBranchId === "" ? (
     <Card>
       <CardContent className="p-5 text-sm text-muted-foreground">
         اختر فرعاً محدداً لعرض رصيد الخزينة الفعلي وتسجيل جرد اليوم. «كل الفروع» متاح لتقرير الورديات فقط.
@@ -275,7 +278,7 @@ export default function DayCloseReport() {
             <Button
               disabled={recordDailyM.isPending || !countRequestId}
               onClick={() => recordDailyM.mutate({
-                branchId: Number(branchId),
+                branchId: Number(effectiveBranchId),
                 businessDate: date,
                 countedCash: treasuryCounted,
                 countedBreakdown: Object.fromEntries(Object.entries(treasuryBreakdown).map(([key, value]) => [String(key), value])),
@@ -324,9 +327,9 @@ export default function DayCloseReport() {
     </Card>
   );
 
-  const missedDailyPanel = branchId === "" ? null : (
+  const missedDailyPanel = effectiveBranchId === "" ? null : (
     <MissedDailyCountExceptionPanel
-      branchId={Number(branchId)}
+      branchId={Number(effectiveBranchId)}
       businessDate={date}
       canManage={canManageDaily}
     />
@@ -413,7 +416,7 @@ export default function DayCloseReport() {
     }
 
     exportRows(exportRowsData, {
-      filename: `مطابقة-إقفال-اليوم-${date}-${branchId || "الكل"}`,
+      filename: `مطابقة-إقفال-اليوم-${date}-${effectiveBranchId || "الكل"}`,
       columns: [
         { key: "shiftId", header: "الوردية", map: (r) => r.shiftId },
         { key: "branchName", header: "الفرع", map: (r) => r.branchName },
@@ -569,7 +572,7 @@ export default function DayCloseReport() {
             <label className="text-[11px] text-muted-foreground">الفرع</label>
             <AppSelect
               className="h-9"
-              value={String(branchId)}
+              value={String(effectiveBranchId)}
               onValueChange={(next) => setBranchId(next ? Number(next) : "")}
             >
               <option value="">كل الفروع</option>
