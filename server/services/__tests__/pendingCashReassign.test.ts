@@ -266,6 +266,10 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     });
     const receiptId = await pendingContract(HOLDER, referenceNumber, true, CASHIER);
     const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+    const holder = appRouter.createCaller(makeCtx(await user(HOLDER)));
+
+    await expect(holder.treasury.pendingHandoverReceipts()).resolves.toHaveLength(1);
+    await expect(manager.treasury.pendingHandoverQueue()).resolves.toHaveLength(1);
 
     await manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER });
     const newHolder = appRouter.createCaller(makeCtx(await user(NEW_HOLDER)));

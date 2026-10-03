@@ -148,6 +148,37 @@ export async function listMyPendingTreasuryReceipts(
         eq(sourceReceipt.direction, "OUT"),
         eq(sourceReceipt.paymentMethod, "CASH"),
         eq(sourceReceipt.cashBucket, "DRAWER"),
+        eq(sourceReceipt.amount, receipts.amount),
+        eq(sourceReceipt.status, "COMPLETED"),
+        eq(sourceReceipt.approvalStatus, "APPROVED"),
+        sql`(
+          SELECT COUNT(*)
+          FROM accountingEntries sourceEvidence
+          WHERE sourceEvidence.receiptId = ${sourceReceipt.id}
+            AND sourceEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+            AND sourceEvidence.branchId = ${sourceReceipt.branchId}
+            AND sourceEvidence.amount = ${sourceReceipt.amount}
+        ) = 1`,
+        sql`(
+          SELECT COUNT(*)
+          FROM receipts custodyCandidate
+          WHERE custodyCandidate.branchId = ${receipts.branchId}
+            AND UPPER(TRIM(custodyCandidate.referenceNumber)) = UPPER(TRIM(${receipts.referenceNumber}))
+            AND custodyCandidate.direction = 'OUT'
+            AND custodyCandidate.paymentMethod = 'CASH'
+            AND custodyCandidate.cashBucket = 'DRAWER'
+            AND custodyCandidate.receiptStatus = 'COMPLETED'
+            AND custodyCandidate.receiptApprovalStatus = 'APPROVED'
+            AND custodyCandidate.amount = ${receipts.amount}
+            AND (
+              SELECT COUNT(*)
+              FROM accountingEntries candidateEvidence
+              WHERE candidateEvidence.receiptId = custodyCandidate.id
+                AND candidateEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+                AND candidateEvidence.branchId = custodyCandidate.branchId
+                AND candidateEvidence.amount = custodyCandidate.amount
+            ) = 1
+        ) = 1`,
       ),
     )
     .leftJoin(shifts, eq(sourceReceipt.shiftId, shifts.id))
@@ -236,6 +267,37 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
         eq(sourceReceipt.direction, "OUT"),
         eq(sourceReceipt.paymentMethod, "CASH"),
         eq(sourceReceipt.cashBucket, "DRAWER"),
+        eq(sourceReceipt.amount, receipts.amount),
+        eq(sourceReceipt.status, "COMPLETED"),
+        eq(sourceReceipt.approvalStatus, "APPROVED"),
+        sql`(
+          SELECT COUNT(*)
+          FROM accountingEntries sourceEvidence
+          WHERE sourceEvidence.receiptId = ${sourceReceipt.id}
+            AND sourceEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+            AND sourceEvidence.branchId = ${sourceReceipt.branchId}
+            AND sourceEvidence.amount = ${sourceReceipt.amount}
+        ) = 1`,
+        sql`(
+          SELECT COUNT(*)
+          FROM receipts custodyCandidate
+          WHERE custodyCandidate.branchId = ${receipts.branchId}
+            AND UPPER(TRIM(custodyCandidate.referenceNumber)) = UPPER(TRIM(${receipts.referenceNumber}))
+            AND custodyCandidate.direction = 'OUT'
+            AND custodyCandidate.paymentMethod = 'CASH'
+            AND custodyCandidate.cashBucket = 'DRAWER'
+            AND custodyCandidate.receiptStatus = 'COMPLETED'
+            AND custodyCandidate.receiptApprovalStatus = 'APPROVED'
+            AND custodyCandidate.amount = ${receipts.amount}
+            AND (
+              SELECT COUNT(*)
+              FROM accountingEntries candidateEvidence
+              WHERE candidateEvidence.receiptId = custodyCandidate.id
+                AND candidateEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+                AND candidateEvidence.branchId = custodyCandidate.branchId
+                AND candidateEvidence.amount = custodyCandidate.amount
+            ) = 1
+        ) = 1`,
       ),
     )
     .leftJoin(shifts, eq(sourceReceipt.shiftId, shifts.id))

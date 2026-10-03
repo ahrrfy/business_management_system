@@ -250,7 +250,7 @@ describe("daily physical treasury reconciliation", () => {
     expect(blocked.actions.canCount).toBe(false);
   });
 
-  it("pairs a custody source before cutoff with its target completed after cutoff", async () => {
+  it("keeps cross-day custody blocked until its target event reaches the cutoff", async () => {
     const inserted = await db().insert(s.shifts).values({
       branchId: 1,
       userId: MANAGER,
@@ -308,7 +308,8 @@ describe("daily physical treasury reconciliation", () => {
       { branchId: 1, businessDate: DATE },
       actor(MANAGER),
     );
-    expect(status.blockers.map((item) => item.code)).not.toContain("PENDING_CUSTODY");
+    expect(status.blockers.map((item) => item.code)).toContain("PENDING_CUSTODY");
+    expect(status.actions.canCount).toBe(false);
   });
 
   it("does not classify ordinary vouchers with CH references as custody", async () => {

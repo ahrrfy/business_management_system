@@ -8,7 +8,6 @@ import {
   eq,
   gt,
   gte,
-  like,
   lt,
   notInArray,
   or,
@@ -304,42 +303,82 @@ export async function buildDailyCashEvidenceTx(
   let pendingFirstId = 0;
   let pendingLastId = 0;
   while (true) {
-    const page = await tx
-      .select({
-        id: receipts.id,
-        amount: receipts.amount,
-        referenceNumber: receipts.referenceNumber,
-      })
-      .from(receipts)
-      .where(
-        and(
-          eq(receipts.branchId, branchId),
-          eq(receipts.direction, "IN"),
-          eq(receipts.cashBucket, "TREASURY"),
-          eq(receipts.paymentMethod, "CASH"),
-          eq(receipts.status, "PENDING"),
-          eq(receipts.approvalStatus, "APPROVED"),
-          sql`${receipts.voucherNumber} IS NULL`,
-          sql`${receipts.invoiceId} IS NULL`,
-          sql`${receipts.workOrderId} IS NULL`,
-          sql`${receipts.reservationId} IS NULL`,
-          or(
-            like(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CD-%"),
-            like(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CH-%"),
-          ),
-          lt(receipts.createdAt, endExclusive),
-          gt(receipts.id, pendingCursor),
-        ),
-      )
-      .orderBy(asc(receipts.id))
-      .limit(500);
-    if (page.length === 0) break;
-    for (const row of page) {
-      const id = Number(row.id);
+    const page = (
+      await tx.execute(sql`
+        SELECT
+          source.id AS sourceId,
+          MAX(target.id) AS targetId,
+          MAX(target.amount) AS amount,
+          MAX(target.referenceNumber) AS referenceNumber
+        FROM receipts source
+        INNER JOIN receipts target
+          ON target.branchId = source.branchId
+          AND UPPER(TRIM(target.referenceNumber)) = UPPER(TRIM(source.referenceNumber))
+          AND target.amount = source.amount
+          AND target.direction = 'IN'
+          AND target.paymentMethod = 'CASH'
+          AND target.cashBucket = 'TREASURY'
+          AND target.receiptApprovalStatus = 'APPROVED'
+          AND target.voucherNumber IS NULL
+          AND target.invoiceId IS NULL
+          AND target.workOrderId IS NULL
+          AND target.reservationId IS NULL
+          AND (
+            target.receiptStatus = 'PENDING'
+            OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+          )
+        WHERE source.branchId = ${branchId}
+          AND source.direction = 'OUT'
+          AND source.paymentMethod = 'CASH'
+          AND source.cashBucket = 'DRAWER'
+          AND source.receiptStatus = 'COMPLETED'
+          AND source.receiptApprovalStatus = 'APPROVED'
+          AND ${receiptCashEventAtSql("source")} < ${endExclusive}
+          AND source.id > ${pendingCursor}
+          AND (
+            UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
+            OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM accountingEntries sourceEntry
+            WHERE sourceEntry.receiptId = source.id
+              AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+              AND sourceEntry.branchId = source.branchId
+              AND sourceEntry.amount = source.amount
+          )
+          AND (
+            SELECT COUNT(*)
+            FROM accountingEntries sourceEntry
+            WHERE sourceEntry.receiptId = source.id
+              AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+          ) = 1
+        GROUP BY source.id
+        HAVING COUNT(DISTINCT target.id) = 1
+          AND MAX(CASE
+            WHEN target.receiptStatus = 'PENDING'
+              OR ${receiptCashEventAtSql("target")} >= ${endExclusive}
+            THEN 1 ELSE 0
+          END) = 1
+        ORDER BY source.id ASC
+        LIMIT 500
+      `)
+    ) as unknown as [Array<{
+      sourceId: number | string;
+      targetId: number | string;
+      amount: string;
+      referenceNumber: string | null;
+    }>];
+    const rows = page[0] ?? [];
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const id = Number(row.sourceId);
       if (pendingFirstId === 0) pendingFirstId = id;
       pendingLastId = id;
       pendingCustodyCount += 1;
-      pendingHash.update(JSON.stringify([id, row.amount, row.referenceNumber]));
+      pendingHash.update(
+        JSON.stringify([id, Number(row.targetId), row.amount, row.referenceNumber]),
+      );
       pendingHash.update("\n");
     }
     pendingCursor = pendingLastId;
