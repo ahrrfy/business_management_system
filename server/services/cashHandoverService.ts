@@ -3,7 +3,7 @@
 // وبلا قبول لاحق. cash drop أثناء الوردية يبقى مساراً مستقلاً ومحكوماً.
 
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, gt, inArray, like, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, like, sql } from "drizzle-orm";
 import { accountingEntries, receipts } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -137,7 +137,11 @@ export async function settlePendingShiftCloseHandovers(): Promise<{
           eq(receipts.cashBucket, "TREASURY"),
           eq(receipts.status, "PENDING"),
           eq(receipts.approvalStatus, "APPROVED"),
-          like(receipts.referenceNumber, "CH-%"),
+          isNull(receipts.voucherNumber),
+          isNull(receipts.invoiceId),
+          isNull(receipts.workOrderId),
+          isNull(receipts.reservationId),
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%'`,
         ),
       )
       .orderBy(asc(receipts.id))
@@ -159,7 +163,7 @@ export async function settlePendingShiftCloseHandovers(): Promise<{
           pending.direction !== "IN" ||
           pending.paymentMethod !== "CASH" ||
           pending.cashBucket !== "TREASURY" ||
-          !pending.referenceNumber?.startsWith("CH-")
+          !pending.referenceNumber?.trim().toUpperCase().startsWith("CH-")
         ) {
           return false;
         }
@@ -170,7 +174,7 @@ export async function settlePendingShiftCloseHandovers(): Promise<{
           .where(
             and(
               eq(receipts.branchId, Number(pending.branchId)),
-              eq(receipts.referenceNumber, pending.referenceNumber),
+              sql`UPPER(TRIM(${receipts.referenceNumber})) = UPPER(TRIM(${pending.referenceNumber}))`,
               eq(receipts.direction, "OUT"),
               eq(receipts.paymentMethod, "CASH"),
               eq(receipts.cashBucket, "DRAWER"),
@@ -189,7 +193,11 @@ export async function settlePendingShiftCloseHandovers(): Promise<{
         }
 
         const sourceEntries = await tx
-          .select({ entryType: accountingEntries.entryType })
+          .select({
+            entryType: accountingEntries.entryType,
+            branchId: accountingEntries.branchId,
+            amount: accountingEntries.amount,
+          })
           .from(accountingEntries)
           .where(
             and(
@@ -198,8 +206,10 @@ export async function settlePendingShiftCloseHandovers(): Promise<{
             ),
           );
         if (
-          sourceEntries.filter((entry) => entry.entryType === "CASH_TRANSFER_OUT").length !== 1 ||
-          sourceEntries.some((entry) => entry.entryType === "CASH_HANDOVER")
+          sourceEntries.length !== 1 ||
+          sourceEntries[0]?.entryType !== "CASH_TRANSFER_OUT" ||
+          Number(sourceEntries[0]?.branchId) !== Number(pending.branchId) ||
+          !money(sourceEntries[0]?.amount ?? 0).eq(money(source.amount))
         ) {
           return false;
         }

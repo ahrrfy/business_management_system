@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -222,6 +222,32 @@ describe("treasury handover receipt acceptance", () => {
       entityType: "receipt",
       entityId: String(receiptId),
     });
+  });
+
+  it("accepts a displayed custody contract when the source reference differs by case and whitespace", async () => {
+    const receiptId = await pendingContract("CD-1-NORMALIZED-ACCEPT");
+    await db().update(s.receipts).set({ referenceNumber: " cd-1-normalized-accept " })
+      .where(and(
+        eq(s.receipts.direction, "OUT"),
+        eq(s.receipts.referenceNumber, "CD-1-NORMALIZED-ACCEPT"),
+      ));
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+
+    expect(await recipient.treasury.pendingHandoverReceipts()).toHaveLength(1);
+    await expect(
+      recipient.treasury.acceptHandoverReceipt(acceptInput(receiptId, "normalized-accept")),
+    ).resolves.toMatchObject({ accepted: true });
+  });
+
+  it("rejects custody accounting evidence whose amount does not match the receipt", async () => {
+    const receiptId = await pendingContract("CD-1-BAD-EVIDENCE-BRANCH");
+    await db().update(s.accountingEntries).set({ amount: "70000.00" })
+      .where(eq(s.accountingEntries.entryType, "CASH_TRANSFER_OUT"));
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+
+    await expect(
+      recipient.treasury.acceptHandoverReceipt(acceptInput(receiptId, "bad-evidence-branch")),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("rejects an orphan cash-drop contract without materialising treasury cash", async () => {

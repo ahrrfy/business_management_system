@@ -20,7 +20,7 @@ const treasuryRouter = readFileSync(
 describe("DayCloseReport missed daily count exception contract", () => {
   it("mounts the governed exception panel only with a concrete branch", () => {
     expect(page).toContain("MissedDailyCountExceptionPanel");
-    expect(page).toContain('const missedDailyPanel = branchId === "" ? null');
+    expect(page).toContain('const missedDailyPanel = effectiveBranchId === "" ? null');
     expect(page).toContain("businessDate={date}");
     expect(page).toContain("canManage={canManageDaily}");
     expect(treasuryRouter).toContain(

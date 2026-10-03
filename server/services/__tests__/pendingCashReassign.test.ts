@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -233,6 +233,51 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     await manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER });
     const row = (await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId)))[0];
     expect(Number(row.createdBy)).toBe(NEW_HOLDER);
+  });
+
+  it("تطبع مرجع المصدر قبل فحص فصل مُسلِّم النقد عن المستلم الجديد", async () => {
+    const referenceNumber = "CD-1-20260816-NORMALIZED";
+    const receiptId = await pendingContract(HOLDER, referenceNumber, true, NEW_HOLDER);
+    await db().update(s.receipts).set({ referenceNumber: " cd-1-20260816-normalized " })
+      .where(and(
+        eq(s.receipts.direction, "OUT"),
+        eq(s.receipts.referenceNumber, referenceNumber),
+      ));
+    const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+
+    await expect(
+      manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("تتجاهل سنداً عادياً متصادماً وتفصل المُسلِّم من مصدر العهدة المحاسبي الفريد", async () => {
+    const referenceNumber = "CD-COLLISION-RESOLUTION";
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      referenceNumber: ` ${referenceNumber.toLowerCase()} `,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      partyType: "OTHER",
+      createdBy: NEW_HOLDER,
+    });
+    const receiptId = await pendingContract(HOLDER, referenceNumber, true, CASHIER);
+    const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+    const holder = appRouter.createCaller(makeCtx(await user(HOLDER)));
+
+    await expect(holder.treasury.pendingHandoverReceipts()).resolves.toHaveLength(1);
+    await expect(manager.treasury.pendingHandoverQueue()).resolves.toHaveLength(1);
+
+    await manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER });
+    const newHolder = appRouter.createCaller(makeCtx(await user(NEW_HOLDER)));
+    await expect(
+      newHolder.treasury.acceptHandoverReceipt(
+        acceptInput(receiptId, "collision-source-accept"),
+      ),
+    ).resolves.toMatchObject({ accepted: true });
   });
 
   it("مرجعٌ حرٌّ يبدأ بـCD- (سند بنكيّ) لا يحجزه قيد التفرّد", async () => {
