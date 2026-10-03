@@ -74,6 +74,7 @@ interface Evidence {
   interbranchTransitCount: number;
   residualDrawerCount: number;
   unscopedCashCount: number;
+  invalidOpeningFloatCount: number;
   treasuryReceiptCount: number;
   treasuryLastReceiptId: number;
 }
@@ -405,7 +406,7 @@ export async function buildDailyCashEvidenceTx(
     LEFT JOIN receipts received ON received.id = t.receivedReceiptId
     LEFT JOIN receipts reversal ON reversal.id = t.reversalReceiptId
     WHERE t.fromBranchId = ${branchId}
-      AND (t.sentAt < ${endExclusive} OR ${receiptCashEventAtSql("sent")} < ${endExclusive})
+      AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
       AND NOT COALESCE((
         sent.id IS NOT NULL
         AND sent.branchId = t.fromBranchId
@@ -461,7 +462,7 @@ export async function buildDailyCashEvidenceTx(
         AND source.direction = 'OUT'
         AND source.paymentMethod = 'CASH'
         AND source.cashBucket = 'DRAWER'
-        AND source.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND source.receiptStatus = 'COMPLETED'
         AND source.receiptApprovalStatus = 'APPROVED'
         AND ${receiptCashEventAtSql("source")} < ${endExclusive}
         AND (
@@ -496,7 +497,7 @@ export async function buildDailyCashEvidenceTx(
         AND source.direction = 'OUT'
         AND source.paymentMethod = 'CASH'
         AND source.cashBucket = 'DRAWER'
-        AND source.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND source.receiptStatus = 'COMPLETED'
         AND source.receiptApprovalStatus = 'APPROVED'
         AND ${receiptCashEventAtSql("source")} < ${endExclusive}
         AND (
@@ -569,7 +570,7 @@ export async function buildDailyCashEvidenceTx(
       WHERE r.branchId = ${branchId}
         AND r.cashBucket = 'DRAWER'
         AND r.paymentMethod = 'CASH'
-        AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND r.receiptStatus = 'COMPLETED'
         AND r.receiptApprovalStatus = 'APPROVED'
         AND ${receiptCashEventAtSql("r")} < ${endExclusive}
       GROUP BY r.shiftId
@@ -609,6 +610,34 @@ export async function buildDailyCashEvidenceTx(
         )
       )
   `));
+  const openingFloatLinkContract = and(
+    eq(accountingEntries.branchId, shifts.branchId),
+    eq(accountingEntries.amount, shifts.openingBalance),
+    eq(receipts.branchId, shifts.branchId),
+    eq(receipts.amount, shifts.openingBalance),
+    eq(receipts.direction, "OUT"),
+    eq(receipts.paymentMethod, "CASH"),
+    eq(receipts.cashBucket, "TREASURY"),
+    or(eq(receipts.status, "COMPLETED"), eq(receipts.status, "REVERSED")),
+    eq(receipts.approvalStatus, "APPROVED"),
+  );
+  const [invalidOpeningFloat] = await tx
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(shifts)
+    .innerJoin(
+      accountingEntries,
+      and(
+        eq(accountingEntries.entryType, "SHIFT_FLOAT_OUT"),
+        eq(accountingEntries.dedupeKey, sql`CONCAT('SHIFT_FLOAT:', ${shifts.id})`),
+      ),
+    )
+    .leftJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
+    .where(and(
+      eq(shifts.branchId, branchId),
+      lt(shifts.openedAt, endExclusive),
+      sql`NOT COALESCE((${openingFloatLinkContract!}), FALSE)`,
+    ));
+  const invalidOpeningFloatCount = Number(invalidOpeningFloat?.count ?? 0);
 
   const canonical = JSON.stringify({
     branchId,
@@ -639,6 +668,7 @@ export async function buildDailyCashEvidenceTx(
       unpairedCustodySourceCount,
       residualDrawerCount,
       unscopedCashCount,
+      invalidOpeningFloatCount,
     ],
   });
 
@@ -654,6 +684,7 @@ export async function buildDailyCashEvidenceTx(
     interbranchTransitCount,
     residualDrawerCount,
     unscopedCashCount,
+    invalidOpeningFloatCount,
     treasuryReceiptCount,
     treasuryLastReceiptId,
   };
@@ -822,7 +853,7 @@ const DAILY_CASH_BLOCKER_REMEDY: Record<DailyCashBlockerCode, string> = {
   PENDING_CUSTODY: "عالِج عقد العهدة الناقص أو المتكرر، ثم اعدد العهدة واقبلها من طابور الاستلام",
   CASH_IN_TRANSIT: "استلم أو ألغِ تحويلات النقد بين الفروع قبل الجرد النهائي",
   RESIDUAL_DRAWER_CASH: "صفِّ النقد المتبقي في الأدراج المغلقة إلى الخزينة",
-  UNSCOPED_CASH: "عالِج حركات النقد غير المنسوبة من تقرير معالجة النقد",
+  UNSCOPED_CASH: "عالِج حركات النقد غير المنسوبة أو عهد الافتتاح غير المتطابقة من تقرير معالجة النقد",
   STALE_EVIDENCE: "أعد جرد الخزينة على الحركات الحالية",
   TREASURY_VARIANCE: "افتح قضية فرق نقد واعتمد سند التصحيح بمبلغ الفرق",
   SEPARATION_OF_DUTIES: "اطلب الاعتماد من مستخدمٍ غير من عدّ الخزينة",
@@ -881,11 +912,13 @@ function blockersFor(evidence: Evidence) {
       count: evidence.residualDrawerCount,
     });
   }
-  if (evidence.unscopedCashCount > 0) {
+  const unscopedEvidenceCount =
+    evidence.unscopedCashCount + evidence.invalidOpeningFloatCount;
+  if (unscopedEvidenceCount > 0) {
     blockers.push({
       code: "UNSCOPED_CASH",
-      message: "توجد حركات نقد مادي غير منسوبة إلى خزينة أو وردية",
-      count: evidence.unscopedCashCount,
+      message: "توجد حركات نقد غير منسوبة أو عهد افتتاح غير متطابقة",
+      count: unscopedEvidenceCount,
     });
   }
   return blockers;

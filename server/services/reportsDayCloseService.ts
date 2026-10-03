@@ -1096,7 +1096,7 @@ export async function getDayCloseReconciliation(opts: {
           eq(custodySourceReceipt.cashBucket, "DRAWER"),
           eq(custodySourceReceipt.paymentMethod, "CASH"),
           eq(custodySourceReceipt.approvalStatus, "APPROVED"),
-          inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+          eq(custodySourceReceipt.status, "COMPLETED"),
           lt(custodySourceEventAt, endExclusive),
         );
         const custodyInTransitTarget = or(
@@ -1134,7 +1134,7 @@ export async function getDayCloseReconciliation(opts: {
             eq(custodySourceReceipt.cashBucket, "DRAWER"),
             eq(custodySourceReceipt.paymentMethod, "CASH"),
             eq(custodySourceReceipt.approvalStatus, "APPROVED"),
-            inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            eq(custodySourceReceipt.status, "COMPLETED"),
             custodyReference,
             lt(custodySourceEventAt, endExclusive),
             exists(
@@ -1162,10 +1162,13 @@ export async function getDayCloseReconciliation(opts: {
             inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
             custodyReference,
             lt(custodySourceEventAt, endExclusive),
-            notExists(
-              db.select({ id: custodyTargetReceipt.id })
-                .from(custodyTargetReceipt)
-                .where(and(matchingCustodyTarget, custodyTargetContractState)),
+            or(
+              ne(custodySourceReceipt.status, "COMPLETED"),
+              notExists(
+                db.select({ id: custodyTargetReceipt.id })
+                  .from(custodyTargetReceipt)
+                  .where(and(matchingCustodyTarget, custodyTargetContractState)),
+              ),
             ),
           ));
         const [invalidCustodyTarget] = await db
@@ -1211,7 +1214,7 @@ export async function getDayCloseReconciliation(opts: {
             eq(custodySourceReceipt.cashBucket, "DRAWER"),
             eq(custodySourceReceipt.paymentMethod, "CASH"),
             eq(custodySourceReceipt.approvalStatus, "APPROVED"),
-            inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            eq(custodySourceReceipt.status, "COMPLETED"),
             custodyReference,
             lt(custodySourceEventAt, endExclusive),
           ))
@@ -1301,7 +1304,7 @@ export async function getDayCloseReconciliation(opts: {
         );
         const transferScope = and(
           inArray(cashTransfers.fromBranchId, scopedBranchIds),
-          or(lt(cashTransfers.sentAt, endExclusive), lt(sentEventAt, endExclusive)),
+          lt(sentEventAt, endExclusive),
         );
         const [invalidTransferEvidence] = scopedBranchIds.length === 0
           ? [{ count: 0 }]

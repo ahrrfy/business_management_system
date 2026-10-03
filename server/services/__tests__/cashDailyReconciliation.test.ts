@@ -379,6 +379,43 @@ describe("daily physical treasury reconciliation", () => {
     )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
+  it("does not backdate a transfer whose sent cash event is after the business-day cutoff", async () => {
+    const afterCutoff = new Date("2026-09-01T01:00:00.000Z");
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-AFTER-DAILY-CUTOFF",
+      createdBy: MANAGER,
+      createdAt: afterCutoff,
+      approvedAt: afterCutoff,
+    });
+    const sentReceiptId = Number(
+      (sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId,
+    );
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-AFTER-DAILY-CUTOFF",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "10000.00",
+      status: "IN_TRANSIT",
+      sentBy: MANAGER,
+      sentReceiptId,
+      sentAt: TEST_NOW,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).not.toContain("CASH_IN_TRANSIT");
+    expect(status.actions.canCount).toBe(true);
+  });
+
   it("keeps a transfer blocked when its received link points to an unrelated receipt", async () => {
     const sentResult = await db().insert(s.receipts).values({
       branchId: 1,
@@ -751,6 +788,24 @@ describe("daily physical treasury reconciliation", () => {
     });
 
     const blocked = await getDailyCashReconciliation({ branchId: 1, businessDate: DATE }, actor(MANAGER));
+    expect(blocked.blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
+    expect(blocked.actions.canCount).toBe(false);
+  });
+
+  it("blocks certification when the opening-float receipt contradicts its shift", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "25000.00" },
+      actor(MANAGER),
+    );
+    await db().update(s.shifts).set({ openedAt: TEST_NOW })
+      .where(sql`${s.shifts.id} = ${shiftId}`);
+    await db().update(s.receipts).set({ amount: "24999.00" })
+      .where(sql`${s.receipts.referenceNumber} = ${`SF-1-${shiftId}`}`);
+
+    const blocked = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
     expect(blocked.blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
     expect(blocked.actions.canCount).toBe(false);
   });

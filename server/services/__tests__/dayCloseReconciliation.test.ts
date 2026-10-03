@@ -502,6 +502,36 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     });
   });
 
+  it("يحجب الرقم النهائي عندما يُعكس مصدر العهدة ويبقى هدف الاستلام معلقاً", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertCustodySource({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CH-REVERSED-SOURCE",
+      approvalStatus: "APPROVED",
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-REVERSED-SOURCE",
+      createdBy: CASHIER1,
+    });
+    await db().update(s.receipts).set({ status: "REVERSED" })
+      .where(eq(s.receipts.id, sourceReceiptId));
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
   it("يثبت العهدة بالطريق من حدث خروج الدرج ولو أُنشئ هدف الاستلام بعد حد اليوم", async () => {
     const { shiftId } = await openShift(
       { branchId: 1, openingBalance: "100000" },
@@ -782,6 +812,43 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       cashInTransit: "80000.00",
       expectedCashOnHand: "1000000.00",
       isReadyForFinalCount: false,
+    });
+  });
+
+  it("لا يعيد تحويل الفروع إلى يوم سابق إذا وقع حدث إيصال الإرسال بعد حد اليوم", async () => {
+    const beforeCutoff = new Date(`${DATE}T12:00:00.000Z`);
+    const afterCutoff = new Date(beforeCutoff.getTime() + 86_400_000);
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-AFTER-REPORT-CUTOFF",
+      createdBy: ADMIN,
+      createdAt: afterCutoff,
+    });
+    const sentReceiptId = Number(
+      (sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId,
+    );
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-AFTER-REPORT-CUTOFF",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "IN_TRANSIT",
+      sentBy: ADMIN,
+      sentReceiptId,
+      sentAt: beforeCutoff,
+    });
+
+    expect((await report(1)).cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: true,
     });
   });
 
