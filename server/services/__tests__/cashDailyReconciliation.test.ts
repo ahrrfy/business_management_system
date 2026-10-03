@@ -45,6 +45,7 @@ async function insertCashPosting(input: {
   await db().insert(s.accountingEntries).values({
     ...input,
     entryDate: DATE,
+    createdAt: TEST_NOW,
   });
 }
 
@@ -487,6 +488,12 @@ describe("daily physical treasury reconciliation", () => {
     const blocked = await getDailyCashReconciliation({ branchId: 1, businessDate: DATE }, actor(MANAGER));
     expect(blocked.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
     expect(blocked.actions.canCount).toBe(false);
+    const destinationBlocked = await getDailyCashReconciliation(
+      { branchId: 2, businessDate: DATE },
+      { userId: CHECKER, branchId: 2, role: "manager" },
+    );
+    expect(destinationBlocked.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+    expect(destinationBlocked.actions.canCount).toBe(false);
 
     await expect(recordDailyTreasuryCount(
       {
@@ -712,6 +719,46 @@ describe("daily physical treasury reconciliation", () => {
       expect(status.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
       expect(status.actions.canCount).toBe(false);
     }
+
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sentReceiptId,
+      amount: "10000.00",
+      dedupeKey: `CT_CLEAR_OUT:${transferNumber}`,
+    });
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_IN",
+      branchId: 2,
+      receiptId: receivedReceiptId,
+      amount: "10000.00",
+      dedupeKey: `CT_IN:${transferNumber}`,
+    });
+    expect((await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    )).blockers.map((item) => item.code)).not.toContain("CASH_IN_TRANSIT");
+
+    await db().update(s.receipts).set({ status: "REVERSED" })
+      .where(sql`${s.receipts.id} = ${receivedReceiptId}`);
+    expect((await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    )).blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+
+    await db().update(s.receipts).set({ status: "COMPLETED" })
+      .where(sql`${s.receipts.id} = ${receivedReceiptId}`);
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_IN",
+      branchId: 2,
+      receiptId: receivedReceiptId,
+      amount: "10000.00",
+      dedupeKey: `CT_EXTRA_IN:${transferNumber}`,
+    });
+    expect((await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    )).blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
   });
 
   it("keeps a transfer blocked when both receipt and reversal are linked", async () => {
@@ -1018,6 +1065,29 @@ describe("daily physical treasury reconciliation", () => {
     expect(blocked.actions.canCount).toBe(false);
   });
 
+  it("blocks a shift whose closing timestamp contradicts its open status", async () => {
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "0.00",
+      status: "OPEN",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+
+    const blocked = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(blocked.blockers.map((item) => item.code)).toContain("RESIDUAL_DRAWER_CASH");
+    expect(blocked.actions.canCount).toBe(false);
+  });
+
   it("blocks the treasury certificate while materialized cash is unscoped", async () => {
     await db().insert(s.receipts).values({
       branchId: 1,
@@ -1072,6 +1142,28 @@ describe("daily physical treasury reconciliation", () => {
     );
     expect(blocked.blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
     expect(blocked.actions.canCount).toBe(false);
+  });
+
+  it("validates contradictory zero-opening SF evidence and rejects a reversed float receipt", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "25000.00" },
+      actor(MANAGER),
+    );
+    await db().update(s.shifts).set({ openingBalance: "0.00", openedAt: TEST_NOW })
+      .where(sql`${s.shifts.id} = ${shiftId}`);
+    expect((await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    )).blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
+
+    await db().update(s.shifts).set({ openingBalance: "25000.00" })
+      .where(sql`${s.shifts.id} = ${shiftId}`);
+    await db().update(s.receipts).set({ status: "REVERSED" })
+      .where(sql`${s.receipts.referenceNumber} = ${`SF-1-${shiftId}`}`);
+    expect((await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    )).blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
   });
 
   it("reopens with optimistic concurrency and never lets an old replay reopen a newer certificate", async () => {

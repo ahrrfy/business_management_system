@@ -791,6 +791,10 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       expectedCashOnHand: "1000000.00",
       isReadyForFinalCount: false,
     });
+    expect((await report(2)).cashPosition).toMatchObject({
+      cashInTransit: "125000.00",
+      isReadyForFinalCount: false,
+    });
   });
 
   it("يشتق عبور تحويل الفروع من لحظات الإيصالات المرتبطة لا حقول دورة الحالة", async () => {
@@ -1102,6 +1106,21 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       cashInTransit: "0.00",
       expectedCashOnHand: "1080000.00",
     });
+
+    await db().update(s.receipts).set({ status: "REVERSED" })
+      .where(eq(s.receipts.id, receivedReceiptId));
+    expect((await report(1)).cashPosition).toBeNull();
+
+    await db().update(s.receipts).set({ status: "COMPLETED" })
+      .where(eq(s.receipts.id, receivedReceiptId));
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_IN",
+      branchId: 2,
+      receiptId: receivedReceiptId,
+      amount: "80000.00",
+      dedupeKey: `CT_EXTRA_IN:${transferNumber}`,
+    });
+    expect((await report(1)).cashPosition).toBeNull();
   });
 
   it("لا ينهي عهدة درج مكتملة بلا قيد قبول الخزينة المرتبط", async () => {
@@ -1143,6 +1162,43 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     });
 
     expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يفحص دليل SF المتناقض للوردية الصفرية ويرفض إيصال العهدة المعكوس", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "25000.00" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await db().update(s.shifts).set({ openingBalance: "0.00" })
+      .where(eq(s.shifts.id, shiftId));
+    expect((await report(1)).cashPosition).toBeNull();
+
+    await db().update(s.shifts).set({ openingBalance: "25000.00" })
+      .where(eq(s.shifts.id, shiftId));
+    await db().update(s.receipts).set({ status: "REVERSED" })
+      .where(eq(s.receipts.referenceNumber, `SF-1-${shiftId}`));
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("لا يعتبر closedAt وحده دليلاً على إغلاق درج ما زالت حالته OPEN", async () => {
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: CASHIER1,
+      openingBalance: "0.00",
+      status: "OPEN",
+      shiftType: "RETAIL",
+      openedAt: new Date(`${DATE}T10:00:00.000Z`),
+      closedAt: new Date(`${DATE}T12:00:00.000Z`),
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+
+    expect((await report(1)).cashPosition).toMatchObject({
+      expectedDrawersCash: "0.00",
+      isReadyForFinalCount: false,
+    });
   });
 
   it("يحجب الرقم النهائي عند وجود نقد مادي غير منسوب إلى خزينة أو وردية", async () => {
