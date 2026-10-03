@@ -10,6 +10,7 @@
  * وأُعيد تشكيلها لتُخرج التصميم الجديد نفسه، فتلتقط شاشات التقارير القديمة اللمسة الجديدة تلقائياً.
  */
 import { BRAND as B, CO, esc, logoUrl, CAIRO_FONT } from './brand';
+import { code128Svg } from './barcode';
 
 // ─── ثوابت التصميم ────────────────────────────────────────────────────────────
 
@@ -391,6 +392,17 @@ function coFrom(cs?: CompanySettings) {
 
 // ─── ترويسة المستند ──────────────────────────────────────────────────────────
 
+export interface DocHeaderBarcode {
+  /** القيمة النصية المراد ترميزها (مثل "INV-22333" أو "22333") */
+  value: string;
+  /** SVG جاهز (اختياري، إن غاب يُنشأ عبر code128Svg) */
+  svg?: string | null;
+  /** تسمية توضيحية أسفل الباركود */
+  caption?: string | null;
+  /** موضع الباركود بالنسبة للرقم: بجانب الرقم أو تحته (الافتراضي "beside") */
+  placement?: "beside" | "below";
+}
+
 export interface DocHeaderMeta {
   /** عنوان المستند بالعربية — "فاتورة مبيعات"، "سند قبض"، … */
   title: string;
@@ -400,6 +412,8 @@ export interface DocHeaderMeta {
   badge?: { label: string; color?: string } | null;
   /** سطر تعريف ثانوي تحت العنوان (مثلاً «بيان تفصيلي — يوضح محتوى كل فاتورة»). */
   subtitle?: string | null;
+  /** باركود رقم المستند (اختياري) — إما كائن DocHeaderBarcode أو نص القيمة مباشرة */
+  barcode?: DocHeaderBarcode | string | null;
 }
 
 /**
@@ -411,11 +425,68 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
   const logo = logoUrl();
   const badgeColor = meta.badge?.color ?? B.orange;
 
-  const fields = meta.fields.map((f) => `
+  const rawBarcode = meta.barcode;
+  const barcodeObj: DocHeaderBarcode | null = rawBarcode
+    ? typeof rawBarcode === 'string'
+      ? { value: rawBarcode, placement: 'beside' }
+      : rawBarcode
+    : null;
+
+  const placement = barcodeObj?.placement ?? 'beside';
+
+  let barcodeSvg: string | null = null;
+  if (barcodeObj) {
+    if (barcodeObj.svg) {
+      barcodeSvg = barcodeObj.svg;
+    } else if (barcodeObj.value) {
+      barcodeSvg = code128Svg(barcodeObj.value, {
+        moduleWidth: placement === 'beside' ? 0.9 : 0.95,
+        height: 22,
+        quietZone: 4,
+        showText: false,
+      }).svg;
+    }
+  }
+
+  // نحدد الحقل المستهدف للباركود: الحقل الذي يحوي اسمه «رقم» أو الحقل الأول
+  const barcodeTargetIdx = meta.fields.findIndex((f) => f.label.includes('رقم'));
+  const targetIdx = barcodeTargetIdx >= 0 ? barcodeTargetIdx : 0;
+
+  const fields = meta.fields.map((f, idx) => {
+    const isTarget = barcodeObj && barcodeSvg && idx === targetIdx;
+    if (!isTarget) {
+      return `
     <div style="display:flex;justify-content:space-between;font-size:11.25px">
       <span style="color:#000;font-weight:600">${esc(f.label)}</span>
       <span style="font-weight:800;color:#000;font-size:12.5px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(f.value)}</span>
-    </div>`).join('');
+    </div>`;
+    }
+
+    if (placement === 'below') {
+      const captionHtml = barcodeObj.caption
+        ? `<span style="font-size:8px;color:#555;font-family:monospace;letter-spacing:0.5px">${esc(barcodeObj.caption)}</span>`
+        : '';
+      return `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;font-size:11.25px">
+      <span style="color:#000;font-weight:600;padding-top:1px">${esc(f.label)}</span>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+        <span style="font-weight:800;color:#000;font-size:12.5px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(f.value)}</span>
+        <div style="line-height:0;margin-top:1px" title="${esc(barcodeObj.value)}">${barcodeSvg}</div>
+        ${captionHtml}
+      </div>
+    </div>`;
+    }
+
+    // placement === 'beside' (الافتراضي)
+    return `
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.25px">
+      <span style="color:#000;font-weight:600">${esc(f.label)}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="line-height:0;background:#fff;border-radius:2px" title="${esc(barcodeObj.value)}">${barcodeSvg}</div>
+        <span style="font-weight:800;color:#000;font-size:12.5px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(f.value)}</span>
+      </div>
+    </div>`;
+  }).join('');
 
   const badge = meta.badge
     ? `<div style="margin-top:8px;display:inline-block;padding:3px 12px;border:1px solid ${badgeColor};border-radius:20px;white-space:nowrap;font-size:10.25px;font-weight:800;color:${badgeColor}">${esc(meta.badge.label)}</div>`
