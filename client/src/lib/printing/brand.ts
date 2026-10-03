@@ -128,11 +128,56 @@ export function openPrintWindow(
   w.document.open();
   w.document.write(html);
   w.document.close();
+
+  // تحصين دفاعي مباشر (Defense-in-Depth):
+  // بما أن النافذة فُتحت محلياً من نفس الأصل (about:blank)، يربط المتصل الأحداث برمجياً مباشرة على DOM
+  // لضمان استجابة أزرار الشريط (طباعة، حفظ PDF، إغلاق) بنسبة 100% حتى لو عطلت سياسة المتصفح الأحداث المضمنة.
+  try {
+    const bindToolbar = () => {
+      try {
+        const doc = w.document;
+        if (!doc) return;
+        const printBtn = doc.getElementById("doc-btn-print");
+        if (printBtn && !(printBtn as any).__bound) {
+          (printBtn as any).__bound = true;
+          printBtn.addEventListener("click", () => {
+            w.focus();
+            w.print();
+          });
+        }
+        const saveBtn = doc.getElementById("doc-btn-save-pdf");
+        if (saveBtn && !(saveBtn as any).__bound) {
+          (saveBtn as any).__bound = true;
+          saveBtn.addEventListener("click", () => {
+            if (typeof (w as any).saveDocAsPdf === "function") {
+              (w as any).saveDocAsPdf();
+            } else {
+              w.print();
+            }
+          });
+        }
+        const closeBtn = doc.getElementById("doc-btn-close");
+        if (closeBtn && !(closeBtn as any).__bound) {
+          (closeBtn as any).__bound = true;
+          closeBtn.addEventListener("click", () => {
+            try {
+              w.close();
+            } catch {}
+          });
+        }
+      } catch {}
+    };
+    bindToolbar();
+    w.setTimeout(bindToolbar, 40);
+  } catch {}
+
   return true;
 }
 
 if (typeof window !== "undefined") {
   window.addEventListener("message", (event) => {
+    // حماية ضد Cross-Origin Message Injection: قبول الرسائل من نفس الأصل فقط
+    if (event.origin !== window.location.origin) return;
     if (event.data?.type === "CLOSE_PRINT_WINDOW") {
       try {
         if (

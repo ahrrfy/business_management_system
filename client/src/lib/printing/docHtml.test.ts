@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wrapA4Doc, wrapMultiA4Doc, pageHeader, docHeader } from "./docHtml";
+import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader } from "./docHtml";
 import {
   buildSalesInvoiceV2Html,
   buildPurchaseInvoiceV2Html,
@@ -23,22 +23,25 @@ describe("wrapA4Doc", () => {
     );
   });
 
-  it("يزود المعاينة بأزرار تفاعلية حقيقية: طباعة، حفظ كـ PDF، وإغلاق ذكي", () => {
+  it("يزود المعاينة بأزرار تفاعلية حقيقية متوافقة مع CSP: معرفات فريدة، ربط برمجي، وغياب تام للسمات المضمنة", () => {
     const html = wrapA4Doc("كشف حساب رسمي", "<div>المحتوى</div>");
 
     expect(html).toContain("html2pdf.bundle.min.js");
-    expect(html).toContain('onclick="printDoc()"');
-    expect(html).toContain('onclick="saveDocAsPdf()"');
-    expect(html).toContain('onclick="closeDocPreview()"');
-    expect(html).toContain("function printDoc()");
-    expect(html).toContain("function saveDocAsPdf()");
-    expect(html).toContain("function closeDocPreview()");
+    expect(html).toContain('id="doc-btn-print"');
+    expect(html).toContain('id="doc-btn-save-pdf"');
+    expect(html).toContain('id="doc-btn-close"');
+    expect(html).not.toContain("onclick=");
+    expect(html).not.toContain("onload=");
+    expect(html).toContain("addEventListener('click', printDoc)");
+    expect(html).toContain("addEventListener('click', saveDocAsPdf)");
+    expect(html).toContain("addEventListener('click', closeDocPreview)");
     expect(html).toContain("CLOSE_PRINT_WINDOW");
+    expect(html).toContain("doc-exporting-pdf");
   });
 });
 
 describe("wrapMultiA4Doc", () => {
-  it("يدعم دمج صفحات A4 متعددة مع فواصل الصفحات وأزرار شريط الأدوات", () => {
+  it("يدعم دمج صفحات A4 متعددة مع فواصل الصفحات وأزرار شريط الأدوات دون سمات مضمنة", () => {
     const pages = ["<div>صفحة 1</div>", "<div>صفحة 2</div>"];
     const html = wrapMultiA4Doc("قسائم الرواتب", pages, {
       badgeLabel: "مسيّر رواتب 2026-09",
@@ -52,8 +55,14 @@ describe("wrapMultiA4Doc", () => {
     expect(html).toContain("حفظ كملف PDF");
     expect(html).toContain("طباعة المستند");
     expect(html).toContain('id="doc-pages-container"');
-    expect(html).toContain('onclick="saveDocAsPdf()"');
-    expect(html).toContain('onclick="closeDocPreview()"');
+    expect(html).toContain('id="doc-btn-print"');
+    expect(html).toContain('id="doc-btn-save-pdf"');
+    expect(html).toContain('id="doc-btn-close"');
+    expect(html).not.toContain("onclick=");
+    expect(html).toContain("addEventListener('click', printDoc)");
+    expect(html).toContain("addEventListener('click', saveDocAsPdf)");
+    expect(html).toContain("addEventListener('click', closeDocPreview)");
+    expect(html).toContain("doc-exporting-pdf");
   });
 });
 
@@ -243,5 +252,16 @@ describe("pageHeader - استهداف حقل مرجع الفاتورة (Warehous
     expect(html).toContain("77665");
     expect(html).toContain('title="INV-77665"');
     expect(html).toContain("<svg");
+  });
+});
+
+describe("wrapReceiptDoc", () => {
+  it("يغلّف الإيصال الحراري برباط برمجي للطباعة دون سمة onload المضمنة لضمان توافق CSP", () => {
+    const html = wrapReceiptDoc("إيصال قبض", "<div>محتوى الإيصال</div>");
+    expect(html).toContain("إيصال قبض");
+    expect(html).toContain("80mm");
+    expect(html).not.toContain("onload=");
+    expect(html).toContain("addEventListener('load'");
+    expect(html).toContain("window.print()");
   });
 });
