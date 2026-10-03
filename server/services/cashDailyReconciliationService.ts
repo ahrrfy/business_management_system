@@ -318,6 +318,10 @@ export async function buildDailyCashEvidenceTx(
           eq(receipts.paymentMethod, "CASH"),
           eq(receipts.status, "PENDING"),
           eq(receipts.approvalStatus, "APPROVED"),
+          sql`${receipts.voucherNumber} IS NULL`,
+          sql`${receipts.invoiceId} IS NULL`,
+          sql`${receipts.workOrderId} IS NULL`,
+          sql`${receipts.reservationId} IS NULL`,
           or(
             like(receipts.referenceNumber, "CD-%"),
             like(receipts.referenceNumber, "CH-%"),
@@ -416,6 +420,12 @@ export async function buildDailyCashEvidenceTx(
         UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
         OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
       )
+      AND EXISTS (
+        SELECT 1
+        FROM accountingEntries sourceEntry
+        WHERE sourceEntry.receiptId = source.id
+          AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+      )
       AND NOT EXISTS (
         SELECT 1
         FROM receipts target
@@ -426,6 +436,10 @@ export async function buildDailyCashEvidenceTx(
           AND target.paymentMethod = 'CASH'
           AND target.cashBucket = 'TREASURY'
           AND target.receiptApprovalStatus = 'APPROVED'
+          AND target.voucherNumber IS NULL
+          AND target.invoiceId IS NULL
+          AND target.workOrderId IS NULL
+          AND target.reservationId IS NULL
           AND (
             target.receiptStatus = 'PENDING'
             OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
@@ -437,7 +451,14 @@ export async function buildDailyCashEvidenceTx(
     FROM shifts s
     LEFT JOIN (
       SELECT r.shiftId, SUM(CASE
-        WHEN r.direction = 'OUT' AND UPPER(TRIM(r.referenceNumber)) LIKE 'CH-%'
+        WHEN r.direction = 'OUT'
+          AND UPPER(TRIM(r.referenceNumber)) LIKE 'CH-%'
+          AND EXISTS (
+            SELECT 1
+            FROM accountingEntries handoverEntry
+            WHERE handoverEntry.receiptId = r.id
+              AND handoverEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+          )
           THEN r.amount ELSE 0 END) AS handoversCash
       FROM receipts r
       WHERE r.branchId = ${branchId}

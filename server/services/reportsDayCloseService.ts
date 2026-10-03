@@ -285,6 +285,14 @@ export async function getDayCloseReconciliation(opts: {
     approvedAt: receipts.approvedAt,
     createdAt: receipts.createdAt,
   });
+  const custodySourceEvidence = db
+    .selectDistinct({ receiptId: accountingEntries.receiptId })
+    .from(accountingEntries)
+    .where(and(
+      isNotNull(accountingEntries.receiptId),
+      inArray(accountingEntries.entryType, ["CASH_TRANSFER_OUT", "CASH_HANDOVER"]),
+    ))
+    .as("dayCloseCustodySourceEvidence");
   const openingFloatReceipt = alias(receipts, "dayCloseOpeningFloatReceipt");
   const openingFloatEntry = alias(accountingEntries, "dayCloseOpeningFloatEntry");
   const openingFloatEventAt = cashEventAtSql({
@@ -367,6 +375,10 @@ export async function getDayCloseReconciliation(opts: {
       })
       .from(sourceReceipt)
       .innerJoin(
+        custodySourceEvidence,
+        eq(custodySourceEvidence.receiptId, sourceReceipt.id),
+      )
+      .innerJoin(
         pendingReceipt,
         and(
           eq(pendingReceipt.branchId, sourceReceipt.branchId),
@@ -377,6 +389,10 @@ export async function getDayCloseReconciliation(opts: {
           eq(pendingReceipt.cashBucket, "TREASURY"),
           eq(pendingReceipt.status, "PENDING"),
           eq(pendingReceipt.approvalStatus, "APPROVED"),
+          isNull(pendingReceipt.voucherNumber),
+          isNull(pendingReceipt.invoiceId),
+          isNull(pendingReceipt.workOrderId),
+          isNull(pendingReceipt.reservationId),
         ),
       )
       .leftJoin(firstCount, eq(firstCount.treasuryReceiptId, pendingReceipt.id))
@@ -440,13 +456,14 @@ export async function getDayCloseReconciliation(opts: {
         cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
         salesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
         collectionsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
-        handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
-        cashDropsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
-        expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR UPPER(TRIM(${receipts.referenceNumber})) NOT LIKE 'CH-%') AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
-        returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR UPPER(TRIM(${receipts.referenceNumber})) NOT LIKE 'CH-%') AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+        handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NOT NULL AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        cashDropsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NOT NULL AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
+        returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
       })
       .from(receipts)
       .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+      .leftJoin(custodySourceEvidence, eq(custodySourceEvidence.receiptId, receipts.id))
       .where(isDrawerCash)
       .groupBy(receipts.shiftId);
 
@@ -1020,6 +1037,10 @@ export async function getDayCloseReconciliation(opts: {
           eq(custodyTargetReceipt.cashBucket, "TREASURY"),
           eq(custodyTargetReceipt.paymentMethod, "CASH"),
           eq(custodyTargetReceipt.approvalStatus, "APPROVED"),
+          isNull(custodyTargetReceipt.voucherNumber),
+          isNull(custodyTargetReceipt.invoiceId),
+          isNull(custodyTargetReceipt.workOrderId),
+          isNull(custodyTargetReceipt.reservationId),
         );
         const matchingCustodySource = and(
           eq(custodySourceReceipt.branchId, custodyTargetReceipt.branchId),
@@ -1057,6 +1078,10 @@ export async function getDayCloseReconciliation(opts: {
         const [custodyTransitRow] = await db
           .select({ amount: sql<string>`COALESCE(SUM(${custodySourceReceipt.amount}), 0)` })
           .from(custodySourceReceipt)
+          .innerJoin(
+            custodySourceEvidence,
+            eq(custodySourceEvidence.receiptId, custodySourceReceipt.id),
+          )
           .where(and(
             ...sourceScope,
             eq(custodySourceReceipt.direction, "OUT"),
@@ -1078,6 +1103,10 @@ export async function getDayCloseReconciliation(opts: {
         const [invalidCustodySource] = await db
           .select({ count: sql<number>`COUNT(*)` })
           .from(custodySourceReceipt)
+          .innerJoin(
+            custodySourceEvidence,
+            eq(custodySourceEvidence.receiptId, custodySourceReceipt.id),
+          )
           .where(and(
             ...sourceScope,
             eq(custodySourceReceipt.direction, "OUT"),
@@ -1177,9 +1206,10 @@ export async function getDayCloseReconciliation(opts: {
             shiftId: receipts.shiftId,
             cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`.as("cashIn"),
             cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`.as("cashOut"),
-            handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`.as("handoversCash"),
+            handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NOT NULL AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`.as("handoversCash"),
           })
           .from(receipts)
+          .leftJoin(custodySourceEvidence, eq(custodySourceEvidence.receiptId, receipts.id))
           .where(and(
             ...(scopedBranchIds.length > 0 ? [inArray(receipts.branchId, scopedBranchIds)] : []),
             ...materializedDrawerCashConditions(),

@@ -98,13 +98,30 @@ type ReceiptOverride = Partial<typeof s.receipts.$inferInsert> & {
 };
 /** إيصال نقدي درج (DRAWER/CASH/COMPLETED) افتراضاً — يُخصَّص بالتجاوزات. */
 async function insertReceipt(o: ReceiptOverride) {
-  await db().insert(s.receipts).values({
+  const inserted = await db().insert(s.receipts).values({
     paymentMethod: "CASH",
     cashBucket: "DRAWER",
     status: "COMPLETED",
     createdBy: CASHIER1,
     ...o,
   });
+  return Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId);
+}
+
+/** مصدر عهدة حقيقي: الإيصال وحده لا يكفي، بل يلزمه دليل قيد محاسبي مخصص. */
+async function insertCustodySource(o: ReceiptOverride) {
+  const receiptId = await insertReceipt(o);
+  const normalizedReference = String(o.referenceNumber ?? "").trim().toUpperCase();
+  const isDrop = normalizedReference.startsWith("CD-");
+  await db().insert(s.accountingEntries).values({
+    entryType: isDrop ? "CASH_TRANSFER_OUT" : "CASH_HANDOVER",
+    postingProfile: isDrop ? "CASH_DROP_TO_TRANSIT" : "CASH_HANDOVER_TO_TRANSIT",
+    branchId: o.branchId,
+    receiptId,
+    amount: o.amount,
+    entryDate: DATE,
+  });
+  return receiptId;
 }
 
 async function report(branchId?: number) {
@@ -445,7 +462,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const invoiceId = await seedInvoice(1);
     await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "50000.00", invoiceId, approvalStatus: "APPROVED" });
-    await insertReceipt({ shiftId, branchId: 1, direction: "OUT", amount: "40000.00", referenceNumber: "CD-1-POSITION", approvalStatus: "APPROVED" });
+    await insertCustodySource({ shiftId, branchId: 1, direction: "OUT", amount: "40000.00", referenceNumber: "CD-1-POSITION", approvalStatus: "APPROVED" });
     await db().insert(s.receipts).values({
       branchId: 1,
       direction: "IN",
@@ -475,7 +492,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     );
     const beforeCutoff = new Date(`${DATE}T12:00:00.000Z`);
     const afterCutoff = new Date(beforeCutoff.getTime() + 86_400_000);
-    await insertReceipt({
+    await insertCustodySource({
       shiftId,
       branchId: 1,
       direction: "OUT",
@@ -535,7 +552,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     const priorDay = new Date(new Date(`${DATE}T10:00:00.000Z`).getTime() - 86_400_000);
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     await db().update(s.shifts).set({ openedAt: priorDay }).where(eq(s.shifts.id, shiftId));
-    await insertReceipt({
+    await insertCustodySource({
       shiftId,
       branchId: 1,
       direction: "OUT",
@@ -667,7 +684,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const invoiceId = await seedInvoice(1);
     await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "50000.00", invoiceId, approvalStatus: "APPROVED" });
-    await insertReceipt({ shiftId, branchId: 1, direction: "OUT", amount: "100000.00", referenceNumber: "CH-LEGACY-PARTIAL", approvalStatus: "APPROVED" });
+    await insertCustodySource({ shiftId, branchId: 1, direction: "OUT", amount: "100000.00", referenceNumber: "CH-LEGACY-PARTIAL", approvalStatus: "APPROVED" });
     await db().insert(s.receipts).values({
       branchId: 1,
       direction: "IN",
@@ -712,7 +729,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
   it("يعيد بناء الدرج عند حد اليوم ولا يسقطه بسبب إغلاق وتسليم حدثا في اليوم التالي", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const nextDay = new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() + 86_400_000);
-    await insertReceipt({
+    await insertCustodySource({
       shiftId,
       branchId: 1,
       direction: "OUT",
@@ -1157,6 +1174,47 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.totals.expected).toBe("3540950.00");
   });
 
+  it("R2 (Regression): سند صرف عادي بمرجع CH مطابق لسند قبض لا يتحول إلى عهدة", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertReceipt({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      approvalStatus: "APPROVED",
+      voucherNumber: "PV-1-CH-COLLISION",
+      referenceNumber: "CH-ORDINARY-VOUCHER-COLLISION",
+    });
+    await db().insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      voucherNumber: "RV-1-CH-COLLISION",
+      referenceNumber: "CH-ORDINARY-VOUCHER-COLLISION",
+      createdBy: ADMIN,
+    });
+
+    const res = await report(1);
+    const shiftLine = line(res, shiftId);
+    expect(shiftLine.handoversCash).toBe("0.00");
+    expect(shiftLine.expensesCash).toBe("10000.00");
+    expect(res.cashPosition).toMatchObject({ cashInTransit: "0.00" });
+  });
+
   it("R2 (Adversarial): مناعة الأحرف الصغيرة والمسافات في التحويلات وتسليمات العهدة (Case-Insensitive & Trim)", async () => {
     // ١) تحويل داخلي بحروف صغيرة ومسافات: يجب استبعاده من النقد المباشر
     await db().insert(s.receipts).values({
@@ -1174,7 +1232,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
     await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "100000.00" });
     // تسليم عهدة بحروف صغيرة
-    await db().insert(s.receipts).values({
+    await insertCustodySource({
       branchId: 1, shiftId, direction: "OUT", amount: "150000.00", paymentMethod: "CASH",
       cashBucket: "DRAWER", status: "COMPLETED", approvalStatus: "APPROVED",
       referenceNumber: " ch-shift-close-001 ",
