@@ -1,9 +1,9 @@
 // تبويب «العمليات» — إيداع نقد / سحب / شراء دولار من الصيرفة.
 // الإيداع والسحب نقلُ أصلٍ بين الخزينة والصيرفة؛ شراء الدولار (نموذج الدَّين، قرار مالك ٣/٨) يزيد
 // ذمّتنا الدولارية على الصيرفة (الدولار يُسلَّم فوراً نقداً) ولا يمسّ الدينار إطلاقاً.
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { ArrowDownToLine, ArrowUpFromLine, Check, Clock, DollarSign, Wallet } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Check, Clock, DollarSign, FileSpreadsheet, Printer, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,11 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { notify } from "@/lib/notify";
 import { D, fmtAr, formatIqd } from "@/lib/money";
 import { BalanceTag, isMoneyStr, isRateStr, NetExposureTag, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { exportRows } from "@/lib/export";
+import { printPendingExchangeDepositsDoc } from "@/lib/printing/printExchangeStatement";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { fmtDateTime } from "@/lib/date";
+
 
 type Action = "deposit" | "withdraw" | "buyUsd";
 type Currency = "IQD" | "USD";
@@ -125,6 +130,60 @@ export default function ExchangeOperations() {
   }, [usdAmount, rate]);
 
   const pending = deposit.isPending || withdraw.isPending || buyUsd.isPending;
+
+  const exportPendingDepositsExcel = useCallback(() => {
+    const list = pendingDeps.data ?? [];
+    if (list.length === 0) {
+      notify.err("لا توجد إيداعات معلقة للتصدير");
+      return;
+    }
+    exportRows(list, {
+      filename: "ايداعات-دولار-معلقة",
+      title: "إيداعات الدولار المعلقة — بانتظار الاعتماد الثاني",
+      columns: [
+        { key: "txnNumber", header: "رقم الحركة" },
+        { key: "houseName", header: "الصيرفة", map: (p) => p.houseName ?? "—" },
+        { key: "usdAmount", header: "المبلغ ($)", money: true, map: (p) => Number(p.usdAmount) },
+        { key: "exchangeRate", header: "سعر الصرف المرجعي", map: (p) => Number(p.exchangeRate) },
+        { key: "notes", header: "ملاحظات", map: (p) => p.notes || "—" },
+      ],
+      totalsRow: {
+        txnNumber: "الإجمالي",
+        usdAmount: list.reduce((acc, p) => acc + Number(p.usdAmount || 0), 0),
+      },
+    });
+  }, [pendingDeps.data]);
+
+  const printPendingDepositsDoc = useCallback(() => {
+    const list = pendingDeps.data ?? [];
+    if (list.length === 0) {
+      notify.err("لا توجد إيداعات معلقة للطباعة");
+      return;
+    }
+    if (!reservePrintWindow()) {
+      notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+      return;
+    }
+    const totalUsd = list.reduce((acc, p) => acc + Number(p.usdAmount || 0), 0);
+    const ok = printPendingExchangeDepositsDoc({
+      count: list.length,
+      totalUsdAmount: totalUsd.toFixed(2),
+      printedByName: me.data?.name || "المحاسب",
+      printRequestedAt: fmtDateTime(new Date()),
+      deposits: list.map((p) => ({
+        txnNumber: p.txnNumber,
+        houseName: p.houseName ?? "—",
+        usdAmount: p.usdAmount,
+        exchangeRate: p.exchangeRate,
+        notes: p.notes,
+      })),
+    });
+    if (!ok) {
+      releaseReservedPrintWindow();
+      notify.err("تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.");
+    }
+  }, [pendingDeps.data, me.data?.name]);
+
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -297,9 +356,31 @@ export default function ExchangeOperations() {
 
       {(pendingDeps.data ?? []).length > 0 && (
         <Card className="p-4 space-y-3">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <Clock className="h-4 w-4 text-[var(--sem-warn)]" aria-hidden />
-            إيداعات دولار معلّقة — بانتظار اعتماد ثانٍ (فصل مهام: لا يعتمدها مُنشئها)
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Clock className="h-4 w-4 text-[var(--sem-warn)]" aria-hidden />
+              إيداعات دولار معلّقة — بانتظار اعتماد ثانٍ (فصل مهام: لا يعتمدها مُنشئها)
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={printPendingDepositsDoc}
+                className="gap-1.5"
+              >
+                <Printer className="size-4" aria-hidden />
+                طباعة / PDF
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={exportPendingDepositsExcel}
+                className="gap-1.5"
+              >
+                <FileSpreadsheet className="size-4" aria-hidden />
+                تصدير Excel
+              </Button>
+            </div>
           </div>
           <div className="space-y-2">
             {(pendingDeps.data ?? []).map((p) => (

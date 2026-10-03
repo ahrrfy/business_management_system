@@ -2,7 +2,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { type ColumnDef } from "@tanstack/react-table";
-import { FileText, Printer, Undo2 } from "lucide-react";
+import { FileSpreadsheet, FileText, Printer, Undo2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -16,8 +17,10 @@ import { notify } from "@/lib/notify";
 import { selectCls, type ExchangeRow } from "@/components/exchange/shared";
 import { RowActions, type RowAction } from "@/components/list";
 import { printExchangeSlipSmart, type ExchangeSlipData } from "@/lib/printing/printExchangeSlip";
+import { printExchangeStatementDoc } from "@/lib/printing/printExchangeStatement";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
+import { exportSheets, type SheetSpec } from "@/lib/export";
 
 const TYPE_AR: Record<string, string> = {
   DEPOSIT: "إيداع",
@@ -76,6 +79,7 @@ const physicalUsdColumns: ColumnDef<PhysicalUsdRow, unknown>[] = [
 ];
 
 export default function ExchangeStatement() {
+  const me = trpc.auth.me.useQuery();
   const houses = trpc.exchange.list.useQuery({ limit: 200, offset: 0 });
   const [houseId, setHouseId] = useState(0);
   const [from, setFrom] = useState("");
@@ -87,6 +91,7 @@ export default function ExchangeStatement() {
     { enabled: houseId > 0 },
   );
   const printAudit = usePrintAudit();
+
 
   // عكس عملية صيرفة خاطئة (فصل مهام خادميّ: مُنشئ ≠ مُنفِّذ). يُعيد الأرصدة وWAVG وذمّة المورد،
   // ويستثني العملية من إجماليات الكشف. تأكيدٌ صريح لأنه إجراءٌ ماليّ لا يُتراجَع عنه.
@@ -238,12 +243,186 @@ export default function ExchangeStatement() {
 
   const sum = st.data?.summary;
 
+  const exportStatementExcel = useCallback(() => {
+    const house = houseRows.find((h) => h.id === houseId);
+    if (!house || !st.data || !sum) return;
+    const txns = (st.data.transactions ?? []) as TxnRow[];
+    const phys = (st.data.physicalUsdByBranch ?? []) as PhysicalUsdRow[];
+
+    const sheets: SheetSpec<any>[] = [
+      {
+        sheetName: "كشف الحركات",
+        title: `كشف حساب صيرفة — ${house.name}`,
+        meta: [
+          { label: "الصيرفة", value: house.name },
+          { label: "الهاتف", value: house.phone || "—" },
+          { label: "الفترة", value: `من ${from || "البداية"} إلى ${to || "الآن"}` },
+          { label: "رصيد الدينار الحالي", value: `${fmtAr(sum.currentBalanceIqd)} د.ع` },
+          { label: "رصيد الدولار الحالي", value: `${fmtAr(sum.currentBalanceUsd)} $` },
+        ],
+        columns: [
+          { key: "createdAt", header: "التاريخ", map: (r: TxnRow) => fmtDT(r.createdAt) },
+          { key: "txnNumber", header: "رقم الحركة" },
+          { key: "type", header: "النوع", map: (r: TxnRow) => TYPE_AR[r.type] ?? r.type },
+          { key: "supplierName", header: "المورد / الطرف", map: (r: TxnRow) => r.supplierName ?? "—" },
+          { key: "branchName", header: "الفرع", map: (r: TxnRow) => r.branchName ?? "—" },
+          { key: "createdByName", header: "المنفذ", map: (r: TxnRow) => r.createdByName ?? "—" },
+          { key: "iqdAmount", header: "مبلغ ديناري / قيمة دفترية (د.ع)", money: true, map: (r: TxnRow) => Number(r.iqdAmount) },
+          { key: "usdAmount", header: "دولار ($)", money: true, map: (r: TxnRow) => Number(r.usdAmount) },
+          { key: "exchangeRate", header: "سعر الصرف", map: (r: TxnRow) => (D(r.exchangeRate).gt(0) ? Number(r.exchangeRate) : "") },
+          { key: "fxDiff", header: "فرق الصرف (د.ع)", money: true, map: (r: TxnRow) => Number(r.fxDiff) },
+          { key: "commissionIqd", header: "عمولة (د.ع)", money: true, map: (r: TxnRow) => Number(r.commissionIqd) },
+          { key: "balanceIqdAfter", header: "رصيد دينار بعد الحركة", money: true, map: (r: TxnRow) => Number(r.balanceIqdAfter) },
+          { key: "balanceUsdAfter", header: "رصيد دولار بعد الحركة", money: true, map: (r: TxnRow) => Number(r.balanceUsdAfter) },
+          { key: "status", header: "الحالة", map: (r: TxnRow) => (r.status === "ACTIVE" ? "نافذة" : r.status === "REVERSED" ? "معكوسة" : "بانتظار الاعتماد") },
+          { key: "voucherNumber", header: "سند الصرف المرتبط", map: (r: TxnRow) => r.voucherNumber ?? "—" },
+          { key: "notes", header: "ملاحظات", map: (r: TxnRow) => r.notes ?? "" },
+        ],
+        rows: txns,
+        totalsRow: {
+          txnNumber: "الإجمالي / الرصيد الختامي",
+          iqdAmount: txns
+            .filter((t) => t.status === "ACTIVE")
+            .reduce((acc, t) => acc + Number(t.iqdAmount || 0), 0),
+          usdAmount: txns
+            .filter((t) => t.status === "ACTIVE")
+            .reduce((acc, t) => acc + Number(t.usdAmount || 0), 0),
+          fxDiff: Number(sum.totalFxDiff),
+          commissionIqd: Number(sum.totalFeesIqd),
+          balanceIqdAfter: Number(sum.currentBalanceIqd),
+          balanceUsdAfter: Number(sum.currentBalanceUsd),
+        },
+      },
+    ];
+
+    if (phys.length > 0) {
+      sheets.push({
+        sheetName: "النقد الدولاري بالفرع",
+        title: `النقد الدولاري الفعلي حسب الفرع — ${house.name}`,
+        columns: [
+          { key: "branchName", header: "الفرع" },
+          { key: "quantityUsd", header: "الكمية الفعلية ($)", money: true, map: (r: PhysicalUsdRow) => Number(r.quantityUsd) },
+          { key: "carryingIqd", header: "القيمة الدفترية (د.ع)", money: true, map: (r: PhysicalUsdRow) => Number(r.carryingIqd) },
+          { key: "wavgRate", header: "متوسط الكلفة للعرض", map: (r: PhysicalUsdRow) => Number(r.wavgRate) },
+        ],
+        rows: phys,
+      });
+    }
+
+    sheets.push({
+      sheetName: "ملخص الأرصدة والتعامل",
+      title: `ملخص حركة وأرصدة الصيرفة — ${house.name}`,
+      columns: [
+        { key: "indicator", header: "المؤشر المالي" },
+        { key: "amount", header: "القيمة", money: true, map: (r: any) => Number(r.amount) },
+        { key: "unit", header: "العملة / الوحدة" },
+        { key: "note", header: "البيان / التوضيح" },
+      ],
+      rows: [
+        { indicator: "حساب الصيرفة — دينار", amount: sum.currentBalanceIqd, unit: "د.ع", note: "شركة ككل" },
+        { indicator: "حساب الصيرفة — دولار", amount: sum.currentBalanceUsd, unit: "$", note: "كمية control، شركة ككل" },
+        { indicator: "قيمة control الدفترية", amount: sum.currentControlCarryingIqd, unit: "د.ع", note: "ليست نقداً فعلياً" },
+        { indicator: "ذمة الصيرفة المدينة — دينار", amount: sum.iqdControlReceivableIqd, unit: "د.ع", note: "د.ع" },
+        { indicator: "ذمة الصيرفة الدائنة — دينار", amount: sum.iqdControlPayableIqd, unit: "د.ع", note: "د.ع" },
+        { indicator: "ذمة الصيرفة المدينة — دولار", amount: sum.usdControlReceivableIqd, unit: "د.ع", note: "قيمة دفترية د.ع" },
+        { indicator: "ذمة الصيرفة الدائنة — دولار", amount: sum.usdControlPayableIqd, unit: "د.ع", note: "قيمة دفترية د.ع" },
+        { indicator: "إجمالي الإيداعات (دينار)", amount: sum.totalDepositIqd, unit: "د.ع", note: "د.ع" },
+        { indicator: "إجمالي الإيداعات (دولار)", amount: sum.totalDepositUsd, unit: "$", note: "$" },
+        { indicator: "إجمالي السحب (دينار)", amount: sum.totalWithdrawIqd, unit: "د.ع", note: "د.ع" },
+        { indicator: "إجمالي السحب (دولار)", amount: sum.totalWithdrawUsd, unit: "$", note: "$" },
+        { indicator: "إجمالي الدولار المشترى", amount: sum.totalUsdBought, unit: "$", note: "$" },
+        { indicator: "إجمالي التسديدات", amount: sum.totalSettledIqd, unit: "د.ع", note: "د.ع" },
+        { indicator: "إجمالي العمولات", amount: sum.totalFeesIqd, unit: "د.ع", note: "د.ع" },
+        { indicator: "صافي فروق الصرف", amount: sum.totalFxDiff, unit: "د.ع", note: "د.ع" },
+      ],
+    });
+
+    exportSheets(`كشف-حساب-صيرفة-${house.name}`, sheets);
+  }, [houseRows, houseId, st.data, sum, from, to]);
+
+  const printFullStatement = useCallback(() => {
+    const house = houseRows.find((h) => h.id === houseId);
+    if (!house || !st.data || !sum) return;
+    if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+    const txns = (st.data.transactions ?? []) as TxnRow[];
+    const phys = (st.data.physicalUsdByBranch ?? []) as PhysicalUsdRow[];
+
+    const ok = printExchangeStatementDoc({
+      houseName: house.name,
+      housePhone: house.phone,
+      fromDate: from || undefined,
+      toDate: to || undefined,
+      printedByName: me.data?.name || "المحاسب",
+      printRequestedAt: fmtDateTime(new Date()),
+      summary: {
+        currentBalanceIqd: sum.currentBalanceIqd,
+        currentBalanceUsd: sum.currentBalanceUsd,
+        currentControlCarryingIqd: sum.currentControlCarryingIqd,
+        totalDepositIqd: sum.totalDepositIqd,
+        totalWithdrawIqd: sum.totalWithdrawIqd,
+        totalDepositUsd: sum.totalDepositUsd,
+        totalWithdrawUsd: sum.totalWithdrawUsd,
+        totalUsdBought: sum.totalUsdBought,
+        totalSettledIqd: sum.totalSettledIqd,
+        totalFeesIqd: sum.totalFeesIqd,
+        totalFxDiff: sum.totalFxDiff,
+      },
+      physicalUsdByBranch: phys,
+      transactions: txns.map((t) => ({
+        createdAt: fmtDT(t.createdAt),
+        txnNumber: t.txnNumber,
+        type: t.type,
+        typeLabel: TYPE_AR[t.type] ?? t.type,
+        supplierName: t.supplierName,
+        branchName: t.branchName,
+        createdByName: t.createdByName,
+        iqdAmount: t.iqdAmount,
+        usdAmount: t.usdAmount,
+        fxDiff: t.fxDiff,
+        commissionIqd: t.commissionIqd,
+        balanceIqdAfter: t.balanceIqdAfter,
+        balanceUsdAfter: t.balanceUsdAfter,
+        status: t.status,
+        statusLabel: t.status === "ACTIVE" ? "نافذة" : t.status === "REVERSED" ? "معكوسة" : "معلّقة",
+        notes: t.notes,
+      })),
+    });
+    if (!ok) {
+      releaseReservedPrintWindow();
+      notify.err("تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.");
+    }
+  }, [houseRows, houseId, st.data, sum, from, to, me.data?.name]);
+
   return (
     <div className="space-y-4" dir="rtl">
       <PageHeader
         icon={<FileText className="h-5 w-5 text-primary" />}
         title="كشف حساب الصيرفة"
         description="رصيد التعامل مع الصيرفة على مستوى الشركة، وحيازة الدولار الفعلية مفصّلة حسب الفرع."
+        actions={
+          houseId > 0 && st.data ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={printFullStatement}
+              >
+                <Printer className="size-4" aria-hidden />
+                طباعة / PDF الكشف
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={exportStatementExcel}
+              >
+                <FileSpreadsheet className="size-4" aria-hidden />
+                تصدير Excel
+              </Button>
+            </div>
+          ) : null
+        }
       />
 
       <Card className="p-3">
