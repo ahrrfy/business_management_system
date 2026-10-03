@@ -197,14 +197,36 @@ ${CAIRO_FONT}
     }, 250);
   }
 
-  function saveDocAsPdf() {
+  async function saveDocAsPdf() {
+    var rawTitle = ${JSON.stringify(title)} || 'document';
+    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
+    var filename = safeTitle + '.pdf';
+
+    var fileHandle = null;
+    if (typeof window.showSaveFilePicker === 'function') {
+      try {
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{
+            description: 'ملف PDF (*.pdf)',
+            accept: { 'application/pdf': ['.pdf'] }
+          }]
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          return;
+        }
+        fileHandle = null;
+      }
+    }
+
     var saveBtn = document.getElementById('doc-btn-save-pdf');
     var origHtml = saveBtn ? saveBtn.innerHTML : '';
     if (saveBtn) {
       saveBtn.disabled = true;
       saveBtn.style.opacity = '0.75';
       saveBtn.style.cursor = 'wait';
-      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ إنشاء ملف PDF…</span>';
+      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ حفظ ملف PDF…</span>';
     }
 
     function resetBtn() {
@@ -218,10 +240,7 @@ ${CAIRO_FONT}
     }
 
     document.body.classList.add('doc-exporting-pdf');
-    var target = document.querySelector('.page');
-    var rawTitle = ${JSON.stringify(title)} || 'document';
-    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
-    var filename = safeTitle + '.pdf';
+    var target = document.querySelector('.page') || document.body;
 
     var opt = {
       margin: 0,
@@ -244,15 +263,25 @@ ${CAIRO_FONT}
       }
     };
 
-    if (typeof window.html2pdf === 'function') {
-      window.html2pdf().set(opt).from(target).save().then(function () {
-        resetBtn();
-      }).catch(function (err) {
-        console.error('[PDF Export] failed:', err);
+    try {
+      if (typeof window.html2pdf === 'function') {
+        var worker = window.html2pdf().set(opt).from(target);
+        if (fileHandle) {
+          var pdfBlob = await worker.outputPdf('blob');
+          var writable = await fileHandle.createWritable();
+          await writable.write(pdfBlob);
+          await writable.close();
+          resetBtn();
+        } else {
+          await worker.save();
+          resetBtn();
+        }
+      } else {
         resetBtn();
         window.print();
-      });
-    } else {
+      }
+    } catch (err) {
+      console.error('[PDF Export] failed:', err);
       resetBtn();
       window.print();
     }
@@ -485,14 +514,36 @@ ${pagesHtml}
     }, 250);
   }
 
-  function saveDocAsPdf() {
+  async function saveDocAsPdf() {
+    var rawTitle = ${JSON.stringify(title)} || 'document';
+    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
+    var filename = safeTitle + '.pdf';
+
+    var fileHandle = null;
+    if (typeof window.showSaveFilePicker === 'function') {
+      try {
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{
+            description: 'ملف PDF (*.pdf)',
+            accept: { 'application/pdf': ['.pdf'] }
+          }]
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          return;
+        }
+        fileHandle = null;
+      }
+    }
+
     var saveBtn = document.getElementById('doc-btn-save-pdf');
     var origHtml = saveBtn ? saveBtn.innerHTML : '';
     if (saveBtn) {
       saveBtn.disabled = true;
       saveBtn.style.opacity = '0.75';
       saveBtn.style.cursor = 'wait';
-      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ إنشاء ملف PDF…</span>';
+      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ حفظ ملف PDF…</span>';
     }
 
     function resetBtn() {
@@ -507,9 +558,6 @@ ${pagesHtml}
 
     document.body.classList.add('doc-exporting-pdf');
     var target = document.getElementById('doc-pages-container') || document.body;
-    var rawTitle = ${JSON.stringify(title)} || 'document';
-    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
-    var filename = safeTitle + '.pdf';
 
     var opt = {
       margin: 0,
@@ -533,15 +581,25 @@ ${pagesHtml}
       pagebreak: { mode: ['css', 'legacy'], after: '.page' }
     };
 
-    if (typeof window.html2pdf === 'function') {
-      window.html2pdf().set(opt).from(target).save().then(function () {
-        resetBtn();
-      }).catch(function (err) {
-        console.error('[PDF Export] failed:', err);
+    try {
+      if (typeof window.html2pdf === 'function') {
+        var worker = window.html2pdf().set(opt).from(target);
+        if (fileHandle) {
+          var pdfBlob = await worker.outputPdf('blob');
+          var writable = await fileHandle.createWritable();
+          await writable.write(pdfBlob);
+          await writable.close();
+          resetBtn();
+        } else {
+          await worker.save();
+          resetBtn();
+        }
+      } else {
         resetBtn();
         window.print();
-      });
-    } else {
+      }
+    } catch (err) {
+      console.error('[PDF Export] failed:', err);
       resetBtn();
       window.print();
     }

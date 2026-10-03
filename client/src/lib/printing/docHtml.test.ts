@@ -37,6 +37,8 @@ describe("wrapA4Doc", () => {
     expect(html).toContain("addEventListener('click', closeDocPreview)");
     expect(html).toContain("CLOSE_PRINT_WINDOW");
     expect(html).toContain("doc-exporting-pdf");
+    expect(html).toContain("showSaveFilePicker");
+    expect(html).toContain("outputPdf('blob')");
   });
 });
 
@@ -63,6 +65,8 @@ describe("wrapMultiA4Doc", () => {
     expect(html).toContain("addEventListener('click', saveDocAsPdf)");
     expect(html).toContain("addEventListener('click', closeDocPreview)");
     expect(html).toContain("doc-exporting-pdf");
+    expect(html).toContain("showSaveFilePicker");
+    expect(html).toContain("outputPdf('blob')");
   });
 });
 
