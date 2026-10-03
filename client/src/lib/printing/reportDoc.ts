@@ -24,6 +24,7 @@ import {
   type TableCol,
   type MetaSection,
   type SummaryItem,
+  type DocHeaderBarcode,
 } from "./docHtml";
 import { BRAND, esc } from "./brand";
 
@@ -32,6 +33,10 @@ export interface ReportDocInput {
   title: string;
   /** رقم مستند اختياري. */
   docNum?: string | null;
+  /** باركود رقم المستند (اختياري، إن لم يُمرّر وكان docNum موجوداً يُولّد تلقائياً Model 1). */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب رقم المستند ('beside') أو تحته ('below'). */
+  barcodePlacement?: 'beside' | 'below';
   /** تاريخ الإصدار (نصّ معروض)؛ الافتراضي = اليوم بالـar-IQ. */
   docDate?: string | null;
   /** أسطر إضافية في رأس المستند (الفترة/الفرع/الفلاتر النشطة). */
@@ -73,7 +78,14 @@ function noteBlock(note: string): string {
  */
 export function printReportDoc(input: ReportDocInput): boolean {
   const date = input.docDate ?? fmtDate(new Date());
-  const head = docHeader(input.title, input.docNum ?? null, date, input.headerExtra);
+  const head = docHeader(
+    input.title,
+    input.docNum ?? null,
+    date,
+    input.headerExtra,
+    input.barcode,
+    input.barcodePlacement,
+  );
   const note = input.note ? noteBlock(input.note) : "";
   const meta = input.meta && input.meta.length ? docMeta(input.meta) : "";
 

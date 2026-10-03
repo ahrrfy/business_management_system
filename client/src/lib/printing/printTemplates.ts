@@ -26,11 +26,12 @@ import { formatArabicMoneyWords } from './tafqit';
 /** إعادة تصدير قوالب V2 الرَسميّة للاستخدام المباشر (فاتورة مشتريات + تقرير مبيعات جديدان بلا نظير قديم). */
 export {
   printSalesInvoiceV2, buildSalesInvoiceV2Html, printPurchaseInvoiceV2, buildPurchaseInvoiceV2Html, printQuotationV2,
-  printWorkOrderV2, printStatementV2, printSalesReportV2,
+  printWorkOrderV2, printStatementV2, printSalesReportV2, resolveDocBarcode,
 } from './printTemplatesV2';
 export type {
   SalesInvoiceV2Data, PurchaseInvoiceV2Data, QuotationV2Data,
   WorkOrderV2Data, StatementV2Data, SalesReportV2Data, VoucherV2Data,
+  WarehouseSlipV2Data,
 } from './printTemplatesV2';
 export type { DocHeaderBarcode } from './docHtml';
 import { qrCodeSvg, qrSvgSync } from './qr';

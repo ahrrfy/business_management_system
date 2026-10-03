@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wrapA4Doc, wrapMultiA4Doc, pageHeader } from "./docHtml";
+import { wrapA4Doc, wrapMultiA4Doc, pageHeader, docHeader } from "./docHtml";
 import { buildSalesInvoiceV2Html, buildPurchaseInvoiceV2Html } from "./printTemplatesV2";
 
 describe("wrapA4Doc", () => {
@@ -152,6 +152,52 @@ describe("buildSalesInvoiceV2Html & buildPurchaseInvoiceV2Html", () => {
     expect(html).toContain("فاتورة مشتريات");
     expect(html).toContain("5544");
     expect(html).toContain('title="PO-5544"');
+    expect(html).toContain("<svg");
+  });
+});
+
+describe("docHeader - التوليد التلقائي لباركود رقم المستند (Model 1)", () => {
+  it("يولّد باركود النموذج 1 تلقائياً بجانب رقم المستند عند تمرير docNum", () => {
+    const html = docHeader("أمر شراء", "9988", "2026-10-03");
+
+    expect(html).toContain("أمر شراء");
+    expect(html).toContain("9988");
+    expect(html).toContain("<svg");
+    expect(html).toContain('title="PO-9988"');
+  });
+
+  it("يلغي الباركود عند تمرير barcode: false أو null", () => {
+    const htmlFalse = docHeader("أمر شراء", "9988", "2026-10-03", undefined, false);
+    expect(htmlFalse).not.toContain("<svg");
+    expect(htmlFalse).not.toContain('title="PO-9988"');
+
+    const htmlNull = docHeader("أمر شراء", "9988", "2026-10-03", undefined, null);
+    expect(htmlNull).not.toContain("<svg");
+    expect(htmlNull).not.toContain('title="PO-9988"');
+  });
+
+  it("يدعم موضع الباركود تحته (below) في docHeader", () => {
+    const html = docHeader("أمر شراء", "9988", "2026-10-03", undefined, undefined, "below");
+
+    expect(html).toContain('title="PO-9988"');
+    expect(html).toContain("flex-direction:column;align-items:flex-end");
+  });
+});
+
+describe("pageHeader - استهداف حقل مرجع الفاتورة (Warehouse Slip)", () => {
+  it("يضع الباركود بجانب حقل مرجع الفاتورة عندما لا يحتوي على كلمة رقم", () => {
+    const html = pageHeader({
+      title: "سند تجهيز مخزني",
+      fields: [
+        { label: "مرجع الفاتورة", value: "77665" },
+        { label: "التاريخ", value: "2026-10-03" },
+      ],
+      barcode: "INV-77665",
+    });
+
+    expect(html).toContain("مرجع الفاتورة");
+    expect(html).toContain("77665");
+    expect(html).toContain('title="INV-77665"');
     expect(html).toContain("<svg");
   });
 });

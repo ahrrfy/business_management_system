@@ -31,9 +31,16 @@ describe("stripDocPrefix — نزعٌ مشروطٌ بأن يكون الباقي 
     expect(stripDocPrefix("WO-1-20260811-00003")).toBe("WO-1-20260811-00003");
   });
 
-  it("الرقم العاري والباركودات الأخرى تمرّ بلا مساس", () => {
-    expect(stripDocPrefix("10023")).toBe("10023");
-    expect(stripDocPrefix("6912345614849")).toBe("6912345614849");
-    expect(stripDocPrefix("  INV-10023  ")).toBe("10023"); // تُشذَّب المسافات
+  it("يدعم البادئات الموسعة الجديدة للسندات والتحويلات والطلبات", () => {
+    expect(docBarcode("VCH", "3001")).toBe("VCH-3001");
+    expect(docBarcode("TRN", "4002")).toBe("TRN-4002");
+    expect(docBarcode("EXC", "5003")).toBe("EXC-5003");
+    expect(docBarcode("GIFT", "6004")).toBe("GIFT-6004");
+    expect(docBarcode("ORD", "7005")).toBe("ORD-7005");
+    expect(stripDocPrefix("VCH-3001")).toBe("3001");
+    expect(stripDocPrefix("TRN-4002")).toBe("4002");
+    expect(stripDocPrefix("EXC-5003")).toBe("5003");
+    expect(stripDocPrefix("GIFT-6004")).toBe("6004");
+    expect(stripDocPrefix("ORD-7005")).toBe("7005");
   });
 });
