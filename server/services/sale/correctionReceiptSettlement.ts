@@ -33,7 +33,7 @@ import {
 import type { Tx } from "../../db";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
-import { computeDrawerCashBalance } from "../cash/cashAvailability";
+import { assertCashOutAvailable, computeDrawerCashBalance } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import type { Actor } from "../tx";
@@ -214,6 +214,18 @@ export async function settlePriorPaymentsTx(
   };
   for (const r of rows) {
     const amount = round2(money(r.amount));
+    if (r.paymentMethod === "CASH" && r.cashBucket === "DRAWER" && r.shiftId != null) {
+      const sh = shiftById.get(Number(r.shiftId));
+      if (sh?.status === "OPEN") {
+        await assertCashOutAvailable(tx, {
+          branchId: Number(r.branchId ?? input.branchId),
+          shiftId: Number(r.shiftId),
+          cashBucket: "DRAWER",
+          amount,
+          operation: "عكس قبض الفاتورة بالتصحيح الكامل",
+        });
+      }
+    }
     const res = await tx.insert(receipts).values({
       invoiceId: input.invoiceId,
       branchId: Number(r.branchId ?? input.branchId),
