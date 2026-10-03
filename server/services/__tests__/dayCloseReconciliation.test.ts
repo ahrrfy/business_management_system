@@ -565,6 +565,47 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect((await report(1)).cashPosition).toBeNull();
   });
 
+  it("يحجب الرقم النهائي عند تكرار هدف عهدة واحد", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await insertCustodySource({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CD-DUPLICATE-TARGET",
+      approvalStatus: "APPROVED",
+    });
+    await db().insert(s.receipts).values([
+      {
+        branchId: 1,
+        direction: "IN",
+        amount: "10000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: "CD-DUPLICATE-TARGET",
+        createdBy: ADMIN,
+      },
+      {
+        branchId: 1,
+        direction: "IN",
+        amount: "10000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: " cd-duplicate-target ",
+        createdBy: ADMIN,
+      },
+    ]);
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
   it("يحجب الموقف النقدي إذا كانت عهدة عد أعمى من وردية يوم سابق ما تزال معلقة", async () => {
     const priorDay = new Date(new Date(`${DATE}T10:00:00.000Z`).getTime() - 86_400_000);
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
@@ -850,6 +891,17 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       expectedCashOnHand: "1000000.00",
       isReadyForFinalCount: true,
     });
+  });
+
+  it("يحجب الموضع النهائي إذا اختلف مبلغ إيصال SF عن عهدة افتتاح الوردية", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await db().update(s.receipts).set({ amount: "99999.00" })
+      .where(eq(s.receipts.referenceNumber, `SF-1-${shiftId}`));
+
+    expect((await report(1)).cashPosition).toBeNull();
   });
 
   it("يربط عهدة SF بقيدها الفريد ولا يكرر الوردية عند تكرار رقم المرجع", async () => {

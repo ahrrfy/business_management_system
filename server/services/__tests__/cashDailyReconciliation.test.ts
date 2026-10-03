@@ -431,6 +431,84 @@ describe("daily physical treasury reconciliation", () => {
     expect(status.actions.canCount).toBe(false);
   });
 
+  it("blocks the treasury certificate when one custody source has duplicate targets", async () => {
+    const shiftResult = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "0.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+    const shiftId = Number(
+      (shiftResult as any)?.[0]?.insertId ?? (shiftResult as any)?.insertId,
+    );
+    const sourceResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-DUPLICATE-DAILY-TARGET",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const sourceReceiptId = Number(
+      (sourceResult as any)?.[0]?.insertId ?? (sourceResult as any)?.insertId,
+    );
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values([
+      {
+        branchId: 1,
+        direction: "IN",
+        amount: "10000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: "CD-DUPLICATE-DAILY-TARGET",
+        createdBy: CHECKER,
+        createdAt: TEST_NOW,
+        approvedAt: TEST_NOW,
+      },
+      {
+        branchId: 1,
+        direction: "IN",
+        amount: "10000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: " cd-duplicate-daily-target ",
+        createdBy: CHECKER,
+        createdAt: TEST_NOW,
+        approvedAt: TEST_NOW,
+      },
+    ]);
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("PENDING_CUSTODY");
+    expect(status.actions.canCount).toBe(false);
+  });
+
   it("blocks drawer cash linked to a shift from another branch", async () => {
     const shiftResult = await db().insert(s.shifts).values({
       branchId: 2,

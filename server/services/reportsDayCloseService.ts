@@ -302,22 +302,28 @@ export async function getDayCloseReconciliation(opts: {
     createdAt: openingFloatReceipt.createdAt,
   });
   const openingFloatEntryJoin = and(
-    eq(openingFloatEntry.branchId, shifts.branchId),
     eq(openingFloatEntry.entryType, "SHIFT_FLOAT_OUT"),
     eq(openingFloatEntry.dedupeKey, sql`CONCAT('SHIFT_FLOAT:', ${shifts.id})`),
   );
   const openingFloatReceiptJoin = eq(openingFloatReceipt.id, openingFloatEntry.receiptId);
+  const openingFloatLinkContract = and(
+    eq(openingFloatEntry.branchId, shifts.branchId),
+    eq(openingFloatEntry.amount, shifts.openingBalance),
+    eq(openingFloatReceipt.branchId, shifts.branchId),
+    eq(openingFloatReceipt.amount, shifts.openingBalance),
+    eq(openingFloatReceipt.direction, "OUT"),
+    eq(openingFloatReceipt.cashBucket, "TREASURY"),
+    eq(openingFloatReceipt.paymentMethod, "CASH"),
+    eq(openingFloatReceipt.approvalStatus, "APPROVED"),
+    inArray(openingFloatReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+  );
   const fundedShiftVisibleAtCutoff = or(
     sql`${shifts.openingBalance} = 0`,
     // ورديات ما قبل عقد SF التاريخي لا تملك إيصالاً مرتبطاً؛ يبقى openedAt دليلها
     // الوحيد. أمّا إذا وُجد SF فلا تدخل العهدة قبل لحظة تحقّقه المالية.
     isNull(openingFloatEntry.id),
     and(
-      eq(openingFloatReceipt.direction, "OUT"),
-      eq(openingFloatReceipt.cashBucket, "TREASURY"),
-      eq(openingFloatReceipt.paymentMethod, "CASH"),
-      eq(openingFloatReceipt.approvalStatus, "APPROVED"),
-      inArray(openingFloatReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+      openingFloatLinkContract,
       lt(openingFloatEventAt, endExclusive),
     ),
   );
@@ -1004,6 +1010,23 @@ export async function getDayCloseReconciliation(opts: {
           ? [inArray(receipts.branchId, scopedBranchIds)]
           : [];
 
+        // وجود قيد SF يعني أن الوردية تخضع للعقد الحديث، فلا يجوز إسقاط وردية ذات
+        // إيصالٍ مربوط بفرع/مبلغ مختلف وكأنها وردية تاريخية بلا دليل. هذا فساد دليل
+        // ماليّ، ولذلك نحجب الموضع النهائي بدلاً من نشر مجموع خزينة ودرج غير متقابلين.
+        const [invalidOpeningFloat] = scopedBranchIds.length === 0
+          ? [{ count: 0 }]
+          : await db
+              .select({ count: sql<number>`COUNT(*)` })
+              .from(shifts)
+              .innerJoin(openingFloatEntry, openingFloatEntryJoin)
+              .leftJoin(openingFloatReceipt, openingFloatReceiptJoin)
+              .where(and(
+                inArray(shifts.branchId, scopedBranchIds),
+                lt(shifts.openedAt, endExclusive),
+                sql`NOT COALESCE((${openingFloatLinkContract!}), FALSE)`,
+              ));
+        if (Number(invalidOpeningFloat?.count ?? 0) > 0) return null;
+
         // استعلامات موضع محدودة ومجمّعة؛ لا نعيد بناء بصمات دليل اليوم لكل فرع عند
         // عرض «كل الفروع»، فذلك يمسح التاريخ الكامل مرات متكررة بلا حاجة للتقرير.
         const [treasuryRow] = await db
@@ -1160,9 +1183,58 @@ export async function getDayCloseReconciliation(opts: {
                 .where(matchingCustodySource),
             ),
           ));
+        const duplicateCustodyTargets = await db
+          .select({ receiptId: custodySourceReceipt.id })
+          .from(custodySourceReceipt)
+          .innerJoin(
+            custodySourceEvidence,
+            eq(custodySourceEvidence.receiptId, custodySourceReceipt.id),
+          )
+          .innerJoin(
+            custodyTargetReceipt,
+            and(matchingCustodyTarget, custodyTargetContractState),
+          )
+          .where(and(
+            ...sourceScope,
+            eq(custodySourceReceipt.direction, "OUT"),
+            eq(custodySourceReceipt.cashBucket, "DRAWER"),
+            eq(custodySourceReceipt.paymentMethod, "CASH"),
+            eq(custodySourceReceipt.approvalStatus, "APPROVED"),
+            inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            custodyReference,
+            lt(custodySourceEventAt, endExclusive),
+          ))
+          .groupBy(custodySourceReceipt.id)
+          .having(sql`COUNT(DISTINCT ${custodyTargetReceipt.id}) > 1`);
+        const duplicateCustodySources = await db
+          .select({ receiptId: custodyTargetReceipt.id })
+          .from(custodyTargetReceipt)
+          .innerJoin(custodySourceReceipt, matchingCustodySource)
+          .innerJoin(
+            custodySourceEvidence,
+            eq(custodySourceEvidence.receiptId, custodySourceReceipt.id),
+          )
+          .where(and(
+            ...targetScope,
+            eq(custodyTargetReceipt.direction, "IN"),
+            eq(custodyTargetReceipt.cashBucket, "TREASURY"),
+            eq(custodyTargetReceipt.paymentMethod, "CASH"),
+            eq(custodyTargetReceipt.approvalStatus, "APPROVED"),
+            isNull(custodyTargetReceipt.voucherNumber),
+            isNull(custodyTargetReceipt.invoiceId),
+            isNull(custodyTargetReceipt.workOrderId),
+            isNull(custodyTargetReceipt.reservationId),
+            targetCustodyReference,
+            lt(custodyTargetEventAt, endExclusive),
+            custodyTargetContractState,
+          ))
+          .groupBy(custodyTargetReceipt.id)
+          .having(sql`COUNT(DISTINCT ${custodySourceReceipt.id}) > 1`);
         if (
           Number(invalidCustodySource?.count ?? 0) > 0 ||
-          Number(invalidCustodyTarget?.count ?? 0) > 0
+          Number(invalidCustodyTarget?.count ?? 0) > 0 ||
+          duplicateCustodyTargets.length > 0 ||
+          duplicateCustodySources.length > 0
         ) return null;
 
         const sentReceipt = alias(receipts, "dayCloseTransferSentReceipt");

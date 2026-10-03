@@ -421,45 +421,101 @@ export async function buildDailyCashEvidenceTx(
         )
       ), 0)
   `));
+  // عقد العهدة واحد إلى واحد. نصفٌ مفقود أو أكثر من نظيرٍ واحد يعني أن موضع
+  // النقد غير قابل للإثبات، حتى لو كانت كل الإيصالات منفردةً صحيحة شكلياً.
   const unpairedCustodySourceCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
-    FROM receipts source
-    WHERE source.branchId = ${branchId}
-      AND source.direction = 'OUT'
-      AND source.paymentMethod = 'CASH'
-      AND source.cashBucket = 'DRAWER'
-      AND source.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-      AND source.receiptApprovalStatus = 'APPROVED'
-      AND ${receiptCashEventAtSql("source")} < ${endExclusive}
-      AND (
-        UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
-        OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
-      )
-      AND EXISTS (
-        SELECT 1
-        FROM accountingEntries sourceEntry
-        WHERE sourceEntry.receiptId = source.id
-          AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM receipts target
-        WHERE target.branchId = source.branchId
-          AND UPPER(TRIM(target.referenceNumber)) = UPPER(TRIM(source.referenceNumber))
-          AND target.amount = source.amount
-          AND target.direction = 'IN'
-          AND target.paymentMethod = 'CASH'
-          AND target.cashBucket = 'TREASURY'
-          AND target.receiptApprovalStatus = 'APPROVED'
-          AND target.voucherNumber IS NULL
-          AND target.invoiceId IS NULL
-          AND target.workOrderId IS NULL
-          AND target.reservationId IS NULL
-          AND (
-            target.receiptStatus = 'PENDING'
-            OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+    FROM (
+      SELECT source.id AS receiptId
+      FROM receipts source
+      LEFT JOIN receipts target
+        ON target.branchId = source.branchId
+        AND UPPER(TRIM(target.referenceNumber)) = UPPER(TRIM(source.referenceNumber))
+        AND target.amount = source.amount
+        AND target.direction = 'IN'
+        AND target.paymentMethod = 'CASH'
+        AND target.cashBucket = 'TREASURY'
+        AND target.receiptApprovalStatus = 'APPROVED'
+        AND target.voucherNumber IS NULL
+        AND target.invoiceId IS NULL
+        AND target.workOrderId IS NULL
+        AND target.reservationId IS NULL
+        AND (
+          (target.receiptStatus = 'PENDING' AND target.createdAt < ${endExclusive})
+          OR (
+            target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+            AND ${receiptCashEventAtSql("target")} < ${endExclusive}
           )
-      )
+        )
+      WHERE source.branchId = ${branchId}
+        AND source.direction = 'OUT'
+        AND source.paymentMethod = 'CASH'
+        AND source.cashBucket = 'DRAWER'
+        AND source.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND source.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("source")} < ${endExclusive}
+        AND (
+          UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
+          OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM accountingEntries sourceEntry
+          WHERE sourceEntry.receiptId = source.id
+            AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+        )
+      GROUP BY source.id
+      HAVING COUNT(DISTINCT target.id) <> 1
+
+      UNION ALL
+
+      SELECT target.id AS receiptId
+      FROM receipts target
+      LEFT JOIN receipts source
+        ON source.branchId = target.branchId
+        AND UPPER(TRIM(source.referenceNumber)) = UPPER(TRIM(target.referenceNumber))
+        AND source.amount = target.amount
+        AND source.direction = 'OUT'
+        AND source.paymentMethod = 'CASH'
+        AND source.cashBucket = 'DRAWER'
+        AND source.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND source.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("source")} < ${endExclusive}
+        AND (
+          UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
+          OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
+        )
+      LEFT JOIN (
+        SELECT DISTINCT receiptId
+        FROM accountingEntries
+        WHERE entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+      ) sourceEvidence ON sourceEvidence.receiptId = source.id
+      WHERE target.branchId = ${branchId}
+        AND target.direction = 'IN'
+        AND target.paymentMethod = 'CASH'
+        AND target.cashBucket = 'TREASURY'
+        AND target.receiptApprovalStatus = 'APPROVED'
+        AND target.voucherNumber IS NULL
+        AND target.invoiceId IS NULL
+        AND target.workOrderId IS NULL
+        AND target.reservationId IS NULL
+        AND (
+          UPPER(TRIM(target.referenceNumber)) LIKE 'CH-%'
+          OR UPPER(TRIM(target.referenceNumber)) LIKE 'CD-%'
+        )
+        AND (
+          (target.receiptStatus = 'PENDING' AND target.createdAt < ${endExclusive})
+          OR (
+            target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+            AND ${receiptCashEventAtSql("target")} < ${endExclusive}
+          )
+        )
+      GROUP BY target.id
+      HAVING COUNT(DISTINCT CASE
+        WHEN sourceEvidence.receiptId IS NOT NULL THEN source.id
+        ELSE NULL
+      END) <> 1
+    ) invalidCustodyContracts
   `));
   const residualDrawerCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
@@ -729,7 +785,7 @@ async function findApprovedDailyResolutionTx(
 const DAILY_CASH_BLOCKER_REMEDY: Record<DailyCashBlockerCode, string> = {
   OPEN_SHIFT: "أغلق الورديات المفتوحة من تبويب الورديات في الخزينة",
   UNMATCHED_SHIFT: "طابِق كل وردية مغلقة حتى يتساوى متوقَّعها مع معدودها",
-  PENDING_CUSTODY: "اعدد عهد النقد واقبلها من طابور عهد الاستلام في الخزينة",
+  PENDING_CUSTODY: "عالِج عقد العهدة الناقص أو المتكرر، ثم اعدد العهدة واقبلها من طابور الاستلام",
   CASH_IN_TRANSIT: "استلم أو ألغِ تحويلات النقد بين الفروع قبل الجرد النهائي",
   RESIDUAL_DRAWER_CASH: "صفِّ النقد المتبقي في الأدراج المغلقة إلى الخزينة",
   UNSCOPED_CASH: "عالِج حركات النقد غير المنسوبة من تقرير معالجة النقد",
@@ -773,7 +829,7 @@ function blockersFor(evidence: Evidence) {
   if (custodyBlockerCount > 0) {
     blockers.push({
       code: "PENDING_CUSTODY",
-      message: "توجد عهد نقد غير مكتملة أو لم تُعدّ وتُقبل بعد",
+      message: "توجد عهد نقد ناقصة أو متكررة أو لم تُعدّ وتُقبل بعد",
       count: custodyBlockerCount,
     });
   }
