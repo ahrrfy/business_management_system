@@ -144,11 +144,20 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
   it("يعتمد نطاق الفرع الذي فرضه الخادم للعنوان والجرد", () => {
     const source = readPage("DayCloseReport.tsx");
 
-    expect(source).toContain('const effectiveBranchId: number | "" = branchId === "" ? dc?.branchId ?? "" : branchId');
+    expect(source).toContain('const effectiveBranchId: number | "" = dc?.branchId ?? branchId');
     expect(source).toContain('{ branchId: Number(effectiveBranchId || 0), businessDate: date }');
     expect(source).toContain('{ enabled: effectiveBranchId !== "" }');
     expect(source).toContain('const branchLabel = effectiveBranchId');
     expect(source).toContain('const dailyPanel = effectiveBranchId === ""');
+  });
+
+  it("ينتظر دليل الخزينة الناجح قبل تمكين التصدير والطباعة لفرع", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain("const dailyEvidenceUnavailable =");
+    expect(source).toContain("dailyQ.isFetching || dailyQ.isError || dailyQ.data == null");
+    expect(source).toContain("exportDisabled={!dc || dailyEvidenceUnavailable");
+    expect(source).toContain("printDisabled={!dc || dailyEvidenceUnavailable");
   });
 
   it("يبني التقرير المالي من لقطة واحدة ولا يعيد مسح دليل كل فرع", () => {

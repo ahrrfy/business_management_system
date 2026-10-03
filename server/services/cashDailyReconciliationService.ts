@@ -69,6 +69,7 @@ interface Evidence {
   openShiftCount: number;
   unmatchedShiftCount: number;
   pendingCustodyCount: number;
+  unpairedCustodySourceCount: number;
   custodyVarianceCount: number;
   interbranchTransitCount: number;
   residualDrawerCount: number;
@@ -401,6 +402,36 @@ export async function buildDailyCashEvidenceTx(
         AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
       )
   `));
+  const unpairedCustodySourceCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM receipts source
+    WHERE source.branchId = ${branchId}
+      AND source.direction = 'OUT'
+      AND source.paymentMethod = 'CASH'
+      AND source.cashBucket = 'DRAWER'
+      AND source.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+      AND source.receiptApprovalStatus = 'APPROVED'
+      AND ${receiptCashEventAtSql("source")} < ${endExclusive}
+      AND (
+        UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
+        OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM receipts target
+        WHERE target.branchId = source.branchId
+          AND target.referenceNumber = source.referenceNumber
+          AND target.amount = source.amount
+          AND target.direction = 'IN'
+          AND target.paymentMethod = 'CASH'
+          AND target.cashBucket = 'TREASURY'
+          AND target.receiptApprovalStatus = 'APPROVED'
+          AND (
+            target.receiptStatus = 'PENDING'
+            OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+          )
+      )
+  `));
   const residualDrawerCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
     FROM shifts s
@@ -468,6 +499,7 @@ export async function buildDailyCashEvidenceTx(
     ],
     finalPositionBlockers: [
       interbranchTransitCount,
+      unpairedCustodySourceCount,
       residualDrawerCount,
       unscopedCashCount,
     ],
@@ -480,6 +512,7 @@ export async function buildDailyCashEvidenceTx(
     openShiftCount,
     unmatchedShiftCount,
     pendingCustodyCount,
+    unpairedCustodySourceCount,
     custodyVarianceCount,
     interbranchTransitCount,
     residualDrawerCount,
@@ -688,11 +721,13 @@ function blockersFor(evidence: Evidence) {
       count: evidence.unmatchedShiftCount,
     });
   }
-  if (evidence.pendingCustodyCount > 0) {
+  const custodyBlockerCount =
+    evidence.pendingCustodyCount + evidence.unpairedCustodySourceCount;
+  if (custodyBlockerCount > 0) {
     blockers.push({
       code: "PENDING_CUSTODY",
-      message: "توجد عهد نقد لم تُعدّ وتُقبل بعد",
-      count: evidence.pendingCustodyCount,
+      message: "توجد عهد نقد غير مكتملة أو لم تُعدّ وتُقبل بعد",
+      count: custodyBlockerCount,
     });
   }
   if (evidence.interbranchTransitCount > 0) {
@@ -1020,7 +1055,8 @@ export async function recordDailyTreasuryCount(
       lastClientRequestId: clientRequestId,
       evidenceHash: evidence.evidenceHash,
       shiftCount: evidence.shiftCount,
-      custodyCount: evidence.pendingCustodyCount,
+      custodyCount:
+        evidence.pendingCustodyCount + evidence.unpairedCustodySourceCount,
       countedByUserId: actor.userId,
       countedAt: new Date(),
       closedByUserId: null,

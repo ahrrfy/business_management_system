@@ -130,7 +130,7 @@ export default function DayCloseReport() {
   const dc: DC | undefined = q.data;
   // الراوتر يفرض فرع المدير حتى لو ترك محدّد «كل الفروع» فارغاً. اعتمد النطاق
   // الموثّق في نتيجة الخادم للعنوان والجرد، لا قيمة المحدّد غير الموثوقة.
-  const effectiveBranchId: number | "" = branchId === "" ? dc?.branchId ?? "" : branchId;
+  const effectiveBranchId: number | "" = dc?.branchId ?? branchId;
   const dailyQ = trpc.treasury.dailyCashReconciliation.useQuery(
     { branchId: Number(effectiveBranchId || 0), businessDate: date },
     { enabled: effectiveBranchId !== "" },
@@ -193,6 +193,9 @@ export default function DayCloseReport() {
   };
 
   const daily = dailyQ.data;
+  const dailyEvidenceUnavailable =
+    effectiveBranchId !== "" &&
+    (dailyQ.isFetching || dailyQ.isError || dailyQ.data == null);
   const saved = daily?.reconciliation;
   const position = dc?.cashPosition;
   const reconciliationStale = daily?.blockers.some((blocker) => blocker.code === "STALE_EVIDENCE") ?? false;
@@ -545,8 +548,8 @@ export default function DayCloseReport() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!dc || (!dc.cashPosition && dc.shifts.length === 0 && dc.directOperations.receiptCount === 0) || dc.withheldBlindCountShiftCount > 0}
-      printDisabled={!dc || (!dc.cashPosition && dc.shifts.length === 0 && dc.directOperations.receiptCount === 0) || dc.withheldBlindCountShiftCount > 0}
+      exportDisabled={!dc || dailyEvidenceUnavailable || (!dc.cashPosition && dc.shifts.length === 0 && dc.directOperations.receiptCount === 0) || dc.withheldBlindCountShiftCount > 0}
+      printDisabled={!dc || dailyEvidenceUnavailable || (!dc.cashPosition && dc.shifts.length === 0 && dc.directOperations.receiptCount === 0) || dc.withheldBlindCountShiftCount > 0}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">

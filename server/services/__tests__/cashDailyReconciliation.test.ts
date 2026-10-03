@@ -203,6 +203,43 @@ describe("daily physical treasury reconciliation", () => {
     expect(JSON.stringify(status)).not.toContain("87500.00");
   });
 
+  it("blocks a drawer custody source that has no matching treasury target", async () => {
+    const inserted = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "25000.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "25000.00",
+      expectedCash: "25000.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+    const shiftId = Number((inserted as unknown as [{ insertId: number }])[0]?.insertId ?? 0);
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "25000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-UNPAIRED-SOURCE",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+    });
+
+    const blocked = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(blocked.blockers.map((item) => item.code)).toContain("PENDING_CUSTODY");
+    expect(blocked.actions.canCount).toBe(false);
+  });
+
   it("blocks counting and closing while interbranch cash is in transit", async () => {
     const cleanCount = await recordDailyTreasuryCount(
       {
