@@ -3,7 +3,12 @@ import { inArray, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import * as schema from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { approveExpense, createExpense, listExpenses } from "../expenseService";
+import {
+  approveExpense,
+  createExpense,
+  executeApprovedExpense,
+  listExpenses,
+} from "../expenseService";
 import { openShift } from "../shiftService";
 
 type FundingKind = "DRAWER" | "TREASURY" | "NON_CASH" | "STOCK";
@@ -182,6 +187,12 @@ describe("expense list traceability contract", () => {
       role: "admin",
       isOwner: true,
     });
+    await executeApprovedExpense(treasury.expenseId, "TREASURY", {
+      userId: 2,
+      branchId: 1,
+      role: "admin",
+      isOwner: true,
+    });
 
     const nonCash = await createExpense(
       {
@@ -197,6 +208,12 @@ describe("expense list traceability contract", () => {
       actor,
     );
     await approveExpense(nonCash.expenseId, {
+      userId: 2,
+      branchId: 1,
+      role: "admin",
+      isOwner: true,
+    });
+    await executeApprovedExpense(nonCash.expenseId, "NON_CASH", {
       userId: 2,
       branchId: 1,
       role: "admin",

@@ -100,6 +100,42 @@ afterEach(() => {
 });
 
 describe("daily physical treasury reconciliation", () => {
+  it("treats 12,264,000 IQD as the authoritative physical count when it matches the proven cash position", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "12164000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "PHYSICAL-CASH-12264000",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+
+    const counted = await recordDailyTreasuryCount(
+      {
+        branchId: 1,
+        businessDate: DATE,
+        countedCash: "12264000.00",
+        countedBreakdown: { "50000": 245, "10000": 1, "1000": 4 },
+        expectedVersion: 0,
+        clientRequestId: "daily-count-12264000",
+      },
+      actor(MANAGER),
+      auditCtx(MANAGER),
+    );
+
+    expect(counted).toMatchObject({
+      countedTreasuryCash: "12264000.00",
+      expectedTreasuryCash: "12264000.00",
+      status: "MATCHED",
+      variance: "0.00",
+    });
+  });
+
   it("records a matched count idempotently and requires a second manager to close", async () => {
     const initial = await getDailyCashReconciliation({ branchId: 1, businessDate: DATE }, actor(MANAGER));
     expect(initial.expectedTreasuryCash).toBe("100000.00");

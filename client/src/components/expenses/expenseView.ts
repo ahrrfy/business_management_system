@@ -80,6 +80,10 @@ export type ExpenseRow = ExpenseRowBase &
     receiptStatus: string | null;
     approvalStatus: string | null;
     approvedByName: string | null;
+    executedBy: number | null;
+    executedByName: string | null;
+    executedAt: string | Date | null;
+    workflowStatus: string | null;
     updatedAt: string | Date | null;
     fundingKind: string | null;
     integrityWarnings: string[] | null;
@@ -133,6 +137,14 @@ export const SHIFT_STATUS_LABEL: Record<string, string> = {
 /** حالةُ اعتماد **سند الصرف** المرافق (`receipts.approvalStatus`) لا حالةُ المصروف نفسه. */
 export const APPROVAL_LABEL: Record<string, string> = EXPENSE_APPROVAL_AR;
 
+export function isApprovedAwaitingExecution(r: ExpenseRow): boolean {
+  return (
+    r.status === "PENDING_APPROVAL" &&
+    (r.workflowStatus === "APPROVED_AWAITING_EXECUTION" ||
+      (r.receiptStatus === "PENDING" && r.approvalStatus === "APPROVED"))
+  );
+}
+
 export function fundingKindOf(r: ExpenseRow): FundingKind {
   if (r.status === "PENDING_APPROVAL" || r.status === "REJECTED")
     return "PENDING";
@@ -167,9 +179,11 @@ export function warningsOf(r: ExpenseRow): string[] {
 export function fundingDetail(r: ExpenseRow): string {
   const kind = fundingKindOf(r);
   if (kind === "PENDING")
-    return r.paymentMethod === "CASH"
-      ? "طلب معلق بلا أثر مالي حتى الآن — يصرف من الخزينة عند الاعتماد"
-      : `طلب معلق بلا أثر مالي حتى الآن — ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`;
+    return isApprovedAwaitingExecution(r)
+      ? r.paymentMethod === "CASH"
+        ? "معتمد بلا أثر مالي — ينتظر الصرف من وردية المنشئ أو الخزينة الإدارية"
+        : `معتمد بلا أثر مالي — ينتظر التنفيذ بطريقة ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`
+      : "طلب اعتماد معلق بلا أثر مالي حتى الآن";
   if (kind === "ACCRUED_UNPAID")
     return `${r.accrualBeneficiaryName ?? r.payee ?? "مستفيد غير موثق"} · اعتراف محاسبي بلا خروج نقدي`;
   if (kind === "ACCRUED_PAID")

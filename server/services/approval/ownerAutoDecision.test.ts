@@ -58,4 +58,15 @@ describe("ownerAutoDecision", () => {
       expect.objectContaining({ userId: 1, isOwner: true, crossBranch: true }),
     );
   });
+
+  it("يعد اعتماد المصروف للمالك ناجحا ولو بقي الدفع منتظرا", async () => {
+    mocks.decideDecision.mockResolvedValueOnce({ outcome: "REQUESTED" as const });
+
+    await expect(
+      autoDecideForActiveOwner(
+        { userId: 1, branchId: 1, role: "admin" },
+        { kind: "expense.approve", id: 902 },
+      ),
+    ).resolves.toBe(true);
+  });
 });

@@ -64,6 +64,7 @@ import {
   fundingKindOf,
   FUNDING_META,
   FUNDING_ORDER,
+  isApprovedAwaitingExecution,
   METHOD_LABEL,
   metric,
   PAGE_SIZE,
@@ -616,11 +617,43 @@ export default function Expenses() {
         utils.expenses.list.invalidate(),
         utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
       ]);
-      notify.ok("تم اعتماد المصروف وتنفيذه ذرياً");
+      notify.ok("تم اعتماد المصروف رقابياً؛ لا أثر مالي حتى ينفذه صاحب الدرج أو أمين الخزينة");
+    },
+    onError: (error) => notify.err(error),
+  });
+  const executeFromOwnDrawer =
+    trpc.expenses.executeFromOwnDrawer.useMutation({
+      onSuccess: async (_result, variables) => {
+        await Promise.all([
+          utils.expenses.list.invalidate(),
+          utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
+        ]);
+        notify.ok("تم صرف المصروف من درج وردية المنشئ وتسجيل المنفذ الفعلي");
+      },
+      onError: (error) => {
+        const detail = /رصيد|سيولة|غير كاف/.test(error.message)
+          ? `${error.message} موّل الوردية من تبويب الورديات أو نفّذ الدفع مباشرة من الخزينة.`
+          : error.message;
+        notify.err(detail);
+      },
+    });
+  const executeManaged = trpc.expenses.executeManaged.useMutation({
+    onSuccess: async (_result, variables) => {
+      await Promise.all([
+        utils.expenses.list.invalidate(),
+        utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
+      ]);
+      notify.ok(
+        variables.source === "TREASURY"
+          ? "تم الدفع من الخزينة باسم منفذ التسليم الفعلي"
+          : "تم تنفيذ طريقة الدفع وتسجيل المنفذ الفعلي",
+      );
     },
     onError: (error) => notify.err(error),
   });
   function actionsFor(r: ExpenseRow) {
+    const approvedAwaitingExecution = isApprovedAwaitingExecution(r);
+    const isRequester = Number(r.createdBy ?? 0) === Number(me.data?.id ?? 0);
     return [
       {
         key: "print",
@@ -635,10 +668,10 @@ export default function Expenses() {
         key: "approve",
         kind: "approve" as const,
         icon: CircleCheck,
-        label: "اعتماد وصرف",
+        label: "اعتماد الطلب",
         // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — canApprove أصلاً يشترط
         // isOwner، فاستثناءُ صانع الطلب هنا كان يحجب الاعتماد الذاتي المسموح به خادمياً.
-        hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
+        hidden: r.status !== "PENDING_APPROVAL" || r.approvalStatus === "APPROVED" || !canApprove,
         disabled: approve.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () =>
@@ -646,12 +679,9 @@ export default function Expenses() {
             if (
               !(await confirm({
                 variant: "warning",
-                title: "اعتماد وصرف المصروف",
-                description:
-                  r.paymentMethod === "CASH"
-                    ? `سيُسحب ${fmt(r.amount)} د.ع من خزينة الفرع ويُنشأ القيد والإيصال كعملية ذرية واحدة. هل تتابع؟`
-                    : `سيُنفذ المصروف غير النقدي ${fmt(r.amount)} د.ع ويُنشأ القيد والإيصال كعملية ذرية واحدة. هل تتابع؟`,
-                confirmText: "اعتماد وصرف",
+                title: "اعتماد طلب المصروف",
+                description: `سيُعتمد طلب ${fmt(r.amount)} د.ع رقابياً فقط، بلا خصم ولا قيد مالي. التنفيذ خطوة مستقلة باسم من دفع فعلياً. هل تتابع؟`,
+                confirmText: "اعتماد فقط",
                 cancelText: "تراجع",
               }))
             )
@@ -660,12 +690,78 @@ export default function Expenses() {
           })(),
       },
       {
+        key: "execute-own-drawer",
+        kind: "approve" as const,
+        icon: WalletCards,
+        label: "صرف من ورديتي",
+        hidden: !approvedAwaitingExecution || r.paymentMethod !== "CASH" || !isRequester,
+        disabled: executeFromOwnDrawer.isPending,
+        disabledReason: "توجد عملية تنفيذ قيد المعالجة",
+        onSelect: () =>
+          void (async () => {
+            if (
+              !(await confirm({
+                variant: "warning",
+                title: "تنفيذ المصروف من درج الوردية",
+                description: `سيُخصم ${fmt(r.amount)} د.ع من ورديتك أنت، وتُسجل أنت منفذَ التسليم. إذا لم يكفِ الرصيد فموّل الوردية أو اختر الصرف المباشر من الخزينة.`,
+                confirmText: "تنفيذ من ورديتي",
+                cancelText: "تراجع",
+              }))
+            )
+              return;
+            executeFromOwnDrawer.mutate({ expenseId: Number(r.id) });
+          })(),
+      },
+      {
+        key: "fund-own-drawer",
+        kind: "transfer" as const,
+        icon: CircleDollarSign,
+        label: "تمويل الوردية",
+        hidden: !approvedAwaitingExecution || r.paymentMethod !== "CASH" || !isRequester,
+        onSelect: () => {
+          window.location.href = "/treasury?tab=shifts";
+        },
+      },
+      {
+        key: "execute-managed",
+        kind: "approve" as const,
+        icon: Landmark,
+        label:
+          r.paymentMethod === "CASH"
+            ? "دفع مباشر من الخزينة"
+            : "تنفيذ طريقة الدفع",
+        hidden: !approvedAwaitingExecution || !canCancel,
+        disabled: executeManaged.isPending,
+        disabledReason: "توجد عملية تنفيذ قيد المعالجة",
+        onSelect: () =>
+          void (async () => {
+            const source = r.paymentMethod === "CASH" ? "TREASURY" : "NON_CASH";
+            if (
+              !(await confirm({
+                variant: "warning",
+                title:
+                  source === "TREASURY"
+                    ? "دفع المصروف من الخزينة"
+                    : "تنفيذ طريقة الدفع",
+                description:
+                  source === "TREASURY"
+                    ? `سيُخصم ${fmt(r.amount)} د.ع من الخزينة الإدارية، وستُسجل أنت منفذَ تسليم النقد لا المعتمِد. هل تتابع؟`
+                    : `سيُنفذ مبلغ ${fmt(r.amount)} د.ع بطريقة ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}، وستُسجل أنت منفذ العملية. هل تتابع؟`,
+                confirmText: "تنفيذ الدفع",
+                cancelText: "تراجع",
+              }))
+            )
+              return;
+            executeManaged.mutate({ expenseId: Number(r.id), source });
+          })(),
+      },
+      {
         key: "reject",
         kind: "cancel" as const,
         icon: Ban,
         label: "رفض الطلب",
         variant: "destructive" as const,
-        hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
+        hidden: r.status !== "PENDING_APPROVAL" || r.approvalStatus === "APPROVED" || !canApprove,
         disabled: approve.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () => {
@@ -1459,6 +1555,9 @@ export default function Expenses() {
                                   اعتمد: {r.approvedByName ?? "—"}
                                 </div>
                                 <div className="text-[11px] text-muted-foreground">
+                                  نفّذ: {r.executedByName ?? "لم يُنفذ بعد"}
+                                </div>
+                                <div className="text-[11px] text-muted-foreground">
                                   {r.approvalStatus
                                     ? (APPROVAL_LABEL[r.approvalStatus] ??
                                       r.approvalStatus)
@@ -1481,9 +1580,11 @@ export default function Expenses() {
                               <td className="p-2">
                                 <span
                                   className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
-                                  title={r.status === "PENDING_APPROVAL" ? "الوضع الراهن: طلب معلّق بلا أثر مالي حتى الآن" : undefined}
+                                  title={r.status === "PENDING_APPROVAL" ? "الوضع الراهن: بلا أثر مالي حتى التنفيذ الفعلي" : undefined}
                                 >
-                                  {STATUS_LABEL[r.status] ?? r.status}
+                                  {isApprovedAwaitingExecution(r)
+                                    ? "معتمد — بانتظار التنفيذ"
+                                    : (STATUS_LABEL[r.status] ?? r.status)}
                                 </span>
                               </td>
                               <td className="max-w-52 p-2">

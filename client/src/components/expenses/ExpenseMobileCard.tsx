@@ -9,6 +9,7 @@ import { ExpenseTracePanel } from "./ExpenseTracePanel";
 import {
   expenseCategoryText,
   fundingDetail,
+  isApprovedAwaitingExecution,
   STATUS_CLS,
   STATUS_LABEL,
   type ExpenseRow,
@@ -49,9 +50,11 @@ export function ExpenseMobileCard({
             </span>
             <span
               className={`rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
-              title={r.status === "PENDING_APPROVAL" ? "الوضع الراهن: طلب معلّق بلا أثر مالي حتى الآن" : undefined}
+              title={r.status === "PENDING_APPROVAL" ? "الوضع الراهن: بلا أثر مالي حتى التنفيذ الفعلي" : undefined}
             >
-              {STATUS_LABEL[r.status] ?? r.status}
+              {isApprovedAwaitingExecution(r)
+                ? "معتمد — بانتظار التنفيذ"
+                : (STATUS_LABEL[r.status] ?? r.status)}
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -104,6 +107,12 @@ export function ExpenseMobileCard({
           <dt className="text-muted-foreground">أنشأ العملية</dt>
           <dd>
             {r.createdByName ?? (r.createdBy != null ? `#${r.createdBy}` : "—")}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">المعتمد / المنفذ</dt>
+          <dd>
+            {r.approvedByName ?? "—"} / {r.executedByName ?? "لم يُنفذ بعد"}
           </dd>
         </div>
         <div>

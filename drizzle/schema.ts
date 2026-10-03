@@ -2753,6 +2753,9 @@ export const receipts = mysqlTable(
       .notNull(),
     approvedBy: int("approvedBy"), // FK → users (هَجرة 0036)؛ NULL إن لم يَستلزم موافقة
     approvedAt: timestamp("approvedAt"), // وقت الاعتماد
+    // 0379: التنفيذ المالي فعل مستقل عن إنشاء الطلب واعتماده.
+    executedBy: int("executedBy").references(() => users.id),
+    executedAt: timestamp("executedAt"),
   },
   (table) => ({
     invoiceIdx: index("idx_receipt_invoice").on(table.invoiceId),
@@ -2779,6 +2782,7 @@ export const receipts = mysqlTable(
       table.cashBucket,
       table.createdAt,
     ),
+    executedAtIdx: index("idx_receipt_executed_at").on(table.executedAt),
     invoiceStatusIdx: index("idx_receipt_invoice_status").on(
       table.invoiceId,
       table.status,

@@ -21,7 +21,8 @@ export interface OwnerAutoDecisionOptions {
  *
  * هذه هي الوصلة العامة بين خدمات الطلب وصندوق القرارات: لا نكرر منطق التنفيذ المالي
  * أو المخزني هنا، بل نستدعي المصدر نفسه الذي يستعمله زر «اعتماد». الموظف يعاد منه
- * `false` بلا أي تغيير، والمالك ينفذ مسار الاعتماد الأصلي كاملا مرة واحدة.
+ * `false` بلا أي تغيير، والمالك ينفذ مسار الاعتماد الأصلي كاملا مرة واحدة. بعض
+ * المصادر (المصروفات) تُتم الاعتماد فقط وتُبقي التنفيذ النقدي خطوة مستقلة.
  */
 export async function autoDecideForActiveOwner(
   actor: Actor,
@@ -69,7 +70,10 @@ export async function autoDecideForActiveOwner(
     },
     decisionActor,
   );
-  if (result.outcome !== "EXECUTED") {
+  const acceptedOutcome =
+    result.outcome === "EXECUTED" ||
+    (options.kind === "expense.approve" && result.outcome === "REQUESTED");
+  if (!acceptedOutcome) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({

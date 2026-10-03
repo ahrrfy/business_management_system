@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
-import { exportRows } from "@/lib/export";
+import { exportSheets } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 import { selectCls } from "@/lib/ui/formStyles";
@@ -371,81 +371,104 @@ export default function DayCloseReport() {
       retainedInDrawer: r.retainedInDrawer ?? "",
     }));
 
-    if (dc.directOperations.receiptCount > 0) {
-      exportRowsData.push({
-        shiftId: "مباشر",
-        branchName: branchLabel,
-        userName: "الخزينة المباشرة (خارج الأدراج)",
-        shiftType: "مباشر",
-        status: "مكتملة",
-        opening: "0.00",
-        salesCash: dc.directOperations.salesCash,
-        collectionsCash: dc.directOperations.collectionsCash,
-        otherIn: dc.directOperations.otherIn,
-        cashIn: dc.directOperations.cashIn,
-        returnsCash: dc.directOperations.returnsCash,
-        expensesCash: dc.directOperations.expensesCash,
-        otherOut: dc.directOperations.otherOut,
-        cashDrops: "0.00",
-        operatingOut: dc.directOperations.operatingOut,
-        expected: dc.directOperations.netCash,
-        counted: "",
-        drift: "",
-        handoversCash: "0.00",
-        retainedInDrawer: "",
-      });
-    }
-
-    if (dc.cashPosition) {
-      exportRowsData.push({
-        shiftId: "نهائي",
-        branchName: branchLabel,
-        userName: dc.cashPosition.branchCount > 1 ? "الموقف النقدي النهائي لكل الفروع" : "الموقف النقدي النهائي للفرع",
-        shiftType: "مطابقة نهائية",
-        status: dc.cashPosition.isReadyForFinalCount ? "جاهزة للجرد النهائي" : "غير جاهزة للإقفال",
-        opening: "0.00",
-        salesCash: "0.00",
-        collectionsCash: "0.00",
-        otherIn: "0.00",
-        cashIn: "0.00",
-        returnsCash: "0.00",
-        expensesCash: "0.00",
-        otherOut: "0.00",
-        cashDrops: "0.00",
-        operatingOut: "0.00",
+    const treasuryRows = [
+      {
+        recordType: "ملخص المطابقة النهائية",
+        time: "",
+        actor: "",
+        direction: "",
+        description: dc.cashPosition.branchCount > 1 ? "الموقف النقدي النهائي لكل الفروع" : "الموقف النقدي النهائي للفرع",
+        cashIn: "",
+        cashOut: "",
         expected: dc.cashPosition.expectedCashOnHand,
         counted: finalCountUsable ? saved!.countedTreasuryCash : "",
-        drift: finalCountUsable ? (finalVariance ?? "") : "",
-        handoversCash: "0.00",
-        retainedInDrawer: "",
-      });
-    }
+        variance: finalCountUsable ? (finalVariance ?? "") : "",
+      },
+      ...dc.directMovements.details.map((movement) => ({
+        recordType: "حركة نقدية مباشرة",
+        time: movement.time,
+        actor: movement.userName ?? "",
+        direction: movement.direction === "IN" ? "داخل" : "خارج",
+        description: movement.description,
+        cashIn: movement.direction === "IN" ? movement.amount : "",
+        cashOut: movement.direction === "OUT" ? movement.amount : "",
+        expected: "",
+        counted: "",
+        variance: "",
+      })),
+    ];
 
-    exportRows(exportRowsData, {
-      filename: `مطابقة-إقفال-اليوم-${date}-${effectiveBranchId || "الكل"}`,
-      columns: [
-        { key: "shiftId", header: "الوردية", map: (r) => r.shiftId },
-        { key: "branchName", header: "الفرع", map: (r) => r.branchName },
-        { key: "userName", header: "الكاشير", map: (r) => r.userName },
-        { key: "shiftType", header: "النوع", map: (r) => r.shiftType },
-        { key: "status", header: "الحالة", map: (r) => r.status },
-        { key: "opening", header: "افتتاحي", map: (r) => r.opening },
-        { key: "salesCash", header: "مبيعات نقدية", map: (r) => r.salesCash },
-        { key: "collectionsCash", header: "تحصيلات", map: (r) => r.collectionsCash },
-        { key: "otherIn", header: "مقبوضات أخرى", map: (r) => r.otherIn },
-        { key: "cashIn", header: "إجمالي الداخل", map: (r) => r.cashIn },
-        { key: "returnsCash", header: "مرتجعات", map: (r) => r.returnsCash },
-        { key: "expensesCash", header: "مصروفات/سندات", map: (r) => r.expensesCash },
-        { key: "otherOut", header: "مصروفات أخرى", map: (r) => r.otherOut },
-        { key: "cashDrops", header: "سحب أثناء الوردية", map: (r) => r.cashDrops },
-        { key: "operatingOut", header: "إجمالي الخارج التشغيلي", map: (r) => r.operatingOut },
-        { key: "expected", header: "المتوقَّع", map: (r) => r.expected },
-        { key: "counted", header: "المعدود", map: (r) => r.counted },
-        { key: "drift", header: "الفرق", map: (r) => r.drift },
-        { key: "handoversCash", header: "خرج إلى العهدة", map: (r) => r.handoversCash },
-        { key: "retainedInDrawer", header: "المتبقّي بالدرج", map: (r) => r.retainedInDrawer },
-      ],
-    });
+    exportSheets(`مطابقة-إقفال-اليوم-${date}-${effectiveBranchId || "الكل"}`, [
+      {
+        sheetName: "مطابقة الورديات",
+        title: "مطابقة نقد أدراج الورديات",
+        meta: [
+          { label: "التاريخ", value: fmtDate(date) },
+          { label: "الفرع", value: branchLabel },
+        ],
+        rows: exportRowsData,
+        columns: [
+          { key: "shiftId", header: "الوردية" },
+          { key: "branchName", header: "الفرع" },
+          { key: "userName", header: "الكاشير" },
+          { key: "shiftType", header: "النوع" },
+          { key: "status", header: "الحالة" },
+          { key: "opening", header: "افتتاحي" },
+          { key: "salesCash", header: "مبيعات نقدية" },
+          { key: "collectionsCash", header: "تحصيلات" },
+          { key: "otherIn", header: "مقبوضات أخرى" },
+          { key: "cashIn", header: "إجمالي الداخل" },
+          { key: "returnsCash", header: "مرتجعات" },
+          { key: "expensesCash", header: "مصروفات/سندات" },
+          { key: "otherOut", header: "مصروفات أخرى" },
+          { key: "cashDrops", header: "سحب أثناء الوردية" },
+          { key: "operatingOut", header: "إجمالي الخارج التشغيلي" },
+          { key: "expected", header: "المتوقَّع" },
+          { key: "counted", header: "المعدود" },
+          { key: "drift", header: "الفرق" },
+          { key: "handoversCash", header: "خرج إلى العهدة" },
+          { key: "retainedInDrawer", header: "المتبقّي بالدرج" },
+        ],
+        totalsRow: {
+          shiftId: "الإجمالي",
+          opening: dc.totals.opening,
+          cashIn: dc.totals.shiftCashIn,
+          operatingOut: dc.totals.shiftOperatingOut,
+          expected: dc.totals.shiftExpected,
+          counted: dc.totals.counted,
+          drift: dc.totals.drift,
+          handoversCash: dc.totals.handoversCash,
+          retainedInDrawer: dc.totals.retainedInDrawer,
+        },
+      },
+      {
+        sheetName: "الخزينة والمطابقة",
+        title: "الخزينة الإدارية والموقف النقدي النهائي",
+        meta: [
+          { label: "التاريخ", value: fmtDate(date) },
+          { label: "الفرع", value: branchLabel },
+          { label: "رصيد الخزينة المتوقع", value: formatIqd(dc.cashPosition.expectedTreasuryCash) },
+          { label: "النقد الموجود في الأدراج", value: formatIqd(dc.cashPosition.expectedDrawersCash) },
+          { label: "النقد بالعهدة في الطريق", value: formatIqd(dc.cashPosition.cashInTransit) },
+          { label: "إجمالي المقبوضات المباشرة", value: formatIqd(dc.directOperations.cashIn) },
+          { label: "إجمالي المدفوعات المباشرة", value: formatIqd(dc.directOperations.operatingOut) },
+          { label: "صافي الحركات المباشرة", value: formatIqd(dc.directOperations.netCash) },
+        ],
+        rows: treasuryRows,
+        columns: [
+          { key: "recordType", header: "القسم" },
+          { key: "time", header: "الوقت" },
+          { key: "actor", header: "الموظف" },
+          { key: "direction", header: "الاتجاه" },
+          { key: "description", header: "البيان" },
+          { key: "cashIn", header: "داخل مباشر" },
+          { key: "cashOut", header: "خارج مباشر" },
+          { key: "expected", header: "المتوقع النهائي" },
+          { key: "counted", header: "المعدود الفعلي" },
+          { key: "variance", header: "الفرق" },
+        ],
+      },
+    ]);
   }
 
   // طباعة A4 — نفس أعمدة الشاشة/التصدير (تفصيل كل وردية)، ولا اقتطاع (اليوم الواحد محدودُ الورديات أصلاً).
@@ -470,32 +493,6 @@ export default function DayCloseReport() {
       handovers: fmtAr(r.handoversCash),
     }));
 
-    if (dc.directOperations.receiptCount > 0) {
-      printRows.push({
-        shiftId: "مباشر",
-        branch: branchLabel,
-        cashier: "الخزينة المباشرة (خارج الأدراج)",
-        status: "مكتملة",
-        expected: fmtAr(dc.totals.directNetCash),
-        counted: "—",
-        drift: "—",
-        handovers: "—",
-      });
-    }
-
-    if (dc.cashPosition) {
-      printRows.push({
-        shiftId: "نهائي",
-        branch: branchLabel,
-        cashier: dc.cashPosition.branchCount > 1 ? "الموقف النقدي النهائي لكل الفروع" : "الموقف النقدي النهائي للفرع",
-        status: dc.cashPosition.isReadyForFinalCount ? "جاهزة للجرد النهائي" : "غير جاهزة للإقفال",
-        expected: fmtAr(dc.cashPosition.expectedCashOnHand),
-        counted: finalCountUsable ? fmtAr(saved!.countedTreasuryCash) : "—",
-        drift: finalCountUsable ? fmtAr(finalVariance!) : "—",
-        handovers: "—",
-      });
-    }
-
     const opened = printReportDoc({
       title: "مطابقة إقفال اليوم للنقد",
       headerExtra: [
@@ -504,6 +501,32 @@ export default function DayCloseReport() {
       ],
       note: NOTE,
       orientation: "landscape",
+      meta: [
+        {
+          title: "الموقف النقدي والخزينة",
+          fields: [
+            { label: "رصيد الخزينة المتوقع", value: formatIqd(dc.cashPosition.expectedTreasuryCash) },
+            { label: "النقد الموجود في الأدراج", value: formatIqd(dc.cashPosition.expectedDrawersCash) },
+            { label: "النقد بالعهدة في الطريق", value: formatIqd(dc.cashPosition.cashInTransit) },
+            { label: "المتوقع النهائي", value: formatIqd(dc.cashPosition.expectedCashOnHand) },
+            { label: "المعدود الفعلي", value: finalCountUsable ? formatIqd(saved!.countedTreasuryCash) : "غير متاح" },
+            { label: "فرق المطابقة", value: finalCountUsable ? formatIqd(finalVariance!) : "غير متاح" },
+          ],
+        },
+        {
+          title: "الحركات النقدية المباشرة",
+          fields: [
+            { label: "عدد الحركات", value: String(dc.directMovements.count) },
+            { label: "إجمالي المقبوضات", value: formatIqd(dc.directOperations.cashIn) },
+            { label: "إجمالي المدفوعات", value: formatIqd(dc.directOperations.operatingOut) },
+            { label: "الصافي", value: formatIqd(dc.directOperations.netCash) },
+            ...dc.directMovements.details.map((movement) => ({
+              label: `${movement.direction === "IN" ? "داخل" : "خارج"} · ${movement.userName ?? "غير محدد"} · ${new Date(movement.time).toLocaleTimeString("ar-IQ-u-nu-latn")}`,
+              value: `${formatIqd(movement.amount)} — ${movement.description}`,
+            })),
+          ],
+        },
+      ],
       columns: [
         { key: "shiftId", label: "الوردية" },
         { key: "branch", label: "الفرع" },
@@ -515,21 +538,9 @@ export default function DayCloseReport() {
         { key: "handovers", label: "خرج إلى العهدة", align: "left" },
       ],
       rows: printRows,
+      emptyText: "لا ورديات في هذا اليوم؛ بيانات الخزينة والمطابقة موضحة في القسم المستقل أعلاه.",
       summary: [
-        ...(dc.cashPosition
-          ? [
-              { label: "رصيد الخزينة المتوقع", value: formatIqd(dc.cashPosition.expectedTreasuryCash) },
-              { label: "النقد الموجود في الأدراج", value: formatIqd(dc.cashPosition.expectedDrawersCash) },
-              { label: "النقد بالعهدة في الطريق", value: formatIqd(dc.cashPosition.cashInTransit) },
-              { label: "الرقم النهائي المتوقع", value: formatIqd(dc.cashPosition.expectedCashOnHand), large: true, bold: true },
-            ]
-          : []),
-        ...(dc.directOperations.receiptCount > 0
-          ? [
-              { label: "صافي المقبوضات المباشرة (الخزينة)", value: formatIqd(dc.totals.directNetCash), bold: true },
-              { label: "محصلة حركة اليوم (ليست الرصيد النهائي)", value: formatIqd(dc.totals.expected), bold: true },
-            ]
-          : []),
+        { label: "متوقع الأدراج", value: formatIqd(dc.totals.shiftExpected) },
         { label: "معدود الورديات عند إغلاقها", value: formatIqd(dc.totals.counted) },
         { label: "فرق الورديات", value: formatIqd(dc.totals.drift), bold: true },
       ],
@@ -808,9 +819,9 @@ function ReconciliationHero({ dc, daily }: { dc: DC; daily?: RouterOutputs["trea
               </span>
             </div>
             <div className="text-foreground">
-              محصلة حركة اليوم (ليست الرصيد النهائي):{" "}
+              متوقع الأدراج (منفصل عن الخزينة):{" "}
               <strong className="text-money-positive tabular-nums text-sm font-bold" dir="ltr">
-                {fmtAr(dc.totals.expected)} د.ع
+                {fmtAr(dc.totals.shiftExpected)} د.ع
               </strong>
             </div>
           </div>
@@ -924,7 +935,7 @@ function useShiftColumns(dc: DC) {
           </span>
         </DayCloseCellDetailsHover>
       ),
-      footer: () => <span className="text-money-positive">{fmtAr(dc.totals.cashIn)}</span>, meta: { kind: "money" },
+      footer: () => <span className="text-money-positive">{fmtAr(dc.totals.shiftCashIn)}</span>, meta: { kind: "money" },
     },
     {
       id: "operatingOut", header: "خارج تشغيلي", accessorFn: (sh) => Number(sh.operatingOut),
@@ -935,7 +946,7 @@ function useShiftColumns(dc: DC) {
           </span>
         </DayCloseCellDetailsHover>
       ),
-      footer: () => <span className="text-money-negative">{fmtAr(dc.totals.operatingOut)}</span>, meta: { kind: "money" },
+      footer: () => <span className="text-money-negative">{fmtAr(dc.totals.shiftOperatingOut)}</span>, meta: { kind: "money" },
     },
     {
       id: "expected", header: "المتوقَّع", accessorFn: (sh) => Number(sh.expected),
@@ -948,7 +959,7 @@ function useShiftColumns(dc: DC) {
       ),
       footer: () => (
         <span className="text-[var(--sem-info)]" title={dc.totals.openCount > 0 ? `المغلقة: ${fmtAr(dc.totals.closedExpected)} · الجارية: ${fmtAr(dc.totals.openRunningExpected)}` : undefined}>
-          {fmtAr(dc.totals.expected)}
+          {fmtAr(dc.totals.shiftExpected)}
         </span>
       ),
       meta: { kind: "money" },

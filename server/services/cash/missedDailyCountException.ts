@@ -118,6 +118,7 @@ export async function buildMissingDailyCashEvidenceTx(
 ): Promise<MissingDailyCashEvidence> {
   const { start, endExclusive } = utcDayRange(businessDate, businessDate);
   const cashEventAt = cashEventAtSql({
+    executedAt: receipts.executedAt,
     approvedBy: receipts.approvedBy,
     createdBy: receipts.createdBy,
     approvedAt: receipts.approvedAt,
