@@ -3,6 +3,8 @@ import { Loader2 } from "lucide-react";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { lazy, Suspense } from "react";
 
+import { ACTION_LABELS } from "@shared/actionLabels";
+
 // Lazy load the heavy roles
 const StudioManagerDashboard = lazy(() => import("@/components/product-studio/StudioManagerDashboard"));
 const StudioPhotographerWorkspace = lazy(() => import("@/components/product-studio/StudioPhotographerWorkspace"));
@@ -22,7 +24,7 @@ export default function ProductImageStudio() {
       <div className="flex h-screen items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="size-10 animate-spin text-primary" />
-          <p className="text-muted-foreground animate-pulse text-sm">جاري تحميل مساحة العمل الاستوديو...</p>
+          <p className="text-muted-foreground animate-pulse text-sm">{ACTION_LABELS.loading}</p>
         </div>
       </div>
     );

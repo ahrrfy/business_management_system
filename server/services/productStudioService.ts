@@ -6312,4 +6312,390 @@ export async function getStudioProductVariantMatrix(actor: ProductStudioActor, p
   };
 }
 
+/**
+ * استعلام سريع للمنتج وصوره عبر الباركود — متاح لكل من يملك حق قراءة الاستوديو.
+ * لا يشترط وجود حملة تصوير أو مهمة مسبقة لتمكين الوصول المباشر والفوري.
+ */
+export async function quickBarcodeLookup(
+  actor: ProductStudioActor,
+  barcodeInput: string | { barcode: string },
+) {
+  const barcode = typeof barcodeInput === "string" ? barcodeInput : barcodeInput.barcode;
+  const db = requireDb();
+  const resolved = await resolveStudioBarcode(actor, barcode);
+  const productId = Number(resolved.productId);
+  const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
+
+  const productRows = await db
+    .select({
+      id: products.id,
+      name: products.name,
+      description: products.description,
+      brand: products.brand,
+      modelName: products.modelName,
+      categoryName: categories.name,
+      isActive: products.isActive,
+    })
+    .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .where(eq(products.id, productId))
+    .limit(1);
+
+  const product = productRows[0];
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير موجود",
+        why: "لم نتمكن من العثور على سجل المنتج في قاعدة البيانات",
+        doThis: "تأكد من صحة الباركود أو ابحث عن المنتج بالاسم في الاستوديو",
+      }),
+    });
+  }
+
+  // جلب الصور المعتمدة للمنتج
+  const imageRows = await db
+    .select({
+      id: productImages.id,
+      productId: productImages.productId,
+      variantId: productImages.variantId,
+      url: productImages.url,
+      thumbDataUrl: productImages.thumbDataUrl,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      reviewStatus: productImages.reviewStatus,
+      origin: productImages.origin,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(
+      and(
+        eq(productImages.productId, productId),
+        variantId != null ? or(isNull(productImages.variantId), eq(productImages.variantId, variantId)) : sql`1=1`,
+        eq(productImages.reviewStatus, "APPROVED"),
+      ),
+    )
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), desc(productImages.id));
+
+  // جلب أي مهمة نشطة لهذا المنتج
+  const activeJob = (
+    await db
+      .select({
+        id: productImageJobs.id,
+        status: productImageJobs.status,
+        assignedTo: productImageJobs.assignedTo,
+        submittedAt: productImageJobs.submittedAt,
+        processedUrl: productImageJobs.processedUrl,
+      })
+      .from(productImageJobs)
+      .where(
+        and(
+          eq(productImageJobs.productId, productId),
+          inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW"]),
+        ),
+      )
+      .orderBy(desc(productImageJobs.id))
+      .limit(1)
+  )[0];
+
+  const canAutoApprove = isManager(actor);
+
+  return {
+    product: {
+      id: Number(product.id),
+      name: product.name,
+      description: product.description ?? null,
+      brand: product.brand ?? null,
+      modelName: product.modelName ?? null,
+      categoryName: product.categoryName ?? null,
+      variantId,
+      variantName: resolved.variantName ?? null,
+      unitId: resolved.unitId,
+      unitName: resolved.unitName,
+      barcode,
+      isActive: Boolean(product.isActive),
+    },
+    images: imageRows.map((img) => ({
+      id: Number(img.id),
+      url: img.url,
+      thumbDataUrl: img.thumbDataUrl,
+      isPrimary: Boolean(img.isPrimary),
+      sortOrder: Number(img.sortOrder),
+      reviewStatus: img.reviewStatus,
+      origin: img.origin,
+      createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+    })),
+    activeJob: activeJob
+      ? {
+          id: Number(activeJob.id),
+          status: activeJob.status,
+          assignedTo: activeJob.assignedTo ? Number(activeJob.assignedTo) : null,
+          isMine: activeJob.assignedTo ? Number(activeJob.assignedTo) === actor.userId : false,
+          candidateThumb: activeJob.processedUrl ?? null,
+        }
+      : null,
+    canAutoApprove,
+    userRole: actor.role,
+    userId: actor.userId,
+  };
+}
+
+/**
+ * حفظ مباشر لصورة المنتج الممسوح بالباركود ومعالجتها:
+ * - إذا كان المستخدم مديراً (Admin / Manager): اعتماد فوري وتلقائي ونشر الصورة بالكتالوج مباشرة بلا روتين.
+ * - إذا كان مصوراً أو موظفاً آخر: إرسال الصورة للاعتماد الإداري بحالة PENDING_REVIEW.
+ */
+export async function quickSaveBarcodeProductImage(
+  actor: ProductStudioActor,
+  input: {
+    productId: number;
+    variantId?: number | null;
+    barcode?: string;
+    originalDataUrl?: string | null;
+    processedDataUrl: string;
+    thumbnailDataUrl: string;
+    mode: "FLATTEN" | "CUT" | "AI" | "ORIGINAL";
+    setAsPrimary?: boolean;
+    adminOverrideReason?: string | null;
+  },
+) {
+  assertStoragePolicy();
+  const db = requireDb();
+
+  const product = (
+    await db
+      .select({ id: products.id, name: products.name, description: products.description })
+      .from(products)
+      .where(eq(products.id, input.productId))
+      .limit(1)
+  )[0];
+
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير موجود",
+        why: "لم نتمكن من العثور على المنتج المطلوب لتخزين صورته",
+        doThis: "تأكد من صحة معرّف المنتج وأعد المحاولة",
+      }),
+    });
+  }
+
+  // فك ترميز وتخزين الصور
+  const processed = decodeStudioImage(input.processedDataUrl);
+  const thumbnail = decodeStudioThumbnail(input.thumbnailDataUrl, processed);
+  const original = input.originalDataUrl ? decodeStudioImage(input.originalDataUrl) : null;
+
+  const store = getImageStore();
+  const originalKey = original ? objectKeyFor(original.hash, original.mime, studioObjectPrefix("original")) : null;
+  const processedKey = objectKeyFor(processed.hash, processed.mime, studioObjectPrefix("candidate"));
+
+  if (original && originalKey) {
+    await stageStudioObject(originalKey);
+    await store.put(originalKey, original.bytes, original.mime);
+  }
+  await stageStudioObject(processedKey);
+  await store.put(processedKey, processed.bytes, processed.mime);
+
+  const managerActor = isManager(actor);
+
+  if (managerActor) {
+    // -------------------------------------------------------------
+    // مسار المدير: اعتماد فوري ومباشر دون روتين (Direct Manager Approval)
+    // -------------------------------------------------------------
+    return await withStudioTx(async (tx) => {
+      const existingImages = await tx
+        .select({
+          id: productImages.id,
+          isPrimary: productImages.isPrimary,
+          sortOrder: productImages.sortOrder,
+        })
+        .from(productImages)
+        .where(
+          and(
+            eq(productImages.productId, input.productId),
+            input.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, input.variantId),
+            eq(productImages.reviewStatus, "APPROVED"),
+          ),
+        )
+        .for("update");
+
+      const hasPrimary = existingImages.some((img) => img.isPrimary);
+      const isPrimary = input.setAsPrimary === true || !hasPrimary;
+
+      if (isPrimary && hasPrimary) {
+        const prevPrimaryIds = existingImages.filter((img) => img.isPrimary).map((img) => Number(img.id));
+        if (prevPrimaryIds.length > 0) {
+          await tx
+            .update(productImages)
+            .set({ isPrimary: false })
+            .where(inArray(productImages.id, prevPrimaryIds));
+        }
+      }
+
+      const maxSortOrder = existingImages.reduce((max, img) => Math.max(max, Number(img.sortOrder ?? 0)), 0);
+      const nextSortOrder = maxSortOrder + 1;
+
+      const origin =
+        input.mode === "AI"
+          ? "STUDIO_AI"
+          : input.mode === "CUT"
+            ? "STUDIO_PRO"
+            : input.mode === "ORIGINAL"
+              ? "ORIGINAL"
+              : "STUDIO_FREE";
+
+      // إنشاء صف في productImageJobs لتسجيل الأثر المكتمل
+      const [job] = await tx
+        .insert(productImageJobs)
+        .values({
+          productId: input.productId,
+          variantId: input.variantId ?? null,
+          campaignId: null,
+          branchId: actor.branchId ?? null,
+          sourceContentHash: original?.hash ?? processed.hash,
+          originalObjectKey: originalKey ?? processedKey,
+          processedObjectKey: processedKey,
+          originalMime: original?.mime ?? processed.mime,
+          processedMime: processed.mime,
+          processedContentHash: processed.hash,
+          processedBytes: processed.bytes.length,
+          processedWidth: processed.width,
+          processedHeight: processed.height,
+          mode: input.mode === "ORIGINAL" ? "FLATTEN" : input.mode,
+          status: "APPROVED",
+          assignedTo: actor.userId,
+          assignedBy: actor.userId,
+          assignedAt: new Date(),
+          submittedBy: actor.userId,
+          submittedAt: new Date(),
+          reviewedBy: actor.userId,
+          reviewedAt: new Date(),
+          barcodeVerifiedBy: actor.userId,
+          barcodeVerifiedAt: new Date(),
+          activeSlot: null,
+        })
+        .$returningId();
+
+      const jobId = Number(job.id);
+
+      const [inserted] = await tx
+        .insert(productImages)
+        .values({
+          productId: input.productId,
+          variantId: input.variantId ?? null,
+          url: "stored-object",
+          isPrimary,
+          sortOrder: nextSortOrder,
+          objectKey: processedKey,
+          originalKey: originalKey ?? null,
+          contentHash: processed.hash,
+          thumbDataUrl: thumbnail.dataUrl,
+          mime: processed.mime,
+          width: processed.width,
+          height: processed.height,
+          bytes: processed.bytes.length,
+          reviewStatus: "APPROVED",
+          origin,
+          publishedStudioJobId: jobId,
+          migratedAt: new Date(),
+        })
+        .$returningId();
+
+      const imageId = Number(inserted.id);
+      const publishedUrl = await publishedImageUrl(imageId, processed.hash);
+
+      await tx
+        .update(productImages)
+        .set({ url: publishedUrl })
+        .where(eq(productImages.id, imageId));
+
+      await tx
+        .update(productImageJobs)
+        .set({ sourceImageId: imageId })
+        .where(eq(productImageJobs.id, jobId));
+
+      await tx.insert(auditLogs).values(
+        auditValues(actor, "productStudio.quickCapture.managerApproved", imageId, {
+          productId: input.productId,
+          variantId: input.variantId ?? null,
+          jobId,
+          mode: input.mode,
+          isPrimary,
+          barcode: input.barcode?.slice(0, 64) ?? null,
+        }),
+      );
+
+      return {
+        success: true as const,
+        autoApproved: true as const,
+        imageId: imageId as number | null,
+        jobId,
+        url: publishedUrl as string | null,
+        thumbDataUrl: thumbnail.dataUrl,
+        message: "تم حفظ واعتماد ونشر الصورة للمنتج في الكتالوج بنجاح دون الحاجة لاعتماد لاحق.",
+      };
+    });
+  } else {
+    // -------------------------------------------------------------
+    // مسار المصور / الموظف: إرسال للمراجعة والاعتماد من قبل المدير
+    // -------------------------------------------------------------
+    return await withStudioTx(async (tx) => {
+      const mode = input.mode === "ORIGINAL" ? "FLATTEN" : input.mode;
+
+      const [job] = await tx
+        .insert(productImageJobs)
+        .values({
+          productId: input.productId,
+          variantId: input.variantId ?? null,
+          campaignId: null,
+          branchId: actor.branchId ?? null,
+          sourceContentHash: original?.hash ?? processed.hash,
+          originalObjectKey: originalKey ?? processedKey,
+          processedObjectKey: processedKey,
+          originalMime: original?.mime ?? processed.mime,
+          processedMime: processed.mime,
+          processedContentHash: processed.hash,
+          processedBytes: processed.bytes.length,
+          processedWidth: processed.width,
+          processedHeight: processed.height,
+          processedUrl: thumbnail.dataUrl,
+          mode,
+          status: "PENDING_REVIEW",
+          assignedTo: actor.userId,
+          assignedBy: actor.userId,
+          assignedAt: new Date(),
+          submittedBy: actor.userId,
+          submittedAt: new Date(),
+          barcodeVerifiedBy: actor.userId,
+          barcodeVerifiedAt: new Date(),
+          activeSlot: 1,
+        })
+        .$returningId();
+
+      const jobId = Number(job.id);
+
+      await tx.insert(auditLogs).values(
+        auditValues(actor, "productStudio.quickCapture.submittedForReview", jobId, {
+          productId: input.productId,
+          variantId: input.variantId ?? null,
+          mode: input.mode,
+          barcode: input.barcode?.slice(0, 64) ?? null,
+        }),
+      );
+
+      return {
+        success: true as const,
+        autoApproved: false as const,
+        imageId: null as number | null,
+        jobId,
+        url: null as string | null,
+        thumbDataUrl: thumbnail.dataUrl,
+        message: "تم حفظ الصورة ومعالجتها بنجاح، وأُرسلت للمدير بانتظار الاعتماد.",
+      };
+    });
+  }
+}
+
+
 

@@ -1,4 +1,5 @@
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
+import { StudioQuickBarcodeSearch } from "@/components/product-studio/StudioQuickBarcodeSearch";
 import { StudioProductVariantMatrixCard } from "@/components/product-studio/StudioProductVariantMatrixCard";
 import { ProductImageGallery } from "@/components/product-studio/ProductImageGallery";
 import { StudioCampaignImageBatch } from "@/components/product-studio/StudioCampaignImageBatch";
@@ -669,6 +670,14 @@ export default function StudioPhotographerWorkspace({
           </CardContent>
         </Card>
       )}
+
+      {/* مسح وبحث سريع بالباركود وكاميرا الهاتف لأي منتج مباشرة */}
+      <StudioQuickBarcodeSearch
+        offline={offline}
+        onProductHandled={() => {
+          utils.productStudio.invalidate();
+        }}
+      />
 
       {!offline && (
         <StudioCaptureStation

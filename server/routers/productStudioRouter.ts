@@ -2,7 +2,7 @@ import { z } from "zod";
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { barcodeString, barcodeStorageString } from "../lib/schemas";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, quickBarcodeLookup, quickSaveBarcodeProductImage, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
 import { discoverImageGaps, getGapProductIds, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
@@ -373,4 +373,24 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => bulkCancelStudioBacklog(actor(ctx), input)),
+  // البحث السريع بالباركود للمنتجات وصورها — متاح لكل من يملك الوصول للاستوديو بلا حملات
+  quickBarcodeLookup: productStudioReadProcedure
+    .input(z.object({ barcode: barcodeString }))
+    .query(({ ctx, input }) => quickBarcodeLookup(actor(ctx), input.barcode)),
+  // الحفظ الفوري والمعالجة: اعتماد مباشر وتلقائي للمدير بلا روتين، وإرسال للاعتماد لغير المدير
+  quickSaveBarcodeProductImage: productStudioWriteProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        variantId: z.number().int().positive().nullable().optional(),
+        barcode: barcodeString.optional(),
+        originalDataUrl: z.string().max(1_300_000).nullable().optional(),
+        processedDataUrl: z.string().max(1_300_000),
+        thumbnailDataUrl: z.string().max(180_000),
+        mode: z.enum(["FLATTEN", "CUT", "AI", "ORIGINAL"]).default("FLATTEN"),
+        setAsPrimary: z.boolean().optional(),
+        adminOverrideReason,
+      }),
+    )
+    .mutation(({ ctx, input }) => quickSaveBarcodeProductImage(actor(ctx), input)),
 });

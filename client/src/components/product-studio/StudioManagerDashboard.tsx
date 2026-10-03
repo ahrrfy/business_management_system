@@ -13,6 +13,7 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { STUDIO_STORAGE_DISABLED_MESSAGE } from "@/pages/ProductImageStudio";
 import { studioOfflineCapabilities } from "@/lib/productStudio/coldOfflinePolicy";
+import { StudioQuickBarcodeSearch } from "@/components/product-studio/StudioQuickBarcodeSearch";
 import { useState } from "react";
 
 export default function StudioManagerDashboard({
@@ -55,6 +56,14 @@ export default function StudioManagerDashboard({
           <span>{STUDIO_STORAGE_DISABLED_MESSAGE}</span>
         </div>
       )}
+
+      {/* حقل المسح والبحث بالباركود وكاميرا الهاتف للوصول السريع للمنتجات واعتمادها فورياً */}
+      <StudioQuickBarcodeSearch
+        offline={offline}
+        onProductHandled={() => {
+          utils.productStudio.invalidate();
+        }}
+      />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="grid w-full grid-cols-3 lg:w-[600px]">
