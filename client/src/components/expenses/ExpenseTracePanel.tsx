@@ -88,13 +88,21 @@ export function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           id: expense.createdBy,
           at: fmtDateTime(expense.createdAt as unknown as string),
         },
-        executedBy: {
-          name: expense.createdByName,
-          id: expense.createdBy,
-          note: receiptId
-            ? `منفذ إيصال الصرف R#${receiptId}`
-            : "لا يوجد إيصال صرف مرتبط",
-        },
+        executedBy:
+          expense.executedByName || expense.executedBy != null
+            ? {
+                name:
+                  expense.executedByName ??
+                  (expense.executedBy != null
+                    ? `#${expense.executedBy}`
+                    : "غير موثق"),
+                id: expense.executedBy,
+                at: fmtDateTime(expense.executedAt),
+                note: receiptId
+                  ? `منفذ إيصال الصرف R#${receiptId}`
+                  : "منفذ الحركة المالية",
+              }
+            : null,
         beneficiary: { name: expense.payee || "غير محدد" },
         approvedBy: expense.approvedByName
           ? { name: expense.approvedByName, note: expense.approvalStatus }

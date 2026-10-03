@@ -924,6 +924,8 @@ export async function getDayCloseReconciliation(opts: {
   };
   const branchDraftCond = opts.branchId != null ? sql`AND d.branchId = ${opts.branchId}` : sql``;
   const branchInvCond = opts.branchId != null ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  const directMovementExecutor = alias(users, "directMovementExecutor");
+  const directMovementCreator = alias(users, "directMovementCreator");
   const directMovementsRes = await db
     .select({
       id: receipts.id,
@@ -933,11 +935,14 @@ export async function getDayCloseReconciliation(opts: {
       referenceNumber: receipts.referenceNumber,
       description: receipts.description,
       status: receipts.status,
-      userId: receipts.createdBy,
-      userName: users.name,
+      // 0379: هوية منفذ الحركة مستقلة عن منشئ الطلب. سجلات ما قبل الحقل
+      // لا تحمل executedBy، لذا نرجع إلى المنشئ لها وحدها دون طمس التنفيذ الحديث.
+      userId: sql<number | null>`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`,
+      userName: sql<string | null>`COALESCE(${directMovementExecutor.name}, ${directMovementCreator.name})`,
     })
     .from(receipts)
-    .leftJoin(users, eq(users.id, receipts.createdBy))
+    .leftJoin(directMovementExecutor, eq(directMovementExecutor.id, receipts.executedBy))
+    .leftJoin(directMovementCreator, eq(directMovementCreator.id, receipts.createdBy))
     .where(and(...directConds))
     .orderBy(eventAt, receipts.id);
 

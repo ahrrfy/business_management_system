@@ -225,7 +225,11 @@ export const expenseSource: DecisionSource = {
       return decided(input, "REJECTED", defaultMessage("REJECTED", subject));
     }
     await approveExpense(input.id, serviceActor(actor));
-    return decided(input, "EXECUTED", `${subject}: اعتُمد وصُرف من الخزينة وسُجّل قيده.`);
+    return decided(
+      input,
+      "REQUESTED",
+      `${subject}: اعتُمد وينتظر تنفيذ الدفع من درج المنفذ أو خزينة الفرع. لم يتحرك النقد ولم يُسجّل قيد الصرف بعد.`,
+    );
   },
 };
 

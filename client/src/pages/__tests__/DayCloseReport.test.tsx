@@ -109,7 +109,7 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).not.toContain('shiftId: "مباشر"');
     expect(source).not.toContain('shiftId: "نهائي"');
     expect(source).toContain("<DirectOperationsPanel direct={dc.directOperations}");
-    expect(source).toContain("صافي المقبوضات المباشرة (الخزينة)");
+    expect(source).toContain("إجمالي المقبوضات المباشرة");
     expect(source).toContain("متوقع الأدراج (منفصل عن الخزينة)");
     expect(source).toContain("الرقم النهائي المتوقع");
     expect(source).toContain("fmtAr(dc.totals.shiftCashIn)");
@@ -119,6 +119,25 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(service).toContain("operatingOut: toDbMoney(tOpOut)");
     expect(service).toContain("expected: toDbMoney(tExpected)");
     expect(service).not.toContain("tExpected.plus(directNetCash)");
+  });
+
+  it("يصدر الورديات والخزينة في ورقتين مستقلتين ويطبع ملخص الخزينة حتى بلا ورديات", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain('import { exportSheets } from "@/lib/export"');
+    expect(source).toContain('sheetName: "مطابقة الورديات"');
+    expect(source).toContain('sheetName: "الخزينة والمطابقة"');
+    expect(source).toContain('recordType: "ملخص المطابقة النهائية"');
+    expect(source).toContain("...dc.directMovements.details.map");
+    expect(source).toContain('title: "الموقف النقدي والخزينة"');
+    expect(source).toContain('title: "الحركات النقدية المباشرة"');
+    expect(source).toContain('label: "المتوقع النهائي"');
+    expect(source).toContain('label: "المعدود الفعلي"');
+    expect(source).toContain('label: "فرق المطابقة"');
+    expect(source.match(/\.\.\.dc\.directMovements\.details\.map/g)).toHaveLength(2);
+    expect(source).toContain('emptyText: "لا ورديات في هذا اليوم؛ بيانات الخزينة والمطابقة موضحة في القسم المستقل أعلاه."');
+    expect(source).not.toContain('shiftId: "مباشر"');
+    expect(source).not.toContain('shiftId: "نهائي"');
   });
 
   it("يفصل موضع النقد النهائي عن حجم حركة اليوم ولا يجمع المغلق مع الخزينة مرتين", () => {

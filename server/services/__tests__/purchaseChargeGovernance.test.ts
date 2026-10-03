@@ -219,7 +219,20 @@ describe("حوكمة مصروف الشراء — فصل المهام على قا
       description: "تمويل اختباري لدرج منفذ الشحن",
       createdBy: maker.userId,
     });
-    const { requestId } = await createChargeAndRequestPost(maker, "CASH");
+    const { requestId, purchaseChargeId } = await createChargeAndRequestPost(maker, "CASH");
+    const historicalCreatedAt = new Date("2025-01-01T08:00:00.000Z");
+    await db()
+      .update(schema.purchaseCharges)
+      .set({ createdAt: historicalCreatedAt })
+      .where(eq(schema.purchaseCharges.id, purchaseChargeId));
+    const [backdatedCharge] = await db()
+      .select({ version: schema.purchaseCharges.version })
+      .from(schema.purchaseCharges)
+      .where(eq(schema.purchaseCharges.id, purchaseChargeId));
+    await db()
+      .update(schema.purchaseChargeControlRequests)
+      .set({ baseChargeVersion: Number(backdatedCharge.version) })
+      .where(eq(schema.purchaseChargeControlRequests.id, requestId));
 
     await decidePurchaseChargeControl(
       {
@@ -243,6 +256,8 @@ describe("حوكمة مصروف الشراء — فصل المهام على قا
       executedBy: maker.userId,
     });
     expect(receipt.executedAt).not.toBeNull();
+    expect(receipt.executedAt!.getTime()).toBeGreaterThan(historicalCreatedAt.getTime());
+    expect(receipt.approvedAt?.getTime()).toBe(receipt.executedAt!.getTime());
     const [entry] = await db()
       .select()
       .from(schema.accountingEntries)
@@ -264,6 +279,92 @@ describe("حوكمة مصروف الشراء — فصل المهام على قا
       createdByName: "طالب",
     });
     expect(reviewerShift?.expensesCash).toBe("0.00");
+  });
+
+  it("عكس المصروف النقدي يُدخل النقد في وردية المراجع المنفّذ لا وردية منشئ المصروف", async () => {
+    await db().insert(schema.shifts).values([
+      {
+        id: 701,
+        userId: maker.userId,
+        branchId: 1,
+        openingBalance: "0.00",
+        status: "OPEN",
+        shiftType: "RETAIL",
+        openGuard: "7:1:RETAIL",
+      },
+      {
+        id: 801,
+        userId: reviewer.userId,
+        branchId: 1,
+        openingBalance: "0.00",
+        status: "OPEN",
+        shiftType: "RETAIL",
+        openGuard: "8:1:RETAIL",
+      },
+    ]);
+    await db().insert(schema.receipts).values({
+      branchId: 1,
+      shiftId: 701,
+      cashBucket: "DRAWER",
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      description: "تمويل اختباري لدرج منفذ الشحن",
+      createdBy: maker.userId,
+    });
+    const { requestId, purchaseChargeId } = await createChargeAndRequestPost(maker, "CASH");
+
+    await decidePurchaseChargeControl(
+      {
+        requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE",
+        reviewReason: "اعتماد دفع مصروف الشحن النقدي",
+      },
+      reviewer,
+    );
+    const reverseRequest = await requestPurchaseChargeControl(
+      {
+        purchaseChargeId,
+        expectedChargeVersion: 2,
+        requestKey: `pc-gov-reverse:${randomUUID()}`,
+        kind: "REVERSE",
+        evidenceReference: `reverse-ev-${randomUUID()}`,
+        reason: "استرداد رسوم الشحن نقداً",
+      },
+      maker,
+    );
+    await decidePurchaseChargeControl(
+      {
+        requestId: reverseRequest.requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE",
+        reviewReason: "استلمت مبلغ الاسترداد نقداً",
+      },
+      reviewer,
+    );
+
+    const [reverseReceipt] = await db()
+      .select()
+      .from(schema.receipts)
+      .where(eq(schema.receipts.direction, "IN"))
+      .orderBy(sql`${schema.receipts.id} DESC`)
+      .limit(1);
+    expect(reverseReceipt).toMatchObject({
+      shiftId: 801,
+      cashBucket: "DRAWER",
+      createdBy: reviewer.userId,
+      approvedBy: reviewer.userId,
+      executedBy: reviewer.userId,
+    });
+    expect(reverseReceipt.executedAt).not.toBeNull();
+    const [reverseEntry] = await db()
+      .select()
+      .from(schema.accountingEntries)
+      .where(eq(schema.accountingEntries.receiptId, Number(reverseReceipt.id)));
+    expect(Number(reverseEntry.createdBy)).toBe(reviewer.userId);
   });
 
   it("يعتمد المالكُ طلب ترحيلٍ أنشأه هو بنفسه فيُرحَّل المصروف فعلياً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {

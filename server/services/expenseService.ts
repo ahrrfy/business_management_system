@@ -1095,6 +1095,96 @@ async function lockExpenseExecutorShift(
   return Number(shift.id);
 }
 
+async function completedExpenseExecutionReplay(
+  tx: Tx,
+  exp: typeof expenses.$inferSelect,
+  receipt: typeof receipts.$inferSelect | null,
+  source: ExpenseExecutionSource,
+  actor: Actor,
+) {
+  const expectedCashBucket =
+    exp.paymentMethod !== "CASH"
+      ? null
+      : source === "OWN_DRAWER"
+        ? "DRAWER"
+        : source === "TREASURY"
+          ? "TREASURY"
+          : null;
+  const sourceMatches =
+    exp.paymentMethod === "CASH"
+      ? expectedCashBucket != null
+      : source === "NON_CASH";
+  const drawerMatches =
+    expectedCashBucket !== "DRAWER" ||
+    (exp.shiftId != null && Number(exp.createdBy) === actor.userId);
+  const treasuryMatches =
+    expectedCashBucket !== "TREASURY" || exp.shiftId == null;
+  const nonCashMatches =
+    exp.paymentMethod === "CASH" ||
+    (exp.cashBucket == null && exp.shiftId == null);
+  const recordMatches =
+    exp.status === "ACTIVE" &&
+    exp.receiptId != null &&
+    receipt != null &&
+    Number(receipt.id) === Number(exp.receiptId) &&
+    receipt.status === "COMPLETED" &&
+    receipt.approvalStatus === "APPROVED" &&
+    receipt.approvedBy != null &&
+    receipt.approvedAt != null &&
+    receipt.executedBy != null &&
+    receipt.executedAt != null &&
+    Number(receipt.executedBy) === actor.userId &&
+    Number(receipt.createdBy) === Number(exp.createdBy) &&
+    Number(receipt.branchId) === Number(exp.branchId) &&
+    receipt.direction === "OUT" &&
+    receipt.paymentMethod === exp.paymentMethod &&
+    money(receipt.amount).eq(money(exp.amount)) &&
+    receipt.cashBucket === exp.cashBucket &&
+    (receipt.shiftId == null ? null : Number(receipt.shiftId)) ===
+      (exp.shiftId == null ? null : Number(exp.shiftId)) &&
+    exp.cashBucket === expectedCashBucket &&
+    drawerMatches &&
+    treasuryMatches &&
+    nonCashMatches;
+
+  if (!sourceMatches || !recordMatches) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "أُوقف تكرار تنفيذ المصروف لحماية الرصيد",
+        why: "مصدر الدفع أو منفذ العملية لا يطابق سجل التنفيذ المكتمل، أو أن السجل المالي غير متماسك",
+        doThis: "حدّث الطلب واستخدم مصدر الدفع والمنفذ الأصليين، أو راجع سلامة السند والقيد",
+      }),
+    });
+  }
+
+  const postedEntries = await tx
+    .select({ id: accountingEntries.id })
+    .from(accountingEntries)
+    .where(eq(accountingEntries.receiptId, Number(exp.receiptId)))
+    .limit(2);
+  if (postedEntries.length !== 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "أُوقف تكرار تنفيذ المصروف لحماية القيد",
+        why: "سجل التنفيذ مكتمل لكن قيده المحاسبي مفقود أو مكرر",
+        doThis: "راجع سلامة السند والقيد قبل أي محاولة تنفيذ أخرى",
+      }),
+    });
+  }
+
+  return {
+    expenseId: Number(exp.id),
+    receiptId: Number(exp.receiptId),
+    status: "ACTIVE" as const,
+    cashBucket: exp.cashBucket,
+    shiftId: exp.shiftId == null ? null : Number(exp.shiftId),
+    executedBy: Number(receipt.executedBy),
+    idempotent: true,
+  };
+}
+
 /** تنفيذ مصروف سبق اعتماده؛ هنا فقط تتحرك الأموال ويُسجّل المنفذ الحقيقي. */
 export async function executeApprovedExpense(
   expenseId: number,
@@ -1108,6 +1198,8 @@ export async function executeApprovedExpense(
           branchId: expenses.branchId,
           createdBy: expenses.createdBy,
           paymentMethod: expenses.paymentMethod,
+          receiptId: expenses.receiptId,
+          status: expenses.status,
         })
         .from(expenses)
         .where(eq(expenses.id, expenseId))
@@ -1135,6 +1227,54 @@ export async function executeApprovedExpense(
           doThis: "نفّذ طلب فرعك أو اطلب من مسؤول الفرع المعني إتمام الدفع",
         }),
       });
+    }
+
+    // إعادةُ المحاولة لسجلّ مكتمل لا تحتاج ورديةً ما تزال مفتوحة: الوردية قد
+    // أُغلقت بعد التنفيذ الصحيح. نثبت أولاً أن المصدر والمنفذ والسند والقيد هي
+    // نفسها، ثم نعيد النتيجة بلا لمس أي رصيد أو كتابة أثرٍ ثانٍ.
+    if (hint.status === "ACTIVE") {
+      const completedExpense = (
+        await tx
+          .select()
+          .from(expenses)
+          .where(eq(expenses.id, expenseId))
+          .for("update")
+          .limit(1)
+      )[0];
+      const completedReceipt =
+        completedExpense?.receiptId == null
+          ? null
+          : (
+              await tx
+                .select()
+                .from(receipts)
+                .where(eq(receipts.id, Number(completedExpense.receiptId)))
+                .for("update")
+                .limit(1)
+            )[0] ?? null;
+      if (
+        !completedExpense ||
+        Number(completedExpense.branchId) !== Number(hint.branchId) ||
+        Number(completedExpense.createdBy) !== Number(hint.createdBy) ||
+        completedExpense.paymentMethod !== hint.paymentMethod ||
+        Number(completedExpense.receiptId) !== Number(hint.receiptId)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "أُوقف تكرار تنفيذ المصروف لحماية الرصيد",
+            why: "تغيّرت بيانات الطلب المكتمل أثناء التحقق من إعادة المحاولة",
+            doThis: "حدّث الطلب وراجع سجل التنفيذ قبل إعادة المحاولة",
+          }),
+        });
+      }
+      return completedExpenseExecutionReplay(
+        tx,
+        completedExpense,
+        completedReceipt,
+        source,
+        actor,
+      );
     }
 
     let shiftId: number | null = null;
@@ -1235,12 +1375,7 @@ export async function executeApprovedExpense(
       receipt.executedBy != null &&
       receipt.executedAt != null
     ) {
-      return {
-        expenseId,
-        receiptId: Number(exp.receiptId),
-        status: "ACTIVE" as const,
-        idempotent: true,
-      };
+      return completedExpenseExecutionReplay(tx, exp, receipt, source, actor);
     }
     if (
       exp.status !== "PENDING_APPROVAL" ||

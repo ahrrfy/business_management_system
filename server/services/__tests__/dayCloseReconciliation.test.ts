@@ -1512,6 +1512,48 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(Number(res.totals.opening) + Number(res.totals.cashIn) - Number(res.totals.operatingOut)).toBe(Number(res.totals.expected));
   });
 
+  it("يعرض منفذ الحركة المباشرة ويعود إلى المنشئ للسجلات التاريخية فقط", async () => {
+    await db().insert(s.receipts).values([
+      {
+        branchId: 1,
+        direction: "OUT",
+        amount: "75000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        voucherNumber: "PV-1-EXECUTOR-AUDIT",
+        description: "حركة نفذها الكاشير بعد إنشاء المدير",
+        createdBy: MANAGER1,
+        executedBy: CASHIER1,
+        executedAt: new Date(`${DATE}T12:00:00.000Z`),
+      },
+      {
+        branchId: 1,
+        direction: "OUT",
+        amount: "25000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        voucherNumber: "PV-1-LEGACY-AUDIT",
+        description: "حركة تاريخية بلا منفذ مستقل",
+        createdBy: CASHIER2,
+      },
+    ]);
+
+    const res = await report(1);
+    const executed = res.directMovements.details.find(
+      (movement) => movement.description === "حركة نفذها الكاشير بعد إنشاء المدير",
+    );
+    const legacy = res.directMovements.details.find(
+      (movement) => movement.description === "حركة تاريخية بلا منفذ مستقل",
+    );
+
+    expect(executed?.userName).toBe("كاشير١");
+    expect(legacy?.userName).toBe("كاشير٢");
+  });
+
   it("R2: التحويلات الداخلية وتمويل الخزينة (CH- / CD- / SF- / CT- / TF-) لا تُحسب كإيراد خارجي مباشر", async () => {
     // حركة تسليم داخلي في الخزينة CH-
     await db().insert(s.receipts).values({

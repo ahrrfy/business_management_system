@@ -513,6 +513,54 @@ describe("دورة اعتماد المصروفات", () => {
     ).toHaveLength(1);
   });
 
+  it("إعادة تنفيذ مصروف الدرج المكتمل تنجح بعد إغلاق الوردية ولا تقبل مصدر دفع مختلفاً", async () => {
+    await openCreatorDrawer("750000.00");
+    const request = await pendingExpense();
+    await approveExpense(request.expenseId, ownerA);
+
+    const executed = await executeApprovedExpense(
+      request.expenseId,
+      "OWN_DRAWER",
+      creator,
+    );
+    expect(executed).toMatchObject({
+      status: "ACTIVE",
+      cashBucket: "DRAWER",
+      shiftId: 1,
+      executedBy: creator.userId,
+      idempotent: false,
+    });
+
+    await db()
+      .update(s.shifts)
+      .set({ status: "CLOSED", closedAt: new Date(), openGuard: null })
+      .where(eq(s.shifts.id, 1));
+
+    await expect(
+      executeApprovedExpense(request.expenseId, "OWN_DRAWER", creator),
+    ).resolves.toMatchObject({
+      expenseId: request.expenseId,
+      receiptId: Number(request.receiptId),
+      status: "ACTIVE",
+      idempotent: true,
+    });
+    await expect(
+      executeApprovedExpense(request.expenseId, "TREASURY", creator),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, Number(request.receiptId))),
+    ).toHaveLength(1);
+    expect(
+      await db()
+        .select()
+        .from(s.auditLogs)
+        .where(eq(s.auditLogs.action, "expense.execute")),
+    ).toHaveLength(1);
+  });
+
   it("راية المالك وحدها تفتح endpoint الاعتماد ولو كان قالب الدور user", async () => {
     await fundTreasury("750000.00");
     const request = await pendingExpense();
