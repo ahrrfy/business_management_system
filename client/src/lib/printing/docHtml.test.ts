@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { wrapA4Doc, wrapMultiA4Doc } from "./docHtml";
+import { wrapA4Doc, wrapMultiA4Doc, pageHeader } from "./docHtml";
+import { buildSalesInvoiceV2Html, buildPurchaseInvoiceV2Html } from "./printTemplatesV2";
 
 describe("wrapA4Doc", () => {
   it("يدعم التقرير الأفقي مع بقاء قواعد الجداول متعددة الصفحات", () => {
@@ -28,6 +29,130 @@ describe("wrapMultiA4Doc", () => {
     expect(html).toContain("page-break-after:always !important");
     expect(html).toContain("حفظ كملف PDF");
     expect(html).toContain("طباعة المستند");
+  });
+});
+
+describe("pageHeader - باركود رقم المستند", () => {
+  it("يعرض الباركود بجانب الرقم افتراضياً عند تمرير قيمة نصية", () => {
+    const html = pageHeader({
+      title: "فاتورة مبيعات",
+      fields: [
+        { label: "رقم الفاتورة", value: "22333" },
+        { label: "التاريخ", value: "03/10/2026" },
+      ],
+      barcode: "INV-22333",
+    });
+
+    expect(html).toContain("رقم الفاتورة");
+    expect(html).toContain("22333");
+    expect(html).toContain("<svg");
+    expect(html).toContain('title="INV-22333"');
+    expect(html).toContain("align-items:center");
+  });
+
+  it("يعرض الباركود تحت الرقم مباشرة عند تحديد placement='below'", () => {
+    const html = pageHeader({
+      title: "فاتورة مبيعات",
+      fields: [
+        { label: "رقم الفاتورة", value: "22333" },
+        { label: "التاريخ", value: "03/10/2026" },
+      ],
+      barcode: {
+        value: "INV-22333",
+        placement: "below",
+        caption: "INV-22333",
+      },
+    });
+
+    expect(html).toContain("رقم الفاتورة");
+    expect(html).toContain("22333");
+    expect(html).toContain("<svg");
+    expect(html).toContain("flex-direction:column;align-items:flex-end");
+    expect(html).toContain("INV-22333");
+  });
+
+  it("يحافظ على الترويسة الكلاسيكية دون باركود عند غيابه", () => {
+    const html = pageHeader({
+      title: "فاتورة مبيعات",
+      fields: [
+        { label: "رقم الفاتورة", value: "22333" },
+        { label: "التاريخ", value: "03/10/2026" },
+      ],
+    });
+
+    expect(html).toContain("رقم الفاتورة");
+    expect(html).toContain("22333");
+    expect(html).not.toContain("<svg");
+  });
+});
+
+describe("buildSalesInvoiceV2Html & buildPurchaseInvoiceV2Html", () => {
+  const dummySalesInvoice = {
+    invoiceNumber: "22333",
+    invoiceDate: "2026-10-03",
+    customerName: "عميل تجريبي",
+    subtotal: 50000,
+    total: 50000,
+    items: [
+      {
+        productName: "دفتر ملاحظات",
+        quantity: 2,
+        unitPrice: 25000,
+        total: 50000,
+      },
+    ],
+  };
+
+  it("يولّد باركود الفاتورة تلقائياً ببادئة INV في فاتورة المبيعات الرسمية", () => {
+    const html = buildSalesInvoiceV2Html(dummySalesInvoice);
+
+    expect(html).toContain("فاتورة مبيعات");
+    expect(html).toContain("22333");
+    expect(html).toContain('title="INV-22333"');
+    expect(html).toContain("<svg");
+  });
+
+  it("يدعم خيار موضع الباركود تحته (below) في فاتورة المبيعات", () => {
+    const html = buildSalesInvoiceV2Html({
+      ...dummySalesInvoice,
+      barcodePlacement: "below",
+    });
+
+    expect(html).toContain('title="INV-22333"');
+    expect(html).toContain("flex-direction:column;align-items:flex-end");
+  });
+
+  it("يتيح إلغاء الباركود صراحةً عند تمرير barcode: false", () => {
+    const html = buildSalesInvoiceV2Html({
+      ...dummySalesInvoice,
+      barcode: false,
+    });
+
+    // الترويسة لا تحوي باركود رقم الفاتورة (QR التحقق أسفل الصفحة منفصل)
+    expect(html).not.toContain('title="INV-22333"');
+  });
+
+  it("يولّد باركود الفاتورة تلقائياً ببادئة PO في فاتورة المشتريات الرسمية", () => {
+    const html = buildPurchaseInvoiceV2Html({
+      invoiceNumber: "5544",
+      invoiceDate: "2026-10-03",
+      supplierName: "مورّد القرطاسية",
+      subtotal: 100000,
+      total: 100000,
+      items: [
+        {
+          productName: "أقلام حبر",
+          quantity: 10,
+          unitPrice: 10000,
+          total: 100000,
+        },
+      ],
+    });
+
+    expect(html).toContain("فاتورة مشتريات");
+    expect(html).toContain("5544");
+    expect(html).toContain('title="PO-5544"');
+    expect(html).toContain("<svg");
   });
 });
 

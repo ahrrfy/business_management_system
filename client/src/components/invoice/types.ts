@@ -128,13 +128,13 @@ export type InvoiceAction =
   | { type: "REPLACE_STATE"; state: InvoiceState }
   | { type: "SET_FIELD"; field: keyof Omit<InvoiceState, "items">; value: InvoiceState[keyof Omit<InvoiceState, "items">] }
   | { type: "SET_TIER_PRICES"; tier: PriceTier; pricesByUnitId: Record<number, ResolvedLinePrice> }
-  | { type: "SET_ENTITY_PRICES"; id: number | null; pricesByUnitId: Record<number, ResolvedLinePrice> }
+  | { type: "SET_ENTITY_PRICES"; id: number | null; tier?: PriceTier; pricesByUnitId: Record<number, ResolvedLinePrice> }
   | {
       type: "SET_STOCK_SNAPSHOTS";
       snapshotsByUnitId: Record<number, { stockBase: number; stockBranchId: number; reservedBase: number; availableBase: number; isService: boolean; allowBackorder: boolean }>;
     }
   | { type: "MARK_STOCK_STALE" }
-  | { type: "SET_ENTITY"; id: number | null }
+  | { type: "SET_ENTITY"; id: number | null; tier?: PriceTier }
   | { type: "ADD_ITEM"; item: InvoiceLine }
   | { type: "ADD_ITEMS"; items: InvoiceLine[] }
   | { type: "UPDATE_ITEM"; idx: number; field: keyof InvoiceLine; value: InvoiceLine[keyof InvoiceLine] }

@@ -39,6 +39,7 @@ export default defineConfig({
       "client/src/lib/printing/shiftRaster.test.ts",
       "client/src/pages/__tests__/shiftDefaultOpenFilter.test.ts",
       "client/src/lib/printing/printTemplates.test.ts",
+      "client/src/lib/printing/docHtml.test.ts",
       "client/src/lib/printing/printTransport.test.ts",
       "client/src/lib/printing/receptionReceiptMeta.test.ts",
       "client/src/lib/printing/labelDesign.test.ts",

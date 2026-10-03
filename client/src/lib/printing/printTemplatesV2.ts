@@ -10,6 +10,7 @@
  */
 import { BRAND as B, esc, fmt, fmtC, openPrintWindow } from './brand';
 import { fmtQty } from '@shared/quantityFormat';
+import { docBarcode } from '@shared/documentNumber';
 import { fmtDate as formatDate } from '../date';
 import {
   wrapA4Doc,
@@ -26,6 +27,7 @@ import {
   signaturesBlock,
   type CompanySettings,
   type DocTableCol,
+  type DocHeaderBarcode,
 } from './docHtml';
 import { formatArabicMoneyWords } from './tafqit';
 
@@ -74,6 +76,36 @@ function balanceDirSupplier(balance: number): string {
   return balance >= 0 ? 'علينا' : 'لنا';
 }
 
+/**
+ * حلّ وتجهيز كائن باركود المستند للترويسة الرسمية.
+ * إن لم يُلغَ صراحةً (false/null)، يُنشأ تلقائياً كرمز آلة قياسي ببادئة النوع (مثل INV-XXXXX).
+ */
+function resolveDocBarcode(
+  prefix: 'INV' | 'PO' | 'QUO' | 'WO',
+  docNum: string,
+  barcode?: DocHeaderBarcode | string | boolean | null,
+  placement?: 'beside' | 'below',
+): DocHeaderBarcode | null {
+  if (barcode === false || barcode === null) return null;
+  const defaultPlacement = placement ?? 'beside';
+  if (typeof barcode === 'object' && barcode !== undefined) {
+    return {
+      ...barcode,
+      placement: placement ?? barcode.placement ?? defaultPlacement,
+    };
+  }
+  if (typeof barcode === 'string') {
+    return {
+      value: barcode,
+      placement: defaultPlacement,
+    };
+  }
+  return {
+    value: docBarcode(prefix, docNum),
+    placement: defaultPlacement,
+  };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // ١. فاتورة مبيعات — A4
 // ═════════════════════════════════════════════════════════════════════════════
@@ -81,6 +113,10 @@ function balanceDirSupplier(balance: number): string {
 export interface SalesInvoiceV2Data {
   invoiceNumber: string;
   invoiceDate?: string | Date | null;
+  /** باركود رقم الفاتورة للطباعة الرسمية (اختياري، إن غاب يُنشأ تلقائياً من رقم الفاتورة كرمز آلة INV-XXXXX) */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
   /** حالة الدفع كنص عربي: «مدفوعة»، «مدفوعة جزئياً»، «آجلة»، … (مع لون الشارة الملائم). */
   statusLabel?: string | null;
   statusColor?: string | null;
@@ -135,7 +171,7 @@ export interface SalesInvoiceV2Data {
   settings?: CompanySettings;
 }
 
-export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
+export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
   const date = fmtDate(d.invoiceDate);
   const badge = d.statusLabel ? { label: d.statusLabel, color: d.statusColor ?? B.orange } : null;
 
@@ -146,6 +182,7 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
       { label: 'التاريخ', value: date },
     ],
     badge,
+    barcode: resolveDocBarcode('INV', d.invoiceNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
   const cards = infoCards([
@@ -261,7 +298,11 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
   });
 
   const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
-  return openPrintWindow(wrapA4Doc(`فاتورة ${d.invoiceNumber}`, body));
+  return wrapA4Doc(`فاتورة ${d.invoiceNumber}`, body);
+}
+
+export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
+  return openPrintWindow(buildSalesInvoiceV2Html(d));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -271,6 +312,10 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
 export interface PurchaseInvoiceV2Data {
   invoiceNumber: string;
   invoiceDate?: string | Date | null;
+  /** باركود رقم الفاتورة للطباعة الرسمية (اختياري، إن غاب يُنشأ تلقائياً من رقم الفاتورة كرمز آلة PO-XXXXX) */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
   statusLabel?: string | null;
   statusColor?: string | null;
 
@@ -307,7 +352,7 @@ export interface PurchaseInvoiceV2Data {
   settings?: CompanySettings;
 }
 
-export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
+export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
   const date = fmtDate(d.invoiceDate);
   const badge = d.statusLabel ? { label: d.statusLabel, color: d.statusColor ?? B.orange } : null;
 
@@ -318,6 +363,7 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
       { label: 'التاريخ', value: date },
     ],
     badge,
+    barcode: resolveDocBarcode('PO', d.invoiceNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
   const cards = infoCards([
@@ -395,7 +441,11 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
   });
 
   const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${tafqit}${sig}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.invoiceNumber}` })}`;
-  return openPrintWindow(wrapA4Doc(`فاتورة مشتريات ${d.invoiceNumber}`, body));
+  return wrapA4Doc(`فاتورة مشتريات ${d.invoiceNumber}`, body);
+}
+
+export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
+  return openPrintWindow(buildPurchaseInvoiceV2Html(d));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -533,6 +583,10 @@ export interface QuotationV2Data {
   quoteNumber: string;
   quoteDate?: string | Date | null;
   validUntil?: string | null;
+  /** باركود رقم العرض للطباعة الرسمية (اختياري، إن غاب يُنشأ كرمز آلة QUO-XXXXX) */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
 
   customerName?: string | null;
   contactPerson?: string | null;
@@ -570,6 +624,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
       { label: 'تاريخ الإصدار', value: fmtDate(d.quoteDate) },
     ],
     badge: d.validUntil ? { label: `صالح حتى ${d.validUntil}`, color: B.orange } : null,
+    barcode: resolveDocBarcode('QUO', d.quoteNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
   const cards = infoCards([
@@ -644,6 +699,10 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
 
 export interface WorkOrderV2Data {
   woNumber: string;
+  /** باركود رقم الطلب للطباعة الرسمية (اختياري، إن غاب يُنشأ كرمز آلة WO-XXXXX) */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
   /** تاريخ إصدار الطلب (اليوم الذي استُلم فيه العمل). يظهر «تاريخ الإصدار» في الترويسة. */
   woDate?: string | Date | null;
   dueDate?: string | null;
@@ -680,6 +739,7 @@ export function printWorkOrderV2(d: WorkOrderV2Data): boolean {
       ...(d.dueDate ? [{ label: 'تاريخ التسليم', value: d.dueDate }] : []),
     ],
     badge: d.statusLabel ? { label: d.statusLabel, color: d.statusColor ?? B.orange } : null,
+    barcode: resolveDocBarcode('WO', d.woNumber, d.barcode, d.barcodePlacement),
   }, d.settings);
 
   const cards = infoCards([
