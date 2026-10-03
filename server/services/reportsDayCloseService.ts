@@ -284,8 +284,40 @@ export async function getDayCloseReconciliation(opts: {
     approvedAt: receipts.approvedAt,
     createdAt: receipts.createdAt,
   });
+  const openingFloatReceipt = alias(receipts, "dayCloseOpeningFloatReceipt");
+  const openingFloatEventAt = cashEventAtSql({
+    approvedBy: openingFloatReceipt.approvedBy,
+    createdBy: openingFloatReceipt.createdBy,
+    approvedAt: openingFloatReceipt.approvedAt,
+    createdAt: openingFloatReceipt.createdAt,
+  });
+  const openingFloatJoin = and(
+    eq(openingFloatReceipt.branchId, shifts.branchId),
+    eq(
+      openingFloatReceipt.referenceNumber,
+      sql`CONCAT('SF-', ${shifts.branchId}, '-', ${shifts.id})`,
+    ),
+  );
+  const fundedShiftVisibleAtCutoff = or(
+    sql`${shifts.openingBalance} = 0`,
+    // ورديات ما قبل عقد SF التاريخي لا تملك إيصالاً مرتبطاً؛ يبقى openedAt دليلها
+    // الوحيد. أمّا إذا وُجد SF فلا تدخل العهدة قبل لحظة تحقّقه المالية.
+    isNull(openingFloatReceipt.id),
+    and(
+      eq(openingFloatReceipt.direction, "OUT"),
+      eq(openingFloatReceipt.cashBucket, "TREASURY"),
+      eq(openingFloatReceipt.paymentMethod, "CASH"),
+      eq(openingFloatReceipt.approvalStatus, "APPROVED"),
+      inArray(openingFloatReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+      lt(openingFloatEventAt, endExclusive),
+    ),
+  );
 
-  const shiftConds = [gte(shifts.openedAt, start), lt(shifts.openedAt, endExclusive)];
+  const shiftConds = [
+    gte(shifts.openedAt, start),
+    lt(shifts.openedAt, endExclusive),
+    fundedShiftVisibleAtCutoff,
+  ];
   if (opts.branchId != null) shiftConds.push(eq(shifts.branchId, opts.branchId));
 
   const shiftRows = await db
@@ -307,6 +339,7 @@ export async function getDayCloseReconciliation(opts: {
     .from(shifts)
     .leftJoin(branches, eq(branches.id, shifts.branchId))
     .leftJoin(users, eq(users.id, shifts.userId))
+    .leftJoin(openingFloatReceipt, openingFloatJoin)
     .where(and(...shiftConds))
     .orderBy(shifts.branchId, shifts.openedAt, shifts.id);
 
@@ -892,6 +925,21 @@ export async function getDayCloseReconciliation(opts: {
   const cashPosition = withholdCashPosition
     ? null
     : await (async () => {
+        if (opts.branchId == null) {
+          const [branchlessCash] = await db
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(receipts)
+            .where(and(
+              isNull(receipts.branchId),
+              eq(receipts.paymentMethod, "CASH"),
+              eq(receipts.approvalStatus, "APPROVED"),
+              inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+              lt(eventAt, endExclusive),
+            ));
+          // لا يمكن إسناد هذا النقد إلى أي فرع، ولذلك لا يجوز إسقاطه من موقف المنشأة.
+          if (Number(branchlessCash?.count ?? 0) > 0) return null;
+        }
+
         let scopedBranches: Array<{ id: number }>;
         if (opts.branchId != null) {
           scopedBranches = [{ id: opts.branchId }];
@@ -907,7 +955,9 @@ export async function getDayCloseReconciliation(opts: {
             db.selectDistinct({ id: shifts.branchId }).from(shifts).where(lt(shifts.openedAt, endExclusive)),
           ]);
           const ids = new Set<number>(lines.map((line) => line.branchId));
-          for (const row of [...treasuryBranches, ...shiftBranches]) ids.add(Number(row.id));
+          for (const row of [...treasuryBranches, ...shiftBranches]) {
+            if (row.id != null) ids.add(Number(row.id));
+          }
           scopedBranches = Array.from(ids, (id) => ({ id }));
         }
 
@@ -1042,9 +1092,11 @@ export async function getDayCloseReconciliation(opts: {
               })
               .from(shifts)
               .leftJoin(cutoffDrawerReceipts, eq(cutoffDrawerReceipts.shiftId, shifts.id))
+              .leftJoin(openingFloatReceipt, openingFloatJoin)
               .where(and(
                 inArray(shifts.branchId, scopedBranchIds),
                 lt(shifts.openedAt, endExclusive),
+                fundedShiftVisibleAtCutoff,
               ));
         const expectedDrawersCash = money(cutoffPosition?.expectedDrawersCash ?? 0);
         const openAtCutoffCount = Number(cutoffPosition?.openAtCutoffCount ?? 0);
@@ -1062,10 +1114,12 @@ export async function getDayCloseReconciliation(opts: {
                   THEN 1 ELSE 0 END), 0)`,
               })
               .from(shifts)
+              .leftJoin(openingFloatReceipt, openingFloatJoin)
               .where(and(
                 inArray(shifts.branchId, scopedBranchIds),
                 gte(shifts.openedAt, start),
                 lt(shifts.openedAt, endExclusive),
+                fundedShiftVisibleAtCutoff,
               ));
 
         // أي نقد مادي غير منسوب لخزينة أو لوردية لا يدخل المعادلة، ولذلك لا يجوز

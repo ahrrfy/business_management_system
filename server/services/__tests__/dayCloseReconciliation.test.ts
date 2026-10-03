@@ -402,6 +402,22 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     });
   });
 
+  it("يحجب موقف كل الفروع إذا وُجد نقد بلا فرع بدلاً من إسقاطه من المعادلة", async () => {
+    await db().insert(s.receipts).values({
+      branchId: null,
+      direction: "IN",
+      amount: "7777.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "BRANCHLESS-CASH",
+      createdBy: ADMIN,
+    });
+
+    expect((await report()).cashPosition).toBeNull();
+  });
+
   it("يحفظ معادلة الموقع أثناء الوردية: خزينة + درج مفتوح + عهدة بالطريق", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const invoiceId = await seedInvoice(1);
@@ -650,6 +666,23 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       cashInTransit: "0.00",
       expectedCashOnHand: "1000000.00",
       isReadyForFinalCount: false,
+    });
+  });
+
+  it("لا يضيف عهدة افتتاح وردية قبل تحقق إيصال SF المرتبط عند حد اليوم", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const afterCutoff = new Date(new Date(`${DATE}T12:00:00.000Z`).getTime() + 86_400_000);
+    await db().update(s.receipts).set({ createdAt: afterCutoff, approvedAt: afterCutoff })
+      .where(eq(s.receipts.referenceNumber, `SF-1-${shiftId}`));
+
+    const res = await report(1);
+    expect(res.shifts).toEqual([]);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: true,
     });
   });
 

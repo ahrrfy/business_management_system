@@ -37,8 +37,11 @@ import {
 } from "./idempotency";
 import { extractInsertId } from "../lib/insertId";
 import { todayUtcDate, utcDayRange } from "./businessDay";
-import { lockCashSourceForUpdate } from "./cash/cashAvailability";
-import { cashEventAtSql } from "./cash/cashEventAt";
+import {
+  lockCashSourceForUpdate,
+  MATERIALIZED_RECEIPT_STATUS_SQL,
+} from "./cash/cashAvailability";
+import { cashEventAtSql, receiptCashEventAtSql } from "./cash/cashEventAt";
 import {
   validateCashBreakdown,
   type CashBreakdown,
@@ -52,6 +55,9 @@ export type DailyCashBlockerCode =
   | "OPEN_SHIFT"
   | "UNMATCHED_SHIFT"
   | "PENDING_CUSTODY"
+  | "CASH_IN_TRANSIT"
+  | "RESIDUAL_DRAWER_CASH"
+  | "UNSCOPED_CASH"
   | "STALE_EVIDENCE"
   | "TREASURY_VARIANCE"
   | "SEPARATION_OF_DUTIES";
@@ -64,6 +70,9 @@ interface Evidence {
   unmatchedShiftCount: number;
   pendingCustodyCount: number;
   custodyVarianceCount: number;
+  interbranchTransitCount: number;
+  residualDrawerCount: number;
+  unscopedCashCount: number;
   treasuryReceiptCount: number;
   treasuryLastReceiptId: number;
 }
@@ -356,6 +365,78 @@ export async function buildDailyCashEvidenceTx(
             return Number(rows[0]?.count ?? 0);
           });
 
+  const countFromResult = (result: unknown) => {
+    const rows = (result as [Array<{ count: number | string }>])?.[0] ?? [];
+    return Number(rows[0]?.count ?? 0);
+  };
+  const interbranchTransitCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM cashTransfers t
+    INNER JOIN receipts sent ON sent.id = t.sentReceiptId
+    LEFT JOIN receipts received ON received.id = t.receivedReceiptId
+    LEFT JOIN receipts reversal ON reversal.id = t.reversalReceiptId
+    WHERE t.fromBranchId = ${branchId}
+      AND sent.direction = 'OUT'
+      AND sent.paymentMethod = 'CASH'
+      AND sent.cashBucket = 'TREASURY'
+      AND sent.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+      AND sent.receiptApprovalStatus = 'APPROVED'
+      AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
+      AND NOT (
+        received.id IS NOT NULL
+        AND received.direction = 'IN'
+        AND received.paymentMethod = 'CASH'
+        AND received.cashBucket = 'TREASURY'
+        AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND received.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+      )
+      AND NOT (
+        reversal.id IS NOT NULL
+        AND reversal.direction = 'IN'
+        AND reversal.paymentMethod = 'CASH'
+        AND reversal.cashBucket = 'TREASURY'
+        AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND reversal.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
+      )
+  `));
+  const residualDrawerCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM shifts s
+    LEFT JOIN (
+      SELECT r.shiftId, SUM(CASE
+        WHEN r.direction = 'OUT' AND UPPER(TRIM(r.referenceNumber)) LIKE 'CH-%'
+          THEN r.amount ELSE 0 END) AS handoversCash
+      FROM receipts r
+      WHERE r.branchId = ${branchId}
+        AND r.cashBucket = 'DRAWER'
+        AND r.paymentMethod = 'CASH'
+        AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND r.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("r")} < ${endExclusive}
+      GROUP BY r.shiftId
+    ) drawer ON drawer.shiftId = s.id
+    WHERE s.branchId = ${branchId}
+      AND s.openedAt < ${endExclusive}
+      AND s.closedAt IS NOT NULL
+      AND s.closedAt < ${endExclusive}
+      AND (
+        s.countedCash IS NULL
+        OR s.countedCash - COALESCE(drawer.handoversCash, 0) <> 0
+      )
+  `));
+  const unscopedCashCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM receipts r
+    WHERE r.branchId = ${branchId}
+      AND r.paymentMethod = 'CASH'
+      AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+      AND r.receiptApprovalStatus = 'APPROVED'
+      AND ${receiptCashEventAtSql("r")} < ${endExclusive}
+      AND (r.cashBucket IS NULL OR (r.cashBucket = 'DRAWER' AND r.shiftId IS NULL))
+  `));
+
   const canonical = JSON.stringify({
     branchId,
     businessDate,
@@ -380,6 +461,11 @@ export async function buildDailyCashEvidenceTx(
       pendingLastId,
       pendingDigest,
     ],
+    finalPositionBlockers: [
+      interbranchTransitCount,
+      residualDrawerCount,
+      unscopedCashCount,
+    ],
   });
 
   return {
@@ -390,6 +476,9 @@ export async function buildDailyCashEvidenceTx(
     unmatchedShiftCount,
     pendingCustodyCount,
     custodyVarianceCount,
+    interbranchTransitCount,
+    residualDrawerCount,
+    unscopedCashCount,
     treasuryReceiptCount,
     treasuryLastReceiptId,
   };
@@ -556,6 +645,9 @@ const DAILY_CASH_BLOCKER_REMEDY: Record<DailyCashBlockerCode, string> = {
   OPEN_SHIFT: "أغلق الورديات المفتوحة من تبويب الورديات في الخزينة",
   UNMATCHED_SHIFT: "طابِق كل وردية مغلقة حتى يتساوى متوقَّعها مع معدودها",
   PENDING_CUSTODY: "اعدد عهد النقد واقبلها من طابور عهد الاستلام في الخزينة",
+  CASH_IN_TRANSIT: "استلم أو ألغِ تحويلات النقد بين الفروع قبل الجرد النهائي",
+  RESIDUAL_DRAWER_CASH: "صفِّ النقد المتبقي في الأدراج المغلقة إلى الخزينة",
+  UNSCOPED_CASH: "عالِج حركات النقد غير المنسوبة من تقرير معالجة النقد",
   STALE_EVIDENCE: "أعد جرد الخزينة على الحركات الحالية",
   TREASURY_VARIANCE: "افتح قضية فرق نقد واعتمد سند التصحيح بمبلغ الفرق",
   SEPARATION_OF_DUTIES: "اطلب الاعتماد من مستخدمٍ غير من عدّ الخزينة",
@@ -596,6 +688,27 @@ function blockersFor(evidence: Evidence) {
       code: "PENDING_CUSTODY",
       message: "توجد عهد نقد لم تُعدّ وتُقبل بعد",
       count: evidence.pendingCustodyCount,
+    });
+  }
+  if (evidence.interbranchTransitCount > 0) {
+    blockers.push({
+      code: "CASH_IN_TRANSIT",
+      message: "توجد تحويلات نقد بين الفروع ما تزال بالطريق",
+      count: evidence.interbranchTransitCount,
+    });
+  }
+  if (evidence.residualDrawerCount > 0) {
+    blockers.push({
+      code: "RESIDUAL_DRAWER_CASH",
+      message: "يوجد نقد متبقٍ في أدراج مغلقة",
+      count: evidence.residualDrawerCount,
+    });
+  }
+  if (evidence.unscopedCashCount > 0) {
+    blockers.push({
+      code: "UNSCOPED_CASH",
+      message: "توجد حركات نقد مادي غير منسوبة إلى خزينة أو وردية",
+      count: evidence.unscopedCashCount,
     });
   }
   return blockers;

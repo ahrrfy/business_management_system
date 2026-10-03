@@ -49,6 +49,7 @@ beforeEach(async () => {
     "employeeAdvances",
     "cashDailyReconciliations",
     "cashCustodyCounts",
+    "cashTransfers",
     "accountingEntries",
     "receipts",
     "shifts",
@@ -56,7 +57,10 @@ beforeEach(async () => {
     "branches",
   ]) await d.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
-  await d.insert(s.branches).values({ id: 1, name: "Main", code: "MAIN", type: "MAIN" });
+  await d.insert(s.branches).values([
+    { id: 1, name: "Main", code: "MAIN", type: "MAIN" },
+    { id: 2, name: "Second", code: "SECOND", type: "SALES" },
+  ]);
   await d.insert(s.users).values([
     { id: MANAGER, openId: "daily-manager", name: "Counter", role: "manager", loginMethod: "local", branchId: 1 },
     { id: CHECKER, openId: "daily-checker", name: "Checker", role: "manager", loginMethod: "local", branchId: 1 },
@@ -197,6 +201,133 @@ describe("daily physical treasury reconciliation", () => {
     expect(status.evidence).not.toHaveProperty("pendingCustodyCash");
     expect(status.currentEvidence).not.toHaveProperty("pendingCustodyCash");
     expect(JSON.stringify(status)).not.toContain("87500.00");
+  });
+
+  it("blocks counting and closing while interbranch cash is in transit", async () => {
+    const cleanCount = await recordDailyTreasuryCount(
+      {
+        branchId: 1,
+        businessDate: DATE,
+        countedCash: "100000.00",
+        countedBreakdown: { "50000": 2 },
+        expectedVersion: 0,
+        clientRequestId: "position-blocker-clean-count",
+      },
+      actor(MANAGER),
+      auditCtx(MANAGER),
+    );
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-DAILY-BLOCKER",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const sentReceipt = (await db().select({ id: s.receipts.id }).from(s.receipts)
+      .where(sql`${s.receipts.referenceNumber} = 'CT-DAILY-BLOCKER'`).limit(1))[0]!;
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-DAILY-BLOCKER",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "10000.00",
+      status: "IN_TRANSIT",
+      sentBy: MANAGER,
+      sentReceiptId: Number(sentReceipt.id),
+      sentAt: TEST_NOW,
+    });
+
+    const blocked = await getDailyCashReconciliation({ branchId: 1, businessDate: DATE }, actor(MANAGER));
+    expect(blocked.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+    expect(blocked.actions.canCount).toBe(false);
+
+    await expect(recordDailyTreasuryCount(
+      {
+        branchId: 1,
+        businessDate: DATE,
+        countedCash: "90000.00",
+        countedBreakdown: { "50000": 1, "10000": 4 },
+        expectedVersion: Number(cleanCount.version),
+        clientRequestId: "position-blocker-recount",
+      },
+      actor(MANAGER),
+      auditCtx(MANAGER),
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // نحاكي شهادة قديمة سُجّلت قبل إضافة العائق كي نثبت أن الإقفال نفسه محمي أيضاً.
+    await db().update(s.cashDailyReconciliations).set({
+      expectedTreasuryCash: blocked.evidence.expectedTreasuryCash,
+      countedTreasuryCash: blocked.evidence.expectedTreasuryCash,
+      variance: "0.00",
+      evidenceHash: blocked.evidence.evidenceHash,
+      status: "MATCHED",
+    }).where(sql`${s.cashDailyReconciliations.id} = ${Number(cleanCount.id)}`);
+    await expect(closeDailyCashReconciliation(
+      {
+        reconciliationId: Number(cleanCount.id),
+        expectedVersion: Number(cleanCount.version),
+        clientRequestId: "position-blocker-close",
+      },
+      actor(CHECKER),
+      auditCtx(CHECKER),
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("blocks the treasury certificate while a closed drawer retains cash", async () => {
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "25000.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "25000.00",
+      expectedCash: "25000.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+
+    const blocked = await getDailyCashReconciliation({ branchId: 1, businessDate: DATE }, actor(MANAGER));
+    expect(blocked.blockers.map((item) => item.code)).toContain("RESIDUAL_DRAWER_CASH");
+    expect(blocked.actions.canCount).toBe(false);
+    await expect(recordDailyTreasuryCount(
+      {
+        branchId: 1,
+        businessDate: DATE,
+        countedCash: "100000.00",
+        countedBreakdown: { "50000": 2 },
+        expectedVersion: 0,
+        clientRequestId: "residual-drawer-blocker-count",
+      },
+      actor(MANAGER),
+      auditCtx(MANAGER),
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("blocks the treasury certificate while materialized cash is unscoped", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: null,
+      direction: "IN",
+      amount: "5000.00",
+      paymentMethod: "CASH",
+      cashBucket: null,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "DAILY-UNSCOPED-CASH",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+    });
+
+    const blocked = await getDailyCashReconciliation({ branchId: 1, businessDate: DATE }, actor(MANAGER));
+    expect(blocked.blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
+    expect(blocked.actions.canCount).toBe(false);
   });
 
   it("reopens with optimistic concurrency and never lets an old replay reopen a newer certificate", async () => {
