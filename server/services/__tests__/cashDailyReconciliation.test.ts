@@ -35,6 +35,19 @@ function auditCtx(userId: number) {
   };
 }
 
+async function insertCashPosting(input: {
+  entryType: "CASH_TRANSFER_OUT" | "CASH_TRANSFER_IN";
+  branchId: number;
+  receiptId: number;
+  amount: string;
+  dedupeKey: string;
+}) {
+  await db().insert(s.accountingEntries).values({
+    ...input,
+    entryDate: DATE,
+  });
+}
+
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(TEST_NOW);
@@ -312,6 +325,65 @@ describe("daily physical treasury reconciliation", () => {
     expect(status.actions.canCount).toBe(false);
   });
 
+  it("keeps completed drawer custody blocked without the linked treasury acceptance posting", async () => {
+    const shiftResult = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "0.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+    const shiftId = Number((shiftResult as any)?.[0]?.insertId ?? (shiftResult as any)?.insertId);
+    const sourceResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-MISSING-ACCEPTANCE-POSTING",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const sourceReceiptId = Number((sourceResult as any)?.[0]?.insertId ?? (sourceResult as any)?.insertId);
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-MISSING-ACCEPTANCE-POSTING",
+      createdBy: CHECKER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("PENDING_CUSTODY");
+    expect(status.actions.canCount).toBe(false);
+  });
+
   it("does not classify ordinary vouchers with CH references as custody", async () => {
     const inserted = await db().insert(s.shifts).values({
       branchId: 1,
@@ -394,6 +466,13 @@ describe("daily physical treasury reconciliation", () => {
     });
     const sentReceipt = (await db().select({ id: s.receipts.id }).from(s.receipts)
       .where(sql`${s.receipts.referenceNumber} = 'CT-DAILY-BLOCKER'`).limit(1))[0]!;
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: Number(sentReceipt.id),
+      amount: "10000.00",
+      dedupeKey: "CT_OUT:CT-DAILY-BLOCKER",
+    });
     await db().insert(s.cashTransfers).values({
       transferNumber: "CT-DAILY-BLOCKER",
       fromBranchId: 1,
@@ -508,6 +587,13 @@ describe("daily physical treasury reconciliation", () => {
     });
     const sentReceiptId = Number((sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId);
     const receivedReceiptId = Number((receivedResult as any)?.[0]?.insertId ?? (receivedResult as any)?.insertId);
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sentReceiptId,
+      amount: "10000.00",
+      dedupeKey: "CT_OUT:CT-MALFORMED-RECEIVED-LINK",
+    });
     await db().insert(s.cashTransfers).values({
       transferNumber: "CT-MALFORMED-RECEIVED-LINK",
       fromBranchId: 1,
@@ -528,6 +614,58 @@ describe("daily physical treasury reconciliation", () => {
     );
     expect(status.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
     expect(status.actions.canCount).toBe(false);
+
+    const destinationStatus = await getDailyCashReconciliation(
+      { branchId: 2, businessDate: DATE },
+      { userId: CHECKER, branchId: 2, role: "manager" },
+    );
+    expect(destinationStatus.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+    expect(destinationStatus.actions.canCount).toBe(false);
+  });
+
+  it("keeps a received transfer blocked without canonical terminal postings", async () => {
+    const transferNumber = "CT-MISSING-TERMINAL-POSTINGS";
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "10000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: transferNumber, createdBy: MANAGER, createdAt: TEST_NOW, approvedAt: TEST_NOW,
+    });
+    const receivedResult = await db().insert(s.receipts).values({
+      branchId: 2, direction: "IN", amount: "10000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: transferNumber, createdBy: CHECKER, createdAt: TEST_NOW, approvedAt: TEST_NOW,
+    });
+    const sentReceiptId = Number((sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId);
+    const receivedReceiptId = Number((receivedResult as any)?.[0]?.insertId ?? (receivedResult as any)?.insertId);
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sentReceiptId,
+      amount: "10000.00",
+      dedupeKey: `CT_OUT:${transferNumber}`,
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber,
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "10000.00",
+      status: "RECEIVED",
+      sentBy: MANAGER,
+      receivedBy: CHECKER,
+      sentReceiptId,
+      receivedReceiptId,
+      sentAt: TEST_NOW,
+      receivedAt: TEST_NOW,
+    });
+
+    for (const branchId of [1, 2]) {
+      const status = await getDailyCashReconciliation(
+        { branchId, businessDate: DATE },
+        { userId: branchId === 1 ? MANAGER : CHECKER, branchId, role: "manager" },
+      );
+      expect(status.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+      expect(status.actions.canCount).toBe(false);
+    }
   });
 
   it("keeps a transfer blocked when both receipt and reversal are linked", async () => {
@@ -863,6 +1001,24 @@ describe("daily physical treasury reconciliation", () => {
       .where(sql`${s.shifts.id} = ${shiftId}`);
     await db().update(s.receipts).set({ amount: "24999.00" })
       .where(sql`${s.receipts.referenceNumber} = ${`SF-1-${shiftId}`}`);
+
+    const blocked = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(blocked.blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
+    expect(blocked.actions.canCount).toBe(false);
+  });
+
+  it("blocks a modern positive opening shift when its SF posting is absent", async () => {
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "25000.00",
+      status: "OPEN",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+    });
 
     const blocked = await getDailyCashReconciliation(
       { branchId: 1, businessDate: DATE },

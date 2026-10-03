@@ -41,6 +41,7 @@ import {
   MATERIALIZED_RECEIPT_STATUS_SQL,
 } from "./cash/cashAvailability";
 import { cashEventAtSql, receiptCashEventAtSql } from "./cash/cashEventAt";
+import { SHIFT_FLOAT_CONTRACT_CUTOFF } from "./cash/shiftFloatContract";
 import {
   validateCashBreakdown,
   type CashBreakdown,
@@ -425,6 +426,24 @@ export async function buildDailyCashEvidenceTx(
     AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
     AND received.receiptApprovalStatus = 'APPROVED'
     AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+    AND EXISTS (
+      SELECT 1
+      FROM accountingEntries receivedEntry
+      WHERE receivedEntry.receiptId = received.id
+        AND receivedEntry.entryType = 'CASH_TRANSFER_IN'
+        AND receivedEntry.dedupeKey = CONCAT('CT_IN:', t.transferNumber)
+        AND receivedEntry.branchId = t.toBranchId
+        AND receivedEntry.amount = t.amount
+    )
+    AND EXISTS (
+      SELECT 1
+      FROM accountingEntries clearingEntry
+      WHERE clearingEntry.receiptId = sent.id
+        AND clearingEntry.entryType = 'CASH_TRANSFER_OUT'
+        AND clearingEntry.dedupeKey = CONCAT('CT_CLEAR_OUT:', t.transferNumber)
+        AND clearingEntry.branchId = t.fromBranchId
+        AND clearingEntry.amount = t.amount
+    )
   `;
   const validReversalTransferAtCutoff = sql`
     reversal.id IS NOT NULL
@@ -437,6 +456,15 @@ export async function buildDailyCashEvidenceTx(
     AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
     AND reversal.receiptApprovalStatus = 'APPROVED'
     AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
+    AND EXISTS (
+      SELECT 1
+      FROM accountingEntries reversalEntry
+      WHERE reversalEntry.receiptId = reversal.id
+        AND reversalEntry.entryType = 'CASH_TRANSFER_IN'
+        AND reversalEntry.dedupeKey = CONCAT('CT_OUT_REV:', t.transferNumber)
+        AND reversalEntry.branchId = t.fromBranchId
+        AND reversalEntry.amount = t.amount
+    )
   `;
   const interbranchTransitCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
@@ -444,8 +472,14 @@ export async function buildDailyCashEvidenceTx(
     LEFT JOIN receipts sent ON sent.id = t.sentReceiptId
     LEFT JOIN receipts received ON received.id = t.receivedReceiptId
     LEFT JOIN receipts reversal ON reversal.id = t.reversalReceiptId
-    WHERE t.fromBranchId = ${branchId}
-      AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
+    WHERE (
+        (t.fromBranchId = ${branchId} AND ${receiptCashEventAtSql("sent")} < ${endExclusive})
+        OR (
+          t.toBranchId = ${branchId}
+          AND t.receivedReceiptId IS NOT NULL
+          AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+        )
+      )
       AND NOT COALESCE((
         sent.id IS NOT NULL
         AND sent.branchId = t.fromBranchId
@@ -457,6 +491,15 @@ export async function buildDailyCashEvidenceTx(
         AND sent.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND sent.receiptApprovalStatus = 'APPROVED'
         AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
+        AND EXISTS (
+          SELECT 1
+          FROM accountingEntries sentEntry
+          WHERE sentEntry.receiptId = sent.id
+            AND sentEntry.entryType = 'CASH_TRANSFER_OUT'
+            AND sentEntry.dedupeKey = CONCAT('CT_OUT:', t.transferNumber)
+            AND sentEntry.branchId = t.fromBranchId
+            AND sentEntry.amount = t.amount
+        )
         AND (${validReceivedTransferAtCutoff} OR ${validReversalTransferAtCutoff})
         AND NOT (${validReceivedTransferAtCutoff} AND ${validReversalTransferAtCutoff})
         AND (
@@ -493,6 +536,37 @@ export async function buildDailyCashEvidenceTx(
         AND (
           target.receiptStatus = 'PENDING'
           OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        )
+        AND (
+          target.receiptStatus = 'PENDING'
+          OR ${receiptCashEventAtSql("target")} >= ${endExclusive}
+          OR EXISTS (
+            SELECT 1
+            FROM accountingEntries sourceHandoverEntry
+            WHERE sourceHandoverEntry.receiptId = source.id
+              AND sourceHandoverEntry.entryType = 'CASH_HANDOVER'
+              AND sourceHandoverEntry.branchId = source.branchId
+              AND sourceHandoverEntry.amount = source.amount
+          )
+          OR (
+            EXISTS (
+              SELECT 1
+              FROM accountingEntries sourceTransferEntry
+              WHERE sourceTransferEntry.receiptId = source.id
+                AND sourceTransferEntry.entryType = 'CASH_TRANSFER_OUT'
+                AND sourceTransferEntry.branchId = source.branchId
+                AND sourceTransferEntry.amount = source.amount
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM accountingEntries targetEntry
+              WHERE targetEntry.receiptId = target.id
+                AND targetEntry.entryType = 'CASH_TRANSFER_IN'
+                AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
+                AND targetEntry.branchId = target.branchId
+                AND targetEntry.amount = target.amount
+            )
+          )
         )
       WHERE source.branchId = ${branchId}
         AND source.direction = 'OUT'
@@ -544,7 +618,8 @@ export async function buildDailyCashEvidenceTx(
         SELECT
           receiptId,
           MAX(branchId) AS branchId,
-          MAX(amount) AS amount
+          MAX(amount) AS amount,
+          MAX(entryType) AS entryType
         FROM accountingEntries
         WHERE entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
         GROUP BY receiptId
@@ -575,7 +650,25 @@ export async function buildDailyCashEvidenceTx(
         )
       GROUP BY target.id
       HAVING COUNT(DISTINCT CASE
-        WHEN sourceEvidence.receiptId IS NOT NULL THEN source.id
+        WHEN sourceEvidence.receiptId IS NOT NULL
+          AND (
+            target.receiptStatus = 'PENDING'
+            OR ${receiptCashEventAtSql("target")} >= ${endExclusive}
+            OR sourceEvidence.entryType = 'CASH_HANDOVER'
+            OR (
+              sourceEvidence.entryType = 'CASH_TRANSFER_OUT'
+              AND EXISTS (
+                SELECT 1
+                FROM accountingEntries targetEntry
+                WHERE targetEntry.receiptId = target.id
+                  AND targetEntry.entryType = 'CASH_TRANSFER_IN'
+                  AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
+                  AND targetEntry.branchId = target.branchId
+                  AND targetEntry.amount = target.amount
+              )
+            )
+          )
+        THEN source.id
         ELSE NULL
       END) <> 1
     ) invalidCustodyContracts
@@ -660,7 +753,7 @@ export async function buildDailyCashEvidenceTx(
   const [invalidOpeningFloat] = await tx
     .select({ count: sql<number>`COUNT(*)` })
     .from(shifts)
-    .innerJoin(
+    .leftJoin(
       accountingEntries,
       and(
         eq(accountingEntries.entryType, "SHIFT_FLOAT_OUT"),
@@ -671,7 +764,17 @@ export async function buildDailyCashEvidenceTx(
     .where(and(
       eq(shifts.branchId, branchId),
       lt(shifts.openedAt, endExclusive),
-      sql`NOT COALESCE((${openingFloatLinkContract!}), FALSE)`,
+      sql`${shifts.openingBalance} > 0`,
+      or(
+        and(
+          gte(shifts.openedAt, SHIFT_FLOAT_CONTRACT_CUTOFF),
+          sql`${accountingEntries.id} IS NULL`,
+        ),
+        and(
+          sql`${accountingEntries.id} IS NOT NULL`,
+          sql`NOT COALESCE((${openingFloatLinkContract!}), FALSE)`,
+        ),
+      ),
     ));
   const invalidOpeningFloatCount = Number(invalidOpeningFloat?.count ?? 0);
 

@@ -45,6 +45,7 @@ import { getDb } from "../db";
 import { utcDayRange } from "./businessDay";
 import { MATERIALIZED_RECEIPT_STATUSES, materializedDrawerCashConditions } from "./cash/cashAvailability";
 import { cashEventAtSql } from "./cash/cashEventAt";
+import { SHIFT_FLOAT_CONTRACT_CUTOFF } from "./cash/shiftFloatContract";
 import {
   isPotentialCashCustodyRecipient,
   type CashCustodyVisibilityActor,
@@ -331,8 +332,11 @@ export async function getDayCloseReconciliation(opts: {
   const fundedShiftVisibleAtCutoff = or(
     sql`${shifts.openingBalance} = 0`,
     // ورديات ما قبل عقد SF التاريخي لا تملك إيصالاً مرتبطاً؛ يبقى openedAt دليلها
-    // الوحيد. أمّا إذا وُجد SF فلا تدخل العهدة قبل لحظة تحقّقه المالية.
-    isNull(openingFloatEntry.id),
+    // الوحيد. الغياب بعد بدء العقد فسادٌ مالي، لا مسار توافقٍ تاريخي.
+    and(
+      lt(shifts.openedAt, SHIFT_FLOAT_CONTRACT_CUTOFF),
+      isNull(openingFloatEntry.id),
+    ),
     and(
       openingFloatLinkContract,
       lt(openingFloatEventAt, endExclusive),
@@ -1031,12 +1035,22 @@ export async function getDayCloseReconciliation(opts: {
           : await db
               .select({ count: sql<number>`COUNT(*)` })
               .from(shifts)
-              .innerJoin(openingFloatEntry, openingFloatEntryJoin)
+              .leftJoin(openingFloatEntry, openingFloatEntryJoin)
               .leftJoin(openingFloatReceipt, openingFloatReceiptJoin)
               .where(and(
                 inArray(shifts.branchId, scopedBranchIds),
                 lt(shifts.openedAt, endExclusive),
-                sql`NOT COALESCE((${openingFloatLinkContract!}), FALSE)`,
+                sql`${shifts.openingBalance} > 0`,
+                or(
+                  and(
+                    gte(shifts.openedAt, SHIFT_FLOAT_CONTRACT_CUTOFF),
+                    isNull(openingFloatEntry.id),
+                  ),
+                  and(
+                    isNotNull(openingFloatEntry.id),
+                    sql`NOT COALESCE((${openingFloatLinkContract!}), FALSE)`,
+                  ),
+                ),
               ));
         if (Number(invalidOpeningFloat?.count ?? 0) > 0) return null;
 
@@ -1071,6 +1085,49 @@ export async function getDayCloseReconciliation(opts: {
           approvedAt: custodyTargetReceipt.approvedAt,
           createdAt: custodyTargetReceipt.createdAt,
         });
+        const custodyTargetPostingContract = or(
+          eq(custodyTargetReceipt.status, "PENDING"),
+          and(
+            inArray(custodyTargetReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            gte(custodyTargetEventAt, endExclusive),
+          ),
+          exists(
+            db.select({ id: accountingEntries.id })
+              .from(accountingEntries)
+              .where(and(
+                eq(accountingEntries.receiptId, custodySourceReceipt.id),
+                eq(accountingEntries.entryType, "CASH_HANDOVER"),
+                eq(accountingEntries.branchId, custodySourceReceipt.branchId),
+                eq(accountingEntries.amount, custodySourceReceipt.amount),
+              )),
+          ),
+          and(
+            exists(
+              db.select({ id: accountingEntries.id })
+                .from(accountingEntries)
+                .where(and(
+                  eq(accountingEntries.receiptId, custodySourceReceipt.id),
+                  eq(accountingEntries.entryType, "CASH_TRANSFER_OUT"),
+                  eq(accountingEntries.branchId, custodySourceReceipt.branchId),
+                  eq(accountingEntries.amount, custodySourceReceipt.amount),
+                )),
+            ),
+            exists(
+              db.select({ id: accountingEntries.id })
+                .from(accountingEntries)
+                .where(and(
+                  eq(accountingEntries.receiptId, custodyTargetReceipt.id),
+                  eq(accountingEntries.entryType, "CASH_TRANSFER_IN"),
+                  eq(
+                    accountingEntries.dedupeKey,
+                    sql`CONCAT('CASH_CUSTODY_ACCEPT:', ${custodyTargetReceipt.id})`,
+                  ),
+                  eq(accountingEntries.branchId, custodyTargetReceipt.branchId),
+                  eq(accountingEntries.amount, custodyTargetReceipt.amount),
+                )),
+            ),
+          ),
+        );
         const sourceScope = scopedBranchIds.length > 0
           ? [inArray(custodySourceReceipt.branchId, scopedBranchIds)]
           : [];
@@ -1089,6 +1146,7 @@ export async function getDayCloseReconciliation(opts: {
           isNull(custodyTargetReceipt.invoiceId),
           isNull(custodyTargetReceipt.workOrderId),
           isNull(custodyTargetReceipt.reservationId),
+          custodyTargetPostingContract,
         );
         const matchingCustodySource = and(
           eq(custodySourceReceipt.branchId, custodyTargetReceipt.branchId),
@@ -1100,6 +1158,7 @@ export async function getDayCloseReconciliation(opts: {
           eq(custodySourceReceipt.approvalStatus, "APPROVED"),
           eq(custodySourceReceipt.status, "COMPLETED"),
           lt(custodySourceEventAt, endExclusive),
+          custodyTargetPostingContract,
         );
         const custodyInTransitTarget = or(
           eq(custodyTargetReceipt.status, "PENDING"),
@@ -1283,6 +1342,20 @@ export async function getDayCloseReconciliation(opts: {
           eq(sentReceipt.amount, cashTransfers.amount),
           eq(sentReceipt.approvalStatus, "APPROVED"),
           inArray(sentReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+          exists(
+            db.select({ id: accountingEntries.id })
+              .from(accountingEntries)
+              .where(and(
+                eq(accountingEntries.receiptId, sentReceipt.id),
+                eq(accountingEntries.entryType, "CASH_TRANSFER_OUT"),
+                eq(
+                  accountingEntries.dedupeKey,
+                  sql`CONCAT('CT_OUT:', ${cashTransfers.transferNumber})`,
+                ),
+                eq(accountingEntries.branchId, cashTransfers.fromBranchId),
+                eq(accountingEntries.amount, cashTransfers.amount),
+              )),
+          ),
         );
         const receivedReceiptContract = and(
           eq(receivedReceipt.branchId, cashTransfers.toBranchId),
@@ -1293,6 +1366,34 @@ export async function getDayCloseReconciliation(opts: {
           eq(receivedReceipt.amount, cashTransfers.amount),
           eq(receivedReceipt.approvalStatus, "APPROVED"),
           inArray(receivedReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+          exists(
+            db.select({ id: accountingEntries.id })
+              .from(accountingEntries)
+              .where(and(
+                eq(accountingEntries.receiptId, receivedReceipt.id),
+                eq(accountingEntries.entryType, "CASH_TRANSFER_IN"),
+                eq(
+                  accountingEntries.dedupeKey,
+                  sql`CONCAT('CT_IN:', ${cashTransfers.transferNumber})`,
+                ),
+                eq(accountingEntries.branchId, cashTransfers.toBranchId),
+                eq(accountingEntries.amount, cashTransfers.amount),
+              )),
+          ),
+          exists(
+            db.select({ id: accountingEntries.id })
+              .from(accountingEntries)
+              .where(and(
+                eq(accountingEntries.receiptId, sentReceipt.id),
+                eq(accountingEntries.entryType, "CASH_TRANSFER_OUT"),
+                eq(
+                  accountingEntries.dedupeKey,
+                  sql`CONCAT('CT_CLEAR_OUT:', ${cashTransfers.transferNumber})`,
+                ),
+                eq(accountingEntries.branchId, cashTransfers.fromBranchId),
+                eq(accountingEntries.amount, cashTransfers.amount),
+              )),
+          ),
         );
         const reversalReceiptContract = and(
           eq(reversalReceipt.branchId, cashTransfers.fromBranchId),
@@ -1303,10 +1404,32 @@ export async function getDayCloseReconciliation(opts: {
           eq(reversalReceipt.amount, cashTransfers.amount),
           eq(reversalReceipt.approvalStatus, "APPROVED"),
           inArray(reversalReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+          exists(
+            db.select({ id: accountingEntries.id })
+              .from(accountingEntries)
+              .where(and(
+                eq(accountingEntries.receiptId, reversalReceipt.id),
+                eq(accountingEntries.entryType, "CASH_TRANSFER_IN"),
+                eq(
+                  accountingEntries.dedupeKey,
+                  sql`CONCAT('CT_OUT_REV:', ${cashTransfers.transferNumber})`,
+                ),
+                eq(accountingEntries.branchId, cashTransfers.fromBranchId),
+                eq(accountingEntries.amount, cashTransfers.amount),
+              )),
+          ),
         );
         const transferScope = and(
           inArray(cashTransfers.fromBranchId, scopedBranchIds),
           lt(sentEventAt, endExclusive),
+        );
+        const transferValidationScope = or(
+          transferScope,
+          and(
+            inArray(cashTransfers.toBranchId, scopedBranchIds),
+            isNotNull(cashTransfers.receivedReceiptId),
+            lt(receivedEventAt, endExclusive),
+          ),
         );
         const [invalidTransferEvidence] = scopedBranchIds.length === 0
           ? [{ count: 0 }]
@@ -1317,7 +1440,7 @@ export async function getDayCloseReconciliation(opts: {
               .leftJoin(receivedReceipt, eq(receivedReceipt.id, cashTransfers.receivedReceiptId))
               .leftJoin(reversalReceipt, eq(reversalReceipt.id, cashTransfers.reversalReceiptId))
               .where(and(
-                transferScope,
+                transferValidationScope,
                 or(
                   isNull(sentReceipt.id),
                   sql`NOT COALESCE((${sentReceiptContract!}), FALSE)`,
