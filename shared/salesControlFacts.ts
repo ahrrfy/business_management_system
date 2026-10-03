@@ -109,7 +109,7 @@ export function salesControlFacts(
   const payment = p.additionalPayment && typeof p.additionalPayment === "object"
     ? asRecord(p.additionalPayment)
     : null;
-  return [
+  const facts: SalesControlFact[] = [
     { label: "بنود الفاتورة البديلة", value: String(lines.length) },
     { label: "العميل البديل", value: p.customerId == null ? "كما هو/عابر" : `#${String(p.customerId)}` },
     {
@@ -125,4 +125,12 @@ export function salesControlFacts(
         : p.overpayHandling === "CREDIT" ? "رصيد دائن" : "حسب النتيجة",
     },
   ];
+  // التصحيح الكامل (٣/١٠/٢٦): ما استُلم فعلاً من المقبوض المسجَّل؛ الباقي يُعكَس من وردية الأصل.
+  if (p.priorPaymentReceivedAmount != null && String(p.priorPaymentReceivedAmount).trim() !== "") {
+    facts.push({
+      label: "المستلَم فعلاً من المقبوض المسجَّل",
+      value: `${formatMoney(String(p.priorPaymentReceivedAmount))} د.ع — والباقي يُعكَس من وردية الفاتورة الأصلية`,
+    });
+  }
+  return facts;
 }

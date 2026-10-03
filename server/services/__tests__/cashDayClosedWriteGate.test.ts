@@ -64,6 +64,7 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "reversal/executors/invoiceRefund.ts": 1,
   "reversal/executors/workOrderDelivery.ts": 1,
   "sale/correct.ts": 1,
+  "sale/correctionReceiptSettlement.ts": 2,
   "sale/create.ts": 1,
   "sale/payment.ts": 1,
   "shiftFundingService.ts": 2,

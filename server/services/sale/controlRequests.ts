@@ -303,19 +303,23 @@ export async function requestSalesControl(
     }
     if (["SALES_REISSUE", "SALES_EXCHANGE"].includes(input.requestType)) {
       const correctionPayload = input.payload as SalesReissueControlPayload;
-      const targetCustomerId = correctionPayload.customerId === undefined
-        ? invoice.customerId == null ? null : Number(invoice.customerId)
-        : correctionPayload.customerId == null ? null : Number(correctionPayload.customerId);
-      const originalCustomerId = invoice.customerId == null ? null : Number(invoice.customerId);
-      if (money(invoice.paidAmount ?? "0").gt(0) && targetCustomerId !== originalCustomerId) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: appErrorMessage({
-            what: "تعذّر إنشاء طلب تعديل الفاتورة",
-            why: "الفاتورة تحمل مقبوضات مرتبطة بعميلها الأصلي ولا يمكن نقلها إلى عميل آخر",
-            doThis: "أبقِ العميل الأصلي في التعديل، أو عالج المقبوضات بمسار مالي مستقل قبل إنشاء الطلب",
-          }),
-        });
+      // قرار المالك (٣/١٠/٢٦): تغيير العميل على فاتورةٍ مقبوضة مسموح؛ المقبوض يُسوّى عند التنفيذ
+      // (عكسٌ تعويضيّ + إعادة قيد المستلَم فعلاً) في correctionReceiptSettlement.ts. هنا نتحقّق
+      // فقط من أنّ «المستلَم فعلاً» المُعلَن لا يتجاوز المسجَّل.
+      const received = correctionPayload.priorPaymentReceivedAmount;
+      if (received != null) {
+        const paid = round2(money(invoice.paidAmount ?? "0"));
+        const declared = round2(money(received));
+        if (declared.lt(0) || declared.gt(paid)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر إنشاء طلب تعديل الفاتورة",
+              why: `المبلغ المستلَم فعلاً (${declared.toFixed(2)}) أكبر من المقبوض المسجَّل على الفاتورة (${paid.toFixed(2)})`,
+              doThis: "حدّث شاشة التعديل ليُعاد احتساب المقبوض ثم أعد الإرسال",
+            }),
+          });
+        }
       }
       const blockReason = await correctionRequestBlockReasonTx(tx, invoice);
       if (blockReason) {
@@ -396,14 +400,73 @@ export async function requestSalesControl(
   }, { gate: "NONE" });
   // التصحيح والاستبدال يمران دائماً بشاشة «كان/أصبح»: قد يلزم اختيار درج مفتوح أو
   // تنفيذ بطاقة وإدخال مرجعها وقت الاعتماد، فلا يصح حسمهما تلقائياً بلا تلك المدخلات.
+  // استثناء المالك (قرار ٣/١٠/٢٦): المالك صاحب التصحيح ينفّذه فوراً بمحرّك الاعتماد نفسه —
+  // ما لم يحمل فرقاً غير نقديّ يلزمه تمرير جهاز الدفع من شاشة الاعتماد.
   const needsCorrectionReview = input.requestType === "SALES_REISSUE"
     || input.requestType === "SALES_EXCHANGE";
-  const approved = needsCorrectionReview ? false : await autoDecideForActiveOwner(actor, {
+  if (needsCorrectionReview) {
+    if (result.replayed || result.status !== "PENDING") return result;
+    const executed = await executeCorrectionAsActiveOwner(Number(result.id), actor, reason);
+    return executed
+      ? { ...result, status: "APPROVED" as const, resultInvoiceId: executed.resultInvoiceId, ownerExecuted: true as const }
+      : result;
+  }
+  const approved = await autoDecideForActiveOwner(actor, {
     kind: "sales.control.approve",
     id: Number(result.id),
     reason,
   });
   return approved ? { ...result, status: "APPROVED" as const } : result;
+}
+
+/**
+ * تنفيذ المالك المباشر لتعديل الفاتورة. هوية المالك من القاعدة لا من حمولة API (نمط
+ * ownerAutoDecision). يمرّ بـapproveSalesControlRequest حرفياً (اللقطة/الأقفال/التسوية/الحراس)،
+ * فلا مسار ماليّ ثانٍ. فشل التنفيذ يسحب الطلب الذي أنشأه المالك للتوّ ثم يعيد الخطأ كما هو،
+ * كي لا يبقى طلبٌ معلّق يحجز الفاتورة ولا أثر جزئيّ (معاملة الاعتماد تراجعت كاملةً).
+ */
+async function executeCorrectionAsActiveOwner(
+  requestId: number,
+  actor: Actor,
+  reason: string,
+): Promise<{ resultInvoiceId: number | null } | null> {
+  const db = requireDb();
+  const [owner] = await db
+    .select({ id: users.id, isOwner: users.isOwner, isActive: users.isActive })
+    .from(users)
+    .where(eq(users.id, actor.userId))
+    .limit(1);
+  if (!owner?.isActive || !owner.isOwner) return null;
+  const [request] = await db
+    .select({ branchId: salesControlRequests.branchId, payload: salesControlRequests.payload })
+    .from(salesControlRequests)
+    .where(eq(salesControlRequests.id, requestId))
+    .limit(1);
+  if (!request) return null;
+  const payload = request.payload as unknown as SalesReissueControlPayload;
+  if (payload.additionalPayment && payload.additionalPayment.method !== "CASH") return null;
+  const ownerActor = {
+    userId: Number(owner.id),
+    branchId: Number(request.branchId),
+    role: "admin",
+    isOwner: true,
+  };
+  try {
+    const res = await approveSalesControlRequest(
+      requestId,
+      ownerActor,
+      `تنفيذ مباشر من المالك: ${reason}`.slice(0, 500),
+      null,
+    );
+    return { resultInvoiceId: res.request.resultInvoiceId == null ? null : Number(res.request.resultInvoiceId) };
+  } catch (error) {
+    await withdrawSalesControlRequest(
+      requestId,
+      "سحب تلقائي: تعذّر تنفيذ تعديل المالك المباشر ولم يتغيّر شيء",
+      ownerActor,
+    ).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function markStaleTx(
@@ -906,14 +969,18 @@ export async function approveSalesControlRequest(
           },
         };
       }
+      // المالك ينفّذ طلبه هو: لا يصحّ أن يكون مُصدر قرار الائتمان ومستهلكه معاً
+      // (validateApproval يرفضه) ⇒ يُطبَّق سقف ائتمان العميل العاديّ بدل التجاوز الموثّق.
+      const selfExecuted = Number(request.requestedBy) === Number(actor.userId);
       const corrected = await correctSaleInTx(tx, {
         ...routedPayload,
         originalInvoiceId: Number(request.invoiceId),
         clientRequestId: `sales-control-${requestId}`,
-        creditApproved: true,
-        // مُصدر قرار الائتمان = المعتمِد (actor.userId)؛ المستهلك = طالب الطلب (request.requestedBy).
-        // `assertReviewerSeparation` فوق تضمن actor ≠ requestedBy — الفصل حقيقيّ لا شكلي.
-        managerOverrideByUserId: Number(request.requestedBy),
+        // مُصدر قرار الائتمان = طالب الطلب (request.requestedBy)؛ المستهلك = المعتمِد (actor.userId).
+        // `assertReviewerSeparation` فوق تضمن actor ≠ requestedBy لغير المالك — الفصل حقيقيّ لا شكلي.
+        ...(selfExecuted
+          ? {}
+          : { creditApproved: true, managerOverrideByUserId: Number(request.requestedBy) }),
         priceOverrideApproved: true,
         controlExpectedSnapshot: storedSnapshot,
       }, effectiveActor);

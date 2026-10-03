@@ -61,10 +61,11 @@ const correctionPayload = z.object({
     method: paymentMethod,
   }).nullish(),
   overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
+  priorPaymentReceivedAmount: nonNegMoneyString.nullish(),
 });
 
 function actor(ctx: {
-  user: { id: number; branchId?: number | null; role: string };
+  user: { id: number; branchId?: number | null; role: string; isOwner?: boolean | null };
   scopedOwnerId?: number | null;
   invoiceCorrectionScope?: "sales" | "reception";
 }) {
@@ -72,6 +73,8 @@ function actor(ctx: {
     userId: ctx.user.id,
     branchId: Number(ctx.user.branchId ?? 0),
     role: ctx.user.role,
+    // ctx.user يُحمَّل من صفّ users في الجلسة (لا من حمولة الطلب)؛ المالك وحده يتجاوز فصل المهام.
+    isOwner: ctx.user.isOwner === true,
     scopedOwnerId: ctx.scopedOwnerId,
     invoiceScope: ctx.invoiceCorrectionScope,
   };

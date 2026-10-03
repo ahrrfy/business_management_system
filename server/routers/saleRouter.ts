@@ -948,6 +948,8 @@ export const saleRouter = router({
         }).nullish(),
         // الفرق الزائد (المصحّح < المقبوض): رصيد دائن للعميل أو استرداد نقديّ (قرار المالك الهجين).
         overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
+        // كم استُلم فعلاً من المقبوض المسجَّل (غيابه = كله). الأقل يُعكَس من وردية الأصل.
+        priorPaymentReceivedAmount: nonNegMoneyString.nullish(),
         reason: z.string().trim().min(3, "اكتب سبب التصحيح").max(500),
         clientRequestId: z.string().min(1).max(80).optional(),
         // موافقة مدير لتجاوز حدّ الائتمان أو البيع تحت التكلفة في السطور المصحّحة.
@@ -982,9 +984,13 @@ export const saleRouter = router({
         action: "sale.reissue.request",
         entityType: "invoice",
         entityId: originalInvoiceId,
-        newValue: { requestId: res.id, payloadHash: res.payloadHash, reason },
+        newValue: { requestId: res.id, payloadHash: res.payloadHash, reason, status: res.status },
       });
-      return { requestId: res.id, status: res.status, replayed: res.replayed };
+      // المالك ينفّذ فوراً (requestSalesControl يتحقّق من هويته من القاعدة) ⇒ تعود الفاتورة البديلة.
+      const resultInvoiceId = "resultInvoiceId" in res && res.resultInvoiceId != null
+        ? Number(res.resultInvoiceId)
+        : null;
+      return { requestId: res.id, status: res.status, replayed: res.replayed, resultInvoiceId };
     }),
 
   /** سجل تصحيحات الفاتورة للمدير/المالك فقط. */
