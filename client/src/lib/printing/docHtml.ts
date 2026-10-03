@@ -9,9 +9,9 @@
  * الأسماء القديمة (docHeader / docMeta / docTable / docSummary / docFooter / agingSummaryBars) مُبقاة
  * وأُعيد تشكيلها لتُخرج التصميم الجديد نفسه، فتلتقط شاشات التقارير القديمة اللمسة الجديدة تلقائياً.
  */
-import { BRAND as B, CO, esc, logoUrl, CAIRO_FONT } from './brand';
-import { code128Svg } from './barcode';
-import { docBarcode } from '@shared/documentNumber';
+import { BRAND as B, CO, esc, logoUrl, CAIRO_FONT, FONT_ORIGIN } from "./brand";
+import { code128Svg } from "./barcode";
+import { docBarcode } from "@shared/documentNumber";
 
 // ─── ثوابت التصميم ────────────────────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ export const SAFETY_INSET = 24;
 export function wrapA4Doc(
   title: string,
   bodyContent: string,
-  options: { orientation?: "portrait" | "landscape" } = {},
+  options: { orientation?: "portrait" | "landscape"; autoPrint?: boolean } = {},
 ): string {
   const landscape = options.orientation === "landscape";
   const pageWidth = landscape ? PAGE_H : PAGE_W;
@@ -133,7 +133,10 @@ ${CAIRO_FONT}
   .doc-btn-close:hover {
     background: rgba(255,255,255,0.22);
   }
+  @keyframes doc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .doc-spinner { animation: doc-spin 0.8s linear infinite; }
 </style>
+<script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
 <body>
 <div class="doc-toolbar" dir="rtl">
@@ -142,15 +145,15 @@ ${CAIRO_FONT}
     <span class="doc-toolbar-badge">معاينة المستند الرسمي A4</span>
   </div>
   <div class="doc-toolbar-actions">
-    <button class="doc-btn doc-btn-primary" onclick="window.print()">
+    <button class="doc-btn doc-btn-primary" onclick="printDoc()">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
       <span>طباعة المستند</span>
     </button>
-    <button class="doc-btn doc-btn-save" onclick="window.print()">
+    <button class="doc-btn doc-btn-save" onclick="saveDocAsPdf()">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
       <span>حفظ كملف PDF</span>
     </button>
-    <button class="doc-btn doc-btn-close" onclick="window.close()">
+    <button class="doc-btn doc-btn-close" onclick="closeDocPreview()">
       <span>إغلاق المعاينة</span>
     </button>
   </div>
@@ -160,6 +163,95 @@ ${CAIRO_FONT}
   ${bodyContent}
 </div>
 <script>
+  function printDoc() {
+    window.focus();
+    window.print();
+  }
+
+  function closeDocPreview() {
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, '*');
+      }
+    } catch (e) {}
+    try {
+      window.close();
+    } catch (e) {}
+    try {
+      window.open('', '_self');
+      window.close();
+    } catch (e) {}
+    setTimeout(function () {
+      if (!window.closed) {
+        var btn = document.querySelector('.doc-btn-close');
+        if (btn) {
+          btn.innerHTML = '<span>إغلاق التبويبة (Ctrl+W)</span>';
+          btn.style.background = '#DC2626';
+          btn.style.color = '#fff';
+        }
+      }
+    }, 250);
+  }
+
+  function saveDocAsPdf() {
+    var saveBtn = document.querySelector('.doc-btn-save');
+    var origHtml = saveBtn ? saveBtn.innerHTML : '';
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.style.opacity = '0.75';
+      saveBtn.style.cursor = 'wait';
+      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ إنشاء ملف PDF…</span>';
+    }
+
+    function resetBtn() {
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.style.opacity = '1';
+        saveBtn.style.cursor = 'pointer';
+        saveBtn.innerHTML = origHtml;
+      }
+    }
+
+    var target = document.querySelector('.page');
+    var rawTitle = ${JSON.stringify(title)} || 'document';
+    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
+    var filename = safeTitle + '.pdf';
+
+    var opt = {
+      margin: 0,
+      filename: filename,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        letterRendering: true,
+        windowWidth: ${pageWidth},
+        scrollY: 0,
+        scrollX: 0
+      },
+      jsPDF: {
+        unit: 'px',
+        format: [${pageWidth}, ${pageHeight}],
+        hotfixes: ['px_scaling'],
+        orientation: '${landscape ? "landscape" : "portrait"}'
+      }
+    };
+
+    if (typeof window.html2pdf === 'function') {
+      window.html2pdf().set(opt).from(target).save().then(function () {
+        resetBtn();
+      }).catch(function (err) {
+        console.error('[PDF Export] failed:', err);
+        resetBtn();
+        window.print();
+      });
+    } else {
+      resetBtn();
+      window.print();
+    }
+  }
+
   (function () {
     var images = Array.from(document.images).map(function (image) {
       return image.complete
@@ -171,10 +263,14 @@ ${CAIRO_FONT}
     });
     var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
     Promise.all([fonts].concat(images)).then(function () {
-      window.setTimeout(function () {
+      ${
+        options.autoPrint !== false
+          ? `window.setTimeout(function () {
         window.focus();
         window.print();
-      }, 120);
+      }, 120);`
+          : ""
+      }
     });
   })();
 </script>
@@ -188,12 +284,18 @@ ${CAIRO_FONT}
 export function wrapMultiA4Doc(
   title: string,
   pagesContent: string[],
-  options: { orientation?: "portrait" | "landscape"; badgeLabel?: string } = {},
+  options: {
+    orientation?: "portrait" | "landscape";
+    badgeLabel?: string;
+    autoPrint?: boolean;
+  } = {},
 ): string {
   const landscape = options.orientation === "landscape";
   const pageWidth = landscape ? PAGE_H : PAGE_W;
   const pageHeight = landscape ? PAGE_W : PAGE_H;
-  const badge = options.badgeLabel ?? `معاينة المستند الرسمي A4 — ${pagesContent.length} صفحة`;
+  const badge =
+    options.badgeLabel ??
+    `معاينة المستند الرسمي A4 — ${pagesContent.length} صفحة`;
 
   const pagesHtml = pagesContent
     .map(
@@ -305,7 +407,10 @@ ${CAIRO_FONT}
   .doc-btn-close:hover {
     background: rgba(255,255,255,0.22);
   }
+  @keyframes doc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .doc-spinner { animation: doc-spin 0.8s linear infinite; }
 </style>
+<script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
 <body>
 <div class="doc-toolbar" dir="rtl">
@@ -314,21 +419,113 @@ ${CAIRO_FONT}
     <span class="doc-toolbar-badge">${esc(badge)}</span>
   </div>
   <div class="doc-toolbar-actions">
-    <button class="doc-btn doc-btn-primary" onclick="window.print()">
+    <button class="doc-btn doc-btn-primary" onclick="printDoc()">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
       <span>طباعة المستند</span>
     </button>
-    <button class="doc-btn doc-btn-save" onclick="window.print()">
+    <button class="doc-btn doc-btn-save" onclick="saveDocAsPdf()">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
       <span>حفظ كملف PDF</span>
     </button>
-    <button class="doc-btn doc-btn-close" onclick="window.close()">
+    <button class="doc-btn doc-btn-close" onclick="closeDocPreview()">
       <span>إغلاق المعاينة</span>
     </button>
   </div>
 </div>
+<div id="doc-pages-container">
 ${pagesHtml}
+</div>
 <script>
+  function printDoc() {
+    window.focus();
+    window.print();
+  }
+
+  function closeDocPreview() {
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, '*');
+      }
+    } catch (e) {}
+    try {
+      window.close();
+    } catch (e) {}
+    try {
+      window.open('', '_self');
+      window.close();
+    } catch (e) {}
+    setTimeout(function () {
+      if (!window.closed) {
+        var btn = document.querySelector('.doc-btn-close');
+        if (btn) {
+          btn.innerHTML = '<span>إغلاق التبويبة (Ctrl+W)</span>';
+          btn.style.background = '#DC2626';
+          btn.style.color = '#fff';
+        }
+      }
+    }, 250);
+  }
+
+  function saveDocAsPdf() {
+    var saveBtn = document.querySelector('.doc-btn-save');
+    var origHtml = saveBtn ? saveBtn.innerHTML : '';
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.style.opacity = '0.75';
+      saveBtn.style.cursor = 'wait';
+      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ إنشاء ملف PDF…</span>';
+    }
+
+    function resetBtn() {
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.style.opacity = '1';
+        saveBtn.style.cursor = 'pointer';
+        saveBtn.innerHTML = origHtml;
+      }
+    }
+
+    var target = document.getElementById('doc-pages-container') || document.body;
+    var rawTitle = ${JSON.stringify(title)} || 'document';
+    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
+    var filename = safeTitle + '.pdf';
+
+    var opt = {
+      margin: 0,
+      filename: filename,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        letterRendering: true,
+        windowWidth: ${pageWidth},
+        scrollY: 0,
+        scrollX: 0
+      },
+      jsPDF: {
+        unit: 'px',
+        format: [${pageWidth}, ${pageHeight}],
+        hotfixes: ['px_scaling'],
+        orientation: '${landscape ? "landscape" : "portrait"}'
+      },
+      pagebreak: { mode: ['css', 'legacy'] }
+    };
+
+    if (typeof window.html2pdf === 'function') {
+      window.html2pdf().set(opt).from(target).save().then(function () {
+        resetBtn();
+      }).catch(function (err) {
+        console.error('[PDF Export] failed:', err);
+        resetBtn();
+        window.print();
+      });
+    } else {
+      resetBtn();
+      window.print();
+    }
+  }
+
   (function () {
     var images = Array.from(document.images).map(function (image) {
       return image.complete
@@ -340,10 +537,14 @@ ${pagesHtml}
     });
     var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
     Promise.all([fonts].concat(images)).then(function () {
-      window.setTimeout(function () {
+      ${
+        options.autoPrint !== false
+          ? `window.setTimeout(function () {
         window.focus();
         window.print();
-      }, 150);
+      }, 150);`
+          : ""
+      }
     });
   })();
 </script>
@@ -382,11 +583,11 @@ export interface CompanySettings {
 
 function coFrom(cs?: CompanySettings) {
   return {
-    name:   cs?.name   ?? CO.name,
-    sub:    cs?.sub    ?? CO.sub,
-    taxId:  cs?.taxId  ?? CO.taxId,
-    cr:     cs?.commercialRegistry ?? CO.commercialRegistry,
-    lic:    cs?.chamberLicense ?? CO.chamberLicense,
+    name: cs?.name ?? CO.name,
+    sub: cs?.sub ?? CO.sub,
+    taxId: cs?.taxId ?? CO.taxId,
+    cr: cs?.commercialRegistry ?? CO.commercialRegistry,
+    lic: cs?.chamberLicense ?? CO.chamberLicense,
     footer: cs?.footerLine ?? CO.footerLine,
   };
 }
@@ -428,12 +629,12 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
 
   const rawBarcode = meta.barcode;
   const barcodeObj: DocHeaderBarcode | null = rawBarcode
-    ? typeof rawBarcode === 'string'
-      ? { value: rawBarcode, placement: 'beside' }
+    ? typeof rawBarcode === "string"
+      ? { value: rawBarcode, placement: "beside" }
       : rawBarcode
     : null;
 
-  const placement = barcodeObj?.placement ?? 'beside';
+  const placement = barcodeObj?.placement ?? "beside";
 
   let barcodeSvg: string | null = null;
   if (barcodeObj) {
@@ -441,7 +642,7 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
       barcodeSvg = barcodeObj.svg;
     } else if (barcodeObj.value) {
       barcodeSvg = code128Svg(barcodeObj.value, {
-        moduleWidth: placement === 'beside' ? 0.9 : 0.95,
+        moduleWidth: placement === "beside" ? 0.9 : 0.95,
         height: 22,
         quietZone: 4,
         showText: false,
@@ -450,24 +651,27 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
   }
 
   // نحدد الحقل المستهدف للباركود: الحقل الذي يحوي اسمه «رقم» أو «مرجع» أو الحقل الأول
-  const barcodeTargetIdx = meta.fields.findIndex((f) => f.label.includes('رقم') || f.label.includes('مرجع'));
+  const barcodeTargetIdx = meta.fields.findIndex(
+    (f) => f.label.includes("رقم") || f.label.includes("مرجع"),
+  );
   const targetIdx = barcodeTargetIdx >= 0 ? barcodeTargetIdx : 0;
 
-  const fields = meta.fields.map((f, idx) => {
-    const isTarget = barcodeObj && barcodeSvg && idx === targetIdx;
-    if (!isTarget) {
-      return `
+  const fields = meta.fields
+    .map((f, idx) => {
+      const isTarget = barcodeObj && barcodeSvg && idx === targetIdx;
+      if (!isTarget) {
+        return `
     <div style="display:flex;justify-content:space-between;font-size:11.25px">
       <span style="color:#000;font-weight:600">${esc(f.label)}</span>
       <span style="font-weight:800;color:#000;font-size:12.5px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(f.value)}</span>
     </div>`;
-    }
+      }
 
-    if (placement === 'below') {
-      const captionHtml = barcodeObj.caption
-        ? `<span style="font-size:8px;color:#555;font-family:monospace;letter-spacing:0.5px">${esc(barcodeObj.caption)}</span>`
-        : '';
-      return `
+      if (placement === "below") {
+        const captionHtml = barcodeObj.caption
+          ? `<span style="font-size:8px;color:#555;font-family:monospace;letter-spacing:0.5px">${esc(barcodeObj.caption)}</span>`
+          : "";
+        return `
     <div style="display:flex;justify-content:space-between;align-items:flex-start;font-size:11.25px">
       <span style="color:#000;font-weight:600;padding-top:1px">${esc(f.label)}</span>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
@@ -476,10 +680,10 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
         ${captionHtml}
       </div>
     </div>`;
-    }
+      }
 
-    // placement === 'beside' (الافتراضي)
-    return `
+      // placement === 'beside' (الافتراضي)
+      return `
     <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.25px">
       <span style="color:#000;font-weight:600">${esc(f.label)}</span>
       <div style="display:flex;align-items:center;gap:8px">
@@ -487,15 +691,16 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
         <span style="font-weight:800;color:#000;font-size:12.5px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(f.value)}</span>
       </div>
     </div>`;
-  }).join('');
+    })
+    .join("");
 
   const badge = meta.badge
     ? `<div style="margin-top:8px;display:inline-block;padding:3px 12px;border:1px solid ${badgeColor};border-radius:20px;white-space:nowrap;font-size:10.25px;font-weight:800;color:${badgeColor}">${esc(meta.badge.label)}</div>`
-    : '';
+    : "";
 
   const subtitle = meta.subtitle
     ? `<div style="font-size:10px;color:${B.borderDk};font-weight:700;margin-top:3px">${esc(meta.subtitle)}</div>`
-    : '';
+    : "";
 
   return `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
   <div style="display:flex;gap:16px;align-items:flex-start">
@@ -528,7 +733,7 @@ export function pageHeader(meta: DocHeaderMeta, cs?: CompanySettings): string {
 export interface InfoCard {
   title: string;
   /** «green» = عنوان أخضر + خطّ داخلي أخضر. «gray» = عنوان أسود + خطّ داخلي رمادي (الطرف الثاني). */
-  variant?: 'green' | 'gray';
+  variant?: "green" | "gray";
   fields: { label: string; value: string }[];
   /** خلاصة عريضة بديلة عن الجدول (استعمل هذا لسندات القبض/الدفع). */
   bigLine?: { primary: string; secondary?: string };
@@ -537,22 +742,22 @@ export interface InfoCard {
 /** شبكة بطاقتين بمقاس 1fr:1fr. يمين=أخضر (بيانات الطرف)، يسار=رمادي (تفاصيل تشغيلية). */
 export function infoCards(cards: InfoCard[]): string {
   const cell = (card: InfoCard) => {
-    const isGreen = (card.variant ?? 'green') === 'green';
-    const accent = isGreen ? B.green : '#8B8E89';
-    const titleColor = isGreen ? B.green : '#000';
+    const isGreen = (card.variant ?? "green") === "green";
+    const accent = isGreen ? B.green : "#8B8E89";
+    const titleColor = isGreen ? B.green : "#000";
 
     const body = card.bigLine
-      ? `<div style="font-size:14.25px;font-weight:900;color:${B.ink};line-height:1.4">${esc(card.bigLine.primary)}</div>${card.bigLine.secondary ? `<div style="font-size:10.75px;color:#000;margin-top:4px">${esc(card.bigLine.secondary)}</div>` : ''}`
-      : `<div style="display:flex;flex-direction:column;gap:6px">${
-          card.fields.map((f, i, all) => {
+      ? `<div style="font-size:14.25px;font-weight:900;color:${B.ink};line-height:1.4">${esc(card.bigLine.primary)}</div>${card.bigLine.secondary ? `<div style="font-size:10.75px;color:#000;margin-top:4px">${esc(card.bigLine.secondary)}</div>` : ""}`
+      : `<div style="display:flex;flex-direction:column;gap:6px">${card.fields
+          .map((f, i, all) => {
             const last = i === all.length - 1;
             const isPhone = /هاتف|رقم/.test(f.label);
-            return `<div style="display:flex;justify-content:space-between;font-size:11.75px;${last ? '' : `border-bottom:1px dashed ${B.borderLight};padding-bottom:5px`}">
+            return `<div style="display:flex;justify-content:space-between;font-size:11.75px;${last ? "" : `border-bottom:1px dashed ${B.borderLight};padding-bottom:5px`}">
               <span style="color:#000">${esc(f.label)}</span>
-              <span style="font-weight:800;color:#000;font-size:${isPhone ? '12.75px' : '11.75px'};${isPhone ? 'direction:ltr;unicode-bidi:isolate;white-space:nowrap;' : ''}">${esc(f.value)}</span>
+              <span style="font-weight:800;color:#000;font-size:${isPhone ? "12.75px" : "11.75px"};${isPhone ? "direction:ltr;unicode-bidi:isolate;white-space:nowrap;" : ""}">${esc(f.value)}</span>
             </div>`;
-          }).join('')
-        }</div>`;
+          })
+          .join("")}</div>`;
 
     return `<div style="border:1px solid ${B.border};border-inline-start:3px solid ${accent};border-radius:4px;padding:11px 14px">
       <div style="font-size:10.25px;font-weight:800;color:${titleColor};letter-spacing:.3px;margin-bottom:8px">${esc(card.title)}</div>
@@ -560,8 +765,8 @@ export function infoCards(cards: InfoCard[]): string {
     </div>`;
   };
 
-  const cols = cards.length === 1 ? '1fr' : '1fr 1fr';
-  return `<div style="display:grid;grid-template-columns:${cols};gap:14px;margin-top:13px">${cards.map(cell).join('')}</div>`;
+  const cols = cards.length === 1 ? "1fr" : "1fr 1fr";
+  return `<div style="display:grid;grid-template-columns:${cols};gap:14px;margin-top:13px">${cards.map(cell).join("")}</div>`;
 }
 
 // ─── جدول البنود بالتصميم المرجعي ────────────────────────────────────────────
@@ -585,7 +790,15 @@ export interface DocTableOpts {
   /** إخفاء عمود الترقيم كلياً (لجداول التقارير الخاصة كأعمار الذمم). */
   hideIndex?: boolean;
   /** تذييل «الإجمالي» (تُدرَج مباشرةً كصف tfoot). */
-  totalsRow?: { label: string; cells: { key: string; value: string; color?: string; emphasize?: boolean }[] } | null;
+  totalsRow?: {
+    label: string;
+    cells: {
+      key: string;
+      value: string;
+      color?: string;
+      emphasize?: boolean;
+    }[];
+  } | null;
   /** لا يُطبَّق border-bottom على tbody rows (كشف الحساب: صف قيم + صف تفاصيل شفافين على بعضهما). */
   suppressRowBorderBottom?: boolean;
 }
@@ -603,53 +816,72 @@ export function docTableV2(
   const showIdx = !opts.hideIndex;
 
   const th = (label: string, width?: number) =>
-    `<th style="vertical-align:middle;padding:7px 8px;text-align:center;font-size:11.5px;font-weight:800;color:#fff;border:1.5px solid rgba(255,255,255,.5);letter-spacing:.2px;${width ? `width:${width}px;` : ''}">${esc(label)}</th>`;
+    `<th style="vertical-align:middle;padding:7px 8px;text-align:center;font-size:11.5px;font-weight:800;color:#fff;border:1.5px solid rgba(255,255,255,.5);letter-spacing:.2px;${width ? `width:${width}px;` : ""}">${esc(label)}</th>`;
 
-  const head = `<tr style="background:${B.greenDark}">${showIdx ? th('م', idxW) : ''}${columns.map((c) => th(c.label, c.width)).join('')}</tr>`;
+  const head = `<tr style="background:${B.greenDark}">${showIdx ? th("م", idxW) : ""}${columns.map((c) => th(c.label, c.width)).join("")}</tr>`;
 
-  const bodyRows = rows.map((r, ri) => {
-    const bg = ri % 2 === 0 ? '#fff' : B.zebra;
-    const brdBot = opts.suppressRowBorderBottom ? 'border-bottom:none;' : '';
+  const bodyRows = rows
+    .map((r, ri) => {
+      const bg = ri % 2 === 0 ? "#fff" : B.zebra;
+      const brdBot = opts.suppressRowBorderBottom ? "border-bottom:none;" : "";
 
-    const idxCell = showIdx
-      ? `<td style="vertical-align:middle;padding:6px;text-align:center;font-size:11.25px;color:#000;font-weight:700;border:1.5px solid ${B.borderDk};${brdBot}">${ri + 1}</td>`
-      : '';
+      const idxCell = showIdx
+        ? `<td style="vertical-align:middle;padding:6px;text-align:center;font-size:11.25px;color:#000;font-weight:700;border:1.5px solid ${B.borderDk};${brdBot}">${ri + 1}</td>`
+        : "";
 
-    const cells = columns.map((c) => {
-      const size = c.size ?? 12.25;
-      const color = c.color ?? '#000';
-      const isMoney = /price|total|tax|amount|debit|credit|balance|remaining|paid/i.test(c.key);
-      const align = 'text-align:center';
-      const font = isMoney ? 'direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums;' : '';
-      const weight = c.emphasize ? 'font-weight:800' : (isMoney ? 'font-weight:800' : 'font-weight:700');
-      const finalColor = c.emphasize ? B.green : color;
-      const finalSize = c.emphasize ? 13.25 : size;
-      return `<td style="vertical-align:middle;padding:6px;${align};font-size:${finalSize}px;color:${finalColor};${weight};border:1.5px solid ${B.borderDk};${brdBot}${font}">${esc(r[c.key] ?? '')}</td>`;
-    }).join('');
+      const cells = columns
+        .map((c) => {
+          const size = c.size ?? 12.25;
+          const color = c.color ?? "#000";
+          const isMoney =
+            /price|total|tax|amount|debit|credit|balance|remaining|paid/i.test(
+              c.key,
+            );
+          const align = "text-align:center";
+          const font = isMoney
+            ? "direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums;"
+            : "";
+          const weight = c.emphasize
+            ? "font-weight:800"
+            : isMoney
+              ? "font-weight:800"
+              : "font-weight:700";
+          const finalColor = c.emphasize ? B.green : color;
+          const finalSize = c.emphasize ? 13.25 : size;
+          return `<td style="vertical-align:middle;padding:6px;${align};font-size:${finalSize}px;color:${finalColor};${weight};border:1.5px solid ${B.borderDk};${brdBot}${font}">${esc(r[c.key] ?? "")}</td>`;
+        })
+        .join("");
 
-    return `<tr style="background:${bg}">${idxCell}${cells}</tr>`;
-  }).join('');
+      return `<tr style="background:${bg}">${idxCell}${cells}</tr>`;
+    })
+    .join("");
 
-  let foot = '';
+  let foot = "";
   if (opts.totalsRow) {
     // خلايا الإجمالي — نتعامل مع عمود ملخّص (colspan) + خلايا فردية للأعمدة المطابقة.
     const cellByKey = new Map(opts.totalsRow.cells.map((c) => [c.key, c]));
     // نحسب "labelSpan": عدد الأعمدة من البداية التي لا قيمة إجمالي لها = تُدمَج تحت خلية «الإجمالي».
     let labelSpan = 0;
     const totalColsCount = (showIdx ? 1 : 0) + columns.length;
-    for (const c of (showIdx ? [{ key: '__idx__' } as { key: string }, ...columns] : columns)) {
+    for (const c of showIdx
+      ? [{ key: "__idx__" } as { key: string }, ...columns]
+      : columns) {
       if (!cellByKey.has(c.key)) labelSpan++;
       else break;
     }
     const trailing = totalColsCount - labelSpan - opts.totalsRow.cells.length;
-    const emphasize = (c: { emphasize?: boolean; color?: string; value: string }) => {
+    const emphasize = (c: {
+      emphasize?: boolean;
+      color?: string;
+      value: string;
+    }) => {
       const color = c.color ?? B.ink;
       return `<td style="vertical-align:middle;padding:6px;text-align:center;font-size:11.25px;font-weight:900;color:${color};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(c.value)}</td>`;
     };
     foot = `<tfoot><tr style="background:#F2F2EC">
       <td colspan="${labelSpan}" style="vertical-align:middle;padding:6px;text-align:center;font-size:10.75px;font-weight:800;color:${B.ink};border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink}">${esc(opts.totalsRow.label)}</td>
-      ${opts.totalsRow.cells.map(emphasize).join('')}
-      ${trailing > 0 ? `<td colspan="${trailing}" style="border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink}"></td>` : ''}
+      ${opts.totalsRow.cells.map(emphasize).join("")}
+      ${trailing > 0 ? `<td colspan="${trailing}" style="border:1.5px solid ${B.borderDk};border-top:3px solid ${B.ink}"></td>` : ""}
     </tr></tfoot>`;
   }
 
@@ -665,8 +897,14 @@ export function docTableV2(
 // ─── صف تفصيلي داخل جدول (لكشف الحساب المفصّل) ────────────────────────────
 
 /** صفٌّ من عمودٍ واحد ممتدّ يشرح محتوى الصف السابق (فاتورة/سند). */
-export function docTableDetailRow(zebraIndex: number, typeLabel: string, typeColor: string, details: string, cols: number): string {
-  const bg = zebraIndex % 2 === 0 ? '#fff' : B.zebra;
+export function docTableDetailRow(
+  zebraIndex: number,
+  typeLabel: string,
+  typeColor: string,
+  details: string,
+  cols: number,
+): string {
+  const bg = zebraIndex % 2 === 0 ? "#fff" : B.zebra;
   return `<tr style="background:${bg}">
     <td colspan="${cols}" style="vertical-align:middle;padding:6px 12px 9px;text-align:right;font-size:10px;color:${B.textFaint};border:1.5px solid ${B.borderDk};border-top:none;line-height:1.65">
       <span style="font-weight:800;color:${typeColor}">${esc(typeLabel)} — </span>${esc(details)}
@@ -682,7 +920,7 @@ export interface TotalsRowLine {
   /** كهرماني للخصم؛ اتركه اسم اللون الجاهز. */
   color?: string;
   /** بادئة ± أمام القيمة. */
-  sign?: '+' | '−';
+  sign?: "+" | "−";
 }
 
 export interface TotalsBox {
@@ -692,14 +930,23 @@ export interface TotalsBox {
   /** خلاصة الدفع تحت الشريط: المدفوع + المتبقّي (اختياري) + الرصيد بعد الفاتورة. */
   paid?: { label: string; value: string } | null;
   remaining?: { label: string; value: string } | null;
-  balance?: { beforeLabel: string; before: string; afterLabel: string; after: string; direction: string; directionColor?: string } | null;
+  balance?: {
+    beforeLabel: string;
+    before: string;
+    afterLabel: string;
+    after: string;
+    direction: string;
+    directionColor?: string;
+  } | null;
 }
 
 /** يُنتَج على يسار الصفحة (`justify-content:flex-end`) بعرض 290px. */
 export function totalsBox(t: TotalsBox): string {
-  const line = (l: TotalsRowLine) => `<div style="display:flex;justify-content:space-between;padding:5px 2px;font-size:11.75px;border-bottom:1px dashed ${B.border}">
+  const line = (
+    l: TotalsRowLine,
+  ) => `<div style="display:flex;justify-content:space-between;padding:5px 2px;font-size:11.75px;border-bottom:1px dashed ${B.border}">
     <span style="color:#000">${esc(l.label)}</span>
-    <span style="font-weight:${l.color ? '700' : '800'};color:${l.color ?? '#000'};font-size:12.75px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${l.sign ? `${l.sign} ` : ''}${esc(l.value)}</span>
+    <span style="font-weight:${l.color ? "700" : "800"};color:${l.color ?? "#000"};font-size:12.75px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${l.sign ? `${l.sign} ` : ""}${esc(l.value)}</span>
   </div>`;
 
   const grandBar = `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;margin-top:7px;background:${B.greenDark};border-radius:4px">
@@ -707,27 +954,33 @@ export function totalsBox(t: TotalsBox): string {
     <span style="font-size:18.5px;font-weight:900;color:#fff;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(t.grandTotal.value)} <span style="font-size:11.75px;font-weight:700">د.ع</span></span>
   </div>`;
 
-  const paidLine = t.paid ? `<div style="display:flex;justify-content:space-between;padding:6px 2px 0;font-size:11.25px">
+  const paidLine = t.paid
+    ? `<div style="display:flex;justify-content:space-between;padding:6px 2px 0;font-size:11.25px">
     <span style="color:#000">${esc(t.paid.label)}</span>
     <span style="font-weight:800;color:#000;font-size:12.75px;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(t.paid.value)}</span>
-  </div>` : '';
+  </div>`
+    : "";
 
-  const remLine = t.remaining ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin-top:5px;background:${B.alertBg};border:1px solid ${B.alertBorder};border-radius:4px;font-size:11.75px">
+  const remLine = t.remaining
+    ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin-top:5px;background:${B.alertBg};border:1px solid ${B.alertBorder};border-radius:4px;font-size:11.75px">
     <span style="color:${B.alert};font-weight:800;white-space:nowrap">${esc(t.remaining.label)}</span>
     <span style="font-weight:900;color:${B.alert};direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(t.remaining.value)}</span>
-  </div>` : '';
+  </div>`
+    : "";
 
-  const balLine = t.balance ? `<div style="margin-top:7px;padding-top:6px;border-top:1px dashed #C9CAC2">
+  const balLine = t.balance
+    ? `<div style="margin-top:7px;padding-top:6px;border-top:1px dashed #C9CAC2">
     <div style="display:flex;justify-content:space-between;align-items:baseline">
       <span style="font-size:9.75px;color:${B.textFaint};font-weight:700">${esc(t.balance.afterLabel)}</span>
       <span style="font-size:13.5px;font-weight:900;color:#000;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(t.balance.after)} <span style="font-size:9.5px;font-weight:800;color:${t.balance.directionColor ?? B.alert}">(${esc(t.balance.direction)})</span></span>
     </div>
     <div style="font-size:8.25px;color:#000;margin-top:1px">${esc(t.balance.beforeLabel)} ${esc(t.balance.before)} قبل هذه الفاتورة</div>
-  </div>` : '';
+  </div>`
+    : "";
 
   return `<div style="display:flex;justify-content:flex-end;margin-top:10px">
     <div style="width:290px">
-      ${t.lines.map(line).join('')}
+      ${t.lines.map(line).join("")}
       ${grandBar}
       ${paidLine}
       ${remLine}
@@ -737,11 +990,15 @@ export function totalsBox(t: TotalsBox): string {
 }
 
 /** شريط إجمالي فقط (بلا سطور فرعية) — لأوامر الشغل والعرض المُبسَّط والسندات. */
-export function grandTotalBar(label: string, value: string, opts: { big?: boolean } = {}): string {
-  const pad = opts.big ? '14px 18px' : '10px 14px';
-  const labelSize = opts.big ? '13.75px' : '12.75px';
-  const valSize = opts.big ? '21.5px' : '18.5px';
-  const unitSize = opts.big ? '12.25px' : '11.75px';
+export function grandTotalBar(
+  label: string,
+  value: string,
+  opts: { big?: boolean } = {},
+): string {
+  const pad = opts.big ? "14px 18px" : "10px 14px";
+  const labelSize = opts.big ? "13.75px" : "12.75px";
+  const valSize = opts.big ? "21.5px" : "18.5px";
+  const unitSize = opts.big ? "12.25px" : "11.75px";
   return `<div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;padding:${pad};background:${B.greenDark};border-radius:4px">
     <span style="font-size:${labelSize};font-weight:700;color:${B.greenAccentText}">${esc(label)}</span>
     <span style="font-size:${valSize};font-weight:900;color:#fff;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(value)} <span style="font-size:${unitSize};font-weight:700">د.ع</span></span>
@@ -751,7 +1008,10 @@ export function grandTotalBar(label: string, value: string, opts: { big?: boolea
 // ─── سطر التفقيط ─────────────────────────────────────────────────────────────
 
 /** صندوق «المبلغ كتابةً (تفقيطاً)» بحدود متقطّعة وخلفية FCFCFA. */
-export function tafqitLine(words: string, label = 'المبلغ كتابةً (تفقيطاً):'): string {
+export function tafqitLine(
+  words: string,
+  label = "المبلغ كتابةً (تفقيطاً):",
+): string {
   return `<div style="margin-top:8px;padding:6px 14px;border:1px dashed #C9CAC2;border-radius:4px;background:#FCFCFA">
     <span style="font-size:10.75px;font-weight:800;color:#000">${esc(label)} </span>
     <span style="font-size:12.75px;font-weight:800;color:#000">${esc(words)}</span>
@@ -778,7 +1038,7 @@ export function qrPlaceholderSvg(sizePx = 42): string {
 }
 
 export interface SignatureItem {
-  kind: 'sig' | 'stamp';
+  kind: "sig" | "stamp";
   /** نص التسمية أسفل خط التوقيع. غير مستعمل لـstamp. */
   label?: string;
   /** عرض الخانة بالبكسل. افتراضي 120 للتوقيع، 48 للختم. */
@@ -803,28 +1063,35 @@ export interface SignatureBlock {
 /** يعرض QR (يمين) + خانات التوقيع/الختم. كل خانة = فراغ فوق + خط أفقي 1px أسود + تسمية. */
 export function signaturesBlock(b: SignatureBlock): string {
   const qrSize = b.qrSize ?? 42;
-  const qr = b.qrSvg === true ? qrPlaceholderSvg(qrSize) : (typeof b.qrSvg === 'string' ? b.qrSvg : '');
+  const qr =
+    b.qrSvg === true
+      ? qrPlaceholderSvg(qrSize)
+      : typeof b.qrSvg === "string"
+        ? b.qrSvg
+        : "";
   const qrCaption = b.qrCaption
     ? `<div style="font-size:${qrSize >= 52 ? 8.25 : 7.75}px;color:#000;text-align:center;max-width:${qrSize >= 52 ? 80 : 118}px;line-height:1.2">${esc(b.qrCaption)}</div>`
-    : '';
+    : "";
   const qrBlock = qr
     ? `<div style="display:flex;flex-direction:column;align-items:center;gap:5px;flex-shrink:0">${qr}${qrCaption}</div>`
-    : '<div></div>';
+    : "<div></div>";
 
   const spaceH = b.spaceHeight ?? 22;
   const labelSize = b.labelSize ?? 10.25;
 
-  const cells = b.items.map((it) => {
-    if (it.kind === 'stamp') {
-      const w = it.width ?? 48;
-      return `<div style="width:${w}px;height:${w}px;border:1px dashed #C9CAC2;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9.25px;color:${B.textFaint};text-align:center;line-height:1.4">ختم<br />الشركة</div>`;
-    }
-    const w = it.width ?? 120;
-    return `<div style="text-align:center;width:${w}px">
+  const cells = b.items
+    .map((it) => {
+      if (it.kind === "stamp") {
+        const w = it.width ?? 48;
+        return `<div style="width:${w}px;height:${w}px;border:1px dashed #C9CAC2;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9.25px;color:${B.textFaint};text-align:center;line-height:1.4">ختم<br />الشركة</div>`;
+      }
+      const w = it.width ?? 120;
+      return `<div style="text-align:center;width:${w}px">
       <div style="height:${spaceH}px"></div>
-      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:${labelSize}px;color:#000;font-weight:600">${esc(it.label ?? '')}</div>
+      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:${labelSize}px;color:#000;font-weight:600">${esc(it.label ?? "")}</div>
     </div>`;
-  }).join('');
+    })
+    .join("");
 
   return `<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:6px;gap:18px">
     ${qrBlock}
@@ -835,9 +1102,12 @@ export function signaturesBlock(b: SignatureBlock): string {
 // ─── التذييل المثبَّت أسفل الصفحة ────────────────────────────────────────────
 
 /** يُدمَج داخل `.page-footer` تلقائياً في `pageClose(footer)`. */
-export function pageFooter(cs?: CompanySettings, opts: { rightText?: string } = {}): string {
+export function pageFooter(
+  cs?: CompanySettings,
+  opts: { rightText?: string } = {},
+): string {
   const c = coFrom(cs);
-  const right = opts.rightText ?? cs?.footerRef ?? '';
+  const right = opts.rightText ?? cs?.footerRef ?? "";
   return `<div class="page-footer">
     <div style="height:1px;background:${B.border};margin-bottom:10px"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -850,8 +1120,12 @@ export function pageFooter(cs?: CompanySettings, opts: { rightText?: string } = 
 // ─── مغلّف جسم الصفحة ────────────────────────────────────────────────────────
 
 /** يفتح `.page-body`. المحتوى المُدرج يظهر داخل حشوة 32/42/0. */
-export function pageBodyOpen(): string { return `<div class="page-body">`; }
-export function pageBodyClose(): string { return `</div>`; }
+export function pageBodyOpen(): string {
+  return `<div class="page-body">`;
+}
+export function pageBodyClose(): string {
+  return `</div>`;
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // توافق خلفي: أسماء الدوال القديمة تُبقى لكن تُنتج التصميم الجديد.
@@ -859,9 +1133,13 @@ export function pageBodyClose(): string { return `</div>`; }
 // ═════════════════════════════════════════════════════════════════════════════
 
 /** aliased للاسم القديم؛ يفتح `.page-body`. */
-export function a4PageOpen(): string { return pageBodyOpen(); }
+export function a4PageOpen(): string {
+  return pageBodyOpen();
+}
 /** aliased للاسم القديم؛ يُغلق `.page-body` (تذييل الصفحة يُدرَج داخل .page مباشرةً). */
-export function a4PageClose(): string { return pageBodyClose(); }
+export function a4PageClose(): string {
+  return pageBodyClose();
+}
 
 /** توافق خلفي — ترويسة بمعامَلات مسطّحة (title/رقم/تاريخ) مع دعم باركود رقم المستند الافتراضي بالنموذج 1. */
 export function docHeader(
@@ -870,56 +1148,77 @@ export function docHeader(
   docDate?: string | null,
   extra?: { label: string; value: string }[],
   barcode?: DocHeaderBarcode | string | boolean | null,
-  placement?: 'beside' | 'below',
+  placement?: "beside" | "below",
 ): string {
   const fields: { label: string; value: string }[] = [];
-  if (docNum) fields.push({ label: 'رقم المستند', value: docNum });
-  if (docDate) fields.push({ label: 'التاريخ', value: docDate });
+  if (docNum) fields.push({ label: "رقم المستند", value: docNum });
+  if (docDate) fields.push({ label: "التاريخ", value: docDate });
   if (extra) fields.push(...extra);
 
   let resolvedBarcode: DocHeaderBarcode | string | null = null;
   const getAutoPrefix = (): string => {
-    if (title.includes('شراء') || title.includes('مشتريات')) return 'PO';
-    if (title.includes('سند') || title.includes('قبض') || title.includes('صرف')) return 'VCH';
-    if (title.includes('مناقلة') || title.includes('تحويل')) return 'TRN';
-    if (title.includes('استبدال')) return 'EXC';
-    if (title.includes('هدية')) return 'GIFT';
-    if (title.includes('طلب')) return 'ORD';
-    if (title.includes('أمانة')) return 'CNS';
-    if (title.includes('شغل')) return 'WO';
-    if (title.includes('عرض')) return 'QUO';
-    return 'INV';
+    if (title.includes("شراء") || title.includes("مشتريات")) return "PO";
+    if (title.includes("سند") || title.includes("قبض") || title.includes("صرف"))
+      return "VCH";
+    if (title.includes("مناقلة") || title.includes("تحويل")) return "TRN";
+    if (title.includes("استبدال")) return "EXC";
+    if (title.includes("هدية")) return "GIFT";
+    if (title.includes("طلب")) return "ORD";
+    if (title.includes("أمانة")) return "CNS";
+    if (title.includes("شغل")) return "WO";
+    if (title.includes("عرض")) return "QUO";
+    return "INV";
   };
 
   if (barcode !== undefined) {
     if (barcode === false || barcode === null) {
       resolvedBarcode = null;
-    } else if (typeof barcode === 'object') {
-      resolvedBarcode = { ...barcode, placement: placement ?? barcode.placement ?? 'beside' };
-    } else if (typeof barcode === 'string') {
-      resolvedBarcode = { value: barcode, placement: placement ?? 'beside' };
+    } else if (typeof barcode === "object") {
+      resolvedBarcode = {
+        ...barcode,
+        placement: placement ?? barcode.placement ?? "beside",
+      };
+    } else if (typeof barcode === "string") {
+      resolvedBarcode = { value: barcode, placement: placement ?? "beside" };
     } else if (barcode === true && docNum) {
-      resolvedBarcode = { value: docBarcode(getAutoPrefix(), docNum), placement: placement ?? 'beside' };
+      resolvedBarcode = {
+        value: docBarcode(getAutoPrefix(), docNum),
+        placement: placement ?? "beside",
+      };
     }
   } else if (docNum) {
-    resolvedBarcode = { value: docBarcode(getAutoPrefix(), docNum), placement: placement ?? 'beside' };
+    resolvedBarcode = {
+      value: docBarcode(getAutoPrefix(), docNum),
+      placement: placement ?? "beside",
+    };
   }
 
   return `${pageBodyOpen()}${pageHeader({ title, fields, barcode: resolvedBarcode })}`;
 }
 
 /** توافق خلفي — بطاقات المعلومات القديمة (title+fields). */
-export interface MetaSection { title?: string; fields: { label: string; value: string }[] }
+export interface MetaSection {
+  title?: string;
+  fields: { label: string; value: string }[];
+}
 export function docMeta(sections: MetaSection[]): string {
-  return infoCards(sections.map((s, i) => ({
-    title: s.title ?? '',
-    variant: i === 0 ? 'green' : 'gray',
-    fields: s.fields,
-  })));
+  return infoCards(
+    sections.map((s, i) => ({
+      title: s.title ?? "",
+      variant: i === 0 ? "green" : "gray",
+      fields: s.fields,
+    })),
+  );
 }
 
 /** توافق خلفي — نوع عمود قديم يُترجَم إلى DocTableCol. */
-export interface TableCol { key: string; label: string; width?: string; align?: 'right'|'left'|'center'; bold?: boolean }
+export interface TableCol {
+  key: string;
+  label: string;
+  width?: string;
+  align?: "right" | "left" | "center";
+  bold?: boolean;
+}
 
 /** يترجم عرض mm/pt/px إلى عدد بكسل تقريبيّاً. */
 function widthToPx(w?: string): number | undefined {
@@ -928,35 +1227,57 @@ function widthToPx(w?: string): number | undefined {
   if (!m) return undefined;
   const n = Number(m[1]);
   switch (m[2]) {
-    case 'mm': return Math.round(n * 3.78);
-    case 'pt': return Math.round(n * 1.333);
-    default:   return Math.round(n);
+    case "mm":
+      return Math.round(n * 3.78);
+    case "pt":
+      return Math.round(n * 1.333);
+    default:
+      return Math.round(n);
   }
 }
 
 /** توافق خلفي — الجدول القديم بأعمدة وصفوف مبسّطة. */
-export function docTable(columns: TableCol[], rows: Record<string, string>[], showIndex = true): string {
+export function docTable(
+  columns: TableCol[],
+  rows: Record<string, string>[],
+  showIndex = true,
+): string {
   return docTableV2(
-    columns.map((c) => ({ key: c.key, label: c.label, width: widthToPx(c.width), emphasize: c.bold })),
+    columns.map((c) => ({
+      key: c.key,
+      label: c.label,
+      width: widthToPx(c.width),
+      emphasize: c.bold,
+    })),
     rows,
     { hideIndex: !showIndex },
   );
 }
 
 /** توافق خلفي — صندوق الملخّص القديم كسطور بسيطة. الأخير = شريط الإجمالي الأخضر. */
-export interface SummaryItem { label: string; value: string; bold?: boolean; large?: boolean }
+export interface SummaryItem {
+  label: string;
+  value: string;
+  bold?: boolean;
+  large?: boolean;
+}
 /** يزيل لاحقة « د.ع» من نصّ مالي مُنسَّق (fmtC)، لأن `totalsBox`/`grandTotalBar` يضيفانها ⇒ نتفادى التكرار. */
 function stripIQDSuffix(v: string): string {
-  return v.replace(/\s*د\.ع\s*$/, '');
+  return v.replace(/\s*د\.ع\s*$/, "");
 }
 export function docSummary(items: SummaryItem[], qrSvg?: string): string {
   const last = items[items.length - 1];
   // المتّصلون القدامى (PO/production/تقارير) يُنسّقون القيم عبر fmtC فتحوي « د.ع» لاحقةً.
   // نسحبها هنا قبل تسليمها لـtotalsBox الجديد الذي يضيفها في شريط الإجمالي الأخضر تلقائياً ⇒ يتفادى «د.ع د.ع».
-  const lines = items.slice(0, -1).map((it) => ({ label: it.label, value: stripIQDSuffix(it.value) }));
+  const lines = items
+    .slice(0, -1)
+    .map((it) => ({ label: it.label, value: stripIQDSuffix(it.value) }));
   const box = totalsBox({
     lines,
-    grandTotal: { label: last?.label ?? 'الإجمالي', value: stripIQDSuffix(last?.value ?? '') },
+    grandTotal: {
+      label: last?.label ?? "الإجمالي",
+      value: stripIQDSuffix(last?.value ?? ""),
+    },
   });
   if (!qrSvg) return box;
   // اذا اُمرَر QR، نضعه على أقصى اليمين تحت الجدول.
@@ -972,24 +1293,35 @@ export function docFooter(): string {
 }
 
 /** توافق خلفي — أشرطة أعمار الذمم كما كانت (مستعملة في aging reports فقط). */
-export function agingSummaryBars(pcts: { label: string; val: number; color: string }[], total: number): string {
-  const cards = pcts.map((p) => `
+export function agingSummaryBars(
+  pcts: { label: string; val: number; color: string }[],
+  total: number,
+): string {
+  const cards = pcts
+    .map(
+      (p) => `
     <div style="flex:1;background:${p.color}12;border:1px solid ${p.color}30;border-radius:4px;padding:2.5mm;text-align:center;">
       <div style="font-size:8px;color:${B.textFaint};margin-bottom:1mm;">${esc(p.label)}</div>
-      <div style="font-size:12px;font-weight:700;color:${p.color};">${p.val.toLocaleString('en-US')}</div>
+      <div style="font-size:12px;font-weight:700;color:${p.color};">${p.val.toLocaleString("en-US")}</div>
       <div style="font-size:7.5px;color:${B.textFaint};">${total ? Math.round((p.val / total) * 100) : 0}%</div>
-    </div>`).join('');
+    </div>`,
+    )
+    .join("");
 
   const totalCard = `<div style="flex:1.2;background:${B.greenPale};border:1px solid ${B.greenLight};border-radius:4px;padding:2.5mm;text-align:center;">
     <div style="font-size:8px;color:${B.textFaint};margin-bottom:1mm;">الإجمالي</div>
-    <div style="font-size:13px;font-weight:800;color:${B.green};">${total.toLocaleString('en-US')}</div>
+    <div style="font-size:13px;font-weight:800;color:${B.green};">${total.toLocaleString("en-US")}</div>
     <div style="font-size:7.5px;color:${B.textFaint};">د.ع</div>
   </div>`;
 
-  const stackBar = pcts.map((p) => {
-    const w = total ? (p.val / total) * 100 : 0;
-    return w > 0 ? `<div style="width:${w}%;background:${p.color};min-width:2px;" title="${esc(p.label)}"></div>` : '';
-  }).join('');
+  const stackBar = pcts
+    .map((p) => {
+      const w = total ? (p.val / total) * 100 : 0;
+      return w > 0
+        ? `<div style="width:${w}%;background:${p.color};min-width:2px;" title="${esc(p.label)}"></div>`
+        : "";
+    })
+    .join("");
 
   return `<div style="display:flex;gap:2mm;margin-bottom:5mm;">${cards}${totalCard}</div>
 <div style="height:5mm;display:flex;border-radius:3px;overflow:hidden;margin-bottom:5mm;">${stackBar}</div>`;

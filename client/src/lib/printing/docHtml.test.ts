@@ -1,17 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { wrapA4Doc, wrapMultiA4Doc, pageHeader, docHeader } from "./docHtml";
-import { buildSalesInvoiceV2Html, buildPurchaseInvoiceV2Html } from "./printTemplatesV2";
+import {
+  buildSalesInvoiceV2Html,
+  buildPurchaseInvoiceV2Html,
+} from "./printTemplatesV2";
 
 describe("wrapA4Doc", () => {
   it("يدعم التقرير الأفقي مع بقاء قواعد الجداول متعددة الصفحات", () => {
-    const html = wrapA4Doc("تقرير", "<table><thead><tr><th>رأس</th></tr></thead></table>", {
-      orientation: "landscape",
-    });
+    const html = wrapA4Doc(
+      "تقرير",
+      "<table><thead><tr><th>رأس</th></tr></thead></table>",
+      {
+        orientation: "landscape",
+      },
+    );
 
     expect(html).toContain("@page{size:A4 landscape;margin:0}");
     expect(html).toContain("width:1123px;min-height:794px");
     expect(html).toContain("thead{display:table-header-group}");
-    expect(html).toContain("tr,td,th{page-break-inside:avoid;break-inside:avoid}");
+    expect(html).toContain(
+      "tr,td,th{page-break-inside:avoid;break-inside:avoid}",
+    );
+  });
+
+  it("يزود المعاينة بأزرار تفاعلية حقيقية: طباعة، حفظ كـ PDF، وإغلاق ذكي", () => {
+    const html = wrapA4Doc("كشف حساب رسمي", "<div>المحتوى</div>");
+
+    expect(html).toContain("html2pdf.bundle.min.js");
+    expect(html).toContain('onclick="printDoc()"');
+    expect(html).toContain('onclick="saveDocAsPdf()"');
+    expect(html).toContain('onclick="closeDocPreview()"');
+    expect(html).toContain("function printDoc()");
+    expect(html).toContain("function saveDocAsPdf()");
+    expect(html).toContain("function closeDocPreview()");
+    expect(html).toContain("CLOSE_PRINT_WINDOW");
   });
 });
 
@@ -29,6 +51,9 @@ describe("wrapMultiA4Doc", () => {
     expect(html).toContain("page-break-after:always !important");
     expect(html).toContain("حفظ كملف PDF");
     expect(html).toContain("طباعة المستند");
+    expect(html).toContain('id="doc-pages-container"');
+    expect(html).toContain('onclick="saveDocAsPdf()"');
+    expect(html).toContain('onclick="closeDocPreview()"');
   });
 });
 
@@ -167,17 +192,36 @@ describe("docHeader - التوليد التلقائي لباركود رقم ال
   });
 
   it("يلغي الباركود عند تمرير barcode: false أو null", () => {
-    const htmlFalse = docHeader("أمر شراء", "9988", "2026-10-03", undefined, false);
+    const htmlFalse = docHeader(
+      "أمر شراء",
+      "9988",
+      "2026-10-03",
+      undefined,
+      false,
+    );
     expect(htmlFalse).not.toContain("<svg");
     expect(htmlFalse).not.toContain('title="PO-9988"');
 
-    const htmlNull = docHeader("أمر شراء", "9988", "2026-10-03", undefined, null);
+    const htmlNull = docHeader(
+      "أمر شراء",
+      "9988",
+      "2026-10-03",
+      undefined,
+      null,
+    );
     expect(htmlNull).not.toContain("<svg");
     expect(htmlNull).not.toContain('title="PO-9988"');
   });
 
   it("يدعم موضع الباركود تحته (below) في docHeader", () => {
-    const html = docHeader("أمر شراء", "9988", "2026-10-03", undefined, undefined, "below");
+    const html = docHeader(
+      "أمر شراء",
+      "9988",
+      "2026-10-03",
+      undefined,
+      undefined,
+      "below",
+    );
 
     expect(html).toContain('title="PO-9988"');
     expect(html).toContain("flex-direction:column;align-items:flex-end");
@@ -201,4 +245,3 @@ describe("pageHeader - استهداف حقل مرجع الفاتورة (Warehous
     expect(html).toContain("<svg");
   });
 });
-

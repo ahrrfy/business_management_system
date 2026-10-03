@@ -193,6 +193,7 @@
     "express-rate-limit": "^8.5.2",
     "framer-motion": "^12.23.22",
     "helmet": "^8.2.0",
+    "html2pdf.js": "^0.14.0",
     "input-otp": "^1.4.2",
     "jose": "6.1.0",
     "lucide-react": "^0.453.0",
