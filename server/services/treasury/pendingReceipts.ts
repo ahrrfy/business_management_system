@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, or, like } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
@@ -47,8 +47,9 @@ function canonicalBreakdown(value: unknown): string {
 function contractSource(
   referenceNumber: string,
 ): PendingTreasuryReceipt["source"] | null {
-  if (referenceNumber.startsWith("CD-")) return "CASH_DROP";
-  if (referenceNumber.startsWith("CH-")) return "CASH_HANDOVER";
+  const normalized = referenceNumber.trim().toUpperCase();
+  if (normalized.startsWith("CD-")) return "CASH_DROP";
+  if (normalized.startsWith("CH-")) return "CASH_HANDOVER";
   return null;
 }
 
@@ -77,7 +78,7 @@ export async function listMyPendingTreasuryReceipts(
     .leftJoin(
       sourceReceipt,
       and(
-        eq(sourceReceipt.referenceNumber, receipts.referenceNumber),
+        sql`UPPER(TRIM(${sourceReceipt.referenceNumber})) = UPPER(TRIM(${receipts.referenceNumber}))`,
         eq(sourceReceipt.branchId, receipts.branchId),
         eq(sourceReceipt.direction, "OUT"),
         eq(sourceReceipt.paymentMethod, "CASH"),
@@ -94,9 +95,13 @@ export async function listMyPendingTreasuryReceipts(
         eq(receipts.cashBucket, "TREASURY"),
         eq(receipts.status, "PENDING"),
         eq(receipts.approvalStatus, "APPROVED"),
+        isNull(receipts.voucherNumber),
+        isNull(receipts.invoiceId),
+        isNull(receipts.workOrderId),
+        isNull(receipts.reservationId),
         or(
-          like(receipts.referenceNumber, "CD-%"),
-          like(receipts.referenceNumber, "CH-%"),
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%'`,
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%'`,
         ),
       ),
     )
@@ -161,7 +166,7 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
     .leftJoin(
       sourceReceipt,
       and(
-        eq(sourceReceipt.referenceNumber, receipts.referenceNumber),
+        sql`UPPER(TRIM(${sourceReceipt.referenceNumber})) = UPPER(TRIM(${receipts.referenceNumber}))`,
         eq(sourceReceipt.branchId, receipts.branchId),
         eq(sourceReceipt.direction, "OUT"),
         eq(sourceReceipt.paymentMethod, "CASH"),
@@ -177,7 +182,14 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
         eq(receipts.cashBucket, "TREASURY"),
         eq(receipts.status, "PENDING"),
         eq(receipts.approvalStatus, "APPROVED"),
-        or(like(receipts.referenceNumber, "CD-%"), like(receipts.referenceNumber, "CH-%")),
+        isNull(receipts.voucherNumber),
+        isNull(receipts.invoiceId),
+        isNull(receipts.workOrderId),
+        isNull(receipts.reservationId),
+        or(
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%'`,
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%'`,
+        ),
         // عزل الفرع: admin يعبُر؛ غيره يرى فرعه وحده (نمط branchScopedProcedure).
         ...(elevated ? [] : [eq(receipts.branchId, actor.branchId)]),
       ),

@@ -188,7 +188,7 @@ describe("daily physical treasury reconciliation", () => {
       cashBucket: "TREASURY",
       status: "PENDING",
       approvalStatus: "APPROVED",
-      referenceNumber: "CH-BLIND-DAILY-EVIDENCE",
+      referenceNumber: " ch-blind-daily-evidence ",
       createdBy: CHECKER,
       createdAt: TEST_NOW,
     });
@@ -377,6 +377,98 @@ describe("daily physical treasury reconciliation", () => {
       actor(CHECKER),
       auditCtx(CHECKER),
     )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("keeps a transfer blocked when its received link points to an unrelated receipt", async () => {
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-MALFORMED-RECEIVED-LINK",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const receivedResult = await db().insert(s.receipts).values({
+      branchId: 2,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      voucherNumber: "RV-UNRELATED-TRANSFER-LINK",
+      referenceNumber: "UNRELATED-RECEIPT",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const sentReceiptId = Number((sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId);
+    const receivedReceiptId = Number((receivedResult as any)?.[0]?.insertId ?? (receivedResult as any)?.insertId);
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-MALFORMED-RECEIVED-LINK",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "10000.00",
+      status: "RECEIVED",
+      sentBy: MANAGER,
+      receivedBy: CHECKER,
+      sentReceiptId,
+      receivedReceiptId,
+      sentAt: TEST_NOW,
+      receivedAt: TEST_NOW,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+    expect(status.actions.canCount).toBe(false);
+  });
+
+  it("blocks drawer cash linked to a shift from another branch", async () => {
+    const shiftResult = await db().insert(s.shifts).values({
+      branchId: 2,
+      userId: MANAGER,
+      openingBalance: "0.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+    const foreignShiftId = Number(
+      (shiftResult as any)?.[0]?.insertId ?? (shiftResult as any)?.insertId,
+    );
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: foreignShiftId,
+      direction: "IN",
+      amount: "5000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CROSS-BRANCH-DRAWER-LINK",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("UNSCOPED_CASH");
+    expect(status.actions.canCount).toBe(false);
   });
 
   it("blocks the treasury certificate while a closed drawer retains cash", async () => {

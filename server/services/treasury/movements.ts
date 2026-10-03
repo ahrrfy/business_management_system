@@ -146,7 +146,16 @@ export async function getRecentMovements(
         r.direction = 'OUT'
         AND r.paymentMethod = 'CASH'
         AND r.cashBucket = 'DRAWER'
-        AND (r.referenceNumber LIKE 'CH-%' OR r.referenceNumber LIKE 'CD-%')
+        AND (
+          UPPER(TRIM(r.referenceNumber)) LIKE 'CH-%'
+          OR UPPER(TRIM(r.referenceNumber)) LIKE 'CD-%'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM accountingEntries custodyEvidence
+          WHERE custodyEvidence.receiptId = r.id
+            AND custodyEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+        )
         AND r.branchId = ${scope.actorBranchId}
         AND (r.createdBy IS NULL OR r.createdBy <> ${scope.userId})
         AND (s.userId IS NULL OR s.userId <> ${scope.userId})
@@ -154,12 +163,16 @@ export async function getRecentMovements(
           SELECT 1
           FROM receipts pendingCustody
           WHERE pendingCustody.branchId = r.branchId
-            AND pendingCustody.referenceNumber = r.referenceNumber
+            AND UPPER(TRIM(pendingCustody.referenceNumber)) = UPPER(TRIM(r.referenceNumber))
             AND pendingCustody.direction = 'IN'
             AND pendingCustody.paymentMethod = 'CASH'
             AND pendingCustody.cashBucket = 'TREASURY'
             AND pendingCustody.receiptStatus = 'PENDING'
             AND pendingCustody.receiptApprovalStatus = 'APPROVED'
+            AND pendingCustody.voucherNumber IS NULL
+            AND pendingCustody.invoiceId IS NULL
+            AND pendingCustody.workOrderId IS NULL
+            AND pendingCustody.reservationId IS NULL
             AND NOT EXISTS (
               SELECT 1
               FROM cashCustodyCounts firstCount

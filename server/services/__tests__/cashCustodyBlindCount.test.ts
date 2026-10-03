@@ -44,7 +44,10 @@ async function seedCustody(input: {
   const shiftId = Number(
     (shiftResult as any)[0]?.insertId ?? (shiftResult as any).insertId,
   );
-  const referenceNumber = `${input.prefix}-1-20260831-BLIND-${shiftId}`;
+  const canonicalReference = `${input.prefix}-1-20260831-BLIND-${shiftId}`;
+  const referenceNumber = input.prefix === "CD"
+    ? ` ${canonicalReference.toLowerCase()} `
+    : canonicalReference;
   const sourceResult = await db().insert(s.receipts).values({
     branchId: 1,
     shiftId,

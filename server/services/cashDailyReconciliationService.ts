@@ -323,8 +323,8 @@ export async function buildDailyCashEvidenceTx(
           sql`${receipts.workOrderId} IS NULL`,
           sql`${receipts.reservationId} IS NULL`,
           or(
-            like(receipts.referenceNumber, "CD-%"),
-            like(receipts.referenceNumber, "CH-%"),
+            like(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CD-%"),
+            like(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "CH-%"),
           ),
           lt(receipts.createdAt, endExclusive),
           gt(receipts.id, pendingCursor),
@@ -377,34 +377,49 @@ export async function buildDailyCashEvidenceTx(
   const interbranchTransitCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
     FROM cashTransfers t
-    INNER JOIN receipts sent ON sent.id = t.sentReceiptId
+    LEFT JOIN receipts sent ON sent.id = t.sentReceiptId
     LEFT JOIN receipts received ON received.id = t.receivedReceiptId
     LEFT JOIN receipts reversal ON reversal.id = t.reversalReceiptId
     WHERE t.fromBranchId = ${branchId}
-      AND sent.direction = 'OUT'
-      AND sent.paymentMethod = 'CASH'
-      AND sent.cashBucket = 'TREASURY'
-      AND sent.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-      AND sent.receiptApprovalStatus = 'APPROVED'
-      AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
-      AND NOT (
-        received.id IS NOT NULL
-        AND received.direction = 'IN'
-        AND received.paymentMethod = 'CASH'
-        AND received.cashBucket = 'TREASURY'
-        AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-        AND received.receiptApprovalStatus = 'APPROVED'
-        AND ${receiptCashEventAtSql("received")} < ${endExclusive}
-      )
-      AND NOT (
-        reversal.id IS NOT NULL
-        AND reversal.direction = 'IN'
-        AND reversal.paymentMethod = 'CASH'
-        AND reversal.cashBucket = 'TREASURY'
-        AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-        AND reversal.receiptApprovalStatus = 'APPROVED'
-        AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
-      )
+      AND (t.sentAt < ${endExclusive} OR ${receiptCashEventAtSql("sent")} < ${endExclusive})
+      AND NOT COALESCE((
+        sent.id IS NOT NULL
+        AND sent.branchId = t.fromBranchId
+        AND sent.direction = 'OUT'
+        AND sent.paymentMethod = 'CASH'
+        AND sent.cashBucket = 'TREASURY'
+        AND UPPER(TRIM(sent.referenceNumber)) = UPPER(TRIM(t.transferNumber))
+        AND sent.amount = t.amount
+        AND sent.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND sent.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
+        AND (
+          (
+            received.id IS NOT NULL
+            AND received.branchId = t.toBranchId
+            AND received.direction = 'IN'
+            AND received.paymentMethod = 'CASH'
+            AND received.cashBucket = 'TREASURY'
+            AND UPPER(TRIM(received.referenceNumber)) = UPPER(TRIM(t.transferNumber))
+            AND received.amount = t.amount
+            AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+            AND received.receiptApprovalStatus = 'APPROVED'
+            AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+          )
+          OR (
+            reversal.id IS NOT NULL
+            AND reversal.branchId = t.fromBranchId
+            AND reversal.direction = 'IN'
+            AND reversal.paymentMethod = 'CASH'
+            AND reversal.cashBucket = 'TREASURY'
+            AND UPPER(TRIM(reversal.referenceNumber)) = CONCAT('CANCEL-', UPPER(TRIM(t.transferNumber)))
+            AND reversal.amount = t.amount
+            AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+            AND reversal.receiptApprovalStatus = 'APPROVED'
+            AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
+          )
+        )
+      ), 0)
   `));
   const unpairedCustodySourceCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
@@ -430,7 +445,7 @@ export async function buildDailyCashEvidenceTx(
         SELECT 1
         FROM receipts target
         WHERE target.branchId = source.branchId
-          AND target.referenceNumber = source.referenceNumber
+          AND UPPER(TRIM(target.referenceNumber)) = UPPER(TRIM(source.referenceNumber))
           AND target.amount = source.amount
           AND target.direction = 'IN'
           AND target.paymentMethod = 'CASH'
@@ -491,7 +506,18 @@ export async function buildDailyCashEvidenceTx(
       AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
       AND r.receiptApprovalStatus = 'APPROVED'
       AND ${receiptCashEventAtSql("r")} < ${endExclusive}
-      AND (r.cashBucket IS NULL OR (r.cashBucket = 'DRAWER' AND r.shiftId IS NULL))
+      AND (
+        r.cashBucket IS NULL
+        OR (
+          r.cashBucket = 'DRAWER'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM shifts linkedShift
+            WHERE linkedShift.id = r.shiftId
+              AND linkedShift.branchId = r.branchId
+          )
+        )
+      )
   `));
 
   const canonical = JSON.stringify({
