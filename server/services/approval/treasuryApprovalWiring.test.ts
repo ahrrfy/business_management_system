@@ -89,10 +89,9 @@ const SITES: WiredSite[] = [
     trigger: cashVarianceApprovalTrigger("SURPLUS", "REJECT"),
     retainLegacy: cashVarianceApprovalRetainsLegacy("SURPLUS", "REJECT"),
   },
-  // التصنيفان التاليان **مكتوبان صراحةً في موضع الاستدعاء** لأنّ `shared/approvalTriggers.ts`
-  // لا يحمل مُصنِّفاً للمصروفات ولا لرفض السند بعد. وتثبيتُهما هنا يجعل أيّ تحويلٍ لاحق إلى
-  // دالّةٍ مُصنِّفة تحويلاً **مُثبَت التكافؤ** لا تخميناً.
-  { name: "approveExpense · صرف مصروف", trigger: "MONEY_OUT", retainLegacy: false },
+  // اعتماد المصروف قرارٌ رقابيّ بلا خروج مال؛ التنفيذ اللاحق وحده يحرّك العهدة.
+  // الرفض كذلك بلا أثر مالي، لذلك كلا الموضعين مصنّف صراحةً بـ null.
+  { name: "approveExpense · اعتماد بلا صرف", trigger: null, retainLegacy: false },
   { name: "rejectExpense · رفض بلا أثر", trigger: null, retainLegacy: false },
   { name: "rejectVoucher · رفض بلا أثر", trigger: null, retainLegacy: false },
 ];
@@ -113,7 +112,7 @@ describe("الزوج الذي يمرره كل موضع — تثبيت لا اش�
       ["approveCashVarianceCase · زيادة — مستبقاة حتى يحسمها المالك", null, true],
       ["rejectCashVarianceCase · عجز", null, false],
       ["rejectCashVarianceCase · زيادة", null, false],
-      ["approveExpense · صرف مصروف", "MONEY_OUT", false],
+      ["approveExpense · اعتماد بلا صرف", null, false],
       ["rejectExpense · رفض بلا أثر", null, false],
       ["rejectVoucher · رفض بلا أثر", null, false],
     ]);
@@ -353,11 +352,11 @@ describe("الحارس النصي — الوصل كما هو في الشيفرة
     }
   });
 
-  it("المصروفات: موضعان بتصنيف صريح ريثما يُضاف مصنفهما", () => {
+  it("المصروفات: الاعتماد والرفض بلا أثر مالي، والتنفيذ وحده يخرج المال", () => {
     const blocks = assertApproverBlocks(read(FILES.expense));
     expect(blocks).toHaveLength(2);
-    expect(blocks.filter((b) => b.includes('trigger: "MONEY_OUT"'))).toHaveLength(1);
-    expect(blocks.filter((b) => b.includes("trigger: null"))).toHaveLength(1);
+    expect(blocks.filter((b) => b.includes('trigger: "MONEY_OUT"'))).toHaveLength(0);
+    expect(blocks.filter((b) => b.includes("trigger: null"))).toHaveLength(2);
     // ولا استبقاءَ في أيٍّ منهما: لا قرارَ مالكٍ مكتوباً للمصروفات.
     expect(blocks.join("\n")).not.toContain("retainLegacy");
   });
