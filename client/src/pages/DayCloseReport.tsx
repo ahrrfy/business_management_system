@@ -339,10 +339,13 @@ export default function DayCloseReport() {
   );
 
   function onExport() {
-    if (!dc || dc.withheldBlindCountShiftCount > 0) {
-      if (dc?.withheldBlindCountShiftCount) {
-        notify.warn("التقرير جزئي", "أكمل العدّ المستقل للعهد النقدية قبل تصدير تقرير الإقفال.");
-      }
+    if (!dc) return;
+    if (dc.withheldBlindCountShiftCount > 0) {
+      notify.warn("التقرير جزئي", "أكمل العدّ المستقل للعهد النقدية قبل تصدير تقرير الإقفال.");
+      return;
+    }
+    if (!dc.cashPosition) {
+      notify.warn("الرقم النهائي محجوب", "عالِج أدلة النقد غير المكتملة أو المتعارضة قبل تصدير تقرير الإقفال.");
       return;
     }
     const exportRowsData = dc.shifts.map((r) => ({
@@ -447,10 +450,13 @@ export default function DayCloseReport() {
 
   // طباعة A4 — نفس أعمدة الشاشة/التصدير (تفصيل كل وردية)، ولا اقتطاع (اليوم الواحد محدودُ الورديات أصلاً).
   function onPrint() {
-    if (!dc || dc.withheldBlindCountShiftCount > 0) {
-      if (dc?.withheldBlindCountShiftCount) {
-        notify.warn("التقرير جزئي", "أكمل العدّ المستقل للعهد النقدية قبل طباعة تقرير الإقفال.");
-      }
+    if (!dc) return;
+    if (dc.withheldBlindCountShiftCount > 0) {
+      notify.warn("التقرير جزئي", "أكمل العدّ المستقل للعهد النقدية قبل طباعة تقرير الإقفال.");
+      return;
+    }
+    if (!dc.cashPosition) {
+      notify.warn("الرقم النهائي محجوب", "عالِج أدلة النقد غير المكتملة أو المتعارضة قبل طباعة تقرير الإقفال.");
       return;
     }
     const printRows = dc.shifts.map((r) => ({
@@ -548,8 +554,8 @@ export default function DayCloseReport() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!dc || dailyEvidenceUnavailable || (!dc.cashPosition && dc.shifts.length === 0 && dc.directOperations.receiptCount === 0) || dc.withheldBlindCountShiftCount > 0}
-      printDisabled={!dc || dailyEvidenceUnavailable || (!dc.cashPosition && dc.shifts.length === 0 && dc.directOperations.receiptCount === 0) || dc.withheldBlindCountShiftCount > 0}
+      exportDisabled={!dc || dailyEvidenceUnavailable || !dc.cashPosition || dc.withheldBlindCountShiftCount > 0}
+      printDisabled={!dc || dailyEvidenceUnavailable || !dc.cashPosition || dc.withheldBlindCountShiftCount > 0}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">

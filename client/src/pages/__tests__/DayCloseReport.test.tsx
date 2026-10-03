@@ -133,6 +133,9 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).toContain('drift: finalCountUsable ? (finalVariance ?? "") : ""');
     expect(source).not.toContain("Number(dc.cashPosition.expectedCashOnHand)");
     expect(source).not.toContain("Number(finalVariance)");
+    expect(source).toContain("if (!dc.cashPosition)");
+    expect(source).toContain("exportDisabled={!dc || dailyEvidenceUnavailable || !dc.cashPosition");
+    expect(source).toContain("printDisabled={!dc || dailyEvidenceUnavailable || !dc.cashPosition");
     expect(source).toContain("drift: finalCountUsable ? fmtAr(finalVariance!)");
   });
 
