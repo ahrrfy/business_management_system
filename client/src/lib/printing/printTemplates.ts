@@ -14,9 +14,10 @@ import { fmtDate, fmtDateTime } from '../date';
 import {
   wrapA4Doc, wrapReceiptDoc,
   docHeader, docMeta, docTable, docSummary, docFooter, agingSummaryBars,
+  type DocHeaderBarcode,
 } from './docHtml';
 import {
-  printSalesInvoiceV2, printPurchaseInvoiceV2,
+  printSalesInvoiceV2, buildSalesInvoiceV2Html, printPurchaseInvoiceV2, buildPurchaseInvoiceV2Html,
   printQuotationV2, printWorkOrderV2, printStatementV2,
   printSalesReportV2,
 } from './printTemplatesV2';
@@ -24,13 +25,14 @@ import { formatArabicMoneyWords } from './tafqit';
 
 /** إعادة تصدير قوالب V2 الرَسميّة للاستخدام المباشر (فاتورة مشتريات + تقرير مبيعات جديدان بلا نظير قديم). */
 export {
-  printSalesInvoiceV2, printPurchaseInvoiceV2, printQuotationV2,
+  printSalesInvoiceV2, buildSalesInvoiceV2Html, printPurchaseInvoiceV2, buildPurchaseInvoiceV2Html, printQuotationV2,
   printWorkOrderV2, printStatementV2, printSalesReportV2,
 } from './printTemplatesV2';
 export type {
   SalesInvoiceV2Data, PurchaseInvoiceV2Data, QuotationV2Data,
   WorkOrderV2Data, StatementV2Data, SalesReportV2Data, VoucherV2Data,
 } from './printTemplatesV2';
+export type { DocHeaderBarcode } from './docHtml';
 import { qrCodeSvg, qrSvgSync } from './qr';
 import { code128Svg } from './barcode';
 import { resolveQrUrl } from './render';
@@ -114,6 +116,10 @@ export interface InvoicePrintData {
   qrUrl?: string | null;
   /** حمولة QR المشفرة من الخادم أو معرّف المستند (اختياري) — تُحوَّل تلقائياً إلى رابط عبر resolveQrUrl. */
   qrPayload?: string | null;
+  /** باركود رقم الفاتورة للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
 }
 
 export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
@@ -137,6 +143,8 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
   printSalesInvoiceV2({
     invoiceNumber: d.invoiceNumber,
     invoiceDate: d.invoiceDate,
+    barcode: d.barcode,
+    barcodePlacement: d.barcodePlacement,
     statusLabel,
     statusColor,
     customerName: d.customerName,
@@ -206,6 +214,10 @@ export interface QuotationPrintData {
   total: string | number;
   qrUrl?: string | null;
   qrPayload?: string | null;
+  /** باركود رقم العرض للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
 }
 
 export async function printQuotation(d: QuotationPrintData): Promise<void> {
@@ -222,6 +234,8 @@ export async function printQuotation(d: QuotationPrintData): Promise<void> {
     quoteNumber: d.quoteNumber,
     quoteDate: d.quoteDate,
     validUntil: d.validUntil,
+    barcode: d.barcode,
+    barcodePlacement: d.barcodePlacement,
     customerName: d.customerName,
     contactPerson: d.contactPerson,
     customerPhone: d.customerPhone,
