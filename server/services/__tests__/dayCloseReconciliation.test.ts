@@ -1212,6 +1212,8 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     const shiftLine = line(res, shiftId);
     expect(shiftLine.handoversCash).toBe("0.00");
     expect(shiftLine.expensesCash).toBe("10000.00");
+    expect(shiftLine.movements.find((movement) => movement.id === sourceReceiptId)?.categoryType)
+      .toBe("EXPENSE");
     expect(res.cashPosition).toMatchObject({ cashInTransit: "0.00" });
   });
 

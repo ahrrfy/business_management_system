@@ -458,8 +458,8 @@ export async function getDayCloseReconciliation(opts: {
         collectionsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
         handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NOT NULL AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
         cashDropsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NOT NULL AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
-        expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
-        returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+        expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NULL AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
+        returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NULL AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
       })
       .from(receipts)
       .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
@@ -580,6 +580,7 @@ export async function getDayCloseReconciliation(opts: {
         createdAt: receipts.createdAt,
         createdBy: receipts.createdBy,
         createdByName: receiptUsers.name,
+        custodyEvidenceReceiptId: custodySourceEvidence.receiptId,
         // Invoices
         invoiceId: receipts.invoiceId,
         invoiceNumber: invoices.invoiceNumber,
@@ -619,6 +620,7 @@ export async function getDayCloseReconciliation(opts: {
         and(eq(receipts.partyType, "SUPPLIER"), eq(suppliers.id, receipts.partyId)),
       )
       .leftJoin(workOrders, eq(workOrders.id, receipts.workOrderId))
+      .leftJoin(custodySourceEvidence, eq(custodySourceEvidence.receiptId, receipts.id))
       .where(isDrawerCash)
       .orderBy(desc(receipts.createdAt), desc(receipts.id));
 
@@ -626,15 +628,16 @@ export async function getDayCloseReconciliation(opts: {
     if (r.shiftId == null) continue;
     const sId = Number(r.shiftId);
     const ref = (r.referenceNumber ?? "").trim().toUpperCase();
-    const isHandover = r.direction === "OUT" && ref.startsWith("CH-");
-    const isCashDrop = r.direction === "OUT" && ref.startsWith("CD-");
+    const hasCustodyEvidence = r.custodyEvidenceReceiptId != null;
+    const isHandover = r.direction === "OUT" && hasCustodyEvidence && ref.startsWith("CH-");
+    const isCashDrop = r.direction === "OUT" && hasCustodyEvidence && ref.startsWith("CD-");
     const isExpense =
       r.direction === "OUT" &&
-      !isHandover &&
+      !hasCustodyEvidence &&
       (r.voucherNumber != null || r.expenseId != null);
     const isReturn =
       r.direction === "OUT" &&
-      !isHandover &&
+      !hasCustodyEvidence &&
       r.voucherNumber == null &&
       r.expenseId == null &&
       r.invoiceId != null;
