@@ -250,6 +250,67 @@ describe("daily physical treasury reconciliation", () => {
     expect(blocked.actions.canCount).toBe(false);
   });
 
+  it("pairs a custody source before cutoff with its target completed after cutoff", async () => {
+    const inserted = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "0.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+    const shiftId = Number((inserted as unknown as [{ insertId: number }])[0]?.insertId ?? 0);
+    const sourceInserted = await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-CROSS-DAY-DAILY",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const sourceReceiptId = Number(
+      (sourceInserted as unknown as [{ insertId: number }])[0]?.insertId ?? 0,
+    );
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    const nextDay = new Date("2026-09-01T01:00:00.000Z");
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-CROSS-DAY-DAILY",
+      createdBy: CHECKER,
+      createdAt: nextDay,
+      approvedAt: nextDay,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).not.toContain("PENDING_CUSTODY");
+  });
+
   it("does not classify ordinary vouchers with CH references as custody", async () => {
     const inserted = await db().insert(s.shifts).values({
       branchId: 1,

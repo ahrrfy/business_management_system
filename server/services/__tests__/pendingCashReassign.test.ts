@@ -250,6 +250,32 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  it("تتجاهل سنداً عادياً متصادماً وتفصل المُسلِّم من مصدر العهدة المحاسبي الفريد", async () => {
+    const referenceNumber = "CD-COLLISION-RESOLUTION";
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      referenceNumber: ` ${referenceNumber.toLowerCase()} `,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      partyType: "OTHER",
+      createdBy: NEW_HOLDER,
+    });
+    const receiptId = await pendingContract(HOLDER, referenceNumber, true, CASHIER);
+    const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+
+    await manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER });
+    const newHolder = appRouter.createCaller(makeCtx(await user(NEW_HOLDER)));
+    await expect(
+      newHolder.treasury.acceptHandoverReceipt(
+        acceptInput(receiptId, "collision-source-accept"),
+      ),
+    ).resolves.toMatchObject({ accepted: true });
+  });
+
   it("مرجعٌ حرٌّ يبدأ بـCD- (سند بنكيّ) لا يحجزه قيد التفرّد", async () => {
     // `referenceNumber` حقلٌ حرّ؛ حجزُ كل ما يبدأ بـ«CD-» كان يمنع سندين بنكيَّين بنفس المرجع.
     const mk = (ref: string) =>

@@ -1000,17 +1000,19 @@ export async function getDayCloseReconciliation(opts: {
           scopedBranches = [{ id: opts.branchId }];
         } else {
           // لا نكرّر بناء الأدلة لكل وحدة خاملة: الفروع المؤثرة هي التي تحمل نقد خزينة
-          // أو وردية ظاهرة/مفتوحة، مع بقاء المجموع شاملاً لكل النقد التاريخي المتراكم.
-          const [treasuryBranches, shiftBranches] = await Promise.all([
+          // أو وردية ظاهرة/مفتوحة أو مصدر تحويل، مع بقاء المجموع شاملاً لكل النقد
+          // التاريخي المتراكم وعدم إسقاط تحويلٍ فاسد صادر من فرع خامل.
+          const [treasuryBranches, shiftBranches, transferBranches] = await Promise.all([
             db.selectDistinct({ id: receipts.branchId }).from(receipts).where(and(
               eq(receipts.cashBucket, "TREASURY"),
               eq(receipts.paymentMethod, "CASH"),
               lt(eventAt, endExclusive),
             )),
             db.selectDistinct({ id: shifts.branchId }).from(shifts).where(lt(shifts.openedAt, endExclusive)),
+            db.selectDistinct({ id: cashTransfers.fromBranchId }).from(cashTransfers),
           ]);
           const ids = new Set<number>(lines.map((line) => line.branchId));
-          for (const row of [...treasuryBranches, ...shiftBranches]) {
+          for (const row of [...treasuryBranches, ...shiftBranches, ...transferBranches]) {
             if (row.id != null) ids.add(Number(row.id));
           }
           scopedBranches = Array.from(ids, (id) => ({ id }));

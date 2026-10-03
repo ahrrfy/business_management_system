@@ -452,11 +452,8 @@ export async function buildDailyCashEvidenceTx(
         AND target.workOrderId IS NULL
         AND target.reservationId IS NULL
         AND (
-          (target.receiptStatus = 'PENDING' AND target.createdAt < ${endExclusive})
-          OR (
-            target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-            AND ${receiptCashEventAtSql("target")} < ${endExclusive}
-          )
+          target.receiptStatus = 'PENDING'
+          OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         )
       WHERE source.branchId = ${branchId}
         AND source.direction = 'OUT'

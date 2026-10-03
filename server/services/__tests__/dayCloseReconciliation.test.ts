@@ -852,6 +852,43 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     });
   });
 
+  it("يحجب موقف كل الفروع إذا نسب عقد التحويل إيصال الإرسال إلى فرع مصدر خامل مختلف", async () => {
+    await db().insert(s.branches).values({
+      id: 3,
+      name: "فرع مصدر خامل",
+      code: "IDLE-SOURCE",
+      type: "SALES",
+    });
+    const eventAt = new Date(`${DATE}T12:00:00.000Z`);
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-IDLE-SOURCE-MISMATCH",
+      createdBy: ADMIN,
+      createdAt: eventAt,
+    });
+    const sentReceiptId = Number(
+      (sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId,
+    );
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-IDLE-SOURCE-MISMATCH",
+      fromBranchId: 3,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "IN_TRANSIT",
+      sentBy: ADMIN,
+      sentReceiptId,
+      sentAt: eventAt,
+    });
+
+    expect((await report()).cashPosition).toBeNull();
+  });
+
   it("يحجب الموقف النقدي إذا أشار استلام التحويل إلى إيصال غير تابع للعقد", async () => {
     const eventAt = new Date(`${DATE}T12:00:00.000Z`);
     const sentResult = await db().insert(s.receipts).values({
