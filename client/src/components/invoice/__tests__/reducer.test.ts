@@ -83,6 +83,47 @@ describe("invoiceReducer tier repricing", () => {
     expect(next.items.map((item) => item.priceSource)).toEqual(["CONTRACT", undefined]);
   });
 
+  it("changes entity and price tier together when SET_ENTITY specifies tier", () => {
+    const state = {
+      ...createInitialState("SALE"),
+      entityId: null,
+      tier: "RETAIL" as const,
+    };
+
+    const next = invoiceReducer(state, {
+      type: "SET_ENTITY",
+      id: 15,
+      tier: "WHOLESALE",
+    });
+
+    expect(next.entityId).toBe(15);
+    expect(next.tier).toBe("WHOLESALE");
+  });
+
+  it("changes entity, price tier, and effective prices atomically when SET_ENTITY_PRICES specifies tier", () => {
+    const state = {
+      ...createInitialState("SALE"),
+      entityId: null,
+      tier: "RETAIL" as const,
+      items: [line(11, "1000.00"), line(22, "2000.00")],
+    };
+
+    const next = invoiceReducer(state, {
+      type: "SET_ENTITY_PRICES",
+      id: 15,
+      tier: "WHOLESALE",
+      pricesByUnitId: {
+        11: { price: "800.00", priceSource: "TIER" },
+        22: { price: "1600.00", priceSource: "CONTRACT" },
+      },
+    });
+
+    expect(next.entityId).toBe(15);
+    expect(next.tier).toBe("WHOLESALE");
+    expect(next.items.map((item) => item.price)).toEqual(["800.00", "1600.00"]);
+    expect(next.items.map((item) => item.priceSource)).toEqual(["TIER", "CONTRACT"]);
+  });
+
   it("keeps a line unchanged when the server did not return its unit", () => {
     const state = {
       ...createInitialState("QUOTATION"),
