@@ -26,7 +26,7 @@ const SEARCH_LIMIT = 20;
 export interface EntityPickerProps {
   type: InvoiceType;
   selectedId: number | null;
-  onSelect: (id: number | null) => void;
+  onSelect: (id: number | null, entity?: EntityRow | null) => void;
   /** يربط زرّ المنتقي بتسمية الحقل الخارجية. */
   id?: string;
   /** يمنع فتح المنتقي وتغيير القيمة، مع إبقاء اسم الكيان المختار مقروءاً. */
@@ -153,7 +153,7 @@ export function EntityPicker({ type, selectedId, onSelect, id, disabled = false,
                   role="option"
                   aria-selected={e.id === selectedId}
                   onClick={() => {
-                    onSelect(e.id);
+                    onSelect(e.id, e);
                     setOpen(false);
                     setQ("");
                   }}
@@ -197,7 +197,7 @@ export function EntityPicker({ type, selectedId, onSelect, id, disabled = false,
                 size="sm"
                 className="w-full border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"
                 onClick={() => {
-                  onSelect(null);
+                  onSelect(null, null);
                   setOpen(false);
                 }}
               >
