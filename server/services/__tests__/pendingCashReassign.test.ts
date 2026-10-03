@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -233,6 +233,21 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     await manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER });
     const row = (await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId)))[0];
     expect(Number(row.createdBy)).toBe(NEW_HOLDER);
+  });
+
+  it("تطبع مرجع المصدر قبل فحص فصل مُسلِّم النقد عن المستلم الجديد", async () => {
+    const referenceNumber = "CD-1-20260816-NORMALIZED";
+    const receiptId = await pendingContract(HOLDER, referenceNumber, true, NEW_HOLDER);
+    await db().update(s.receipts).set({ referenceNumber: " cd-1-20260816-normalized " })
+      .where(and(
+        eq(s.receipts.direction, "OUT"),
+        eq(s.receipts.referenceNumber, referenceNumber),
+      ));
+    const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+
+    await expect(
+      manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("مرجعٌ حرٌّ يبدأ بـCD- (سند بنكيّ) لا يحجزه قيد التفرّد", async () => {

@@ -193,7 +193,11 @@ export async function settlePendingShiftCloseHandovers(): Promise<{
         }
 
         const sourceEntries = await tx
-          .select({ entryType: accountingEntries.entryType })
+          .select({
+            entryType: accountingEntries.entryType,
+            branchId: accountingEntries.branchId,
+            amount: accountingEntries.amount,
+          })
           .from(accountingEntries)
           .where(
             and(
@@ -202,8 +206,10 @@ export async function settlePendingShiftCloseHandovers(): Promise<{
             ),
           );
         if (
-          sourceEntries.filter((entry) => entry.entryType === "CASH_TRANSFER_OUT").length !== 1 ||
-          sourceEntries.some((entry) => entry.entryType === "CASH_HANDOVER")
+          sourceEntries.length !== 1 ||
+          sourceEntries[0]?.entryType !== "CASH_TRANSFER_OUT" ||
+          Number(sourceEntries[0]?.branchId) !== Number(pending.branchId) ||
+          !money(sourceEntries[0]?.amount ?? 0).eq(money(source.amount))
         ) {
           return false;
         }

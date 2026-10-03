@@ -155,7 +155,15 @@ export async function getRecentMovements(
           FROM accountingEntries custodyEvidence
           WHERE custodyEvidence.receiptId = r.id
             AND custodyEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+            AND custodyEvidence.branchId = r.branchId
+            AND custodyEvidence.amount = r.amount
         )
+        AND (
+          SELECT COUNT(*)
+          FROM accountingEntries custodyEvidence
+          WHERE custodyEvidence.receiptId = r.id
+            AND custodyEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+        ) = 1
         AND r.branchId = ${scope.actorBranchId}
         AND (r.createdBy IS NULL OR r.createdBy <> ${scope.userId})
         AND (s.userId IS NULL OR s.userId <> ${scope.userId})

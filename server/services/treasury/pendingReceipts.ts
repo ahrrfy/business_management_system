@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
@@ -285,7 +285,7 @@ export async function reassignPendingTreasuryReceipt(
         .from(receipts)
         .where(
           and(
-            eq(receipts.referenceNumber, referenceNumber),
+            sql`UPPER(TRIM(${receipts.referenceNumber})) = UPPER(TRIM(${referenceNumber}))`,
             eq(receipts.branchId, Number(row.branchId)),
             eq(receipts.direction, "OUT"),
             eq(receipts.cashBucket, "DRAWER"),
@@ -551,7 +551,7 @@ export async function acceptPendingTreasuryReceipt(
       .where(
         and(
           eq(receipts.branchId, Number(row.branchId)),
-          eq(receipts.referenceNumber, referenceNumber),
+          sql`UPPER(TRIM(${receipts.referenceNumber})) = UPPER(TRIM(${referenceNumber}))`,
           eq(receipts.direction, "OUT"),
           eq(receipts.paymentMethod, "CASH"),
           eq(receipts.cashBucket, "DRAWER"),
@@ -587,18 +587,25 @@ export async function acceptPendingTreasuryReceipt(
       }
     }
     const sourceEntries = await tx
-      .select({ entryType: accountingEntries.entryType, amount: accountingEntries.amount })
+      .select({
+        entryType: accountingEntries.entryType,
+        branchId: accountingEntries.branchId,
+        amount: accountingEntries.amount,
+      })
       .from(accountingEntries)
-      .where(eq(accountingEntries.receiptId, Number(matchingSource.id)));
-    const stagedToTransit = sourceEntries.some(
-      (entry) => entry.entryType === "CASH_TRANSFER_OUT" && declared.eq(money(entry.amount)),
-    );
-    const legacyRecognized = sourceEntries.some(
-      (entry) => entry.entryType === "CASH_HANDOVER" && declared.eq(money(entry.amount)),
-    );
-    if (stagedToTransit === legacyRecognized) {
+      .where(and(
+        eq(accountingEntries.receiptId, Number(matchingSource.id)),
+        inArray(accountingEntries.entryType, ["CASH_TRANSFER_OUT", "CASH_HANDOVER"]),
+      ));
+    const sourceEntry = sourceEntries.length === 1 ? sourceEntries[0] : null;
+    if (
+      !sourceEntry ||
+      Number(sourceEntry.branchId) !== Number(row.branchId) ||
+      !declared.eq(money(sourceEntry.amount))
+    ) {
       throw new TRPCError({ code: "CONFLICT", message: "دليل قيد تسليم النقد مفقود أو متعارض" });
     }
+    const stagedToTransit = sourceEntry.entryType === "CASH_TRANSFER_OUT";
 
     const variance = counted.minus(declared);
     const countStatus = variance.abs().lte("0.005") ? "MATCHED" : "VARIANCE_OPEN";

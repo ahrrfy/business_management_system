@@ -431,6 +431,74 @@ describe("daily physical treasury reconciliation", () => {
     expect(status.actions.canCount).toBe(false);
   });
 
+  it("keeps a transfer blocked when both receipt and reversal are linked", async () => {
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-DUAL-TERMINAL",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const receivedResult = await db().insert(s.receipts).values({
+      branchId: 2,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-DUAL-TERMINAL",
+      createdBy: CHECKER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const reversalResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CANCEL-CT-DUAL-TERMINAL",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const insertId = (result: unknown) => Number(
+      (result as any)?.[0]?.insertId ?? (result as any)?.insertId,
+    );
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-DUAL-TERMINAL",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "10000.00",
+      status: "CANCELLED",
+      sentBy: MANAGER,
+      receivedBy: CHECKER,
+      cancelledBy: MANAGER,
+      sentReceiptId: insertId(sentResult),
+      receivedReceiptId: insertId(receivedResult),
+      reversalReceiptId: insertId(reversalResult),
+      sentAt: TEST_NOW,
+      receivedAt: TEST_NOW,
+      cancelledAt: TEST_NOW,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+    expect(status.actions.canCount).toBe(false);
+  });
+
   it("blocks the treasury certificate when one custody source has duplicate targets", async () => {
     const shiftResult = await db().insert(s.shifts).values({
       branchId: 1,
@@ -500,6 +568,69 @@ describe("daily physical treasury reconciliation", () => {
         approvedAt: TEST_NOW,
       },
     ]);
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("PENDING_CUSTODY");
+    expect(status.actions.canCount).toBe(false);
+  });
+
+  it("blocks the treasury certificate when custody accounting evidence has the wrong amount", async () => {
+    const shiftResult = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "0.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: TEST_NOW,
+      closedAt: TEST_NOW,
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+    const shiftId = Number(
+      (shiftResult as any)?.[0]?.insertId ?? (shiftResult as any)?.insertId,
+    );
+    const sourceResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-BAD-DAILY-EVIDENCE",
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const sourceReceiptId = Number(
+      (sourceResult as any)?.[0]?.insertId ?? (sourceResult as any)?.insertId,
+    );
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "9000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-BAD-DAILY-EVIDENCE",
+      createdBy: CHECKER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
 
     const status = await getDailyCashReconciliation(
       { branchId: 1, businessDate: DATE },

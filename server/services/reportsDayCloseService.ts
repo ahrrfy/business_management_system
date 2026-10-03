@@ -285,13 +285,24 @@ export async function getDayCloseReconciliation(opts: {
     approvedAt: receipts.approvedAt,
     createdAt: receipts.createdAt,
   });
+  const custodyEvidenceReceipt = alias(receipts, "dayCloseCustodyEvidenceReceipt");
   const custodySourceEvidence = db
-    .selectDistinct({ receiptId: accountingEntries.receiptId })
+    .select({ receiptId: accountingEntries.receiptId })
     .from(accountingEntries)
+    .innerJoin(
+      custodyEvidenceReceipt,
+      eq(custodyEvidenceReceipt.id, accountingEntries.receiptId),
+    )
     .where(and(
       isNotNull(accountingEntries.receiptId),
       inArray(accountingEntries.entryType, ["CASH_TRANSFER_OUT", "CASH_HANDOVER"]),
     ))
+    .groupBy(accountingEntries.receiptId)
+    .having(sql`
+      COUNT(*) = 1
+      AND MAX(${accountingEntries.branchId}) = MAX(${custodyEvidenceReceipt.branchId})
+      AND MAX(${accountingEntries.amount}) = MAX(${custodyEvidenceReceipt.amount})
+    `)
     .as("dayCloseCustodySourceEvidence");
   const openingFloatReceipt = alias(receipts, "dayCloseOpeningFloatReceipt");
   const openingFloatEntry = alias(accountingEntries, "dayCloseOpeningFloatEntry");

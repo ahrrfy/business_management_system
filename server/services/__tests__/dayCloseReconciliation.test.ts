@@ -606,6 +606,71 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect((await report(1)).cashPosition).toBeNull();
   });
 
+  it("يحجب الرقم النهائي إذا لم يطابق مبلغ قيد العهدة إيصال المصدر", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertCustodySource({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CD-BAD-ACCOUNTING-AMOUNT",
+      approvalStatus: "APPROVED",
+    });
+    await db().update(s.accountingEntries).set({ amount: "9000.00" })
+      .where(eq(s.accountingEntries.receiptId, sourceReceiptId));
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-BAD-ACCOUNTING-AMOUNT",
+      createdBy: ADMIN,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحجب الرقم النهائي إذا حمل مصدر العهدة قيدَي خروج متعارضين", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertCustodySource({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CH-CONTRADICTORY-EVIDENCE",
+      approvalStatus: "APPROVED",
+    });
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-CONTRADICTORY-EVIDENCE",
+      createdBy: ADMIN,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
   it("يحجب الموقف النقدي إذا كانت عهدة عد أعمى من وردية يوم سابق ما تزال معلقة", async () => {
     const priorDay = new Date(new Date(`${DATE}T10:00:00.000Z`).getTime() - 86_400_000);
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });

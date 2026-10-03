@@ -374,6 +374,30 @@ export async function buildDailyCashEvidenceTx(
     const rows = (result as [Array<{ count: number | string }>])?.[0] ?? [];
     return Number(rows[0]?.count ?? 0);
   };
+  const validReceivedTransferAtCutoff = sql`
+    received.id IS NOT NULL
+    AND received.branchId = t.toBranchId
+    AND received.direction = 'IN'
+    AND received.paymentMethod = 'CASH'
+    AND received.cashBucket = 'TREASURY'
+    AND UPPER(TRIM(received.referenceNumber)) = UPPER(TRIM(t.transferNumber))
+    AND received.amount = t.amount
+    AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+    AND received.receiptApprovalStatus = 'APPROVED'
+    AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+  `;
+  const validReversalTransferAtCutoff = sql`
+    reversal.id IS NOT NULL
+    AND reversal.branchId = t.fromBranchId
+    AND reversal.direction = 'IN'
+    AND reversal.paymentMethod = 'CASH'
+    AND reversal.cashBucket = 'TREASURY'
+    AND UPPER(TRIM(reversal.referenceNumber)) = CONCAT('CANCEL-', UPPER(TRIM(t.transferNumber)))
+    AND reversal.amount = t.amount
+    AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+    AND reversal.receiptApprovalStatus = 'APPROVED'
+    AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
+  `;
   const interbranchTransitCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
     FROM cashTransfers t
@@ -393,31 +417,17 @@ export async function buildDailyCashEvidenceTx(
         AND sent.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND sent.receiptApprovalStatus = 'APPROVED'
         AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
+        AND (${validReceivedTransferAtCutoff} OR ${validReversalTransferAtCutoff})
+        AND NOT (${validReceivedTransferAtCutoff} AND ${validReversalTransferAtCutoff})
         AND (
-          (
-            received.id IS NOT NULL
-            AND received.branchId = t.toBranchId
-            AND received.direction = 'IN'
-            AND received.paymentMethod = 'CASH'
-            AND received.cashBucket = 'TREASURY'
-            AND UPPER(TRIM(received.referenceNumber)) = UPPER(TRIM(t.transferNumber))
-            AND received.amount = t.amount
-            AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-            AND received.receiptApprovalStatus = 'APPROVED'
-            AND ${receiptCashEventAtSql("received")} < ${endExclusive}
-          )
-          OR (
-            reversal.id IS NOT NULL
-            AND reversal.branchId = t.fromBranchId
-            AND reversal.direction = 'IN'
-            AND reversal.paymentMethod = 'CASH'
-            AND reversal.cashBucket = 'TREASURY'
-            AND UPPER(TRIM(reversal.referenceNumber)) = CONCAT('CANCEL-', UPPER(TRIM(t.transferNumber)))
-            AND reversal.amount = t.amount
-            AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
-            AND reversal.receiptApprovalStatus = 'APPROVED'
-            AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
-          )
+          t.receivedReceiptId IS NULL
+          OR ${receiptCashEventAtSql("received")} >= ${endExclusive}
+          OR ${validReceivedTransferAtCutoff}
+        )
+        AND (
+          t.reversalReceiptId IS NULL
+          OR ${receiptCashEventAtSql("reversal")} >= ${endExclusive}
+          OR ${validReversalTransferAtCutoff}
         )
       ), 0)
   `));
@@ -463,7 +473,15 @@ export async function buildDailyCashEvidenceTx(
           FROM accountingEntries sourceEntry
           WHERE sourceEntry.receiptId = source.id
             AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+            AND sourceEntry.branchId = source.branchId
+            AND sourceEntry.amount = source.amount
         )
+        AND (
+          SELECT COUNT(*)
+          FROM accountingEntries sourceEntry
+          WHERE sourceEntry.receiptId = source.id
+            AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+        ) = 1
       GROUP BY source.id
       HAVING COUNT(DISTINCT target.id) <> 1
 
@@ -486,10 +504,18 @@ export async function buildDailyCashEvidenceTx(
           OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
         )
       LEFT JOIN (
-        SELECT DISTINCT receiptId
+        SELECT
+          receiptId,
+          MAX(branchId) AS branchId,
+          MAX(amount) AS amount
         FROM accountingEntries
         WHERE entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
-      ) sourceEvidence ON sourceEvidence.receiptId = source.id
+        GROUP BY receiptId
+        HAVING COUNT(*) = 1
+      ) sourceEvidence
+        ON sourceEvidence.receiptId = source.id
+        AND sourceEvidence.branchId = source.branchId
+        AND sourceEvidence.amount = source.amount
       WHERE target.branchId = ${branchId}
         AND target.direction = 'IN'
         AND target.paymentMethod = 'CASH'
@@ -529,7 +555,15 @@ export async function buildDailyCashEvidenceTx(
             FROM accountingEntries handoverEntry
             WHERE handoverEntry.receiptId = r.id
               AND handoverEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+              AND handoverEntry.branchId = r.branchId
+              AND handoverEntry.amount = r.amount
           )
+          AND (
+            SELECT COUNT(*)
+            FROM accountingEntries handoverEntry
+            WHERE handoverEntry.receiptId = r.id
+              AND handoverEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+          ) = 1
           THEN r.amount ELSE 0 END) AS handoversCash
       FROM receipts r
       WHERE r.branchId = ${branchId}
