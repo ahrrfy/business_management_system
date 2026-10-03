@@ -36,6 +36,7 @@ import {
   PAYMENT_TERMS,
   TIER_OPTIONS,
   type Currency,
+  type EntityRow,
   type InvoiceAction,
   type InvoiceState,
   type InvoiceType,
@@ -226,21 +227,48 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
     }
   }
 
-  /** يغيّر العميل وأسعار سلة البيع/العرض معاً كي لا يبقى سعر عميل سابق في مستند العميل الجديد. */
-  async function changeEntity(nextId: number | null) {
+  /** يغيّر العميل وأسعار سلة البيع/العرض معاً كي لا يبقى سعر عميل سابق في مستند العميل الجديد،
+   *  ويحوّل فئة السعر تلقائياً لتطابق فئة العميل المختار (أو الافتراضي "RETAIL" عند الإلغاء). */
+  async function changeEntity(nextId: number | null, selectedEntity?: EntityRow | null) {
     activePricingIntentEpoch.invalidate();
+    const epochToken = activePricingIntentEpoch.capture();
+
+    if (invoiceType !== "SALE" && invoiceType !== "QUOTATION") {
+      dispatch({ type: "SET_ENTITY", id: nextId });
+      return;
+    }
+
+    let targetTier: PriceTier = "RETAIL";
+    if (nextId != null) {
+      if (selectedEntity?.defaultPriceTier) {
+        targetTier = selectedEntity.defaultPriceTier as PriceTier;
+      } else {
+        try {
+          const customer = await utils.customers.get.fetch({ customerId: nextId });
+          if (!activePricingIntentEpoch.isCurrent(epochToken)) return;
+          if (customer?.defaultPriceTier) {
+            targetTier = customer.defaultPriceTier as PriceTier;
+          }
+        } catch {
+          if (!activePricingIntentEpoch.isCurrent(epochToken)) return;
+          targetTier = latestStateRef.current.tier;
+        }
+      }
+    } else {
+      targetTier = "RETAIL";
+    }
+
+    const currentKey = `${latestStateRef.current.entityId ?? "none"}:${latestStateRef.current.tier}`;
+    const nextKey = `${nextId ?? "none"}:${targetTier}`;
+
     const intent = beginPricingSelectionIntent(
       pricingRequestGuardRef.current,
-      `customer:${nextId ?? "none"}`,
-      latestStateRef.current.entityId,
-      nextId,
+      `customer:${nextId ?? "none"}:tier:${targetTier}`,
+      currentKey,
+      nextKey,
     );
     if (!intent.changed) {
       setIsRepricing(false);
-      return;
-    }
-    if (invoiceType !== "SALE" && invoiceType !== "QUOTATION") {
-      dispatch({ type: "SET_ENTITY", id: nextId });
       return;
     }
 
@@ -253,13 +281,13 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
         const unitIds = Array.from(new Set(snapshot.items.map((item) => item.productUnitId)))
           .sort((a, b) => a - b);
         if (unitIds.length === 0) {
-          dispatch({ type: "SET_ENTITY", id: nextId });
+          dispatch({ type: "SET_ENTITY", id: nextId, tier: targetTier });
           return;
         }
 
         const rows = await utils.catalog.byUnitIds.fetch({
           branchId: snapshot.branchId,
-          tier: snapshot.tier,
+          tier: targetTier,
           productUnitIds: unitIds,
           customerId: nextId,
         });
@@ -282,7 +310,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             priceSource: row.isContractPrice ? "CONTRACT" : "TIER",
           };
         }
-        dispatch({ type: "SET_ENTITY_PRICES", id: nextId, pricesByUnitId });
+        dispatch({ type: "SET_ENTITY_PRICES", id: nextId, tier: targetTier, pricesByUnitId });
         return;
       }
     } catch (error) {
@@ -408,7 +436,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             <EntityPicker
               type={invoiceType}
               selectedId={state.entityId}
-              onSelect={(id) => void changeEntity(id)}
+              onSelect={(id, entity) => void changeEntity(id, entity)}
               placeholder={isReturn ? `نقدي — بلا ${isSale ? "عميل" : "مورّد"} (اختياري)` : undefined}
             />
           </FieldGroup>
