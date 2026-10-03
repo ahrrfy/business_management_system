@@ -108,7 +108,6 @@ afterEach(async () => {
 describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
   it("looks up product by barcode and returns details with existing images list", async () => {
     const result = await quickBarcodeLookup(photographer, { barcode: "6291100223344" });
-    expect(result.found).toBe(true);
     expect(result.product).toBeDefined();
     expect(result.product?.name).toBe("سماعة لاسلكية برو");
     expect(result.product?.brand).toBe("سوني");
@@ -116,14 +115,13 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
     expect(result.product?.categoryName).toBe("إلكترونيات");
     expect(result.product?.variantName).toBe("أسود ملكي");
     expect(result.product?.barcode).toBe("6291100223344");
-    expect(result.existingImages).toEqual([]);
+    expect(result.images).toEqual([]);
   });
 
-  it("returns not found for nonexistent barcode", async () => {
-    const result = await quickBarcodeLookup(photographer, { barcode: "9999999999999" });
-    expect(result.found).toBe(false);
-    expect(result.product).toBeNull();
-    expect(result.existingImages).toEqual([]);
+  it("returns not found error for nonexistent barcode", async () => {
+    await expect(quickBarcodeLookup(photographer, { barcode: "9999999999999" })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
   });
 
   it("manager path: auto-approves and publishes image directly without review queue", async () => {
@@ -164,10 +162,10 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
 
     // After approval, quickBarcodeLookup should return this newly approved image
     const lookupAfter = await quickBarcodeLookup(photographer, { barcode: "6291100223344" });
-    expect(lookupAfter.found).toBe(true);
-    expect(lookupAfter.existingImages).toHaveLength(1);
-    expect(lookupAfter.existingImages[0].id).toBe(saveResult.imageId);
-    expect(lookupAfter.existingImages[0].isPrimary).toBe(true);
+    expect(lookupAfter.product).toBeDefined();
+    expect(lookupAfter.images).toHaveLength(1);
+    expect(lookupAfter.images[0].id).toBe(saveResult.imageId);
+    expect(lookupAfter.images[0].isPrimary).toBe(true);
   });
 
   it("photographer path: creates job with PENDING_REVIEW for manager review", async () => {
