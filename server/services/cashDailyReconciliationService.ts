@@ -423,7 +423,7 @@ export async function buildDailyCashEvidenceTx(
     AND received.cashBucket = 'TREASURY'
     AND UPPER(TRIM(received.referenceNumber)) = UPPER(TRIM(t.transferNumber))
     AND received.amount = t.amount
-    AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+    AND received.receiptStatus = 'COMPLETED'
     AND received.receiptApprovalStatus = 'APPROVED'
     AND ${receiptCashEventAtSql("received")} < ${endExclusive}
     AND EXISTS (
@@ -444,6 +444,12 @@ export async function buildDailyCashEvidenceTx(
         AND clearingEntry.branchId = t.fromBranchId
         AND clearingEntry.amount = t.amount
     )
+    AND (
+      SELECT COUNT(*)
+      FROM accountingEntries receivedEntryCount
+      WHERE receivedEntryCount.receiptId = received.id
+        AND receivedEntryCount.createdAt < ${endExclusive}
+    ) = 1
   `;
   const validReversalTransferAtCutoff = sql`
     reversal.id IS NOT NULL
@@ -453,7 +459,7 @@ export async function buildDailyCashEvidenceTx(
     AND reversal.cashBucket = 'TREASURY'
     AND UPPER(TRIM(reversal.referenceNumber)) = CONCAT('CANCEL-', UPPER(TRIM(t.transferNumber)))
     AND reversal.amount = t.amount
-    AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+    AND reversal.receiptStatus = 'COMPLETED'
     AND reversal.receiptApprovalStatus = 'APPROVED'
     AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
     AND EXISTS (
@@ -465,6 +471,12 @@ export async function buildDailyCashEvidenceTx(
         AND reversalEntry.branchId = t.fromBranchId
         AND reversalEntry.amount = t.amount
     )
+    AND (
+      SELECT COUNT(*)
+      FROM accountingEntries reversalEntryCount
+      WHERE reversalEntryCount.receiptId = reversal.id
+        AND reversalEntryCount.createdAt < ${endExclusive}
+    ) = 1
   `;
   const interbranchTransitCount = countFromResult(await tx.execute(sql`
     SELECT COUNT(*) AS count
@@ -485,8 +497,7 @@ export async function buildDailyCashEvidenceTx(
         )
         OR (
           t.toBranchId = ${branchId}
-          AND t.receivedReceiptId IS NOT NULL
-          AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+          AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
         )
       )
       AND NOT COALESCE((
@@ -497,7 +508,7 @@ export async function buildDailyCashEvidenceTx(
         AND sent.cashBucket = 'TREASURY'
         AND UPPER(TRIM(sent.referenceNumber)) = UPPER(TRIM(t.transferNumber))
         AND sent.amount = t.amount
-        AND sent.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND sent.receiptStatus = 'COMPLETED'
         AND sent.receiptApprovalStatus = 'APPROVED'
         AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
         AND EXISTS (
@@ -509,6 +520,13 @@ export async function buildDailyCashEvidenceTx(
             AND sentEntry.branchId = t.fromBranchId
             AND sentEntry.amount = t.amount
         )
+        AND (
+          SELECT COUNT(*)
+          FROM accountingEntries sentEntryCount
+          WHERE sentEntryCount.receiptId = sent.id
+            AND sentEntryCount.createdAt < ${endExclusive}
+        ) = CASE WHEN t.receivedReceiptId IS NOT NULL
+          AND ${receiptCashEventAtSql("received")} < ${endExclusive} THEN 2 ELSE 1 END
         AND (${validReceivedTransferAtCutoff} OR ${validReversalTransferAtCutoff})
         AND NOT (${validReceivedTransferAtCutoff} AND ${validReversalTransferAtCutoff})
         AND (
@@ -721,6 +739,8 @@ export async function buildDailyCashEvidenceTx(
           s.closedAt IS NOT NULL
           AND s.closedAt < ${endExclusive}
           AND (
+            s.shiftStatus <> 'CLOSED'
+            OR
             s.countedCash IS NULL
             OR s.countedCash - COALESCE(drawer.handoversCash, 0) <> 0
           )
@@ -756,7 +776,7 @@ export async function buildDailyCashEvidenceTx(
     eq(receipts.direction, "OUT"),
     eq(receipts.paymentMethod, "CASH"),
     eq(receipts.cashBucket, "TREASURY"),
-    or(eq(receipts.status, "COMPLETED"), eq(receipts.status, "REVERSED")),
+    eq(receipts.status, "COMPLETED"),
     eq(receipts.approvalStatus, "APPROVED"),
   );
   const [invalidOpeningFloat] = await tx
@@ -773,9 +793,9 @@ export async function buildDailyCashEvidenceTx(
     .where(and(
       eq(shifts.branchId, branchId),
       lt(shifts.openedAt, endExclusive),
-      sql`${shifts.openingBalance} > 0`,
       or(
         and(
+          sql`${shifts.openingBalance} > 0`,
           gte(shifts.openedAt, SHIFT_FLOAT_CONTRACT_CUTOFF),
           sql`${accountingEntries.id} IS NULL`,
         ),
