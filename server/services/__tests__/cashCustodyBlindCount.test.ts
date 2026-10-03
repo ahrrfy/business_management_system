@@ -45,7 +45,7 @@ async function seedCustody(input: {
     (shiftResult as any)[0]?.insertId ?? (shiftResult as any).insertId,
   );
   const referenceNumber = `${input.prefix}-1-20260831-BLIND-${shiftId}`;
-  await db().insert(s.receipts).values({
+  const sourceResult = await db().insert(s.receipts).values({
     branchId: 1,
     shiftId,
     direction: "OUT",
@@ -58,6 +58,19 @@ async function seedCustody(input: {
     partyType: "OTHER",
     description: "خروج عهدة نقدية للاختبار",
     createdBy: CASHIER,
+  });
+  const sourceReceiptId = Number(
+    (sourceResult as any)[0]?.insertId ?? (sourceResult as any).insertId,
+  );
+  await db().insert(s.accountingEntries).values({
+    entryType: input.prefix === "CD" ? "CASH_TRANSFER_OUT" : "CASH_HANDOVER",
+    postingProfile: input.prefix === "CD"
+      ? "CASH_DROP_TO_TRANSIT"
+      : "CASH_HANDOVER_TO_TRANSIT",
+    branchId: 1,
+    receiptId: sourceReceiptId,
+    amount: input.amount,
+    entryDate: new Date().toISOString().slice(0, 10),
   });
   const pendingResult = await db().insert(s.receipts).values({
     branchId: 1,
