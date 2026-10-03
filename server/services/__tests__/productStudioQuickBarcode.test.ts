@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,13 +8,24 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest } from "../../lib/imageStore";
 import {
+  approveStudioTask,
+  quickAiTransform,
   quickBarcodeLookup,
   quickSaveBarcodeProductImage,
   type ProductStudioActor,
 } from "../productStudioService";
+import {
+  getAiStudioConfig,
+  updateAiImageStudioSettings,
+  updateImageStudioSettings,
+} from "../imageStudioSettingsService";
+import { __resetKeyCacheForTests } from "../cryptoService";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const WEBP_1X1 = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+
+const ORIGINAL_KEY = process.env.INTEGRATIONS_ENCRYPTION_KEY;
+const TEST_KEY_HEX = crypto.randomBytes(32).toString("hex");
 
 function db() {
   const value = getDb();
@@ -87,6 +99,8 @@ async function seed() {
 }
 
 beforeEach(async () => {
+  process.env.INTEGRATIONS_ENCRYPTION_KEY = TEST_KEY_HEX;
+  __resetKeyCacheForTests();
   storeDir = await mkdtemp(path.join(tmpdir(), "erp-quick-barcode-"));
   process.env.IMAGE_STORE_DRIVER = "fs";
   process.env.IMAGE_STORE_DIR = storeDir;
@@ -97,6 +111,10 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  if (ORIGINAL_KEY === undefined) delete process.env.INTEGRATIONS_ENCRYPTION_KEY;
+  else process.env.INTEGRATIONS_ENCRYPTION_KEY = ORIGINAL_KEY;
+  __resetKeyCacheForTests();
   if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
   __resetImageStoreForTest();
@@ -201,4 +219,191 @@ describe("quickBarcodeLookup & quickSaveBarcodeProductImage", () => {
     expect(jobs[0].status).toBe("PENDING_REVIEW");
     expect(jobs[0].submittedBy).toBe(photographer.userId);
   });
+
+  it("photographer path with PRO (remove.bg) creates job with mode PRO, and approval publishes with STUDIO_PRO origin", async () => {
+    const saveResult = await quickSaveBarcodeProductImage(photographer, {
+      productId: 801,
+      variantId: 801,
+      barcode: "6291100223344",
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "PRO",
+    });
+
+    expect(saveResult.success).toBe(true);
+    expect(saveResult.autoApproved).toBe(false);
+
+    // Job should have mode PRO
+    const jobs = await db()
+      .select()
+      .from(s.productImageJobs)
+      .where(eq(s.productImageJobs.id, saveResult.jobId));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].mode).toBe("PRO");
+    expect(jobs[0].status).toBe("PENDING_REVIEW");
+
+    // When manager approves the task
+    const approved = await approveStudioTask(manager, saveResult.jobId);
+    expect(approved.imageId).toBeGreaterThan(0);
+
+    // Image in productImages should have origin STUDIO_PRO
+    const images = await db()
+      .select()
+      .from(s.productImages)
+      .where(eq(s.productImages.productId, 801));
+    expect(images).toHaveLength(1);
+    expect(images[0].origin).toBe("STUDIO_PRO");
+  });
+
+  it("manager path with PRO (remove.bg) auto-approves and publishes image with STUDIO_PRO origin", async () => {
+    const saveResult = await quickSaveBarcodeProductImage(manager, {
+      productId: 801,
+      variantId: 801,
+      barcode: "6291100223344",
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "PRO",
+      setAsPrimary: true,
+    });
+
+    expect(saveResult.success).toBe(true);
+    expect(saveResult.autoApproved).toBe(true);
+
+    const images = await db()
+      .select()
+      .from(s.productImages)
+      .where(eq(s.productImages.productId, 801));
+    expect(images).toHaveLength(1);
+    expect(images[0].reviewStatus).toBe("APPROVED");
+    expect(images[0].origin).toBe("STUDIO_PRO");
+
+    const jobs = await db()
+      .select()
+      .from(s.productImageJobs)
+      .where(eq(s.productImageJobs.id, saveResult.jobId));
+    expect(jobs[0].mode).toBe("PRO");
+    expect(jobs[0].status).toBe("APPROVED");
+  });
 });
+
+describe("getAiStudioConfig", () => {
+  it("exposes both AI and PRO readiness states", async () => {
+    const configInitial = await getAiStudioConfig();
+    expect(configInitial).toMatchObject({
+      aiAvailable: false,
+      proAvailable: false,
+      hasAiKey: false,
+      hasProKey: false,
+      cryptoReady: true,
+    });
+
+    await updateAiImageStudioSettings({ aiKey: "GEMINI_KEY_ABC", aiEnabled: true }, 101);
+    await updateImageStudioSettings({ removebgKey: "REMOVEBG_KEY_XYZ", proEnabled: true }, 101);
+
+    const configReady = await getAiStudioConfig();
+    expect(configReady).toMatchObject({
+      aiAvailable: true,
+      aiEnabled: true,
+      hasAiKey: true,
+      proAvailable: true,
+      proEnabled: true,
+      hasProKey: true,
+      cryptoReady: true,
+    });
+  });
+});
+
+describe("quickAiTransform", () => {
+  it("rejects with BAD_REQUEST if imageDataUrl is invalid", async () => {
+    await expect(
+      quickAiTransform(photographer, { imageDataUrl: "invalid-base64" }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+  });
+
+  it("rejects with PRECONDITION_FAILED when AI key is missing or disabled", async () => {
+    await expect(
+      quickAiTransform(photographer, { imageDataUrl: PNG_1X1, mode: "AI" }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+  });
+
+  it("rejects with PRECONDITION_FAILED when REMOVEBG key is missing or disabled", async () => {
+    await expect(
+      quickAiTransform(photographer, { imageDataUrl: PNG_1X1, mode: "REMOVEBG" }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+  });
+
+  it("transforms image via AI (Gemini) when runtime is configured", async () => {
+    await updateAiImageStudioSettings({ aiKey: "AI_KEY_TEST_12345" }, 101);
+    await updateAiImageStudioSettings({ aiEnabled: true }, 101);
+
+    const fakeFetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { text: "enhanced image" },
+                  { inlineData: { mimeType: "image/png", data: "VEVTVF9BSV9JTUFHRQ==" } },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const result = await quickAiTransform(photographer, {
+      imageDataUrl: PNG_1X1,
+      mode: "AI",
+      productId: 801,
+      barcode: "6291100223344",
+    });
+
+    expect(result.provider).toBe("GEMINI");
+    expect(result.imageDataUrl).toBe("data:image/png;base64,VEVTVF9BSV9JTUFHRQ==");
+    expect(fakeFetch).toHaveBeenCalled();
+  });
+
+  it("transforms image via REMOVEBG when service is configured", async () => {
+    await updateImageStudioSettings({ removebgKey: "REMOVEBG_KEY_TEST_12345" }, 101);
+    await updateImageStudioSettings({ proEnabled: true }, 101);
+
+    const fakeCutout = Buffer.from("FAKE_CUTOUT_PNG_BYTES");
+    const fakeFetch = vi.fn().mockResolvedValue(
+      new Response(fakeCutout, {
+        status: 200,
+        headers: {
+          "content-type": "image/png",
+          "X-Credits-Charged": "1",
+          "X-Width": "100",
+          "X-Height": "100",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const result = await quickAiTransform(photographer, {
+      imageDataUrl: PNG_1X1,
+      mode: "REMOVEBG",
+      productId: 801,
+      barcode: "6291100223344",
+    });
+
+    expect(result.provider).toBe("REMOVEBG");
+    expect(result.imageDataUrl).toBe(`data:image/png;base64,${fakeCutout.toString("base64")}`);
+    expect(fakeFetch).toHaveBeenCalled();
+  });
+});
+

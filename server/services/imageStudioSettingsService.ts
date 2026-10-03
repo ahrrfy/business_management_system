@@ -253,18 +253,27 @@ export async function getAiStudioConfig(): Promise<{
   hasAiKey: boolean;
   cryptoReady: boolean;
   provider: string;
+  proAvailable: boolean;
+  proEnabled: boolean;
+  hasProKey: boolean;
 }> {
   const row = await readRow();
   const key = safeDecrypt(row?.encryptedAiKey ?? null);
+  const proKey = safeDecrypt(row?.encryptedRemovebgKey ?? null);
   const cryptoReady = isCryptoReady();
   const aiEnabled = !!row?.aiEnabled;
   const hasAiKey = !!key;
+  const proEnabled = !!row?.proEnabled;
+  const hasProKey = !!proKey;
   return {
     aiAvailable: aiEnabled && hasAiKey && cryptoReady,
     aiEnabled,
     hasAiKey,
     cryptoReady,
     provider: row?.aiProvider ?? "GEMINI",
+    proAvailable: proEnabled && hasProKey && cryptoReady,
+    proEnabled,
+    hasProKey,
   };
 }
 
