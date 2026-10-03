@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, or, like } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
@@ -9,6 +9,7 @@ import {
   users,
 } from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
+import type { Tx } from "../../db";
 import {
   createPostingIntent,
   creditLine,
@@ -47,9 +48,74 @@ function canonicalBreakdown(value: unknown): string {
 function contractSource(
   referenceNumber: string,
 ): PendingTreasuryReceipt["source"] | null {
-  if (referenceNumber.startsWith("CD-")) return "CASH_DROP";
-  if (referenceNumber.startsWith("CH-")) return "CASH_HANDOVER";
+  const normalized = referenceNumber.trim().toUpperCase();
+  if (normalized.startsWith("CD-")) return "CASH_DROP";
+  if (normalized.startsWith("CH-")) return "CASH_HANDOVER";
   return null;
+}
+
+async function resolveUniqueCustodySourceTx(
+  tx: Tx,
+  args: { branchId: number; referenceNumber: string; amount: string },
+) {
+  const declared = money(args.amount);
+  const sourceRows = await tx
+    .select({
+      id: receipts.id,
+      amount: receipts.amount,
+      createdBy: receipts.createdBy,
+      shiftId: receipts.shiftId,
+    })
+    .from(receipts)
+    .where(
+      and(
+        eq(receipts.branchId, args.branchId),
+        sql`UPPER(TRIM(${receipts.referenceNumber})) = UPPER(TRIM(${args.referenceNumber}))`,
+        eq(receipts.direction, "OUT"),
+        eq(receipts.paymentMethod, "CASH"),
+        eq(receipts.cashBucket, "DRAWER"),
+        eq(receipts.status, "COMPLETED"),
+        eq(receipts.approvalStatus, "APPROVED"),
+        eq(receipts.amount, declared.toFixed(2)),
+      ),
+    )
+    .for("update");
+  const sourceIds = sourceRows.map((row) => Number(row.id));
+  const sourceEntries = sourceIds.length === 0
+    ? []
+    : await tx
+        .select({
+          receiptId: accountingEntries.receiptId,
+          entryType: accountingEntries.entryType,
+          branchId: accountingEntries.branchId,
+          amount: accountingEntries.amount,
+        })
+        .from(accountingEntries)
+        .where(
+          and(
+            inArray(accountingEntries.receiptId, sourceIds),
+            inArray(accountingEntries.entryType, ["CASH_TRANSFER_OUT", "CASH_HANDOVER"]),
+          ),
+        );
+  const validSources = sourceRows.flatMap((candidate) => {
+    const entries = sourceEntries.filter(
+      (entry) => Number(entry.receiptId) === Number(candidate.id),
+    );
+    if (entries.length !== 1) return [];
+    const entry = entries[0];
+    if (
+      Number(entry.branchId) !== args.branchId ||
+      !declared.eq(money(entry.amount))
+    ) return [];
+    return [{ ...candidate, sourceEntryType: entry.entryType }];
+  });
+  if (validSources.length !== 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "عقد تسليم النقد لا يملك سند خروج مطابقاً وفريداً",
+    });
+  }
+  return validSources[0];
 }
 
 /**
@@ -77,11 +143,42 @@ export async function listMyPendingTreasuryReceipts(
     .leftJoin(
       sourceReceipt,
       and(
-        eq(sourceReceipt.referenceNumber, receipts.referenceNumber),
+        sql`UPPER(TRIM(${sourceReceipt.referenceNumber})) = UPPER(TRIM(${receipts.referenceNumber}))`,
         eq(sourceReceipt.branchId, receipts.branchId),
         eq(sourceReceipt.direction, "OUT"),
         eq(sourceReceipt.paymentMethod, "CASH"),
         eq(sourceReceipt.cashBucket, "DRAWER"),
+        eq(sourceReceipt.amount, receipts.amount),
+        eq(sourceReceipt.status, "COMPLETED"),
+        eq(sourceReceipt.approvalStatus, "APPROVED"),
+        sql`(
+          SELECT COUNT(*)
+          FROM accountingEntries sourceEvidence
+          WHERE sourceEvidence.receiptId = ${sourceReceipt.id}
+            AND sourceEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+            AND sourceEvidence.branchId = ${sourceReceipt.branchId}
+            AND sourceEvidence.amount = ${sourceReceipt.amount}
+        ) = 1`,
+        sql`(
+          SELECT COUNT(*)
+          FROM receipts custodyCandidate
+          WHERE custodyCandidate.branchId = ${receipts.branchId}
+            AND UPPER(TRIM(custodyCandidate.referenceNumber)) = UPPER(TRIM(${receipts.referenceNumber}))
+            AND custodyCandidate.direction = 'OUT'
+            AND custodyCandidate.paymentMethod = 'CASH'
+            AND custodyCandidate.cashBucket = 'DRAWER'
+            AND custodyCandidate.receiptStatus = 'COMPLETED'
+            AND custodyCandidate.receiptApprovalStatus = 'APPROVED'
+            AND custodyCandidate.amount = ${receipts.amount}
+            AND (
+              SELECT COUNT(*)
+              FROM accountingEntries candidateEvidence
+              WHERE candidateEvidence.receiptId = custodyCandidate.id
+                AND candidateEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+                AND candidateEvidence.branchId = custodyCandidate.branchId
+                AND candidateEvidence.amount = custodyCandidate.amount
+            ) = 1
+        ) = 1`,
       ),
     )
     .leftJoin(shifts, eq(sourceReceipt.shiftId, shifts.id))
@@ -94,9 +191,13 @@ export async function listMyPendingTreasuryReceipts(
         eq(receipts.cashBucket, "TREASURY"),
         eq(receipts.status, "PENDING"),
         eq(receipts.approvalStatus, "APPROVED"),
+        isNull(receipts.voucherNumber),
+        isNull(receipts.invoiceId),
+        isNull(receipts.workOrderId),
+        isNull(receipts.reservationId),
         or(
-          like(receipts.referenceNumber, "CD-%"),
-          like(receipts.referenceNumber, "CH-%"),
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%'`,
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%'`,
         ),
       ),
     )
@@ -161,11 +262,42 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
     .leftJoin(
       sourceReceipt,
       and(
-        eq(sourceReceipt.referenceNumber, receipts.referenceNumber),
+        sql`UPPER(TRIM(${sourceReceipt.referenceNumber})) = UPPER(TRIM(${receipts.referenceNumber}))`,
         eq(sourceReceipt.branchId, receipts.branchId),
         eq(sourceReceipt.direction, "OUT"),
         eq(sourceReceipt.paymentMethod, "CASH"),
         eq(sourceReceipt.cashBucket, "DRAWER"),
+        eq(sourceReceipt.amount, receipts.amount),
+        eq(sourceReceipt.status, "COMPLETED"),
+        eq(sourceReceipt.approvalStatus, "APPROVED"),
+        sql`(
+          SELECT COUNT(*)
+          FROM accountingEntries sourceEvidence
+          WHERE sourceEvidence.receiptId = ${sourceReceipt.id}
+            AND sourceEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+            AND sourceEvidence.branchId = ${sourceReceipt.branchId}
+            AND sourceEvidence.amount = ${sourceReceipt.amount}
+        ) = 1`,
+        sql`(
+          SELECT COUNT(*)
+          FROM receipts custodyCandidate
+          WHERE custodyCandidate.branchId = ${receipts.branchId}
+            AND UPPER(TRIM(custodyCandidate.referenceNumber)) = UPPER(TRIM(${receipts.referenceNumber}))
+            AND custodyCandidate.direction = 'OUT'
+            AND custodyCandidate.paymentMethod = 'CASH'
+            AND custodyCandidate.cashBucket = 'DRAWER'
+            AND custodyCandidate.receiptStatus = 'COMPLETED'
+            AND custodyCandidate.receiptApprovalStatus = 'APPROVED'
+            AND custodyCandidate.amount = ${receipts.amount}
+            AND (
+              SELECT COUNT(*)
+              FROM accountingEntries candidateEvidence
+              WHERE candidateEvidence.receiptId = custodyCandidate.id
+                AND candidateEvidence.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+                AND candidateEvidence.branchId = custodyCandidate.branchId
+                AND candidateEvidence.amount = custodyCandidate.amount
+            ) = 1
+        ) = 1`,
       ),
     )
     .leftJoin(shifts, eq(sourceReceipt.shiftId, shifts.id))
@@ -177,7 +309,14 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
         eq(receipts.cashBucket, "TREASURY"),
         eq(receipts.status, "PENDING"),
         eq(receipts.approvalStatus, "APPROVED"),
-        or(like(receipts.referenceNumber, "CD-%"), like(receipts.referenceNumber, "CH-%")),
+        isNull(receipts.voucherNumber),
+        isNull(receipts.invoiceId),
+        isNull(receipts.workOrderId),
+        isNull(receipts.reservationId),
+        or(
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%'`,
+          sql`UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%'`,
+        ),
         // عزل الفرع: admin يعبُر؛ غيره يرى فرعه وحده (نمط branchScopedProcedure).
         ...(elevated ? [] : [eq(receipts.branchId, actor.branchId)]),
       ),
@@ -267,20 +406,11 @@ export async function reassignPendingTreasuryReceipt(
     // («لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه»). بدون هذا الفحص كانت إعادة الإسناد
     // **باباً خلفياً يطويه**: يكفي أن يكون مُسلِّم السحب مديراً فيُسنِد العهدة لنفسه ثمّ يقبلها
     // بيده ⇒ سلسلة حيازة بشخصٍ واحد. المُسلِّم = مُنشئ سند الدرج المقابل (OUT).
-    const sourceOut = (
-      await tx
-        .select({ createdBy: receipts.createdBy, shiftId: receipts.shiftId })
-        .from(receipts)
-        .where(
-          and(
-            eq(receipts.referenceNumber, referenceNumber),
-            eq(receipts.branchId, Number(row.branchId)),
-            eq(receipts.direction, "OUT"),
-            eq(receipts.cashBucket, "DRAWER"),
-          ),
-        )
-        .limit(1)
-    )[0];
+    const sourceOut = await resolveUniqueCustodySourceTx(tx, {
+      branchId: Number(row.branchId),
+      referenceNumber,
+      amount: String(row.amount),
+    });
     if (sourceOut?.createdBy != null && Number(sourceOut.createdBy) === toUserId) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -528,34 +658,11 @@ export async function acceptPendingTreasuryReceipt(
 
     // CD وCH الجديدان يخرجان إلى CASH_IN_TRANSIT. البيانات التاريخية قد تحمل
     // CASH_HANDOVER سبق أن أثبت الخزينة؛ ندعمها بلا ترحيل مزدوج.
-    const sourceRows = await tx
-      .select({
-        id: receipts.id,
-        amount: receipts.amount,
-        createdBy: receipts.createdBy,
-        shiftId: receipts.shiftId,
-      })
-      .from(receipts)
-      .where(
-        and(
-          eq(receipts.branchId, Number(row.branchId)),
-          eq(receipts.referenceNumber, referenceNumber),
-          eq(receipts.direction, "OUT"),
-          eq(receipts.paymentMethod, "CASH"),
-          eq(receipts.cashBucket, "DRAWER"),
-          eq(receipts.status, "COMPLETED"),
-          eq(receipts.approvalStatus, "APPROVED"),
-        ),
-      )
-      .for("update");
-    const matchingSources = sourceRows.filter((candidate) => declared.eq(money(candidate.amount)));
-    if (matchingSources.length !== 1) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "عقد تسليم النقد لا يملك سند خروج مطابقاً وفريداً",
-      });
-    }
-    const matchingSource = matchingSources[0];
+    const matchingSource = await resolveUniqueCustodySourceTx(tx, {
+      branchId: Number(row.branchId),
+      referenceNumber,
+      amount: declared.toFixed(2),
+    });
     if (matchingSource.createdBy != null && Number(matchingSource.createdBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمُسلِّم النقد قبول عهدته" });
     }
@@ -574,19 +681,7 @@ export async function acceptPendingTreasuryReceipt(
         });
       }
     }
-    const sourceEntries = await tx
-      .select({ entryType: accountingEntries.entryType, amount: accountingEntries.amount })
-      .from(accountingEntries)
-      .where(eq(accountingEntries.receiptId, Number(matchingSource.id)));
-    const stagedToTransit = sourceEntries.some(
-      (entry) => entry.entryType === "CASH_TRANSFER_OUT" && declared.eq(money(entry.amount)),
-    );
-    const legacyRecognized = sourceEntries.some(
-      (entry) => entry.entryType === "CASH_HANDOVER" && declared.eq(money(entry.amount)),
-    );
-    if (stagedToTransit === legacyRecognized) {
-      throw new TRPCError({ code: "CONFLICT", message: "دليل قيد تسليم النقد مفقود أو متعارض" });
-    }
+    const stagedToTransit = matchingSource.sourceEntryType === "CASH_TRANSFER_OUT";
 
     const variance = counted.minus(declared);
     const countStatus = variance.abs().lte("0.005") ? "MATCHED" : "VARIANCE_OPEN";

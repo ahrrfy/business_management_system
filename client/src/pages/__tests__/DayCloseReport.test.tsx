@@ -6,6 +6,8 @@ const readPage = (name: string) =>
   readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 const readCashService = () =>
   readFileSync(new URL("../../../../server/services/cashDailyReconciliationService.ts", import.meta.url), "utf8");
+const readDayCloseService = () =>
+  readFileSync(new URL("../../../../server/services/reportsDayCloseService.ts", import.meta.url), "utf8");
 const readTreasuryRouter = () =>
   readFileSync(new URL("../../../../server/routers/treasuryRouter.ts", import.meta.url), "utf8");
 
@@ -96,7 +98,7 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).toContain("import { DirectOperationsPanel } from");
     expect(source).toContain("dc.shifts.length === 0 && dc.directOperations.receiptCount === 0");
     expect(source).toContain("<DirectOperationsPanel direct={dc.directOperations}");
-    expect(source).toContain("hasDirect ? dc.totals.shiftExpected : dc.totals.closedExpected");
+    expect(source).toContain("fmtAr(dc.totals.closedExpected)");
     expect(source).toContain("حركة نقدية مباشرة (خارج الأدراج)");
   });
 
@@ -107,6 +109,71 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).toContain('shiftId: "مباشر"');
     expect(source).toContain('userName: "الخزينة المباشرة (خارج الأدراج)"');
     expect(source).toContain("صافي المقبوضات المباشرة (الخزينة)");
-    expect(source).toContain("إجمالي النقد المتوقع الشامل");
+    expect(source).toContain("محصلة حركة اليوم (ليست الرصيد النهائي)");
+    expect(source).toContain("الرقم النهائي المتوقع");
+  });
+
+  it("يفصل موضع النقد النهائي عن حجم حركة اليوم ولا يجمع المغلق مع الخزينة مرتين", () => {
+    const source = readPage("DayCloseReport.tsx");
+    const service = readDayCloseService();
+
+    expect(source).toMatch(/الموقف النقدي النهائي\s*للـ?فرع/);
+    expect(source).toContain("الخزينة + الأدراج المفتوحة + النقد بالطريق");
+    expect(source).not.toContain("D(dc.totals.physicalDrawerCash).plus(saved.countedTreasuryCash)");
+    expect(service).toContain("expectedCashOnHand");
+    expect(service).toMatch(/expectedTreasuryCash\s*\.plus\(expectedDrawersCash\)/);
+    expect(service).toContain("closedByCutoff");
+    expect(service).toContain("lt(eventAt, endExclusive)");
+    expect(service).toContain("leftJoin(cutoffDrawerReceipts");
+    expect(service).not.toContain("inArray(receipts.shiftId, cutoffShiftIds)");
+    expect(source).toContain('blocker.code === "STALE_EVIDENCE"');
+    expect(source).toContain('saved?.status !== "REOPENED"');
+    expect(source).toContain("D(saved.countedTreasuryCash).minus(position.expectedCashOnHand).toFixed(2)");
+    expect(source).toContain('expected: dc.cashPosition.expectedCashOnHand');
+    expect(source).toContain('drift: finalCountUsable ? (finalVariance ?? "") : ""');
+    expect(source).not.toContain("Number(dc.cashPosition.expectedCashOnHand)");
+    expect(source).not.toContain("Number(finalVariance)");
+    expect(source).toContain("if (!dc.cashPosition)");
+    expect(source).toContain("exportDisabled={!dc || dailyEvidenceUnavailable || !dc.cashPosition");
+    expect(source).toContain("printDisabled={!dc || dailyEvidenceUnavailable || !dc.cashPosition");
+    expect(source).toContain("drift: finalCountUsable ? fmtAr(finalVariance!)");
+  });
+
+  it("يعطي فرق الجرد النهائي أولوية لون على تطابق الورديات", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain("const reconciliationBorderClass = finalVariance != null");
+    expect(source).toContain("<Card className={reconciliationBorderClass}>");
+    expect(source).not.toContain("finalMatched || balanced");
+  });
+
+  it("يعتمد نطاق الفرع الذي فرضه الخادم للعنوان والجرد", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain('const effectiveBranchId: number | "" = dc?.branchId ?? branchId');
+    expect(source).toContain('{ branchId: Number(effectiveBranchId || 0), businessDate: date }');
+    expect(source).toContain('{ enabled: effectiveBranchId !== "" }');
+    expect(source).toContain('const branchLabel = effectiveBranchId');
+    expect(source).toContain('const dailyPanel = effectiveBranchId === ""');
+  });
+
+  it("ينتظر دليل الخزينة الناجح قبل تمكين التصدير والطباعة لفرع", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain("const dailyEvidenceUnavailable =");
+    expect(source).toContain("dailyQ.isFetching || dailyQ.isError || dailyQ.data == null");
+    expect(source).toContain("exportDisabled={!dc || dailyEvidenceUnavailable");
+    expect(source).toContain("printDisabled={!dc || dailyEvidenceUnavailable");
+  });
+
+  it("يبني التقرير المالي من لقطة واحدة ولا يعيد مسح دليل كل فرع", () => {
+    const service = readDayCloseService();
+
+    expect(service).toContain("return withTx(async (db) => {");
+    expect(service).not.toContain("buildDailyCashEvidenceTx");
+    expect(service).toContain('alias(receipts, "dayCloseTransferSentReceipt")');
+    expect(service).toContain("sentReceiptId");
+    expect(service).toContain("orphanCash");
+    expect(service).toContain("leftJoin(sourceShift");
   });
 });

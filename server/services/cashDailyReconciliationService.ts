@@ -8,7 +8,6 @@ import {
   eq,
   gt,
   gte,
-  like,
   lt,
   notInArray,
   or,
@@ -37,8 +36,12 @@ import {
 } from "./idempotency";
 import { extractInsertId } from "../lib/insertId";
 import { todayUtcDate, utcDayRange } from "./businessDay";
-import { lockCashSourceForUpdate } from "./cash/cashAvailability";
-import { cashEventAtSql } from "./cash/cashEventAt";
+import {
+  lockCashSourceForUpdate,
+  MATERIALIZED_RECEIPT_STATUS_SQL,
+} from "./cash/cashAvailability";
+import { cashEventAtSql, receiptCashEventAtSql } from "./cash/cashEventAt";
+import { SHIFT_FLOAT_CONTRACT_CUTOFF } from "./cash/shiftFloatContract";
 import {
   validateCashBreakdown,
   type CashBreakdown,
@@ -52,6 +55,9 @@ export type DailyCashBlockerCode =
   | "OPEN_SHIFT"
   | "UNMATCHED_SHIFT"
   | "PENDING_CUSTODY"
+  | "CASH_IN_TRANSIT"
+  | "RESIDUAL_DRAWER_CASH"
+  | "UNSCOPED_CASH"
   | "STALE_EVIDENCE"
   | "TREASURY_VARIANCE"
   | "SEPARATION_OF_DUTIES";
@@ -63,7 +69,12 @@ interface Evidence {
   openShiftCount: number;
   unmatchedShiftCount: number;
   pendingCustodyCount: number;
+  unpairedCustodySourceCount: number;
   custodyVarianceCount: number;
+  interbranchTransitCount: number;
+  residualDrawerCount: number;
+  unscopedCashCount: number;
+  invalidOpeningFloatCount: number;
   treasuryReceiptCount: number;
   treasuryLastReceiptId: number;
 }
@@ -293,38 +304,82 @@ export async function buildDailyCashEvidenceTx(
   let pendingFirstId = 0;
   let pendingLastId = 0;
   while (true) {
-    const page = await tx
-      .select({
-        id: receipts.id,
-        amount: receipts.amount,
-        referenceNumber: receipts.referenceNumber,
-      })
-      .from(receipts)
-      .where(
-        and(
-          eq(receipts.branchId, branchId),
-          eq(receipts.direction, "IN"),
-          eq(receipts.cashBucket, "TREASURY"),
-          eq(receipts.paymentMethod, "CASH"),
-          eq(receipts.status, "PENDING"),
-          eq(receipts.approvalStatus, "APPROVED"),
-          or(
-            like(receipts.referenceNumber, "CD-%"),
-            like(receipts.referenceNumber, "CH-%"),
-          ),
-          lt(receipts.createdAt, endExclusive),
-          gt(receipts.id, pendingCursor),
-        ),
-      )
-      .orderBy(asc(receipts.id))
-      .limit(500);
-    if (page.length === 0) break;
-    for (const row of page) {
-      const id = Number(row.id);
+    const page = (
+      await tx.execute(sql`
+        SELECT
+          source.id AS sourceId,
+          MAX(target.id) AS targetId,
+          MAX(target.amount) AS amount,
+          MAX(target.referenceNumber) AS referenceNumber
+        FROM receipts source
+        INNER JOIN receipts target
+          ON target.branchId = source.branchId
+          AND UPPER(TRIM(target.referenceNumber)) = UPPER(TRIM(source.referenceNumber))
+          AND target.amount = source.amount
+          AND target.direction = 'IN'
+          AND target.paymentMethod = 'CASH'
+          AND target.cashBucket = 'TREASURY'
+          AND target.receiptApprovalStatus = 'APPROVED'
+          AND target.voucherNumber IS NULL
+          AND target.invoiceId IS NULL
+          AND target.workOrderId IS NULL
+          AND target.reservationId IS NULL
+          AND (
+            target.receiptStatus = 'PENDING'
+            OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+          )
+        WHERE source.branchId = ${branchId}
+          AND source.direction = 'OUT'
+          AND source.paymentMethod = 'CASH'
+          AND source.cashBucket = 'DRAWER'
+          AND source.receiptStatus = 'COMPLETED'
+          AND source.receiptApprovalStatus = 'APPROVED'
+          AND ${receiptCashEventAtSql("source")} < ${endExclusive}
+          AND source.id > ${pendingCursor}
+          AND (
+            UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
+            OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM accountingEntries sourceEntry
+            WHERE sourceEntry.receiptId = source.id
+              AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+              AND sourceEntry.branchId = source.branchId
+              AND sourceEntry.amount = source.amount
+          )
+          AND (
+            SELECT COUNT(*)
+            FROM accountingEntries sourceEntry
+            WHERE sourceEntry.receiptId = source.id
+              AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+          ) = 1
+        GROUP BY source.id
+        HAVING COUNT(DISTINCT target.id) = 1
+          AND MAX(CASE
+            WHEN target.receiptStatus = 'PENDING'
+              OR ${receiptCashEventAtSql("target")} >= ${endExclusive}
+            THEN 1 ELSE 0
+          END) = 1
+        ORDER BY source.id ASC
+        LIMIT 500
+      `)
+    ) as unknown as [Array<{
+      sourceId: number | string;
+      targetId: number | string;
+      amount: string;
+      referenceNumber: string | null;
+    }>];
+    const rows = page[0] ?? [];
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const id = Number(row.sourceId);
       if (pendingFirstId === 0) pendingFirstId = id;
       pendingLastId = id;
       pendingCustodyCount += 1;
-      pendingHash.update(JSON.stringify([id, row.amount, row.referenceNumber]));
+      pendingHash.update(
+        JSON.stringify([id, Number(row.targetId), row.amount, row.referenceNumber]),
+      );
       pendingHash.update("\n");
     }
     pendingCursor = pendingLastId;
@@ -356,6 +411,382 @@ export async function buildDailyCashEvidenceTx(
             return Number(rows[0]?.count ?? 0);
           });
 
+  const countFromResult = (result: unknown) => {
+    const rows = (result as [Array<{ count: number | string }>])?.[0] ?? [];
+    return Number(rows[0]?.count ?? 0);
+  };
+  const validReceivedTransferAtCutoff = sql`
+    received.id IS NOT NULL
+    AND received.branchId = t.toBranchId
+    AND received.direction = 'IN'
+    AND received.paymentMethod = 'CASH'
+    AND received.cashBucket = 'TREASURY'
+    AND UPPER(TRIM(received.referenceNumber)) = UPPER(TRIM(t.transferNumber))
+    AND received.amount = t.amount
+    AND received.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+    AND received.receiptApprovalStatus = 'APPROVED'
+    AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+    AND EXISTS (
+      SELECT 1
+      FROM accountingEntries receivedEntry
+      WHERE receivedEntry.receiptId = received.id
+        AND receivedEntry.entryType = 'CASH_TRANSFER_IN'
+        AND receivedEntry.dedupeKey = CONCAT('CT_IN:', t.transferNumber)
+        AND receivedEntry.branchId = t.toBranchId
+        AND receivedEntry.amount = t.amount
+    )
+    AND EXISTS (
+      SELECT 1
+      FROM accountingEntries clearingEntry
+      WHERE clearingEntry.receiptId = sent.id
+        AND clearingEntry.entryType = 'CASH_TRANSFER_OUT'
+        AND clearingEntry.dedupeKey = CONCAT('CT_CLEAR_OUT:', t.transferNumber)
+        AND clearingEntry.branchId = t.fromBranchId
+        AND clearingEntry.amount = t.amount
+    )
+  `;
+  const validReversalTransferAtCutoff = sql`
+    reversal.id IS NOT NULL
+    AND reversal.branchId = t.fromBranchId
+    AND reversal.direction = 'IN'
+    AND reversal.paymentMethod = 'CASH'
+    AND reversal.cashBucket = 'TREASURY'
+    AND UPPER(TRIM(reversal.referenceNumber)) = CONCAT('CANCEL-', UPPER(TRIM(t.transferNumber)))
+    AND reversal.amount = t.amount
+    AND reversal.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+    AND reversal.receiptApprovalStatus = 'APPROVED'
+    AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
+    AND EXISTS (
+      SELECT 1
+      FROM accountingEntries reversalEntry
+      WHERE reversalEntry.receiptId = reversal.id
+        AND reversalEntry.entryType = 'CASH_TRANSFER_IN'
+        AND reversalEntry.dedupeKey = CONCAT('CT_OUT_REV:', t.transferNumber)
+        AND reversalEntry.branchId = t.fromBranchId
+        AND reversalEntry.amount = t.amount
+    )
+  `;
+  const interbranchTransitCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM cashTransfers t
+    LEFT JOIN receipts sent ON sent.id = t.sentReceiptId
+    LEFT JOIN receipts received ON received.id = t.receivedReceiptId
+    LEFT JOIN receipts reversal ON reversal.id = t.reversalReceiptId
+    WHERE (
+        (
+          t.fromBranchId = ${branchId}
+          AND (
+            ${receiptCashEventAtSql("sent")} < ${endExclusive}
+            OR (
+              t.reversalReceiptId IS NOT NULL
+              AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
+            )
+          )
+        )
+        OR (
+          t.toBranchId = ${branchId}
+          AND t.receivedReceiptId IS NOT NULL
+          AND ${receiptCashEventAtSql("received")} < ${endExclusive}
+        )
+      )
+      AND NOT COALESCE((
+        sent.id IS NOT NULL
+        AND sent.branchId = t.fromBranchId
+        AND sent.direction = 'OUT'
+        AND sent.paymentMethod = 'CASH'
+        AND sent.cashBucket = 'TREASURY'
+        AND UPPER(TRIM(sent.referenceNumber)) = UPPER(TRIM(t.transferNumber))
+        AND sent.amount = t.amount
+        AND sent.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND sent.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("sent")} < ${endExclusive}
+        AND EXISTS (
+          SELECT 1
+          FROM accountingEntries sentEntry
+          WHERE sentEntry.receiptId = sent.id
+            AND sentEntry.entryType = 'CASH_TRANSFER_OUT'
+            AND sentEntry.dedupeKey = CONCAT('CT_OUT:', t.transferNumber)
+            AND sentEntry.branchId = t.fromBranchId
+            AND sentEntry.amount = t.amount
+        )
+        AND (${validReceivedTransferAtCutoff} OR ${validReversalTransferAtCutoff})
+        AND NOT (${validReceivedTransferAtCutoff} AND ${validReversalTransferAtCutoff})
+        AND (
+          t.receivedReceiptId IS NULL
+          OR ${receiptCashEventAtSql("received")} >= ${endExclusive}
+          OR ${validReceivedTransferAtCutoff}
+        )
+        AND (
+          t.reversalReceiptId IS NULL
+          OR ${receiptCashEventAtSql("reversal")} >= ${endExclusive}
+          OR ${validReversalTransferAtCutoff}
+        )
+      ), 0)
+  `));
+  // عقد العهدة واحد إلى واحد. نصفٌ مفقود أو أكثر من نظيرٍ واحد يعني أن موضع
+  // النقد غير قابل للإثبات، حتى لو كانت كل الإيصالات منفردةً صحيحة شكلياً.
+  const unpairedCustodySourceCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM (
+      SELECT source.id AS receiptId
+      FROM receipts source
+      LEFT JOIN receipts target
+        ON target.branchId = source.branchId
+        AND UPPER(TRIM(target.referenceNumber)) = UPPER(TRIM(source.referenceNumber))
+        AND target.amount = source.amount
+        AND target.direction = 'IN'
+        AND target.paymentMethod = 'CASH'
+        AND target.cashBucket = 'TREASURY'
+        AND target.receiptApprovalStatus = 'APPROVED'
+        AND target.voucherNumber IS NULL
+        AND target.invoiceId IS NULL
+        AND target.workOrderId IS NULL
+        AND target.reservationId IS NULL
+        AND (
+          target.receiptStatus = 'PENDING'
+          OR target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        )
+        AND (
+          target.receiptStatus = 'PENDING'
+          OR ${receiptCashEventAtSql("target")} >= ${endExclusive}
+          OR EXISTS (
+            SELECT 1
+            FROM accountingEntries sourceHandoverEntry
+            WHERE sourceHandoverEntry.receiptId = source.id
+              AND sourceHandoverEntry.entryType = 'CASH_HANDOVER'
+              AND sourceHandoverEntry.branchId = source.branchId
+              AND sourceHandoverEntry.amount = source.amount
+          )
+          OR (
+            EXISTS (
+              SELECT 1
+              FROM accountingEntries sourceTransferEntry
+              WHERE sourceTransferEntry.receiptId = source.id
+                AND sourceTransferEntry.entryType = 'CASH_TRANSFER_OUT'
+                AND sourceTransferEntry.branchId = source.branchId
+                AND sourceTransferEntry.amount = source.amount
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM accountingEntries targetEntry
+              WHERE targetEntry.receiptId = target.id
+                AND targetEntry.entryType = 'CASH_TRANSFER_IN'
+                AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
+                AND targetEntry.branchId = target.branchId
+                AND targetEntry.amount = target.amount
+            )
+          )
+        )
+      WHERE source.branchId = ${branchId}
+        AND source.direction = 'OUT'
+        AND source.paymentMethod = 'CASH'
+        AND source.cashBucket = 'DRAWER'
+        AND source.receiptStatus = 'COMPLETED'
+        AND source.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("source")} < ${endExclusive}
+        AND (
+          UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
+          OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM accountingEntries sourceEntry
+          WHERE sourceEntry.receiptId = source.id
+            AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+            AND sourceEntry.branchId = source.branchId
+            AND sourceEntry.amount = source.amount
+        )
+        AND (
+          SELECT COUNT(*)
+          FROM accountingEntries sourceEntry
+          WHERE sourceEntry.receiptId = source.id
+            AND sourceEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+        ) = 1
+      GROUP BY source.id
+      HAVING COUNT(DISTINCT target.id) <> 1
+
+      UNION ALL
+
+      SELECT target.id AS receiptId
+      FROM receipts target
+      LEFT JOIN receipts source
+        ON source.branchId = target.branchId
+        AND UPPER(TRIM(source.referenceNumber)) = UPPER(TRIM(target.referenceNumber))
+        AND source.amount = target.amount
+        AND source.direction = 'OUT'
+        AND source.paymentMethod = 'CASH'
+        AND source.cashBucket = 'DRAWER'
+        AND source.receiptStatus = 'COMPLETED'
+        AND source.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("source")} < ${endExclusive}
+        AND (
+          UPPER(TRIM(source.referenceNumber)) LIKE 'CH-%'
+          OR UPPER(TRIM(source.referenceNumber)) LIKE 'CD-%'
+        )
+      LEFT JOIN (
+        SELECT
+          receiptId,
+          MAX(branchId) AS branchId,
+          MAX(amount) AS amount,
+          MAX(entryType) AS entryType
+        FROM accountingEntries
+        WHERE entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+        GROUP BY receiptId
+        HAVING COUNT(*) = 1
+      ) sourceEvidence
+        ON sourceEvidence.receiptId = source.id
+        AND sourceEvidence.branchId = source.branchId
+        AND sourceEvidence.amount = source.amount
+      WHERE target.branchId = ${branchId}
+        AND target.direction = 'IN'
+        AND target.paymentMethod = 'CASH'
+        AND target.cashBucket = 'TREASURY'
+        AND target.receiptApprovalStatus = 'APPROVED'
+        AND target.voucherNumber IS NULL
+        AND target.invoiceId IS NULL
+        AND target.workOrderId IS NULL
+        AND target.reservationId IS NULL
+        AND (
+          UPPER(TRIM(target.referenceNumber)) LIKE 'CH-%'
+          OR UPPER(TRIM(target.referenceNumber)) LIKE 'CD-%'
+        )
+        AND (
+          (target.receiptStatus = 'PENDING' AND target.createdAt < ${endExclusive})
+          OR (
+            target.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+            AND ${receiptCashEventAtSql("target")} < ${endExclusive}
+          )
+        )
+      GROUP BY target.id
+      HAVING COUNT(DISTINCT CASE
+        WHEN sourceEvidence.receiptId IS NOT NULL
+          AND (
+            target.receiptStatus = 'PENDING'
+            OR ${receiptCashEventAtSql("target")} >= ${endExclusive}
+            OR sourceEvidence.entryType = 'CASH_HANDOVER'
+            OR (
+              sourceEvidence.entryType = 'CASH_TRANSFER_OUT'
+              AND EXISTS (
+                SELECT 1
+                FROM accountingEntries targetEntry
+                WHERE targetEntry.receiptId = target.id
+                  AND targetEntry.entryType = 'CASH_TRANSFER_IN'
+                  AND targetEntry.dedupeKey = CONCAT('CASH_CUSTODY_ACCEPT:', target.id)
+                  AND targetEntry.branchId = target.branchId
+                  AND targetEntry.amount = target.amount
+              )
+            )
+          )
+        THEN source.id
+        ELSE NULL
+      END) <> 1
+    ) invalidCustodyContracts
+  `));
+  const residualDrawerCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM shifts s
+    LEFT JOIN (
+      SELECT r.shiftId, SUM(CASE
+        WHEN r.direction = 'OUT'
+          AND UPPER(TRIM(r.referenceNumber)) LIKE 'CH-%'
+          AND EXISTS (
+            SELECT 1
+            FROM accountingEntries handoverEntry
+            WHERE handoverEntry.receiptId = r.id
+              AND handoverEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+              AND handoverEntry.branchId = r.branchId
+              AND handoverEntry.amount = r.amount
+          )
+          AND (
+            SELECT COUNT(*)
+            FROM accountingEntries handoverEntry
+            WHERE handoverEntry.receiptId = r.id
+              AND handoverEntry.entryType IN ('CASH_TRANSFER_OUT', 'CASH_HANDOVER')
+          ) = 1
+          THEN r.amount ELSE 0 END) AS handoversCash
+      FROM receipts r
+      WHERE r.branchId = ${branchId}
+        AND r.cashBucket = 'DRAWER'
+        AND r.paymentMethod = 'CASH'
+        AND r.receiptStatus = 'COMPLETED'
+        AND r.receiptApprovalStatus = 'APPROVED'
+        AND ${receiptCashEventAtSql("r")} < ${endExclusive}
+      GROUP BY r.shiftId
+    ) drawer ON drawer.shiftId = s.id
+    WHERE s.branchId = ${branchId}
+      AND s.openedAt < ${endExclusive}
+      AND (
+        (s.shiftStatus = 'CLOSED' AND s.closedAt IS NULL)
+        OR (
+          s.closedAt IS NOT NULL
+          AND s.closedAt < ${endExclusive}
+          AND (
+            s.countedCash IS NULL
+            OR s.countedCash - COALESCE(drawer.handoversCash, 0) <> 0
+          )
+        )
+      )
+  `));
+  const unscopedCashCount = countFromResult(await tx.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM receipts r
+    WHERE r.branchId = ${branchId}
+      AND r.paymentMethod = 'CASH'
+      AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+      AND r.receiptApprovalStatus = 'APPROVED'
+      AND ${receiptCashEventAtSql("r")} < ${endExclusive}
+      AND (
+        r.cashBucket IS NULL
+        OR (
+          r.cashBucket = 'DRAWER'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM shifts linkedShift
+            WHERE linkedShift.id = r.shiftId
+              AND linkedShift.branchId = r.branchId
+          )
+        )
+      )
+  `));
+  const openingFloatLinkContract = and(
+    eq(accountingEntries.branchId, shifts.branchId),
+    eq(accountingEntries.amount, shifts.openingBalance),
+    eq(receipts.branchId, shifts.branchId),
+    eq(receipts.amount, shifts.openingBalance),
+    eq(receipts.direction, "OUT"),
+    eq(receipts.paymentMethod, "CASH"),
+    eq(receipts.cashBucket, "TREASURY"),
+    or(eq(receipts.status, "COMPLETED"), eq(receipts.status, "REVERSED")),
+    eq(receipts.approvalStatus, "APPROVED"),
+  );
+  const [invalidOpeningFloat] = await tx
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(shifts)
+    .leftJoin(
+      accountingEntries,
+      and(
+        eq(accountingEntries.entryType, "SHIFT_FLOAT_OUT"),
+        eq(accountingEntries.dedupeKey, sql`CONCAT('SHIFT_FLOAT:', ${shifts.id})`),
+      ),
+    )
+    .leftJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
+    .where(and(
+      eq(shifts.branchId, branchId),
+      lt(shifts.openedAt, endExclusive),
+      sql`${shifts.openingBalance} > 0`,
+      or(
+        and(
+          gte(shifts.openedAt, SHIFT_FLOAT_CONTRACT_CUTOFF),
+          sql`${accountingEntries.id} IS NULL`,
+        ),
+        and(
+          sql`${accountingEntries.id} IS NOT NULL`,
+          sql`NOT COALESCE((${openingFloatLinkContract!}), FALSE)`,
+        ),
+      ),
+    ));
+  const invalidOpeningFloatCount = Number(invalidOpeningFloat?.count ?? 0);
+
   const canonical = JSON.stringify({
     branchId,
     businessDate,
@@ -380,6 +811,13 @@ export async function buildDailyCashEvidenceTx(
       pendingLastId,
       pendingDigest,
     ],
+    finalPositionBlockers: [
+      interbranchTransitCount,
+      unpairedCustodySourceCount,
+      residualDrawerCount,
+      unscopedCashCount,
+      invalidOpeningFloatCount,
+    ],
   });
 
   return {
@@ -389,7 +827,12 @@ export async function buildDailyCashEvidenceTx(
     openShiftCount,
     unmatchedShiftCount,
     pendingCustodyCount,
+    unpairedCustodySourceCount,
     custodyVarianceCount,
+    interbranchTransitCount,
+    residualDrawerCount,
+    unscopedCashCount,
+    invalidOpeningFloatCount,
     treasuryReceiptCount,
     treasuryLastReceiptId,
   };
@@ -555,7 +998,10 @@ async function findApprovedDailyResolutionTx(
 const DAILY_CASH_BLOCKER_REMEDY: Record<DailyCashBlockerCode, string> = {
   OPEN_SHIFT: "أغلق الورديات المفتوحة من تبويب الورديات في الخزينة",
   UNMATCHED_SHIFT: "طابِق كل وردية مغلقة حتى يتساوى متوقَّعها مع معدودها",
-  PENDING_CUSTODY: "اعدد عهد النقد واقبلها من طابور عهد الاستلام في الخزينة",
+  PENDING_CUSTODY: "عالِج عقد العهدة الناقص أو المتكرر، ثم اعدد العهدة واقبلها من طابور الاستلام",
+  CASH_IN_TRANSIT: "استلم أو ألغِ تحويلات النقد بين الفروع قبل الجرد النهائي",
+  RESIDUAL_DRAWER_CASH: "صفِّ النقد المتبقي في الأدراج المغلقة إلى الخزينة",
+  UNSCOPED_CASH: "عالِج حركات النقد غير المنسوبة أو عهد الافتتاح غير المتطابقة من تقرير معالجة النقد",
   STALE_EVIDENCE: "أعد جرد الخزينة على الحركات الحالية",
   TREASURY_VARIANCE: "افتح قضية فرق نقد واعتمد سند التصحيح بمبلغ الفرق",
   SEPARATION_OF_DUTIES: "اطلب الاعتماد من مستخدمٍ غير من عدّ الخزينة",
@@ -591,11 +1037,36 @@ function blockersFor(evidence: Evidence) {
       count: evidence.unmatchedShiftCount,
     });
   }
-  if (evidence.pendingCustodyCount > 0) {
+  const custodyBlockerCount =
+    evidence.pendingCustodyCount + evidence.unpairedCustodySourceCount;
+  if (custodyBlockerCount > 0) {
     blockers.push({
       code: "PENDING_CUSTODY",
-      message: "توجد عهد نقد لم تُعدّ وتُقبل بعد",
-      count: evidence.pendingCustodyCount,
+      message: "توجد عهد نقد ناقصة أو متكررة أو لم تُعدّ وتُقبل بعد",
+      count: custodyBlockerCount,
+    });
+  }
+  if (evidence.interbranchTransitCount > 0) {
+    blockers.push({
+      code: "CASH_IN_TRANSIT",
+      message: "توجد تحويلات نقد بين الفروع ما تزال بالطريق",
+      count: evidence.interbranchTransitCount,
+    });
+  }
+  if (evidence.residualDrawerCount > 0) {
+    blockers.push({
+      code: "RESIDUAL_DRAWER_CASH",
+      message: "يوجد نقد متبقٍ في أدراج مغلقة",
+      count: evidence.residualDrawerCount,
+    });
+  }
+  const unscopedEvidenceCount =
+    evidence.unscopedCashCount + evidence.invalidOpeningFloatCount;
+  if (unscopedEvidenceCount > 0) {
+    blockers.push({
+      code: "UNSCOPED_CASH",
+      message: "توجد حركات نقد غير منسوبة أو عهد افتتاح غير متطابقة",
+      count: unscopedEvidenceCount,
     });
   }
   return blockers;
@@ -902,7 +1373,8 @@ export async function recordDailyTreasuryCount(
       lastClientRequestId: clientRequestId,
       evidenceHash: evidence.evidenceHash,
       shiftCount: evidence.shiftCount,
-      custodyCount: evidence.pendingCustodyCount,
+      custodyCount:
+        evidence.pendingCustodyCount + evidence.unpairedCustodySourceCount,
       countedByUserId: actor.userId,
       countedAt: new Date(),
       closedByUserId: null,

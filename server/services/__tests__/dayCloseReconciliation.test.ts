@@ -98,12 +98,42 @@ type ReceiptOverride = Partial<typeof s.receipts.$inferInsert> & {
 };
 /** إيصال نقدي درج (DRAWER/CASH/COMPLETED) افتراضاً — يُخصَّص بالتجاوزات. */
 async function insertReceipt(o: ReceiptOverride) {
-  await db().insert(s.receipts).values({
+  const inserted = await db().insert(s.receipts).values({
     paymentMethod: "CASH",
     cashBucket: "DRAWER",
     status: "COMPLETED",
     createdBy: CASHIER1,
     ...o,
+  });
+  return Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId);
+}
+
+/** مصدر عهدة حقيقي: الإيصال وحده لا يكفي، بل يلزمه دليل قيد محاسبي مخصص. */
+async function insertCustodySource(o: ReceiptOverride) {
+  const receiptId = await insertReceipt(o);
+  const normalizedReference = String(o.referenceNumber ?? "").trim().toUpperCase();
+  const isDrop = normalizedReference.startsWith("CD-");
+  await db().insert(s.accountingEntries).values({
+    entryType: isDrop ? "CASH_TRANSFER_OUT" : "CASH_HANDOVER",
+    postingProfile: isDrop ? "CASH_DROP_TO_TRANSIT" : "CASH_HANDOVER_TO_TRANSIT",
+    branchId: o.branchId,
+    receiptId,
+    amount: o.amount,
+    entryDate: DATE,
+  });
+  return receiptId;
+}
+
+async function insertCashPosting(input: {
+  entryType: "CASH_TRANSFER_OUT" | "CASH_TRANSFER_IN";
+  branchId: number;
+  receiptId: number;
+  amount: string;
+  dedupeKey: string;
+}) {
+  await db().insert(s.accountingEntries).values({
+    ...input,
+    entryDate: DATE,
   });
 }
 
@@ -375,7 +405,912 @@ describe("dayCloseReconciliation — الحوكمة عبر الراوتر (I6)",
 });
 
 describe("مطابقة النقد المباشر والخزينة — منع الفائض الصامت (Zero Silent Cash Leakage)", () => {
-  it("R1+R2: إدراج سند قبض مباشر (RV) بمبلغ 3,540,950 د.ع يرفع المتوقَّع ويطابق النقد الفعلي 13,568,250 د.ع بلا فائض صامت", async () => {
+  it("يعرض الرصيد المرحّل حتى في يوم بلا حركة ولا وردية", async () => {
+    const res = await report(1);
+
+    expect(res.shifts).toEqual([]);
+    expect(res.directOperations.receiptCount).toBe(0);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: true,
+    });
+  });
+
+  it("يجمع الموقف النقدي النهائي لكل الفروع في العرض الافتراضي", async () => {
+    const res = await report();
+
+    expect(res.cashPosition).toMatchObject({
+      branchCount: 2,
+      expectedTreasuryCash: "2000000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "2000000.00",
+      isReadyForFinalCount: true,
+    });
+  });
+
+  it("يحجب موقف كل الفروع إذا وُجد نقد بلا فرع بدلاً من إسقاطه من المعادلة", async () => {
+    await db().insert(s.receipts).values({
+      branchId: null,
+      direction: "IN",
+      amount: "7777.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "BRANCHLESS-CASH",
+      createdBy: ADMIN,
+    });
+
+    expect((await report()).cashPosition).toBeNull();
+  });
+
+  it("يحجب موقف كل الفروع إذا كان فرعٌ لا يحمل إلا نقداً مادياً يتيماً", async () => {
+    await db().insert(s.branches).values({
+      id: 3,
+      name: "فرع يتيم نقدياً",
+      code: "ORPHAN",
+      type: "SALES",
+    });
+    await db().insert(s.receipts).values({
+      branchId: 3,
+      shiftId: null,
+      direction: "IN",
+      amount: "9000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "ORPHAN-ONLY-BRANCH-CASH",
+      createdBy: ADMIN,
+    });
+
+    expect((await report()).cashPosition).toBeNull();
+  });
+
+  it("يحجب نقد درج مرتبطاً بورديّة تابعة لفرع آخر", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 2, openingBalance: "0" },
+      { userId: MANAGER2, branchId: 2 },
+    );
+    await insertReceipt({
+      branchId: 1,
+      shiftId,
+      direction: "IN",
+      amount: "5000.00",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CROSS-BRANCH-DRAWER-LINK",
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحفظ معادلة الموقع أثناء الوردية: خزينة + درج مفتوح + عهدة بالطريق", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const invoiceId = await seedInvoice(1);
+    await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "50000.00", invoiceId, approvalStatus: "APPROVED" });
+    await insertCustodySource({ shiftId, branchId: 1, direction: "OUT", amount: "40000.00", referenceNumber: " cd-1-position ", approvalStatus: "APPROVED" });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "40000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: " cd-1-position ",
+      createdBy: CASHIER1,
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "900000.00",
+      expectedDrawersCash: "110000.00",
+      cashInTransit: "40000.00",
+      expectedCashOnHand: "1050000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("يحجب الرقم النهائي عندما يُعكس مصدر العهدة ويبقى هدف الاستلام معلقاً", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertCustodySource({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CH-REVERSED-SOURCE",
+      approvalStatus: "APPROVED",
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-REVERSED-SOURCE",
+      createdBy: CASHIER1,
+    });
+    await db().update(s.receipts).set({ status: "REVERSED" })
+      .where(eq(s.receipts.id, sourceReceiptId));
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يثبت العهدة بالطريق من حدث خروج الدرج ولو أُنشئ هدف الاستلام بعد حد اليوم", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const beforeCutoff = new Date(`${DATE}T12:00:00.000Z`);
+    const afterCutoff = new Date(beforeCutoff.getTime() + 86_400_000);
+    await insertCustodySource({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "40000.00",
+      referenceNumber: "CD-1-CROSS-DAY-CUSTODY",
+      approvalStatus: "APPROVED",
+      createdAt: beforeCutoff,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "40000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-1-CROSS-DAY-CUSTODY",
+      createdBy: CASHIER1,
+      createdAt: afterCutoff,
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "900000.00",
+      expectedDrawersCash: "60000.00",
+      cashInTransit: "40000.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: false,
+    });
+
+    const blind = await getDayCloseReconciliation({
+      date: DATE,
+      branchId: 1,
+      actor: { userId: MANAGER1, branchId: 1, role: "manager" },
+    });
+    expect(blind.cashPosition).toBeNull();
+  });
+
+  it("يحجب الرقم النهائي لعهدة استقبال بلا خروج درج مطابق", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "87500.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-SOURCELESS-DAY-CLOSE",
+      createdBy: MANAGER1,
+      createdAt: new Date(`${DATE}T12:00:00.000Z`),
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحجب الرقم النهائي عند تكرار هدف عهدة واحد", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await insertCustodySource({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CD-DUPLICATE-TARGET",
+      approvalStatus: "APPROVED",
+    });
+    await db().insert(s.receipts).values([
+      {
+        branchId: 1,
+        direction: "IN",
+        amount: "10000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: "CD-DUPLICATE-TARGET",
+        createdBy: ADMIN,
+      },
+      {
+        branchId: 1,
+        direction: "IN",
+        amount: "10000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: " cd-duplicate-target ",
+        createdBy: ADMIN,
+      },
+    ]);
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحجب الرقم النهائي إذا لم يطابق مبلغ قيد العهدة إيصال المصدر", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertCustodySource({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CD-BAD-ACCOUNTING-AMOUNT",
+      approvalStatus: "APPROVED",
+    });
+    await db().update(s.accountingEntries).set({ amount: "9000.00" })
+      .where(eq(s.accountingEntries.receiptId, sourceReceiptId));
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-BAD-ACCOUNTING-AMOUNT",
+      createdBy: ADMIN,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحجب الرقم النهائي إذا حمل مصدر العهدة قيدَي خروج متعارضين", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertCustodySource({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      referenceNumber: "CH-CONTRADICTORY-EVIDENCE",
+      approvalStatus: "APPROVED",
+    });
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-CONTRADICTORY-EVIDENCE",
+      createdBy: ADMIN,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحجب الموقف النقدي إذا كانت عهدة عد أعمى من وردية يوم سابق ما تزال معلقة", async () => {
+    const priorDay = new Date(new Date(`${DATE}T10:00:00.000Z`).getTime() - 86_400_000);
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    await db().update(s.shifts).set({ openedAt: priorDay }).where(eq(s.shifts.id, shiftId));
+    await insertCustodySource({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "40000.00",
+      referenceNumber: "CH-PRIOR-BLIND-POSITION",
+      approvalStatus: "APPROVED",
+      createdAt: priorDay,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "40000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-PRIOR-BLIND-POSITION",
+      createdBy: CASHIER1,
+      createdAt: priorDay,
+    });
+
+    const res = await getDayCloseReconciliation({
+      date: DATE,
+      branchId: 1,
+      actor: { userId: MANAGER1, branchId: 1, role: "manager" },
+    });
+    expect(res.shifts).toEqual([]);
+    expect(res.withheldBlindCountShiftCount).toBe(0);
+    expect(res.cashPosition).toBeNull();
+  });
+
+  it("يبقي التحويل النقدي بين الفروع ضمن النقد بالطريق حتى الاستلام", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "125000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-1-POSITION-IN-TRANSIT",
+      createdBy: ADMIN,
+      createdAt: new Date(`${DATE}T12:00:00.000Z`),
+    });
+    const sentReceipt = (await db().select({ id: s.receipts.id }).from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, "CT-1-POSITION-IN-TRANSIT")).limit(1))[0]!;
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: Number(sentReceipt.id),
+      amount: "125000.00",
+      dedupeKey: "CT_OUT:CT-1-POSITION-IN-TRANSIT",
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-1-POSITION-IN-TRANSIT",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "125000.00",
+      status: "IN_TRANSIT",
+      sentBy: ADMIN,
+      sentReceiptId: Number(sentReceipt.id),
+      sentAt: new Date(`${DATE}T12:00:00.000Z`),
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "875000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "125000.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("يشتق عبور تحويل الفروع من لحظات الإيصالات المرتبطة لا حقول دورة الحالة", async () => {
+    const beforeCutoff = new Date(`${DATE}T12:00:00.000Z`);
+    const afterCutoff = new Date(new Date(`${DATE}T12:00:00.000Z`).getTime() + 86_400_000);
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "CT-1-EVENT-CUTOFF", createdBy: ADMIN, createdAt: beforeCutoff,
+    });
+    const sentReceipt = (await db().select({ id: s.receipts.id }).from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, "CT-1-EVENT-CUTOFF")).limit(1))[0]!;
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: Number(sentReceipt.id),
+      amount: "80000.00",
+      dedupeKey: "CT_OUT:CT-1-EVENT-CUTOFF",
+    });
+    await db().insert(s.receipts).values({
+      branchId: 2, direction: "IN", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "CT-1-EVENT-CUTOFF", createdBy: ADMIN, createdAt: afterCutoff,
+    });
+    const linkedReceipts = await db().select({ id: s.receipts.id, branchId: s.receipts.branchId })
+      .from(s.receipts).where(eq(s.receipts.referenceNumber, "CT-1-EVENT-CUTOFF"));
+    const receivedReceipt = linkedReceipts.find((row) => Number(row.branchId) === 2)!;
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-1-EVENT-CUTOFF",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "RECEIVED",
+      sentBy: ADMIN,
+      receivedBy: MANAGER2,
+      sentReceiptId: Number(sentReceipt.id),
+      receivedReceiptId: Number(receivedReceipt.id),
+      // حقلا الحالة كلاهما قبل القطع عمداً؛ الدليل المالي المرتبط وحده بعد القطع.
+      sentAt: beforeCutoff,
+      receivedAt: beforeCutoff,
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "920000.00",
+      cashInTransit: "80000.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("لا يعيد تحويل الفروع إلى يوم سابق إذا وقع حدث إيصال الإرسال بعد حد اليوم", async () => {
+    const beforeCutoff = new Date(`${DATE}T12:00:00.000Z`);
+    const afterCutoff = new Date(beforeCutoff.getTime() + 86_400_000);
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-AFTER-REPORT-CUTOFF",
+      createdBy: ADMIN,
+      createdAt: afterCutoff,
+    });
+    const sentReceiptId = Number(
+      (sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId,
+    );
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-AFTER-REPORT-CUTOFF",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "IN_TRANSIT",
+      sentBy: ADMIN,
+      sentReceiptId,
+      sentAt: beforeCutoff,
+    });
+
+    expect((await report(1)).cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: true,
+    });
+  });
+
+  it("يحجب موقف كل الفروع إذا نسب عقد التحويل إيصال الإرسال إلى فرع مصدر خامل مختلف", async () => {
+    await db().insert(s.branches).values({
+      id: 3,
+      name: "فرع مصدر خامل",
+      code: "IDLE-SOURCE",
+      type: "SALES",
+    });
+    const eventAt = new Date(`${DATE}T12:00:00.000Z`);
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-IDLE-SOURCE-MISMATCH",
+      createdBy: ADMIN,
+      createdAt: eventAt,
+    });
+    const sentReceiptId = Number(
+      (sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId,
+    );
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-IDLE-SOURCE-MISMATCH",
+      fromBranchId: 3,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "IN_TRANSIT",
+      sentBy: ADMIN,
+      sentReceiptId,
+      sentAt: eventAt,
+    });
+
+    expect((await report()).cashPosition).toBeNull();
+  });
+
+  it("يحجب الموقف النقدي إذا أشار استلام التحويل إلى إيصال غير تابع للعقد", async () => {
+    const eventAt = new Date(`${DATE}T12:00:00.000Z`);
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CT-INVALID-RECEIVED-LINK",
+      createdBy: ADMIN,
+      createdAt: eventAt,
+    });
+    const receivedResult = await db().insert(s.receipts).values({
+      branchId: 2,
+      direction: "IN",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      voucherNumber: "RV-UNRELATED-TRANSFER-LINK",
+      referenceNumber: "UNRELATED-RECEIPT",
+      createdBy: ADMIN,
+      createdAt: eventAt,
+    });
+    const sentReceiptId = Number((sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId);
+    const receivedReceiptId = Number((receivedResult as any)?.[0]?.insertId ?? (receivedResult as any)?.insertId);
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sentReceiptId,
+      amount: "80000.00",
+      dedupeKey: "CT_OUT:CT-INVALID-RECEIVED-LINK",
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber: "CT-INVALID-RECEIVED-LINK",
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "RECEIVED",
+      sentBy: ADMIN,
+      receivedBy: MANAGER2,
+      sentReceiptId,
+      receivedReceiptId,
+      sentAt: eventAt,
+      receivedAt: eventAt,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+    expect((await report(2)).cashPosition).toBeNull();
+  });
+
+  it("يفحص عكس التحويل في فرع المصدر حتى عند غياب إيصال الإرسال", async () => {
+    const eventAt = new Date(`${DATE}T12:00:00.000Z`);
+    const transferNumber = "CT-REVERSAL-WITHOUT-SENT";
+    const reversalResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: `CANCEL-${transferNumber}`,
+      createdBy: ADMIN,
+      createdAt: eventAt,
+    });
+    const reversalReceiptId = Number(
+      (reversalResult as any)?.[0]?.insertId ?? (reversalResult as any)?.insertId,
+    );
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_IN",
+      branchId: 1,
+      receiptId: reversalReceiptId,
+      amount: "80000.00",
+      dedupeKey: `CT_OUT_REV:${transferNumber}`,
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber,
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "CANCELLED",
+      sentBy: ADMIN,
+      cancelledBy: ADMIN,
+      reversalReceiptId,
+      sentAt: eventAt,
+      cancelledAt: eventAt,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("لا يعتبر التحويل مستلماً بلا قيدي الاستلام والتصفية المرتبطين", async () => {
+    const eventAt = new Date(`${DATE}T12:00:00.000Z`);
+    const transferNumber = "CT-MISSING-TERMINAL-POSTINGS";
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: transferNumber, createdBy: ADMIN, createdAt: eventAt,
+    });
+    const receivedResult = await db().insert(s.receipts).values({
+      branchId: 2, direction: "IN", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: transferNumber, createdBy: MANAGER2, createdAt: eventAt,
+    });
+    const sentReceiptId = Number((sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId);
+    const receivedReceiptId = Number((receivedResult as any)?.[0]?.insertId ?? (receivedResult as any)?.insertId);
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sentReceiptId,
+      amount: "80000.00",
+      dedupeKey: `CT_OUT:${transferNumber}`,
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber,
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "RECEIVED",
+      sentBy: ADMIN,
+      receivedBy: MANAGER2,
+      sentReceiptId,
+      receivedReceiptId,
+      sentAt: eventAt,
+      receivedAt: eventAt,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+    expect((await report(2)).cashPosition).toBeNull();
+  });
+
+  it("ينهي التحويل المستلم عند اكتمال قيود الإرسال والتصفية والاستلام", async () => {
+    const eventAt = new Date(`${DATE}T12:00:00.000Z`);
+    const transferNumber = "CT-CANONICAL-TERMINAL-POSTINGS";
+    const sentResult = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: transferNumber, createdBy: ADMIN, createdAt: eventAt,
+    });
+    const receivedResult = await db().insert(s.receipts).values({
+      branchId: 2, direction: "IN", amount: "80000.00", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: transferNumber, createdBy: MANAGER2, createdAt: eventAt,
+    });
+    const sentReceiptId = Number((sentResult as any)?.[0]?.insertId ?? (sentResult as any)?.insertId);
+    const receivedReceiptId = Number((receivedResult as any)?.[0]?.insertId ?? (receivedResult as any)?.insertId);
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT", branchId: 1, receiptId: sentReceiptId,
+      amount: "80000.00", dedupeKey: `CT_OUT:${transferNumber}`,
+    });
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_OUT", branchId: 1, receiptId: sentReceiptId,
+      amount: "80000.00", dedupeKey: `CT_CLEAR_OUT:${transferNumber}`,
+    });
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_IN", branchId: 2, receiptId: receivedReceiptId,
+      amount: "80000.00", dedupeKey: `CT_IN:${transferNumber}`,
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber,
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "RECEIVED",
+      sentBy: ADMIN,
+      receivedBy: MANAGER2,
+      sentReceiptId,
+      receivedReceiptId,
+      sentAt: eventAt,
+      receivedAt: eventAt,
+    });
+
+    expect((await report(1)).cashPosition).toMatchObject({
+      expectedTreasuryCash: "920000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "920000.00",
+    });
+    expect((await report(2)).cashPosition).toMatchObject({
+      expectedTreasuryCash: "1080000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1080000.00",
+    });
+  });
+
+  it("لا ينهي عهدة درج مكتملة بلا قيد قبول الخزينة المرتبط", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "0.00" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await insertCustodySource({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "25000.00",
+      referenceNumber: "CD-MISSING-TARGET-POSTING",
+      approvalStatus: "APPROVED",
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "25000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CD-MISSING-TARGET-POSTING",
+      createdBy: MANAGER1,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحجب عهدة افتتاح وردية حديثة موجبة إذا غاب قيد SF", async () => {
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: CASHIER1,
+      openingBalance: "25000.00",
+      status: "OPEN",
+      shiftType: "RETAIL",
+      openedAt: new Date(`${DATE}T10:00:00.000Z`),
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يحجب الرقم النهائي عند وجود نقد مادي غير منسوب إلى خزينة أو وردية", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: null,
+      direction: "IN",
+      amount: "12345.00",
+      paymentMethod: "CASH",
+      cashBucket: null,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "LEGACY-UNSCOPED-CASH",
+      createdBy: ADMIN,
+    });
+
+    const res = await report(1);
+    expect(res.cashPosition).toBeNull();
+  });
+
+  it("لا يُسقط نقداً متبقياً في درج وردية مغلقة تاريخية ولا يسمح باعتباره جرداً نهائياً", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const invoiceId = await seedInvoice(1);
+    await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "50000.00", invoiceId, approvalStatus: "APPROVED" });
+    await insertCustodySource({ shiftId, branchId: 1, direction: "OUT", amount: "100000.00", referenceNumber: "CH-LEGACY-PARTIAL", approvalStatus: "APPROVED" });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "100000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-LEGACY-PARTIAL",
+      createdBy: ADMIN,
+    });
+    await db().update(s.shifts).set({
+      status: "CLOSED",
+      openedAt: new Date(new Date(`${DATE}T09:00:00.000Z`).getTime() - 86_400_000),
+      closedAt: new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() - 86_400_000),
+      countedCash: "150000.00",
+      expectedCash: "150000.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    }).where(eq(s.shifts.id, shiftId));
+    await db().update(s.receipts).set({
+      createdAt: new Date(new Date(`${DATE}T17:00:00.000Z`).getTime() - 86_400_000),
+      approvedAt: new Date(new Date(`${DATE}T17:00:00.000Z`).getTime() - 86_400_000),
+    }).where(eq(s.receipts.shiftId, shiftId));
+    await db().update(s.receipts).set({
+      createdAt: new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() - 86_400_000),
+      approvedAt: new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() - 86_400_000),
+    }).where(eq(s.receipts.referenceNumber, "CH-LEGACY-PARTIAL"));
+
+    const res = await report(1);
+    expect(res.shifts).toEqual([]);
+    expect(res.totals.retainedInDrawer).toBe("0.00");
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      expectedDrawersCash: "50000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1050000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("يعيد بناء الدرج عند حد اليوم ولا يسقطه بسبب إغلاق وتسليم حدثا في اليوم التالي", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const nextDay = new Date(new Date(`${DATE}T18:00:00.000Z`).getTime() + 86_400_000);
+    await insertCustodySource({
+      shiftId,
+      branchId: 1,
+      direction: "OUT",
+      amount: "100000.00",
+      referenceNumber: "CH-NEXT-DAY-CUTOFF",
+      approvalStatus: "APPROVED",
+      createdAt: nextDay,
+      approvedAt: nextDay,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "100000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-NEXT-DAY-CUTOFF",
+      createdBy: ADMIN,
+      approvedBy: ADMIN,
+      createdAt: nextDay,
+      approvedAt: nextDay,
+    });
+    await db().update(s.shifts).set({
+      status: "CLOSED",
+      closedAt: nextDay,
+      countedCash: "100000.00",
+      expectedCash: "100000.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    }).where(eq(s.shifts.id, shiftId));
+
+    const res = await report(1);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "900000.00",
+      expectedDrawersCash: "100000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: false,
+    });
+  });
+
+  it("لا يضيف عهدة افتتاح وردية قبل تحقق إيصال SF المرتبط عند حد اليوم", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const afterCutoff = new Date(new Date(`${DATE}T12:00:00.000Z`).getTime() + 86_400_000);
+    await db().update(s.receipts).set({ createdAt: afterCutoff, approvedAt: afterCutoff })
+      .where(eq(s.receipts.referenceNumber, `SF-1-${shiftId}`));
+
+    const res = await report(1);
+    expect(res.shifts).toEqual([]);
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "1000000.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1000000.00",
+      isReadyForFinalCount: true,
+    });
+  });
+
+  it("يحجب الموضع النهائي إذا اختلف مبلغ إيصال SF عن عهدة افتتاح الوردية", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await db().update(s.receipts).set({ amount: "99999.00" })
+      .where(eq(s.receipts.referenceNumber, `SF-1-${shiftId}`));
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
+  it("يربط عهدة SF بقيدها الفريد ولا يكرر الوردية عند تكرار رقم المرجع", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "100000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: `SF-1-${shiftId}`,
+      createdBy: ADMIN,
+    });
+
+    const res = await report(1);
+    expect(res.shifts.map((row) => row.shiftId)).toEqual([shiftId]);
+    expect(res.totals.opening).toBe("100000.00");
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "800000.00",
+      expectedDrawersCash: "100000.00",
+      expectedCashOnHand: "900000.00",
+    });
+  });
+
+  it("R1+R2: يفصل حركة اليوم عن موضع النقد النهائي بعد إقفال الوردية", async () => {
     // تمويل الخزينة لتغطية عهدة افتتاح الوردية (مستبعد من الإيرادات المباشرة عبر بادئة TEST-TREASURY)
     await db().insert(s.receipts).values({
       branchId: 1,
@@ -418,15 +1353,25 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.netCash).toBe("3540950.00");
     expect(res.directOperations.receiptCount).toBe(1);
 
-    // التحقق من المجاميع الكاملة: تشمل الوردية + التدفق المباشر
+    // حركة اليوم تشرح ما وقع، لكنها ليست الرصيد النقدي التراكمي الموجود في الفرع.
     expect(res.totals.shiftExpected).toBe("10027300.00");
     expect(res.totals.directNetCash).toBe("3540950.00");
     expect(res.totals.collectionsCash).toBe("3540950.00");
     expect(res.totals.cashIn).toBe("3568250.00"); // 27,300 مبيعات وردية + 3,540,950 تحصيل مباشر
-    // المتوقَّع الشامل = 10,027,300 + 3,540,950 = 13,568,250 د.ع (يطابق النقد الفعلي تماماً!)
+    // صافي حركة اليوم = 10,027,300 + 3,540,950 = 13,568,250 د.ع.
     expect(res.totals.expected).toBe("13568250.00");
-    expect(res.totals.closedExpected).toBe("13568250.00");
-    expect(res.totals.physicalDrawerCash).toBe("13568250.00");
+    expect(res.totals.closedExpected).toBe("10027300.00");
+    expect(res.totals.physicalDrawerCash).toBe("0.00");
+
+    // الرصيد النهائي تراكمي: مليون مرحّل + 20 مليون تمويل - 10 ملايين عهدة
+    // + 10,027,300 إغلاق وردية + 3,540,950 تحصيل مباشر.
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "24568250.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "24568250.00",
+      isReadyForFinalCount: true,
+    });
 
     // ثوابت الجمع الشاملة
     expect(Number(res.totals.salesCash) + Number(res.totals.collectionsCash) + Number(res.totals.otherIn)).toBe(Number(res.totals.cashIn));
@@ -455,7 +1400,14 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.totals.collectionsCash).toBe("3540950.00");
     expect(res.totals.cashIn).toBe("3540950.00");
     expect(res.totals.expected).toBe("3540950.00");
-    expect(res.totals.physicalDrawerCash).toBe("3540950.00");
+    expect(res.totals.physicalDrawerCash).toBe("0.00");
+    expect(res.cashPosition).toMatchObject({
+      expectedTreasuryCash: "4540950.00",
+      expectedDrawersCash: "0.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "4540950.00",
+      isReadyForFinalCount: true,
+    });
   });
 
   it("R2: تفكيك الحركات المباشرة المتعددة (بيع، تحصيل، مرتجع، مصروف) مع حفظ التوازن", async () => {
@@ -493,6 +1445,12 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.expensesCash).toBe("100000.00");
     expect(res.directOperations.operatingOut).toBe("150000.00");
     expect(res.directOperations.netCash).toBe("550000.00");
+    expect(res.directMovements).toMatchObject({
+      count: 4,
+      in: "700000.00",
+      out: "150000.00",
+      net: "550000.00",
+    });
 
     expect(Number(res.totals.salesCash) + Number(res.totals.collectionsCash) + Number(res.totals.otherIn)).toBe(Number(res.totals.cashIn));
     expect(Number(res.totals.returnsCash) + Number(res.totals.expensesCash) + Number(res.totals.otherOut)).toBe(Number(res.totals.operatingOut));
@@ -682,10 +1640,14 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     // تقرير اليوم يرى حركة 600,000 المعتمدة اليوم، ويستبعد 900,000 المعتمدة غداً
     expect(resToday.directOperations.collectionsCash).toBe("600000.00");
     expect(resToday.totals.collectionsCash).toBe("600000.00");
+    expect(resToday.directMovements).toMatchObject({ count: 1, net: "600000.00" });
+    expect(resToday.directMovements.details[0]?.time.slice(0, 10)).toBe(DATE);
 
     // تقرير الغد يرى حركة 900,000
     const resTomorrow = await getDayCloseReconciliation({ date: nextDateStr, branchId: 1 });
     expect(resTomorrow.directOperations.collectionsCash).toBe("900000.00");
+    expect(resTomorrow.directMovements).toMatchObject({ count: 1, net: "900000.00" });
+    expect(resTomorrow.directMovements.details[0]?.time.slice(0, 10)).toBe(nextDateStr);
   });
 
   it("R2 (Adversarial): عدم استبعاد سندات القبض/الصرف الرسمية بسبب تطابق مرجعي مصادف (CT-/TF- with voucherNumber)", async () => {
@@ -706,6 +1668,107 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.totals.expected).toBe("3540950.00");
   });
 
+  it("R2 (Regression): سند صرف عادي بمرجع CH مطابق لسند قبض لا يتحول إلى عهدة", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertReceipt({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      approvalStatus: "APPROVED",
+      voucherNumber: "PV-1-CH-COLLISION",
+      referenceNumber: "CH-ORDINARY-VOUCHER-COLLISION",
+    });
+    await db().insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      voucherNumber: "RV-1-CH-COLLISION",
+      referenceNumber: "CH-ORDINARY-VOUCHER-COLLISION",
+      createdBy: ADMIN,
+    });
+
+    const res = await report(1);
+    const shiftLine = line(res, shiftId);
+    expect(shiftLine.handoversCash).toBe("0.00");
+    expect(shiftLine.expensesCash).toBe("10000.00");
+    expect(shiftLine.movements.find((movement) => movement.id === sourceReceiptId)?.categoryType)
+      .toBe("EXPENSE");
+    expect(res.cashPosition).toMatchObject({ cashInTransit: "0.00" });
+  });
+
+  it("R2 (Regression): سند قبض خزينة مستقل بمرجع CH لا يُعامل كهدف عهدة", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      voucherNumber: "RV-1-STANDALONE-CH",
+      referenceNumber: "CH-STANDALONE-TREASURY-VOUCHER",
+      createdBy: ADMIN,
+    });
+
+    expect((await report(1)).cashPosition).toMatchObject({
+      expectedTreasuryCash: "1010000.00",
+      cashInTransit: "0.00",
+      expectedCashOnHand: "1010000.00",
+      isReadyForFinalCount: true,
+    });
+  });
+
+  it("R2 (Regression): دفعة درج عادية لا تبرر هدف عهدة معلّقاً يطابق مرجعها ومبلغها", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const sourceReceiptId = await insertReceipt({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "10000.00",
+      approvalStatus: "APPROVED",
+      voucherNumber: "PV-1-PENDING-CH-COLLISION",
+      referenceNumber: "CH-PENDING-COLLISION",
+    });
+    await db().insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "10000.00",
+      entryDate: DATE,
+    });
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-PENDING-COLLISION",
+      createdBy: ADMIN,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
   it("R2 (Adversarial): مناعة الأحرف الصغيرة والمسافات في التحويلات وتسليمات العهدة (Case-Insensitive & Trim)", async () => {
     // ١) تحويل داخلي بحروف صغيرة ومسافات: يجب استبعاده من النقد المباشر
     await db().insert(s.receipts).values({
@@ -723,7 +1786,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
     await insertReceipt({ shiftId, branchId: 1, direction: "IN", amount: "100000.00" });
     // تسليم عهدة بحروف صغيرة
-    await db().insert(s.receipts).values({
+    await insertCustodySource({
       branchId: 1, shiftId, direction: "OUT", amount: "150000.00", paymentMethod: "CASH",
       cashBucket: "DRAWER", status: "COMPLETED", approvalStatus: "APPROVED",
       referenceNumber: " ch-shift-close-001 ",
@@ -868,8 +1931,8 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.totals.shiftExpected).toBe("10027300.00");
     expect(res.totals.directNetCash).toBe("2629500.00");
     expect(res.totals.expected).toBe("12656800.00");
-    expect(res.totals.closedExpected).toBe("12656800.00");
-    expect(res.totals.physicalDrawerCash).toBe("12656800.00");
+    expect(res.totals.closedExpected).toBe("10027300.00");
+    expect(res.totals.physicalDrawerCash).toBe("0.00");
 
     // ج) الحفاظ على العمليات المشروعة في المجاميع الكلية
     expect(res.totals.collectionsCash).toBe("2779500.00");
