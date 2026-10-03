@@ -1,21 +1,17 @@
-import { lazy, Suspense, useRef, useState, useTransition } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 import {
   AlertCircle,
   Camera,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  Eye,
   Image as ImageIcon,
+  Layers,
   Loader2,
   Package,
-  Plus,
-  RefreshCw,
   ScanLine,
   Send,
   Sparkles,
   Upload,
-  X,
+  Wand2,
   ZoomIn,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,7 +30,8 @@ import { UnifiedSearchInput } from "@/components/search/UnifiedSearchInput";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { runFreeStudioCut, runFreeStudioFlatten } from "@/lib/imageStudio/freePipeline";
+import { normalizeAiStudioImage } from "@/lib/imageStudio/aiStudio";
+import { finishCutFromCutout, runFreeStudioFlatten } from "@/lib/imageStudio/freePipeline";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
 import { compressCanvas } from "@/components/form/ImageUploader";
 
@@ -42,7 +39,7 @@ const CameraScanner = lazy(() =>
   import("@/components/scan/CameraScanner").then((module) => ({ default: module.CameraScanner })),
 );
 
-type StudioMode = "FLATTEN" | "CUT" | "ORIGINAL";
+type StudioMode = "AI" | "REMOVEBG" | "FLATTEN" | "ORIGINAL";
 
 interface Props {
   className?: string;
@@ -61,36 +58,36 @@ async function prepareMobileCapturedImage(file: File): Promise<string> {
     reader.onload = () => {
       const img = new Image();
       img.onerror = () => reject(new Error("تعذّر تحميل بيانات الصورة"));
-      img.onload = () => {
-        const MAX_DIM = 1600;
-        let { width, height } = img;
-        if (width > MAX_DIM || height > MAX_DIM) {
-          if (width > height) {
-            height = Math.round((height * MAX_DIM) / width);
-            width = MAX_DIM;
-          } else {
-            width = Math.round((width * MAX_DIM) / height);
-            height = MAX_DIM;
-          }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) {
-          resolve(reader.result as string);
-          return;
-        }
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(img, 0, 0, width, height);
-
-        // ترميز WebP أو JPEG بحجم خفيف
+      img.onload = async () => {
         try {
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
-          resolve(dataUrl);
-        } catch {
-          resolve(reader.result as string);
+          const MAX_DIM = 1600;
+          let { width, height } = img;
+          if (width > MAX_DIM || height > MAX_DIM) {
+            if (width > height) {
+              height = Math.round((height * MAX_DIM) / width);
+              width = MAX_DIM;
+            } else {
+              width = Math.round((width * MAX_DIM) / height);
+              height = MAX_DIM;
+            }
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) {
+            reject(new Error("تعذّر إنشاء سياق معالجة الصورة"));
+            return;
+          }
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // ضغط محكوم وفق سلّم ImageUploader لضمان حجم خفيف مناسب للهواتف و≤700KB
+          const compressed = await compressCanvas(canvas);
+          resolve(compressed.dataUrl);
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error("تعذّر ضغط وتجهيز الصورة"));
         }
       };
       img.src = reader.result as string;
@@ -106,6 +103,39 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
   const [lookupBarcode, setLookupBarcode] = useState<string | null>(null);
   const [productModalOpen, setProductModalOpen] = useState(false);
 
+  // استعلام جاهزية وإعدادات استوديو الذكاء ومسار Pro
+  const aiConfig = trpc.imageStudio.aiConfig.useQuery(undefined, {
+    enabled: !offline,
+    staleTime: 60_000,
+  });
+
+  const aiAvailable = !offline && aiConfig.data?.aiAvailable === true;
+  const proAvailable = !offline && aiConfig.data?.proAvailable === true;
+
+  const aiUnavailableMessage = offline
+    ? "المعالجة بالذكاء الاصطناعي تتطلب اتصالاً بالإنترنت."
+    : aiConfig.isLoading
+      ? "يجري التحقق من جاهزية مزود الذكاء الاصطناعي..."
+      : aiConfig.data?.cryptoReady === false
+        ? "تشفير الإعدادات غير جاهز (مفتاح التشفير غير مضبوط في البيئة)."
+        : aiConfig.data?.aiEnabled === false
+          ? "مسار الذكاء الاصطناعي معطّل في إعدادات الاستوديو."
+          : aiConfig.data?.hasAiKey === false
+            ? "مفتاح مزود الذكاء الاصطناعي غير مدخل في إعدادات الاستوديو."
+            : "مسار الذكاء الاصطناعي غير متاح حالياً.";
+
+  const proUnavailableMessage = offline
+    ? "خدمة remove.bg تتطلب اتصالاً بالإنترنت."
+    : aiConfig.isLoading
+      ? "يجري التحقق من جاهزية remove.bg..."
+      : aiConfig.data?.cryptoReady === false
+        ? "تشفير الإعدادات غير جاهز."
+        : aiConfig.data?.proEnabled === false
+          ? "خدمة remove.bg معطّلة في إعدادات الاستوديو."
+          : aiConfig.data?.hasProKey === false
+            ? "مفتاح remove.bg غير مدخل في إعدادات الاستوديو."
+            : "خدمة remove.bg غير متاحة حالياً.";
+
   // حالة الصورة الجديدة الملتقطة
   const [rawImage, setRawImage] = useState<string | null>(null);
   const [processedImage, setProcessedImage] = useState<string | null>(null);
@@ -113,6 +143,9 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
   const [setAsPrimary, setSetAsPrimary] = useState(true);
   const [isProcessingAi, setIsProcessingAi] = useState(false);
   const [previewZoomImage, setPreviewZoomImage] = useState<string | null>(null);
+
+  // ذاكرة تخزين مؤقتة للنتائج المعالجة حسب كل وضع للقطة الحالية
+  const processedCacheRef = useRef<Partial<Record<StudioMode, string>>>({});
 
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -127,6 +160,15 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
     },
   );
 
+  // معالجة الذكاء الاصطناعي عبر الخادم
+  const quickAiMutation = trpc.productStudio.quickAiTransform.useMutation();
+
+  const resetImageState = () => {
+    setRawImage(null);
+    setProcessedImage(null);
+    processedCacheRef.current = {};
+  };
+
   // حفظ واعتماد الصورة المباشرة
   const saveMutation = trpc.productStudio.quickSaveBarcodeProductImage.useMutation({
     onSuccess: (data) => {
@@ -139,8 +181,7 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
         onProductHandled(lookupQuery.data.product.id);
       }
       // تصفير الصورة الملتقطة بعد الحفظ الناجح
-      setRawImage(null);
-      setProcessedImage(null);
+      resetImageState();
     },
     onError: (err) => {
       notify.err(err.message || "تعذّر حفظ الصورة");
@@ -153,8 +194,7 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
     setLookupBarcode(trimmed);
     setProductModalOpen(true);
     // تصفير مدخلات الصورة القديمة
-    setRawImage(null);
-    setProcessedImage(null);
+    resetImageState();
   };
 
   const handleCameraDetect = (detected: string) => {
@@ -163,24 +203,57 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
     handleStartSearch(detected);
   };
 
-  // معالجة الصورة في المتصفح حسب الوضع المختار
+  // معالجة الصورة حسب الوضع المختار مع التخزين المؤقت والتدهور السلس
   const processImageInMode = async (sourceDataUrl: string, mode: StudioMode) => {
+    if (processedCacheRef.current[mode]) {
+      setProcessedImage(processedCacheRef.current[mode]!);
+      return;
+    }
+
     setIsProcessingAi(true);
     try {
       if (mode === "ORIGINAL") {
+        processedCacheRef.current["ORIGINAL"] = sourceDataUrl;
         setProcessedImage(sourceDataUrl);
       } else if (mode === "FLATTEN") {
         const result = await runFreeStudioFlatten(sourceDataUrl);
+        processedCacheRef.current["FLATTEN"] = result.dataUrl;
         setProcessedImage(result.dataUrl);
-      } else if (mode === "CUT") {
+      } else if (mode === "REMOVEBG") {
         try {
-          const result = await runFreeStudioCut(sourceDataUrl);
-          setProcessedImage(result.dataUrl);
-        } catch {
-          // التدهور السلس إذا لم يدعم الهاتف نموذج العزل
-          notify.warn("تعذّر العزل التلقائي بالذكاء، تم تطبيق المعالجة البيضاء النقية.");
-          const fallbackResult = await runFreeStudioFlatten(sourceDataUrl);
-          setProcessedImage(fallbackResult.dataUrl);
+          const res = await quickAiMutation.mutateAsync({
+            imageDataUrl: sourceDataUrl,
+            mode: "REMOVEBG",
+            productId: lookupQuery.data?.product?.id,
+            barcode: lookupBarcode ?? undefined,
+          });
+          const cutResult = await finishCutFromCutout(res.imageDataUrl, sourceDataUrl, { trustCutout: true });
+          processedCacheRef.current["REMOVEBG"] = cutResult.dataUrl;
+          setProcessedImage(cutResult.dataUrl);
+        } catch (err: any) {
+          notify.warn(err.message || "تعذّر العزل عبر remove.bg، تم التحويل للخلفية البيضاء السريعة.");
+          const fallback = await runFreeStudioFlatten(sourceDataUrl);
+          processedCacheRef.current["FLATTEN"] = fallback.dataUrl;
+          setActiveMode("FLATTEN");
+          setProcessedImage(fallback.dataUrl);
+        }
+      } else if (mode === "AI") {
+        try {
+          const res = await quickAiMutation.mutateAsync({
+            imageDataUrl: sourceDataUrl,
+            mode: "AI",
+            productId: lookupQuery.data?.product?.id,
+            barcode: lookupBarcode ?? undefined,
+          });
+          const normalized = await normalizeAiStudioImage(res.imageDataUrl);
+          processedCacheRef.current["AI"] = normalized.dataUrl;
+          setProcessedImage(normalized.dataUrl);
+        } catch (err: any) {
+          notify.warn(err.message || "تعذّر تحسين الصورة باستوديو الذكاء (API)، تم التحويل للخلفية البيضاء السريعة.");
+          const fallback = await runFreeStudioFlatten(sourceDataUrl);
+          processedCacheRef.current["FLATTEN"] = fallback.dataUrl;
+          setActiveMode("FLATTEN");
+          setProcessedImage(fallback.dataUrl);
         }
       }
     } catch (err: any) {
@@ -200,7 +273,10 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
       setIsProcessingAi(true);
       const optimizedDataUrl = await prepareMobileCapturedImage(file);
       setRawImage(optimizedDataUrl);
-      await processImageInMode(optimizedDataUrl, activeMode);
+      processedCacheRef.current = {};
+      const initialMode: StudioMode = aiAvailable ? "AI" : proAvailable ? "REMOVEBG" : "FLATTEN";
+      setActiveMode(initialMode);
+      await processImageInMode(optimizedDataUrl, initialMode);
     } catch (err: any) {
       notify.err(err.message || "تعذّر تجهيز الصورة");
     } finally {
@@ -231,7 +307,7 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
         originalDataUrl: rawImage,
         processedDataUrl: processedImage,
         thumbnailDataUrl: thumb,
-        mode: activeMode,
+        mode: activeMode === "REMOVEBG" ? "PRO" : activeMode,
         setAsPrimary,
       });
     } catch (err: any) {
@@ -327,8 +403,7 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
         if (!open) {
           setProductModalOpen(false);
           setLookupBarcode(null);
-          setRawImage(null);
-          setProcessedImage(null);
+          resetImageState();
         }
       }}>
         <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-2xl sm:max-w-3xl">
@@ -465,14 +540,65 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => {
-                        setRawImage(null);
-                        setProcessedImage(null);
-                      }}
+                      onClick={resetImageState}
                       className="h-8 text-xs text-muted-foreground"
                     >
                       إلغاء اللقطة
                     </Button>
+                  )}
+                </div>
+
+                {/* شريط حالة مزودي الذكاء الاصطناعي والإعدادات */}
+                <div className="rounded-lg border bg-muted/20 p-2.5 space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Sparkles aria-hidden className="size-3.5 text-primary" />
+                      جاهزية معالجة الذكاء الاصطناعي
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {aiAvailable ? (
+                        <Badge variant="outline" className="border-emerald-600/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 font-normal text-[11px] gap-1">
+                          <CheckCircle2 aria-hidden className="size-3 text-emerald-600" />
+                          استوديو الذكاء ({aiConfig.data?.provider || "Gemini"}): جاهز
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="border-amber-600/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 font-normal text-[11px] gap-1" title={aiUnavailableMessage}>
+                          <AlertCircle aria-hidden className="size-3 text-amber-600" />
+                          استوديو الذكاء: غير متاح
+                        </Badge>
+                      )}
+                      {proAvailable ? (
+                        <Badge variant="outline" className="border-emerald-600/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 font-normal text-[11px] gap-1">
+                          <CheckCircle2 aria-hidden className="size-3 text-emerald-600" />
+                          عزل remove.bg: جاهز
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="border-muted bg-muted/40 text-muted-foreground font-normal text-[11px] gap-1" title={proUnavailableMessage}>
+                          <AlertCircle aria-hidden className="size-3" />
+                          عزل remove.bg: غير متاح
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  {(!aiAvailable || !proAvailable) && (
+                    <div className="rounded border border-amber-500/20 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-800 dark:text-amber-300 space-y-1">
+                      {!aiAvailable && (
+                        <div className="flex items-start gap-1.5">
+                          <AlertCircle aria-hidden className="size-3.5 shrink-0 mt-0.5 text-amber-600" />
+                          <span>
+                            استوديو الذكاء ({aiConfig.data?.provider || "Gemini"}): {aiUnavailableMessage}
+                          </span>
+                        </div>
+                      )}
+                      {!proAvailable && (
+                        <div className="flex items-start gap-1.5">
+                          <AlertCircle aria-hidden className="size-3.5 shrink-0 mt-0.5 text-amber-600" />
+                          <span>
+                            عزل remove.bg: {proUnavailableMessage}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -522,7 +648,63 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
                     {/* شريط اختيار وضع معالجة الاستوديو */}
                     <div className="space-y-1.5">
                       <Label className="text-xs text-muted-foreground">وضع المعالجة في الاستوديو:</Label>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleModeChange("AI")}
+                          disabled={isProcessingAi || !aiAvailable}
+                          title={!aiAvailable ? aiUnavailableMessage : undefined}
+                          className={`flex flex-col items-center justify-center rounded-lg border p-2 text-center transition ${
+                            !aiAvailable
+                              ? "border-dashed border-border/60 bg-muted/20 text-muted-foreground/60 cursor-not-allowed opacity-60"
+                              : activeMode === "AI"
+                                ? "border-primary bg-primary/10 text-primary font-bold shadow-xs"
+                                : "border-border bg-background text-muted-foreground hover:bg-accent/40"
+                          }`}
+                        >
+                          <span className="text-xs flex items-center gap-1">
+                            <Wand2 aria-hidden className="size-3 text-primary" />
+                            استوديو الذكاء (API)
+                          </span>
+                          <span className="text-[10px] opacity-75">
+                            {aiAvailable
+                              ? "تحسين توليدي وخلفية استوديو"
+                              : !aiConfig.data?.hasAiKey
+                                ? "المفتاح غير مدخل"
+                                : !aiConfig.data?.aiEnabled
+                                  ? "معطّل بالإعدادات"
+                                  : "غير متاح"}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleModeChange("REMOVEBG")}
+                          disabled={isProcessingAi || !proAvailable}
+                          title={!proAvailable ? proUnavailableMessage : undefined}
+                          className={`flex flex-col items-center justify-center rounded-lg border p-2 text-center transition ${
+                            !proAvailable
+                              ? "border-dashed border-border/60 bg-muted/20 text-muted-foreground/60 cursor-not-allowed opacity-60"
+                              : activeMode === "REMOVEBG"
+                                ? "border-primary bg-primary/10 text-primary font-bold shadow-xs"
+                                : "border-border bg-background text-muted-foreground hover:bg-accent/40"
+                          }`}
+                        >
+                          <span className="text-xs flex items-center gap-1">
+                            <Layers aria-hidden className="size-3 text-primary" />
+                            عزل بالذكاء (remove.bg)
+                          </span>
+                          <span className="text-[10px] opacity-75">
+                            {proAvailable
+                              ? "عزل دقيق واحترافي"
+                              : !aiConfig.data?.hasProKey
+                                ? "المفتاح غير مدخل"
+                                : !aiConfig.data?.proEnabled
+                                  ? "معطّل بالإعدادات"
+                                  : "غير متاح"}
+                          </span>
+                        </button>
+
                         <button
                           type="button"
                           onClick={() => handleModeChange("FLATTEN")}
@@ -533,25 +715,8 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
                               : "border-border bg-background text-muted-foreground hover:bg-accent/40"
                           }`}
                         >
-                          <span className="text-xs">خلفية بيضاء نقية</span>
+                          <span className="text-xs">خلفية بيضاء سريعة</span>
                           <span className="text-[10px] opacity-75">سريع 100% ومناسب للهواتف</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => handleModeChange("CUT")}
-                          disabled={isProcessingAi}
-                          className={`flex flex-col items-center justify-center rounded-lg border p-2 text-center transition ${
-                            activeMode === "CUT"
-                              ? "border-primary bg-primary/10 text-primary font-bold shadow-xs"
-                              : "border-border bg-background text-muted-foreground hover:bg-accent/40"
-                          }`}
-                        >
-                          <span className="text-xs flex items-center gap-1">
-                            <Sparkles aria-hidden className="size-3" />
-                            عزل بالذكاء
-                          </span>
-                          <span className="text-[10px] opacity-75">تفريغ الخلفية تلقائياً</span>
                         </button>
 
                         <button
@@ -576,6 +741,13 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
                         <div className="flex h-56 flex-col items-center justify-center gap-2">
                           <Loader2 aria-hidden className="size-7 animate-spin text-primary" />
                           <p className="text-xs text-muted-foreground">{ACTION_LABELS.processing}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {activeMode === "AI"
+                              ? "جاري معالجة الصورة وتحسينها عبر مزود الذكاء الاصطناعي..."
+                              : activeMode === "REMOVEBG"
+                                ? "جاري عزل خلفية الصورة عبر remove.bg..."
+                                : "جاري معالجة الصورة..."}
+                          </p>
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -593,7 +765,15 @@ export function StudioQuickBarcodeSearch({ className = "", onProductHandled, off
                           <div className="space-y-1 text-center">
                             <span className="text-[11px] font-bold text-primary flex items-center justify-center gap-1">
                               <CheckCircle2 aria-hidden className="size-3" />
-                              الناتج النهائي للاستوديو
+                              الناتج النهائي للاستوديو ({
+                                activeMode === "AI"
+                                  ? "استوديو الذكاء"
+                                  : activeMode === "REMOVEBG"
+                                    ? "عزل remove.bg"
+                                    : activeMode === "FLATTEN"
+                                      ? "خلفية بيضاء سريعة"
+                                      : "اللقطة الأصلية"
+                              })
                             </span>
                             <div className="flex h-48 items-center justify-center rounded-lg border border-primary/30 bg-white p-1 shadow-xs">
                               <img

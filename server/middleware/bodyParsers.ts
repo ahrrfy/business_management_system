@@ -52,6 +52,8 @@ export function applyBodyParsers(app: Express): void {
     // خادمياً من المحتوى والحجم قبل حفظ أي نتيجة.
     if (
       req.path.includes("imageStudio.aiStudioTransform") ||
+      req.path.includes("productStudio.quickAiTransform") ||
+      req.path.includes("productStudio.quickSaveBarcodeProductImage") ||
       req.path.includes("productStudio.bindProcessingProof") ||
       req.path.includes("productStudio.submitCandidate")
     ) {

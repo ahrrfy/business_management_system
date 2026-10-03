@@ -2,7 +2,7 @@ import { z } from "zod";
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { barcodeString, barcodeStorageString } from "../lib/schemas";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, quickBarcodeLookup, quickSaveBarcodeProductImage, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, drainStudioCampaignBacklog, distributeCampaignTasks, getNextPhotographerTask, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, getStudioProductVariantMatrix, linkStudioBarcode, quickBarcodeLookup, quickSaveBarcodeProductImage, quickAiTransform, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
 import { discoverImageGaps, getGapProductIds, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
@@ -387,10 +387,22 @@ export const productStudioRouter = router({
         originalDataUrl: z.string().max(1_300_000).nullable().optional(),
         processedDataUrl: z.string().max(1_300_000),
         thumbnailDataUrl: z.string().max(180_000),
-        mode: z.enum(["FLATTEN", "CUT", "AI", "ORIGINAL"]).default("FLATTEN"),
+        mode: z.enum(["FLATTEN", "CUT", "PRO", "AI", "ORIGINAL"]).default("FLATTEN"),
         setAsPrimary: z.boolean().optional(),
         adminOverrideReason,
       }),
     )
     .mutation(({ ctx, input }) => quickSaveBarcodeProductImage(actor(ctx), input)),
+  // معالجة بالذكاء الاصطناعي السريعة عبر API (Gemini أو remove.bg) لصور الباركود المباشرة
+  quickAiTransform: productStudioWriteProcedure
+    .input(
+      z.object({
+        imageDataUrl: z.string().min(1).max(6_000_000),
+        mode: z.enum(["AI", "REMOVEBG"]).default("AI"),
+        productId: z.number().int().positive().optional(),
+        barcode: barcodeString.optional(),
+        adminOverrideReason,
+      }),
+    )
+    .mutation(({ ctx, input }) => quickAiTransform(actor(ctx), input)),
 });

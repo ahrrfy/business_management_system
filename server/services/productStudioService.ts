@@ -31,6 +31,15 @@ import {
   type AppNotificationWriter,
 } from "./appNotificationOutboxService";
 import { generateAndSaveContentDraftForProduct } from "./productContentAiService";
+import { buildAiStudioPrompt } from "@shared/imageStudio/aiPrompt";
+import { getAiStudioRuntime, getDecryptedRemovebgKey } from "./imageStudioSettingsService";
+import { AiImageError, aiImageErrorMessageAr, generateStudioImage } from "./aiImageStudioService";
+import {
+  ImageStudioGuardError,
+  imageStudioGuardErrorMessageAr,
+  runGuardedImageStudioCall,
+} from "./imageStudioUsageGuard";
+import { callRemovebg, RemovebgError, removebgErrorMessageAr } from "./removebgService";
 
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
 const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
@@ -6454,7 +6463,7 @@ export async function quickSaveBarcodeProductImage(
     originalDataUrl?: string | null;
     processedDataUrl: string;
     thumbnailDataUrl: string;
-    mode: "FLATTEN" | "CUT" | "AI" | "ORIGINAL";
+    mode: "FLATTEN" | "CUT" | "PRO" | "AI" | "ORIGINAL";
     setAsPrimary?: boolean;
     adminOverrideReason?: string | null;
   },
@@ -6539,11 +6548,18 @@ export async function quickSaveBarcodeProductImage(
       const origin =
         input.mode === "AI"
           ? "STUDIO_AI"
-          : input.mode === "CUT"
+          : input.mode === "PRO" || input.mode === "CUT"
             ? "STUDIO_PRO"
             : input.mode === "ORIGINAL"
               ? "ORIGINAL"
               : "STUDIO_FREE";
+
+      const jobMode: "FLATTEN" | "CUT" | "PRO" | "AI" =
+        input.mode === "ORIGINAL"
+          ? "FLATTEN"
+          : input.mode === "CUT"
+            ? "PRO"
+            : input.mode;
 
       // إنشاء صف في productImageJobs لتسجيل الأثر المكتمل
       const [job] = await tx
@@ -6562,7 +6578,7 @@ export async function quickSaveBarcodeProductImage(
           processedBytes: processed.bytes.length,
           processedWidth: processed.width,
           processedHeight: processed.height,
-          mode: input.mode === "ORIGINAL" ? "FLATTEN" : input.mode,
+          mode: jobMode,
           status: "APPROVED",
           assignedTo: actor.userId,
           assignedBy: actor.userId,
@@ -6641,7 +6657,12 @@ export async function quickSaveBarcodeProductImage(
     // مسار المصور / الموظف: إرسال للمراجعة والاعتماد من قبل المدير
     // -------------------------------------------------------------
     return await withStudioTx(async (tx) => {
-      const mode = input.mode === "ORIGINAL" ? "FLATTEN" : input.mode;
+      const jobMode: "FLATTEN" | "CUT" | "PRO" | "AI" =
+        input.mode === "ORIGINAL"
+          ? "FLATTEN"
+          : input.mode === "CUT"
+            ? "PRO"
+            : input.mode;
 
       const [job] = await tx
         .insert(productImageJobs)
@@ -6660,7 +6681,7 @@ export async function quickSaveBarcodeProductImage(
           processedWidth: processed.width,
           processedHeight: processed.height,
           processedUrl: thumbnail.dataUrl,
-          mode,
+          mode: jobMode,
           status: "PENDING_REVIEW",
           assignedTo: actor.userId,
           assignedBy: actor.userId,
@@ -6696,6 +6717,175 @@ export async function quickSaveBarcodeProductImage(
     });
   }
 }
+
+/**
+ * معالجة مباشرة بالذكاء الاصطناعي لصور الباركود السريعة:
+ * - وضع "AI" (الافتراضي): يعالج الصورة عبر مزوّد الذكاء الاصطناعي (مثل Gemini) لإعادة تصميمها كاستوديو أبيض ناصع.
+ * - وضع "REMOVEBG": يقص خلفية الصورة بدقة عبر خدمة remove.bg عبر API.
+ */
+export async function quickAiTransform(
+  actor: ProductStudioActor,
+  input: {
+    imageDataUrl: string;
+    mode?: "AI" | "REMOVEBG";
+    productId?: number;
+    barcode?: string;
+    adminOverrideReason?: string | null;
+  },
+): Promise<{
+  imageDataUrl: string;
+  provider: string;
+  model?: string;
+}> {
+  assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
+  const match = /^data:([^;]+);base64,(.+)$/.exec(input.imageDataUrl);
+  if (!match) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "صيغة الصورة غير مدعومة",
+        why: "بيانات الصورة المرسلة لا تطابق صيغة data-URL الصحيحة",
+        doThis: "أعد التقاط الصورة أو اختيارها من الجهاز بصيغة صالحة",
+      }),
+    });
+  }
+
+  const mimeType = canonicalImageMime(match[1]);
+  const imageBase64 = match[2];
+  const mode = input.mode ?? "AI";
+
+  if (mode === "REMOVEBG") {
+    const removebgKey = await getDecryptedRemovebgKey();
+    if (!removebgKey) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "خدمة remove.bg غير جاهزة",
+          why: "مفتاح API لخدمة remove.bg غير مفعّل أو غير مضبوط في إعدادات الاستوديو",
+          doThis: "تأكد من ضبط وتفعيل مفتاح remove.bg في إعدادات استوديو الصور",
+        }),
+      });
+    }
+
+    try {
+      const result = await runGuardedImageStudioCall({
+        service: "REMOVEBG",
+        userId: actor.userId,
+        branchId: actor.branchId,
+        run: () => callRemovebg(removebgKey, imageBase64),
+      });
+
+      return {
+        imageDataUrl: `data:image/png;base64,${result.cutout.toString("base64")}`,
+        provider: "REMOVEBG",
+      };
+    } catch (e) {
+      if (e instanceof ImageStudioGuardError) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: appErrorMessage({
+            what: "الاستوديو مشغول حالياً",
+            why: "هناك طلبات معالجة أخرى قيد التنفيذ تتجاوز سعة التزامن",
+            doThis: "انتظر لحظة ثم أعد المحاولة",
+          }),
+        });
+      }
+      if (e instanceof RemovebgError) {
+        const code =
+          e.kind === "AUTH" || e.kind === "OUT_OF_CREDITS"
+            ? "PRECONDITION_FAILED"
+            : e.kind === "RATE_LIMITED"
+              ? "TOO_MANY_REQUESTS"
+              : e.kind === "BAD_INPUT"
+                ? "BAD_REQUEST"
+                : "INTERNAL_SERVER_ERROR";
+        throw new TRPCError({
+          code,
+          message: appErrorMessage({
+            what: "تعذّر قص خلفية الصورة عبر remove.bg",
+            why: removebgErrorMessageAr(e.kind),
+            doThis: "تحقق من رصيد المفتاح أو استخدم خيار الخلفية البيضاء السريعة",
+          }),
+        });
+      }
+      throw e;
+    }
+  }
+
+  // وضع "AI" التوليدي (Gemini أو أي مزود معتمد)
+  const runtime = await getAiStudioRuntime();
+  if (!runtime) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "مسار الذكاء الاصطناعي غير جاهز",
+        why: "مفتاح مزوّد الذكاء الاصطناعي غير مضبوط أو الخدمة معطّلة في إعدادات الاستوديو",
+        doThis: "تأكد من إدخال مفتاح API وتفعيل الخدمة من إعدادات استوديو الصور",
+      }),
+    });
+  }
+
+  try {
+    const result = await generateStudioImage(
+      {
+        apiKey: runtime.apiKey,
+        model: runtime.model,
+        prompt: buildAiStudioPrompt(runtime.basePrompt),
+        imageBase64,
+        mimeType,
+      },
+      {
+        runAttempt: (run) =>
+          runGuardedImageStudioCall({
+            service: "AI",
+            userId: actor.userId,
+            branchId: actor.branchId,
+            run,
+          }),
+      },
+    );
+
+    return {
+      imageDataUrl: `data:${result.mimeType};base64,${result.imageBase64}`,
+      provider: runtime.provider,
+      model: runtime.model,
+    };
+  } catch (e) {
+    if (e instanceof ImageStudioGuardError) {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: appErrorMessage({
+          what: "الاستوديو مشغول حالياً",
+          why: "هناك طلبات معالجة صور أخرى قيد التنفيذ تتجاوز سعة التزامن",
+          doThis: "انتظر لحظة ثم أعد المحاولة",
+        }),
+      });
+    }
+    if (e instanceof AiImageError) {
+      const code =
+        e.kind === "AUTH" || e.kind === "QUOTA"
+          ? "PRECONDITION_FAILED"
+          : e.kind === "BLOCKED" || e.kind === "BAD_INPUT" || e.kind === "NO_IMAGE"
+            ? "BAD_REQUEST"
+            : "INTERNAL_SERVER_ERROR";
+      const showDetail = e.kind === "NO_IMAGE" || e.kind === "BLOCKED";
+      const detail =
+        showDetail && e.message && !e.message.startsWith("HTTP ")
+          ? `${aiImageErrorMessageAr(e.kind)} — ${e.message}`
+          : aiImageErrorMessageAr(e.kind);
+      throw new TRPCError({
+        code,
+        message: appErrorMessage({
+          what: "تعذّر تحويل الصورة بالذكاء الاصطناعي",
+          why: detail,
+          doThis: "تحقق من جودة اللقطة وخلوها من التعارضات أو اختر البديل المحلي",
+        }),
+      });
+    }
+    throw e;
+  }
+}
+
 
 
 
