@@ -1,8 +1,8 @@
 // تبويب «مطابقة الأرصدة» — مقارنة رصيدنا الدفتري (حتى تاريخ قطع) برصيد كشف الصيرفة + البنود المعلّقة.
 // قراءة فقط: أي فرق حقيقي يُسوّى لاحقاً بقيد تصحيح يدوي صريح (لا تسوية صامتة).
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Scale as ScaleIcon, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Scale as ScaleIcon, CheckCircle2, AlertTriangle, FileSpreadsheet, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,9 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
 import { isSignedMoneyStr, selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { exportSheets, type SheetSpec } from "@/lib/export";
+import { printExchangeReconcileDoc } from "@/lib/printing/printExchangeStatement";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
 
 const TYPE_AR: Record<string, string> = {
   DEPOSIT: "إيداع", WITHDRAW: "سحب", FX_BUY: "شراء دولار", SETTLE: "تسديد مورد", OPENING: "رصيد افتتاحي",
@@ -45,6 +48,7 @@ const pendingColumns: ColumnDef<PendingRow, unknown>[] = [
 ];
 
 export default function ExchangeReconcile() {
+  const me = trpc.auth.me.useQuery();
   const houses = trpc.exchange.list.useQuery({ limit: 200, offset: 0 });
   const [houseId, setHouseId] = useState(0);
   const [statedIqd, setStatedIqd] = useState("");
@@ -67,6 +71,100 @@ export default function ExchangeReconcile() {
   };
 
   const r = rec.data;
+  const house = houseRows.find((h) => h.id === houseId);
+
+  const printReconcileDoc = useCallback(() => {
+    if (!r || !house) return;
+    if (!reservePrintWindow()) {
+      notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+      return;
+    }
+    const ok = printExchangeReconcileDoc({
+      houseName: house.name,
+      asOfDate: asOf || undefined,
+      ourBalanceIqd: r.ourBalanceIqd,
+      statedBalanceIqd: r.statedBalanceIqd,
+      diffIqd: r.diffIqd,
+      ourBalanceUsd: r.ourBalanceUsd,
+      statedBalanceUsd: r.statedBalanceUsd,
+      diffUsd: r.diffUsd,
+      matched: r.matched,
+      pending: (r.pending as PendingRow[]).map((p) => ({
+        txnNumber: p.txnNumber,
+        typeLabel: TYPE_AR[p.type] ?? p.type,
+        iqdAmount: p.iqdAmount,
+        usdAmount: p.usdAmount,
+        createdAt: fmtDateTime(p.createdAt),
+      })),
+      printedByName: me.data?.name || "المحاسب",
+      printRequestedAt: fmtDateTime(new Date()),
+    });
+    if (!ok) {
+      releaseReservedPrintWindow();
+      notify.err("تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.");
+    }
+  }, [r, house, asOf, me.data?.name]);
+
+  const exportReconcileExcel = useCallback(() => {
+    if (!r || !house) return;
+    const sheets: SheetSpec[] = [];
+
+    const summaryRows = [
+      {
+        item: "حساب الدينار العراقي (IQD)",
+        our: Number(r.ourBalanceIqd),
+        stated: Number(r.statedBalanceIqd),
+        diff: Number(r.diffIqd),
+        status: D(r.diffIqd).isZero() ? "مطابق" : "غير مطابق",
+      },
+      {
+        item: "حساب الدولار الأمريكي (USD)",
+        our: Number(r.ourBalanceUsd),
+        stated: Number(r.statedBalanceUsd),
+        diff: Number(r.diffUsd),
+        status: D(r.diffUsd).isZero() ? "مطابق" : "غير مطابق",
+      },
+    ];
+    sheets.push({
+      sheetName: "مقارنة الأرصدة",
+      title: `محضر مطابقة رصيد صيرفة — ${house.name}`,
+      columns: [
+        { key: "item", header: "البيان والعملة" },
+        { key: "our", header: "رصيدنا الدفتري", money: true },
+        { key: "stated", header: "رصيد كشف الصيرفة", money: true },
+        { key: "diff", header: "فارق المطابقة", money: true },
+        { key: "status", header: "الحالة" },
+      ],
+      rows: summaryRows,
+    });
+
+    const pendingList = (r.pending as PendingRow[]).map((p) => ({
+      txnNumber: p.txnNumber,
+      type: TYPE_AR[p.type] ?? p.type,
+      iqdAmount: Number(p.iqdAmount || 0),
+      usdAmount: Number(p.usdAmount || 0),
+      createdAt: fmtDateTime(p.createdAt),
+    }));
+    sheets.push({
+      sheetName: "البنود المعلقة",
+      title: `البنود المعلقة بعد تاريخ القطع — ${house.name}`,
+      columns: [
+        { key: "txnNumber", header: "رقم الحركة" },
+        { key: "type", header: "نوع العملية" },
+        { key: "iqdAmount", header: "دينار (د.ع)", money: true },
+        { key: "usdAmount", header: "دولار ($)", money: true },
+        { key: "createdAt", header: "تاريخ العملية" },
+      ],
+      rows: pendingList,
+      totalsRow: {
+        txnNumber: "الإجمالي",
+        iqdAmount: pendingList.reduce((acc, p) => acc + p.iqdAmount, 0),
+        usdAmount: pendingList.reduce((acc, p) => acc + p.usdAmount, 0),
+      },
+    });
+
+    exportSheets(`محضر-مطابقة-صيرفة-${house.name}`, sheets);
+  }, [r, house]);
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -74,6 +172,30 @@ export default function ExchangeReconcile() {
         icon={<ScaleIcon className="h-5 w-5 text-primary" />}
         title="مطابقة أرصدة الصيرفة"
         description="قارن رصيدك الدفتري برصيد كشف الصيرفة لديهم، واكشف البنود المعلّقة (فروق التوقيت)."
+        actions={
+          r ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={printReconcileDoc}
+              >
+                <Printer className="size-4" aria-hidden />
+                طباعة / PDF المحضر
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={exportReconcileExcel}
+              >
+                <FileSpreadsheet className="size-4" aria-hidden />
+                تصدير Excel
+              </Button>
+            </div>
+          ) : null
+        }
       />
 
       <Card className="p-4 space-y-3">

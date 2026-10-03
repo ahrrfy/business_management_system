@@ -1,7 +1,6 @@
-// تبويب «الصيرفات» — قائمة الصرّافين بأرصدتهم (دينار/دولار) + إضافة/تعديل/تعطيل.
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Building2, Plus, Pencil, Power, DollarSign } from "lucide-react";
+import { Building2, Plus, Pencil, Power, DollarSign, FileSpreadsheet, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,9 +14,14 @@ import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
 import { BalanceTag, netExposureIqd, NetExposureTag, type ExchangeRow } from "@/components/exchange/shared";
 import { RowActions } from "@/components/list";
+import { exportRows } from "@/lib/export";
+import { printExchangeHousesListDoc } from "@/lib/printing/printExchangeStatement";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { fmtDateTime } from "@/lib/date";
 
 export default function ExchangeAccounts() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
   const list = trpc.exchange.list.useQuery({ limit: 200, offset: 0 });
   const [editing, setEditing] = useState<ExchangeRow | null>(null);
   const [creating, setCreating] = useState(false);
@@ -118,6 +122,66 @@ export default function ExchangeAccounts() {
     [setActive],
   );
 
+  const printAccountsDoc = useCallback(() => {
+    if (rows.length === 0) {
+      notify.err("لا توجد صيرفات للطباعة");
+      return;
+    }
+    if (!reservePrintWindow()) {
+      notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+      return;
+    }
+    const ok = printExchangeHousesListDoc({
+      totals,
+      printedByName: me.data?.name || "المحاسب",
+      houses: rows.map((r) => ({
+        name: r.name,
+        phone: r.phone,
+        balanceIqd: r.balanceIqd,
+        balanceUsd: r.balanceUsd,
+        usdCostRate: r.usdCostRate,
+        netExposure: netExposureIqd(r),
+        isActive: r.isActive,
+      })),
+      printRequestedAt: fmtDateTime(new Date()),
+    });
+    if (!ok) {
+      releaseReservedPrintWindow();
+      notify.err("تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.");
+    }
+  }, [rows, totals, me.data?.name]);
+
+  const exportAccountsExcel = useCallback(() => {
+    if (rows.length === 0) {
+      notify.err("لا توجد صيرفات للتصدير");
+      return;
+    }
+    exportRows(rows, {
+      filename: "قائمة-الصيرفات-والارصدة",
+      title: "أرصدة الصيرفات ومكاتب التحويل",
+      columns: [
+        { key: "name", header: "الصيرفة" },
+        { key: "phone", header: "الهاتف", map: (r) => r.phone || "—" },
+        { key: "legacyCode", header: "الرمز القديم", map: (r) => r.legacyCode || "—" },
+        { key: "balanceIqd", header: "رصيد الدينار (د.ع)", money: true, map: (r) => Number(r.balanceIqd) },
+        { key: "dirIqd", header: "اتجاه الدينار", map: (r) => (D(r.balanceIqd).isNegative() ? "علينا" : "لنا") },
+        { key: "balanceUsd", header: "رصيد الدولار ($)", money: true, map: (r) => Number(r.balanceUsd) },
+        { key: "dirUsd", header: "اتجاه الدولار", map: (r) => (D(r.balanceUsd).isNegative() ? "علينا" : "لنا") },
+        { key: "usdCostRate", header: "متوسط كلفة الدولار", map: (r) => (D(r.usdCostRate).isZero() ? "—" : Number(r.usdCostRate)) },
+        { key: "netExposure", header: "صافي التعرّض (د.ع)", money: true, map: (r) => Number(netExposureIqd(r)) },
+        { key: "dirNet", header: "اتجاه التعرّض", map: (r) => (D(netExposureIqd(r)).isNegative() ? "علينا" : "لنا") },
+        { key: "isActive", header: "الحالة", map: (r) => (r.isActive ? "فعّالة" : "معطَّلة") },
+        { key: "notes", header: "ملاحظات", map: (r) => r.notes || "—" },
+      ],
+      totalsRow: {
+        name: "الإجمالي",
+        balanceIqd: Number(totals.iqd),
+        balanceUsd: Number(totals.usd),
+        netExposure: Number(totals.net),
+      },
+    });
+  }, [rows, totals]);
+
   return (
     <div className="space-y-4" dir="rtl">
       <PageHeader
@@ -125,10 +189,32 @@ export default function ExchangeAccounts() {
         title="الصيرفات (الصرّافون)"
         description="إدارة الصرّافين ومكاتب التحويل وأرصدتنا لديهم (دينار ودولار)."
         actions={
-          <Button size="sm" onClick={() => setCreating(true)} className="gap-1.5">
-            <Plus className="h-4 w-4" />
-            صيرفة جديدة
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={printAccountsDoc}
+              disabled={rows.length === 0}
+              className="gap-1.5"
+            >
+              <Printer className="size-4" aria-hidden />
+              طباعة / PDF
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportAccountsExcel}
+              disabled={rows.length === 0}
+              className="gap-1.5"
+            >
+              <FileSpreadsheet className="size-4" aria-hidden />
+              تصدير Excel
+            </Button>
+            <Button size="sm" onClick={() => setCreating(true)} className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              صيرفة جديدة
+            </Button>
+          </div>
         }
       />
 
