@@ -419,11 +419,16 @@ export async function buildDailyCashEvidenceTx(
     ) drawer ON drawer.shiftId = s.id
     WHERE s.branchId = ${branchId}
       AND s.openedAt < ${endExclusive}
-      AND s.closedAt IS NOT NULL
-      AND s.closedAt < ${endExclusive}
       AND (
-        s.countedCash IS NULL
-        OR s.countedCash - COALESCE(drawer.handoversCash, 0) <> 0
+        (s.shiftStatus = 'CLOSED' AND s.closedAt IS NULL)
+        OR (
+          s.closedAt IS NOT NULL
+          AND s.closedAt < ${endExclusive}
+          AND (
+            s.countedCash IS NULL
+            OR s.countedCash - COALESCE(drawer.handoversCash, 0) <> 0
+          )
+        )
       )
   `));
   const unscopedCashCount = countFromResult(await tx.execute(sql`

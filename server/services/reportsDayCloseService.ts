@@ -22,9 +22,10 @@
 // السحب النقديّ أثناء الوردية (cash drop, referenceNumber LIKE 'CD-%' — cashDropService): يقع
 //   **أثناء** الوردية فيُدرَج في computeExpectedCash (يُنقِص المتوقَّع) والنقد المعدود يُنقِص بالمثل ⇒
 //   الفرق لا يتأثّر. يُصنَّف في دلو cashDrops (ضمن الخارج التشغيليّ)، خلافاً لتسليم الإغلاق CH.
-import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lt, ne, notExists, notInArray, notLike, or, sql } from "drizzle-orm";
+import { and, desc, eq, exists, gte, inArray, isNotNull, isNull, like, lt, ne, notExists, notInArray, notLike, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
+  accountingEntries,
   branches,
   cashTransfers,
   cashCustodyCounts,
@@ -285,24 +286,24 @@ export async function getDayCloseReconciliation(opts: {
     createdAt: receipts.createdAt,
   });
   const openingFloatReceipt = alias(receipts, "dayCloseOpeningFloatReceipt");
+  const openingFloatEntry = alias(accountingEntries, "dayCloseOpeningFloatEntry");
   const openingFloatEventAt = cashEventAtSql({
     approvedBy: openingFloatReceipt.approvedBy,
     createdBy: openingFloatReceipt.createdBy,
     approvedAt: openingFloatReceipt.approvedAt,
     createdAt: openingFloatReceipt.createdAt,
   });
-  const openingFloatJoin = and(
-    eq(openingFloatReceipt.branchId, shifts.branchId),
-    eq(
-      openingFloatReceipt.referenceNumber,
-      sql`CONCAT('SF-', ${shifts.branchId}, '-', ${shifts.id})`,
-    ),
+  const openingFloatEntryJoin = and(
+    eq(openingFloatEntry.branchId, shifts.branchId),
+    eq(openingFloatEntry.entryType, "SHIFT_FLOAT_OUT"),
+    eq(openingFloatEntry.dedupeKey, sql`CONCAT('SHIFT_FLOAT:', ${shifts.id})`),
   );
+  const openingFloatReceiptJoin = eq(openingFloatReceipt.id, openingFloatEntry.receiptId);
   const fundedShiftVisibleAtCutoff = or(
     sql`${shifts.openingBalance} = 0`,
     // ورديات ما قبل عقد SF التاريخي لا تملك إيصالاً مرتبطاً؛ يبقى openedAt دليلها
     // الوحيد. أمّا إذا وُجد SF فلا تدخل العهدة قبل لحظة تحقّقه المالية.
-    isNull(openingFloatReceipt.id),
+    isNull(openingFloatEntry.id),
     and(
       eq(openingFloatReceipt.direction, "OUT"),
       eq(openingFloatReceipt.cashBucket, "TREASURY"),
@@ -339,7 +340,8 @@ export async function getDayCloseReconciliation(opts: {
     .from(shifts)
     .leftJoin(branches, eq(branches.id, shifts.branchId))
     .leftJoin(users, eq(users.id, shifts.userId))
-    .leftJoin(openingFloatReceipt, openingFloatJoin)
+    .leftJoin(openingFloatEntry, openingFloatEntryJoin)
+    .leftJoin(openingFloatReceipt, openingFloatReceiptJoin)
     .where(and(...shiftConds))
     .orderBy(shifts.branchId, shifts.openedAt, shifts.id);
 
@@ -350,6 +352,12 @@ export async function getDayCloseReconciliation(opts: {
     const pendingReceipt = alias(receipts, "blindCountPendingReceipt");
     const firstCount = alias(cashCustodyCounts, "blindCountFirstCount");
     const sourceShift = alias(shifts, "blindCountSourceShift");
+    const sourceEventAt = cashEventAtSql({
+      approvedBy: sourceReceipt.approvedBy,
+      createdBy: sourceReceipt.createdBy,
+      approvedAt: sourceReceipt.approvedAt,
+      createdAt: sourceReceipt.createdAt,
+    });
     const pendingBlindRows = await db
       .select({
         shiftId: sourceReceipt.shiftId,
@@ -363,6 +371,7 @@ export async function getDayCloseReconciliation(opts: {
         and(
           eq(pendingReceipt.branchId, sourceReceipt.branchId),
           eq(pendingReceipt.referenceNumber, sourceReceipt.referenceNumber),
+          eq(pendingReceipt.amount, sourceReceipt.amount),
           eq(pendingReceipt.direction, "IN"),
           eq(pendingReceipt.paymentMethod, "CASH"),
           eq(pendingReceipt.cashBucket, "TREASURY"),
@@ -384,7 +393,7 @@ export async function getDayCloseReconciliation(opts: {
             like(sourceReceipt.referenceNumber, "CH-%"),
             like(sourceReceipt.referenceNumber, "CD-%"),
           ),
-          lt(pendingReceipt.createdAt, endExclusive),
+          lt(sourceEventAt, endExclusive),
           isNull(firstCount.id),
         ),
       );
@@ -983,25 +992,129 @@ export async function getDayCloseReconciliation(opts: {
           ));
         const expectedTreasuryCash = money(treasuryRow?.amount ?? 0);
 
+        const custodySourceReceipt = alias(receipts, "dayCloseCustodySourceReceipt");
+        const custodyTargetReceipt = alias(receipts, "dayCloseCustodyTargetReceipt");
+        const custodySourceEventAt = cashEventAtSql({
+          approvedBy: custodySourceReceipt.approvedBy,
+          createdBy: custodySourceReceipt.createdBy,
+          approvedAt: custodySourceReceipt.approvedAt,
+          createdAt: custodySourceReceipt.createdAt,
+        });
+        const custodyTargetEventAt = cashEventAtSql({
+          approvedBy: custodyTargetReceipt.approvedBy,
+          createdBy: custodyTargetReceipt.createdBy,
+          approvedAt: custodyTargetReceipt.approvedAt,
+          createdAt: custodyTargetReceipt.createdAt,
+        });
+        const sourceScope = scopedBranchIds.length > 0
+          ? [inArray(custodySourceReceipt.branchId, scopedBranchIds)]
+          : [];
+        const targetScope = scopedBranchIds.length > 0
+          ? [inArray(custodyTargetReceipt.branchId, scopedBranchIds)]
+          : [];
+        const matchingCustodyTarget = and(
+          eq(custodyTargetReceipt.branchId, custodySourceReceipt.branchId),
+          eq(custodyTargetReceipt.referenceNumber, custodySourceReceipt.referenceNumber),
+          eq(custodyTargetReceipt.amount, custodySourceReceipt.amount),
+          eq(custodyTargetReceipt.direction, "IN"),
+          eq(custodyTargetReceipt.cashBucket, "TREASURY"),
+          eq(custodyTargetReceipt.paymentMethod, "CASH"),
+          eq(custodyTargetReceipt.approvalStatus, "APPROVED"),
+        );
+        const matchingCustodySource = and(
+          eq(custodySourceReceipt.branchId, custodyTargetReceipt.branchId),
+          eq(custodySourceReceipt.referenceNumber, custodyTargetReceipt.referenceNumber),
+          eq(custodySourceReceipt.amount, custodyTargetReceipt.amount),
+          eq(custodySourceReceipt.direction, "OUT"),
+          eq(custodySourceReceipt.cashBucket, "DRAWER"),
+          eq(custodySourceReceipt.paymentMethod, "CASH"),
+          eq(custodySourceReceipt.approvalStatus, "APPROVED"),
+          inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+          lt(custodySourceEventAt, endExclusive),
+        );
+        const custodyInTransitTarget = or(
+          eq(custodyTargetReceipt.status, "PENDING"),
+          and(
+            inArray(custodyTargetReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            gte(custodyTargetEventAt, endExclusive),
+          ),
+        );
+        const custodyTargetContractState = or(
+          eq(custodyTargetReceipt.status, "PENDING"),
+          inArray(custodyTargetReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+        );
+        const custodyReference = or(
+          like(custodySourceReceipt.referenceNumber, "CH-%"),
+          like(custodySourceReceipt.referenceNumber, "CD-%"),
+        );
+        const targetCustodyReference = or(
+          like(custodyTargetReceipt.referenceNumber, "CH-%"),
+          like(custodyTargetReceipt.referenceNumber, "CD-%"),
+        );
+
+        // العهدة بالطريق تبدأ عند حدث خروج الدرج، لا عند إنشاء إيصال الاستلام. قد يُنشأ
+        // إيصال الطرف الثاني بعد منتصف الليل؛ النقد يبقى موجوداً بالطريق عند حد اليوم.
         const [custodyTransitRow] = await db
-          .select({ amount: sql<string>`COALESCE(SUM(${receipts.amount}), 0)` })
-          .from(receipts)
+          .select({ amount: sql<string>`COALESCE(SUM(${custodySourceReceipt.amount}), 0)` })
+          .from(custodySourceReceipt)
           .where(and(
-            ...scopeReceipt,
-            eq(receipts.direction, "IN"),
-            eq(receipts.cashBucket, "TREASURY"),
-            eq(receipts.paymentMethod, "CASH"),
-            eq(receipts.approvalStatus, "APPROVED"),
-            or(like(receipts.referenceNumber, "CH-%"), like(receipts.referenceNumber, "CD-%")),
-            lt(receipts.createdAt, endExclusive),
-            or(
-              eq(receipts.status, "PENDING"),
-              and(
-                inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
-                gte(eventAt, endExclusive),
-              ),
+            ...sourceScope,
+            eq(custodySourceReceipt.direction, "OUT"),
+            eq(custodySourceReceipt.cashBucket, "DRAWER"),
+            eq(custodySourceReceipt.paymentMethod, "CASH"),
+            eq(custodySourceReceipt.approvalStatus, "APPROVED"),
+            inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            custodyReference,
+            lt(custodySourceEventAt, endExclusive),
+            exists(
+              db.select({ id: custodyTargetReceipt.id })
+                .from(custodyTargetReceipt)
+                .where(and(matchingCustodyTarget, custodyInTransitTarget)),
             ),
           ));
+
+        // أي نصف عقد منفرد يجعل الرقم النهائي غير قابل للإثبات: هدف بلا خروج مادي،
+        // أو خروج بلا هدف استلام. لا نخمن مكان النقد ولا نسرّب مبلغ عهدة غير موثقة.
+        const [invalidCustodySource] = await db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(custodySourceReceipt)
+          .where(and(
+            ...sourceScope,
+            eq(custodySourceReceipt.direction, "OUT"),
+            eq(custodySourceReceipt.cashBucket, "DRAWER"),
+            eq(custodySourceReceipt.paymentMethod, "CASH"),
+            eq(custodySourceReceipt.approvalStatus, "APPROVED"),
+            inArray(custodySourceReceipt.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            custodyReference,
+            lt(custodySourceEventAt, endExclusive),
+            notExists(
+              db.select({ id: custodyTargetReceipt.id })
+                .from(custodyTargetReceipt)
+                .where(and(matchingCustodyTarget, custodyTargetContractState)),
+            ),
+          ));
+        const [invalidCustodyTarget] = await db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(custodyTargetReceipt)
+          .where(and(
+            ...targetScope,
+            eq(custodyTargetReceipt.direction, "IN"),
+            eq(custodyTargetReceipt.cashBucket, "TREASURY"),
+            eq(custodyTargetReceipt.paymentMethod, "CASH"),
+            eq(custodyTargetReceipt.approvalStatus, "APPROVED"),
+            targetCustodyReference,
+            lt(custodyTargetReceipt.createdAt, endExclusive),
+            custodyTargetContractState,
+            notExists(
+              db.select({ id: custodySourceReceipt.id })
+                .from(custodySourceReceipt)
+                .where(matchingCustodySource),
+            ),
+          ));
+        if (
+          Number(invalidCustodySource?.count ?? 0) > 0 ||
+          Number(invalidCustodyTarget?.count ?? 0) > 0
+        ) return null;
 
         const sentReceipt = alias(receipts, "dayCloseTransferSentReceipt");
         const receivedReceipt = alias(receipts, "dayCloseTransferReceivedReceipt");
@@ -1092,7 +1205,8 @@ export async function getDayCloseReconciliation(opts: {
               })
               .from(shifts)
               .leftJoin(cutoffDrawerReceipts, eq(cutoffDrawerReceipts.shiftId, shifts.id))
-              .leftJoin(openingFloatReceipt, openingFloatJoin)
+              .leftJoin(openingFloatEntry, openingFloatEntryJoin)
+              .leftJoin(openingFloatReceipt, openingFloatReceiptJoin)
               .where(and(
                 inArray(shifts.branchId, scopedBranchIds),
                 lt(shifts.openedAt, endExclusive),
@@ -1114,7 +1228,8 @@ export async function getDayCloseReconciliation(opts: {
                   THEN 1 ELSE 0 END), 0)`,
               })
               .from(shifts)
-              .leftJoin(openingFloatReceipt, openingFloatJoin)
+              .leftJoin(openingFloatEntry, openingFloatEntryJoin)
+              .leftJoin(openingFloatReceipt, openingFloatReceiptJoin)
               .where(and(
                 inArray(shifts.branchId, scopedBranchIds),
                 gte(shifts.openedAt, start),

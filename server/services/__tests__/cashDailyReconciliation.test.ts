@@ -310,6 +310,29 @@ describe("daily physical treasury reconciliation", () => {
     )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
+  it("blocks a legacy closed shift whose closing timestamp is unknown", async () => {
+    await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: MANAGER,
+      openingBalance: "0.00",
+      status: "CLOSED",
+      shiftType: "RETAIL",
+      openedAt: new Date("2026-08-30T09:00:00.000Z"),
+      closedAt: null,
+      countedCash: "0.00",
+      expectedCash: "0.00",
+      variance: "0.00",
+      reconciliationStatus: "MATCHED",
+    });
+
+    const blocked = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(blocked.blockers.map((item) => item.code)).toContain("RESIDUAL_DRAWER_CASH");
+    expect(blocked.actions.canCount).toBe(false);
+  });
+
   it("blocks the treasury certificate while materialized cash is unscoped", async () => {
     await db().insert(s.receipts).values({
       branchId: 1,
