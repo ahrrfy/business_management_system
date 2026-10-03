@@ -16,9 +16,11 @@ import {
   pageHeader,
   wrapA4Doc,
   type CompanySettings,
+  type DocHeaderBarcode,
 } from "./docHtml";
 import { esc, fmt, openPrintWindow } from "./brand";
 import { fmtQty } from "@shared/quantityFormat";
+import { resolveDocBarcode } from "./printTemplatesV2";
 
 export interface TransferDocLine {
   productName: string;
@@ -49,6 +51,10 @@ export interface TransferDocData {
   receivedAt?: string | null; // منسَّق للعرض
   receiveNotes?: string | null;
   lines: TransferDocLine[];
+  /** باركود رقم السند للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
   settings?: CompanySettings;
 }
 
@@ -80,6 +86,7 @@ export function printTransferDoc(d: TransferDocData): boolean {
         ...(d.receivedAt ? [{ label: "تاريخ الاستلام", value: d.receivedAt }] : []),
       ],
       badge: { label: st.label, color: st.color },
+      barcode: resolveDocBarcode("TRN", d.transferNumber, d.barcode, d.barcodePlacement),
     },
     d.settings,
   );

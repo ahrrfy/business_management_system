@@ -9,6 +9,7 @@ import { printDoc } from "./print";
 import { BRAND, CO } from "./brand";
 import { printVoucherV2 } from "./printTemplatesV2";
 import { qrCodeSvg } from "./qr";
+import type { DocHeaderBarcode } from "./docHtml";
 
 export interface VoucherPrintData {
   voucherNumber: string;
@@ -39,6 +40,10 @@ export interface VoucherPrintData {
   attachmentUrl?: string | null;
   /** attachment-upload (٥/٧): رقم الفاتورة المرتبطة بسند العميل (اختياري). */
   relatedInvoiceNumber?: string | null;
+  /** باركود رقم السند للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
 }
 
 const STATUS_LABEL: Record<VoucherPrintData["approvalStatus"], string> = {
@@ -190,6 +195,8 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
     qrSvg,
     signatureShortHash: d.signatureHash ? shortHash(d.signatureHash) : null,
     attachmentImageUrl,
+    barcode: d.barcode,
+    barcodePlacement: d.barcodePlacement,
     settings: {
       taxId: CO.taxId,
       commercialRegistry: CO.commercialRegistry,

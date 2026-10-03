@@ -12,10 +12,12 @@ import {
   pageHeader,
   signaturesBlock,
   wrapA4Doc,
+  type DocHeaderBarcode,
 } from "./docHtml";
 import { BRAND, openPrintWindow } from "./brand";
 import { qrCodeSvg } from "./qr";
 import { D, fmtAr } from "@/lib/money";
+import { resolveDocBarcode } from "./printTemplatesV2";
 
 export type ExchangeSlipType = "DEPOSIT" | "WITHDRAW" | "FX_BUY" | "SETTLE" | "OPENING";
 export type ExchangeSlipStatus = "ACTIVE" | "REVERSED" | "PENDING_APPROVAL";
@@ -42,6 +44,10 @@ export interface ExchangeSlipData {
   balanceIqdAfter: string;
   balanceUsdAfter: string;
   notes?: string | null;
+  /** باركود رقم العملية للطباعة الرسمية (اختياري). إما كائن DocHeaderBarcode أو نص القيمة أو true/false */
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  /** موضع الباركود: بجانب الرقم أو تحته (الافتراضي "beside") */
+  barcodePlacement?: 'beside' | 'below';
 }
 
 const TYPE_LABEL: Record<ExchangeSlipType, string> = {
@@ -125,6 +131,7 @@ export async function printExchangeSlipA4(d: ExchangeSlipData): Promise<boolean>
       ...(d.branchName ? [{ label: "الفرع", value: d.branchName }] : []),
     ],
     badge: { label: st.label, color: st.color },
+    barcode: resolveDocBarcode("EXC", d.txnNumber, d.barcode, d.barcodePlacement),
   });
 
   const cards = infoCards([

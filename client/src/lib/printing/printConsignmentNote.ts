@@ -2,6 +2,8 @@
 // بلا أيّ مجموع ماليّ (بضاعة لا فاتورة) — عدد القطع فقط + توقيعان. esc() على كل حقل حرّ.
 import { BRAND, CAIRO_FONT, CO, esc, logoUrl, openPrintWindow } from "./brand";
 import { fmtQty } from "@shared/quantityFormat";
+import { code128Svg } from "./barcode";
+import { docBarcode } from "@shared/documentNumber";
 
 export interface ConsignmentNoteForPrint {
   noteNumber: string;
@@ -17,11 +19,26 @@ export interface ConsignmentNoteForPrint {
     quantity: string;
     baseQuantity: number;
   }>;
+  barcode?: boolean;
 }
 
 const TYPE_AR: Record<string, string> = { DEPOSIT: "إيداع بضاعة", WITHDRAW: "سحب بضاعة", EXCHANGE: "استبدال بضاعة" };
 
 export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
+  let barcodeHtml = "";
+  if (note.barcode !== false) {
+    try {
+      const res = code128Svg(docBarcode("CNS", note.noteNumber), {
+        height: 22,
+        moduleWidth: 0.9,
+        quietZone: 4,
+        showText: false,
+      });
+      barcodeHtml = `<span style="display:inline-flex;align-items:center;vertical-align:middle;">${res.svg}</span>`;
+    } catch {
+      /* بلا باركود عند تعذر التوليد */
+    }
+  }
   const showDir = note.noteType === "EXCHANGE";
   const totalBase = note.lines.reduce((s, l) => s + (l.lineDirection === "IN" ? l.baseQuantity : -l.baseQuantity), 0);
   const rows = note.lines
@@ -72,7 +89,7 @@ export function printConsignmentNote(note: ConsignmentNoteForPrint): boolean {
   <div class="title"><span class="band">سند ${esc(TYPE_AR[note.noteType])}</span></div>
   <div class="meta">
     <div class="box"><b>المودِع:</b> ${esc(note.consignorName)}${note.consignorPhone ? ` — ${esc(note.consignorPhone)}` : ""}</div>
-    <div class="box"><b>رقم السند:</b> <span class="mono">${esc(note.noteNumber)}</span> · <b>التاريخ:</b> ${dateStr}</div>
+    <div class="box"><b>رقم السند:</b> <span class="mono" style="display:inline-flex;align-items:center;gap:6px;vertical-align:middle;"><span>${esc(note.noteNumber)}</span>${barcodeHtml}</span> · <b>التاريخ:</b> ${dateStr}</div>
   </div>
   <table>
     <thead><tr><th class="c">#</th>${showDir ? '<th class="c">الاتجاه</th>' : ""}<th>المنتج</th><th>الرمز</th><th class="c">الكمية</th></tr></thead>

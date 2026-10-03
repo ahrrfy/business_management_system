@@ -15,10 +15,12 @@ import {
   signaturesBlock,
   wrapA4Doc,
   type CompanySettings,
+  type DocHeaderBarcode,
 } from "./docHtml";
 import { esc, openPrintWindow } from "./brand";
 import { qrCodeSvg } from "./qr";
 import { fmtQty } from "@shared/quantityFormat";
+import { resolveDocBarcode } from "./printTemplatesV2";
 
 export interface GiftVoucherLineForPrint {
   productName: string;
@@ -35,6 +37,8 @@ export interface GiftVoucherPrintData {
   partyName?: string | null; // المورّد المانح (وارد) أو العميل المستفيد (صادر)
   lines: GiftVoucherLineForPrint[];
   settings?: CompanySettings;
+  barcode?: DocHeaderBarcode | string | boolean | null;
+  barcodePlacement?: 'beside' | 'below';
 }
 
 export async function printGiftVoucherA4(d: GiftVoucherPrintData): Promise<boolean> {
@@ -58,6 +62,7 @@ export async function printGiftVoucherA4(d: GiftVoucherPrintData): Promise<boole
         { label: "الاتجاه", value: isIn ? "وارد" : "صادر" },
       ],
       badge: { label: "هدية مجانية", color: "#0D6B52" },
+      barcode: resolveDocBarcode("GIFT", d.giftNumber, d.barcode, d.barcodePlacement),
     },
     d.settings,
   );
