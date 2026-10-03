@@ -228,7 +228,10 @@ export default function ExpenseNew() {
       await utils.expenses.list.invalidate();
       notify.ok(
         "status" in result && result.status === "PENDING_APPROVAL"
-          ? "تم رفع طلب المصروف للمالك بلا صرف مالي حتى الاعتماد"
+          ? "workflowStatus" in result &&
+            result.workflowStatus === "APPROVED_AWAITING_EXECUTION"
+            ? "تم اعتماد الطلب تلقائياً، وينتظر تنفيذاً مستقلاً بلا أثر مالي حتى الآن"
+            : "تم رفع طلب المصروف للمالك بلا صرف مالي"
           : "تم تسجيل المصروف وتنفيذه",
       );
       bypassUnsavedGuard();
@@ -311,7 +314,7 @@ export default function ExpenseNew() {
       const ok = await confirm({
         variant: "warning",
         title: "رفع طلب اعتماد مصروف",
-        description: `سيُحفظ طلب ${fmt(D(amount).toFixed(2))} د.ع بلا أي خصم أو قيد مالي. يستطيع مالك نشط آخر فقط اعتماده. ${expenseApprovalExecutionText(paymentMethod)}`,
+        description: `سيُحفظ طلب ${fmt(D(amount).toFixed(2))} د.ع بلا أي خصم أو قيد مالي. ${expenseApprovalExecutionText(paymentMethod)}`,
         confirmText: "رفع طلب الاعتماد",
         cancelText: "تراجع",
       });
@@ -551,8 +554,8 @@ export default function ExpenseNew() {
                         الخزينة
                       </span>
                       <span className="mt-1 block text-xs text-muted-foreground">
-                        يُحفظ بلا صرف أو قيد، ثم ينفذه مالك آخر من خزينة الفرع
-                        عند الاعتماد.
+                        يُحفظ بلا صرف أو قيد؛ الاعتماد رقابي فقط، والتنفيذ المباشر
+                        من الخزينة إجراء مستقل باسم من سلّم النقد فعلياً.
                       </span>
                     </button>
                   </div>
@@ -561,7 +564,7 @@ export default function ExpenseNew() {
                     <strong className="text-foreground">
                       {me.data?.name ?? `مستخدم #${me.data?.id ?? "—"}`}
                     </strong>
-                    . المنشئ لا يستطيع اعتماد طلبه بنفسه.
+                    . المنشئ هو منفذ الصرف من درج ورديته، والمعتمِد يبقى مراجعاً فقط.
                   </p>
                 </div>
               )}

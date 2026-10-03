@@ -5,6 +5,7 @@ import {
   approveExpense,
   cancelExpense,
   createExpense,
+  executeApprovedExpense,
   getExpenseTrace,
   listExpenses,
   rejectExpense,
@@ -379,11 +380,40 @@ export const expenseRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل المصروف" });
     }),
 
-  /** زر واحد: اعتماد + تنفيذ ذرّي؛ الخدمة تعيد قراءة isOwner/isActive تحت القفل. */
+  /** الاعتماد قرار رقابي فقط؛ لا يحرك نقداً ولا ينشئ قيداً. */
   approve: ownerProcedure
     .input(z.object({ expenseId: z.number().int().positive() }))
     .mutation(({ input, ctx }) =>
       approveExpense(input.expenseId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
+
+  /** منشئ الطلب ينفذ التسليم فعلياً من درج ورديته بعد الاعتماد. */
+  executeFromOwnDrawer: expensesCashierProcedure
+    .input(z.object({ expenseId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      executeApprovedExpense(input.expenseId, "OWN_DRAWER", {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
+
+  /** أمين/مدير الخزينة ينفذ الدفع المباشر، أو طريقة الدفع غير النقدية. */
+  executeManaged: expensesManagerProcedure
+    .input(
+      z.object({
+        expenseId: z.number().int().positive(),
+        source: z.enum(["TREASURY", "NON_CASH"]),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      executeApprovedExpense(input.expenseId, input.source, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,

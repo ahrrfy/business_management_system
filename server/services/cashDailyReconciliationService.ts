@@ -206,6 +206,7 @@ export async function buildDailyCashEvidenceTx(
   const { start, endExclusive } = utcDayRange(businessDate, businessDate);
   const today = businessDate === todayUtcDate();
   const treasuryCashEventAt = cashEventAtSql({
+    executedAt: receipts.executedAt,
     approvedBy: receipts.approvedBy,
     createdBy: receipts.createdBy,
     approvedAt: receipts.approvedAt,
@@ -866,6 +867,7 @@ async function assertTreasurySnapshotStillCurrentTx(
 ): Promise<void> {
   const { endExclusive } = utcDayRange(businessDate, businessDate);
   const eventAt = cashEventAtSql({
+    executedAt: receipts.executedAt,
     approvedBy: receipts.approvedBy,
     createdBy: receipts.createdBy,
     approvedAt: receipts.approvedAt,

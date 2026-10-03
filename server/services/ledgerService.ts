@@ -122,8 +122,8 @@ const ACTOR_ATTRIBUTED_ENTRY_TYPES = new Set<EntryType>([
 /**
  * يثبّت هوية منفّذ الحركات التي تغيّر نقداً/ذمّةً في لحظة الترحيل:
  * - الكاتب المباشر يمرّر createdBy، فنلتقط الاسم الحالي لقطةً غير متأثرة بتعديل المستخدم لاحقاً.
- * - مسار Maker/Checker يرحّل عند الاعتماد ولا يمرّر actor إلى postEntry؛ عندئذٍ يكون
- *   receipts.approvedBy هو المنفّذ الفعلي، مع fallback إلى منشئ السند للسند المعتمد مباشرةً.
+ * - عند غياب الكاتب نأخذ `receipts.executedBy`، ثم منشئ السند التاريخي عند غياب
+ *   دليل التنفيذ؛ `approvedBy` مراجع رقابي ولا يجوز أن يتحول إلى منفذ.
  * لا نفرض تخميناً من الفاتورة/أمر الشراء عند غياب المصدرين: منشئ المستند ليس بالضرورة منفّذ
  * الدفع أو المرتجع، فتبقى الفجوة NULL بدلاً من إسناد جنائي كاذب.
  */
@@ -144,9 +144,7 @@ async function resolveEntryActor(
     const row = (
       await tx
         .select({
-          createdBy: sql<
-            number | null
-          >`COALESCE(${receipts.approvedBy}, ${receipts.createdBy})`,
+          createdBy: sql<number | null>`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`,
           createdByNameSnapshot: sql<
             string | null
           >`COALESCE(${receiptActor.name}, ${receiptActor.username})`,
@@ -156,7 +154,7 @@ async function resolveEntryActor(
           receiptActor,
           eq(
             receiptActor.id,
-            sql`COALESCE(${receipts.approvedBy}, ${receipts.createdBy})`,
+            sql`COALESCE(${receipts.executedBy}, ${receipts.createdBy})`,
           ),
         )
         .where(eq(receipts.id, e.receiptId))

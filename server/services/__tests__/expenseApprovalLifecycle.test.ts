@@ -8,6 +8,7 @@ import {
   approveExpense,
   cancelExpense,
   createExpense,
+  executeApprovedExpense,
   listExpenses,
   rejectExpense,
 } from "../expenseService";
@@ -451,18 +452,38 @@ describe("دورة اعتماد المصروفات", () => {
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
   });
 
-  it("مالك نشط غير المنشئ يعتمد فينفذ CASH من الخزينة بذرة واحدة", async () => {
+  it("الاعتماد لا يصرف، ثم التنفيذ من الخزينة يسجل المنفذ لا المعتمد", async () => {
     await fundTreasury("750000.00");
     const request = await pendingExpense();
     await approveExpense(request.expenseId, ownerA);
 
-    const expense = (
+    let expense = (
       await db()
         .select()
         .from(s.expenses)
         .where(eq(s.expenses.id, request.expenseId))
     )[0];
-    const receipt = (
+    let receipt = (
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.id, Number(request.receiptId)))
+    )[0];
+    expect(expense.status).toBe("PENDING_APPROVAL");
+    expect(receipt.status).toBe("PENDING");
+    expect(receipt.approvalStatus).toBe("APPROVED");
+    expect(Number(receipt.approvedBy)).toBe(ownerA.userId);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+
+    await executeApprovedExpense(request.expenseId, "TREASURY", ownerB);
+
+    expense = (
+      await db()
+        .select()
+        .from(s.expenses)
+        .where(eq(s.expenses.id, request.expenseId))
+    )[0];
+    receipt = (
       await db()
         .select()
         .from(s.receipts)
@@ -474,6 +495,9 @@ describe("دورة اعتماد المصروفات", () => {
     expect(receipt.status).toBe("COMPLETED");
     expect(receipt.approvalStatus).toBe("APPROVED");
     expect(Number(receipt.approvedBy)).toBe(ownerA.userId);
+    expect(Number(receipt.createdBy)).toBe(creator.userId);
+    expect(Number(receipt.executedBy)).toBe(ownerB.userId);
+    expect(receipt.executedAt).not.toBeNull();
     expect(receipt.cashBucket).toBe("TREASURY");
     expect(
       await db()
@@ -485,7 +509,55 @@ describe("دورة اعتماد المصروفات", () => {
       await db()
         .select()
         .from(s.auditLogs)
-        .where(eq(s.auditLogs.action, "expense.approveDisburse")),
+        .where(eq(s.auditLogs.action, "expense.execute")),
+    ).toHaveLength(1);
+  });
+
+  it("إعادة تنفيذ مصروف الدرج المكتمل تنجح بعد إغلاق الوردية ولا تقبل مصدر دفع مختلفاً", async () => {
+    await openCreatorDrawer("750000.00");
+    const request = await pendingExpense();
+    await approveExpense(request.expenseId, ownerA);
+
+    const executed = await executeApprovedExpense(
+      request.expenseId,
+      "OWN_DRAWER",
+      creator,
+    );
+    expect(executed).toMatchObject({
+      status: "ACTIVE",
+      cashBucket: "DRAWER",
+      shiftId: 1,
+      executedBy: creator.userId,
+      idempotent: false,
+    });
+
+    await db()
+      .update(s.shifts)
+      .set({ status: "CLOSED", closedAt: new Date(), openGuard: null })
+      .where(eq(s.shifts.id, 1));
+
+    await expect(
+      executeApprovedExpense(request.expenseId, "OWN_DRAWER", creator),
+    ).resolves.toMatchObject({
+      expenseId: request.expenseId,
+      receiptId: Number(request.receiptId),
+      status: "ACTIVE",
+      idempotent: true,
+    });
+    await expect(
+      executeApprovedExpense(request.expenseId, "TREASURY", creator),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, Number(request.receiptId))),
+    ).toHaveLength(1);
+    expect(
+      await db()
+        .select()
+        .from(s.auditLogs)
+        .where(eq(s.auditLogs.action, "expense.execute")),
     ).toHaveLength(1);
   });
 
@@ -514,7 +586,10 @@ describe("دورة اعتماد المصروفات", () => {
 
     await expect(
       caller.expenses.approve({ expenseId: request.expenseId }),
-    ).resolves.toMatchObject({ status: "ACTIVE" });
+    ).resolves.toMatchObject({
+      status: "PENDING_APPROVAL",
+      workflowStatus: "APPROVED_AWAITING_EXECUTION",
+    });
     expect(
       (
         await db()
@@ -522,14 +597,15 @@ describe("دورة اعتماد المصروفات", () => {
           .from(s.expenses)
           .where(eq(s.expenses.id, request.expenseId))
       )[0]?.status,
-    ).toBe("ACTIVE");
+    ).toBe("PENDING_APPROVAL");
   });
 
-  it("نقص الخزينة يرجع الاعتماد كاملاً ويبقي الطلب معلّقاً", async () => {
+  it("نقص الخزينة لا يمنع الاعتماد ويمنع التنفيذ بلا أثر مالي", async () => {
     await fundTreasury("100000.00");
     const request = await pendingExpense();
+    await approveExpense(request.expenseId, ownerA);
     await expect(
-      approveExpense(request.expenseId, ownerA),
+      executeApprovedExpense(request.expenseId, "TREASURY", ownerB),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     const expense = (
       await db()
@@ -546,38 +622,63 @@ describe("دورة اعتماد المصروفات", () => {
     expect(expense.status).toBe("PENDING_APPROVAL");
     expect(expense.cashBucket).toBeNull();
     expect(receipt.status).toBe("PENDING");
-    expect(receipt.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(receipt.approvalStatus).toBe("APPROVED");
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
-    expect(await db().select().from(s.auditLogs)).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.auditLogs)
+        .where(eq(s.auditLogs.action, "expense.approve")),
+    ).toHaveLength(1);
   });
 
-  it("اعتماد المصروف الكبير غير النقدي ينفذه بلا cashBucket", async () => {
+  it("اعتماد المصروف غير النقدي لا ينفذه حتى إجراء التنفيذ المستقل", async () => {
     const request = await pendingExpense("800000.00", "TRANSFER");
     await approveExpense(request.expenseId, ownerA);
-    const expense = (
+    let expense = (
       await db()
         .select()
         .from(s.expenses)
         .where(eq(s.expenses.id, request.expenseId))
     )[0];
-    const receipt = (
+    let receipt = (
       await db()
         .select()
         .from(s.receipts)
         .where(eq(s.receipts.id, Number(request.receiptId)))
     )[0];
     expect(expense).toMatchObject({
-      status: "ACTIVE",
+      status: "PENDING_APPROVAL",
       paymentMethod: "TRANSFER",
       shiftId: null,
       cashBucket: null,
     });
     expect(receipt).toMatchObject({
-      status: "COMPLETED",
+      status: "PENDING",
       approvalStatus: "APPROVED",
       shiftId: null,
       cashBucket: null,
     });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+
+    await executeApprovedExpense(request.expenseId, "NON_CASH", ownerB);
+    expense = (
+      await db()
+        .select()
+        .from(s.expenses)
+        .where(eq(s.expenses.id, request.expenseId))
+    )[0];
+    receipt = (
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.id, Number(request.receiptId)))
+    )[0];
+    expect(expense.status).toBe("ACTIVE");
+    expect(receipt.status).toBe("COMPLETED");
+    expect(Number(receipt.createdBy)).toBe(creator.userId);
+    expect(Number(receipt.executedBy)).toBe(ownerB.userId);
+    expect(receipt.executedAt).not.toBeNull();
     expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 
@@ -607,6 +708,7 @@ describe("دورة اعتماد المصروفات", () => {
 
     for (const request of requests) {
       await approveExpense(request.expenseId, ownerA);
+      await executeApprovedExpense(request.expenseId, "NON_CASH", ownerB);
     }
     expect(await db().select().from(s.accountingEntries)).toHaveLength(4);
     expect(
@@ -619,7 +721,7 @@ describe("دورة اعتماد المصروفات", () => {
     ).toBe(true);
   });
 
-  it("غير المالك والمالك المعطل لا يرفضان، وطلب المالك النشط يصبح ACTIVE فوراً", async () => {
+  it("غير المالك والمالك المعطل لا يرفضان، وطلب المالك يعتمد تلقائياً بلا تنفيذ", async () => {
     const request = await pendingExpense();
     await expect(
       rejectExpense(
@@ -655,10 +757,16 @@ describe("دورة اعتماد المصروفات", () => {
       },
       ownerA,
     );
-    expect(selfApproveRequest.status).toBe("ACTIVE");
+    expect(selfApproveRequest).toMatchObject({
+      status: "PENDING_APPROVAL",
+      workflowStatus: "APPROVED_AWAITING_EXECUTION",
+    });
     await expect(
       approveExpense(selfApproveRequest.expenseId, ownerA),
-    ).resolves.toMatchObject({ status: "ACTIVE" });
+    ).resolves.toMatchObject({
+      status: "PENDING_APPROVAL",
+      workflowStatus: "APPROVED_AWAITING_EXECUTION",
+    });
 
     const selfRejectRequest = await createExpense(
       {
@@ -670,13 +778,13 @@ describe("دورة اعتماد المصروفات", () => {
       },
       ownerA,
     );
-    expect(selfRejectRequest.status).toBe("ACTIVE");
+    expect(selfRejectRequest.status).toBe("PENDING_APPROVAL");
     await expect(
       rejectExpense(selfRejectRequest.expenseId, ownerA, "طلب ذاتي"),
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
-  it("اعتمادان متزامنان يصنعان أثراً مالياً واحداً فقط", async () => {
+  it("اعتمادان متزامنان يصنعان قراراً رقابياً واحداً بلا أثر مالي", async () => {
     await fundTreasury("1000000.00");
     const request = await pendingExpense();
     const results = await Promise.all([
@@ -690,33 +798,37 @@ describe("دورة اعتماد المصروفات", () => {
         .select()
         .from(s.accountingEntries)
         .where(eq(s.accountingEntries.receiptId, Number(request.receiptId))),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(
       await db()
         .select()
         .from(s.auditLogs)
-        .where(eq(s.auditLogs.action, "expense.approveDisburse")),
+        .where(eq(s.auditLogs.action, "expense.approve")),
     ).toHaveLength(1);
-    const completedOut = await db()
+    const approvedPendingOut = await db()
       .select()
       .from(s.receipts)
       .where(
         and(
           eq(s.receipts.id, Number(request.receiptId)),
-          eq(s.receipts.status, "COMPLETED"),
+          eq(s.receipts.status, "PENDING"),
           eq(s.receipts.direction, "OUT"),
         ),
       );
-    expect(completedOut).toHaveLength(1);
+    expect(approvedPendingOut).toHaveLength(1);
   });
 
-  it("اعتماد مصروفين متزامنين لا يتجاوز رصيد خزينة يكفي واحداً", async () => {
+  it("تنفيذ مصروفين متزامنين لا يتجاوز رصيد خزينة يكفي واحداً", async () => {
     await fundTreasury("750000.00");
     const first = await pendingExpense();
     const second = await pendingExpense();
-    const settled = await Promise.allSettled([
+    await Promise.all([
       approveExpense(first.expenseId, ownerA),
       approveExpense(second.expenseId, ownerB),
+    ]);
+    const settled = await Promise.allSettled([
+      executeApprovedExpense(first.expenseId, "TREASURY", ownerA),
+      executeApprovedExpense(second.expenseId, "TREASURY", ownerB),
     ]);
     expect(
       settled.filter((result) => result.status === "fulfilled"),
@@ -756,12 +868,13 @@ describe("دورة اعتماد المصروفات", () => {
       .from(s.receipts)
       .where(eq(s.receipts.id, Number(request.receiptId)));
     const entries = await db().select().from(s.accountingEntries);
-    if (expense.status === "ACTIVE") {
+    if (receipt.approvalStatus === "APPROVED") {
+      expect(expense.status).toBe("PENDING_APPROVAL");
       expect(receipt).toMatchObject({
-        status: "COMPLETED",
+        status: "PENDING",
         approvalStatus: "APPROVED",
       });
-      expect(entries).toHaveLength(1);
+      expect(entries).toHaveLength(0);
     } else {
       expect(expense.status).toBe("REJECTED");
       expect(receipt).toMatchObject({
@@ -777,6 +890,7 @@ describe("دورة اعتماد المصروفات", () => {
     await fundTreasury("1000000.00");
     const activeRequest = await pendingExpense();
     await approveExpense(activeRequest.expenseId, ownerA);
+    await executeApprovedExpense(activeRequest.expenseId, "TREASURY", ownerB);
     const waitingRequest = await pendingExpense();
 
     const settled = await Promise.allSettled([
@@ -792,7 +906,7 @@ describe("دورة اعتماد المصروفات", () => {
     ).toBe("CANCELLED");
     expect(
       rows.find((row) => Number(row.id) === waitingRequest.expenseId)?.status,
-    ).toBe("ACTIVE");
+    ).toBe("PENDING_APPROVAL");
   });
 
   it("المجاميع والتقرير المالي يستبعدان المعلّق والمرفوض", async () => {

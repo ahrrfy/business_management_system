@@ -1409,13 +1409,12 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.netCash).toBe("3540950.00");
     expect(res.directOperations.receiptCount).toBe(1);
 
-    // حركة اليوم تشرح ما وقع، لكنها ليست الرصيد النقدي التراكمي الموجود في الفرع.
+    // إجماليات totals تخص الأدراج وحدها؛ حركة الخزينة تبقى في directOperations/direct*.
     expect(res.totals.shiftExpected).toBe("10027300.00");
     expect(res.totals.directNetCash).toBe("3540950.00");
-    expect(res.totals.collectionsCash).toBe("3540950.00");
-    expect(res.totals.cashIn).toBe("3568250.00"); // 27,300 مبيعات وردية + 3,540,950 تحصيل مباشر
-    // صافي حركة اليوم = 10,027,300 + 3,540,950 = 13,568,250 د.ع.
-    expect(res.totals.expected).toBe("13568250.00");
+    expect(res.totals.collectionsCash).toBe("0.00");
+    expect(res.totals.cashIn).toBe("27300.00");
+    expect(res.totals.expected).toBe("10027300.00");
     expect(res.totals.closedExpected).toBe("10027300.00");
     expect(res.totals.physicalDrawerCash).toBe("0.00");
 
@@ -1453,9 +1452,9 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.shifts.length).toBe(0);
     expect(res.totals.shiftCount).toBe(0);
     expect(res.directOperations.collectionsCash).toBe("3540950.00");
-    expect(res.totals.collectionsCash).toBe("3540950.00");
-    expect(res.totals.cashIn).toBe("3540950.00");
-    expect(res.totals.expected).toBe("3540950.00");
+    expect(res.totals.collectionsCash).toBe("0.00");
+    expect(res.totals.cashIn).toBe("0.00");
+    expect(res.totals.expected).toBe("0.00");
     expect(res.totals.physicalDrawerCash).toBe("0.00");
     expect(res.cashPosition).toMatchObject({
       expectedTreasuryCash: "4540950.00",
@@ -1511,6 +1510,48 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(Number(res.totals.salesCash) + Number(res.totals.collectionsCash) + Number(res.totals.otherIn)).toBe(Number(res.totals.cashIn));
     expect(Number(res.totals.returnsCash) + Number(res.totals.expensesCash) + Number(res.totals.otherOut)).toBe(Number(res.totals.operatingOut));
     expect(Number(res.totals.opening) + Number(res.totals.cashIn) - Number(res.totals.operatingOut)).toBe(Number(res.totals.expected));
+  });
+
+  it("يعرض منفذ الحركة المباشرة ويعود إلى المنشئ للسجلات التاريخية فقط", async () => {
+    await db().insert(s.receipts).values([
+      {
+        branchId: 1,
+        direction: "OUT",
+        amount: "75000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        voucherNumber: "PV-1-EXECUTOR-AUDIT",
+        description: "حركة نفذها الكاشير بعد إنشاء المدير",
+        createdBy: MANAGER1,
+        executedBy: CASHIER1,
+        executedAt: new Date(`${DATE}T12:00:00.000Z`),
+      },
+      {
+        branchId: 1,
+        direction: "OUT",
+        amount: "25000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        voucherNumber: "PV-1-LEGACY-AUDIT",
+        description: "حركة تاريخية بلا منفذ مستقل",
+        createdBy: CASHIER2,
+      },
+    ]);
+
+    const res = await report(1);
+    const executed = res.directMovements.details.find(
+      (movement) => movement.description === "حركة نفذها الكاشير بعد إنشاء المدير",
+    );
+    const legacy = res.directMovements.details.find(
+      (movement) => movement.description === "حركة تاريخية بلا منفذ مستقل",
+    );
+
+    expect(executed?.userName).toBe("كاشير١");
+    expect(legacy?.userName).toBe("كاشير٢");
   });
 
   it("R2: التحويلات الداخلية وتمويل الخزينة (CH- / CD- / SF- / CT- / TF-) لا تُحسب كإيراد خارجي مباشر", async () => {
@@ -1570,18 +1611,18 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     // تقرير فرع ١ يرى مبلغه فقط
     const res1 = await report(1);
     expect(res1.directOperations.collectionsCash).toBe("3540950.00");
-    expect(res1.totals.collectionsCash).toBe("3540950.00");
+    expect(res1.totals.collectionsCash).toBe("0.00");
 
     // تقرير فرع ٢ يرى مبلغه فقط
     const res2 = await report(2);
     expect(res2.directOperations.collectionsCash).toBe("1000000.00");
-    expect(res2.totals.collectionsCash).toBe("1000000.00");
+    expect(res2.totals.collectionsCash).toBe("0.00");
 
     // تقرير الإدارة العامة (الكل) يجمع الفرعين بدقة
     const caller = appRouter.createCaller(makeCtx({ id: ADMIN, role: "admin", branchId: null, name: "المدير العام" }));
     const resAll = await caller.reports.dayCloseReconciliation({ date: DATE });
     expect(resAll.directOperations.collectionsCash).toBe("4540950.00");
-    expect(resAll.totals.collectionsCash).toBe("4540950.00");
+    expect(resAll.totals.collectionsCash).toBe("0.00");
   });
 
   it("R2: إلغاء وعكس السندات المباشرة (Compensating Reversal Vouchers) يُصافَر بدقة تامة", async () => {
@@ -1631,7 +1672,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     // تقرير تاريخ اليوم (DATE) يتضمن حركة 23:59:59 ويستبعد تماماً 00:00:00 لليوم التالي
     const resToday = await report(1);
     expect(resToday.directOperations.collectionsCash).toBe("500000.00");
-    expect(resToday.totals.collectionsCash).toBe("500000.00");
+    expect(resToday.totals.collectionsCash).toBe("0.00");
 
     // تقرير اليوم التالي (nextDateStr) يتضمن حركة 00:00:00
     const resNext = await getDayCloseReconciliation({ date: nextDateStr, branchId: 1 });
@@ -1659,12 +1700,12 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.cashIn).toBe("1000000.00");
     expect(res.directOperations.operatingOut).toBe("250000.00");
     expect(res.directOperations.netCash).toBe("750000.00");
-    expect(res.totals.cashIn).toBe("1000000.00");
-    expect(res.totals.operatingOut).toBe("250000.00");
-    expect(res.totals.expected).toBe("750000.00");
+    expect(res.totals.cashIn).toBe("0.00");
+    expect(res.totals.operatingOut).toBe("0.00");
+    expect(res.totals.expected).toBe("0.00");
   });
 
-  it("R2 (Adversarial): تحقّق التدفق النقدي عند الاعتماد (Maker-Checker cashEventAt Delay Across Dates)", async () => {
+  it("R2 (Adversarial): وقت التنفيذ المستقل يسبق الاعتماد في تأريخ النقد مع توافق السجلات القديمة", async () => {
     const prevDateObj = new Date(Date.UTC(Number(DATE.slice(0, 4)), Number(DATE.slice(5, 7)) - 1, Number(DATE.slice(8, 10)) - 1));
     const prevDateStr = prevDateObj.toISOString().slice(0, 10);
     const nextDateObj = new Date(Date.UTC(Number(DATE.slice(0, 4)), Number(DATE.slice(5, 7)) - 1, Number(DATE.slice(8, 10)) + 1));
@@ -1681,21 +1722,23 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
       createdBy: ADMIN,
     });
 
-    // ٢) سند أُنشئ اليوم لكن اعتُمِد غداً: يُستبعد من تقرير اليوم ويدخل تقرير الغد
+    // ٢) طلب اعتُمد اليوم لكن نُفّذ غداً: لا يتحرك النقد إلا غداً.
     await db().insert(s.receipts).values({
       branchId: 1, direction: "IN", amount: "900000.00", paymentMethod: "CASH",
       cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
       voucherNumber: "RV-1-DELAYED-TOMORROW",
       createdAt: new Date(`${DATE}T21:00:00.000Z`),
-      approvedAt: new Date(`${nextDateStr}T11:00:00.000Z`),
+      approvedAt: new Date(`${DATE}T11:00:00.000Z`),
       approvedBy: ADMIN,
+      executedAt: new Date(`${nextDateStr}T11:30:00.000Z`),
+      executedBy: ADMIN,
       createdBy: ADMIN,
     });
 
     const resToday = await report(1);
-    // تقرير اليوم يرى حركة 600,000 المعتمدة اليوم، ويستبعد 900,000 المعتمدة غداً
+    // التقرير يرى السجل التاريخي 600,000 بحسب approvedAt، ويستبعد 900,000 حتى التنفيذ غداً.
     expect(resToday.directOperations.collectionsCash).toBe("600000.00");
-    expect(resToday.totals.collectionsCash).toBe("600000.00");
+    expect(resToday.totals.collectionsCash).toBe("0.00");
     expect(resToday.directMovements).toMatchObject({ count: 1, net: "600000.00" });
     expect(resToday.directMovements.details[0]?.time.slice(0, 10)).toBe(DATE);
 
@@ -1720,8 +1763,8 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     // يجب شمول السند كاملاً بلا إسقاط صامت لأن له رقم سند رسمي
     expect(res.directOperations.collectionsCash).toBe("3540950.00");
     expect(res.directOperations.receiptCount).toBe(1);
-    expect(res.totals.collectionsCash).toBe("3540950.00");
-    expect(res.totals.expected).toBe("3540950.00");
+    expect(res.totals.collectionsCash).toBe("0.00");
+    expect(res.totals.expected).toBe("0.00");
   });
 
   it("R2 (Regression): سند صرف عادي بمرجع CH مطابق لسند قبض لا يتحول إلى عهدة", async () => {
@@ -1891,7 +1934,7 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect(res.directOperations.cashIn).toBe("0.00");
   });
 
-  it("R3 (Regression): استبعاد سندات صرف الرواتب والتحويلات القانونية النقدية من العمليات المباشرة وحماية المتوقع من أن يصبح سالباً", async () => {
+  it("R3 (Regression): كل صرف رواتب وتحويل قانوني نقدي يظهر في حركة الخزينة ولا يبقى صامتاً", async () => {
     // تمويل الخزينة لتغطية افتتاح الوردية وصرف الرواتب
     await db().insert(s.receipts).values({
       branchId: 1, direction: "IN", amount: "50000000.00", paymentMethod: "CASH",
@@ -1973,30 +2016,29 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
 
     const res = await report(1);
 
-    // أ) التحقق الحاسم من استبعاد كافة سندات صرف الرواتب والتحويلات القانونية من directOperations
-    expect(res.directOperations.receiptCount).toBe(2); // فقط التحصيل المشروع RV ومصروف الصيانة PV
+    // أ) كل حركة نقدية مادية تدخل المطابقة؛ الرواتب غير المصنفة تظهر في otherOut ولا تختفي.
+    expect(res.directOperations.receiptCount).toBe(6);
     expect(res.directOperations.collectionsCash).toBe("2779500.00");
     expect(res.directOperations.expensesCash).toBe("150000.00");
     expect(res.directOperations.cashIn).toBe("2779500.00");
-    // الخارج التشغيلي المباشر يحوي فقط الـ 150,000 المشروعة، ولا يحتوي الـ 26,167,825 د.ع للرواتب
-    expect(res.directOperations.operatingOut).toBe("150000.00");
-    expect(res.directOperations.netCash).toBe("2629500.00"); // 2,779,500 - 150,000 = +2,629,500 د.ع
+    expect(res.directOperations.otherOut).toBe("26167825.00");
+    expect(res.directOperations.operatingOut).toBe("26317825.00");
+    expect(res.directOperations.netCash).toBe("-23538325.00");
 
-    // ب) حماية رصيد المتوقع والنقد الفعلي من الانهيار بالسالب
-    // المتوقع = الوردية (10,027,300) + صافي المباشر (2,629,500) = 12,656,800 د.ع (موجب ومطابق تماماً!)
+    // ب) صرف الخزينة لا يغيّر متوقع الأدراج؛ الموقف النقدي النهائي في cashPosition.
     expect(res.totals.shiftExpected).toBe("10027300.00");
-    expect(res.totals.directNetCash).toBe("2629500.00");
-    expect(res.totals.expected).toBe("12656800.00");
+    expect(res.totals.directNetCash).toBe("-23538325.00");
+    expect(res.totals.expected).toBe("10027300.00");
     expect(res.totals.closedExpected).toBe("10027300.00");
     expect(res.totals.physicalDrawerCash).toBe("0.00");
 
-    // ج) الحفاظ على العمليات المشروعة في المجاميع الكلية
-    expect(res.totals.collectionsCash).toBe("2779500.00");
+    // ج) المجاميع العامة تبقى للورديات، والحركات المباشرة لا تتسرّب إليها.
+    expect(res.totals.collectionsCash).toBe("0.00");
     expect(res.totals.salesCash).toBe("27300.00");
-    expect(res.totals.expensesCash).toBe("150000.00");
+    expect(res.totals.expensesCash).toBe("0.00");
   });
 
-  it("R3 (Regression): استبعاد عكوس ومردودات الرواتب (SALARY_PAYMENT_RETURN / REMITTANCE_RETURN / EOS_SETTLEMENT_REVERSAL) من التدفقات المباشرة", async () => {
+  it("R3 (Regression): مردودات وعكوس الرواتب النقدية تظهر كقبض خزينة فعلي", async () => {
     // ١) إنشاء أحداث أصلية تُعكَس (لتوافق قيد chk_payroll_event_reversal_shape)
     const baseEvents = [
       { id: 70211, kind: "SALARY_PAYMENT" as const },
@@ -2082,16 +2124,15 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
 
     const res = await report(1);
 
-    // العكوس والمردودات لا تُحسب كإيراد مباشر ولا ترفع المتوقع كذباً
-    expect(res.directOperations.receiptCount).toBe(1); // فقط البيع المباشر المشروع
+    expect(res.directOperations.receiptCount).toBe(4);
     expect(res.directOperations.salesCash).toBe("400000.00");
-    expect(res.directOperations.cashIn).toBe("400000.00");
-    expect(res.directOperations.otherIn).toBe("0.00");
-    expect(res.totals.cashIn).toBe("400000.00");
-    expect(res.totals.expected).toBe("400000.00");
+    expect(res.directOperations.cashIn).toBe("1400000.00");
+    expect(res.directOperations.otherIn).toBe("1000000.00");
+    expect(res.totals.cashIn).toBe("0.00");
+    expect(res.totals.expected).toBe("0.00");
   });
 
-  it("R3 (Adversarial): شمولية الاستبعاد لرواتب ذات مرجع صريح وبقاء السندات المباشرة عديمة المرجع مشمولة", async () => {
+  it("R3 (Adversarial): الراتب ذو المرجع الصريح والسندات عديمة المرجع كلها ظاهرة نقدياً", async () => {
     // ١) سند تسوية نهاية خدمة يحمل referenceNumber صريح (TERM-SETTLEMENT-99-1) مرتبط بحدث رواتب
     await db().insert(s.receipts).values({
       id: 70301,
@@ -2165,13 +2206,12 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
 
     const res = await report(1);
 
-    // الراتب بمرجع صريح مستبعد حتماً
-    // السندات المشروعة غير المرتبطة بأحداث الرواتب مشمولة بالكامل حتى لو كان referenceNumber = null
-    expect(res.directOperations.receiptCount).toBe(2);
+    expect(res.directOperations.receiptCount).toBe(3);
     expect(res.directOperations.collectionsCash).toBe("250000.00");
     expect(res.directOperations.expensesCash).toBe("50000.00");
-    expect(res.directOperations.netCash).toBe("200000.00");
-    expect(res.totals.expected).toBe("200000.00");
+    expect(res.directOperations.otherOut).toBe("1500000.00");
+    expect(res.directOperations.netCash).toBe("-1300000.00");
+    expect(res.totals.expected).toBe("0.00");
   });
 });
 

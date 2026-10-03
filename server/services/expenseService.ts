@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset } from "../lib/paginateKeyset";
@@ -167,6 +168,7 @@ export type RecurringFrequency =
 export type ExpenseSource = "CASH" | "STOCK" | "ACCRUAL";
 export type ExpenseStockReason = "INTERNAL_USE" | "WASTAGE";
 export type ExpenseCashSource = "OWN_DRAWER" | "TREASURY";
+export type ExpenseExecutionSource = ExpenseCashSource | "NON_CASH";
 export type ExpenseFundingKind =
   | "DRAWER"
   | "TREASURY"
@@ -700,6 +702,8 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
         status: pendingApproval ? "PENDING" : "COMPLETED",
         approvalStatus: pendingApproval ? "PENDING_APPROVAL" : "APPROVED",
         createdBy: actor.userId,
+        executedBy: pendingApproval ? null : actor.userId,
+        executedAt: pendingApproval ? null : new Date(),
       });
       const receiptId = extractInsertId(rRes);
 
@@ -775,7 +779,13 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
         id: result.expenseId,
         reason: input.description ?? null,
       });
-      if (approved) return { ...result, status: "ACTIVE" as const, requiresApproval: false };
+      if (approved)
+        return {
+          ...result,
+          status: "PENDING_APPROVAL" as const,
+          workflowStatus: "APPROVED_AWAITING_EXECUTION" as const,
+          requiresApproval: false,
+        };
     }
     return result;
   } catch (error) {
@@ -799,7 +809,13 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
           id: replay.expenseId,
           reason: input.description ?? null,
         });
-        if (approved) return { ...replay, status: "ACTIVE" as const, requiresApproval: false };
+        if (approved)
+          return {
+            ...replay,
+            status: "PENDING_APPROVAL" as const,
+            workflowStatus: "APPROVED_AWAITING_EXECUTION" as const,
+            requiresApproval: false,
+          };
       }
       return replay;
     }
@@ -905,11 +921,13 @@ async function lockExpenseCashSourceBeforeDocument(
   }
 }
 
-/** اعتماد وتنفيذ ذريّ: مالك نشط غير المُنشئ، والخزينة هي مصدر CASH الوحيد. */
+/**
+ * الاعتماد قرار رقابي فقط: لا يغيّر رصيد درج أو خزينة، ولا ينشئ قيداً.
+ * التنفيذ اللاحق وحده يحدد مصدر المال وهوية من سلّمه فعلياً.
+ */
 export async function approveExpense(expenseId: number, actor: Actor) {
   return withTx(async (tx) => {
     await lockActiveOwner(tx, actor);
-    await lockExpenseCashSourceBeforeDocument(tx, expenseId, "APPROVE");
     const exp = (
       await tx
         .select()
@@ -920,19 +938,11 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     )[0];
     if (!exp)
       throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
-    // بالفعل لا بالإجراء: **اعتمادُ المصروف خروجُ مال** — تحقّقٌ من ثلاث كتاباتٍ أدناه في
-    // هذه الدالّة نفسها: `assertCashOutAvailable` على خزينة الفرع حين تكون الطريقة نقداً،
-    // ثمّ الإيصال المعلَّق يُقلَب `COMPLETED/APPROVED` بـ`cashBucket='TREASURY'` واتّجاهه
-    // `OUT` مضمونٌ بـ`assertPendingExpenseReceipt`، ثمّ `postEntry` بـ`PAYMENT_OUT`.
-    // ⇒ نقدٌ يغادر الخزينة فعلاً. وضابطُ فصل المهام القائم يُنقل كما هو إلى `legacy`.
-    // ⚠️ ولا مُصنِّفَ لهذا الفعل في `shared/approvalTriggers.ts` بعد — التصنيف هنا صريحٌ
-    // حتى يُضيفه القائد (`expenseApprovalTrigger`) فيُحوَّل هذا الموضع إليه.
-    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك. `lockActiveOwner` أعلاه يضمن actor
-    // مالكاً نشطاً بالفعل قبل هذه النقطة، فحذفُ اشتراط «مختلفٌ عن المُنشئ» يكفي بلا حاجة
-    // لفحصٍ إضافي هنا — الفحصُ القديم أُبقي نصّاً ميتاً موثَّقاً لا مكتوباً بيدٍ من جديد.
+    // الاعتماد لا يحقق trigger=MONEY_OUT لأن المال لم يغادر أي عهدة بعد. فصل القرار
+    // الرقابي عن التنفيذ يمنع إسناد القيد أو الوردية إلى آخر من ضغط «اعتماد».
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
-      trigger: "MONEY_OUT",
+      trigger: null,
       subject: `مصروف #${expenseId}`,
       legacy: () => {
         // القديم "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه" أُلغي عمداً.
@@ -998,25 +1008,25 @@ export async function approveExpense(expenseId: number, actor: Actor) {
         .for("update")
         .limit(1)
     )[0];
-    assertPendingExpenseReceipt(exp, receipt);
-
-    const cashBucket = exp.paymentMethod === "CASH" ? "TREASURY" : null;
-    if (cashBucket === "TREASURY") {
-      await assertCashOutAvailable(tx, {
-        branchId: Number(exp.branchId),
-        cashBucket,
-        shiftId: null,
-        amount: exp.amount,
-        operation: "اعتماد وصرف المصروف من الخزينة",
-      });
+    if (
+      receipt?.status === "PENDING" &&
+      receipt.approvalStatus === "APPROVED" &&
+      receipt.approvedBy != null &&
+      receipt.approvedAt != null
+    ) {
+      return {
+        expenseId,
+        receiptId: Number(exp.receiptId),
+        status: "PENDING_APPROVAL" as const,
+        workflowStatus: "APPROVED_AWAITING_EXECUTION" as const,
+        idempotent: true,
+      };
     }
+    assertPendingExpenseReceipt(exp, receipt);
 
     await tx
       .update(receipts)
       .set({
-        shiftId: null,
-        cashBucket,
-        status: "COMPLETED",
         approvalStatus: "APPROVED",
         approvedBy: actor.userId,
         approvedAt: new Date(),
@@ -1028,56 +1038,16 @@ export async function approveExpense(expenseId: number, actor: Actor) {
           eq(receipts.approvalStatus, "PENDING_APPROVAL"),
         ),
       );
-    await tx
-      .update(expenses)
-      .set({
-        shiftId: null,
-        cashBucket,
-        status: "ACTIVE",
-      })
-      .where(
-        and(
-          eq(expenses.id, expenseId),
-          eq(expenses.status, "PENDING_APPROVAL"),
-        ),
-      );
-
-    const postingSourceComponents = cashExpensePostingSourceComponents(
-      exp.category,
-      exp.paymentMethod,
-      money(exp.amount),
-      false,
-      cashBucket,
-    );
-    await postEntry(tx, {
-      entryType: "PAYMENT_OUT",
-      branchId: Number(exp.branchId),
-      receiptId: Number(exp.receiptId),
-      amount: money(exp.amount),
-      paymentMethod: exp.paymentMethod,
-      postingIntent: cashExpensePostingIntent(
-        exp.category,
-        exp.paymentMethod,
-        money(exp.amount),
-        false,
-        cashBucket,
-      ),
-      postingSourceComponents,
-      entryDate: new Date(exp.expenseDate),
-      notes: `مصروف معتمد (${exp.category})${exp.description?.trim() ? ": " + exp.description.trim() : ""}`,
-      createdBy: actor.userId,
-    });
     await insertExpenseAudit(
       tx,
       actor,
       expenseId,
       Number(exp.branchId),
-      "expense.approveDisburse",
-      { status: "PENDING_APPROVAL", cashBucket: null },
+      "expense.approve",
+      { approvalStatus: "PENDING_APPROVAL" },
       {
-        status: "ACTIVE",
-        cashBucket,
-        receiptId: Number(exp.receiptId),
+        approvalStatus: "APPROVED",
+        status: "PENDING_APPROVAL",
         approvedBy: actor.userId,
       },
     );
@@ -1085,7 +1055,444 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     return {
       expenseId,
       receiptId: Number(exp.receiptId),
+      status: "PENDING_APPROVAL" as const,
+      workflowStatus: "APPROVED_AWAITING_EXECUTION" as const,
+      idempotent: false,
+    };
+  });
+}
+
+async function lockExpenseExecutorShift(
+  tx: any,
+  branchId: number,
+  actor: Actor,
+): Promise<number> {
+  const shift = (
+    await tx
+      .select({ id: shifts.id, userId: shifts.userId })
+      .from(shifts)
+      .where(
+        and(
+          eq(shifts.userId, actor.userId),
+          eq(shifts.branchId, branchId),
+          eq(shifts.status, "OPEN"),
+          eq(shifts.shiftType, "RETAIL"),
+        ),
+      )
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!shift) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ المصروف من درج الوردية",
+        why: "لا توجد وردية بيع بالتجزئة مفتوحة لمنفذ الصرف في الفرع",
+        doThis: "افتح ورديتك وموّلها، أو اختر الدفع المباشر من خزينة الفرع",
+      }),
+    });
+  }
+  return Number(shift.id);
+}
+
+async function completedExpenseExecutionReplay(
+  tx: Tx,
+  exp: typeof expenses.$inferSelect,
+  receipt: typeof receipts.$inferSelect | null,
+  source: ExpenseExecutionSource,
+  actor: Actor,
+) {
+  const expectedCashBucket =
+    exp.paymentMethod !== "CASH"
+      ? null
+      : source === "OWN_DRAWER"
+        ? "DRAWER"
+        : source === "TREASURY"
+          ? "TREASURY"
+          : null;
+  const sourceMatches =
+    exp.paymentMethod === "CASH"
+      ? expectedCashBucket != null
+      : source === "NON_CASH";
+  const drawerMatches =
+    expectedCashBucket !== "DRAWER" ||
+    (exp.shiftId != null && Number(exp.createdBy) === actor.userId);
+  const treasuryMatches =
+    expectedCashBucket !== "TREASURY" || exp.shiftId == null;
+  const nonCashMatches =
+    exp.paymentMethod === "CASH" ||
+    (exp.cashBucket == null && exp.shiftId == null);
+  const recordMatches =
+    exp.status === "ACTIVE" &&
+    exp.receiptId != null &&
+    receipt != null &&
+    Number(receipt.id) === Number(exp.receiptId) &&
+    receipt.status === "COMPLETED" &&
+    receipt.approvalStatus === "APPROVED" &&
+    receipt.approvedBy != null &&
+    receipt.approvedAt != null &&
+    receipt.executedBy != null &&
+    receipt.executedAt != null &&
+    Number(receipt.executedBy) === actor.userId &&
+    Number(receipt.createdBy) === Number(exp.createdBy) &&
+    Number(receipt.branchId) === Number(exp.branchId) &&
+    receipt.direction === "OUT" &&
+    receipt.paymentMethod === exp.paymentMethod &&
+    money(receipt.amount).eq(money(exp.amount)) &&
+    receipt.cashBucket === exp.cashBucket &&
+    (receipt.shiftId == null ? null : Number(receipt.shiftId)) ===
+      (exp.shiftId == null ? null : Number(exp.shiftId)) &&
+    exp.cashBucket === expectedCashBucket &&
+    drawerMatches &&
+    treasuryMatches &&
+    nonCashMatches;
+
+  if (!sourceMatches || !recordMatches) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "أُوقف تكرار تنفيذ المصروف لحماية الرصيد",
+        why: "مصدر الدفع أو منفذ العملية لا يطابق سجل التنفيذ المكتمل، أو أن السجل المالي غير متماسك",
+        doThis: "حدّث الطلب واستخدم مصدر الدفع والمنفذ الأصليين، أو راجع سلامة السند والقيد",
+      }),
+    });
+  }
+
+  const postedEntries = await tx
+    .select({ id: accountingEntries.id })
+    .from(accountingEntries)
+    .where(eq(accountingEntries.receiptId, Number(exp.receiptId)))
+    .limit(2);
+  if (postedEntries.length !== 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "أُوقف تكرار تنفيذ المصروف لحماية القيد",
+        why: "سجل التنفيذ مكتمل لكن قيده المحاسبي مفقود أو مكرر",
+        doThis: "راجع سلامة السند والقيد قبل أي محاولة تنفيذ أخرى",
+      }),
+    });
+  }
+
+  return {
+    expenseId: Number(exp.id),
+    receiptId: Number(exp.receiptId),
+    status: "ACTIVE" as const,
+    cashBucket: exp.cashBucket,
+    shiftId: exp.shiftId == null ? null : Number(exp.shiftId),
+    executedBy: Number(receipt.executedBy),
+    idempotent: true,
+  };
+}
+
+/** تنفيذ مصروف سبق اعتماده؛ هنا فقط تتحرك الأموال ويُسجّل المنفذ الحقيقي. */
+export async function executeApprovedExpense(
+  expenseId: number,
+  source: ExpenseExecutionSource,
+  actor: Actor,
+) {
+  return withTx(async (tx) => {
+    const hint = (
+      await tx
+        .select({
+          branchId: expenses.branchId,
+          createdBy: expenses.createdBy,
+          paymentMethod: expenses.paymentMethod,
+          receiptId: expenses.receiptId,
+          status: expenses.status,
+        })
+        .from(expenses)
+        .where(eq(expenses.id, expenseId))
+        .limit(1)
+    )[0];
+    if (!hint)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المصروف",
+          why: "طلب المصروف المحدد غير موجود أو حُذف قبل التنفيذ",
+          doThis: "حدّث قائمة المصروفات واختر طلباً موجوداً بانتظار التنفيذ",
+        }),
+      });
+
+    if (
+      actor.role !== "admin" &&
+      Number(actor.branchId) !== Number(hint.branchId)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المصروف",
+          why: "الطلب يتبع فرعاً غير الفرع المسموح لحسابك",
+          doThis: "نفّذ طلب فرعك أو اطلب من مسؤول الفرع المعني إتمام الدفع",
+        }),
+      });
+    }
+
+    // إعادةُ المحاولة لسجلّ مكتمل لا تحتاج ورديةً ما تزال مفتوحة: الوردية قد
+    // أُغلقت بعد التنفيذ الصحيح. نثبت أولاً أن المصدر والمنفذ والسند والقيد هي
+    // نفسها، ثم نعيد النتيجة بلا لمس أي رصيد أو كتابة أثرٍ ثانٍ.
+    if (hint.status === "ACTIVE") {
+      const completedExpense = (
+        await tx
+          .select()
+          .from(expenses)
+          .where(eq(expenses.id, expenseId))
+          .for("update")
+          .limit(1)
+      )[0];
+      const completedReceipt =
+        completedExpense?.receiptId == null
+          ? null
+          : (
+              await tx
+                .select()
+                .from(receipts)
+                .where(eq(receipts.id, Number(completedExpense.receiptId)))
+                .for("update")
+                .limit(1)
+            )[0] ?? null;
+      if (
+        !completedExpense ||
+        Number(completedExpense.branchId) !== Number(hint.branchId) ||
+        Number(completedExpense.createdBy) !== Number(hint.createdBy) ||
+        completedExpense.paymentMethod !== hint.paymentMethod ||
+        Number(completedExpense.receiptId) !== Number(hint.receiptId)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "أُوقف تكرار تنفيذ المصروف لحماية الرصيد",
+            why: "تغيّرت بيانات الطلب المكتمل أثناء التحقق من إعادة المحاولة",
+            doThis: "حدّث الطلب وراجع سجل التنفيذ قبل إعادة المحاولة",
+          }),
+        });
+      }
+      return completedExpenseExecutionReplay(
+        tx,
+        completedExpense,
+        completedReceipt,
+        source,
+        actor,
+      );
+    }
+
+    let shiftId: number | null = null;
+    let cashBucket: "DRAWER" | "TREASURY" | null = null;
+    if (hint.paymentMethod === "CASH") {
+      if (source === "NON_CASH") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تحديد مصدر دفع المصروف النقدي",
+            why: "اختيار الدفع غير النقدي لا يحدد مكان خروج النقد الفعلي",
+            doThis: "اختر الصرف من درج الوردية أو الدفع المباشر من خزينة الفرع",
+          }),
+        });
+      }
+      if (source === "OWN_DRAWER") {
+        if (Number(hint.createdBy) !== actor.userId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تنفيذ المصروف من هذا الدرج",
+              why: "صرف درج الوردية محصور بمنشئ الطلب من ورديته المفتوحة",
+              doThis: "دع منشئ الطلب ينفذه من ورديته، أو نفّذه من خزينة الفرع",
+            }),
+          });
+        }
+        shiftId = await lockExpenseExecutorShift(
+          tx,
+          Number(hint.branchId),
+          actor,
+        );
+        cashBucket = "DRAWER";
+      } else {
+        await lockCashSourceForUpdate(tx, {
+          branchId: Number(hint.branchId),
+          cashBucket: "TREASURY",
+          shiftId: null,
+        });
+        cashBucket = "TREASURY";
+      }
+    } else if (source !== "NON_CASH") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المصروف بطريقة الدفع المختارة",
+          why: "طريقة الدفع غير النقدية لا ترتبط بدرج وردية أو خزينة نقدية",
+          doThis: "اختر التنفيذ غير النقدي حتى يبقى رصيد النقد بلا تغيير",
+        }),
+      });
+    }
+
+    const exp = (
+      await tx
+        .select()
+        .from(expenses)
+        .where(eq(expenses.id, expenseId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!exp)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر إكمال تنفيذ المصروف",
+          why: "الطلب لم يعد موجوداً بعد بدء العملية",
+          doThis: "حدّث قائمة المصروفات وتحقق من حالة الطلب قبل إعادة التنفيذ",
+        }),
+      });
+    if (
+      Number(exp.branchId) !== Number(hint.branchId) ||
+      Number(exp.createdBy) !== Number(hint.createdBy) ||
+      exp.paymentMethod !== hint.paymentMethod
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "أُوقف تنفيذ المصروف لحماية الرصيد",
+          why: "تغيّرت بيانات الطلب بعد بدء عملية التنفيذ",
+          doThis: "حدّث الطلب وراجِع المبلغ وطريقة الدفع ثم أعد التنفيذ",
+        }),
+      });
+    }
+
+    const receipt = exp.receiptId == null
+      ? null
+      : (
+          await tx
+            .select()
+            .from(receipts)
+            .where(eq(receipts.id, Number(exp.receiptId)))
+            .for("update")
+            .limit(1)
+        )[0];
+    if (
+      exp.status === "ACTIVE" &&
+      receipt?.status === "COMPLETED" &&
+      receipt.approvalStatus === "APPROVED" &&
+      receipt.executedBy != null &&
+      receipt.executedAt != null
+    ) {
+      return completedExpenseExecutionReplay(tx, exp, receipt, source, actor);
+    }
+    if (
+      exp.status !== "PENDING_APPROVAL" ||
+      !receipt ||
+      receipt.status !== "PENDING" ||
+      receipt.approvalStatus !== "APPROVED" ||
+      receipt.approvedBy == null ||
+      receipt.approvedAt == null ||
+      receipt.executedBy != null ||
+      receipt.executedAt != null ||
+      receipt.cashBucket != null ||
+      receipt.shiftId != null ||
+      Number(receipt.createdBy) !== Number(exp.createdBy) ||
+      Number(receipt.branchId) !== Number(exp.branchId) ||
+      receipt.direction !== "OUT" ||
+      receipt.paymentMethod !== exp.paymentMethod ||
+      !money(receipt.amount).eq(money(exp.amount))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "أُوقف تنفيذ المصروف لحماية السجل المالي",
+          why: "الطلب غير معتمد بانتظار التنفيذ أو أن سند الصرف لا يطابق بياناته",
+          doThis: "حدّث الطلب وتحقق من الاعتماد والسند، ثم أعد التنفيذ دون تعديل يدوي للسجل",
+        }),
+      });
+    }
+
+    if (cashBucket != null) {
+      await assertCashOutAvailable(tx, {
+        branchId: Number(exp.branchId),
+        cashBucket,
+        shiftId,
+        amount: exp.amount,
+        operation:
+          cashBucket === "DRAWER"
+            ? "تنفيذ المصروف من درج الوردية"
+            : "تنفيذ المصروف من الخزينة الإدارية",
+      });
+    }
+
+    const executedAt = new Date();
+    await tx
+      .update(receipts)
+      .set({
+        shiftId,
+        cashBucket,
+        status: "COMPLETED",
+        executedBy: actor.userId,
+        executedAt,
+      })
+      .where(
+        and(
+          eq(receipts.id, Number(exp.receiptId)),
+          eq(receipts.status, "PENDING"),
+          eq(receipts.approvalStatus, "APPROVED"),
+        ),
+      );
+    await tx
+      .update(expenses)
+      .set({ shiftId, cashBucket, status: "ACTIVE" })
+      .where(
+        and(
+          eq(expenses.id, expenseId),
+          eq(expenses.status, "PENDING_APPROVAL"),
+        ),
+      );
+
+    const amount = money(exp.amount);
+    const postingSourceComponents = cashExpensePostingSourceComponents(
+      exp.category,
+      exp.paymentMethod,
+      amount,
+      false,
+      cashBucket,
+    );
+    await postEntry(tx, {
+      entryType: "PAYMENT_OUT",
+      branchId: Number(exp.branchId),
+      receiptId: Number(exp.receiptId),
+      amount,
+      paymentMethod: exp.paymentMethod,
+      postingIntent: cashExpensePostingIntent(
+        exp.category,
+        exp.paymentMethod,
+        amount,
+        false,
+        cashBucket,
+      ),
+      postingSourceComponents,
+      entryDate: new Date(exp.expenseDate),
+      notes: `تنفيذ مصروف (${exp.category})${exp.description?.trim() ? ": " + exp.description.trim() : ""}`,
+      createdBy: actor.userId,
+    });
+    await insertExpenseAudit(
+      tx,
+      actor,
+      expenseId,
+      Number(exp.branchId),
+      "expense.execute",
+      { status: "PENDING_APPROVAL", cashBucket: null },
+      {
+        status: "ACTIVE",
+        cashBucket,
+        shiftId,
+        executedBy: actor.userId,
+        approvedBy: Number(receipt.approvedBy),
+      },
+    );
+
+    return {
+      expenseId,
+      receiptId: Number(exp.receiptId),
       status: "ACTIVE" as const,
+      cashBucket,
+      shiftId,
+      executedBy: actor.userId,
       idempotent: false,
     };
   });
@@ -1885,6 +2292,8 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       approvalStatus: "APPROVED",
       referenceNumber: `CANCEL-EXP-${expenseId}`,
       createdBy: actor.userId,
+      executedBy: actor.userId,
+      executedAt: new Date(),
     });
     const compReceiptId = extractInsertId(compRes);
 
@@ -1997,6 +2406,7 @@ const expenseCreator = alias(users, "expenseCreator");
 const expenseShiftOwner = alias(users, "expenseShiftOwner");
 const expenseReceiptCreator = alias(users, "expenseReceiptCreator");
 const expenseReceiptApprover = alias(users, "expenseReceiptApprover");
+const expenseReceiptExecutor = alias(users, "expenseReceiptExecutor");
 const expenseAuditActor = alias(users, "expenseAuditActor");
 
 const SYSTEM_PAYMENT_REQUEST_PREFIX = "@SYSTEM_PAYMENT_REQUEST:";
@@ -2302,6 +2712,10 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       receiptApprovedByName: expenseReceiptApprover.name,
       receiptApprovedByRole: expenseReceiptApprover.role,
       receiptApprovedAt: receipts.approvedAt,
+      receiptExecutedBy: receipts.executedBy,
+      receiptExecutedByName: expenseReceiptExecutor.name,
+      receiptExecutedByRole: expenseReceiptExecutor.role,
+      receiptExecutedAt: receipts.executedAt,
       accrualObligationId: accrualObligations.id,
       accrualKind: accrualObligations.kind,
       settlementStatus: accrualObligations.status,
@@ -2350,6 +2764,10 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
     .leftJoin(
       expenseReceiptApprover,
       eq(receipts.approvedBy, expenseReceiptApprover.id),
+    )
+    .leftJoin(
+      expenseReceiptExecutor,
+      eq(receipts.executedBy, expenseReceiptExecutor.id),
     );
 }
 
@@ -2430,12 +2848,19 @@ function integrityWarningsOf(row: any): string[] {
       warnings.push("RECEIPT_PAYMENT_METHOD_MISMATCH");
     if ((row.cashBucket ?? null) !== (row.receiptCashBucket ?? null))
       warnings.push("RECEIPT_CASH_BUCKET_MISMATCH");
+    // منشئ الطلب ثابت؛ منفذ التسليم محفوظ في executedBy ولا يطمس المنشئ.
     if (nullableId(row.createdBy) !== nullableId(row.receiptCreatedBy))
       warnings.push("RECEIPT_CREATOR_MISMATCH");
     if (row.status === "PENDING_APPROVAL") {
       if (
         row.receiptStatus !== "PENDING" ||
-        row.receiptApprovalStatus !== "PENDING_APPROVAL"
+        !["PENDING_APPROVAL", "APPROVED"].includes(
+          row.receiptApprovalStatus ?? "",
+        ) ||
+        (row.receiptApprovalStatus === "APPROVED" &&
+          (row.receiptApprovedBy == null || row.receiptApprovedAt == null)) ||
+        row.receiptExecutedBy != null ||
+        row.receiptExecutedAt != null
       )
         warnings.push("PENDING_RECEIPT_MISMATCH");
     } else if (row.status === "REJECTED") {
@@ -2496,6 +2921,15 @@ function enrichExpenseRow<T extends Record<string, any>>(row: T) {
     approvedBy: row.receiptApprovedBy ?? null,
     approvedByName: row.receiptApprovedByName ?? null,
     approvedAt: row.receiptApprovedAt ?? null,
+    executedBy: row.receiptExecutedBy ?? null,
+    executedByName: row.receiptExecutedByName ?? null,
+    executedAt: row.receiptExecutedAt ?? null,
+    workflowStatus:
+      row.status === "PENDING_APPROVAL" &&
+      row.receiptStatus === "PENDING" &&
+      row.receiptApprovalStatus === "APPROVED"
+        ? "APPROVED_AWAITING_EXECUTION"
+        : row.status,
     fundingKind,
     integrityWarnings,
     needsAudit: integrityWarnings.length > 0,
@@ -2608,7 +3042,11 @@ const financialIntegritySql = sql`(
     OR NOT (${expenses.createdBy} <=> ${receipts.createdBy})
     OR (${expenses.status} = 'PENDING_APPROVAL' AND (
       ${receipts.status} <> 'PENDING'
-      OR ${receipts.approvalStatus} <> 'PENDING_APPROVAL'
+      OR ${receipts.approvalStatus} NOT IN ('PENDING_APPROVAL', 'APPROVED')
+      OR (${receipts.approvalStatus} = 'APPROVED' AND (
+        ${receipts.approvedBy} IS NULL OR ${receipts.approvedAt} IS NULL
+      ))
+      OR ${receipts.executedBy} IS NOT NULL OR ${receipts.executedAt} IS NOT NULL
       OR ${expenses.shiftId} IS NOT NULL OR ${expenses.cashBucket} IS NOT NULL
     ))
     OR (${expenses.status} = 'REJECTED' AND (

@@ -48,7 +48,7 @@ describe("expenseCategoryText — اتساق عرض الفئة والدلو", ()
 });
 
 describe("fundingDetail — وضوح دلالة الوضع الراهن للمصروف المعلق", () => {
-  it("يوضح أن المصروف النقدي المعلق بلا أثر مالي حتى الآن ويصرف عند الاعتماد", () => {
+  it("يوضح أن طلب الاعتماد المعلق بلا أثر مالي", () => {
     const detail = fundingDetail({
       id: 1,
       status: "PENDING_APPROVAL",
@@ -59,7 +59,25 @@ describe("fundingDetail — وضوح دلالة الوضع الراهن للمص
       expenseDate: new Date(),
     } as any);
 
-    expect(detail).toBe("طلب معلق بلا أثر مالي حتى الآن — يصرف من الخزينة عند الاعتماد");
+    expect(detail).toBe("طلب اعتماد معلق بلا أثر مالي حتى الآن");
+  });
+
+  it("يفصل الاعتماد عن التنفيذ ومصدر النقد", () => {
+    const detail = fundingDetail({
+      id: 3,
+      status: "PENDING_APPROVAL",
+      workflowStatus: "APPROVED_AWAITING_EXECUTION",
+      approvalStatus: "APPROVED",
+      receiptStatus: "PENDING",
+      paymentMethod: "CASH",
+      source: "CASH",
+      amount: "50000.00",
+      category: "TRANSPORT",
+      expenseDate: new Date(),
+    } as any);
+
+    expect(detail).toContain("معتمد بلا أثر مالي");
+    expect(detail).toContain("وردية المنشئ أو الخزينة الإدارية");
   });
 
   it("يوضح الوضع الراهن للمصروف المعلق غير النقدي", () => {
@@ -73,7 +91,7 @@ describe("fundingDetail — وضوح دلالة الوضع الراهن للمص
       expenseDate: new Date(),
     } as any);
 
-    expect(detail).toContain("طلب معلق بلا أثر مالي حتى الآن");
+    expect(detail).toContain("طلب اعتماد معلق بلا أثر مالي حتى الآن");
   });
 });
 
@@ -106,7 +124,7 @@ describe("EXPENSE_FUNDING_META — شارات الأثر المالي للمصر
     } as any;
     expect(fundingKindOf(pendingExpense)).toBe("PENDING");
     expect(fundingKindOf({ ...pendingExpense, status: "REJECTED" })).toBe("PENDING");
-    expect(fundingDetail(pendingExpense)).toBe("طلب معلق بلا أثر مالي حتى الآن — يصرف من الخزينة عند الاعتماد");
+    expect(fundingDetail(pendingExpense)).toBe("طلب اعتماد معلق بلا أثر مالي حتى الآن");
   });
 });
 

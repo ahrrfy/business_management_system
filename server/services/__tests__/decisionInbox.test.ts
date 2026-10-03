@@ -557,6 +557,42 @@ describe("decisions.decide — الحسم في مكانه بنتيجة مهيك�
     expect((await owner.decisions.inbox()).rows.some((r) => r.kind === "purchase.order.control" && r.id === requestId)).toBe(false);
   });
 
+  it("اعتماد المصروف يعود REQUESTED وينص على انتظار التنفيذ بلا ادعاء دفع أو قيد", async () => {
+    const [receipt] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "150000.00", paymentMethod: "CASH", cashBucket: null, shiftId: null,
+      status: "PENDING", approvalStatus: "PENDING_APPROVAL", description: "صيانة مكيف الصالة", createdBy: CASHIER,
+    }).$returningId();
+    const [expense] = await db().insert(s.expenses).values({
+      branchId: 1, expenseDate: new Date("2026-09-01"), category: "MAINTENANCE", amount: "150000.00", paymentMethod: "CASH",
+      cashBucket: null, source: "CASH", description: "صيانة مكيف الصالة", payee: "ورشة التبريد", receiptId: receipt.id,
+      status: "PENDING_APPROVAL", createdBy: CASHIER,
+    }).$returningId();
+
+    const res = await (await caller(OWNER)).decisions.decide({
+      kind: "expense.approve",
+      id: expense.id,
+      action: "APPROVE",
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.outcome).toBe("REQUESTED");
+    expect(res.message).toMatch(/اعتُمد.*ينتظر تنفيذ الدفع/);
+    expect(res.message).not.toMatch(/دُفع|صُرف|سُجّل قيده/);
+    const [afterReceipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, receipt.id));
+    expect(afterReceipt).toMatchObject({
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      cashBucket: null,
+      shiftId: null,
+    });
+    expect(afterReceipt.executedBy).toBeNull();
+    expect(afterReceipt.executedAt).toBeNull();
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+
   it("اعتماد تسوية مخزون ينفذ الاثر ويعود EXECUTED، وتكراره STALE", async () => {
     const [adj] = await db().insert(s.stockAdjustmentRequests).values({
       variantId: 1, branchId: 1, targetQuantity: 14, expectedQuantity: 10, notes: "[COST_SNAPSHOT:200.00]\nجرد الرف الثاني",
