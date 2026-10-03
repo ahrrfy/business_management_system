@@ -59,6 +59,13 @@ import { assertNoActiveInstallmentPlanAfterInvoiceLockTx } from "../installment/
 import { assertPeriodOpen } from "../periodLockService";
 import type { Tx } from "../../db";
 import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
+import {
+  lockPriorPaymentShiftsTx,
+  postReRecordedPaymentsTx,
+  settlePriorPaymentsTx,
+  type SettlementResult,
+  type ShiftSettlementEffect,
+} from "./correctionReceiptSettlement";
 
 type CorrectionPayMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -83,6 +90,12 @@ export interface CorrectSaleInput {
     externalPaymentAttemptId?: number | null;
     externalPaymentDeviceId?: string | null;
   } | null;
+  /**
+   * كم استُلم **فعلاً** من المقبوض المسجَّل على الأصل (قرار المالك ٣/١٠/٢٦). غيابه = كله استُلم
+   * (السلوك السابق). أقلّ من المسجَّل ⇒ الفرق يُعكَس من الوردية الأصلية (مفتوحة أو مغلقة) لأنّه
+   * سُجِّل خطأً ولم يدخل الدرج. انظر correctionReceiptSettlement.ts.
+   */
+  priorPaymentReceivedAmount?: string | null;
   /** معالجة الفرق الزائد (المصحّح < المقبوض) — قرار الموظّف الهجين (§١٠). */
   overpayHandling?: "CREDIT" | "CASH_REFUND";
   /** درج الاسترداد النقديّ للفرق الزائد عند تعدّد الدرج المفتوح. */
@@ -106,6 +119,16 @@ export interface CorrectSaleResult {
   /** الفرق الزائد المُعالَج (رصيد/استرداد) — صفر إن لم يكن. */
   overpay: string;
   overpayHandled?: "CREDIT" | "CASH_REFUND";
+  /** أثر تسوية مقبوضات الأصل حين تغيّر العميل أو لم يُستلم المسجَّل كاملاً. */
+  settlement?: {
+    mode: "REASSIGN";
+    carriedAmount: string;
+    notReceivedAmount: string;
+    reversedReceiptIds: number[];
+    compensatingReceiptIds: number[];
+    reRecordedReceiptIds: number[];
+    shiftEffects: ShiftSettlementEffect[];
+  };
   idempotentReplay?: boolean;
 }
 
@@ -232,6 +255,7 @@ export async function correctSaleInTx(
     //    تحتاج درجاً، والزبون العابر الذي لم يحدد المخرج يُرفض لاحقاً ذرّياً إن ظهر فائض.
     const invPreview = (
       await tx.select({ branchId: invoices.branchId, shiftId: invoices.shiftId,
+          customerId: invoices.customerId, paidAmount: invoices.paidAmount,
         })
         .from(invoices).where(eq(invoices.id, input.originalInvoiceId)).limit(1)
     )[0];
@@ -355,6 +379,22 @@ export async function correctSaleInTx(
       }
     }
 
+    // ورديات مقبوضات الأصل مصدرٌ ماليّ أيضاً حين قد تلزم تسويتها (تغيّر العميل أو مقبوضٌ لم يُستلم):
+    // تُقفَل هنا قبل جهة التوصيل والفاتورة، حفاظاً على ترتيب الأقفال المصدر ← المستند.
+    const previewOriginalCustomerId = invPreview.customerId != null ? Number(invPreview.customerId) : null;
+    const previewTargetCustomerId = input.customerId === undefined
+      ? previewOriginalCustomerId
+      : input.customerId != null ? Number(input.customerId) : null;
+    const previewPaid = round2(money(invPreview.paidAmount ?? "0"));
+    const mayNeedSettlement = previewPaid.gt(0) && (
+      previewTargetCustomerId !== previewOriginalCustomerId
+      || (input.priorPaymentReceivedAmount != null
+        && round2(money(input.priorPaymentReceivedAmount)).lt(previewPaid))
+    );
+    const lockedPriorShiftIds = mayNeedSettlement
+      ? await lockPriorPaymentShiftsTx(tx, input.originalInvoiceId)
+      : new Set<number>();
+
     // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. التصحيح عكسٌ كامل
     // مثل الإلغاء؛ لذلك لا يكفي غياب DISPATCHED/PARTIAL: DELIVERED+SETTLED وWRITTEN_OFF
     // يحملان حقيقةً تشغيلية/مالية نهائية لا يجوز محوها بإعادة الإصدار. السماح للحالة الملغاة
@@ -446,19 +486,54 @@ export async function correctSaleInTx(
         message: `تعذّر التصحيح: المدفوع المسجَّل (${originalPaid.toFixed(2)}) لا يطابق إيصالات القبض القابلة للنقل (${detachedSum.toFixed(2)}) — قد يكون بعضه من عربونٍ مرتبطٍ بغير هذه الفاتورة. عالِجها بإلغاءٍ كامل ثمّ إعادة بيع.`,
       });
     }
-    // منع تغيير العميل عند وجود مدفوعات: المقبوض يخصّ العميل الأصليّ؛ نقله لعميلٍ آخر يُشوّه الذمم
-    //    (يُعيد للأصل ويُرصّد الجديد بلا إيصالٍ للأصل). لتغيير العميل: إلغاءٌ كامل ثمّ إعادة بيع.
     // ⚠️ `undefined` = «الحقل لم يُرسَل ⇒ بلا تغيير»، بخلاف `null` = «أزِل العميل صراحةً».
-    //    كان الاشتقاق يخلط بينهما (`!= null` وحده) — وهو كودٌ ميّتٌ ما دام أيّ مقبوضٍ محظوراً،
-    //    لكنّه يصير حيّاً بمجرّد رفع الحظر: تصحيحُ فاتورةٍ مقبوضةٍ بلا مسّ العميل كان سيُرفَض
-    //    زوراً بـ«لا يُغيَّر العميل». نُطابق الاشتقاق حرفياً لما تمرّره خطوة ⑦ لإعادة الترحيل.
+    //    نُطابق الاشتقاق حرفياً لما تمرّره خطوة ⑦ لإعادة الترحيل.
     const targetCustomerId = input.customerId === undefined
       ? originalCustomerId
       : input.customerId != null ? Number(input.customerId) : null;
-    if (originalPaid.gt(0) && Number(targetCustomerId ?? 0) !== Number(originalCustomerId ?? 0)) {
+    // قرار المالك (٣/١٠/٢٦): لا حظر لتغيير العميل على فاتورةٍ مقبوضة. المقبوض إمّا:
+    //   · KEEP — العميل نفسه وكل المسجَّل استُلم ⇒ النقل الحرفيّ للإيصالات كما كان (بلا أثر نقد).
+    //   · REASSIGN — تغيّر العميل أو لم يُستلم المسجَّل كاملاً ⇒ عكسٌ بإيصالات تعويضية على الوردية
+    //     الأصلية + إعادة قيد المستلَم فعلاً باسم الطرف الجديد (correctionReceiptSettlement.ts).
+    const receivedPrior = input.priorPaymentReceivedAmount == null
+      ? detachedSum
+      : round2(money(input.priorPaymentReceivedAmount));
+    if (receivedPrior.lt(0) || receivedPrior.gt(detachedSum)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يُغيَّر العميل في تصحيحٍ عليه مدفوعات — المقبوض يخصّ العميل الأصليّ. لتغييره: ألغِ الفاتورة وأعِد البيع.",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ تعديل الفاتورة",
+          why: `المبلغ المستلَم فعلاً (${receivedPrior.toFixed(2)}) خارج المقبوض المسجَّل (${detachedSum.toFixed(2)})`,
+          doThis: "حدّث شاشة التعديل ليُعاد احتساب المقبوض ثم أعد الحفظ",
+        }),
+      });
+    }
+    const customerChanged = Number(targetCustomerId ?? 0) !== Number(originalCustomerId ?? 0);
+    // نقل مقبوضٍ إلى عميلٍ آخر قرارٌ ماليّ لا يُستنتَج من الصمت: المستدعي (الشاشة/الطلب) يجب أن
+    // يُعلن المستلَم فعلاً. بلا إعلان يبقى الحظر التاريخيّ — لا نفترض أنّ المال استُلم ولا العكس.
+    if (detachedSum.gt(0) && customerChanged && input.priorPaymentReceivedAmount == null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يُغيَّر العميل في هذا التصحيح بعد",
+          why: "الفاتورة تحمل مقبوضات ولم يُحدَّد كم استُلم منها فعلاً",
+          doThis: "افتح التصحيح الكامل من شاشة الفاتورة ليُحدَّد المستلَم فعلاً ثم احفظ",
+        }),
+      });
+    }
+    const needsSettlement = detachedSum.gt(0) && (
+      customerChanged
+      || receivedPrior.lt(detachedSum)
+    );
+    if (needsSettlement && !mayNeedSettlement) {
+      // المعاينة قبل القفل لم تتوقّع التسوية (تغيّرت الفاتورة بين القراءتين) ⇒ ورديات غير مقفلة.
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ تعديل الفاتورة",
+          why: "تغيّرت الفاتورة أثناء التعديل",
+          doThis: "حدّث الفاتورة وأعد التعديل؛ لم يتغيّر المال أو المخزون",
+        }),
       });
     }
 
@@ -484,8 +559,26 @@ export async function correctSaleInTx(
       await adjustCustomerBalance(tx, originalCustomerId, originalPaid);
     }
 
-    // ── ٤) فصل إيصالات القبض عن الأصل (المجموع مُتحقَّقٌ = المدفوع أعلاه؛ تُعاد ختمها عبر preCollected) ──
-    if (detachedIds.length) {
+    // ── ٤) نقل المقبوض: KEEP = فصل الإيصالات وإعادة ختمها حرفياً؛ REASSIGN = عكسٌ تعويضيّ + إعادة قيد ──
+    //    في المسارين يبقى ③ صحيحاً: KEEP ينقل القبض للجديدة، وREASSIGN يكتب PAYMENT_OUT بطرف الأصل
+    //    بالمبلغ نفسه (المال «يُعاد» للأصل دفترياً ثم يُقيَّد المستلَم فعلاً على الطرف الجديد).
+    let settlement: SettlementResult | null = null;
+    let carriedIds: number[] = detachedIds;
+    let carriedSum = detachedSum;
+    if (needsSettlement) {
+      settlement = await settlePriorPaymentsTx(tx, {
+        invoiceId: input.originalInvoiceId,
+        invoiceNumber: inv.invoiceNumber,
+        branchId: Number(inv.branchId),
+        originalCustomerId,
+        targetCustomerId,
+        recordedAmount: detachedSum,
+        receivedAmount: receivedPrior,
+        lockedShiftIds: lockedPriorShiftIds,
+      }, actor);
+      carriedIds = settlement.reRecorded.map((r) => r.receiptId);
+      carriedSum = settlement.carriedAmount;
+    } else if (detachedIds.length) {
       await tx.update(receipts).set({ invoiceId: null }).where(inArray(receipts.id, detachedIds));
     }
 
@@ -520,7 +613,7 @@ export async function correctSaleInTx(
                 null,
             }
           : null,
-        preCollected: detachedSum.gt(0) ? { amount: detachedSum.toFixed(2), receiptIds: detachedIds } : null,
+        preCollected: carriedSum.gt(0) ? { amount: carriedSum.toFixed(2), receiptIds: carriedIds } : null,
       allowPreCollectedOverpay: true,
       // نسبةُ البيع تبقى للبائع الأصليّ لا للمدير المصحِّح: وعاء العمولة يُجمَّع بـ
       // `invoices.createdBy` (commissions/base.ts) وقيدُ RETURN العكسيّ يُخصَم من الأصليّ ⇒
@@ -536,12 +629,21 @@ export async function correctSaleInTx(
     );
     const newId = repost.invoiceId;
     const newTotal = round2(money(repost.total));
+    if (settlement && settlement.reRecorded.length) {
+      await postReRecordedPaymentsTx(tx, {
+        reRecorded: settlement.reRecorded,
+        newInvoiceId: newId,
+        branchId: Number(inv.branchId),
+        targetCustomerId,
+        invoiceNumber: inv.invoiceNumber,
+      });
+    }
 
     // حارس: الدفعة الإضافية لا تتجاوز الفرق المستحقّ (النقص) — الزائد لن يُردّ (createSaleInTx يقصر
     //    المدفوع بالإجمالي فيُبتَلع الفائض بلا استرداد). حصِّل الفرق فقط. (الرفض هنا يُرجِع الترحيل ذرّياً.)
     if (input.additionalPayment) {
       const addAmt = round2(money(input.additionalPayment.amount));
-      const shortfall = round2(Decimal.max(new Decimal(0), newTotal.minus(detachedSum)),
+      const shortfall = round2(Decimal.max(new Decimal(0), newTotal.minus(carriedSum)),
       );
       if (addAmt.gt(shortfall)) {
         throw new TRPCError({
@@ -636,7 +738,7 @@ export async function correctSaleInTx(
     //    `createSaleInTx` يقصُر `paidNow` على الإجمالي الجديد (allowPreCollectedOverpay) فيبقى
     //    الفرقُ **مالاً دفعه الزبون بلا مقابل** — ولا يجوز أن «يُبتلَع» بصمت. المبدأ المالي الحاكم:
     //    «لا دينار يضيع بصمت… ومالٌ محتجَز يلزمه مسار خروجٍ ممكنٌ دائماً».
-    const overpay = round2(Decimal.max(new Decimal(0), detachedSum.minus(newTotal)),
+    const overpay = round2(Decimal.max(new Decimal(0), carriedSum.minus(newTotal)),
     );
     let overpayHandled: "CREDIT" | "CASH_REFUND" | undefined = undefined;
     if (overpay.gt(0)) {
@@ -724,5 +826,18 @@ export async function correctSaleInTx(
       total: repost.total,
       overpay: overpay.toFixed(2),
       overpayHandled,
+      ...(settlement
+        ? {
+            settlement: {
+              mode: "REASSIGN" as const,
+              carriedAmount: settlement.carriedAmount.toFixed(2),
+              notReceivedAmount: settlement.notReceivedAmount.toFixed(2),
+              reversedReceiptIds: settlement.reversedReceiptIds,
+              compensatingReceiptIds: settlement.compensatingReceiptIds,
+              reRecordedReceiptIds: settlement.reRecorded.map((r) => r.receiptId),
+              shiftEffects: settlement.shiftEffects,
+            },
+          }
+        : {}),
     };
 }

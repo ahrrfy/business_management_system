@@ -29,7 +29,6 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems,
 } from "@/lib/invoiceTransfer";
 import { useUnsavedGuard, bypassUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -48,7 +47,7 @@ import { releaseReservedPrintWindow, reservePrintWindow,
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { captureDigitalInvoiceBasketItems, resolveDigitalInvoiceSettlement, toDigitalPrepareLine, toDigitalPrepareRegularLine, validateDigitalInvoiceCheckout } from "@/components/pos/digitalBasket";
-import { AlertTriangle, Lock, FileWarning, CreditCard } from "lucide-react";
+import { AlertTriangle, Lock, CreditCard } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -73,7 +72,6 @@ import {
   allocateLineTax,
   derivePaymentTerms,
   INVOICE_TYPES,
-  PAYMENT_METHODS,
   type InvoiceActionKind,
   type InvoiceLine,
   type PaymentMethod,
@@ -81,6 +79,7 @@ import {
   type PriceTier,
 } from "@/components/invoice";
 import { createPricingIntentEpoch } from "@/components/invoice/productSearchResolution"; import { ACTION_LABELS } from "@shared/actionLabels";
+import { SalesCorrectionPanel, resolvePriorReceipt, type PriorReceiptMode } from "@/components/invoice/SalesCorrectionPanel";
 
 const INVOICE_TYPE = "SALE" as const;
 
@@ -129,6 +128,13 @@ export default function SalesInvoice() {
   const [correctionKind, setCorrectionKind] = useState<"REISSUE" | "EXCHANGE">("REISSUE");
   const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
   const [collectNow, setCollectNow] = useState("");
+  // التسوية تُستنتَج من كان/أصبح: الأصل نقديّ صار آجلاً ⇒ المقبوض لم يُستلم؛ والمفتاح يصحّح الاستنتاج.
+  const [receiptMode, setReceiptMode] = useState<PriorReceiptMode>("AUTO");
+  const originalTerms = useMemo(() => (original.data ? derivePaymentTerms(original.data) : "CASH"), [original.data]);
+  const ownerExecutes = me.data?.isOwner === true;
+  const priorReceipt = resolvePriorReceipt({ recordedPaid: originalPaid.toFixed(2), originalTerms, targetTerms: state.paymentTerms, mode: receiptMode });
+  const receivedPrior = D(priorReceipt.amount ?? "0");
+  const customerChanged = isCorrection && !!original.data && (original.data.customerId ?? null) !== (state.entityId ?? null);
   const correctionHydratedRef = useRef(false);
   // مُعرَّف هنا (لا لاحقاً) كي تتمكّن هيدرة التصحيح من تثبيته ⇒ لا تطمس تهيئةُ الضريبة الافتراضية ضريبةَ الأصل.
   const taxDefaultsAppliedRef = useRef(false);
@@ -499,8 +505,19 @@ export default function SalesInvoice() {
   });
 
   // إعادة الإصدار تبدأ بطلب صفر الأثر؛ مراجعٌ مستقل ينفّذ العكس+الإصدار ذرّياً من طابور التحكم.
+  // المالك النشط استثناء: الخادم ينفّذ طلبه فوراً (status=APPROVED) ⇒ ننتقل للفاتورة البديلة.
+  function finishOwnerCorrection(resultInvoiceId: number | null | undefined): boolean {
+    if (resultInvoiceId == null || !(Number(resultInvoiceId) > 0)) return false;
+    utils.sales.get.invalidate(); utils.salesControl.list.invalidate();
+    notify.ok("نُفّذ التصحيح", "عُكس الأصل وصدرت الفاتورة البديلة وسوّيت الأموال في معاملة واحدة.");
+    setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+    bypassUnsavedGuard();
+    navigate(`/invoices/${Number(resultInvoiceId)}`);
+    return true;
+  }
   const reissue = trpc.sales.reissue.useMutation({
     onSuccess: (r) => {
+      if (r.status === "APPROVED" && finishOwnerCorrection(r.resultInvoiceId)) return;
       utils.salesControl.list.invalidate();
       notify.ok(
         "أُرسل طلب إعادة الإصدار",
@@ -520,6 +537,7 @@ export default function SalesInvoice() {
   });
   const exchange = trpc.salesControl.requestExchange.useMutation({
     onSuccess: (result) => {
+      if (result.status === "APPROVED" && finishOwnerCorrection("resultInvoiceId" in result ? (result.resultInvoiceId as number | null) : null)) return;
       utils.salesControl.list.invalidate();
       notify.ok(
         "أُرسل طلب الاستبدال",
@@ -619,7 +637,7 @@ export default function SalesInvoice() {
   /** حمولة طلب التصحيح: مبلغ/طريقة الفرق اقتراح؛ الدرج وإثبات المزوّد يحددهما المراجع. */
   function buildCorrectionPayload(approval?: Approval) {
     const base = buildPayload(approval);
-    const diff = D(totals.grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
+    const diff = D(totals.grandTotal).minus(receivedPrior); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
     const collect = D(collectNow.trim() || "0");
     // أجرة التوصيل وإفصاح التنازل يُحمَلان كما في عقد الإنشاء؛ المجاني لا يدخل الإجمالي.
     const deliveryFee =
@@ -642,6 +660,8 @@ export default function SalesInvoice() {
       notes: base.notes ?? null,
       reason: reason.trim(),
       clientRequestId,
+      // المستلَم فعلاً من المقبوض المسجَّل (مستنتَج من كان/أصبح) — الخادم يعكس الباقي ويحمل المستلَم.
+      ...(priorReceipt.amount != null ? { priorPaymentReceivedAmount: priorReceipt.amount } : {}),
       ...(diff.gt(0) && collect.gt(0)
         ? {
             additionalPayment: {
@@ -662,7 +682,7 @@ export default function SalesInvoice() {
   /** تحقّق التصحيح — رسالة عربية أو null. */
   function validateCorrection(): string | null {
     if (reason.trim().length < 3) return "اكتب سبب التصحيح (٣ أحرف على الأقل).";
-    const diff = D(totals.grandTotal).minus(originalPaid);
+    const diff = D(totals.grandTotal).minus(receivedPrior);
     const collect = D(collectNow.trim() || "0");
     if (diff.gt(0)) {
       if (collect.gt(diff)) return `التحصيل المقترح (${collect.toFixed(2)}) يتجاوز الفرق المستحقّ (${diff.toFixed(2)}).`;
@@ -1160,9 +1180,17 @@ export default function SalesInvoice() {
             </Card>
           )}
           {isCorrection && (
-            <CorrectionPanel
+            <SalesCorrectionPanel
               original={original.data ?? null}
-              originalPaid={originalPaid}
+              recordedPaid={originalPaid}
+              receivedPrior={receivedPrior}
+              receiptMode={receiptMode}
+              setReceiptMode={setReceiptMode}
+              inferredNotReceived={priorReceipt.inferredNotReceived}
+              customerChanged={customerChanged}
+              originalTerms={originalTerms}
+              targetTerms={state.paymentTerms}
+              ownerExecutes={ownerExecutes}
               grandTotal={totals.grandTotal}
               reason={reason}
               setReason={setReason}
@@ -1184,7 +1212,7 @@ export default function SalesInvoice() {
             saving={isCorrection ? reissue.isPending || exchange.isPending : create.isPending}
             pasteAvailable={pasteAvailable}
             availableActions={isCorrection ? ["save"] : undefined}
-            primaryLabel={isCorrection ? correctionKind === "EXCHANGE" ? "إرسال طلب الاستبدال" : "إرسال طلب إعادة الإصدار" : undefined}
+            primaryLabel={isCorrection ? ownerExecutes ? "تنفيذ التصحيح" : correctionKind === "EXCHANGE" ? "إرسال طلب الاستبدال" : "إرسال طلب إعادة الإصدار" : undefined}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
@@ -1258,171 +1286,6 @@ export default function SalesInvoice() {
         onClose={() => { setDigitalIntentId(null); setDigitalFinalizeError(null); }}
         onAllExecuted={finalizeDigitalIntent}
       />
-    </div>
-  );
-}
-
-/** سطر ملخّصٍ صغير (وصف ⟷ قيمة) داخل لوحة التصحيح. */ function CorrRow({ label, value, className }: { label: string; value: string; className?: string; }) { return (<div className="flex items-center justify-between gap-2"><span className="text-muted-foreground">{label}</span><span className={className ?? "font-semibold tabular-nums"} dir="ltr">{value}</span></div>); }
-
-interface CorrectionPanelProps {
-  original: { invoiceNumber?: string | null } | null;
-  originalPaid: ReturnType<typeof D>;
-  grandTotal: string;
-  reason: string;
-  setReason: (v: string) => void;
-  correctionKind: "REISSUE" | "EXCHANGE";
-  setCorrectionKind: (v: "REISSUE" | "EXCHANGE") => void;
-  collectNow: string;
-  setCollectNow: (v: string) => void;
-  /** طريقة قبض «المُحصَّل الآن» — هنا لا في TotalsPanel: لوحة الدفع مخفيّة في التصحيح. */
-  paymentMethod: PaymentMethod;
-  setPaymentMethod: (v: PaymentMethod) => void;
-  overpayHandling: "CREDIT" | "CASH_REFUND";
-  setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
-  hasCustomer: boolean;
-}
-
-/**
- * لوحة تصحيح الفاتورة — تظهر فقط في وضع التصحيح (isCorrection). تعرض السبب الإلزاميّ، وفرق
- * المال بين المدفوع سابقاً وإجمالي التصحيح، وتفرّع حسب اتجاه الفرق:
- *   نقص (الإجمالي > المدفوع) ⇒ اقتراح التحصيل عند الاعتماد + تنبيه إن بقي جزءٌ ذمّةً بلا عميل.
- *   فائض (الإجمالي < المدفوع) ⇒ خيار «استرداد نقديّ» أو «رصيد دائن» (الأخير يلزمه عميل).
- * لا منطقَ ماليّ هنا — كلّه عرضٌ وتحقّقٌ عميليّ يُماثل validateCorrection؛ الخادم هو الحكم.
- */
-function CorrectionPanel({ original, originalPaid, grandTotal, reason, setReason, correctionKind, setCorrectionKind, collectNow, setCollectNow, paymentMethod, setPaymentMethod, overpayHandling,
-  setOverpayHandling,
-  hasCustomer,
-}: CorrectionPanelProps) {
-  const diff = D(grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
-  const isShort = diff.gt(0);
-  const isOver = diff.lt(0);
-  const collect = D(collectNow || "0");
-  const remainingCredit = isShort ? diff.minus(collect) : D("0");
-
-  return (
-    <div dir="rtl" className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm">
-      <div className="flex items-center gap-2 font-bold text-primary">
-        <FileWarning aria-hidden className="size-4 shrink-0" />
-        <span>تصحيح موثَّق{original?.invoiceNumber ? ` — ${original.invoiceNumber}` : ""}</span>
-      </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        الطلب لا يغيّر شيئاً الآن. عند الاعتماد يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة، ثم تصبح البديلة جاهزة للطباعة.
-      </p>
-
-      <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="نوع العملية">
-        <Button
-          type="button"
-          variant={correctionKind === "REISSUE" ? "default" : "outline"}
-          onClick={() => setCorrectionKind("REISSUE")}
-          aria-pressed={correctionKind === "REISSUE"}
-        >
-          تصحيح وإعادة إصدار
-        </Button>
-        <Button
-          type="button"
-          variant={correctionKind === "EXCHANGE" ? "default" : "outline"}
-          onClick={() => setCorrectionKind("EXCHANGE")}
-          aria-pressed={correctionKind === "EXCHANGE"}
-        >
-          استبدال للعميل
-        </Button>
-      </div>
-
-      <div className="space-y-1">
-        <Label className="text-xs font-semibold">
-          سبب التصحيح <span className="text-destructive">*</span>
-        </Label>
-        <Textarea
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          rows={2}
-          placeholder="مثال: صُحِّحت الكمية بعد مراجعة الطلب"
-          className="text-sm"
-        />
-      </div>
-
-      <Card className="space-y-1 p-2 text-xs">
-        <CorrRow label="مدفوعٌ على الأصل" value={fmt(originalPaid.toString())} />
-        <CorrRow label="إجمالي بعد التصحيح" value={fmt(grandTotal)} />
-        <div className="my-1 h-px bg-border" />
-        {diff.isZero() ? (
-          <div className="font-semibold text-money-positive">لا فرق ماليّ — التصحيح متوازن.</div>
-        ) : isShort ? (
-          <CorrRow label="فرقٌ مستحقّ (نقص)" value={fmt(diff.toString())} className="font-bold tabular-nums text-money-negative" />
-        ) : (
-          <CorrRow label="فائضٌ للزبون" value={fmt(diff.abs().toString())} className="font-bold tabular-nums text-money-positive" />
-        )}
-      </Card>
-
-      {isShort && (
-        <div className="space-y-1">
-          <Label className="text-xs font-semibold">المبلغ المقترح تحصيله عند الاعتماد</Label>
-          <MoneyInput value={collectNow} onChange={setCollectNow} placeholder="0" ariaLabel="المبلغ المقترح تحصيله عند الاعتماد" />
-          {/* الطرق تُشتقّ من السياسة المركزية (لا نصّ ثابت) — المعطَّلة لا تُعرَض أصلاً هنا
-              لأنّ هذا منتقٍ مضغوط لا لوحة دفعٍ كاملة. */}
-          {collect.gt(0) && (
-            <div className="space-y-1 pt-1">
-              <Label className="text-xs font-semibold">طريقة القبض</Label>
-              <div className="flex flex-wrap gap-1.5">
-                {PAYMENT_METHODS.filter((m) => isPosPaymentMethodEnabled(m.value),
-                ).map((m) => {
-                  const MIcon = m.icon;
-                  const active = paymentMethod === m.value;
-                  return (
-                    <button
-                      key={m.value}
-                      type="button"
-                      onClick={() => setPaymentMethod(m.value)}
-                      aria-pressed={active}
-                      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-bold transition outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                        active
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-input bg-card text-foreground hover:bg-muted"
-                      }`}
-                    >
-                      <MIcon aria-hidden className="size-4" />
-                      {m.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-          {remainingCredit.gt(0) && (
-            <p className={`text-xs ${hasCustomer ? "text-muted-foreground" : "text-destructive"}`}>
-              {hasCustomer
-                ? `المتبقّي ${fmt(remainingCredit.toString())} يُسجَّل ذمّةً على العميل.`
-                : `المتبقّي ${fmt(remainingCredit.toString())} ذمّة — اختر عميلاً أو حصِّل الفرق كاملاً.`}
-            </p>
-          )}
-        </div>
-      )}
-
-      {isOver && (
-        <div className="space-y-1.5">
-          <Label className="text-xs font-semibold">معالجة الفائض</Label>
-          <RadioGroup
-            value={overpayHandling}
-            onValueChange={(v) => setOverpayHandling(v as "CREDIT" | "CASH_REFUND")}
-            className="gap-2"
-          >
-            <label className="flex cursor-pointer items-center gap-2 text-xs">
-              <RadioGroupItem value="CASH_REFUND" /> استرداد نقديّ من الدرج
-            </label>
-            <label className="flex cursor-pointer items-center gap-2 text-xs">
-              <RadioGroupItem value="CREDIT" /> رصيدٌ دائنٌ للعميل
-            </label>
-          </RadioGroup>
-          {overpayHandling === "CREDIT" && !hasCustomer && (
-            <p className="text-xs text-destructive">الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو استرداداً نقدياً.</p>
-          )}
-          {overpayHandling === "CASH_REFUND" && (
-            <p className="text-xs text-muted-foreground">
-              يختار المراجع الدرج المفتوح لحظة الاعتماد؛ لا يخرج أي نقد عند إرسال الطلب.
-            </p>
-          )}
-        </div>
-      )}
     </div>
   );
 }
