@@ -32,7 +32,7 @@ const OPENING = "100000";
 beforeEach(async () => {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["receipts", "shifts", "users", "branches"]) {
+  for (const t of ["accountingEntries", "receipts", "shifts", "users", "branches"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -43,6 +43,28 @@ beforeEach(async () => {
   await d.insert(s.shifts).values({
     id: SHIFT, branchId: BRANCH, userId: CASHIER, openingBalance: OPENING,
     status: "OPEN", shiftType: "RETAIL",
+  });
+  const floatReceiptResult = await d.insert(s.receipts).values({
+    branchId: BRANCH,
+    direction: "OUT",
+    amount: OPENING,
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: `SF-${BRANCH}-${SHIFT}`,
+    createdBy: CASHIER,
+  });
+  const floatReceiptId = Number(
+    (floatReceiptResult as any)?.[0]?.insertId ?? (floatReceiptResult as any)?.insertId,
+  );
+  await d.insert(s.accountingEntries).values({
+    entryType: "SHIFT_FLOAT_OUT",
+    branchId: BRANCH,
+    receiptId: floatReceiptId,
+    amount: OPENING,
+    dedupeKey: `SHIFT_FLOAT:${SHIFT}`,
+    entryDate: new Date().toISOString().slice(0, 10),
   });
 
   const base = {
