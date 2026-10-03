@@ -970,6 +970,47 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect((await report(2)).cashPosition).toBeNull();
   });
 
+  it("يفحص عكس التحويل في فرع المصدر حتى عند غياب إيصال الإرسال", async () => {
+    const eventAt = new Date(`${DATE}T12:00:00.000Z`);
+    const transferNumber = "CT-REVERSAL-WITHOUT-SENT";
+    const reversalResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "80000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: `CANCEL-${transferNumber}`,
+      createdBy: ADMIN,
+      createdAt: eventAt,
+    });
+    const reversalReceiptId = Number(
+      (reversalResult as any)?.[0]?.insertId ?? (reversalResult as any)?.insertId,
+    );
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_IN",
+      branchId: 1,
+      receiptId: reversalReceiptId,
+      amount: "80000.00",
+      dedupeKey: `CT_OUT_REV:${transferNumber}`,
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber,
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "80000.00",
+      status: "CANCELLED",
+      sentBy: ADMIN,
+      cancelledBy: ADMIN,
+      reversalReceiptId,
+      sentAt: eventAt,
+      cancelledAt: eventAt,
+    });
+
+    expect((await report(1)).cashPosition).toBeNull();
+  });
+
   it("لا يعتبر التحويل مستلماً بلا قيدي الاستلام والتصفية المرتبطين", async () => {
     const eventAt = new Date(`${DATE}T12:00:00.000Z`);
     const transferNumber = "CT-MISSING-TERMINAL-POSTINGS";

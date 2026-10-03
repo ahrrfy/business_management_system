@@ -623,6 +623,52 @@ describe("daily physical treasury reconciliation", () => {
     expect(destinationStatus.actions.canCount).toBe(false);
   });
 
+  it("scopes a source reversal even when the sent receipt is absent", async () => {
+    const transferNumber = "CT-REVERSAL-WITHOUT-SENT";
+    const reversalResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: `CANCEL-${transferNumber}`,
+      createdBy: MANAGER,
+      createdAt: TEST_NOW,
+      approvedAt: TEST_NOW,
+    });
+    const reversalReceiptId = Number(
+      (reversalResult as any)?.[0]?.insertId ?? (reversalResult as any)?.insertId,
+    );
+    await insertCashPosting({
+      entryType: "CASH_TRANSFER_IN",
+      branchId: 1,
+      receiptId: reversalReceiptId,
+      amount: "10000.00",
+      dedupeKey: `CT_OUT_REV:${transferNumber}`,
+    });
+    await db().insert(s.cashTransfers).values({
+      transferNumber,
+      fromBranchId: 1,
+      toBranchId: 2,
+      amount: "10000.00",
+      status: "CANCELLED",
+      sentBy: MANAGER,
+      cancelledBy: MANAGER,
+      reversalReceiptId,
+      sentAt: TEST_NOW,
+      cancelledAt: TEST_NOW,
+    });
+
+    const status = await getDailyCashReconciliation(
+      { branchId: 1, businessDate: DATE },
+      actor(MANAGER),
+    );
+    expect(status.blockers.map((item) => item.code)).toContain("CASH_IN_TRANSIT");
+    expect(status.actions.canCount).toBe(false);
+  });
+
   it("keeps a received transfer blocked without canonical terminal postings", async () => {
     const transferNumber = "CT-MISSING-TERMINAL-POSTINGS";
     const sentResult = await db().insert(s.receipts).values({

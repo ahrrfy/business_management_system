@@ -473,7 +473,16 @@ export async function buildDailyCashEvidenceTx(
     LEFT JOIN receipts received ON received.id = t.receivedReceiptId
     LEFT JOIN receipts reversal ON reversal.id = t.reversalReceiptId
     WHERE (
-        (t.fromBranchId = ${branchId} AND ${receiptCashEventAtSql("sent")} < ${endExclusive})
+        (
+          t.fromBranchId = ${branchId}
+          AND (
+            ${receiptCashEventAtSql("sent")} < ${endExclusive}
+            OR (
+              t.reversalReceiptId IS NOT NULL
+              AND ${receiptCashEventAtSql("reversal")} < ${endExclusive}
+            )
+          )
+        )
         OR (
           t.toBranchId = ${branchId}
           AND t.receivedReceiptId IS NOT NULL

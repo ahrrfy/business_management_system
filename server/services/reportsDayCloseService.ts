@@ -1423,8 +1423,18 @@ export async function getDayCloseReconciliation(opts: {
           inArray(cashTransfers.fromBranchId, scopedBranchIds),
           lt(sentEventAt, endExclusive),
         );
+        const transferSourceValidationScope = and(
+          inArray(cashTransfers.fromBranchId, scopedBranchIds),
+          or(
+            lt(sentEventAt, endExclusive),
+            and(
+              isNotNull(cashTransfers.reversalReceiptId),
+              lt(reversalEventAt, endExclusive),
+            ),
+          ),
+        );
         const transferValidationScope = or(
-          transferScope,
+          transferSourceValidationScope,
           and(
             inArray(cashTransfers.toBranchId, scopedBranchIds),
             isNotNull(cashTransfers.receivedReceiptId),
