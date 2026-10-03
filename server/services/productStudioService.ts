@@ -6316,7 +6316,11 @@ export async function getStudioProductVariantMatrix(actor: ProductStudioActor, p
  * استعلام سريع للمنتج وصوره عبر الباركود — متاح لكل من يملك حق قراءة الاستوديو.
  * لا يشترط وجود حملة تصوير أو مهمة مسبقة لتمكين الوصول المباشر والفوري.
  */
-export async function quickBarcodeLookup(actor: ProductStudioActor, barcode: string) {
+export async function quickBarcodeLookup(
+  actor: ProductStudioActor,
+  barcodeInput: string | { barcode: string },
+) {
+  const barcode = typeof barcodeInput === "string" ? barcodeInput : barcodeInput.barcode;
   const db = requireDb();
   const resolved = await resolveStudioBarcode(actor, barcode);
   const productId = Number(resolved.productId);
