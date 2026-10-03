@@ -129,7 +129,10 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).toContain('blocker.code === "STALE_EVIDENCE"');
     expect(source).toContain('saved?.status !== "REOPENED"');
     expect(source).toContain("D(saved.countedTreasuryCash).minus(position.expectedCashOnHand).toFixed(2)");
-    expect(source).toContain("drift: finalCountUsable ? Number(finalVariance)");
+    expect(source).toContain('expected: dc.cashPosition.expectedCashOnHand');
+    expect(source).toContain('drift: finalCountUsable ? (finalVariance ?? "") : ""');
+    expect(source).not.toContain("Number(dc.cashPosition.expectedCashOnHand)");
+    expect(source).not.toContain("Number(finalVariance)");
     expect(source).toContain("drift: finalCountUsable ? fmtAr(finalVariance!)");
   });
 
