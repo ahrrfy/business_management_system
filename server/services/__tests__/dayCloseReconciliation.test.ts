@@ -418,6 +418,29 @@ describe("مطابقة النقد المباشر والخزينة — منع ا�
     expect((await report()).cashPosition).toBeNull();
   });
 
+  it("يحجب موقف كل الفروع إذا كان فرعٌ لا يحمل إلا نقداً مادياً يتيماً", async () => {
+    await db().insert(s.branches).values({
+      id: 3,
+      name: "فرع يتيم نقدياً",
+      code: "ORPHAN",
+      type: "SALES",
+    });
+    await db().insert(s.receipts).values({
+      branchId: 3,
+      shiftId: null,
+      direction: "IN",
+      amount: "9000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "ORPHAN-ONLY-BRANCH-CASH",
+      createdBy: ADMIN,
+    });
+
+    expect((await report()).cashPosition).toBeNull();
+  });
+
   it("يحفظ معادلة الموقع أثناء الوردية: خزينة + درج مفتوح + عهدة بالطريق", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const invoiceId = await seedInvoice(1);

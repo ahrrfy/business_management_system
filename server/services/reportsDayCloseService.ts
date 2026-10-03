@@ -1243,7 +1243,9 @@ export async function getDayCloseReconciliation(opts: {
           .select({ count: sql<number>`COUNT(*)` })
           .from(receipts)
           .where(and(
-            ...scopeReceipt,
+            // في عرض كل الفروع يجب فحص كل النقد المادي مباشرةً؛ قائمة الفروع
+            // المشتقة من الخزائن/الورديات لا تشمل فرعاً لا يحمل إلا سجلاً يتيماً.
+            ...(opts.branchId != null ? [eq(receipts.branchId, opts.branchId)] : []),
             eq(receipts.paymentMethod, "CASH"),
             eq(receipts.approvalStatus, "APPROVED"),
             inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),

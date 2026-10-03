@@ -689,12 +689,21 @@ function ReconciliationHero({ dc, daily }: { dc: DC; daily?: RouterOutputs["trea
     ? D(saved.countedTreasuryCash).minus(position.expectedCashOnHand).toFixed(2)
     : null;
   const finalMatched = finalVariance != null && D(finalVariance).isZero();
+  const reconciliationBorderClass = finalVariance != null
+    ? finalMatched
+      ? "border-money-positive/40"
+      : "border-money-negative/40"
+    : balanced
+      ? "border-money-positive/40"
+      : dc.driftCount > 0
+        ? "border-money-negative/40"
+        : undefined;
   const positionTitle = position?.branchCount === 1
     ? "الموقف النقدي النهائي للفرع"
     : `الموقف النقدي النهائي لكل الفروع (${position?.branchCount ?? 0})`;
 
   return (
-    <Card className={finalMatched || balanced ? "border-money-positive/40" : finalVariance != null || dc.driftCount > 0 ? "border-money-negative/40" : undefined}>
+    <Card className={reconciliationBorderClass}>
       <CardContent className="p-4 space-y-3">
         {position && (
           <section className="space-y-3 rounded-md border bg-card p-3" aria-label={positionTitle}>

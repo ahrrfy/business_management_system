@@ -133,6 +133,14 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
     expect(source).toContain("drift: finalCountUsable ? fmtAr(finalVariance!)");
   });
 
+  it("يعطي فرق الجرد النهائي أولوية لون على تطابق الورديات", () => {
+    const source = readPage("DayCloseReport.tsx");
+
+    expect(source).toContain("const reconciliationBorderClass = finalVariance != null");
+    expect(source).toContain("<Card className={reconciliationBorderClass}>");
+    expect(source).not.toContain("finalMatched || balanced");
+  });
+
   it("يعتمد نطاق الفرع الذي فرضه الخادم للعنوان والجرد", () => {
     const source = readPage("DayCloseReport.tsx");
 
