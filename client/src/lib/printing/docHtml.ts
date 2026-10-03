@@ -135,6 +135,9 @@ ${CAIRO_FONT}
   }
   @keyframes doc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .doc-spinner { animation: doc-spin 0.8s linear infinite; }
+  body.doc-exporting-pdf { background: #fff !important; }
+  body.doc-exporting-pdf .doc-toolbar { display: none !important; }
+  body.doc-exporting-pdf .page { margin: 0 !important; box-shadow: none !important; }
 </style>
 <script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
@@ -145,15 +148,15 @@ ${CAIRO_FONT}
     <span class="doc-toolbar-badge">معاينة المستند الرسمي A4</span>
   </div>
   <div class="doc-toolbar-actions">
-    <button class="doc-btn doc-btn-primary" onclick="printDoc()">
+    <button id="doc-btn-print" class="doc-btn doc-btn-primary" type="button">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
       <span>طباعة المستند</span>
     </button>
-    <button class="doc-btn doc-btn-save" onclick="saveDocAsPdf()">
+    <button id="doc-btn-save-pdf" class="doc-btn doc-btn-save" type="button">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
       <span>حفظ كملف PDF</span>
     </button>
-    <button class="doc-btn doc-btn-close" onclick="closeDocPreview()">
+    <button id="doc-btn-close" class="doc-btn doc-btn-close" type="button">
       <span>إغلاق المعاينة</span>
     </button>
   </div>
@@ -171,7 +174,8 @@ ${CAIRO_FONT}
   function closeDocPreview() {
     try {
       if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, '*');
+        var targetOrigin = window.location.origin || '*';
+        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, targetOrigin);
       }
     } catch (e) {}
     try {
@@ -183,7 +187,7 @@ ${CAIRO_FONT}
     } catch (e) {}
     setTimeout(function () {
       if (!window.closed) {
-        var btn = document.querySelector('.doc-btn-close');
+        var btn = document.getElementById('doc-btn-close');
         if (btn) {
           btn.innerHTML = '<span>إغلاق التبويبة (Ctrl+W)</span>';
           btn.style.background = '#DC2626';
@@ -194,7 +198,7 @@ ${CAIRO_FONT}
   }
 
   function saveDocAsPdf() {
-    var saveBtn = document.querySelector('.doc-btn-save');
+    var saveBtn = document.getElementById('doc-btn-save-pdf');
     var origHtml = saveBtn ? saveBtn.innerHTML : '';
     if (saveBtn) {
       saveBtn.disabled = true;
@@ -204,6 +208,7 @@ ${CAIRO_FONT}
     }
 
     function resetBtn() {
+      document.body.classList.remove('doc-exporting-pdf');
       if (saveBtn) {
         saveBtn.disabled = false;
         saveBtn.style.opacity = '1';
@@ -212,6 +217,7 @@ ${CAIRO_FONT}
       }
     }
 
+    document.body.classList.add('doc-exporting-pdf');
     var target = document.querySelector('.page');
     var rawTitle = ${JSON.stringify(title)} || 'document';
     var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
@@ -251,6 +257,15 @@ ${CAIRO_FONT}
       window.print();
     }
   }
+
+  var printBtn = document.getElementById('doc-btn-print');
+  if (printBtn) printBtn.addEventListener('click', printDoc);
+
+  var saveBtn = document.getElementById('doc-btn-save-pdf');
+  if (saveBtn) saveBtn.addEventListener('click', saveDocAsPdf);
+
+  var closeBtn = document.getElementById('doc-btn-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeDocPreview);
 
   (function () {
     var images = Array.from(document.images).map(function (image) {
@@ -318,8 +333,8 @@ ${CAIRO_FONT}
   body{margin:0;padding:0;font-family:'Cairo',sans-serif}
   .page{width:${pageWidth}px;min-height:${pageHeight}px;background:#fff;position:relative;
     margin:20px auto;font-family:'Cairo',sans-serif;color:#000;direction:rtl;font-size:11.5px;line-height:1.55;
-    display:flex;flex-direction:column;box-shadow:0 4px 18px rgba(0,0,0,0.12);}
-  .page:last-child{margin-bottom:30px;}
+    display:flex;flex-direction:column;box-shadow:0 4px 18px rgba(0,0,0,0.12);page-break-after:always;break-after:page;}
+  .page:last-child{margin-bottom:30px;page-break-after:avoid;break-after:avoid;}
   .page-inset{position:absolute;top:${SAFETY_INSET}px;right:${SAFETY_INSET}px;bottom:${SAFETY_INSET}px;left:${SAFETY_INSET}px;border:1px solid ${B.borderMist};pointer-events:none;z-index:2;}
   .page-body{position:relative;z-index:1;padding:32px 42px 0;flex:1 0 auto;}
   .page-footer{margin-top:auto;padding:14px 42px 24px;z-index:1;position:relative;}
@@ -409,6 +424,9 @@ ${CAIRO_FONT}
   }
   @keyframes doc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .doc-spinner { animation: doc-spin 0.8s linear infinite; }
+  body.doc-exporting-pdf { background: #fff !important; }
+  body.doc-exporting-pdf .doc-toolbar { display: none !important; }
+  body.doc-exporting-pdf .page { margin: 0 !important; box-shadow: none !important; }
 </style>
 <script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
@@ -419,15 +437,15 @@ ${CAIRO_FONT}
     <span class="doc-toolbar-badge">${esc(badge)}</span>
   </div>
   <div class="doc-toolbar-actions">
-    <button class="doc-btn doc-btn-primary" onclick="printDoc()">
+    <button id="doc-btn-print" class="doc-btn doc-btn-primary" type="button">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
       <span>طباعة المستند</span>
     </button>
-    <button class="doc-btn doc-btn-save" onclick="saveDocAsPdf()">
+    <button id="doc-btn-save-pdf" class="doc-btn doc-btn-save" type="button">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
       <span>حفظ كملف PDF</span>
     </button>
-    <button class="doc-btn doc-btn-close" onclick="closeDocPreview()">
+    <button id="doc-btn-close" class="doc-btn doc-btn-close" type="button">
       <span>إغلاق المعاينة</span>
     </button>
   </div>
@@ -444,7 +462,8 @@ ${pagesHtml}
   function closeDocPreview() {
     try {
       if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, '*');
+        var targetOrigin = window.location.origin || '*';
+        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, targetOrigin);
       }
     } catch (e) {}
     try {
@@ -456,7 +475,7 @@ ${pagesHtml}
     } catch (e) {}
     setTimeout(function () {
       if (!window.closed) {
-        var btn = document.querySelector('.doc-btn-close');
+        var btn = document.getElementById('doc-btn-close');
         if (btn) {
           btn.innerHTML = '<span>إغلاق التبويبة (Ctrl+W)</span>';
           btn.style.background = '#DC2626';
@@ -467,7 +486,7 @@ ${pagesHtml}
   }
 
   function saveDocAsPdf() {
-    var saveBtn = document.querySelector('.doc-btn-save');
+    var saveBtn = document.getElementById('doc-btn-save-pdf');
     var origHtml = saveBtn ? saveBtn.innerHTML : '';
     if (saveBtn) {
       saveBtn.disabled = true;
@@ -477,6 +496,7 @@ ${pagesHtml}
     }
 
     function resetBtn() {
+      document.body.classList.remove('doc-exporting-pdf');
       if (saveBtn) {
         saveBtn.disabled = false;
         saveBtn.style.opacity = '1';
@@ -485,6 +505,7 @@ ${pagesHtml}
       }
     }
 
+    document.body.classList.add('doc-exporting-pdf');
     var target = document.getElementById('doc-pages-container') || document.body;
     var rawTitle = ${JSON.stringify(title)} || 'document';
     var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
@@ -509,7 +530,7 @@ ${pagesHtml}
         hotfixes: ['px_scaling'],
         orientation: '${landscape ? "landscape" : "portrait"}'
       },
-      pagebreak: { mode: ['css', 'legacy'] }
+      pagebreak: { mode: ['css', 'legacy'], after: '.page' }
     };
 
     if (typeof window.html2pdf === 'function') {
@@ -525,6 +546,15 @@ ${pagesHtml}
       window.print();
     }
   }
+
+  var printBtn = document.getElementById('doc-btn-print');
+  if (printBtn) printBtn.addEventListener('click', printDoc);
+
+  var saveBtn = document.getElementById('doc-btn-save-pdf');
+  if (saveBtn) saveBtn.addEventListener('click', saveDocAsPdf);
+
+  var closeBtn = document.getElementById('doc-btn-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeDocPreview);
 
   (function () {
     var images = Array.from(document.images).map(function (image) {
@@ -562,8 +592,17 @@ ${CAIRO_FONT}
   @page{size:80mm auto;margin:0}
   body{font-family:'Cairo',sans-serif;width:80mm;background:#fff;color:#000;margin:0;padding:3mm;font-size:11.5px;font-weight:700;line-height:1.5;-webkit-font-smoothing:antialiased}
 </style>
-</head>
-<body onload="window.print();setTimeout(function(){window.close()},400)">${bodyContent}</body></html>`;
+<body>
+${bodyContent}
+<script>
+  window.addEventListener('load', function () {
+    window.print();
+    setTimeout(function () {
+      window.close();
+    }, 400);
+  });
+</script>
+</body></html>`;
 }
 
 // ─── إعدادات المستند (يحقنها المُتصل من إعدادات الشركة) ─────────────────────
