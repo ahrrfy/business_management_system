@@ -86,6 +86,7 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
       return {
         ...state,
         entityId: action.id,
+        ...(action.tier ? { tier: action.tier } : {}),
         items: state.items.map((item) => {
           if (item.digital) return item;
           const resolved = action.pricesByUnitId[item.productUnitId];
@@ -118,7 +119,11 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
       };
 
     case "SET_ENTITY":
-      return { ...state, entityId: action.id };
+      return {
+        ...state,
+        entityId: action.id,
+        ...(action.tier ? { tier: action.tier } : {}),
+      };
 
     case "ADD_ITEM": {
       // كل كرتٍ رقميّ مثيل مستقل (مرجع/طالب/نسخة سعر)، ولو اتحد productUnitId.
