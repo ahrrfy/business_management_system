@@ -6,6 +6,7 @@ import {
   approveExpense,
   cancelExpense,
   createExpense,
+  executeApprovedExpense,
   getExpenseTrace,
   listExpenses,
 } from "../expenseService";
@@ -458,6 +459,7 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
       ...manager2,
       isOwner: true,
     });
+    await executeApprovedExpense(treasury.expenseId, "TREASURY", manager2);
     const treasuryRow = (await listExpenses({ fundingKind: "TREASURY" }))
       .rows[0];
     expect(treasuryRow).toMatchObject({
@@ -505,6 +507,7 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
       ...manager2,
       isOwner: true,
     });
+    await executeApprovedExpense(created.expenseId, "NON_CASH", manager2);
     await db()
       .update(s.receipts)
       .set({ amount: "401.00" })

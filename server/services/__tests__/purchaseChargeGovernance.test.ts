@@ -10,6 +10,7 @@ import {
   requestPurchaseChargeControl,
 } from "../purchase/purchaseCharges";
 import type { Actor } from "../tx";
+import { getDayCloseReconciliation } from "../reportsDayCloseService";
 
 /**
  * مصروفُ الشراء (شحن/كمرك/…) خروجُ مالٍ حقيقيّ خلف بوّابة فصل مهامٍ
@@ -40,6 +41,7 @@ async function reset() {
     "purchaseChargeControlRequests",
     "receipts",
     "accountingEntries",
+    "shifts",
     "purchaseOrderItems",
     "purchaseOrders",
     "productUnits",
@@ -99,7 +101,10 @@ async function makePurchaseOrderId(): Promise<number> {
 }
 
 /** ينشئ مصروف شراءٍ PAID/TRANSFER مسوَّدةً، ثم يطلب ترحيله بهويّة `requester`. */
-async function createChargeAndRequestPost(requester: Actor) {
+async function createChargeAndRequestPost(
+  requester: Actor,
+  paymentMethod: "CASH" | "TRANSFER" = "TRANSFER",
+) {
   const purchaseOrderId = await makePurchaseOrderId();
   const created = await createPurchaseCharge(
     {
@@ -109,11 +114,11 @@ async function createChargeAndRequestPost(requester: Actor) {
       expenseAccountId: 1,
       chargeType: "SHIPPING",
       settlement: "PAID",
-      paymentMethod: "TRANSFER",
+      paymentMethod,
       amount: "5000.00",
       expenseDate: "2026-01-01",
-      externalReference: `TR-${randomUUID()}`,
-      evidenceType: "BANK_ADVICE",
+      externalReference: `${paymentMethod}-${randomUUID()}`,
+      evidenceType: paymentMethod === "CASH" ? "CARRIER_INVOICE" : "BANK_ADVICE",
       evidenceReference: `ev-${randomUUID()}`,
       allocations: [{ purchaseOrderId, allocatedAmount: "5000.00" }],
     },
@@ -166,10 +171,99 @@ describe("حوكمة مصروف الشراء — فصل المهام على قا
 
     const receiptsRows = await db().select().from(schema.receipts);
     expect(receiptsRows).toHaveLength(1);
-    expect(receiptsRows[0]).toMatchObject({ direction: "OUT", partyType: "SUPPLIER", partyId: 1 });
+    expect(receiptsRows[0]).toMatchObject({
+      direction: "OUT",
+      partyType: "SUPPLIER",
+      partyId: 1,
+      createdBy: maker.userId,
+      approvedBy: reviewer.userId,
+      executedBy: maker.userId,
+    });
+    expect(receiptsRows[0].executedAt).not.toBeNull();
 
     const entries = await db().select().from(schema.accountingEntries).where(eq(schema.accountingEntries.entryType, "PAYMENT_OUT"));
     expect(entries).toHaveLength(1);
+    expect(Number(entries[0].createdBy)).toBe(maker.userId);
+  });
+
+  it("مصروف الشحن النقدي يُخصم من وردية المنشئ ويظهر في المطابقة باسم المنفذ لا المراجع", async () => {
+    await db().insert(schema.shifts).values([
+      {
+        id: 701,
+        userId: maker.userId,
+        branchId: 1,
+        openingBalance: "0.00",
+        status: "OPEN",
+        shiftType: "RETAIL",
+        openGuard: "7:1:RETAIL",
+      },
+      {
+        id: 801,
+        userId: reviewer.userId,
+        branchId: 1,
+        openingBalance: "0.00",
+        status: "OPEN",
+        shiftType: "RETAIL",
+        openGuard: "8:1:RETAIL",
+      },
+    ]);
+    await db().insert(schema.receipts).values({
+      branchId: 1,
+      shiftId: 701,
+      cashBucket: "DRAWER",
+      direction: "IN",
+      amount: "10000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      description: "تمويل اختباري لدرج منفذ الشحن",
+      createdBy: maker.userId,
+    });
+    const { requestId } = await createChargeAndRequestPost(maker, "CASH");
+
+    await decidePurchaseChargeControl(
+      {
+        requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE",
+        reviewReason: "اعتماد مستند الشحن النقدي",
+      },
+      reviewer,
+    );
+
+    const [receipt] = await db()
+      .select()
+      .from(schema.receipts)
+      .where(eq(schema.receipts.direction, "OUT"));
+    expect(receipt).toMatchObject({
+      shiftId: 701,
+      cashBucket: "DRAWER",
+      createdBy: maker.userId,
+      approvedBy: reviewer.userId,
+      executedBy: maker.userId,
+    });
+    expect(receipt.executedAt).not.toBeNull();
+    const [entry] = await db()
+      .select()
+      .from(schema.accountingEntries)
+      .where(eq(schema.accountingEntries.receiptId, Number(receipt.id)));
+    expect(Number(entry.createdBy)).toBe(maker.userId);
+
+    const report = await getDayCloseReconciliation({
+      date: new Date().toISOString().slice(0, 10),
+      branchId: 1,
+    });
+    const makerShift = report.shifts.find((row) => row.shiftId === 701);
+    const reviewerShift = report.shifts.find((row) => row.shiftId === 801);
+    expect(makerShift?.expensesCash).toBe("5000.00");
+    expect(makerShift?.operatingOut).toBe("5000.00");
+    expect(makerShift?.movements[0]).toMatchObject({
+      categoryType: "EXPENSE",
+      categoryLabel: "مصروف شراء",
+      classification: "SHIPPING",
+      createdByName: "طالب",
+    });
+    expect(reviewerShift?.expensesCash).toBe("0.00");
   });
 
   it("يعتمد المالكُ طلب ترحيلٍ أنشأه هو بنفسه فيُرحَّل المصروف فعلياً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {

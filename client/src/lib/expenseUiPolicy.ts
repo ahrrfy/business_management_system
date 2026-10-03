@@ -44,8 +44,8 @@ export function expenseAuditDetail(
 
 export function expenseApprovalExecutionText(paymentMethod: string): string {
   return paymentMethod === "CASH"
-    ? "عند الاعتماد يُصرف المبلغ من خزينة الفرع."
-    : "عند الاعتماد يُنفذ بطريقة الدفع المختارة خارج رصيد الدرج والخزينة النقدية.";
+    ? "الاعتماد لا يحرّك النقد؛ بعده ينفّذ صاحب الطلب من ورديته أو ينفّذ أمين خزينة الفرع الدفع المباشر."
+    : "الاعتماد لا ينفّذ الدفع؛ يلزم تنفيذ مستقل بطريقة الدفع المختارة خارج رصيد الدرج والخزينة النقدية.";
 }
 
 const EXPENSE_STATUS_FILTERS = new Set([

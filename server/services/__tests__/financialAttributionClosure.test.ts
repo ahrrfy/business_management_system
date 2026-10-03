@@ -338,6 +338,8 @@ describe("لقطة منفذ قيد الدفتر", () => {
       approvalStatus: "APPROVED",
       createdBy: 1,
       approvedBy: 2,
+      executedBy: 3,
+      executedAt: new Date(),
     });
 
     await withTx(async (tx) => {
@@ -350,7 +352,7 @@ describe("لقطة منفذ قيد الدفتر", () => {
         amount: money("25.00"),
         createdBy: 1,
       });
-      // مسار الاعتماد يملك receipt.approvedBy ولا يمرر actor إلى postEntry حالياً.
+      // عند غياب actor الصريح، executedBy هو المنفذ؛ المنشئ والمعتمد لا يحلّان مكانه.
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
         branchId: 1,
@@ -385,8 +387,8 @@ describe("لقطة منفذ قيد الدفتر", () => {
         }),
         expect.objectContaining({
           entryType: "PAYMENT_OUT",
-          createdBy: 2,
-          createdByNameSnapshot: "منفذ المورد الأصلي",
+          createdBy: 3,
+          createdByNameSnapshot: "منفذ المرتجع الأصلي",
         }),
         expect.objectContaining({
           entryType: "RETURN",
@@ -429,8 +431,8 @@ describe("لقطة منفذ قيد الدفتر", () => {
       expect.arrayContaining([
         expect.objectContaining({
           entryType: "PAYMENT_OUT",
-          createdBy: 2,
-          createdByName: "منفذ المورد الأصلي",
+          createdBy: 3,
+          createdByName: "منفذ المرتجع الأصلي",
         }),
       ]),
     );

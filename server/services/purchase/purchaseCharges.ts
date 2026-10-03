@@ -143,7 +143,18 @@ async function paymentContext(
   if (charge.paymentMethod !== "CASH") {
     return { shiftId: null, cashBucket: null, treasuryApproval: null };
   }
-  const result = await shiftIdForCashTx(tx, { ...actor, branchId: Number(charge.branchId) }, Number(charge.branchId), label);
+  // المصروف المدفوع يوثّق دفعاً نفذه منشئ سجل المصروف قبل المراجعة؛ نحل مصدر
+  // النقد من عهدته، لا من وردية المراجع الذي ضغط «اعتماد».
+  const result = await shiftIdForCashTx(
+    tx,
+    {
+      ...actor,
+      userId: Number(charge.createdBy),
+      branchId: Number(charge.branchId),
+    },
+    Number(charge.branchId),
+    label,
+  );
   if (direction === "OUT" && result.cashBucket === "TREASURY") {
     const treasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
       actor,
@@ -288,9 +299,9 @@ export async function decidePurchaseChargeControl(input: DecidePurchaseChargeCon
         } else {
           assertNonPhysicalOutReceipt({ classification: "NON_CASH_METHOD", paymentMethod: method, cashBucket: null, approvalStatus: "APPROVED", operation: "ترحيل مصروف شراء" });
         }
-        const receipt = await tx.insert(receipts).values({ branchId: Number(charge.branchId), shiftId: instrument.shiftId, cashBucket: instrument.cashBucket, direction: "OUT", amount: charge.amount, paymentMethod: method, referenceNumber: charge.externalReference ?? charge.chargeNumber, partyType: charge.payeeSupplierId == null ? "OTHER" : "SUPPLIER", partyId: charge.payeeSupplierId, description: `${charge.chargeType} — ${charge.evidenceReference}`, status: "COMPLETED", approvalStatus: "APPROVED", approvedBy: actor.userId, approvedAt: new Date(), createdBy: actor.userId }); receiptId = extractInsertId(receipt);
+        const receipt = await tx.insert(receipts).values({ branchId: Number(charge.branchId), shiftId: instrument.shiftId, cashBucket: instrument.cashBucket, direction: "OUT", amount: charge.amount, paymentMethod: method, referenceNumber: charge.externalReference ?? charge.chargeNumber, partyType: charge.payeeSupplierId == null ? "OTHER" : "SUPPLIER", partyId: charge.payeeSupplierId, description: `${charge.chargeType} — ${charge.evidenceReference}`, status: "COMPLETED", approvalStatus: "APPROVED", approvedBy: actor.userId, approvedAt: new Date(), createdBy: Number(charge.createdBy), executedBy: Number(charge.createdBy), executedAt: charge.createdAt }); receiptId = extractInsertId(receipt);
         const source = { roleDebits: { [role]: amount }, roleCredits: { [asset]: amount } };
-        await postEntry(tx, { entryType: "PAYMENT_OUT", branchId: Number(charge.branchId), supplierId: charge.payeeSupplierId == null ? null : Number(charge.payeeSupplierId), receiptId, amount, paymentMethod: method, entryDate, createdBy: actor.userId, dedupeKey, notes: charge.evidenceReference, postingIntent: createPostingIntent("PAYMENT_OUT_EXPENSE", "PAYMENT_OUT", [debitLine(role, amount), creditLine(asset, amount)], source), postingSourceComponents: source });
+        await postEntry(tx, { entryType: "PAYMENT_OUT", branchId: Number(charge.branchId), supplierId: charge.payeeSupplierId == null ? null : Number(charge.payeeSupplierId), receiptId, amount, paymentMethod: method, entryDate, createdBy: Number(charge.createdBy), dedupeKey, notes: charge.evidenceReference, postingIntent: createPostingIntent("PAYMENT_OUT_EXPENSE", "PAYMENT_OUT", [debitLine(role, amount), creditLine(asset, amount)], source), postingSourceComponents: source });
       } else {
         const source = { roleDebits: { [role]: amount }, roleCredits: { ACCRUED_EXPENSES: amount } };
         await postEntry(tx, { entryType: "ADJUST", branchId: Number(charge.branchId), supplierId: Number(charge.payeeSupplierId), amount, entryDate, createdBy: actor.userId, dedupeKey, notes: charge.evidenceReference, postingIntent: createPostingIntent("ADJUST_EXPENSE_ACCRUAL", "ADJUST", [debitLine(role, amount), creditLine("ACCRUED_EXPENSES", amount)], source), postingSourceComponents: source });
@@ -301,7 +312,8 @@ export async function decidePurchaseChargeControl(input: DecidePurchaseChargeCon
       const dedupeKey = `PURCHASE_CHARGE_REVERSAL:${charge.id}`;
       if (charge.settlement === "PAID") {
         const method = charge.paymentMethod!; const asset = paymentAssetRole(method, instrument.cashBucket, "IN");
-        const receipt = await tx.insert(receipts).values({ branchId: Number(charge.branchId), shiftId: instrument.shiftId, cashBucket: instrument.cashBucket, direction: "IN", amount: charge.amount, paymentMethod: method, referenceNumber: `REV:${charge.chargeNumber}`, partyType: charge.payeeSupplierId == null ? "OTHER" : "SUPPLIER", partyId: charge.payeeSupplierId, description: `عكس ${charge.chargeType}`, status: "COMPLETED", approvalStatus: "APPROVED", approvedBy: actor.userId, approvedAt: new Date(), createdBy: actor.userId }); receiptId = extractInsertId(receipt);
+        const now = new Date();
+        const receipt = await tx.insert(receipts).values({ branchId: Number(charge.branchId), shiftId: instrument.shiftId, cashBucket: instrument.cashBucket, direction: "IN", amount: charge.amount, paymentMethod: method, referenceNumber: `REV:${charge.chargeNumber}`, partyType: charge.payeeSupplierId == null ? "OTHER" : "SUPPLIER", partyId: charge.payeeSupplierId, description: `عكس ${charge.chargeType}`, status: "COMPLETED", approvalStatus: "APPROVED", approvedBy: actor.userId, approvedAt: now, createdBy: actor.userId, executedBy: actor.userId, executedAt: now }); receiptId = extractInsertId(receipt);
         const source = { roleDebits: { [asset]: amount }, roleCredits: { [role]: amount } };
         await postEntry(tx, { entryType: "PAYMENT_IN", branchId: Number(charge.branchId), supplierId: charge.payeeSupplierId == null ? null : Number(charge.payeeSupplierId), receiptId, amount, paymentMethod: method, entryDate: new Date(), createdBy: actor.userId, dedupeKey, notes: request.reason, postingIntent: createPostingIntent("PAYMENT_IN_OTHER", "PAYMENT_IN", [debitLine(asset, amount), creditLine(role, amount)], source), postingSourceComponents: source });
       } else {

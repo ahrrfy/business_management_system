@@ -33,7 +33,7 @@ import {
   expenseCategories,
   expenses,
   invoices,
-  payrollAccountingEvents,
+  purchaseCharges,
   receipts,
   shifts,
   suppliers,
@@ -136,6 +136,10 @@ export interface DayCloseTotals {
   shiftCount: number;
   openCount: number;
   closedCount: number;
+  /**
+   * إجماليات الأدراج/الورديات فقط. لا تدخل فيها حركات الخزينة المباشرة؛
+   * فهي متاحة صراحةً تحت directOperations والحقول direct* أدناه.
+   */
   opening: string;
   salesCash: string;
   collectionsCash: string;
@@ -147,7 +151,7 @@ export interface DayCloseTotals {
   operatingOut: string;
   handoversCash: string;
   cashDrops: string;
-  expected: string;
+  expected: string;  // opening + cashIn - operatingOut للورديات فقط
   counted: string;   // Σ المعدود (الورديات المغلقة فقط)
   drift: string;     // Σ الفرق (الورديات المغلقة فقط)
   retainedInDrawer: string;
@@ -281,6 +285,7 @@ export async function getDayCloseReconciliation(opts: {
   const { start, endExclusive } = utcDayRange(opts.date, opts.date);
 
   const eventAt = cashEventAtSql({
+    executedAt: receipts.executedAt,
     approvedBy: receipts.approvedBy,
     createdBy: receipts.createdBy,
     approvedAt: receipts.approvedAt,
@@ -308,6 +313,7 @@ export async function getDayCloseReconciliation(opts: {
   const openingFloatReceipt = alias(receipts, "dayCloseOpeningFloatReceipt");
   const openingFloatEntry = alias(accountingEntries, "dayCloseOpeningFloatEntry");
   const openingFloatEventAt = cashEventAtSql({
+    executedAt: openingFloatReceipt.executedAt,
     approvedBy: openingFloatReceipt.approvedBy,
     createdBy: openingFloatReceipt.createdBy,
     approvedAt: openingFloatReceipt.approvedAt,
@@ -385,6 +391,7 @@ export async function getDayCloseReconciliation(opts: {
     const firstCount = alias(cashCustodyCounts, "blindCountFirstCount");
     const sourceShift = alias(shifts, "blindCountSourceShift");
     const sourceEventAt = cashEventAtSql({
+      executedAt: sourceReceipt.executedAt,
       approvedBy: sourceReceipt.approvedBy,
       createdBy: sourceReceipt.createdBy,
       approvedAt: sourceReceipt.approvedAt,
@@ -466,7 +473,7 @@ export async function getDayCloseReconciliation(opts: {
   // تفكيك مقبوضات/مدفوعات الدرج النقدية لكل وردية عبر SUM(CASE …). البِنى متنافية بالإنشاء:
   //   • تسليم الخزينة يحمل referenceNumber='CH-…' وبلا voucherNumber/expense/invoiceId ⇒ دلوُه وحده.
   //   • salesCash: IN بفاتورة بلا سند. collectionsCash: IN بسند قبض. (otherIn = المتبقّي.)
-  //   • expensesCash: OUT بسند صرف أو مصروف مرتبط. returnsCash: OUT بفاتورة بلا سند/مصروف/CH.
+  //   • expensesCash: OUT بسند صرف أو مصروف عادي/شراء مرتبط. returnsCash: OUT بفاتورة بلا مصروف/CH.
   // cashIn/cashOut إجماليّان (الصيغة القانونية) ⇒ otherIn/otherOut = بواقٍ تضمن التطابق دوماً.
   // المسار ز (١٦/٨): كانت الشروط تُكتب هنا يدوياً بلا حالةٍ ولا اعتماد ⇒ إيصالٌ معلَّق أو
   // غير معتمَد يدخل «المتوقَّع» في التقرير ولا يدخله في حارس الوردية ⇒ فرقٌ يُتَّهم به الكاشير.
@@ -483,8 +490,8 @@ export async function getDayCloseReconciliation(opts: {
         collectionsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
         handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NOT NULL AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
         cashDropsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NOT NULL AND UPPER(TRIM(${receipts.referenceNumber})) LIKE 'CD-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
-        expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NULL AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
-        returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NULL AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+        expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NULL AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL OR ${purchaseCharges.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
+        returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${custodySourceEvidence.receiptId} IS NULL AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${purchaseCharges.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
       })
       .from(receipts)
       .innerJoin(
@@ -492,6 +499,7 @@ export async function getDayCloseReconciliation(opts: {
         and(eq(shifts.id, receipts.shiftId), eq(shifts.branchId, receipts.branchId)),
       )
       .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+      .leftJoin(purchaseCharges, eq(purchaseCharges.paymentReceiptId, receipts.id))
       .leftJoin(custodySourceEvidence, eq(custodySourceEvidence.receiptId, receipts.id))
       .where(isDrawerCash)
       .groupBy(receipts.shiftId);
@@ -538,14 +546,8 @@ export async function getDayCloseReconciliation(opts: {
         notLike(sql`UPPER(TRIM(${receipts.referenceNumber}))`, "TREASURY-SEED%"),
       ),
     ),
-    // استبعاد صرف الرواتب والتحويلات القانونية (تسويات الخزينة المرتبطة بأحداث الرواتب)
-    // حتى لا تُحسب كعمليات تشغيلية مباشرة تفرّغ النقد المتوقع للأدراج.
-    notExists(
-      db
-        .select({ one: sql`1` })
-        .from(payrollAccountingEvents)
-        .where(eq(payrollAccountingEvents.receiptId, receipts.id)),
-    ),
+    // كل حركة نقد مادية في الخزينة تدخل المطابقة مرة واحدة، بما فيها الرواتب والضرائب.
+    // التصنيف يشرح الحركة، لكنه لا يجوز أن يخفيها من معادلة النقد الفعلي.
   ];
   if (opts.branchId != null) {
     directConds.push(eq(receipts.branchId, opts.branchId));
@@ -566,11 +568,12 @@ export async function getDayCloseReconciliation(opts: {
       cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
       salesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
       collectionsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
-      expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
-      returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
+      expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL OR ${purchaseCharges.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
+      returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${purchaseCharges.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
     })
     .from(receipts)
     .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+    .leftJoin(purchaseCharges, eq(purchaseCharges.paymentReceiptId, receipts.id))
     .where(and(...directConds));
 
   const directAgg = directAggRows[0];
@@ -621,6 +624,9 @@ export async function getDayCloseReconciliation(opts: {
         expenseCategory: expenses.category,
         expenseCategoryName: expenseCategories.name,
         expenseReferenceNumber: expenses.referenceNumber,
+        purchaseChargeId: purchaseCharges.id,
+        purchaseChargeType: purchaseCharges.chargeType,
+        purchaseChargeEvidence: purchaseCharges.evidenceReference,
         // Vouchers
         voucherCategoryName: voucherCategories.name,
         // Work orders
@@ -640,6 +646,7 @@ export async function getDayCloseReconciliation(opts: {
       )
       .leftJoin(receiptUsers, eq(receiptUsers.id, receipts.createdBy))
       .leftJoin(expenses, eq(expenses.receiptId, receipts.id))
+      .leftJoin(purchaseCharges, eq(purchaseCharges.paymentReceiptId, receipts.id))
       .leftJoin(expenseCategories, eq(expenseCategories.id, expenses.expenseCategoryId))
       .leftJoin(voucherCategories, eq(voucherCategories.id, receipts.voucherCategoryId))
       .leftJoin(invoices, eq(invoices.id, receipts.invoiceId))
@@ -667,12 +674,13 @@ export async function getDayCloseReconciliation(opts: {
     const isExpense =
       r.direction === "OUT" &&
       !hasCustodyEvidence &&
-      (r.voucherNumber != null || r.expenseId != null);
+      (r.voucherNumber != null || r.expenseId != null || r.purchaseChargeId != null);
     const isReturn =
       r.direction === "OUT" &&
       !hasCustodyEvidence &&
       r.voucherNumber == null &&
       r.expenseId == null &&
+      r.purchaseChargeId == null &&
       r.invoiceId != null;
 
     const isSale =
@@ -708,7 +716,11 @@ export async function getDayCloseReconciliation(opts: {
       documentNumber = r.referenceNumber;
     } else if (isExpense) {
       categoryType = "EXPENSE";
-      categoryLabel = r.voucherNumber ? "سند صرف" : "مصروف تشغيلي";
+      categoryLabel = r.voucherNumber
+        ? "سند صرف"
+        : r.purchaseChargeId != null
+          ? "مصروف شراء"
+          : "مصروف تشغيلي";
       payee =
         r.expensePayee ||
         r.counterpartyName ||
@@ -716,10 +728,15 @@ export async function getDayCloseReconciliation(opts: {
         r.partyCustomerName ||
         "غير محدد";
       partyName = payee;
-      description = r.expenseDescription || r.description || "مصروف نقدي من الدرج";
+      description =
+        r.expenseDescription ||
+        r.description ||
+        r.purchaseChargeEvidence ||
+        "مصروف نقدي من الدرج";
       classification =
         r.expenseCategoryName ||
         (r.expenseCategory ? expenseBucketLabel(r.expenseCategory) : null) ||
+        r.purchaseChargeType ||
         r.voucherCategoryName ||
         "مصروفات عامة";
       documentNumber =
@@ -1077,12 +1094,14 @@ export async function getDayCloseReconciliation(opts: {
         const custodySourceReceipt = alias(receipts, "dayCloseCustodySourceReceipt");
         const custodyTargetReceipt = alias(receipts, "dayCloseCustodyTargetReceipt");
         const custodySourceEventAt = cashEventAtSql({
+          executedAt: custodySourceReceipt.executedAt,
           approvedBy: custodySourceReceipt.approvedBy,
           createdBy: custodySourceReceipt.createdBy,
           approvedAt: custodySourceReceipt.approvedAt,
           createdAt: custodySourceReceipt.createdAt,
         });
         const custodyTargetEventAt = cashEventAtSql({
+          executedAt: custodyTargetReceipt.executedAt,
           approvedBy: custodyTargetReceipt.approvedBy,
           createdBy: custodyTargetReceipt.createdBy,
           approvedAt: custodyTargetReceipt.approvedAt,
@@ -1319,18 +1338,21 @@ export async function getDayCloseReconciliation(opts: {
         const receivedReceipt = alias(receipts, "dayCloseTransferReceivedReceipt");
         const reversalReceipt = alias(receipts, "dayCloseTransferReversalReceipt");
         const sentEventAt = cashEventAtSql({
+          executedAt: sentReceipt.executedAt,
           approvedBy: sentReceipt.approvedBy,
           createdBy: sentReceipt.createdBy,
           approvedAt: sentReceipt.approvedAt,
           createdAt: sentReceipt.createdAt,
         });
         const receivedEventAt = cashEventAtSql({
+          executedAt: receivedReceipt.executedAt,
           approvedBy: receivedReceipt.approvedBy,
           createdBy: receivedReceipt.createdBy,
           approvedAt: receivedReceipt.approvedAt,
           createdAt: receivedReceipt.createdAt,
         });
         const reversalEventAt = cashEventAtSql({
+          executedAt: reversalReceipt.executedAt,
           approvedBy: reversalReceipt.approvedBy,
           createdBy: reversalReceipt.createdBy,
           approvedAt: reversalReceipt.approvedAt,
@@ -1686,17 +1708,19 @@ export async function getDayCloseReconciliation(opts: {
       openCount,
       closedCount,
       opening: toDbMoney(tOpening),
-      salesCash: toDbMoney(tSales.plus(directSales)),
-      collectionsCash: toDbMoney(tColl.plus(directCollections)),
-      otherIn: toDbMoney(tOtherIn.plus(directOtherIn)),
-      cashIn: toDbMoney(tCashIn.plus(directCashIn)),
-      returnsCash: toDbMoney(tReturns.plus(directReturns)),
-      expensesCash: toDbMoney(tExpenses.plus(directExpenses)),
-      otherOut: toDbMoney(tOtherOut.plus(directOtherOut)),
-      operatingOut: toDbMoney(tOpOut.plus(directOperatingOut)),
+      // هذا الكائن يصف الورديات فقط. دمج حركة الخزينة هنا كان يجعل صرف
+      // الخزينة يظهر كعجز في الأدراج رغم عدم خروجه منها.
+      salesCash: toDbMoney(tSales),
+      collectionsCash: toDbMoney(tColl),
+      otherIn: toDbMoney(tOtherIn),
+      cashIn: toDbMoney(tCashIn),
+      returnsCash: toDbMoney(tReturns),
+      expensesCash: toDbMoney(tExpenses),
+      otherOut: toDbMoney(tOtherOut),
+      operatingOut: toDbMoney(tOpOut),
       handoversCash: toDbMoney(tHandovers),
       cashDrops: toDbMoney(tCashDrops),
-      expected: toDbMoney(tExpected.plus(directNetCash)),
+      expected: toDbMoney(tExpected),
       counted: toDbMoney(tCounted),
       drift: toDbMoney(tDrift),
       retainedInDrawer: toDbMoney(tRetained),
