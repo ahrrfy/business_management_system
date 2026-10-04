@@ -546,7 +546,7 @@ describe("printInvoiceA4 — رصيد العميل السابق والنهائي
     expect(html).toContain("90,000 د.ع");
     expect(html).toContain("الرصيد النهائي (الحساب الكلي)");
     expect(html).toContain("150,000");
-    expect(html).toContain("مطلوب من العميل");
+    expect(html).toContain("لنا");
     expect(html).toContain("المتبقّي");
     expect(html).toContain("60,000");
   });
