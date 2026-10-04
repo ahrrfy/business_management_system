@@ -191,7 +191,7 @@ describe("buildSalesInvoiceV2Html & buildPurchaseInvoiceV2Html", () => {
     expect(html).not.toContain(">الضريبة<");
     // خلية الباركود تحتوي على SVG هندسي صالح للماسحات الضوئية ورقم الباركود تحته
     expect(html).toContain("<svg");
-    expect(html).toContain("viewBox=\"0 0 105 22\"");
+    expect(html).toContain("max-width:105px;height:22px");
     expect(html).toContain("628100012345");
   });
 
@@ -349,18 +349,18 @@ describe("wrapReceiptDoc", () => {
 
 describe("docTableV2 - دعم rawHtml للأعمدة المركبة مثل الباركود", () => {
   it("يمرر محتوى HTML دون تشفير عند تحديد rawHtml: true", () => {
-    const tableHtml = docTableV2({
-      columns: [
+    const tableHtml = docTableV2(
+      [
         { key: "barcode", label: "الباركود", rawHtml: true },
         { key: "name", label: "اسم المنتج" },
       ],
-      rows: [
+      [
         {
           barcode: '<svg class="test-barcode"><rect width="10" height="20"/></svg>',
           name: "منتج تجريبي & اختبار <1>",
         },
       ],
-    });
+    );
 
     // المحتوى الخام في rawHtml يبقى وسماً كما هو
     expect(tableHtml).toContain('<svg class="test-barcode"><rect width="10" height="20"/></svg>');
