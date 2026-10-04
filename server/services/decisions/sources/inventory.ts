@@ -4,8 +4,17 @@
  */
 import { eq } from "drizzle-orm";
 import { costRevaluationApprovalTrigger, stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
+import {
+  COST_WAVE_MIN_REASON_LENGTH,
+  COST_WAVE_PURPOSE_LABELS,
+  COST_WAVE_RULE_LABELS,
+} from "@shared/costWave";
 import { decisionSubkindLabel } from "@shared/decisionRegistry";
-import { costRevaluationRequests, stockAdjustmentRequests } from "../../../../drizzle/schema";
+import {
+  costRevaluationRequests,
+  costUpdateWaves,
+  stockAdjustmentRequests,
+} from "../../../../drizzle/schema";
 import {
   approveStockAdjustment,
   listStockAdjustmentRequests,
@@ -16,6 +25,11 @@ import {
   listCostRevaluations,
   rejectCostRevaluation,
 } from "../../inventory/costRevaluationRequest";
+import {
+  approveCostWave,
+  listCostWaves,
+  rejectCostWave,
+} from "../../inventory/costWaveService";
 import { requireDb } from "../../tx";
 import { serviceActor } from "../gate";
 import { buildRow, decided, defaultMessage, itemLabel } from "../rows";
@@ -153,6 +167,90 @@ export const costRevaluationSource: DecisionSource = {
       input,
       "EXECUTED",
       `${subject}: اعتُمدت — التكلفة الجديدة ${res.newCost} وقيود مرحلة ${res.postedEntries}.`,
+    );
+  },
+};
+
+/** موجات التكلفة تظهر للمعتمد المؤهل التالي فقط؛ المعتمد السابق والمنشئ مستبعدان في الخدمة. */
+export const costWaveSource: DecisionSource = {
+  key: "inventory.costWave",
+  kinds: ["inventory.costWave.approve", "inventory.costWave.reject"],
+  gate: { type: "MODULE", moduleKey: "inventory", roles: ["manager"] },
+  supportedActions: ["APPROVE", "REJECT"],
+  async list(actor, scope) {
+    const scopedBranch = scopeBranch(actor, scope);
+    if (scopedBranch === "NONE") return [];
+    const page = await listCostWaves(
+      { view: "AWAITING_MINE", branchId: scopedBranch ?? undefined, limit: 100 },
+      serviceActor(actor),
+    );
+    const names = await branchNames(requireDb(), ids(page.rows.map((row) => row.branchId)));
+    return page.rows.map((row) =>
+      buildRow(
+        {
+          kind: "inventory.costWave.approve",
+          id: row.id,
+          title: `موجة تكلفة · ${row.name}`,
+          subkind: decisionSubkindLabel(row.purpose),
+          amount: row.expectedValueDelta,
+          branchId: row.branchId,
+          branchName: names.get(Number(row.branchId)) ?? null,
+          requestedBy: row.createdBy,
+          requestedByName: row.createdByName,
+          requestedAt: row.createdAt,
+          summaryItems: [
+            { label: "الغرض: " + COST_WAVE_PURPOSE_LABELS[row.purpose] },
+            { label: "القاعدة: " + COST_WAVE_RULE_LABELS[row.ruleType], qty: row.changeValue },
+            { label: "الاصناف المتأثرة", qty: row.itemCount },
+            { label: "الأصناف المستبعدة — أسبابها وتفاصيلها في المستند", qty: row.skippedCount },
+            { label: "الكمية المتأثرة", qty: row.expectedQuantity, unit: "بالوحدة الاساس" },
+            { label: "قيمة المخزون قبل", unitPrice: row.inventoryValueBefore },
+            { label: "قيمة المخزون بعد", unitPrice: row.inventoryValueAfter },
+            { label: "تقدم الاعتماد", qty: `${row.approvalCount} من ${row.requiredApprovals}` },
+          ],
+          reason: row.reason,
+          reasonMinLength: COST_WAVE_MIN_REASON_LENGTH,
+          approveBlockedReason: "اعتماد موجة التكلفة متاح من شاشة التفاصيل فقط بعد مراجعة الأصناف المستبعدة وأسبابها.",
+          openActionLabel: "مراجعة التفاصيل والاعتماد",
+          trigger: costRevaluationApprovalTrigger("APPROVE"),
+        },
+        scope.now,
+      ),
+    );
+  },
+  freshness: (id) =>
+    freshnessFrom(
+      async () =>
+        (
+          await requireDb()
+            .select({ status: costUpdateWaves.status })
+            .from(costUpdateWaves)
+            .where(eq(costUpdateWaves.id, id))
+            .limit(1)
+        )[0]?.status,
+      ["PENDING_APPROVAL"],
+    ),
+  async decide(input, actor) {
+    const subject = `موجة التكلفة رقم ${input.id}`;
+    if (input.action === "REJECT") {
+      await rejectCostWave(input.id, input.reason ?? "", serviceActor(actor));
+      return decided(input, "REJECTED", defaultMessage("REJECTED", subject));
+    }
+    const result = await approveCostWave(input.id, serviceActor(actor));
+    if (result.status === "CONFLICTED") {
+      return decided(input, "STALE", `${subject}: تعارضت لقطة التكلفة أو الكمية ولم يطبق اي تغيير.`);
+    }
+    if (result.status === "PENDING_APPROVAL") {
+      return decided(
+        input,
+        "REQUESTED",
+        `${subject}: سُجل اعتمادك (${result.approvalCount}) وما زالت تنتظر الاعتماد المستقل التالي.`,
+      );
+    }
+    return decided(
+      input,
+      "EXECUTED",
+      `${subject}: اعتُمدت وطُبقت على ${result.appliedItems} صنف و${result.postedEntries ?? 0} قيد مرحلة.`,
     );
   },
 };

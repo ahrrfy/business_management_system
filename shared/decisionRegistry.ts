@@ -429,6 +429,48 @@ const INVENTORY: Record<string, DecisionSpec> = {
   }),
 
   /**
+   * [`inventoryRouter.ts`](../server/routers/inventoryRouter.ts) ⇐
+   * [`inventory/costWaveService.ts`](../server/services/inventory/costWaveService.ts).
+   * الاعتماد الأخير يعيد فحص بصمة المستند والتكلفة والكميات ثم يغيّر كل الأصناف ذرّياً.
+   */
+  "inventory.costWave.approve": spec({
+    kind: "inventory.costWave.approve",
+    title: "اعتماد موجة تكلفة",
+    why: "الاعتماد النهائي يغير تكلفة مجموعة أصناف وقيمة المخزون وقيود كل الفروع دفعة واحدة. مراجعة سطحية تنشر خطا واحدا على آلاف الوحدات وكل هوامش البيع اللاحقة.",
+    decidesOn: [
+      "اسم الموجة وغرضها المحاسبي",
+      "قاعدة التغيير وقيمتها",
+      "عدد الاصناف والكميات المتاثرة",
+      "قيمة المخزون قبل وبعد وفرق القيمة",
+      "الاصناف المستبعدة واسبابها",
+      "سبب التصحيح ومستنده",
+      "من طلب وتقدم الاعتمادات",
+    ],
+    approver: "INDEPENDENT_REVIEWER",
+    withdrawable: false,
+    procedure: { router: "inventory", name: "approveCostWave" },
+    href: (id) => `/inventory?tab=cost-waves&wave=${id}`,
+  }),
+
+  /** رفض الموجة يبقي كل التكاليف والقيود كما هي، ويُلزم سبباً مكتوباً. */
+  "inventory.costWave.reject": spec({
+    kind: "inventory.costWave.reject",
+    title: "رفض موجة تكلفة",
+    why: "رفض موجة تصحيح بلا سبب يترك تكاليف يعرف طالبها انها خاطئة ويمنع تتبع سبب بقاء الخلل، فيعاد الطلب بصياغة اخرى حتى يمر.",
+    decidesOn: [
+      "اسم الموجة وغرضها",
+      "عدد الاصناف وفرق قيمة المخزون",
+      "سبب التصحيح ومستنده",
+      "سبب الرفض",
+      "من طلب",
+    ],
+    approver: "INDEPENDENT_REVIEWER",
+    withdrawable: false,
+    procedure: { router: "inventory", name: "rejectCostWave" },
+    href: (id) => `/inventory?tab=cost-waves&wave=${id}`,
+  }),
+
+  /**
    * [`stocktakeRouter.ts:580`](../server/routers/stocktakeRouter.ts#L580) ⇐
    * `decideStocktakeItem`. قرارٌ لكلّ صنفٍ داخل الجلسة: تسوية أم إبقاء. `href` ⇐ معرّف الجلسة.
    */

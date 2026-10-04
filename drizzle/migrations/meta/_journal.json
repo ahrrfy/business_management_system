@@ -2430,7 +2430,13 @@
 			"when": 1788148839000,
 			"tag": "0381_manager_badge_and_pin",
 			"breakpoints": true
+		},
+		{
+			"idx": 382,
+			"version": "5",
+			"when": 1788148840000,
+			"tag": "0382_cost_revaluation_waves",
+			"breakpoints": true
 		}
 	]
 }
-
