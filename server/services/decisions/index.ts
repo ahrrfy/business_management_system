@@ -26,7 +26,7 @@ import { OTHER_SOURCES } from "./sources/others";
 import { PURCHASING_SOURCES } from "./sources/purchasing";
 import { SALES_SOURCES } from "./sources/sales";
 import { TREASURY_SOURCES } from "./sources/treasury";
-import { costRevaluationSource, stockAdjustmentSource } from "./sources/inventory";
+import { costRevaluationSource, costWaveSource, stockAdjustmentSource } from "./sources/inventory";
 import type { DecideInput, DecideOptions, DecisionActor, DecisionScope, DecisionSource } from "./types";
 
 export type { DecideInput, DecisionActor, DecisionSource } from "./types";
@@ -36,6 +36,7 @@ export const DECISION_SOURCES: readonly DecisionSource[] = [
   ...PURCHASING_SOURCES,
   stockAdjustmentSource,
   costRevaluationSource,
+  costWaveSource,
   ...TREASURY_SOURCES,
   ...SALES_SOURCES,
   ...OTHER_SOURCES,

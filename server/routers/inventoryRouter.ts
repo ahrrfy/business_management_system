@@ -5,6 +5,11 @@ import type { ProductBarcodeMatch } from "@shared/productScan";
 import { appErrorMessage } from "@shared/errors";
 import { actorSuffix } from "@shared/notificationActorLabel";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import {
+  COST_WAVE_MAX_REASON_LENGTH,
+  COST_WAVE_MAX_SELECTED_ITEMS,
+  COST_WAVE_MIN_REASON_LENGTH,
+} from "@shared/costWave";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { nonNegMoneyString } from "../lib/schemas";
 import { alias } from "drizzle-orm/mysql-core";
@@ -55,8 +60,17 @@ import {
   listCostRevaluations,
   getCostRevaluationPreview,
 } from "../services/inventory/costRevaluationRequest";
+import {
+  approveCostWave,
+  getCostWave,
+  listCostWaves,
+  previewCostWave,
+  rejectCostWave,
+  submitCostWave,
+} from "../services/inventory/costWaveService";
 import { withTx } from "../services/tx";
 import { retryOnDup } from "../lib/retryDup";
+import { resolveActorBranchId } from "../lib/branchAuthority";
 import { canSeeCostForUser, inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
 import { listBackorderShortfall } from "../services/inventory/backorderShortfall";
 
@@ -73,6 +87,47 @@ const TRANSFER_REASONS = {
 } as const;
 type TransferReason = keyof typeof TRANSFER_REASONS;
 const TRANSFER_REASON_KEYS = Object.keys(TRANSFER_REASONS) as [TransferReason, ...TransferReason[]];
+
+const costWaveFiltersSchema = z.object({
+  scope: z.enum(["FILTERED", "SELECTED", "ALL"]),
+  categoryId: z.number().int().positive().nullable().optional(),
+  productSearch: z.string().trim().max(200).nullable().optional(),
+  variantIds: z
+    .array(z.number().int().positive())
+    .max(COST_WAVE_MAX_SELECTED_ITEMS)
+    .nullable()
+    .optional(),
+});
+const costWavePreviewSchema = z.object({
+  branchId: z.number().int().positive().nullable().optional(),
+  purpose: z.enum(["CORRECTION", "IMPAIRMENT"]),
+  ruleType: z.enum([
+    "SET_COST",
+    "INCREASE_AMOUNT",
+    "DECREASE_AMOUNT",
+    "INCREASE_PERCENT",
+    "DECREASE_PERCENT",
+  ]),
+  changeValue: z.string().trim().regex(/^\d+(?:\.\d{1,4})?$/).max(30),
+  filters: costWaveFiltersSchema,
+});
+
+function costWaveActor(user: {
+  id: number;
+  branchId?: number | null;
+  role: string;
+  isOwner?: boolean | null;
+}, requestedBranchId?: number | null, requireBranch = false) {
+  const branchId = requireBranch
+    ? resolveActorBranchId({ user }, requestedBranchId)
+    : Number(user.branchId ?? 0);
+  return {
+    userId: Number(user.id),
+    branchId,
+    role: user.role,
+    isOwner: user.isOwner ?? false,
+  };
+}
 
 /**
  * سجلّ سندات التحويل ببحثٍ برقم السند + مدى تاريخ — امتدادٌ محليّ لـ`listStockTransfers`
@@ -624,6 +679,70 @@ export const inventoryRouter = router({
         branchId: ctx.user.branchId ?? 1,
         role: ctx.user.role,
       })
+    ),
+
+  /* ── موجات التكلفة: مستند جماعي + اعتمادان مستقلان + تطبيق ذري ─────────────── */
+  previewCostWave: inventoryManagerProcedure
+    .input(costWavePreviewSchema)
+    .mutation(({ input, ctx }) =>
+      previewCostWave(input, costWaveActor(ctx.user, input.branchId, true)),
+    ),
+
+  submitCostWave: inventoryManagerProcedure
+    .input(
+      costWavePreviewSchema.extend({
+        name: z.string().trim().min(3).max(255),
+        description: z.string().trim().max(2000).nullable().optional(),
+        reason: z
+          .string()
+          .trim()
+          .min(COST_WAVE_MIN_REASON_LENGTH)
+          .max(COST_WAVE_MAX_REASON_LENGTH),
+        previewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      }),
+    )
+    .mutation(({ input, ctx }) => {
+      const actor = costWaveActor(ctx.user, input.branchId, true);
+      return submitCostWave(input, actor);
+    }),
+
+  costWaves: inventoryManagerProcedure
+    .input(
+      z
+        .object({
+          view: z.enum(["AWAITING_MINE", "MY_REQUESTS", "HISTORY"]).optional(),
+          status: z.enum(["PENDING_APPROVAL", "APPLIED", "REJECTED", "CONFLICTED"]).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+          cursor: z.number().int().positive().nullable().optional(),
+          search: z.string().trim().max(200).nullable().optional(),
+        })
+        .optional(),
+    )
+    .query(({ input, ctx }) => listCostWaves(input ?? {}, costWaveActor(ctx.user))),
+
+  costWave: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(({ input, ctx }) => getCostWave(input.id, costWaveActor(ctx.user))),
+
+  approveCostWave: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      approveCostWave(input.id, costWaveActor(ctx.user)),
+    ),
+
+  rejectCostWave: inventoryManagerProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        reason: z
+          .string()
+          .trim()
+          .min(COST_WAVE_MIN_REASON_LENGTH)
+          .max(COST_WAVE_MAX_REASON_LENGTH),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      rejectCostWave(input.id, input.reason, costWaveActor(ctx.user)),
     ),
 
   pendingAdjustments: inventoryReadProcedure

@@ -34,7 +34,8 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { variantDisplayName, variantDescriptor } from "@shared/variantDisplay";
-import { Camera, CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { Camera, CheckCircle2, ExternalLink, Layers3, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { InventoryModals } from "@/components/inventory/InventoryModals";
@@ -69,6 +70,15 @@ export default function Inventory() {
   const canAdjust = role === "admin" || role === "manager" || role === "warehouse";
   // التسوية المضمّنة سطر-بسطر للمدير فقط — المسار المعتمد للجميع صار جلسة جرد موثّقة.
   const canInlineAdjust = role === "admin" || role === "manager";
+  const canCostWaves = me.data
+    ? moduleAccessAllowed(
+        me.data.role,
+        (me.data.permissionsOverride ?? null) as PermissionMap | null,
+        "inventory",
+        "FULL",
+        ["manager"],
+      )
+    : false;
   const myBranch = me.data?.branchId ?? 1;
 
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
@@ -607,11 +617,20 @@ export default function Inventory() {
         title="المخزون"
         description="الأرصدة الحالية لكل منتج مع تسوية يدوية (جرد/تلف/تصحيح) تُسجَّل كحركة تدقيق، وسجلّ آخر الحركات."
         actions={
-          lowCount > 0 ? (
-            <span className="badge-stock-low rounded-full px-3 py-1 text-xs">
-              {fmtInt(lowCount)} منتج تحت الحد الأدنى
-            </span>
-          ) : undefined
+          <div className="flex flex-wrap items-center gap-2">
+            {lowCount > 0 && (
+              <span className="badge-stock-low rounded-full px-3 py-1 text-xs">
+                {fmtInt(lowCount)} منتج تحت الحد الأدنى
+              </span>
+            )}
+            {canCostWaves && (
+              <Button asChild size="sm" variant="outline">
+                <Link href="/inventory?tab=cost-waves">
+                  <Layers3 aria-hidden /> موجات التكلفة
+                </Link>
+              </Button>
+            )}
+          </div>
         }
       />
 
