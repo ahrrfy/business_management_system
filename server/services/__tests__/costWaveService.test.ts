@@ -237,6 +237,15 @@ describe("معاينة وإرسال موجة التكلفة", () => {
     ).rejects.toThrow(/هبوط القيمة لا يرفع التكلفة/);
   });
 
+  it("يرفض قيمة تغيير لا يمكن تخزينها في DECIMAL(15,4)", async () => {
+    await expect(
+      previewCostWave(
+        { ...previewInput, ruleType: "SET_COST", changeValue: "100000000000" },
+        creator,
+      ),
+    ).rejects.toThrow(/حد التخزين/);
+  });
+
   it("يقبل التعيين في هبوط القيمة ويستبعد فقط الصفوف التي سيرفع تكلفتها", async () => {
     const preview = await previewCostWave(
       {
@@ -389,6 +398,14 @@ describe("معاينة وإرسال موجة التكلفة", () => {
     await expect(
       approveCostWave(submitted.waveId, globalAdmin2),
     ).resolves.toMatchObject({ status: "APPLIED", approvalCount: 2 });
+  });
+
+  it("يطبق مرشح الفرع في استعلام القائمة قبل الترقيم", async () => {
+    const { submitted } = await submittedWave();
+    const branchOne = await listCostWaves({ branchId: 1 }, globalAdmin);
+    const branchTwo = await listCostWaves({ branchId: 2 }, globalAdmin);
+    expect(listRows(branchOne).map((wave) => wave.id)).toContain(submitted.waveId);
+    expect(listRows(branchTwo).map((wave) => wave.id)).not.toContain(submitted.waveId);
   });
 
   it("يمنع طلب إعادة تقييم فردي لنفس الصنف ما دامت الموجة معلقة", async () => {
@@ -675,14 +692,27 @@ describe("الرفض والعزل", () => {
     ).rejects.toThrow(/الإدارة العامة|فروع/);
   });
 
-  it("تشغيل سياسة اعتماد المالك يمنع المدير غير المالك من الاعتماد", async () => {
+  it("سياسة المالك تُبقي مراجعين مستقلين وتجعل المالك المعتمد النهائي", async () => {
     const previous = process.env.ROLLOUT_OWNER_ONLY_APPROVAL;
     process.env.ROLLOUT_OWNER_ONLY_APPROVAL = "ON";
     try {
+      await db()
+        .update(s.users)
+        .set({ isOwner: true })
+        .where(eq(s.users.id, checker2.userId));
       const { submitted } = await submittedWave();
       await expect(
+        approveCostWave(submitted.waveId, checker2),
+      ).rejects.toThrow(/الخطوة النهائية/);
+      await expect(
         approveCostWave(submitted.waveId, checker1),
-      ).rejects.toThrow(/المالك/);
+      ).resolves.toMatchObject({ status: "PENDING_APPROVAL", approvalCount: 1 });
+      await expect(
+        approveCostWave(submitted.waveId, checker1),
+      ).rejects.toThrow(/مسبقاً/);
+      await expect(
+        approveCostWave(submitted.waveId, checker2),
+      ).resolves.toMatchObject({ status: "APPLIED", approvalCount: 2 });
     } finally {
       if (previous === undefined)
         delete process.env.ROLLOUT_OWNER_ONLY_APPROVAL;

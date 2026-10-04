@@ -6,6 +6,7 @@ import { appErrorMessage } from "@shared/errors";
 import { actorSuffix } from "@shared/notificationActorLabel";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import {
+  COST_WAVE_MAX_CHANGE_VALUE,
   COST_WAVE_MAX_REASON_LENGTH,
   COST_WAVE_MAX_SELECTED_ITEMS,
   COST_WAVE_MIN_REASON_LENGTH,
@@ -108,7 +109,12 @@ const costWavePreviewSchema = z.object({
     "INCREASE_PERCENT",
     "DECREASE_PERCENT",
   ]),
-  changeValue: z.string().trim().regex(/^\d+(?:\.\d{1,4})?$/).max(30),
+  changeValue: z
+    .string()
+    .trim()
+    .regex(/^\d{1,11}(?:\.\d{1,4})?$/, {
+      message: "القيمة يجب ألا تتجاوز " + COST_WAVE_MAX_CHANGE_VALUE,
+    }),
   filters: costWaveFiltersSchema,
 });
 

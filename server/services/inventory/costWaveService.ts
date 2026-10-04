@@ -34,6 +34,7 @@ import {
 } from "../../../drizzle/schema";
 import { costRevaluationApprovalTrigger } from "../../../shared/approvalTriggers";
 import {
+  COST_WAVE_MAX_CHANGE_VALUE,
   COST_WAVE_MAX_ITEMS,
   COST_WAVE_MAX_PERCENT,
   COST_WAVE_MAX_REASON_LENGTH,
@@ -56,6 +57,7 @@ import {
   type RoleKey,
 } from "../../../shared/permissions";
 import { variantDescriptor } from "../../../shared/variantDisplay";
+import { isRolloutOn } from "../../config/rolloutFlags";
 import { getDb, type Tx } from "../../db";
 import { canCrossBranches } from "../../lib/branchAuthority";
 import { extractInsertId } from "../../lib/insertId";
@@ -243,6 +245,16 @@ function assertScope(filters: CostWaveFilters): void {
 function assertRule(input: PreviewCostWaveInput): Decimal {
   assertScope(input.filters);
   const value = money(input.changeValue);
+  if (value.gt(COST_WAVE_MAX_CHANGE_VALUE)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبول قيمة تغيير التكلفة",
+        why: "القيمة تتجاوز حد التخزين " + COST_WAVE_MAX_CHANGE_VALUE,
+        doThis: "اخفض القيمة ثم أعد المعاينة",
+      }),
+    });
+  }
   if (value.isNegative() || (input.ruleType !== "SET_COST" && !value.gt(0))) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -1245,12 +1257,6 @@ export async function approveCostWave(
       });
     }
     assertChecker({ createdBy: Number(wave.createdBy) }, actor);
-    assertApprover({
-      actor: await resolveApprovalActor(tx, actor),
-      trigger: costRevaluationApprovalTrigger("APPROVE"),
-      subject: `موجة تكلفة رقم ${waveId}`,
-      legacy: () => {},
-    });
     const prior = (
       await tx
         .select({ id: costUpdateWaveApprovals.id })
@@ -1334,6 +1340,33 @@ export async function approveCostWave(
         }),
       });
     }
+    const resolvedActor = await resolveApprovalActor(tx, actor);
+    const isFinalApproval = approvalNumber === COST_WAVE_REQUIRED_APPROVALS;
+    // الاعتماد الأول مراجعة بلا أثر مالي. عند تشغيل سياسة المالك يُحجز المالك
+    // للخطوة النهائية التي تطبق الموجة، فيبقى الفصل بين شخصين قابلاً للتنفيذ
+    // حتى في المنشآت ذات المالك الواحد.
+    if (
+      isRolloutOn("ownerOnlyApproval") &&
+      !isFinalApproval &&
+      resolvedActor.isOwner
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل اعتماد المالك أولاً",
+          why: "اعتماد المالك محجوز للخطوة النهائية التي تطبّق موجة التكلفة",
+          doThis: "ليُسجّل مدير مخوّل المراجعة الأولى، ثم يعتمد المالك التطبيق النهائي",
+        }),
+      });
+    }
+    assertApprover({
+      actor: resolvedActor,
+      trigger: isFinalApproval
+        ? costRevaluationApprovalTrigger("APPROVE")
+        : null,
+      subject: "موجة تكلفة رقم " + waveId,
+      legacy: () => {},
+    });
     await tx.insert(costUpdateWaveApprovals).values({
       waveId,
       approverId: actor.userId,
@@ -1558,6 +1591,7 @@ export async function listCostWaves(
   filter: {
     view?: CostWaveListView;
     status?: CostWaveStatus;
+    branchId?: number | null;
     limit?: number;
     cursor?: number | null;
     search?: string | null;
@@ -1573,6 +1607,9 @@ export async function listCostWaves(
           eq(costUpdateWaves.branchId, actor.branchId),
           eq(costUpdateWaves.isCrossBranch, false),
         );
+      }
+      if (filter.branchId != null) {
+        conditions.push(eq(costUpdateWaves.branchId, filter.branchId));
       }
       if (filter.status)
         conditions.push(eq(costUpdateWaves.status, filter.status));
@@ -1614,6 +1651,7 @@ export async function listCostWaves(
           id: costUpdateWaves.id,
           branchId: costUpdateWaves.branchId,
           name: costUpdateWaves.name,
+          reason: costUpdateWaves.reason,
           purpose: costUpdateWaves.purpose,
           ruleType: costUpdateWaves.ruleType,
           changeValue: costUpdateWaves.changeValue,

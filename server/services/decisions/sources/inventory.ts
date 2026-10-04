@@ -4,6 +4,11 @@
  */
 import { eq } from "drizzle-orm";
 import { costRevaluationApprovalTrigger, stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
+import {
+  COST_WAVE_MIN_REASON_LENGTH,
+  COST_WAVE_PURPOSE_LABELS,
+  COST_WAVE_RULE_LABELS,
+} from "@shared/costWave";
 import { decisionSubkindLabel } from "@shared/decisionRegistry";
 import {
   costRevaluationRequests,
@@ -176,14 +181,11 @@ export const costWaveSource: DecisionSource = {
     const scopedBranch = scopeBranch(actor, scope);
     if (scopedBranch === "NONE") return [];
     const page = await listCostWaves(
-      { view: "AWAITING_MINE", limit: 200 },
+      { view: "AWAITING_MINE", branchId: scopedBranch ?? undefined, limit: 100 },
       serviceActor(actor),
     );
-    const visible = scopedBranch == null
-      ? page.rows
-      : page.rows.filter((row) => Number(row.branchId) === scopedBranch);
-    const names = await branchNames(requireDb(), ids(visible.map((row) => row.branchId)));
-    return visible.map((row) =>
+    const names = await branchNames(requireDb(), ids(page.rows.map((row) => row.branchId)));
+    return page.rows.map((row) =>
       buildRow(
         {
           kind: "inventory.costWave.approve",
@@ -197,12 +199,19 @@ export const costWaveSource: DecisionSource = {
           requestedByName: row.createdByName,
           requestedAt: row.createdAt,
           summaryItems: [
+            { label: "الغرض: " + COST_WAVE_PURPOSE_LABELS[row.purpose] },
+            { label: "القاعدة: " + COST_WAVE_RULE_LABELS[row.ruleType], qty: row.changeValue },
             { label: "الاصناف المتأثرة", qty: row.itemCount },
+            { label: "الأصناف المستبعدة — أسبابها وتفاصيلها في المستند", qty: row.skippedCount },
             { label: "الكمية المتأثرة", qty: row.expectedQuantity, unit: "بالوحدة الاساس" },
             { label: "قيمة المخزون قبل", unitPrice: row.inventoryValueBefore },
             { label: "قيمة المخزون بعد", unitPrice: row.inventoryValueAfter },
             { label: "تقدم الاعتماد", qty: `${row.approvalCount} من ${row.requiredApprovals}` },
           ],
+          reason: row.reason,
+          reasonMinLength: COST_WAVE_MIN_REASON_LENGTH,
+          approveBlockedReason: "اعتماد موجة التكلفة متاح من شاشة التفاصيل فقط بعد مراجعة الأصناف المستبعدة وأسبابها.",
+          openActionLabel: "مراجعة التفاصيل والاعتماد",
           trigger: costRevaluationApprovalTrigger("APPROVE"),
         },
         scope.now,

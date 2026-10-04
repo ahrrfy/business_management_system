@@ -23,6 +23,13 @@ const contract = readFileSync(
   new URL("../../../../shared/costWave.ts", import.meta.url),
   "utf8",
 );
+const decisionSource = readFileSync(
+  new URL(
+    "../../../../server/services/decisions/sources/inventory.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 describe("عقد واجهة موجات التكلفة", () => {
   it("تظهر كوحدة مستقلة بجوار موجات الأسعار مع الأقسام الأربعة", () => {
@@ -57,6 +64,23 @@ describe("عقد واجهة موجات التكلفة", () => {
     expect(page).toContain("فرع المستند");
     expect(page).toContain("branchId");
     expect(page).not.toContain("branches.data?.[0]");
+  });
+
+  it("يستخدم منتقي المخزون نفسه ولا يشترط صلاحية إدارة الكتالوج", () => {
+    expect(page).toContain("trpc.inventory.onHand.useQuery");
+    expect(page).not.toContain("trpc.catalog.adminList.useQuery");
+  });
+
+  it("يمسح سبب الرفض عند تبديل الموجة أو إغلاق النافذة", () => {
+    expect(detail).toContain("}, [waveId]);");
+    expect(detail).toContain("function closeDialog()");
+    expect(detail).toContain('setRejectionReason("")');
+  });
+
+  it("يرشح صندوق القرار في قاعدة البيانات ويفرض فتح التفاصيل قبل الاعتماد", () => {
+    expect(decisionSource).toContain("branchId: scopedBranch ?? undefined");
+    expect(decisionSource).toContain("approveBlockedReason");
+    expect(decisionSource).toContain("COST_WAVE_MIN_REASON_LENGTH");
   });
 
   it("يشرح الاعتمادين والتطبيق الذري قبل الإرسال والاعتماد النهائي", () => {

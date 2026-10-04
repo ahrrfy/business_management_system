@@ -1598,7 +1598,7 @@ export const costUpdateWaves = mysqlTable(
       .references(() => branches.id),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
-    reason: varchar("reason", { length: 500 }).notNull(),
+    reason: varchar("reason", { length: 1000 }).notNull(),
     purpose: mysqlEnum("costWavePurpose", ["CORRECTION", "IMPAIRMENT"]).notNull(),
     ruleType: mysqlEnum("costWaveRuleType", [
       "SET_COST",

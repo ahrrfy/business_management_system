@@ -92,6 +92,8 @@ export const COST_WAVE_SKIP_LABELS: Record<CostWaveSkipReason, string> = {
 export const COST_WAVE_REQUIRED_APPROVALS = 2;
 export const COST_WAVE_MIN_REASON_LENGTH = 10;
 export const COST_WAVE_MAX_REASON_LENGTH = 1_000;
+/** الحد المطابق لـ DECIMAL(15,4): أحد عشر رقماً صحيحاً وأربع منازل عشرية. */
+export const COST_WAVE_MAX_CHANGE_VALUE = "99999999999.9999";
 /** حد تشغيلي محافظ إلى أن يصبح الترحيل الجماعي دفعاتٍ حقيقيةً لا حلقة قيود متسلسلة. */
 export const COST_WAVE_MAX_ITEMS = 250;
 export const COST_WAVE_MAX_SELECTED_ITEMS = COST_WAVE_MAX_ITEMS;

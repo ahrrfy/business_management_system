@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   COST_WAVE_MAX_REASON_LENGTH,
@@ -67,6 +67,15 @@ export function CostWaveDetailDialog({
   );
   const [rejectionReason, setRejectionReason] = useState("");
 
+  useEffect(() => {
+    setRejectionReason("");
+  }, [waveId]);
+
+  function closeDialog() {
+    setRejectionReason("");
+    onClose();
+  }
+
   async function refresh() {
     await Promise.all([
       utils.inventory.costWave.invalidate(),
@@ -130,7 +139,7 @@ export function CostWaveDetailDialog({
   }
 
   return (
-    <Dialog open={waveId != null} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={waveId != null} onOpenChange={(open) => !open && closeDialog()}>
       <DialogContent className="sm:max-w-7xl">
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2">

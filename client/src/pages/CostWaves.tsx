@@ -55,7 +55,7 @@ type Preview = RouterOutputs["inventory"]["previewCostWave"];
 type PreviewRow = Preview["rows"][number];
 type SkippedRow = Preview["skipped"][number];
 type WaveRow = RouterOutputs["inventory"]["costWaves"]["rows"][number];
-type CatalogRow = RouterOutputs["catalog"]["adminList"]["rows"][number];
+type InventoryCandidateRow = RouterOutputs["inventory"]["onHand"][number];
 
 const STATUS_VARIANT: Record<
   CostWaveStatus,
@@ -207,8 +207,8 @@ function CreateCostWave({
       ? Number(me.data.branchId)
       : null;
   const debouncedPicker = useDebouncedValue(pickerSearch, 220);
-  const picker = trpc.catalog.adminList.useQuery(
-    { branchId: branchId ?? 0, q: debouncedPicker.trim(), limit: 30 },
+  const picker = trpc.inventory.onHand.useQuery(
+    { branchId: branchId ?? 0, q: debouncedPicker.trim(), limit: 30, offset: 0 },
     {
       enabled:
         scope === "SELECTED" &&
@@ -270,13 +270,13 @@ function CreateCostWave({
   }, [branchId, scope, filters, variantIds.length]);
 
   const pickerRows = useMemo(() => {
-    const map = new Map<number, CatalogRow>();
-    for (const row of picker.data?.rows ?? [])
+    const map = new Map<number, InventoryCandidateRow>();
+    for (const row of picker.data ?? [])
       map.set(Number(row.variantId), row);
     return Array.from(map.values());
-  }, [picker.data?.rows]);
+  }, [picker.data]);
 
-  function toggleVariant(row: CatalogRow) {
+  function toggleVariant(row: InventoryCandidateRow) {
     const id = Number(row.variantId);
     if (
       !variantIds.includes(id) &&
