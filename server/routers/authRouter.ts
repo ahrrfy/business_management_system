@@ -169,21 +169,31 @@ export const authRouter = router({
 
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) return null;
-    // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر (لا شأن للعميل به حتى مشفَّراً).
+    // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر + pinHash (لا شأن للعميل بها).
     const {
       passwordHash: _passwordHash,
       totpSecretEncrypted: _totpSecret,
+      pinHash: _pinHash,
       ...safe
-    } = ctx.user;
+    } = ctx.user as any;
     // إلزام 2FA (قرار المالك ٢٣/٧ + إنفاذ خادميّ M9 ٣/٨): الأدمن/المدير يجب أن يُفعّلوا 2FA قبل
     // استعمال النظام — تُوجّههم الواجهة إجبارياً لشاشة التفعيل، والخادم يحجب أي إجراء غير التفعيل.
     // نستعمل نفس دالة الإنفاذ الخادميّ (twoFactorEnrollmentRequired) فتتّسق الراية الواجهية مع
     // البوّابة الخادمية تماماً — بما فيه مفتاح الإيقاف TWO_FACTOR_ENFORCEMENT=off (وإلا بقيت الواجهة
     // حاجبةً رغم إيقاف الإنفاذ) وحارس isCryptoReady (لا إلزام بلا مفتاح تشفير).
     const mustEnroll2FA = twoFactorEnrollmentRequired(safe);
+    const hasPin = Boolean((ctx.user as any).pinHash);
     // معرّف الشركة من AsyncLocalStorage الخادميّ، لا من localStorage/حقل دخول قابل للتلاعب.
     // `null` يعني نشر شركة واحدة، ويستعمله العميل لعزل أي حالة تشغيلية في المتصفح.
-    return { ...safe, role: safe.isOwner ? "admin" : safe.role, companyId: getCurrentCompanyId(), mustEnroll2FA, mustEnrollTwoFactor: mustEnroll2FA };
+    return {
+      ...safe,
+      hasPin,
+      badgeBarcode: (ctx.user as any).badgeBarcode ?? null,
+      role: safe.isOwner ? "admin" : safe.role,
+      companyId: getCurrentCompanyId(),
+      mustEnroll2FA,
+      mustEnrollTwoFactor: mustEnroll2FA,
+    };
   }),
 
   /** هل الخادم في وضع تعدّد الشركات؟ تستعملها شاشة الدخول لإظهار/إخفاء حقل "رمز الشركة"

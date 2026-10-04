@@ -9,6 +9,7 @@ import { D, fmt, positiveDiff } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import type { ManagerApprovalInput } from "@shared/managerApproval";
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
@@ -34,7 +35,7 @@ export interface PickupPayment {
 
 export interface PickupDeliveryExtra {
   addToCustomerDebt?: boolean;
-  managerApproval?: { email: string; password: string };
+  managerApproval?: ManagerApprovalInput;
 }
 
 /**
@@ -54,7 +55,7 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
   const [confirmText, setConfirmText] = useState("");
   const [error, setError] = useState("");
   const [showManagerApproval, setShowManagerApproval] = useState(false);
-  const [managerApproval, setManagerApproval] = useState<{ email: string; password: string } | null>(null);
+  const [managerApproval, setManagerApproval] = useState<ManagerApprovalInput | null>(null);
   const [addToCustomerDebt, setAddToCustomerDebt] = useState(false);
 
   useEffect(() => {
@@ -207,8 +208,8 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
             title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
             description={`تسليم الطلب مع بقاء ${fmt(unpaidRemainder.toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
             onCancel={() => setShowManagerApproval(false)}
-            onApprove={(email, password) => {
-              setManagerApproval({ email, password });
+            onApprove={(approval) => {
+              setManagerApproval(approval);
               setAddToCustomerDebt(true);
               setShowManagerApproval(false);
               setError("");

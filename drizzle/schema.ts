@@ -114,6 +114,10 @@ export const users = mysqlTable(
     totpSecretEncrypted: varchar("totpSecretEncrypted", { length: 255 }),
     totpEnabledAt: timestamp("totpEnabledAt"),
     totpLastUsedStep: bigint("totpLastUsedStep", { mode: "number" }),
+    // رمز PIN المخصص للاعتماد السريع في نقاط البيع (مشفّر scrypt)
+    pinHash: varchar("pinHash", { length: 255 }),
+    // رمز باركود شارة الاعتماد للمدير (فريد وقابل للتجديد)
+    badgeBarcode: varchar("badgeBarcode", { length: 64 }).unique(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),

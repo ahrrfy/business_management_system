@@ -57,6 +57,7 @@ import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternal
 } from "../services/posExternalPayment";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
+import { managerApprovalSchema, type ManagerApprovalInput } from "@shared/managerApproval";
 import { lookupInvoiceForCorrection } from "../services/sale/correctionLookup";
 import { phoneSuffix10 } from "../lib/phone";
 
@@ -119,81 +120,312 @@ setInterval(() => {
   });
 }, MGR_APPROVAL_WINDOW_MS).unref?.();
 
-function _trackMgrAttempt(email: string): boolean {
+function _trackMgrAttempt(key: string): boolean {
   const now = Date.now();
-  const key = email.trim().toLowerCase();
-  const arr = (mgrApprovalAttempts.get(key) ?? []).filter((t) => now - t < MGR_APPROVAL_WINDOW_MS,
-  );
+  const normalizedKey = key.trim().toLowerCase();
+  const arr = (mgrApprovalAttempts.get(normalizedKey) ?? []).filter((t) => now - t < MGR_APPROVAL_WINDOW_MS);
   arr.push(now);
-  mgrApprovalAttempts.set(key, arr);
+  mgrApprovalAttempts.set(normalizedKey, arr);
   return arr.length <= MGR_APPROVAL_MAX;
 }
 
-/** يتحقّق من هوية مدير (بريد + كلمة مرور) لاعتماد تجاوز حدّ الائتمان. يعيد معرّف المدير.
- *  مُحصَّن: rate limit بالبريد، توقيت ثابت ≥٣٠٠ms، وكل فشل يُسجَّل في auditLogs.
+export function _clearMgrAttempt(key: string): void {
+  const normalizedKey = key.trim().toLowerCase();
+  mgrApprovalAttempts.delete(normalizedKey);
+}
+
+export function _clearAllMgrAttempts(): void {
+  mgrApprovalAttempts.clear();
+}
+
+/** يتحقّق من هوية مدير (باركود الشارة أو PIN أو بريد + كلمة مرور) لاعتماد العمليات الحساسة. يعيد معرّف المدير.
+ *  مُحصَّن: rate limit لكل معرّف/باركود، توقيت ثابت ≥٣٠٠ms، وكل فشل يُسجَّل في auditLogs.
  *  عزل الفرع: admin يَعبر دائماً؛ manager يَجب أن يكون مدير نفس الفرع المُمرَّر (branchId).
- *  (تدقيق ١٥/٦/٢٦): قبل الإصلاح كان أي manager في أي فرع يعتمد بيع فرع آخر — IDOR إداري. */
+ *  فصل المهام: يمنع الاعتماد الذاتي (SOD-03). */
 export async function verifyManagerApproval(
-  approval: { email: string; password: string },
+  approval: ManagerApprovalInput,
   ctx: { user: { id: number; branchId?: number | null } },
   branchId?: number,
 ): Promise<number> {
   const start = Date.now();
-  const email = approval.email.trim().toLowerCase();
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة",
-    });
-
-  // rate limit (لا يُلَتقَط في الـcatch — يُرمى مباشرة لإفهام المستخدم بحدّ المعدّل).
-  if (!_trackMgrAttempt(email)) {
-    await logAudit(ctx as any, {
-      action: "sale.creditOverride.rateLimited",
-      entityType: "user",
-      outcome: "FAILURE",
-      newValue: { email, attempts: mgrApprovalAttempts.get(email)?.length ?? 0,
-      },
-    });
-    throw new TRPCError({
-      code: "TOO_MANY_REQUESTS",
-      message: "محاولات كثيرة جداً لاعتماد المدير — جرّب بعد دقيقة.",
-    });
+  if (!db) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
   }
 
-  const u = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
-  const ok = u && u.isActive !== false && (await verifyPassword(approval.password, u.passwordHash)) && (u.role === "manager" || u.role === "admin");
+  let attemptKey = "";
+  let targetMgrKey: string | null = null;
+  const actorKey = ctx.user?.id ? `actor:${ctx.user.id}` : "";
+  let method: "BARCODE" | "PIN" | "PASSWORD" = "PASSWORD";
+  let u: (typeof users.$inferSelect) | undefined;
+  let ok = false;
+  let failureReason = "invalid_credentials";
+
+  const appRec = approval as Record<string, string | undefined>;
+  const explicitMethod = appRec.method as "BARCODE" | "PIN" | "PASSWORD" | undefined;
+  const hasBarcode = Boolean(appRec.barcode?.trim());
+  const hasPin = Boolean(appRec.pin?.trim());
+  const hasPassword = Boolean(appRec.password);
+
+  // المسار الأول: مسح باركود الشارة المخصص
+  if (explicitMethod === "BARCODE" || (!explicitMethod && hasBarcode)) {
+    method = "BARCODE";
+    const rawBarcode = (appRec.barcode ?? "").trim();
+    // استخلاص رمز الباركود القياسي في حال وجود بادئات أو لواحق من قارئات الباركود
+    const cleanMatch = rawBarcode.match(/MGR-\d+-\d+/i);
+    const barcode = cleanMatch ? cleanMatch[0].toUpperCase() : rawBarcode;
+
+    if (!barcode) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "رمز الباركود مطلوب",
+          why: "لم يتم تقديم رمز باركود صالح للاعتماد",
+          doThis: "امسح شارة مدير صالحة وأعد المحاولة",
+        }),
+      });
+    }
+
+    attemptKey = `barcode:${barcode.toLowerCase()}`;
+    const mgrMatch = barcode.match(/^MGR-(\d+)-/i);
+    if (mgrMatch) {
+      targetMgrKey = `barcode:mgr:${mgrMatch[1]}`;
+    }
+
+    // فحص حد المعدل عبر جميع النواقل (الرمز المحدد، والمدير المستهدف، والمستخدم الطالب)
+    const keysToTrack = [attemptKey];
+    if (targetMgrKey) keysToTrack.push(targetMgrKey);
+    if (actorKey) keysToTrack.push(actorKey);
+
+    let isRateLimited = false;
+    for (const k of keysToTrack) {
+      if (!_trackMgrAttempt(k)) isRateLimited = true;
+    }
+
+    if (isRateLimited) {
+      await logAudit(ctx as any, {
+        action: "sale.creditOverride.rateLimited",
+        entityType: "user",
+        outcome: "FAILURE",
+        newValue: { method, barcode, attempts: mgrApprovalAttempts.get(attemptKey)?.length ?? 0 },
+      });
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: appErrorMessage({
+          what: "محاولات كثيرة جداً لاعتماد المدير",
+          why: "تجاوزت الحد المسموح للمحاولات المتتالية",
+          doThis: "انتظر دقيقة كاملة قبل إعادة المحاولة",
+        }),
+      });
+    }
+
+    u = (await db.select().from(users).where(eq(users.badgeBarcode, barcode)).limit(1))[0];
+    ok = Boolean(u && u.isActive !== false && (u.role === "manager" || u.role === "admin"));
+    if (!u) {
+      failureReason = "invalid_or_expired_barcode";
+    } else if (u.isActive === false) {
+      failureReason = "inactive";
+    } else if (u.role !== "manager" && u.role !== "admin") {
+      failureReason = "not_manager";
+    }
+  }
+  // المسار الثاني: اسم المستخدم / البريد + رمز PIN المخصص
+  else if (explicitMethod === "PIN" || (!explicitMethod && hasPin)) {
+    method = "PIN";
+    const ident = (appRec.identifier || appRec.username || appRec.email || "").trim();
+    const pinVal = (appRec.pin ?? "").trim();
+
+    if (!ident || !pinVal) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "بيانات اعتماد PIN غير مكتملة",
+          why: "يلزم إدخال اسم المستخدم أو البريد ورمز PIN المخصص",
+          doThis: "أدخل اسم المستخدم ورمز PIN المخصص وأعد المحاولة",
+        }),
+      });
+    }
+
+    attemptKey = `pin:${ident.toLowerCase()}`;
+
+    const keysToTrack = [attemptKey];
+    if (actorKey) keysToTrack.push(actorKey);
+
+    let isRateLimited = false;
+    for (const k of keysToTrack) {
+      if (!_trackMgrAttempt(k)) isRateLimited = true;
+    }
+
+    if (isRateLimited) {
+      await logAudit(ctx as any, {
+        action: "sale.creditOverride.rateLimited",
+        entityType: "user",
+        outcome: "FAILURE",
+        newValue: { method, identifier: ident, attempts: mgrApprovalAttempts.get(attemptKey)?.length ?? 0 },
+      });
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: appErrorMessage({
+          what: "محاولات كثيرة جداً لاعتماد المدير",
+          why: "تجاوزت الحد المسموح للمحاولات المتتالية",
+          doThis: "انتظر دقيقة كاملة قبل إعادة المحاولة",
+        }),
+      });
+    }
+
+    if (ident) {
+      u = (
+        await db
+          .select()
+          .from(users)
+          .where(or(eq(users.email, ident.toLowerCase()), eq(users.username, ident)))
+          .limit(1)
+      )[0];
+    }
+
+    const pinMatch = u?.pinHash ? await verifyPassword(pinVal, u.pinHash) : false;
+    ok = Boolean(u && u.isActive !== false && pinMatch && (u.role === "manager" || u.role === "admin"));
+    if (!u) {
+      failureReason = "no_user";
+    } else if (u.isActive === false) {
+      failureReason = "inactive";
+    } else if (u.role !== "manager" && u.role !== "admin") {
+      failureReason = "not_manager";
+    } else if (!u.pinHash) {
+      failureReason = "no_pin_configured";
+    } else if (!pinMatch) {
+      failureReason = "wrong_pin";
+    }
+  }
+  // المسار الثالث: البريد وكلمة المرور الكلاسيكي (التوافق الكامل)
+  else if (explicitMethod === "PASSWORD" || (!explicitMethod && hasPassword)) {
+    method = "PASSWORD";
+    const email = (appRec.email ?? "").trim().toLowerCase();
+    const pwd = appRec.password ?? "";
+
+    if (!email || !pwd) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "بيانات اعتماد كلمة المرور غير مكتملة",
+          why: "يلزم إدخال البريد الإلكتروني وكلمة المرور",
+          doThis: "أدخل البريد الإلكتروني وكلمة المرور وأعد المحاولة",
+        }),
+      });
+    }
+
+    attemptKey = email;
+
+    const keysToTrack = [attemptKey];
+    if (actorKey) keysToTrack.push(actorKey);
+
+    let isRateLimited = false;
+    for (const k of keysToTrack) {
+      if (!_trackMgrAttempt(k)) isRateLimited = true;
+    }
+
+    if (isRateLimited) {
+      await logAudit(ctx as any, {
+        action: "sale.creditOverride.rateLimited",
+        entityType: "user",
+        outcome: "FAILURE",
+        newValue: { method, email, attempts: mgrApprovalAttempts.get(attemptKey)?.length ?? 0 },
+      });
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: appErrorMessage({
+          what: "محاولات كثيرة جداً لاعتماد المدير",
+          why: "تجاوزت الحد المسموح للمحاولات المتتالية",
+          doThis: "انتظر دقيقة كاملة قبل إعادة المحاولة",
+        }),
+      });
+    }
+
+    u = (
+      await db
+        .select()
+        .from(users)
+        .where(or(eq(users.email, email), eq(users.username, email)))
+        .limit(1)
+    )[0];
+
+    const pwdMatch = u ? await verifyPassword(pwd, u.passwordHash) : false;
+    ok = Boolean(u && u.isActive !== false && pwdMatch && (u.role === "manager" || u.role === "admin"));
+    if (!u) {
+      failureReason = "no_user";
+    } else if (u.isActive === false) {
+      failureReason = "inactive";
+    } else if (!pwdMatch || (u.role !== "manager" && u.role !== "admin")) {
+      failureReason = "wrong_password_or_role";
+    }
+  } else {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "بيانات اعتماد المدير غير مكتملة",
+        why: "يلزم مسح باركود الشارة أو إدخال الـ PIN أو كلمة المرور",
+        doThis: "امسح شارة مدير أو أدخل بيانات اعتماده",
+      }),
+    });
+  }
 
   // ثبّت الحدّ الأدنى للوقت قبل الإرجاع (يَمنع timing attack).
   const elapsed = Date.now() - start;
   if (elapsed < MGR_APPROVAL_MIN_RESPONSE_MS) {
-    await new Promise((r) => setTimeout(r, MGR_APPROVAL_MIN_RESPONSE_MS - elapsed),
-    );
+    await new Promise((r) => setTimeout(r, MGR_APPROVAL_MIN_RESPONSE_MS - elapsed));
   }
 
-  if (!ok) {
+  if (!ok || !u) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.fail",
       entityType: "user",
       entityId: u?.id ?? null,
       outcome: "FAILURE",
-      newValue: { email, reason: !u ? "no_user" : u.isActive === false ? "inactive" : "wrong_password_or_role",
+      newValue: {
+        method,
+        identifier: attemptKey,
+        reason: failureReason,
       },
     });
-    throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير).",
+
+    let msg = "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير).";
+    if (method === "BARCODE") {
+      msg = "رمز باركود المدير غير صالح (تأكّد من مسح شارة مدير صالحة لهذا الفرع ومفعّلة).";
+    } else if (method === "PIN") {
+      msg =
+        failureReason === "no_pin_configured"
+          ? "لم يتم تعيين رمز PIN لهذا المدير بعد — يرجى استخدام كلمة المرور أو تعيين PIN من ملف المستخدم."
+          : "رمز PIN للمدير غير صحيح (تأكّد من اسم المستخدم والرمز المخصص).";
+    }
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "موافقة المدير غير مقبولة",
+        why: msg,
+        doThis: "تأكد من شارة أو بيانات مدير معتمد للفرع وأعد المحاولة",
+      }),
     });
   }
+
   // SOD-03 (فصل المهام): لا يجوز للمستخدم اعتماد عمليته بنفسه (كاشير بدور مدير يُدخل بيانات نفسه).
-  // كان غياب الفحص يُتيح للمدير-الكاشير تجاوز حدّ الائتمان على بيعه ذاتياً بلا حسيب.
   if (Number(u.id) === Number(ctx.user.id) && u.isOwner !== true) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.fail",
       entityType: "user",
       entityId: u.id,
       outcome: "FAILURE",
-      newValue: { email, reason: "self_approval" },
+      newValue: { method, identifier: attemptKey, reason: "self_approval" },
     });
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد عمليتك بنفسك — يلزم مدير آخر (فصل المهام).",
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "لا يجوز اعتماد عمليتك بنفسك",
+        why: "سياسة فصل المهام (SOD-03) تمنع الاعتماد الذاتي للعمليات المالية",
+        doThis: "اطلب من مدير آخر اعتماد هذه العملية",
+      }),
     });
   }
+
   // عزل الفرع: admin يَعبر؛ manager يَجب أن يَخدم فرع الفاتورة نفسه.
   if (u.role === "manager" && branchId != null && Number(u.branchId) !== branchId) {
     await logAudit(ctx as any, {
@@ -201,24 +433,59 @@ export async function verifyManagerApproval(
       entityType: "user",
       entityId: u.id,
       outcome: "FAILURE",
-      newValue: { email, reason: "cross_branch", approverBranchId: u.branchId, saleBranchId: branchId,
+      newValue: {
+        method,
+        identifier: attemptKey,
+        reason: "cross_branch",
+        approverBranchId: u.branchId,
+        saleBranchId: branchId,
       },
     });
-    throw new TRPCError({ code: "FORBIDDEN", message: "المعتمد ليس مدير هذا الفرع",
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "المعتمد ليس مدير هذا الفرع",
+        why: "حساب المدير مرتبط بفرع آخر ولا يملك صلاحية الاعتماد في هذا الفرع",
+        doThis: "اطلب الاعتماد من مدير هذا الفرع أو من مسؤول عام",
+      }),
     });
   }
+
   // M (تَدقيق ٢٣/٦/٢٦): admin عابر-الفرع يَجتاز بلا تَوثيق صريح ⇒ نَسجّل سطر تَدقيق مُكثَّف
-  // عند المرور. لا يَمنع المرور (admin له سلطة عليا بالتَصميم)، لكن يَترك أَثَراً forensic
-  // كَشّافاً لإساءة استعمال admin مُخترَق (نافذة تَحقيقات لاحقة كاشفة).
   if (u.role === "admin" && branchId != null && u.branchId != null && Number(u.branchId) !== branchId) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.adminCrossBranch",
       entityType: "user",
       entityId: u.id,
-      newValue: { email, approverBranchId: u.branchId, saleBranchId: branchId, saleActorId: ctx.user.id,
+      newValue: {
+        method,
+        identifier: attemptKey,
+        approverBranchId: u.branchId,
+        saleBranchId: branchId,
+        saleActorId: ctx.user.id,
       },
     });
   }
+
+  // توثيق نجاح الاعتماد في سجل التدقيق
+  await logAudit(ctx as any, {
+    action: "sale.creditOverride.success",
+    entityType: "user",
+    entityId: u.id,
+    outcome: "SUCCESS",
+    newValue: {
+      method,
+      approverId: u.id,
+      approverName: u.name,
+      approverRole: u.role,
+      branchId: branchId ?? u.branchId,
+    },
+  });
+
+  _clearMgrAttempt(attemptKey);
+  if (targetMgrKey) _clearMgrAttempt(targetMgrKey);
+  if (actorKey) _clearMgrAttempt(actorKey);
+
   return Number(u.id);
 }
 
@@ -566,6 +833,29 @@ export const saleRouter = router({
       );
     }),
 
+  /** التحقق من اعتماد المدير (مسح باركود شارة أو PIN أو بريد وكلمة مرور) */
+  verifyManager: salesCashierProcedure
+    .input(
+      z.object({
+        approval: managerApprovalSchema,
+        branchId: z.number().int().positive().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const effectiveBranchId = input.branchId ?? (ctx.user.branchId ? Number(ctx.user.branchId) : undefined);
+      const managerId = await verifyManagerApproval(input.approval, ctx, effectiveBranchId);
+      const db = getDb();
+      const mgr = db
+        ? (await db.select({ id: users.id, name: users.name, role: users.role }).from(users).where(eq(users.id, managerId)).limit(1))[0]
+        : null;
+      return {
+        success: true,
+        managerId,
+        name: mgr?.name ?? "المدير",
+        role: mgr?.role ?? "manager",
+      };
+    }),
+
   create: salesCashierProcedure
     .input(
       z.object({
@@ -615,8 +905,8 @@ export const saleRouter = router({
         deviceId: z.string().trim().min(1).max(64).optional(),
         couponCode: z.string().trim().min(3).max(64).optional(),
         notes: z.string().optional(),
-        // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        // موافقة مدير لتجاوز حدّ الائتمان (شارة باركود / PIN / بريد وكلمة مرور).
+        managerApproval: managerApprovalSchema.optional(),
       }).superRefine((input, ctx) => {
         // الإثبات = محاولة دفع خارجية مؤكَّدة خادمياً، لا نصٌّ يكتبه الكاشير. (الإقفال الشامل
         // للطرق غير النقدية أُلغي في ١٦/٨/٢٦ — كان يعطّل بيع البطاقة كلّياً بلا مقابل نزاهةٍ إضافيّ.)
@@ -953,7 +1243,7 @@ export const saleRouter = router({
         reason: z.string().trim().min(3, "اكتب سبب التصحيح").max(500),
         clientRequestId: z.string().min(1).max(80).optional(),
         // موافقة مدير لتجاوز حدّ الائتمان أو البيع تحت التكلفة في السطور المصحّحة.
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        managerApproval: managerApprovalSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

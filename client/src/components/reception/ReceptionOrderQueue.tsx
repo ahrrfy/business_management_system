@@ -362,10 +362,10 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
           title="اعتماد مدير — ردّ أمانة أجرة التوصيل"
           description="ردّ أمانة الأجرة النقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض يحتاج مديراً (تُفحص بياناته على الخادم وتُسجَّل باسمه)."
           onCancel={() => setReclassifyMgrAsk(null)}
-          onApprove={(email, password) => {
+          onApprove={(approval) => {
             const vars = reclassifyMgrAsk;
             setReclassifyMgrAsk(null);
-            setDeliveryMethod.mutate({ ...vars, managerApproval: { email, password } });
+            setDeliveryMethod.mutate({ ...vars, managerApproval: approval });
           }}
         />
       )}

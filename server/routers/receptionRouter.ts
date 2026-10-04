@@ -25,6 +25,7 @@ import {
   syncDraft,
 } from "../services/reception";
 import { verifyManagerApproval } from "./saleRouter";
+import { managerApprovalSchema } from "@shared/managerApproval";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { retryOnDup } from "../lib/retryDup";
 import { router, workordersCashierProcedure, workordersExecProcedure,
@@ -258,7 +259,7 @@ export const receptionRouter = router({
         clientRequestId: z.string().min(8).max(80),
         // قرار المالك (ب، ٨/٨): ردّ العربون النقديّ عبر ورديةٍ أخرى/بعد الإغلاق يلزمه اعتماد
         // مدير. الكاشير يُمرّر بيانات مديرٍ آخر فتُتحقَّق خادمياً بنفس مسار تجاوز الخصم/الائتمان.
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        managerApproval: managerApprovalSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -433,7 +434,7 @@ export const receptionRouter = router({
       couponCode: z.string().nullish(),
       // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
       openingSellUnavailableConfirmed: z.boolean().optional(),
-      managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      managerApproval: managerApprovalSchema.optional(),
     }),
     )
     .mutation(async ({ input, ctx }) => {

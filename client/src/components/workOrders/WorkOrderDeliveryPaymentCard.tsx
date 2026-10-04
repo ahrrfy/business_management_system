@@ -9,6 +9,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import type { ManagerApprovalInput } from "@shared/managerApproval";
 
 export const WO_PAYMENT_METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
@@ -29,7 +30,7 @@ interface WorkOrderDeliveryPaymentCardProps {
   setPayMethod: (val: WoPaymentMethod) => void;
   payReference: string;
   setPayReference: (val: string) => void;
-  deliveryMgrApproval: { email: string; password: string } | null;
+  deliveryMgrApproval: ManagerApprovalInput | null;
   onClearMgrApproval: () => void;
   onRequestMgrApproval: () => void;
 }

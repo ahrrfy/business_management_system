@@ -38,6 +38,7 @@ import { CartPanel } from "@/components/pos/CartPanel";
 import { PaymentPanel } from "@/components/pos/PaymentPanel";
 import { POSOverlays } from "@/components/pos/POSOverlays";
 import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
+import type { ManagerApprovalInput } from "@shared/managerApproval";
 import { POSFundingBanner } from "@/components/pos/POSFundingBanner";
 import { POSShiftOpenScreen } from "@/components/pos/POSShiftOpenScreen";
 import { usePOSTabsDraft } from "@/components/pos/usePOSTabsDraft";
@@ -974,7 +975,7 @@ export default function POS() {
     }
   }
 
-  async function submitSale(approval?: { email: string; password: string }) {
+  async function submitSale(approval?: ManagerApprovalInput) {
     setSaleError(null);
     if (!shift || !cart.length) return;
     if (activeTab.method !== "CASH" && !externalPaymentConfirmed) {
@@ -1417,7 +1418,7 @@ export default function POS() {
         mgrPwd={mgrPwd}
         setMgrPwd={setMgrPwd}
         isSalePending={sale.isPending}
-        onApproveCredit={() => submitSale({ email: mgrEmail, password: mgrPwd })}
+        onApproveCredit={(appr) => submitSale(appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))}
         onCancelCredit={() => setCreditPrompt(null)}
       />
     </div>

@@ -209,10 +209,10 @@ export default function DraftPaymentsDialog({
           title="اعتماد مدير — ردّ عربون نقديّ"
           description="ردّ العربون النقديّ عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض يحتاج مديراً (تُفحص بياناته على الخادم وتُسجَّل باسمه)."
           onCancel={() => setMgrAsk(null)}
-          onApprove={(email, password) => {
+          onApprove={(approval) => {
             const vars = mgrAsk;
             setMgrAsk(null);
-            refundM.mutate({ ...vars, managerApproval: { email, password } });
+            refundM.mutate({ ...vars, managerApproval: approval });
           }}
         />
       )}

@@ -15,6 +15,7 @@ import {
 } from "../../trpc";
 import { actorOf, requireDb, scopedBranchOf } from "./shared";
 import { verifyManagerApproval } from "../saleRouter";
+import { managerApprovalSchema } from "@shared/managerApproval";
 
 const studentSnapshotSchema = z.object({
   studentName: z.string().min(1).max(200),
@@ -43,10 +44,7 @@ export const salesRouter = router({
         notes: z.string().max(5000).nullish(),
         sourceType: z.enum(["POS", "INVOICE", "RECEPTION"]).default("POS"),
         sourcePayload: z.unknown().optional(),
-        managerApproval: z
-          .object({ email: z.string().min(1), password: z.string().min(1) })
-          .strict()
-          .optional(),
+        managerApproval: managerApprovalSchema.optional(),
         regularLines: z.array(z.object({
           lineKey: z.string().min(1).max(64),
           variantId: z.number().int().positive(),

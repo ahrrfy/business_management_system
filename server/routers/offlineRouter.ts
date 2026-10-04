@@ -34,6 +34,7 @@ import {
   postRecoveryItem,
 } from "../services/offline/recovery";
 import { verifyManagerApproval } from "./saleRouter";
+import { managerApprovalSchema } from "@shared/managerApproval";
 import {
   customersReadProcedure,
   posCashierProcedure,
@@ -209,9 +210,8 @@ export const offlineRouter = router({
         capturedAt: z.string().min(10).max(40),
         offlineReceiptNumber: z.string().min(4).max(40),
         deviceId: z.string().max(40).optional(),
-        // ش٤: اعتماد مدير لترحيل عنصرٍ معلَّق تحت التكلفة (بريد + كلمة مرور، تُتحقَّق خادمياً
-        // بنفس مسار saleRouter المحصَّن: rate-limit + توقيت ثابت + SOD + تدقيق).
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        // ش٤: اعتماد مدير لترحيل عنصرٍ معلَّق تحت التكلفة (شارة باركود / PIN / بريد وكلمة مرور).
+        managerApproval: managerApprovalSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -324,7 +324,7 @@ export const offlineRouter = router({
         capturedAt: z.string().min(10).max(40),
         offlineReceiptNumber: z.string().min(4).max(40),
         deviceId: z.string().max(40).optional(),
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        managerApproval: managerApprovalSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -411,7 +411,7 @@ export const offlineRouter = router({
         capturedAt: z.string().min(10).max(40),
         offlineReceiptNumber: z.string().min(4).max(40),
         deviceId: z.string().max(40).optional(),
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        managerApproval: managerApprovalSchema.optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

@@ -548,6 +548,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   // ── المستخدمون والموظفون ──
   users_email_unique: { field: "البريد الإلكتروني", entity: "المستخدمون", hint: "مستخدم آخر مسجّل بنفس البريد — استعمل بريداً مختلفاً أو عدّل حساب المستخدم الموجود." },
   users_username_unique: { field: "اسم المستخدم", entity: "المستخدمون", hint: "اسم الدخول محجوز لمستخدم آخر — اختر اسماً مختلفاً." },
+  users_badgeBarcode_unique: { field: "باركود شارة المدير", entity: "المستخدمون", hint: "رمز الشارة هذا مسجل لمدير آخر بالفعل — قم بتوليد رمز باركود جديد." },
   users_openId_unique: { msg: "معرّف مستخدم داخلي مكرّر (خطأ داخلي) — أعد المحاولة، وإن تكرّر أبلغ الدعم." },
   roles_key_unique: { field: "رمز الدور", entity: "الأدوار المخصّصة" },
   employees_email_unique: { field: "البريد الإلكتروني", entity: "الموظفون" },

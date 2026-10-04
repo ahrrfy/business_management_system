@@ -12,6 +12,7 @@ import { cancelSale } from "../services/sale/cancel";
 import { correctSale } from "../services/sale/correct";
 import { money, round2 } from "../services/money";
 import { verifyManagerApproval } from "./saleRouter";
+import { managerApprovalSchema } from "@shared/managerApproval";
 import { posCashierProcedure, router } from "../trpc";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
@@ -95,8 +96,8 @@ export const printPosRouter = router({
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),
         notes: z.string().optional(),
-        // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        // موافقة مدير لتجاوز حدّ الائتمان (شارة باركود / PIN / بريد وكلمة مرور).
+        managerApproval: managerApprovalSchema.optional(),
       }).superRefine((input, ctx) => {
         // الإثبات = محاولة دفع خارجية مؤكَّدة خادمياً، لا نصٌّ يكتبه الكاشير. (الإقفال الشامل
         // للطرق غير النقدية أُلغي في ١٦/٨/٢٦ — كان يعطّل بيع البطاقة كلّياً بلا مقابل نزاهةٍ إضافيّ.)

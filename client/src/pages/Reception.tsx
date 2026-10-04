@@ -88,7 +88,7 @@ import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
 import { triggerReceptionShippingLabel } from "@/components/reception/receptionShippingLabel";
 import type { DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { buildReceptionDepartureData } from "@/components/reception/receptionDepartureHelper";
-import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import { ReceptionShiftCloseDialog } from "@/components/reception/ReceptionShiftCloseDialog";
 import DepositDialog from "@/components/reception/DepositDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -271,7 +271,7 @@ export default function Reception() {
   const [discountFor, setDiscountFor] = useState<string | null>(null);
   const [approvalAsk, setApprovalAsk] = useState<{ lineKey: string; pct: number } | null>(null);
   /** اعتماد المدير للخصم >١٠٪ — يُحمل حتى الإرسال (يتحقّق خادمياً عند الالتزام). */
-  const mgrCredsRef = useRef<{ email: string; password: string } | null>(null);
+  const mgrCredsRef = useRef<ManagerApprovalInput | null>(null);
   // ش٢ (§٨.٢): المسوّدة المُرقّاة — السلّة محليّةٌ بالافتراض، وتترقّى بحفظٍ صريح؛ بعدها تُزامَن
   // بالجملة بdebounce ~٨٠٠مث وversion تفاؤليّ (تعارضُ زميلٍ ⇒ إعادة تحميلٍ لا طمس).
   const [activeDraft, setActiveDraft] = useState<{ id: number; version: number } | null>(null);
@@ -2760,7 +2760,7 @@ export default function Reception() {
       {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onReprintLabel={() => triggerReceptionShippingLabel(lastSale, deliveryDeparture, customer.phone)} onClose={() => setShowReceiptOverlay(false)} />}
 
       {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
-      {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(email, password) => { mgrCredsRef.current = { email, password }; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
+      {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(appr) => { mgrCredsRef.current = appr; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
 
       <DigitalCardsPickerDialog
         open={cardsOpen}
