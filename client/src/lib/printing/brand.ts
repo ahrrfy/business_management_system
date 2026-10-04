@@ -141,8 +141,12 @@ export function openPrintWindow(
         if (printBtn && !(printBtn as any).__bound) {
           (printBtn as any).__bound = true;
           printBtn.addEventListener("click", () => {
-            w.focus();
-            w.print();
+            if (typeof (w as any).printDoc === "function") {
+              (w as any).printDoc();
+            } else {
+              w.focus();
+              w.print();
+            }
           });
         }
         const saveBtn = doc.getElementById("doc-btn-save-pdf");
@@ -160,15 +164,22 @@ export function openPrintWindow(
         if (closeBtn && !(closeBtn as any).__bound) {
           (closeBtn as any).__bound = true;
           closeBtn.addEventListener("click", () => {
-            try {
-              w.close();
-            } catch {}
+            if (typeof (w as any).closeDocPreview === "function") {
+              (w as any).closeDocPreview();
+            } else {
+              try {
+                w.close();
+              } catch {}
+            }
           });
         }
       } catch {}
     };
     bindToolbar();
-    w.setTimeout(bindToolbar, 40);
+    // تكرار المحاولة لضمان الربط حتى لو استغرق بناء الـ DOM وقتاً في المتصفح
+    [50, 150, 300, 600, 1200].forEach((ms) => {
+      window.setTimeout(bindToolbar, ms);
+    });
   } catch {}
 
   return true;

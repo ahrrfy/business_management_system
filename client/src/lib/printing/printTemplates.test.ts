@@ -516,4 +516,74 @@ describe("BarcodeDisplay — توليد SVG مع رابط scannable عبر resol
   });
 });
 
+describe("printInvoiceA4 — رصيد العميل السابق والنهائي", () => {
+  beforeEach(() => {
+    vi.mocked(openPrintWindow).mockClear();
+  });
+
+  it("يُظهر الرصيد السابق والرصيد النهائي (الحساب الكلي) عند تمرير customerBalance", async () => {
+    await printInvoiceA4({
+      invoiceNumber: "INV-2026-BAL",
+      invoiceDate: "2026-10-04",
+      customerName: "عميل ذو حساب آجل",
+      customerBalance: "150000",
+      subtotal: "100000",
+      total: "100000",
+      paidAmount: "40000",
+      items: [
+        {
+          productName: "بضاعة آجلة",
+          quantity: 1,
+          unitPrice: 100000,
+          total: 100000,
+        },
+      ],
+    });
+
+    expect(openPrintWindow).toHaveBeenCalledOnce();
+    const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(html).toContain("الرصيد السابق");
+    expect(html).toContain("90,000 د.ع");
+    expect(html).toContain("الرصيد النهائي (الحساب الكلي)");
+    expect(html).toContain("150,000 د.ع");
+    expect(html).toContain("المتبقي");
+    expect(html).toContain("60,000 د.ع");
+  });
+
+  it("يُظهر الرصيد كـ خالص عندما يكون الرصيد النهائي صفراً", async () => {
+    await printInvoiceA4({
+      invoiceNumber: "INV-2026-BAL-ZERO",
+      invoiceDate: "2026-10-04",
+      customerName: "عميل سدد كامل حسابه",
+      customerBalance: 0,
+      subtotal: "50000",
+      total: "50000",
+      paidAmount: "50000",
+      items: [],
+    });
+
+    expect(openPrintWindow).toHaveBeenCalledOnce();
+    const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(html).toContain("الرصيد النهائي (الحساب الكلي)");
+    expect(html).toContain("خالص");
+  });
+
+  it("لا يعرض قسم الرصيد للعميل النقدي العام (customerBalance: null)", async () => {
+    await printInvoiceA4({
+      invoiceNumber: "INV-2026-CASH",
+      invoiceDate: "2026-10-04",
+      customerName: "عميل نقدي",
+      customerBalance: null,
+      subtotal: "25000",
+      total: "25000",
+      paidAmount: "25000",
+      items: [],
+    });
+
+    expect(openPrintWindow).toHaveBeenCalledOnce();
+    const html = vi.mocked(openPrintWindow).mock.calls[0]?.[0] ?? "";
+    expect(html).not.toContain("الرصيد النهائي");
+  });
+});
+
 
