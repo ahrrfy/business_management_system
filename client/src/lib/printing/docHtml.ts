@@ -142,7 +142,12 @@ ${CAIRO_FONT}
 <script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
 <body>
-<div class="doc-toolbar" dir="rtl">
+<div class="doc-toolbar" dir="rtl"
+  data-title="${esc(title)}"
+  data-page-width="${pageWidth}"
+  data-page-height="${pageHeight}"
+  data-landscape="${landscape ? "true" : "false"}"
+  data-auto-print="${options.autoPrint !== false ? "true" : "false"}">
   <div class="doc-toolbar-info">
     <span class="doc-toolbar-title">${esc(title)}</span>
     <span class="doc-toolbar-badge">معاينة المستند الرسمي A4</span>
@@ -165,159 +170,7 @@ ${CAIRO_FONT}
   <div class="page-inset"></div>
   ${bodyContent}
 </div>
-<script>
-  function printDoc() {
-    window.focus();
-    window.print();
-  }
-
-  function closeDocPreview() {
-    try {
-      if (window.opener && !window.opener.closed) {
-        var targetOrigin = window.location.origin || '*';
-        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, targetOrigin);
-      }
-    } catch (e) {}
-    try {
-      window.close();
-    } catch (e) {}
-    try {
-      window.open('', '_self');
-      window.close();
-    } catch (e) {}
-    setTimeout(function () {
-      if (!window.closed) {
-        var btn = document.getElementById('doc-btn-close');
-        if (btn) {
-          btn.innerHTML = '<span>إغلاق التبويبة (Ctrl+W)</span>';
-          btn.style.background = '#DC2626';
-          btn.style.color = '#fff';
-        }
-      }
-    }, 250);
-  }
-
-  async function saveDocAsPdf() {
-    var rawTitle = ${JSON.stringify(title)} || 'document';
-    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
-    var filename = safeTitle + '.pdf';
-
-    var fileHandle = null;
-    if (typeof window.showSaveFilePicker === 'function') {
-      try {
-        fileHandle = await window.showSaveFilePicker({
-          suggestedName: filename,
-          types: [{
-            description: 'ملف PDF (*.pdf)',
-            accept: { 'application/pdf': ['.pdf'] }
-          }]
-        });
-      } catch (err) {
-        if (err && err.name === 'AbortError') {
-          return;
-        }
-        fileHandle = null;
-      }
-    }
-
-    var saveBtn = document.getElementById('doc-btn-save-pdf');
-    var origHtml = saveBtn ? saveBtn.innerHTML : '';
-    if (saveBtn) {
-      saveBtn.disabled = true;
-      saveBtn.style.opacity = '0.75';
-      saveBtn.style.cursor = 'wait';
-      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ حفظ ملف PDF…</span>';
-    }
-
-    function resetBtn() {
-      document.body.classList.remove('doc-exporting-pdf');
-      if (saveBtn) {
-        saveBtn.disabled = false;
-        saveBtn.style.opacity = '1';
-        saveBtn.style.cursor = 'pointer';
-        saveBtn.innerHTML = origHtml;
-      }
-    }
-
-    document.body.classList.add('doc-exporting-pdf');
-    var target = document.querySelector('.page') || document.body;
-
-    var opt = {
-      margin: 0,
-      filename: filename,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        letterRendering: true,
-        windowWidth: ${pageWidth},
-        scrollY: 0,
-        scrollX: 0
-      },
-      jsPDF: {
-        unit: 'px',
-        format: [${pageWidth}, ${pageHeight}],
-        hotfixes: ['px_scaling'],
-        orientation: '${landscape ? "landscape" : "portrait"}'
-      }
-    };
-
-    try {
-      if (typeof window.html2pdf === 'function') {
-        var worker = window.html2pdf().set(opt).from(target);
-        if (fileHandle) {
-          var pdfBlob = await worker.outputPdf('blob');
-          var writable = await fileHandle.createWritable();
-          await writable.write(pdfBlob);
-          await writable.close();
-          resetBtn();
-        } else {
-          await worker.save();
-          resetBtn();
-        }
-      } else {
-        resetBtn();
-        window.print();
-      }
-    } catch (err) {
-      console.error('[PDF Export] failed:', err);
-      resetBtn();
-      window.print();
-    }
-  }
-
-  var printBtn = document.getElementById('doc-btn-print');
-  if (printBtn) printBtn.addEventListener('click', printDoc);
-
-  var saveBtn = document.getElementById('doc-btn-save-pdf');
-  if (saveBtn) saveBtn.addEventListener('click', saveDocAsPdf);
-
-  var closeBtn = document.getElementById('doc-btn-close');
-  if (closeBtn) closeBtn.addEventListener('click', closeDocPreview);
-
-  (function () {
-    var images = Array.from(document.images).map(function (image) {
-      return image.complete
-        ? Promise.resolve()
-        : new Promise(function (resolve) {
-            image.addEventListener('load', resolve, { once: true });
-            image.addEventListener('error', resolve, { once: true });
-          });
-    });
-    var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
-    Promise.all([fonts].concat(images)).then(function () {
-      ${
-        options.autoPrint !== false
-          ? `window.setTimeout(function () {
-        window.focus();
-        window.print();
-      }, 120);`
-          : ""
-      }
-    });
-  })();
-</script>
+<script src="${FONT_ORIGIN}/vendor/doc-toolbar.js"></script>
 </body></html>`;
 }
 
@@ -460,7 +313,13 @@ ${CAIRO_FONT}
 <script src="${FONT_ORIGIN}/vendor/html2pdf.bundle.min.js"></script>
 </head>
 <body>
-<div class="doc-toolbar" dir="rtl">
+<div class="doc-toolbar" dir="rtl"
+  data-title="${esc(title)}"
+  data-page-width="${pageWidth}"
+  data-page-height="${pageHeight}"
+  data-landscape="${landscape ? "true" : "false"}"
+  data-auto-print="${options.autoPrint !== false ? "true" : "false"}"
+  data-multi="true">
   <div class="doc-toolbar-info">
     <span class="doc-toolbar-title">${esc(title)}</span>
     <span class="doc-toolbar-badge">${esc(badge)}</span>
@@ -482,160 +341,7 @@ ${CAIRO_FONT}
 <div id="doc-pages-container">
 ${pagesHtml}
 </div>
-<script>
-  function printDoc() {
-    window.focus();
-    window.print();
-  }
-
-  function closeDocPreview() {
-    try {
-      if (window.opener && !window.opener.closed) {
-        var targetOrigin = window.location.origin || '*';
-        window.opener.postMessage({ type: 'CLOSE_PRINT_WINDOW' }, targetOrigin);
-      }
-    } catch (e) {}
-    try {
-      window.close();
-    } catch (e) {}
-    try {
-      window.open('', '_self');
-      window.close();
-    } catch (e) {}
-    setTimeout(function () {
-      if (!window.closed) {
-        var btn = document.getElementById('doc-btn-close');
-        if (btn) {
-          btn.innerHTML = '<span>إغلاق التبويبة (Ctrl+W)</span>';
-          btn.style.background = '#DC2626';
-          btn.style.color = '#fff';
-        }
-      }
-    }, 250);
-  }
-
-  async function saveDocAsPdf() {
-    var rawTitle = ${JSON.stringify(title)} || 'document';
-    var safeTitle = rawTitle.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
-    var filename = safeTitle + '.pdf';
-
-    var fileHandle = null;
-    if (typeof window.showSaveFilePicker === 'function') {
-      try {
-        fileHandle = await window.showSaveFilePicker({
-          suggestedName: filename,
-          types: [{
-            description: 'ملف PDF (*.pdf)',
-            accept: { 'application/pdf': ['.pdf'] }
-          }]
-        });
-      } catch (err) {
-        if (err && err.name === 'AbortError') {
-          return;
-        }
-        fileHandle = null;
-      }
-    }
-
-    var saveBtn = document.getElementById('doc-btn-save-pdf');
-    var origHtml = saveBtn ? saveBtn.innerHTML : '';
-    if (saveBtn) {
-      saveBtn.disabled = true;
-      saveBtn.style.opacity = '0.75';
-      saveBtn.style.cursor = 'wait';
-      saveBtn.innerHTML = '<svg class="doc-spinner" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg><span>جارٍ حفظ ملف PDF…</span>';
-    }
-
-    function resetBtn() {
-      document.body.classList.remove('doc-exporting-pdf');
-      if (saveBtn) {
-        saveBtn.disabled = false;
-        saveBtn.style.opacity = '1';
-        saveBtn.style.cursor = 'pointer';
-        saveBtn.innerHTML = origHtml;
-      }
-    }
-
-    document.body.classList.add('doc-exporting-pdf');
-    var target = document.getElementById('doc-pages-container') || document.body;
-
-    var opt = {
-      margin: 0,
-      filename: filename,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        letterRendering: true,
-        windowWidth: ${pageWidth},
-        scrollY: 0,
-        scrollX: 0
-      },
-      jsPDF: {
-        unit: 'px',
-        format: [${pageWidth}, ${pageHeight}],
-        hotfixes: ['px_scaling'],
-        orientation: '${landscape ? "landscape" : "portrait"}'
-      },
-      pagebreak: { mode: ['css', 'legacy'], after: '.page' }
-    };
-
-    try {
-      if (typeof window.html2pdf === 'function') {
-        var worker = window.html2pdf().set(opt).from(target);
-        if (fileHandle) {
-          var pdfBlob = await worker.outputPdf('blob');
-          var writable = await fileHandle.createWritable();
-          await writable.write(pdfBlob);
-          await writable.close();
-          resetBtn();
-        } else {
-          await worker.save();
-          resetBtn();
-        }
-      } else {
-        resetBtn();
-        window.print();
-      }
-    } catch (err) {
-      console.error('[PDF Export] failed:', err);
-      resetBtn();
-      window.print();
-    }
-  }
-
-  var printBtn = document.getElementById('doc-btn-print');
-  if (printBtn) printBtn.addEventListener('click', printDoc);
-
-  var saveBtn = document.getElementById('doc-btn-save-pdf');
-  if (saveBtn) saveBtn.addEventListener('click', saveDocAsPdf);
-
-  var closeBtn = document.getElementById('doc-btn-close');
-  if (closeBtn) closeBtn.addEventListener('click', closeDocPreview);
-
-  (function () {
-    var images = Array.from(document.images).map(function (image) {
-      return image.complete
-        ? Promise.resolve()
-        : new Promise(function (resolve) {
-            image.addEventListener('load', resolve, { once: true });
-            image.addEventListener('error', resolve, { once: true });
-          });
-    });
-    var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
-    Promise.all([fonts].concat(images)).then(function () {
-      ${
-        options.autoPrint !== false
-          ? `window.setTimeout(function () {
-        window.focus();
-        window.print();
-      }, 150);`
-          : ""
-      }
-    });
-  })();
-</script>
+<script src="${FONT_ORIGIN}/vendor/doc-toolbar.js"></script>
 </body></html>`;
 }
 
@@ -1075,7 +781,7 @@ export function totalsBox(t: TotalsBox): string {
       <span style="font-size:9.75px;color:${B.textFaint};font-weight:700">${esc(t.balance.afterLabel)}</span>
       <span style="font-size:13.5px;font-weight:900;color:#000;direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums">${esc(t.balance.after)} <span style="font-size:9.5px;font-weight:800;color:${t.balance.directionColor ?? B.alert}">(${esc(t.balance.direction)})</span></span>
     </div>
-    <div style="font-size:8.25px;color:#000;margin-top:1px">${esc(t.balance.beforeLabel)} ${esc(t.balance.before)} قبل هذه الفاتورة</div>
+    <div style="font-size:8.25px;color:#000;margin-top:1px">${esc(t.balance.beforeLabel)}: ${esc(t.balance.before)} د.ع قبل هذه الفاتورة</div>
   </div>`
     : "";
 

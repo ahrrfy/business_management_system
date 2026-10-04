@@ -378,6 +378,9 @@ export default function Invoices() {
         invoiceNumber: d.invoiceNumber,
         invoiceDate: d.invoiceDate,
         customerName: d.customerName,
+        customerPhone: d.customerPhone ?? null,
+        customerAddress: d.customerAddress ?? null,
+        customerBalance: d.customerId ? d.customerBalance : null,
         salespersonName: d.salespersonName,
         companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
         paymentMethod: paymentMethodLabel(d.paymentMethod),
@@ -390,13 +393,8 @@ export default function Invoices() {
         qrPayload: d.qrPayload ?? null,
         items: d.items.map((it, i) => ({
           productName: variantDisplayName({ ...it, productName: it.productName ?? "" }),
-          unitName: it.unitName,
-          quantity: it.quantity,
-          unitPrice: it.unitPrice,
-          total: it.total,
-          taxAmount: shares[i] ?? "0",
-          isGift: it.isGift,
-          barcode: it.barcode ?? it.sku ?? null,
+          unitName: it.unitName, quantity: it.quantity, unitPrice: it.unitPrice, total: it.total,
+          taxAmount: shares[i] ?? "0", isGift: it.isGift, barcode: it.barcode ?? it.sku ?? null,
         })),
       });
     } catch (e) {

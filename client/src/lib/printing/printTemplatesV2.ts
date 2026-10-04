@@ -71,11 +71,13 @@ export { fmtQty };
 
 /** اتّجاه رصيد العميل (الموجب = لنا عليه). */
 function balanceDirCustomer(balance: number): string {
-  return balance >= 0 ? 'لنا' : 'علينا';
+  if (Math.abs(balance) < 0.01) return 'خالص';
+  return balance > 0 ? 'لنا' : 'علينا';
 }
 /** اتّجاه رصيد المورّد (الموجب = علينا نحن للمورّد). */
 function balanceDirSupplier(balance: number): string {
-  return balance >= 0 ? 'علينا' : 'لنا';
+  if (Math.abs(balance) < 0.01) return 'خالص';
+  return balance > 0 ? 'علينا' : 'لنا';
 }
 
 /**
@@ -335,9 +337,9 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
     remaining: remainingNum > 0 ? { label: 'المتبقّي', value: fmtIQD(remainingNum) } : null,
     balance: balAfter != null ? {
-      beforeLabel: 'كان الرصيد',
+      beforeLabel: 'الرصيد السابق',
       before: fmtIQD(balBefore ?? 0),
-      afterLabel: 'الرصيد الكلي بعد الفاتورة',
+      afterLabel: 'الرصيد النهائي (الحساب الكلي)',
       after: fmtIQD(Math.abs(balAfter)),
       direction: balanceDirCustomer(balAfter),
       directionColor: B.alert,
@@ -502,9 +504,9 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
     remaining: remainingNum > 0 ? { label: 'المتبقّي', value: fmtIQD(remainingNum) } : null,
     balance: balAfter != null ? {
-      beforeLabel: 'كان الرصيد',
+      beforeLabel: 'الرصيد السابق',
       before: fmtIQD(balBefore ?? 0),
-      afterLabel: 'الرصيد الكلي بعد الفاتورة',
+      afterLabel: 'الرصيد النهائي (المستحق للمورّد)',
       after: fmtIQD(Math.abs(balAfter)),
       direction: balanceDirSupplier(balAfter),
       directionColor: B.alert,

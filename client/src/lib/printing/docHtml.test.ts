@@ -23,7 +23,7 @@ describe("wrapA4Doc", () => {
     );
   });
 
-  it("يزود المعاينة بأزرار تفاعلية حقيقية متوافقة مع CSP: معرفات فريدة، ربط برمجي، وغياب تام للسمات المضمنة", () => {
+  it("يزود المعاينة بأزرار تفاعلية حقيقية متوافقة مع CSP: معرفات فريدة، ربط برمجي عبر نص برمجي خارجي، وغياب تام للسمات المضمنة", () => {
     const html = wrapA4Doc("كشف حساب رسمي", "<div>المحتوى</div>");
 
     expect(html).toContain("html2pdf.bundle.min.js");
@@ -32,13 +32,8 @@ describe("wrapA4Doc", () => {
     expect(html).toContain('id="doc-btn-close"');
     expect(html).not.toContain("onclick=");
     expect(html).not.toContain("onload=");
-    expect(html).toContain("addEventListener('click', printDoc)");
-    expect(html).toContain("addEventListener('click', saveDocAsPdf)");
-    expect(html).toContain("addEventListener('click', closeDocPreview)");
-    expect(html).toContain("CLOSE_PRINT_WINDOW");
-    expect(html).toContain("doc-exporting-pdf");
-    expect(html).toContain("showSaveFilePicker");
-    expect(html).toContain("outputPdf('blob')");
+    expect(html).toContain("/vendor/doc-toolbar.js");
+    expect(html).toContain('data-title="كشف حساب رسمي"');
   });
 });
 
@@ -61,12 +56,8 @@ describe("wrapMultiA4Doc", () => {
     expect(html).toContain('id="doc-btn-save-pdf"');
     expect(html).toContain('id="doc-btn-close"');
     expect(html).not.toContain("onclick=");
-    expect(html).toContain("addEventListener('click', printDoc)");
-    expect(html).toContain("addEventListener('click', saveDocAsPdf)");
-    expect(html).toContain("addEventListener('click', closeDocPreview)");
-    expect(html).toContain("doc-exporting-pdf");
-    expect(html).toContain("showSaveFilePicker");
-    expect(html).toContain("outputPdf('blob')");
+    expect(html).toContain("/vendor/doc-toolbar.js");
+    expect(html).toContain('data-title="قسائم الرواتب"');
   });
 });
 
