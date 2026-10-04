@@ -813,7 +813,8 @@ export async function reconcileDeliveryFloat(): Promise<ReconcileResult[]> {
 
   /**
    * م١ (PR-3) — **الدفتر الإلحاقيّ مقابل العمود المخزَّن، لكلّ جهةٍ باسمها** (لا مجموعاً):
-   *   ledger = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+   *   ledger = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED
+   *            − Σ COD_REMITTED − Σ COD_RETURNED − Σ COD_WRITTEN_OFF − Σ SHORTFALL_SETTLED
    *   (`deriveCashInHandFromLedger` — الصيغةُ الواحدة مع اللوحة و`cashSource.ts`).
    * الكاشفُ أعلاه يطابق قيود المحاسبة؛ وهذا يطابق **الدفتر التشغيليّ** الذي سيصير المرجع عند قلب
    * `courierLedgerDerived` — صفرُ انحرافٍ على كلّ الجهات لأيامٍ متتالية هو شرطُ القلب (§١٠).

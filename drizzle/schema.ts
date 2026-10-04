@@ -13149,12 +13149,14 @@ export const deliveryLedgerEntries = mysqlTable(
       "COD_ASSIGNED",
       "COD_COLLECTED",
       "COD_REMITTED",
+      "COD_RETURNED",
       "COD_RELEASED",
       "COD_WRITTEN_OFF",
       "COD_RECOVERED",
       // Slice DFP1 (٣٠/٨/٢٦، هجرة 0295): عجزُ التحصيل ذمّةٌ فوريّة على المندوب — رافعٌ لعهدة
       // الجهة تماماً كـCOD_COLLECTED، لكن مع إلزامِ `shortfallReason` أدناه.
       "SHORTFALL_ASSIGNED",
+      "SHORTFALL_SETTLED",
       "FEE_EARNED",
       "FEE_PAID",
       "FEE_OFFSET",

@@ -362,8 +362,8 @@ describe("خدمةُ روافد الردّ الموحَّدة — العزلُ �
     expect(manager.drawers).toHaveLength(0);
     expect(manager.rails.DRAWER.available).toBe(false);
     expect(manager.rails.TREASURY.available).toBe(true);
-    // زبونٌ عابر ⇒ لا بطاقة (عقد الخدمة: نقدٌ كامل فقط).
-    expect(manager.rails.CARD.available).toBe(false);
+    // الزبون العابر يستطيع ردّ المقبوض إلى البطاقة أيضاً؛ التنفيذ نفسه يفرض مرجع الجهاز.
+    expect(manager.rails.CARD.available).toBe(true);
     const staff = await withTx((tx) =>
       refundRailPreflight(tx, { sourceDocType: "SALE_RETURN", sourceDocId: invoiceId }, { ...RECEPTION_STAFF, permissionsOverride: { sales: "READ", treasury: "NONE" } as unknown as RefundRailActor["permissionsOverride"] }),
     );

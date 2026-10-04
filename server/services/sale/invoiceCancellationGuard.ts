@@ -229,7 +229,15 @@ export async function assertInvoiceReversalDeliverySafeTx(
         .from(deliveryLedgerEntries)
         .where(and(
           like(deliveryLedgerEntries.eventKey, `ONLINE:${Number(onlineOrder.id)}:%`),
-          inArray(deliveryLedgerEntries.entryType, ["COD_COLLECTED", "COD_REMITTED", "COD_WRITTEN_OFF", "COD_RECOVERED"]),
+          inArray(deliveryLedgerEntries.entryType, [
+            "COD_COLLECTED",
+            "COD_REMITTED",
+            "COD_RETURNED",
+            "COD_WRITTEN_OFF",
+            "COD_RECOVERED",
+            "SHORTFALL_ASSIGNED",
+            "SHORTFALL_SETTLED",
+          ]),
         ))
     )[0];
     const legacyCustodyPosting = (

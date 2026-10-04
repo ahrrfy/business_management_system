@@ -131,7 +131,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
 
     await expect(
       returnSale({ invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: null }, manager),
-    ).rejects.toThrow(/resolution.*CASH.*كامل/);
+    ).rejects.toThrow(/resolution.*مبلغ الرد.*المستحق/);
 
     // صفر أثر: البضاعة لم تعُد والإيراد لم يُعكَس (المعاملة ذرّية).
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
@@ -594,13 +594,41 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
         {
           invoiceId,
           lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(),
           operatorReason: "محاولة كاشير بلا وردية",
         },
         { userId: 2, branchId: 1 },
       ),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
-      message: expect.stringContaining("يشترط وجود وردية مفتوحة للكاشير"),
+      message: expect.stringContaining("يوجد رد نقدي فعلي"),
     });
+  });
+
+  it("كاشير بلا وردية يلغي فاتورة دفع عند الاستلام غير مدفوعة بلا صرف نقد", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale({
+      branchId: 1,
+      sourceType: "ORDER",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      codDispatchPending: true,
+      paymentMode: "COD",
+    }, manager);
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+
+    const result = await returnSaleDirect({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        ...walkInCashResolution(),
+        amount: "0.00",
+        reason: "إلغاء قبل الاستلام",
+      },
+      clientRequestId: "cashier-unpaid-cod-no-shift",
+      operatorReason: "إلغاء قبل الاستلام بلا قبض",
+    }, { userId: 2, branchId: 1 });
+
+    expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10.00" });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
   });
 });

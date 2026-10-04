@@ -207,6 +207,7 @@ export type PostingProfile =
   | "TREASURY_FUNDING_LOAN"
   | "DELIVERY_DISPATCH_COD"
   | "DELIVERY_REMIT_COD"
+  | "DELIVERY_RETURN_CUSTODY"
   | "DELIVERY_FEE_EXPENSE"
   | "DELIVERY_FEE_ACCRUAL"
   | "DELIVERY_FEE_SETTLEMENT"
@@ -391,7 +392,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "TREASURY_FUNDING_LOAN",
   ],
   DELIVERY_DISPATCH: ["DELIVERY_DISPATCH_COD"],
-  DELIVERY_REMIT: ["DELIVERY_REMIT_COD"],
+  DELIVERY_REMIT: ["DELIVERY_REMIT_COD", "DELIVERY_RETURN_CUSTODY"],
   DELIVERY_FEE: [
     "DELIVERY_FEE_EXPENSE",
     "DELIVERY_FEE_ACCRUAL",
@@ -2297,6 +2298,18 @@ export const PROFILE_POLICIES = Object.freeze({
         sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["DELIVERY_FLOAT"]),
       ],
       requireRoleComponents: [...CASH_ASSETS, "DELIVERY_FLOAT"],
+    },
+  ),
+  DELIVERY_RETURN_CUSTODY: profilePolicy(
+    "DELIVERY_REMIT",
+    ["AR"],
+    ["DELIVERY_FLOAT"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["DELIVERY_FLOAT"]),
+      ],
+      requireRoleComponents: ["AR", "DELIVERY_FLOAT"],
     },
   ),
   DELIVERY_FEE_EXPENSE: profilePolicy(

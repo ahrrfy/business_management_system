@@ -139,7 +139,7 @@ export interface RefundCapSnapshot {
   netByMethod: Map<RefundMethod, Decimal>;
   /** السقف الأقصى لكل طريقة **قبل** قصّه بقيمة المرتجع الجاري. */
   capByMethod: Map<RefundMethod, Decimal>;
-  /** عهدة المندوب غير المورّدة: طرد تسليم لم يدخل نقده الدرج/الخزينة بعد (remittanceId IS NULL). */
+  /** عهدة المندوب غير المورّدة كما يثبتها دفتر التوصيل بعد التوريد/التحرير/الشطب الجزئي. */
   unremittedDeliveryCustody: Decimal;
   /** هل الفاتورة مرتبطة بعهدة توصيل غير مورّدة؟ */
   hasUnremittedDelivery: boolean;
@@ -203,36 +203,35 @@ export async function loadRefundCaps(
     `),
   );
 
-  // ③ ما حصّله المندوب وورّده: إيصال التوريد مجمَّعٌ لعدّة فواتير بلا `invoiceId` فلا يراه ①.
+  // ③ ما ورّده المندوب فعلاً: إيصال التوريد مجمَّعٌ لعدّة فواتير بلا `invoiceId` فلا يراه ①.
   //    قرار المالك (٦/٨): مالٌ نقديّ وصلنا فعلاً ومُورَّد إلى صندوق الشركة ⇒ يدخل الوعاء برافدٍ نقديّ.
-  //    ⚠️ يجب أن يكون مُورَّداً (remittanceId IS NOT NULL)؛ ما لم يُورَّد فهو عهدة مندوب لا نقد درج.
-  const remittedRows = rowsOf(
+  // ④ العهدة الحية = التحصيل + العجز المسند − التوريد/التحرير/الشطب، لكل إرسالية.
+  //    لا نستعمل remittanceId كعلمٍ ثنائي: التوريد قد يكون جزئياً، والتحصيل المثبت قد يقل عن COD.
+  const deliveryRows = rowsOf(
     await exec.execute(sql`
-      SELECT CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS amount
-      FROM deliveryConsignments cn
-      WHERE cn.invoiceId = ${invoiceId}
-        AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
-        AND cn.remittanceId IS NOT NULL
-    `),
-  );
-
-  // ④ عهدة التوصيل غير المورّدة: ما زالت بذمة المندوب ولم يدخل الدرج منها فلس واحد.
-  const unremittedRows = rowsOf(
-    await exec.execute(sql`
-      SELECT CAST(COALESCE(SUM(COALESCE(NULLIF(cn.collectedAmount, '0.00'), cn.codAmount, '0.00')), 0) AS CHAR) AS amount
-      FROM deliveryConsignments cn
-      WHERE cn.invoiceId = ${invoiceId}
-        AND (cn.parcelStatus = 'DELIVERED' OR cn.consignmentStatus IN ('DELIVERED','PARTIAL'))
-        AND cn.remittanceId IS NULL
-        AND cn.consignmentStatus NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')
+      SELECT
+        CAST(COALESCE(SUM(x.remittedAmount), 0) AS CHAR) AS remittedAmount,
+        CAST(COALESCE(SUM(GREATEST(0, x.custodyAmount)), 0) AS CHAR) AS unremittedAmount
+      FROM (
+        SELECT cn.id,
+          COALESCE(SUM(CASE WHEN dle.entryType = 'COD_REMITTED' AND dle.remittanceId IS NOT NULL THEN dle.amount ELSE 0 END), 0) AS remittedAmount,
+          COALESCE(SUM(CASE
+            WHEN dle.entryType IN ('COD_COLLECTED','SHORTFALL_ASSIGNED') THEN dle.amount
+            WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
+            ELSE 0 END), 0) AS custodyAmount
+        FROM deliveryConsignments cn
+        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+        WHERE cn.invoiceId = ${invoiceId}
+        GROUP BY cn.id
+      ) x
     `),
   );
 
   return refundCapSnapshot(
     receiptRows,
     applicationRows,
-    remittedRows[0]?.amount,
-    unremittedRows[0]?.amount,
+    deliveryRows[0]?.remittedAmount,
+    deliveryRows[0]?.unremittedAmount,
   );
 }
 
@@ -289,15 +288,23 @@ export async function loadRefundCapsByInvoiceIds(
       GROUP BY invoiceId, coll.orderPayMethod
     `),
     exec.execute(sql`
-      SELECT cn.invoiceId AS invoiceId,
-             CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NOT NULL THEN COALESCE(cn.collectedAmount, 0) ELSE 0 END), 0) AS CHAR) AS remittedAmount,
-             CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NOT NULL THEN COALESCE(cn.collectedAmount, 0) ELSE 0 END), 0) AS CHAR) AS amount,
-             CAST(COALESCE(SUM(CASE WHEN cn.remittanceId IS NULL THEN COALESCE(NULLIF(cn.collectedAmount, '0.00'), cn.codAmount, '0.00') ELSE 0 END), 0) AS CHAR) AS unremittedAmount
-      FROM deliveryConsignments cn
-      WHERE cn.invoiceId IN (${idList})
-        AND (cn.parcelStatus = 'DELIVERED' OR cn.consignmentStatus IN ('DELIVERED','PARTIAL'))
-        AND cn.consignmentStatus NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')
-      GROUP BY cn.invoiceId
+      SELECT x.invoiceId,
+             CAST(COALESCE(SUM(x.remittedAmount), 0) AS CHAR) AS remittedAmount,
+             CAST(COALESCE(SUM(x.remittedAmount), 0) AS CHAR) AS amount,
+             CAST(COALESCE(SUM(GREATEST(0, x.custodyAmount)), 0) AS CHAR) AS unremittedAmount
+      FROM (
+        SELECT cn.invoiceId, cn.id,
+          COALESCE(SUM(CASE WHEN dle.entryType = 'COD_REMITTED' AND dle.remittanceId IS NOT NULL THEN dle.amount ELSE 0 END), 0) AS remittedAmount,
+          COALESCE(SUM(CASE
+            WHEN dle.entryType IN ('COD_COLLECTED','SHORTFALL_ASSIGNED') THEN dle.amount
+            WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
+            ELSE 0 END), 0) AS custodyAmount
+        FROM deliveryConsignments cn
+        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = cn.id
+        WHERE cn.invoiceId IN (${idList})
+        GROUP BY cn.invoiceId, cn.id
+      ) x
+      GROUP BY x.invoiceId
     `),
   ]);
   const receiptRows = rowsOf(rawRows[0]);

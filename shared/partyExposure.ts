@@ -41,9 +41,11 @@ export type PartyExposureLedgerEntry = {
     | "COD_ASSIGNED"
     | "COD_COLLECTED"
     | "COD_REMITTED"
+    | "COD_RETURNED"
     | "COD_RELEASED"
     | "COD_WRITTEN_OFF"
     | "SHORTFALL_ASSIGNED"
+    | "SHORTFALL_SETTLED"
     | "FEE_EARNED"
     | "FEE_PAID"
     | "FEE_REFUNDED"
@@ -105,7 +107,8 @@ const fmt = (n: number): string => n.toFixed(2);
 
 /**
  * م١ (PR-2/3) — **النقد بيد الجهة مشتقّاً من الدفتر الإلحاقيّ** (مصدر الحقيقة المستهدَف):
- *   Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+ *   Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED
+ *   − Σ COD_REMITTED − Σ COD_RETURNED − Σ COD_WRITTEN_OFF − Σ SHORTFALL_SETTLED
  * الأنواعُ والإشارات من `DELIVERY_CASH_CUSTODY_SIGN` (ثابتٌ واحد يقرؤه الخادم SQL أيضاً).
  * الدالّة خطّيّة في المبالغ ⇒ تمريرُ مجاميعَ مُجمَّعةٍ لكلّ نوعٍ يُنتج نفس الناتج تماماً.
  */
@@ -120,16 +123,18 @@ export function deriveCashInHandFromLedger(ledger: PartyExposureLedgerEntry[]): 
 }
 
 /**
- * Codex #1012 P2 — **العجزُ المحمَّل على الجهة** (`SHORTFALL_ASSIGNED`) مجموعاً: ذمّةٌ غير نقديّة
+ * Codex #1012 P2 — **العجزُ المحمَّل على الجهة** صافياً
+ * (`SHORTFALL_ASSIGNED − SHORTFALL_SETTLED`): ذمّةٌ غير نقديّة
  * تُطرح من «العهدة الكلّية» لِتُعرَض «نقد بيده» ماديّاً وحده، وتظهر عموداً خامساً مستقلّاً.
- * لا كاتبَ يُنقصها في الشيفرة اليوم (لا نوعَ «تسوية عجز») ⇒ المجموع = العجز القائم.
+ * `SHORTFALL_SETTLED` لا يعني شطب خسارة؛ بل إغلاقُ الجزء الذي زال سببه بمرتجع البيع.
  */
 export function deriveShortfallOwedFromLedger(ledger: PartyExposureLedgerEntry[]): string {
   let owed = 0;
   for (const e of ledger) {
     if (e.entryType === "SHORTFALL_ASSIGNED") owed += toNum(e.amount);
+    if (e.entryType === "SHORTFALL_SETTLED") owed -= toNum(e.amount);
   }
-  return fmt(owed);
+  return fmt(Math.max(0, owed));
 }
 
 /**

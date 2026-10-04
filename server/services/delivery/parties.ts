@@ -60,7 +60,7 @@ export async function assertFloatLimitTx(
   const row = (await tx.select({
     exposure: sql<string>`COALESCE(SUM(CASE
       WHEN ${deliveryLedgerEntries.entryType} = 'COD_ASSIGNED' THEN ${deliveryLedgerEntries.amount}
-      WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RELEASED','COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
+      WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RETURNED','COD_RELEASED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -${deliveryLedgerEntries.amount}
       ELSE 0 END),0)`,
   }).from(deliveryLedgerEntries).where(eq(deliveryLedgerEntries.partyId, Number(party.id))))[0];
   const committed = money(row?.exposure ?? "0");

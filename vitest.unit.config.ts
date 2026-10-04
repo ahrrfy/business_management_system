@@ -82,6 +82,7 @@ export default defineConfig({
       "client/src/components/vouchers/voucherUiPolicy.test.ts",
       "client/src/components/workspace/OperationalWorkspace.test.ts",
       "client/src/components/table/TablePager.test.ts",
+      "client/src/components/data-table/__tests__/DataTableSorting.test.tsx",
       "client/src/components/ui/MobileDataCard.test.ts",
       "client/src/components/storefront/TurnstileWidget.test.ts",
       "client/src/components/quran/__tests__/quranAudio.test.ts",

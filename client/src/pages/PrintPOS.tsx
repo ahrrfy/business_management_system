@@ -807,7 +807,7 @@ export default function PrintPOS() {
 
     if (offline) {
       if (isReservation) {
-        setMessage({ kind: "err", text: "حجز الفواتير والبيع الآجل يتطلب الاتصال بالخادم." });
+        setMessage({ kind: "err", text: "الدفع عند الاستلام والبيع الآجل يتطلب الاتصال بالخادم." });
         return;
       }
       void captureOfflinePrintSale(forceFullPayment);
@@ -827,7 +827,7 @@ export default function PrintPOS() {
 
     if (isReservation) {
       if (tab.customerId == null && !tab.contactName.trim() && !tab.contactPhone.trim()) {
-        setMessage({ kind: "err", text: "حجز الطلب يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." });
+        setMessage({ kind: "err", text: "الدفع عند الاستلام يتطلّب تحديد عميل مسجل أو إدخال اسم/هاتف الزبون." });
         return;
       }
     } else if (isCredit && tab.customerId == null) {

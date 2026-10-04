@@ -180,7 +180,7 @@ const DISPATCHERS = {
  *    والخزينةُ مخرجُ الإداريّ حين لا وردية (`shiftIdForCashTx`) — توفّرُها يقرّره `rails`.
  *
  * المبلغُ: ما أرسله الموظّف (`amount`) مقصوصاً بالوعاء، أو الوعاءُ كلُّه — الكفايةُ تُقاس به.
- * والبطاقةُ تُباح لعميلٍ مسجَّل حين يوجد سقفٌ لها؛ الزبونُ العابر نقدٌ فقط (عقد الخدمة).
+ * والبطاقةُ رافد ردّ فوريّ متاح للمسجّل والعابر حين يوجد سقفٌ لها، مع مرجع الجهاز عند التنفيذ.
  */
 async function saleReturnPreflight(tx: Tx, ctx: RefundRailContext, exposeCash: boolean): Promise<RefundPreflight | null> {
   const inv = (
@@ -196,7 +196,6 @@ async function saleReturnPreflight(tx: Tx, ctx: RefundRailContext, exposeCash: b
   const requested = ctx.amount != null ? money(ctx.amount) : caps.pool;
   const cashOut = round2(Decimal.min(requested, caps.pool));
   const needsCashDrawer = cashOut.gt(0);
-  const isWalkIn = inv.customerId == null;
   const cardCap = caps.capByMethod.get("CARD") ?? money(0);
   const drawers = needsCashDrawer ? await openDrawers(tx, branchId, cashOut, exposeCash) : [];
   const treasury = needsCashDrawer
@@ -209,7 +208,7 @@ async function saleReturnPreflight(tx: Tx, ctx: RefundRailContext, exposeCash: b
     drawers,
     treasuryCash: needsCashDrawer && exposeCash ? toDbMoney(round2(treasury)) : null,
     treasurySufficient: needsCashDrawer ? treasury.gte(cashOut) : false,
-    cardRefundAllowed: !isWalkIn && cardCap.gt(0),
+    cardRefundAllowed: cardCap.gt(0),
   };
 }
 

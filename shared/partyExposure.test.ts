@@ -15,18 +15,20 @@ import {
 } from "./deliveryLedgerEntryType";
 
 describe("deriveCashInHandFromLedger — النقد بيد الجهة من الدفتر (م١ PR-2/3)", () => {
-  it("Σ COD_COLLECTED + SHORTFALL_ASSIGNED − COD_REMITTED − COD_WRITTEN_OFF، وما عداها لا يمسّ العهدة", () => {
+  it("يحسب تحصيل/عجز العهدة ويطرح التوريد والمرتجع وتسوية العجز دون COD_RELEASED", () => {
     const cash = deriveCashInHandFromLedger([
       { entryType: "COD_ASSIGNED", amount: "9999" },
       { entryType: "COD_COLLECTED", amount: "5000" },
       { entryType: "SHORTFALL_ASSIGNED", amount: "500" },
       { entryType: "COD_REMITTED", amount: "3000" },
+      { entryType: "COD_RETURNED", amount: "100" },
       { entryType: "COD_WRITTEN_OFF", amount: "200" },
+      { entryType: "SHORTFALL_SETTLED", amount: "100" },
       { entryType: "COD_RELEASED", amount: "9999" },
       { entryType: "COD_RECOVERED", amount: "9999" },
       { entryType: "FEE_EARNED", amount: "9999" },
     ]);
-    expect(cash).toBe("2300.00");
+    expect(cash).toBe("2100.00");
   });
 
   it("إشاراتُها هي عينُ إشارات الجدول العامّ على أنواع النقد (ثابتٌ واحد لا نسخة)", () => {
@@ -325,15 +327,16 @@ describe("computePartyExposure — صافي المسؤوليّة (الحسبة �
 
 // ─── Codex #1012 P2 — العجزُ ذمّةٌ لا نقدٌ ماديّ (العمود الخامس) ───────────────────────────────
 describe("computePartyExposure — العمود ٥: عجزٌ محمَّل (ذمّةٌ غير نقديّة، لا نقدٌ بيده)", () => {
-  it("deriveShortfallOwedFromLedger يجمع SHORTFALL_ASSIGNED وحده", () => {
+  it("deriveShortfallOwedFromLedger يعرض العجز القائم بعد تسوية المرتجع", () => {
     const owed = deriveShortfallOwedFromLedger([
       { entryType: "COD_COLLECTED", amount: "5000" },
       { entryType: "SHORTFALL_ASSIGNED", amount: "300" },
       { entryType: "SHORTFALL_ASSIGNED", amount: "200" },
+      { entryType: "SHORTFALL_SETTLED", amount: "125" },
       { entryType: "COD_REMITTED", amount: "5000" },
       { entryType: "FEE_EARNED", amount: "1000" },
     ]);
-    expect(owed).toBe("500.00");
+    expect(owed).toBe("375.00");
   });
 
   it("العجز يُطرح من «نقد بيده» ويظهر عموداً مستقلّاً — والعهدةُ الكلّية المُمرَّرة = physical + shortfall", () => {

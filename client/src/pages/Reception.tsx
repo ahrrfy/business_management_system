@@ -1413,10 +1413,10 @@ export default function Reception() {
       if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
     }
     const hasCustomLines = customWithDeposits.length > 0;
-    // حجز الفاتورة للطلبات عن بعد أو التسليم يتطلب معرفة العميل (اسمه وهاتفه)
+    // طلب الدفع عند الاستلام يتطلب معرفة المستلم (اسمه وهاتفه)
     if (isReserve) {
       if (!customer.customerId && (!isValidIqMobile(receptionPhone) || customer.name.trim().length < 2)) {
-        notify.err("لحفظ وحجز الفاتورة يرجى إدخال اسم العميل ورقم هاتفه العراقي (١١ رقماً تبدأ بـ07)");
+        notify.err("للدفع عند الاستلام يرجى إدخال اسم العميل ورقم هاتفه العراقي (١١ رقماً تبدأ بـ07)");
         customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
         return;
       }
@@ -1915,7 +1915,7 @@ export default function Reception() {
           : "أُرسلت المستندات إلى الطابعة مباشرة";
       if (isReserve) {
         notify.ok(
-          `تم حفظ وحجز الفاتورة #${result.regularSale?.invoiceNumber ?? ""}`,
+          `تم تأكيد فاتورة الدفع عند الاستلام #${result.regularSale?.invoiceNumber ?? ""}`,
           "جاهزة للتسليم المباشر (/reception/handover) أو الإسناد للتوصيل (/reception/workflow)",
         );
       } else {

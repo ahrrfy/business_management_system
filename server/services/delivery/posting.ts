@@ -82,6 +82,19 @@ export function deliveryRemitIntent(
   );
 }
 
+/** إلغاء تحصيل COD غير مورّد: تعود الذمّة من عهدة المندوب قبل أن يعكسها مرتجع البيع. */
+export function deliveryCustodyReturnIntent(amount: Decimal): PostingIntent {
+  return createPostingIntent(
+    "DELIVERY_RETURN_CUSTODY",
+    "DELIVERY_REMIT",
+    [debitLine("AR", amount), creditLine("DELIVERY_FLOAT", amount)],
+    {
+      roleDebits: { AR: amount },
+      roleCredits: { DELIVERY_FLOAT: amount },
+    },
+  );
+}
+
 /** The business incurs the courier fee when delivery succeeds, before cash is paid. */
 export function deliveryFeeAccrualIntent(amount: Decimal): PostingIntent {
   return createPostingIntent("DELIVERY_FEE_ACCRUAL", "DELIVERY_FEE", [

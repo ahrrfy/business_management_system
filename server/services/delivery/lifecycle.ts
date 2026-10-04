@@ -154,11 +154,13 @@ export async function appendDeliveryLedgerEntry(
       | "COD_ASSIGNED"
       | "COD_COLLECTED"
       | "COD_REMITTED"
+      | "COD_RETURNED"
       | "COD_RELEASED"
       | "COD_WRITTEN_OFF"
       | "COD_RECOVERED"
       // Slice DFP1 (٣٠/٨/٢٦، هجرة 0295): عجزُ التحصيل — ذمّة فوريّة على المندوب.
       | "SHORTFALL_ASSIGNED"
+      | "SHORTFALL_SETTLED"
       | "FEE_EARNED"
       | "FEE_PAID"
       | "FEE_OFFSET"
@@ -334,6 +336,7 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
       codAssigned: "0.00",
       codCollected: "0.00",
       codRemitted: "0.00",
+      codReturned: "0.00",
       codReleased: "0.00",
       codWrittenOff: "0.00",
       codRecovered: "0.00",
@@ -353,9 +356,11 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
         codAssigned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_ASSIGNED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         codCollected: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         codRemitted: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_REMITTED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
+        codReturned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_RETURNED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         codReleased: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_RELEASED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         codWrittenOff: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_WRITTEN_OFF' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         codRecovered: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_RECOVERED' THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
+        deliveryShortfallAssigned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_ASSIGNED' AND ${deliveryLedgerEntries.consignmentId} IS NOT NULL THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         feeEarned: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount} WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
         feePaid: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID','FEE_OFFSET') THEN ${deliveryLedgerEntries.amount} ELSE 0 END),0)`,
       })
@@ -370,13 +375,15 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
   const assigned = n(row?.codAssigned);
   const collected = n(row?.codCollected);
   const remitted = n(row?.codRemitted);
+  const returned = n(row?.codReturned);
   const released = n(row?.codReleased);
   const writtenOff = n(row?.codWrittenOff);
   const recovered = n(row?.codRecovered);
+  const deliveryShortfallAssigned = n(row?.deliveryShortfallAssigned);
   const earned = n(row?.feeEarned);
   const paid = n(row?.feePaid);
-  const outstandingRaw = assigned - collected - released;
-  const custody = collected - remitted - writtenOff;
+  const outstandingRaw = assigned - collected - deliveryShortfallAssigned - released;
+  const custody = collected - remitted - returned - writtenOff;
   const feeDueRaw = earned - paid;
   /**
    * Slice DFP2 (٣١/٨/٢٦): قصّ `feeDue` عند صفر — أُبلغ عنه على الإنتاج (٣١/٨):
@@ -392,6 +399,7 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
     codAssigned: assigned.toFixed(2),
     codCollected: collected.toFixed(2),
     codRemitted: remitted.toFixed(2),
+    codReturned: returned.toFixed(2),
     codReleased: released.toFixed(2),
     codWrittenOff: writtenOff.toFixed(2),
     codRecovered: recovered.toFixed(2),
