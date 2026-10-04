@@ -26,8 +26,10 @@ import {
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, Columns3, Rows3, RotateCcw, AlertTriangle } from "lucide-react";
+import { DataTableColumnHeader, DataTableHeaderContext } from "@/components/data-table/DataTableColumnHeader";
+export { DataTableColumnHeader, DataTableHeaderContext } from "@/components/data-table/DataTableColumnHeader";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
@@ -287,29 +289,15 @@ function renderHeaderContent<T>(
   h: import("@tanstack/react-table").Header<T, unknown>,
 ) {
   if (h.isPlaceholder) return null;
-  const presentation = resolveColumnPresentation(h.column);
-  const sortable = h.column.getCanSort();
-  const dir = h.column.getIsSorted();
-
-  const sortIcon = dir === "asc" ? (
-    <ChevronUp aria-hidden className="size-3.5 shrink-0 text-primary" />
-  ) : dir === "desc" ? (
-    <ChevronDown aria-hidden className="size-3.5 shrink-0 text-primary" />
-  ) : sortable ? (
-    <ArrowUpDown aria-hidden className="size-3.5 shrink-0 opacity-30 group-hover:opacity-70" />
-  ) : null;
-
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1",
-        presentation.align === "end" && "flex-row-reverse"
-      )}
-    >
-      <span>{flexRender(h.column.columnDef.header, h.getContext())}</span>
-      {sortIcon}
-    </span>
-  );
+  const headerContent = flexRender(h.column.columnDef.header, h.getContext());
+  if (
+    React.isValidElement(headerContent) &&
+    (headerContent.type === DataTableColumnHeader ||
+      Boolean((headerContent.props as Record<string, unknown> | null)?.["data-column-header"]))
+  ) {
+    return headerContent;
+  }
+  return <DataTableColumnHeader column={h.column} title={headerContent} interactive={false} />;
 }
 
 export function DataTable<T, K = string>({
@@ -411,14 +399,42 @@ export function DataTable<T, K = string>({
    * نسخُها، فالفرزُ الافتراضيّ عليها نصّيٌّ ⇒ «1,234» قبل «999» و«2/9» قبل «10/9».
    * هنا نُلحق مقارنةً تناسب نوعَ العمود، و`sortingFn` الصريح على العمود يتقدّم دائماً.
    */
+  const serverMode = !!serverPagination;
+  const paginated = !serverMode && Number.isFinite(pageSize);
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const effectiveSorting = serverMode ? (serverSorting?.value ?? []) : sorting;
+  const sortingRef = useRef<SortingState>(effectiveSorting);
+  sortingRef.current = effectiveSorting;
+
+  /*
+   * فرزٌ مشتقٌّ من `meta.kind` (٢/٩/٢٦): `accessorFn` يحمل **القيمة المعروضة** كي يصحّ
+   * نسخُها، فالفرزُ الافتراضيّ عليها نصّيٌّ ⇒ «1,234» قبل «999» و«2/9» قبل «10/9».
+   * هنا نُلحق مقارنةً تناسب نوعَ العمود، و`sortingFn` الصريح على العمود يتقدّم دائماً.
+   * ونضبط `sortDescFirst` ليبدأ تنازلياً دائماً لأعمدة المبالغ المالية والأرقام، وتصاعدياً للنصوص.
+   */
   const sortAwareColumns = useMemo<ColumnDef<T, unknown>[]>(
     () =>
       effectiveColumns.map((column) => {
-        if ((column as { sortingFn?: unknown }).sortingFn) return column;
         const kind = column.meta?.kind;
-        if (!kind) return column;
-        const fn = sortingFnForKind(kind);
-        return fn === "auto" ? column : ({ ...column, sortingFn: fn } as ColumnDef<T, unknown>);
+        const existingSortDescFirst = (column as { sortDescFirst?: boolean }).sortDescFirst;
+        const shouldSortDescFirst =
+          existingSortDescFirst !== undefined
+            ? existingSortDescFirst
+            : kind === "money" || kind === "number";
+
+        let sortingFn = (column as { sortingFn?: unknown }).sortingFn;
+        if (!sortingFn && kind) {
+          const fn = sortingFnForKind(kind, () => sortingRef.current);
+          if (fn !== "auto") {
+            sortingFn = fn;
+          }
+        }
+
+        return {
+          ...column,
+          ...(sortingFn ? { sortingFn } : {}),
+          sortDescFirst: shouldSortDescFirst,
+        } as ColumnDef<T, unknown>;
       }),
     [effectiveColumns],
   );
@@ -430,7 +446,6 @@ export function DataTable<T, K = string>({
     return `data-table-view:v2:${scope}:${hash >>> 0}`;
   }, [effectiveColumns, viewKey]);
   const initialView = useMemo(() => readTableView(storageKey), [storageKey]);
-  const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
   const [compact, setCompact] = useState(initialView.compact === true);
@@ -440,11 +455,6 @@ export function DataTable<T, K = string>({
     writeTableView(storageKey, { columnVisibility, compact });
   }, [storageKey, columnVisibility, compact]);
 
-  // مَع الترقيم الخادميّ: `data` صفحةٌ جاهزة ⇒ لا ترقيم ولا تصفية محلّيان (كلاهما يعمل على
-  // الصفحة وحدها فيُخفي صفوف الخادم ويكذب على المستخدم).
-  const serverMode = !!serverPagination;
-  const paginated = !serverMode && Number.isFinite(pageSize);
-  const effectiveSorting = serverMode ? (serverSorting?.value ?? []) : sorting;
   const table = useReactTable({
     data,
     columns: sortAwareColumns,
@@ -453,6 +463,7 @@ export function DataTable<T, K = string>({
     onColumnVisibilityChange: setColumnVisibility,
     enableSorting: !serverMode || !!serverSorting,
     manualSorting: serverMode,
+    enableSortingRemoval: true,
     ...(serverMode ? {} : { onGlobalFilterChange: setGlobalFilter }),
     getCoreRowModel: getCoreRowModel(),
     ...(!serverMode ? { getSortedRowModel: getSortedRowModel() } : {}),
@@ -742,56 +753,58 @@ export function DataTable<T, K = string>({
           <div className="hidden md:block">
             <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
               <table className={cn("w-max min-w-full border-separate border-spacing-0 text-sm", grid && TABLE_GRID_FRAME_CLS)}>
-                <thead className="bg-muted">
-                  {table.getHeaderGroups().map((hg) => (
-                    <tr key={hg.id} className="text-start">
-                      {selectionEnabled && (
-                        <th className={cn("p-2 w-10 text-center align-middle border-b border-border/80", grid && "border-e border-border/70")}>
-                          <input
-                            type="checkbox"
-                            aria-label="تَحديد كل المَرئي"
-                            className="size-4 cursor-pointer accent-primary"
-                            checked={allVisibleSelected}
-                            ref={(el) => {
-                              if (el) el.indeterminate = someVisibleSelected;
-                            }}
-                            onChange={toggleAllVisible}
-                          />
-                        </th>
-                      )}
-                      {hg.headers.map((h) => {
-                        const sortable = h.column.getCanSort();
-                        const dir = h.column.getIsSorted();
-                        return (
-                          <th
-                            key={h.id}
-                            className={cn(
-                              "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
-                              grid && TABLE_GRID_HEAD_BORDER_CLS,
-                              columnPresentationClass(h.column),
-                              sortable && "cursor-pointer select-none hover:bg-muted/80 group"
-                            )}
-                            aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
-                            {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
-                            onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
-                            onKeyDown={
-                              sortable
-                                ? (e) => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                      e.preventDefault();
-                                      h.column.getToggleSortingHandler()?.(e);
-                                    }
-                                  }
-                                : undefined
-                            }
-                          >
-                            {renderHeaderContent(h)}
+                <DataTableHeaderContext.Provider value={{ inTableTh: true }}>
+                  <thead className="bg-muted">
+                    {table.getHeaderGroups().map((hg) => (
+                      <tr key={hg.id} className="text-start">
+                        {selectionEnabled && (
+                          <th className={cn("p-2 w-10 text-center align-middle border-b border-border/80", grid && "border-e border-border/70")}>
+                            <input
+                              type="checkbox"
+                              aria-label="تَحديد كل المَرئي"
+                              className="size-4 cursor-pointer accent-primary"
+                              checked={allVisibleSelected}
+                              ref={(el) => {
+                                if (el) el.indeterminate = someVisibleSelected;
+                              }}
+                              onChange={toggleAllVisible}
+                            />
                           </th>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </thead>
+                        )}
+                        {hg.headers.map((h) => {
+                          const sortable = h.column.getCanSort();
+                          const dir = h.column.getIsSorted();
+                          return (
+                            <th
+                              key={h.id}
+                              className={cn(
+                                "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
+                                grid && TABLE_GRID_HEAD_BORDER_CLS,
+                                columnPresentationClass(h.column),
+                                sortable && "cursor-pointer select-none hover:bg-muted/80 group"
+                              )}
+                              aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
+                              {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
+                              onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
+                              onKeyDown={
+                                sortable
+                                  ? (e) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        h.column.getToggleSortingHandler()?.(e);
+                                      }
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {renderHeaderContent(h)}
+                            </th>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </thead>
+                </DataTableHeaderContext.Provider>
                 <tbody>
                   {loading && (
                     <TableSkeleton rows={8} cols={effectiveColumns.length + (selectionEnabled ? 1 : 0)} />
@@ -893,56 +906,58 @@ export function DataTable<T, K = string>({
       ) : (
         <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
           <table className={cn("w-max min-w-full border-separate border-spacing-0 text-sm", grid && TABLE_GRID_FRAME_CLS)}>
-            <thead className="bg-muted">
-              {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="text-start">
-                  {selectionEnabled && (
-                    <th className={cn("p-2 w-10 text-center align-middle border-b border-border/80", grid && "border-e border-border/70")}>
-                      <input
-                        type="checkbox"
-                        aria-label="تَحديد كل المَرئي"
-                        className="size-4 cursor-pointer accent-primary"
-                        checked={allVisibleSelected}
-                        ref={(el) => {
-                          if (el) el.indeterminate = someVisibleSelected;
-                        }}
-                        onChange={toggleAllVisible}
-                      />
-                    </th>
-                  )}
-                  {hg.headers.map((h) => {
-                    const sortable = h.column.getCanSort();
-                    const dir = h.column.getIsSorted();
-                    return (
-                      <th
-                        key={h.id}
-                        className={cn(
-                          "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
-                          grid && TABLE_GRID_HEAD_BORDER_CLS,
-                          columnPresentationClass(h.column),
-                          sortable && "cursor-pointer select-none hover:bg-muted/80 group"
-                        )}
-                        aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
-                        {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
-                        onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
-                        onKeyDown={
-                          sortable
-                            ? (e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  h.column.getToggleSortingHandler()?.(e);
-                                }
-                              }
-                            : undefined
-                        }
-                      >
-                        {renderHeaderContent(h)}
+            <DataTableHeaderContext.Provider value={{ inTableTh: true }}>
+              <thead className="bg-muted">
+                {table.getHeaderGroups().map((hg) => (
+                  <tr key={hg.id} className="text-start">
+                    {selectionEnabled && (
+                      <th className={cn("p-2 w-10 text-center align-middle border-b border-border/80", grid && "border-e border-border/70")}>
+                        <input
+                          type="checkbox"
+                          aria-label="تَحديد كل المَرئي"
+                          className="size-4 cursor-pointer accent-primary"
+                          checked={allVisibleSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = someVisibleSelected;
+                          }}
+                          onChange={toggleAllVisible}
+                        />
                       </th>
-                    );
-                  })}
-                </tr>
-              ))}
-            </thead>
+                    )}
+                    {hg.headers.map((h) => {
+                      const sortable = h.column.getCanSort();
+                      const dir = h.column.getIsSorted();
+                      return (
+                        <th
+                          key={h.id}
+                          className={cn(
+                            "border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground align-middle",
+                            grid && TABLE_GRID_HEAD_BORDER_CLS,
+                            columnPresentationClass(h.column),
+                            sortable && "cursor-pointer select-none hover:bg-muted/80 group"
+                          )}
+                          aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
+                          {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
+                          onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
+                          onKeyDown={
+                            sortable
+                              ? (e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    h.column.getToggleSortingHandler()?.(e);
+                                  }
+                                }
+                              : undefined
+                          }
+                        >
+                          {renderHeaderContent(h)}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </thead>
+            </DataTableHeaderContext.Provider>
             <tbody>
               {loading && (
                 <TableSkeleton rows={8} cols={effectiveColumns.length + (selectionEnabled ? 1 : 0)} />

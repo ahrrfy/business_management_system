@@ -1,4 +1,4 @@
-import type { Column, ColumnDef } from "@tanstack/react-table";
+import type { Column, ColumnDef, SortingState } from "@tanstack/react-table";
 
 export type TableColumnKind = "text" | "number" | "money" | "date" | "datetime" | "code" | "phone" | "status" | "actor" | "actions";
 export type TableColumnAlign = "start" | "center" | "end";
@@ -103,85 +103,263 @@ export function withColumnPresentation<T>(
  * وتبقى للشاشة الكلمةُ الأخيرة: `sortingFn` صريحٌ على العمود يتقدّم على هذا الاشتقاق.
  */
 
-/** يستخرج عدداً من نصٍّ معروض (فواصل آلاف · رموز عملة · علامة سالب · نسبة). */
+/** يستخرج عدداً من نصٍّ معروض (فواصل آلاف · رموز عملة · علامة سالب · نسبة · أقواس محاسبية). */
 export function numericFromDisplay(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value !== "string") return null;
-  /*
-   * ⚠️ **تطبيعُ إشارة السالب أوّلاً** (مراجعة Codex على PR #946): شاشاتٌ تعرض السالب
-   * بالمحرف الطباعيّ «−» (U+2212) لا بالشرطة اللاتينية — مثل `CommissionRuns` و
-   * `StocktakeReport`. والتنقيةُ أدناه تُسقط ما ليس رقماً ولا نقطةً ولا شرطةً لاتينية،
-   * فكان «−1,000» يصير «1000» ⇒ **يُفرَز موجباً** فيقع في الجهة الخاطئة تماماً من
-   * الترتيب، صعوداً وهبوطاً. تحويلُه قبل التنقية يُبقي الإشارة.
-   */
-  const normalized = value.replace(/−/g, "-");
-  // نلتقط أوّل رمزٍ عدديّ (بما في ذلك السالب والفاصلة وفواصل الآلاف) لمنع دمج الأرقام المتعددة في الخلايا المكدسة
-  const match = normalized.match(/-?\s*\d[\d,]*(?:\.\d+)?/);
-  if (!match) return null;
+
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed === "—" || trimmed === "-" || trimmed === "–") return null;
+
+  // تطبيع الأرقام الهندية/العربية (١٢٣ -> 123)
+  const arabicIndicDigits = "٠١٢٣٤٥٦٧٨٩";
+  let normalized = trimmed.replace(/[٠-٩]/g, (d) => String(arabicIndicDigits.indexOf(d)));
+
+  // تطبيع فواصل الآلاف والفواصل العشرية العربية
+  // U+066B (فاصلة عشرية عربية ٫) -> .
+  // U+066C (فاصلة آلاف عربية ٬) -> ,
+  // U+060C (فاصلة عربية ،) -> ,
+  normalized = normalized
+    .replace(/\u066B/g, ".")
+    .replace(/[\u066C\u060C]/g, ",");
+
+  // تطبيع إشارات السالب المختلفة (المحرف الطباعي U+2212، الوصلة U+2013، الشرطة U+2014)
+  normalized = normalized.replace(/[−–—]/g, "-");
+
+  // نلتقط أوّل رمزٍ عدديّ بما في ذلك الأعداد التي تبدأ بفاصلة عشرية مثل .5 أو ٫٥
+  const match = normalized.match(/(?:\d[\d,]*(?:\.\d+)?|\.\d+)/);
+  if (!match || match.index === undefined) return null;
+
+  const prefix = normalized.slice(0, match.index);
+  const suffix = normalized.slice(match.index + match[0].length);
+
+  // 1. الأقواس المحاسبية للأرصدة السالبة مثل (1,500) أو (1,500 د.ع) أو ($1,500) أو الرصيد: (1,500)
+  // ⚠️ يجب أن تحيط الأقواس بالمبلغ الأساسي نفسه، ولا تطابق الملاحظات اللاحقة مثل "1,000.50 (مدفوع: 200.25)"
+  const isAccountingParen = (() => {
+    const lastOpenParen = prefix.lastIndexOf("(");
+    if (lastOpenParen === -1) return false;
+    const lastCloseParenInPrefix = prefix.lastIndexOf(")");
+    if (lastCloseParenInPrefix > lastOpenParen) return false;
+
+    const firstCloseParen = suffix.indexOf(")");
+    if (firstCloseParen === -1) return false;
+    const firstOpenParenInSuffix = suffix.indexOf("(");
+    if (firstOpenParenInSuffix !== -1 && firstOpenParenInSuffix < firstCloseParen) return false;
+
+    const betweenOpenAndNum = prefix.slice(lastOpenParen + 1).trim();
+    const betweenNumAndClose = suffix.slice(0, firstCloseParen).trim();
+
+    // داخل القوسين: لا يُسمح بأرقام أخرى ولا بنقطتين رأسيتين
+    if (/\d/.test(betweenNumAndClose)) return false;
+    if (/[:=]/.test(betweenOpenAndNum) || /[:=]/.test(betweenNumAndClose)) return false;
+
+    // ما يسبق العدد داخل القوسين: إما فارغ أو رموز/كلمات عملة أو إشارة
+    if (
+      betweenOpenAndNum !== "" &&
+      !/^[\s$€£¥+-]*$/.test(betweenOpenAndNum) &&
+      !/^(?:د\.ع|ر\.س|ج\.م|د\.ك|د\.إ|USD|IQD|SAR|EUR|GBP)$/i.test(betweenOpenAndNum)
+    ) {
+      return false;
+    }
+
+    // ما بين العدد والقوس المغلق: لا يُسمح بنصوص طويلة أو علامات ترقيم شاذة
+    if (betweenNumAndClose.length > 15 || /[;!?/\\]/.test(betweenNumAndClose)) return false;
+
+    // الجزء الذي يسبق القوس المفتوح: إما فارغ أو رمز/كلمة عملة أو نص ينتهي بنقطتين مثل "الرصيد:"
+    const beforeOpenParen = prefix.slice(0, lastOpenParen).trim();
+    if (
+      beforeOpenParen !== "" &&
+      !/[:=]\s*$/.test(beforeOpenParen) &&
+      !/^[\s$€£¥+-]*$/.test(beforeOpenParen) &&
+      !/^(?:د\.ع|ر\.س|ج\.م|د\.ك|د\.إ|USD|IQD|SAR|EUR|GBP)$/i.test(beforeOpenParen)
+    ) {
+      return false;
+    }
+
+    return true;
+  })();
+
+  // 2. إشارة سالب سابقة (prefix minus) مباشرة قبل العدد الأول دون أن تُسبق بحرف أو رقم
+  // ⚠️ لا تُعتبر سالباً إن سُبقت بحرف لاتيني/عربي (مثل معرّف INV-123 أو INV - 123) أو رقم (مثل مدى 100 - 200)
+  const hasPrefixMinus = (() => {
+    const lastMinusIndex = prefix.lastIndexOf("-");
+    if (lastMinusIndex === -1) return false;
+    const beforeMinus = prefix.slice(0, lastMinusIndex).trim();
+    if (beforeMinus === "" || /^[\s(]*[^\w\u0600-\u06FF\d\s]*$/.test(beforeMinus)) {
+      return true;
+    }
+    if (/[:=]\s*$/.test(beforeMinus)) {
+      return true;
+    }
+    return false;
+  })();
+
+  // 3. إشارة سالب لاحقة (suffix minus) في نصوص RTL عند نهاية المبلغ أو النص (مثل 1,500- أو 1,500 د.ع -)
+  // ⚠️ لا تُعتبر سالباً إن تلاها رقم (مدى: 100 - 200) أو نص وصفي (مثل: 1,500 د.ع - رصيد افتتاحي)
+  const hasSuffixMinus = /^(?:[^\d\w\s-]*|\s+[\u0600-\u06FFa-zA-Z]+)*\s*-\s*$/.test(suffix);
+
+  const isNegative = isAccountingParen || hasPrefixMinus || hasSuffixMinus;
+
   const cleaned = match[0].replace(/\s+/g, "").replace(/,/g, "");
-  if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
+  if (cleaned === "" || cleaned === ".") return null;
   const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+
+  const result = isNegative ? -Math.abs(n) : Math.abs(n);
+  return result === 0 ? 0 : result;
 }
 
-/** مقارنةٌ رقمية تُبقي الفارغَ في الذيل دائماً (لا يتصدّر «—» قائمةَ الأكبر). */
-export function compareNumericDisplay(a: unknown, b: unknown): number {
+/** مقارنةٌ رقمية رياضية حقيقية تُبقي الفارغَ في الذيل دائماً في كلا الاتجاهين الصاعد والهابط. */
+export function compareNumericDisplay(a: unknown, b: unknown, isDesc = false): number {
   const x = numericFromDisplay(a);
   const y = numericFromDisplay(b);
   if (x === null && y === null) return 0;
-  if (x === null) return 1;
-  if (y === null) return -1;
+  if (x === null) return isDesc ? -1 : 1;
+  if (y === null) return isDesc ? 1 : -1;
   return x - y;
 }
 
-/**
- * مقارنةُ تواريخ.
- *
- * ⚠️ **لا يُعتمد `Date.parse` على النصّ المعروض** (مراجعة Codex على PR #946): تنسيقُ
- * العرض في المشروع `DD/MM/YYYY` (انظر `fmtDate` في `client/src/lib/date.ts`)، و
- * `Date.parse` يقرأه **أمريكياً**: «02/09/2026» تصير ٩ فبراير، و«25/09/2026» تصير
- * `Invalid Date` فتسقط إلى مقارنةٍ نصّية. فالنتيجة ترتيبٌ غيرُ زمنيّ في كلّ عمود تاريخٍ
- * يُغذّى بـ`fmtDate`/`fmtDateTime` — وهو نقضٌ لغرض هذا الملفّ نفسه.
- * لذلك يُحلَّل التنسيقُ المعروض **صراحةً** أوّلاً، ثمّ يمرّ الباقي على `Date.parse`
- * (وهو يفهم ISO بدقّة)، ويبقى تحتهما السقوطُ إلى المقارنة النصّية.
- */
-export function compareDateDisplay(a: unknown, b: unknown): number {
-  const parse = (v: unknown): number | null => {
-    if (v instanceof Date) return v.getTime();
-    if (typeof v === "number") return v;
-    if (typeof v !== "string" || v.trim() === "") return null;
-    const text = v.trim();
-    // تنسيقُ العرض: DD/MM/YYYY ويتبعه اختياراً «، HH:mm» (فاصلة عربية أو لاتينية).
-    const shown = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s*[،,]\s*(\d{1,2}):(\d{2}))?/);
-    if (shown) {
-      const [, dd, mm, yyyy, hh, mi] = shown;
-      const ms = new Date(
-        Number(yyyy),
-        Number(mm) - 1,
-        Number(dd),
-        hh ? Number(hh) : 0,
-        mi ? Number(mi) : 0,
-      ).getTime();
-      return Number.isNaN(ms) ? null : ms;
+/** يستخرج طابعاً زمنياً (timestamp) من تاريخ معروض أو قيمة تاريخ. */
+export function parseDateDisplay(v: unknown): number | null {
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.getTime();
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "string" || v.trim() === "") return null;
+
+  const text = v.trim();
+  if (text === "—" || text === "-" || text === "–") return null;
+
+  // تطبيع الأرقام الهندية/العربية
+  const arabicIndicDigits = "٠١٢٣٤٥٦٧٨٩";
+  const normalized = text.replace(/[٠-٩]/g, (d) => String(arabicIndicDigits.indexOf(d)));
+
+  // إذا كان النص يحمل علامة المنطقة الزمنية الصريحة بعد وقت (مثل T...Z أو HH:mm+03:00) فهو طابع زمني دقيق يُحلّل مباشرة
+  // ⚠️ يجب اشتراط وجود وحدة وقت قبل الإشارة كي لا تُفسَّر السنة في مثل "02-09-2026" كـ offset سالب
+  if (/(?:T|\d{1,2}:\d{2})\s*(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)) {
+    const t = Date.parse(normalized);
+    if (!Number.isNaN(t)) return t;
+  }
+
+  // 1. تنسيق ISO: YYYY-MM-DD أو YYYY/MM/DD أو YYYY.MM.DD (تفسير محلي يمنع انزياح اليوم مع التوقيت العربي +3)
+  const isoMatch = normalized.match(
+    /^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})(?:[\s,،T]+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(ص|صباحاً|م|مساءً|am|pm|a\.m\.|p\.m\.))?)?/i,
+  );
+  if (isoMatch) {
+    const [, yyyy, mm, dd, rawHh, mi, ss, ampm] = isoMatch;
+    let hh = rawHh ? Number(rawHh) : 0;
+    if (ampm) {
+      const isPm = /^(م|مساءً|pm|p\.m\.)$/i.test(ampm.trim());
+      const isAm = /^(ص|صباحاً|am|a\.m\.)$/i.test(ampm.trim());
+      if (isPm && hh < 12) {
+        hh += 12;
+      } else if (isAm && hh === 12) {
+        hh = 0;
+      }
     }
-    const t = Date.parse(text);
-    return Number.isNaN(t) ? null : t;
+    const ms = new Date(
+      Number(yyyy),
+      Number(mm) - 1,
+      Number(dd),
+      hh,
+      mi ? Number(mi) : 0,
+      ss ? Number(ss) : 0,
+    ).getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+
+  // 2. تنسيقُ العرض المحلي: DD/MM/YYYY أو DD-MM-YYYY أو DD.MM.YYYY ويتبعه اختياراً الوقت (HH:mm أو HH:mm:ss) وعلامة ص/م/AM/PM
+  const shown = normalized.match(
+    /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[\s,،]+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(ص|صباحاً|م|مساءً|am|pm|a\.m\.|p\.m\.))?)?/i,
+  );
+  if (shown) {
+    const [, dd, mm, yyyy, rawHh, mi, ss, ampm] = shown;
+    let hh = rawHh ? Number(rawHh) : 0;
+    if (ampm) {
+      const isPm = /^(م|مساءً|pm|p\.m\.)$/i.test(ampm.trim());
+      const isAm = /^(ص|صباحاً|am|a\.m\.)$/i.test(ampm.trim());
+      if (isPm && hh < 12) {
+        hh += 12;
+      } else if (isAm && hh === 12) {
+        hh = 0;
+      }
+    }
+    const ms = new Date(
+      Number(yyyy),
+      Number(mm) - 1,
+      Number(dd),
+      hh,
+      mi ? Number(mi) : 0,
+      ss ? Number(ss) : 0,
+    ).getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+
+  const t = Date.parse(normalized);
+  return Number.isNaN(t) ? null : t;
+}
+
+/** مقارنةُ تواريخ زمنية حقيقية تُبقي الفارغَ في الذيل دائماً في كلا الاتجاهين الصاعد والهابط. */
+export function compareDateDisplay(a: unknown, b: unknown, isDesc = false): number {
+  const x = parseDateDisplay(a);
+  const y = parseDateDisplay(b);
+  const isPlaceholder = (v: unknown): boolean => {
+    if (v === null || v === undefined) return true;
+    if (typeof v === "string") {
+      const t = v.trim();
+      return t === "" || t === "—" || t === "-" || t === "–";
+    }
+    return false;
   };
-  const x = parse(a);
-  const y = parse(b);
-  if (x === null && y === null) return String(a ?? "").localeCompare(String(b ?? ""), "ar");
-  if (x === null) return 1;
-  if (y === null) return -1;
+  if (x === null && y === null) {
+    if (isPlaceholder(a) && isPlaceholder(b)) return 0;
+    return String(a ?? "").localeCompare(String(b ?? ""), "ar");
+  }
+  if (x === null) return isDesc ? -1 : 1;
+  if (y === null) return isDesc ? 1 : -1;
   return x - y;
+}
+
+/** مقارنةٌ نصية عربية متوافقة مع RTL وتُبقي القيم الفارغة في الذيل دائماً وتدعم الفرز الأبجدي الرقمي الطبيعي. */
+export function compareTextDisplay(a: unknown, b: unknown, isDesc = false): number {
+  const isValueEmpty = (v: unknown): boolean => {
+    if (v === null || v === undefined) return true;
+    if (typeof v === "string") {
+      const t = v.trim();
+      return t === "" || t === "—" || t === "-" || t === "–";
+    }
+    return false;
+  };
+  const xEmpty = isValueEmpty(a);
+  const yEmpty = isValueEmpty(b);
+  if (xEmpty && yEmpty) return 0;
+  if (xEmpty) return isDesc ? -1 : 1;
+  if (yEmpty) return isDesc ? 1 : -1;
+  return String(a ?? "").trim().localeCompare(String(b ?? "").trim(), "ar", { numeric: true });
 }
 
 /** الأنواع التي تلزمها مقارنةٌ مشتقّة بدل المقارنة النصّية الافتراضية. */
-export function sortingFnForKind(kind: TableColumnKind): "auto" | ((rowA: { getValue: (id: string) => unknown }, rowB: { getValue: (id: string) => unknown }, id: string) => number) {
+export function sortingFnForKind(
+  kind: TableColumnKind,
+  getSorting?: () => SortingState | undefined,
+): "auto" | ((rowA: { getValue: (id: string) => unknown }, rowB: { getValue: (id: string) => unknown }, id: string) => number) {
   if (kind === "money" || kind === "number") {
-    return (rowA, rowB, id) => compareNumericDisplay(rowA.getValue(id), rowB.getValue(id));
+    return (rowA, rowB, id) => {
+      const isDesc = getSorting?.()?.find((s) => s.id === id)?.desc ?? false;
+      return compareNumericDisplay(rowA.getValue(id), rowB.getValue(id), isDesc);
+    };
   }
   if (kind === "date" || kind === "datetime") {
-    return (rowA, rowB, id) => compareDateDisplay(rowA.getValue(id), rowB.getValue(id));
+    return (rowA, rowB, id) => {
+      const isDesc = getSorting?.()?.find((s) => s.id === id)?.desc ?? false;
+      return compareDateDisplay(rowA.getValue(id), rowB.getValue(id), isDesc);
+    };
+  }
+  if (kind === "text" || kind === "code" || kind === "status" || kind === "phone") {
+    return (rowA, rowB, id) => {
+      const isDesc = getSorting?.()?.find((s) => s.id === id)?.desc ?? false;
+      return compareTextDisplay(rowA.getValue(id), rowB.getValue(id), isDesc);
+    };
   }
   return "auto";
 }
