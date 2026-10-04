@@ -560,13 +560,7 @@ export default function Invoices() {
             <div className="flex min-w-0 flex-col items-start gap-0.5">
               <InvoiceChannelBadge row={r} />
               {r.workOrderNumber ? (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/work-orders/${r.workOrderId}`)}
-                  className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline"
-                  dir="ltr"
-                  title="فتح أمر الشغل"
-                >
+                <button type="button" onClick={() => navigate(`/work-orders/${r.workOrderId}`)} className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline" dir="ltr" title="فتح أمر الشغل">
                   {r.workOrderNumber}
                 </button>
               ) : null}
@@ -582,21 +576,11 @@ export default function Invoices() {
         cell: ({ row }) => {
           const r = row.original;
           if (!r.consignmentStatus) return <span className="text-muted-foreground">—</span>;
-          const st = CONSIGNMENT_STATUS[r.consignmentStatus] ?? {
-            label: r.consignmentStatus,
-            cls: "bg-muted",
-          };
+          const st = CONSIGNMENT_STATUS[r.consignmentStatus] ?? { label: r.consignmentStatus, cls: "bg-muted" };
           return (
             <div className="flex flex-col items-start gap-0.5">
               <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${st.cls}`}>توصيل — {st.label}</span>
-              <span className="text-[11px] text-muted-foreground">
-                {r.deliveryPartyName ?? "—"}
-                {r.consignmentNumber ? (
-                  <span className="ms-1 font-mono" dir="ltr">
-                    {r.consignmentNumber}
-                  </span>
-                ) : null}
-              </span>
+              <span className="text-[11px] text-muted-foreground">{r.deliveryPartyName ?? "—"}{r.consignmentNumber ? <span className="ms-1 font-mono" dir="ltr">{r.consignmentNumber}</span> : null}</span>
             </div>
           );
         },
