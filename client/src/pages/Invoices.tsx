@@ -541,17 +541,19 @@ export default function Invoices() {
       },
       // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (سطر واحد لكل فرع لا معنى لتمييزه).
       ...(showBranchCol
-        ? [
-            {
-              id: "branch",
-              header: "الفرع",
-              cell: ({ row }) => branchNames.get(row.original.branchId) ?? `#${row.original.branchId}`,
-            } as ColumnDef<Row, unknown>,
-          ]
+        ? [{
+            id: "branch",
+            header: "الفرع",
+            accessorFn: (r: Row) => branchNames.get(r.branchId) ?? `#${r.branchId}`,
+            meta: { kind: "text" as const },
+            cell: ({ row }: { row: { original: Row } }) => branchNames.get(row.original.branchId) ?? `#${row.original.branchId}`,
+          } as ColumnDef<Row, unknown>]
         : []),
       {
         id: "channel",
         header: "القناة",
+        accessorFn: (r) => invoiceChannelLabel(deriveInvoiceChannel(r)),
+        meta: { kind: "text" },
         cell: ({ row }) => {
           const r = row.original;
           return (
@@ -575,6 +577,8 @@ export default function Invoices() {
       {
         id: "delivery",
         header: "التوصيل",
+        accessorFn: (r) => (r.consignmentStatus ? (CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus) : "—"),
+        meta: { kind: "status" },
         cell: ({ row }) => {
           const r = row.original;
           if (!r.consignmentStatus) return <span className="text-muted-foreground">—</span>;
@@ -600,19 +604,18 @@ export default function Invoices() {
       {
         accessorKey: "salespersonName",
         header: "موظف المبيعات",
+        meta: { kind: "text" },
         cell: (c) => (c.getValue() as string) ?? "—",
       },
       {
         id: "shiftDevice",
         header: "الوردية / المحطة",
+        accessorFn: (r) => [r.shiftId ? `#${r.shiftId}` : "", r.deviceId ?? ""].filter(Boolean).join(" "),
+        meta: { kind: "code" },
         cell: ({ row }) => (
           <span className="text-xs">
             {row.original.shiftId ? `#${row.original.shiftId}` : "—"}
-            {row.original.deviceId ? (
-              <span className="block text-muted-foreground font-mono" dir="ltr">
-                {row.original.deviceId}
-              </span>
-            ) : null}
+            {row.original.deviceId ? <span className="block text-muted-foreground font-mono" dir="ltr">{row.original.deviceId}</span> : null}
           </span>
         ),
       },

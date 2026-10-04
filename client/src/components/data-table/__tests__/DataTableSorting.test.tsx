@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   numericFromDisplay,
   compareNumericDisplay,
@@ -12,7 +12,7 @@ import {
 } from "@/components/data-table/columnContract";
 import { DataTableColumnHeader } from "@/components/data-table/DataTableColumnHeader";
 import { DataTable } from "@/components/data-table/DataTable";
-import type { Column, ColumnDef } from "@tanstack/react-table";
+import type { Column, ColumnDef, SortingState } from "@tanstack/react-table";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -776,3 +776,788 @@ describe("DataTable Tri-State Sorting Interaction & Cycle", () => {
     expect(rows[3].textContent).toContain("—");
   });
 });
+
+describe("DataTable Universal Sorting with serverPagination", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  type SupplierTestRow = {
+    id: number;
+    name: string;
+    balance: number;
+    balanceUsd: number;
+  };
+
+  const supplierData: SupplierTestRow[] = [
+    { id: 1, name: "شركة النور", balance: 500000, balanceUsd: 400 },
+    { id: 2, name: "مكتبة الرؤية", balance: 1200000, balanceUsd: 1000 },
+    { id: 3, name: "دار البيان", balance: -150000, balanceUsd: 0 },
+    { id: 4, name: "مورد الأمل", balance: 0, balanceUsd: 250 },
+  ];
+
+  const supplierColumns: ColumnDef<SupplierTestRow>[] = [
+    {
+      id: "name",
+      header: "الاسم",
+      accessorFn: (s) => s.name,
+      meta: { kind: "text" },
+    },
+    {
+      id: "balance",
+      header: "الرصيد",
+      accessorFn: (s) => `${s.balance.toLocaleString("en-US")} د.ع`,
+      meta: { kind: "money" },
+    },
+    {
+      id: "balanceUsd",
+      header: "الرصيد $",
+      accessorFn: (s) => (s.balanceUsd > 0 ? `$${s.balanceUsd}` : "—"),
+      meta: { kind: "money" },
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: () => <button type="button">تعديل</button>,
+    },
+  ];
+
+  it("يفعّل الفرز التفاعلي الذكي والنمط الثلاثي للأرصدة في جداول serverPagination", () => {
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={supplierData}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 100,
+          }}
+        />,
+      );
+    });
+
+    const ths = host.querySelectorAll<HTMLTableCellElement>("thead th");
+    const nameTh = ths[0];
+    const balanceTh = ths[1];
+    const balanceUsdTh = ths[2];
+    const actionsTh = ths[3];
+
+    // التحقق من أن أعمدة البيانات قابلة للفرز
+    expect(nameTh.getAttribute("role")).toBe("button");
+    expect(balanceTh.getAttribute("role")).toBe("button");
+    expect(balanceUsdTh.getAttribute("role")).toBe("button");
+    expect(nameTh.getAttribute("aria-sort")).toBe("none");
+    expect(balanceTh.getAttribute("aria-sort")).toBe("none");
+    expect(balanceUsdTh.getAttribute("aria-sort")).toBe("none");
+
+    // عمود الإجراءات معطل صراحة ولا يقبل الفرز
+    expect(actionsTh.getAttribute("role")).toBeNull();
+    expect(actionsTh.getAttribute("aria-sort")).toBeNull();
+    expect(actionsTh.querySelector("[data-column-header='true'] svg")).toBeNull();
+
+    // الحالة الأولية لصفوف الجدول
+    let rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("شركة النور");
+
+    // النقرة الأولى على عمود الرصيد: فرز تنازلي (الأعلى للأقل)
+    act(() => {
+      balanceTh.click();
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("descending");
+    rows = host.querySelectorAll("tbody tr");
+    // الأعلى: مكتبة الرؤية (1,200,000)
+    expect(rows[0].textContent).toContain("مكتبة الرؤية");
+    // الثاني: شركة النور (500,000)
+    expect(rows[1].textContent).toContain("شركة النور");
+    // الثالث: مورد الأمل (0)
+    expect(rows[2].textContent).toContain("مورد الأمل");
+    // الرابع: دار البيان (-150,000)
+    expect(rows[3].textContent).toContain("دار البيان");
+
+    // النقرة الثانية على عمود الرصيد: عكس اتجاه الفرز إلى تصاعدي (الأقل للأعلى)
+    act(() => {
+      balanceTh.click();
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("ascending");
+    rows = host.querySelectorAll("tbody tr");
+    // الأقل: دار البيان (-150,000)
+    expect(rows[0].textContent).toContain("دار البيان");
+    // الثاني: مورد الأمل (0)
+    expect(rows[1].textContent).toContain("مورد الأمل");
+    // الثالث: شركة النور (500,000)
+    expect(rows[2].textContent).toContain("شركة النور");
+    // الرابع: مكتبة الرؤية (1,200,000)
+    expect(rows[3].textContent).toContain("مكتبة الرؤية");
+
+    // النقرة الثالثة: إلغاء الفرز والعودة للترتيب الافتراضي
+    act(() => {
+      balanceTh.click();
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("none");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("شركة النور");
+    expect(rows[1].textContent).toContain("مكتبة الرؤية");
+    expect(rows[2].textContent).toContain("دار البيان");
+    expect(rows[3].textContent).toContain("مورد الأمل");
+  });
+
+  it("يفرز عمود الرصيد الدولاري (balanceUsd) تنازلياً مع تذييل القيم الفارغة — في جداول serverPagination", () => {
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={supplierData}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 100,
+          }}
+        />,
+      );
+    });
+
+    const balanceUsdTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[2];
+
+    // النقرة الأولى: تنازلي للأموال (1000 ثم 400 ثم 250 ثم — في الذيل)
+    act(() => {
+      balanceUsdTh.click();
+    });
+    expect(balanceUsdTh.getAttribute("aria-sort")).toBe("descending");
+    let rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("مكتبة الرؤية"); // $1000
+    expect(rows[1].textContent).toContain("شركة النور"); // $400
+    expect(rows[2].textContent).toContain("مورد الأمل"); // $250
+    expect(rows[3].textContent).toContain("دار البيان"); // — في الذيل
+
+    // النقرة الثانية: تصاعدي (250 ثم 400 ثم 1000 ثم — في الذيل دائماً)
+    act(() => {
+      balanceUsdTh.click();
+    });
+    expect(balanceUsdTh.getAttribute("aria-sort")).toBe("ascending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("مورد الأمل"); // $250
+    expect(rows[1].textContent).toContain("شركة النور"); // $400
+    expect(rows[2].textContent).toContain("مكتبة الرؤية"); // $1000
+    expect(rows[3].textContent).toContain("دار البيان"); // — في الذيل دائماً
+
+    // النقرة الثالثة: إلغاء الفرز
+    act(() => {
+      balanceUsdTh.click();
+    });
+    expect(balanceUsdTh.getAttribute("aria-sort")).toBe("none");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("شركة النور");
+  });
+
+  it("يفرز عمود الاسم هجائياً تصاعدياً ثم تنازلياً في جداول serverPagination", () => {
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={supplierData}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 100,
+          }}
+        />,
+      );
+    });
+
+    const nameTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[0];
+
+    // النقرة الأولى: تصاعدياً للنصوص
+    act(() => {
+      nameTh.click();
+    });
+    expect(nameTh.getAttribute("aria-sort")).toBe("ascending");
+    let rows = host.querySelectorAll("tbody tr");
+    // دار البيان (د) يسبق شركة النور (ش) ثم مكتبة الرؤية (م) ومورد الأمل (م)
+    expect(rows[0].textContent).toContain("دار البيان");
+
+    // النقرة الثانية: تنازلياً للنصوص
+    act(() => {
+      nameTh.click();
+    });
+    expect(nameTh.getAttribute("aria-sort")).toBe("descending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[rows.length - 1].textContent).toContain("دار البيان");
+
+    // النقرة الثالثة: إلغاء الفرز
+    act(() => {
+      nameTh.click();
+    });
+    expect(nameTh.getAttribute("aria-sort")).toBe("none");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("شركة النور");
+  });
+
+  it("يدعم serverSorting الخارجي إن مُرِّر مع serverPagination ويفوّض التحديث إليه دون فرز محلي مزدوج", () => {
+    let externalSorting: SortingState = [{ id: "balance", desc: true }];
+    const onSortingChange = (updater: SortingState) => {
+      externalSorting = updater;
+    };
+
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={supplierData}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 100,
+          }}
+          serverSorting={{
+            value: externalSorting,
+            onChange: onSortingChange,
+          }}
+        />,
+      );
+    });
+
+    const balanceTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+    expect(balanceTh.getAttribute("aria-sort")).toBe("descending");
+
+    // النقر يفوّض التحديث لدالة onChange الخارجية
+    act(() => {
+      balanceTh.click();
+    });
+    expect(externalSorting).toEqual([{ id: "balance", desc: false }]);
+  });
+
+  it("يدعم التنقل والفرز عبر لوحة المفاتيح (Enter و Space) في ترويسات serverPagination", () => {
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={supplierData}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 100,
+          }}
+        />,
+      );
+    });
+
+    const balanceTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+    expect(balanceTh.getAttribute("aria-sort")).toBe("none");
+
+    // الضغط على مفتاح Enter يفعّل الفرز التنازلي
+    act(() => {
+      balanceTh.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("descending");
+    let rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("مكتبة الرؤية"); // 1,200,000
+
+    // الضغط على مفتاح Space يعكس اتجاه الفرز إلى تصاعدي
+    act(() => {
+      balanceTh.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("ascending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("دار البيان"); // -150,000
+
+    // الضغط مرة ثالثة يلغي الفرز
+    act(() => {
+      balanceTh.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("none");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("شركة النور");
+  });
+
+  it("يحافظ على تزامن ترتيب كروت الهاتف mobileCardRenderer مع صفوف الجدول عند الفرز", () => {
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={supplierData}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 100,
+          }}
+          mobileCardRenderer={(row) => (
+            <div data-testid="mobile-card" key={row.id}>
+              <span>{row.name}</span>: <span>{row.balance}</span>
+            </div>
+          )}
+        />,
+      );
+    });
+
+    const balanceTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+
+    // الفرز تنازلياً
+    act(() => {
+      balanceTh.click();
+    });
+
+    const tableRows = host.querySelectorAll("tbody tr");
+    const mobileCards = host.querySelectorAll("[data-testid='mobile-card']");
+
+    expect(mobileCards.length).toBe(4);
+    // الترتيب في الكروت مطابق للجدول تماماً: الأعلى أولاً
+    expect(tableRows[0].textContent).toContain("مكتبة الرؤية");
+    expect(mobileCards[0].textContent).toContain("مكتبة الرؤية");
+    expect(tableRows[3].textContent).toContain("دار البيان");
+    expect(mobileCards[3].textContent).toContain("دار البيان");
+
+    // الفرز تصاعدياً
+    act(() => {
+      balanceTh.click();
+    });
+    const updatedCards = host.querySelectorAll("[data-testid='mobile-card']");
+    expect(updatedCards[0].textContent).toContain("دار البيان");
+    expect(updatedCards[3].textContent).toContain("مكتبة الرؤية");
+  });
+
+  it("يطبق الفرز النشط تلقائياً على البيانات الجديدة عند انتقال الصفحة في serverPagination", () => {
+    const page0Data: SupplierTestRow[] = [
+      { id: 1, name: "شركة النور", balance: 500000, balanceUsd: 400 },
+      { id: 2, name: "مكتبة الرؤية", balance: 1200000, balanceUsd: 1000 },
+    ];
+    const page1Data: SupplierTestRow[] = [
+      { id: 3, name: "دار البيان", balance: -150000, balanceUsd: 0 },
+      { id: 4, name: "مورد الأمل", balance: 200000, balanceUsd: 250 },
+    ];
+
+    // عرض الصفحة 0
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={page0Data}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 2,
+            total: 4,
+          }}
+        />,
+      );
+    });
+
+    const balanceTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+
+    // تفعيل الفرز التنازلي على الصفحة 0
+    act(() => {
+      balanceTh.click();
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("descending");
+    let rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("مكتبة الرؤية"); // 1,200,000
+    expect(rows[1].textContent).toContain("شركة النور"); // 500,000
+
+    // انتقال الصفحة إلى 1 ووصول بيانات الصفحة 1
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={page1Data}
+          searchable={false}
+          serverPagination={{
+            page: 1,
+            onPageChange: () => {},
+            pageSize: 2,
+            total: 4,
+          }}
+        />,
+      );
+    });
+
+    // المؤشر يبقى تنازلياً والبيانات الجديدة تفرز تنازلياً في الصفحة الحالية
+    const newBalanceTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+    expect(newBalanceTh.getAttribute("aria-sort")).toBe("descending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("مورد الأمل"); // 200,000
+    expect(rows[1].textContent).toContain("دار البيان"); // -150,000
+  });
+
+  it("يتعامل بسلاسة مع الجداول الفارغة دون أخطاء في serverPagination", () => {
+    act(() => {
+      root.render(
+        <DataTable
+          columns={supplierColumns}
+          data={[]}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 0,
+          }}
+        />,
+      );
+    });
+
+    const balanceTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+    expect(balanceTh.getAttribute("aria-sort")).toBe("none");
+
+    // النقر على جدول فارغ يغيّر مؤشر الفرز دون انهيار
+    act(() => {
+      balanceTh.click();
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("descending");
+
+    act(() => {
+      balanceTh.click();
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("ascending");
+
+    act(() => {
+      balanceTh.click();
+    });
+    expect(balanceTh.getAttribute("aria-sort")).toBe("none");
+  });
+
+  it("ينفذ دورة النمط الثلاثي للأعمدة الرقمية (kind: 'number') بحيث يبدأ تنازلياً ثم تصاعدياً ثم يعود للأصل", () => {
+    type StockRow = { id: number; name: string; qty: number };
+    const stockData: StockRow[] = [
+      { id: 1, name: "صنف أ", qty: 5 },
+      { id: 2, name: "صنف ب", qty: 120 },
+      { id: 3, name: "صنف ج", qty: 0 },
+      { id: 4, name: "صنف د", qty: 45 },
+    ];
+    const stockCols: ColumnDef<StockRow>[] = [
+      { id: "name", header: "الصنف", accessorFn: (r) => r.name, meta: { kind: "text" } },
+      { id: "qty", header: "الكمية", accessorFn: (r) => r.qty, meta: { kind: "number" } },
+    ];
+
+    act(() => {
+      root.render(<DataTable columns={stockCols} data={stockData} searchable={false} />);
+    });
+
+    const qtyTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+    expect(qtyTh.getAttribute("aria-sort")).toBe("none");
+
+    // النقرة الأولى: يبدأ تنازلياً للأرقام
+    act(() => {
+      qtyTh.click();
+    });
+    expect(qtyTh.getAttribute("aria-sort")).toBe("descending");
+    let rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("صنف ب"); // 120
+    expect(rows[1].textContent).toContain("صنف د"); // 45
+    expect(rows[2].textContent).toContain("صنف أ"); // 5
+    expect(rows[3].textContent).toContain("صنف ج"); // 0
+
+    // النقرة الثانية: عكس الاتجاه إلى تصاعدي
+    act(() => {
+      qtyTh.click();
+    });
+    expect(qtyTh.getAttribute("aria-sort")).toBe("ascending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("صنف ج"); // 0
+    expect(rows[1].textContent).toContain("صنف أ"); // 5
+    expect(rows[2].textContent).toContain("صنف د"); // 45
+    expect(rows[3].textContent).toContain("صنف ب"); // 120
+
+    // النقرة الثالثة: إلغاء الفرز واستعادة الترتيب الأولي
+    act(() => {
+      qtyTh.click();
+    });
+    expect(qtyTh.getAttribute("aria-sort")).toBe("none");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("صنف أ");
+    expect(rows[1].textContent).toContain("صنف ب");
+  });
+
+  it("ينفذ دورة النمط الثلاثي لأعمدة الوقت والتاريخ الكامل (kind: 'datetime') تصاعدياً ثم تنازلياً", () => {
+    type EventRow = { id: number; title: string; timestamp: string };
+    const eventData: EventRow[] = [
+      { id: 1, title: "حدث مسائي", timestamp: "2026-09-02T18:30:00Z" },
+      { id: 2, title: "حدث قديم", timestamp: "2026-09-01T08:00:00Z" },
+      { id: 3, title: "حدث صباحي", timestamp: "2026-09-02T10:00:00Z" },
+    ];
+    const eventCols: ColumnDef<EventRow>[] = [
+      { id: "title", header: "العنوان", accessorFn: (r) => r.title, meta: { kind: "text" } },
+      { id: "timestamp", header: "الوقت", accessorFn: (r) => r.timestamp, meta: { kind: "datetime" } },
+    ];
+
+    act(() => {
+      root.render(<DataTable columns={eventCols} data={eventData} searchable={false} />);
+    });
+
+    const timeTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+    expect(timeTh.getAttribute("aria-sort")).toBe("none");
+
+    // النقرة الأولى: تصاعدياً للتواريخ (الأقدم أولاً)
+    act(() => {
+      timeTh.click();
+    });
+    expect(timeTh.getAttribute("aria-sort")).toBe("ascending");
+    let rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("حدث قديم"); // 01/09
+    expect(rows[1].textContent).toContain("حدث صباحي"); // 02/09 10:00
+    expect(rows[2].textContent).toContain("حدث مسائي"); // 02/09 18:30
+
+    // النقرة الثانية: تنازلياً (الأحدث أولاً)
+    act(() => {
+      timeTh.click();
+    });
+    expect(timeTh.getAttribute("aria-sort")).toBe("descending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("حدث مسائي");
+    expect(rows[1].textContent).toContain("حدث صباحي");
+    expect(rows[2].textContent).toContain("حدث قديم");
+
+    // النقرة الثالثة: إلغاء الفرز
+    act(() => {
+      timeTh.click();
+    });
+    expect(timeTh.getAttribute("aria-sort")).toBe("none");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("حدث مسائي");
+    expect(rows[1].textContent).toContain("حدث قديم");
+  });
+
+  it("يحافظ على الفرز النشط مع البحث المحلي (globalFilter) ويدمج التصفية والفرز بسلاسة", () => {
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        root.render(<DataTable columns={supplierColumns} data={supplierData} searchable={true} />);
+      });
+
+      const balanceTh = host.querySelectorAll<HTMLTableCellElement>("thead th")[1];
+
+      // الفرز تنازلياً للمبالغ
+      act(() => {
+        balanceTh.click();
+      });
+      expect(balanceTh.getAttribute("aria-sort")).toBe("descending");
+
+      // محاكاة إدخال نص في حقل البحث
+      const searchInput = host.querySelector<HTMLInputElement>("input[type='search'], input[placeholder*='بحث']");
+      expect(searchInput).not.toBeNull();
+
+      act(() => {
+        if (searchInput) {
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype,
+            "value",
+          )?.set;
+          nativeInputValueSetter?.call(searchInput, "م");
+          searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
+
+      // تقديم المؤقت لتجاوز مهلة الـ debounce (180ms)
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+
+      const rows = host.querySelectorAll("tbody tr");
+      // يطابق فقط "مكتبة الرؤية" و"مورد الأمل"
+      expect(rows.length).toBe(2);
+      // ويبقى الترتيب تنازلياً حسب الرصيد: مكتبة الرؤية (1,200,000) ثم مورد الأمل (0)
+      expect(rows[0].textContent).toContain("مكتبة الرؤية");
+      expect(rows[1].textContent).toContain("مورد الأمل");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("يعطل الفرز تلقائياً لأعمدة الإجراءات المعرفة بـ id: 'actions' أو id: 'action' دون الحاجة للتصريح بـ enableSorting: false", () => {
+    type SimpleRow = { id: number; name: string };
+    const testData: SimpleRow[] = [
+      { id: 1, name: "عنصر أ" },
+      { id: 2, name: "عنصر ب" },
+    ];
+    const testCols: ColumnDef<SimpleRow>[] = [
+      { id: "name", header: "الاسم", accessorFn: (r) => r.name },
+      // عمود actions بلا enableSorting وبلا meta
+      { id: "actions", header: "إجراء", cell: () => <button type="button">تعديل</button> },
+      // عمود action بصيغة المفرد بلا enableSorting وبلا meta
+      { id: "action", header: "عمليات", cell: () => <button type="button">حذف</button> },
+    ];
+
+    act(() => {
+      root.render(<DataTable columns={testCols} data={testData} searchable={false} />);
+    });
+
+    const ths = host.querySelectorAll<HTMLTableCellElement>("thead th");
+    const nameTh = ths[0];
+    const actionsTh = ths[1];
+    const actionTh = ths[2];
+
+    expect(nameTh.getAttribute("role")).toBe("button");
+    expect(nameTh.getAttribute("aria-sort")).toBe("none");
+
+    // أعمدة الإجراءات يجب أن تكون معطلة تماماً
+    expect(actionsTh.getAttribute("role")).toBeNull();
+    expect(actionsTh.getAttribute("aria-sort")).toBeNull();
+    expect(actionsTh.querySelector("[data-column-header='true'] svg")).toBeNull();
+
+    expect(actionTh.getAttribute("role")).toBeNull();
+    expect(actionTh.getAttribute("aria-sort")).toBeNull();
+    expect(actionTh.querySelector("[data-column-header='true'] svg")).toBeNull();
+
+    // النقر على ترويسة الإجراءات لا يُحدث أي فرز
+    act(() => {
+      actionsTh.click();
+      actionTh.click();
+    });
+    expect(actionsTh.getAttribute("aria-sort")).toBeNull();
+    expect(actionTh.getAttribute("aria-sort")).toBeNull();
+  });
+
+  it("يفعّل الفرز التفاعلي الذكي والنمط الثلاثي لأعمدة جدول الفواتير (Invoices) مع serverPagination", () => {
+    type InvoiceRow = {
+      id: number;
+      invoiceNumber: string;
+      customerName: string;
+      total: string;
+      branch: string;
+      channel: string;
+      consignmentStatus: string;
+    };
+    const invoicesData: InvoiceRow[] = [
+      { id: 1, invoiceNumber: "INV-001", customerName: "شركة البشائر", total: "50000", branch: "الفرع الرئيسي", channel: "POS", consignmentStatus: "DELIVERED" },
+      { id: 2, invoiceNumber: "INV-002", customerName: "مكتبة الفرات", total: "150000", branch: "فرع المبيعات", channel: "ONLINE", consignmentStatus: "PENDING" },
+      { id: 3, invoiceNumber: "INV-003", customerName: "مطبعة دجلة", total: "10000", branch: "الفرع الرئيسي", channel: "POS", consignmentStatus: "IN_TRANSIT" },
+    ];
+
+    const invoiceCols: ColumnDef<InvoiceRow>[] = [
+      {
+        id: "customerAndInvoice",
+        header: "العميل / رقم الفاتورة",
+        accessorFn: (r) => `${r.customerName} · ${r.invoiceNumber}`,
+        meta: { kind: "text" },
+      },
+      {
+        id: "branch",
+        header: "الفرع",
+        accessorFn: (r) => r.branch,
+        meta: { kind: "text" },
+      },
+      {
+        id: "channel",
+        header: "القناة",
+        accessorFn: (r) => r.channel,
+        meta: { kind: "text" },
+      },
+      {
+        id: "delivery",
+        header: "التوصيل",
+        accessorFn: (r) => r.consignmentStatus,
+        meta: { kind: "status" },
+      },
+      {
+        id: "financialSummary",
+        header: "المبالغ",
+        accessorFn: (r) => `${r.total} د.ع`,
+        meta: { kind: "money" },
+      },
+      {
+        id: "action",
+        header: "إجراء",
+        enableSorting: false,
+        cell: () => <button type="button">معاينة</button>,
+      },
+    ];
+
+    act(() => {
+      root.render(
+        <DataTable
+          columns={invoiceCols}
+          data={invoicesData}
+          searchable={false}
+          serverPagination={{
+            page: 0,
+            onPageChange: () => {},
+            pageSize: 50,
+            total: 3,
+          }}
+        />,
+      );
+    });
+
+    const ths = host.querySelectorAll<HTMLTableCellElement>("thead th");
+    const branchTh = ths[1];
+    const moneyTh = ths[4];
+    const actionTh = ths[5];
+
+    // عمود الإجراءات معطل
+    expect(actionTh.getAttribute("role")).toBeNull();
+
+    // 1. فرز المبالغ دورة ثلاثية: تنازلي -> تصاعدي -> إلغاء
+    act(() => {
+      moneyTh.click();
+    });
+    expect(moneyTh.getAttribute("aria-sort")).toBe("descending");
+    let rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("مكتبة الفرات"); // 150000
+    expect(rows[1].textContent).toContain("شركة البشائر"); // 50000
+    expect(rows[2].textContent).toContain("مطبعة دجلة"); // 10000
+
+    act(() => {
+      moneyTh.click();
+    });
+    expect(moneyTh.getAttribute("aria-sort")).toBe("ascending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("مطبعة دجلة"); // 10000
+    expect(rows[1].textContent).toContain("شركة البشائر"); // 50000
+    expect(rows[2].textContent).toContain("مكتبة الفرات"); // 150000
+
+    act(() => {
+      moneyTh.click();
+    });
+    expect(moneyTh.getAttribute("aria-sort")).toBe("none");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("شركة البشائر");
+
+    // 2. فرز الفرع دورة ثلاثية: تصاعدي -> تنازلي -> إلغاء
+    act(() => {
+      branchTh.click();
+    });
+    expect(branchTh.getAttribute("aria-sort")).toBe("ascending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("الفرع الرئيسي");
+
+    act(() => {
+      branchTh.click();
+    });
+    expect(branchTh.getAttribute("aria-sort")).toBe("descending");
+    rows = host.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("فرع المبيعات");
+
+    act(() => {
+      branchTh.click();
+    });
+    expect(branchTh.getAttribute("aria-sort")).toBe("none");
+  });
+});
+
+
+
+
