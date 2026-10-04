@@ -227,7 +227,7 @@ type DataTableProps<T, K = string> = {
   };
   /** مفتاح ثابت لحفظ الأعمدة والكثافة. إن غاب يُشتق مفتاح من المسار ومعرّفات الأعمدة. */
   viewKey?: string;
-  /** فرز خادمي مضبوط. بدونه يُعطّل الفرز في serverPagination كي لا يفرز الصفحة الحالية فقط. */
+  /** فرز خادمي مضبوط (اختياري). إن غاب، يعمل الفرز التفاعلي الذكي محلياً على بيانات الصفحة المعروضة تلقائياً. */
   serverSorting?: {
     value: SortingState;
     onChange: (value: SortingState) => void;
@@ -402,7 +402,7 @@ export function DataTable<T, K = string>({
   const serverMode = !!serverPagination;
   const paginated = !serverMode && Number.isFinite(pageSize);
   const [sorting, setSorting] = useState<SortingState>([]);
-  const effectiveSorting = serverMode ? (serverSorting?.value ?? []) : sorting;
+  const effectiveSorting = serverSorting ? serverSorting.value : sorting;
   const sortingRef = useRef<SortingState>(effectiveSorting);
   sortingRef.current = effectiveSorting;
 
@@ -415,7 +415,7 @@ export function DataTable<T, K = string>({
   const sortAwareColumns = useMemo<ColumnDef<T, unknown>[]>(
     () =>
       effectiveColumns.map((column) => {
-        const kind = column.meta?.kind;
+        const kind = column.meta?.kind ?? "text";
         const existingSortDescFirst = (column as { sortDescFirst?: boolean }).sortDescFirst;
         const shouldSortDescFirst =
           existingSortDescFirst !== undefined
@@ -423,17 +423,23 @@ export function DataTable<T, K = string>({
             : kind === "money" || kind === "number";
 
         let sortingFn = (column as { sortingFn?: unknown }).sortingFn;
-        if (!sortingFn && kind) {
+        if (!sortingFn) {
           const fn = sortingFnForKind(kind, () => sortingRef.current);
           if (fn !== "auto") {
             sortingFn = fn;
           }
         }
 
+        const isActionOrExplicitlyDisabled =
+          column.enableSorting === false ||
+          (column.enableSorting !== true &&
+            (kind === "actions" || column.id === "actions" || column.id === "action"));
+
         return {
           ...column,
           ...(sortingFn ? { sortingFn } : {}),
           sortDescFirst: shouldSortDescFirst,
+          ...(isActionOrExplicitlyDisabled ? { enableSorting: false } : {}),
         } as ColumnDef<T, unknown>;
       }),
     [effectiveColumns],
@@ -458,15 +464,24 @@ export function DataTable<T, K = string>({
   const table = useReactTable({
     data,
     columns: sortAwareColumns,
-    state: serverMode ? { sorting: effectiveSorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
-    onSortingChange: serverMode && serverSorting ? (updater) => serverSorting.onChange(typeof updater === "function" ? updater(serverSorting.value) : updater) : setSorting,
+    state: {
+      sorting: effectiveSorting,
+      columnVisibility,
+      ...(serverMode ? {} : { globalFilter }),
+    },
+    onSortingChange: serverSorting
+      ? (updater) =>
+          serverSorting.onChange(
+            typeof updater === "function" ? updater(serverSorting.value) : updater,
+          )
+      : setSorting,
     onColumnVisibilityChange: setColumnVisibility,
-    enableSorting: !serverMode || !!serverSorting,
-    manualSorting: serverMode,
+    enableSorting: true,
+    manualSorting: !!serverSorting,
     enableSortingRemoval: true,
     ...(serverMode ? {} : { onGlobalFilterChange: setGlobalFilter }),
     getCoreRowModel: getCoreRowModel(),
-    ...(!serverMode ? { getSortedRowModel: getSortedRowModel() } : {}),
+    ...(!serverSorting ? { getSortedRowModel: getSortedRowModel() } : {}),
     ...(serverMode ? {} : { getFilteredRowModel: getFilteredRowModel() }),
     ...(paginated ? { getPaginationRowModel: getPaginationRowModel() } : {}),
     initialState: paginated ? { pagination: { pageSize } } : undefined,

@@ -144,7 +144,7 @@ export default function Suppliers() {
       id: "name",
       header: "الاسم",
       accessorFn: (s) => s.name ?? "",
-      meta: { width: "wide", wrap: true },
+      meta: { kind: "text", width: "wide", wrap: true },
       cell: ({ row }) => {
         const s = row.original;
         const id = Number(s.id);
@@ -186,8 +186,8 @@ export default function Suppliers() {
       meta: { kind: "phone" },
       cell: ({ row }) => <CopyInline value={row.original.phone} />,
     },
-    { id: "city", header: "المدينة", accessorFn: (s) => s.city ?? "—", cell: ({ row }) => <span className="text-xs">{row.original.city ?? "—"}</span> },
-    { id: "paymentTerms", header: "شروط الدفع", accessorFn: (s) => s.paymentTerms ?? "—", cell: ({ row }) => <span className="text-xs">{row.original.paymentTerms ?? "—"}</span> },
+    { id: "city", header: "المدينة", accessorFn: (s) => s.city ?? "—", meta: { kind: "text" }, cell: ({ row }) => <span className="text-xs">{row.original.city ?? "—"}</span> },
+    { id: "paymentTerms", header: "شروط الدفع", accessorFn: (s) => s.paymentTerms ?? "—", meta: { kind: "text" }, cell: ({ row }) => <span className="text-xs">{row.original.paymentTerms ?? "—"}</span> },
     {
       id: "balance",
       header: "الرصيد",
