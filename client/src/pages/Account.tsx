@@ -14,13 +14,15 @@ import { describeUserAgent } from "@/lib/userAgent";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertTriangle, Copy, Monitor, Bell, BellOff, ShieldCheck, ShieldOff, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, Copy, Monitor, Bell, BellOff, ShieldCheck, ShieldOff, Volume2, VolumeX, KeyRound, Printer, RefreshCw, Trash2, ScanLine } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { MyPerformanceCard } from "@/components/account/MyPerformanceCard";
 import { notify } from "@/lib/notify";
 import { isPushSupported, getPermissionState, subscribeToPush, unsubscribeFromPushBrowser } from "@/lib/push";
 import { ROLE_LABEL } from "@/lib/roles";
 import { AUDIO_FEEDBACK_CHANGE_EVENT, isAudioFeedbackEnabled, playAudioFeedback, setAudioFeedbackEnabled } from "@/lib/audioFeedback";
+import { printManagerBadge } from "@/lib/printing/managerBadge";
+import type { RoleKey } from "@/lib/permissionsModel";
 
 export default function Account() {
   const [location, navigate] = useLocation();
@@ -288,6 +290,8 @@ export default function Account() {
       </div>
 
       <TwoFactorCard />
+
+      <ManagerBadgeAndPinCard />
 
       <Card>
         <CardHeader><CardTitle className="text-base">الجلسات النشطة</CardTitle></CardHeader>
@@ -634,6 +638,238 @@ function TwoFactorCard() {
             </div>
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ManagerBadgeAndPinCard() {
+  const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const [pin, setPin] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+
+  const changePinMut = trpc.users.changeMyPin.useMutation({
+    onSuccess: async () => {
+      await utils.auth.me.invalidate();
+      setPin("");
+      setCurrentPassword("");
+      notify.ok("تم حفظ رمز PIN بنجاح");
+    },
+    onError: (err) => notify.err(err.message || "فشل تعيين رمز PIN"),
+  });
+
+  const genBadgeMut = trpc.users.generateMyBadgeBarcode.useMutation({
+    onSuccess: async () => {
+      await utils.auth.me.invalidate();
+      notify.ok("تم إصدار شارة الباركود بنجاح");
+    },
+    onError: (err) => notify.err(err.message || "فشل إصدار شارة الباركود"),
+  });
+
+  const clearBadgeMut = trpc.users.clearMyBadgeBarcode.useMutation({
+    onSuccess: async () => {
+      await utils.auth.me.invalidate();
+      notify.ok("تم إلغاء شارة الباركود بنجاح");
+    },
+    onError: (err) => notify.err(err.message || "فشل إلغاء شارة الباركود"),
+  });
+
+  const u = me.data;
+  if (!u) return null;
+  const isManagerOrAdmin = u.role === "admin" || u.role === "manager" || (u as any).isOwner || (u as any).hasPin || (u as any).badgeBarcode;
+  if (!isManagerOrAdmin) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <ScanLine className="size-4" aria-hidden />
+          اعتماد المدير وشارة الباركود (نقطة البيع والاستقبال)
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <p className="text-xs text-muted-foreground">
+          تُتيح لك اعتماد سقف الائتمان، وردّ العربون، وردّ أمانة التوصيل، والتسليم على الحساب بمسح الباركود المباشر أو إدخال رمز PIN السريع دون الحاجة لكتابة كلمة المرور الكاملة في كل عملية.
+        </p>
+
+        {/* قسم رمز PIN */}
+        <div className="space-y-3 rounded-lg border p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold flex items-center gap-2">
+              <KeyRound className="size-4 text-primary" aria-hidden />
+              رمز PIN السريع (4-8 أرقام)
+            </span>
+            {(u as any).hasPin ? (
+              <span className="text-xs font-medium text-money-positive bg-money-positive/10 px-2 py-0.5 rounded flex items-center gap-1">
+                <ShieldCheck className="size-3.5" aria-hidden />
+                مفعّل
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                غير معيّن
+              </span>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 max-w-xl">
+            <div className="space-y-1">
+              <Label htmlFor="my-pin-input">رمز PIN الجديد</Label>
+              <Input
+                id="my-pin-input"
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={8}
+                dir="ltr"
+                placeholder="4-8 أرقام عددية"
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
+                className="text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="my-pin-pwd">كلمة المرور الحالية (اختياري للتأكيد)</Label>
+              <PasswordInput
+                id="my-pin-pwd"
+                autoComplete="current-password"
+                placeholder="كلمة المرور الحالية"
+                value={currentPassword}
+                onChange={setCurrentPassword}
+              />
+            </div>
+          </div>
+          <div>
+            <Button
+              type="button"
+              size="sm"
+              disabled={pin.length < 4 || changePinMut.isPending}
+              onClick={() => changePinMut.mutate({ pin, currentPassword: currentPassword || undefined })}
+            >
+              {changePinMut.isPending ? ACTION_LABELS.saving : (u as any).hasPin ? "تحديث رمز PIN" : "تعيين رمز PIN"}
+            </Button>
+          </div>
+        </div>
+
+        {/* قسم شارة الباركود */}
+        <div className="space-y-3 rounded-lg border p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold flex items-center gap-2">
+              <ScanLine className="size-4 text-primary" aria-hidden />
+              شارة الاعتماد الممسوحة (باركود مباشر)
+            </span>
+            {(u as any).badgeBarcode ? (
+              <span className="text-xs font-mono font-bold text-primary bg-primary/10 px-2 py-0.5 rounded" dir="ltr">
+                {(u as any).badgeBarcode}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                لا توجد شارة صادرة
+              </span>
+            )}
+          </div>
+
+          {(u as any).badgeBarcode ? (
+            <div className="flex gap-2 flex-wrap items-center">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  printManagerBadge({
+                    userName: u.name ?? "",
+                    userRole: ROLE_LABEL[u.role as RoleKey] ?? u.role ?? "مدير",
+                    userIdentifier: (u as any).username ?? u.email ?? "",
+                    badgeBarcode: (u as any).badgeBarcode,
+                  }, "card");
+                }}
+              >
+                <Printer className="size-3.5 ml-1" aria-hidden />
+                طباعة شارة (بطاقة هوية)
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  printManagerBadge({
+                    userName: u.name ?? "",
+                    userRole: ROLE_LABEL[u.role as RoleKey] ?? u.role ?? "مدير",
+                    userIdentifier: (u as any).username ?? u.email ?? "",
+                    badgeBarcode: (u as any).badgeBarcode,
+                  }, "thermal");
+                }}
+              >
+                <Printer className="size-3.5 ml-1" aria-hidden />
+                طباعة شارة (طابعة إيصالات 80مم)
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  printManagerBadge({
+                    userName: u.name ?? "",
+                    userRole: ROLE_LABEL[u.role as RoleKey] ?? u.role ?? "مدير",
+                    userIdentifier: (u as any).username ?? u.email ?? "",
+                    badgeBarcode: (u as any).badgeBarcode,
+                  }, "thermal-58");
+                }}
+              >
+                <Printer className="size-3.5 ml-1" aria-hidden />
+                طباعة شارة (طابعة إيصالات 58مم)
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={genBadgeMut.isPending}
+                onClick={async () => {
+                  const ok = await confirmDialog({
+                    title: "تجديد شارة الباركود",
+                    description: "سيؤدي هذا إلى توليد باركود جديد وإبطال الباركود المطبوع حالياً. هل تريد المتابعة؟",
+                    confirmText: "تجديد الباركود",
+                  });
+                  if (ok) genBadgeMut.mutate();
+                }}
+              >
+                <RefreshCw className="size-3.5 ml-1" aria-hidden />
+                {genBadgeMut.isPending ? ACTION_LABELS.refreshing : "تجديد الباركود"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                disabled={clearBadgeMut.isPending}
+                onClick={async () => {
+                  const ok = await confirmDialog({
+                    title: "إلغاء شارة الباركود",
+                    description: "هل أنت متأكد من إلغاء شارة الباركود؟ لن تتمكن من الاعتماد بالمسح المباشر.",
+                    confirmText: "إلغاء الشارة",
+                    variant: "danger",
+                  });
+                  if (ok) clearBadgeMut.mutate();
+                }}
+              >
+                <Trash2 className="size-3.5 ml-1" aria-hidden />
+                {clearBadgeMut.isPending ? ACTION_LABELS.cancelling : "إلغاء الشارة"}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                size="sm"
+                disabled={genBadgeMut.isPending}
+                onClick={() => genBadgeMut.mutate()}
+              >
+                <ScanLine className="size-3.5 ml-1" aria-hidden />
+                {genBadgeMut.isPending ? ACTION_LABELS.processing : "إصدار شارة باركود جديدة"}
+              </Button>
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

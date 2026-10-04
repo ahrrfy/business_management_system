@@ -36,7 +36,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
 import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
-import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { ManagerApprovalDialog, type ManagerApprovalInput } from "@/components/reception/ManagerApprovalDialog";
 import { WorkOrderDeliverySection } from "@/components/delivery/WorkOrderDeliverySection";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
@@ -175,7 +175,7 @@ export default function WorkOrderDetail() {
   const [payMethod, setPayMethod] = useState<WoPaymentMethod>("CASH");
   const [payReference, setPayReference] = useState("");
   const [showDeliveryMgrApproval, setShowDeliveryMgrApproval] = useState(false);
-  const [deliveryMgrApproval, setDeliveryMgrApproval] = useState<{ email: string; password: string } | null>(null);
+  const [deliveryMgrApproval, setDeliveryMgrApproval] = useState<ManagerApprovalInput | null>(null);
   const [deliveryAddToDebt, setDeliveryAddToDebt] = useState(false);
   const [partialDispatchMessage, setPartialDispatchMessage] = useState("");
   const deliverRequestIdRef = useRef<string | null>(null);
@@ -1350,8 +1350,8 @@ export default function WorkOrderDetail() {
           title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
           description={`تسليم الطلب مع بقاء ${fmt(positiveDiff(remainingDue.toFixed(2), D(payAmount || "0").toFixed(2)).toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
           onCancel={() => setShowDeliveryMgrApproval(false)}
-          onApprove={(email, password) => {
-            setDeliveryMgrApproval({ email, password });
+          onApprove={(approval) => {
+            setDeliveryMgrApproval(approval);
             setDeliveryAddToDebt(true);
             setShowDeliveryMgrApproval(false);
             setError("");

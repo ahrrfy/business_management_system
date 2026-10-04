@@ -22,6 +22,7 @@ import {
   type RoleKey,
 } from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
 import { randomInt } from "node:crypto";
 import { nanoid } from "nanoid";
@@ -135,6 +136,8 @@ const SAFE_COLUMNS = {
   mustChangePassword: users.mustChangePassword,
   lastSignedIn: users.lastSignedIn,
   createdAt: users.createdAt,
+  badgeBarcode: users.badgeBarcode,
+  hasPin: sql<boolean>`CASE WHEN ${users.pinHash} IS NOT NULL THEN TRUE ELSE FALSE END`,
 } as const;
 
 function normEmail(s: string | null | undefined): string {
@@ -383,6 +386,11 @@ export async function updateUser(input: UpdateUserInput, actor: MaybeScopedActor
         patch.customRoleId = nextCustomRoleId ?? null;
         // تغيير الدور يُبطل الجلسات (يُعاد تحميل السياق/الصلاحيات).
         patch.sessionsValidFrom = new Date();
+        // تجريد بيانات اعتماد المدير (الباركود والـ PIN) إذا سُحب دور المدير/الأدمن:
+        if (nextRole !== "manager" && nextRole !== "admin" && !existing.isOwner) {
+          patch.badgeBarcode = null;
+          patch.pinHash = null;
+        }
       }
     }
     if (input.branchId !== undefined || nextRole !== undefined) {
@@ -991,6 +999,296 @@ export async function listUsers(input: ListUsersInput = {}) {
   }));
   const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(users).where(where as any))[0];
   return { rows, total: Number(totalRow?.n ?? 0) };
+}
+
+/**
+ * تعيين رمز PIN سريع للمدير / المسؤول (للاعتماد في نقاط البيع والاستقبال).
+ */
+export async function setUserPin(
+  userId: number,
+  pin: string,
+  actor: Actor,
+): Promise<{ success: boolean }> {
+  if (!/^\d{4,8}$/.test(pin)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "رمز PIN غير صالح",
+        why: "رمز PIN يجب أن يتكون من 4 إلى 8 أرقام عددية",
+        doThis: "أدخل رمز PIN مكوّناً من 4 إلى 8 أرقام",
+      }),
+    });
+  }
+
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const target = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!target) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المستخدم غير موجود",
+        why: "لم يُعثر على سجل المستخدم المطلوب",
+        doThis: "تأكد من اختيار مستخدم صحيح من القائمة",
+      }),
+    });
+  }
+
+  assertCanAdministerUser(actor, target);
+
+  if (target.role !== "manager" && target.role !== "admin" && !target.isOwner) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تعيين رمز PIN",
+        why: "رمز PIN مخصص للمديرين والمسؤولين فقط",
+        doThis: "غيّر دور المستخدم إلى مدير أو مسؤول أولاً",
+      }),
+    });
+  }
+
+  const pinHash = await hashPassword(pin);
+  await db.update(users).set({ pinHash }).where(eq(users.id, userId));
+
+  return { success: true };
+}
+
+/**
+ * مسح رمز PIN للمستخدم.
+ */
+export async function clearUserPin(
+  userId: number,
+  actor: Actor,
+): Promise<{ success: boolean }> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const target = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!target) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المستخدم غير موجود",
+        why: "لم يُعثر على سجل المستخدم المطلوب",
+        doThis: "تأكد من اختيار مستخدم صحيح من القائمة",
+      }),
+    });
+  }
+
+  assertCanAdministerUser(actor, target);
+
+  await db.update(users).set({ pinHash: null }).where(eq(users.id, userId));
+  return { success: true };
+}
+
+/**
+ * توليد باركود شارة جديد للمدير / المسؤول.
+ */
+export async function generateUserBadgeBarcode(
+  userId: number,
+  actor: Actor,
+): Promise<{ barcode: string }> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const target = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!target) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المستخدم غير موجود",
+        why: "لم يُعثر على سجل المستخدم المطلوب",
+        doThis: "تأكد من اختيار مستخدم صحيح من القائمة",
+      }),
+    });
+  }
+
+  assertCanAdministerUser(actor, target);
+
+  if (target.role !== "manager" && target.role !== "admin" && !target.isOwner) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إصدار شارة الاعتماد",
+        why: "شارة الاعتماد مخصصة للمديرين والمسؤولين فقط",
+        doThis: "غيّر دور المستخدم إلى مدير أو مسؤول أولاً",
+      }),
+    });
+  }
+
+  let barcode = "";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    barcode = `MGR-${userId}-${randomInt(100000, 999999)}`;
+    if (barcode !== target.badgeBarcode) {
+      const existing = (await db.select({ id: users.id }).from(users).where(eq(users.badgeBarcode, barcode)).limit(1))[0];
+      if (!existing) break;
+    }
+  }
+  await db.update(users).set({ badgeBarcode: barcode }).where(eq(users.id, userId));
+
+  return { barcode };
+}
+
+/**
+ * مسح باركود الشارة للمستخدم.
+ */
+export async function clearUserBadgeBarcode(
+  userId: number,
+  actor: Actor,
+): Promise<{ success: boolean }> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const target = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!target) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المستخدم غير موجود",
+        why: "لم يُعثر على سجل المستخدم المطلوب",
+        doThis: "تأكد من اختيار مستخدم صحيح من القائمة",
+      }),
+    });
+  }
+
+  assertCanAdministerUser(actor, target);
+
+  await db.update(users).set({ badgeBarcode: null }).where(eq(users.id, userId));
+  return { success: true };
+}
+
+/**
+ * تغيير رمز PIN ذاتياً من شاشة حسابي.
+ */
+export async function changeMyPin(
+  userId: number,
+  pin: string,
+  currentPassword?: string,
+): Promise<{ success: boolean }> {
+  if (!/^\d{4,8}$/.test(pin)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "رمز PIN غير صالح",
+        why: "رمز PIN يجب أن يتكون من 4 إلى 8 أرقام عددية",
+        doThis: "أدخل رمز PIN مكوّناً من 4 إلى 8 أرقام",
+      }),
+    });
+  }
+
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const target = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!target) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المستخدم غير موجود",
+        why: "لم يُعثر على حساب المستخدم الحالي",
+        doThis: "سجّل الدخول مجدداً إلى النظام",
+      }),
+    });
+  }
+
+  if (target.role !== "manager" && target.role !== "admin" && !target.isOwner) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "غير مصرّح بتعيين رمز PIN",
+        why: "رمز PIN مخصص للمديرين والمسؤولين فقط",
+        doThis: "راجع مسؤول النظام لترقية الصلاحيات",
+      }),
+    });
+  }
+
+  if (target.passwordHash && currentPassword) {
+    const valid = await verifyPassword(currentPassword, target.passwordHash);
+    if (!valid) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: appErrorMessage({
+          what: "تعذّر تغيير رمز PIN",
+          why: "كلمة المرور الحالية غير صحيحة",
+          doThis: "تأكد من كتابة كلمة المرور الحالية بدقة",
+        }),
+      });
+    }
+  }
+
+  const pinHash = await hashPassword(pin);
+  await db.update(users).set({ pinHash }).where(eq(users.id, userId));
+  return { success: true };
+}
+
+/**
+ * توليد باركود الشارة ذاتياً من شاشة حسابي للمدير/المسؤول.
+ */
+export async function generateMyBadgeBarcode(
+  userId: number,
+): Promise<{ barcode: string }> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const target = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!target) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المستخدم غير موجود",
+        why: "لم يُعثر على حساب المستخدم الحالي",
+        doThis: "سجّل الدخول مجدداً إلى النظام",
+      }),
+    });
+  }
+
+  if (target.role !== "manager" && target.role !== "admin" && !target.isOwner) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "غير مصرّح بإصدار شارة الاعتماد",
+        why: "شارة الاعتماد مخصصة للمديرين والمسؤولين فقط",
+        doThis: "راجع مسؤول النظام لترقية الصلاحيات",
+      }),
+    });
+  }
+
+  let barcode = "";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    barcode = `MGR-${userId}-${randomInt(100000, 999999)}`;
+    if (barcode !== target.badgeBarcode) {
+      const existing = (await db.select({ id: users.id }).from(users).where(eq(users.badgeBarcode, barcode)).limit(1))[0];
+      if (!existing) break;
+    }
+  }
+  await db.update(users).set({ badgeBarcode: barcode }).where(eq(users.id, userId));
+  return { barcode };
+}
+
+/**
+ * مسح باركود الشارة ذاتياً من شاشة حسابي.
+ */
+export async function clearMyBadgeBarcode(
+  userId: number,
+): Promise<{ success: boolean }> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const target = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!target) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المستخدم غير موجود",
+        why: "لم يُعثر على حساب المستخدم الحالي",
+        doThis: "سجّل الدخول مجدداً إلى النظام",
+      }),
+    });
+  }
+
+  await db.update(users).set({ badgeBarcode: null }).where(eq(users.id, userId));
+  return { success: true };
 }
 
 export const PASSWORD_MIN = PASSWORD_MIN_LEN;

@@ -3,6 +3,7 @@ import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import type { ManagerApprovalInput } from "@shared/managerApproval";
 
 export interface POSOverlaysProps {
   C: C;
@@ -24,7 +25,7 @@ export interface POSOverlaysProps {
   mgrPwd: string;
   setMgrPwd: (s: string) => void;
   isSalePending: boolean;
-  onApproveCredit: () => void;
+  onApproveCredit: (approval?: ManagerApprovalInput) => void;
   onCancelCredit: () => void;
 }
 
@@ -86,6 +87,7 @@ export function POSOverlays({
           isPending={isSalePending}
           onApprove={onApproveCredit}
           onCancel={onCancelCredit}
+          branchId={branchId}
         />
       )}
     </>

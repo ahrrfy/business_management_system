@@ -45,6 +45,7 @@ import {
 } from "../services/workOrder/cancel";
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
+import { managerApprovalSchema } from "@shared/managerApproval";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { dispatchToDelivery } from "../services/deliveryService";
@@ -218,9 +219,8 @@ const receptionCheckoutSchema = z.object({
   // بيع مباشر بدون عربون: المقبوض أقلّ من إجمالي البضاعة/الطباعة بلا توصيل ⇒ المتبقّي ذمّةٌ على
   // عميل استقبال فعّال بهوية مكتملة (اسم + هاتف عراقي). التفويض الخادمي محصور في checkoutReception.
   deferredDirect: z.boolean().optional(),
-  // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (بريد+كلمة مرور، verifyManagerApproval نفسها) —
-  // يمنح priceOverrideApproved للكاشير كما يمنحه sales.create تماماً.
-  managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+  // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (شارة باركود / PIN / بريد وكلمة مرور).
+  managerApproval: managerApprovalSchema.optional(),
   // ٥/٨ — زبونٌ عابر: اسمٌ وهاتفٌ مرجعيّان يُكتبان على الفاتورة نفسها بلا إنشاء عميل ولا ذمّة.
   // يحلّان محلّ إجبار الكاشير على إنشاء عميلٍ لكل بيعٍ نقديّ (وكان يفشل بـFORBIDDEN لأدوارٍ
   // تفتح محطة الاستقبال بلا صلاحية crm=FULL، فيسقط الاسم والهاتف بعد الطباعة تماماً).
@@ -2015,8 +2015,8 @@ export const workOrderRouter = router({
         refundShiftId: z.number().int().positive().nullish(),
         // تأكيد الكاشير صرفَ أمانة الأجرة نقداً للزبون — إلزاميّ خادمياً حين توجد أمانةٌ تُردّ.
         confirmFeeRefund: z.boolean().optional(),
-        // اعتماد مدير لردّ الأمانة عبر ورديةٍ غير وردية القبض (بريد+كلمة مرور، نفس verifyManagerApproval).
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        // اعتماد مدير لردّ الأمانة عبر ورديةٍ غير وردية القبض (شارة باركود / PIN / بريد وكلمة مرور).
+        managerApproval: managerApprovalSchema.optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -2214,8 +2214,8 @@ export const workOrderRouter = router({
         partialDispatchConfirmed: z.boolean().optional(),
         /** إضافة المتبقي غير المستحصل إلى ذمة العميل (باعتماد مدير) */
         addToCustomerDebt: z.boolean().optional(),
-        /** بيانات اعتماد المدير للموافقة على إضافة المتبقي إلى ذمة العميل */
-        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+        /** بيانات اعتماد المدير للموافقة على إضافة المتبقي إلى ذمة العميل (شارة باركود / PIN / بريد وكلمة مرور) */
+        managerApproval: managerApprovalSchema.optional(), // managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional()
       })
     )
     .mutation(async ({ input, ctx }) => {

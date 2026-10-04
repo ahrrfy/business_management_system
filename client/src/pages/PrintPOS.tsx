@@ -42,6 +42,7 @@ import { normalizeSearchText } from "@shared/searchNormalize";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import type { ManagerApprovalInput } from "@shared/managerApproval";
 import { buildBrandedReceipt, type Receipt, POS_COLORS } from "@/components/pos/posShared";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
@@ -770,7 +771,7 @@ export default function PrintPOS() {
     return true;
   }
 
-  function submit(forceFullPayment: boolean, approval?: { email: string; password: string }, isReservation?: boolean) {
+  function submit(forceFullPayment: boolean, approval?: ManagerApprovalInput, isReservation?: boolean) {
     if (!shift || !cart.length || sale.isPending || correctSaleMut.isPending) return;
     setMessage(null);
 
@@ -1191,7 +1192,7 @@ export default function PrintPOS() {
       )}
       {creditPrompt && (
         <CreditApprovalDialog C={C as any} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
-          isPending={sale.isPending} onApprove={() => submit(false, { email: mgrEmail, password: mgrPwd })} onCancel={() => setCreditPrompt(null)} />
+          isPending={sale.isPending} branchId={branchId} onApprove={(appr) => submit(false, appr ?? (mgrEmail && mgrPwd ? { email: mgrEmail, password: mgrPwd } : undefined))} onCancel={() => setCreditPrompt(null)} />
       )}
       <HeldOrdersDrawer
         open={heldDrawerOpen}

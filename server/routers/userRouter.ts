@@ -19,10 +19,17 @@ import {
   setUserActive,
   suggestUsername,
   updateUser,
+  setUserPin,
+  clearUserPin,
+  generateUserBadgeBarcode,
+  clearUserBadgeBarcode,
+  changeMyPin,
+  generateMyBadgeBarcode,
+  clearMyBadgeBarcode,
 } from "../services/userService";
 import { getUserUsage } from "../services/entityUsage";
 import { issuePasswordResetToken } from "../services/passwordResetService";
-import { adminProcedure, protectedProcedure, router, usersAdminProcedure } from "../trpc";
+import { adminProcedure, protectedProcedure, router, selfServiceProcedure, usersAdminProcedure } from "../trpc";
 
 // تحفظ tuple الـenum أنواع RoleKey الحرفية ⇒ z.infer ينتج RoleKey لا string ⇒ يُغني عن as any.
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
@@ -330,6 +337,127 @@ export const userRouter = router({
       const { changePassword } = await import("../services/userService");
       const res = await changePassword(ctx.user.id, input.oldPassword, input.newPassword);
       await logAudit(ctx, { action: "user.changePassword", entityType: "user", entityId: ctx.user.id });
+      return res;
+    }),
+
+  /** تعيين رمز PIN سريع للمدير/المسؤول بواسطة الأدمن */
+  setPin: usersAdminProcedure
+    .input(
+      z.object({
+        userId: z.number().int().positive(),
+        pin: z.string().regex(/^\d{4,8}$/, "رمز PIN يجب أن يتكون من 4 إلى 8 أرقام"),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await setUserPin(input.userId, input.pin, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      });
+      await logAudit(ctx, {
+        action: "user.setPin",
+        entityType: "user",
+        entityId: input.userId,
+      });
+      return res;
+    }),
+
+  /** مسح رمز PIN للمستخدم بواسطة الأدمن */
+  clearPin: usersAdminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await clearUserPin(input.userId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      });
+      await logAudit(ctx, {
+        action: "user.clearPin",
+        entityType: "user",
+        entityId: input.userId,
+      });
+      return res;
+    }),
+
+  /** توليد باركود شارة جديد للمدير/المسؤول بواسطة الأدمن */
+  generateBadgeBarcode: usersAdminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await generateUserBadgeBarcode(input.userId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      });
+      await logAudit(ctx, {
+        action: "user.generateBadgeBarcode",
+        entityType: "user",
+        entityId: input.userId,
+        newValue: { barcode: res.barcode },
+      });
+      return res;
+    }),
+
+  /** مسح باركود الشارة بواسطة الأدمن */
+  clearBadgeBarcode: usersAdminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await clearUserBadgeBarcode(input.userId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      });
+      await logAudit(ctx, {
+        action: "user.clearBadgeBarcode",
+        entityType: "user",
+        entityId: input.userId,
+      });
+      return res;
+    }),
+
+  /** تغيير رمز PIN بواسطة المستخدم نفسه (من شاشة «حسابي») */
+  changeMyPin: selfServiceProcedure
+    .input(
+      z.object({
+        pin: z.string().regex(/^\d{4,8}$/, "رمز PIN يجب أن يتكون من 4 إلى 8 أرقام"),
+        currentPassword: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await changeMyPin(ctx.user.id, input.pin, input.currentPassword);
+      await logAudit(ctx, {
+        action: "user.changeMyPin",
+        entityType: "user",
+        entityId: ctx.user.id,
+      });
+      return res;
+    }),
+
+  /** توليد باركود الشارة ذاتياً للمدير/المسؤول (من شاشة «حسابي») */
+  generateMyBadgeBarcode: selfServiceProcedure
+    .mutation(async ({ ctx }) => {
+      const res = await generateMyBadgeBarcode(ctx.user.id);
+      await logAudit(ctx, {
+        action: "user.generateMyBadgeBarcode",
+        entityType: "user",
+        entityId: ctx.user.id,
+        newValue: { barcode: res.barcode },
+      });
+      return res;
+    }),
+
+  /** مسح باركود الشارة ذاتياً (من شاشة «حسابي») */
+  clearMyBadgeBarcode: selfServiceProcedure
+    .mutation(async ({ ctx }) => {
+      const res = await clearMyBadgeBarcode(ctx.user.id);
+      await logAudit(ctx, {
+        action: "user.clearMyBadgeBarcode",
+        entityType: "user",
+        entityId: ctx.user.id,
+      });
       return res;
     }),
 });

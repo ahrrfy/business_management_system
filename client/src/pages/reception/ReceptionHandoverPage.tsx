@@ -634,12 +634,12 @@ export default function ReceptionHandoverPage() {
                 title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
                 description={`تسليم الطلب #${scanned.orderNumber} مع بقاء ${fmt(remaining.toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
                 onCancel={() => setShowDebtApproval(false)}
-                onApprove={(email, password) => {
+                onApprove={(approval) => {
                   setShowDebtApproval(false);
                   deliverMut.mutate({
                     workOrderId: scanned.id,
                     addToCustomerDebt: true,
-                    managerApproval: { email, password },
+                    managerApproval: approval,
                     clientRequestId: crypto.randomUUID(),
                   });
                 }}

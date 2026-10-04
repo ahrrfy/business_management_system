@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/button";
 import { fmtAr, D, positiveDiff, round2 } from "@/lib/money";
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import type { ManagerApprovalInput } from "@shared/managerApproval";
 import type { DeliverTarget } from "./workOrderTypes";
 
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export interface WorkOrderDeliverExtra {
   addToCustomerDebt?: boolean;
-  managerApproval?: { email: string; password: string };
+  managerApproval?: ManagerApprovalInput;
 }
 
 export function WorkOrderDeliverDialog({
@@ -34,7 +35,7 @@ export function WorkOrderDeliverDialog({
   const [methodV, setMethodV] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
   const [reference, setReference] = useState("");
   const [showManagerApproval, setShowManagerApproval] = useState(false);
-  const [managerApproval, setManagerApproval] = useState<{ email: string; password: string } | null>(null);
+  const [managerApproval, setManagerApproval] = useState<ManagerApprovalInput | null>(null);
   const [addToCustomerDebt, setAddToCustomerDebt] = useState(false);
   const [error, setError] = useState("");
 
@@ -169,8 +170,8 @@ export function WorkOrderDeliverDialog({
           title="اعتماد مدير — إضافة متبقي طلب لذمة العميل"
           description={`تسليم الطلب مع بقاء ${fmtAr(unpaidRemainder.toFixed(2))} د.ع غير مستحصلة يتطلب موافقة المدير لتحويلها إلى ذمة العميل.`}
           onCancel={() => setShowManagerApproval(false)}
-          onApprove={(email, password) => {
-            setManagerApproval({ email, password });
+          onApprove={(approval) => {
+            setManagerApproval(approval);
             setAddToCustomerDebt(true);
             setShowManagerApproval(false);
             setError("");
