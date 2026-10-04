@@ -448,7 +448,7 @@ export function PaymentPanel({
                   ? (paid >= expectedNow
                       ? "دفع كامل للطلب وإرسال للتنفيذ"
                       : `عربون مقبوض: ${fmt(paid)} د.ع · متبقٍّ للتسليم: ${fmt(remaining)} د.ع`)
-                  : "حجز مؤقت للتنفيذ · الدفع عند الاستلام"}
+                  : "الدفع عند الاستلام · لم يُقبض شيء"}
               </span>
             </span>
           )}
@@ -467,7 +467,7 @@ export function PaymentPanel({
                     className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg border-2 border-primary/80 bg-primary/5 px-3 text-xs font-black text-primary shadow-xs transition-colors hover:bg-primary/15 disabled:bg-muted disabled:text-muted-foreground disabled:border-transparent disabled:shadow-none"
                   >
                     <BookmarkCheck aria-hidden className="size-4" />
-                    <span>حجز مؤقت (بلا دفعة)</span>
+                    <span>دفع عند الاستلام (بلا عربون)</span>
                   </button>
                   {paid < expectedNow && (
                     <button
@@ -514,7 +514,7 @@ export function PaymentPanel({
                     type="button"
                     disabled={cartEmpty || submitting || !hasShift}
                     onClick={() => onSubmit({ quickFullPay: false, isReservation: true })}
-                    title="حفظ وحجز الطلب للتنفيذ والدفع عند الاستلام"
+                    title="تأكيد الطلب للتنفيذ والتحصيل عند الاستلام"
                     className="inline-flex h-11 min-w-48 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
                   >
                     {submitting ? (
@@ -522,7 +522,7 @@ export function PaymentPanel({
                     ) : (
                       <>
                         <BookmarkCheck aria-hidden className="size-4" />
-                        <span>حجز مؤقت وإرسال للتنفيذ</span>
+                        <span>الدفع عند الاستلام</span>
                       </>
                     )}
                   </button>
@@ -535,11 +535,11 @@ export function PaymentPanel({
                 type="button"
                 disabled={cartEmpty || submitting || !hasShift}
                 onClick={() => onSubmit({ quickFullPay: false, isReservation: true })}
-                title="حفظ وحجز الفاتورة لتكون جاهزة في شاشة التسليم المباشر أو الإسناد للتوصيل"
+                title="تأكيد الفاتورة للدفع عند الاستلام مباشرة أو عبر جهة التوصيل"
                 className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg border-2 border-primary/80 bg-primary/5 px-4 text-sm font-black text-primary shadow-xs transition-colors hover:bg-primary/15 disabled:bg-muted disabled:text-muted-foreground disabled:border-transparent disabled:shadow-none"
               >
                 <BookmarkCheck aria-hidden className="size-4" />
-                <span>حفظ وحجز الفاتورة</span>
+                <span>الدفع عند الاستلام</span>
               </button>
               {!deferred && (
                 <button

@@ -44,6 +44,13 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(approvals).toContain("رفض طلب البيع");
   });
 
+  it("لا يعرض حقل وردية المرتجع إلا لرد CASH موجب فعلاً", () => {
+    const approvals = page("SalesControlApprovals.tsx");
+    expect(approvals).toContain('returnMoney?.method === "CASH"');
+    expect(approvals).toContain('D(returnMoney.amount ?? "0").gt(0)');
+    expect(approvals).toContain("canReview && returnNeedsCashRouting && !reviewerConflict");
+  });
+
   it("يعرض تعديل الفاتورة كمقارنة كان/سيصبح ويطبع الحرارية وليبل الشحن بلا كتابة الرقم", () => {
     const approvals = page("SalesControlApprovals.tsx");
     const controlRouter = server("routers/salesControlRouter.ts");

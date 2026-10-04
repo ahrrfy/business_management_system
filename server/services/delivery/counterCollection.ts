@@ -131,14 +131,15 @@ export async function registerCounterCollectionTx(
    * `collectedAmount` يبقى 12k (تاريخ) والعهدةُ الفعليّة صفرٌ. يأتي الزبونُ ويسدّد الـ8k
    * بالكاونتر ⇒ الشرطُ القديم يُبقي الطردَ زومبي في طابور التوريد بلا شيءٍ يُورَّد.
    *
-   * الإصلاح: قياسُ العهدة من الدفتر الذي يكذّبه الواقعُ لا الصفوف التاريخيّة: `COD_COLLECTED − (COD_REMITTED + COD_WRITTEN_OFF)` لهذه الإرسالية = عهدةٌ حيّةٌ بيد الجهة. صفرٌ ⇒ لا شيء يُورَّد ⇒ إغلاقٌ آمن.
+   * الإصلاح: قياسُ النقد من الدفتر الذي يكذّبه الواقعُ لا الصفوف التاريخيّة:
+   * `COD_COLLECTED − (COD_REMITTED + COD_RETURNED + COD_WRITTEN_OFF)` لهذه الإرسالية.
    */
   const custodyRow = (
     await tx
       .select({
         pending: sql<string>`COALESCE(SUM(CASE
           WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
-          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
           ELSE 0 END), 0)`,
       })
       .from(deliveryLedgerEntries)

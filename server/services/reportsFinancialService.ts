@@ -1295,14 +1295,18 @@ export async function getFinancialPosition(
   // ولا تكرار كامل رصيد الجهة المشتركة في كل فرع.
   const dfRow = rowsOf(
     await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(CASE
-      WHEN entryType = 'COD_COLLECTED' THEN amount
-      WHEN entryType IN ('COD_REMITTED','COD_WRITTEN_OFF') THEN -amount
-      ELSE 0 END), 0) AS CHAR) AS v
-    FROM deliveryLedgerEntries
-    WHERE 1=1
-      ${bId ? sql`AND branchId = ${bId}` : sql``}
-      ${asOf ? sql`AND DATE(occurredAt) <= ${asOf}` : sql``}
+    SELECT CAST(COALESCE(SUM(GREATEST(0, x.custodyAmount)), 0) AS CHAR) AS v
+    FROM (
+      SELECT dle.partyId, dle.consignmentId, COALESCE(SUM(CASE
+        WHEN dle.entryType IN ('COD_COLLECTED','SHORTFALL_ASSIGNED') THEN dle.amount
+        WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
+        ELSE 0 END), 0) AS custodyAmount
+      FROM deliveryLedgerEntries dle
+      WHERE 1 = 1
+        ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
+        ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
+      GROUP BY dle.partyId, dle.consignmentId
+    ) x
   `),
   )[0] ?? { v: "0" };
   // مراجعة PR #495 (ازدواج): الجزء المدعوم بعميلٍ مسجَّل من عهدة المناديب محسوبٌ سلفاً في
@@ -1311,20 +1315,24 @@ export async function getFinancialPosition(
   // يُستبعَد من الأصل هنا فلا يُحتسب ديناران لدينارٍ واحد بالطريق.
   const dfDupRow = rowsOf(
     await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(CASE
-      WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount
-      WHEN dle.entryType IN ('COD_REMITTED','COD_WRITTEN_OFF') THEN -dle.amount
-      ELSE 0 END), 0) AS CHAR) AS v
-    FROM deliveryLedgerEntries dle
-      JOIN deliveryConsignments dc ON dc.id = dle.consignmentId
-      JOIN invoices i ON i.id = dc.invoiceId
-    WHERE i.customerId IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM accountingEntries ae
-        WHERE ae.dedupeKey = CONCAT('PAYMENT_IN:COURIER_DELIVERY:', dc.id)
-      )
-      ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
-      ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
+    SELECT CAST(COALESCE(SUM(GREATEST(0, x.custodyAmount)), 0) AS CHAR) AS v
+    FROM (
+      SELECT dc.id, COALESCE(SUM(CASE
+        WHEN dle.entryType IN ('COD_COLLECTED','SHORTFALL_ASSIGNED') THEN dle.amount
+        WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -dle.amount
+        ELSE 0 END), 0) AS custodyAmount
+      FROM deliveryConsignments dc
+        JOIN invoices i ON i.id = dc.invoiceId
+        LEFT JOIN deliveryLedgerEntries dle ON dle.consignmentId = dc.id
+      WHERE i.customerId IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM accountingEntries ae
+          WHERE ae.dedupeKey = CONCAT('PAYMENT_IN:COURIER_DELIVERY:', dc.id)
+        )
+        ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
+        ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
+      GROUP BY dc.id
+    ) x
   `),
   )[0] ?? { v: "0" };
   const deliveryFloatGross = money(dfRow.v ?? 0);

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import Decimal from "decimal.js";
-import { invoiceRemaining, isFullyPaid } from "./invoiceRemaining";
+import { invoiceRemaining, isFullyPaid, refundDueAfterReturn } from "./invoiceRemaining";
 
 /**
  * اختبارٌ عقديّ: النتيجةُ رقمياً مطابقةٌ للنسخ التسع القائمة في الخادم (`total − returnedTotal − paidAmount`)،
@@ -80,5 +80,27 @@ describe("isFullyPaid — عتبةٌ ≤ صفر", () => {
   it("null ⇒ صفر ⇒ مُسدَّدة (لا فاتورة ⇒ لا مطالبة)", () => {
     expect(isFullyPaid(null)).toBe(true);
     expect(isFullyPaid(undefined)).toBe(true);
+  });
+});
+
+describe("refundDueAfterReturn — لا يُردّ إلا ما صار زائداً من المقبوض", () => {
+  it("فاتورة دفع عند الاستلام بلا أي دفعة: الإلغاء الكامل لا يخلق استرداداً وهمياً", () => {
+    expect(refundDueAfterReturn({ total: "19000", paidAmount: "0", returnedTotal: "0" }, "19000").toString()).toBe("0");
+  });
+
+  it("يرد العربون فقط عند الإلغاء الكامل، لا كامل قيمة الفاتورة", () => {
+    expect(refundDueAfterReturn({ total: "19000", paidAmount: "5000", returnedTotal: "0" }, "19000").toString()).toBe("5000");
+  });
+
+  it("لا يرد العربون ما دامت قيمة البضاعة الباقية تغطيه", () => {
+    expect(refundDueAfterReturn({ total: "19000", paidAmount: "5000", returnedTotal: "0" }, "3000").toString()).toBe("0");
+  });
+
+  it("يرد فقط الجزء الذي تجاوز صافي الفاتورة بعد المرتجع الجزئي", () => {
+    expect(refundDueAfterReturn({ total: "19000", paidAmount: "5000", returnedTotal: "0" }, "16000").toString()).toBe("2000");
+  });
+
+  it("يحتسب المرتجعات السابقة قبل تحديد المبلغ الواجب رده الآن", () => {
+    expect(refundDueAfterReturn({ total: "19000", paidAmount: "5000", returnedTotal: "12000" }, "4000").toString()).toBe("2000");
   });
 });

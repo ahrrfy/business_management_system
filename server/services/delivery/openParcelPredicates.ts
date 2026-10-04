@@ -8,7 +8,7 @@
  * يقرؤه حارسُ الإسناد (`parties.assertNoStaleOpenParcelsTx`) وعدّادُ اللوحة (`board.ts`) — صيغةٌ
  * واحدة، وإلّا عرضت اللوحة «0 متأخّر» على جهةٍ يرفض الحارسُ إسنادَها.
  */
-import { and, eq, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type Decimal from "decimal.js";
 import { deliveryConsignments, deliveryLedgerEntries } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -25,19 +25,26 @@ import { money, round2 } from "../money";
  * المرجعُ الخارجيّ يُكتب باسم الجدول حرفياً: تأهيلُ Drizzle للعمود داخل استعلامٍ مترابط لا يُعتمَد
  * عليه ([[drizzle-correlated-subquery-column-qualification]]).
  */
-export const consignmentShortfallAssignedSql = sql<string>`(SELECT COALESCE(SUM(dle.amount), 0)
+export const consignmentShortfallAssignedSql = sql<string>`(SELECT COALESCE(SUM(CASE
+    WHEN dle.entryType = 'SHORTFALL_ASSIGNED' THEN dle.amount
+    WHEN dle.entryType = 'SHORTFALL_SETTLED' THEN -dle.amount
+    ELSE 0 END), 0)
   FROM deliveryLedgerEntries dle
-  WHERE dle.consignmentId = deliveryConsignments.id AND dle.entryType = 'SHORTFALL_ASSIGNED')`;
+  WHERE dle.consignmentId = deliveryConsignments.id
+    AND dle.entryType IN ('SHORTFALL_ASSIGNED','SHORTFALL_SETTLED'))`;
 
 /** نفس المعنى لطردٍ واحدٍ داخل معاملة (حلقة التوريد تقرأ الطرود واحداً واحداً تحت القفل). */
 export async function shortfallAssignedForConsignmentTx(tx: Tx, consignmentId: number): Promise<Decimal> {
   const row = (
     await tx
-      .select({ v: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)` })
+      .select({ v: sql<string>`COALESCE(SUM(CASE
+        WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_ASSIGNED' THEN ${deliveryLedgerEntries.amount}
+        WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_SETTLED' THEN -${deliveryLedgerEntries.amount}
+        ELSE 0 END), 0)` })
       .from(deliveryLedgerEntries)
       .where(and(
         eq(deliveryLedgerEntries.consignmentId, consignmentId),
-        eq(deliveryLedgerEntries.entryType, "SHORTFALL_ASSIGNED"),
+        inArray(deliveryLedgerEntries.entryType, ["SHORTFALL_ASSIGNED", "SHORTFALL_SETTLED"]),
       ))
   )[0];
   return round2(money(row?.v ?? "0"));

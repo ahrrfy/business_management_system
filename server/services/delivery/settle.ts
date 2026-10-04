@@ -592,6 +592,7 @@ export async function writeOffDeliveryShortfallInTx(
       // تبعاً باسترداد نقدٍ لم يوجد). مكوّناها:
       //   ① realPart: ذمّةٌ حيّة تُبرَّأ الآن (الزبون دفع للمندوب) — إسقاطُها خسارة.
       //   ② custodyHeld: نقدٌ مثبتُ التحصيل بدليل دفتر التوصيل (Σ COD_COLLECTED − Σ COD_REMITTED
+      //      − Σ COD_RETURNED
       //      لهذه الإرسالية) ضاع بيد المندوب — خسارةُ نقدٍ حقيقيّ ولو كانت الفاتورة مسدَّدةً
       //      سلفاً لحظةَ التسليم (المسار الحديث: realPart=0 هناك دائماً والخسارةُ واقعة).
       // وما زاد عنهما انحرافُ codAmount عن الواقع (مرتجع/تسديد سبق الإسناد بلا علم الإرسالية)
@@ -602,7 +603,7 @@ export async function writeOffDeliveryShortfallInTx(
           .select({
             v: sql<string>`COALESCE(SUM(CASE
               WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
-              WHEN ${deliveryLedgerEntries.entryType} = 'COD_REMITTED' THEN -${deliveryLedgerEntries.amount}
+              WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RETURNED') THEN -${deliveryLedgerEntries.amount}
               ELSE 0 END), 0)`,
           })
           .from(deliveryLedgerEntries)

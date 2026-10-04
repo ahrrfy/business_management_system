@@ -673,6 +673,14 @@ export default function SalesControlApprovals() {
           const correctionNeedsExternalRouting = isPendingCorrection
             && correctionPayload.additionalPayment != null
             && correctionPayload.additionalPayment.method !== "CASH";
+          const returnPayload = request.payload as {
+            refund?: { amount?: string; method?: string } | null;
+            resolution?: { amount?: string; method?: string } | null;
+          } | null;
+          const returnMoney = returnPayload?.resolution ?? returnPayload?.refund;
+          const returnNeedsCashRouting = request.requestType === "SALES_RETURN"
+            && returnMoney?.method === "CASH"
+            && D(returnMoney.amount ?? "0").gt(0);
           return (
           <Card key={request.id} className={isPendingCorrection ? "xl:col-span-2" : undefined}>
             <CardHeader className="pb-2">
@@ -795,7 +803,7 @@ export default function SalesControlApprovals() {
                   لا يمكنك مراجعة هذا الطلب لأنك الطالب أو منشئ الفاتورة. يجب أن يحسمه مدير مستقل.
                 </div>
               )}
-              {canReview && request.requestType === "SALES_RETURN" && !reviewerConflict && (
+              {canReview && returnNeedsCashRouting && !reviewerConflict && (
                 <div className="space-y-1 rounded-md border border-dashed p-3">
                   <Label htmlFor={`routing-${request.id}`} className="text-xs">
                     درج خروج النقد (اختياريّ — اتركه فارغاً لاستعمال الدرج المسجَّل في الطلب)

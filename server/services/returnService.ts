@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
+import { refundDueAfterReturn } from "@shared/predicates/invoiceRemaining";
 import Decimal from "decimal.js";
 import {
   and,
@@ -17,6 +18,7 @@ import {
   accountingEntries,
   customers,
   deliveryConsignments,
+  deliveryLedgerEntries,
   deliveryParties,
   digitalSaleDetails,
   invoiceItemBundleComponents,
@@ -91,6 +93,7 @@ import {
 import { withTx, type Actor } from "./tx";
 import { reverseInvoiceSaleInTx } from "./reversal/invoiceReversal"; // ق٧: المرتجعُ الكامل يمرّ بمحرّك العكس
 import { reconcileDeliveryOnReturnTx } from "./delivery/returnReconciliation";
+import { deliveryCustodyReturnIntent } from "./delivery/posting";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
@@ -106,6 +109,27 @@ import {
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 export type ReturnDisposition = "RESTOCK" | "DAMAGED";
+const RETURN_AMOUNT_IDEMPOTENCY_OPERATION = "sale.return.amount";
+
+/** يخزن (القيمة، هل اكتمل المرتجع) بلا إشارة؛ 2×الفلس + 1 للكامل، و+0 للجزئي. */
+export function returnResultRefId(amount: Decimal, fullyReturned: boolean): number {
+  const minor = round2(amount).times(100);
+  const encoded = minor.times(2).plus(fullyReturned ? 1 : 0);
+  if (!minor.isInteger() || minor.lt(0) || encoded.gt(Number.MAX_SAFE_INTEGER)) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قيمة المرتجع خارج نطاق الحفظ الآمن" });
+  }
+  return encoded.toNumber();
+}
+
+export function returnResultFromRefId(refId: number): {
+  amount: Decimal;
+  fullyReturned: boolean;
+} {
+  return {
+    amount: money(Math.floor(refId / 2)).dividedBy(100),
+    fullyReturned: refId % 2 === 1,
+  };
+}
 
 /**
  * تسوية الزبون العابر: قرارٌ صريح مستقلّ عن `refund` التاريخيّ للعملاء المسجّلين.
@@ -117,6 +141,7 @@ export interface WalkInReturnResolution {
   method: PaymentMethod;
   amount: string;
   shiftId?: number | null;
+  reference?: string | null;
   reason: string;
   disposition: ReturnDisposition;
 }
@@ -157,73 +182,220 @@ export interface ReturnSaleInput {
   operatorReason?: string | null;
 }
 
+type UnremittedDeliverySnapshot = {
+  id: number;
+  partyId: number;
+  branchId: number;
+  consignmentNumber: string;
+  codAmount: string;
+  collectedAmount: string | null;
+  counterSettledAmount: string | null;
+  status: string;
+  parcelStatus: string;
+  moneyStatus:
+    | "NOT_APPLICABLE"
+    | "UNSETTLED"
+    | "PARTIAL"
+    | "SETTLED"
+    | "CANCELLED"
+    | "WRITTEN_OFF";
+  remittanceId: number | null;
+  custodyRecognizedAt?: Date | null;
+};
+
+type RemainingDeliveryCustody = {
+  total: Decimal;
+  shortfall: Decimal;
+};
+
+/** قيمة المرتجع تمتص المتبقي غير المدفوع أولاً؛ وما زاد وحده يمس المال المقبوض. */
+function allocateReturnAgainstInvoice(
+  invoice: { total: string; paidAmount: string; returnedTotal?: string | null },
+  returnAmount: Decimal,
+): { unpaidRelief: Decimal; paidRelief: Decimal } {
+  const liveNetBeforeReturn = round2(
+    Decimal.max(0, money(invoice.total).minus(money(invoice.returnedTotal ?? "0"))),
+  );
+  const unpaidBeforeReturn = round2(
+    Decimal.max(0, liveNetBeforeReturn.minus(money(invoice.paidAmount))),
+  );
+  const unpaidRelief = round2(Decimal.min(returnAmount, unpaidBeforeReturn));
+  return {
+    unpaidRelief,
+    paidRelief: round2(Decimal.max(0, returnAmount.minus(unpaidRelief))),
+  };
+}
+
+/** دفتر التوصيل هو الحقيقة: يفصل النقد الفعلي عن العجز غير النقدي بلا تخمين من `codAmount`. */
+async function remainingUnremittedDeliveryCustody(
+  tx: Tx,
+  consignmentId: number,
+): Promise<RemainingDeliveryCustody> {
+  const row = (
+    await tx
+      .select({
+        amount: sql<string>`COALESCE(SUM(CASE
+          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED','SHORTFALL_ASSIGNED') THEN ${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF','SHORTFALL_SETTLED') THEN -${deliveryLedgerEntries.amount}
+          ELSE 0 END), 0)`,
+        shortfall: sql<string>`COALESCE(SUM(CASE
+          WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_ASSIGNED' THEN ${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} = 'SHORTFALL_SETTLED' THEN -${deliveryLedgerEntries.amount}
+          ELSE 0 END), 0)`,
+      })
+      .from(deliveryLedgerEntries)
+      .where(eq(deliveryLedgerEntries.consignmentId, consignmentId))
+  )[0];
+  const total = round2(Decimal.max(0, money(row?.amount ?? "0")));
+  return {
+    total,
+    shortfall: round2(Decimal.min(total, Decimal.max(0, money(row?.shortfall ?? "0")))),
+  };
+}
+
 /**
  * عكس عهدة جهة التوصيل غير المورّدة آلياً عند إرجاع الفاتورة.
- * لا يخرج نقدٌ من درج الكاشير، بل يُعكس رصيد عهدة المندوب ويُوسم الطرد بالرجوع.
+ * لا يخرج نقدٌ من درج الكاشير. المرتجع الجزئي يعكس حصته فقط ويبقي الطرد حيّاً؛
+ * والمرتجع الكامل يغلق ما تبقّى من العهدة ويحوّل الطرد إلى راجع.
  */
 async function reverseUnremittedDeliveryConsignment(
   tx: Tx,
-  cn: {
-    id: number;
-    partyId: number;
-    branchId: number;
-    consignmentNumber: string;
-    codAmount: string;
-    collectedAmount: string | null;
-    parcelStatus: string;
-    moneyStatus: string;
-    custodyRecognizedAt?: Date | null;
-  },
+  cn: UnremittedDeliverySnapshot,
   invoiceId: number,
+  customerId: number | null,
   invoiceNumber: string,
   actorUserId: number | null,
+  amountToReverse: Decimal,
+  unpaidExposureToRelease: Decimal,
+  isFullReturn: boolean,
+  eventKeySuffix: string,
   reason?: string | null,
 ): Promise<{ reversedCustody: Decimal }> {
-  const hasCustody =
-    cn.custodyRecognizedAt != null || cn.parcelStatus === "DELIVERED";
-  const col = money(cn.collectedAmount ?? "0");
-  const cod = money(cn.codAmount ?? "0");
-  const rawCustody = hasCustody ? (col.gt(0) ? col : cod) : money(0);
-  const reversedCustody = round2(rawCustody);
+  const available = await remainingUnremittedDeliveryCustody(tx, cn.id);
+  const availableCustody = available.total;
+  const reversedCustody = round2(
+    Decimal.min(availableCustody, Decimal.max(0, amountToReverse)),
+  );
+  // العجز دينٌ غير نقدي؛ نغلقه أولاً كي لا نسجّل نقداً وهمياً راجعاً من يد المندوب.
+  const reversedShortfall = round2(Decimal.min(available.shortfall, reversedCustody));
+  const reversedCash = round2(reversedCustody.minus(reversedShortfall));
+  const liveExposureBefore = round2(Decimal.max(
+    0,
+    money(cn.codAmount)
+      .minus(money(cn.collectedAmount ?? "0"))
+      .minus(money(cn.counterSettledAmount ?? "0")),
+  ));
+  const releasedExposure = round2(Decimal.min(
+    liveExposureBefore,
+    Decimal.max(0, unpaidExposureToRelease),
+  ));
+  const newCounterSettled = round2(
+    money(cn.counterSettledAmount ?? "0")
+      .plus(reversedCustody)
+      .plus(releasedExposure),
+  );
+  const remainingCustody = round2(availableCustody.minus(reversedCustody));
 
   if (reversedCustody.gt(0)) {
     await adjustDeliveryBalance(tx, Number(cn.partyId), reversedCustody.neg());
 
+    if (reversedCash.gt(0)) {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${cn.id}:COD_RETURNED:RETURN:${eventKeySuffix}`,
+        partyId: Number(cn.partyId),
+        consignmentId: Number(cn.id),
+        branchId: Number(cn.branchId),
+        entryType: "COD_RETURNED",
+        amount: toDbMoney(reversedCash),
+        actorUserId,
+        notes: `عكس نقد عهدة التوصيل لمرتجع الفاتورة ${invoiceNumber}`,
+      });
+    }
+    if (reversedShortfall.gt(0)) {
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${cn.id}:SHORTFALL_SETTLED:RETURN:${eventKeySuffix}`,
+        partyId: Number(cn.partyId),
+        consignmentId: Number(cn.id),
+        branchId: Number(cn.branchId),
+        entryType: "SHORTFALL_SETTLED",
+        amount: toDbMoney(reversedShortfall),
+        actorUserId,
+        notes: `تسوية عجز التوصيل بمرتجع الفاتورة ${invoiceNumber}`,
+      });
+    }
+
+    const custodyPostingSource = {
+      roleDebits: { AR: reversedCustody },
+      roleCredits: { DELIVERY_FLOAT: reversedCustody },
+    };
+    await postEntry(tx, {
+      entryType: "DELIVERY_REMIT",
+      dedupeKey: `DELIVERY_RETURN:${cn.id}:${eventKeySuffix.slice(0, 32)}`,
+      postingIntent: deliveryCustodyReturnIntent(reversedCustody),
+      postingSourceComponents: custodyPostingSource,
+      branchId: Number(cn.branchId),
+      invoiceId,
+      customerId,
+      deliveryPartyId: Number(cn.partyId),
+      amount: reversedCustody,
+      createdBy: actorUserId,
+      notes: `عكس عهدة التوصيل غير المورّدة لمرتجع الفاتورة ${invoiceNumber}`,
+    });
+  }
+
+  if (releasedExposure.gt(0)) {
     await appendDeliveryLedgerEntry(tx, {
-      eventKey: `CN:${cn.id}:COD_RELEASED:RETURN`,
+      eventKey: `CN:${cn.id}:COD_RELEASED:RETURN:${eventKeySuffix}`,
       partyId: Number(cn.partyId),
       consignmentId: Number(cn.id),
       branchId: Number(cn.branchId),
       entryType: "COD_RELEASED",
-      amount: toDbMoney(reversedCustody),
+      amount: toDbMoney(releasedExposure),
       actorUserId,
-      notes: `عكس عهدة التوصيل لمرتجع الفاتورة ${invoiceNumber}`,
+      notes: `تحرير الجزء غير المدفوع بمرتجع الفاتورة ${invoiceNumber}`,
     });
   }
 
+  const targetMoneyStatus = isFullReturn
+    ? "CANCELLED"
+    : remainingCustody.lte(0)
+      ? "SETTLED"
+      : cn.moneyStatus;
   await tx
     .update(deliveryConsignments)
-    .set({
-      status: "RETURNED",
-      parcelStatus: "RETURNED",
-      moneyStatus: "CANCELLED",
-      returnedAt: new Date(),
-      notes: sql`CONCAT(COALESCE(${deliveryConsignments.notes}, ''), ' | مرتجع بيع وعكس عهدة')`,
-    })
+    .set(isFullReturn
+      ? {
+          counterSettledAmount: toDbMoney(newCounterSettled),
+          status: "RETURNED",
+          parcelStatus: "RETURNED",
+          moneyStatus: targetMoneyStatus,
+          returnedAt: new Date(),
+          notes: sql`CONCAT(COALESCE(${deliveryConsignments.notes}, ''), ' | مرتجع بيع وعكس عهدة')`,
+        }
+      : {
+          counterSettledAmount: toDbMoney(newCounterSettled),
+          moneyStatus: targetMoneyStatus,
+        })
     .where(eq(deliveryConsignments.id, Number(cn.id)));
 
   await appendDeliveryEvent(tx, {
-    eventKey: `PARCEL_RETURNED:SALE_RETURN:${cn.id}`,
+    eventKey: `CN:${cn.id}:${isFullReturn ? "PARCEL_RETURNED" : "RETURN_SETTLEMENT"}:SALE_RETURN:${eventKeySuffix}`,
     consignmentId: Number(cn.id),
-    eventType: "PARCEL_RETURNED",
+    eventType: isFullReturn ? "PARCEL_RETURNED" : "RETURN_SETTLEMENT",
     fromParcelStatus: cn.parcelStatus,
-    toParcelStatus: "RETURNED",
+    toParcelStatus: isFullReturn ? "RETURNED" : cn.parcelStatus,
     fromMoneyStatus: cn.moneyStatus,
-    toMoneyStatus: "CANCELLED",
+    toMoneyStatus: targetMoneyStatus,
     actorUserId,
     payload: {
       reason: reason ?? "مرتجع بيع - عكس عهدة التوصيل",
+      invoiceId,
       reversedCustody: reversedCustody.toFixed(2),
+      reversedCash: reversedCash.toFixed(2),
+      reversedShortfall: reversedShortfall.toFixed(2),
+      releasedExposure: releasedExposure.toFixed(2),
+      remainingCustody: remainingCustody.toFixed(2),
+      isFullReturn,
     },
   });
 
@@ -244,7 +416,7 @@ export async function returnSaleInTx(
         amount: input.resolution.amount,
         method: input.resolution.method,
         shiftId: input.resolution.shiftId ?? null,
-        reference: null,
+        reference: input.resolution.reference ?? null,
       }
     : input.refund;
   const resolutionReason =
@@ -352,12 +524,26 @@ export async function returnSaleInTx(
       const expectedTotal = round2(
         expectedNetRevenue.plus(round2(expectedNetRevenue.times(taxRateR))),
       );
-      // resolution يحمل قيمة العملية الخادمية الدقيقة (ومنها تقريب IQD في المرتجع المُكمِل)،
-      // بينما إعادة اشتقاق البنود أعلاه تعطي الخام 1300 لفاتورة إجماليها المقرّب 1250. بصمة
-      // idempotency تحرس الحمولة؛ استخدم مبلغ resolution لنتيجة replay ولحدّ التراكم.
-      const replayOperationTotal = input.resolution
-        ? money(input.resolution.amount)
-        : expectedTotal;
+      const fullyReturnedReplayFallback =
+        replayInv.status === "RETURNED" ||
+        replayItems.every(
+          (r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity,
+        );
+      /**
+       * مبلغ التسوية قد يكون صفراً لفاتورة COD مرتجعة بقيمة موجبة، لذلك لا يصلح بديلاً
+       * عن قيمة المستند. الصفوف القديمة بلا المفتاح المرافق تُعاد من أسطر الطلب نفسها.
+       */
+      const replayAmountRefId = await checkIdempotency(
+        tx,
+        RETURN_AMOUNT_IDEMPOTENCY_OPERATION,
+        input.clientRequestId,
+        requestFingerprint,
+      );
+      const replayResult = replayAmountRefId == null
+        ? null
+        : returnResultFromRefId(replayAmountRefId);
+      const replayOperationTotal = replayResult?.amount ?? expectedTotal;
+      const fullyReturnedReplay = replayResult?.fullyReturned ?? fullyReturnedReplayFallback;
       // يجب أن يكون التراكمي على الفاتورة شاملاً قيمة هذا المرتجع (وإلا فبصمة الكيان مختلفة).
       const cumulativeReturned = money(replayInv.returnedTotal ?? "0");
       if (cumulativeReturned.lt(replayOperationTotal)) {
@@ -372,11 +558,6 @@ export async function returnSaleInTx(
           }),
         });
       }
-      const fullyReturnedReplay =
-        replayInv.status === "RETURNED" ||
-        replayItems.every(
-          (r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity,
-        );
       // رافدا الردّ الفوريّ (نقد/بطاقة) لا يُنشئان سنداً معلَّقاً ⇒ لا مرجعَ معلَّقاً يُبحَث عنه.
       const pendingReference =
         refund && !isSurfacedRefundMethod(refund.method)
@@ -453,7 +634,7 @@ export async function returnSaleInTx(
       }),
     });
   }
-  const deliveryPreview =
+  let deliveryPreview =
     (
       await tx
         .select({
@@ -464,6 +645,7 @@ export async function returnSaleInTx(
           consignmentNumber: deliveryConsignments.consignmentNumber,
           codAmount: deliveryConsignments.codAmount,
           collectedAmount: deliveryConsignments.collectedAmount,
+          counterSettledAmount: deliveryConsignments.counterSettledAmount,
           status: deliveryConsignments.status,
           parcelStatus: deliveryConsignments.parcelStatus,
           moneyStatus: deliveryConsignments.moneyStatus,
@@ -480,24 +662,6 @@ export async function returnSaleInTx(
         .limit(1)
     )[0] ?? null;
 
-  const isUnremittedDelivery =
-    deliveryPreview != null &&
-    deliveryPreview.remittanceId == null &&
-    (["DELIVERED", "PARTIAL"].includes(deliveryPreview.status) ||
-      ["DELIVERED", "PARTIAL"].includes(deliveryPreview.parcelStatus)) &&
-    (money(deliveryPreview.collectedAmount ?? "0").gt(0) ||
-      money(deliveryPreview.codAmount ?? "0").gt(0));
-
-  if (isUnremittedDelivery) {
-    if (refund) {
-      refund.amount = "0.00";
-      refund.shiftId = null;
-    }
-    if (input.resolution) {
-      input.resolution.amount = "0.00";
-      input.resolution.shiftId = null;
-    }
-  }
   /**
    * ⭐ **مصدرُ النقد الخارج: درجٌ مفتوح، وإلّا الخزينةُ للإداريّ** (تدقيق ١/٩/٢٦).
    *
@@ -630,6 +794,15 @@ export async function returnSaleInTx(
           partyId: deliveryConsignments.partyId,
           branchId: deliveryConsignments.branchId,
           invoiceId: deliveryConsignments.invoiceId,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          codAmount: deliveryConsignments.codAmount,
+          collectedAmount: deliveryConsignments.collectedAmount,
+          counterSettledAmount: deliveryConsignments.counterSettledAmount,
+          status: deliveryConsignments.status,
+          parcelStatus: deliveryConsignments.parcelStatus,
+          moneyStatus: deliveryConsignments.moneyStatus,
+          remittanceId: deliveryConsignments.remittanceId,
+          custodyRecognizedAt: deliveryConsignments.custodyRecognizedAt,
         })
         .from(deliveryConsignments)
         .where(eq(deliveryConsignments.id, Number(deliveryPreview.id)))
@@ -652,6 +825,7 @@ export async function returnSaleInTx(
         }),
       });
     }
+    deliveryPreview = lockedDelivery;
   } else {
     // locking gap/current read يمنع إسناد إرسالية جديدة بين المعاينة وقفل الفاتورة.
     await tx
@@ -660,6 +834,25 @@ export async function returnSaleInTx(
       .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
       .for("update");
   }
+
+  const liveDeliveryCustody = deliveryPreview == null
+    ? money(0)
+    : (await remainingUnremittedDeliveryCustody(tx, Number(deliveryPreview.id))).total;
+  const hasPriorDeliveryCustodyReturn = deliveryPreview == null
+    ? false
+    : Boolean((await tx
+        .select({ id: deliveryLedgerEntries.id })
+        .from(deliveryLedgerEntries)
+        .where(and(
+          eq(deliveryLedgerEntries.consignmentId, Number(deliveryPreview.id)),
+          inArray(deliveryLedgerEntries.entryType, ["COD_RETURNED", "SHORTFALL_SETTLED"]),
+        ))
+        .limit(1))[0]);
+  const isUnremittedDelivery =
+    deliveryPreview != null &&
+    (["DELIVERED", "PARTIAL"].includes(deliveryPreview.status) ||
+      ["DELIVERED", "PARTIAL"].includes(deliveryPreview.parcelStatus)) &&
+    (liveDeliveryCustody.gt(0) || hasPriorDeliveryCustodyReturn);
 
   const invRows = await tx
     .select()
@@ -766,14 +959,14 @@ export async function returnSaleInTx(
           code: "PRECONDITION_FAILED",
           message: appErrorMessage({
             what: "تعذّر تسجيل مرتجع زبونٍ عابر",
-            why: "الفاتورة بلا عميلٍ مسجَّل، ولم يصل معها قرارُ التسوية (resolution) الذي يحدّد ردّ CASH نقداً كاملاً مع سبب المرتجع ومصير البضاعة — وبلا ذلك يبقى مالُ الزبون في الدرج بلا ذمّةٍ تحمله ولا طرفٍ يُنسَب إليه",
+            why: "الفاتورة بلا عميلٍ مسجَّل، ولم يصل معها قرارُ التسوية (resolution) الذي يحدّد مبلغ الردّ المستحق فعلاً مع سبب المرتجع ومصير البضاعة",
             doThis:
-              "أدخِل الردّ النقديّ الكامل والسبب ومصير البضاعة في شاشة المرتجع؛ وإن كان المطلوب رصيداً أو مساراً آخر فسجّل الزبون عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته",
+              "أكمل السبب ومصير البضاعة؛ إن لم تُقبض دفعة يكون مبلغ الرد صفراً، وإن قُبض عربون فلا يُرد إلا الجزء الذي أصبح زائداً بعد المرتجع",
           }),
         });
       }
     }
-    if (input.refund != null && !isUnremittedDelivery) {
+    if (input.refund != null) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -784,21 +977,17 @@ export async function returnSaleInTx(
         }),
       });
     }
-    if (isUnremittedDelivery) {
-      resolution.amount = "0.00";
-      resolution.shiftId = null;
-    }
     if (
       resolution.kind !== "IMMEDIATE_REFUND" ||
-      resolution.method !== "CASH"
+      !isSurfacedRefundMethod(resolution.method)
     ) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: appErrorMessage({
           what: "تعذّر تسجيل مرتجع زبونٍ عابر",
-          why: `طريقة الردّ المطلوبة «${resolution.method}» غير متاحة لزبونٍ بلا حساب — المسار الوحيد ردّ CASH نقداً فوريّاً كامل فقط: لا بطاقة ولا تحويل ولا رصيد معلّق، فالعابر لا ذمّةَ له تستوعب الفرق`,
+          why: `طريقة الردّ المطلوبة «${resolution.method}» غير متاحة — رافدا الردّ الفوريّ المعتمدان هما النقد أو البطاقة للمبلغ المستحق فعلاً فقط`,
           doThis:
-            "بدّل طريقة الردّ إلى النقد وسلّم الزبون مبلغه من الدرج؛ وإن أصرّ على مسارٍ آخر فسجّله عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته",
+            "اختر النقد أو البطاقة؛ وعند البطاقة نفّذ الرد على الجهاز وأدخل مرجع العملية",
         }),
       });
     }
@@ -1043,9 +1232,7 @@ export async function returnSaleInTx(
   async function validateRefundAgainstCaps(
     returnedTotalForRefund: Decimal,
   ): Promise<{ refundCap: Decimal; refundRequest: Decimal }> {
-    const requestedRefund = isUnremittedDelivery
-      ? money(0)
-      : money(refund?.amount ?? "0");
+    const requestedRefund = money(refund?.amount ?? "0");
     if (requestedRefund.lt(0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1059,29 +1246,41 @@ export async function returnSaleInTx(
     }
     const refundMethod = refund?.method;
     let refundCap = new Decimal(0);
+    let refundableStorePool = money(0);
     if (refundMethod) {
       // `lock: true` إلزاميّ هنا: current read بعد قفل المصدر — لا نعتمد لقطةً قد يستهلكها
       // استردادٌ متزامنٌ على الفاتورة نفسها بين القراءة والكتابة.
       const caps = await loadRefundCaps(tx, input.invoiceId, { lock: true });
+      refundableStorePool = caps.pool;
       refundCap = effectiveRefundCap(
         caps,
         refundMethod,
         returnedTotalForRefund,
       );
     }
-    // ⭐ الزبون العابر (بلا حساب): ما لا يُردّ لا يجد أين يُقيَّد — الردُّ يساوي قيمة المرتجع بالضبط.
-    // استثناء: شحنة التوصيل غير المورّدة تعكس عهدة التوصيل آلياً ويكون الرد النقدي صفراً.
+    // ⭐ الزبون العابر: الرد يساوي فقط ما صار زائداً من المال المقبوض بعد المرتجع.
+    // فاتورة COD غير المدفوعة = صفر، والإلغاء الكامل بعد عربون = العربون فقط.
+    const requiredWalkInRefund = refundDueAfterReturn({
+      total: inv.total,
+      // عند التوصيل غير المورّد يشمل `invoice.paidAmount` عهدةً في يد المندوب؛
+      // الردّ من المتجر يُحسب من الوعاء الذي دخل المتجر فعلاً فقط.
+      paidAmount: isUnremittedDelivery
+        ? refundableStorePool.toString()
+        : inv.paidAmount,
+      returnedTotal: inv.returnedTotal,
+    }, returnedTotalForRefund.toString());
     if (
       isWalkInReturn &&
-      !isUnremittedDelivery &&
-      !requestedRefund.eq(returnedTotalForRefund)
+      !requestedRefund.eq(requiredWalkInRefund)
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "تعذّر تسجيل مرتجع زبونٍ عابر",
-          why: `الردّ يجب أن يساوي قيمة المرتجع بالضبط بعد التقريب: المطلوب ${returnedTotalForRefund.toFixed(2)} د.ع والمُدخَل ${requestedRefund.toFixed(2)} د.ع — فرق ${returnedTotalForRefund.minus(requestedRefund).abs().toFixed(2)} د.ع ${requestedRefund.lt(returnedTotalForRefund) ? "ناقص يبقى في الدرج بلا صاحب" : "زائد يخرج من الدرج بلا مستند"}`,
-          doThis: `أدخِل ${returnedTotalForRefund.toFixed(2)} د.ع بالضبط وسلّمها للزبون؛ ولا يصحّ ردٌّ جزئيّ لزبونٍ بلا حساب — فإن كان المطلوب رصيداً أو مطالبةً مالية فسجّله عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته`,
+          why: `المبلغ الواجب ردّه بعد هذا المرتجع هو ${requiredWalkInRefund.toFixed(2)} د.ع، لا ${requestedRefund.toFixed(2)} د.ع — لا يُردّ إلا ما قُبض فعلاً وصار زائداً على صافي الفاتورة`,
+          doThis: requiredWalkInRefund.isZero()
+            ? "سجّل مبلغ الرد صفراً: لا درج ولا وردية صرف لأن الزبون لم يدفع ما يستوجب الاسترداد"
+            : `أدخِل ${requiredWalkInRefund.toFixed(2)} د.ع بالضبط؛ وهو الجزء المستحق من المقبوض، لا كامل قيمة البضاعة المرتجعة`,
         }),
       });
     }
@@ -1174,15 +1373,30 @@ export async function returnSaleInTx(
       },
       actor,
     );
+    let fullReversedDeliveryCustody = money(0);
     if (isUnremittedDelivery && deliveryPreview) {
-      await reverseUnremittedDeliveryConsignment(
+      const fullAllocation = allocateReturnAgainstInvoice(inv, returnedTotalFull);
+      const deliveryReversal = await reverseUnremittedDeliveryConsignment(
         tx,
         deliveryPreview,
         input.invoiceId,
+        inv.customerId == null ? null : Number(inv.customerId),
         inv.invoiceNumber,
         actor.userId,
+        Decimal.max(0, fullAllocation.paidRelief.minus(fullRefundRequest)),
+        fullAllocation.unpaidRelief,
+        true,
+        requestFingerprint?.slice(0, 20) ?? `full-${input.invoiceId}-${deliveryPreview.counterSettledAmount ?? "0"}`,
         resolutionReason,
       );
+      fullReversedDeliveryCustody = deliveryReversal.reversedCustody;
+      if (inv.customerId != null && deliveryReversal.reversedCustody.gt(0)) {
+        await adjustCustomerBalance(
+          tx,
+          Number(inv.customerId),
+          deliveryReversal.reversedCustody,
+        );
+      }
     }
     await tx
       .update(invoices)
@@ -1191,17 +1405,37 @@ export async function returnSaleInTx(
           money(inv.returnedTotal ?? "0").plus(returnedTotalFull),
         ),
         status: "RETURNED",
-        ...(isUnremittedDelivery ? { paidAmount: "0.00" } : {}),
+        ...(isUnremittedDelivery
+          ? {
+              paidAmount: toDbMoney(
+                Decimal.max(
+                  0,
+                  money(inv.paidAmount)
+                    .minus(summary.refundAmount)
+                    .minus(fullReversedDeliveryCustody),
+                ),
+              ),
+            }
+          : {}),
       })
       .where(eq(invoices.id, input.invoiceId));
-    await reconcileDeliveryOnReturnTx(tx, {
-      invoiceId: input.invoiceId,
-      returnedTotal: returnedTotalFull,
-      isFullReturn: true,
-      actor,
-      clientRequestId: input.clientRequestId,
-    });
+    if (!isUnremittedDelivery) {
+      await reconcileDeliveryOnReturnTx(tx, {
+        invoiceId: input.invoiceId,
+        returnedTotal: returnedTotalFull,
+        isFullReturn: true,
+        actor,
+        clientRequestId: input.clientRequestId,
+      });
+    }
     if (input.clientRequestId) {
+      await recordIdempotencyKey(
+        tx,
+        RETURN_AMOUNT_IDEMPOTENCY_OPERATION,
+        input.clientRequestId,
+        returnResultRefId(returnedTotalFull, true),
+        requestFingerprint,
+      );
       await recordIdempotencyKey(
         tx,
         "sale.return",
@@ -2143,22 +2377,30 @@ export async function returnSaleInTx(
   // returnedTotal تراكمي عبر مرتجعات جزئية ⇒ يمنع انحراف AR في reconcile/aging.
   // G7 (١٩/٦/٢٦): clamp ≥ 0 — refundCap نظرياً يضمن `cashRefund ≤ paidAmount`، لكن لو
   // انحرف الحساب لأي سبب (مرتجع قديم مُسجَّل بطريقة مختلفة، حالة حدّية) نمنع paidAmount السالب.
+  let reversedDeliveryCustody = money(0);
   if (isUnremittedDelivery && deliveryPreview) {
-    await reverseUnremittedDeliveryConsignment(
+    const returnAllocation = allocateReturnAgainstInvoice(inv, returnedTotal);
+    const deliveryReversal = await reverseUnremittedDeliveryConsignment(
       tx,
       deliveryPreview,
       input.invoiceId,
+      inv.customerId == null ? null : Number(inv.customerId),
       inv.invoiceNumber,
       actor.userId,
+      Decimal.max(0, returnAllocation.paidRelief.minus(materializedRefund)),
+      returnAllocation.unpaidRelief,
+      fullyReturned,
+      requestFingerprint?.slice(0, 20) ?? `partial-${input.invoiceId}-${deliveryPreview.counterSettledAmount ?? "0"}`,
       resolutionReason,
     );
+    reversedDeliveryCustody = deliveryReversal.reversedCustody;
   }
-  const paidMinusRefund = money(inv.paidAmount).minus(materializedRefund);
-  const newPaid = isUnremittedDelivery
+  const paidMinusReturnSettlements = money(inv.paidAmount)
+    .minus(materializedRefund)
+    .minus(reversedDeliveryCustody);
+  const newPaid = paidMinusReturnSettlements.lt(0)
     ? money(0)
-    : paidMinusRefund.lt(0)
-      ? money(0)
-      : paidMinusRefund;
+    : paidMinusReturnSettlements;
   const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(returnedTotal);
   // INVOICE-STATUS (تدقيق ٢/٧): الحالة على الصافي بعد المرتجعات ⇒ فاتورة مُرتجَعة جزئياً وسُدّد
   // صافيها تصبح PAID لا PARTIALLY_PAID الأبدية.
@@ -2180,24 +2422,37 @@ export async function returnSaleInTx(
 
   // AR: the portion not refunded in cash is dropped from the customer's balance.
   if (inv.customerId) {
+    const balanceRelief = Decimal.max(
+      0,
+      returnedTotal.minus(materializedRefund).minus(reversedDeliveryCustody),
+    );
     await adjustCustomerBalance(
       tx,
       Number(inv.customerId),
-      returnedTotal.minus(materializedRefund).neg(),
+      balanceRelief.neg(),
     );
   }
 
   // تسوية إرسالية التوصيل النشطة إن وُجدت (R1 & R2).
-  await reconcileDeliveryOnReturnTx(tx, {
-    invoiceId: input.invoiceId,
-    returnedTotal,
-    isFullReturn: fullyReturned,
-    actor,
-    clientRequestId: input.clientRequestId,
-  });
+  if (!isUnremittedDelivery) {
+    await reconcileDeliveryOnReturnTx(tx, {
+      invoiceId: input.invoiceId,
+      returnedTotal,
+      isFullReturn: fullyReturned,
+      actor,
+      clientRequestId: input.clientRequestId,
+    });
+  }
 
   // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).
   if (input.clientRequestId) {
+    await recordIdempotencyKey(
+      tx,
+      RETURN_AMOUNT_IDEMPOTENCY_OPERATION,
+      input.clientRequestId,
+      returnResultRefId(returnedTotal, fullyReturned),
+      requestFingerprint,
+    );
     await recordIdempotencyKey(
       tx,
       "sale.return",
@@ -2529,6 +2784,9 @@ export async function returnSaleDirect(
         effectiveRole === "cashier" || effectiveRole === "print_operator";
 
       if (isCashierOrReception) {
+        const directRefund = coreInput.resolution ?? coreInput.refund;
+        const needsCashShift = directRefund?.method === "CASH"
+          && money(directRefund.amount).gt(0);
         const [invRow] = await tx
           .select({
             branchId: invoices.branchId,
@@ -2541,21 +2799,23 @@ export async function returnSaleDirect(
           .limit(1);
 
         const targetBranchId = invRow?.branchId ?? actor.branchId;
-        const openShiftId = await openShiftIdTx(
-          tx,
-          actor.userId,
-          targetBranchId,
-        );
-        if (!openShiftId) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: appErrorMessage({
-              what: "تعذّر تنفيذ المرتجع المباشر",
-              why: "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لإتمام المرتجع المباشر",
-              doThis:
-                "افتح وردية جديدة في فرع الفاتورة قبل محاولة إجراء المرتجع",
-            }),
-          });
+        if (needsCashShift) {
+          const openShiftId = await openShiftIdTx(
+            tx,
+            actor.userId,
+            targetBranchId,
+          );
+          if (!openShiftId) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تعذّر تنفيذ المرتجع المباشر",
+                why: "يوجد رد نقدي فعلي، لذلك يلزم درج وردية مفتوح في فرع الفاتورة",
+                doThis:
+                  "افتح وردية في فرع الفاتورة أو اجعل مديراً يصرف الرد من الخزينة؛ المرتجع بلا رد نقدي لا يحتاج وردية صرف",
+              }),
+            });
+          }
         }
 
         // عزل الفروع: كاشير لا ينفّذ مرتجعاً مباشراً لفاتورة فرع آخر

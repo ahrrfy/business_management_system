@@ -633,8 +633,8 @@ export async function readOperationalBalanceSnapshot(
       .select({
         branchId: deliveryLedgerEntries.branchId,
         gross: sql<string>`CAST(COALESCE(SUM(CASE
-          WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
-          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED', 'COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED', 'SHORTFALL_ASSIGNED') THEN ${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED', 'COD_RETURNED', 'COD_WRITTEN_OFF', 'SHORTFALL_SETTLED') THEN -${deliveryLedgerEntries.amount}
           ELSE 0 END), 0) AS CHAR)`,
         customerBacked: sql<string>`CAST(COALESCE(SUM(CASE
           WHEN ${invoices.customerId} IS NOT NULL
@@ -643,8 +643,8 @@ export async function readOperationalBalanceSnapshot(
               WHERE ae.dedupeKey = CONCAT('PAYMENT_IN:COURIER_DELIVERY:', ${deliveryConsignments.id})
             )
           THEN CASE
-            WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
-            WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED', 'COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
+            WHEN ${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED', 'SHORTFALL_ASSIGNED') THEN ${deliveryLedgerEntries.amount}
+            WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED', 'COD_RETURNED', 'COD_WRITTEN_OFF', 'SHORTFALL_SETTLED') THEN -${deliveryLedgerEntries.amount}
             ELSE 0 END
           ELSE 0 END), 0) AS CHAR)`,
       })

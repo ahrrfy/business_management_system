@@ -268,7 +268,7 @@ export async function getCourierPerformance(
     .leftJoin(users, eq(deliveryParties.userId, users.id))
     .where(sql`${deliveryParties.id} IN (${sql.join(partyIds, sql`, `)})`);
   const partyMap = new Map(parties.map((p) => [Number(p.id), p]));
-  const custodyConds = [sql`${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED','COD_REMITTED','COD_WRITTEN_OFF')`];
+  const custodyConds = [sql`${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED','COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF')`];
   if (input.branchId) custodyConds.push(eq(deliveryLedgerEntries.branchId, input.branchId));
   const custodyAgg = await db.select({
     partyId: deliveryLedgerEntries.partyId,

@@ -556,7 +556,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               </div>
             )}
             <p className="border-t pt-2 text-[11px] text-muted-foreground">
-              حجز مؤقت للتنفيذ · الدفع والتسوية المالية تتمان عند استلام الطلب (تسليم مباشر أو إسناد لمندوب).
+              الدفع والتسوية عند الاستلام مباشرةً أو عبر مندوب التوصيل.
             </p>
           </div>
         </div>

@@ -739,11 +739,11 @@ export async function listPartyObligations(branchId: number | null) {
     WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
       AND (SELECT COALESCE(SUM(CASE
           WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount
-          WHEN dle.entryType IN ('COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED') THEN -dle.amount
+          WHEN dle.entryType IN ('COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF') THEN -dle.amount
           ELSE 0 END), 0)
         FROM deliveryLedgerEntries dle
         WHERE dle.consignmentId = dc.id
-          AND dle.entryType IN ('COD_COLLECTED','COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED')
+          AND dle.entryType IN ('COD_COLLECTED','COD_REMITTED','COD_RETURNED','COD_WRITTEN_OFF')
       ) > 0`;
   const rows = await db
     .select({
@@ -761,7 +761,7 @@ export async function listPartyObligations(branchId: number | null) {
        * يُوجِّه التسويةَ نحو تحصيلٍ غير موجود.
        *
        * الصيغة: للإرسالية عهدةٌ حيّةٌ إن كان
-       *   `SUM(COD_COLLECTED) − SUM(COD_REMITTED + COD_WRITTEN_OFF + COD_RELEASED) > 0`.
+       *   `SUM(COD_COLLECTED) − SUM(COD_REMITTED + COD_RETURNED + COD_WRITTEN_OFF) > 0`.
        * لتفصيل فخّ Drizzle الذي يحتّم إسناد الـscope عبر `${awaitingCustodyScope}` بدل بنائه
        * مباشرةً هنا: راجع التعليق فوق `awaitingCustodyScope` أعلاه.
        */

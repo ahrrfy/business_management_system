@@ -106,6 +106,8 @@ const walkInResolution = z.object({
    * الزبون العابر النقديّ خارج ساعات الوردية حجباً كاملاً.
    */
   shiftId: z.number().int().positive().optional(),
+  // مرجع جهاز الدفع إلزامي خادمياً عندما تكون الطريقة CARD والمبلغ موجباً.
+  reference: z.string().trim().min(1).max(100).optional(),
   reason: z
     .string()
     .trim()
@@ -966,9 +968,7 @@ export const returnRouter = router({
       // لحظياً بقيمة ما اختاره الموظف، فيبقى الطرفان على معادلةٍ واحدة.
       // رافدا الردّ وحدهما (قرار المالك ١٧/٨: نقدٌ أو بطاقة) — لا تُعرَض طريقةٌ لا يريدها العمل.
       const isWalkIn = inv.customerId == null;
-      const surfacedMethods = isWalkIn
-        ? (["CASH"] as const)
-        : SURFACED_REFUND_METHODS;
+      const surfacedMethods = SURFACED_REFUND_METHODS;
       const refundOptions = surfacedMethods.map((m) => ({
         method: m,
         cap: (caps.capByMethod.get(m) ?? money(0)).toFixed(2),
@@ -981,7 +981,7 @@ export const returnRouter = router({
           ? isWalkIn
             ? caps.hasUnremittedDelivery
               ? "الطلب مرتبط بشحنة توصيل لم يورَّد نقدها بعد؛ سيتم عكس عهدة التوصيل آلياً دون إخراج نقد من الدرج."
-              : "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
+              : "لا يوجد مقبوض يستوجب الرد؛ سجّل المرتجع بلا إخراج نقد وبلا وردية صرف."
             : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
           : null,
       }));
@@ -1109,8 +1109,10 @@ export const returnRouter = router({
           ? {
               required: true as const,
               kind: "IMMEDIATE_REFUND" as const,
+              /** CASH افتراضي العرض؛ الرد الفوري متاح أيضاً على CARD بمرجع الجهاز. */
               method: "CASH" as const,
-              exactAmountRequired: !caps.hasUnremittedDelivery,
+              methods: SURFACED_REFUND_METHODS,
+              exactAmountRequired: true as const,
               deliveryCustodyReversal: caps.hasUnremittedDelivery,
               reasonRequired: true as const,
               dispositions: ["RESTOCK", "DAMAGED"] as const,
@@ -1127,6 +1129,8 @@ export const returnRouter = router({
         taxAmount: inv.taxAmount,
         total: inv.total,
         paidAmount: inv.paidAmount,
+        /** المقبوض الموجود فعلاً لدى المتجر؛ يستبعد عهدة المندوب غير المورّدة. */
+        refundablePaidAmount: caps.pool.toFixed(2),
         /** ما أُرجِع سابقاً — تحتاجه الشاشة لتحسب «المستحقّ للزبون» فلا تُعبّئ ردّاً لمدين. */
         returnedTotal: inv.returnedTotal ?? "0",
         paymentMethod: inv.paymentMethod,
