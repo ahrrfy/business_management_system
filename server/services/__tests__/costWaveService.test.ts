@@ -703,7 +703,7 @@ describe("الرفض والعزل", () => {
       const { submitted } = await submittedWave();
       await expect(
         approveCostWave(submitted.waveId, checker2),
-      ).rejects.toThrow(/الخطوة النهائية/);
+      ).rejects.toThrow(/اعتماد المالك محجوز/);
       await expect(
         approveCostWave(submitted.waveId, checker1),
       ).resolves.toMatchObject({ status: "PENDING_APPROVAL", approvalCount: 1 });

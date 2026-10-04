@@ -1360,6 +1360,7 @@ export async function approveCostWave(
       });
     }
     assertApprover({
+      // resolvedActor مصدره resolveApprovalActor(tx, actor) أعلاه، لا حمولة الطلب.
       actor: resolvedActor,
       trigger: isFinalApproval
         ? costRevaluationApprovalTrigger("APPROVE")
