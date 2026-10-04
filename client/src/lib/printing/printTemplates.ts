@@ -119,6 +119,12 @@ export interface InvoicePrintData {
   taxRate?: number | null;
   total: string | number;
   paidAmount?: string | number | null;
+  /** رصيد العميل الحالي في دفتر الأستاذ (يُشتق منه الرصيد النهائي بعد الفاتورة والكان قبلها). */
+  customerBalance?: string | number | null;
+  /** رصيد العميل قبل هذه الفاتورة بصورة صريحة إن عُرف. */
+  customerBalanceBefore?: string | number | null;
+  /** رصيد العميل النهائي (الذمة الكلية) بعد هذه الفاتورة بصورة صريحة إن عُرف. */
+  customerBalanceAfter?: string | number | null;
   /** رابط QR جاهز للتحقق الرقمي (اختياري، مثلاً https://.../verify?ref=...). */
   qrUrl?: string | null;
   /** حمولة QR المشفرة من الخادم أو معرّف المستند (اختياري) — تُحوَّل تلقائياً إلى رابط عبر resolveQrUrl. */
@@ -147,6 +153,16 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     : (Number(d.paidAmount ?? 0) > 0 ? 'مدفوعة جزئياً' : 'آجلة');
   const statusColor = remainingNum <= 0.001 ? '#0D6B52' : (Number(d.paidAmount ?? 0) > 0 ? '#92400E' : '#8A1F11');
 
+  // حساب الرصيد السابق والرصيد النهائي (الذمة الكلية) من دفتر الأستاذ الفعلي
+  let balAfter = d.customerBalanceAfter != null ? Number(d.customerBalanceAfter) : null;
+  let balBefore = d.customerBalanceBefore != null ? Number(d.customerBalanceBefore) : null;
+  if (balAfter == null && d.customerBalance != null && d.customerBalance !== '') {
+    balAfter = Number(d.customerBalance);
+    if (balBefore == null) {
+      balBefore = balAfter - remainingNum;
+    }
+  }
+
   printSalesInvoiceV2({
     invoiceNumber: d.invoiceNumber,
     invoiceDate: d.invoiceDate,
@@ -160,6 +176,8 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     customerPhone: d.customerPhone,
     paymentMethod: d.paymentMethod,
     salesRep: d.salespersonName,
+    customerBalanceBefore: balBefore,
+    customerBalanceAfter: balAfter,
     items: d.items.map((it) => ({
       productName: it.productName,
       unitName: it.unitName,
