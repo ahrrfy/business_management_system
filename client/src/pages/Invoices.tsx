@@ -395,6 +395,8 @@ export default function Invoices() {
           unitPrice: it.unitPrice,
           total: it.total,
           taxAmount: shares[i] ?? "0",
+          isGift: it.isGift,
+          barcode: it.barcode ?? it.sku ?? null,
         })),
       });
     } catch (e) {

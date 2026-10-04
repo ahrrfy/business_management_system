@@ -12,6 +12,8 @@ import { BRAND as B, esc, fmt, fmtC, openPrintWindow } from './brand';
 import { fmtQty } from '@shared/quantityFormat';
 import { docBarcode } from '@shared/documentNumber';
 import { fmtDate as formatDate } from '../date';
+import { productBarcodeSvg } from './barcode';
+import { canonicalizeBarcodeInput } from '@shared/barcodeNormalize';
 import {
   wrapA4Doc,
   pageHeader,
@@ -106,6 +108,39 @@ export function resolveDocBarcode(
   };
 }
 
+/**
+ * راسم باركود السطر في جدول المستندات الرسمية (بديل عمود الضريبة عند عدم تفعيلها).
+ * يُخرج تمثيلاً مرئياً كاملاً (قضبان SVG هندسية + الرمز المقروء بشرياً بالأسفل)
+ * بمقاييس دقيقة تلائم جدول A4 وقابلة للمسح الضوئي الفوري بواسطة كافة الماسحات.
+ */
+export function renderItemBarcodeCell(rawCode?: string | null, svgOverride?: string | null): string {
+  if (svgOverride) {
+    const code = rawCode ? canonicalizeBarcodeInput(rawCode) : '';
+    return `<div style="display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:100%;max-width:115px;margin:0 auto;vertical-align:middle">
+      <div style="width:100%;max-width:105px;height:22px;display:flex;align-items:center;justify-content:center;overflow:hidden">${svgOverride}</div>
+      ${code ? `<span style="font-family:monospace;font-size:8.5px;font-weight:700;color:#000;line-height:1.2;margin-top:1.5px;direction:ltr;unicode-bidi:isolate;letter-spacing:0.5px">${esc(code)}</span>` : ''}
+    </div>`;
+  }
+  if (!rawCode) return '<span style="color:#888;font-weight:700">—</span>';
+  const code = canonicalizeBarcodeInput(rawCode);
+  if (!code) return '<span style="color:#888;font-weight:700">—</span>';
+  try {
+    const res = productBarcodeSvg(code, {
+      moduleWidth: 1,
+      height: 22,
+      quietZone: 4,
+      showText: false,
+      fitToBox: true,
+    });
+    return `<div style="display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:100%;max-width:115px;margin:0 auto;vertical-align:middle">
+      <div style="width:100%;max-width:105px;height:22px;display:flex;align-items:center;justify-content:center;overflow:hidden">${res.svg}</div>
+      <span style="font-family:monospace;font-size:8.5px;font-weight:700;color:#000;line-height:1.2;margin-top:1.5px;direction:ltr;unicode-bidi:isolate;letter-spacing:0.5px">${esc(code)}</span>
+    </div>`;
+  } catch {
+    return `<span style="font-family:monospace;font-size:9.5px;font-weight:700;color:#000;direction:ltr;unicode-bidi:isolate">${esc(code)}</span>`;
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // ١. فاتورة مبيعات — A4
 // ═════════════════════════════════════════════════════════════════════════════
@@ -139,7 +174,14 @@ export interface SalesInvoiceV2Data {
     total: string | number;
     /** هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع «مجاناً» ووسمُ «هدية» بجانب الاسم. */
     isGift?: boolean | null;
+    /** باركود المنتج (يُستبدل به عمود الضريبة عند عدم تفعيلها). */
+    barcode?: string | null;
+    /** SVG جاهز للباركود إن وُجد. */
+    barcodeSvg?: string | null;
   }[];
+
+  /** تحكم صريح بإظهار عمود الباركود بدل الضريبة (الافتراضي: true عندما لا توجد ضريبة على الفاتورة). */
+  showBarcodeColumn?: boolean;
 
   /** إفصاح التوصيل (0152): الأجرة المقبوضة (>0 ⇒ سطر «أجرة التوصيل»). */
   deliveryFee?: string | number | null;
@@ -206,14 +248,30 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
     },
   ]);
 
-  const cols: DocTableCol[] = [
-    { key: 'name', label: 'المنتج' },
-    { key: 'unit', label: 'الوحدة', width: 58 },
-    { key: 'qty',  label: 'الكمية', width: 52 },
-    { key: 'price', label: 'السعر', width: 74 },
-    { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
-    { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
-  ];
+  const hasTax =
+    Number(d.taxAmount ?? 0) > 0 ||
+    Number(d.taxRate ?? 0) > 0 ||
+    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
+  const showBarcode =
+    d.showBarcodeColumn !== undefined ? d.showBarcodeColumn : !hasTax;
+
+  const cols: DocTableCol[] = showBarcode
+    ? [
+        { key: 'name', label: 'المنتج' },
+        { key: 'unit', label: 'الوحدة', width: 50 },
+        { key: 'qty',  label: 'الكمية', width: 48 },
+        { key: 'price', label: 'السعر', width: 70 },
+        { key: 'barcode', label: 'الباركود', width: 115, rawHtml: true },
+        { key: 'total', label: 'الإجمالي', width: 84, emphasize: true },
+      ]
+    : [
+        { key: 'name', label: 'المنتج' },
+        { key: 'unit', label: 'الوحدة', width: 58 },
+        { key: 'qty',  label: 'الكمية', width: 52 },
+        { key: 'price', label: 'السعر', width: 74 },
+        { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
+        { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
+      ];
   // الهدية تُطبَع «مجاناً» لا «0»: الصفر على مستندٍ رسميّ يُقرأ خطأَ تسعيرٍ أو سهواً، والوسم
   // يُثبت للزبون (وللمراجع) أنّ المجّانيّة قرارٌ مقصود — وتكلفتها مُرحَّلة مصروفَ هدايا في الدفتر.
   const rows = d.items.map((it) => ({
@@ -221,6 +279,7 @@ export function buildSalesInvoiceV2Html(d: SalesInvoiceV2Data): string {
     unit: it.unitName ?? '',
     qty:  fmtQty(it.quantity),
     price: it.isGift ? 'مجاناً' : fmtIQD(it.unitPrice),
+    barcode: renderItemBarcodeCell(it.barcode, it.barcodeSvg),
     tax:  Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
     total: it.isGift ? 'مجاناً' : fmtIQD(it.total),
   }));
@@ -334,7 +393,14 @@ export interface PurchaseInvoiceV2Data {
     unitPrice: string | number;
     taxAmount?: string | number | null;
     total: string | number;
+    /** باركود المنتج (يُستبدل به عمود الضريبة عند عدم تفعيلها). */
+    barcode?: string | null;
+    /** SVG جاهز للباركود إن وُجد. */
+    barcodeSvg?: string | null;
   }[];
+
+  /** تحكم صريح بإظهار عمود الباركود بدل الضريبة (الافتراضي: true عندما لا توجد ضريبة على الفاتورة). */
+  showBarcodeColumn?: boolean;
 
   subtotal: string | number;
   discountAmount?: string | number | null;
@@ -387,19 +453,36 @@ export function buildPurchaseInvoiceV2Html(d: PurchaseInvoiceV2Data): string {
     },
   ]);
 
-  const cols: DocTableCol[] = [
-    { key: 'name', label: 'المنتج' },
-    { key: 'unit', label: 'الوحدة', width: 58 },
-    { key: 'qty', label: 'الكمية', width: 52 },
-    { key: 'price', label: 'السعر', width: 74 },
-    { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
-    { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
-  ];
+  const hasTax =
+    Number(d.taxAmount ?? 0) > 0 ||
+    Number(d.taxRate ?? 0) > 0 ||
+    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
+  const showBarcode =
+    d.showBarcodeColumn !== undefined ? d.showBarcodeColumn : !hasTax;
+
+  const cols: DocTableCol[] = showBarcode
+    ? [
+        { key: 'name', label: 'المنتج' },
+        { key: 'unit', label: 'الوحدة', width: 50 },
+        { key: 'qty', label: 'الكمية', width: 48 },
+        { key: 'price', label: 'السعر', width: 70 },
+        { key: 'barcode', label: 'الباركود', width: 115, rawHtml: true },
+        { key: 'total', label: 'الإجمالي', width: 84, emphasize: true },
+      ]
+    : [
+        { key: 'name', label: 'المنتج' },
+        { key: 'unit', label: 'الوحدة', width: 58 },
+        { key: 'qty', label: 'الكمية', width: 52 },
+        { key: 'price', label: 'السعر', width: 74 },
+        { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
+        { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
+      ];
   const rows = d.items.map((it) => ({
     name: it.productName,
     unit: it.unitName ?? '',
     qty: fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
+    barcode: renderItemBarcodeCell(it.barcode, it.barcodeSvg),
     tax: Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
     total: fmtIQD(it.total),
   }));
@@ -602,7 +685,14 @@ export interface QuotationV2Data {
     unitPrice: string | number;
     taxAmount?: string | number | null;
     total: string | number;
+    /** باركود المنتج (يُستبدل به عمود الضريبة عند عدم تفعيلها). */
+    barcode?: string | null;
+    /** SVG جاهز للباركود إن وُجد. */
+    barcodeSvg?: string | null;
   }[];
+
+  /** تحكم صريح بإظهار عمود الباركود بدل الضريبة (الافتراضي: true عندما لا توجد ضريبة على الفاتورة). */
+  showBarcodeColumn?: boolean;
 
   subtotal: string | number;
   discountAmount?: string | number | null;
@@ -647,19 +737,36 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
     },
   ]);
 
-  const cols: DocTableCol[] = [
-    { key: 'name', label: 'المنتج' },
-    { key: 'unit', label: 'الوحدة', width: 58 },
-    { key: 'qty', label: 'الكمية', width: 52 },
-    { key: 'price', label: 'السعر', width: 74 },
-    { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
-    { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
-  ];
+  const hasTax =
+    Number(d.taxAmount ?? 0) > 0 ||
+    Number(d.taxRate ?? 0) > 0 ||
+    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
+  const showBarcode =
+    d.showBarcodeColumn !== undefined ? d.showBarcodeColumn : !hasTax;
+
+  const cols: DocTableCol[] = showBarcode
+    ? [
+        { key: 'name', label: 'المنتج' },
+        { key: 'unit', label: 'الوحدة', width: 50 },
+        { key: 'qty', label: 'الكمية', width: 48 },
+        { key: 'price', label: 'السعر', width: 70 },
+        { key: 'barcode', label: 'الباركود', width: 115, rawHtml: true },
+        { key: 'total', label: 'الإجمالي', width: 84, emphasize: true },
+      ]
+    : [
+        { key: 'name', label: 'المنتج' },
+        { key: 'unit', label: 'الوحدة', width: 58 },
+        { key: 'qty', label: 'الكمية', width: 52 },
+        { key: 'price', label: 'السعر', width: 74 },
+        { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
+        { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
+      ];
   const rows = d.items.map((it) => ({
     name: it.productName,
     unit: it.unitName ?? '',
     qty: fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
+    barcode: renderItemBarcodeCell(it.barcode, it.barcodeSvg),
     tax: Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
     total: fmtIQD(it.total),
   }));

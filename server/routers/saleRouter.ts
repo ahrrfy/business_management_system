@@ -1451,6 +1451,7 @@ export const saleRouter = router({
 
         productName: products.name,
         sku: productVariants.sku,
+        barcode: sql<string | null>`COALESCE(NULLIF(${productUnits.barcode}, ''), NULLIF(${productVariants.sku}, ''))`,
         variantName: productVariants.variantName,
         color: productVariants.color,
         size: productVariants.size,
