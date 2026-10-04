@@ -100,7 +100,13 @@ export interface InvoicePrintData {
     taxAmount?: string | number | null;
     /** هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع «مجاناً» بدل صفرٍ يُقرأ خطأَ تسعير. */
     isGift?: boolean | null;
+    /** باركود المنتج (يُستبدل به عمود الضريبة عند عدم تفعيلها). */
+    barcode?: string | null;
+    /** SVG جاهز للباركود إن وُجد. */
+    barcodeSvg?: string | null;
   }[];
+  /** تحكم صريح بإظهار عمود الباركود بدل الضريبة (الافتراضي: true عندما لا توجد ضريبة على الفاتورة). */
+  showBarcodeColumn?: boolean;
   /** إفصاح التوصيل (0152): أجرةٌ مقبوضة / توصيلٌ مُهدىً بقيمته / لا توصيل. */
   deliveryFee?: string | number | null;
   deliveryFree?: boolean | null;
@@ -146,6 +152,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     invoiceDate: d.invoiceDate,
     barcode: d.barcode,
     barcodePlacement: d.barcodePlacement,
+    showBarcodeColumn: d.showBarcodeColumn,
     statusLabel,
     statusColor,
     customerName: d.customerName,
@@ -161,6 +168,8 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
       taxAmount: it.taxAmount ?? null,
       total: it.total,
       isGift: it.isGift ?? null,
+      barcode: it.barcode ?? null,
+      barcodeSvg: it.barcodeSvg ?? null,
     })),
     deliveryFee: d.deliveryFee ?? null,
     deliveryFree: d.deliveryFree ?? null,
@@ -207,7 +216,13 @@ export interface QuotationPrintData {
     unitPrice: string | number;
     taxAmount?: string | number | null;
     total: string | number;
+    /** باركود المنتج (يُستبدل به عمود الضريبة عند عدم تفعيلها). */
+    barcode?: string | null;
+    /** SVG جاهز للباركود إن وُجد. */
+    barcodeSvg?: string | null;
   }[];
+  /** تحكم صريح بإظهار عمود الباركود بدل الضريبة (الافتراضي: true عندما لا توجد ضريبة على الفاتورة). */
+  showBarcodeColumn?: boolean;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -237,6 +252,7 @@ export async function printQuotation(d: QuotationPrintData): Promise<void> {
     validUntil: d.validUntil,
     barcode: d.barcode,
     barcodePlacement: d.barcodePlacement,
+    showBarcodeColumn: d.showBarcodeColumn,
     customerName: d.customerName,
     contactPerson: d.contactPerson,
     customerPhone: d.customerPhone,
@@ -258,6 +274,8 @@ export async function printQuotation(d: QuotationPrintData): Promise<void> {
       unitPrice: it.unitPrice,
       taxAmount: it.taxAmount ?? null,
       total: it.total,
+      barcode: it.barcode ?? null,
+      barcodeSvg: it.barcodeSvg ?? null,
     })),
     subtotal: d.subtotal,
     discountAmount: d.discountAmount ?? null,

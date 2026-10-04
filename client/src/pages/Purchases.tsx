@@ -397,6 +397,7 @@ export default function Purchases() {
           unitPrice: it.unitPrice,
           taxAmount: taxShares[index] ?? "0",
           total: it.total,
+          barcode: it.barcode ?? it.sku ?? null,
         })),
         subtotal: d.subtotal ?? "0",
         taxAmount: d.taxAmount ?? "0",

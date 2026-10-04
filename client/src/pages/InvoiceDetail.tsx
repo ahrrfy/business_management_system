@@ -650,6 +650,7 @@ export default function InvoiceDetail() {
         total: it.total,
         taxAmount: shares[i] ?? "0",
         isGift: it.isGift,
+        barcode: it.barcode ?? it.sku ?? null,
       })),
       deliveryFee: data.deliveryFee,
       deliveryFree: data.deliveryFree,

@@ -1233,7 +1233,7 @@ export const purchaseRouter = router({
           // سيُخطئ عند كمّيةٍ كسريّة مقرَّبة ⇒ نقرأه من مصدره.
           productId: products.id,
           conversionFactor: productUnits.conversionFactor,
-          barcode: productUnits.barcode,
+          barcode: sql<string | null>`COALESCE(NULLIF(${productUnits.barcode}, ''), NULLIF(${productVariants.sku}, ''))`,
         })
         .from(purchaseOrderItems)
         .leftJoin(

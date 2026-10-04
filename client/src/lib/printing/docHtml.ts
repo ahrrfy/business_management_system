@@ -879,6 +879,8 @@ export interface DocTableCol {
   emphasize?: boolean;
   /** حجم الخطّ بالبكسل (11.25/11.75/12/12.75 — يطابق سلّم التصميم). */
   size?: number;
+  /** تجاوز الهروب لتضمين HTML خام (كالباركود SVG). */
+  rawHtml?: boolean;
 }
 
 export interface DocTableOpts {
@@ -945,7 +947,9 @@ export function docTableV2(
               : "font-weight:700";
           const finalColor = c.emphasize ? B.green : color;
           const finalSize = c.emphasize ? 13.25 : size;
-          return `<td style="vertical-align:middle;padding:6px;${align};font-size:${finalSize}px;color:${finalColor};${weight};border:1.5px solid ${B.borderDk};${brdBot}${font}">${esc(r[c.key] ?? "")}</td>`;
+          const rawVal = r[c.key] ?? "";
+          const content = c.rawHtml ? rawVal : esc(rawVal);
+          return `<td style="vertical-align:middle;padding:6px;${align};font-size:${finalSize}px;color:${finalColor};${weight};border:1.5px solid ${B.borderDk};${brdBot}${font}">${content}</td>`;
         })
         .join("");
 

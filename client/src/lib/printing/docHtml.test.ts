@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader } from "./docHtml";
+import { wrapA4Doc, wrapMultiA4Doc, wrapReceiptDoc, pageHeader, docHeader, docTableV2 } from "./docHtml";
 import {
   buildSalesInvoiceV2Html,
   buildPurchaseInvoiceV2Html,
@@ -170,6 +170,83 @@ describe("buildSalesInvoiceV2Html & buildPurchaseInvoiceV2Html", () => {
     expect(html).not.toContain('title="INV-22333"');
   });
 
+  it("يستبدل عمود الضريبة بعمود الباركود مع الترميز الكامل SVG عند عدم تفعيل الضريبة في فاتورة المبيعات", () => {
+    const html = buildSalesInvoiceV2Html({
+      ...dummySalesInvoice,
+      taxAmount: 0,
+      taxRate: 0,
+      items: [
+        {
+          productName: "دفتر ملاحظات",
+          quantity: 2,
+          unitPrice: 25000,
+          total: 50000,
+          barcode: "628100012345",
+        },
+      ],
+    });
+
+    // عمود الباركود يحل محل عمود الضريبة في رأس الجدول
+    expect(html).toContain(">الباركود<");
+    expect(html).not.toContain(">الضريبة<");
+    // خلية الباركود تحتوي على SVG هندسي صالح للماسحات الضوئية ورقم الباركود تحته
+    expect(html).toContain("<svg");
+    expect(html).toContain("max-width:105px;height:22px");
+    expect(html).toContain("628100012345");
+  });
+
+  it("يُبقي عمود الضريبة كما هو في فاتورة المبيعات إذا كانت الضريبة مفعلة وذات قيمة", () => {
+    const html = buildSalesInvoiceV2Html({
+      ...dummySalesInvoice,
+      taxAmount: 5000,
+      taxRate: 10,
+      items: [
+        {
+          productName: "دفتر ملاحظات",
+          quantity: 2,
+          unitPrice: 25000,
+          taxRate: 10,
+          taxAmount: 5000,
+          total: 55000,
+          barcode: "628100012345",
+        },
+      ],
+    });
+
+    // عمود الضريبة يظهر لأن الضريبة مفعلة
+    expect(html).toContain(">الضريبة<");
+    expect(html).not.toContain(">الباركود<");
+  });
+
+  it("يستبدل عمود الضريبة بعمود الباركود مع SVG في فاتورة المشتريات الرسمية عند عدم وجود ضريبة", () => {
+    const html = buildPurchaseInvoiceV2Html({
+      invoiceNumber: "5544",
+      invoiceDate: "2026-10-03",
+      supplierName: "مورّد القرطاسية",
+      subtotal: 100000,
+      total: 100000,
+      taxAmount: 0,
+      taxRate: 0,
+      items: [
+        {
+          productName: "أقلام حبر",
+          quantity: 10,
+          unitPrice: 10000,
+          total: 100000,
+          barcode: "978020137962",
+        },
+      ],
+    });
+
+    expect(html).toContain("فاتورة مشتريات");
+    expect(html).toContain("5544");
+    expect(html).toContain('title="PO-5544"');
+    expect(html).toContain(">الباركود<");
+    expect(html).not.toContain(">الضريبة<");
+    expect(html).toContain("<svg");
+    expect(html).toContain("978020137962");
+  });
+
   it("يولّد باركود الفاتورة تلقائياً ببادئة PO في فاتورة المشتريات الرسمية", () => {
     const html = buildPurchaseInvoiceV2Html({
       invoiceNumber: "5544",
@@ -269,3 +346,27 @@ describe("wrapReceiptDoc", () => {
     expect(html).toContain("window.print()");
   });
 });
+
+describe("docTableV2 - دعم rawHtml للأعمدة المركبة مثل الباركود", () => {
+  it("يمرر محتوى HTML دون تشفير عند تحديد rawHtml: true", () => {
+    const tableHtml = docTableV2(
+      [
+        { key: "barcode", label: "الباركود", rawHtml: true },
+        { key: "name", label: "اسم المنتج" },
+      ],
+      [
+        {
+          barcode: '<svg class="test-barcode"><rect width="10" height="20"/></svg>',
+          name: "منتج تجريبي & اختبار <1>",
+        },
+      ],
+    );
+
+    // المحتوى الخام في rawHtml يبقى وسماً كما هو
+    expect(tableHtml).toContain('<svg class="test-barcode"><rect width="10" height="20"/></svg>');
+    // الأعمدة العادية يتم تشفير محتواها النصي للحماية
+    expect(tableHtml).toContain("&amp;");
+    expect(tableHtml).toContain("&lt;1&gt;");
+  });
+});
+
