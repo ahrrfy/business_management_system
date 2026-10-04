@@ -541,30 +541,26 @@ export default function Invoices() {
       },
       // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (سطر واحد لكل فرع لا معنى لتمييزه).
       ...(showBranchCol
-        ? [
-            {
-              id: "branch",
-              header: "الفرع",
-              cell: ({ row }) => branchNames.get(row.original.branchId) ?? `#${row.original.branchId}`,
-            } as ColumnDef<Row, unknown>,
-          ]
+        ? [{
+            id: "branch",
+            header: "الفرع",
+            accessorFn: (r: Row) => branchNames.get(r.branchId) ?? `#${r.branchId}`,
+            meta: { kind: "text" as const },
+            cell: ({ row }: { row: { original: Row } }) => branchNames.get(row.original.branchId) ?? `#${row.original.branchId}`,
+          } as ColumnDef<Row, unknown>]
         : []),
       {
         id: "channel",
         header: "القناة",
+        accessorFn: (r) => invoiceChannelLabel(deriveInvoiceChannel(r)),
+        meta: { kind: "text" },
         cell: ({ row }) => {
           const r = row.original;
           return (
             <div className="flex min-w-0 flex-col items-start gap-0.5">
               <InvoiceChannelBadge row={r} />
               {r.workOrderNumber ? (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/work-orders/${r.workOrderId}`)}
-                  className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline"
-                  dir="ltr"
-                  title="فتح أمر الشغل"
-                >
+                <button type="button" onClick={() => navigate(`/work-orders/${r.workOrderId}`)} className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline" dir="ltr" title="فتح أمر الشغل">
                   {r.workOrderNumber}
                 </button>
               ) : null}
@@ -575,24 +571,16 @@ export default function Invoices() {
       {
         id: "delivery",
         header: "التوصيل",
+        accessorFn: (r) => (r.consignmentStatus ? (CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus) : "—"),
+        meta: { kind: "status" },
         cell: ({ row }) => {
           const r = row.original;
           if (!r.consignmentStatus) return <span className="text-muted-foreground">—</span>;
-          const st = CONSIGNMENT_STATUS[r.consignmentStatus] ?? {
-            label: r.consignmentStatus,
-            cls: "bg-muted",
-          };
+          const st = CONSIGNMENT_STATUS[r.consignmentStatus] ?? { label: r.consignmentStatus, cls: "bg-muted" };
           return (
             <div className="flex flex-col items-start gap-0.5">
               <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${st.cls}`}>توصيل — {st.label}</span>
-              <span className="text-[11px] text-muted-foreground">
-                {r.deliveryPartyName ?? "—"}
-                {r.consignmentNumber ? (
-                  <span className="ms-1 font-mono" dir="ltr">
-                    {r.consignmentNumber}
-                  </span>
-                ) : null}
-              </span>
+              <span className="text-[11px] text-muted-foreground">{r.deliveryPartyName ?? "—"}{r.consignmentNumber ? <span className="ms-1 font-mono" dir="ltr">{r.consignmentNumber}</span> : null}</span>
             </div>
           );
         },
@@ -600,19 +588,18 @@ export default function Invoices() {
       {
         accessorKey: "salespersonName",
         header: "موظف المبيعات",
+        meta: { kind: "text" },
         cell: (c) => (c.getValue() as string) ?? "—",
       },
       {
         id: "shiftDevice",
         header: "الوردية / المحطة",
+        accessorFn: (r) => [r.shiftId ? `#${r.shiftId}` : "", r.deviceId ?? ""].filter(Boolean).join(" "),
+        meta: { kind: "code" },
         cell: ({ row }) => (
           <span className="text-xs">
             {row.original.shiftId ? `#${row.original.shiftId}` : "—"}
-            {row.original.deviceId ? (
-              <span className="block text-muted-foreground font-mono" dir="ltr">
-                {row.original.deviceId}
-              </span>
-            ) : null}
+            {row.original.deviceId ? <span className="block text-muted-foreground font-mono" dir="ltr">{row.original.deviceId}</span> : null}
           </span>
         ),
       },
