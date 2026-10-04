@@ -40,6 +40,11 @@ import { logger } from "../logger";
 import { users } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
+import {
+  isAccountAuthenticationLocked,
+  recordAccountAuthenticationFailure,
+  clearAccountAuthenticationFailures,
+} from "../services/accountAuthenticationLockout";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { processPayment,
 } from "../services/saleService";
@@ -220,6 +225,16 @@ export async function verifyManagerApproval(
     }
 
     u = (await db.select().from(users).where(eq(users.badgeBarcode, barcode)).limit(1))[0];
+    if (u && isAccountAuthenticationLocked(u)) {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: appErrorMessage({
+          what: "محاولات كثيرة جداً لاعتماد المدير",
+          why: "تم قفل حساب المدير مؤقتاً بسبب تكرار المحاولات الخاطئة عبر خوادم النظام",
+          doThis: "انتظر ١٥ دقيقة أو راجع مسؤول النظام لإلغاء القفل",
+        }),
+      });
+    }
     ok = Boolean(u && u.isActive !== false && (u.role === "manager" || u.role === "admin"));
     if (!u) {
       failureReason = "invalid_or_expired_barcode";
@@ -281,6 +296,17 @@ export async function verifyManagerApproval(
           .where(or(eq(users.email, ident.toLowerCase()), eq(users.username, ident)))
           .limit(1)
       )[0];
+    }
+
+    if (u && isAccountAuthenticationLocked(u)) {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: appErrorMessage({
+          what: "محاولات كثيرة جداً لاعتماد المدير",
+          why: "تم قفل حساب المدير مؤقتاً بسبب تكرار المحاولات الخاطئة عبر خوادم النظام",
+          doThis: "انتظر ١٥ دقيقة أو راجع مسؤول النظام لإلغاء القفل",
+        }),
+      });
     }
 
     const pinMatch = u?.pinHash ? await verifyPassword(pinVal, u.pinHash) : false;
@@ -349,6 +375,17 @@ export async function verifyManagerApproval(
         .limit(1)
     )[0];
 
+    if (u && isAccountAuthenticationLocked(u)) {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: appErrorMessage({
+          what: "محاولات كثيرة جداً لاعتماد المدير",
+          why: "تم قفل حساب المدير مؤقتاً بسبب تكرار المحاولات الخاطئة عبر خوادم النظام",
+          doThis: "انتظر ١٥ دقيقة أو راجع مسؤول النظام لإلغاء القفل",
+        }),
+      });
+    }
+
     const pwdMatch = u ? await verifyPassword(pwd, u.passwordHash) : false;
     ok = Boolean(u && u.isActive !== false && pwdMatch && (u.role === "manager" || u.role === "admin"));
     if (!u) {
@@ -376,6 +413,9 @@ export async function verifyManagerApproval(
   }
 
   if (!ok || !u) {
+    if (u) {
+      await recordAccountAuthenticationFailure(u.id);
+    }
     await logAudit(ctx as any, {
       action: "sale.creditOverride.fail",
       entityType: "user",
@@ -485,6 +525,7 @@ export async function verifyManagerApproval(
   _clearMgrAttempt(attemptKey);
   if (targetMgrKey) _clearMgrAttempt(targetMgrKey);
   if (actorKey) _clearMgrAttempt(actorKey);
+  await clearAccountAuthenticationFailures(u.id);
 
   return Number(u.id);
 }
