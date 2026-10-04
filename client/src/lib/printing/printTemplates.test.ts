@@ -545,9 +545,10 @@ describe("printInvoiceA4 — رصيد العميل السابق والنهائي
     expect(html).toContain("الرصيد السابق");
     expect(html).toContain("90,000 د.ع");
     expect(html).toContain("الرصيد النهائي (الحساب الكلي)");
-    expect(html).toContain("150,000 د.ع");
-    expect(html).toContain("المتبقي");
-    expect(html).toContain("60,000 د.ع");
+    expect(html).toContain("150,000");
+    expect(html).toContain("مطلوب من العميل");
+    expect(html).toContain("المتبقّي");
+    expect(html).toContain("60,000");
   });
 
   it("يُظهر الرصيد كـ خالص عندما يكون الرصيد النهائي صفراً", async () => {
