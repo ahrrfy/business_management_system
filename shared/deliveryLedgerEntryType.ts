@@ -26,6 +26,8 @@ export const DELIVERY_LEDGER_ENTRY_TYPES = [
   "COD_COLLECTED",
   /** الجهة ورّدت النقد إلى درج المكتبة. */
   "COD_REMITTED",
+  /** عكسُ نقدٍ كان في عهدة الجهة بسبب مرتجع بيع؛ لا يدخل درج المكتبة ولا وعاء الاسترداد. */
+  "COD_RETURNED",
   /** تحرُّرُ تعرُّضٍ بلا نقد (رجوعٌ/إلغاءٌ/سدادٌ كاونتريّ). */
   "COD_RELEASED",
   /** شُطب عجزٌ باعتمادٍ ثانٍ — خسارةٌ على المكتبة لا ذمّةٌ على الجهة. */
@@ -37,6 +39,8 @@ export const DELIVERY_LEDGER_ENTRY_TYPES = [
    * كـ`COD_COLLECTED`، ويلزمه `shortfallReason` من `shared/shortfallReason.ts`.
    */
   "SHORTFALL_ASSIGNED",
+  /** تسويةُ عجزٍ محمَّل بسبب مرتجع بيع؛ تخفض الذمّة غير النقديّة بلا حركة درج. */
+  "SHORTFALL_SETTLED",
   /** أجرةُ توصيلٍ اكتسبتها الجهة — نحن مدينون لها بها. */
   "FEE_EARNED",
   /** دُفعت الأجرة نقداً للجهة. */
@@ -55,10 +59,12 @@ export const DELIVERY_LEDGER_ENTRY_LABEL: Readonly<Record<DeliveryLedgerEntryTyp
     COD_ASSIGNED: "تعرض إسناد",
     COD_COLLECTED: "تحصيل نقد",
     COD_REMITTED: "توريد للمكتبة",
+    COD_RETURNED: "عكس عهدة مرتجع",
     COD_RELEASED: "تحرير تعرض",
     COD_WRITTEN_OFF: "شطب عجز",
     COD_RECOVERED: "استرداد مشطوب",
     SHORTFALL_ASSIGNED: "عجز محمل على الجهة",
+    SHORTFALL_SETTLED: "تسوية عجز مرتجع",
     FEE_EARNED: "استحقاق أجرة",
     FEE_PAID: "دفع أجرة",
     FEE_OFFSET: "خصم أجرة",
@@ -80,10 +86,12 @@ export const DELIVERY_LEDGER_ENTRY_SIGN: Readonly<Record<DeliveryLedgerEntryType
     COD_ASSIGNED: 1,
     COD_COLLECTED: 1,
     COD_REMITTED: -1,
+    COD_RETURNED: -1,
     COD_RELEASED: -1,
     COD_WRITTEN_OFF: -1,
     COD_RECOVERED: 1,
     SHORTFALL_ASSIGNED: 1,
+    SHORTFALL_SETTLED: -1,
     FEE_EARNED: -1,
     FEE_PAID: 1,
     FEE_OFFSET: 1,
@@ -94,7 +102,8 @@ export const DELIVERY_LEDGER_ENTRY_SIGN: Readonly<Record<DeliveryLedgerEntryType
  * م١ (PR-2/3) — **العهدةُ الكلّية للجهة مشتقّةً من الدفتر** (نقدٌ ماديّ + عجزٌ محمَّل): الأنواعُ
  * التي تحرّكها وإشارتُها، وهي عينُها إشارة `DELIVERY_LEDGER_ENTRY_SIGN` مقصورةً على أحداث العهدة:
  *
- *   custody = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+ *   custody = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED
+ *             − Σ COD_REMITTED − Σ COD_RETURNED − Σ COD_WRITTEN_OFF − Σ SHORTFALL_SETTLED
  *
  * ⚠️ **العجزُ داخل العهدة عمداً — لا داخل «نقد بيده»** (Codex #1012 P2): `SHORTFALL_ASSIGNED` ذمّةٌ
  * غير نقديّة، لكنّه يرفع `deliveryParties.currentBalance` بـ`adjustDeliveryBalance` تماماً كالنقد،
@@ -119,7 +128,9 @@ export const DELIVERY_CASH_CUSTODY_SIGN = Object.freeze({
   COD_COLLECTED: 1,
   SHORTFALL_ASSIGNED: 1,
   COD_REMITTED: -1,
+  COD_RETURNED: -1,
   COD_WRITTEN_OFF: -1,
+  SHORTFALL_SETTLED: -1,
 } as const satisfies Partial<Record<DeliveryLedgerEntryType, 1 | -1>>);
 
 export type DeliveryCashCustodyEntryType = keyof typeof DELIVERY_CASH_CUSTODY_SIGN;

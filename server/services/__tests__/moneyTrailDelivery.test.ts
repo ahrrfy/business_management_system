@@ -19,6 +19,8 @@ import { closeShift, openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 import { returnConsignment } from "../delivery/returns";
 import { confirmConsignmentDelivery, transitionConsignmentParcel } from "../delivery/courier";
+import { assertNoInTransitConsignment } from "../delivery/guards";
+import { registerCounterCollectionTx } from "../delivery/counterCollection";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 import { payDeliveryFee } from "../delivery/fees";
 import { getDeliveryFinancialSummary } from "../delivery/lifecycle";
@@ -26,6 +28,7 @@ import { getFinancialPosition } from "../reportsFinancialService";
 import { getCustomerStatement } from "../reports/arAging";
 import { returnSale } from "../returnService";
 import { loadRefundCaps } from "../returns/refundCaps";
+import { processPayment } from "../sale/payment";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
@@ -103,6 +106,25 @@ async function deliverConsignment(consignmentId: number) {
     { consignmentId, clientRequestId: `money-${consignmentId}-delivered` },
     { userId: 3 },
   );
+}
+
+async function payAtCounter(invoiceId: number, amount: string, shiftId: number, requestId: string) {
+  return processPayment({
+    invoiceId,
+    amount,
+    method: "CASH",
+    shiftId,
+    clientRequestId: requestId,
+    preInsertCheck: async (tx) => {
+      await assertNoInTransitConsignment(tx, invoiceId);
+      await registerCounterCollectionTx(tx, {
+        invoiceId,
+        amount,
+        actorUserId: CASHIER.userId,
+        refKey: requestId,
+      });
+    },
+  }, CASHIER);
 }
 
 beforeEach(async () => {
@@ -480,6 +502,35 @@ describe("M6/M7 — عهدة المناديب أصلٌ ظاهر، وسقفها �
     void shift;
   });
 
+  it("M6.c: عجز التوريد العام يبقى أصلاً على جهة التوصيل ولا يسقط لأنه بلا رقم طرد", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون عابر بعجز توريد", contactPhone: "07700000106",
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m6c-remittance-shortfall",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const cn = await consignmentForInvoice(checkout.regularSale!.invoiceId);
+    await deliverConsignment(Number(cn.id));
+    await recordDeliveryRemittance({
+      branchId: 1,
+      partyId: 1,
+      lines: [{ consignmentId: Number(cn.id), collectedAmount: "10000.00" }],
+      countedCash: "9000.00",
+      shortfall: { reason: "OTHER", notes: "فرق عد فعلي" },
+      clientRequestId: "m6c-remittance-shortfall-cash",
+    }, CASHIER);
+
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(1000);
+    const shortfall = (await db().select().from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.entryType, "SHORTFALL_ASSIGNED")))[0];
+    expect(shortfall.consignmentId).toBeNull();
+    expect(Number(shortfall.amount)).toBe(1000);
+    expect(Number((await getFinancialPosition({ verify: false })).deliveryFloat)).toBe(1000);
+  });
+
   it("M7: عهدةٌ تتجاوز سقف المندوب تُرفض برسالةٍ تسمّي المبلغ", async () => {
     await db().update(s.deliveryParties).set({ floatLimit: "5000.00" }).where(eq(s.deliveryParties.id, 1));
     const shift = await openReception();
@@ -561,6 +612,451 @@ describe("M10 — حماية صندوق الكاشير عند إرجاع طلب 
       eq(s.receipts.direction, "OUT"),
     ));
     expect(outReceipts).toHaveLength(0);
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+
+  it("المرتجع الجزئي يسقط غير المدفوع من ذمة العميل قبل أن يمس عهدة المندوب", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m10-unpaid-first",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+      await transitionConsignmentParcel(
+        { consignmentId: Number(cn.id), toStatus, clientRequestId: `m10-unpaid-first-${toStatus}` },
+        { userId: 3 },
+      );
+    }
+    await confirmConsignmentDelivery({
+      consignmentId: Number(cn.id),
+      clientRequestId: "m10-unpaid-first-proof",
+      statementWitness: { partyId: 1, statementNumber: "M10-UF", collectedAmount: "4000.00" },
+    }, { userId: 1 });
+    expect(Number((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance)).toBe(6000);
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(4000);
+
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 4 }],
+      restock: true,
+      clientRequestId: "m10-unpaid-first-return",
+    }, MANAGER);
+
+    expect(Number((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance)).toBe(2000);
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(4000);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0]).toMatchObject({
+      paidAmount: "4000.00",
+      returnedTotal: "4000.00",
+    });
+    expect((await consignmentForInvoice(invoiceId)).counterSettledAmount).toBe("4000.00");
+    expect(await db().select().from(s.deliveryLedgerEntries).where(and(
+      eq(s.deliveryLedgerEntries.consignmentId, Number(cn.id)),
+      eq(s.deliveryLedgerEntries.entryType, "COD_RETURNED"),
+    ))).toHaveLength(0);
+    const released = await db().select().from(s.deliveryLedgerEntries).where(and(
+      eq(s.deliveryLedgerEntries.consignmentId, Number(cn.id)),
+      eq(s.deliveryLedgerEntries.entryType, "COD_RELEASED"),
+    ));
+    expect(released.some((row) => Number(row.amount) === 4000)).toBe(true);
+  });
+
+  it("سداد الكاونتر لا يخصم من عهدة المندوب: 4,000 بيده و6,000 بالكاونتر يعكسان كل مصدر وحده", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون كشف وكاونتر", contactPhone: "07700000107",
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m10-counter-split",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+      await transitionConsignmentParcel(
+        { consignmentId: Number(cn.id), toStatus, clientRequestId: `m10-counter-split-${toStatus}` },
+        { userId: 3 },
+      );
+    }
+    await confirmConsignmentDelivery({
+      consignmentId: Number(cn.id),
+      clientRequestId: "m10-counter-split-proof",
+      statementWitness: { partyId: 1, statementNumber: "M10-CS", collectedAmount: "4000.00" },
+    }, { userId: 1 });
+    await payAtCounter(invoiceId, "6000.00", shift.shiftId, "m10-counter-split-pay");
+
+    const caps = await loadRefundCaps(db(), invoiceId);
+    expect(caps.pool.toFixed(2)).toBe("6000.00");
+    expect(caps.unremittedDeliveryCustody.toFixed(2)).toBe("4000.00");
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "6000.00", shiftId: shift.shiftId,
+        reason: "إلغاء كامل بعد كشف جزئي وسداد الباقي بالكاونتر", disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-counter-split-return",
+    }, MANAGER);
+
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
+    const returned = await db().select().from(s.deliveryLedgerEntries).where(and(
+      eq(s.deliveryLedgerEntries.consignmentId, Number(cn.id)),
+      eq(s.deliveryLedgerEntries.entryType, "COD_RETURNED"),
+    ));
+    expect(returned).toHaveLength(1);
+    expect(Number(returned[0].amount)).toBe(4000);
+    expect(Number((await getFinancialPosition({ verify: false })).deliveryFloat)).toBe(0);
+    expect((await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER)).variance).toBe("0.00");
+  });
+
+  it("عجز التسليم يُسوّى كذمة غير نقدية عند المرتجع ولا يتحول إلى نقد وهمي", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون بعجز توصيل", contactPhone: "07700000108",
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m10-shortfall-return",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+      await transitionConsignmentParcel(
+        { consignmentId: Number(cn.id), toStatus, clientRequestId: `m10-shortfall-return-${toStatus}` },
+        { userId: 3 },
+      );
+    }
+    await confirmConsignmentDelivery({
+      consignmentId: Number(cn.id), clientRequestId: "m10-shortfall-return-delivered",
+      collectedAmount: "8000.00", shortfallReason: "PARTIAL_REFUSAL",
+    }, { userId: 3 });
+
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "0.00", shiftId: null,
+        reason: "إلغاء كامل وتسوية العجز مع البضاعة الراجعة", disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-shortfall-return-sale",
+    }, MANAGER);
+
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
+    const ledger = await db().select().from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.consignmentId, Number(cn.id)));
+    expect(Number(ledger.find((row) => row.entryType === "COD_RETURNED")?.amount)).toBe(8000);
+    expect(Number(ledger.find((row) => row.entryType === "SHORTFALL_SETTLED")?.amount)).toBe(2000);
+    expect(Number((await getFinancialPosition({ verify: false })).deliveryFloat)).toBe(0);
+    expect((await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER)).variance).toBe("0.00");
+  });
+
+  it("التوريد الجزئي يردّ ما دخل الدرج فقط ويعكس بقية عهدة المندوب", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون توريد جزئي", contactPhone: "07700000103",
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m10-partial-remittance",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    await deliverConsignment(Number(cn.id));
+    await recordDeliveryRemittance({
+      branchId: 1,
+      partyId: 1,
+      lines: [{ consignmentId: Number(cn.id), collectedAmount: "4000.00" }],
+      countedCash: "4000.00",
+      clientRequestId: "m10-partial-remittance-cash",
+    }, CASHIER);
+
+    const caps = await loadRefundCaps(db(), invoiceId);
+    expect(caps.pool.toFixed(2)).toBe("4000.00");
+    expect(caps.unremittedDeliveryCustody.toFixed(2)).toBe("6000.00");
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "4000.00", shiftId: shift.shiftId,
+        reason: "إلغاء الطلب بعد توريد جزء من التحصيل", disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-partial-remittance-return",
+    }, MANAGER);
+
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
+    expect((await consignmentForInvoice(invoiceId))).toMatchObject({
+      status: "RETURNED",
+      parcelStatus: "RETURNED",
+      moneyStatus: "CANCELLED",
+      counterSettledAmount: "6000.00",
+    });
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0]).toMatchObject({
+      status: "RETURNED",
+      paidAmount: "0.00",
+    });
+    expect(Number((await getFinancialPosition({ verify: false })).deliveryFloat)).toBe(0);
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+
+  it("عربون المتجر يُرد وحده، وعهدة المندوب غير المورّدة تُعكس بلا تحميل الدرج قيمتها", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون بعربون", contactPhone: "07700000100",
+      paymentMethod: "CASH", paidAmount: "3000.00",
+      clientRequestId: "m10-store-deposit",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    await deliverConsignment(Number(cn.id));
+
+    const caps = await loadRefundCaps(db(), invoiceId);
+    expect(caps.pool.toFixed(2)).toBe("3000.00");
+    expect(caps.unremittedDeliveryCustody.toFixed(2)).toBe("7000.00");
+
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    const result = await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "3000.00",
+        shiftId: shift.shiftId,
+        reason: "إلغاء الطلب ورد العربون المقبوض",
+        disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-store-deposit-return",
+    }, MANAGER);
+
+    expect(result).toMatchObject({ fullyReturned: true, returnedTotal: "10000.00" });
+    const outs = await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, invoiceId),
+      eq(s.receipts.direction, "OUT"),
+    ));
+    expect(outs).toHaveLength(1);
+    expect(outs[0]).toMatchObject({ amount: "3000.00", paymentMethod: "CASH", shiftId: shift.shiftId });
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
+    expect((await consignmentForInvoice(invoiceId))).toMatchObject({
+      status: "RETURNED",
+      parcelStatus: "RETURNED",
+      moneyStatus: "CANCELLED",
+      counterSettledAmount: "7000.00",
+    });
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0]).toMatchObject({
+      status: "RETURNED",
+      paidAmount: "0.00",
+      returnedTotal: "10000.00",
+    });
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+
+  it("المرتجع الكامل لا يحوّل عهدة المندوب إلى رصيد دائن وهمي لعميل مسجّل", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "3000.00",
+      clientRequestId: "m10-registered-deposit",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    await deliverConsignment(Number(cn.id));
+    expect(Number((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance)).toBe(0);
+
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+    await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      refund: { amount: "3000.00", method: "CASH", shiftId: shift.shiftId },
+      restock: true,
+      clientRequestId: "m10-registered-deposit-return",
+    }, MANAGER);
+
+    expect(Number((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance)).toBe(0);
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
+    const custodyReturns = await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.invoiceId, invoiceId),
+      eq(s.accountingEntries.entryType, "DELIVERY_REMIT"),
+    ));
+    expect(custodyReturns).toHaveLength(1);
+    expect(custodyReturns[0]).toMatchObject({ amount: "7000.00", deliveryPartyId: 1, customerId: 1 });
+    const position = await getFinancialPosition({ verify: false });
+    expect(Number(position.deliveryFloat)).toBe(0);
+    expect(Number(position.arDebit)).toBe(0);
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+
+  it("العربون غير المردود يبقى رصيداً دائناً ومقبوضاً مثبتاً بعد عكس عهدة التوصيل", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId, customerId: 1,
+      paymentMethod: "CASH", paidAmount: "3000.00",
+      clientRequestId: "m10-registered-credit",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    await deliverConsignment(Number(cn.id));
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+
+    await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
+      restock: true,
+      clientRequestId: "m10-registered-credit-return",
+    }, MANAGER);
+
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0]).toMatchObject({
+      status: "RETURNED",
+      paidAmount: "3000.00",
+    });
+    expect(Number((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance)).toBe(-3000);
+    expect(await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, invoiceId),
+      eq(s.receipts.direction, "OUT"),
+    ))).toHaveLength(0);
+    expect((await loadRefundCaps(db(), invoiceId)).pool.toFixed(2)).toBe("3000.00");
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "3000.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+
+  it("إكمال المرتجع يغلق الإرسالية حتى إن استُنفدت عهدتها في المرتجع الجزئي الأول", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون عهدة مستنفدة", contactPhone: "07700000102",
+      paymentMethod: "CASH", paidAmount: "3000.00",
+      clientRequestId: "m10-exhausted-custody",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    await deliverConsignment(Number(cn.id));
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+
+    await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 7 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "0.00",
+        reason: "إرجاع الجزء المغطى بعهدة المندوب", disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-exhausted-custody-1",
+    }, MANAGER);
+    expect((await consignmentForInvoice(invoiceId))).toMatchObject({
+      parcelStatus: "DELIVERED",
+      moneyStatus: "SETTLED",
+      counterSettledAmount: "7000.00",
+    });
+
+    const completed = await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 3 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "3000.00", shiftId: shift.shiftId,
+        reason: "إكمال المرتجع ورد العربون", disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-exhausted-custody-2",
+    }, MANAGER);
+    expect(completed.fullyReturned).toBe(true);
+    expect((await consignmentForInvoice(invoiceId))).toMatchObject({
+      status: "RETURNED",
+      parcelStatus: "RETURNED",
+      moneyStatus: "CANCELLED",
+      counterSettledAmount: "7000.00",
+    });
+    const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
+    expect(closed.variance).toBe("0.00");
+  });
+
+  it("المرتجع الجزئي يعكس من عهدة المندوب بقدر البضاعة فقط ويبقي الإرسالية حية حتى الإرجاع الكامل", async () => {
+    const shift = await openReception();
+    const checkout = await checkoutReception({
+      branchId: 1, shiftId: shift.shiftId,
+      contactName: "زبون مرتجع جزئي", contactPhone: "07700000101",
+      paymentMethod: "CASH", paidAmount: "0",
+      clientRequestId: "m10-partial-custody",
+      regularSale: { lines: [LINE], amount: "10000.00" },
+      delivery: { partyId: 1, fee: "0", feeCollection: "COURIER" },
+    }, CASHIER);
+    const invoiceId = checkout.regularSale!.invoiceId;
+    const cn = await consignmentForInvoice(invoiceId);
+    await deliverConsignment(Number(cn.id));
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
+
+    const first = await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 4 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "0.00",
+        reason: "إرجاع أربعة فقط من طلب التوصيل",
+        disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-partial-custody-return-1",
+    }, MANAGER);
+    expect(first).toMatchObject({ fullyReturned: false, returnedTotal: "4000.00" });
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(6000);
+    expect((await consignmentForInvoice(invoiceId))).toMatchObject({
+      status: "DISPATCHED",
+      parcelStatus: "DELIVERED",
+      moneyStatus: "UNSETTLED",
+      counterSettledAmount: "4000.00",
+    });
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0]).toMatchObject({
+      status: "PAID",
+      paidAmount: "6000.00",
+      returnedTotal: "4000.00",
+    });
+    const capsAfterPartial = await loadRefundCaps(db(), invoiceId);
+    expect(capsAfterPartial.unremittedDeliveryCustody.toFixed(2)).toBe("6000.00");
+
+    const second = await returnSale({
+      invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 6 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "0.00",
+        reason: "إرجاع بقية طلب التوصيل",
+        disposition: "RESTOCK",
+      },
+      clientRequestId: "m10-partial-custody-return-2",
+    }, MANAGER);
+    expect(second).toMatchObject({ fullyReturned: true, returnedTotal: "6000.00" });
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
+    expect((await consignmentForInvoice(invoiceId))).toMatchObject({
+      status: "RETURNED",
+      parcelStatus: "RETURNED",
+      moneyStatus: "CANCELLED",
+      counterSettledAmount: "10000.00",
+    });
+    expect(await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, invoiceId),
+      eq(s.receipts.direction, "OUT"),
+    ))).toHaveLength(0);
     const closed = await closeShift({ shiftId: shift.shiftId, countedCash: "0.00" }, CASHIER);
     expect(closed.variance).toBe("0.00");
   });

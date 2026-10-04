@@ -17,7 +17,8 @@
  *
  * ## النقد بيد الجهة — مصدران يُعرَضان معاً (الطرح الظلّيّ، الخطّة §١٠)
  *   · `cashInHandLedger` مشتقٌّ من دفتر التوصيل الإلحاقيّ (`deliveryLedgerEntries`):
- *       Σ(COD_COLLECTED + SHORTFALL_ASSIGNED + COD_RECOVERED) − Σ(COD_REMITTED + COD_WRITTEN_OFF)
+ *       Σ(COD_COLLECTED + SHORTFALL_ASSIGNED)
+ *       − Σ(COD_REMITTED + COD_RETURNED + COD_WRITTEN_OFF + SHORTFALL_SETTLED)
  *   · `cashInHandStored` العمود المخزَّن `deliveryParties.currentBalance` (المرجع القائم اليوم).
  *   · `cashInHandDrift`  = ledger − stored. الصفرُ هو الصحّة؛ وغيرُه انحرافٌ تُظهره الواجهة شارةً
  *     بدل أن يُبتلَع — وهو ما يقرّر متى يُقلَب العلَم `courierLedgerDerived` إلى `ON`.

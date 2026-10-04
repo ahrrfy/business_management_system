@@ -72,6 +72,25 @@ export function invoiceRemaining(inv: InvoiceRemainingInput | null | undefined):
 }
 
 /**
+ * المبلغ الذي أصبح واجباً ردّه فعلاً بعد مرتجعٍ جديد.
+ *
+ * لا تساوي قيمةُ البضاعة المرتجعة مبلغَ الاسترداد بالضرورة: فاتورةُ الدفع عند الاستلام لم
+ * يُقبض منها شيء، والعربون يبقى مغطياً للبضاعة المتبقية إلى أن يتجاوزها. لذلك نضيف قيمة
+ * المرتجع الحالي إلى المرتجعات السابقة، ثم لا نرد إلا السالب من المتبقّي.
+ */
+export function refundDueAfterReturn(
+  inv: InvoiceRemainingInput | null | undefined,
+  currentReturnTotal: string | number | null | undefined,
+): Decimal {
+  if (!inv) return new Decimal(0);
+  const remainingAfterReturn = invoiceRemaining({
+    ...inv,
+    returnedTotal: toDecimalSafe(inv.returnedTotal).plus(toDecimalSafe(currentReturnTotal)).toString(),
+  });
+  return remainingAfterReturn.lt(0) ? remainingAfterReturn.negated() : new Decimal(0);
+}
+
+/**
  * ⭐ هل الفاتورةُ **مُسدَّدةٌ بالكامل** (المتبقّي ≤ 0)؟
  *
  * يقبل السدادَ الزائد (`invoiceRemaining < 0`) بوصفه «مُسدَّداً» — الفاتورةُ لا تُطالَب. ذمّةُ

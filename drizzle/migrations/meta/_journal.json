@@ -2416,6 +2416,13 @@
 			"when": 1788148837000,
 			"tag": "0379_receipt_execution_evidence",
 			"breakpoints": true
+		},
+		{
+			"idx": 380,
+			"version": "5",
+			"when": 1788148838000,
+			"tag": "0380_delivery_shortfall_settlement",
+			"breakpoints": true
 		}
 	]
 }

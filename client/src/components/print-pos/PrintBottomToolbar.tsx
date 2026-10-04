@@ -434,7 +434,7 @@ export function PrintBottomToolbar({
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
         {!editingInvoice && (
           <>
-            {/* حجز الطلب — أزرق سماوي داكن */}
+            {/* الدفع عند الاستلام — أزرق سماوي داكن */}
             <button
               type="button"
               disabled={!canReserve || isPending}
@@ -447,8 +447,8 @@ export function PrintBottomToolbar({
                     : hasZeroLine
                       ? "أدخل سعراً للخدمات ذات السعر اليدوي"
                       : !hasCustomerInfo
-                        ? "حجز الطلب يتطلب اسم أو هاتف الزبون أو اختيار عميل"
-                        : "حجز الطلب كفاتورة معلقة بالتسليم مع حفظ العربون إن وجد"
+                        ? "الدفع عند الاستلام يتطلب اسم أو هاتف الزبون أو اختيار عميل"
+                        : "إنشاء فاتورة دفع عند الاستلام مع حفظ العربون إن وجد"
               }
               style={{
                 display: "inline-flex",
@@ -473,7 +473,7 @@ export function PrintBottomToolbar({
               }}
             >
               <Clock size={16} aria-hidden />
-              <span>حجز الطلب</span>
+              <span>الدفع عند الاستلام</span>
             </button>
 
             {/* دفع سريع — برتقالي متوهج */}

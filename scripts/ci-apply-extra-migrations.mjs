@@ -235,6 +235,9 @@ const EXTRA_MIGRATIONS = [
   // ١٧/٩/٢٦: يثبت وحدة/كمية الصنف الأساس لأمر الشغل ويميز سطر استهلاكه الإلزامي؛
   // يمنع التسليم بوحدة حالية مختلفة أو بيع صنف مادي لم يُخصم عند بدء التنفيذ.
   "drizzle/migrations/0363_work_order_base_inventory_snapshot.sql",
+  // ٤/١٠/٢٦: يوسّع enum دفتر التوصيل بأحداث عكس عهدة المرتجع وتسوية العجز.
+  // db:push لا يوسّع enum قائماً بموثوقية، لذا نعيد الهجرة idempotently بعد بناء قاعدة CI.
+  "drizzle/migrations/0380_delivery_shortfall_settlement.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

@@ -4,9 +4,15 @@
  */
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
+import Decimal from "decimal.js";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { returnSale, type ReturnSaleInput } from "../returnService";
+import {
+  returnResultFromRefId,
+  returnResultRefId,
+  returnSale,
+  type ReturnSaleInput,
+} from "../returnService";
 import { createSale } from "../saleService";
 import { getShiftReport } from "../shiftService";
 
@@ -65,6 +71,24 @@ async function sellRoundedWalkIn() {
   return { invoiceId: sale.invoiceId, itemId: Number(item.id) };
 }
 
+async function sellUnpaidCodWalkIn() {
+  const sale = await createSale({
+    branchId: 1,
+    sourceType: "ORDER",
+    priceTier: "RETAIL",
+    contactName: "زبونة اتصال",
+    contactPhone: "07700000000",
+    lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+    codDispatchPending: true,
+    paymentMode: "COD",
+  }, actor);
+  const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+  const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+  expect(invoice.customerId).toBeNull();
+  expect(invoice.paidAmount).toBe("0.00");
+  return { invoiceId: sale.invoiceId, itemId: Number(item.id), total: invoice.total };
+}
+
 function exactResolution(invoiceId: number, itemId: number): ReturnSaleInput {
   return {
     invoiceId,
@@ -101,6 +125,45 @@ beforeEach(async () => {
 });
 
 describe("returnSale — resolution الزبون العابر", () => {
+  it("يحفظ نتيجة idempotency لمرتجع صفري القيمة من دون خلط الكامل بالجزئي", () => {
+    expect(returnResultFromRefId(returnResultRefId(new Decimal(0), false))).toMatchObject({
+      fullyReturned: false,
+    });
+    expect(returnResultFromRefId(returnResultRefId(new Decimal(0), true))).toMatchObject({
+      fullyReturned: true,
+    });
+  });
+  it("يلغي طلب دفع عند الاستلام غير المدفوع بلا وردية وبلا إيصال OUT", async () => {
+    const { invoiceId, itemId, total } = await sellUnpaidCodWalkIn();
+    const before = await getShiftReport(1);
+
+    const input: ReturnSaleInput = {
+      invoiceId,
+      lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "0.00",
+        reason: "الزبونة ألغت الطلب قبل الاستلام",
+        disposition: "RESTOCK",
+      },
+      clientRequestId: "unpaid-cod-walkin-return",
+    };
+    const result = await returnSale(input, actor);
+    const replay = await returnSale(input, actor);
+
+    expect(result).toMatchObject({ fullyReturned: true, returnedTotal: total });
+    expect(replay).toMatchObject({ fullyReturned: true, returnedTotal: total, idempotentReplay: true });
+    expect(await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, invoiceId), eq(s.receipts.direction, "OUT"),
+    ))).toHaveLength(0);
+    expect((await getShiftReport(1))?.expectedCash).toBe(before?.expectedCash);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0]).toMatchObject({
+      status: "RETURNED",
+      paidAmount: "0.00",
+    });
+  });
+
   it("يرفض غياب resolution حتى لو أُرسل refund نقدي قديم، ولا يترك أثراً", async () => {
     const { invoiceId, itemId } = await sellRoundedWalkIn();
     await expect(returnSale({
@@ -109,30 +172,41 @@ describe("returnSale — resolution الزبون العابر", () => {
       refund: { amount: "1250.00", method: "CASH", shiftId: 1 },
     }, actor)).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
-      message: expect.stringMatching(/resolution.*CASH.*كامل/),
+      message: expect.stringMatching(/resolution.*مبلغ الرد/),
     });
     await assertNoReturnEffect(invoiceId, itemId);
   });
 
-  it("يرفض الرد الجزئي وطريقة CARD برسالة توجيهية، وتبقى المحاولة ذرية", async () => {
+  it("يرفض مبلغاً غير دقيق ويسمح بردّ البطاقة بمرجع من دون مساس الدرج", async () => {
     const { invoiceId, itemId } = await sellRoundedWalkIn();
     const partial = exactResolution(invoiceId, itemId);
     partial.clientRequestId = "walkin-partial";
     partial.resolution!.amount = "1000.00";
     await expect(returnSale(partial, actor)).rejects.toMatchObject({
       code: "BAD_REQUEST",
-      message: expect.stringMatching(/1250\.00.*1000\.00.*جزئي/),
+      message: expect.stringMatching(/المبلغ الواجب.*1250\.00.*1000\.00/),
     });
     await assertNoReturnEffect(invoiceId, itemId);
 
     const card = exactResolution(invoiceId, itemId);
     card.clientRequestId = "walkin-card";
     card.resolution!.method = "CARD";
-    await expect(returnSale(card, actor)).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      message: expect.stringMatching(/CASH.*كامل فقط/),
+    card.resolution!.shiftId = null;
+    card.resolution!.reference = "CARD-REFUND-1250";
+    const beforeCash = (await getShiftReport(1))?.expectedCash;
+    await expect(returnSale(card, actor)).resolves.toMatchObject({
+      fullyReturned: true,
+      returnedTotal: "1250.00",
     });
-    await assertNoReturnEffect(invoiceId, itemId);
+    expect((await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, invoiceId), eq(s.receipts.direction, "OUT"),
+    )))[0]).toMatchObject({
+      amount: "1250.00",
+      paymentMethod: "CARD",
+      shiftId: null,
+      referenceNumber: "CARD-REFUND-1250",
+    });
+    expect((await getShiftReport(1))?.expectedCash).toBe(beforeCash);
   });
 
   it("ينفّذ الرد الدقيق من الدرج نفسه، ثم يعيد الطلب idempotently بلا صرف أو مخزون مزدوج", async () => {
@@ -143,6 +217,7 @@ describe("returnSale — resolution الزبون العابر", () => {
 
     expect(first.returnedTotal).toBe("1250.00");
     expect((replay as { idempotentReplay?: boolean }).idempotentReplay).toBe(true);
+    expect(replay.returnedTotal).toBe("1250.00");
     const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];
     const stock = (await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0];
@@ -157,6 +232,56 @@ describe("returnSale — resolution الزبون العابر", () => {
     expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "RETURN"))).toHaveLength(1);
     expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"))).toHaveLength(1);
     expect((await getShiftReport(1))?.expectedCash).toBe("0.00");
+  });
+
+  it("يعيد نتيجة مفتاح المرتجع الجزئي نفسه حتى بعد مرتجع لاحق أكمل الفاتورة", async () => {
+    const sale = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      sourceType: "POS",
+      priceTier: "RETAIL",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+      payment: { amount: "3900.00", method: "CASH" },
+    }, actor);
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    const firstInput: ReturnSaleInput = {
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "1300.00",
+        shiftId: 1,
+        reason: "إرجاع القطعة الأولى",
+        disposition: "RESTOCK",
+      },
+      clientRequestId: "walkin-partial-replay-a",
+    };
+    const first = await returnSale(firstInput, actor);
+    expect(first).toMatchObject({ fullyReturned: false, returnedTotal: "1300.00" });
+
+    const second = await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "2600.00",
+        shiftId: 1,
+        reason: "إرجاع القطعتين المتبقيتين",
+        disposition: "RESTOCK",
+      },
+      clientRequestId: "walkin-partial-replay-b",
+    }, actor);
+    expect(second).toMatchObject({ fullyReturned: true, returnedTotal: "2600.00" });
+
+    const replay = await returnSale(firstInput, actor);
+    expect(replay).toMatchObject({
+      idempotentReplay: true,
+      returnedTotal: "1300.00",
+      fullyReturned: false,
+    });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(2);
   });
 
   it("يبقي مسار العميل المسجّل القديم: مرتجع آجل بلا refund ولا resolution يسقط الذمّة", async () => {
