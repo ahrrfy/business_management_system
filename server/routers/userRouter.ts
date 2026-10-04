@@ -29,7 +29,7 @@ import {
 } from "../services/userService";
 import { getUserUsage } from "../services/entityUsage";
 import { issuePasswordResetToken } from "../services/passwordResetService";
-import { adminProcedure, protectedProcedure, router, usersAdminProcedure } from "../trpc";
+import { adminProcedure, protectedProcedure, router, selfServiceProcedure, usersAdminProcedure } from "../trpc";
 
 // تحفظ tuple الـenum أنواع RoleKey الحرفية ⇒ z.infer ينتج RoleKey لا string ⇒ يُغني عن as any.
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
@@ -341,7 +341,7 @@ export const userRouter = router({
     }),
 
   /** تعيين رمز PIN سريع للمدير/المسؤول بواسطة الأدمن */
-  setPin: adminProcedure
+  setPin: usersAdminProcedure
     .input(
       z.object({
         userId: z.number().int().positive(),
@@ -364,7 +364,7 @@ export const userRouter = router({
     }),
 
   /** مسح رمز PIN للمستخدم بواسطة الأدمن */
-  clearPin: adminProcedure
+  clearPin: usersAdminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await clearUserPin(input.userId, {
@@ -382,7 +382,7 @@ export const userRouter = router({
     }),
 
   /** توليد باركود شارة جديد للمدير/المسؤول بواسطة الأدمن */
-  generateBadgeBarcode: adminProcedure
+  generateBadgeBarcode: usersAdminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await generateUserBadgeBarcode(input.userId, {
@@ -401,7 +401,7 @@ export const userRouter = router({
     }),
 
   /** مسح باركود الشارة بواسطة الأدمن */
-  clearBadgeBarcode: adminProcedure
+  clearBadgeBarcode: usersAdminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await clearUserBadgeBarcode(input.userId, {
@@ -419,7 +419,7 @@ export const userRouter = router({
     }),
 
   /** تغيير رمز PIN بواسطة المستخدم نفسه (من شاشة «حسابي») */
-  changeMyPin: protectedProcedure
+  changeMyPin: selfServiceProcedure
     .input(
       z.object({
         pin: z.string().regex(/^\d{4,8}$/, "رمز PIN يجب أن يتكون من 4 إلى 8 أرقام"),
@@ -437,7 +437,7 @@ export const userRouter = router({
     }),
 
   /** توليد باركود الشارة ذاتياً للمدير/المسؤول (من شاشة «حسابي») */
-  generateMyBadgeBarcode: protectedProcedure
+  generateMyBadgeBarcode: selfServiceProcedure
     .mutation(async ({ ctx }) => {
       const res = await generateMyBadgeBarcode(ctx.user.id);
       await logAudit(ctx, {
@@ -450,7 +450,7 @@ export const userRouter = router({
     }),
 
   /** مسح باركود الشارة ذاتياً (من شاشة «حسابي») */
-  clearMyBadgeBarcode: protectedProcedure
+  clearMyBadgeBarcode: selfServiceProcedure
     .mutation(async ({ ctx }) => {
       const res = await clearMyBadgeBarcode(ctx.user.id);
       await logAudit(ctx, {

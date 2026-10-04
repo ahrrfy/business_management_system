@@ -38,7 +38,7 @@ export function ManagerApprovalDialog({
 
   // Password
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [pwd, setPwd] = useState("");
   const hasApprovedRef = useRef(false);
 
   const heading = title ?? `اعتماد مدير — خصم ${pct}٪`;
@@ -78,9 +78,9 @@ export function ManagerApprovalDialog({
   function handlePasswordSubmit() {
     if (hasApprovedRef.current) return;
     const e = email.trim();
-    if (!e || !password) return;
+    if (!e || !pwd) return;
     hasApprovedRef.current = true;
-    onApprove({ email: e, password });
+    onApprove({ email: e, password: pwd });
     setTimeout(() => { hasApprovedRef.current = false; }, 600);
   }
 
@@ -235,24 +235,24 @@ export function ManagerApprovalDialog({
                 hasApprovedRef.current = false;
                 setEmail(e.target.value);
               }}
-              placeholder="manager@alroya.local"
+              placeholder="user@domain"
               dir="ltr"
               className="h-10 text-sm"
               autoComplete="off"
             />
             <label className="text-xs font-bold text-foreground">كلمة المرور</label>
             <Input
-              value={password}
+              value={pwd}
               onChange={(e) => {
                 hasApprovedRef.current = false;
-                setPassword(e.target.value);
+                setPwd(e.target.value);
               }}
               type="password"
               placeholder="كلمة المرور"
               dir="ltr"
               className="h-10 text-sm"
               onKeyDown={(e) => {
-                if (e.key === "Enter" && email.trim() && password) {
+                if (e.key === "Enter" && email.trim() && pwd) {
                   e.preventDefault();
                   handlePasswordSubmit();
                 }
@@ -271,7 +271,7 @@ export function ManagerApprovalDialog({
             disabled={
               (tab === "BARCODE" && !barcode.trim()) ||
               (tab === "PIN" && (!identifier.trim() || !pin.trim())) ||
-              (tab === "PASSWORD" && (!email.trim() || !password))
+              (tab === "PASSWORD" && (!email.trim() || !pwd))
             }
             onClick={() => {
               if (tab === "BARCODE") handleBarcodeSubmit();
