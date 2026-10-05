@@ -28,12 +28,13 @@ fi
 
 readonly PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 created_user=0
+created_docker_group=0
 
 cleanup() {
   systemctl stop "${UNIT}" >/dev/null 2>&1 || true
   systemctl stop "${SEED_UNIT}" >/dev/null 2>&1 || true
   if [[ "${created_user}" -eq 1 ]]; then
-    /usr/bin/setpriv --reuid="$(id -u deploy)" --regid="$(id -g deploy)" --clear-groups -- \
+    /usr/bin/setpriv --reuid="$(id -u deploy)" --regid="$(id -g deploy)" --init-groups -- \
       /usr/bin/env HOME=/home/deploy USER=deploy LOGNAME=deploy PM2_HOME=/home/deploy/.pm2 \
       /usr/bin/node "${PM2_BIN}" kill >/dev/null 2>&1 || true
   fi
@@ -46,12 +47,28 @@ cleanup() {
   if [[ "${created_user}" -eq 1 ]]; then
     userdel -r deploy >/dev/null 2>&1 || true
   fi
+  if [[ "${created_docker_group}" -eq 1 ]]; then
+    groupdel docker >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
 useradd --create-home --shell /bin/bash deploy
 created_user=1
-usermod --append --groups docker deploy 2>/dev/null || true
+if ! getent group docker >/dev/null; then
+  groupadd docker
+  created_docker_group=1
+fi
+usermod --append --groups docker deploy
+
+# Run through the actual PM2 daemon: a CLI with correct login groups must not
+# hide a daemon that lost the Docker group at clean boot.
+cat > /home/deploy/backup-permission-probe.cjs <<'NODE'
+const fs = require('node:fs');
+const data = fs.readFileSync('/run/erp-pm2/backup-permission-probe', 'utf8');
+fs.writeFileSync('/home/deploy/backup-permission-result', data);
+NODE
+chmod 0644 /home/deploy/backup-permission-probe.cjs
 
 install -d -o root -g root -m 0755 /usr/local/libexec/erp
 install -o root -g root -m 0755 \
@@ -77,7 +94,10 @@ assert_active_contract() {
   [[ "$(stat -c '%U:%G:%a' "${HELPER_TARGET}")" == "root:root:755" ]]
   [[ "$(awk '/^Uid:/{print $2}' "/proc/${main_pid}/status")" == "$(id -u deploy)" ]]
   if [[ "${require_sanitized_identity}" == "yes" ]]; then
-    [[ -z "$(awk '/^Groups:/{sub(/^Groups:[[:space:]]*/, ""); print}' "/proc/${main_pid}/status")" ]]
+    local expected_groups actual_groups
+    expected_groups="$(id -G deploy | tr ' ' '\n' | sort -nu | tr '\n' ' ')"
+    actual_groups="$(awk '/^Groups:/{for (i=2;i<=NF;i++) print $i}' "/proc/${main_pid}/status" | sort -nu | tr '\n' ' ')"
+    [[ "${actual_groups}" == "${expected_groups}" ]]
     [[ "$(awk '/^CapEff:/{print $2}' "/proc/${main_pid}/status")" == "0000000000000000" ]]
     [[ "$(awk '/^CapBnd:/{print $2}' "/proc/${main_pid}/status")" == "0000000000000000" ]]
     [[ "$(awk '/^CapAmb:/{print $2}' "/proc/${main_pid}/status")" == "0000000000000000" ]]
@@ -86,6 +106,24 @@ assert_active_contract() {
       exit 1
     fi
   fi
+  printf 'backup group access verified\n' > /run/erp-pm2/backup-permission-probe
+  chown root:docker /run/erp-pm2/backup-permission-probe
+  chmod 0640 /run/erp-pm2/backup-permission-probe
+  rm -f /home/deploy/backup-permission-result
+  /usr/bin/setpriv --reuid="$(id -u deploy)" --regid="$(id -g deploy)" --init-groups -- \
+    /usr/bin/env HOME=/home/deploy USER=deploy LOGNAME=deploy PM2_HOME=/home/deploy/.pm2 \
+    /usr/bin/node "${PM2_BIN}" start /home/deploy/backup-permission-probe.cjs \
+    --name erp-backup-permission-probe --cwd /home/deploy \
+    --interpreter /usr/bin/node --no-autorestart >/dev/null
+  for attempt in {1..40}; do
+    cmp -s /run/erp-pm2/backup-permission-probe /home/deploy/backup-permission-result && break
+    sleep 0.25
+  done
+  if ! cmp -s /run/erp-pm2/backup-permission-probe /home/deploy/backup-permission-result; then
+    cat /home/deploy/.pm2/logs/erp-backup-permission-probe-error.log >&2 || true
+    return 1
+  fi
+  cmp /run/erp-pm2/backup-permission-probe /home/deploy/backup-permission-result
   if journalctl -u "${UNIT}" --since=-1min --no-pager | grep -q 'does not belong to service'; then
     echo "pm2 systemd linux test: systemd rejected the reconciled main PID" >&2
     exit 1
