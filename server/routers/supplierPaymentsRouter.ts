@@ -7,6 +7,7 @@ import {
   listPendingSupplierPaymentRequests,
   listSupplierPaymentRefundSources,
   listSupplierPaymentSources,
+  listSupplierPaymentCashSources,
   requestSupplierPayment,
   requestSupplierPaymentRefund,
   SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
@@ -28,6 +29,13 @@ const actor = (ctx: {
 const key = z.string().trim().min(1).max(120);
 const reason = z.string().trim().min(3).max(500);
 const method = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
+const cashSource = z
+  .object({
+    mode: z.enum(["DRAWER", "TREASURY"]),
+    shiftId: z.number().int().positive().nullish(),
+  })
+  .strict()
+  .nullish();
 const sourcePageCommon = {
   branchId: z.number().int().positive(),
   supplierId: z.number().int().positive().optional(),
@@ -35,6 +43,11 @@ const sourcePageCommon = {
 } as const;
 
 export const supplierPaymentsRouter = router({
+  cashSources: purchasesManagerProcedure
+    .input(z.object({ branchId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      listSupplierPaymentCashSources(input.branchId, actor(ctx)),
+    ),
   requestPayment: purchasesManagerProcedure
     .input(
       z.object({
@@ -46,6 +59,7 @@ export const supplierPaymentsRouter = router({
         amount: positiveMoneyString,
         currencyAmount: positiveMoneyString,
         paymentMethod: method,
+        cashSource,
         externalReference: z.string().trim().max(160).nullish(),
         evidenceType: z.enum([
           "PAYMENT_ORDER",
@@ -164,10 +178,12 @@ export const supplierPaymentsRouter = router({
       z.object({
         ...sourcePageCommon,
         purchaseOrderId: z.number().int().positive().optional(),
-        cursor: z.object({
-          invoiceDate: z.string().date(),
-          id: z.number().int().positive(),
-        }).optional(),
+        cursor: z
+          .object({
+            invoiceDate: z.string().date(),
+            id: z.number().int().positive(),
+          })
+          .optional(),
       }),
     )
     .query(({ input, ctx }) => listSupplierPaymentSources(input, actor(ctx))),
@@ -175,10 +191,12 @@ export const supplierPaymentsRouter = router({
     .input(
       z.object({
         ...sourcePageCommon,
-        cursor: z.object({
-          postedAt: z.coerce.date(),
-          id: z.number().int().positive(),
-        }).optional(),
+        cursor: z
+          .object({
+            postedAt: z.coerce.date(),
+            id: z.number().int().positive(),
+          })
+          .optional(),
       }),
     )
     .query(({ input, ctx }) =>
