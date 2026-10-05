@@ -685,6 +685,25 @@ describe("storefront category strip and categories navigation", () => {
     expect(html).toContain('data-selected="true"');
   });
 
+  it("renders infinite looping marquee track for category chips with seamless repeated sets", () => {
+    const cats = [
+      { id: 1, name: "قسم 1" },
+      { id: 2, name: "قسم 2" },
+    ];
+    const html = renderToStaticMarkup(
+      createElement(CategoryChipStrip, {
+        cats,
+        selectedId: null,
+        onPick: vi.fn(),
+      }),
+    );
+
+    expect(html).toContain("will-change-transform");
+    expect(html).toContain("translate3d(0, 0, 0)");
+    const matchCount = (html.match(/قسم 1/g) || []).length;
+    expect(matchCount).toBeGreaterThanOrEqual(3);
+  });
+
   it("renders StorefrontCategories section with id store-categories and themed cards", () => {
     const cats = [
       { id: 1, name: "قرطاسية عامة", productCount: 25, availableCount: 20 },
