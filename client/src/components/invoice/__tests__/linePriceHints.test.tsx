@@ -7,7 +7,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { SaleLineInsight, SaleRef } from "@shared/priceAlerts";
-import { SaleLastPriceHints, ageLabel } from "../LinePriceHints";
+import { ContractPriceHint, SaleLastPriceHints, ageLabel } from "../LinePriceHints";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
 const sale = (price: string, over: Partial<SaleRef> = {}): SaleRef => ({
@@ -80,5 +80,43 @@ describe("ageLabel", () => {
     expect(ageLabel(7)).toBe("قبل 7 أيام");
     expect(ageLabel(30)).toBe("قبل 30 يوماً");
     expect(ageLabel(null)).toBe("");
+  });
+});
+
+describe("ContractPriceHint", () => {
+  const out = (over: Partial<Parameters<typeof ContractPriceHint>[0]> = {}) =>
+    renderToStaticMarkup(
+      <ContractPriceHint priceSource="CONTRACT" referencePrice="900" enteredPrice="900" onRestore={() => {}} {...over} />,
+    );
+
+  it("سعر الكتالوج لم يُمسّ ⇒ شارة «سعر تعاقدي» بلا تحذير ولا زرّ", () => {
+    const h = out();
+    expect(h).toContain("سعر تعاقدي للعميل");
+    expect(h).not.toContain("يختلف");
+    expect(h).not.toContain("استعد");
+  });
+
+  it("عُدّل السعر عن التعاقدي ⇒ تنبيه بالسعر التعاقدي وزرّ استعد", () => {
+    const h = out({ enteredPrice: "850" });
+    expect(h).toContain("يختلف عن السعر التعاقدي");
+    expect(h).toContain("900");
+    expect(h).toContain("استعد");
+  });
+
+  it("شاشة للقراءة فقط ⇒ التنبيه بلا زرّ", () => {
+    const h = out({ enteredPrice: "850", onRestore: undefined });
+    expect(h).toContain("يختلف");
+    expect(h).not.toContain("استعد");
+  });
+
+  it("السعر من الفئة (TIER) أو بلا مرجع أو غير قابل للقراءة ⇒ لا شيء", () => {
+    expect(out({ priceSource: "TIER" })).toBe("");
+    expect(out({ priceSource: null })).toBe("");
+    expect(out({ referencePrice: null })).toBe("");
+    expect(out({ referencePrice: "abc" })).toBe("");
+  });
+
+  it("المساواة عدديّة لا نصّيّة (900.00 = 900)", () => {
+    expect(out({ referencePrice: "900.00", enteredPrice: "900" })).not.toContain("يختلف");
   });
 });

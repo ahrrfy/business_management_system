@@ -817,15 +817,16 @@ export const saleRouter = router({
   lineInsights: salesCorrectionProcedure
     .input(z.object({
       customerId: z.number().int().positive(),
+      excludeInvoiceId: z.number().int().positive().optional(),
       items: z.array(z.object({
         variantId: z.number().int().positive(),
         productUnitId: z.number().int().positive(),
       })).min(1).max(200),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return {};
-      return getSaleLineInsights(db, input);
+      return getSaleLineInsights(db, { ...input, scope: { branchId: ctx.scopedBranchId, ownerId: ctx.scopedOwnerId } });
     }),
 
 

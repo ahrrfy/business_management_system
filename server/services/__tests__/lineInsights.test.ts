@@ -29,11 +29,13 @@ async function addSale(opts: {
   isGift?: boolean;
   discountPercent?: string;
   variantId?: number;
+  branchId?: number;
+  createdBy?: number;
 }): Promise<number> {
   invSeq += 1;
   const id = invSeq;
   await db().insert(s.invoices).values({
-    id, invoiceNumber: `INV-T-${id}`, sourceType: "POS", branchId: 1, customerId: opts.customerId,
+    id, invoiceNumber: `INV-T-${id}`, sourceType: "POS", branchId: opts.branchId ?? 1, createdBy: opts.createdBy ?? null, customerId: opts.customerId,
     invoiceDate: new Date(opts.at), subtotal: opts.price, total: opts.price, costTotal: "0.00",
     status: opts.status ?? "PAID",
   });
@@ -50,8 +52,14 @@ beforeEach(async () => {
   await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const table of TABLES) await db().execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
-  await db().insert(s.branches).values({ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" });
-  await db().insert(s.users).values({ id: 1, openId: "line-insights", name: "مدير", role: "manager", loginMethod: "local" });
+  await db().insert(s.branches).values([
+    { id: 1, name: "MAIN", code: "MAIN", type: "MAIN" },
+    { id: 2, name: "SECOND", code: "SECOND", type: "MAIN" },
+  ]);
+  await db().insert(s.users).values([
+    { id: 1, openId: "line-insights", name: "مدير", role: "manager", loginMethod: "local" },
+    { id: 2, openId: "line-insights-2", name: "كاشير", role: "cashier", loginMethod: "local" },
+  ]);
   await db().insert(s.customers).values([
     { id: 1, name: "عميل أ" },
     { id: 2, name: "عميل ب" },
@@ -90,6 +98,30 @@ describe.sequential("getSaleLineInsights", () => {
     await addSale({ customerId: 1, unitId: 1, price: "77.00", at: "2026-08-01T10:00:00Z", status: "RETURNED" });
     const out = await getSaleLineInsights(db(), { customerId: 1, items: [{ variantId: 1, productUnitId: 1 }] });
     expect(out["1:1"]!.lastSales.map((r) => r.price)).toEqual(["77.00"]);
+  });
+
+  it("excludeInvoiceId: الفاتورة قيد التصحيح لا تُعدّ «آخر بيع» لنفسها، وغيرها يبقى", async () => {
+    const older = await addSale({ customerId: 1, unitId: 1, price: "100.00", at: "2026-08-01T10:00:00Z" });
+    const editing = await addSale({ customerId: 1, unitId: 1, price: "150.00", at: "2026-09-01T10:00:00Z" });
+    const base = { customerId: 1, items: [{ variantId: 1, productUnitId: 1 }] };
+    expect((await getSaleLineInsights(db(), base))["1:1"]!.lastSales[0]!.price).toBe("150.00");
+    const out = await getSaleLineInsights(db(), { ...base, excludeInvoiceId: editing });
+    expect(out["1:1"]!.lastSales.map((r) => r.invoiceId)).toEqual([older]);
+    expect(await getSaleLineInsights(db(), { ...base, excludeInvoiceId: older }).then((o) => o["1:1"]!.lastSales.length)).toBe(1);
+  });
+
+  it("scope: المحصور بفرعٍ/بموظّفٍ لا يرى سعر فرعٍ/موظّفٍ آخر، وغير المحصور يرى الكل", async () => {
+    await addSale({ customerId: 1, unitId: 1, price: "100.00", at: "2026-08-01T10:00:00Z", branchId: 1, createdBy: 1 });
+    await addSale({ customerId: 1, unitId: 1, price: "130.00", at: "2026-09-01T10:00:00Z", branchId: 2, createdBy: 2 });
+    const base = { customerId: 1, items: [{ variantId: 1, productUnitId: 1 }] };
+    const prices = async (scope?: { branchId?: number | null; ownerId?: number | null }) =>
+      (await getSaleLineInsights(db(), { ...base, scope }))["1:1"]?.lastSales.map((r) => r.price);
+    expect(await prices()).toEqual(["130.00", "100.00"]);
+    expect(await prices({ branchId: null, ownerId: null })).toEqual(["130.00", "100.00"]);
+    expect(await prices({ branchId: 1 })).toEqual(["100.00"]);
+    expect(await prices({ branchId: 2 })).toEqual(["130.00"]);
+    expect(await prices({ ownerId: 2 })).toEqual(["130.00"]);
+    expect(await prices({ branchId: 1, ownerId: 2 })).toBeUndefined();
   });
 
   it("سقف المراجع لكل وحدة، والوحدات لا تُجوِّع بعضها ولا تختلط", async () => {

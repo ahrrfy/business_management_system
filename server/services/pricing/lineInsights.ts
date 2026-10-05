@@ -3,8 +3,9 @@
  * التقييم (أقل/أعلى/نفس السعر) في `@shared/priceAlerts` ليُعاد محلّياً مع كل تعديلِ سعرٍ بلا شبكة.
  *
  * قراراتٌ مقصودة (خطّة «تنبيهات الأسعار الذكية»، السؤال ١):
- *  • النطاق **على مستوى الشركة** لا الفرع/الموظف: «بِعتَ هذا العميل بكذا» حقيقةُ علاقةٍ مع العميل لا
- *    سرٌّ فرعيّ، وتقييدُها بفواتير الكاشير وحده يُفرغ الميزة. تُعاد السعر والتاريخ ورقم الفاتورة
+ *  • النطاق **على مستوى العميل عبر الشركة** للمستخدم غير المحصور: «بِعتَ هذا العميل بكذا» حقيقةُ علاقةٍ لا
+ *    سرٌّ فرعيّ؛ لكنّ المحصور بفرعٍ/بموظّفٍ (`scope`) لا يرى إلا ضمن حدوده — لا نُلغي العزل (CLAUDE.md).
+ *    تُعاد السعر والتاريخ ورقم الفاتورة
  *    وخصم السطر فقط — لا تكلفة ولا ذمّة ولا مبلغ فاتورة.
  *  • الاستبعاد: الفواتير الملغاة/المستبدَلة (`VOIDED_INVOICE_STATUSES` — بيعٌ لم يقع قطّ؛ ⛔ لا
  *    `DEAD` لأنّ المُرتجَع ما زال سعراً حقيقيّاً دفعه العميل)، وسطور الهدايا، وأسعار الصفر.
@@ -13,7 +14,7 @@
  * قراءةٌ فقط: لا كتابة ولا قفل ولا أثر على الدفتر/المخزون. الخدمة لا تقرأ `ctx` (قاعدة الطبقات) —
  * تستقبل مقبض القاعدة والمدخلات صريحةً.
  */
-import { and, desc, eq, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import type { SaleLineInsight, SaleRef } from "@shared/priceAlerts";
 import { invoiceItems, invoices } from "../../../drizzle/schema";
@@ -28,7 +29,14 @@ export const lineInsightKey = (variantId: number, productUnitId: number) => `${v
 
 export async function getSaleLineInsights(
   db: DB,
-  input: { customerId: number; items: ReadonlyArray<{ variantId: number; productUnitId: number }> },
+  input: {
+    customerId: number;
+    items: ReadonlyArray<{ variantId: number; productUnitId: number }>;
+    /** فاتورةٌ قيد التصحيح: تُستثنى كي لا يُقارَن سعرها بنفسها («نفس آخر سعر» كاذبة) — ما زالت CONFIRMED حتى الحفظ. */
+    excludeInvoiceId?: number;
+    /** عزل المستدعي: فرعٌ و/أو موظّفٌ مُنشئ (الفارغ = غير محصور). مصدره `ctx.scopedBranchId/scopedOwnerId`. */
+    scope?: { branchId?: number | null; ownerId?: number | null };
+  },
 ): Promise<Record<string, SaleLineInsight>> {
   const unique = Array.from(
     new Map(input.items.map((i) => [lineInsightKey(i.variantId, i.productUnitId), i])).values(),
@@ -53,6 +61,9 @@ export async function getSaleLineInsights(
     .where(
       and(
         eq(invoices.customerId, input.customerId),
+        input.excludeInvoiceId != null ? ne(invoices.id, input.excludeInvoiceId) : undefined,
+        input.scope?.branchId ? eq(invoices.branchId, input.scope.branchId) : undefined,
+        input.scope?.ownerId != null ? eq(invoices.createdBy, input.scope.ownerId) : undefined,
         notInArray(invoices.status, [...VOIDED_INVOICE_STATUSES]),
         eq(invoiceItems.isGift, false),
         sql`${invoiceItems.unitPrice} > 0`,

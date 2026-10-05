@@ -23,8 +23,10 @@ export function useSaleLineInsights(args: {
   enabled: boolean;
   customerId: number | null | undefined;
   items: readonly InvoiceLine[];
+  /** فاتورةٌ قيد التصحيح — تُستثنى من «آخر بيع» كي لا تُقارَن بنفسها. */
+  excludeInvoiceId?: number | null;
 }): { insights: Record<string, SaleLineInsight> | null; settled: boolean } {
-  const { enabled, customerId, items } = args;
+  const { enabled, customerId, items, excludeInvoiceId } = args;
   const customer = customerId != null && customerId > 0 ? customerId : null;
 
   // توقيعٌ ثابتٌ لمجموعة (صنف × وحدة): الكميّة/السعر لا تُعيد الجلب — المعرّفات وحدها.
@@ -48,7 +50,11 @@ export function useSaleLineInsights(args: {
   );
 
   const query = trpc.sales.lineInsights.useQuery(
-    { customerId: customer ?? 1, items: pairs.length > 0 ? pairs : [{ variantId: 1, productUnitId: 1 }] },
+    {
+      customerId: customer ?? 1,
+      items: pairs.length > 0 ? pairs : [{ variantId: 1, productUnitId: 1 }],
+      ...(excludeInvoiceId != null && excludeInvoiceId > 0 ? { excludeInvoiceId } : {}),
+    },
     {
       enabled: enabled && customer != null && pairs.length > 0,
       staleTime: 60_000,
@@ -59,14 +65,15 @@ export function useSaleLineInsights(args: {
   );
 
   // آخر جوابٍ طازج لكل عميل — كي لا يُعرَض جوابُ عميلٍ سابقٍ لعميلٍ جديد.
-  const lastFresh = useRef<{ customerId: number; data: Record<string, SaleLineInsight> } | null>(null);
+  const lastFresh = useRef<{ customerId: number; excludeId: number | null; data: Record<string, SaleLineInsight> } | null>(null);
   const fresh = customer != null && query.data && !query.isPlaceholderData ? query.data : null;
-  if (fresh && customer != null) lastFresh.current = { customerId: customer, data: fresh };
+  const excludeId = excludeInvoiceId != null && excludeInvoiceId > 0 ? excludeInvoiceId : null;
+  if (fresh && customer != null) lastFresh.current = { customerId: customer, excludeId, data: fresh };
 
   if (!enabled || customer == null) return { insights: null, settled: false };
   if (fresh) return { insights: fresh, settled: true };
   const stash = lastFresh.current;
-  return stash && stash.customerId === customer
+  return stash && stash.customerId === customer && stash.excludeId === excludeId
     ? { insights: stash.data, settled: false }
     : { insights: null, settled: false };
 }

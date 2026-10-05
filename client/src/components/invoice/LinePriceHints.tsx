@@ -9,7 +9,7 @@
  * أيقونات `lucide-react` (لا إيموجي)، وألوان توكنز `--sem-*` (حارس `check:colors`)، وأرقام بـ`fmtNum`.
  */
 import React from "react";
-import { AlertTriangle, Check, Info, TrendingUp } from "lucide-react";
+import { AlertTriangle, Check, FileText, Info, TrendingUp } from "lucide-react";
 import { daysSince, evaluateSalePriceAlerts, type PriceAlert, type SaleLineInsight } from "@shared/priceAlerts";
 import { cn } from "@/lib/utils";
 import { D } from "@/lib/money";
@@ -148,6 +148,61 @@ export function SaleLastPriceHints({
           {alertText(alert)}
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * تلميح السعر التعاقدي: الكتالوج يملأ السعر التعاقدي آلياً (`priceSource="CONTRACT"` و`referencePrice`)
+ * لكن الجدول لم يُظهر ذلك — فيعدّله الموظف بلا أن يعلم أنه يخرج عن عقد العميل.
+ * عرضٌ فقط من حالة السطر نفسها (السعر وصل أصلاً للكاشير مُحلَّلاً)، فلا استعلامَ جديد ولا تسريب.
+ *  • السعر = التعاقدي ⇒ شارة «سعر تعاقدي».  • يختلف ⇒ تنبيه + زرّ «استعد» (إن لم تكن الشاشة للقراءة).
+ */
+export function ContractPriceHint({
+  priceSource,
+  referencePrice,
+  enteredPrice,
+  onRestore,
+}: {
+  priceSource: string | null | undefined;
+  referencePrice: string | null | undefined;
+  enteredPrice: string;
+  onRestore?: (price: string) => void;
+}) {
+  if (priceSource !== "CONTRACT" || !referencePrice) return null;
+  let differs: boolean;
+  try {
+    differs = !D(referencePrice).eq(D(enteredPrice));
+  } catch {
+    return null;
+  }
+  return (
+    <div
+      className={cn(
+        "mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] font-semibold leading-4",
+        differs ? "text-[var(--sem-warn)]" : "text-primary",
+      )}
+      dir="rtl"
+      data-testid="contract-price-hint"
+    >
+      {differs ? <AlertTriangle aria-hidden className="size-3 shrink-0" /> : <FileText aria-hidden className="size-3 shrink-0" />}
+      {differs ? (
+        <span>
+          يختلف عن السعر التعاقدي (<span dir="ltr" className="tabular-nums">{fmtNum(referencePrice)}</span> د.ع)
+        </span>
+      ) : (
+        <span>سعر تعاقدي للعميل</span>
+      )}
+      {differs && onRestore && (
+        <button
+          type="button"
+          className="rounded border border-primary/40 bg-primary/10 px-1.5 text-[10px] font-bold text-primary hover:bg-primary/20"
+          aria-label="استعادة السعر التعاقدي"
+          onClick={() => onRestore(referencePrice)}
+        >
+          استعد
+        </button>
+      )}
     </div>
   );
 }

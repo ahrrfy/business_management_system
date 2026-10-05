@@ -20,7 +20,7 @@ import { trpc } from "@/lib/trpc";
 import { calcLineTotal, calcMargin, calcUnitCost, fmtNum } from "./totals";
 import { formatQuantity } from "@shared/quantityFormat";
 import { ProductSearchBar } from "./ProductSearchBar";
-import { PurchaseInsightHints, SaleLastPriceHints } from "./LinePriceHints";
+import { ContractPriceHint, PurchaseInsightHints, SaleLastPriceHints } from "./LinePriceHints";
 import { saleInsightKey, useSaleLineInsights } from "./useSaleLineInsights";
 import type { PricingIntentEpoch } from "./productSearchResolution";
 import { getLineStockState } from "./stockAvailability";
@@ -38,6 +38,8 @@ export interface ProductTableProps {
   branchId: number;
   tier: PriceTier;
   customerId?: number | null;
+  /** فاتورةٌ قيد التصحيح — تُستثنى من «آخر سعر بيع» كي لا تُقارَن بنفسها. */
+  excludeInvoiceId?: number | null;
   /** ساعة مشتركة لإبطال نتائج البحث القديمة فور نية تغيير العميل/الفئة. */
   pricingIntentEpoch?: PricingIntentEpoch;
   invoiceType: InvoiceType;
@@ -158,6 +160,7 @@ export function ProductTable({
   branchId,
   tier,
   customerId,
+  excludeInvoiceId,
   pricingIntentEpoch,
   invoiceType,
   showCost,
@@ -214,7 +217,7 @@ export function ProductTable({
 
   // تلميحات «آخر سعر بيع لهذا العميل» — جلبٌ واحد مُجمَّع للسلة كلّها (فاتورة البيع بعميلٍ مُسمّى).
   const saleHintsActive = invoiceType === "SALE" && customerId != null;
-  const saleInsights = useSaleLineInsights({ enabled: saleHintsActive, customerId, items })
+  const saleInsights = useSaleLineInsights({ enabled: saleHintsActive, customerId, items, excludeInvoiceId })
 
   const priceAsIqd = (price: string) => {
     const numeric = Number(price);
@@ -485,6 +488,14 @@ export function ProductTable({
                         onUsePrice={readOnlyPricing ? undefined : (price) => dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: price })}
                       />
                     )}
+                     {invoiceType === "SALE" && !item.isGift && !item.digital && (
+                       <ContractPriceHint
+                         priceSource={item.priceSource}
+                         referencePrice={item.referencePrice}
+                         enteredPrice={item.price}
+                         onRestore={readOnlyPricing ? undefined : (price) => dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: price })}
+                       />
+                     )}
                   </td>
                   <td className={cn(td, "text-xs text-muted-foreground")}>{item.unit}</td>
                   <td className={td}>
