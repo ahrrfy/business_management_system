@@ -2,7 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like, sql } from "drizzle-orm";
-import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, shifts, suppliers } from "../../../drizzle/schema";
 import { isWithinPriceDecimals, priceDecimalsMessage, type PriceCurrency } from "../../../shared/moneyPrecision";
 import { appErrorMessage } from "../../../shared/errors";
 import { extractInsertId } from "../../lib/insertId";
@@ -20,6 +20,46 @@ import type { ConfirmPurchaseOrderInput, CreatePurchaseOrderInput, PurchaseDocum
 import { submitPurchaseOrderForApproval } from "./controls";
 import { replacePurchaseOrderRevisionAllocationsTx } from "./requisitions";
 import { appendPurchaseOrderEventTx, createPurchaseOrderRevisionTx } from "./revisions";
+import { openShiftIdTx } from "../shiftService";
+import { PETTY_CASH_LIMIT_IQD } from "../expenseService";
+
+async function captureShippingSourceTx(
+  tx: Tx, input: PurchaseDocumentInput, actor: Actor, branchId: number,
+  previous?: typeof purchaseOrders.$inferSelect,
+) {
+  const source = input.shippingFundingSource ?? previous?.shippingFundingSource ?? "ACCRUAL";
+  const requestedShift = source === "DRAWER" ? input.shippingShiftId ?? previous?.shippingFundingShiftId ?? null : null;
+  const sourceUnchanged = previous && source === previous.shippingFundingSource
+    && requestedShift === previous.shippingFundingShiftId
+    && money(input.shippingCost ?? "0").eq(money(previous.shippingCost ?? "0"))
+    && money(input.customsCost ?? "0").eq(money(previous.customsCost ?? "0"));
+  if (previous && Number(previous.createdBy) !== actor.userId && !sourceUnchanged) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+    what: "تعذر تعديل تصريح دفع الشحن", why: "تصريح الدفع ومصدره ومبلغه تخص منشئ الفاتورة، لا المحرر أو المعتمد",
+    doThis: "اترك تصريح المنشئ كما هو، أو اطلب منه مراجعة الدفع ومصدره",
+  }) });
+  if (source === "ACCRUAL") {
+    if (input.shippingShiftId != null) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "تعذر حفظ مصدر الشحن", why: "الشحن غير المدفوع لا يملك وردية صرف",
+      doThis: "اختر غير مدفوع دون وردية، أو صرح بالدفع النقدي من درجك",
+    }) });
+    return { shippingFundingSource: "ACCRUAL" as const, shippingFundingShiftId: null };
+  }
+  const amount = round2(money(input.shippingCost ?? "0").plus(money(input.customsCost ?? "0")));
+  if (!amount.gt(0) || amount.gte(PETTY_CASH_LIMIT_IQD)) throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+    what: "تعذر حفظ دفع الشحن من الدرج", why: "مبلغ الشحن يجب أن يكون موجباً وأقل من سقف النثرية",
+    doThis: "صحح أجرة الشحن، أو استخدم مسار الصرف الإداري للمبلغ المتجاوز للسقف",
+  }) });
+  const creatorId = Number(previous?.createdBy ?? actor.userId);
+  const shiftId = requestedShift ?? await openShiftIdTx(tx, creatorId, branchId, "RETAIL");
+  const [shift] = shiftId == null ? [] : await tx.select().from(shifts).where(eq(shifts.id, shiftId)).for("update").limit(1);
+  if (!shift || shift.status !== "OPEN" || Number(shift.branchId) !== branchId || Number(shift.userId) !== creatorId) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+      what: "تعذر توثيق دفع الشحن من الدرج", why: "مصدر الدفع ليس وردية مفتوحة تخص منشئ الفاتورة في فرعها",
+      doThis: "حدد درجك الفعلي المفتوح؛ لا تستخدم درج المعتمد ولا تحول الدفع للخزينة تلقائياً",
+    }) });
+  }
+  return { shippingFundingSource: "DRAWER" as const, shippingFundingShiftId: Number(shift.id) };
+}
 
 /** تسلسل سعر ضمني لعمود decimal(15,4) — نظير toDbRate في exchangeHouseService. */
 const toDbRate = (x: Decimal): string => x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
@@ -337,6 +377,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       invoiceDiscount: input.invoiceDiscount ?? null,
       shippingCost: input.shippingCost ?? null,
       customsCost: input.customsCost ?? null,
+      shippingFundingSource: input.shippingFundingSource ?? "ACCRUAL",
+      shippingShiftId: input.shippingShiftId ?? null,
       items: [...input.items]
         .map((i) => ({
           variantId: i.variantId,
@@ -390,6 +432,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       }
     }
 
+    // Cash source precedes branch/PO locks, matching payment and close lock order.
+    const shippingSource = await captureShippingSourceTx(tx, input, actor, input.branchId);
     // نفس قفل الفرع الذي تبدأ به جلسة الجرد: يمنع سباق «التقاط نطاق OPENING ↔ إنشاء قائمة شراء».
     // إن سبق الجردُ، ينظف أمر الشراء العنصر الموجود أدناه؛ وإن سبق الشراءُ، يراه فلتر الجرد بعد القفل.
     const [branch] = await tx
@@ -451,6 +495,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       taxRatePercent: taxRate.toFixed(2),
       shippingCost: shippingCost.toFixed(2),
       customsCost: customsCost.toFixed(2),
+      ...shippingSource,
       total: total.toFixed(2),
       settlementType,
       status: "DRAFT",
@@ -554,6 +599,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     )[0];
     if (!poPreview) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
     assertPurchaseBranch(poPreview, actor);
+    const shippingSource = await captureShippingSourceTx(tx, input, actor, Number(poPreview.branchId), poPreview);
 
     // نفس قفل الفرع الذي يبدأ به الإنشاء والجرد: يحفظ ترتيب الأقفال (فرع ← أمر) ويمنع سباق
     // «التقاط نطاق OPENING ↔ تعديل قائمة الشراء».
@@ -570,7 +616,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     )[0];
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
     assertPurchaseBranch(po, actor);
-    if (Number(po.version) !== input.expectedVersion) {
+    if (Number(po.version) !== input.expectedVersion || Number(po.version) !== Number(poPreview.version)) {
       throw new TRPCError({
         code: "CONFLICT",
         message: "تغيّر أمر الشراء؛ حدّث الصفحة ثم أعد المحاولة",
@@ -632,6 +678,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       taxRatePercent: taxRate.toFixed(2),
       shippingCost: shippingCost.toFixed(2),
       customsCost: customsCost.toFixed(2),
+      ...shippingSource,
       total: total.toFixed(2),
       // الحالة تبقى كما هي: التعديل ليس اعتماداً ولا سحباً للاعتماد (لكلٍّ إجراؤه).
       agreedCurrency,

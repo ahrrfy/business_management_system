@@ -299,6 +299,8 @@ export const purchaseRouter = router({
           // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
           shippingCost: nonNegMoneyString.optional(),
           customsCost: nonNegMoneyString.optional(),
+          shippingFundingSource: z.enum(["ACCRUAL", "DRAWER"]).optional(),
+          shippingShiftId: z.number().int().positive().optional(),
           revisionReason: z.string().trim().min(3).max(500).optional(),
           requisitionAllocations: z
             .array(
@@ -378,6 +380,8 @@ export const purchaseRouter = router({
         invoiceDiscount: nonNegMoneyString.optional(),
         shippingCost: nonNegMoneyString.optional(),
         customsCost: nonNegMoneyString.optional(),
+        shippingFundingSource: z.enum(["ACCRUAL", "DRAWER"]).optional(),
+        shippingShiftId: z.number().int().positive().optional(),
         requisitionAllocations: z
           .array(
             z.object({
@@ -1179,8 +1183,10 @@ export const purchaseRouter = router({
             subtotal: purchaseOrders.subtotal,
             taxAmount: purchaseOrders.taxAmount,
             taxRatePercent: purchaseOrders.taxRatePercent,
-            // landed-cost: الشحن/الكمرك المُرسمَلان — للعرض في شاشة الاستلام/التفاصيل (تكلفة ⇒ محجوبة عن غير المدير).
+            // Shipping is a separate company expense, not inventory/AP capitalization.
             shippingCost: purchaseOrders.shippingCost,
+            shippingFundingSource: purchaseOrders.shippingFundingSource,
+            shippingFundingShiftId: purchaseOrders.shippingFundingShiftId,
             customsCost: purchaseOrders.customsCost,
             total: purchaseOrders.total,
             paidAmount: purchaseOrders.paidAmount,

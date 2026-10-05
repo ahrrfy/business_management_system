@@ -524,8 +524,8 @@ export default function PurchaseOrderDetail() {
                     ) : null}
 
                     <p className="text-[11px] leading-relaxed text-muted-foreground border-t pt-2">
-                      يُرسمَل هذا المبلغ في تكلفة المخزون عند الاستلام (Landed Cost)، ويُصرف لناقل مستقل بسند صرف مخصص
-                      يحسم من الوردية أو الخزينة ولا يؤثر على ذمة المورد الأساسية.
+                      يسجل هذا المبلغ مصروف نقل على الشركة عند الاستلام، ولا يضاف إلى تكلفة المخزون أو ذمة المورد.
+                      مصدر النقد هو درج منفذ الدفع الموثق، وليس وردية المعتمد أو المدقق.
                     </p>
                   </CardContent>
                 </Card>
@@ -559,7 +559,7 @@ export default function PurchaseOrderDetail() {
                 </span>
               </div>
               <div className="rounded-md border bg-muted/50 p-2.5 text-xs text-muted-foreground leading-relaxed mt-2">
-                سيتم صرف المبلغ نقداً من درج الكاشير للوردية المفتوحة حالياً في الفرع، وخصم المبلغ من النقد المتوقع في الدرج تلقائياً لمنع ظهور أي عجز محاسبي عند إقفال الوردية.
+                يوثق هذا الإجراء دفعاً نقدياً فعلياً من درج منشئ الفاتورة في فرعها، لا درج المعتمد. ينقص النقد المتوقع بمقدار الشحن؛ لا تؤكد الصرف إلا إذا كان هذا مصدر الدفع الحقيقي.
               </div>
             </DialogDescription>
           </DialogHeader>

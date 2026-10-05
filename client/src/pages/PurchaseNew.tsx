@@ -358,6 +358,7 @@ export default function PurchaseNew() {
   // على الأصناف بنسبة القيمة للعرض فقط؛ المعاينة هنا بـdecimal.js والخادم يعيد الحساب مرجعياً.
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
+  const [shippingFundingSource, setShippingFundingSource] = useState<"ACCRUAL" | "DRAWER">("ACCRUAL");
 
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -669,6 +670,7 @@ export default function PurchaseNew() {
       customsCost: safeMoney(customsCost).gt(0)
         ? round2(safeMoney(customsCost)).toFixed(2)
         : undefined,
+      shippingFundingSource: landed.hasLanded ? shippingFundingSource : "ACCRUAL",
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -895,6 +897,7 @@ export default function PurchaseNew() {
     state,
     shippingCost,
     customsCost,
+    shippingFundingSource,
     supplierRow.data,
     branches.data,
   ]);
@@ -1001,6 +1004,8 @@ export default function PurchaseNew() {
             onShippingCostChange={setShippingCost}
             customsCost={customsCost}
             onCustomsCostChange={setCustomsCost}
+            shippingFundingSource={shippingFundingSource}
+            onShippingFundingSourceChange={setShippingFundingSource}
             landed={landed}
             items={state.items}
             subtotal={totals.subtotal}
@@ -1012,9 +1017,8 @@ export default function PurchaseNew() {
             <div className="font-extrabold">سياسة تسوية المورد</div>
             {state.paymentTerms === "CASH" ? (
               <p className="mt-1 text-muted-foreground">
-                نقدي: عند كل استلام ينشئ النظام طلب صرف من الخزينة بكامل قيمة
-                الجزء المستلم. لا يخرج النقد حتى يعتمد شخص آخر، ويظل المبلغ في
-                حساب تسوية مستقل بلا إنشاء ذمة على المورد.
+                نقدي: وصف لطريقة السداد المتوقعة فقط. اعتماد الفاتورة لا يثبت دفع المورد؛
+                وثق السداد ومصدره من طلب سداد مستقل، ولا تحمل وردية المعتمد أي صرف.
               </p>
             ) : (
               <p className="mt-1 text-muted-foreground">

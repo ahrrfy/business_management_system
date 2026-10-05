@@ -72,7 +72,8 @@ function originalReceiptOrderVersion(payloadCanonical: string): number {
   });
 }
 
-async function recognizeShippingAndCustomsInTx(
+/** Internal shipping-only writer, also used for paid freight on cancelled goods. */
+export async function recognizeShippingAndCustomsInTx(
   tx: Tx,
   input: {
     purchaseOrderId: number;
@@ -84,6 +85,7 @@ async function recognizeShippingAndCustomsInTx(
     creatorId?: number;
     deterministicKey: string;
     recognizedAt: Date;
+    evidencePrefix?: "AUTO-PO-APPROVAL" | "PO-CANCELLATION-SHIPPING";
     shippingFundingSource?: {
       mode: "DRAWER" | "TREASURY" | "ACCRUAL";
       shiftId?: number | null;
@@ -121,7 +123,7 @@ async function recognizeShippingAndCustomsInTx(
       };
 
   let openShiftId: number | null = null;
-  if (input.shippingFundingSource?.shiftId != null) {
+  if (input.shippingFundingSource?.mode === "DRAWER" && input.shippingFundingSource.shiftId != null) {
     const [explicitShift] = await tx
       .select({
         id: shifts.id,
@@ -141,7 +143,7 @@ async function recognizeShippingAndCustomsInTx(
     ) {
       openShiftId = Number(explicitShift.id);
     }
-  } else {
+  } else if (input.shippingFundingSource?.mode === "DRAWER") {
     openShiftId = await openShiftIdTx(
       tx,
       creatorActor.userId,
@@ -192,7 +194,7 @@ async function recognizeShippingAndCustomsInTx(
     .digest("hex")
     .slice(0, 16);
   const reference = `SHIP-${input.poNumber}-${token}`;
-  const evidenceReference = `AUTO-PO-APPROVAL:${input.deterministicKey}`;
+  const evidenceReference = `${input.evidencePrefix ?? "AUTO-PO-APPROVAL"}:${input.deterministicKey}`;
   const beneficiaryName = "ناقل غير محدَّد";
   const recognitionDedupe = `PURCHASE_SHIPPING_ACCRUAL:${input.purchaseOrderId}:${token}`;
   const treasuryFallbackReason = fallbackReason;
@@ -411,6 +413,12 @@ export async function postApprovedPurchaseInvoiceInTx(
       code: "CONFLICT",
       message: "نسخة أمر الشراء المعتمدة مفقودة أو لا تخص الأمر",
     });
+  }
+  if (revision.shippingFundingSource !== po.shippingFundingSource || revision.shippingFundingShiftId !== po.shippingFundingShiftId) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذر ترحيل تصريح دفع الشحن", why: "مصدر الدفع الحالي لا يطابق النسخة المعتمدة",
+      doThis: "راجع نسخة الفاتورة ومصدر درج المنشئ قبل اعتمادها",
+    }) });
   }
   const poItems = await tx
     .select()
@@ -751,7 +759,10 @@ export async function postApprovedPurchaseInvoiceInTx(
       creatorId: po.createdBy != null ? Number(po.createdBy) : actor.userId,
       deterministicKey,
       recognizedAt: postedAt,
-      shippingFundingSource: options?.shippingFundingSource,
+      shippingFundingSource: options?.shippingFundingSource ?? {
+        mode: revision.shippingFundingSource,
+        shiftId: revision.shippingFundingShiftId,
+      },
     },
   );
 

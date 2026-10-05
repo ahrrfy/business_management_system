@@ -1,11 +1,15 @@
 import { TRPCError } from "@trpc/server";
 import { hasCashVariance } from "@shared/cashDailyReconciliation";
 import { appErrorMessage } from "@shared/errors";
-import { and, desc, eq, gt, inArray, like, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, like, notExists, notInArray, or, sql } from "drizzle-orm";
 import {
+  accountingEntries,
+  accrualObligationEvents,
+  accrualObligations,
   digitalSaleIntents,
   expenses,
   invoices,
+  purchaseOrders,
   receipts,
   shifts,
   users,
@@ -362,6 +366,49 @@ export async function closeShift(
         }),
       });
     }
+
+    // Source mutex precedes purchase-document locks. A declared physical payment
+    // is not yet in the ledger while its invoice is awaiting posting; never let
+    // the cashier close using a fictitious higher count in that interval.
+    const [unpostedShipping] = await tx
+      .select({ id: purchaseOrders.id, poNumber: purchaseOrders.poNumber })
+      .from(purchaseOrders)
+      .where(and(
+        eq(purchaseOrders.shippingFundingSource, "DRAWER"),
+        eq(purchaseOrders.shippingFundingShiftId, input.shiftId),
+        sql`COALESCE(${purchaseOrders.shippingCost}, 0) + COALESCE(${purchaseOrders.customsCost}, 0) > 0`,
+        notExists(tx.select({ id: accrualObligations.id }).from(accrualObligations)
+          .innerJoin(accrualObligationEvents, eq(accrualObligationEvents.obligationId, accrualObligations.id))
+          .innerJoin(accountingEntries, eq(accountingEntries.id, accrualObligationEvents.accountingEntryId))
+          .innerJoin(receipts, eq(receipts.id, accrualObligationEvents.receiptId))
+          .where(and(
+            eq(accrualObligations.purchaseOrderId, purchaseOrders.id),
+            eq(accrualObligations.kind, "PURCHASE_SHIPPING"),
+            // Immutable settlement proof remains valid while an independently
+            // governed refund is pending or completed. Actual INs set cash.
+            eq(accrualObligationEvents.eventType, "PAYMENT_SETTLED"),
+            eq(accrualObligations.recognizedAmount, sql`COALESCE(${purchaseOrders.shippingCost}, 0) + COALESCE(${purchaseOrders.customsCost}, 0)`),
+            eq(accrualObligationEvents.amount, accrualObligations.recognizedAmount),
+            eq(accountingEntries.amount, accrualObligations.recognizedAmount),
+            eq(accountingEntries.entryType, "PAYMENT_OUT"),
+            eq(accountingEntries.receiptId, receipts.id),
+            eq(accountingEntries.purchaseOrderId, purchaseOrders.id),
+            eq(accountingEntries.branchId, purchaseOrders.branchId),
+            eq(receipts.amount, accrualObligations.recognizedAmount),
+            eq(receipts.shiftId, input.shiftId), eq(receipts.branchId, purchaseOrders.branchId),
+            eq(receipts.createdBy, purchaseOrders.createdBy), eq(receipts.direction, "OUT"),
+            eq(receipts.status, "COMPLETED"), ...materializedDrawerCashConditions(),
+          ))),
+      ))
+      .limit(1);
+    if (unpostedShipping) throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذر إغلاق الوردية",
+        why: `دفع شحن الفاتورة ${unpostedShipping.poNumber} (رقم ${Number(unpostedShipping.id)}) لم يسجل في الدرج بعد`,
+        doThis: "أكمل مراجعة الفاتورة وتوثيق صرف الشحن، أو صحح تصريح الدفع إن كان خاطئاً. لا تغير العد الفعلي لإظهار مطابقة وهمية",
+      }),
+    });
 
     const expected = await computeExpectedCash(
       tx,
