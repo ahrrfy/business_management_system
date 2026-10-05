@@ -122,6 +122,7 @@ export default defineConfig({
       "client/src/components/scan/BarcodeSearchCue.test.ts",
       "client/src/components/invoice/__tests__/paymentTerms.test.ts",
       "client/src/components/invoice/__tests__/stockAvailability.test.ts",
+      "client/src/components/invoice/__tests__/linePriceHints.test.tsx",
       "client/src/components/invoice/__tests__/priceCellPrecision.test.ts",
       "client/src/components/invoice/__tests__/supplierInvoiceMatch.test.ts",
       // PUR-UNIT-01 (٤/٩/٢٦) — سعرُ الوحدة التقديريّ لشاشة الشراء = costBase × conversionFactor.
@@ -138,6 +139,7 @@ export default defineConfig({
       "shared/productChannelTitles.test.ts",
       "shared/__tests__/workOrderDeliveryState.test.ts",
       "shared/__tests__/documentNumber.test.ts",
+      "shared/__tests__/priceAlerts.test.ts",
       "shared/receptionChannel.test.ts",
       "shared/actionLabels.test.ts",
       "shared/uiContracts.test.ts",
